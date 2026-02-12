@@ -1,4 +1,7 @@
 use super::*;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use tonic::{Request, Response, Status};
 
 #[test]
 // AC-GRP-090
@@ -286,4 +289,167 @@ fn resolve_bundle_download_url_expands_api_relative_path() {
         resolved,
         "http://10.0.0.1:50051/api/v1/endpoint/threat-intel/bundle/rules-v1"
     );
+}
+
+#[derive(Clone)]
+struct EnrollmentTokenRecord {
+    expires_at_unix: i64,
+    max_uses: u32,
+    used: u32,
+}
+
+#[derive(Default)]
+struct EnrollmentMockState {
+    token_table: HashMap<String, EnrollmentTokenRecord>,
+    endpoint_agents: Vec<String>,
+}
+
+#[derive(Clone)]
+struct MockAgentControlService {
+    state: Arc<Mutex<EnrollmentMockState>>,
+}
+
+#[tonic::async_trait]
+impl pb::agent_control_service_server::AgentControlService for MockAgentControlService {
+    async fn ping(
+        &self,
+        _request: Request<pb::PingRequest>,
+    ) -> Result<Response<pb::PingResponse>, Status> {
+        Ok(Response::new(pb::PingResponse {
+            status: "ok".to_string(),
+        }))
+    }
+
+    async fn enroll(
+        &self,
+        request: Request<pb::EnrollRequest>,
+    ) -> Result<Response<pb::EnrollResponse>, Status> {
+        let req = request.into_inner();
+        let mut guard = self.state.lock().expect("state lock");
+
+        let token = guard
+            .token_table
+            .get_mut(&req.enrollment_token)
+            .ok_or_else(|| Status::unauthenticated("token not found"))?;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or_default();
+        if token.expires_at_unix <= now {
+            return Err(Status::permission_denied("token expired"));
+        }
+        if token.max_uses > 0 && token.used >= token.max_uses {
+            return Err(Status::resource_exhausted("token usage exceeded"));
+        }
+        if req.csr.is_empty() {
+            return Err(Status::invalid_argument("missing csr"));
+        }
+
+        token.used += 1;
+        guard.endpoint_agents.push(req.hostname);
+
+        Ok(Response::new(pb::EnrollResponse {
+            agent_id: "agent-created-1".to_string(),
+            signed_certificate: b"signed-by-scep-ca".to_vec(),
+            ca_certificate: b"ca-cert".to_vec(),
+            initial_policy: "{}".to_string(),
+            initial_rules: "{}".to_string(),
+            status: "ok".to_string(),
+            issued_profile: "default".to_string(),
+        }))
+    }
+
+    async fn heartbeat(
+        &self,
+        _request: Request<pb::HeartbeatRequest>,
+    ) -> Result<Response<pb::HeartbeatResponse>, Status> {
+        Ok(Response::new(pb::HeartbeatResponse {
+            heartbeat_interval_secs: 30,
+            policy_update: None,
+            rule_update: None,
+            pending_commands: Vec::new(),
+            fleet_baseline: None,
+            status: "ok".to_string(),
+            server_time: String::new(),
+        }))
+    }
+
+    async fn get_latest_threat_intel(
+        &self,
+        _request: Request<pb::ThreatIntelRequest>,
+    ) -> Result<Response<pb::ThreatIntelVersion>, Status> {
+        Ok(Response::new(pb::ThreatIntelVersion {
+            version: String::new(),
+            bundle_path: String::new(),
+            sigma_count: 0,
+            yara_count: 0,
+            ioc_count: 0,
+            cve_count: 0,
+            published_at_unix: 0,
+            custom_rule_count: 0,
+            custom_rule_version_hash: String::new(),
+        }))
+    }
+}
+
+fn free_local_addr() -> std::net::SocketAddr {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
+    let addr = listener.local_addr().expect("local addr");
+    drop(listener);
+    addr
+}
+
+#[tokio::test]
+// AC-GRP-007 AC-GRP-008 AC-GRP-009
+async fn enroll_grpc_validates_token_issues_cert_and_tracks_endpoint_agent_record() {
+    let state = Arc::new(Mutex::new(EnrollmentMockState::default()));
+    state.lock().expect("state lock").token_table.insert(
+        "tok-valid".to_string(),
+        EnrollmentTokenRecord {
+            expires_at_unix: i64::MAX,
+            max_uses: 2,
+            used: 0,
+        },
+    );
+
+    let addr = free_local_addr();
+    let svc = MockAgentControlService {
+        state: state.clone(),
+    };
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    tokio::spawn(async move {
+        tonic::transport::Server::builder()
+            .add_service(pb::agent_control_service_server::AgentControlServiceServer::new(svc))
+            .serve_with_shutdown(addr, async move {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .expect("serve mock agent-control");
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let client = Client::with_mode(addr.to_string(), TransportMode::Grpc);
+    client
+        .enroll(&EnrollmentEnvelope {
+            agent_id: "agent-1".to_string(),
+            mac: "00:11:22:33:44:55".to_string(),
+            hostname: "host-a".to_string(),
+            enrollment_token: Some("tok-valid".to_string()),
+            tenant_id: Some("default".to_string()),
+        })
+        .await
+        .expect("enroll must succeed for valid token");
+
+    let guard = state.lock().expect("state lock");
+    let token = guard
+        .token_table
+        .get("tok-valid")
+        .expect("existing token record");
+    assert_eq!(token.used, 1);
+    assert_eq!(guard.endpoint_agents.len(), 1);
+    assert_eq!(guard.endpoint_agents[0], "host-a");
+    drop(guard);
+
+    let _ = shutdown_tx.send(());
 }

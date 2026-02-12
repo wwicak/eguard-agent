@@ -4,7 +4,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tonic_build::configure()
         .build_client(true)
-        .build_server(false)
+        .build_server(true)
         .compile_protos(
             &[
                 "../../proto/eguard/v1/agent.proto",
