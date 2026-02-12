@@ -45,7 +45,7 @@ fn transitions_learning_to_active() {
 }
 
 #[test]
-// AC-BSL-039
+// AC-BSL-039 AC-DET-039 AC-DET-078
 fn transitions_active_to_stale() {
     let path = std::env::temp_dir().join(format!(
         "eguard-baseline-{}.bin",
@@ -83,6 +83,7 @@ fn learning_does_not_transition_before_window() {
 }
 
 #[test]
+// AC-DET-039 AC-DET-078
 fn active_does_not_become_stale_before_window() {
     let path = std::env::temp_dir().join(format!(
         "eguard-baseline-{}.bin",

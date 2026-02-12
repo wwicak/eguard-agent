@@ -233,6 +233,60 @@ fn layer4_matches_default_template() {
 }
 
 #[test]
+// AC-DET-052
+fn layer4_template_matching_is_bounded_by_declared_depth() {
+    let mut l4 = Layer4Engine::new(300);
+    l4.add_template(KillChainTemplate {
+        name: "bounded_depth_chain".to_string(),
+        stages: vec![
+            TemplatePredicate {
+                process_any_of: Some(crate::util::set_of(["root"])),
+                uid_eq: None,
+                uid_ne: None,
+                require_network_non_web: false,
+                require_module_loaded: false,
+                require_sensitive_file_access: false,
+            },
+            TemplatePredicate {
+                process_any_of: Some(crate::util::set_of(["mid"])),
+                uid_eq: None,
+                uid_ne: None,
+                require_network_non_web: false,
+                require_module_loaded: false,
+                require_sensitive_file_access: false,
+            },
+            TemplatePredicate {
+                process_any_of: Some(crate::util::set_of(["leaf"])),
+                uid_eq: None,
+                uid_ne: None,
+                require_network_non_web: true,
+                require_module_loaded: false,
+                require_sensitive_file_access: false,
+            },
+        ],
+        max_depth: 1,
+        max_inter_stage_secs: 30,
+    });
+
+    let mut root = event(1, EventClass::ProcessExec, "root", "systemd", 1000);
+    root.pid = 10;
+    root.ppid = 1;
+    let _ = l4.observe(&root);
+
+    let mut mid = event(2, EventClass::ProcessExec, "mid", "root", 1000);
+    mid.pid = 11;
+    mid.ppid = 10;
+    let _ = l4.observe(&mid);
+
+    let mut leaf = event(3, EventClass::NetworkConnect, "leaf", "mid", 1000);
+    leaf.pid = 12;
+    leaf.ppid = 11;
+    leaf.dst_port = Some(9001);
+    let hits = l4.observe(&leaf);
+    assert!(hits.iter().all(|h| h != "bounded_depth_chain"));
+}
+
+#[test]
 fn engine_runs_all_layers() {
     let mut d = DetectionEngine::default_with_rules();
     d.layer1.load_hashes(["deadbeef".to_string()]);

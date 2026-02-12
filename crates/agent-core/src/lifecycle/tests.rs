@@ -154,7 +154,7 @@ fn verify_bundle_signature_with_material_accepts_signed_payload() {
 }
 
 #[test]
-// AC-DET-143 AC-DET-144 AC-DET-170
+// AC-DET-143 AC-DET-144 AC-DET-170 AC-EBP-092
 fn load_bundle_rules_reads_signed_archive_bundle() {
     let base = std::env::temp_dir().join(format!(
         "eguard-signed-bundle-load-{}",
@@ -230,8 +230,10 @@ rule signed_bundle_marker {
     std::env::set_var("EGUARD_RULES_STAGING_DIR", &staging);
 
     let mut engine = DetectionEngine::default_with_rules();
+    let started = std::time::Instant::now();
     let (_sigma, yara) = load_bundle_rules(&mut engine, bundle_path.to_string_lossy().as_ref());
     assert_eq!(yara, 1);
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
     let staging_entries = std::fs::read_dir(&staging)
         .expect("staging root exists")
         .count();
