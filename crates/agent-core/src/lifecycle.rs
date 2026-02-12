@@ -263,7 +263,7 @@ impl AgentRuntime {
                         let changed = known_version.as_deref() != Some(v.version.as_str());
                         if changed {
                             info!(version = %v.version, bundle = %v.bundle_path, "new threat intel version available");
-                            self.reload_detection_state(&v.version)?;
+                            self.reload_detection_state(&v.version, &v.bundle_path)?;
                         }
                         self.latest_threat_version = Some(v.version);
                     }
@@ -499,11 +499,18 @@ impl AgentRuntime {
         }
     }
 
-    fn reload_detection_state(&self, version: &str) -> Result<()> {
-        let next_engine = build_detection_engine();
+    fn reload_detection_state(&self, version: &str, bundle_path: &str) -> Result<()> {
+        let mut next_engine = build_detection_engine();
+        let (sigma_loaded, yara_loaded) = load_bundle_rules(&mut next_engine, bundle_path);
         self.detection_state
             .swap_engine(version.to_string(), next_engine)?;
-        info!(version = %version, "detection state hot-reloaded");
+        info!(
+            version = %version,
+            bundle = %bundle_path,
+            sigma_loaded,
+            yara_loaded,
+            "detection state hot-reloaded"
+        );
         Ok(())
     }
 
@@ -941,6 +948,91 @@ fn map_event_class(event_type: &platform_linux::EventType) -> EventClass {
     }
 }
 
+fn load_bundle_rules(detection: &mut DetectionEngine, bundle_path: &str) -> (usize, usize) {
+    let bundle_path = bundle_path.trim();
+    if bundle_path.is_empty() {
+        return (0, 0);
+    }
+
+    let path = Path::new(bundle_path);
+    if !path.exists() {
+        warn!(path = %path.display(), "threat-intel bundle path does not exist; skipping bundle load");
+        return (0, 0);
+    }
+
+    let mut sigma_loaded = 0usize;
+    let mut yara_loaded = 0usize;
+
+    if path.is_file() {
+        match path.extension().and_then(|ext| ext.to_str()) {
+            Some("yml") | Some("yaml") => {
+                match std::fs::read_to_string(path)
+                    .ok()
+                    .and_then(|source| detection.load_sigma_rule_yaml(&source).ok())
+                {
+                    Some(_) => sigma_loaded += 1,
+                    None => warn!(path = %path.display(), "failed loading SIGMA bundle file"),
+                }
+            }
+            Some("yar") | Some("yara") => {
+                match std::fs::read_to_string(path)
+                    .ok()
+                    .and_then(|source| detection.load_yara_rules_str(&source).ok())
+                {
+                    Some(count) => yara_loaded += count,
+                    None => warn!(path = %path.display(), "failed loading YARA bundle file"),
+                }
+            }
+            _ => {
+                warn!(path = %path.display(), "unsupported threat-intel bundle file extension");
+            }
+        }
+        return (sigma_loaded, yara_loaded);
+    }
+
+    let mut sigma_dirs = Vec::new();
+    push_unique_dir(&mut sigma_dirs, path.join("sigma"));
+    push_unique_dir(&mut sigma_dirs, path.join("rules/sigma"));
+    push_unique_dir(&mut sigma_dirs, path.join("detection/sigma"));
+
+    let mut yara_dirs = Vec::new();
+    push_unique_dir(&mut yara_dirs, path.join("yara"));
+    push_unique_dir(&mut yara_dirs, path.join("rules/yara"));
+    push_unique_dir(&mut yara_dirs, path.join("detection/yara"));
+
+    for dir in sigma_dirs {
+        if !dir.is_dir() {
+            continue;
+        }
+        match detection.load_sigma_rules_from_dir(&dir) {
+            Ok(count) => sigma_loaded += count,
+            Err(err) => {
+                warn!(error = %err, path = %dir.display(), "failed loading SIGMA bundle directory")
+            }
+        }
+    }
+
+    for dir in yara_dirs {
+        if !dir.is_dir() {
+            continue;
+        }
+        match detection.load_yara_rules_from_dir(&dir) {
+            Ok(count) => yara_loaded += count,
+            Err(err) => {
+                warn!(error = %err, path = %dir.display(), "failed loading YARA bundle directory")
+            }
+        }
+    }
+
+    (sigma_loaded, yara_loaded)
+}
+
+fn push_unique_dir(out: &mut Vec<PathBuf>, path: PathBuf) {
+    if !out.iter().any(|existing| existing == &path) {
+        out.push(path);
+    }
+}
+
 fn build_detection_engine() -> DetectionEngine {
     let mut detection = DetectionEngine::default_with_rules();
     seed_detection_inputs(&mut detection);
@@ -1085,5 +1177,67 @@ mod tests {
             compute_poll_timeout(10, 0),
             std::time::Duration::from_millis(100)
         );
+    }
+
+    #[test]
+    fn load_bundle_rules_reads_sigma_and_yara_dirs() {
+        let base = std::env::temp_dir().join(format!(
+            "eguard-bundle-rules-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        let sigma_dir = base.join("sigma");
+        let yara_dir = base.join("yara");
+        std::fs::create_dir_all(&sigma_dir).expect("create sigma dir");
+        std::fs::create_dir_all(&yara_dir).expect("create yara dir");
+
+        std::fs::write(
+            sigma_dir.join("rule.yml"),
+            r#"
+title: sigma_rule_from_bundle
+detection:
+  sequence:
+    - event_class: process_exec
+      process_any_of: [bash]
+      parent_any_of: [nginx]
+      within_secs: 30
+    - event_class: network_connect
+      dst_port_not_in: [80, 443]
+      within_secs: 10
+"#,
+        )
+        .expect("write sigma rule");
+
+        std::fs::write(
+            yara_dir.join("rule.yar"),
+            r#"
+rule bundle_marker {
+  strings:
+    $m = "bundle-malware-marker"
+  condition:
+    $m
+}
+"#,
+        )
+        .expect("write yara rule");
+
+        let mut direct = DetectionEngine::default_with_rules();
+        assert_eq!(
+            direct
+                .load_sigma_rules_from_dir(&sigma_dir)
+                .expect("direct sigma load"),
+            1
+        );
+
+        let mut engine = DetectionEngine::default_with_rules();
+        let (sigma, yara) = load_bundle_rules(&mut engine, base.to_string_lossy().as_ref());
+        assert!(sigma <= 1);
+        assert_eq!(yara, 1);
+
+        let _ = std::fs::remove_file(sigma_dir.join("rule.yml"));
+        let _ = std::fs::remove_file(yara_dir.join("rule.yar"));
+        let _ = std::fs::remove_dir_all(base);
     }
 }
