@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Posture {
     Compliant,
     NonCompliant,
@@ -14,3 +14,6 @@ pub fn posture_from_compliance(status: &str) -> Posture {
         _ => Posture::Unknown,
     }
 }
+
+#[cfg(test)]
+mod tests;

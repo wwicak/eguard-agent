@@ -5,6 +5,18 @@ use anyhow::{Context, Result};
 use response::{ResponseConfig, ResponsePolicy};
 use serde::{Deserialize, Serialize};
 
+const AGENT_CONFIG_CANDIDATES: [&str; 3] = [
+    "/etc/eguard-agent/agent.conf",
+    "./conf/agent.conf",
+    "./agent.conf",
+];
+
+const BOOTSTRAP_CONFIG_CANDIDATES: [&str; 3] = [
+    "/etc/eguard-agent/bootstrap.conf",
+    "./conf/bootstrap.conf",
+    "./bootstrap.conf",
+];
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AgentMode {
     Learning,
@@ -66,93 +78,15 @@ impl AgentConfig {
     }
 
     fn apply_env_overrides(&mut self) {
-        if let Ok(v) = std::env::var("EGUARD_AGENT_ID") {
-            if !v.trim().is_empty() {
-                self.agent_id = v;
-            }
-        }
-
-        if let Ok(v) = std::env::var("EGUARD_AGENT_MAC") {
-            if !v.trim().is_empty() {
-                self.mac = v;
-            }
-        }
-
-        let server = std::env::var("EGUARD_SERVER_ADDR")
-            .ok()
-            .filter(|v| !v.trim().is_empty())
-            .or_else(|| {
-                std::env::var("EGUARD_SERVER")
-                    .ok()
-                    .filter(|v| !v.trim().is_empty())
-            });
-        if let Some(server) = server {
-            self.server_addr = server;
-        }
-
-        if let Ok(mode) = std::env::var("EGUARD_AGENT_MODE") {
-            self.mode = parse_mode(&mode);
-        }
-
-        if let Ok(v) = std::env::var("EGUARD_TRANSPORT_MODE") {
-            if !v.trim().is_empty() {
-                self.transport_mode = v;
-            }
-        }
-
-        if let Ok(v) = std::env::var("EGUARD_ENROLLMENT_TOKEN") {
-            self.enrollment_token = non_empty(Some(v));
-        }
-
-        if let Ok(v) = std::env::var("EGUARD_TENANT_ID") {
-            self.tenant_id = non_empty(Some(v));
-        }
-
-        if let Ok(v) = std::env::var("EGUARD_AUTONOMOUS_RESPONSE") {
-            self.response.autonomous_response = parse_bool(&v);
-        }
-
-        if let Ok(v) = std::env::var("EGUARD_RESPONSE_DRY_RUN") {
-            self.response.dry_run = parse_bool(&v);
-        }
-
-        if let Ok(v) = std::env::var("EGUARD_RESPONSE_MAX_KILLS_PER_MINUTE") {
-            if let Ok(parsed) = v.trim().parse::<usize>() {
-                self.response.max_kills_per_minute = parsed;
-            }
-        }
-
-        if let Ok(v) = std::env::var("EGUARD_BUFFER_BACKEND") {
-            if !v.trim().is_empty() {
-                self.offline_buffer_backend = v;
-            }
-        }
-
-        if let Ok(v) = std::env::var("EGUARD_BUFFER_PATH") {
-            if !v.trim().is_empty() {
-                self.offline_buffer_path = v;
-            }
-        }
-
-        if let Ok(v) = std::env::var("EGUARD_BUFFER_CAP_MB") {
-            if let Some(cap) = parse_cap_mb(&v) {
-                self.offline_buffer_cap_bytes = cap;
-            }
-        }
-
-        if let Ok(v) = std::env::var("EGUARD_TLS_CERT") {
-            self.tls_cert_path = non_empty(Some(v));
-        }
-        if let Ok(v) = std::env::var("EGUARD_TLS_KEY") {
-            self.tls_key_path = non_empty(Some(v));
-        }
-        if let Ok(v) = std::env::var("EGUARD_TLS_CA") {
-            self.tls_ca_path = non_empty(Some(v));
-        }
-
-        if self.agent_id.trim().is_empty() {
-            self.agent_id = default_agent_id();
-        }
+        self.apply_env_agent_identity();
+        self.apply_env_server_address();
+        self.apply_env_runtime_mode();
+        self.apply_env_transport_mode();
+        self.apply_env_enrollment();
+        self.apply_env_response();
+        self.apply_env_storage();
+        self.apply_env_tls();
+        self.ensure_valid_agent_id();
     }
 
     fn apply_file_config(&mut self) -> Result<bool> {
@@ -166,69 +100,11 @@ impl AgentConfig {
         let file_cfg: FileConfig = toml::from_str(&raw)
             .with_context(|| format!("failed parsing TOML config {}", path.display()))?;
 
-        if let Some(agent) = file_cfg.agent {
-            if let Some(v) = non_empty(agent.id) {
-                self.agent_id = v;
-            }
-            if let Some(v) = non_empty(agent.mac) {
-                self.mac = v;
-            }
-            if let Some(v) = non_empty(agent.server_addr).or_else(|| non_empty(agent.server)) {
-                self.server_addr = v;
-            }
-            if let Some(v) = non_empty(agent.mode) {
-                self.mode = parse_mode(&v);
-            }
-        }
-
-        if let Some(transport) = file_cfg.transport {
-            if let Some(v) = non_empty(transport.mode) {
-                self.transport_mode = v;
-            }
-        }
-
-        if let Some(response) = file_cfg.response {
-            if let Some(v) = response.autonomous_response {
-                self.response.autonomous_response = v;
-            }
-            if let Some(v) = response.dry_run {
-                self.response.dry_run = v;
-            }
-            if let Some(rate_limit) = response.rate_limit {
-                if let Some(v) = rate_limit.max_kills_per_minute {
-                    self.response.max_kills_per_minute = v;
-                }
-            }
-
-            apply_response_policy(&mut self.response.definite, response.definite);
-            apply_response_policy(&mut self.response.very_high, response.very_high);
-            apply_response_policy(&mut self.response.high, response.high);
-            apply_response_policy(&mut self.response.medium, response.medium);
-        }
-
-        if let Some(storage) = file_cfg.storage {
-            if let Some(v) = non_empty(storage.backend) {
-                self.offline_buffer_backend = v;
-            }
-            if let Some(v) = non_empty(storage.path) {
-                self.offline_buffer_path = v;
-            }
-            if let Some(v) = storage.cap_mb {
-                self.offline_buffer_cap_bytes = v.saturating_mul(1024 * 1024);
-            }
-        }
-
-        if let Some(tls) = file_cfg.tls {
-            if let Some(v) = non_empty(tls.cert_path) {
-                self.tls_cert_path = Some(v);
-            }
-            if let Some(v) = non_empty(tls.key_path) {
-                self.tls_key_path = Some(v);
-            }
-            if let Some(v) = non_empty(tls.ca_path) {
-                self.tls_ca_path = Some(v);
-            }
-        }
+        self.apply_file_agent(file_cfg.agent);
+        self.apply_file_transport(file_cfg.transport);
+        self.apply_file_response(file_cfg.response);
+        self.apply_file_storage(file_cfg.storage);
+        self.apply_file_tls(file_cfg.tls);
 
         Ok(true)
     }
@@ -261,6 +137,170 @@ impl AgentConfig {
 
         self.bootstrap_config_path = Some(path);
         Ok(())
+    }
+
+    fn apply_env_agent_identity(&mut self) {
+        if let Some(v) = env_non_empty("EGUARD_AGENT_ID") {
+            self.agent_id = v;
+        }
+        if let Some(v) = env_non_empty("EGUARD_AGENT_MAC") {
+            self.mac = v;
+        }
+    }
+
+    fn apply_env_server_address(&mut self) {
+        let server = env_non_empty("EGUARD_SERVER_ADDR").or_else(|| env_non_empty("EGUARD_SERVER"));
+        if let Some(server) = server {
+            self.server_addr = server;
+        }
+    }
+
+    fn apply_env_runtime_mode(&mut self) {
+        if let Ok(mode) = std::env::var("EGUARD_AGENT_MODE") {
+            self.mode = parse_mode(&mode);
+        }
+    }
+
+    fn apply_env_transport_mode(&mut self) {
+        if let Some(v) = env_non_empty("EGUARD_TRANSPORT_MODE") {
+            self.transport_mode = v;
+        }
+    }
+
+    fn apply_env_enrollment(&mut self) {
+        if let Ok(v) = std::env::var("EGUARD_ENROLLMENT_TOKEN") {
+            self.enrollment_token = non_empty(Some(v));
+        }
+        if let Ok(v) = std::env::var("EGUARD_TENANT_ID") {
+            self.tenant_id = non_empty(Some(v));
+        }
+    }
+
+    fn apply_env_response(&mut self) {
+        if let Ok(v) = std::env::var("EGUARD_AUTONOMOUS_RESPONSE") {
+            self.response.autonomous_response = parse_bool(&v);
+        }
+        if let Ok(v) = std::env::var("EGUARD_RESPONSE_DRY_RUN") {
+            self.response.dry_run = parse_bool(&v);
+        }
+        if let Some(v) = env_usize("EGUARD_RESPONSE_MAX_KILLS_PER_MINUTE") {
+            self.response.max_kills_per_minute = v;
+        }
+    }
+
+    fn apply_env_storage(&mut self) {
+        if let Some(v) = env_non_empty("EGUARD_BUFFER_BACKEND") {
+            self.offline_buffer_backend = v;
+        }
+        if let Some(v) = env_non_empty("EGUARD_BUFFER_PATH") {
+            self.offline_buffer_path = v;
+        }
+        if let Ok(v) = std::env::var("EGUARD_BUFFER_CAP_MB") {
+            if let Some(cap) = parse_cap_mb(&v) {
+                self.offline_buffer_cap_bytes = cap;
+            }
+        }
+    }
+
+    fn apply_env_tls(&mut self) {
+        if let Ok(v) = std::env::var("EGUARD_TLS_CERT") {
+            self.tls_cert_path = non_empty(Some(v));
+        }
+        if let Ok(v) = std::env::var("EGUARD_TLS_KEY") {
+            self.tls_key_path = non_empty(Some(v));
+        }
+        if let Ok(v) = std::env::var("EGUARD_TLS_CA") {
+            self.tls_ca_path = non_empty(Some(v));
+        }
+    }
+
+    fn ensure_valid_agent_id(&mut self) {
+        if self.agent_id.trim().is_empty() {
+            self.agent_id = default_agent_id();
+        }
+    }
+
+    fn apply_file_agent(&mut self, agent: Option<FileAgentConfig>) {
+        let Some(agent) = agent else {
+            return;
+        };
+
+        if let Some(v) = non_empty(agent.id) {
+            self.agent_id = v;
+        }
+        if let Some(v) = non_empty(agent.mac) {
+            self.mac = v;
+        }
+        if let Some(v) = non_empty(agent.server_addr).or_else(|| non_empty(agent.server)) {
+            self.server_addr = v;
+        }
+        if let Some(v) = non_empty(agent.mode) {
+            self.mode = parse_mode(&v);
+        }
+    }
+
+    fn apply_file_transport(&mut self, transport: Option<FileTransportConfig>) {
+        let Some(transport) = transport else {
+            return;
+        };
+        if let Some(v) = non_empty(transport.mode) {
+            self.transport_mode = v;
+        }
+    }
+
+    fn apply_file_response(&mut self, response: Option<FileResponseConfig>) {
+        let Some(response) = response else {
+            return;
+        };
+
+        if let Some(v) = response.autonomous_response {
+            self.response.autonomous_response = v;
+        }
+        if let Some(v) = response.dry_run {
+            self.response.dry_run = v;
+        }
+        if let Some(rate_limit) = response.rate_limit {
+            if let Some(v) = rate_limit.max_kills_per_minute {
+                self.response.max_kills_per_minute = v;
+            }
+        }
+
+        apply_response_policy(&mut self.response.definite, response.definite);
+        apply_response_policy(&mut self.response.very_high, response.very_high);
+        apply_response_policy(&mut self.response.high, response.high);
+        apply_response_policy(&mut self.response.medium, response.medium);
+    }
+
+    fn apply_file_storage(&mut self, storage: Option<FileStorageConfig>) {
+        let Some(storage) = storage else {
+            return;
+        };
+
+        if let Some(v) = non_empty(storage.backend) {
+            self.offline_buffer_backend = v;
+        }
+        if let Some(v) = non_empty(storage.path) {
+            self.offline_buffer_path = v;
+        }
+        if let Some(v) = storage.cap_mb {
+            self.offline_buffer_cap_bytes = v.saturating_mul(1024 * 1024);
+        }
+    }
+
+    fn apply_file_tls(&mut self, tls: Option<FileTlsConfig>) {
+        let Some(tls) = tls else {
+            return;
+        };
+
+        if let Some(v) = non_empty(tls.cert_path) {
+            self.tls_cert_path = Some(v);
+        }
+        if let Some(v) = non_empty(tls.key_path) {
+            self.tls_key_path = Some(v);
+        }
+        if let Some(v) = non_empty(tls.ca_path) {
+            self.tls_ca_path = Some(v);
+        }
     }
 }
 
@@ -361,54 +401,29 @@ struct BootstrapConfig {
 }
 
 fn resolve_config_path() -> Result<Option<PathBuf>> {
-    if let Ok(p) = std::env::var("EGUARD_AGENT_CONFIG") {
-        let p = p.trim();
-        if !p.is_empty() {
-            let path = PathBuf::from(p);
-            if !path.exists() {
-                anyhow::bail!(
-                    "configured EGUARD_AGENT_CONFIG does not exist: {}",
-                    path.display()
-                );
-            }
-            return Ok(Some(path));
-        }
-    }
-
-    for candidate in [
-        "/etc/eguard-agent/agent.conf",
-        "./conf/agent.conf",
-        "./agent.conf",
-    ] {
-        let p = Path::new(candidate);
-        if p.exists() {
-            return Ok(Some(p.to_path_buf()));
-        }
-    }
-
-    Ok(None)
+    resolve_path_from_env_or_candidates("EGUARD_AGENT_CONFIG", &AGENT_CONFIG_CANDIDATES)
 }
 
 fn resolve_bootstrap_path() -> Result<Option<PathBuf>> {
-    if let Ok(p) = std::env::var("EGUARD_BOOTSTRAP_CONFIG") {
+    resolve_path_from_env_or_candidates("EGUARD_BOOTSTRAP_CONFIG", &BOOTSTRAP_CONFIG_CANDIDATES)
+}
+
+fn resolve_path_from_env_or_candidates(
+    env_var: &str,
+    candidates: &[&str],
+) -> Result<Option<PathBuf>> {
+    if let Ok(p) = std::env::var(env_var) {
         let p = p.trim();
         if !p.is_empty() {
             let path = PathBuf::from(p);
             if !path.exists() {
-                anyhow::bail!(
-                    "configured EGUARD_BOOTSTRAP_CONFIG does not exist: {}",
-                    path.display()
-                );
+                anyhow::bail!("configured {} does not exist: {}", env_var, path.display());
             }
             return Ok(Some(path));
         }
     }
 
-    for candidate in [
-        "/etc/eguard-agent/bootstrap.conf",
-        "./conf/bootstrap.conf",
-        "./bootstrap.conf",
-    ] {
+    for candidate in candidates {
         let p = Path::new(candidate);
         if p.exists() {
             return Ok(Some(p.to_path_buf()));
@@ -422,14 +437,14 @@ fn parse_bootstrap_config(raw: &str) -> Result<BootstrapConfig> {
     let mut cfg = BootstrapConfig::default();
     let mut section = String::new();
 
-    for line in raw.lines() {
-        let mut line = line.trim();
-        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+    for raw_line in raw.lines() {
+        let line = raw_line.trim();
+        if is_bootstrap_comment_or_empty(line) {
             continue;
         }
 
-        if let Some(content) = line.strip_prefix('[').and_then(|v| v.strip_suffix(']')) {
-            section = content.trim().to_ascii_lowercase();
+        if let Some(parsed_section) = parse_bootstrap_section_name(line) {
+            section = parsed_section;
             continue;
         }
 
@@ -437,40 +452,71 @@ fn parse_bootstrap_config(raw: &str) -> Result<BootstrapConfig> {
             continue;
         }
 
-        if let Some((head, _)) = line.split_once('#') {
-            line = head.trim();
-        }
-        if let Some((head, _)) = line.split_once(';') {
-            line = head.trim();
-        }
-        if line.is_empty() {
-            continue;
-        }
-
-        let Some((raw_key, raw_value)) = line.split_once('=') else {
+        let Some((key, value)) = parse_bootstrap_server_entry(line) else {
             continue;
         };
-
-        let key = raw_key.trim().to_ascii_lowercase();
-        let value = raw_value.trim().trim_matches('"').trim_matches('\'').trim();
-        if value.is_empty() {
-            continue;
-        }
-
-        match key.as_str() {
-            "address" => cfg.address = Some(value.to_string()),
-            "grpc_port" => {
-                if let Ok(port) = value.parse::<u16>() {
-                    cfg.grpc_port = Some(port);
-                }
-            }
-            "enrollment_token" => cfg.enrollment_token = Some(value.to_string()),
-            "tenant_id" => cfg.tenant_id = Some(value.to_string()),
-            _ => {}
-        }
+        apply_bootstrap_server_entry(&mut cfg, &key, &value);
     }
 
     Ok(cfg)
+}
+
+fn is_bootstrap_comment_or_empty(line: &str) -> bool {
+    line.is_empty() || line.starts_with('#') || line.starts_with(';')
+}
+
+fn parse_bootstrap_section_name(line: &str) -> Option<String> {
+    line.strip_prefix('[')
+        .and_then(|v| v.strip_suffix(']'))
+        .map(|section| section.trim().to_ascii_lowercase())
+}
+
+fn parse_bootstrap_server_entry(line: &str) -> Option<(String, String)> {
+    let line = strip_bootstrap_inline_comment(line).trim();
+    if line.is_empty() {
+        return None;
+    }
+
+    let (raw_key, raw_value) = line.split_once('=')?;
+    let key = raw_key.trim().to_ascii_lowercase();
+    let value = raw_value
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim()
+        .to_string();
+    if value.is_empty() {
+        return None;
+    }
+
+    Some((key, value))
+}
+
+fn strip_bootstrap_inline_comment(line: &str) -> &str {
+    let hash_idx = line.find('#');
+    let semicolon_idx = line.find(';');
+    let cut_at = match (hash_idx, semicolon_idx) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    };
+
+    cut_at.map(|idx| &line[..idx]).unwrap_or(line)
+}
+
+fn apply_bootstrap_server_entry(cfg: &mut BootstrapConfig, key: &str, value: &str) {
+    match key {
+        "address" => cfg.address = Some(value.to_string()),
+        "grpc_port" => {
+            if let Ok(port) = value.parse::<u16>() {
+                cfg.grpc_port = Some(port);
+            }
+        }
+        "enrollment_token" => cfg.enrollment_token = Some(value.to_string()),
+        "tenant_id" => cfg.tenant_id = Some(value.to_string()),
+        _ => {}
+    }
 }
 
 fn format_server_addr(address: &str, grpc_port: Option<u16>) -> String {
@@ -506,6 +552,16 @@ fn has_explicit_port(address: &str) -> bool {
 
 fn non_empty(v: Option<String>) -> Option<String> {
     v.filter(|s| !s.trim().is_empty())
+}
+
+fn env_non_empty(name: &str) -> Option<String> {
+    std::env::var(name).ok().and_then(|v| non_empty(Some(v)))
+}
+
+fn env_usize(name: &str) -> Option<usize> {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
 }
 
 fn default_agent_id() -> String {
@@ -552,157 +608,4 @@ fn apply_response_policy(dst: &mut ResponsePolicy, src: Option<FileResponsePolic
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
-    use std::sync::{Mutex, OnceLock};
-
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-
-    fn clear_env() {
-        let vars = [
-            "EGUARD_AGENT_CONFIG",
-            "EGUARD_BOOTSTRAP_CONFIG",
-            "EGUARD_AGENT_ID",
-            "EGUARD_SERVER_ADDR",
-            "EGUARD_SERVER",
-            "EGUARD_AGENT_MODE",
-            "EGUARD_TRANSPORT_MODE",
-            "EGUARD_ENROLLMENT_TOKEN",
-            "EGUARD_TENANT_ID",
-            "EGUARD_AUTONOMOUS_RESPONSE",
-            "EGUARD_RESPONSE_DRY_RUN",
-            "EGUARD_RESPONSE_MAX_KILLS_PER_MINUTE",
-            "EGUARD_BUFFER_BACKEND",
-            "EGUARD_BUFFER_PATH",
-            "EGUARD_BUFFER_CAP_MB",
-            "EGUARD_TLS_CERT",
-            "EGUARD_TLS_KEY",
-            "EGUARD_TLS_CA",
-        ];
-        for v in vars {
-            std::env::remove_var(v);
-        }
-    }
-
-    #[test]
-    fn file_config_is_loaded() {
-        let _guard = env_lock().lock().expect("env lock");
-        clear_env();
-
-        let path = std::env::temp_dir().join(format!(
-            "eguard-agent-config-{}.toml",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or_default()
-        ));
-
-        let mut f = std::fs::File::create(&path).expect("create file");
-        writeln!(
-            f,
-            "[agent]\nserver_addr=\"10.0.0.1:50051\"\nmode=\"active\"\n[transport]\nmode=\"grpc\"\n[response]\nautonomous_response=true\ndry_run=true\n[response.high]\nkill=true\nquarantine=false\ncapture_script=true\n[response.rate_limit]\nmax_kills_per_minute=21\n[storage]\nbackend=\"memory\"\ncap_mb=10"
-        )
-        .expect("write file");
-
-        std::env::set_var("EGUARD_AGENT_CONFIG", &path);
-        let cfg = AgentConfig::load().expect("load config");
-
-        assert_eq!(cfg.server_addr, "10.0.0.1:50051");
-        assert!(matches!(cfg.mode, AgentMode::Active));
-        assert!(cfg.response.autonomous_response);
-        assert!(cfg.response.dry_run);
-        assert!(cfg.response.high.kill);
-        assert!(!cfg.response.high.quarantine);
-        assert!(cfg.response.high.capture_script);
-        assert_eq!(cfg.response.max_kills_per_minute, 21);
-        assert_eq!(cfg.transport_mode, "grpc");
-        assert_eq!(cfg.offline_buffer_backend, "memory");
-        assert_eq!(cfg.offline_buffer_cap_bytes, 10 * 1024 * 1024);
-
-        clear_env();
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn env_overrides_file_config() {
-        let _guard = env_lock().lock().expect("env lock");
-        clear_env();
-
-        let path = std::env::temp_dir().join(format!(
-            "eguard-agent-config-{}.toml",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or_default()
-        ));
-
-        let mut f = std::fs::File::create(&path).expect("create file");
-        writeln!(f, "[agent]\nserver_addr=\"10.0.0.1:50051\"").expect("write file");
-
-        std::env::set_var("EGUARD_AGENT_CONFIG", &path);
-        std::env::set_var("EGUARD_SERVER_ADDR", "10.9.9.9:50051");
-        std::env::set_var("EGUARD_TRANSPORT_MODE", "http");
-        std::env::set_var("EGUARD_AUTONOMOUS_RESPONSE", "true");
-        let cfg = AgentConfig::load().expect("load config");
-
-        assert_eq!(cfg.server_addr, "10.9.9.9:50051");
-        assert_eq!(cfg.transport_mode, "http");
-        assert!(cfg.response.autonomous_response);
-
-        clear_env();
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn bootstrap_config_is_used_when_agent_config_missing() {
-        let _guard = env_lock().lock().expect("env lock");
-        clear_env();
-
-        let path = std::env::temp_dir().join(format!(
-            "eguard-bootstrap-config-{}.conf",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or_default()
-        ));
-
-        let mut f = std::fs::File::create(&path).expect("create bootstrap file");
-        writeln!(
-            f,
-            "[server]\naddress = 10.11.12.13\ngrpc_port = 50051\nenrollment_token = abc123def456\ntenant_id = default"
-        )
-        .expect("write bootstrap file");
-
-        std::env::set_var("EGUARD_BOOTSTRAP_CONFIG", &path);
-        let cfg = AgentConfig::load().expect("load config");
-
-        assert_eq!(cfg.server_addr, "10.11.12.13:50051");
-        assert_eq!(cfg.transport_mode, "grpc");
-        assert_eq!(cfg.enrollment_token.as_deref(), Some("abc123def456"));
-        assert_eq!(cfg.tenant_id.as_deref(), Some("default"));
-        assert_eq!(cfg.bootstrap_config_path.as_deref(), Some(path.as_path()));
-
-        clear_env();
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn format_server_addr_handles_ipv6_without_port() {
-        assert_eq!(
-            format_server_addr("2001:db8::1", Some(50051)),
-            "[2001:db8::1]:50051"
-        );
-        assert_eq!(
-            format_server_addr("[2001:db8::1]:50051", Some(50052)),
-            "[2001:db8::1]:50051"
-        );
-        assert_eq!(
-            format_server_addr("eguard.example.com", Some(50051)),
-            "eguard.example.com:50051"
-        );
-    }
-}
+mod tests;

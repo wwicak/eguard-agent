@@ -26,3 +26,6 @@ impl RetryPolicy {
         delay.min(self.max_backoff)
     }
 }
+
+#[cfg(test)]
+mod tests;

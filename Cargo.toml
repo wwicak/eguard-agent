@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "crates/acceptance",
   "crates/agent-core",
   "crates/grpc-client",
   "crates/detection",

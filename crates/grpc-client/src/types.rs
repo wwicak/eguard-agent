@@ -82,3 +82,6 @@ pub struct TlsConfig {
 pub struct ServerState {
     pub persistence_enabled: bool,
 }
+
+#[cfg(test)]
+mod tests;

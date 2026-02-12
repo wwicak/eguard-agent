@@ -1,0 +1,303 @@
+
+use super::*;
+use std::io::Write;
+use std::sync::{Mutex, OnceLock};
+
+fn env_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn clear_env() {
+    let vars = [
+        "EGUARD_AGENT_CONFIG",
+        "EGUARD_BOOTSTRAP_CONFIG",
+        "EGUARD_AGENT_ID",
+        "EGUARD_SERVER_ADDR",
+        "EGUARD_SERVER",
+        "EGUARD_AGENT_MODE",
+        "EGUARD_TRANSPORT_MODE",
+        "EGUARD_ENROLLMENT_TOKEN",
+        "EGUARD_TENANT_ID",
+        "EGUARD_AUTONOMOUS_RESPONSE",
+        "EGUARD_RESPONSE_DRY_RUN",
+        "EGUARD_RESPONSE_MAX_KILLS_PER_MINUTE",
+        "EGUARD_BUFFER_BACKEND",
+        "EGUARD_BUFFER_PATH",
+        "EGUARD_BUFFER_CAP_MB",
+        "EGUARD_TLS_CERT",
+        "EGUARD_TLS_KEY",
+        "EGUARD_TLS_CA",
+    ];
+    for v in vars {
+        std::env::remove_var(v);
+    }
+}
+
+#[test]
+// AC-CFG-004 AC-CFG-010 AC-CFG-013 AC-CFG-017 AC-CFG-020
+fn file_config_is_loaded() {
+    let _guard = env_lock().lock().expect("env lock");
+    clear_env();
+
+    let path = std::env::temp_dir().join(format!(
+        "eguard-agent-config-{}.toml",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+
+    let mut f = std::fs::File::create(&path).expect("create file");
+    writeln!(
+            f,
+            "[agent]\nserver_addr=\"10.0.0.1:50051\"\nmode=\"active\"\n[transport]\nmode=\"grpc\"\n[response]\nautonomous_response=true\ndry_run=true\n[response.high]\nkill=true\nquarantine=false\ncapture_script=true\n[response.rate_limit]\nmax_kills_per_minute=21\n[storage]\nbackend=\"memory\"\ncap_mb=10"
+        )
+        .expect("write file");
+
+    std::env::set_var("EGUARD_AGENT_CONFIG", &path);
+    let cfg = AgentConfig::load().expect("load config");
+
+    assert_eq!(cfg.server_addr, "10.0.0.1:50051");
+    assert!(matches!(cfg.mode, AgentMode::Active));
+    assert!(cfg.response.autonomous_response);
+    assert!(cfg.response.dry_run);
+    assert!(cfg.response.high.kill);
+    assert!(!cfg.response.high.quarantine);
+    assert!(cfg.response.high.capture_script);
+    assert_eq!(cfg.response.max_kills_per_minute, 21);
+    assert_eq!(cfg.transport_mode, "grpc");
+    assert_eq!(cfg.offline_buffer_backend, "memory");
+    assert_eq!(cfg.offline_buffer_cap_bytes, 10 * 1024 * 1024);
+
+    clear_env();
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+// AC-CFG-004
+fn env_overrides_file_config() {
+    let _guard = env_lock().lock().expect("env lock");
+    clear_env();
+
+    let path = std::env::temp_dir().join(format!(
+        "eguard-agent-config-{}.toml",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+
+    let mut f = std::fs::File::create(&path).expect("create file");
+    writeln!(f, "[agent]\nserver_addr=\"10.0.0.1:50051\"").expect("write file");
+
+    std::env::set_var("EGUARD_AGENT_CONFIG", &path);
+    std::env::set_var("EGUARD_SERVER_ADDR", "10.9.9.9:50051");
+    std::env::set_var("EGUARD_TRANSPORT_MODE", "http");
+    std::env::set_var("EGUARD_AUTONOMOUS_RESPONSE", "true");
+    let cfg = AgentConfig::load().expect("load config");
+
+    assert_eq!(cfg.server_addr, "10.9.9.9:50051");
+    assert_eq!(cfg.transport_mode, "http");
+    assert!(cfg.response.autonomous_response);
+
+    clear_env();
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+// AC-CFG-001 AC-CFG-002
+fn bootstrap_config_is_used_when_agent_config_missing() {
+    let _guard = env_lock().lock().expect("env lock");
+    clear_env();
+
+    let path = std::env::temp_dir().join(format!(
+        "eguard-bootstrap-config-{}.conf",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+
+    let mut f = std::fs::File::create(&path).expect("create bootstrap file");
+    writeln!(
+            f,
+            "[server]\naddress = 10.11.12.13\ngrpc_port = 50051\nenrollment_token = abc123def456\ntenant_id = default"
+        )
+        .expect("write bootstrap file");
+
+    std::env::set_var("EGUARD_BOOTSTRAP_CONFIG", &path);
+    let cfg = AgentConfig::load().expect("load config");
+
+    assert_eq!(cfg.server_addr, "10.11.12.13:50051");
+    assert_eq!(cfg.transport_mode, "grpc");
+    assert_eq!(cfg.enrollment_token.as_deref(), Some("abc123def456"));
+    assert_eq!(cfg.tenant_id.as_deref(), Some("default"));
+    assert_eq!(cfg.bootstrap_config_path.as_deref(), Some(path.as_path()));
+
+    clear_env();
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+// AC-CFG-002
+fn format_server_addr_handles_ipv6_without_port() {
+    assert_eq!(
+        format_server_addr("2001:db8::1", Some(50051)),
+        "[2001:db8::1]:50051"
+    );
+    assert_eq!(
+        format_server_addr("[2001:db8::1]:50051", Some(50052)),
+        "[2001:db8::1]:50051"
+    );
+    assert_eq!(
+        format_server_addr("eguard.example.com", Some(50051)),
+        "eguard.example.com:50051"
+    );
+}
+
+#[test]
+// AC-CFG-010
+fn parse_bool_accepts_expected_truthy_values() {
+    assert!(parse_bool("1"));
+    assert!(parse_bool("true"));
+    assert!(parse_bool("YES"));
+    assert!(parse_bool("enabled"));
+    assert!(!parse_bool("0"));
+    assert!(!parse_bool("false"));
+}
+
+#[test]
+// AC-CFG-020
+fn parse_cap_mb_handles_invalid_values() {
+    assert_eq!(parse_cap_mb("10"), Some(10 * 1024 * 1024));
+    assert_eq!(parse_cap_mb("not-a-number"), None);
+}
+
+#[test]
+// AC-CFG-002
+fn has_explicit_port_detects_ipv4_and_ipv6_forms() {
+    assert!(has_explicit_port("127.0.0.1:50051"));
+    assert!(has_explicit_port("[2001:db8::1]:50051"));
+    assert!(!has_explicit_port("eguard.example.com"));
+    assert!(!has_explicit_port("2001:db8::1"));
+}
+
+#[test]
+// AC-CFG-001 AC-CFG-002
+fn parse_bootstrap_config_ignores_comments_and_other_sections() {
+    let cfg = parse_bootstrap_config(
+        r#"
+[misc]
+address = ignored.example
+
+[server]
+address = 10.1.2.3 ; inline comment
+grpc_port = 50051 # inline comment
+enrollment_token = "tok-123"
+tenant_id = 'tenant-a'
+"#,
+    )
+    .expect("parse bootstrap");
+
+    assert_eq!(cfg.address.as_deref(), Some("10.1.2.3"));
+    assert_eq!(cfg.grpc_port, Some(50051));
+    assert_eq!(cfg.enrollment_token.as_deref(), Some("tok-123"));
+    assert_eq!(cfg.tenant_id.as_deref(), Some("tenant-a"));
+}
+
+#[test]
+// AC-CFG-004
+fn resolve_config_path_fails_for_missing_explicit_env_path() {
+    let _guard = env_lock().lock().expect("env lock");
+    clear_env();
+    std::env::set_var(
+        "EGUARD_AGENT_CONFIG",
+        "/tmp/eguard-agent-config-should-not-exist.toml",
+    );
+
+    let err = resolve_config_path().expect_err("missing explicit config path should fail");
+    assert!(err.to_string().contains("does not exist"));
+    clear_env();
+}
+
+#[test]
+// AC-CFG-010 AC-CFG-011 AC-CFG-012 AC-CFG-013 AC-CFG-014
+fn apply_response_policy_updates_only_provided_fields() {
+    let mut dst = ResponsePolicy {
+        kill: false,
+        quarantine: false,
+        capture_script: false,
+    };
+    let src = FileResponsePolicy {
+        kill: Some(true),
+        quarantine: None,
+        capture_script: Some(true),
+    };
+
+    apply_response_policy(&mut dst, Some(src));
+    assert!(dst.kill);
+    assert!(!dst.quarantine);
+    assert!(dst.capture_script);
+}
+
+#[test]
+// AC-CFG-010 AC-CFG-011 AC-CFG-012 AC-CFG-013 AC-CFG-014 AC-CFG-020
+fn default_config_matches_expected_baseline_values() {
+    let cfg = AgentConfig::default();
+    assert!(matches!(cfg.mode, AgentMode::Learning));
+    assert_eq!(cfg.transport_mode, "http");
+    assert_eq!(cfg.offline_buffer_backend, "sqlite");
+    assert_eq!(
+        cfg.offline_buffer_path,
+        "/var/lib/eguard-agent/offline-events.db"
+    );
+    assert_eq!(cfg.offline_buffer_cap_bytes, 100 * 1024 * 1024);
+    assert!(!cfg.response.autonomous_response);
+    assert!(!cfg.response.dry_run);
+}
+
+#[test]
+// AC-CFG-004
+fn eguard_server_fallback_env_is_used_when_primary_is_absent() {
+    let _guard = env_lock().lock().expect("env lock");
+    clear_env();
+    std::env::set_var("EGUARD_SERVER", "10.2.3.4:50051");
+
+    let mut cfg = AgentConfig::default();
+    cfg.apply_env_overrides();
+    assert_eq!(cfg.server_addr, "10.2.3.4:50051");
+
+    clear_env();
+}
+
+#[test]
+// AC-CFG-004
+fn eguard_server_addr_takes_precedence_over_eguard_server() {
+    let _guard = env_lock().lock().expect("env lock");
+    clear_env();
+    std::env::set_var("EGUARD_SERVER", "10.2.3.4:50051");
+    std::env::set_var("EGUARD_SERVER_ADDR", "10.9.9.9:50051");
+
+    let mut cfg = AgentConfig::default();
+    cfg.apply_env_overrides();
+    assert_eq!(cfg.server_addr, "10.9.9.9:50051");
+
+    clear_env();
+}
+
+#[test]
+// AC-CFG-001
+fn resolve_bootstrap_path_fails_for_missing_explicit_env_path() {
+    let _guard = env_lock().lock().expect("env lock");
+    clear_env();
+    std::env::set_var(
+        "EGUARD_BOOTSTRAP_CONFIG",
+        "/tmp/eguard-bootstrap-config-should-not-exist.conf",
+    );
+
+    let err = resolve_bootstrap_path().expect_err("missing explicit bootstrap path should fail");
+    assert!(err.to_string().contains("does not exist"));
+
+    clear_env();
+}

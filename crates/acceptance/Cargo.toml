@@ -1,0 +1,14 @@
+[package]
+name = "acceptance"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+detection = { path = "../detection" }
+response = { path = "../response" }
+grpc-client = { path = "../grpc-client" }
+baseline = { path = "../baseline" }
+compliance = { path = "../compliance" }
+nac = { path = "../nac" }
+platform-linux = { path = "../platform-linux" }

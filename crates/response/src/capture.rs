@@ -65,21 +65,15 @@ fn read_cmdline_args(pid: u32) -> ResponseResult<Vec<String>> {
 }
 
 fn read_file_capped(path: &Path, cap: usize) -> std::io::Result<Vec<u8>> {
-    let mut data = fs::read(path)?;
+    let data = fs::read(path)?;
     if data.len() > cap {
-        data.truncate(cap);
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "file exceeds capture limit",
+        ));
     }
     Ok(data)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn capture_current_process_metadata() {
-        let pid = std::process::id();
-        let capture = capture_script_content(pid).expect("capture script content");
-        assert_eq!(capture.pid, pid);
-    }
-}
+mod tests;

@@ -3,10 +3,11 @@ mod errors;
 mod kill;
 mod quarantine;
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use detection::Confidence;
@@ -63,43 +64,70 @@ impl Default for ResponseConfig {
 
 #[derive(Debug, Clone)]
 pub struct ProtectedList {
-    process_names: HashSet<String>,
+    process_patterns: Vec<Regex>,
     protected_paths: Vec<PathBuf>,
 }
 
 impl ProtectedList {
     pub fn default_linux() -> Self {
-        let process_names = [
-            "systemd",
+        let process_patterns = [
+            "^systemd",
             "init",
             "sshd",
             "dbus-daemon",
             "journald",
             "eguard-agent",
+            "containerd",
+            "dockerd",
         ]
         .into_iter()
-        .map(str::to_string)
+        .map(compile_process_pattern)
         .collect();
 
         let protected_paths = vec![
             PathBuf::from("/usr/bin"),
+            PathBuf::from("/usr/sbin"),
             PathBuf::from("/lib"),
             PathBuf::from("/usr/lib"),
+            PathBuf::from("/boot"),
+            PathBuf::from("/usr/local/eg"),
         ];
 
         Self {
-            process_names,
+            process_patterns,
             protected_paths,
         }
     }
 
     pub fn is_protected_process(&self, process_name: &str) -> bool {
-        self.process_names.contains(process_name)
+        self.process_patterns
+            .iter()
+            .any(|pattern| pattern.is_match(process_name))
     }
 
     pub fn is_protected_path(&self, path: &Path) -> bool {
         self.protected_paths.iter().any(|p| path.starts_with(p))
     }
+}
+
+fn compile_process_pattern(raw: &str) -> Regex {
+    let pattern = if looks_like_regex(raw) {
+        raw.to_string()
+    } else {
+        format!("^{}$", regex::escape(raw))
+    };
+    Regex::new(&pattern).unwrap_or_else(|_| {
+        Regex::new(&format!("^{}$", regex::escape(raw))).expect("fallback regex should compile")
+    })
+}
+
+fn looks_like_regex(raw: &str) -> bool {
+    raw.chars().any(|c| {
+        matches!(
+            c,
+            '^' | '$' | '.' | '*' | '+' | '?' | '[' | ']' | '(' | ')' | '{' | '}' | '|'
+        )
+    })
 }
 
 #[derive(Debug)]
@@ -305,38 +333,4 @@ pub fn execute_server_command_with_state(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn isolate_and_unisolate_change_state() {
-        let mut state = HostControlState::default();
-
-        let iso = execute_server_command_with_state(ServerCommand::Isolate, 1, &mut state);
-        assert_eq!(iso.status, "completed");
-        assert!(state.isolated);
-
-        let uniso = execute_server_command_with_state(ServerCommand::Unisolate, 2, &mut state);
-        assert_eq!(uniso.status, "completed");
-        assert!(!state.isolated);
-    }
-
-    #[test]
-    fn unknown_command_is_failed() {
-        let mut state = HostControlState::default();
-        let result = execute_server_command_with_state(ServerCommand::Unknown, 3, &mut state);
-        assert_eq!(result.outcome, CommandOutcome::Ignored);
-        assert_eq!(result.status, "failed");
-    }
-
-    #[test]
-    fn emergency_rule_push_is_recognized() {
-        let cmd = parse_server_command("emergency_rule_push");
-        assert_eq!(cmd, ServerCommand::EmergencyRulePush);
-
-        let mut state = HostControlState::default();
-        let result = execute_server_command_with_state(cmd, 4, &mut state);
-        assert_eq!(result.outcome, CommandOutcome::Applied);
-        assert_eq!(result.status, "completed");
-    }
-}
+mod tests;

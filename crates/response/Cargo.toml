@@ -8,3 +8,4 @@ license.workspace = true
 serde.workspace = true
 detection = { path = "../detection" }
 nix.workspace = true
+regex = "1"

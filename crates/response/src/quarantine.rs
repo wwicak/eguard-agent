@@ -105,33 +105,4 @@ fn overwrite_file_prefix_with_zeros(path: &Path, file_size: u64) -> ResponseResu
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn restore_quarantined_file_writes_destination() {
-        let base = std::env::temp_dir().join(format!(
-            "eguard-restore-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or_default()
-        ));
-        fs::create_dir_all(&base).expect("create base");
-
-        let src = base.join("quarantine.bin");
-        let dst = base.join("restored.bin");
-        fs::write(&src, b"payload").expect("write src");
-
-        let report = restore_quarantined(&src, &dst, 0o600).expect("restore file");
-        assert_eq!(report.restored_path, dst);
-        assert_eq!(
-            fs::read(&report.restored_path).expect("read restored"),
-            b"payload"
-        );
-
-        let _ = fs::remove_file(src);
-        let _ = fs::remove_file(report.restored_path);
-        let _ = fs::remove_dir(base);
-    }
-}
+mod tests;

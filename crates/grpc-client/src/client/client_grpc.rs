@@ -1,0 +1,287 @@
+use std::time::Duration;
+
+use anyhow::{Context, Result};
+use tokio_stream::iter;
+use tonic::transport::Channel;
+use tracing::warn;
+
+use crate::pb;
+use crate::types::{
+    CommandEnvelope, ComplianceEnvelope, EnrollmentEnvelope, EventEnvelope, ResponseEnvelope,
+    ServerState, ThreatIntelVersionEnvelope,
+};
+
+use super::{from_pb_agent_command, now_unix, to_pb_telemetry_event, Client};
+
+impl Client {
+    pub(super) async fn send_events_grpc(&self, batch: &[EventEnvelope]) -> Result<()> {
+        self.with_retry("send_events_grpc_stream", || async {
+            let mut client = self.telemetry_client().await?;
+            let events: Vec<pb::TelemetryEvent> = batch.iter().map(to_pb_telemetry_event).collect();
+            let stream = iter(events);
+            client
+                .stream_events(tonic::Request::new(stream))
+                .await
+                .context("stream_events RPC failed")?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub(super) async fn enroll_grpc(&self, enrollment: &EnrollmentEnvelope) -> Result<()> {
+        self.with_retry("enroll_grpc", || async {
+            if enrollment.enrollment_token.is_some() {
+                warn!(
+                    "enrollment_token is configured but gRPC EnrollRequest has no token field yet"
+                );
+            }
+
+            let mut client = self.agent_control_client().await?;
+            client
+                .enroll(pb::EnrollRequest {
+                    agent_id: enrollment.agent_id.clone(),
+                    mac: enrollment.mac.clone(),
+                    hostname: enrollment.hostname.clone(),
+                    os_type: "linux".to_string(),
+                    agent_version: "0.1.0".to_string(),
+                })
+                .await
+                .context("enroll RPC failed")?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub(super) async fn send_heartbeat_grpc(
+        &self,
+        agent_id: &str,
+        compliance_status: &str,
+    ) -> Result<()> {
+        self.with_retry("heartbeat_grpc", || async {
+            let mut client = self.agent_control_client().await?;
+            client
+                .heartbeat(pb::HeartbeatRequest {
+                    agent_id: agent_id.to_string(),
+                    agent_version: "0.1.0".to_string(),
+                    compliance_status: compliance_status.to_string(),
+                    sent_at_unix: now_unix(),
+                })
+                .await
+                .context("heartbeat RPC failed")?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub(super) async fn send_compliance_grpc(&self, compliance: &ComplianceEnvelope) -> Result<()> {
+        self.with_retry("compliance_grpc", || async {
+            let mut client = self.compliance_client().await?;
+            client
+                .report_compliance(pb::ComplianceReport {
+                    agent_id: compliance.agent_id.clone(),
+                    policy_id: compliance.policy_id.clone(),
+                    check_type: compliance.check_type.clone(),
+                    status: compliance.status.clone(),
+                    detail: compliance.detail.clone(),
+                    expected_value: compliance.expected_value.clone(),
+                    actual_value: compliance.actual_value.clone(),
+                    checked_at_unix: now_unix(),
+                })
+                .await
+                .context("report_compliance RPC failed")?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub(super) async fn send_response_grpc(&self, response: &ResponseEnvelope) -> Result<()> {
+        self.with_retry("response_grpc", || async {
+            let mut client = self.response_client().await?;
+            client
+                .report_response(pb::ResponseReport {
+                    agent_id: response.agent_id.clone(),
+                    action: response.action_type.clone(),
+                    confidence: response.confidence.clone(),
+                    success: response.success,
+                    detail: response.error_message.clone(),
+                    created_at_unix: now_unix(),
+                })
+                .await
+                .context("report_response RPC failed")?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub(super) async fn stream_command_channel_grpc(
+        &self,
+        agent_id: &str,
+        completed_command_ids: &[String],
+        limit: usize,
+    ) -> Result<Vec<CommandEnvelope>> {
+        self.with_retry("command_channel_grpc", || async {
+            let mut client = self.command_client().await?;
+            let response = client
+                .command_channel(pb::CommandChannelRequest {
+                    agent_id: agent_id.to_string(),
+                    completed_command_ids: completed_command_ids.to_vec(),
+                    limit: limit as i32,
+                })
+                .await
+                .context("command_channel RPC failed")?;
+
+            let mut stream = response.into_inner();
+            let mut out = Vec::with_capacity(limit);
+            while out.len() < limit {
+                match tokio::time::timeout(Duration::from_millis(350), stream.message()).await {
+                    Ok(Ok(Some(command))) => out.push(from_pb_agent_command(command)),
+                    Ok(Ok(None)) => break,
+                    Ok(Err(err)) => {
+                        return Err(err).context("command_channel stream read failed");
+                    }
+                    Err(_) => break,
+                }
+            }
+
+            Ok(out)
+        })
+        .await
+    }
+
+    pub(super) async fn poll_commands_grpc(
+        &self,
+        agent_id: &str,
+        limit: usize,
+    ) -> Result<Vec<CommandEnvelope>> {
+        self.with_retry("fetch_commands_grpc", || async {
+            let mut client = self.command_client().await?;
+            let response = client
+                .poll_commands(pb::PollCommandsRequest {
+                    agent_id: agent_id.to_string(),
+                    limit: limit as i32,
+                })
+                .await
+                .context("poll_commands RPC failed")?
+                .into_inner();
+
+            Ok(response
+                .commands
+                .into_iter()
+                .map(from_pb_agent_command)
+                .collect::<Vec<_>>())
+        })
+        .await
+    }
+
+    pub(super) async fn ack_command_grpc(&self, command_id: &str, status: &str) -> Result<()> {
+        self.with_retry("ack_command_grpc", || async {
+            let mut client = self.command_client().await?;
+            client
+                .ack_command(pb::AckCommandRequest {
+                    command_id: command_id.to_string(),
+                    status: status.to_string(),
+                })
+                .await
+                .context("ack_command RPC failed")?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub(super) async fn fetch_latest_threat_intel_grpc(
+        &self,
+    ) -> Result<Option<ThreatIntelVersionEnvelope>> {
+        self.with_retry("threat_intel_grpc", || async {
+            let mut client = self.agent_control_client().await?;
+            let res = client
+                .get_latest_threat_intel(pb::ThreatIntelRequest {
+                    agent_id: String::new(),
+                })
+                .await
+                .context("get_latest_threat_intel RPC failed")?
+                .into_inner();
+            Ok(map_threat_intel_response(res))
+        })
+        .await
+    }
+
+    pub(super) async fn check_server_state_grpc(&self) -> Result<Option<ServerState>> {
+        self.with_retry("check_state_grpc", || async {
+            let mut client = self.agent_control_client().await?;
+            let res = client
+                .ping(pb::PingRequest {
+                    agent_id: String::new(),
+                })
+                .await
+                .context("ping RPC failed")?
+                .into_inner();
+
+            if res.status.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(ServerState {
+                    persistence_enabled: false,
+                }))
+            }
+        })
+        .await
+    }
+
+    async fn telemetry_client(
+        &self,
+    ) -> Result<pb::telemetry_service_client::TelemetryServiceClient<Channel>> {
+        let channel = self.connect_channel().await?;
+        Ok(pb::telemetry_service_client::TelemetryServiceClient::new(
+            channel,
+        ))
+    }
+
+    async fn command_client(
+        &self,
+    ) -> Result<pb::command_service_client::CommandServiceClient<Channel>> {
+        let channel = self.connect_channel().await?;
+        Ok(pb::command_service_client::CommandServiceClient::new(
+            channel,
+        ))
+    }
+
+    async fn compliance_client(
+        &self,
+    ) -> Result<pb::compliance_service_client::ComplianceServiceClient<Channel>> {
+        let channel = self.connect_channel().await?;
+        Ok(pb::compliance_service_client::ComplianceServiceClient::new(
+            channel,
+        ))
+    }
+
+    async fn response_client(
+        &self,
+    ) -> Result<pb::response_service_client::ResponseServiceClient<Channel>> {
+        let channel = self.connect_channel().await?;
+        Ok(pb::response_service_client::ResponseServiceClient::new(
+            channel,
+        ))
+    }
+
+    async fn agent_control_client(
+        &self,
+    ) -> Result<pb::agent_control_service_client::AgentControlServiceClient<Channel>> {
+        let channel = self.connect_channel().await?;
+        Ok(pb::agent_control_service_client::AgentControlServiceClient::new(channel))
+    }
+}
+
+fn map_threat_intel_response(res: pb::ThreatIntelVersion) -> Option<ThreatIntelVersionEnvelope> {
+    if res.version.is_empty() {
+        return None;
+    }
+
+    Some(ThreatIntelVersionEnvelope {
+        version: res.version,
+        bundle_path: res.bundle_path,
+        sigma_count: res.sigma_count,
+        yara_count: res.yara_count,
+        ioc_count: res.ioc_count,
+        cve_count: res.cve_count,
+    })
+}

@@ -1,18 +1,15 @@
 use std::collections::HashMap;
 use std::collections::VecDeque;
-use std::fs;
-use std::io::Read;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{anyhow, Result};
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::Deserialize;
 use tracing::{info, warn};
 
 use baseline::{BaselineStatus, BaselineStore, BaselineTransition, ProcessKey};
 use compliance::{evaluate, evaluate_linux, parse_policy_json, CompliancePolicy, ComplianceResult};
-use detection::{Confidence, DetectionEngine, EventClass, TelemetryEvent};
+use detection::{Confidence, DetectionEngine, DetectionOutcome, EventClass, TelemetryEvent};
 use grpc_client::{
     Client as GrpcClient, CommandEnvelope, ComplianceEnvelope, EnrollmentEnvelope, EventBuffer,
     EventEnvelope, ResponseEnvelope, TlsConfig, TransportMode,
@@ -22,16 +19,41 @@ use platform_linux::{
     enrich_event_with_cache, EbpfEngine, EbpfStats, EnrichmentCache, EventType, RawEvent,
 };
 use response::{
-    capture_script_content, execute_server_command_with_state, kill_process_tree,
-    parse_server_command, plan_action, quarantine_file, CommandOutcome, HostControlState,
-    KillRateLimiter, PlannedAction, ProtectedList, ResponseConfig, ServerCommand,
+    capture_script_content, kill_process_tree, plan_action, quarantine_file, HostControlState,
+    KillRateLimiter, PlannedAction, ProtectedList, ResponseConfig,
 };
 
 use crate::config::{AgentConfig, AgentMode};
-use crate::detection_state::{EmergencyRule, EmergencyRuleType, SharedDetectionState};
+use crate::detection_state::{EmergencyRuleType, SharedDetectionState};
+
+mod bundle_path;
+mod command_pipeline;
+mod detection_bootstrap;
+mod ebpf_bootstrap;
+mod rule_bundle_loader;
+mod rule_bundle_verify;
+use bundle_path::{
+    is_remote_bundle_reference, resolve_rules_staging_root, staging_bundle_archive_path,
+};
 
 const DEFAULT_RULES_STAGING_DIR: &str = "/var/lib/eguard-agent/rules-staging";
 const MAX_SIGNED_RULE_BUNDLE_BYTES: u64 = 256 * 1024 * 1024;
+const HEARTBEAT_TICK_INTERVAL: u64 = 6;
+const COMPLIANCE_TICK_INTERVAL: u64 = 12;
+const THREAT_INTEL_TICK_INTERVAL: u64 = 30;
+const BASELINE_SAVE_TICK_INTERVAL: u64 = 60;
+const EVENT_BATCH_SIZE: usize = 256;
+const COMMAND_FETCH_LIMIT: usize = 10;
+const DEGRADE_AFTER_SEND_FAILURES: u32 = 3;
+
+struct TickEvaluation {
+    detection_event: TelemetryEvent,
+    detection_outcome: DetectionOutcome,
+    confidence: Confidence,
+    action: PlannedAction,
+    compliance: ComplianceResult,
+    event_envelope: EventEnvelope,
+}
 
 pub struct AgentRuntime {
     config: AgentConfig,
@@ -134,196 +156,306 @@ impl AgentRuntime {
     pub async fn tick(&mut self, now_unix: i64) -> Result<()> {
         self.tick_count = self.tick_count.saturating_add(1);
 
-        let raw = self.next_raw_event(now_unix);
-
-        let enriched = enrich_event_with_cache(raw, &mut self.enrichment_cache);
-
-        let det_event = to_detection_event(&enriched, now_unix);
-        self.observe_baseline(&det_event, now_unix);
-        let detection_outcome = self.detection_state.process_event(&det_event)?;
-        let confidence = detection_outcome.confidence;
-        let response_cfg = self.effective_response_config();
-        let action = plan_action(confidence, &response_cfg);
-
-        let comp = self.evaluate_compliance();
-        let posture = posture_from_compliance(&comp.status);
-        self.log_posture(posture);
-
-        let envelope = EventEnvelope {
-            agent_id: self.config.agent_id.clone(),
-            event_type: "process_exec".to_string(),
-            payload_json: format!(
-                "{{\"exe\":\"{}\"}}",
-                enriched.process_exe.unwrap_or_default()
-            ),
-            created_at_unix: now_unix,
-        };
-
-        let forced_degraded = matches!(self.config.mode, AgentMode::Degraded);
+        let evaluation = self.evaluate_tick(now_unix)?;
         if matches!(self.runtime_mode, AgentMode::Degraded) {
-            self.client.set_online(false);
-            self.buffer.enqueue(envelope)?;
-            warn!(
-                pending = self.buffer.pending_count(),
-                "server unavailable, buffered event"
-            );
-
-            if !forced_degraded && self.tick_count % 6 == 0 {
-                self.client.set_online(true);
-                match self.client.check_server_state().await {
-                    Ok(Some(_)) => {
-                        match self
-                            .client
-                            .send_heartbeat(&self.config.agent_id, &comp.status)
-                            .await
-                        {
-                            Ok(_) => {
-                                self.runtime_mode = self.config.mode.clone();
-                                self.consecutive_send_failures = 0;
-                                info!(mode = ?self.runtime_mode, "server reachable again, leaving degraded mode");
-                            }
-                            Err(err) => {
-                                self.client.set_online(false);
-                                warn!(error = %err, "degraded probe heartbeat failed");
-                            }
-                        }
-                    }
-                    Ok(None) => {
-                        self.client.set_online(false);
-                        warn!("degraded probe state check returned no data");
-                    }
-                    Err(err) => {
-                        self.client.set_online(false);
-                        warn!(error = %err, "degraded probe failed");
-                    }
-                }
-            }
+            self.handle_degraded_tick(&evaluation).await?;
         } else {
-            self.client.set_online(true);
-
-            if !self.enrolled {
-                let hostname =
-                    std::env::var("HOSTNAME").unwrap_or_else(|_| self.config.agent_id.clone());
-                let enroll = EnrollmentEnvelope {
-                    agent_id: self.config.agent_id.clone(),
-                    mac: self.config.mac.clone(),
-                    hostname,
-                    enrollment_token: self.config.enrollment_token.clone(),
-                    tenant_id: self.config.tenant_id.clone(),
-                };
-                if let Err(err) = self.client.enroll(&enroll).await {
-                    warn!(error = %err, "enrollment failed");
-                } else {
-                    self.enrolled = true;
-                    self.consume_bootstrap_config();
-                }
-            }
-
-            let mut batch = self.buffer.drain_batch(256)?;
-            batch.push(envelope);
-            if let Err(err) = self.client.send_events(&batch).await {
-                for ev in batch {
-                    self.buffer.enqueue(ev)?;
-                }
-                self.consecutive_send_failures = self.consecutive_send_failures.saturating_add(1);
-                if self.consecutive_send_failures >= 3 {
-                    self.runtime_mode = AgentMode::Degraded;
-                }
-                warn!(error = %err, pending = self.buffer.pending_count(), "send failed, events re-buffered");
-            } else {
-                self.consecutive_send_failures = 0;
-            }
-
-            if self.tick_count % 6 == 0 {
-                if let Err(err) = self
-                    .client
-                    .send_heartbeat(&self.config.agent_id, &comp.status)
-                    .await
-                {
-                    warn!(error = %err, "heartbeat failed");
-                }
-            }
-
-            if self.tick_count % 12 == 0 {
-                let compliance = ComplianceEnvelope {
-                    agent_id: self.config.agent_id.clone(),
-                    policy_id: "default".to_string(),
-                    check_type: "runtime_health".to_string(),
-                    status: comp.status.clone(),
-                    detail: comp.detail.clone(),
-                    expected_value: "firewall_enabled=true".to_string(),
-                    actual_value: "firewall_enabled=true".to_string(),
-                };
-                if let Err(err) = self.client.send_compliance(&compliance).await {
-                    warn!(error = %err, "compliance send failed");
-                }
-            }
-
-            if self.tick_count % 30 == 0 {
-                match self.client.fetch_latest_threat_intel().await? {
-                    Some(v) => {
-                        let known_version = self
-                            .latest_threat_version
-                            .clone()
-                            .or(self.detection_state.version()?);
-                        let changed = known_version.as_deref() != Some(v.version.as_str());
-                        if changed {
-                            info!(version = %v.version, bundle = %v.bundle_path, "new threat intel version available");
-                            self.reload_detection_state(&v.version, &v.bundle_path)?;
-                        }
-                        self.latest_threat_version = Some(v.version);
-                    }
-                    None => {}
-                }
-            }
-
-            let completed_cursor = self.completed_command_cursor();
-            match self
-                .client
-                .fetch_commands(&self.config.agent_id, &completed_cursor, 10)
-                .await
-            {
-                Ok(commands) => {
-                    for command in commands {
-                        self.handle_command(command, now_unix).await;
-                    }
-                }
-                Err(err) => {
-                    warn!(error = %err, "command fetch failed");
-                }
-            }
-
-            if !matches!(action, PlannedAction::AlertOnly | PlannedAction::None) {
-                let local = self.execute_planned_action(action, &det_event, now_unix);
-                let response = ResponseEnvelope {
-                    agent_id: self.config.agent_id.clone(),
-                    action_type: format!("{:?}", action).to_ascii_lowercase(),
-                    confidence: confidence_label(confidence),
-                    success: local.success,
-                    error_message: local.detail,
-                };
-                if let Err(err) = self.client.send_response(&response).await {
-                    warn!(error = %err, "response report send failed");
-                }
-            }
-
-            info!(
-                ?action,
-                ?confidence,
-                mode = ?self.runtime_mode,
-                temporal_hits = detection_outcome.temporal_hits.len(),
-                killchain_hits = detection_outcome.kill_chain_hits.len(),
-                z1 = detection_outcome.signals.z1_exact_ioc,
-                z2 = detection_outcome.signals.z2_temporal,
-                z3h = detection_outcome.signals.z3_anomaly_high,
-                z4 = detection_outcome.signals.z4_kill_chain,
-                yara_hits = detection_outcome.yara_hits.len(),
-                "event evaluated"
-            );
+            self.handle_connected_tick(now_unix, &evaluation).await?;
+            self.log_detection_evaluation(&evaluation);
         }
 
         let _ = self.protected.is_protected_process("systemd");
         Ok(())
+    }
+
+    fn evaluate_tick(&mut self, now_unix: i64) -> Result<TickEvaluation> {
+        let raw = self.next_raw_event(now_unix);
+        let enriched = enrich_event_with_cache(raw, &mut self.enrichment_cache);
+
+        let detection_event = to_detection_event(&enriched, now_unix);
+        self.observe_baseline(&detection_event, now_unix);
+
+        let detection_outcome = self.detection_state.process_event(&detection_event)?;
+        let confidence = detection_outcome.confidence;
+        let response_cfg = self.effective_response_config();
+        let action = plan_action(confidence, &response_cfg);
+
+        let compliance = self.evaluate_compliance();
+        let posture = posture_from_compliance(&compliance.status);
+        self.log_posture(posture);
+
+        let event_envelope = self.build_event_envelope(enriched.process_exe.as_deref(), now_unix);
+
+        Ok(TickEvaluation {
+            detection_event,
+            detection_outcome,
+            confidence,
+            action,
+            compliance,
+            event_envelope,
+        })
+    }
+
+    async fn handle_degraded_tick(&mut self, evaluation: &TickEvaluation) -> Result<()> {
+        self.client.set_online(false);
+        self.buffer.enqueue(evaluation.event_envelope.clone())?;
+        warn!(
+            pending = self.buffer.pending_count(),
+            "server unavailable, buffered event"
+        );
+
+        if self.should_probe_server_recovery() {
+            self.probe_server_recovery(&evaluation.compliance.status)
+                .await;
+        }
+
+        Ok(())
+    }
+
+    fn should_probe_server_recovery(&self) -> bool {
+        !self.is_forced_degraded() && self.tick_count % HEARTBEAT_TICK_INTERVAL == 0
+    }
+
+    fn is_forced_degraded(&self) -> bool {
+        matches!(self.config.mode, AgentMode::Degraded)
+    }
+
+    async fn probe_server_recovery(&mut self, compliance_status: &str) {
+        self.client.set_online(true);
+        match self.client.check_server_state().await {
+            Ok(Some(_)) => {
+                match self
+                    .client
+                    .send_heartbeat(&self.config.agent_id, compliance_status)
+                    .await
+                {
+                    Ok(_) => {
+                        self.runtime_mode = self.config.mode.clone();
+                        self.consecutive_send_failures = 0;
+                        info!(mode = ?self.runtime_mode, "server reachable again, leaving degraded mode");
+                    }
+                    Err(err) => {
+                        self.client.set_online(false);
+                        warn!(error = %err, "degraded probe heartbeat failed");
+                    }
+                }
+            }
+            Ok(None) => {
+                self.client.set_online(false);
+                warn!("degraded probe state check returned no data");
+            }
+            Err(err) => {
+                self.client.set_online(false);
+                warn!(error = %err, "degraded probe failed");
+            }
+        }
+    }
+
+    async fn handle_connected_tick(
+        &mut self,
+        now_unix: i64,
+        evaluation: &TickEvaluation,
+    ) -> Result<()> {
+        self.client.set_online(true);
+        self.ensure_enrolled().await;
+
+        self.send_event_batch(evaluation.event_envelope.clone())
+            .await?;
+        self.send_heartbeat_if_due(&evaluation.compliance.status)
+            .await;
+        self.send_compliance_if_due(&evaluation.compliance).await;
+        self.refresh_threat_intel_if_due().await?;
+        self.sync_pending_commands(now_unix).await;
+        self.report_local_action_if_needed(
+            evaluation.action,
+            evaluation.confidence,
+            &evaluation.detection_event,
+            now_unix,
+        )
+        .await;
+
+        Ok(())
+    }
+
+    async fn ensure_enrolled(&mut self) {
+        if self.enrolled {
+            return;
+        }
+
+        let enroll = self.build_enrollment_envelope();
+        if let Err(err) = self.client.enroll(&enroll).await {
+            warn!(error = %err, "enrollment failed");
+            return;
+        }
+
+        self.enrolled = true;
+        self.consume_bootstrap_config();
+    }
+
+    fn build_enrollment_envelope(&self) -> EnrollmentEnvelope {
+        let hostname = std::env::var("HOSTNAME").unwrap_or_else(|_| self.config.agent_id.clone());
+        EnrollmentEnvelope {
+            agent_id: self.config.agent_id.clone(),
+            mac: self.config.mac.clone(),
+            hostname,
+            enrollment_token: self.config.enrollment_token.clone(),
+            tenant_id: self.config.tenant_id.clone(),
+        }
+    }
+
+    async fn send_event_batch(&mut self, envelope: EventEnvelope) -> Result<()> {
+        let mut batch = self.buffer.drain_batch(EVENT_BATCH_SIZE)?;
+        batch.push(envelope);
+
+        if let Err(err) = self.client.send_events(&batch).await {
+            for ev in batch {
+                self.buffer.enqueue(ev)?;
+            }
+
+            self.consecutive_send_failures = self.consecutive_send_failures.saturating_add(1);
+            if self.consecutive_send_failures >= DEGRADE_AFTER_SEND_FAILURES {
+                self.runtime_mode = AgentMode::Degraded;
+            }
+
+            warn!(
+                error = %err,
+                pending = self.buffer.pending_count(),
+                "send failed, events re-buffered"
+            );
+        } else {
+            self.consecutive_send_failures = 0;
+        }
+
+        Ok(())
+    }
+
+    async fn send_heartbeat_if_due(&self, compliance_status: &str) {
+        if self.tick_count % HEARTBEAT_TICK_INTERVAL != 0 {
+            return;
+        }
+
+        if let Err(err) = self
+            .client
+            .send_heartbeat(&self.config.agent_id, compliance_status)
+            .await
+        {
+            warn!(error = %err, "heartbeat failed");
+        }
+    }
+
+    async fn send_compliance_if_due(&self, compliance: &ComplianceResult) {
+        if self.tick_count % COMPLIANCE_TICK_INTERVAL != 0 {
+            return;
+        }
+
+        let envelope = ComplianceEnvelope {
+            agent_id: self.config.agent_id.clone(),
+            policy_id: "default".to_string(),
+            check_type: "runtime_health".to_string(),
+            status: compliance.status.clone(),
+            detail: compliance.detail.clone(),
+            expected_value: "firewall_enabled=true".to_string(),
+            actual_value: "firewall_enabled=true".to_string(),
+        };
+
+        if let Err(err) = self.client.send_compliance(&envelope).await {
+            warn!(error = %err, "compliance send failed");
+        }
+    }
+
+    async fn refresh_threat_intel_if_due(&mut self) -> Result<()> {
+        if self.tick_count % THREAT_INTEL_TICK_INTERVAL != 0 {
+            return Ok(());
+        }
+
+        if let Some(v) = self.client.fetch_latest_threat_intel().await? {
+            let known_version = self
+                .latest_threat_version
+                .clone()
+                .or(self.detection_state.version()?);
+            let changed = known_version.as_deref() != Some(v.version.as_str());
+            if changed {
+                info!(version = %v.version, bundle = %v.bundle_path, "new threat intel version available");
+                let local_bundle_path = self
+                    .prepare_bundle_for_reload(&v.version, &v.bundle_path)
+                    .await?;
+                self.reload_detection_state(&v.version, &local_bundle_path)?;
+            }
+            self.latest_threat_version = Some(v.version);
+        }
+
+        Ok(())
+    }
+
+    async fn sync_pending_commands(&mut self, now_unix: i64) {
+        let completed_cursor = self.completed_command_cursor();
+        match self
+            .client
+            .fetch_commands(
+                &self.config.agent_id,
+                &completed_cursor,
+                COMMAND_FETCH_LIMIT,
+            )
+            .await
+        {
+            Ok(commands) => {
+                for command in commands {
+                    self.handle_command(command, now_unix).await;
+                }
+            }
+            Err(err) => {
+                warn!(error = %err, "command fetch failed");
+            }
+        }
+    }
+
+    async fn report_local_action_if_needed(
+        &mut self,
+        action: PlannedAction,
+        confidence: Confidence,
+        event: &TelemetryEvent,
+        now_unix: i64,
+    ) {
+        if matches!(action, PlannedAction::AlertOnly | PlannedAction::None) {
+            return;
+        }
+
+        let local = self.execute_planned_action(action, event, now_unix);
+        let response = ResponseEnvelope {
+            agent_id: self.config.agent_id.clone(),
+            action_type: format!("{:?}", action).to_ascii_lowercase(),
+            confidence: confidence_label(confidence),
+            success: local.success,
+            error_message: local.detail,
+        };
+        if let Err(err) = self.client.send_response(&response).await {
+            warn!(error = %err, "response report send failed");
+        }
+    }
+
+    fn build_event_envelope(&self, process_exe: Option<&str>, now_unix: i64) -> EventEnvelope {
+        EventEnvelope {
+            agent_id: self.config.agent_id.clone(),
+            event_type: "process_exec".to_string(),
+            payload_json: format!("{{\"exe\":\"{}\"}}", process_exe.unwrap_or_default()),
+            created_at_unix: now_unix,
+        }
+    }
+
+    fn log_detection_evaluation(&self, evaluation: &TickEvaluation) {
+        info!(
+            action = ?evaluation.action,
+            confidence = ?evaluation.confidence,
+            mode = ?self.runtime_mode,
+            temporal_hits = evaluation.detection_outcome.temporal_hits.len(),
+            killchain_hits = evaluation.detection_outcome.kill_chain_hits.len(),
+            z1 = evaluation.detection_outcome.signals.z1_exact_ioc,
+            z2 = evaluation.detection_outcome.signals.z2_temporal,
+            z3h = evaluation.detection_outcome.signals.z3_anomaly_high,
+            z4 = evaluation.detection_outcome.signals.z4_kill_chain,
+            yara_hits = evaluation.detection_outcome.yara_hits.len(),
+            "event evaluated"
+        );
     }
 
     fn log_posture(&self, posture: Posture) {
@@ -419,7 +551,7 @@ impl AgentRuntime {
             if let Err(err) = self.baseline_store.save() {
                 warn!(error = %err, "failed persisting baseline transition state");
             }
-        } else if self.tick_count % 60 == 0 {
+        } else if self.tick_count % BASELINE_SAVE_TICK_INTERVAL == 0 {
             if let Err(err) = self.baseline_store.save() {
                 warn!(error = %err, "failed persisting baseline store snapshot");
             }
@@ -435,65 +567,9 @@ impl AgentRuntime {
         let mut success = true;
         let mut notes = Vec::new();
 
-        if should_capture_script(action, event) {
-            match capture_script_content(event.pid) {
-                Ok(capture) => {
-                    let bytes = capture
-                        .script_content
-                        .as_ref()
-                        .map(|buf| buf.len())
-                        .or_else(|| capture.stdin_content.as_ref().map(|buf| buf.len()))
-                        .unwrap_or(0);
-                    notes.push(format!("script_capture_bytes={}", bytes));
-                }
-                Err(err) => {
-                    success = false;
-                    notes.push(format!("capture_failed:{}", err));
-                }
-            }
-        }
-
-        if requires_kill(action) {
-            if event.pid == std::process::id() {
-                success = false;
-                notes.push("kill_skipped:self_pid".to_string());
-            } else if !self.limiter.allow(Instant::now()) {
-                success = false;
-                notes.push("kill_skipped:rate_limited".to_string());
-            } else {
-                match kill_process_tree(event.pid, &self.protected) {
-                    Ok(report) => notes.push(format!("killed_pids={}", report.killed_pids.len())),
-                    Err(err) => {
-                        success = false;
-                        notes.push(format!("kill_failed:{}", err));
-                    }
-                }
-            }
-        }
-
-        if requires_quarantine(action) {
-            match event.file_path.as_deref() {
-                Some(path) => {
-                    let sha = event
-                        .file_hash
-                        .clone()
-                        .unwrap_or_else(|| synthetic_quarantine_id(event));
-                    match quarantine_file(Path::new(path), &sha, &self.protected) {
-                        Ok(report) => {
-                            notes.push(format!("quarantined:{}", report.quarantine_path.display()))
-                        }
-                        Err(err) => {
-                            success = false;
-                            notes.push(format!("quarantine_failed:{}", err));
-                        }
-                    }
-                }
-                None => {
-                    success = false;
-                    notes.push("quarantine_failed:missing_file_path".to_string());
-                }
-            }
-        }
+        self.execute_capture_step(action, event, &mut success, &mut notes);
+        self.execute_kill_step(action, event, &mut success, &mut notes);
+        self.execute_quarantine_step(action, event, &mut success, &mut notes);
 
         if notes.is_empty() {
             notes.push("no_local_action".to_string());
@@ -502,6 +578,96 @@ impl AgentRuntime {
         LocalActionResult {
             success,
             detail: notes.join("; "),
+        }
+    }
+
+    fn execute_capture_step(
+        &self,
+        action: PlannedAction,
+        event: &TelemetryEvent,
+        success: &mut bool,
+        notes: &mut Vec<String>,
+    ) {
+        if !should_capture_script(action, event) {
+            return;
+        }
+
+        match capture_script_content(event.pid) {
+            Ok(capture) => {
+                let bytes = capture
+                    .script_content
+                    .as_ref()
+                    .map(|buf| buf.len())
+                    .or_else(|| capture.stdin_content.as_ref().map(|buf| buf.len()))
+                    .unwrap_or(0);
+                notes.push(format!("script_capture_bytes={}", bytes));
+            }
+            Err(err) => {
+                *success = false;
+                notes.push(format!("capture_failed:{}", err));
+            }
+        }
+    }
+
+    fn execute_kill_step(
+        &mut self,
+        action: PlannedAction,
+        event: &TelemetryEvent,
+        success: &mut bool,
+        notes: &mut Vec<String>,
+    ) {
+        if !requires_kill(action) {
+            return;
+        }
+
+        if event.pid == std::process::id() {
+            *success = false;
+            notes.push("kill_skipped:self_pid".to_string());
+            return;
+        }
+
+        if !self.limiter.allow(Instant::now()) {
+            *success = false;
+            notes.push("kill_skipped:rate_limited".to_string());
+            return;
+        }
+
+        match kill_process_tree(event.pid, &self.protected) {
+            Ok(report) => notes.push(format!("killed_pids={}", report.killed_pids.len())),
+            Err(err) => {
+                *success = false;
+                notes.push(format!("kill_failed:{}", err));
+            }
+        }
+    }
+
+    fn execute_quarantine_step(
+        &self,
+        action: PlannedAction,
+        event: &TelemetryEvent,
+        success: &mut bool,
+        notes: &mut Vec<String>,
+    ) {
+        if !requires_quarantine(action) {
+            return;
+        }
+
+        let Some(path) = event.file_path.as_deref() else {
+            *success = false;
+            notes.push("quarantine_failed:missing_file_path".to_string());
+            return;
+        };
+
+        let sha = event
+            .file_hash
+            .clone()
+            .unwrap_or_else(|| synthetic_quarantine_id(event));
+        match quarantine_file(Path::new(path), &sha, &self.protected) {
+            Ok(report) => notes.push(format!("quarantined:{}", report.quarantine_path.display())),
+            Err(err) => {
+                *success = false;
+                notes.push(format!("quarantine_failed:{}", err));
+            }
         }
     }
 
@@ -520,94 +686,60 @@ impl AgentRuntime {
         Ok(())
     }
 
-    fn completed_command_cursor(&self) -> Vec<String> {
-        self.completed_command_ids.iter().cloned().collect()
+    async fn prepare_bundle_for_reload(&self, version: &str, bundle_path: &str) -> Result<String> {
+        let bundle_path = bundle_path.trim();
+        if bundle_path.is_empty() {
+            return Ok(String::new());
+        }
+
+        if !is_remote_bundle_reference(bundle_path) {
+            return Ok(bundle_path.to_string());
+        }
+
+        let local_bundle = self
+            .download_remote_bundle_archive(version, bundle_path)
+            .await?;
+        self.download_remote_bundle_signature_if_needed(bundle_path, &local_bundle)
+            .await?;
+
+        Ok(local_bundle.to_string_lossy().into_owned())
     }
 
-    fn track_completed_command(&mut self, command_id: &str) {
-        if command_id.is_empty() {
-            return;
-        }
-
-        self.completed_command_ids.push_back(command_id.to_string());
-        while self.completed_command_ids.len() > 256 {
-            self.completed_command_ids.pop_front();
-        }
+    async fn download_remote_bundle_archive(
+        &self,
+        version: &str,
+        bundle_url: &str,
+    ) -> Result<PathBuf> {
+        let local_bundle = staging_bundle_archive_path(version, bundle_url)?;
+        self.client
+            .download_bundle(bundle_url, &local_bundle)
+            .await
+            .map_err(|err| anyhow!("download threat-intel bundle '{}': {}", bundle_url, err))?;
+        Ok(local_bundle)
     }
 
-    async fn handle_command(&mut self, command: CommandEnvelope, now_unix: i64) {
-        let command_id = command.command_id.clone();
-        let parsed = parse_server_command(&command.command_type);
-        let mut exec = execute_server_command_with_state(parsed, now_unix, &mut self.host_control);
-
-        if parsed == ServerCommand::EmergencyRulePush {
-            match self.apply_emergency_rule_from_payload(&command.payload_json) {
-                Ok(rule_name) => {
-                    exec.detail = format!("emergency rule applied: {}", rule_name);
-                }
-                Err(err) => {
-                    exec.outcome = CommandOutcome::Ignored;
-                    exec.status = "failed";
-                    exec.detail = format!("emergency rule push rejected: {}", err);
-                }
-            }
+    async fn download_remote_bundle_signature_if_needed(
+        &self,
+        bundle_url: &str,
+        local_bundle: &Path,
+    ) -> Result<()> {
+        if !is_signed_bundle_archive(local_bundle) {
+            return Ok(());
         }
 
-        info!(
-            command_id = %command.command_id,
-            command_type = %command.command_type,
-            payload = %command.payload_json,
-            parsed = ?parsed,
-            outcome = ?exec.outcome,
-            detail = %exec.detail,
-            "received command"
-        );
-
-        if let Err(err) = self.client.ack_command(&command_id, exec.status).await {
-            warn!(error = %err, command_id = %command_id, "failed to ack command");
-        }
-
-        let report = ResponseEnvelope {
-            agent_id: self.config.agent_id.clone(),
-            action_type: format!("command:{}", command.command_type),
-            confidence: "high".to_string(),
-            success: exec.status == "completed",
-            error_message: if exec.status == "completed" {
-                String::new()
-            } else {
-                exec.detail.clone()
-            },
-        };
-        if let Err(err) = self.client.send_response(&report).await {
-            warn!(error = %err, command_id = %command.command_id, "failed to send command response report");
-        }
-
-        self.track_completed_command(&command_id);
-    }
-
-    fn apply_emergency_rule_from_payload(&self, payload_json: &str) -> Result<String> {
-        let payload: EmergencyRulePayload = serde_json::from_str(payload_json)
-            .map_err(|err| anyhow!("invalid emergency payload: {}", err))?;
-
-        let rule_name = payload.rule_name.trim();
-        if rule_name.is_empty() {
-            return Err(anyhow!("missing emergency rule name"));
-        }
-
-        let rule_content = payload.rule_content.trim();
-        if rule_content.is_empty() {
-            return Err(anyhow!("missing emergency rule content"));
-        }
-
-        let rule_type = parse_emergency_rule_type(&payload.rule_type)?;
-        let rule = EmergencyRule {
-            name: rule_name.to_string(),
-            rule_type,
-            rule_content: rule_content.to_string(),
-        };
-
-        self.detection_state.apply_emergency_rule(rule)?;
-        Ok(rule_name.to_string())
+        let signature_url = format!("{}.sig", bundle_url);
+        let signature_dst = PathBuf::from(format!("{}.sig", local_bundle.to_string_lossy()));
+        self.client
+            .download_bundle(&signature_url, &signature_dst)
+            .await
+            .map_err(|err| {
+                anyhow!(
+                    "download threat-intel bundle signature '{}': {}",
+                    signature_url,
+                    err
+                )
+            })?;
+        Ok(())
     }
 }
 
@@ -778,101 +910,15 @@ fn derive_runtime_mode(config_mode: &AgentMode, baseline_status: BaselineStatus)
 }
 
 fn init_ebpf_engine() -> EbpfEngine {
-    let objects_dir = std::env::var("EGUARD_EBPF_OBJECTS_DIR")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .map(PathBuf::from);
-    let elf_path = std::env::var("EGUARD_EBPF_ELF")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .map(PathBuf::from);
-    let map_name = std::env::var("EGUARD_EBPF_RING_MAP")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| "events".to_string());
-
-    if let Some(dir) = objects_dir {
-        if let Some(engine) = try_init_ebpf_from_object_dir(&dir, &map_name) {
-            return engine;
-        }
-    }
-
-    for dir in default_ebpf_objects_dirs() {
-        if let Some(engine) = try_init_ebpf_from_object_dir(&dir, &map_name) {
-            return engine;
-        }
-    }
-
-    let Some(elf_path) = elf_path else {
-        return EbpfEngine::disabled();
-    };
-
-    match EbpfEngine::from_elf(&elf_path, &map_name) {
-        Ok(engine) => {
-            info!(path = %elf_path.display(), map = %map_name, "eBPF engine initialized");
-            engine
-        }
-        Err(err) => {
-            warn!(error = %err, path = %elf_path.display(), map = %map_name, "failed to initialize eBPF engine; using disabled backend");
-            EbpfEngine::disabled()
-        }
-    }
-}
-
-fn try_init_ebpf_from_object_dir(objects_dir: &Path, map_name: &str) -> Option<EbpfEngine> {
-    let object_paths = candidate_ebpf_object_paths(objects_dir);
-    if object_paths.is_empty() {
-        return None;
-    }
-
-    match EbpfEngine::from_elfs(&object_paths, map_name) {
-        Ok(engine) => {
-            info!(
-                objects_dir = %objects_dir.display(),
-                object_count = object_paths.len(),
-                map = %map_name,
-                "eBPF engine initialized from object directory"
-            );
-            Some(engine)
-        }
-        Err(err) => {
-            warn!(
-                error = %err,
-                objects_dir = %objects_dir.display(),
-                map = %map_name,
-                "failed to initialize eBPF engine from object directory"
-            );
-            None
-        }
-    }
+    ebpf_bootstrap::init_ebpf_engine()
 }
 
 fn default_ebpf_objects_dirs() -> Vec<PathBuf> {
-    vec![
-        PathBuf::from("./zig-out/ebpf"),
-        PathBuf::from("zig-out/ebpf"),
-        PathBuf::from("/usr/lib/eguard-agent/ebpf"),
-    ]
+    ebpf_bootstrap::default_ebpf_objects_dirs()
 }
 
 fn candidate_ebpf_object_paths(objects_dir: &Path) -> Vec<PathBuf> {
-    const OBJECT_NAMES: [&str; 6] = [
-        "process_exec_bpf.o",
-        "file_open_bpf.o",
-        "tcp_connect_bpf.o",
-        "dns_query_bpf.o",
-        "module_load_bpf.o",
-        "lsm_block_bpf.o",
-    ];
-
-    let mut out = Vec::new();
-    for name in OBJECT_NAMES {
-        let candidate = objects_dir.join(name);
-        if candidate.exists() {
-            out.push(candidate);
-        }
-    }
-    out
+    ebpf_bootstrap::candidate_ebpf_object_paths(objects_dir)
 }
 
 fn synthetic_raw_event(now_unix: i64) -> RawEvent {
@@ -955,308 +1001,27 @@ fn map_event_class(event_type: &platform_linux::EventType) -> EventClass {
 }
 
 fn load_bundle_rules(detection: &mut DetectionEngine, bundle_path: &str) -> (usize, usize) {
-    let bundle_path = bundle_path.trim();
-    if bundle_path.is_empty() {
-        return (0, 0);
-    }
-
-    let path = Path::new(bundle_path);
-    if !path.exists() {
-        warn!(path = %path.display(), "threat-intel bundle path does not exist; skipping bundle load");
-        return (0, 0);
-    }
-
-    if path.is_file() {
-        if is_signed_bundle_archive(path) {
-            return load_signed_bundle_archive_rules(detection, path);
-        }
-        return load_bundle_rules_from_file(detection, path);
-    }
-
-    load_bundle_rules_from_dir(detection, path)
+    rule_bundle_loader::load_bundle_rules(detection, bundle_path)
 }
 
 fn is_signed_bundle_archive(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .map(|name| {
-            let lower = name.to_ascii_lowercase();
-            lower.ends_with(".tar.zst") || lower.ends_with(".tzst")
-        })
-        .unwrap_or(false)
-}
-
-fn load_bundle_rules_from_file(detection: &mut DetectionEngine, path: &Path) -> (usize, usize) {
-    let mut sigma_loaded = 0usize;
-    let mut yara_loaded = 0usize;
-
-    match path.extension().and_then(|ext| ext.to_str()) {
-        Some("yml") | Some("yaml") => {
-            match fs::read_to_string(path)
-                .ok()
-                .and_then(|source| detection.load_sigma_rule_yaml(&source).ok())
-            {
-                Some(_) => sigma_loaded += 1,
-                None => warn!(path = %path.display(), "failed loading SIGMA bundle file"),
-            }
-        }
-        Some("yar") | Some("yara") => {
-            match fs::read_to_string(path)
-                .ok()
-                .and_then(|source| detection.load_yara_rules_str(&source).ok())
-            {
-                Some(count) => yara_loaded += count,
-                None => warn!(path = %path.display(), "failed loading YARA bundle file"),
-            }
-        }
-        _ => {
-            warn!(path = %path.display(), "unsupported threat-intel bundle file extension");
-        }
-    }
-
-    (sigma_loaded, yara_loaded)
-}
-
-fn load_bundle_rules_from_dir(detection: &mut DetectionEngine, path: &Path) -> (usize, usize) {
-    let mut sigma_loaded = 0usize;
-    let mut yara_loaded = 0usize;
-
-    let mut sigma_dirs = Vec::new();
-    push_unique_dir(&mut sigma_dirs, path.join("sigma"));
-    push_unique_dir(&mut sigma_dirs, path.join("rules/sigma"));
-    push_unique_dir(&mut sigma_dirs, path.join("detection/sigma"));
-
-    let mut yara_dirs = Vec::new();
-    push_unique_dir(&mut yara_dirs, path.join("yara"));
-    push_unique_dir(&mut yara_dirs, path.join("rules/yara"));
-    push_unique_dir(&mut yara_dirs, path.join("detection/yara"));
-
-    for dir in sigma_dirs {
-        if !dir.is_dir() {
-            continue;
-        }
-        match detection.load_sigma_rules_from_dir(&dir) {
-            Ok(count) => sigma_loaded += count,
-            Err(err) => {
-                warn!(error = %err, path = %dir.display(), "failed loading SIGMA bundle directory")
-            }
-        }
-    }
-
-    for dir in yara_dirs {
-        if !dir.is_dir() {
-            continue;
-        }
-        match detection.load_yara_rules_from_dir(&dir) {
-            Ok(count) => yara_loaded += count,
-            Err(err) => {
-                warn!(error = %err, path = %dir.display(), "failed loading YARA bundle directory")
-            }
-        }
-    }
-
-    (sigma_loaded, yara_loaded)
-}
-
-fn load_signed_bundle_archive_rules(
-    detection: &mut DetectionEngine,
-    bundle_path: &Path,
-) -> (usize, usize) {
-    if !verify_bundle_signature(bundle_path) {
-        warn!(path = %bundle_path.display(), "skipping rule bundle because signature verification failed");
-        return (0, 0);
-    }
-
-    let extraction_dir = match prepare_bundle_extraction_dir(bundle_path) {
-        Ok(path) => path,
-        Err(err) => {
-            warn!(error = %err, path = %bundle_path.display(), "failed preparing bundle extraction directory");
-            return (0, 0);
-        }
-    };
-
-    if let Err(err) = extract_bundle_archive(bundle_path, &extraction_dir) {
-        warn!(error = %err, path = %bundle_path.display(), "failed extracting signed bundle archive");
-        let _ = fs::remove_dir_all(&extraction_dir);
-        return (0, 0);
-    }
-
-    let loaded = load_bundle_rules_from_dir(detection, &extraction_dir);
-    if let Err(err) = fs::remove_dir_all(&extraction_dir) {
-        warn!(error = %err, path = %extraction_dir.display(), "failed cleaning extracted bundle directory");
-    }
-    loaded
-}
-
-fn prepare_bundle_extraction_dir(bundle_path: &Path) -> std::result::Result<PathBuf, String> {
-    let staging_root = std::env::var("EGUARD_RULES_STAGING_DIR")
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_RULES_STAGING_DIR));
-
-    fs::create_dir_all(&staging_root)
-        .map_err(|err| format!("create staging root {}: {}", staging_root.display(), err))?;
-
-    let bundle_name = bundle_path
-        .file_name()
-        .and_then(|v| v.to_str())
-        .unwrap_or("bundle")
-        .to_ascii_lowercase();
-    let sanitized_name = bundle_name
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or_default();
-
-    let extraction = staging_root.join(format!("{}-{}", sanitized_name, nonce));
-    fs::create_dir_all(&extraction)
-        .map_err(|err| format!("create extraction dir {}: {}", extraction.display(), err))?;
-    Ok(extraction)
-}
-
-fn extract_bundle_archive(
-    bundle_path: &Path,
-    extraction_dir: &Path,
-) -> std::result::Result<(), String> {
-    let file = fs::File::open(bundle_path)
-        .map_err(|err| format!("open archive {}: {}", bundle_path.display(), err))?;
-    let decoder = zstd::stream::read::Decoder::new(file)
-        .map_err(|err| format!("create zstd decoder for {}: {}", bundle_path.display(), err))?;
-    let mut archive = tar::Archive::new(decoder);
-
-    let entries = archive
-        .entries()
-        .map_err(|err| format!("read tar entries for {}: {}", bundle_path.display(), err))?;
-    for entry in entries {
-        let mut entry =
-            entry.map_err(|err| format!("read tar entry in {}: {}", bundle_path.display(), err))?;
-
-        let entry_type = entry.header().entry_type();
-        if entry_type.is_symlink() || entry_type.is_hard_link() {
-            continue;
-        }
-
-        let entry_path = entry
-            .path()
-            .map_err(|err| format!("read entry path in {}: {}", bundle_path.display(), err))?
-            .into_owned();
-
-        let Some(safe_rel) = sanitize_archive_relative_path(&entry_path) else {
-            warn!(entry = %entry_path.display(), archive = %bundle_path.display(), "skipping unsafe bundle archive path");
-            continue;
-        };
-
-        let destination = extraction_dir.join(&safe_rel);
-        if entry_type.is_dir() {
-            fs::create_dir_all(&destination)
-                .map_err(|err| format!("create dir {}: {}", destination.display(), err))?;
-            continue;
-        }
-
-        if let Some(parent) = destination.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|err| format!("create parent {}: {}", parent.display(), err))?;
-        }
-
-        entry
-            .unpack(&destination)
-            .map_err(|err| format!("unpack {}: {}", destination.display(), err))?;
-    }
-
-    Ok(())
+    rule_bundle_loader::is_signed_bundle_archive(path)
 }
 
 fn sanitize_archive_relative_path(path: &Path) -> Option<PathBuf> {
-    let mut out = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::Normal(seg) => out.push(seg),
-            Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
-        }
-    }
-    if out.as_os_str().is_empty() {
-        None
-    } else {
-        Some(out)
-    }
+    rule_bundle_loader::sanitize_archive_relative_path(path)
 }
 
 fn verify_bundle_signature(bundle_path: &Path) -> bool {
-    let Some(public_key) = resolve_rule_bundle_public_key() else {
-        warn!("rule bundle public key is not configured; set EGUARD_RULE_BUNDLE_PUBKEY_PATH or EGUARD_RULE_BUNDLE_PUBKEY");
-        return false;
-    };
-
-    let Some(signature_path) = resolve_bundle_signature_path(bundle_path) else {
-        warn!(path = %bundle_path.display(), "bundle signature sidecar file not found");
-        return false;
-    };
-
-    match verify_bundle_signature_with_material(bundle_path, &signature_path, public_key) {
-        Ok(()) => true,
-        Err(err) => {
-            warn!(
-                error = %err,
-                bundle = %bundle_path.display(),
-                signature = %signature_path.display(),
-                "bundle signature verification failed"
-            );
-            false
-        }
-    }
+    rule_bundle_verify::verify_bundle_signature(bundle_path)
 }
 
 fn resolve_rule_bundle_public_key() -> Option<[u8; 32]> {
-    if let Ok(path) = std::env::var("EGUARD_RULE_BUNDLE_PUBKEY_PATH") {
-        let path = path.trim();
-        if !path.is_empty() {
-            match fs::read(path) {
-                Ok(raw) => {
-                    if let Some(key) = parse_ed25519_key_material(&raw) {
-                        return Some(key);
-                    }
-                    warn!(path = %path, "invalid Ed25519 public key file contents");
-                }
-                Err(err) => {
-                    warn!(error = %err, path = %path, "failed reading Ed25519 public key file")
-                }
-            }
-        }
-    }
-
-    if let Ok(raw) = std::env::var("EGUARD_RULE_BUNDLE_PUBKEY") {
-        return parse_ed25519_key_material(raw.as_bytes());
-    }
-
-    None
+    rule_bundle_verify::resolve_rule_bundle_public_key()
 }
 
 fn resolve_bundle_signature_path(bundle_path: &Path) -> Option<PathBuf> {
-    let mut candidates = Vec::new();
-    candidates.push(PathBuf::from(format!(
-        "{}.sig",
-        bundle_path.to_string_lossy()
-    )));
-    candidates.push(bundle_path.with_extension("sig"));
-
-    for candidate in candidates {
-        if candidate.exists() {
-            return Some(candidate);
-        }
-    }
-    None
+    rule_bundle_verify::resolve_bundle_signature_path(bundle_path)
 }
 
 fn verify_bundle_signature_with_material(
@@ -1264,452 +1029,32 @@ fn verify_bundle_signature_with_material(
     signature_path: &Path,
     public_key: [u8; 32],
 ) -> std::result::Result<(), String> {
-    let bundle_bytes = read_file_limited(bundle_path, MAX_SIGNED_RULE_BUNDLE_BYTES)?;
-    let signature_raw = fs::read(signature_path)
-        .map_err(|err| format!("read signature {}: {}", signature_path.display(), err))?;
-    let signature_bytes = parse_ed25519_signature_material(&signature_raw)
-        .ok_or_else(|| format!("invalid signature material in {}", signature_path.display()))?;
-
-    let verifying_key = VerifyingKey::from_bytes(&public_key)
-        .map_err(|err| format!("invalid Ed25519 public key: {}", err))?;
-    let signature = Signature::from_bytes(&signature_bytes);
-    verifying_key
-        .verify(&bundle_bytes, &signature)
-        .map_err(|err| format!("signature mismatch: {}", err))
+    rule_bundle_verify::verify_bundle_signature_with_material(
+        bundle_path,
+        signature_path,
+        public_key,
+    )
 }
 
 fn read_file_limited(path: &Path, max_bytes: u64) -> std::result::Result<Vec<u8>, String> {
-    let metadata = fs::metadata(path).map_err(|err| format!("stat {}: {}", path.display(), err))?;
-    if metadata.len() > max_bytes {
-        return Err(format!(
-            "file {} exceeds max size ({} > {})",
-            path.display(),
-            metadata.len(),
-            max_bytes
-        ));
-    }
-
-    let mut file =
-        fs::File::open(path).map_err(|err| format!("open {}: {}", path.display(), err))?;
-    let mut out = Vec::with_capacity(metadata.len() as usize);
-    file.read_to_end(&mut out)
-        .map_err(|err| format!("read {}: {}", path.display(), err))?;
-    Ok(out)
+    rule_bundle_verify::read_file_limited(path, max_bytes)
 }
 
 fn parse_ed25519_key_material(raw: &[u8]) -> Option<[u8; 32]> {
-    parse_fixed_key_material(raw, 32)
-}
-
-fn parse_ed25519_signature_material(raw: &[u8]) -> Option<[u8; 64]> {
-    parse_fixed_key_material(raw, 64)
-}
-
-fn parse_fixed_key_material<const N: usize>(raw: &[u8], expected_len: usize) -> Option<[u8; N]> {
-    if raw.len() == expected_len {
-        let mut out = [0u8; N];
-        out.copy_from_slice(raw);
-        return Some(out);
-    }
-
-    let text = std::str::from_utf8(raw).ok()?.trim();
-    let bytes = decode_hex_bytes(text)?;
-    if bytes.len() != expected_len {
-        return None;
-    }
-
-    let mut out = [0u8; N];
-    out.copy_from_slice(&bytes);
-    Some(out)
+    rule_bundle_verify::parse_ed25519_key_material(raw)
 }
 
 fn decode_hex_bytes(raw: &str) -> Option<Vec<u8>> {
-    let normalized = raw
-        .trim()
-        .strip_prefix("0x")
-        .or_else(|| raw.trim().strip_prefix("0X"))
-        .unwrap_or(raw.trim());
-
-    let compact = normalized
-        .chars()
-        .filter(|ch| !ch.is_whitespace())
-        .collect::<String>();
-    if compact.len() % 2 != 0 {
-        return None;
-    }
-
-    let mut out = Vec::with_capacity(compact.len() / 2);
-    let bytes = compact.as_bytes();
-    let mut idx = 0usize;
-    while idx < bytes.len() {
-        let hi = decode_hex_nibble(bytes[idx])?;
-        let lo = decode_hex_nibble(bytes[idx + 1])?;
-        out.push((hi << 4) | lo);
-        idx += 2;
-    }
-    Some(out)
-}
-
-fn decode_hex_nibble(ch: u8) -> Option<u8> {
-    match ch {
-        b'0'..=b'9' => Some(ch - b'0'),
-        b'a'..=b'f' => Some(ch - b'a' + 10),
-        b'A'..=b'F' => Some(ch - b'A' + 10),
-        _ => None,
-    }
+    rule_bundle_verify::decode_hex_bytes(raw)
 }
 
 fn push_unique_dir(out: &mut Vec<PathBuf>, path: PathBuf) {
-    if !out.iter().any(|existing| existing == &path) {
-        out.push(path);
-    }
+    rule_bundle_loader::push_unique_dir(out, path)
 }
 
 fn build_detection_engine() -> DetectionEngine {
-    let mut detection = DetectionEngine::default_with_rules();
-    seed_detection_inputs(&mut detection);
-    seed_sigma_rules(&mut detection);
-    seed_yara_rules(&mut detection);
-    detection
-}
-
-fn seed_detection_inputs(detection: &mut DetectionEngine) {
-    detection.layer1.load_hashes(["deadbeef".to_string()]);
-    detection
-        .layer1
-        .load_domains(["known-c2.example.com".to_string()]);
-    detection.layer1.load_ips(["198.51.100.10".to_string()]);
-    detection.layer1.load_string_signatures([
-        "curl|bash".to_string(),
-        "python -c".to_string(),
-        "powershell -enc".to_string(),
-    ]);
-}
-
-fn seed_sigma_rules(detection: &mut DetectionEngine) {
-    const BUILTIN_SIGMA_RULE: &str = r#"
-title: eguard_builtin_webshell
-detection:
-  sequence:
-    - event_class: process_exec
-      process_any_of: [bash, sh]
-      parent_any_of: [nginx, apache2, caddy]
-      within_secs: 30
-    - event_class: network_connect
-      dst_port_not_in: [80, 443]
-      within_secs: 10
-"#;
-
-    let mut loaded = 0usize;
-    match detection.load_sigma_rule_yaml(BUILTIN_SIGMA_RULE) {
-        Ok(_) => loaded += 1,
-        Err(err) => warn!(error = %err, "failed loading built-in SIGMA rule"),
-    }
-
-    let rules_dir = Path::new("rules/sigma");
-    if rules_dir.exists() {
-        match detection.load_sigma_rules_from_dir(rules_dir) {
-            Ok(count) => loaded += count,
-            Err(err) => {
-                warn!(error = %err, path = %rules_dir.display(), "failed loading SIGMA rules from directory")
-            }
-        }
-    }
-
-    info!(loaded_sigma_rules = loaded, "SIGMA rules initialized");
-}
-
-fn seed_yara_rules(detection: &mut DetectionEngine) {
-    const BUILTIN_YARA_RULE: &str = r#"
-rule eguard_builtin_test_marker {
-  strings:
-    $marker = "eguard-malware-test-marker"
-  condition:
-    $marker
-}
-"#;
-
-    let mut loaded = 0usize;
-    match detection.load_yara_rules_str(BUILTIN_YARA_RULE) {
-        Ok(count) => loaded += count,
-        Err(err) => warn!(error = %err, "failed loading built-in YARA rule"),
-    }
-
-    let rules_dir = Path::new("rules/yara");
-    if rules_dir.exists() {
-        match detection.load_yara_rules_from_dir(rules_dir) {
-            Ok(count) => {
-                loaded += count;
-            }
-            Err(err) => {
-                warn!(error = %err, path = %rules_dir.display(), "failed loading YARA rules from directory")
-            }
-        }
-    }
-
-    info!(loaded_yara_rules = loaded, "YARA rules initialized");
+    detection_bootstrap::build_detection_engine()
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use ed25519_dalek::{Signer, SigningKey};
-
-    #[test]
-    fn candidate_ebpf_object_paths_uses_known_order() {
-        let base = std::env::temp_dir().join(format!(
-            "eguard-ebpf-objects-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or_default()
-        ));
-        std::fs::create_dir_all(&base).expect("create temp dir");
-
-        let process = base.join("process_exec_bpf.o");
-        let dns = base.join("dns_query_bpf.o");
-        let lsm = base.join("lsm_block_bpf.o");
-        std::fs::write(&process, b"obj").expect("write process obj");
-        std::fs::write(&dns, b"obj").expect("write dns obj");
-        std::fs::write(&lsm, b"obj").expect("write lsm obj");
-
-        let paths = candidate_ebpf_object_paths(&base);
-        assert_eq!(paths, vec![process.clone(), dns.clone(), lsm.clone()]);
-
-        let _ = std::fs::remove_file(process);
-        let _ = std::fs::remove_file(dns);
-        let _ = std::fs::remove_file(lsm);
-        let _ = std::fs::remove_dir(base);
-    }
-
-    #[test]
-    fn default_ebpf_object_dirs_include_expected_targets() {
-        let dirs = default_ebpf_objects_dirs();
-        assert!(dirs.iter().any(|d| d == &PathBuf::from("./zig-out/ebpf")));
-        assert!(dirs.iter().any(|d| d == &PathBuf::from("zig-out/ebpf")));
-        assert!(dirs
-            .iter()
-            .any(|d| d == &PathBuf::from("/usr/lib/eguard-agent/ebpf")));
-    }
-
-    #[test]
-    fn compute_poll_timeout_prioritizes_drop_backpressure() {
-        assert_eq!(
-            compute_poll_timeout(0, 1),
-            std::time::Duration::from_millis(1)
-        );
-        assert_eq!(
-            compute_poll_timeout(5000, 0),
-            std::time::Duration::from_millis(5)
-        );
-        assert_eq!(
-            compute_poll_timeout(2000, 0),
-            std::time::Duration::from_millis(20)
-        );
-        assert_eq!(
-            compute_poll_timeout(10, 0),
-            std::time::Duration::from_millis(100)
-        );
-    }
-
-    #[test]
-    fn load_bundle_rules_reads_sigma_and_yara_dirs() {
-        let base = std::env::temp_dir().join(format!(
-            "eguard-bundle-rules-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or_default()
-        ));
-        let sigma_dir = base.join("sigma");
-        let yara_dir = base.join("yara");
-        std::fs::create_dir_all(&sigma_dir).expect("create sigma dir");
-        std::fs::create_dir_all(&yara_dir).expect("create yara dir");
-
-        std::fs::write(
-            sigma_dir.join("rule.yml"),
-            r#"
-title: sigma_rule_from_bundle
-detection:
-  sequence:
-    - event_class: process_exec
-      process_any_of: [bash]
-      parent_any_of: [nginx]
-      within_secs: 30
-    - event_class: network_connect
-      dst_port_not_in: [80, 443]
-      within_secs: 10
-"#,
-        )
-        .expect("write sigma rule");
-
-        std::fs::write(
-            yara_dir.join("rule.yar"),
-            r#"
-rule bundle_marker {
-  strings:
-    $m = "bundle-malware-marker"
-  condition:
-    $m
-}
-"#,
-        )
-        .expect("write yara rule");
-
-        let mut direct = DetectionEngine::default_with_rules();
-        assert_eq!(
-            direct
-                .load_sigma_rules_from_dir(&sigma_dir)
-                .expect("direct sigma load"),
-            1
-        );
-
-        let mut engine = DetectionEngine::default_with_rules();
-        let (sigma, yara) = load_bundle_rules(&mut engine, base.to_string_lossy().as_ref());
-        assert!(sigma <= 1);
-        assert_eq!(yara, 1);
-
-        let _ = std::fs::remove_file(sigma_dir.join("rule.yml"));
-        let _ = std::fs::remove_file(yara_dir.join("rule.yar"));
-        let _ = std::fs::remove_dir_all(base);
-    }
-
-    #[test]
-    fn verify_bundle_signature_with_material_accepts_signed_payload() {
-        let base = std::env::temp_dir().join(format!(
-            "eguard-bundle-signature-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or_default()
-        ));
-        std::fs::create_dir_all(&base).expect("create temp dir");
-
-        let bundle = base.join("bundle.tar.zst");
-        let signature = base.join("bundle.tar.zst.sig");
-        std::fs::write(&bundle, b"signed-bundle-content").expect("write bundle bytes");
-
-        let signing = SigningKey::from_bytes(&[7u8; 32]);
-        let sig = signing.sign(b"signed-bundle-content");
-        std::fs::write(&signature, sig.to_bytes()).expect("write signature bytes");
-
-        let verified = verify_bundle_signature_with_material(
-            &bundle,
-            &signature,
-            signing.verifying_key().to_bytes(),
-        );
-        assert!(verified.is_ok());
-
-        let _ = std::fs::remove_file(bundle);
-        let _ = std::fs::remove_file(signature);
-        let _ = std::fs::remove_dir(base);
-    }
-
-    #[test]
-    fn load_bundle_rules_reads_signed_archive_bundle() {
-        let base = std::env::temp_dir().join(format!(
-            "eguard-signed-bundle-load-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or_default()
-        ));
-        let src = base.join("src");
-        let staging = base.join("staging");
-        let sigma_dir = src.join("sigma");
-        let yara_dir = src.join("yara");
-        std::fs::create_dir_all(&sigma_dir).expect("create sigma dir");
-        std::fs::create_dir_all(&yara_dir).expect("create yara dir");
-
-        std::fs::write(
-            sigma_dir.join("rule.yml"),
-            r#"
-title: sigma_rule_from_signed_bundle
-detection:
-  sequence:
-    - event_class: process_exec
-      process_any_of: [bash]
-      parent_any_of: [nginx]
-      within_secs: 30
-    - event_class: network_connect
-      dst_port_not_in: [80, 443]
-      within_secs: 10
-"#,
-        )
-        .expect("write sigma rule");
-        std::fs::write(
-            yara_dir.join("rule.yar"),
-            r#"
-rule signed_bundle_marker {
-  strings:
-    $m = "signed-bundle-marker"
-  condition:
-    $m
-}
-"#,
-        )
-        .expect("write yara rule");
-
-        let tar_path = base.join("bundle.tar");
-        let tar_file = std::fs::File::create(&tar_path).expect("create tar file");
-        let mut tar_builder = tar::Builder::new(tar_file);
-        tar_builder
-            .append_path_with_name(sigma_dir.join("rule.yml"), "sigma/rule.yml")
-            .expect("append sigma file to tar");
-        tar_builder
-            .append_path_with_name(yara_dir.join("rule.yar"), "yara/rule.yar")
-            .expect("append yara file to tar");
-        tar_builder.finish().expect("finish tar archive");
-
-        let bundle_path = base.join("bundle.tar.zst");
-        let mut tar_input = std::fs::File::open(&tar_path).expect("open tar input");
-        let zstd_output = std::fs::File::create(&bundle_path).expect("create zstd output");
-        let mut encoder = zstd::stream::write::Encoder::new(zstd_output, 1).expect("init zstd");
-        std::io::copy(&mut tar_input, &mut encoder).expect("compress tar");
-        encoder.finish().expect("finish zstd");
-
-        let signing = SigningKey::from_bytes(&[9u8; 32]);
-        let bundle_bytes = std::fs::read(&bundle_path).expect("read compressed bundle");
-        let sig = signing.sign(&bundle_bytes);
-        let signature_path = PathBuf::from(format!("{}.sig", bundle_path.to_string_lossy()));
-        std::fs::write(&signature_path, sig.to_bytes()).expect("write signature sidecar");
-
-        std::env::set_var(
-            "EGUARD_RULE_BUNDLE_PUBKEY",
-            to_hex(&signing.verifying_key().to_bytes()),
-        );
-        std::env::set_var("EGUARD_RULES_STAGING_DIR", &staging);
-
-        let mut engine = DetectionEngine::default_with_rules();
-        let (_sigma, yara) = load_bundle_rules(&mut engine, bundle_path.to_string_lossy().as_ref());
-        assert_eq!(yara, 1);
-
-        std::env::remove_var("EGUARD_RULE_BUNDLE_PUBKEY");
-        std::env::remove_var("EGUARD_RULES_STAGING_DIR");
-
-        let _ = std::fs::remove_file(signature_path);
-        let _ = std::fs::remove_file(bundle_path);
-        let _ = std::fs::remove_file(tar_path);
-        let _ = std::fs::remove_dir_all(base);
-    }
-
-    #[test]
-    fn sanitize_archive_relative_path_rejects_traversal() {
-        assert_eq!(
-            sanitize_archive_relative_path(Path::new("../etc/passwd")),
-            None
-        );
-        assert_eq!(
-            sanitize_archive_relative_path(Path::new("/absolute/path")),
-            None
-        );
-        assert_eq!(
-            sanitize_archive_relative_path(Path::new("sigma/rule.yml")),
-            Some(PathBuf::from("sigma/rule.yml"))
-        );
-    }
-
-    fn to_hex(raw: &[u8]) -> String {
-        raw.iter().map(|b| format!("{:02x}", b)).collect::<String>()
-    }
-}
+mod tests;
