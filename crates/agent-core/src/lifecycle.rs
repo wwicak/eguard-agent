@@ -15,7 +15,9 @@ use grpc_client::{
     EventEnvelope, ResponseEnvelope, TlsConfig, TransportMode,
 };
 use nac::{posture_from_compliance, Posture};
-use platform_linux::{enrich_event_with_cache, EbpfEngine, EnrichmentCache, EventType, RawEvent};
+use platform_linux::{
+    enrich_event_with_cache, EbpfEngine, EbpfStats, EnrichmentCache, EventType, RawEvent,
+};
 use response::{
     capture_script_content, execute_server_command_with_state, kill_process_tree,
     parse_server_command, plan_action, quarantine_file, CommandOutcome, HostControlState,
@@ -37,6 +39,8 @@ pub struct AgentRuntime {
     client: GrpcClient,
     tick_count: u64,
     runtime_mode: AgentMode,
+    last_ebpf_stats: EbpfStats,
+    recent_ebpf_drops: u64,
     consecutive_send_failures: u32,
     enrolled: bool,
     latest_threat_version: Option<String>,
@@ -108,6 +112,8 @@ impl AgentRuntime {
             config,
             tick_count: 0,
             runtime_mode: initial_mode,
+            last_ebpf_stats: EbpfStats::default(),
+            recent_ebpf_drops: 0,
             consecutive_send_failures: 0,
             enrolled: false,
             latest_threat_version: None,
@@ -321,7 +327,10 @@ impl AgentRuntime {
 
     fn next_raw_event(&mut self, now_unix: i64) -> RawEvent {
         let timeout = self.adaptive_poll_timeout();
-        match self.ebpf_engine.poll_once(timeout) {
+        let polled = self.ebpf_engine.poll_once(timeout);
+        self.observe_ebpf_stats();
+
+        match polled {
             Ok(events) => {
                 if let Some(event) = events.into_iter().next() {
                     return event;
@@ -336,14 +345,15 @@ impl AgentRuntime {
     }
 
     fn adaptive_poll_timeout(&self) -> std::time::Duration {
-        let pending = self.buffer.pending_count();
-        if pending > 4096 {
-            std::time::Duration::from_millis(5)
-        } else if pending > 1024 {
-            std::time::Duration::from_millis(20)
-        } else {
-            std::time::Duration::from_millis(100)
-        }
+        compute_poll_timeout(self.buffer.pending_count(), self.recent_ebpf_drops)
+    }
+
+    fn observe_ebpf_stats(&mut self) {
+        let stats = self.ebpf_engine.stats();
+        self.recent_ebpf_drops = stats
+            .events_dropped
+            .saturating_sub(self.last_ebpf_stats.events_dropped);
+        self.last_ebpf_stats = stats;
     }
 
     fn effective_response_config(&self) -> ResponseConfig {
@@ -563,6 +573,18 @@ impl AgentRuntime {
 
         self.detection_state.apply_emergency_rule(rule)?;
         Ok(rule_name.to_string())
+    }
+}
+
+fn compute_poll_timeout(pending: usize, recent_ebpf_drops: u64) -> std::time::Duration {
+    if recent_ebpf_drops > 0 {
+        std::time::Duration::from_millis(1)
+    } else if pending > 4096 {
+        std::time::Duration::from_millis(5)
+    } else if pending > 1024 {
+        std::time::Duration::from_millis(20)
+    } else {
+        std::time::Duration::from_millis(100)
     }
 }
 
@@ -984,5 +1006,25 @@ mod tests {
         assert!(dirs
             .iter()
             .any(|d| d == &PathBuf::from("/usr/lib/eguard-agent/ebpf")));
+    }
+
+    #[test]
+    fn compute_poll_timeout_prioritizes_drop_backpressure() {
+        assert_eq!(
+            compute_poll_timeout(0, 1),
+            std::time::Duration::from_millis(1)
+        );
+        assert_eq!(
+            compute_poll_timeout(5000, 0),
+            std::time::Duration::from_millis(5)
+        );
+        assert_eq!(
+            compute_poll_timeout(2000, 0),
+            std::time::Duration::from_millis(20)
+        );
+        assert_eq!(
+            compute_poll_timeout(10, 0),
+            std::time::Duration::from_millis(100)
+        );
     }
 }
