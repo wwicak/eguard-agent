@@ -1,4 +1,5 @@
 mod config;
+mod detection_state;
 mod lifecycle;
 
 use anyhow::Result;

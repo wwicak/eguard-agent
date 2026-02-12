@@ -61,6 +61,11 @@ Current gRPC behavior:
 - Command retrieval attempts `CommandChannel` first and falls back to poll endpoints
 - mTLS channel credentials are loaded from configured cert/key/CA paths
 
+Detection runtime behavior:
+
+- Detection engine state is wrapped in `Arc<RwLock<...>>`
+- Threat-intel version changes trigger background-safe rebuild + atomic engine swap
+
 If `server_addr` has no scheme:
 
 - uses `https://` when TLS cert/key/ca are configured

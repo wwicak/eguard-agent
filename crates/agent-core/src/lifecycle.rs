@@ -18,11 +18,12 @@ use response::{
 };
 
 use crate::config::{AgentConfig, AgentMode};
+use crate::detection_state::SharedDetectionState;
 
 pub struct AgentRuntime {
     config: AgentConfig,
     buffer: EventBuffer,
-    detection: DetectionEngine,
+    detection_state: SharedDetectionState,
     protected: ProtectedList,
     limiter: KillRateLimiter,
     baseline: ProcessBaseline,
@@ -38,17 +39,7 @@ pub struct AgentRuntime {
 
 impl AgentRuntime {
     pub fn new(config: AgentConfig) -> Result<Self> {
-        let mut detection = DetectionEngine::default_with_rules();
-        detection.layer1.load_hashes(["deadbeef".to_string()]);
-        detection
-            .layer1
-            .load_domains(["known-c2.example.com".to_string()]);
-        detection.layer1.load_ips(["198.51.100.10".to_string()]);
-        detection.layer1.load_string_signatures([
-            "curl|bash".to_string(),
-            "python -c".to_string(),
-            "powershell -enc".to_string(),
-        ]);
+        let detection_state = SharedDetectionState::new(build_detection_engine(), None);
 
         let buffer = if config.offline_buffer_backend.eq_ignore_ascii_case("memory") {
             EventBuffer::memory(config.offline_buffer_cap_bytes)
@@ -98,7 +89,7 @@ impl AgentRuntime {
             protected: ProtectedList::default_linux(),
             baseline: ProcessBaseline::new("bash:sshd".to_string()),
             buffer,
-            detection,
+            detection_state,
             client,
             config,
             tick_count: 0,
@@ -126,7 +117,7 @@ impl AgentRuntime {
         self.baseline.observe("process_exec");
 
         let det_event = to_detection_event(&enriched, now_unix);
-        let detection_outcome = self.detection.process_event(&det_event);
+        let detection_outcome = self.detection_state.process_event(&det_event)?;
         let confidence = detection_outcome.confidence;
         let response_cfg = ResponseConfig {
             autonomous_response: self.config.autonomous_response,
@@ -240,11 +231,16 @@ impl AgentRuntime {
             if self.tick_count % 30 == 0 {
                 match self.client.fetch_latest_threat_intel().await? {
                     Some(v) => {
-                        let changed = self.latest_threat_version.as_deref() != Some(v.version.as_str());
+                        let known_version = self
+                            .latest_threat_version
+                            .clone()
+                            .or(self.detection_state.version()?);
+                        let changed = known_version.as_deref() != Some(v.version.as_str());
                         if changed {
                             info!(version = %v.version, bundle = %v.bundle_path, "new threat intel version available");
-                            self.latest_threat_version = Some(v.version);
+                            self.reload_detection_state(&v.version)?;
                         }
+                        self.latest_threat_version = Some(v.version);
                     }
                     None => {}
                 }
@@ -300,6 +296,14 @@ impl AgentRuntime {
 
     fn log_posture(&self, posture: Posture) {
         info!(?posture, "computed nac posture");
+    }
+
+    fn reload_detection_state(&self, version: &str) -> Result<()> {
+        let next_engine = build_detection_engine();
+        self.detection_state
+            .swap_engine(version.to_string(), next_engine)?;
+        info!(version = %version, "detection state hot-reloaded");
+        Ok(())
     }
 
     fn completed_command_cursor(&self) -> Vec<String> {
@@ -391,4 +395,23 @@ fn map_event_class(event_type: &platform_linux::EventType) -> EventClass {
         platform_linux::EventType::DnsQuery => EventClass::DnsQuery,
         platform_linux::EventType::ModuleLoad => EventClass::ModuleLoad,
     }
+}
+
+fn build_detection_engine() -> DetectionEngine {
+    let mut detection = DetectionEngine::default_with_rules();
+    seed_detection_inputs(&mut detection);
+    detection
+}
+
+fn seed_detection_inputs(detection: &mut DetectionEngine) {
+    detection.layer1.load_hashes(["deadbeef".to_string()]);
+    detection
+        .layer1
+        .load_domains(["known-c2.example.com".to_string()]);
+    detection.layer1.load_ips(["198.51.100.10".to_string()]);
+    detection.layer1.load_string_signatures([
+        "curl|bash".to_string(),
+        "python -c".to_string(),
+        "powershell -enc".to_string(),
+    ]);
 }
