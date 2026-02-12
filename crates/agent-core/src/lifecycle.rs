@@ -8,7 +8,7 @@ use serde::Deserialize;
 use tracing::{info, warn};
 
 use baseline::{BaselineStatus, BaselineStore, BaselineTransition, ProcessKey};
-use compliance::{evaluate, CompliancePolicy};
+use compliance::{evaluate, evaluate_linux, parse_policy_json, CompliancePolicy, ComplianceResult};
 use detection::{Confidence, DetectionEngine, EventClass, TelemetryEvent};
 use grpc_client::{
     Client as GrpcClient, CommandEnvelope, ComplianceEnvelope, EnrollmentEnvelope, EventBuffer,
@@ -33,6 +33,7 @@ pub struct AgentRuntime {
     detection_state: SharedDetectionState,
     protected: ProtectedList,
     limiter: KillRateLimiter,
+    compliance_policy: CompliancePolicy,
     baseline_store: BaselineStore,
     ebpf_engine: EbpfEngine,
     enrichment_cache: EnrichmentCache,
@@ -53,6 +54,7 @@ impl AgentRuntime {
         let detection_state = SharedDetectionState::new(build_detection_engine(), None);
         let baseline_store = load_baseline_store()?;
         seed_anomaly_baselines(&detection_state, &baseline_store)?;
+        let compliance_policy = load_compliance_policy();
         let ebpf_engine = init_ebpf_engine();
         let enrichment_cache = EnrichmentCache::default();
 
@@ -103,6 +105,7 @@ impl AgentRuntime {
         Ok(Self {
             limiter: KillRateLimiter::new(config.response.max_kills_per_minute),
             protected: ProtectedList::default_linux(),
+            compliance_policy,
             baseline_store,
             ebpf_engine,
             enrichment_cache,
@@ -136,14 +139,7 @@ impl AgentRuntime {
         let response_cfg = self.effective_response_config();
         let action = plan_action(confidence, &response_cfg);
 
-        let comp = evaluate(
-            &CompliancePolicy {
-                firewall_required: true,
-                min_kernel_prefix: None,
-            },
-            true,
-            "6.8.0",
-        );
+        let comp = self.evaluate_compliance();
         let posture = posture_from_compliance(&comp.status);
         self.log_posture(posture);
 
@@ -326,6 +322,16 @@ impl AgentRuntime {
 
     fn log_posture(&self, posture: Posture) {
         info!(?posture, "computed nac posture");
+    }
+
+    fn evaluate_compliance(&self) -> ComplianceResult {
+        match evaluate_linux(&self.compliance_policy) {
+            Ok(result) => result,
+            Err(err) => {
+                warn!(error = %err, "linux compliance probe failed, using minimal fallback checks");
+                evaluate(&self.compliance_policy, true, "unknown")
+            }
+        }
     }
 
     fn consume_bootstrap_config(&self) {
@@ -589,6 +595,43 @@ impl AgentRuntime {
 
         self.detection_state.apply_emergency_rule(rule)?;
         Ok(rule_name.to_string())
+    }
+}
+
+fn load_compliance_policy() -> CompliancePolicy {
+    if let Ok(path) = std::env::var("EGUARD_COMPLIANCE_POLICY_PATH") {
+        let path = path.trim();
+        if !path.is_empty() {
+            match std::fs::read_to_string(path) {
+                Ok(raw) => match parse_policy_json(&raw) {
+                    Ok(policy) => return policy,
+                    Err(err) => {
+                        warn!(error = %err, path = %path, "invalid compliance policy file; using fallback")
+                    }
+                },
+                Err(err) => {
+                    warn!(error = %err, path = %path, "failed reading compliance policy file; using fallback")
+                }
+            }
+        }
+    }
+
+    if let Ok(raw) = std::env::var("EGUARD_COMPLIANCE_POLICY_JSON") {
+        let raw = raw.trim();
+        if !raw.is_empty() {
+            match parse_policy_json(raw) {
+                Ok(policy) => return policy,
+                Err(err) => {
+                    warn!(error = %err, "invalid EGUARD_COMPLIANCE_POLICY_JSON; using fallback")
+                }
+            }
+        }
+    }
+
+    CompliancePolicy {
+        firewall_required: true,
+        min_kernel_prefix: None,
+        ..CompliancePolicy::default()
     }
 }
 
