@@ -1,4 +1,5 @@
 use super::*;
+use std::time::{Duration, Instant};
 
 fn event_with_hash(hash: &str) -> TelemetryEvent {
     TelemetryEvent {
@@ -104,4 +105,93 @@ fn shared_state_clones_observe_atomic_engine_swap_version() {
         clone.version().expect("version from clone").as_deref(),
         Some("v-new")
     );
+}
+
+#[test]
+// AC-DET-146 AC-DET-148 AC-DET-149 AC-DET-150
+fn rule_reload_swaps_atomically_and_keeps_old_rules_live_during_build() {
+    let mut old_engine = DetectionEngine::default_with_rules();
+    old_engine.layer1.load_hashes(["hash-old".to_string()]);
+    let state = SharedDetectionState::new(old_engine, Some("v-old".to_string()));
+
+    assert_eq!(
+        state
+            .process_event(&event_with_hash("hash-old"))
+            .expect("process old hash")
+            .confidence,
+        detection::Confidence::Definite
+    );
+
+    // Simulate "compilation/build" time before atomic swap; old rules stay live.
+    std::thread::sleep(Duration::from_millis(20));
+    for _ in 0..10 {
+        assert_eq!(
+            state
+                .process_event(&event_with_hash("hash-old"))
+                .expect("old rule remains active before swap")
+                .confidence,
+            detection::Confidence::Definite
+        );
+    }
+
+    let mut next_engine = DetectionEngine::default_with_rules();
+    next_engine.layer1.load_hashes(["hash-new".to_string()]);
+
+    let swap_started = Instant::now();
+    state
+        .swap_engine("v-new".to_string(), next_engine)
+        .expect("swap engine");
+    let swap_elapsed = swap_started.elapsed();
+
+    assert!(swap_elapsed < Duration::from_millis(5));
+
+    assert_eq!(
+        state
+            .version()
+            .expect("version after swap")
+            .as_deref(),
+        Some("v-new")
+    );
+    assert_eq!(
+        state
+            .process_event(&event_with_hash("hash-new"))
+            .expect("process new hash")
+            .confidence,
+        detection::Confidence::Definite
+    );
+    assert_ne!(
+        state
+            .process_event(&event_with_hash("hash-old"))
+            .expect("process old hash after swap")
+            .confidence,
+        detection::Confidence::Definite
+    );
+}
+
+#[test]
+// AC-DET-164
+fn emergency_rule_apply_stays_within_single_rule_compile_budget() {
+    let state = SharedDetectionState::new(
+        DetectionEngine::default_with_rules(),
+        Some("v-latency".to_string()),
+    );
+
+    let started = Instant::now();
+    state
+        .apply_emergency_rule(EmergencyRule {
+            name: "emergency-latency".to_string(),
+            rule_type: EmergencyRuleType::Signature,
+            rule_content: "curl|bash".to_string(),
+        })
+        .expect("apply emergency signature rule");
+    assert!(started.elapsed() < Duration::from_millis(100));
+
+    let out = state
+        .process_event(&event_with_command("curl|bash -s https://bad"))
+        .expect("process event");
+    assert!(out
+        .layer1
+        .matched_signatures
+        .iter()
+        .any(|sig| sig == "curl|bash"));
 }
