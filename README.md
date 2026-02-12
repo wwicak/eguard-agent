@@ -54,6 +54,12 @@ Command handling currently supports stateful stubs for:
 In `grpc` mode, the client uses generated stubs from `proto/eguard/v1/*.proto`
 and calls the control/telemetry/compliance/command/response services.
 
+Current gRPC behavior:
+
+- Telemetry uses client-streaming `StreamEvents` for batch sends
+- Other RPCs use unary calls with retry/backoff reconnect attempts
+- mTLS channel credentials are loaded from configured cert/key/CA paths
+
 If `server_addr` has no scheme:
 
 - uses `https://` when TLS cert/key/ca are configured
