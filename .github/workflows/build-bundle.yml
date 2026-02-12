@@ -1,0 +1,105 @@
+name: Build Threat Intel Bundle
+
+on:
+  workflow_run:
+    workflows:
+      - "Collect SIGMA Rules"
+      - "Collect YARA Rules"
+      - "Collect IOC Feeds"
+      - "Collect CVE Data"
+    types:
+      - completed
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-bundle:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install yara-python pyyaml
+
+      - name: Install zstd
+        run: sudo apt-get update && sudo apt-get install -y zstd
+
+      - name: Set version
+        id: version
+        run: echo "version=$(date -u +%Y.%m.%d.%H%M)" >> "$GITHUB_OUTPUT"
+
+      - name: Validate YARA rules
+        run: |
+          mkdir -p /tmp/yara_validated
+          if [ -d sources/yara ] && [ "$(find sources/yara -name '*.yar' -o -name '*.yara' 2>/dev/null | head -1)" ]; then
+            python threat-intel/processing/yara_validate.py \
+              --input sources/yara \
+              --output /tmp/yara_validated \
+              --test-files threat-intel/tests/clean_files
+          else
+            echo "No YARA rules to validate"
+          fi
+
+      - name: Build bundle
+        run: |
+          python threat-intel/processing/build_bundle.py \
+            --sigma sources/sigma \
+            --yara /tmp/yara_validated \
+            --ioc sources/ioc/consolidated \
+            --cve sources/cve/cves.jsonl \
+            --output bundle \
+            --version "${{ steps.version.outputs.version }}"
+
+      - name: Import GPG key
+        run: |
+          echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --import
+          echo "allow-preset-passphrase" >> ~/.gnupg/gpg-agent.conf
+          gpgconf --kill gpg-agent
+
+      - name: Sign manifest
+        run: |
+          gpg --batch --yes --pinentry-mode loopback \
+            --passphrase "${{ secrets.GPG_PASSPHRASE }}" \
+            --detach-sign --armor \
+            -o bundle/manifest.json.asc bundle/manifest.json
+
+      - name: Verify signature
+        run: gpg --verify bundle/manifest.json.asc bundle/manifest.json
+
+      - name: Package bundle
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          tar cf - -C bundle/ . | zstd -3 -o "eguard-rules-${VERSION}.bundle.tar.zst"
+          cp bundle/manifest.json.asc .
+          echo "Bundle size: $(du -sh eguard-rules-${VERSION}.bundle.tar.zst | cut -f1)"
+
+      - name: Create GitHub Release
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          gh release create "rules-${VERSION}" \
+            "eguard-rules-${VERSION}.bundle.tar.zst" \
+            manifest.json.asc \
+            --title "Rule Bundle ${VERSION}" \
+            --notes "Automated threat intelligence bundle.
+
+          $(cat bundle/manifest.json | python3 -c '
+          import json, sys
+          m = json.load(sys.stdin)
+          print(f"- SIGMA rules: {m[\"sigma_count\"]}")
+          print(f"- YARA rules: {m[\"yara_count\"]}")
+          print(f"- IOC hashes: {m[\"ioc_hash_count\"]}")
+          print(f"- IOC domains: {m[\"ioc_domain_count\"]}")
+          print(f"- IOC IPs: {m[\"ioc_ip_count\"]}")
+          print(f"- CVEs: {m[\"cve_count\"]}")
+          ')"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

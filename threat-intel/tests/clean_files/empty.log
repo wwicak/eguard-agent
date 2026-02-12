@@ -1,0 +1,3 @@
+2026-01-01 00:00:00 INFO Application started
+2026-01-01 00:00:01 INFO Listening on port 8080
+2026-01-01 00:00:02 DEBUG Connection accepted from 192.168.1.1

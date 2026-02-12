@@ -1,0 +1,84 @@
+name: Collect CVE Data
+
+on:
+  schedule:
+    - cron: "0 4 * * *"  # Daily at 04:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  collect-cve:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Create source directories
+        run: mkdir -p sources/cve
+
+      - name: Fetch NVD recent CVEs
+        run: |
+          # NVD API 2.0: fetch CVEs modified in last 2 days
+          START_DATE=$(date -u -d '2 days ago' +%Y-%m-%dT00:00:00.000)
+          END_DATE=$(date -u +%Y-%m-%dT23:59:59.999)
+          curl -sSfL --retry 3 --max-time 300 \
+            "https://services.nvd.nist.gov/rest/json/cves/2.0/?lastModStartDate=${START_DATE}&lastModEndDate=${END_DATE}&resultsPerPage=2000" \
+            -o sources/cve/nvd_recent.json
+          echo "Downloaded NVD recent CVEs"
+
+      - name: Fetch GitHub Advisory Database
+        run: |
+          # Query GitHub Advisory Database via GraphQL for recent Linux advisories
+          cat > /tmp/ghsa_query.graphql <<'GRAPHQL'
+          {
+            securityAdvisories(first: 100, orderBy: {field: PUBLISHED_AT, direction: DESC}, classifications: [GENERAL, MALWARE]) {
+              nodes {
+                ghsaId
+                summary
+                severity
+                publishedAt
+                identifiers { type value }
+                vulnerabilities(first: 10, ecosystem: PIP) {
+                  nodes {
+                    package { name ecosystem }
+                    vulnerableVersionRange
+                  }
+                }
+              }
+            }
+          }
+          GRAPHQL
+          gh api graphql -f query="$(cat /tmp/ghsa_query.graphql)" > sources/cve/ghsa_recent.json 2>/dev/null || echo '{"data":{"securityAdvisories":{"nodes":[]}}}' > sources/cve/ghsa_recent.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Linux CVEs
+        run: |
+          python threat-intel/processing/cve_extract.py \
+            --input sources/cve/nvd_recent.json \
+            --output sources/cve/cves.jsonl \
+            --min-cvss 4.0
+
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add sources/cve/
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore(threat-intel): update CVE data $(date -u +%Y-%m-%d)"
+            git push
+          fi
+
+      - name: Trigger bundle build
+        run: gh workflow run build-bundle.yml
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

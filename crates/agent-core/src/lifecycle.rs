@@ -698,27 +698,14 @@ fn init_ebpf_engine() -> EbpfEngine {
         .unwrap_or_else(|| "events".to_string());
 
     if let Some(dir) = objects_dir {
-        let object_paths = candidate_ebpf_object_paths(&dir);
-        if !object_paths.is_empty() {
-            match EbpfEngine::from_elfs(&object_paths, &map_name) {
-                Ok(engine) => {
-                    info!(
-                        objects_dir = %dir.display(),
-                        object_count = object_paths.len(),
-                        map = %map_name,
-                        "eBPF engine initialized from object directory"
-                    );
-                    return engine;
-                }
-                Err(err) => {
-                    warn!(
-                        error = %err,
-                        objects_dir = %dir.display(),
-                        map = %map_name,
-                        "failed to initialize eBPF engine from object directory"
-                    );
-                }
-            }
+        if let Some(engine) = try_init_ebpf_from_object_dir(&dir, &map_name) {
+            return engine;
+        }
+    }
+
+    for dir in default_ebpf_objects_dirs() {
+        if let Some(engine) = try_init_ebpf_from_object_dir(&dir, &map_name) {
+            return engine;
         }
     }
 
@@ -736,6 +723,42 @@ fn init_ebpf_engine() -> EbpfEngine {
             EbpfEngine::disabled()
         }
     }
+}
+
+fn try_init_ebpf_from_object_dir(objects_dir: &Path, map_name: &str) -> Option<EbpfEngine> {
+    let object_paths = candidate_ebpf_object_paths(objects_dir);
+    if object_paths.is_empty() {
+        return None;
+    }
+
+    match EbpfEngine::from_elfs(&object_paths, map_name) {
+        Ok(engine) => {
+            info!(
+                objects_dir = %objects_dir.display(),
+                object_count = object_paths.len(),
+                map = %map_name,
+                "eBPF engine initialized from object directory"
+            );
+            Some(engine)
+        }
+        Err(err) => {
+            warn!(
+                error = %err,
+                objects_dir = %objects_dir.display(),
+                map = %map_name,
+                "failed to initialize eBPF engine from object directory"
+            );
+            None
+        }
+    }
+}
+
+fn default_ebpf_objects_dirs() -> Vec<PathBuf> {
+    vec![
+        PathBuf::from("./zig-out/ebpf"),
+        PathBuf::from("zig-out/ebpf"),
+        PathBuf::from("/usr/lib/eguard-agent/ebpf"),
+    ]
 }
 
 fn candidate_ebpf_object_paths(objects_dir: &Path) -> Vec<PathBuf> {
@@ -920,4 +943,46 @@ rule eguard_builtin_test_marker {
     }
 
     info!(loaded_yara_rules = loaded, "YARA rules initialized");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn candidate_ebpf_object_paths_uses_known_order() {
+        let base = std::env::temp_dir().join(format!(
+            "eguard-ebpf-objects-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&base).expect("create temp dir");
+
+        let process = base.join("process_exec_bpf.o");
+        let dns = base.join("dns_query_bpf.o");
+        let lsm = base.join("lsm_block_bpf.o");
+        std::fs::write(&process, b"obj").expect("write process obj");
+        std::fs::write(&dns, b"obj").expect("write dns obj");
+        std::fs::write(&lsm, b"obj").expect("write lsm obj");
+
+        let paths = candidate_ebpf_object_paths(&base);
+        assert_eq!(paths, vec![process.clone(), dns.clone(), lsm.clone()]);
+
+        let _ = std::fs::remove_file(process);
+        let _ = std::fs::remove_file(dns);
+        let _ = std::fs::remove_file(lsm);
+        let _ = std::fs::remove_dir(base);
+    }
+
+    #[test]
+    fn default_ebpf_object_dirs_include_expected_targets() {
+        let dirs = default_ebpf_objects_dirs();
+        assert!(dirs.iter().any(|d| d == &PathBuf::from("./zig-out/ebpf")));
+        assert!(dirs.iter().any(|d| d == &PathBuf::from("zig-out/ebpf")));
+        assert!(dirs
+            .iter()
+            .any(|d| d == &PathBuf::from("/usr/lib/eguard-agent/ebpf")));
+    }
 }

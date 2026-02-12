@@ -1,0 +1,28 @@
+# Known-good SHA-256 hashes — subtract from IOC lists to reduce false positives.
+# Format: one SHA-256 hash per line.
+# Sources: top Linux packages from Debian/Ubuntu official repositories.
+#
+# To regenerate: download .deb packages from official mirrors and compute
+# sha256sum on the contained binaries.
+#
+# Last updated: 2026-02-12
+#
+# --- Core system binaries (coreutils, util-linux, etc.) ---
+# These are placeholders — replace with actual hashes from your target distro.
+# Run: dpkg -L coreutils | xargs -I{} sha256sum {} 2>/dev/null
+#
+# --- Common libraries (glibc, openssl, zlib, etc.) ---
+# Run: dpkg -L libc6 | xargs -I{} sha256sum {} 2>/dev/null
+#
+# --- Package managers ---
+# Run: dpkg -L apt | xargs -I{} sha256sum {} 2>/dev/null
+#
+# --- Python runtime ---
+# Run: dpkg -L python3 | xargs -I{} sha256sum {} 2>/dev/null
+#
+# --- Shells ---
+# Run: dpkg -L bash | xargs -I{} sha256sum {} 2>/dev/null
+#
+# NOTE: This file should be populated with actual hashes from your environment.
+# The CI pipeline will subtract any IOC hash that appears here.
+# Add hashes of known-good binaries that are commonly flagged as false positives.

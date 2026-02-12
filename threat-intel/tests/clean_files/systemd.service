@@ -1,0 +1,11 @@
+[Unit]
+Description=Example Service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/example --config /etc/example.conf
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

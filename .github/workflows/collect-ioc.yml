@@ -1,0 +1,128 @@
+name: Collect IOC Feeds
+
+on:
+  schedule:
+    - cron: "0 */4 * * *"  # Every 4 hours
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  collect-ioc:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Create source directories
+        run: mkdir -p sources/ioc/{hashes,domains,ips}
+
+      - name: Fetch MalwareBazaar hashes (abuse.ch)
+        run: |
+          curl -sSfL --retry 3 --max-time 120 \
+            "https://bazaar.abuse.ch/export/txt/sha256/recent/" \
+            -o /tmp/bazaar_hashes.txt
+          # Strip comments, prepend source metadata
+          grep -v '^#' /tmp/bazaar_hashes.txt | grep -v '^$' | head -50000 | \
+            awk '{print $1}' > sources/ioc/hashes/malwarebazaar.txt
+
+      - name: Fetch ThreatFox IOCs (abuse.ch)
+        run: |
+          curl -sSfL --retry 3 --max-time 120 \
+            "https://threatfox.abuse.ch/export/csv/recent/" \
+            -o /tmp/threatfox.csv
+          # Extract domains and IPs from ThreatFox CSV
+          grep -v '^#' /tmp/threatfox.csv | grep -v '^$' | \
+            awk -F'","' '{
+              type=$5; ioc=$6;
+              gsub(/"/, "", type); gsub(/"/, "", ioc);
+              if (type ~ /domain/) print ioc;
+            }' | sort -u > sources/ioc/domains/threatfox.txt
+          grep -v '^#' /tmp/threatfox.csv | grep -v '^$' | \
+            awk -F'","' '{
+              type=$5; ioc=$6;
+              gsub(/"/, "", type); gsub(/"/, "", ioc);
+              if (type ~ /ip/) { split(ioc, a, ":"); print a[1]; }
+            }' | sort -u > sources/ioc/ips/threatfox.txt
+
+      - name: Fetch Feodo C2 IPs (abuse.ch)
+        run: |
+          curl -sSfL --retry 3 --max-time 60 \
+            "https://feodotracker.abuse.ch/downloads/ipblocklist_recommended.txt" \
+            -o /tmp/feodo.txt
+          grep -v '^#' /tmp/feodo.txt | grep -v '^$' | \
+            sort -u > sources/ioc/ips/feodo.txt
+
+      - name: Fetch URLhaus domains (abuse.ch)
+        run: |
+          curl -sSfL --retry 3 --max-time 120 \
+            "https://urlhaus.abuse.ch/downloads/text_online/" \
+            -o /tmp/urlhaus.txt
+          # Extract domains from URLs
+          grep -v '^#' /tmp/urlhaus.txt | grep -v '^$' | \
+            sed 's|https\?://||; s|/.*||; s|:.*||' | \
+            sort -u > sources/ioc/domains/urlhaus.txt
+
+      - name: Fetch AlienVault OTX (optional)
+        if: ${{ env.OTX_API_KEY != '' }}
+        env:
+          OTX_API_KEY: ${{ secrets.OTX_API_KEY }}
+        run: |
+          # Fetch recent pulses (last 24h)
+          curl -sSfL --retry 3 --max-time 120 \
+            -H "X-OTX-API-KEY: ${OTX_API_KEY}" \
+            "https://otx.alienvault.com/api/v1/pulses/subscribed?modified_since=$(date -u -d '1 day ago' +%Y-%m-%dT%H:%M:%S)" \
+            -o /tmp/otx_pulses.json
+          # Extract indicators by type
+          python3 -c "
+          import json, sys
+          data = json.load(open('/tmp/otx_pulses.json'))
+          hashes, domains, ips = set(), set(), set()
+          for pulse in data.get('results', []):
+              for ind in pulse.get('indicators', []):
+                  t = ind.get('type', '')
+                  v = ind.get('indicator', '')
+                  if t in ('FileHash-SHA256',): hashes.add(v)
+                  elif t in ('domain', 'hostname'): domains.add(v)
+                  elif t in ('IPv4',): ips.add(v)
+          open('sources/ioc/hashes/otx.txt', 'w').write('\n'.join(sorted(hashes)))
+          open('sources/ioc/domains/otx.txt', 'w').write('\n'.join(sorted(domains)))
+          open('sources/ioc/ips/otx.txt', 'w').write('\n'.join(sorted(ips)))
+          "
+
+      - name: Deduplicate IOCs
+        run: |
+          python threat-intel/processing/ioc_dedup.py \
+            --input sources/ioc \
+            --output /tmp/ioc_deduped
+
+      - name: Apply allowlists
+        run: |
+          python threat-intel/processing/ioc_allowlist.py \
+            --input /tmp/ioc_deduped \
+            --output sources/ioc/consolidated \
+            --hash-allowlist threat-intel/allowlists/known_good_hashes.txt \
+            --domain-allowlist threat-intel/allowlists/known_good_domains.txt
+
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add sources/ioc/
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore(threat-intel): update IOC feeds $(date -u +%Y-%m-%dT%H:%M)"
+            git push
+          fi
+
+      - name: Trigger bundle build
+        run: gh workflow run build-bundle.yml
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
