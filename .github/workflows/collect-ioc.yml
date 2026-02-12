@@ -110,19 +110,20 @@ jobs:
             --hash-allowlist threat-intel/allowlists/known_good_hashes.txt \
             --domain-allowlist threat-intel/allowlists/known_good_domains.txt
 
-      - name: Commit changes
+      - name: Commit and push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add sources/ioc/
           if git diff --cached --quiet; then
             echo "No changes to commit"
-          else
-            git commit -m "chore(threat-intel): update IOC feeds $(date -u +%Y-%m-%dT%H:%M)"
-            git push
+            exit 0
           fi
-
-      - name: Trigger bundle build
-        run: gh workflow run build-bundle.yml
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          git commit -m "chore(threat-intel): update IOC feeds $(date -u +%Y-%m-%dT%H:%M)"
+          for i in 1 2 3; do
+            git pull --rebase origin "${GITHUB_REF_NAME}" && git push && exit 0
+            echo "Push attempt $i failed, retrying in 10s..."
+            sleep 10
+          done
+          echo "Failed to push after 3 attempts"
+          exit 1

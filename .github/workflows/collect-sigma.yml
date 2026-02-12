@@ -34,19 +34,20 @@ jobs:
             --platforms linux \
             --min-status test
 
-      - name: Commit changes
+      - name: Commit and push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add sources/sigma/
           if git diff --cached --quiet; then
             echo "No changes to commit"
-          else
-            git commit -m "chore(threat-intel): update SIGMA rules $(date -u +%Y-%m-%d)"
-            git push
+            exit 0
           fi
-
-      - name: Trigger bundle build
-        run: gh workflow run build-bundle.yml
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          git commit -m "chore(threat-intel): update SIGMA rules $(date -u +%Y-%m-%d)"
+          for i in 1 2 3; do
+            git pull --rebase origin "${GITHUB_REF_NAME}" && git push && exit 0
+            echo "Push attempt $i failed, retrying in 10s..."
+            sleep 10
+          done
+          echo "Failed to push after 3 attempts"
+          exit 1
