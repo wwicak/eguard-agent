@@ -1,9 +1,12 @@
 use std::collections::HashMap;
 use std::collections::VecDeque;
-use std::path::{Path, PathBuf};
+use std::fs;
+use std::io::Read;
+use std::path::{Component, Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{anyhow, Result};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::Deserialize;
 use tracing::{info, warn};
 
@@ -26,6 +29,9 @@ use response::{
 
 use crate::config::{AgentConfig, AgentMode};
 use crate::detection_state::{EmergencyRule, EmergencyRuleType, SharedDetectionState};
+
+const DEFAULT_RULES_STAGING_DIR: &str = "/var/lib/eguard-agent/rules-staging";
+const MAX_SIGNED_RULE_BUNDLE_BYTES: u64 = 256 * 1024 * 1024;
 
 pub struct AgentRuntime {
     config: AgentConfig,
@@ -960,35 +966,60 @@ fn load_bundle_rules(detection: &mut DetectionEngine, bundle_path: &str) -> (usi
         return (0, 0);
     }
 
+    if path.is_file() {
+        if is_signed_bundle_archive(path) {
+            return load_signed_bundle_archive_rules(detection, path);
+        }
+        return load_bundle_rules_from_file(detection, path);
+    }
+
+    load_bundle_rules_from_dir(detection, path)
+}
+
+fn is_signed_bundle_archive(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| {
+            let lower = name.to_ascii_lowercase();
+            lower.ends_with(".tar.zst") || lower.ends_with(".tzst")
+        })
+        .unwrap_or(false)
+}
+
+fn load_bundle_rules_from_file(detection: &mut DetectionEngine, path: &Path) -> (usize, usize) {
     let mut sigma_loaded = 0usize;
     let mut yara_loaded = 0usize;
 
-    if path.is_file() {
-        match path.extension().and_then(|ext| ext.to_str()) {
-            Some("yml") | Some("yaml") => {
-                match std::fs::read_to_string(path)
-                    .ok()
-                    .and_then(|source| detection.load_sigma_rule_yaml(&source).ok())
-                {
-                    Some(_) => sigma_loaded += 1,
-                    None => warn!(path = %path.display(), "failed loading SIGMA bundle file"),
-                }
-            }
-            Some("yar") | Some("yara") => {
-                match std::fs::read_to_string(path)
-                    .ok()
-                    .and_then(|source| detection.load_yara_rules_str(&source).ok())
-                {
-                    Some(count) => yara_loaded += count,
-                    None => warn!(path = %path.display(), "failed loading YARA bundle file"),
-                }
-            }
-            _ => {
-                warn!(path = %path.display(), "unsupported threat-intel bundle file extension");
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some("yml") | Some("yaml") => {
+            match fs::read_to_string(path)
+                .ok()
+                .and_then(|source| detection.load_sigma_rule_yaml(&source).ok())
+            {
+                Some(_) => sigma_loaded += 1,
+                None => warn!(path = %path.display(), "failed loading SIGMA bundle file"),
             }
         }
-        return (sigma_loaded, yara_loaded);
+        Some("yar") | Some("yara") => {
+            match fs::read_to_string(path)
+                .ok()
+                .and_then(|source| detection.load_yara_rules_str(&source).ok())
+            {
+                Some(count) => yara_loaded += count,
+                None => warn!(path = %path.display(), "failed loading YARA bundle file"),
+            }
+        }
+        _ => {
+            warn!(path = %path.display(), "unsupported threat-intel bundle file extension");
+        }
     }
+
+    (sigma_loaded, yara_loaded)
+}
+
+fn load_bundle_rules_from_dir(detection: &mut DetectionEngine, path: &Path) -> (usize, usize) {
+    let mut sigma_loaded = 0usize;
+    let mut yara_loaded = 0usize;
 
     let mut sigma_dirs = Vec::new();
     push_unique_dir(&mut sigma_dirs, path.join("sigma"));
@@ -1025,6 +1056,307 @@ fn load_bundle_rules(detection: &mut DetectionEngine, bundle_path: &str) -> (usi
     }
 
     (sigma_loaded, yara_loaded)
+}
+
+fn load_signed_bundle_archive_rules(
+    detection: &mut DetectionEngine,
+    bundle_path: &Path,
+) -> (usize, usize) {
+    if !verify_bundle_signature(bundle_path) {
+        warn!(path = %bundle_path.display(), "skipping rule bundle because signature verification failed");
+        return (0, 0);
+    }
+
+    let extraction_dir = match prepare_bundle_extraction_dir(bundle_path) {
+        Ok(path) => path,
+        Err(err) => {
+            warn!(error = %err, path = %bundle_path.display(), "failed preparing bundle extraction directory");
+            return (0, 0);
+        }
+    };
+
+    if let Err(err) = extract_bundle_archive(bundle_path, &extraction_dir) {
+        warn!(error = %err, path = %bundle_path.display(), "failed extracting signed bundle archive");
+        let _ = fs::remove_dir_all(&extraction_dir);
+        return (0, 0);
+    }
+
+    let loaded = load_bundle_rules_from_dir(detection, &extraction_dir);
+    if let Err(err) = fs::remove_dir_all(&extraction_dir) {
+        warn!(error = %err, path = %extraction_dir.display(), "failed cleaning extracted bundle directory");
+    }
+    loaded
+}
+
+fn prepare_bundle_extraction_dir(bundle_path: &Path) -> std::result::Result<PathBuf, String> {
+    let staging_root = std::env::var("EGUARD_RULES_STAGING_DIR")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_RULES_STAGING_DIR));
+
+    fs::create_dir_all(&staging_root)
+        .map_err(|err| format!("create staging root {}: {}", staging_root.display(), err))?;
+
+    let bundle_name = bundle_path
+        .file_name()
+        .and_then(|v| v.to_str())
+        .unwrap_or("bundle")
+        .to_ascii_lowercase();
+    let sanitized_name = bundle_name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+
+    let extraction = staging_root.join(format!("{}-{}", sanitized_name, nonce));
+    fs::create_dir_all(&extraction)
+        .map_err(|err| format!("create extraction dir {}: {}", extraction.display(), err))?;
+    Ok(extraction)
+}
+
+fn extract_bundle_archive(
+    bundle_path: &Path,
+    extraction_dir: &Path,
+) -> std::result::Result<(), String> {
+    let file = fs::File::open(bundle_path)
+        .map_err(|err| format!("open archive {}: {}", bundle_path.display(), err))?;
+    let decoder = zstd::stream::read::Decoder::new(file)
+        .map_err(|err| format!("create zstd decoder for {}: {}", bundle_path.display(), err))?;
+    let mut archive = tar::Archive::new(decoder);
+
+    let entries = archive
+        .entries()
+        .map_err(|err| format!("read tar entries for {}: {}", bundle_path.display(), err))?;
+    for entry in entries {
+        let mut entry =
+            entry.map_err(|err| format!("read tar entry in {}: {}", bundle_path.display(), err))?;
+
+        let entry_type = entry.header().entry_type();
+        if entry_type.is_symlink() || entry_type.is_hard_link() {
+            continue;
+        }
+
+        let entry_path = entry
+            .path()
+            .map_err(|err| format!("read entry path in {}: {}", bundle_path.display(), err))?
+            .into_owned();
+
+        let Some(safe_rel) = sanitize_archive_relative_path(&entry_path) else {
+            warn!(entry = %entry_path.display(), archive = %bundle_path.display(), "skipping unsafe bundle archive path");
+            continue;
+        };
+
+        let destination = extraction_dir.join(&safe_rel);
+        if entry_type.is_dir() {
+            fs::create_dir_all(&destination)
+                .map_err(|err| format!("create dir {}: {}", destination.display(), err))?;
+            continue;
+        }
+
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|err| format!("create parent {}: {}", parent.display(), err))?;
+        }
+
+        entry
+            .unpack(&destination)
+            .map_err(|err| format!("unpack {}: {}", destination.display(), err))?;
+    }
+
+    Ok(())
+}
+
+fn sanitize_archive_relative_path(path: &Path) -> Option<PathBuf> {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(seg) => out.push(seg),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+    if out.as_os_str().is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+fn verify_bundle_signature(bundle_path: &Path) -> bool {
+    let Some(public_key) = resolve_rule_bundle_public_key() else {
+        warn!("rule bundle public key is not configured; set EGUARD_RULE_BUNDLE_PUBKEY_PATH or EGUARD_RULE_BUNDLE_PUBKEY");
+        return false;
+    };
+
+    let Some(signature_path) = resolve_bundle_signature_path(bundle_path) else {
+        warn!(path = %bundle_path.display(), "bundle signature sidecar file not found");
+        return false;
+    };
+
+    match verify_bundle_signature_with_material(bundle_path, &signature_path, public_key) {
+        Ok(()) => true,
+        Err(err) => {
+            warn!(
+                error = %err,
+                bundle = %bundle_path.display(),
+                signature = %signature_path.display(),
+                "bundle signature verification failed"
+            );
+            false
+        }
+    }
+}
+
+fn resolve_rule_bundle_public_key() -> Option<[u8; 32]> {
+    if let Ok(path) = std::env::var("EGUARD_RULE_BUNDLE_PUBKEY_PATH") {
+        let path = path.trim();
+        if !path.is_empty() {
+            match fs::read(path) {
+                Ok(raw) => {
+                    if let Some(key) = parse_ed25519_key_material(&raw) {
+                        return Some(key);
+                    }
+                    warn!(path = %path, "invalid Ed25519 public key file contents");
+                }
+                Err(err) => {
+                    warn!(error = %err, path = %path, "failed reading Ed25519 public key file")
+                }
+            }
+        }
+    }
+
+    if let Ok(raw) = std::env::var("EGUARD_RULE_BUNDLE_PUBKEY") {
+        return parse_ed25519_key_material(raw.as_bytes());
+    }
+
+    None
+}
+
+fn resolve_bundle_signature_path(bundle_path: &Path) -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    candidates.push(PathBuf::from(format!(
+        "{}.sig",
+        bundle_path.to_string_lossy()
+    )));
+    candidates.push(bundle_path.with_extension("sig"));
+
+    for candidate in candidates {
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn verify_bundle_signature_with_material(
+    bundle_path: &Path,
+    signature_path: &Path,
+    public_key: [u8; 32],
+) -> std::result::Result<(), String> {
+    let bundle_bytes = read_file_limited(bundle_path, MAX_SIGNED_RULE_BUNDLE_BYTES)?;
+    let signature_raw = fs::read(signature_path)
+        .map_err(|err| format!("read signature {}: {}", signature_path.display(), err))?;
+    let signature_bytes = parse_ed25519_signature_material(&signature_raw)
+        .ok_or_else(|| format!("invalid signature material in {}", signature_path.display()))?;
+
+    let verifying_key = VerifyingKey::from_bytes(&public_key)
+        .map_err(|err| format!("invalid Ed25519 public key: {}", err))?;
+    let signature = Signature::from_bytes(&signature_bytes);
+    verifying_key
+        .verify(&bundle_bytes, &signature)
+        .map_err(|err| format!("signature mismatch: {}", err))
+}
+
+fn read_file_limited(path: &Path, max_bytes: u64) -> std::result::Result<Vec<u8>, String> {
+    let metadata = fs::metadata(path).map_err(|err| format!("stat {}: {}", path.display(), err))?;
+    if metadata.len() > max_bytes {
+        return Err(format!(
+            "file {} exceeds max size ({} > {})",
+            path.display(),
+            metadata.len(),
+            max_bytes
+        ));
+    }
+
+    let mut file =
+        fs::File::open(path).map_err(|err| format!("open {}: {}", path.display(), err))?;
+    let mut out = Vec::with_capacity(metadata.len() as usize);
+    file.read_to_end(&mut out)
+        .map_err(|err| format!("read {}: {}", path.display(), err))?;
+    Ok(out)
+}
+
+fn parse_ed25519_key_material(raw: &[u8]) -> Option<[u8; 32]> {
+    parse_fixed_key_material(raw, 32)
+}
+
+fn parse_ed25519_signature_material(raw: &[u8]) -> Option<[u8; 64]> {
+    parse_fixed_key_material(raw, 64)
+}
+
+fn parse_fixed_key_material<const N: usize>(raw: &[u8], expected_len: usize) -> Option<[u8; N]> {
+    if raw.len() == expected_len {
+        let mut out = [0u8; N];
+        out.copy_from_slice(raw);
+        return Some(out);
+    }
+
+    let text = std::str::from_utf8(raw).ok()?.trim();
+    let bytes = decode_hex_bytes(text)?;
+    if bytes.len() != expected_len {
+        return None;
+    }
+
+    let mut out = [0u8; N];
+    out.copy_from_slice(&bytes);
+    Some(out)
+}
+
+fn decode_hex_bytes(raw: &str) -> Option<Vec<u8>> {
+    let normalized = raw
+        .trim()
+        .strip_prefix("0x")
+        .or_else(|| raw.trim().strip_prefix("0X"))
+        .unwrap_or(raw.trim());
+
+    let compact = normalized
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect::<String>();
+    if compact.len() % 2 != 0 {
+        return None;
+    }
+
+    let mut out = Vec::with_capacity(compact.len() / 2);
+    let bytes = compact.as_bytes();
+    let mut idx = 0usize;
+    while idx < bytes.len() {
+        let hi = decode_hex_nibble(bytes[idx])?;
+        let lo = decode_hex_nibble(bytes[idx + 1])?;
+        out.push((hi << 4) | lo);
+        idx += 2;
+    }
+    Some(out)
+}
+
+fn decode_hex_nibble(ch: u8) -> Option<u8> {
+    match ch {
+        b'0'..=b'9' => Some(ch - b'0'),
+        b'a'..=b'f' => Some(ch - b'a' + 10),
+        b'A'..=b'F' => Some(ch - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn push_unique_dir(out: &mut Vec<PathBuf>, path: PathBuf) {
@@ -1121,6 +1453,7 @@ rule eguard_builtin_test_marker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::{Signer, SigningKey};
 
     #[test]
     fn candidate_ebpf_object_paths_uses_known_order() {
@@ -1239,5 +1572,144 @@ rule bundle_marker {
         let _ = std::fs::remove_file(sigma_dir.join("rule.yml"));
         let _ = std::fs::remove_file(yara_dir.join("rule.yar"));
         let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn verify_bundle_signature_with_material_accepts_signed_payload() {
+        let base = std::env::temp_dir().join(format!(
+            "eguard-bundle-signature-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&base).expect("create temp dir");
+
+        let bundle = base.join("bundle.tar.zst");
+        let signature = base.join("bundle.tar.zst.sig");
+        std::fs::write(&bundle, b"signed-bundle-content").expect("write bundle bytes");
+
+        let signing = SigningKey::from_bytes(&[7u8; 32]);
+        let sig = signing.sign(b"signed-bundle-content");
+        std::fs::write(&signature, sig.to_bytes()).expect("write signature bytes");
+
+        let verified = verify_bundle_signature_with_material(
+            &bundle,
+            &signature,
+            signing.verifying_key().to_bytes(),
+        );
+        assert!(verified.is_ok());
+
+        let _ = std::fs::remove_file(bundle);
+        let _ = std::fs::remove_file(signature);
+        let _ = std::fs::remove_dir(base);
+    }
+
+    #[test]
+    fn load_bundle_rules_reads_signed_archive_bundle() {
+        let base = std::env::temp_dir().join(format!(
+            "eguard-signed-bundle-load-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        let src = base.join("src");
+        let staging = base.join("staging");
+        let sigma_dir = src.join("sigma");
+        let yara_dir = src.join("yara");
+        std::fs::create_dir_all(&sigma_dir).expect("create sigma dir");
+        std::fs::create_dir_all(&yara_dir).expect("create yara dir");
+
+        std::fs::write(
+            sigma_dir.join("rule.yml"),
+            r#"
+title: sigma_rule_from_signed_bundle
+detection:
+  sequence:
+    - event_class: process_exec
+      process_any_of: [bash]
+      parent_any_of: [nginx]
+      within_secs: 30
+    - event_class: network_connect
+      dst_port_not_in: [80, 443]
+      within_secs: 10
+"#,
+        )
+        .expect("write sigma rule");
+        std::fs::write(
+            yara_dir.join("rule.yar"),
+            r#"
+rule signed_bundle_marker {
+  strings:
+    $m = "signed-bundle-marker"
+  condition:
+    $m
+}
+"#,
+        )
+        .expect("write yara rule");
+
+        let tar_path = base.join("bundle.tar");
+        let tar_file = std::fs::File::create(&tar_path).expect("create tar file");
+        let mut tar_builder = tar::Builder::new(tar_file);
+        tar_builder
+            .append_path_with_name(sigma_dir.join("rule.yml"), "sigma/rule.yml")
+            .expect("append sigma file to tar");
+        tar_builder
+            .append_path_with_name(yara_dir.join("rule.yar"), "yara/rule.yar")
+            .expect("append yara file to tar");
+        tar_builder.finish().expect("finish tar archive");
+
+        let bundle_path = base.join("bundle.tar.zst");
+        let mut tar_input = std::fs::File::open(&tar_path).expect("open tar input");
+        let zstd_output = std::fs::File::create(&bundle_path).expect("create zstd output");
+        let mut encoder = zstd::stream::write::Encoder::new(zstd_output, 1).expect("init zstd");
+        std::io::copy(&mut tar_input, &mut encoder).expect("compress tar");
+        encoder.finish().expect("finish zstd");
+
+        let signing = SigningKey::from_bytes(&[9u8; 32]);
+        let bundle_bytes = std::fs::read(&bundle_path).expect("read compressed bundle");
+        let sig = signing.sign(&bundle_bytes);
+        let signature_path = PathBuf::from(format!("{}.sig", bundle_path.to_string_lossy()));
+        std::fs::write(&signature_path, sig.to_bytes()).expect("write signature sidecar");
+
+        std::env::set_var(
+            "EGUARD_RULE_BUNDLE_PUBKEY",
+            to_hex(&signing.verifying_key().to_bytes()),
+        );
+        std::env::set_var("EGUARD_RULES_STAGING_DIR", &staging);
+
+        let mut engine = DetectionEngine::default_with_rules();
+        let (_sigma, yara) = load_bundle_rules(&mut engine, bundle_path.to_string_lossy().as_ref());
+        assert_eq!(yara, 1);
+
+        std::env::remove_var("EGUARD_RULE_BUNDLE_PUBKEY");
+        std::env::remove_var("EGUARD_RULES_STAGING_DIR");
+
+        let _ = std::fs::remove_file(signature_path);
+        let _ = std::fs::remove_file(bundle_path);
+        let _ = std::fs::remove_file(tar_path);
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn sanitize_archive_relative_path_rejects_traversal() {
+        assert_eq!(
+            sanitize_archive_relative_path(Path::new("../etc/passwd")),
+            None
+        );
+        assert_eq!(
+            sanitize_archive_relative_path(Path::new("/absolute/path")),
+            None
+        );
+        assert_eq!(
+            sanitize_archive_relative_path(Path::new("sigma/rule.yml")),
+            Some(PathBuf::from("sigma/rule.yml"))
+        );
+    }
+
+    fn to_hex(raw: &[u8]) -> String {
+        raw.iter().map(|b| format!("{:02x}", b)).collect::<String>()
     }
 }
