@@ -25,11 +25,12 @@ jobs:
 
       - name: Fetch MalwareBazaar hashes (abuse.ch)
         run: |
-          # Full hash list (~300k entries) — covers all known malware samples
+          # Full hash list (~1M entries, ZIP archive)
           curl -sSfL --retry 3 --max-time 300 \
             "https://bazaar.abuse.ch/export/txt/sha256/full/" \
-            -o /tmp/bazaar_hashes_full.txt
-          grep -v '^#' /tmp/bazaar_hashes_full.txt | grep -v '^$' | \
+            -o /tmp/bazaar_full.zip
+          python3 -c "import zipfile; zipfile.ZipFile('/tmp/bazaar_full.zip').extractall('/tmp/bazaar_extract')"
+          grep -v '^#' /tmp/bazaar_extract/full_sha256.txt | grep -v '^$' | \
             awk '{print $1}' > sources/ioc/hashes/malwarebazaar.txt
           echo "MalwareBazaar hashes: $(wc -l < sources/ioc/hashes/malwarebazaar.txt)"
 
@@ -57,9 +58,9 @@ jobs:
 
       - name: Fetch Feodo C2 IPs (abuse.ch)
         run: |
-          # Full blocklist (all tracked C2 IPs, not just recommended)
+          # Aggressive blocklist (~7k IPs, includes historical C2 infrastructure)
           curl -sSfL --retry 3 --max-time 60 \
-            "https://feodotracker.abuse.ch/downloads/ipblocklist.txt" \
+            "https://feodotracker.abuse.ch/downloads/ipblocklist_aggressive.txt" \
             -o /tmp/feodo.txt
           grep -v '^#' /tmp/feodo.txt | grep -v '^$' | \
             sort -u > sources/ioc/ips/feodo.txt
@@ -74,6 +75,55 @@ jobs:
           grep -v '^#' /tmp/urlhaus.txt | grep -v '^$' | \
             sed 's|https\?://||; s|/.*||; s|:.*||' | \
             sort -u > sources/ioc/domains/urlhaus.txt
+
+      - name: Fetch SSL Blacklist (abuse.ch)
+        run: |
+          # Malicious SSL certificate fingerprints (SHA-1)
+          curl -sSfL --retry 3 --max-time 60 \
+            "https://sslbl.abuse.ch/blacklist/sslipblacklist_aggressive.csv" \
+            -o /tmp/sslbl.csv
+          grep -v '^#' /tmp/sslbl.csv | grep -v '^$' | \
+            awk -F, '{print $1}' | grep -E '^[0-9]' | \
+            sort -u > sources/ioc/ips/sslbl.txt
+          echo "SSL Blacklist IPs: $(wc -l < sources/ioc/ips/sslbl.txt)"
+
+      - name: Fetch Botvrij.eu IOCs
+        run: |
+          # European CERT-curated IOCs
+          curl -sSfL --retry 3 --max-time 60 \
+            "https://www.botvrij.eu/data/ioclist.domain.raw" \
+            -o /tmp/botvrij_domains.txt 2>/dev/null || true
+          curl -sSfL --retry 3 --max-time 60 \
+            "https://www.botvrij.eu/data/ioclist.ip-dst.raw" \
+            -o /tmp/botvrij_ips.txt 2>/dev/null || true
+          if [ -s /tmp/botvrij_domains.txt ]; then
+            grep -v '^#' /tmp/botvrij_domains.txt | grep -v '^$' | sort -u > sources/ioc/domains/botvrij.txt
+          fi
+          if [ -s /tmp/botvrij_ips.txt ]; then
+            grep -v '^#' /tmp/botvrij_ips.txt | grep -v '^$' | sort -u > sources/ioc/ips/botvrij.txt
+          fi
+
+      - name: Fetch CINSscore threat IPs
+        run: |
+          # CINS (Collective Intelligence Network Security) threat IPs
+          curl -sSfL --retry 3 --max-time 60 \
+            "https://cinsscore.com/list/ci-badguys.txt" \
+            -o /tmp/cins.txt 2>/dev/null || true
+          if [ -s /tmp/cins.txt ]; then
+            grep -v '^#' /tmp/cins.txt | grep -v '^$' | sort -u > sources/ioc/ips/cins.txt
+            echo "CINS IPs: $(wc -l < sources/ioc/ips/cins.txt)"
+          fi
+
+      - name: Fetch Blocklist.de
+        run: |
+          # Community-driven IDS/IPS blocklist
+          curl -sSfL --retry 3 --max-time 60 \
+            "https://lists.blocklist.de/lists/all.txt" \
+            -o /tmp/blocklist_de.txt 2>/dev/null || true
+          if [ -s /tmp/blocklist_de.txt ]; then
+            grep -v '^#' /tmp/blocklist_de.txt | grep -v '^$' | sort -u > sources/ioc/ips/blocklist_de.txt
+            echo "Blocklist.de IPs: $(wc -l < sources/ioc/ips/blocklist_de.txt)"
+          fi
 
       - name: Fetch AlienVault OTX (optional)
         if: ${{ env.OTX_API_KEY != '' }}

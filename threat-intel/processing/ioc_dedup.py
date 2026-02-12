@@ -17,9 +17,13 @@ SOURCE_TIERS = {
     "feodo": 2,
     "urlhaus": 2,
     "abusech": 2,
-    # Tier 3: aggregators
+    "sslbl": 2,
+    # Tier 3: aggregators / community blocklists
     "otx": 3,
     "alienvault": 3,
+    "botvrij": 3,
+    "cins": 3,
+    "blocklist_de": 3,
     # Tier 4: unvetted
     "other": 4,
 }
