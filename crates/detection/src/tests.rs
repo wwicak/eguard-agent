@@ -656,6 +656,21 @@ fn drift_indicators_report_baseline_age_and_kl_quantiles_by_process_family() {
 }
 
 #[test]
+// AC-DET-182
+fn detection_workspace_excludes_ml_framework_dependencies() {
+    let cargo_lock = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.lock");
+    let lock_content = std::fs::read_to_string(&cargo_lock).expect("read Cargo.lock");
+    let lower = lock_content.to_ascii_lowercase();
+
+    for blocked in ["tensorflow", "tch", "pytorch", "onnxruntime", "candle"] {
+        assert!(
+            !lower.contains(&format!("name = \"{}\"", blocked)),
+            "unexpected ML framework dependency present: {blocked}"
+        );
+    }
+}
+
+#[test]
 // AC-DET-091
 fn detection_latency_p99_stays_within_budget_for_reference_workload() {
     let mut engine = DetectionEngine::default_with_rules();
