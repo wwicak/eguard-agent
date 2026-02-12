@@ -4,6 +4,12 @@ on:
   schedule:
     - cron: "0 4 * * *"  # Daily at 04:00 UTC
   workflow_dispatch:
+    inputs:
+      full_sync:
+        description: "Full historical sync (fetches all Linux CVEs from 2020+)"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -23,19 +29,85 @@ jobs:
       - name: Create source directories
         run: mkdir -p sources/cve
 
-      - name: Fetch NVD recent CVEs
+      - name: Determine sync mode
+        id: mode
         run: |
-          # NVD API 2.0: fetch CVEs modified in last 2 days
-          START_DATE=$(date -u -d '2 days ago' +%Y-%m-%dT00:00:00.000)
+          if [ "${{ inputs.full_sync }}" = "true" ] || [ ! -f sources/cve/cves.jsonl ]; then
+            echo "mode=full" >> "$GITHUB_OUTPUT"
+            echo "Will run FULL historical sync"
+          else
+            echo "mode=incremental" >> "$GITHUB_OUTPUT"
+            echo "Will run incremental sync (last 7 days)"
+          fi
+
+      - name: Fetch NVD CVEs (incremental)
+        if: steps.mode.outputs.mode == 'incremental'
+        run: |
+          START_DATE=$(date -u -d '7 days ago' +%Y-%m-%dT00:00:00.000)
           END_DATE=$(date -u +%Y-%m-%dT23:59:59.999)
           curl -sSfL --retry 3 --max-time 300 \
             "https://services.nvd.nist.gov/rest/json/cves/2.0/?lastModStartDate=${START_DATE}&lastModEndDate=${END_DATE}&resultsPerPage=2000" \
             -o sources/cve/nvd_recent.json
-          echo "Downloaded NVD recent CVEs"
+          echo "Downloaded NVD incremental CVEs"
+
+      - name: Fetch NVD CVEs (full historical)
+        if: steps.mode.outputs.mode == 'full'
+        run: |
+          # NVD API 2.0 allows max 120 day windows per request
+          # Paginate from 2020-01-01 to today in 90-day chunks
+          mkdir -p /tmp/nvd_pages
+          START="2020-01-01"
+          TODAY=$(date -u +%Y-%m-%d)
+          PAGE=0
+
+          current="$START"
+          while [ "$(date -d "$current" +%s)" -lt "$(date -d "$TODAY" +%s)" ]; do
+            next=$(date -u -d "$current + 90 days" +%Y-%m-%d)
+            if [ "$(date -d "$next" +%s)" -gt "$(date -d "$TODAY" +%s)" ]; then
+              next="$TODAY"
+            fi
+
+            S="${current}T00:00:00.000"
+            E="${next}T23:59:59.999"
+            echo "Fetching CVEs from $current to $next..."
+
+            # Paginate within each window (max 2000 per request)
+            START_INDEX=0
+            while true; do
+              OUT="/tmp/nvd_pages/page_${PAGE}.json"
+              HTTP_CODE=$(curl -sSL --retry 3 --max-time 300 -w "%{http_code}" \
+                "https://services.nvd.nist.gov/rest/json/cves/2.0/?lastModStartDate=${S}&lastModEndDate=${E}&resultsPerPage=2000&startIndex=${START_INDEX}" \
+                -o "$OUT")
+
+              if [ "$HTTP_CODE" != "200" ]; then
+                echo "Warning: got HTTP $HTTP_CODE for startIndex=$START_INDEX, skipping"
+                rm -f "$OUT"
+                break
+              fi
+
+              TOTAL=$(python3 -c "import json; print(json.load(open('$OUT')).get('totalResults', 0))")
+              RETURNED=$(python3 -c "import json; print(len(json.load(open('$OUT')).get('vulnerabilities', [])))")
+              echo "  Page $PAGE: $RETURNED results (total: $TOTAL, offset: $START_INDEX)"
+              PAGE=$((PAGE + 1))
+
+              START_INDEX=$((START_INDEX + 2000))
+              if [ "$START_INDEX" -ge "$TOTAL" ]; then
+                break
+              fi
+              # NVD rate limit: ~5 requests per 30 seconds without API key
+              sleep 6
+            done
+
+            current=$(date -u -d "$next + 1 day" +%Y-%m-%d)
+            sleep 6
+          done
+
+          echo "Downloaded $PAGE NVD pages total"
+          # Merge all pages into one directory for processing
+          mv /tmp/nvd_pages sources/cve/nvd_full
 
       - name: Fetch GitHub Advisory Database
         run: |
-          # Query GitHub Advisory Database via GraphQL for recent Linux advisories
           cat > /tmp/ghsa_query.graphql <<'GRAPHQL'
           {
             securityAdvisories(first: 100, orderBy: {field: PUBLISHED_AT, direction: DESC}, classifications: [GENERAL, MALWARE]) {
@@ -61,10 +133,46 @@ jobs:
 
       - name: Extract Linux CVEs
         run: |
+          if [ "${{ steps.mode.outputs.mode }}" = "full" ]; then
+            INPUT_PATH="sources/cve/nvd_full"
+          else
+            INPUT_PATH="sources/cve/nvd_recent.json"
+          fi
+
+          # Extract new CVEs to a temp file
           python threat-intel/processing/cve_extract.py \
-            --input sources/cve/nvd_recent.json \
-            --output sources/cve/cves.jsonl \
+            --input "$INPUT_PATH" \
+            --output /tmp/cves_new.jsonl \
             --min-cvss 4.0
+
+          # Merge with existing data (deduplicate by CVE ID)
+          python3 -c "
+          import json, os
+          existing = {}
+          if os.path.isfile('sources/cve/cves.jsonl'):
+              with open('sources/cve/cves.jsonl') as f:
+                  for line in f:
+                      line = line.strip()
+                      if line:
+                          rec = json.loads(line)
+                          existing[rec['cve_id']] = rec
+
+          with open('/tmp/cves_new.jsonl') as f:
+              for line in f:
+                  line = line.strip()
+                  if line:
+                      rec = json.loads(line)
+                      existing[rec['cve_id']] = rec  # newer data wins
+
+          with open('sources/cve/cves.jsonl', 'w') as f:
+              for rec in sorted(existing.values(), key=lambda r: r['cve_id']):
+                  f.write(json.dumps(rec, separators=(',', ':')) + '\n')
+
+          print(f'CVE database: {len(existing)} total entries')
+          "
+
+          # Clean up full sync temp files
+          rm -rf sources/cve/nvd_full
 
       - name: Commit and push
         run: |
