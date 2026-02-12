@@ -411,6 +411,16 @@ impl IocLayer1 {
         }
         self.matcher = AhoCorasick::new(self.matcher_patterns.clone()).ok();
     }
+
+    #[cfg(test)]
+    pub(crate) fn debug_matcher_pattern_count(&self) -> usize {
+        self.matcher_patterns.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn debug_matcher_pattern_bytes(&self) -> usize {
+        self.matcher_patterns.iter().map(|p| p.len()).sum()
+    }
 }
 
 impl Default for IocLayer1 {

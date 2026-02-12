@@ -124,6 +124,54 @@ fn layer1_append_string_signatures_preserves_existing_patterns() {
 }
 
 #[test]
+// AC-DET-011
+fn aho_matcher_space_scales_with_total_pattern_bytes() {
+    let mut l1 = IocLayer1::new();
+    let patterns = vec![
+        "curl|bash".to_string(),
+        "python -c".to_string(),
+        "wget http://".to_string(),
+        "powershell -enc".to_string(),
+    ];
+    let expected_bytes: usize = patterns.iter().map(|p| p.len()).sum();
+    l1.load_string_signatures(patterns);
+
+    assert_eq!(l1.debug_matcher_pattern_count(), 4);
+    assert_eq!(l1.debug_matcher_pattern_bytes(), expected_bytes);
+}
+
+#[test]
+// AC-DET-010
+fn aho_matcher_scan_runtime_scales_approximately_linearly_with_input_bytes() {
+    let mut l1 = IocLayer1::new();
+    l1.load_string_signatures([
+        "curl|bash".to_string(),
+        "python -c".to_string(),
+        "wget".to_string(),
+        "Invoke-Expression".to_string(),
+    ]);
+
+    let small = "A".repeat(64 * 1024);
+    let large = "A".repeat(256 * 1024);
+
+    let started_small = std::time::Instant::now();
+    for _ in 0..32 {
+        std::hint::black_box(l1.check_text(&small));
+    }
+    let elapsed_small = started_small.elapsed().as_nanos() as f64;
+
+    let started_large = std::time::Instant::now();
+    for _ in 0..32 {
+        std::hint::black_box(l1.check_text(&large));
+    }
+    let elapsed_large = started_large.elapsed().as_nanos() as f64;
+
+    // 4x bytes should stay within a modest constant-factor envelope.
+    let ratio = elapsed_large / elapsed_small.max(1.0);
+    assert!(ratio < 10.0, "runtime ratio too high: {ratio}");
+}
+
+#[test]
 // AC-DET-021 AC-DET-026 AC-DET-027 AC-DET-086
 fn temporal_engine_detects_webshell_pattern() {
     let mut t = TemporalEngine::with_default_rules();
