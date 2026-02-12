@@ -126,6 +126,7 @@ pub enum ServerCommand {
     ConfigChange,
     Uninstall,
     RestoreQuarantine,
+    EmergencyRulePush,
     Unknown,
 }
 
@@ -160,6 +161,7 @@ pub fn parse_server_command(raw: &str) -> ServerCommand {
         "config_change" => ServerCommand::ConfigChange,
         "uninstall" => ServerCommand::Uninstall,
         "restore_quarantine" => ServerCommand::RestoreQuarantine,
+        "emergency_rule_push" => ServerCommand::EmergencyRulePush,
         _ => ServerCommand::Unknown,
     }
 }
@@ -230,6 +232,11 @@ pub fn execute_server_command_with_state(
             status: "completed",
             detail: "quarantine restore requested".to_string(),
         },
+        ServerCommand::EmergencyRulePush => CommandExecution {
+            outcome: CommandOutcome::Applied,
+            status: "completed",
+            detail: "emergency rule push received".to_string(),
+        },
         ServerCommand::Unknown => CommandExecution {
             outcome: CommandOutcome::Ignored,
             status: "failed",
@@ -261,5 +268,16 @@ mod tests {
         let result = execute_server_command_with_state(ServerCommand::Unknown, 3, &mut state);
         assert_eq!(result.outcome, CommandOutcome::Ignored);
         assert_eq!(result.status, "failed");
+    }
+
+    #[test]
+    fn emergency_rule_push_is_recognized() {
+        let cmd = parse_server_command("emergency_rule_push");
+        assert_eq!(cmd, ServerCommand::EmergencyRulePush);
+
+        let mut state = HostControlState::default();
+        let result = execute_server_command_with_state(cmd, 4, &mut state);
+        assert_eq!(result.outcome, CommandOutcome::Applied);
+        assert_eq!(result.status, "completed");
     }
 }

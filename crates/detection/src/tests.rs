@@ -73,6 +73,18 @@ fn layer1_exact_verification_works() {
 }
 
 #[test]
+fn layer1_append_string_signatures_preserves_existing_patterns() {
+    let mut l1 = IocLayer1::new();
+    l1.load_string_signatures(["curl|bash".to_string()]);
+    l1.append_string_signatures(["python -c".to_string()]);
+
+    let cmd = "curl|bash && python -c 'print(1)'";
+    let matches = l1.check_text(cmd);
+    assert!(matches.iter().any(|s| s == "curl|bash"));
+    assert!(matches.iter().any(|s| s == "python -c"));
+}
+
+#[test]
 fn temporal_engine_detects_webshell_pattern() {
     let mut t = TemporalEngine::with_default_rules();
 

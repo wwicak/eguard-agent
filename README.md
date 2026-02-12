@@ -50,6 +50,7 @@ Command handling currently supports stateful stubs for:
 - `isolate` / `unisolate`
 - `scan` / `update`
 - `forensics` / `config_change` / `restore_quarantine` / `uninstall`
+- `emergency_rule_push` (applies IOC/signature rule payload into live detection state)
 
 In `grpc` mode, the client uses generated stubs from `proto/eguard/v1/*.proto`
 and calls the control/telemetry/compliance/command/response services.

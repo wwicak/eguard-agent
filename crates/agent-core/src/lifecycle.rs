@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
+use serde::Deserialize;
 use tracing::{info, warn};
 
 use baseline::ProcessBaseline;
@@ -14,11 +15,11 @@ use nac::{posture_from_compliance, Posture};
 use platform_linux::{enrich_event, EventType, RawEvent};
 use response::{
     execute_server_command_with_state, parse_server_command, plan_action, HostControlState,
-    KillRateLimiter, ProtectedList, PlannedAction, ResponseConfig,
+    CommandOutcome, KillRateLimiter, PlannedAction, ProtectedList, ResponseConfig, ServerCommand,
 };
 
 use crate::config::{AgentConfig, AgentMode};
-use crate::detection_state::SharedDetectionState;
+use crate::detection_state::{EmergencyRule, EmergencyRuleType, SharedDetectionState};
 
 pub struct AgentRuntime {
     config: AgentConfig,
@@ -324,7 +325,21 @@ impl AgentRuntime {
     async fn handle_command(&mut self, command: CommandEnvelope, now_unix: i64) {
         let command_id = command.command_id.clone();
         let parsed = parse_server_command(&command.command_type);
-        let exec = execute_server_command_with_state(parsed, now_unix, &mut self.host_control);
+        let mut exec = execute_server_command_with_state(parsed, now_unix, &mut self.host_control);
+
+        if parsed == ServerCommand::EmergencyRulePush {
+            match self.apply_emergency_rule_from_payload(&command.payload_json) {
+                Ok(rule_name) => {
+                    exec.detail = format!("emergency rule applied: {}", rule_name);
+                }
+                Err(err) => {
+                    exec.outcome = CommandOutcome::Ignored;
+                    exec.status = "failed";
+                    exec.detail = format!("emergency rule push rejected: {}", err);
+                }
+            }
+        }
+
         info!(
             command_id = %command.command_id,
             command_type = %command.command_type,
@@ -355,6 +370,51 @@ impl AgentRuntime {
         }
 
         self.track_completed_command(&command_id);
+    }
+
+    fn apply_emergency_rule_from_payload(&self, payload_json: &str) -> Result<String> {
+        let payload: EmergencyRulePayload =
+            serde_json::from_str(payload_json).map_err(|err| anyhow!("invalid emergency payload: {}", err))?;
+
+        let rule_name = payload.rule_name.trim();
+        if rule_name.is_empty() {
+            return Err(anyhow!("missing emergency rule name"));
+        }
+
+        let rule_content = payload.rule_content.trim();
+        if rule_content.is_empty() {
+            return Err(anyhow!("missing emergency rule content"));
+        }
+
+        let rule_type = parse_emergency_rule_type(&payload.rule_type)?;
+        let rule = EmergencyRule {
+            name: rule_name.to_string(),
+            rule_type,
+            rule_content: rule_content.to_string(),
+        };
+
+        self.detection_state.apply_emergency_rule(rule)?;
+        Ok(rule_name.to_string())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct EmergencyRulePayload {
+    #[serde(default)]
+    rule_name: String,
+    #[serde(default)]
+    rule_type: String,
+    #[serde(default)]
+    rule_content: String,
+}
+
+fn parse_emergency_rule_type(raw: &str) -> Result<EmergencyRuleType> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "ioc_hash" => Ok(EmergencyRuleType::IocHash),
+        "ioc_domain" => Ok(EmergencyRuleType::IocDomain),
+        "ioc_ip" => Ok(EmergencyRuleType::IocIP),
+        "sigma" | "yara" | "signature" => Ok(EmergencyRuleType::Signature),
+        other => Err(anyhow!("unsupported emergency rule type: {}", other)),
     }
 }
 

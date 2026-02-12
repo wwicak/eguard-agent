@@ -225,12 +225,24 @@ impl IocLayer1 {
             }
         }
 
-        if self.matcher_patterns.is_empty() {
-            self.matcher = None;
-            return;
+        self.rebuild_matcher();
+    }
+
+    pub fn append_string_signatures<I>(&mut self, patterns: I)
+    where
+        I: IntoIterator<Item = String>,
+    {
+        for p in patterns {
+            if p.is_empty() {
+                continue;
+            }
+            if self.matcher_patterns.iter().any(|existing| existing == &p) {
+                continue;
+            }
+            self.matcher_patterns.push(p);
         }
 
-        self.matcher = AhoCorasick::new(self.matcher_patterns.clone()).ok();
+        self.rebuild_matcher();
     }
 
     pub fn check_hash(&self, hash: &str) -> Layer1Result {
@@ -344,6 +356,14 @@ impl IocLayer1 {
                 hit.result = Layer1Result::ExactMatch;
             }
         }
+    }
+
+    fn rebuild_matcher(&mut self) {
+        if self.matcher_patterns.is_empty() {
+            self.matcher = None;
+            return;
+        }
+        self.matcher = AhoCorasick::new(self.matcher_patterns.clone()).ok();
     }
 }
 
