@@ -9,11 +9,30 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "ebpf-libbpf")]
-use libbpf_rs::MapCore;
+use libbpf_rs::{MapCore, MapFlags};
 
 use crate::{EventType, RawEvent};
 
 const EVENT_HEADER_SIZE: usize = 1 + 4 + 4 + 4 + 8;
+
+#[cfg(any(test, feature = "ebpf-libbpf"))]
+const FALLBACK_LAST_EVENT_DATA_SIZE: usize = 512;
+
+#[cfg(any(test, feature = "ebpf-libbpf"))]
+const fn align_up(value: usize, align: usize) -> usize {
+    let rem = value % align;
+    if rem == 0 {
+        value
+    } else {
+        value + (align - rem)
+    }
+}
+
+#[cfg(any(test, feature = "ebpf-libbpf"))]
+const FALLBACK_DROPPED_OFFSET: usize = align_up(
+    std::mem::size_of::<u32>() + FALLBACK_LAST_EVENT_DATA_SIZE,
+    std::mem::size_of::<u64>(),
+);
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EbpfStats {
@@ -138,7 +157,8 @@ impl RingBufferBackend for NoopRingBufferBackend {
 
 #[cfg(feature = "ebpf-libbpf")]
 struct LibbpfRingBufferBackend {
-    loaded: Vec<LoadedObject>,
+    _loaded: Vec<LoadedObject>,
+    drop_counter_sources: Vec<DropCounterSource>,
     ring_buffer: libbpf_rs::RingBuffer<'static>,
     records: RecordSink,
 }
@@ -152,6 +172,13 @@ struct LoadedObject {
     object: libbpf_rs::Object,
     _links: Vec<libbpf_rs::Link>,
     attached_programs: Vec<String>,
+}
+
+#[cfg(feature = "ebpf-libbpf")]
+struct DropCounterSource {
+    owner_path: PathBuf,
+    map_handle: libbpf_rs::MapHandle,
+    last_seen: u64,
 }
 
 #[cfg(feature = "ebpf-libbpf")]
@@ -170,10 +197,13 @@ impl LibbpfRingBufferBackend {
             loaded.push(load_object(path, ring_buffer_map)?);
         }
 
+        let drop_counter_sources = collect_drop_counter_sources(&loaded)?;
+
         let (ring_buffer, records) = build_ring_buffer(&mut loaded, ring_buffer_map)?;
 
         Ok(Self {
-            loaded,
+            _loaded: loaded,
+            drop_counter_sources,
             ring_buffer,
             records,
         })
@@ -231,18 +261,51 @@ fn load_object(path: &Path, ring_buffer_map: &str) -> Result<LoadedObject> {
 #[cfg(feature = "ebpf-libbpf")]
 impl RingBufferBackend for LibbpfRingBufferBackend {
     fn poll_raw_events(&mut self, timeout: Duration) -> Result<PollBatch> {
-        let _ = &self.loaded;
         self.ring_buffer
             .poll(timeout)
             .map_err(|err| EbpfError::Backend(format!("poll ring buffer: {}", err)))?;
 
         let records = drain_record_sink(&self.records)?;
+        let dropped = sample_drop_counters(&mut self.drop_counter_sources)?;
 
-        Ok(PollBatch {
-            records,
-            dropped: 0,
-        })
+        Ok(PollBatch { records, dropped })
     }
+}
+
+#[cfg(feature = "ebpf-libbpf")]
+fn collect_drop_counter_sources(loaded: &[LoadedObject]) -> Result<Vec<DropCounterSource>> {
+    let mut sources = Vec::new();
+
+    for loaded_object in loaded {
+        for map in loaded_object.object.maps() {
+            let map_name = map.name().to_string_lossy();
+            if !is_bss_map_name(&map_name) {
+                continue;
+            }
+
+            let map_handle = libbpf_rs::MapHandle::try_from(&map).map_err(|err| {
+                EbpfError::Backend(format!(
+                    "clone drop-counter map '{}' from '{}': {}",
+                    map_name,
+                    loaded_object.path.display(),
+                    err
+                ))
+            })?;
+
+            sources.push(DropCounterSource {
+                owner_path: loaded_object.path.clone(),
+                map_handle,
+                last_seen: 0,
+            });
+        }
+    }
+
+    Ok(sources)
+}
+
+#[cfg(feature = "ebpf-libbpf")]
+fn is_bss_map_name(raw: &str) -> bool {
+    raw == ".bss" || raw.ends_with(".bss")
 }
 
 #[cfg(feature = "ebpf-libbpf")]
@@ -323,6 +386,48 @@ fn drain_record_sink(records: &RecordSink) -> Result<Vec<Vec<u8>>> {
         .lock()
         .map_err(|_| EbpfError::Backend("failed to collect ring buffer records".to_string()))?;
     Ok(std::mem::take(&mut *guard))
+}
+
+#[cfg(feature = "ebpf-libbpf")]
+fn sample_drop_counters(sources: &mut [DropCounterSource]) -> Result<u64> {
+    let mut dropped = 0u64;
+
+    for source in sources {
+        let key = 0u32.to_ne_bytes();
+        let value = source
+            .map_handle
+            .lookup(&key, MapFlags::ANY)
+            .map_err(|err| {
+                EbpfError::Backend(format!(
+                    "read drop-counter map from '{}': {}",
+                    source.owner_path.display(),
+                    err
+                ))
+            })?;
+
+        let Some(raw) = value else {
+            continue;
+        };
+
+        let Some(total) = parse_fallback_dropped_events(&raw) else {
+            continue;
+        };
+
+        let delta = total.saturating_sub(source.last_seen);
+        source.last_seen = total;
+        dropped = dropped.saturating_add(delta);
+    }
+
+    Ok(dropped)
+}
+
+#[cfg(any(test, feature = "ebpf-libbpf"))]
+fn parse_fallback_dropped_events(raw: &[u8]) -> Option<u64> {
+    let end = FALLBACK_DROPPED_OFFSET.checked_add(std::mem::size_of::<u64>())?;
+    let bytes = raw.get(FALLBACK_DROPPED_OFFSET..end)?;
+    let mut out = [0u8; 8];
+    out.copy_from_slice(bytes);
+    Some(u64::from_le_bytes(out))
 }
 
 #[cfg(test)]
@@ -680,6 +785,19 @@ mod tests {
             parse_raw_event(&encode_event(5, 903, 1003, 25, b"kernel_rootkit\0")).expect("module");
         assert!(matches!(module_event.event_type, EventType::ModuleLoad));
         assert!(module_event.payload.contains("module=kernel_rootkit"));
+    }
+
+    #[test]
+    fn parses_fallback_drop_counter_from_bss_buffer() {
+        let mut raw = vec![0u8; FALLBACK_DROPPED_OFFSET + std::mem::size_of::<u64>()];
+        raw[FALLBACK_DROPPED_OFFSET..FALLBACK_DROPPED_OFFSET + std::mem::size_of::<u64>()]
+            .copy_from_slice(&42u64.to_le_bytes());
+
+        assert_eq!(parse_fallback_dropped_events(&raw), Some(42));
+        assert_eq!(
+            parse_fallback_dropped_events(&raw[..FALLBACK_DROPPED_OFFSET]),
+            None
+        );
     }
 
     #[test]
