@@ -564,6 +564,50 @@ fn replay_harness_is_deterministic() {
 }
 
 #[test]
+// AC-DET-095
+fn drift_indicators_report_baseline_age_and_kl_quantiles_by_process_family() {
+    let anomaly = AnomalyEngine::new(AnomalyConfig {
+        window_size: 4,
+        tau_floor_high: 10.0,
+        tau_floor_med: 0.0,
+        delta_high: 1.0,
+        delta_med: 1.0,
+        min_entropy_len: 8,
+        entropy_threshold: 0.1,
+        entropy_z_threshold: -0.1,
+        ..AnomalyConfig::default()
+    });
+    let mut engine = DetectionEngine::new(
+        IocLayer1::new(),
+        TemporalEngine::with_default_rules(),
+        anomaly,
+        Layer4Engine::with_default_templates(),
+    );
+
+    let mut baseline = HashMap::new();
+    baseline.insert(EventClass::ProcessExec, 0.95);
+    baseline.insert(EventClass::NetworkConnect, 0.05);
+    engine.layer3.set_baseline("python:bash".to_string(), baseline);
+
+    let mut events = Vec::new();
+    for ts in 0..16 {
+        let mut ev = event(ts, EventClass::ProcessExec, "python", "bash", 1000);
+        ev.command_line = Some(format!("Ab9$Xy2!Qw8#Tn6@-{ts:02}"));
+        events.push(ev);
+    }
+
+    let drift = report_drift_indicators(&mut engine, &events, 100, 190);
+    assert_eq!(drift.baseline_age_secs, 90);
+
+    let q = drift
+        .kl_quantiles_by_process_family
+        .get("python:bash")
+        .expect("quantiles for process family");
+    assert!(q.p50_kl_bits >= 0.0);
+    assert!(q.p95_kl_bits >= q.p50_kl_bits);
+}
+
+#[test]
 // AC-DET-091
 fn detection_latency_p99_stays_within_budget_for_reference_workload() {
     let mut engine = DetectionEngine::default_with_rules();

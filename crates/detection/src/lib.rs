@@ -19,7 +19,10 @@ pub use layer2::{TemporalEngine, TemporalPredicate, TemporalRule, TemporalStage}
 pub use layer3::{AnomalyConfig, AnomalyDecision, AnomalyEngine};
 pub use layer4::{KillChainTemplate, Layer4Engine, TemplatePredicate};
 pub use policy::confidence_policy;
-pub use replay::{replay_events, ReplayAlert, ReplaySummary};
+pub use replay::{
+    replay_events, report_drift_indicators, DriftIndicators, ProcessDriftQuantiles, ReplayAlert,
+    ReplaySummary,
+};
 pub use sigma::{
     compile_sigma_ast, compile_sigma_rule, BoundedTemporalAst, SigmaCompileError, TemporalExpr,
 };
