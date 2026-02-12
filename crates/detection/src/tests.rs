@@ -124,7 +124,7 @@ fn layer1_append_string_signatures_preserves_existing_patterns() {
 }
 
 #[test]
-// AC-DET-021
+// AC-DET-021 AC-DET-086
 fn temporal_engine_detects_webshell_pattern() {
     let mut t = TemporalEngine::with_default_rules();
 
@@ -210,7 +210,7 @@ fn anomaly_engine_flags_distribution_shift() {
 }
 
 #[test]
-// AC-DET-050 AC-DET-051
+// AC-DET-050 AC-DET-051 AC-DET-088
 fn layer4_matches_default_template() {
     let mut l4 = Layer4Engine::with_default_templates();
 
@@ -233,7 +233,7 @@ fn layer4_matches_default_template() {
 }
 
 #[test]
-// AC-DET-052
+// AC-DET-052 AC-DET-088
 fn layer4_template_matching_is_bounded_by_declared_depth() {
     let mut l4 = Layer4Engine::new(300);
     l4.add_template(KillChainTemplate {
@@ -464,7 +464,7 @@ detection:
 }
 
 #[test]
-// AC-DET-090
+// AC-DET-079 AC-DET-090
 fn replay_harness_is_deterministic() {
     let events = vec![
         event(1, EventClass::ProcessExec, "bash", "nginx", 33),
@@ -495,7 +495,7 @@ fn replay_harness_is_deterministic() {
 }
 
 #[test]
-// AC-DET-035 AC-DET-036 AC-DET-037 AC-DET-038
+// AC-DET-035 AC-DET-036 AC-DET-037 AC-DET-038 AC-DET-087
 fn calibration_threshold_matches_sanov_bound() {
     let n = 512;
     let k = 12;
@@ -554,7 +554,7 @@ fn anomaly_math_matches_probability_and_kl_formulas() {
 }
 
 #[test]
-// AC-DET-021
+// AC-DET-021 AC-DET-086
 fn temporal_engine_enforces_stage_window() {
     let mut t = TemporalEngine::with_default_rules();
 
