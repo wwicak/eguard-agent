@@ -6,15 +6,76 @@ service ResponseService {
   rpc ReportResponse(ResponseReport) returns (ResponseAck);
 }
 
+enum ResponseAction {
+  KILL_PROCESS = 0;
+  KILL_TREE = 1;
+  QUARANTINE_FILE = 2;
+  BLOCK_EXECUTION = 3;
+  BLOCK_CONNECTION = 4;
+  CAPTURE_SCRIPT = 5;
+  NETWORK_ISOLATE = 6;
+}
+
+enum ResponseConfidence {
+  RESPONSE_CONFIDENCE_DEFINITE = 0;
+  RESPONSE_CONFIDENCE_VERY_HIGH = 1;
+  RESPONSE_CONFIDENCE_HIGH = 2;
+  RESPONSE_CONFIDENCE_MEDIUM = 3;
+}
+
+message KillReport {
+  int64 target_pid = 1;
+  string target_exe = 2;
+  repeated int64 killed_pids = 3;
+}
+
+message QuarantineReport {
+  string original_path = 1;
+  string quarantine_path = 2;
+  string sha256 = 3;
+  int64 file_size = 4;
+  string detection_rule = 5;
+}
+
+message BlockReport {
+  string blocked_target = 1;
+  string block_method = 2;
+}
+
+message CaptureReport {
+  string interpreter = 1;
+  string script_path = 2;
+  string script_content = 3;
+  map<string, string> environment = 4;
+}
+
 message ResponseReport {
   string agent_id = 1;
-  string action = 2;
-  string confidence = 3;
-  bool success = 4;
-  string detail = 5;
-  int64 created_at_unix = 6;
+  string alert_id = 2;
+  ResponseAction action = 3;
+  ResponseConfidence confidence = 4;
+  repeated string detection_layers = 5;
+  int64 detection_to_action_us = 6;
+  bool success = 7;
+  string error_message = 8;
+  int64 timestamp = 9;
+
+  oneof detail {
+    KillReport kill = 20;
+    QuarantineReport quarantine = 21;
+    BlockReport block = 22;
+    CaptureReport capture = 23;
+  }
+
+  // Legacy fields retained for current client payload compatibility.
+  string detail_text = 30;
+  int64 created_at_unix = 31;
 }
 
 message ResponseAck {
-  string status = 1;
+  bool accepted = 1;
+  string incident_id = 2;
+
+  // Legacy field retained for current code path compatibility.
+  string status = 20;
 }

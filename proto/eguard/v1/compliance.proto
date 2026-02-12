@@ -6,17 +6,49 @@ service ComplianceService {
   rpc ReportCompliance(ComplianceReport) returns (ComplianceAck);
 }
 
+enum ComplianceStatus {
+  COMPLIANT = 0;
+  NON_COMPLIANT = 1;
+  ERROR = 2;
+}
+
+enum CheckStatus {
+  PASS = 0;
+  FAIL = 1;
+  CHECK_ERROR = 2;
+}
+
+message ComplianceCheckResult {
+  string check_type = 1;
+  CheckStatus status = 2;
+  string actual_value = 3;
+  string expected_value = 4;
+  string detail = 5;
+  bool auto_remediated = 6;
+  string remediation_detail = 7;
+}
+
 message ComplianceReport {
   string agent_id = 1;
   string policy_id = 2;
-  string check_type = 3;
-  string status = 4;
-  string detail = 5;
-  string expected_value = 6;
-  string actual_value = 7;
-  int64 checked_at_unix = 8;
+  string policy_version = 3;
+  int64 checked_at = 4;
+  repeated ComplianceCheckResult checks = 5;
+  ComplianceStatus overall_status = 6;
+
+  // Legacy fields retained for current client payload compatibility.
+  string check_type = 20;
+  string status = 21;
+  string detail = 22;
+  string expected_value = 23;
+  string actual_value = 24;
+  int64 checked_at_unix = 25;
 }
 
 message ComplianceAck {
-  string status = 1;
+  bool accepted = 1;
+  int32 next_check_override_secs = 2;
+
+  // Legacy field retained for current code path compatibility.
+  string status = 20;
 }

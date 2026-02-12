@@ -11,14 +11,26 @@ use crate::types::{
     ServerState, ThreatIntelVersionEnvelope,
 };
 
-use super::{from_pb_agent_command, now_unix, to_pb_telemetry_event, Client};
+use super::{
+    from_pb_agent_command, from_pb_server_command, map_response_action, map_response_confidence,
+    now_unix, to_pb_telemetry_event, Client, MAX_GRPC_RECV_MSG_SIZE_BYTES,
+};
 
 impl Client {
     pub(super) async fn send_events_grpc(&self, batch: &[EventEnvelope]) -> Result<()> {
         self.with_retry("send_events_grpc_stream", || async {
             let mut client = self.telemetry_client().await?;
             let events: Vec<pb::TelemetryEvent> = batch.iter().map(to_pb_telemetry_event).collect();
-            let stream = iter(events);
+            let telemetry_batch = pb::TelemetryBatch {
+                agent_id: batch
+                    .first()
+                    .map(|e| e.agent_id.clone())
+                    .unwrap_or_default(),
+                events,
+                compressed: false,
+                events_compressed: Vec::new(),
+            };
+            let stream = iter([telemetry_batch]);
             client
                 .stream_events(tonic::Request::new(stream))
                 .await
@@ -31,19 +43,25 @@ impl Client {
     pub(super) async fn enroll_grpc(&self, enrollment: &EnrollmentEnvelope) -> Result<()> {
         self.with_retry("enroll_grpc", || async {
             if enrollment.enrollment_token.is_some() {
-                warn!(
-                    "enrollment_token is configured but gRPC EnrollRequest has no token field yet"
-                );
+                warn!("sending enrollment token via EnrollRequest");
             }
 
             let mut client = self.agent_control_client().await?;
             client
                 .enroll(pb::EnrollRequest {
+                    enrollment_token: enrollment.enrollment_token.clone().unwrap_or_default(),
+                    hostname: enrollment.hostname.clone(),
+                    mac_address: enrollment.mac.clone(),
+                    os_type: "linux".to_string(),
+                    os_version: String::new(),
+                    kernel_version: String::new(),
+                    agent_version: "0.1.0".to_string(),
+                    machine_id: String::new(),
+                    csr: Vec::new(),
+                    capabilities: None,
+                    tenant_id: enrollment.tenant_id.clone().unwrap_or_default(),
                     agent_id: enrollment.agent_id.clone(),
                     mac: enrollment.mac.clone(),
-                    hostname: enrollment.hostname.clone(),
-                    os_type: "linux".to_string(),
-                    agent_version: "0.1.0".to_string(),
                 })
                 .await
                 .context("enroll RPC failed")?;
@@ -62,7 +80,13 @@ impl Client {
             client
                 .heartbeat(pb::HeartbeatRequest {
                     agent_id: agent_id.to_string(),
+                    timestamp: now_unix(),
                     agent_version: "0.1.0".to_string(),
+                    status: None,
+                    resource_usage: None,
+                    baseline_report: None,
+                    config_version: String::new(),
+                    buffered_events: 0,
                     compliance_status: compliance_status.to_string(),
                     sent_at_unix: now_unix(),
                 })
@@ -80,6 +104,10 @@ impl Client {
                 .report_compliance(pb::ComplianceReport {
                     agent_id: compliance.agent_id.clone(),
                     policy_id: compliance.policy_id.clone(),
+                    policy_version: String::new(),
+                    checked_at: now_unix(),
+                    checks: Vec::new(),
+                    overall_status: pb::ComplianceStatus::Compliant as i32,
                     check_type: compliance.check_type.clone(),
                     status: compliance.status.clone(),
                     detail: compliance.detail.clone(),
@@ -100,10 +128,16 @@ impl Client {
             client
                 .report_response(pb::ResponseReport {
                     agent_id: response.agent_id.clone(),
-                    action: response.action_type.clone(),
-                    confidence: response.confidence.clone(),
+                    alert_id: String::new(),
+                    action: map_response_action(&response.action_type) as i32,
+                    confidence: map_response_confidence(&response.confidence) as i32,
+                    detection_layers: Vec::new(),
+                    detection_to_action_us: 0,
                     success: response.success,
-                    detail: response.error_message.clone(),
+                    error_message: response.error_message.clone(),
+                    timestamp: now_unix(),
+                    detail: None,
+                    detail_text: response.error_message.clone(),
                     created_at_unix: now_unix(),
                 })
                 .await
@@ -122,10 +156,9 @@ impl Client {
         self.with_retry("command_channel_grpc", || async {
             let mut client = self.command_client().await?;
             let response = client
-                .command_channel(pb::CommandChannelRequest {
+                .command_channel(pb::CommandPollRequest {
                     agent_id: agent_id.to_string(),
                     completed_command_ids: completed_command_ids.to_vec(),
-                    limit: limit as i32,
                 })
                 .await
                 .context("command_channel RPC failed")?;
@@ -134,7 +167,7 @@ impl Client {
             let mut out = Vec::with_capacity(limit);
             while out.len() < limit {
                 match tokio::time::timeout(Duration::from_millis(350), stream.message()).await {
-                    Ok(Ok(Some(command))) => out.push(from_pb_agent_command(command)),
+                    Ok(Ok(Some(command))) => out.push(from_pb_server_command(command)),
                     Ok(Ok(None)) => break,
                     Ok(Err(err)) => {
                         return Err(err).context("command_channel stream read failed");
@@ -231,43 +264,40 @@ impl Client {
         &self,
     ) -> Result<pb::telemetry_service_client::TelemetryServiceClient<Channel>> {
         let channel = self.connect_channel().await?;
-        Ok(pb::telemetry_service_client::TelemetryServiceClient::new(
-            channel,
-        ))
+        Ok(pb::telemetry_service_client::TelemetryServiceClient::new(channel)
+            .max_decoding_message_size(MAX_GRPC_RECV_MSG_SIZE_BYTES))
     }
 
     async fn command_client(
         &self,
     ) -> Result<pb::command_service_client::CommandServiceClient<Channel>> {
         let channel = self.connect_channel().await?;
-        Ok(pb::command_service_client::CommandServiceClient::new(
-            channel,
-        ))
+        Ok(pb::command_service_client::CommandServiceClient::new(channel)
+            .max_decoding_message_size(MAX_GRPC_RECV_MSG_SIZE_BYTES))
     }
 
     async fn compliance_client(
         &self,
     ) -> Result<pb::compliance_service_client::ComplianceServiceClient<Channel>> {
         let channel = self.connect_channel().await?;
-        Ok(pb::compliance_service_client::ComplianceServiceClient::new(
-            channel,
-        ))
+        Ok(pb::compliance_service_client::ComplianceServiceClient::new(channel)
+            .max_decoding_message_size(MAX_GRPC_RECV_MSG_SIZE_BYTES))
     }
 
     async fn response_client(
         &self,
     ) -> Result<pb::response_service_client::ResponseServiceClient<Channel>> {
         let channel = self.connect_channel().await?;
-        Ok(pb::response_service_client::ResponseServiceClient::new(
-            channel,
-        ))
+        Ok(pb::response_service_client::ResponseServiceClient::new(channel)
+            .max_decoding_message_size(MAX_GRPC_RECV_MSG_SIZE_BYTES))
     }
 
     async fn agent_control_client(
         &self,
     ) -> Result<pb::agent_control_service_client::AgentControlServiceClient<Channel>> {
         let channel = self.connect_channel().await?;
-        Ok(pb::agent_control_service_client::AgentControlServiceClient::new(channel))
+        Ok(pb::agent_control_service_client::AgentControlServiceClient::new(channel)
+            .max_decoding_message_size(MAX_GRPC_RECV_MSG_SIZE_BYTES))
     }
 }
 

@@ -1,6 +1,8 @@
 syntax = "proto3";
 
 package eguard.v1;
+option go_package = "gitlab.com/devaistech77/fe_eguard/go/api/agent/v1;agentv1";
+// Go registration hook: pb.RegisterAgentServiceServer(grpcServer, impl)
 
 import "eguard/v1/telemetry.proto";
 import "eguard/v1/compliance.proto";
@@ -17,9 +19,9 @@ service AgentControlService {
 service AgentService {
   rpc Enroll(EnrollRequest) returns (EnrollResponse);
   rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
-  rpc StreamEvents(stream TelemetryEvent) returns (TelemetryStreamAck);
+  rpc StreamEvents(stream TelemetryBatch) returns (stream EventAck);
   rpc ReportCompliance(ComplianceReport) returns (ComplianceAck);
-  rpc CommandChannel(CommandChannelRequest) returns (stream AgentCommand);
+  rpc CommandChannel(CommandPollRequest) returns (stream ServerCommand);
   rpc ReportResponse(ResponseReport) returns (ResponseAck);
   rpc GetPolicy(PolicyRequest) returns (PolicyResponse);
   rpc DownloadRuleBundle(RuleBundleRequest) returns (stream RuleBundleChunk);
@@ -33,29 +35,122 @@ message PingResponse {
   string status = 1;
 }
 
+message AgentCapabilities {
+  bool ebpf_supported = 1;
+  bool lsm_supported = 2;
+  bool yara_supported = 3;
+  repeated string ebpf_programs = 4;
+}
+
 message EnrollRequest {
-  string agent_id = 1;
-  string mac = 2;
-  string hostname = 3;
+  string enrollment_token = 1;
+  string hostname = 2;
+  string mac_address = 3;
   string os_type = 4;
-  string agent_version = 5;
+  string os_version = 5;
+  string kernel_version = 6;
+  string agent_version = 7;
+  string machine_id = 8;
+  bytes csr = 9;
+  AgentCapabilities capabilities = 10;
+  string tenant_id = 11;
+
+  // Legacy compatibility fields.
+  string agent_id = 20;
+  string mac = 21;
+}
+
+message PolicyUpdate {
+  string config_version = 1;
+  string policy_json = 2;
+}
+
+message RuleUpdate {
+  string current_version = 1;
+  string available_version = 2;
+  bool emergency = 3;
+  string bundle_download_url = 4;
+}
+
+enum BaselineStatus {
+  BASELINE_LEARNING = 0;
+  BASELINE_ACTIVE = 1;
+  BASELINE_STALE = 2;
+}
+
+message ProcessBaseline {
+  string process_key = 1;
+  map<string, int64> event_distribution = 2;
+  int64 sample_count = 3;
+  double entropy_threshold = 4;
+}
+
+message BaselineReport {
+  string agent_id = 1;
+  BaselineStatus status = 2;
+  repeated ProcessBaseline baselines = 3;
+}
+
+enum AgentMode {
+  LEARNING = 0;
+  ACTIVE = 1;
+  DEGRADED = 2;
+}
+
+message AgentStatus {
+  AgentMode mode = 1;
+  bool autonomous_response_enabled = 2;
+  int64 active_sigma_rules = 3;
+  int64 active_yara_rules = 4;
+  int64 active_ioc_entries = 5;
+  string last_detection = 6;
+  string last_response_action = 7;
+}
+
+message ResourceUsage {
+  double cpu_percent = 1;
+  int64 memory_rss_bytes = 2;
+  int64 disk_usage_bytes = 3;
+  double events_per_second = 4;
 }
 
 message EnrollResponse {
-  string status = 1;
-  string issued_profile = 2;
+  string agent_id = 1;
+  bytes signed_certificate = 2;
+  bytes ca_certificate = 3;
+  string initial_policy = 4;
+  string initial_rules = 5;
+
+  // Legacy compatibility field.
+  string status = 20;
+  string issued_profile = 21;
 }
 
 message HeartbeatRequest {
   string agent_id = 1;
-  string agent_version = 2;
-  string compliance_status = 3;
-  int64 sent_at_unix = 4;
+  int64 timestamp = 2;
+  string agent_version = 3;
+  AgentStatus status = 4;
+  ResourceUsage resource_usage = 5;
+  BaselineReport baseline_report = 6;
+  string config_version = 7;
+  int64 buffered_events = 8;
+
+  // Legacy compatibility fields.
+  string compliance_status = 20;
+  int64 sent_at_unix = 21;
 }
 
 message HeartbeatResponse {
-  string status = 1;
-  string server_time = 2;
+  int32 heartbeat_interval_secs = 1;
+  PolicyUpdate policy_update = 2;
+  RuleUpdate rule_update = 3;
+  repeated ServerCommand pending_commands = 4;
+  BaselineReport fleet_baseline = 5;
+
+  // Legacy compatibility fields.
+  string status = 20;
+  string server_time = 21;
 }
 
 message ThreatIntelRequest {
@@ -82,15 +177,33 @@ message PolicyResponse {
   string policy_id = 1;
   string config_version = 2;
   string policy_json = 3;
+  CertificatePolicy certificate_policy = 4;
+}
+
+message CertificatePolicy {
+  string pinned_ca_sha256 = 1;
+  int32 rotate_before_expiry_days = 2;
+  bool seamless_rotation = 3;
+  bool require_client_cert_for_all_rpcs_except_enroll = 4;
+  int32 grpc_max_recv_msg_size_bytes = 5;
+  int32 grpc_port = 6;
+  bool require_mtls_after_enroll = 7;
 }
 
 message RuleBundleRequest {
   string agent_id = 1;
   string target_version = 2;
+  bool emergency = 3;
+  bool immediate = 4;
 }
 
 message RuleBundleChunk {
   bytes data = 1;
   int32 sequence = 2;
   bool last = 3;
+  bytes ed25519_signature = 4;
+  bool zstd_compressed = 5;
+  int32 chunk_size_bytes = 6;
+  bool verified = 7;
+  int32 reload_deadline_secs = 8;
 }

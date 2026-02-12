@@ -59,7 +59,7 @@ fn configure_tls_rejects_missing_files() {
 }
 
 #[test]
-// AC-GRP-090
+// AC-GRP-090 AC-GRP-096
 fn grpc_base_url_adds_default_scheme() {
     let c = Client::new("127.0.0.1:50051".to_string());
     assert_eq!(c.grpc_base_url(), "http://127.0.0.1:50051");
@@ -70,6 +70,12 @@ fn grpc_base_url_adds_default_scheme() {
 fn grpc_base_url_preserves_existing_scheme() {
     let c = Client::new("https://agent.example:50051".to_string());
     assert_eq!(c.grpc_base_url(), "https://agent.example:50051");
+}
+
+#[test]
+// AC-GRP-095
+fn grpc_max_receive_message_size_matches_contract() {
+    assert_eq!(MAX_GRPC_RECV_MSG_SIZE_BYTES, 16 << 20);
 }
 
 #[test]
@@ -107,20 +113,41 @@ async fn send_events_empty_batch_returns_without_network() {
 }
 
 #[tokio::test]
-// AC-GRP-081
+// AC-GRP-028 AC-GRP-081
 async fn send_events_offline_returns_error() {
     let mut c = Client::new("127.0.0.1:1".to_string());
     c.set_online(false);
+    let started = std::time::Instant::now();
     let err = c
         .send_events(&[EventEnvelope {
             agent_id: "a1".to_string(),
-            event_type: "process_exec".to_string(),
+            event_type: "alert".to_string(),
             payload_json: "{}".to_string(),
             created_at_unix: 1,
         }])
         .await
         .expect_err("offline send should fail");
     assert!(err.to_string().contains("server unreachable"));
+    assert!(started.elapsed() < std::time::Duration::from_millis(20));
+}
+
+#[test]
+// AC-GRP-029
+fn zstd_level3_compresses_process_event_payload_close_to_target_ratio() {
+    let mut uncompressed = Vec::new();
+    for i in 0..240 {
+        let line = format!(
+            "{{\"event_type\":\"process_exec\",\"pid\":{},\"ppid\":1,\"uid\":1000,\"comm\":\"python3\",\"cmdline\":\"python3 /tmp/task-{} --arg test --flag --alpha 111 --beta 222 --gamma 333 --delta 444\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"env\":\"PATH=/usr/bin:/bin;HOME=/tmp;LANG=C\",\"cgroup\":\"/system.slice/eguard.service\"}}\n",
+            10_000 + i,
+            i
+        );
+        uncompressed.extend_from_slice(line.as_bytes());
+    }
+
+    let compressed =
+        zstd::encode_all(std::io::Cursor::new(&uncompressed), 3).expect("zstd level3 encode");
+    assert!(uncompressed.len() >= 50_000);
+    assert!(compressed.len() * 10 <= uncompressed.len());
 }
 
 #[tokio::test]

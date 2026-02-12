@@ -4,17 +4,68 @@ package eguard.v1;
 
 service TelemetryService {
   rpc SendEvent(TelemetryEvent) returns (TelemetryAck);
-  rpc StreamEvents(stream TelemetryEvent) returns (TelemetryStreamAck);
+  rpc StreamEvents(stream TelemetryBatch) returns (stream EventAck);
+}
+
+enum EventType {
+  PROCESS_EXEC = 0;
+  FILE_OPEN = 1;
+  TCP_CONNECT = 2;
+  DNS_QUERY = 3;
+  MODULE_LOAD = 4;
+  USER_LOGIN = 5;
+  ALERT = 6;
+}
+
+enum Severity {
+  INFO = 0;
+  LOW = 1;
+  MEDIUM = 2;
+  HIGH = 3;
+  CRITICAL = 4;
+}
+
+message ProcessExecEvent {
+  string exe_path = 1;
+  string cmdline = 2;
+  string sha256 = 3;
+  string cgroup_id = 4;
+  repeated string ancestors = 5;
 }
 
 message TelemetryEvent {
+  string event_id = 1;
+  EventType event_type = 2;
+  Severity severity = 3;
+  int64 timestamp = 4;
+  int64 pid = 5;
+  int64 ppid = 6;
+  int64 uid = 7;
+  string comm = 8;
+  string parent_comm = 9;
+
+  // Legacy/compatibility fields retained for current client payloads.
+  string agent_id = 20;
+  string rule_name = 21;
+  string payload_json = 22;
+  map<string, string> labels = 23;
+  int64 created_at_unix = 24;
+
+  oneof detail {
+    ProcessExecEvent process_exec = 30;
+  }
+}
+
+message TelemetryBatch {
   string agent_id = 1;
-  string event_type = 2;
-  string severity = 3;
-  string rule_name = 4;
-  string payload_json = 5;
-  map<string, string> labels = 6;
-  int64 created_at_unix = 7;
+  repeated TelemetryEvent events = 2;
+  bool compressed = 3;
+  bytes events_compressed = 4;
+}
+
+message EventAck {
+  int64 last_event_offset = 1;
+  int64 events_accepted = 2;
 }
 
 message TelemetryAck {

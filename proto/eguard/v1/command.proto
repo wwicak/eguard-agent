@@ -3,12 +3,81 @@ syntax = "proto3";
 package eguard.v1;
 
 service CommandService {
-  rpc CommandChannel(CommandChannelRequest) returns (stream AgentCommand);
+  rpc CommandChannel(CommandPollRequest) returns (stream ServerCommand);
   rpc PollCommands(PollCommandsRequest) returns (PollCommandsResponse);
   rpc AckCommand(AckCommandRequest) returns (AckCommandResponse);
   rpc EnqueueCommand(EnqueueCommandRequest) returns (EnqueueCommandResponse);
 }
 
+enum CommandType {
+  ISOLATE_HOST = 0;
+  UNISOLATE_HOST = 1;
+  RUN_SCAN = 2;
+  UPDATE_RULES = 3;
+  FORENSICS_COLLECT = 4;
+  CONFIG_CHANGE = 5;
+  RESTORE_QUARANTINE = 6;
+  UNINSTALL = 7;
+  EMERGENCY_RULE_PUSH = 8;
+}
+
+message IsolateParams {
+  bool allow_server_connection = 1;
+}
+
+message ScanParams {
+  repeated string paths = 1;
+  bool yara_scan = 2;
+  bool ioc_scan = 3;
+}
+
+message UpdateParams {
+  string target_version = 1;
+  string download_url = 2;
+  string checksum = 3;
+}
+
+message ForensicsParams {
+  bool memory_dump = 1;
+  bool process_list = 2;
+  bool network_connections = 3;
+  bool open_files = 4;
+  bool loaded_modules = 5;
+  repeated int64 target_pids = 6;
+}
+
+message ConfigChangeParams {
+  string config_json = 1;
+  string config_version = 2;
+}
+
+message RestoreQuarantineParams {
+  string sha256 = 1;
+  string original_path = 2;
+}
+
+message CommandPollRequest {
+  string agent_id = 1;
+  repeated string completed_command_ids = 2;
+}
+
+message ServerCommand {
+  string command_id = 1;
+  CommandType command_type = 2;
+  int64 issued_at = 3;
+  string issued_by = 4;
+
+  oneof params {
+    IsolateParams isolate = 10;
+    ScanParams scan = 11;
+    UpdateParams update = 12;
+    ForensicsParams forensics = 13;
+    ConfigChangeParams config_change = 14;
+    RestoreQuarantineParams restore_quarantine = 15;
+  }
+}
+
+// Legacy request retained for compatibility with existing code paths.
 message CommandChannelRequest {
   string agent_id = 1;
   repeated string completed_command_ids = 2;

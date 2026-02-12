@@ -21,6 +21,8 @@ mod client_grpc;
 #[path = "client/client_http.rs"]
 mod client_http;
 
+pub(crate) const MAX_GRPC_RECV_MSG_SIZE_BYTES: usize = 16 << 20;
+
 #[derive(Debug, Clone)]
 pub struct Client {
     server_addr: String,
@@ -380,13 +382,21 @@ fn truncate_commands(mut commands: Vec<CommandEnvelope>, limit: usize) -> Vec<Co
 
 fn to_pb_telemetry_event(event: &EventEnvelope) -> pb::TelemetryEvent {
     pb::TelemetryEvent {
+        event_id: format!("{}-{}", event.agent_id, event.created_at_unix),
         agent_id: event.agent_id.clone(),
-        event_type: event.event_type.clone(),
-        severity: String::new(),
+        event_type: map_event_type(&event.event_type) as i32,
+        severity: pb::Severity::Info as i32,
+        timestamp: event.created_at_unix,
+        pid: 0,
+        ppid: 0,
+        uid: 0,
+        comm: String::new(),
+        parent_comm: String::new(),
         rule_name: String::new(),
         payload_json: event.payload_json.clone(),
         labels: HashMap::new(),
         created_at_unix: event.created_at_unix,
+        detail: None,
     }
 }
 
@@ -395,6 +405,65 @@ fn from_pb_agent_command(command: pb::AgentCommand) -> CommandEnvelope {
         command_id: command.command_id,
         command_type: command.command_type,
         payload_json: command.payload_json,
+    }
+}
+
+fn from_pb_server_command(command: pb::ServerCommand) -> CommandEnvelope {
+    CommandEnvelope {
+        command_id: command.command_id,
+        command_type: map_command_type(command.command_type),
+        payload_json: String::new(),
+    }
+}
+
+fn map_event_type(raw: &str) -> pb::EventType {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "process_exec" | "exec" => pb::EventType::ProcessExec,
+        "file_open" | "file" => pb::EventType::FileOpen,
+        "tcp_connect" | "tcp" => pb::EventType::TcpConnect,
+        "dns_query" | "dns" => pb::EventType::DnsQuery,
+        "module_load" | "module" => pb::EventType::ModuleLoad,
+        "user_login" | "login" => pb::EventType::UserLogin,
+        "alert" => pb::EventType::Alert,
+        _ => pb::EventType::ProcessExec,
+    }
+}
+
+fn map_command_type(raw: i32) -> String {
+    match pb::CommandType::try_from(raw).unwrap_or(pb::CommandType::RunScan) {
+        pb::CommandType::IsolateHost => "isolate_host",
+        pb::CommandType::UnisolateHost => "unisolate_host",
+        pb::CommandType::RunScan => "run_scan",
+        pb::CommandType::UpdateRules => "update_rules",
+        pb::CommandType::ForensicsCollect => "forensics_collect",
+        pb::CommandType::ConfigChange => "config_change",
+        pb::CommandType::RestoreQuarantine => "restore_quarantine",
+        pb::CommandType::Uninstall => "uninstall",
+        pb::CommandType::EmergencyRulePush => "emergency_rule_push",
+    }
+    .to_string()
+}
+
+fn map_response_action(raw: &str) -> pb::ResponseAction {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "kill_process" | "kill" => pb::ResponseAction::KillProcess,
+        "kill_tree" => pb::ResponseAction::KillTree,
+        "quarantine_file" | "quarantine" => pb::ResponseAction::QuarantineFile,
+        "block_execution" => pb::ResponseAction::BlockExecution,
+        "block_connection" => pb::ResponseAction::BlockConnection,
+        "capture_script" => pb::ResponseAction::CaptureScript,
+        "network_isolate" => pb::ResponseAction::NetworkIsolate,
+        _ => pb::ResponseAction::KillProcess,
+    }
+}
+
+fn map_response_confidence(raw: &str) -> pb::ResponseConfidence {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "definite" => pb::ResponseConfidence::Definite,
+        "very_high" | "very-high" => pb::ResponseConfidence::VeryHigh,
+        "high" => pb::ResponseConfidence::High,
+        "medium" => pb::ResponseConfidence::Medium,
+        _ => pb::ResponseConfidence::Medium,
     }
 }
 
