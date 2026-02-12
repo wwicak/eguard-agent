@@ -293,6 +293,73 @@ fn sanitize_archive_relative_path_rejects_traversal() {
     );
 }
 
+#[test]
+// AC-DET-171
+fn signed_bundle_archive_contains_required_manifest_signature_and_rule_paths() {
+    let base = std::env::temp_dir().join(format!(
+        "eguard-bundle-layout-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    let src = base.join("src");
+    std::fs::create_dir_all(src.join("sigma/linux")).expect("sigma/linux");
+    std::fs::create_dir_all(src.join("yara/malware")).expect("yara/malware");
+    std::fs::create_dir_all(src.join("yara/webshell")).expect("yara/webshell");
+    std::fs::create_dir_all(src.join("yara/packer")).expect("yara/packer");
+    std::fs::create_dir_all(src.join("ioc")).expect("ioc");
+    std::fs::create_dir_all(src.join("cve")).expect("cve");
+
+    std::fs::write(src.join("manifest.json"), "{}").expect("manifest");
+    std::fs::write(src.join("signature.ed25519"), [1u8; 64]).expect("signature");
+    std::fs::write(src.join("sigma/linux/rule.yml"), "title: x").expect("sigma");
+    std::fs::write(src.join("yara/malware/rule.yar"), "rule a { condition: true }")
+        .expect("yara malware");
+    std::fs::write(src.join("yara/webshell/rule.yar"), "rule b { condition: true }")
+        .expect("yara webshell");
+    std::fs::write(src.join("yara/packer/rule.yar"), "rule c { condition: true }")
+        .expect("yara packer");
+    std::fs::write(src.join("ioc/hashes.json"), "[]").expect("ioc hashes");
+    std::fs::write(src.join("ioc/domains.json"), "[]").expect("ioc domains");
+    std::fs::write(src.join("ioc/ips.json"), "[]").expect("ioc ips");
+    std::fs::write(src.join("cve/cve-checks.json"), "[]").expect("cve checks");
+
+    let tar_path = base.join("bundle-layout.tar");
+    let tar_file = std::fs::File::create(&tar_path).expect("create tar");
+    let mut builder = tar::Builder::new(tar_file);
+    builder
+        .append_dir_all(".", &src)
+        .expect("append source layout");
+    builder.finish().expect("finish tar");
+
+    let tar_file = std::fs::File::open(&tar_path).expect("open tar");
+    let mut archive = tar::Archive::new(tar_file);
+    let mut entries = std::collections::HashSet::new();
+    for entry in archive.entries().expect("read entries") {
+        let entry = entry.expect("entry");
+        let path = entry.path().expect("entry path").to_path_buf();
+        entries.insert(path.to_string_lossy().trim_start_matches("./").to_string());
+    }
+
+    for required in [
+        "manifest.json",
+        "signature.ed25519",
+        "sigma/linux/rule.yml",
+        "yara/malware/rule.yar",
+        "yara/webshell/rule.yar",
+        "yara/packer/rule.yar",
+        "ioc/hashes.json",
+        "ioc/domains.json",
+        "ioc/ips.json",
+        "cve/cve-checks.json",
+    ] {
+        assert!(entries.contains(required), "missing required entry {required}");
+    }
+
+    let _ = std::fs::remove_dir_all(base);
+}
+
 #[tokio::test]
 // AC-DET-160 AC-DET-163
 async fn emergency_command_is_applied_immediately_in_command_path() {
