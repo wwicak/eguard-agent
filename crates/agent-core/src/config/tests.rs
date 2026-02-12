@@ -241,7 +241,7 @@ fn apply_response_policy_updates_only_provided_fields() {
 }
 
 #[test]
-// AC-CFG-007 AC-CFG-008 AC-CFG-009 AC-CFG-010 AC-CFG-011 AC-CFG-012 AC-CFG-013 AC-CFG-014 AC-CFG-018 AC-CFG-019 AC-CFG-020 AC-CFG-021 AC-GRP-015 AC-GRP-027 AC-ENR-004
+// AC-CFG-007 AC-CFG-008 AC-CFG-009 AC-CFG-010 AC-CFG-011 AC-CFG-012 AC-CFG-013 AC-CFG-014 AC-CFG-018 AC-CFG-019 AC-CFG-020 AC-CFG-021 AC-GRP-015 AC-GRP-027 AC-ENR-004 AC-EBP-045 AC-EBP-046
 fn default_config_matches_expected_baseline_values() {
     let cfg = AgentConfig::default();
     assert!(matches!(cfg.mode, AgentMode::Learning));
@@ -276,7 +276,7 @@ fn default_config_matches_expected_baseline_values() {
 }
 
 #[test]
-// AC-CFG-005 AC-CFG-006 AC-CFG-007 AC-CFG-008 AC-CFG-009 AC-CFG-018 AC-CFG-019 AC-CFG-021 AC-GRP-097
+// AC-CFG-005 AC-CFG-006 AC-CFG-007 AC-CFG-008 AC-CFG-009 AC-CFG-018 AC-CFG-019 AC-CFG-021 AC-GRP-097 AC-EBP-045 AC-EBP-046
 fn file_config_loads_extended_sections() {
     let _guard = env_lock().lock().expect("env lock");
     clear_env();

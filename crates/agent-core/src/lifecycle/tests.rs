@@ -39,6 +39,7 @@ fn default_ebpf_object_dirs_include_expected_targets() {
 }
 
 #[test]
+// AC-EBP-051 AC-EBP-052 AC-EBP-053 AC-EBP-054
 fn compute_poll_timeout_prioritizes_drop_backpressure() {
     assert_eq!(
         compute_poll_timeout(0, 1),
