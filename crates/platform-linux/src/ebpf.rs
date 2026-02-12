@@ -5,6 +5,12 @@ use std::time::Duration;
 #[cfg(test)]
 use std::collections::VecDeque;
 
+#[cfg(feature = "ebpf-libbpf")]
+use std::sync::{Arc, Mutex};
+
+#[cfg(feature = "ebpf-libbpf")]
+use libbpf_rs::MapCore;
+
 use crate::{EventType, RawEvent};
 
 const EVENT_HEADER_SIZE: usize = 1 + 4 + 4 + 4 + 8;
@@ -50,7 +56,7 @@ trait RingBufferBackend {
 }
 
 pub struct EbpfEngine {
-    backend: Box<dyn RingBufferBackend + Send>,
+    backend: Box<dyn RingBufferBackend>,
     stats: EbpfStats,
 }
 
@@ -113,7 +119,7 @@ impl EbpfEngine {
     }
 
     #[cfg(test)]
-    fn with_backend_for_tests(backend: Box<dyn RingBufferBackend + Send>) -> Self {
+    fn with_backend_for_tests(backend: Box<dyn RingBufferBackend>) -> Self {
         Self {
             backend,
             stats: EbpfStats::default(),
@@ -133,13 +139,18 @@ impl RingBufferBackend for NoopRingBufferBackend {
 #[cfg(feature = "ebpf-libbpf")]
 struct LibbpfRingBufferBackend {
     loaded: Vec<LoadedObject>,
-    ring_buffer_map: String,
+    ring_buffer: libbpf_rs::RingBuffer<'static>,
+    records: RecordSink,
 }
+
+#[cfg(feature = "ebpf-libbpf")]
+type RecordSink = Arc<Mutex<Vec<Vec<u8>>>>;
 
 #[cfg(feature = "ebpf-libbpf")]
 struct LoadedObject {
     path: PathBuf,
     object: libbpf_rs::Object,
+    _links: Vec<libbpf_rs::Link>,
     attached_programs: Vec<String>,
 }
 
@@ -159,22 +170,25 @@ impl LibbpfRingBufferBackend {
             loaded.push(load_object(path, ring_buffer_map)?);
         }
 
+        let (ring_buffer, records) = build_ring_buffer(&mut loaded, ring_buffer_map)?;
+
         Ok(Self {
             loaded,
-            ring_buffer_map: ring_buffer_map.to_string(),
+            ring_buffer,
+            records,
         })
     }
 }
 
 #[cfg(feature = "ebpf-libbpf")]
 fn load_object(path: &Path, ring_buffer_map: &str) -> Result<LoadedObject> {
-    let mut object = libbpf_rs::ObjectBuilder::default()
+    let object = libbpf_rs::ObjectBuilder::default()
         .open_file(path)
         .map_err(|err| EbpfError::Backend(format!("open ELF '{}': {}", path.display(), err)))?
         .load()
         .map_err(|err| EbpfError::Backend(format!("load ELF '{}': {}", path.display(), err)))?;
 
-    let map_exists = object.maps_iter().any(|map| map.name() == ring_buffer_map);
+    let map_exists = object.maps().any(|map| map.name() == ring_buffer_map);
     if !map_exists {
         return Err(EbpfError::Backend(format!(
             "ring buffer map '{}' missing in '{}'",
@@ -183,10 +197,11 @@ fn load_object(path: &Path, ring_buffer_map: &str) -> Result<LoadedObject> {
         )));
     }
 
+    let mut links = Vec::new();
     let mut attached_programs = Vec::new();
     for program in object.progs_mut() {
-        let name = program.name().to_string();
-        program.attach().map_err(|err| {
+        let name = program.name().to_string_lossy().into_owned();
+        let link = program.attach().map_err(|err| {
             EbpfError::Backend(format!(
                 "attach program '{}' from '{}': {}",
                 name,
@@ -194,6 +209,7 @@ fn load_object(path: &Path, ring_buffer_map: &str) -> Result<LoadedObject> {
                 err
             ))
         })?;
+        links.push(link);
         attached_programs.push(name);
     }
 
@@ -207,6 +223,7 @@ fn load_object(path: &Path, ring_buffer_map: &str) -> Result<LoadedObject> {
     Ok(LoadedObject {
         path: path.to_path_buf(),
         object,
+        _links: links,
         attached_programs,
     })
 }
@@ -214,61 +231,98 @@ fn load_object(path: &Path, ring_buffer_map: &str) -> Result<LoadedObject> {
 #[cfg(feature = "ebpf-libbpf")]
 impl RingBufferBackend for LibbpfRingBufferBackend {
     fn poll_raw_events(&mut self, timeout: Duration) -> Result<PollBatch> {
-        use std::sync::{Arc, Mutex};
-
-        let records = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
-
-        let mut builder = libbpf_rs::RingBufferBuilder::new();
-        let mut attached_maps = 0usize;
-        for loaded in &mut self.loaded {
-            for map in loaded.object.maps_iter_mut() {
-                if map.name() != self.ring_buffer_map {
-                    continue;
-                }
-
-                let records_sink = Arc::clone(&records);
-                builder
-                    .add(map, move |raw| {
-                        if let Ok(mut guard) = records_sink.lock() {
-                            guard.push(raw.to_vec());
-                        }
-                    })
-                    .map_err(|err| {
-                        EbpfError::Backend(format!(
-                            "add ring buffer callback for '{}' ({} programs): {}",
-                            loaded.path.display(),
-                            loaded.attached_programs.len(),
-                            err
-                        ))
-                    })?;
-                attached_maps += 1;
-            }
-        }
-
-        if attached_maps == 0 {
-            return Err(EbpfError::Backend(format!(
-                "ring buffer map '{}' not found in loaded objects",
-                self.ring_buffer_map
-            )));
-        }
-
-        let ring_buffer = builder
-            .build()
-            .map_err(|err| EbpfError::Backend(format!("build ring buffer: {}", err)))?;
-        ring_buffer
+        let _ = &self.loaded;
+        self.ring_buffer
             .poll(timeout)
             .map_err(|err| EbpfError::Backend(format!("poll ring buffer: {}", err)))?;
 
-        let records = records
-            .lock()
-            .map_err(|_| EbpfError::Backend("failed to collect ring buffer records".to_string()))?
-            .clone();
+        let records = drain_record_sink(&self.records)?;
 
         Ok(PollBatch {
             records,
             dropped: 0,
         })
     }
+}
+
+#[cfg(feature = "ebpf-libbpf")]
+fn build_ring_buffer(
+    loaded: &mut [LoadedObject],
+    ring_buffer_map: &str,
+) -> Result<(libbpf_rs::RingBuffer<'static>, RecordSink)> {
+    struct RingBufferMapSource {
+        owner_path: PathBuf,
+        attached_programs: usize,
+        map_handle: libbpf_rs::MapHandle,
+    }
+
+    let records = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+    let mut map_sources = Vec::<RingBufferMapSource>::new();
+
+    for loaded_object in loaded {
+        for map in loaded_object.object.maps_mut() {
+            if map.name() != ring_buffer_map {
+                continue;
+            }
+
+            let map_handle = libbpf_rs::MapHandle::try_from(&map).map_err(|err| {
+                EbpfError::Backend(format!(
+                    "clone ring buffer map '{}' from '{}': {}",
+                    ring_buffer_map,
+                    loaded_object.path.display(),
+                    err
+                ))
+            })?;
+
+            map_sources.push(RingBufferMapSource {
+                owner_path: loaded_object.path.clone(),
+                attached_programs: loaded_object.attached_programs.len(),
+                map_handle,
+            });
+        }
+    }
+
+    if map_sources.is_empty() {
+        return Err(EbpfError::Backend(format!(
+            "ring buffer map '{}' not found in loaded objects",
+            ring_buffer_map
+        )));
+    }
+
+    let mut builder = libbpf_rs::RingBufferBuilder::new();
+
+    for source in &map_sources {
+        let records_sink = Arc::clone(&records);
+        builder
+            .add(&source.map_handle, move |raw| {
+                if let Ok(mut guard) = records_sink.lock() {
+                    guard.push(raw.to_vec());
+                }
+                0
+            })
+            .map_err(|err| {
+                EbpfError::Backend(format!(
+                    "add ring buffer callback for '{}' ({} programs): {}",
+                    source.owner_path.display(),
+                    source.attached_programs,
+                    err
+                ))
+            })?;
+    }
+
+    let ring_buffer = builder
+        .build()
+        .map_err(|err| EbpfError::Backend(format!("build ring buffer: {}", err)))?;
+
+    Ok((ring_buffer, records))
+}
+
+#[cfg(feature = "ebpf-libbpf")]
+fn drain_record_sink(records: &RecordSink) -> Result<Vec<Vec<u8>>> {
+    let mut guard = records
+        .lock()
+        .map_err(|_| EbpfError::Backend("failed to collect ring buffer records".to_string()))?;
+    Ok(std::mem::take(&mut *guard))
 }
 
 #[cfg(test)]
