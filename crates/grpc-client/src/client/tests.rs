@@ -400,23 +400,11 @@ fn free_local_addr() -> std::net::SocketAddr {
     addr
 }
 
-#[tokio::test]
-// AC-GRP-007 AC-GRP-008 AC-GRP-009
-async fn enroll_grpc_validates_token_issues_cert_and_tracks_endpoint_agent_record() {
-    let state = Arc::new(Mutex::new(EnrollmentMockState::default()));
-    state.lock().expect("state lock").token_table.insert(
-        "tok-valid".to_string(),
-        EnrollmentTokenRecord {
-            expires_at_unix: i64::MAX,
-            max_uses: 2,
-            used: 0,
-        },
-    );
-
+async fn spawn_mock_agent_control(
+    state: Arc<Mutex<EnrollmentMockState>>,
+) -> (std::net::SocketAddr, tokio::sync::oneshot::Sender<()>) {
     let addr = free_local_addr();
-    let svc = MockAgentControlService {
-        state: state.clone(),
-    };
+    let svc = MockAgentControlService { state };
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     tokio::spawn(async move {
         tonic::transport::Server::builder()
@@ -428,6 +416,23 @@ async fn enroll_grpc_validates_token_issues_cert_and_tracks_endpoint_agent_recor
             .expect("serve mock agent-control");
     });
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    (addr, shutdown_tx)
+}
+
+#[tokio::test]
+// AC-GRP-007 AC-GRP-008 AC-GRP-009 AC-ENR-002
+async fn enroll_grpc_validates_token_issues_cert_and_tracks_endpoint_agent_record() {
+    let state = Arc::new(Mutex::new(EnrollmentMockState::default()));
+    state.lock().expect("state lock").token_table.insert(
+        "tok-valid".to_string(),
+        EnrollmentTokenRecord {
+            expires_at_unix: i64::MAX,
+            max_uses: 2,
+            used: 0,
+        },
+    );
+
+    let (addr, shutdown_tx) = spawn_mock_agent_control(state.clone()).await;
 
     let client = Client::with_mode(addr.to_string(), TransportMode::Grpc);
     client
@@ -449,6 +454,119 @@ async fn enroll_grpc_validates_token_issues_cert_and_tracks_endpoint_agent_recor
     assert_eq!(token.used, 1);
     assert_eq!(guard.endpoint_agents.len(), 1);
     assert_eq!(guard.endpoint_agents[0], "host-a");
+    drop(guard);
+
+    let _ = shutdown_tx.send(());
+}
+
+#[tokio::test]
+// AC-GRP-007 AC-ENR-006
+async fn enroll_grpc_rejects_expired_or_exhausted_tokens() {
+    let state = Arc::new(Mutex::new(EnrollmentMockState::default()));
+    {
+        let mut guard = state.lock().expect("state lock");
+        guard.token_table.insert(
+            "tok-expired".to_string(),
+            EnrollmentTokenRecord {
+                expires_at_unix: 1,
+                max_uses: 1,
+                used: 0,
+            },
+        );
+        guard.token_table.insert(
+            "tok-maxed".to_string(),
+            EnrollmentTokenRecord {
+                expires_at_unix: i64::MAX,
+                max_uses: 1,
+                used: 1,
+            },
+        );
+    }
+
+    let (addr, shutdown_tx) = spawn_mock_agent_control(state.clone()).await;
+    let client = Client::with_mode(addr.to_string(), TransportMode::Grpc);
+
+    let expired_err = client
+        .enroll(&EnrollmentEnvelope {
+            agent_id: "agent-exp".to_string(),
+            mac: "00:11:22:33:44:55".to_string(),
+            hostname: "host-exp".to_string(),
+            enrollment_token: Some("tok-expired".to_string()),
+            tenant_id: None,
+        })
+        .await
+        .expect_err("expired token must fail");
+    assert!(expired_err.to_string().contains("operation enroll_grpc failed"));
+
+    let maxed_err = client
+        .enroll(&EnrollmentEnvelope {
+            agent_id: "agent-max".to_string(),
+            mac: "00:11:22:33:44:66".to_string(),
+            hostname: "host-max".to_string(),
+            enrollment_token: Some("tok-maxed".to_string()),
+            tenant_id: None,
+        })
+        .await
+        .expect_err("maxed token must fail");
+    assert!(maxed_err.to_string().contains("operation enroll_grpc failed"));
+
+    let guard = state.lock().expect("state lock");
+    assert!(guard.endpoint_agents.is_empty());
+    assert_eq!(
+        guard
+            .token_table
+            .get("tok-expired")
+            .expect("expired token")
+            .used,
+        0
+    );
+    assert_eq!(
+        guard
+            .token_table
+            .get("tok-maxed")
+            .expect("maxed token")
+            .used,
+        1
+    );
+    drop(guard);
+
+    let _ = shutdown_tx.send(());
+}
+
+#[tokio::test]
+// AC-ENR-006
+async fn enroll_grpc_allows_unlimited_token_when_max_uses_zero() {
+    let state = Arc::new(Mutex::new(EnrollmentMockState::default()));
+    state.lock().expect("state lock").token_table.insert(
+        "tok-unlimited".to_string(),
+        EnrollmentTokenRecord {
+            expires_at_unix: i64::MAX,
+            max_uses: 0,
+            used: 0,
+        },
+    );
+
+    let (addr, shutdown_tx) = spawn_mock_agent_control(state.clone()).await;
+    let client = Client::with_mode(addr.to_string(), TransportMode::Grpc);
+    for i in 0..3 {
+        client
+            .enroll(&EnrollmentEnvelope {
+                agent_id: format!("agent-{i}"),
+                mac: "00:11:22:33:44:77".to_string(),
+                hostname: format!("host-{i}"),
+                enrollment_token: Some("tok-unlimited".to_string()),
+                tenant_id: None,
+            })
+            .await
+            .expect("unlimited token should not be usage-capped");
+    }
+
+    let guard = state.lock().expect("state lock");
+    let token = guard
+        .token_table
+        .get("tok-unlimited")
+        .expect("unlimited token");
+    assert_eq!(token.used, 3);
     drop(guard);
 
     let _ = shutdown_tx.send(());
