@@ -241,7 +241,7 @@ fn apply_response_policy_updates_only_provided_fields() {
 }
 
 #[test]
-// AC-CFG-010 AC-CFG-011 AC-CFG-012 AC-CFG-013 AC-CFG-014 AC-CFG-020
+// AC-CFG-007 AC-CFG-008 AC-CFG-009 AC-CFG-010 AC-CFG-011 AC-CFG-012 AC-CFG-013 AC-CFG-014 AC-CFG-018 AC-CFG-019 AC-CFG-020 AC-CFG-021
 fn default_config_matches_expected_baseline_values() {
     let cfg = AgentConfig::default();
     assert!(matches!(cfg.mode, AgentMode::Learning));
@@ -252,8 +252,91 @@ fn default_config_matches_expected_baseline_values() {
         "/var/lib/eguard-agent/offline-events.db"
     );
     assert_eq!(cfg.offline_buffer_cap_bytes, 100 * 1024 * 1024);
+    assert_eq!(cfg.heartbeat_interval_secs, 30);
+    assert_eq!(cfg.reconnect_backoff_max_secs, 300);
+    assert!(cfg.telemetry_process_exec);
+    assert!(cfg.telemetry_file_events);
+    assert!(cfg.telemetry_network_connections);
+    assert!(cfg.telemetry_dns_queries);
+    assert!(cfg.telemetry_module_loads);
+    assert!(cfg.telemetry_user_logins);
+    assert_eq!(cfg.telemetry_flush_interval_ms, 100);
+    assert_eq!(cfg.telemetry_max_batch_size, 100);
+    assert_eq!(cfg.detection_max_file_scan_size_mb, 100);
+    assert!(cfg.detection_scan_on_create);
+    assert_eq!(cfg.compliance_check_interval_secs, 300);
+    assert!(!cfg.compliance_auto_remediate);
+    assert_eq!(cfg.baseline_learning_period_days, 7);
+    assert_eq!(cfg.baseline_refresh_interval_days, 7);
+    assert_eq!(cfg.baseline_stale_after_days, 30);
+    assert_eq!(cfg.self_protection_integrity_check_interval_secs, 60);
+    assert!(cfg.self_protection_prevent_uninstall);
     assert!(!cfg.response.autonomous_response);
     assert!(!cfg.response.dry_run);
+}
+
+#[test]
+// AC-CFG-005 AC-CFG-006 AC-CFG-007 AC-CFG-008 AC-CFG-009 AC-CFG-018 AC-CFG-019 AC-CFG-021
+fn file_config_loads_extended_sections() {
+    let _guard = env_lock().lock().expect("env lock");
+    clear_env();
+
+    let path = std::env::temp_dir().join(format!(
+        "eguard-agent-config-extended-{}.toml",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+
+    let mut f = std::fs::File::create(&path).expect("create file");
+    writeln!(
+        f,
+        "[agent]\nid=\"agent-123\"\nmachine_id=\"machine-xyz\"\n\
+         [server]\naddress=\"10.20.30.40\"\ngrpc_port=50051\ncert_file=\"/tmp/agent.crt\"\nkey_file=\"/tmp/agent.key\"\nca_file=\"/tmp/ca.crt\"\n\
+         [heartbeat]\ninterval_secs=45\nreconnect_backoff_max_secs=120\n\
+         [telemetry]\nprocess_exec=true\nfile_events=false\nnetwork_connections=true\ndns_queries=false\nmodule_loads=true\nuser_logins=false\nflush_interval_ms=250\nmax_batch_size=64\n\
+         [detection]\nsigma_rules_dir=\"/opt/rules/sigma\"\nyara_rules_dir=\"/opt/rules/yara\"\nioc_dir=\"/opt/rules/ioc\"\nscan_on_create=false\nmax_file_scan_size_mb=42\n\
+         [compliance]\ncheck_interval_secs=900\nauto_remediate=true\n\
+         [baseline]\nlearning_period_days=10\nrefresh_interval_days=14\nstale_after_days=40\n\
+         [self_protection]\nintegrity_check_interval_secs=90\nprevent_uninstall=false"
+    )
+    .expect("write file");
+
+    std::env::set_var("EGUARD_AGENT_CONFIG", &path);
+    let cfg = AgentConfig::load().expect("load config");
+
+    assert_eq!(cfg.agent_id, "agent-123");
+    assert_eq!(cfg.machine_id.as_deref(), Some("machine-xyz"));
+    assert_eq!(cfg.server_addr, "10.20.30.40:50051");
+    assert_eq!(cfg.tls_cert_path.as_deref(), Some("/tmp/agent.crt"));
+    assert_eq!(cfg.tls_key_path.as_deref(), Some("/tmp/agent.key"));
+    assert_eq!(cfg.tls_ca_path.as_deref(), Some("/tmp/ca.crt"));
+    assert_eq!(cfg.heartbeat_interval_secs, 45);
+    assert_eq!(cfg.reconnect_backoff_max_secs, 120);
+    assert!(cfg.telemetry_process_exec);
+    assert!(!cfg.telemetry_file_events);
+    assert!(cfg.telemetry_network_connections);
+    assert!(!cfg.telemetry_dns_queries);
+    assert!(cfg.telemetry_module_loads);
+    assert!(!cfg.telemetry_user_logins);
+    assert_eq!(cfg.telemetry_flush_interval_ms, 250);
+    assert_eq!(cfg.telemetry_max_batch_size, 64);
+    assert_eq!(cfg.detection_sigma_rules_dir, "/opt/rules/sigma");
+    assert_eq!(cfg.detection_yara_rules_dir, "/opt/rules/yara");
+    assert_eq!(cfg.detection_ioc_dir, "/opt/rules/ioc");
+    assert!(!cfg.detection_scan_on_create);
+    assert_eq!(cfg.detection_max_file_scan_size_mb, 42);
+    assert_eq!(cfg.compliance_check_interval_secs, 900);
+    assert!(cfg.compliance_auto_remediate);
+    assert_eq!(cfg.baseline_learning_period_days, 10);
+    assert_eq!(cfg.baseline_refresh_interval_days, 14);
+    assert_eq!(cfg.baseline_stale_after_days, 40);
+    assert_eq!(cfg.self_protection_integrity_check_interval_secs, 90);
+    assert!(!cfg.self_protection_prevent_uninstall);
+
+    clear_env();
+    let _ = std::fs::remove_file(path);
 }
 
 #[test]
