@@ -69,6 +69,42 @@ pub struct ComplianceResult {
     pub checks: Vec<ComplianceCheck>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RemediationAction {
+    pub action_id: String,
+    pub command: String,
+    pub args: Vec<String>,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RemediationOutcome {
+    pub action_id: String,
+    pub success: bool,
+    pub detail: String,
+}
+
+pub trait CommandRunner {
+    fn run(&self, command: &str, args: &[String]) -> std::io::Result<()>;
+}
+
+#[derive(Debug, Default)]
+pub struct ShellCommandRunner;
+
+impl CommandRunner for ShellCommandRunner {
+    fn run(&self, command: &str, args: &[String]) -> std::io::Result<()> {
+        let status = std::process::Command::new(command).args(args).status()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(std::io::Error::other(format!(
+                "command exited with status {}",
+                status
+            )))
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SystemSnapshot {
     pub firewall_enabled: bool,
@@ -247,6 +283,80 @@ pub fn evaluate_snapshot(policy: &CompliancePolicy, snapshot: &SystemSnapshot) -
     }
 }
 
+pub fn plan_remediation_actions(
+    policy: &CompliancePolicy,
+    snapshot: &SystemSnapshot,
+) -> Vec<RemediationAction> {
+    let mut actions = Vec::new();
+
+    if policy.firewall_required && !snapshot.firewall_enabled {
+        actions.push(RemediationAction {
+            action_id: "enable_firewall".to_string(),
+            command: "ufw".to_string(),
+            args: vec!["--force".to_string(), "enable".to_string()],
+            reason: "firewall_required policy is enabled".to_string(),
+        });
+    }
+
+    if policy.require_ssh_root_login_disabled && snapshot.ssh_root_login_permitted == Some(true) {
+        actions.push(RemediationAction {
+            action_id: "disable_ssh_root_login".to_string(),
+            command: "sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                "grep -q '^PermitRootLogin' /etc/ssh/sshd_config && sed -i 's/^PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config || echo 'PermitRootLogin no' >> /etc/ssh/sshd_config && systemctl reload ssh || systemctl reload sshd".to_string(),
+            ],
+            reason: "require_ssh_root_login_disabled policy is enabled".to_string(),
+        });
+    }
+
+    for package in &policy.required_packages {
+        if !package_installed(snapshot, package) {
+            actions.push(RemediationAction {
+                action_id: format!("install_package:{}", package),
+                command: "apt-get".to_string(),
+                args: vec!["install".to_string(), "-y".to_string(), package.to_string()],
+                reason: format!("required package {} is missing", package),
+            });
+        }
+    }
+
+    for package in &policy.forbidden_packages {
+        if package_installed(snapshot, package) {
+            actions.push(RemediationAction {
+                action_id: format!("remove_package:{}", package),
+                command: "apt-get".to_string(),
+                args: vec!["remove".to_string(), "-y".to_string(), package.to_string()],
+                reason: format!("forbidden package {} is installed", package),
+            });
+        }
+    }
+
+    actions
+}
+
+pub fn execute_remediation_actions<R: CommandRunner>(
+    runner: &R,
+    actions: &[RemediationAction],
+) -> Vec<RemediationOutcome> {
+    let mut outcomes = Vec::with_capacity(actions.len());
+    for action in actions {
+        match runner.run(&action.command, &action.args) {
+            Ok(()) => outcomes.push(RemediationOutcome {
+                action_id: action.action_id.clone(),
+                success: true,
+                detail: "ok".to_string(),
+            }),
+            Err(err) => outcomes.push(RemediationOutcome {
+                action_id: action.action_id.clone(),
+                success: false,
+                detail: err.to_string(),
+            }),
+        }
+    }
+    outcomes
+}
+
 fn check_result(
     check: impl Into<String>,
     passed: bool,
@@ -257,6 +367,14 @@ fn check_result(
         status: if passed { "pass" } else { "fail" }.to_string(),
         detail: detail.into(),
     }
+}
+
+fn package_installed(snapshot: &SystemSnapshot, package: &str) -> bool {
+    snapshot
+        .installed_packages
+        .as_ref()
+        .map(|installed| installed.contains(&package.to_ascii_lowercase()))
+        .unwrap_or(false)
 }
 
 fn collect_linux_snapshot() -> Result<SystemSnapshot> {
@@ -463,5 +581,72 @@ mod tests {
         assert!(!installed.contains("telnetd"));
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn plan_remediation_actions_covers_firewall_and_packages() {
+        let policy = CompliancePolicy {
+            firewall_required: true,
+            required_packages: vec!["auditd".to_string()],
+            forbidden_packages: vec!["telnetd".to_string()],
+            ..CompliancePolicy::default()
+        };
+
+        let mut installed = HashSet::new();
+        installed.insert("telnetd".to_string());
+
+        let snapshot = SystemSnapshot {
+            firewall_enabled: false,
+            kernel_version: "6.8.0".to_string(),
+            os_version: None,
+            root_fs_encrypted: None,
+            ssh_root_login_permitted: None,
+            installed_packages: Some(installed),
+        };
+
+        let actions = plan_remediation_actions(&policy, &snapshot);
+        assert!(actions.iter().any(|a| a.action_id == "enable_firewall"));
+        assert!(actions
+            .iter()
+            .any(|a| a.action_id == "install_package:auditd"));
+        assert!(actions
+            .iter()
+            .any(|a| a.action_id == "remove_package:telnetd"));
+    }
+
+    #[test]
+    fn execute_remediation_actions_reports_failures() {
+        #[derive(Default)]
+        struct MockRunner;
+
+        impl CommandRunner for MockRunner {
+            fn run(&self, command: &str, _args: &[String]) -> std::io::Result<()> {
+                if command == "ok" {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::other("boom"))
+                }
+            }
+        }
+
+        let actions = vec![
+            RemediationAction {
+                action_id: "a1".to_string(),
+                command: "ok".to_string(),
+                args: Vec::new(),
+                reason: "test".to_string(),
+            },
+            RemediationAction {
+                action_id: "a2".to_string(),
+                command: "fail".to_string(),
+                args: Vec::new(),
+                reason: "test".to_string(),
+            },
+        ];
+
+        let outcomes = execute_remediation_actions(&MockRunner, &actions);
+        assert_eq!(outcomes.len(), 2);
+        assert!(outcomes[0].success);
+        assert!(!outcomes[1].success);
     }
 }
