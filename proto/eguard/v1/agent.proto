@@ -2,11 +2,27 @@ syntax = "proto3";
 
 package eguard.v1;
 
+import "eguard/v1/telemetry.proto";
+import "eguard/v1/compliance.proto";
+import "eguard/v1/command.proto";
+import "eguard/v1/response.proto";
+
 service AgentControlService {
   rpc Ping(PingRequest) returns (PingResponse);
   rpc Enroll(EnrollRequest) returns (EnrollResponse);
   rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
   rpc GetLatestThreatIntel(ThreatIntelRequest) returns (ThreatIntelVersion);
+}
+
+service AgentService {
+  rpc Enroll(EnrollRequest) returns (EnrollResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc StreamEvents(stream TelemetryEvent) returns (TelemetryStreamAck);
+  rpc ReportCompliance(ComplianceReport) returns (ComplianceAck);
+  rpc CommandChannel(CommandChannelRequest) returns (stream AgentCommand);
+  rpc ReportResponse(ResponseReport) returns (ResponseAck);
+  rpc GetPolicy(PolicyRequest) returns (PolicyResponse);
+  rpc DownloadRuleBundle(RuleBundleRequest) returns (stream RuleBundleChunk);
 }
 
 message PingRequest {
@@ -56,4 +72,25 @@ message ThreatIntelVersion {
   int64 published_at_unix = 7;
   int64 custom_rule_count = 8;
   string custom_rule_version_hash = 9;
+}
+
+message PolicyRequest {
+  string agent_id = 1;
+}
+
+message PolicyResponse {
+  string policy_id = 1;
+  string config_version = 2;
+  string policy_json = 3;
+}
+
+message RuleBundleRequest {
+  string agent_id = 1;
+  string target_version = 2;
+}
+
+message RuleBundleChunk {
+  bytes data = 1;
+  int32 sequence = 2;
+  bool last = 3;
 }

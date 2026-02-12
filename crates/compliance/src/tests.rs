@@ -427,7 +427,7 @@ fn firewall_required_check_maps_to_expected_fail_and_remediation() {
 }
 
 #[test]
-// AC-CMP-033
+// AC-CMP-033 AC-GRP-036
 fn default_runtime_settings_match_documented_values() {
     let (interval, auto_remediate) = default_runtime_settings();
     assert_eq!(interval, 300);

@@ -32,6 +32,25 @@ fn agent_control_proto_declares_enroll_and_heartbeat_rpcs() {
 }
 
 #[test]
+// AC-GRP-071 AC-GRP-076
+fn agent_proto_imports_domain_protos_and_declares_eight_rpc_agent_service() {
+    assert!(AGENT_PROTO.contains("import \"eguard/v1/telemetry.proto\";"));
+    assert!(AGENT_PROTO.contains("import \"eguard/v1/compliance.proto\";"));
+    assert!(AGENT_PROTO.contains("import \"eguard/v1/command.proto\";"));
+    assert!(AGENT_PROTO.contains("import \"eguard/v1/response.proto\";"));
+
+    assert!(AGENT_PROTO.contains("service AgentService"));
+    let service_block = AGENT_PROTO
+        .split("service AgentService")
+        .nth(1)
+        .and_then(|tail| tail.split('}').next())
+        .expect("agent service block");
+    assert_eq!(service_block.matches("rpc ").count(), 8);
+    assert!(AGENT_PROTO.contains("rpc GetPolicy("));
+    assert!(AGENT_PROTO.contains("rpc DownloadRuleBundle("));
+}
+
+#[test]
 // AC-GRP-020 AC-GRP-030 AC-GRP-040 AC-GRP-050
 fn service_protos_declare_streaming_and_reporting_rpcs() {
     assert!(TELEMETRY_PROTO.contains("service TelemetryService"));

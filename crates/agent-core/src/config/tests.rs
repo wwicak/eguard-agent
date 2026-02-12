@@ -241,7 +241,7 @@ fn apply_response_policy_updates_only_provided_fields() {
 }
 
 #[test]
-// AC-CFG-007 AC-CFG-008 AC-CFG-009 AC-CFG-010 AC-CFG-011 AC-CFG-012 AC-CFG-013 AC-CFG-014 AC-CFG-018 AC-CFG-019 AC-CFG-020 AC-CFG-021
+// AC-CFG-007 AC-CFG-008 AC-CFG-009 AC-CFG-010 AC-CFG-011 AC-CFG-012 AC-CFG-013 AC-CFG-014 AC-CFG-018 AC-CFG-019 AC-CFG-020 AC-CFG-021 AC-GRP-015 AC-GRP-027
 fn default_config_matches_expected_baseline_values() {
     let cfg = AgentConfig::default();
     assert!(matches!(cfg.mode, AgentMode::Learning));
