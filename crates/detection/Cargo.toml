@@ -4,7 +4,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+yara-rust = ["dep:yara"]
+
 [dependencies]
 serde.workspace = true
+serde_yaml.workspace = true
 rusqlite.workspace = true
 aho-corasick.workspace = true
+yara = { version = "0.31", optional = true, default-features = false, features = ["vendored", "bundled-4_5_5"] }

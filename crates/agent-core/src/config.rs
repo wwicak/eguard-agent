@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use response::{ResponseConfig, ResponsePolicy};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -18,7 +19,7 @@ pub struct AgentConfig {
     pub mode: AgentMode,
     pub transport_mode: String,
     pub server_addr: String,
-    pub autonomous_response: bool,
+    pub response: ResponseConfig,
     pub offline_buffer_backend: String,
     pub offline_buffer_path: String,
     pub offline_buffer_cap_bytes: usize,
@@ -35,7 +36,7 @@ impl Default for AgentConfig {
             mode: AgentMode::Learning,
             transport_mode: "http".to_string(),
             server_addr: "eguard-server:50051".to_string(),
-            autonomous_response: false,
+            response: ResponseConfig::default(),
             offline_buffer_backend: "sqlite".to_string(),
             offline_buffer_path: "/var/lib/eguard-agent/offline-events.db".to_string(),
             offline_buffer_cap_bytes: 100 * 1024 * 1024,
@@ -70,7 +71,11 @@ impl AgentConfig {
         let server = std::env::var("EGUARD_SERVER_ADDR")
             .ok()
             .filter(|v| !v.trim().is_empty())
-            .or_else(|| std::env::var("EGUARD_SERVER").ok().filter(|v| !v.trim().is_empty()));
+            .or_else(|| {
+                std::env::var("EGUARD_SERVER")
+                    .ok()
+                    .filter(|v| !v.trim().is_empty())
+            });
         if let Some(server) = server {
             self.server_addr = server;
         }
@@ -86,7 +91,17 @@ impl AgentConfig {
         }
 
         if let Ok(v) = std::env::var("EGUARD_AUTONOMOUS_RESPONSE") {
-            self.autonomous_response = parse_bool(&v);
+            self.response.autonomous_response = parse_bool(&v);
+        }
+
+        if let Ok(v) = std::env::var("EGUARD_RESPONSE_DRY_RUN") {
+            self.response.dry_run = parse_bool(&v);
+        }
+
+        if let Ok(v) = std::env::var("EGUARD_RESPONSE_MAX_KILLS_PER_MINUTE") {
+            if let Ok(parsed) = v.trim().parse::<usize>() {
+                self.response.max_kills_per_minute = parsed;
+            }
         }
 
         if let Ok(v) = std::env::var("EGUARD_BUFFER_BACKEND") {
@@ -156,8 +171,21 @@ impl AgentConfig {
 
         if let Some(response) = file_cfg.response {
             if let Some(v) = response.autonomous_response {
-                self.autonomous_response = v;
+                self.response.autonomous_response = v;
             }
+            if let Some(v) = response.dry_run {
+                self.response.dry_run = v;
+            }
+            if let Some(rate_limit) = response.rate_limit {
+                if let Some(v) = rate_limit.max_kills_per_minute {
+                    self.response.max_kills_per_minute = v;
+                }
+            }
+
+            apply_response_policy(&mut self.response.definite, response.definite);
+            apply_response_policy(&mut self.response.very_high, response.very_high);
+            apply_response_policy(&mut self.response.high, response.high);
+            apply_response_policy(&mut self.response.medium, response.medium);
         }
 
         if let Some(storage) = file_cfg.storage {
@@ -220,6 +248,34 @@ struct FileAgentConfig {
 struct FileResponseConfig {
     #[serde(default)]
     autonomous_response: Option<bool>,
+    #[serde(default)]
+    dry_run: Option<bool>,
+    #[serde(default)]
+    definite: Option<FileResponsePolicy>,
+    #[serde(default)]
+    very_high: Option<FileResponsePolicy>,
+    #[serde(default)]
+    high: Option<FileResponsePolicy>,
+    #[serde(default)]
+    medium: Option<FileResponsePolicy>,
+    #[serde(default)]
+    rate_limit: Option<FileResponseRateLimitConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct FileResponsePolicy {
+    #[serde(default)]
+    kill: Option<bool>,
+    #[serde(default)]
+    quarantine: Option<bool>,
+    #[serde(default)]
+    capture_script: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct FileResponseRateLimitConfig {
+    #[serde(default)]
+    max_kills_per_minute: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -254,7 +310,10 @@ fn resolve_config_path() -> Result<Option<PathBuf>> {
         if !p.is_empty() {
             let path = PathBuf::from(p);
             if !path.exists() {
-                anyhow::bail!("configured EGUARD_AGENT_CONFIG does not exist: {}", path.display());
+                anyhow::bail!(
+                    "configured EGUARD_AGENT_CONFIG does not exist: {}",
+                    path.display()
+                );
             }
             return Ok(Some(path));
         }
@@ -305,10 +364,32 @@ fn parse_cap_mb(raw: &str) -> Option<usize> {
     Some(mb.saturating_mul(1024 * 1024))
 }
 
+fn apply_response_policy(dst: &mut ResponsePolicy, src: Option<FileResponsePolicy>) {
+    let Some(src) = src else {
+        return;
+    };
+
+    if let Some(v) = src.kill {
+        dst.kill = v;
+    }
+    if let Some(v) = src.quarantine {
+        dst.quarantine = v;
+    }
+    if let Some(v) = src.capture_script {
+        dst.capture_script = v;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     fn clear_env() {
         let vars = [
@@ -319,6 +400,8 @@ mod tests {
             "EGUARD_AGENT_MODE",
             "EGUARD_TRANSPORT_MODE",
             "EGUARD_AUTONOMOUS_RESPONSE",
+            "EGUARD_RESPONSE_DRY_RUN",
+            "EGUARD_RESPONSE_MAX_KILLS_PER_MINUTE",
             "EGUARD_BUFFER_BACKEND",
             "EGUARD_BUFFER_PATH",
             "EGUARD_BUFFER_CAP_MB",
@@ -333,6 +416,7 @@ mod tests {
 
     #[test]
     fn file_config_is_loaded() {
+        let _guard = env_lock().lock().expect("env lock");
         clear_env();
 
         let path = std::env::temp_dir().join(format!(
@@ -346,7 +430,7 @@ mod tests {
         let mut f = std::fs::File::create(&path).expect("create file");
         writeln!(
             f,
-            "[agent]\nserver_addr=\"10.0.0.1:50051\"\nmode=\"active\"\n[transport]\nmode=\"grpc\"\n[response]\nautonomous_response=true\n[storage]\nbackend=\"memory\"\ncap_mb=10"
+            "[agent]\nserver_addr=\"10.0.0.1:50051\"\nmode=\"active\"\n[transport]\nmode=\"grpc\"\n[response]\nautonomous_response=true\ndry_run=true\n[response.high]\nkill=true\nquarantine=false\ncapture_script=true\n[response.rate_limit]\nmax_kills_per_minute=21\n[storage]\nbackend=\"memory\"\ncap_mb=10"
         )
         .expect("write file");
 
@@ -355,7 +439,12 @@ mod tests {
 
         assert_eq!(cfg.server_addr, "10.0.0.1:50051");
         assert!(matches!(cfg.mode, AgentMode::Active));
-        assert!(cfg.autonomous_response);
+        assert!(cfg.response.autonomous_response);
+        assert!(cfg.response.dry_run);
+        assert!(cfg.response.high.kill);
+        assert!(!cfg.response.high.quarantine);
+        assert!(cfg.response.high.capture_script);
+        assert_eq!(cfg.response.max_kills_per_minute, 21);
         assert_eq!(cfg.transport_mode, "grpc");
         assert_eq!(cfg.offline_buffer_backend, "memory");
         assert_eq!(cfg.offline_buffer_cap_bytes, 10 * 1024 * 1024);
@@ -366,6 +455,7 @@ mod tests {
 
     #[test]
     fn env_overrides_file_config() {
+        let _guard = env_lock().lock().expect("env lock");
         clear_env();
 
         let path = std::env::temp_dir().join(format!(
@@ -382,10 +472,12 @@ mod tests {
         std::env::set_var("EGUARD_AGENT_CONFIG", &path);
         std::env::set_var("EGUARD_SERVER_ADDR", "10.9.9.9:50051");
         std::env::set_var("EGUARD_TRANSPORT_MODE", "http");
+        std::env::set_var("EGUARD_AUTONOMOUS_RESPONSE", "true");
         let cfg = AgentConfig::load().expect("load config");
 
         assert_eq!(cfg.server_addr, "10.9.9.9:50051");
         assert_eq!(cfg.transport_mode, "http");
+        assert!(cfg.response.autonomous_response);
 
         clear_env();
         let _ = std::fs::remove_file(path);

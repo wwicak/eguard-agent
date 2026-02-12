@@ -1,0 +1,10 @@
+/target/
+/Cargo.lock
+/.zig-cache/
+/zig-out/
+
+# Threat intel pipeline (collected data, not checked in)
+/sources/
+/bundle/
+/bundles/
+*.bundle.tar.zst

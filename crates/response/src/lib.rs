@@ -1,3 +1,8 @@
+mod capture;
+mod errors;
+mod kill;
+mod quarantine;
+
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -6,11 +11,40 @@ use serde::{Deserialize, Serialize};
 
 use detection::Confidence;
 
+pub use capture::{capture_script_content, ScriptCapture};
+pub use errors::{ResponseError, ResponseResult};
+pub use kill::{
+    kill_process_tree, kill_process_tree_with, KillReport, NixSignalSender, ProcessIntrospector,
+    ProcfsIntrospector, SignalSender,
+};
+pub use quarantine::{quarantine_file, restore_quarantined, QuarantineReport, RestoreReport};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResponsePolicy {
+    pub kill: bool,
+    pub quarantine: bool,
+    pub capture_script: bool,
+}
+
+impl ResponsePolicy {
+    pub const fn new(kill: bool, quarantine: bool, capture_script: bool) -> Self {
+        Self {
+            kill,
+            quarantine,
+            capture_script,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResponseConfig {
     pub autonomous_response: bool,
     pub dry_run: bool,
     pub max_kills_per_minute: usize,
+    pub definite: ResponsePolicy,
+    pub very_high: ResponsePolicy,
+    pub high: ResponsePolicy,
+    pub medium: ResponsePolicy,
 }
 
 impl Default for ResponseConfig {
@@ -19,6 +53,10 @@ impl Default for ResponseConfig {
             autonomous_response: false,
             dry_run: false,
             max_kills_per_minute: 10,
+            definite: ResponsePolicy::new(true, true, true),
+            very_high: ResponsePolicy::new(true, true, true),
+            high: ResponsePolicy::new(false, false, true),
+            medium: ResponsePolicy::new(false, false, false),
         }
     }
 }
@@ -101,6 +139,8 @@ pub enum PlannedAction {
     None,
     AlertOnly,
     CaptureScript,
+    KillOnly,
+    QuarantineOnly,
     KillAndQuarantine,
 }
 
@@ -109,10 +149,29 @@ pub fn plan_action(confidence: Confidence, config: &ResponseConfig) -> PlannedAc
         return PlannedAction::AlertOnly;
     }
 
-    match confidence {
-        Confidence::Definite | Confidence::VeryHigh => PlannedAction::KillAndQuarantine,
-        Confidence::High => PlannedAction::CaptureScript,
-        Confidence::Medium | Confidence::Low | Confidence::None => PlannedAction::AlertOnly,
+    if config.dry_run {
+        return PlannedAction::AlertOnly;
+    }
+
+    let policy = config.policy_for(confidence);
+
+    match (policy.kill, policy.quarantine, policy.capture_script) {
+        (true, true, _) => PlannedAction::KillAndQuarantine,
+        (true, false, _) => PlannedAction::KillOnly,
+        (false, true, _) => PlannedAction::QuarantineOnly,
+        (false, false, true) => PlannedAction::CaptureScript,
+        (false, false, false) => PlannedAction::AlertOnly,
+    }
+}
+
+impl ResponseConfig {
+    pub fn policy_for(&self, confidence: Confidence) -> &ResponsePolicy {
+        match confidence {
+            Confidence::Definite => &self.definite,
+            Confidence::VeryHigh => &self.very_high,
+            Confidence::High => &self.high,
+            Confidence::Medium | Confidence::Low | Confidence::None => &self.medium,
+        }
     }
 }
 

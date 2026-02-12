@@ -81,8 +81,9 @@ impl SqliteBuffer {
     pub fn new(path: &str, cap_bytes: usize) -> Result<Self> {
         if let Some(parent) = Path::new(path).parent() {
             if !parent.as_os_str().is_empty() {
-                fs::create_dir_all(parent)
-                    .with_context(|| format!("failed creating sqlite parent dir {}", parent.display()))?;
+                fs::create_dir_all(parent).with_context(|| {
+                    format!("failed creating sqlite parent dir {}", parent.display())
+                })?;
             }
         }
 
@@ -161,7 +162,9 @@ impl SqliteBuffer {
     pub fn pending_bytes(&self) -> Result<usize> {
         let total: Option<i64> = self
             .conn
-            .query_row("SELECT SUM(size_bytes) FROM offline_events", [], |row| row.get(0))
+            .query_row("SELECT SUM(size_bytes) FROM offline_events", [], |row| {
+                row.get(0)
+            })
             .optional()?
             .flatten();
         Ok(total.unwrap_or(0).max(0) as usize)

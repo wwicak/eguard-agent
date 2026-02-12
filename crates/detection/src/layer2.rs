@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use crate::sigma::{compile_sigma_rule, SigmaCompileError};
 use crate::types::{EventClass, TelemetryEvent};
 use crate::util::{set_of, set_u16};
 
@@ -71,6 +72,48 @@ pub struct TemporalRule {
 }
 
 #[derive(Debug, Clone)]
+struct MonitorTransition {
+    predicate: TemporalPredicate,
+    max_delay_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+struct DeterministicMonitorAutomaton {
+    name: String,
+    transitions: Vec<MonitorTransition>,
+    max_window_secs: i64,
+}
+
+impl DeterministicMonitorAutomaton {
+    fn from_rule(rule: TemporalRule) -> Self {
+        let mut transitions = Vec::with_capacity(rule.stages.len());
+        let mut max_window_secs: i64 = 0;
+
+        for (idx, stage) in rule.stages.into_iter().enumerate() {
+            max_window_secs = max_window_secs.saturating_add(stage.within_secs as i64);
+            transitions.push(MonitorTransition {
+                predicate: stage.predicate,
+                max_delay_secs: if idx == 0 {
+                    None
+                } else {
+                    Some(stage.within_secs)
+                },
+            });
+        }
+
+        if max_window_secs <= 0 {
+            max_window_secs = 1;
+        }
+
+        Self {
+            name: rule.name,
+            transitions,
+            max_window_secs,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 struct TemporalState {
     stage_idx: usize,
     first_match_ts: i64,
@@ -79,7 +122,7 @@ struct TemporalState {
 
 #[derive(Debug, Default)]
 pub struct TemporalEngine {
-    rules: Vec<TemporalRule>,
+    automata: Vec<DeterministicMonitorAutomaton>,
     states: HashMap<(usize, String), TemporalState>,
     subscriptions: HashMap<EventClass, Vec<usize>>,
     reorder_tolerance_secs: i64,
@@ -160,14 +203,22 @@ impl TemporalEngine {
     }
 
     pub fn add_rule(&mut self, rule: TemporalRule) {
-        let rule_id = self.rules.len();
-        for stage in &rule.stages {
+        let automaton = DeterministicMonitorAutomaton::from_rule(rule);
+        let rule_id = self.automata.len();
+        for transition in &automaton.transitions {
             self.subscriptions
-                .entry(stage.predicate.event_class)
+                .entry(transition.predicate.event_class)
                 .or_default()
                 .push(rule_id);
         }
-        self.rules.push(rule);
+        self.automata.push(automaton);
+    }
+
+    pub fn add_sigma_rule_yaml(&mut self, yaml: &str) -> Result<String, SigmaCompileError> {
+        let rule = compile_sigma_rule(yaml)?;
+        let name = rule.name.clone();
+        self.add_rule(rule);
+        Ok(name)
     }
 
     pub fn observe(&mut self, event: &TelemetryEvent) -> Vec<String> {
@@ -178,10 +229,10 @@ impl TemporalEngine {
 
         let entity = event.entity_key();
         for rule_id in rule_ids {
-            let Some(rule) = self.rules.get(rule_id) else {
+            let Some(automaton) = self.automata.get(rule_id) else {
                 continue;
             };
-            if rule.stages.is_empty() {
+            if automaton.transitions.is_empty() {
                 continue;
             }
 
@@ -190,15 +241,19 @@ impl TemporalEngine {
 
             let mut next_state = current.clone();
             if let Some(state) = current {
-                let stage_idx = state.stage_idx.min(rule.stages.len() - 1);
-                let stage = &rule.stages[stage_idx];
+                let stage_idx = state.stage_idx.min(automaton.transitions.len() - 1);
+                let transition = &automaton.transitions[stage_idx];
 
-                let monotonic_ok = event.ts_unix + self.reorder_tolerance_secs >= state.last_match_ts;
-                let within = event.ts_unix - state.last_match_ts <= stage.within_secs as i64;
-                if monotonic_ok && within && stage.predicate.matches(event) {
+                let monotonic_ok =
+                    event.ts_unix + self.reorder_tolerance_secs >= state.last_match_ts;
+                let within = transition
+                    .max_delay_secs
+                    .map(|v| event.ts_unix - state.last_match_ts <= v as i64)
+                    .unwrap_or(true);
+                if monotonic_ok && within && transition.predicate.matches(event) {
                     let advanced = stage_idx + 1;
-                    if advanced >= rule.stages.len() {
-                        hits.push(rule.name.clone());
+                    if advanced >= automaton.transitions.len() {
+                        hits.push(automaton.name.clone());
                         self.states.remove(&key);
                         continue;
                     }
@@ -207,9 +262,9 @@ impl TemporalEngine {
                         first_match_ts: state.first_match_ts,
                         last_match_ts: event.ts_unix,
                     });
-                } else if rule.stages[0].predicate.matches(event) {
-                    if rule.stages.len() == 1 {
-                        hits.push(rule.name.clone());
+                } else if automaton.transitions[0].predicate.matches(event) {
+                    if automaton.transitions.len() == 1 {
+                        hits.push(automaton.name.clone());
                         self.states.remove(&key);
                         continue;
                     }
@@ -219,14 +274,13 @@ impl TemporalEngine {
                         last_match_ts: event.ts_unix,
                     });
                 } else {
-                    let max_window = rule.stages.iter().map(|s| s.within_secs as i64).sum::<i64>();
-                    if event.ts_unix - state.first_match_ts > max_window {
+                    if event.ts_unix - state.first_match_ts > automaton.max_window_secs {
                         next_state = None;
                     }
                 }
-            } else if rule.stages[0].predicate.matches(event) {
-                if rule.stages.len() == 1 {
-                    hits.push(rule.name.clone());
+            } else if automaton.transitions[0].predicate.matches(event) {
+                if automaton.transitions.len() == 1 {
+                    hits.push(automaton.name.clone());
                     continue;
                 }
                 next_state = Some(TemporalState {

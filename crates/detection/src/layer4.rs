@@ -131,7 +131,13 @@ impl ProcessGraph {
         let stale: Vec<u32> = self
             .nodes
             .iter()
-            .filter_map(|(pid, node)| if node.last_seen < cutoff { Some(*pid) } else { None })
+            .filter_map(|(pid, node)| {
+                if node.last_seen < cutoff {
+                    Some(*pid)
+                } else {
+                    None
+                }
+            })
             .collect();
 
         for pid in stale {

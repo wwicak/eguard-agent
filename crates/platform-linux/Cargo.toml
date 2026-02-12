@@ -4,5 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+ebpf-libbpf = ["dep:libbpf-rs"]
+
 [dependencies]
 serde.workspace = true
+libc.workspace = true
+crypto-accel = { path = "../crypto-accel" }
+libbpf-rs = { version = "0.24", optional = true }

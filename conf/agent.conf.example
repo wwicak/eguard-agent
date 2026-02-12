@@ -18,6 +18,30 @@ mode = "http"
 [response]
 # Enable autonomous kill/quarantine in active mode
 autonomous_response = false
+dry_run = false
+
+[response.definite]
+kill = true
+quarantine = true
+capture_script = true
+
+[response.very_high]
+kill = true
+quarantine = true
+capture_script = true
+
+[response.high]
+kill = false
+quarantine = false
+capture_script = true
+
+[response.medium]
+kill = false
+quarantine = false
+capture_script = false
+
+[response.rate_limit]
+max_kills_per_minute = 10
 
 [storage]
 # sqlite (recommended) or memory

@@ -1,7 +1,8 @@
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use anyhow::{anyhow, Result};
-use detection::{DetectionEngine, DetectionOutcome, TelemetryEvent};
+use detection::{DetectionEngine, DetectionOutcome, EventClass, TelemetryEvent};
 use tracing::info;
 
 struct DetectionSnapshot {
@@ -88,6 +89,19 @@ impl SharedDetectionState {
             }
         }
 
+        Ok(())
+    }
+
+    pub fn set_anomaly_baseline(
+        &self,
+        process_key: String,
+        distribution: HashMap<EventClass, f64>,
+    ) -> Result<()> {
+        let mut guard = self
+            .inner
+            .write()
+            .map_err(|_| anyhow!("detection state lock poisoned"))?;
+        guard.engine.layer3.set_baseline(process_key, distribution);
         Ok(())
     }
 }

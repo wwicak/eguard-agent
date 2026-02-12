@@ -104,8 +104,10 @@ impl Client {
             TransportMode::Grpc => {
                 self.with_retry("send_events_grpc_stream", || async {
                     let channel = self.connect_channel().await?;
-                    let mut client = pb::telemetry_service_client::TelemetryServiceClient::new(channel);
-                    let events: Vec<pb::TelemetryEvent> = batch.iter().map(to_pb_telemetry_event).collect();
+                    let mut client =
+                        pb::telemetry_service_client::TelemetryServiceClient::new(channel);
+                    let events: Vec<pb::TelemetryEvent> =
+                        batch.iter().map(to_pb_telemetry_event).collect();
                     let stream = iter(events);
                     client
                         .stream_events(tonic::Request::new(stream))
@@ -142,7 +144,8 @@ impl Client {
             TransportMode::Grpc => {
                 self.with_retry("enroll_grpc", || async {
                     let channel = self.connect_channel().await?;
-                    let mut client = pb::agent_control_service_client::AgentControlServiceClient::new(channel);
+                    let mut client =
+                        pb::agent_control_service_client::AgentControlServiceClient::new(channel);
                     let req = pb::EnrollRequest {
                         agent_id: enrollment.agent_id.clone(),
                         mac: enrollment.mac.clone(),
@@ -185,7 +188,8 @@ impl Client {
             TransportMode::Grpc => {
                 self.with_retry("heartbeat_grpc", || async {
                     let channel = self.connect_channel().await?;
-                    let mut client = pb::agent_control_service_client::AgentControlServiceClient::new(channel);
+                    let mut client =
+                        pb::agent_control_service_client::AgentControlServiceClient::new(channel);
                     client
                         .heartbeat(pb::HeartbeatRequest {
                             agent_id: agent_id.to_string(),
@@ -224,7 +228,8 @@ impl Client {
             TransportMode::Grpc => {
                 self.with_retry("compliance_grpc", || async {
                     let channel = self.connect_channel().await?;
-                    let mut client = pb::compliance_service_client::ComplianceServiceClient::new(channel);
+                    let mut client =
+                        pb::compliance_service_client::ComplianceServiceClient::new(channel);
                     client
                         .report_compliance(pb::ComplianceReport {
                             agent_id: compliance.agent_id.clone(),
@@ -267,7 +272,8 @@ impl Client {
             TransportMode::Grpc => {
                 self.with_retry("response_grpc", || async {
                     let channel = self.connect_channel().await?;
-                    let mut client = pb::response_service_client::ResponseServiceClient::new(channel);
+                    let mut client =
+                        pb::response_service_client::ResponseServiceClient::new(channel);
                     client
                         .report_response(pb::ResponseReport {
                             agent_id: response.agent_id.clone(),
@@ -347,10 +353,14 @@ impl Client {
                     let mut stream = response.into_inner();
                     let mut out = Vec::with_capacity(limit);
                     while out.len() < limit {
-                        match tokio::time::timeout(Duration::from_millis(350), stream.message()).await {
+                        match tokio::time::timeout(Duration::from_millis(350), stream.message())
+                            .await
+                        {
                             Ok(Ok(Some(command))) => out.push(from_pb_agent_command(command)),
                             Ok(Ok(None)) => break,
-                            Ok(Err(err)) => return Err(err).context("command_channel stream read failed"),
+                            Ok(Err(err)) => {
+                                return Err(err).context("command_channel stream read failed")
+                            }
                             Err(_) => break,
                         }
                     }
@@ -403,7 +413,10 @@ impl Client {
                     let response = self
                         .http
                         .get(&url)
-                        .query(&[("agent_id", agent_id.to_string()), ("limit", limit.to_string())])
+                        .query(&[
+                            ("agent_id", agent_id.to_string()),
+                            ("limit", limit.to_string()),
+                        ])
                         .send()
                         .await
                         .with_context(|| format!("failed polling commands from {}", url))?
@@ -538,7 +551,8 @@ impl Client {
             TransportMode::Grpc => {
                 self.with_retry("threat_intel_grpc", || async {
                     let channel = self.connect_channel().await?;
-                    let mut client = pb::agent_control_service_client::AgentControlServiceClient::new(channel);
+                    let mut client =
+                        pb::agent_control_service_client::AgentControlServiceClient::new(channel);
                     let res = client
                         .get_latest_threat_intel(pb::ThreatIntelRequest {
                             agent_id: String::new(),
@@ -597,7 +611,9 @@ impl Client {
                                 .get("persistence_enabled")
                                 .and_then(|v| v.as_bool())
                                 .unwrap_or(false);
-                            return Ok(Some(ServerState { persistence_enabled }));
+                            return Ok(Some(ServerState {
+                                persistence_enabled,
+                            }));
                         }
                         Ok(None)
                     }
@@ -610,7 +626,8 @@ impl Client {
             TransportMode::Grpc => {
                 self.with_retry("check_state_grpc", || async {
                     let channel = self.connect_channel().await?;
-                    let mut client = pb::agent_control_service_client::AgentControlServiceClient::new(channel);
+                    let mut client =
+                        pb::agent_control_service_client::AgentControlServiceClient::new(channel);
                     let res = client
                         .ping(pb::PingRequest {
                             agent_id: String::new(),
@@ -671,7 +688,9 @@ impl Client {
 
         if let Some(tls) = &self.tls {
             let tls_cfg = self.load_tls_config(tls)?;
-            Ok(endpoint.tls_config(tls_cfg).context("invalid gRPC TLS config")?)
+            Ok(endpoint
+                .tls_config(tls_cfg)
+                .context("invalid gRPC TLS config")?)
         } else {
             Ok(endpoint)
         }
@@ -712,8 +731,7 @@ impl Client {
                         return Err(err).with_context(|| {
                             format!(
                                 "operation {} failed after {} attempts",
-                                operation_name,
-                                attempt
+                                operation_name, attempt
                             )
                         });
                     }

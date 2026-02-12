@@ -99,7 +99,10 @@ impl AnomalyEngine {
                 return None;
             }
 
-            (std::mem::take(&mut window.counts), std::mem::take(&mut window.n))
+            (
+                std::mem::take(&mut window.counts),
+                std::mem::take(&mut window.n),
+            )
         };
 
         let baseline = self
@@ -111,14 +114,16 @@ impl AnomalyEngine {
         let (p, q) = distributions(&counts, sample_count, &baseline, self.config.alpha);
         let kl = kl_divergence_bits(&p, &q);
 
-        let tau_high = self
-            .config
-            .tau_floor_high
-            .max(tau_delta_bits(sample_count, EVENT_CLASSES.len(), self.config.delta_high));
-        let tau_med = self
-            .config
-            .tau_floor_med
-            .max(tau_delta_bits(sample_count, EVENT_CLASSES.len(), self.config.delta_med));
+        let tau_high = self.config.tau_floor_high.max(tau_delta_bits(
+            sample_count,
+            EVENT_CLASSES.len(),
+            self.config.delta_high,
+        ));
+        let tau_med = self.config.tau_floor_med.max(tau_delta_bits(
+            sample_count,
+            EVENT_CLASSES.len(),
+            self.config.delta_med,
+        ));
 
         let high = kl > tau_high || entropy_high;
         let medium = !high && kl > tau_med;

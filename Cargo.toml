@@ -23,6 +23,10 @@ license = "GPL-2.0-or-later"
 [workspace.dependencies]
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
+bincode = "1.3"
+libc = "0.2"
+nix = { version = "0.30", default-features = false, features = ["signal", "process"] }
+sha2 = "0.10"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }
 tokio-stream = "0.1"
 tracing = "0.1"
@@ -31,6 +35,7 @@ toml = "0.8"
 rusqlite = { version = "0.32", features = ["bundled"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde_json = "1"
+serde_yaml = "0.9"
 tonic = { version = "0.12", features = ["tls", "transport"] }
 prost = "0.13"
 tonic-build = "0.12"

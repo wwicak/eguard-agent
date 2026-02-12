@@ -12,7 +12,11 @@ pub struct ComplianceResult {
     pub detail: String,
 }
 
-pub fn evaluate(policy: &CompliancePolicy, firewall_enabled: bool, kernel_version: &str) -> ComplianceResult {
+pub fn evaluate(
+    policy: &CompliancePolicy,
+    firewall_enabled: bool,
+    kernel_version: &str,
+) -> ComplianceResult {
     if policy.firewall_required && !firewall_enabled {
         return ComplianceResult {
             status: "fail".to_string(),
@@ -24,7 +28,10 @@ pub fn evaluate(policy: &CompliancePolicy, firewall_enabled: bool, kernel_versio
         if !kernel_version.starts_with(prefix) {
             return ComplianceResult {
                 status: "fail".to_string(),
-                detail: format!("kernel {} does not match required prefix {}", kernel_version, prefix),
+                detail: format!(
+                    "kernel {} does not match required prefix {}",
+                    kernel_version, prefix
+                ),
             };
         }
     }

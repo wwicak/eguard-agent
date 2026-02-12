@@ -7,7 +7,9 @@ pub mod pb {
     tonic::include_proto!("eguard.v1");
 }
 
-pub use buffer::{estimate_event_size, EventBuffer, OfflineBuffer, SqliteBuffer, DEFAULT_BUFFER_CAP_BYTES};
+pub use buffer::{
+    estimate_event_size, EventBuffer, OfflineBuffer, SqliteBuffer, DEFAULT_BUFFER_CAP_BYTES,
+};
 pub use client::Client;
 pub use retry::RetryPolicy;
 pub use types::{

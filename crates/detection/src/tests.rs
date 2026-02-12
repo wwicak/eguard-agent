@@ -151,3 +151,147 @@ fn engine_runs_all_layers() {
     let out = d.process_event(&ev);
     assert_eq!(out.confidence, Confidence::Definite);
 }
+
+#[test]
+fn sigma_yaml_rule_compiles_and_fires() {
+    let sigma_yaml = r#"
+title: sigma_webshell_network
+detection:
+  sequence:
+    - event_class: process_exec
+      process_any_of: [bash]
+      parent_any_of: [nginx]
+      within_secs: 30
+    - event_class: network_connect
+      dst_port_not_in: [80, 443]
+      within_secs: 10
+"#;
+
+    let mut t = TemporalEngine::new();
+    let name = t
+        .add_sigma_rule_yaml(sigma_yaml)
+        .expect("compile sigma rule");
+    assert_eq!(name, "sigma_webshell_network");
+
+    let mut e1 = event(10, EventClass::ProcessExec, "bash", "nginx", 33);
+    e1.pid = 404;
+    assert!(t.observe(&e1).is_empty());
+
+    let mut e2 = event(15, EventClass::NetworkConnect, "bash", "nginx", 33);
+    e2.pid = 404;
+    e2.dst_port = Some(8443);
+    let hits = t.observe(&e2);
+    assert!(hits.iter().any(|v| v == "sigma_webshell_network"));
+}
+
+#[test]
+fn sigma_yaml_missing_within_secs_is_rejected() {
+    let sigma_yaml = r#"
+title: invalid_rule
+detection:
+  sequence:
+    - event_class: process_exec
+      process_any_of: [bash]
+"#;
+
+    let err = compile_sigma_rule(sigma_yaml).expect_err("expected compile error");
+    assert!(matches!(
+        err,
+        SigmaCompileError::MissingStageWindow { stage_index: 0 }
+    ));
+}
+
+#[test]
+fn sigma_yaml_compiles_to_bounded_temporal_ast() {
+    let sigma_yaml = r#"
+title: sigma_ast_example
+detection:
+  sequence:
+    - event_class: process_exec
+      process_any_of: [bash]
+      within_secs: 30
+    - event_class: network_connect
+      dst_port_not_in: [80, 443]
+      within_secs: 10
+"#;
+
+    let ast = compile_sigma_ast(sigma_yaml).expect("compile sigma ast");
+    assert_eq!(ast.stages.len(), 2);
+    assert_eq!(ast.name, "sigma_ast_example");
+
+    match ast.root {
+        TemporalExpr::And(_, rhs) => match *rhs {
+            TemporalExpr::EventuallyWithin { within_secs, .. } => {
+                assert_eq!(within_secs, 10)
+            }
+            other => panic!("unexpected rhs expression: {:?}", other),
+        },
+        other => panic!("unexpected root expression: {:?}", other),
+    }
+}
+
+#[test]
+fn yara_rule_match_escalates_to_definite() {
+    let mut engine = DetectionEngine::default_with_rules();
+    engine
+        .load_yara_rules_str(
+            r#"
+rule suspicious_payload {
+  strings:
+    $a = "malware-test-marker"
+  condition:
+    $a
+}
+"#,
+        )
+        .expect("load yara rules");
+
+    let mut ev = event(1, EventClass::ProcessExec, "bash", "sshd", 1000);
+    ev.command_line = Some("echo malware-test-marker".to_string());
+    let out = engine.process_event(&ev);
+
+    assert_eq!(out.confidence, Confidence::Definite);
+    assert!(out
+        .yara_hits
+        .iter()
+        .any(|hit| hit.rule_name == "suspicious_payload"));
+}
+
+#[test]
+fn sigma_rules_load_from_directory() {
+    let base = std::env::temp_dir().join(format!(
+        "eguard-sigma-rules-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    std::fs::create_dir_all(&base).expect("create sigma dir");
+
+    let path = base.join("rule.yml");
+    std::fs::write(
+        &path,
+        r#"
+title: sigma_rule_from_dir
+detection:
+  sequence:
+    - event_class: process_exec
+      process_any_of: [bash]
+      parent_any_of: [nginx]
+      within_secs: 30
+    - event_class: network_connect
+      dst_port_not_in: [80, 443]
+      within_secs: 10
+"#,
+    )
+    .expect("write sigma rule");
+
+    let mut engine = DetectionEngine::default_with_rules();
+    let loaded = engine
+        .load_sigma_rules_from_dir(&base)
+        .expect("load sigma directory");
+    assert_eq!(loaded, 1);
+
+    let _ = std::fs::remove_file(path);
+    let _ = std::fs::remove_dir(base);
+}
