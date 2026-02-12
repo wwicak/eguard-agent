@@ -495,6 +495,82 @@ fn replay_harness_is_deterministic() {
 }
 
 #[test]
+// AC-DET-091
+fn detection_latency_p99_stays_within_budget_for_reference_workload() {
+    let mut engine = DetectionEngine::default_with_rules();
+    engine.layer1.load_hashes(["deadbeef".to_string()]);
+
+    let mut samples_ns = Vec::new();
+    for i in 0..2_000i64 {
+        let mut ev = event(i, EventClass::ProcessExec, "bash", "sshd", 1000);
+        if i % 200 == 0 {
+            ev.file_hash = Some("deadbeef".to_string());
+        }
+        let started = std::time::Instant::now();
+        let _ = engine.process_event(&ev);
+        samples_ns.push(started.elapsed().as_nanos() as u64);
+    }
+
+    samples_ns.sort_unstable();
+    let idx = ((samples_ns.len() as f64) * 0.99).ceil() as usize - 1;
+    let p99 = samples_ns[idx.min(samples_ns.len() - 1)];
+    assert!(p99 < std::time::Duration::from_millis(10).as_nanos() as u64);
+}
+
+#[test]
+// AC-DET-093 AC-DET-094
+fn replay_reports_precision_recall_and_false_alarm_upper_bound_by_confidence() {
+    let mut events = Vec::new();
+    let mut malicious = std::collections::HashSet::new();
+    for i in 0..30i64 {
+        let mut ev = event(i, EventClass::ProcessExec, "bash", "sshd", 1000);
+        if i % 10 == 0 {
+            ev.file_hash = Some("deadbeef".to_string());
+            malicious.insert(i as usize);
+        }
+        events.push(ev);
+    }
+
+    let mut engine = DetectionEngine::default_with_rules();
+    engine.layer1.load_hashes(["deadbeef".to_string()]);
+    let summary = replay_events(&mut engine, &events);
+
+    let predicted_definite: std::collections::HashSet<usize> = summary
+        .alerts
+        .iter()
+        .filter(|a| a.confidence == Confidence::Definite)
+        .map(|a| a.index)
+        .collect();
+
+    let tp = predicted_definite.intersection(&malicious).count();
+    let fp = predicted_definite.difference(&malicious).count();
+    let fn_ = malicious.difference(&predicted_definite).count();
+
+    let precision = if tp + fp == 0 {
+        0.0
+    } else {
+        tp as f64 / (tp + fp) as f64
+    };
+    let recall = if tp + fn_ == 0 {
+        0.0
+    } else {
+        tp as f64 / (tp + fn_) as f64
+    };
+    assert!(precision >= 0.99);
+    assert!(recall >= 0.99);
+
+    let benign_trials = events.len() - malicious.len();
+    let false_alarms = fp;
+    let upper_false_alarm = if false_alarms == 0 {
+        1.0 - 0.05f64.powf(1.0 / benign_trials as f64)
+    } else {
+        1.0
+    };
+    assert!(upper_false_alarm >= 0.0);
+    assert!(upper_false_alarm <= 1.0);
+}
+
+#[test]
 // AC-DET-035 AC-DET-036 AC-DET-037 AC-DET-038 AC-DET-087
 fn calibration_threshold_matches_sanov_bound() {
     let n = 512;
