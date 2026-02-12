@@ -35,6 +35,10 @@ pub struct EnrollmentEnvelope {
     pub agent_id: String,
     pub mac: String,
     pub hostname: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enrollment_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

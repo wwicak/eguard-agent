@@ -19,6 +19,8 @@ pub struct AgentConfig {
     pub mode: AgentMode,
     pub transport_mode: String,
     pub server_addr: String,
+    pub enrollment_token: Option<String>,
+    pub tenant_id: Option<String>,
     pub response: ResponseConfig,
     pub offline_buffer_backend: String,
     pub offline_buffer_path: String,
@@ -26,6 +28,8 @@ pub struct AgentConfig {
     pub tls_cert_path: Option<String>,
     pub tls_key_path: Option<String>,
     pub tls_ca_path: Option<String>,
+    #[serde(skip)]
+    pub bootstrap_config_path: Option<PathBuf>,
 }
 
 impl Default for AgentConfig {
@@ -36,6 +40,8 @@ impl Default for AgentConfig {
             mode: AgentMode::Learning,
             transport_mode: "http".to_string(),
             server_addr: "eguard-server:50051".to_string(),
+            enrollment_token: None,
+            tenant_id: None,
             response: ResponseConfig::default(),
             offline_buffer_backend: "sqlite".to_string(),
             offline_buffer_path: "/var/lib/eguard-agent/offline-events.db".to_string(),
@@ -43,6 +49,7 @@ impl Default for AgentConfig {
             tls_cert_path: None,
             tls_key_path: None,
             tls_ca_path: None,
+            bootstrap_config_path: None,
         }
     }
 }
@@ -50,7 +57,10 @@ impl Default for AgentConfig {
 impl AgentConfig {
     pub fn load() -> Result<Self> {
         let mut cfg = Self::default();
-        cfg.apply_file_config()?;
+        let has_agent_config = cfg.apply_file_config()?;
+        if !has_agent_config {
+            cfg.apply_bootstrap_config()?;
+        }
         cfg.apply_env_overrides();
         Ok(cfg)
     }
@@ -88,6 +98,14 @@ impl AgentConfig {
             if !v.trim().is_empty() {
                 self.transport_mode = v;
             }
+        }
+
+        if let Ok(v) = std::env::var("EGUARD_ENROLLMENT_TOKEN") {
+            self.enrollment_token = non_empty(Some(v));
+        }
+
+        if let Ok(v) = std::env::var("EGUARD_TENANT_ID") {
+            self.tenant_id = non_empty(Some(v));
         }
 
         if let Ok(v) = std::env::var("EGUARD_AUTONOMOUS_RESPONSE") {
@@ -137,10 +155,10 @@ impl AgentConfig {
         }
     }
 
-    fn apply_file_config(&mut self) -> Result<()> {
+    fn apply_file_config(&mut self) -> Result<bool> {
         let path = resolve_config_path()?;
         let Some(path) = path else {
-            return Ok(());
+            return Ok(false);
         };
 
         let raw = fs::read_to_string(&path)
@@ -212,6 +230,36 @@ impl AgentConfig {
             }
         }
 
+        Ok(true)
+    }
+
+    fn apply_bootstrap_config(&mut self) -> Result<()> {
+        let path = resolve_bootstrap_path()?;
+        let Some(path) = path else {
+            return Ok(());
+        };
+
+        let raw = fs::read_to_string(&path)
+            .with_context(|| format!("failed reading bootstrap config {}", path.display()))?;
+        let bootstrap = parse_bootstrap_config(&raw).with_context(|| {
+            format!(
+                "failed parsing bootstrap config {}",
+                path.as_path().display()
+            )
+        })?;
+
+        if let Some(address) = bootstrap.address {
+            self.server_addr = format_server_addr(&address, bootstrap.grpc_port);
+            self.transport_mode = "grpc".to_string();
+        }
+        if let Some(token) = bootstrap.enrollment_token {
+            self.enrollment_token = Some(token);
+        }
+        if let Some(tenant_id) = bootstrap.tenant_id {
+            self.tenant_id = Some(tenant_id);
+        }
+
+        self.bootstrap_config_path = Some(path);
         Ok(())
     }
 }
@@ -304,6 +352,14 @@ struct FileTransportConfig {
     mode: Option<String>,
 }
 
+#[derive(Debug, Clone, Default)]
+struct BootstrapConfig {
+    address: Option<String>,
+    grpc_port: Option<u16>,
+    enrollment_token: Option<String>,
+    tenant_id: Option<String>,
+}
+
 fn resolve_config_path() -> Result<Option<PathBuf>> {
     if let Ok(p) = std::env::var("EGUARD_AGENT_CONFIG") {
         let p = p.trim();
@@ -331,6 +387,121 @@ fn resolve_config_path() -> Result<Option<PathBuf>> {
     }
 
     Ok(None)
+}
+
+fn resolve_bootstrap_path() -> Result<Option<PathBuf>> {
+    if let Ok(p) = std::env::var("EGUARD_BOOTSTRAP_CONFIG") {
+        let p = p.trim();
+        if !p.is_empty() {
+            let path = PathBuf::from(p);
+            if !path.exists() {
+                anyhow::bail!(
+                    "configured EGUARD_BOOTSTRAP_CONFIG does not exist: {}",
+                    path.display()
+                );
+            }
+            return Ok(Some(path));
+        }
+    }
+
+    for candidate in [
+        "/etc/eguard-agent/bootstrap.conf",
+        "./conf/bootstrap.conf",
+        "./bootstrap.conf",
+    ] {
+        let p = Path::new(candidate);
+        if p.exists() {
+            return Ok(Some(p.to_path_buf()));
+        }
+    }
+
+    Ok(None)
+}
+
+fn parse_bootstrap_config(raw: &str) -> Result<BootstrapConfig> {
+    let mut cfg = BootstrapConfig::default();
+    let mut section = String::new();
+
+    for line in raw.lines() {
+        let mut line = line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+
+        if let Some(content) = line.strip_prefix('[').and_then(|v| v.strip_suffix(']')) {
+            section = content.trim().to_ascii_lowercase();
+            continue;
+        }
+
+        if section != "server" {
+            continue;
+        }
+
+        if let Some((head, _)) = line.split_once('#') {
+            line = head.trim();
+        }
+        if let Some((head, _)) = line.split_once(';') {
+            line = head.trim();
+        }
+        if line.is_empty() {
+            continue;
+        }
+
+        let Some((raw_key, raw_value)) = line.split_once('=') else {
+            continue;
+        };
+
+        let key = raw_key.trim().to_ascii_lowercase();
+        let value = raw_value.trim().trim_matches('"').trim_matches('\'').trim();
+        if value.is_empty() {
+            continue;
+        }
+
+        match key.as_str() {
+            "address" => cfg.address = Some(value.to_string()),
+            "grpc_port" => {
+                if let Ok(port) = value.parse::<u16>() {
+                    cfg.grpc_port = Some(port);
+                }
+            }
+            "enrollment_token" => cfg.enrollment_token = Some(value.to_string()),
+            "tenant_id" => cfg.tenant_id = Some(value.to_string()),
+            _ => {}
+        }
+    }
+
+    Ok(cfg)
+}
+
+fn format_server_addr(address: &str, grpc_port: Option<u16>) -> String {
+    let address = address.trim();
+    let Some(port) = grpc_port else {
+        return address.to_string();
+    };
+    if has_explicit_port(address) {
+        return address.to_string();
+    }
+
+    if address.contains(':') && !address.starts_with('[') {
+        format!("[{}]:{}", address, port)
+    } else {
+        format!("{}:{}", address, port)
+    }
+}
+
+fn has_explicit_port(address: &str) -> bool {
+    if address.starts_with('[') {
+        return address.contains("]:");
+    }
+
+    if address.matches(':').count() == 1 {
+        return address
+            .rsplit_once(':')
+            .and_then(|(_, p)| p.parse::<u16>().ok())
+            .is_some();
+    }
+
+    false
 }
 
 fn non_empty(v: Option<String>) -> Option<String> {
@@ -394,11 +565,14 @@ mod tests {
     fn clear_env() {
         let vars = [
             "EGUARD_AGENT_CONFIG",
+            "EGUARD_BOOTSTRAP_CONFIG",
             "EGUARD_AGENT_ID",
             "EGUARD_SERVER_ADDR",
             "EGUARD_SERVER",
             "EGUARD_AGENT_MODE",
             "EGUARD_TRANSPORT_MODE",
+            "EGUARD_ENROLLMENT_TOKEN",
+            "EGUARD_TENANT_ID",
             "EGUARD_AUTONOMOUS_RESPONSE",
             "EGUARD_RESPONSE_DRY_RUN",
             "EGUARD_RESPONSE_MAX_KILLS_PER_MINUTE",
@@ -481,5 +655,54 @@ mod tests {
 
         clear_env();
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn bootstrap_config_is_used_when_agent_config_missing() {
+        let _guard = env_lock().lock().expect("env lock");
+        clear_env();
+
+        let path = std::env::temp_dir().join(format!(
+            "eguard-bootstrap-config-{}.conf",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+
+        let mut f = std::fs::File::create(&path).expect("create bootstrap file");
+        writeln!(
+            f,
+            "[server]\naddress = 10.11.12.13\ngrpc_port = 50051\nenrollment_token = abc123def456\ntenant_id = default"
+        )
+        .expect("write bootstrap file");
+
+        std::env::set_var("EGUARD_BOOTSTRAP_CONFIG", &path);
+        let cfg = AgentConfig::load().expect("load config");
+
+        assert_eq!(cfg.server_addr, "10.11.12.13:50051");
+        assert_eq!(cfg.transport_mode, "grpc");
+        assert_eq!(cfg.enrollment_token.as_deref(), Some("abc123def456"));
+        assert_eq!(cfg.tenant_id.as_deref(), Some("default"));
+        assert_eq!(cfg.bootstrap_config_path.as_deref(), Some(path.as_path()));
+
+        clear_env();
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn format_server_addr_handles_ipv6_without_port() {
+        assert_eq!(
+            format_server_addr("2001:db8::1", Some(50051)),
+            "[2001:db8::1]:50051"
+        );
+        assert_eq!(
+            format_server_addr("[2001:db8::1]:50051", Some(50052)),
+            "[2001:db8::1]:50051"
+        );
+        assert_eq!(
+            format_server_addr("eguard.example.com", Some(50051)),
+            "eguard.example.com:50051"
+        );
     }
 }

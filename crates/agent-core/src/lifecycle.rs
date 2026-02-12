@@ -206,11 +206,14 @@ impl AgentRuntime {
                     agent_id: self.config.agent_id.clone(),
                     mac: self.config.mac.clone(),
                     hostname,
+                    enrollment_token: self.config.enrollment_token.clone(),
+                    tenant_id: self.config.tenant_id.clone(),
                 };
                 if let Err(err) = self.client.enroll(&enroll).await {
                     warn!(error = %err, "enrollment failed");
                 } else {
                     self.enrolled = true;
+                    self.consume_bootstrap_config();
                 }
             }
 
@@ -323,6 +326,19 @@ impl AgentRuntime {
 
     fn log_posture(&self, posture: Posture) {
         info!(?posture, "computed nac posture");
+    }
+
+    fn consume_bootstrap_config(&self) {
+        let Some(path) = self.config.bootstrap_config_path.as_ref() else {
+            return;
+        };
+        match std::fs::remove_file(path) {
+            Ok(()) => info!(path = %path.display(), "consumed bootstrap config after enrollment"),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                warn!(error = %err, path = %path.display(), "failed consuming bootstrap config")
+            }
+        }
     }
 
     fn next_raw_event(&mut self, now_unix: i64) -> RawEvent {

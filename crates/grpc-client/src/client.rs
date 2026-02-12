@@ -143,6 +143,9 @@ impl Client {
             }
             TransportMode::Grpc => {
                 self.with_retry("enroll_grpc", || async {
+                    if enrollment.enrollment_token.is_some() {
+                        warn!("enrollment_token is configured but gRPC EnrollRequest has no token field yet");
+                    }
                     let channel = self.connect_channel().await?;
                     let mut client =
                         pb::agent_control_service_client::AgentControlServiceClient::new(channel);
