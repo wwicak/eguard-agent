@@ -124,7 +124,7 @@ fn layer1_append_string_signatures_preserves_existing_patterns() {
 }
 
 #[test]
-// AC-DET-021 AC-DET-086
+// AC-DET-021 AC-DET-026 AC-DET-027 AC-DET-086
 fn temporal_engine_detects_webshell_pattern() {
     let mut t = TemporalEngine::with_default_rules();
 
@@ -630,7 +630,7 @@ fn anomaly_math_matches_probability_and_kl_formulas() {
 }
 
 #[test]
-// AC-DET-021 AC-DET-086
+// AC-DET-020 AC-DET-021 AC-DET-027 AC-DET-086
 fn temporal_engine_enforces_stage_window() {
     let mut t = TemporalEngine::with_default_rules();
 
