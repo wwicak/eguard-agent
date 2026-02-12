@@ -59,6 +59,16 @@ impl AgentRuntime {
 
         let rule_type = parse_emergency_rule_type(&payload.rule_type)?;
 
+        let severity = payload.severity.trim().to_ascii_lowercase();
+        if !severity.is_empty()
+            && !matches!(
+                severity.as_str(),
+                "info" | "low" | "medium" | "high" | "critical"
+            )
+        {
+            return Err(anyhow!("unsupported emergency severity: {}", severity));
+        }
+
         let rule_content = if payload.rule_content.trim().is_empty() {
             payload.content.trim()
         } else {
@@ -69,7 +79,10 @@ impl AgentRuntime {
         }
 
         let rule_name = if payload.rule_name.trim().is_empty() {
-            format!("emergency-{}-rule", payload.rule_type.trim().to_ascii_lowercase())
+            format!(
+                "emergency-{}-rule",
+                payload.rule_type.trim().to_ascii_lowercase()
+            )
         } else {
             payload.rule_name.trim().to_string()
         };

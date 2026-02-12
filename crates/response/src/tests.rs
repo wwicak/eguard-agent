@@ -36,7 +36,7 @@ fn emergency_rule_push_is_recognized() {
 }
 
 #[test]
-// AC-RSP-001 AC-RSP-002 AC-RSP-003 AC-RSP-004 AC-RSP-049 AC-RSP-050 AC-RSP-101
+// AC-RSP-001 AC-RSP-002 AC-RSP-003 AC-RSP-004 AC-RSP-049 AC-RSP-050 AC-RSP-101 AC-DET-066 AC-DET-067 AC-DET-068 AC-DET-069 AC-DET-070 AC-DET-071 AC-DET-092
 fn default_policy_gates_autonomous_actions_by_confidence() {
     let mut cfg = ResponseConfig {
         autonomous_response: true,

@@ -502,7 +502,9 @@ async fn enroll_grpc_rejects_expired_or_exhausted_tokens() {
         })
         .await
         .expect_err("expired token must fail");
-    assert!(expired_err.to_string().contains("operation enroll_grpc failed"));
+    assert!(expired_err
+        .to_string()
+        .contains("operation enroll_grpc failed"));
 
     let maxed_err = client
         .enroll(&EnrollmentEnvelope {
@@ -514,7 +516,9 @@ async fn enroll_grpc_rejects_expired_or_exhausted_tokens() {
         })
         .await
         .expect_err("maxed token must fail");
-    assert!(maxed_err.to_string().contains("operation enroll_grpc failed"));
+    assert!(maxed_err
+        .to_string()
+        .contains("operation enroll_grpc failed"));
 
     let guard = state.lock().expect("state lock");
     assert!(guard.endpoint_agents.is_empty());

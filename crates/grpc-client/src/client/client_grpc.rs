@@ -269,40 +269,50 @@ impl Client {
         &self,
     ) -> Result<pb::telemetry_service_client::TelemetryServiceClient<Channel>> {
         let channel = self.connect_channel().await?;
-        Ok(pb::telemetry_service_client::TelemetryServiceClient::new(channel)
-            .max_decoding_message_size(MAX_GRPC_RECV_MSG_SIZE_BYTES))
+        Ok(
+            pb::telemetry_service_client::TelemetryServiceClient::new(channel)
+                .max_decoding_message_size(MAX_GRPC_RECV_MSG_SIZE_BYTES),
+        )
     }
 
     async fn command_client(
         &self,
     ) -> Result<pb::command_service_client::CommandServiceClient<Channel>> {
         let channel = self.connect_channel().await?;
-        Ok(pb::command_service_client::CommandServiceClient::new(channel)
-            .max_decoding_message_size(MAX_GRPC_RECV_MSG_SIZE_BYTES))
+        Ok(
+            pb::command_service_client::CommandServiceClient::new(channel)
+                .max_decoding_message_size(MAX_GRPC_RECV_MSG_SIZE_BYTES),
+        )
     }
 
     async fn compliance_client(
         &self,
     ) -> Result<pb::compliance_service_client::ComplianceServiceClient<Channel>> {
         let channel = self.connect_channel().await?;
-        Ok(pb::compliance_service_client::ComplianceServiceClient::new(channel)
-            .max_decoding_message_size(MAX_GRPC_RECV_MSG_SIZE_BYTES))
+        Ok(
+            pb::compliance_service_client::ComplianceServiceClient::new(channel)
+                .max_decoding_message_size(MAX_GRPC_RECV_MSG_SIZE_BYTES),
+        )
     }
 
     async fn response_client(
         &self,
     ) -> Result<pb::response_service_client::ResponseServiceClient<Channel>> {
         let channel = self.connect_channel().await?;
-        Ok(pb::response_service_client::ResponseServiceClient::new(channel)
-            .max_decoding_message_size(MAX_GRPC_RECV_MSG_SIZE_BYTES))
+        Ok(
+            pb::response_service_client::ResponseServiceClient::new(channel)
+                .max_decoding_message_size(MAX_GRPC_RECV_MSG_SIZE_BYTES),
+        )
     }
 
     async fn agent_control_client(
         &self,
     ) -> Result<pb::agent_control_service_client::AgentControlServiceClient<Channel>> {
         let channel = self.connect_channel().await?;
-        Ok(pb::agent_control_service_client::AgentControlServiceClient::new(channel)
-            .max_decoding_message_size(MAX_GRPC_RECV_MSG_SIZE_BYTES))
+        Ok(
+            pb::agent_control_service_client::AgentControlServiceClient::new(channel)
+                .max_decoding_message_size(MAX_GRPC_RECV_MSG_SIZE_BYTES),
+        )
     }
 }
 

@@ -11,7 +11,10 @@ fn assert_proto_header(raw: &str) {
 
 fn assert_contains_all(raw: &str, expected: &[&str]) {
     for needle in expected {
-        assert!(raw.contains(needle), "missing protobuf contract fragment: {needle}");
+        assert!(
+            raw.contains(needle),
+            "missing protobuf contract fragment: {needle}"
+        );
     }
 }
 
@@ -60,19 +63,22 @@ fn agent_proto_imports_domain_protos_and_declares_eight_rpc_agent_service() {
 // AC-GRP-020 AC-GRP-030 AC-GRP-040 AC-GRP-050 AC-GRP-060 AC-GRP-061
 fn service_protos_declare_streaming_and_reporting_rpcs() {
     assert!(TELEMETRY_PROTO.contains("service TelemetryService"));
-    assert!(TELEMETRY_PROTO.contains("rpc StreamEvents(stream TelemetryBatch) returns (stream EventAck);"));
+    assert!(TELEMETRY_PROTO
+        .contains("rpc StreamEvents(stream TelemetryBatch) returns (stream EventAck);"));
 
     assert!(COMPLIANCE_PROTO.contains("service ComplianceService"));
     assert!(COMPLIANCE_PROTO.contains("rpc ReportCompliance("));
 
     assert!(COMMAND_PROTO.contains("service CommandService"));
-    assert!(COMMAND_PROTO.contains("rpc CommandChannel(CommandPollRequest) returns (stream ServerCommand);"));
+    assert!(COMMAND_PROTO
+        .contains("rpc CommandChannel(CommandPollRequest) returns (stream ServerCommand);"));
 
     assert!(RESPONSE_PROTO.contains("service ResponseService"));
     assert!(RESPONSE_PROTO.contains("rpc ReportResponse("));
 
     assert!(AGENT_PROTO.contains("rpc GetPolicy(PolicyRequest) returns (PolicyResponse);"));
-    assert!(AGENT_PROTO.contains("rpc DownloadRuleBundle(RuleBundleRequest) returns (stream RuleBundleChunk);"));
+    assert!(AGENT_PROTO
+        .contains("rpc DownloadRuleBundle(RuleBundleRequest) returns (stream RuleBundleChunk);"));
 }
 
 #[test]
@@ -392,6 +398,8 @@ fn certificate_policy_contract_covers_pinning_rotation_client_cert_and_transport
 #[test]
 // AC-GRP-098 AC-GRP-099
 fn go_binding_contract_is_explicit_in_proto() {
-    assert!(AGENT_PROTO.contains("option go_package = \"gitlab.com/devaistech77/fe_eguard/go/api/agent/v1;agentv1\";"));
+    assert!(AGENT_PROTO.contains(
+        "option go_package = \"gitlab.com/devaistech77/fe_eguard/go/api/agent/v1;agentv1\";"
+    ));
     assert!(AGENT_PROTO.contains("pb.RegisterAgentServiceServer("));
 }

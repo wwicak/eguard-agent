@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::*;
+use crate::types::EVENT_CLASSES;
 
 fn event(ts: i64, class: EventClass, process: &str, parent: &str, uid: u32) -> TelemetryEvent {
     TelemetryEvent {
@@ -72,6 +73,26 @@ fn layer1_exact_verification_works() {
     ev.command_line = Some("curl|bash -s evil".to_string());
     let hit = l1.check_event(&ev);
     assert!(hit.matched_signatures.iter().any(|s| s == "curl|bash"));
+}
+
+#[test]
+// AC-DET-003 AC-DET-085
+fn layer1_loaded_entries_have_no_algorithmic_fn_and_unloaded_have_no_fp() {
+    let mut l1 = IocLayer1::new();
+    let mut loaded = Vec::new();
+    for i in 0..256u32 {
+        loaded.push(format!("hash-{i:08x}"));
+    }
+    l1.load_hashes(loaded.clone());
+
+    for value in &loaded {
+        assert_eq!(l1.check_hash(value), Layer1Result::ExactMatch);
+    }
+
+    for i in 0..256u32 {
+        let unknown = format!("unknown-{i:08x}");
+        assert_eq!(l1.check_hash(&unknown), Layer1Result::Clean);
+    }
 }
 
 #[test]
@@ -354,6 +375,7 @@ detection:
 }
 
 #[test]
+// AC-DET-090
 fn replay_harness_is_deterministic() {
     let events = vec![
         event(1, EventClass::ProcessExec, "bash", "nginx", 33),
@@ -384,7 +406,7 @@ fn replay_harness_is_deterministic() {
 }
 
 #[test]
-// AC-DET-038
+// AC-DET-035 AC-DET-036 AC-DET-037 AC-DET-038
 fn calibration_threshold_matches_sanov_bound() {
     let n = 512;
     let k = 12;
@@ -397,6 +419,49 @@ fn calibration_threshold_matches_sanov_bound() {
     let calibration = calibrate_thresholds(n, k, delta, 1e-4, 0.20, 0.10).expect("calibrate");
     assert!(calibration.tau_high >= calibration.tau_delta_high);
     assert!(calibration.tau_med >= calibration.tau_delta_med);
+}
+
+#[test]
+// AC-DET-031 AC-DET-032 AC-DET-033
+fn anomaly_math_matches_probability_and_kl_formulas() {
+    use crate::math::{distributions, kl_divergence_bits};
+
+    let mut counts = HashMap::new();
+    counts.insert(EventClass::ProcessExec, 3);
+    counts.insert(EventClass::NetworkConnect, 1);
+    let total = 4usize;
+
+    let mut baseline = HashMap::new();
+    baseline.insert(EventClass::ProcessExec, 2.0);
+    baseline.insert(EventClass::NetworkConnect, 1.0);
+
+    let alpha = 1.0;
+    let (p, q) = distributions(&counts, total, &baseline, alpha);
+
+    let idx_proc = EVENT_CLASSES
+        .iter()
+        .position(|c| *c == EventClass::ProcessExec)
+        .expect("proc index");
+    let idx_net = EVENT_CLASSES
+        .iter()
+        .position(|c| *c == EventClass::NetworkConnect)
+        .expect("net index");
+
+    assert!((p[idx_proc] - 0.75).abs() < 1e-9);
+    assert!((p[idx_net] - 0.25).abs() < 1e-9);
+
+    let denom = 3.0 + alpha * EVENT_CLASSES.len() as f64;
+    assert!((q[idx_proc] - ((2.0 + alpha) / denom)).abs() < 1e-9);
+    assert!((q[idx_net] - ((1.0 + alpha) / denom)).abs() < 1e-9);
+
+    let expected_kl: f64 = p
+        .iter()
+        .zip(&q)
+        .filter(|(pi, qi)| **pi > 0.0 && **qi > 0.0)
+        .map(|(pi, qi)| pi * (pi / qi).log2())
+        .sum();
+    let kl = kl_divergence_bits(&p, &q);
+    assert!((kl - expected_kl).abs() < 1e-12);
 }
 
 #[test]
