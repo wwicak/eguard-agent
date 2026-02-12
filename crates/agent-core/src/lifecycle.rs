@@ -950,6 +950,10 @@ struct EmergencyRulePayload {
     rule_type: String,
     #[serde(default)]
     rule_content: String,
+    #[serde(default)]
+    content: String,
+    #[serde(default)]
+    severity: String,
 }
 
 fn parse_emergency_rule_type(raw: &str) -> Result<EmergencyRuleType> {

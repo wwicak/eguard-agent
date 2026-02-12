@@ -248,7 +248,7 @@ pub fn parse_server_command(raw: &str) -> ServerCommand {
         "config_change" => ServerCommand::ConfigChange,
         "uninstall" => ServerCommand::Uninstall,
         "restore_quarantine" => ServerCommand::RestoreQuarantine,
-        "emergency_rule_push" => ServerCommand::EmergencyRulePush,
+        "emergency_rule_push" | "push_emergency_rule" => ServerCommand::EmergencyRulePush,
         _ => ServerCommand::Unknown,
     }
 }

@@ -57,25 +57,31 @@ impl AgentRuntime {
         let payload: EmergencyRulePayload = serde_json::from_str(payload_json)
             .map_err(|err| anyhow!("invalid emergency payload: {}", err))?;
 
-        let rule_name = payload.rule_name.trim();
-        if rule_name.is_empty() {
-            return Err(anyhow!("missing emergency rule name"));
-        }
+        let rule_type = parse_emergency_rule_type(&payload.rule_type)?;
 
-        let rule_content = payload.rule_content.trim();
+        let rule_content = if payload.rule_content.trim().is_empty() {
+            payload.content.trim()
+        } else {
+            payload.rule_content.trim()
+        };
         if rule_content.is_empty() {
             return Err(anyhow!("missing emergency rule content"));
         }
 
-        let rule_type = parse_emergency_rule_type(&payload.rule_type)?;
+        let rule_name = if payload.rule_name.trim().is_empty() {
+            format!("emergency-{}-rule", payload.rule_type.trim().to_ascii_lowercase())
+        } else {
+            payload.rule_name.trim().to_string()
+        };
+
         let rule = EmergencyRule {
-            name: rule_name.to_string(),
+            name: rule_name.clone(),
             rule_type,
             rule_content: rule_content.to_string(),
         };
 
         self.detection_state.apply_emergency_rule(rule)?;
-        Ok(rule_name.to_string())
+        Ok(rule_name)
     }
 
     fn apply_emergency_rule_push(&self, payload_json: &str, exec: &mut response::CommandExecution) {

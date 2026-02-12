@@ -302,6 +302,8 @@ struct EnrollmentTokenRecord {
 struct EnrollmentMockState {
     token_table: HashMap<String, EnrollmentTokenRecord>,
     endpoint_agents: Vec<String>,
+    last_enrollment_token: Option<String>,
+    last_csr_len: Option<usize>,
 }
 
 #[derive(Clone)]
@@ -347,6 +349,8 @@ impl pb::agent_control_service_server::AgentControlService for MockAgentControlS
         }
 
         token.used += 1;
+        guard.last_enrollment_token = Some(req.enrollment_token);
+        guard.last_csr_len = Some(req.csr.len());
         guard.endpoint_agents.push(req.hostname);
 
         Ok(Response::new(pb::EnrollResponse {
@@ -420,7 +424,7 @@ async fn spawn_mock_agent_control(
 }
 
 #[tokio::test]
-// AC-GRP-007 AC-GRP-008 AC-GRP-009 AC-ENR-002
+// AC-GRP-007 AC-GRP-008 AC-GRP-009 AC-ENR-001 AC-ENR-002
 async fn enroll_grpc_validates_token_issues_cert_and_tracks_endpoint_agent_record() {
     let state = Arc::new(Mutex::new(EnrollmentMockState::default()));
     state.lock().expect("state lock").token_table.insert(
@@ -454,6 +458,8 @@ async fn enroll_grpc_validates_token_issues_cert_and_tracks_endpoint_agent_recor
     assert_eq!(token.used, 1);
     assert_eq!(guard.endpoint_agents.len(), 1);
     assert_eq!(guard.endpoint_agents[0], "host-a");
+    assert_eq!(guard.last_enrollment_token.as_deref(), Some("tok-valid"));
+    assert!(guard.last_csr_len.unwrap_or_default() > 0);
     drop(guard);
 
     let _ = shutdown_tx.send(());
