@@ -121,6 +121,7 @@ rule bundle_marker {
 }
 
 #[test]
+// AC-DET-143 AC-DET-077
 fn verify_bundle_signature_with_material_accepts_signed_payload() {
     let base = std::env::temp_dir().join(format!(
         "eguard-bundle-signature-{}",
@@ -152,6 +153,7 @@ fn verify_bundle_signature_with_material_accepts_signed_payload() {
 }
 
 #[test]
+// AC-DET-143 AC-DET-144 AC-DET-170
 fn load_bundle_rules_reads_signed_archive_bundle() {
     let base = std::env::temp_dir().join(format!(
         "eguard-signed-bundle-load-{}",
@@ -229,6 +231,10 @@ rule signed_bundle_marker {
     let mut engine = DetectionEngine::default_with_rules();
     let (_sigma, yara) = load_bundle_rules(&mut engine, bundle_path.to_string_lossy().as_ref());
     assert_eq!(yara, 1);
+    let staging_entries = std::fs::read_dir(&staging)
+        .expect("staging root exists")
+        .count();
+    assert_eq!(staging_entries, 0);
 
     std::env::remove_var("EGUARD_RULE_BUNDLE_PUBKEY");
     std::env::remove_var("EGUARD_RULES_STAGING_DIR");
@@ -236,6 +242,35 @@ rule signed_bundle_marker {
     let _ = std::fs::remove_file(signature_path);
     let _ = std::fs::remove_file(bundle_path);
     let _ = std::fs::remove_file(tar_path);
+    let _ = std::fs::remove_dir_all(base);
+}
+
+#[test]
+// AC-DET-143 AC-DET-077
+fn load_bundle_rules_rejects_invalid_signature_archive() {
+    let base = std::env::temp_dir().join(format!(
+        "eguard-bundle-bad-signature-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    std::fs::create_dir_all(&base).expect("create base");
+
+    let bundle_path = base.join("bundle.tar.zst");
+    std::fs::write(&bundle_path, b"not-a-valid-zstd-archive").expect("write bundle bytes");
+    let signature_path = PathBuf::from(format!("{}.sig", bundle_path.to_string_lossy()));
+    std::fs::write(&signature_path, [0u8; 64]).expect("write invalid signature");
+
+    std::env::set_var("EGUARD_RULE_BUNDLE_PUBKEY", to_hex(&[1u8; 32]));
+
+    let mut engine = DetectionEngine::default_with_rules();
+    let loaded = load_bundle_rules(&mut engine, bundle_path.to_string_lossy().as_ref());
+    assert_eq!(loaded, (0, 0));
+
+    std::env::remove_var("EGUARD_RULE_BUNDLE_PUBKEY");
+    let _ = std::fs::remove_file(signature_path);
+    let _ = std::fs::remove_file(bundle_path);
     let _ = std::fs::remove_dir_all(base);
 }
 
