@@ -29,6 +29,39 @@ fn candidate_ebpf_object_paths_uses_known_order() {
 }
 
 #[test]
+// AC-EBP-001
+fn candidate_ebpf_object_paths_discovers_five_core_program_objects() {
+    let base = std::env::temp_dir().join(format!(
+        "eguard-ebpf-core-objects-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    std::fs::create_dir_all(&base).expect("create temp dir");
+
+    let names = [
+        "process_exec_bpf.o",
+        "file_open_bpf.o",
+        "tcp_connect_bpf.o",
+        "dns_query_bpf.o",
+        "module_load_bpf.o",
+    ];
+    for name in names {
+        std::fs::write(base.join(name), b"obj").expect("write object file");
+    }
+
+    let paths = candidate_ebpf_object_paths(&base);
+    assert_eq!(paths.len(), 5);
+    for name in names {
+        assert!(paths.iter().any(|p| p.ends_with(name)));
+    }
+    assert!(!paths.iter().any(|p| p.ends_with("lsm_block_bpf.o")));
+
+    let _ = std::fs::remove_dir_all(base);
+}
+
+#[test]
 fn default_ebpf_object_dirs_include_expected_targets() {
     let dirs = default_ebpf_objects_dirs();
     assert!(dirs.iter().any(|d| d == &PathBuf::from("./zig-out/ebpf")));
@@ -356,6 +389,82 @@ fn signed_bundle_archive_contains_required_manifest_signature_and_rule_paths() {
     ] {
         assert!(entries.contains(required), "missing required entry {required}");
     }
+
+    let _ = std::fs::remove_dir_all(base);
+}
+
+#[test]
+// AC-DET-172 AC-DET-173
+fn synthetic_rule_bundle_sizes_fit_expected_uncompressed_and_zstd_ranges() {
+    let base = std::env::temp_dir().join(format!(
+        "eguard-bundle-size-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    let src = base.join("src");
+    std::fs::create_dir_all(src.join("sigma/linux")).expect("sigma/linux");
+    std::fs::create_dir_all(src.join("yara/malware")).expect("yara/malware");
+    std::fs::create_dir_all(src.join("ioc")).expect("ioc");
+
+    // Build ~10 MiB corpus with controlled entropy so zstd level3 stays in ~2-5 MiB band.
+    let mut payload = Vec::with_capacity(10 * 1024 * 1024);
+    let alphabet = *b"ABCDEFGH";
+    let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+    for idx in 0..(10 * 1024 * 1024) {
+        x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = x;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^= z >> 31;
+        if idx < (2 * 1024 * 1024) {
+            payload.push((z & 0xFF) as u8);
+        } else {
+            payload.push(alphabet[idx % alphabet.len()]);
+        }
+    }
+
+    std::fs::write(src.join("manifest.json"), "{}").expect("manifest");
+    std::fs::write(src.join("signature.ed25519"), [7u8; 64]).expect("signature");
+    std::fs::write(src.join("sigma/linux/rule.yml"), &payload[..4 * 1024 * 1024])
+        .expect("sigma payload");
+    std::fs::write(src.join("yara/malware/rule.yar"), &payload[4 * 1024 * 1024..8 * 1024 * 1024])
+        .expect("yara payload");
+    std::fs::write(src.join("ioc/hashes.json"), &payload[8 * 1024 * 1024..])
+        .expect("ioc payload");
+
+    let mut uncompressed_bytes = 0u64;
+    for path in [
+        src.join("manifest.json"),
+        src.join("signature.ed25519"),
+        src.join("sigma/linux/rule.yml"),
+        src.join("yara/malware/rule.yar"),
+        src.join("ioc/hashes.json"),
+    ] {
+        uncompressed_bytes += std::fs::metadata(path).expect("file stat").len();
+    }
+    assert!(uncompressed_bytes >= 10 * 1024 * 1024);
+    assert!(uncompressed_bytes <= 20 * 1024 * 1024);
+
+    let tar_path = base.join("bundle.tar");
+    let tar_file = std::fs::File::create(&tar_path).expect("create tar");
+    let mut builder = tar::Builder::new(tar_file);
+    builder
+        .append_dir_all(".", &src)
+        .expect("append source layout");
+    builder.finish().expect("finish tar");
+
+    let bundle_path = base.join("bundle.tar.zst");
+    let mut tar_input = std::fs::File::open(&tar_path).expect("open tar input");
+    let zstd_output = std::fs::File::create(&bundle_path).expect("create zstd output");
+    let mut encoder = zstd::stream::write::Encoder::new(zstd_output, 3).expect("init zstd");
+    std::io::copy(&mut tar_input, &mut encoder).expect("compress tar");
+    encoder.finish().expect("finish zstd");
+
+    let compressed_bytes = std::fs::metadata(&bundle_path).expect("bundle stat").len();
+    assert!(compressed_bytes >= 2 * 1024 * 1024);
+    assert!(compressed_bytes <= 5 * 1024 * 1024);
 
     let _ = std::fs::remove_dir_all(base);
 }
