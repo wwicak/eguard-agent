@@ -136,6 +136,97 @@ async fn fetch_commands_offline_returns_error() {
 }
 
 #[tokio::test]
+// AC-GRP-001 AC-GRP-081
+async fn enroll_offline_returns_error() {
+    let mut c = Client::new("127.0.0.1:1".to_string());
+    c.set_online(false);
+    let err = c
+        .enroll(&EnrollmentEnvelope {
+            agent_id: "agent-1".to_string(),
+            mac: "00:11:22:33:44:55".to_string(),
+            hostname: "host-a".to_string(),
+            enrollment_token: Some("tok".to_string()),
+            tenant_id: Some("default".to_string()),
+        })
+        .await
+        .expect_err("offline enroll should fail");
+    assert!(err.to_string().contains("server unreachable"));
+}
+
+#[tokio::test]
+// AC-GRP-010 AC-GRP-081
+async fn send_heartbeat_offline_returns_error() {
+    let mut c = Client::new("127.0.0.1:1".to_string());
+    c.set_online(false);
+    let err = c
+        .send_heartbeat("agent-1", "compliant")
+        .await
+        .expect_err("offline heartbeat should fail");
+    assert!(err.to_string().contains("server unreachable"));
+}
+
+#[tokio::test]
+// AC-GRP-030 AC-CMP-032 AC-GRP-081
+async fn send_compliance_offline_returns_error() {
+    let mut c = Client::new("127.0.0.1:1".to_string());
+    c.set_online(false);
+    let err = c
+        .send_compliance(&ComplianceEnvelope {
+            agent_id: "agent-1".to_string(),
+            policy_id: "policy-1".to_string(),
+            check_type: "firewall_enabled".to_string(),
+            status: "fail".to_string(),
+            detail: "firewall off".to_string(),
+            expected_value: "true".to_string(),
+            actual_value: "false".to_string(),
+        })
+        .await
+        .expect_err("offline compliance should fail");
+    assert!(err.to_string().contains("server unreachable"));
+}
+
+#[tokio::test]
+// AC-GRP-050 AC-GRP-081
+async fn send_response_offline_returns_error() {
+    let mut c = Client::new("127.0.0.1:1".to_string());
+    c.set_online(false);
+    let err = c
+        .send_response(&ResponseEnvelope {
+            agent_id: "agent-1".to_string(),
+            action_type: "kill".to_string(),
+            confidence: "definite".to_string(),
+            success: true,
+            error_message: String::new(),
+        })
+        .await
+        .expect_err("offline response report should fail");
+    assert!(err.to_string().contains("server unreachable"));
+}
+
+#[tokio::test]
+// AC-GRP-060 AC-GRP-081
+async fn fetch_latest_threat_intel_offline_returns_error() {
+    let mut c = Client::new("127.0.0.1:1".to_string());
+    c.set_online(false);
+    let err = c
+        .fetch_latest_threat_intel()
+        .await
+        .expect_err("offline threat-intel query should fail");
+    assert!(err.to_string().contains("server unreachable"));
+}
+
+#[tokio::test]
+// AC-GRP-040 AC-GRP-041
+async fn stream_command_channel_zero_limit_is_empty() {
+    let c = Client::new("127.0.0.1:1".to_string());
+    let out = c
+        .stream_command_channel("agent-1", &["cmd-1".to_string()], 0)
+        .await
+        .expect("zero limit should short-circuit");
+    assert!(out.is_empty());
+}
+
+#[tokio::test]
 // AC-GRP-042 AC-GRP-081
 async fn ack_command_offline_returns_error() {
     let mut c = Client::new("127.0.0.1:1".to_string());
