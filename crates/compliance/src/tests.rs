@@ -1,5 +1,9 @@
 use super::*;
 
+fn snapshot_base(firewall_enabled: bool, kernel_version: &str) -> SystemSnapshot {
+    SystemSnapshot::minimal(firewall_enabled, kernel_version)
+}
+
 #[test]
 // AC-CMP-014 AC-CMP-015 AC-CMP-016
 fn parse_policy_json_handles_extended_fields() {
@@ -37,14 +41,11 @@ fn evaluate_snapshot_reports_package_and_kernel_failures() {
     let mut installed = HashSet::new();
     installed.insert("telnetd".to_string());
 
-    let snapshot = SystemSnapshot {
-        firewall_enabled: false,
-        kernel_version: "6.1.0".to_string(),
-        os_version: Some("Ubuntu 22.04".to_string()),
-        root_fs_encrypted: Some(true),
-        ssh_root_login_permitted: Some(false),
-        installed_packages: Some(installed),
-    };
+    let mut snapshot = snapshot_base(false, "6.1.0");
+    snapshot.os_version = Some("Ubuntu 22.04".to_string());
+    snapshot.root_fs_encrypted = Some(true);
+    snapshot.ssh_root_login_permitted = Some(false);
+    snapshot.installed_packages = Some(installed);
 
     let result = evaluate_snapshot(&policy, &snapshot);
     assert_eq!(result.status, "fail");
@@ -95,14 +96,8 @@ fn plan_remediation_actions_covers_firewall_and_packages() {
     let mut installed = HashSet::new();
     installed.insert("telnetd".to_string());
 
-    let snapshot = SystemSnapshot {
-        firewall_enabled: false,
-        kernel_version: "6.8.0".to_string(),
-        os_version: None,
-        root_fs_encrypted: None,
-        ssh_root_login_permitted: None,
-        installed_packages: Some(installed),
-    };
+    let mut snapshot = snapshot_base(false, "6.8.0");
+    snapshot.installed_packages = Some(installed);
 
     let actions = plan_remediation_actions(&policy, &snapshot);
     assert!(actions.iter().any(|a| a.action_id == "enable_firewall"));
@@ -169,19 +164,17 @@ fn evaluate_snapshot_passes_when_all_checks_succeed() {
         require_ssh_root_login_disabled: true,
         required_packages: vec!["auditd".to_string()],
         forbidden_packages: vec!["telnetd".to_string()],
+        ..CompliancePolicy::default()
     };
 
     let mut installed = HashSet::new();
     installed.insert("auditd".to_string());
 
-    let snapshot = SystemSnapshot {
-        firewall_enabled: true,
-        kernel_version: "6.8.12".to_string(),
-        os_version: Some("Ubuntu 24.04".to_string()),
-        root_fs_encrypted: Some(true),
-        ssh_root_login_permitted: Some(false),
-        installed_packages: Some(installed),
-    };
+    let mut snapshot = snapshot_base(true, "6.8.12");
+    snapshot.os_version = Some("Ubuntu 24.04".to_string());
+    snapshot.root_fs_encrypted = Some(true);
+    snapshot.ssh_root_login_permitted = Some(false);
+    snapshot.installed_packages = Some(installed);
 
     let result = evaluate_snapshot(&policy, &snapshot);
     assert_eq!(result.status, "pass");
@@ -201,14 +194,8 @@ fn package_checks_are_case_insensitive() {
     installed.insert("auditd".to_string());
     installed.insert("telnetd".to_string());
 
-    let snapshot = SystemSnapshot {
-        firewall_enabled: true,
-        kernel_version: "6.8.0".to_string(),
-        os_version: None,
-        root_fs_encrypted: None,
-        ssh_root_login_permitted: None,
-        installed_packages: Some(installed),
-    };
+    let mut snapshot = snapshot_base(true, "6.8.0");
+    snapshot.installed_packages = Some(installed);
 
     let result = evaluate_snapshot(&policy, &snapshot);
     assert!(result
@@ -229,14 +216,10 @@ fn remediation_plan_includes_disabling_ssh_root_login() {
         ..CompliancePolicy::default()
     };
 
-    let snapshot = SystemSnapshot {
-        firewall_enabled: true,
-        kernel_version: "6.8.0".to_string(),
-        os_version: Some("Ubuntu".to_string()),
-        root_fs_encrypted: Some(true),
-        ssh_root_login_permitted: Some(true),
-        installed_packages: None,
-    };
+    let mut snapshot = snapshot_base(true, "6.8.0");
+    snapshot.os_version = Some("Ubuntu".to_string());
+    snapshot.root_fs_encrypted = Some(true);
+    snapshot.ssh_root_login_permitted = Some(true);
 
     let actions = plan_remediation_actions(&policy, &snapshot);
     assert!(actions
@@ -294,6 +277,185 @@ PermitRootLogin yes
     let default_when_missing = "# no directive\n";
     assert_eq!(
         parse_ssh_root_login_from_config(default_when_missing),
+        Some(false)
+    );
+}
+
+#[test]
+// AC-CMP-007
+fn required_services_check_fails_when_service_not_running() {
+    let policy = CompliancePolicy {
+        required_services: vec!["sshd".to_string()],
+        ..CompliancePolicy::default()
+    };
+    let mut snapshot = snapshot_base(true, "6.8.0");
+    let mut services = HashSet::new();
+    services.insert("cron".to_string());
+    snapshot.running_services = Some(services);
+
+    let result = evaluate_snapshot(&policy, &snapshot);
+    assert!(result
+        .checks
+        .iter()
+        .any(|c| c.check == "service_running:sshd" && c.status == "fail"));
+}
+
+#[test]
+// AC-CMP-008
+fn password_policy_check_uses_hardened_probe_flag() {
+    let policy = CompliancePolicy {
+        password_policy_required: true,
+        ..CompliancePolicy::default()
+    };
+    let mut snapshot = snapshot_base(true, "6.8.0");
+    snapshot.password_policy_hardened = Some(true);
+
+    let result = evaluate_snapshot(&policy, &snapshot);
+    assert!(result
+        .checks
+        .iter()
+        .any(|c| c.check == "password_policy" && c.status == "pass"));
+}
+
+#[test]
+// AC-CMP-009
+fn screen_lock_check_uses_probe_flag() {
+    let policy = CompliancePolicy {
+        screen_lock_required: true,
+        ..CompliancePolicy::default()
+    };
+    let mut snapshot = snapshot_base(true, "6.8.0");
+    snapshot.screen_lock_enabled = Some(false);
+
+    let result = evaluate_snapshot(&policy, &snapshot);
+    assert!(result
+        .checks
+        .iter()
+        .any(|c| c.check == "screen_lock_enabled" && c.status == "fail"));
+}
+
+#[test]
+// AC-CMP-011
+fn auto_updates_check_uses_probe_flag() {
+    let policy = CompliancePolicy {
+        auto_updates_required: true,
+        ..CompliancePolicy::default()
+    };
+    let mut snapshot = snapshot_base(true, "6.8.0");
+    snapshot.auto_updates_enabled = Some(true);
+
+    let result = evaluate_snapshot(&policy, &snapshot);
+    assert!(result
+        .checks
+        .iter()
+        .any(|c| c.check == "auto_updates" && c.status == "pass"));
+}
+
+#[test]
+// AC-CMP-012
+fn agent_version_is_reported_from_package_metadata() {
+    assert!(!current_agent_version().trim().is_empty());
+}
+
+#[test]
+// AC-CMP-013
+fn antivirus_check_uses_probe_flag() {
+    let policy = CompliancePolicy {
+        antivirus_required: true,
+        ..CompliancePolicy::default()
+    };
+    let mut snapshot = snapshot_base(true, "6.8.0");
+    snapshot.antivirus_running = Some(false);
+
+    let result = evaluate_snapshot(&policy, &snapshot);
+    assert!(result
+        .checks
+        .iter()
+        .any(|c| c.check == "antivirus_running" && c.status == "fail"));
+}
+
+#[test]
+// AC-CMP-017 AC-CMP-018 AC-CMP-019
+fn parse_policy_json_supports_runtime_timing_controls() {
+    let policy = parse_policy_json(
+        r#"{
+            "check_interval_secs": 300,
+            "grace_period_secs": 3600,
+            "auto_remediate": false
+        }"#,
+    )
+    .expect("parse policy timing");
+
+    assert_eq!(policy.check_interval_secs, Some(300));
+    assert_eq!(policy.grace_period_secs, Some(3600));
+    assert_eq!(policy.auto_remediate, Some(false));
+}
+
+#[test]
+// AC-CMP-025
+fn os_version_gte_check_compares_numeric_prefix() {
+    let policy = CompliancePolicy {
+        min_os_version: Some("22.04".to_string()),
+        ..CompliancePolicy::default()
+    };
+    let mut snapshot = snapshot_base(true, "6.8.0");
+    snapshot.os_version = Some("Ubuntu 24.04.1 LTS".to_string());
+
+    let result = evaluate_snapshot(&policy, &snapshot);
+    assert!(result
+        .checks
+        .iter()
+        .any(|c| c.check == "os_version_gte" && c.status == "pass"));
+}
+
+#[test]
+// AC-CMP-027
+fn firewall_required_check_maps_to_expected_fail_and_remediation() {
+    let policy = CompliancePolicy {
+        firewall_required: true,
+        ..CompliancePolicy::default()
+    };
+    let snapshot = snapshot_base(false, "6.8.0");
+    let result = evaluate_snapshot(&policy, &snapshot);
+    assert!(result
+        .checks
+        .iter()
+        .any(|c| c.check == "firewall_required" && c.status == "fail"));
+
+    let actions = plan_remediation_actions(&policy, &snapshot);
+    assert!(actions.iter().any(|a| a.action_id == "enable_firewall"));
+}
+
+#[test]
+// AC-CMP-033
+fn default_runtime_settings_match_documented_values() {
+    let (interval, auto_remediate) = default_runtime_settings();
+    assert_eq!(interval, 300);
+    assert!(!auto_remediate);
+}
+
+#[test]
+// AC-CMP-007
+fn parse_running_services_output_extracts_service_names() {
+    let raw = "sshd.service loaded active running OpenSSH Daemon\ncron.service loaded active running Regular background program processing daemon\n";
+    let parsed = parse_running_services_output(raw).expect("parse services");
+    assert!(parsed.contains("sshd"));
+    assert!(parsed.contains("cron"));
+}
+
+#[test]
+// AC-CMP-008
+fn parse_password_policy_requires_max_days_and_quality_module() {
+    let login_defs = "PASS_MAX_DAYS 90\n";
+    let pam = "password requisite pam_pwquality.so retry=3 minlen=12\n";
+    assert_eq!(
+        parse_password_policy(Some(login_defs), Some(pam)),
+        Some(true)
+    );
+
+    let weak_login_defs = "PASS_MAX_DAYS 365\n";
+    assert_eq!(
+        parse_password_policy(Some(weak_login_defs), Some(pam)),
         Some(false)
     );
 }

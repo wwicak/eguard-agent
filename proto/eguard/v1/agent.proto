@@ -54,4 +54,6 @@ message ThreatIntelVersion {
   int64 ioc_count = 5;
   int64 cve_count = 6;
   int64 published_at_unix = 7;
+  int64 custom_rule_count = 8;
+  string custom_rule_version_hash = 9;
 }

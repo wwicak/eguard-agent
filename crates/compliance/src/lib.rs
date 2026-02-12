@@ -32,6 +32,8 @@ pub struct CompliancePolicy {
     #[serde(default)]
     pub os_version_prefix: Option<String>,
     #[serde(default)]
+    pub min_os_version: Option<String>,
+    #[serde(default)]
     pub disk_encryption_required: bool,
     #[serde(default)]
     pub require_ssh_root_login_disabled: bool,
@@ -39,6 +41,22 @@ pub struct CompliancePolicy {
     pub required_packages: Vec<String>,
     #[serde(default)]
     pub forbidden_packages: Vec<String>,
+    #[serde(default)]
+    pub required_services: Vec<String>,
+    #[serde(default)]
+    pub password_policy_required: bool,
+    #[serde(default)]
+    pub screen_lock_required: bool,
+    #[serde(default)]
+    pub auto_updates_required: bool,
+    #[serde(default)]
+    pub antivirus_required: bool,
+    #[serde(default)]
+    pub check_interval_secs: Option<u64>,
+    #[serde(default)]
+    pub grace_period_secs: Option<u64>,
+    #[serde(default)]
+    pub auto_remediate: Option<bool>,
 }
 
 impl Default for CompliancePolicy {
@@ -47,10 +65,19 @@ impl Default for CompliancePolicy {
             firewall_required: false,
             min_kernel_prefix: None,
             os_version_prefix: None,
+            min_os_version: None,
             disk_encryption_required: false,
             require_ssh_root_login_disabled: false,
             required_packages: Vec::new(),
             forbidden_packages: Vec::new(),
+            required_services: Vec::new(),
+            password_policy_required: false,
+            screen_lock_required: false,
+            auto_updates_required: false,
+            antivirus_required: false,
+            check_interval_secs: None,
+            grace_period_secs: None,
+            auto_remediate: None,
         }
     }
 }
@@ -113,6 +140,12 @@ pub struct SystemSnapshot {
     pub root_fs_encrypted: Option<bool>,
     pub ssh_root_login_permitted: Option<bool>,
     pub installed_packages: Option<HashSet<String>>,
+    pub running_services: Option<HashSet<String>>,
+    pub password_policy_hardened: Option<bool>,
+    pub screen_lock_enabled: Option<bool>,
+    pub auto_updates_enabled: Option<bool>,
+    pub antivirus_running: Option<bool>,
+    pub agent_version: String,
 }
 
 impl SystemSnapshot {
@@ -124,6 +157,12 @@ impl SystemSnapshot {
             root_fs_encrypted: None,
             ssh_root_login_permitted: None,
             installed_packages: None,
+            running_services: None,
+            password_policy_hardened: None,
+            screen_lock_enabled: None,
+            auto_updates_enabled: None,
+            antivirus_running: None,
+            agent_version: current_agent_version().to_string(),
         }
     }
 }
@@ -198,6 +237,25 @@ pub fn evaluate_snapshot(policy: &CompliancePolicy, snapshot: &SystemSnapshot) -
         checks.push(check_result("os_version_prefix", passed, detail));
     }
 
+    if let Some(min_version) = &policy.min_os_version {
+        let passed = snapshot
+            .os_version
+            .as_ref()
+            .and_then(|v| version_number_prefix(v))
+            .map(|v| version_gte(&v, min_version))
+            .unwrap_or(false);
+        let detail = match snapshot.os_version.as_ref() {
+            Some(version) => format!(
+                "os {} {} minimum {}",
+                version,
+                if passed { "meets" } else { "below" },
+                min_version
+            ),
+            None => "os version unavailable".to_string(),
+        };
+        checks.push(check_result("os_version_gte", passed, detail));
+    }
+
     if policy.disk_encryption_required {
         let passed = snapshot.root_fs_encrypted.unwrap_or(false);
         let detail = if passed {
@@ -257,6 +315,77 @@ pub fn evaluate_snapshot(policy: &CompliancePolicy, snapshot: &SystemSnapshot) -
                 },
             ));
         }
+    }
+
+    if !policy.required_services.is_empty() {
+        for service in &policy.required_services {
+            let running = snapshot
+                .running_services
+                .as_ref()
+                .map(|services| services.contains(&service.to_ascii_lowercase()))
+                .unwrap_or(false);
+            checks.push(check_result(
+                format!("service_running:{}", service),
+                running,
+                if running {
+                    format!("required service {} is running", service)
+                } else {
+                    format!("required service {} is not running", service)
+                },
+            ));
+        }
+    }
+
+    if policy.password_policy_required {
+        let passed = snapshot.password_policy_hardened.unwrap_or(false);
+        checks.push(check_result(
+            "password_policy",
+            passed,
+            if passed {
+                "password policy appears hardened".to_string()
+            } else {
+                "password policy not hardened".to_string()
+            },
+        ));
+    }
+
+    if policy.screen_lock_required {
+        let passed = snapshot.screen_lock_enabled.unwrap_or(false);
+        checks.push(check_result(
+            "screen_lock_enabled",
+            passed,
+            if passed {
+                "screen lock appears enabled".to_string()
+            } else {
+                "screen lock appears disabled".to_string()
+            },
+        ));
+    }
+
+    if policy.auto_updates_required {
+        let passed = snapshot.auto_updates_enabled.unwrap_or(false);
+        checks.push(check_result(
+            "auto_updates",
+            passed,
+            if passed {
+                "automatic updates appear enabled".to_string()
+            } else {
+                "automatic updates appear disabled".to_string()
+            },
+        ));
+    }
+
+    if policy.antivirus_required {
+        let passed = snapshot.antivirus_running.unwrap_or(false);
+        checks.push(check_result(
+            "antivirus_running",
+            passed,
+            if passed {
+                "antivirus process detected".to_string()
+            } else {
+                "antivirus process not detected".to_string()
+            },
+        ));
     }
 
     let failing: Vec<&ComplianceCheck> = checks
@@ -389,6 +518,12 @@ fn collect_linux_snapshot() -> Result<SystemSnapshot> {
         root_fs_encrypted: detect_root_fs_encrypted(),
         ssh_root_login_permitted: detect_ssh_root_login_permitted(),
         installed_packages: detect_installed_packages(),
+        running_services: detect_running_services(),
+        password_policy_hardened: detect_password_policy_hardened(),
+        screen_lock_enabled: detect_screen_lock_enabled(),
+        auto_updates_enabled: detect_auto_updates_enabled(),
+        antivirus_running: detect_antivirus_running(),
+        agent_version: current_agent_version().to_string(),
     })
 }
 
@@ -482,6 +617,167 @@ fn detect_installed_packages() -> Option<HashSet<String>> {
         return Some(pkgs);
     }
     None
+}
+
+fn detect_running_services() -> Option<HashSet<String>> {
+    let output = std::process::Command::new("systemctl")
+        .args([
+            "list-units",
+            "--type=service",
+            "--state=running",
+            "--no-legend",
+            "--no-pager",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_running_services_output(std::str::from_utf8(&output.stdout).ok()?)
+}
+
+fn parse_running_services_output(raw: &str) -> Option<HashSet<String>> {
+    let mut out = HashSet::new();
+    for line in raw.lines() {
+        let Some(unit) = line.split_whitespace().next() else {
+            continue;
+        };
+        if unit.ends_with(".service") {
+            out.insert(unit.trim_end_matches(".service").to_ascii_lowercase());
+        } else {
+            out.insert(unit.to_ascii_lowercase());
+        }
+    }
+    Some(out)
+}
+
+fn detect_password_policy_hardened() -> Option<bool> {
+    let login_defs = fs::read_to_string("/etc/login.defs").ok();
+    let common_password = fs::read_to_string("/etc/pam.d/common-password").ok();
+    parse_password_policy(login_defs.as_deref(), common_password.as_deref())
+}
+
+fn parse_password_policy(
+    login_defs: Option<&str>,
+    pam_common_password: Option<&str>,
+) -> Option<bool> {
+    let mut max_days_ok = false;
+    if let Some(raw) = login_defs {
+        for line in raw.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some(v) = line.strip_prefix("PASS_MAX_DAYS") {
+                let days = v.trim().split_whitespace().next()?.parse::<u64>().ok()?;
+                max_days_ok = days <= 90;
+            }
+        }
+    }
+
+    let mut pam_quality_ok = false;
+    if let Some(raw) = pam_common_password {
+        let lower = raw.to_ascii_lowercase();
+        pam_quality_ok = lower.contains("pam_pwquality.so") || lower.contains("pam_cracklib.so");
+    }
+
+    Some(max_days_ok && pam_quality_ok)
+}
+
+fn detect_screen_lock_enabled() -> Option<bool> {
+    for path in [
+        "/etc/dconf/db/local.d/00-security-settings",
+        "/etc/dconf/db/local.d/01-screensaver",
+    ] {
+        if let Ok(raw) = fs::read_to_string(path) {
+            let lower = raw.to_ascii_lowercase();
+            if lower.contains("lock-enabled=true") || lower.contains("idle-delay") {
+                return Some(true);
+            }
+        }
+    }
+    None
+}
+
+fn detect_auto_updates_enabled() -> Option<bool> {
+    let installed = detect_installed_packages()
+        .map(|pkgs| pkgs.contains("unattended-upgrades"))
+        .unwrap_or(false);
+    let apt_cfg = fs::read_to_string("/etc/apt/apt.conf.d/20auto-upgrades")
+        .ok()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let enabled = apt_cfg.contains("apt::periodic::unattended-upgrade \"1\"");
+    Some(installed && enabled)
+}
+
+fn detect_antivirus_running() -> Option<bool> {
+    let proc_entries = fs::read_dir("/proc").ok()?;
+    let known = ["clamd", "freshclam", "sav-protect", "falcon-sensor"];
+    for entry in proc_entries.flatten() {
+        let name = entry.file_name();
+        let pid = name.to_string_lossy();
+        if !pid.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let comm_path = entry.path().join("comm");
+        if let Ok(raw) = fs::read_to_string(comm_path) {
+            let comm = raw.trim().to_ascii_lowercase();
+            if known.iter().any(|k| comm.contains(k)) {
+                return Some(true);
+            }
+        }
+    }
+    Some(false)
+}
+
+pub fn current_agent_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
+pub fn default_runtime_settings() -> (u64, bool) {
+    (300, false)
+}
+
+fn version_number_prefix(raw: &str) -> Option<String> {
+    let mut out = String::new();
+    for ch in raw.chars() {
+        if ch.is_ascii_digit() || ch == '.' {
+            out.push(ch);
+        } else if !out.is_empty() {
+            break;
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+fn version_gte(current: &str, minimum: &str) -> bool {
+    fn parse_parts(raw: &str) -> Vec<u64> {
+        raw.split('.')
+            .map(|p| p.trim())
+            .filter(|p| !p.is_empty())
+            .map(|p| p.parse::<u64>().unwrap_or(0))
+            .collect()
+    }
+
+    let a = parse_parts(current);
+    let b = parse_parts(minimum);
+    let len = a.len().max(b.len());
+    for i in 0..len {
+        let av = a.get(i).copied().unwrap_or(0);
+        let bv = b.get(i).copied().unwrap_or(0);
+        if av > bv {
+            return true;
+        }
+        if av < bv {
+            return false;
+        }
+    }
+    true
 }
 
 fn parse_dpkg_status(path: &str) -> Option<HashSet<String>> {

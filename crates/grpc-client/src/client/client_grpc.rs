@@ -283,5 +283,7 @@ fn map_threat_intel_response(res: pb::ThreatIntelVersion) -> Option<ThreatIntelV
         yara_count: res.yara_count,
         ioc_count: res.ioc_count,
         cve_count: res.cve_count,
+        custom_rule_count: res.custom_rule_count,
+        custom_rule_version_hash: res.custom_rule_version_hash,
     })
 }

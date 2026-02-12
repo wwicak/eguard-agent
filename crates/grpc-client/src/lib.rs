@@ -1,5 +1,7 @@
 mod buffer;
 mod client;
+#[cfg(test)]
+mod proto_tests;
 mod retry;
 mod types;
 

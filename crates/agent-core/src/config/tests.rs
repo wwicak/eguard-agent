@@ -105,7 +105,7 @@ fn env_overrides_file_config() {
 }
 
 #[test]
-// AC-CFG-001 AC-CFG-002
+// AC-CFG-001 AC-CFG-002 AC-GRP-006
 fn bootstrap_config_is_used_when_agent_config_missing() {
     let _guard = env_lock().lock().expect("env lock");
     clear_env();
@@ -276,7 +276,7 @@ fn default_config_matches_expected_baseline_values() {
 }
 
 #[test]
-// AC-CFG-005 AC-CFG-006 AC-CFG-007 AC-CFG-008 AC-CFG-009 AC-CFG-018 AC-CFG-019 AC-CFG-021
+// AC-CFG-005 AC-CFG-006 AC-CFG-007 AC-CFG-008 AC-CFG-009 AC-CFG-018 AC-CFG-019 AC-CFG-021 AC-GRP-097
 fn file_config_loads_extended_sections() {
     let _guard = env_lock().lock().expect("env lock");
     clear_env();

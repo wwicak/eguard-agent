@@ -196,14 +196,11 @@ fn ac_cmp_eval_and_remediation_executable() {
     let mut installed = std::collections::HashSet::new();
     installed.insert("telnetd".to_string());
 
-    let snapshot = SystemSnapshot {
-        firewall_enabled: false,
-        kernel_version: "6.8.0".to_string(),
-        os_version: Some("Ubuntu 24.04".to_string()),
-        root_fs_encrypted: Some(true),
-        ssh_root_login_permitted: Some(false),
-        installed_packages: Some(installed),
-    };
+    let mut snapshot = SystemSnapshot::minimal(false, "6.8.0");
+    snapshot.os_version = Some("Ubuntu 24.04".to_string());
+    snapshot.root_fs_encrypted = Some(true);
+    snapshot.ssh_root_login_permitted = Some(false);
+    snapshot.installed_packages = Some(installed);
 
     let result = evaluate_snapshot(&policy, &snapshot);
     assert_eq!(result.status, "fail");

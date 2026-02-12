@@ -73,6 +73,7 @@ pub struct AgentRuntime {
     consecutive_send_failures: u32,
     enrolled: bool,
     latest_threat_version: Option<String>,
+    latest_custom_rule_hash: Option<String>,
     host_control: HostControlState,
     completed_command_ids: VecDeque<String>,
 }
@@ -148,6 +149,7 @@ impl AgentRuntime {
             consecutive_send_failures: 0,
             enrolled: false,
             latest_threat_version: None,
+            latest_custom_rule_hash: None,
             host_control: HostControlState::default(),
             completed_command_ids: VecDeque::new(),
         })
@@ -369,19 +371,28 @@ impl AgentRuntime {
         }
 
         if let Some(v) = self.client.fetch_latest_threat_intel().await? {
+            let latest_hash = v.custom_rule_version_hash.clone();
             let known_version = self
                 .latest_threat_version
                 .clone()
                 .or(self.detection_state.version()?);
-            let changed = known_version.as_deref() != Some(v.version.as_str());
+            let changed = known_version.as_deref() != Some(v.version.as_str())
+                || self.latest_custom_rule_hash.as_deref() != Some(latest_hash.as_str());
             if changed {
-                info!(version = %v.version, bundle = %v.bundle_path, "new threat intel version available");
+                info!(
+                    version = %v.version,
+                    bundle = %v.bundle_path,
+                    custom_rule_count = v.custom_rule_count,
+                    custom_rule_hash = %latest_hash,
+                    "new threat intel version available"
+                );
                 let local_bundle_path = self
                     .prepare_bundle_for_reload(&v.version, &v.bundle_path)
                     .await?;
                 self.reload_detection_state(&v.version, &local_bundle_path)?;
             }
             self.latest_threat_version = Some(v.version);
+            self.latest_custom_rule_hash = Some(latest_hash);
         }
 
         Ok(())

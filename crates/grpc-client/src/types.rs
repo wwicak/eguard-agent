@@ -69,6 +69,10 @@ pub struct ThreatIntelVersionEnvelope {
     pub yara_count: i64,
     pub ioc_count: i64,
     pub cve_count: i64,
+    #[serde(default)]
+    pub custom_rule_count: i64,
+    #[serde(default)]
+    pub custom_rule_version_hash: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
