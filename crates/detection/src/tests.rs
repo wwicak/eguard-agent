@@ -96,6 +96,21 @@ fn layer1_loaded_entries_have_no_algorithmic_fn_and_unloaded_have_no_fp() {
 }
 
 #[test]
+// AC-DET-007
+fn layer1_startup_self_check_validates_known_entries_across_prefilter_and_exact_store() {
+    let mut l1 = IocLayer1::new();
+    l1.load_hashes(["abc123".to_string(), "deadbeef".to_string()]);
+    l1.load_domains(["c2.bad.example".to_string()]);
+    l1.load_ips(["203.0.113.10".to_string()]);
+
+    assert!(l1.self_check_hash_sample(["abc123".to_string(), "deadbeef".to_string()]));
+    assert!(l1.self_check_domain_sample(["C2.BAD.EXAMPLE".to_string()]));
+    assert!(l1.self_check_ip_sample(["203.0.113.10".to_string()]));
+
+    assert!(!l1.self_check_hash_sample(["missing".to_string()]));
+}
+
+#[test]
 fn layer1_append_string_signatures_preserves_existing_patterns() {
     let mut l1 = IocLayer1::new();
     l1.load_string_signatures(["curl|bash".to_string()]);

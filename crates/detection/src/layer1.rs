@@ -305,6 +305,52 @@ impl IocLayer1 {
         matches
     }
 
+    pub fn self_check_hash_sample<I>(&self, sample: I) -> bool
+    where
+        I: IntoIterator<Item = String>,
+    {
+        for hash in sample {
+            if !self.prefilter_hashes.contains(&hash) {
+                return false;
+            }
+            if !matches!(self.check_hash(&hash), Layer1Result::ExactMatch) {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub fn self_check_domain_sample<I>(&self, sample: I) -> bool
+    where
+        I: IntoIterator<Item = String>,
+    {
+        for domain in sample {
+            let normalized = domain.to_ascii_lowercase();
+            if !self.prefilter_domains.contains(&normalized) {
+                return false;
+            }
+            if !matches!(self.check_domain(&normalized), Layer1Result::ExactMatch) {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub fn self_check_ip_sample<I>(&self, sample: I) -> bool
+    where
+        I: IntoIterator<Item = String>,
+    {
+        for ip in sample {
+            if !self.prefilter_ips.contains(&ip) {
+                return false;
+            }
+            if !matches!(self.check_ip(&ip), Layer1Result::ExactMatch) {
+                return false;
+            }
+        }
+        true
+    }
+
     pub fn check_event(&self, event: &TelemetryEvent) -> Layer1EventHit {
         let mut hit = Layer1EventHit::default();
 

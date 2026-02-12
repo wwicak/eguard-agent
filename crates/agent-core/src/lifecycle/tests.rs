@@ -247,7 +247,7 @@ rule signed_bundle_marker {
 }
 
 #[test]
-// AC-DET-143 AC-DET-077
+// AC-DET-006 AC-DET-143 AC-DET-077
 fn load_bundle_rules_rejects_invalid_signature_archive() {
     let base = std::env::temp_dir().join(format!(
         "eguard-bundle-bad-signature-{}",
