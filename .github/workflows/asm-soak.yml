@@ -1,0 +1,22 @@
+name: asm-soak
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * 0"
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      EGUARD_SOAK_HOURS: "24"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run asm soak contract harness
+        run: ./scripts/run_asm_soak_ci.sh

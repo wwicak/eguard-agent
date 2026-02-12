@@ -231,3 +231,23 @@ fn total_detection_subsystem_budget_is_within_target_range() {
     let total = layer1_bytes + matcher_bytes + temporal_bytes + anomaly_bytes + graph_bytes;
     assert!((4 * 1024 * 1024..=9 * 1024 * 1024).contains(&total));
 }
+
+#[test]
+// AC-DET-119
+fn hot_path_runtime_state_remains_bounded_under_long_streams() {
+    let mut anomaly = AnomalyEngine::new(AnomalyConfig {
+        window_size: 64,
+        entropy_history_limit: 128,
+        min_entropy_len: 8,
+        ..AnomalyConfig::default()
+    });
+
+    for i in 0..20_000i64 {
+        let mut ev = event(i, EventClass::ProcessExec, "python", "bash", 1000);
+        ev.command_line = Some(format!("Ab9$Xy2!Qw8#Tn6@-{i:04}"));
+        let _ = anomaly.observe(&ev);
+    }
+
+    assert!(anomaly.debug_entropy_history_len("python") <= 128);
+    assert!(anomaly.debug_window_sample_count("python:bash") < 64);
+}

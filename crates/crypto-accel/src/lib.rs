@@ -174,3 +174,5 @@ fn to_hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_policy;
