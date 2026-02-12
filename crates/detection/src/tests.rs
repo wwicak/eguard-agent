@@ -287,6 +287,75 @@ fn layer4_template_matching_is_bounded_by_declared_depth() {
 }
 
 #[test]
+// AC-DET-054
+fn layer4_graph_state_is_pruned_by_sliding_window_to_stay_bounded() {
+    let mut l4 = Layer4Engine::new(10);
+
+    for i in 0..1_000u32 {
+        let mut ev = event(0, EventClass::ProcessExec, "bash", "init", 1000);
+        ev.pid = 10_000 + i;
+        ev.ppid = 1;
+        let _ = l4.observe(&ev);
+    }
+
+    let mut now = event(1_000, EventClass::ProcessExec, "bash", "init", 1000);
+    now.pid = 99_999;
+    now.ppid = 1;
+    let _ = l4.observe(&now);
+
+    assert!(l4.debug_graph_node_count() <= 2);
+}
+
+#[test]
+// AC-DET-053
+fn layer4_evaluation_runtime_is_bounded_with_depth_limited_templates() {
+    let mut l4 = Layer4Engine::new(300);
+    for idx in 0..64 {
+        l4.add_template(KillChainTemplate {
+            name: format!("template-{idx}"),
+            stages: vec![
+                TemplatePredicate {
+                    process_any_of: None,
+                    uid_eq: None,
+                    uid_ne: None,
+                    require_network_non_web: false,
+                    require_module_loaded: false,
+                    require_sensitive_file_access: false,
+                },
+                TemplatePredicate {
+                    process_any_of: Some(std::iter::once("never-match".to_string()).collect()),
+                    uid_eq: None,
+                    uid_ne: None,
+                    require_network_non_web: true,
+                    require_module_loaded: false,
+                    require_sensitive_file_access: false,
+                },
+            ],
+            max_depth: 6,
+            max_inter_stage_secs: 30,
+        });
+    }
+
+    for depth in 0..200u32 {
+        let mut ev = event(depth as i64, EventClass::ProcessExec, "bash", "bash", 1000);
+        ev.pid = 20_000 + depth;
+        ev.ppid = if depth == 0 { 1 } else { 19_999 + depth };
+        let _ = l4.observe(&ev);
+    }
+
+    let mut trigger = event(201, EventClass::NetworkConnect, "bash", "bash", 1000);
+    trigger.pid = 20_199;
+    trigger.ppid = 20_198;
+    trigger.dst_port = Some(9_001);
+
+    let started = std::time::Instant::now();
+    let hits = l4.observe(&trigger);
+    assert!(hits.is_empty());
+    assert!(started.elapsed() < std::time::Duration::from_millis(500));
+    assert_eq!(l4.debug_template_count(), 64);
+}
+
+#[test]
 fn engine_runs_all_layers() {
     let mut d = DetectionEngine::default_with_rules();
     d.layer1.load_hashes(["deadbeef".to_string()]);

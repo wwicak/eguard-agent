@@ -275,6 +275,16 @@ impl Layer4Engine {
 
         false
     }
+
+    #[cfg(test)]
+    pub(crate) fn debug_graph_node_count(&self) -> usize {
+        self.graph.nodes.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn debug_template_count(&self) -> usize {
+        self.templates.len()
+    }
 }
 
 impl Default for Layer4Engine {
