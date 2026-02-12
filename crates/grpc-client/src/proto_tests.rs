@@ -60,7 +60,7 @@ fn agent_proto_imports_domain_protos_and_declares_eight_rpc_agent_service() {
 }
 
 #[test]
-// AC-GRP-020 AC-GRP-030 AC-GRP-040 AC-GRP-050 AC-GRP-060 AC-GRP-061 AC-EBP-040 AC-EBP-043
+// AC-GRP-020 AC-GRP-030 AC-GRP-040 AC-GRP-050 AC-GRP-060 AC-GRP-061 AC-EBP-040 AC-EBP-043 AC-DET-142
 fn service_protos_declare_streaming_and_reporting_rpcs() {
     assert!(TELEMETRY_PROTO.contains("service TelemetryService"));
     assert!(TELEMETRY_PROTO
@@ -115,7 +115,7 @@ fn enrollment_contract_includes_capabilities_and_cert_material() {
 }
 
 #[test]
-// AC-GRP-011 AC-GRP-012 AC-GRP-013 AC-GRP-014 AC-GRP-016 AC-GRP-017 AC-GRP-018 AC-GRP-019 AC-GRP-085
+// AC-GRP-011 AC-GRP-012 AC-GRP-013 AC-GRP-014 AC-GRP-016 AC-GRP-017 AC-GRP-018 AC-GRP-019 AC-GRP-085 AC-DET-140 AC-DET-141
 fn heartbeat_contract_includes_status_usage_policy_rule_and_baselines() {
     assert_contains_all(
         AGENT_PROTO,
