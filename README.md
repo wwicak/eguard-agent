@@ -58,6 +58,7 @@ Current gRPC behavior:
 
 - Telemetry uses client-streaming `StreamEvents` for batch sends
 - Other RPCs use unary calls with retry/backoff reconnect attempts
+- Command retrieval attempts `CommandChannel` first and falls back to poll endpoints
 - mTLS channel credentials are loaded from configured cert/key/CA paths
 
 If `server_addr` has no scheme:

@@ -3,9 +3,16 @@ syntax = "proto3";
 package eguard.v1;
 
 service CommandService {
+  rpc CommandChannel(CommandChannelRequest) returns (stream AgentCommand);
   rpc PollCommands(PollCommandsRequest) returns (PollCommandsResponse);
   rpc AckCommand(AckCommandRequest) returns (AckCommandResponse);
   rpc EnqueueCommand(EnqueueCommandRequest) returns (EnqueueCommandResponse);
+}
+
+message CommandChannelRequest {
+  string agent_id = 1;
+  repeated string completed_command_ids = 2;
+  int32 limit = 3;
 }
 
 message AgentCommand {

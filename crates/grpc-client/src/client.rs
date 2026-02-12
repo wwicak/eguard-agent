@@ -287,8 +287,109 @@ impl Client {
         Ok(())
     }
 
-    pub async fn fetch_commands(&mut self, agent_id: &str, limit: usize) -> Result<Vec<CommandEnvelope>> {
+    pub async fn stream_command_channel(
+        &self,
+        agent_id: &str,
+        completed_command_ids: &[String],
+        limit: usize,
+    ) -> Result<Vec<CommandEnvelope>> {
         self.ensure_online()?;
+
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        match self.mode {
+            TransportMode::Http => {
+                #[derive(Debug, Deserialize)]
+                struct PollResponse {
+                    commands: Vec<CommandEnvelope>,
+                }
+
+                self.with_retry("command_channel_http", || async {
+                    let url = self.url_for("/api/v1/endpoint/command/channel");
+                    let completed = completed_command_ids.join(",");
+                    let response = self
+                        .http
+                        .get(&url)
+                        .query(&[
+                            ("agent_id", agent_id.to_string()),
+                            ("limit", limit.to_string()),
+                            ("completed_command_ids", completed),
+                        ])
+                        .send()
+                        .await
+                        .with_context(|| format!("failed opening command channel to {}", url))?
+                        .error_for_status()
+                        .with_context(|| format!("command channel rejected by {}", url))?;
+
+                    let payload = response
+                        .json::<PollResponse>()
+                        .await
+                        .context("invalid command channel response payload")?;
+                    Ok(payload.commands)
+                })
+                .await
+            }
+            TransportMode::Grpc => {
+                self.with_retry("command_channel_grpc", || async {
+                    let channel = self.connect_channel().await?;
+                    let mut client = pb::command_service_client::CommandServiceClient::new(channel);
+                    let response = client
+                        .command_channel(pb::CommandChannelRequest {
+                            agent_id: agent_id.to_string(),
+                            completed_command_ids: completed_command_ids.to_vec(),
+                            limit: limit as i32,
+                        })
+                        .await
+                        .context("command_channel RPC failed")?;
+
+                    let mut stream = response.into_inner();
+                    let mut out = Vec::with_capacity(limit);
+                    while out.len() < limit {
+                        match tokio::time::timeout(Duration::from_millis(350), stream.message()).await {
+                            Ok(Ok(Some(command))) => out.push(from_pb_agent_command(command)),
+                            Ok(Ok(None)) => break,
+                            Ok(Err(err)) => return Err(err).context("command_channel stream read failed"),
+                            Err(_) => break,
+                        }
+                    }
+
+                    Ok(out)
+                })
+                .await
+            }
+        }
+    }
+
+    pub async fn fetch_commands(
+        &mut self,
+        agent_id: &str,
+        completed_command_ids: &[String],
+        limit: usize,
+    ) -> Result<Vec<CommandEnvelope>> {
+        self.ensure_online()?;
+
+        match self
+            .stream_command_channel(agent_id, completed_command_ids, limit)
+            .await
+        {
+            Ok(mut commands) => {
+                if commands.len() > limit {
+                    commands.truncate(limit);
+                }
+                if !commands.is_empty() {
+                    return Ok(commands);
+                }
+            }
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    mode = ?self.mode,
+                    "command channel unavailable, falling back to polling"
+                );
+            }
+        }
 
         let server_result: Result<Vec<CommandEnvelope>> = match self.mode {
             TransportMode::Http => {
@@ -302,7 +403,7 @@ impl Client {
                     let response = self
                         .http
                         .get(&url)
-                        .query(&[("agent_id", agent_id)])
+                        .query(&[("agent_id", agent_id.to_string()), ("limit", limit.to_string())])
                         .send()
                         .await
                         .with_context(|| format!("failed polling commands from {}", url))?
@@ -332,11 +433,7 @@ impl Client {
                     Ok(response
                         .commands
                         .into_iter()
-                        .map(|c| CommandEnvelope {
-                            command_id: c.command_id,
-                            command_type: c.command_type,
-                            payload_json: c.payload_json,
-                        })
+                        .map(from_pb_agent_command)
                         .collect::<Vec<_>>())
                 })
                 .await
@@ -646,6 +743,14 @@ fn to_pb_telemetry_event(event: &EventEnvelope) -> pb::TelemetryEvent {
         payload_json: event.payload_json.clone(),
         labels: HashMap::new(),
         created_at_unix: event.created_at_unix,
+    }
+}
+
+fn from_pb_agent_command(command: pb::AgentCommand) -> CommandEnvelope {
+    CommandEnvelope {
+        command_id: command.command_id,
+        command_type: command.command_type,
+        payload_json: command.payload_json,
     }
 }
 

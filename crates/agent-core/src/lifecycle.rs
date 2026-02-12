@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use anyhow::Result;
 use tracing::{info, warn};
 
@@ -31,6 +33,7 @@ pub struct AgentRuntime {
     enrolled: bool,
     latest_threat_version: Option<String>,
     host_control: HostControlState,
+    completed_command_ids: VecDeque<String>,
 }
 
 impl AgentRuntime {
@@ -104,6 +107,7 @@ impl AgentRuntime {
             enrolled: false,
             latest_threat_version: None,
             host_control: HostControlState::default(),
+            completed_command_ids: VecDeque::new(),
         })
     }
 
@@ -246,7 +250,12 @@ impl AgentRuntime {
                 }
             }
 
-            match self.client.fetch_commands(&self.config.agent_id, 10).await {
+            let completed_cursor = self.completed_command_cursor();
+            match self
+                .client
+                .fetch_commands(&self.config.agent_id, &completed_cursor, 10)
+                .await
+            {
                 Ok(commands) => {
                     for command in commands {
                         self.handle_command(command, now_unix).await;
@@ -293,7 +302,23 @@ impl AgentRuntime {
         info!(?posture, "computed nac posture");
     }
 
+    fn completed_command_cursor(&self) -> Vec<String> {
+        self.completed_command_ids.iter().cloned().collect()
+    }
+
+    fn track_completed_command(&mut self, command_id: &str) {
+        if command_id.is_empty() {
+            return;
+        }
+
+        self.completed_command_ids.push_back(command_id.to_string());
+        while self.completed_command_ids.len() > 256 {
+            self.completed_command_ids.pop_front();
+        }
+    }
+
     async fn handle_command(&mut self, command: CommandEnvelope, now_unix: i64) {
+        let command_id = command.command_id.clone();
         let parsed = parse_server_command(&command.command_type);
         let exec = execute_server_command_with_state(parsed, now_unix, &mut self.host_control);
         info!(
@@ -306,8 +331,8 @@ impl AgentRuntime {
             "received command"
         );
 
-        if let Err(err) = self.client.ack_command(&command.command_id, exec.status).await {
-            warn!(error = %err, command_id = %command.command_id, "failed to ack command");
+        if let Err(err) = self.client.ack_command(&command_id, exec.status).await {
+            warn!(error = %err, command_id = %command_id, "failed to ack command");
         }
 
         let report = ResponseEnvelope {
@@ -324,6 +349,8 @@ impl AgentRuntime {
         if let Err(err) = self.client.send_response(&report).await {
             warn!(error = %err, command_id = %command.command_id, "failed to send command response report");
         }
+
+        self.track_completed_command(&command_id);
     }
 }
 
