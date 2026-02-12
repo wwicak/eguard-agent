@@ -298,6 +298,25 @@ fn engine_runs_all_layers() {
 }
 
 #[test]
+// AC-DET-080
+fn detection_outcome_includes_rule_names_and_matched_fields_for_traceability() {
+    let mut engine = DetectionEngine::default_with_rules();
+    engine.layer1.load_hashes(["deadbeef".to_string()]);
+
+    let mut first = event(1, EventClass::ProcessExec, "bash", "nginx", 1000);
+    first.pid = 700;
+    first.file_hash = Some("deadbeef".to_string());
+    let first_out = engine.process_event(&first);
+    assert!(first_out.layer1.matched_fields.iter().any(|f| f == "file_hash"));
+
+    let mut second = event(2, EventClass::NetworkConnect, "bash", "nginx", 1000);
+    second.pid = 700;
+    second.dst_port = Some(9001);
+    let second_out = engine.process_event(&second);
+    assert!(second_out.temporal_hits.iter().any(|h| h == "phi_webshell"));
+}
+
+#[test]
 // AC-DET-023
 fn sigma_yaml_rule_compiles_and_fires() {
     let sigma_yaml = r#"

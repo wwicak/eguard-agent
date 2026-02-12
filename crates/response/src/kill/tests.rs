@@ -87,3 +87,25 @@ fn protected_target_process_returns_error_without_signals() {
     assert!(matches!(err, ResponseError::ProtectedProcess(300)));
     assert!(sender.sent.borrow().is_empty());
 }
+
+#[test]
+// AC-EBP-089 AC-EBP-123
+fn kill_path_latency_stays_within_fallback_budget() {
+    let introspector = MockIntrospector {
+        children: HashMap::from([(500, vec![501, 502]), (501, vec![503])]),
+        names: HashMap::from([
+            (500, "malware".to_string()),
+            (501, "bash".to_string()),
+            (502, "python".to_string()),
+            (503, "curl".to_string()),
+        ]),
+    };
+    let sender = MockSignalSender::default();
+    let protected = ProtectedList::default_linux();
+
+    let started = std::time::Instant::now();
+    let report =
+        kill_process_tree_with(500, &protected, &introspector, &sender).expect("kill tree");
+    assert_eq!(report.killed_pids, vec![502, 503, 501, 500]);
+    assert!(started.elapsed() < std::time::Duration::from_millis(50));
+}
