@@ -568,7 +568,7 @@ fn parse_file_open_payload(raw: &[u8]) -> String {
 }
 
 fn parse_tcp_connect_payload(raw: &[u8]) -> String {
-    if raw.len() < 32 {
+    if raw.len() < 16 {
         return parse_c_string(raw);
     }
 
@@ -579,8 +579,17 @@ fn parse_tcp_connect_payload(raw: &[u8]) -> String {
     let saddr_v4 = read_u32_le(raw, 8).unwrap_or_default();
     let daddr_v4 = read_u32_le(raw, 12).unwrap_or_default();
 
-    let src_ip = format_ipv4(saddr_v4);
-    let dst_ip = format_ipv4(daddr_v4);
+    let (src_ip, dst_ip) = if family == 10 && raw.len() >= 48 {
+        let src_v6 = read_ipv6(raw, 16);
+        let dst_v6 = read_ipv6(raw, 32);
+        match (src_v6, dst_v6) {
+            (Some(src), Some(dst)) => (format_ipv6(src), format_ipv6(dst)),
+            _ => (format_ipv4(saddr_v4), format_ipv4(daddr_v4)),
+        }
+    } else {
+        (format_ipv4(saddr_v4), format_ipv4(daddr_v4))
+    };
+
     format!(
         "family={};protocol={};src_ip={};src_port={};dst_ip={};dst_port={}",
         family, protocol, src_ip, sport, dst_ip, dport
@@ -628,6 +637,18 @@ fn parse_lsm_block_payload(raw: &[u8]) -> String {
 fn format_ipv4(ip: u32) -> String {
     let b = ip.to_be_bytes();
     format!("{}.{}.{}.{}", b[0], b[1], b[2], b[3])
+}
+
+fn format_ipv6(ip: [u8; 16]) -> String {
+    std::net::Ipv6Addr::from(ip).to_string()
+}
+
+fn read_ipv6(raw: &[u8], offset: usize) -> Option<[u8; 16]> {
+    let end = offset.checked_add(16)?;
+    let bytes = raw.get(offset..end)?;
+    let mut out = [0u8; 16];
+    out.copy_from_slice(bytes);
+    Some(out)
 }
 
 fn parse_c_string(raw: &[u8]) -> String {
@@ -766,6 +787,30 @@ mod tests {
         assert!(event.payload.contains("protocol=6"));
         assert!(event.payload.contains("src_ip=10.0.0.1"));
         assert!(event.payload.contains("dst_ip=192.168.1.42"));
+        assert!(event.payload.contains("dst_port=4444"));
+    }
+
+    #[test]
+    fn parses_structured_tcp_connect_payload_ipv6() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&10u16.to_le_bytes());
+        payload.extend_from_slice(&12345u16.to_le_bytes());
+        payload.extend_from_slice(&4444u16.to_le_bytes());
+        payload.push(6u8);
+        payload.push(0u8);
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+
+        let src = std::net::Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1).octets();
+        let dst = std::net::Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 2).octets();
+        payload.extend_from_slice(&src);
+        payload.extend_from_slice(&dst);
+
+        let event = parse_raw_event(&encode_event(3, 901, 1001, 23, &payload)).expect("parse tcp");
+        assert!(matches!(event.event_type, EventType::TcpConnect));
+        assert!(event.payload.contains("family=10"));
+        assert!(event.payload.contains("src_ip=2001:db8::1"));
+        assert!(event.payload.contains("dst_ip=2001:db8::2"));
         assert!(event.payload.contains("dst_port=4444"));
     }
 
