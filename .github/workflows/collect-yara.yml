@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   collect-yara:
@@ -18,36 +18,19 @@ jobs:
       - name: Clone YARA rule repositories
         run: |
           git clone --depth 1 https://github.com/Yara-Rules/rules.git /tmp/yara-rules
-          git clone --depth 1 https://github.com/InQuest/awesome-yara.git /tmp/awesome-yara
 
       - name: Collect relevant rules
         run: |
-          mkdir -p sources/yara
-          # Copy main YARA rules (ELF, malware, general)
+          mkdir -p /tmp/yara_collected
           for dir in malware CVE crypto packers; do
             if [ -d "/tmp/yara-rules/${dir}" ]; then
-              cp -r "/tmp/yara-rules/${dir}" "sources/yara/" 2>/dev/null || true
+              cp -r "/tmp/yara-rules/${dir}" "/tmp/yara_collected/" 2>/dev/null || true
             fi
           done
-          # Copy curated rule files from awesome-yara if present
-          if [ -d /tmp/awesome-yara/rules ]; then
-            cp /tmp/awesome-yara/rules/*.yar sources/yara/ 2>/dev/null || true
-          fi
 
-      - name: Commit and push
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add sources/yara/
-          if git diff --cached --quiet; then
-            echo "No changes to commit"
-            exit 0
-          fi
-          git commit -m "chore(threat-intel): update YARA rules $(date -u +%Y-%m-%d)"
-          for i in 1 2 3; do
-            git pull --rebase origin "${GITHUB_REF_NAME}" && git push && exit 0
-            echo "Push attempt $i failed, retrying in 10s..."
-            sleep 10
-          done
-          echo "Failed to push after 3 attempts"
-          exit 1
+      - name: Upload collected rules as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: yara-collected
+          path: /tmp/yara_collected/
+          retention-days: 7

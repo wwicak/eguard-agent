@@ -25,23 +25,19 @@ jobs:
 
       - name: Fetch MalwareBazaar hashes (abuse.ch)
         run: |
-          # Full hash list (~1M entries, ZIP archive)
-          curl -sSfL --retry 3 --max-time 300 \
-            "https://bazaar.abuse.ch/export/txt/sha256/full/" \
-            -o /tmp/bazaar_full.zip
-          python3 -c "import zipfile; zipfile.ZipFile('/tmp/bazaar_full.zip').extractall('/tmp/bazaar_extract')"
-          grep -v '^#' /tmp/bazaar_extract/full_sha256.txt | grep -v '^$' | \
+          # Recent hashes (last 24h) — curated, manageable size
+          curl -sSfL --retry 3 --max-time 120 \
+            "https://bazaar.abuse.ch/export/txt/sha256/recent/" \
+            -o /tmp/bazaar_hashes.txt
+          grep -v '^#' /tmp/bazaar_hashes.txt | grep -v '^$' | \
             awk '{print $1}' > sources/ioc/hashes/malwarebazaar.txt
           echo "MalwareBazaar hashes: $(wc -l < sources/ioc/hashes/malwarebazaar.txt)"
 
       - name: Fetch ThreatFox IOCs (abuse.ch)
         run: |
-          # Full export covers all known IOCs, not just recent
-          curl -sSfL --retry 3 --max-time 300 \
-            "https://threatfox.abuse.ch/export/csv/full/" \
-            -o /tmp/threatfox.csv.zip
-          python3 -c "import zipfile; zipfile.ZipFile('/tmp/threatfox.csv.zip').extractall('/tmp/threatfox_dir')"
-          cat /tmp/threatfox_dir/*.csv > /tmp/threatfox.csv 2>/dev/null || mv /tmp/threatfox_dir/* /tmp/threatfox.csv
+          curl -sSfL --retry 3 --max-time 120 \
+            "https://threatfox.abuse.ch/export/csv/recent/" \
+            -o /tmp/threatfox.csv
           # Extract domains and IPs from ThreatFox CSV
           grep -v '^#' /tmp/threatfox.csv | grep -v '^$' | \
             awk -F'","' '{
@@ -58,7 +54,7 @@ jobs:
 
       - name: Fetch Feodo C2 IPs (abuse.ch)
         run: |
-          # Aggressive blocklist (~7k IPs, includes historical C2 infrastructure)
+          # Aggressive blocklist — curated by abuse.ch analysts
           curl -sSfL --retry 3 --max-time 60 \
             "https://feodotracker.abuse.ch/downloads/ipblocklist_aggressive.txt" \
             -o /tmp/feodo.txt
@@ -78,7 +74,6 @@ jobs:
 
       - name: Fetch SSL Blacklist (abuse.ch)
         run: |
-          # Malicious SSL certificate fingerprints (SHA-1)
           curl -sSfL --retry 3 --max-time 60 \
             "https://sslbl.abuse.ch/blacklist/sslipblacklist_aggressive.csv" \
             -o /tmp/sslbl.csv
@@ -89,7 +84,6 @@ jobs:
 
       - name: Fetch Botvrij.eu IOCs
         run: |
-          # European CERT-curated IOCs
           curl -sSfL --retry 3 --max-time 60 \
             "https://www.botvrij.eu/data/ioclist.domain.raw" \
             -o /tmp/botvrij_domains.txt 2>/dev/null || true
@@ -105,7 +99,6 @@ jobs:
 
       - name: Fetch CINSscore threat IPs
         run: |
-          # CINS (Collective Intelligence Network Security) threat IPs
           curl -sSfL --retry 3 --max-time 60 \
             "https://cinsscore.com/list/ci-badguys.txt" \
             -o /tmp/cins.txt 2>/dev/null || true
@@ -116,7 +109,6 @@ jobs:
 
       - name: Fetch Blocklist.de
         run: |
-          # Community-driven IDS/IPS blocklist
           curl -sSfL --retry 3 --max-time 60 \
             "https://lists.blocklist.de/lists/all.txt" \
             -o /tmp/blocklist_de.txt 2>/dev/null || true
@@ -130,12 +122,10 @@ jobs:
         env:
           OTX_API_KEY: ${{ secrets.OTX_API_KEY }}
         run: |
-          # Fetch recent pulses (last 24h)
           curl -sSfL --retry 3 --max-time 120 \
             -H "X-OTX-API-KEY: ${OTX_API_KEY}" \
             "https://otx.alienvault.com/api/v1/pulses/subscribed?modified_since=$(date -u -d '1 day ago' +%Y-%m-%dT%H:%M:%S)" \
             -o /tmp/otx_pulses.json
-          # Extract indicators by type
           python3 -c "
           import json, sys
           data = json.load(open('/tmp/otx_pulses.json'))
@@ -152,7 +142,7 @@ jobs:
           open('sources/ioc/ips/otx.txt', 'w').write('\n'.join(sorted(ips)))
           "
 
-      - name: Deduplicate IOCs
+      - name: Deduplicate and corroborate IOCs
         run: |
           python threat-intel/processing/ioc_dedup.py \
             --input sources/ioc \
@@ -166,20 +156,9 @@ jobs:
             --hash-allowlist threat-intel/allowlists/known_good_hashes.txt \
             --domain-allowlist threat-intel/allowlists/known_good_domains.txt
 
-      - name: Commit and push
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add sources/ioc/
-          if git diff --cached --quiet; then
-            echo "No changes to commit"
-            exit 0
-          fi
-          git commit -m "chore(threat-intel): update IOC feeds $(date -u +%Y-%m-%dT%H:%M)"
-          for i in 1 2 3; do
-            git pull --rebase origin "${GITHUB_REF_NAME}" && git push && exit 0
-            echo "Push attempt $i failed, retrying in 10s..."
-            sleep 10
-          done
-          echo "Failed to push after 3 attempts"
-          exit 1
+      - name: Upload curated IOCs as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ioc-curated
+          path: sources/ioc/consolidated/
+          retention-days: 7

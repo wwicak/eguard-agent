@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   collect-sigma:
@@ -30,24 +30,13 @@ jobs:
         run: |
           python threat-intel/processing/sigma_filter.py \
             --input /tmp/sigma/rules \
-            --output sources/sigma \
+            --output /tmp/sigma_filtered \
             --platforms linux \
             --min-status test
 
-      - name: Commit and push
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add sources/sigma/
-          if git diff --cached --quiet; then
-            echo "No changes to commit"
-            exit 0
-          fi
-          git commit -m "chore(threat-intel): update SIGMA rules $(date -u +%Y-%m-%d)"
-          for i in 1 2 3; do
-            git pull --rebase origin "${GITHUB_REF_NAME}" && git push && exit 0
-            echo "Push attempt $i failed, retrying in 10s..."
-            sleep 10
-          done
-          echo "Failed to push after 3 attempts"
-          exit 1
+      - name: Upload filtered rules as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sigma-filtered
+          path: /tmp/sigma_filtered/
+          retention-days: 7
