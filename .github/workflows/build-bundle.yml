@@ -93,22 +93,26 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           BUNDLE="eguard-rules-${VERSION}.bundle.tar.zst"
+          python3 -c "
+          import json
+          m = json.load(open('bundle/manifest.json'))
+          lines = [
+              'Automated threat intelligence bundle.',
+              '',
+              f'- SIGMA rules: {m[\"sigma_count\"]}',
+              f'- YARA rules: {m[\"yara_count\"]}',
+              f'- IOC hashes: {m[\"ioc_hash_count\"]}',
+              f'- IOC domains: {m[\"ioc_domain_count\"]}',
+              f'- IOC IPs: {m[\"ioc_ip_count\"]}',
+              f'- CVEs: {m[\"cve_count\"]}',
+          ]
+          open('/tmp/release_notes.md', 'w').write('\n'.join(lines))
+          "
           gh release create "rules-${VERSION}" \
             "${BUNDLE}" \
             "${BUNDLE}.sig" \
             "${BUNDLE}.pub.hex" \
             --title "Rule Bundle ${VERSION}" \
-            --notes "Automated threat intelligence bundle.
-
-          $(cat bundle/manifest.json | python3 -c '
-          import json, sys
-          m = json.load(sys.stdin)
-          print(f"- SIGMA rules: {m[\"sigma_count\"]}")
-          print(f"- YARA rules: {m[\"yara_count\"]}")
-          print(f"- IOC hashes: {m[\"ioc_hash_count\"]}")
-          print(f"- IOC domains: {m[\"ioc_domain_count\"]}")
-          print(f"- IOC IPs: {m[\"ioc_ip_count\"]}")
-          print(f"- CVEs: {m[\"cve_count\"]}")
-          ')"
+            --notes-file /tmp/release_notes.md
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

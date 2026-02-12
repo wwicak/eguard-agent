@@ -32,10 +32,24 @@ SEVERITY_MAP = {
 }
 
 
+def _iter_nodes(configurations) -> list[dict]:
+    """Extract node list from configurations (handles dict or list format)."""
+    if isinstance(configurations, dict):
+        return configurations.get("nodes", [])
+    if isinstance(configurations, list):
+        # NVD 2.0 sometimes returns a list of configuration objects
+        nodes = []
+        for cfg in configurations:
+            if isinstance(cfg, dict):
+                nodes.extend(cfg.get("nodes", []))
+        return nodes
+    return []
+
+
 def is_linux_relevant(cve_item: dict) -> bool:
     """Check if a CVE affects Linux ecosystem based on CPE matches."""
-    configurations = cve_item.get("configurations", {})
-    nodes = configurations.get("nodes", [])
+    configurations = cve_item.get("configurations", [])
+    nodes = _iter_nodes(configurations)
 
     for node in nodes:
         for cpe_match in node.get("cpeMatch", []):
@@ -81,8 +95,8 @@ def extract_cve_record(cve_data: dict) -> dict | None:
 
     # Get affected packages from CPE
     affected_packages = []
-    configurations = cve_data.get("configurations", {})
-    for node in configurations.get("nodes", []):
+    configurations = cve_data.get("configurations", [])
+    for node in _iter_nodes(configurations):
         for cpe_match in node.get("cpeMatch", []):
             criteria = cpe_match.get("criteria", "")
             parts = criteria.split(":")
