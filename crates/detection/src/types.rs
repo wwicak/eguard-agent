@@ -1,0 +1,83 @@
+use serde::{Deserialize, Serialize};
+
+pub(crate) const EVENT_CLASSES: [EventClass; 7] = [
+    EventClass::ProcessExec,
+    EventClass::FileOpen,
+    EventClass::NetworkConnect,
+    EventClass::DnsQuery,
+    EventClass::ModuleLoad,
+    EventClass::Login,
+    EventClass::Alert,
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum EventClass {
+    ProcessExec,
+    FileOpen,
+    NetworkConnect,
+    DnsQuery,
+    ModuleLoad,
+    Login,
+    Alert,
+}
+
+impl EventClass {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ProcessExec => "process_exec",
+            Self::FileOpen => "file_open",
+            Self::NetworkConnect => "network_connect",
+            Self::DnsQuery => "dns_query",
+            Self::ModuleLoad => "module_load",
+            Self::Login => "login",
+            Self::Alert => "alert",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TelemetryEvent {
+    pub ts_unix: i64,
+    pub event_class: EventClass,
+    pub pid: u32,
+    pub ppid: u32,
+    pub uid: u32,
+    pub process: String,
+    pub parent_process: String,
+    pub file_path: Option<String>,
+    pub file_hash: Option<String>,
+    pub dst_port: Option<u16>,
+    pub dst_ip: Option<String>,
+    pub dst_domain: Option<String>,
+    pub command_line: Option<String>,
+}
+
+impl TelemetryEvent {
+    pub fn entity_key(&self) -> String {
+        self.pid.to_string()
+    }
+
+    pub fn process_key(&self) -> String {
+        format!("{}:{}", self.process, self.parent_process)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Confidence {
+    Definite,
+    VeryHigh,
+    High,
+    Medium,
+    Low,
+    None,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DetectionSignals {
+    pub z1_exact_ioc: bool,
+    pub z2_temporal: bool,
+    pub z3_anomaly_high: bool,
+    pub z3_anomaly_med: bool,
+    pub z4_kill_chain: bool,
+    pub l1_prefilter_hit: bool,
+}
