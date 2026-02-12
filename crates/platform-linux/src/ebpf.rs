@@ -151,9 +151,7 @@ impl LibbpfRingBufferBackend {
 
     fn new_many(elf_paths: &[PathBuf], ring_buffer_map: &str) -> Result<Self> {
         if elf_paths.is_empty() {
-            return Err(EbpfError::Backend(
-                "no eBPF ELF files provided".to_string(),
-            ));
+            return Err(EbpfError::Backend("no eBPF ELF files provided".to_string()));
         }
 
         let mut loaded = Vec::with_capacity(elf_paths.len());
@@ -603,8 +601,7 @@ mod tests {
         payload.extend_from_slice(&[0u8; 16]);
         payload.extend_from_slice(&[0u8; 16]);
 
-        let event =
-            parse_raw_event(&encode_event(3, 901, 1001, 23, &payload)).expect("parse tcp");
+        let event = parse_raw_event(&encode_event(3, 901, 1001, 23, &payload)).expect("parse tcp");
         assert!(matches!(event.event_type, EventType::TcpConnect));
         assert!(event.payload.contains("family=2"));
         assert!(event.payload.contains("protocol=6"));
@@ -625,8 +622,8 @@ mod tests {
         assert!(dns_event.payload.contains("qname=c2.bad.example"));
         assert!(dns_event.payload.contains("qtype=1"));
 
-        let module_event = parse_raw_event(&encode_event(5, 903, 1003, 25, b"kernel_rootkit\0"))
-            .expect("module");
+        let module_event =
+            parse_raw_event(&encode_event(5, 903, 1003, 25, b"kernel_rootkit\0")).expect("module");
         assert!(matches!(module_event.event_type, EventType::ModuleLoad));
         assert!(module_event.payload.contains("module=kernel_rootkit"));
     }

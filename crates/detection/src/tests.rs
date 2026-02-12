@@ -295,3 +295,48 @@ detection:
     let _ = std::fs::remove_file(path);
     let _ = std::fs::remove_dir(base);
 }
+
+#[test]
+fn replay_harness_is_deterministic() {
+    let events = vec![
+        event(1, EventClass::ProcessExec, "bash", "nginx", 33),
+        {
+            let mut e = event(2, EventClass::NetworkConnect, "bash", "nginx", 33);
+            e.dst_port = Some(8443);
+            e
+        },
+        {
+            let mut e = event(3, EventClass::ProcessExec, "bash", "sshd", 1000);
+            e.file_hash = Some("deadbeef".to_string());
+            e
+        },
+    ];
+
+    let mut engine_a = DetectionEngine::default_with_rules();
+    engine_a.layer1.load_hashes(["deadbeef".to_string()]);
+    let out_a = replay_events(&mut engine_a, &events);
+
+    let mut engine_b = DetectionEngine::default_with_rules();
+    engine_b.layer1.load_hashes(["deadbeef".to_string()]);
+    let out_b = replay_events(&mut engine_b, &events);
+
+    assert_eq!(out_a, out_b);
+    assert_eq!(out_a.total_events, 3);
+    assert!(out_a.alerts.len() >= 2);
+    assert!(out_a.definite >= 1);
+}
+
+#[test]
+fn calibration_threshold_matches_sanov_bound() {
+    let n = 512;
+    let k = 12;
+    let delta = 1e-6;
+
+    let tau = tau_delta(n, k, delta).expect("tau_delta");
+    let bound = sanov_upper_bound(n, k, tau).expect("sanov upper bound");
+    assert!(bound <= delta * 1.10);
+
+    let calibration = calibrate_thresholds(n, k, delta, 1e-4, 0.20, 0.10).expect("calibrate");
+    assert!(calibration.tau_high >= calibration.tau_delta_high);
+    assert!(calibration.tau_med >= calibration.tau_delta_med);
+}
