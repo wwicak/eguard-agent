@@ -683,6 +683,36 @@ fn resolve_bootstrap_path() -> Result<Option<PathBuf>> {
     resolve_path_from_env_or_candidates("EGUARD_BOOTSTRAP_CONFIG", &BOOTSTRAP_CONFIG_CANDIDATES)
 }
 
+pub fn remove_bootstrap_config(path: &Path) -> Result<()> {
+    if path.exists() {
+        fs::remove_file(path)
+            .with_context(|| format!("failed removing bootstrap config {}", path.display()))?;
+    }
+    Ok(())
+}
+
+pub fn expected_config_files() -> &'static [&'static str] {
+    &[
+        "/etc/eguard-agent/bootstrap.conf",
+        "/etc/eguard-agent/agent.conf",
+        "/etc/eguard-agent/certs/agent.crt",
+        "/etc/eguard-agent/certs/agent.key",
+        "/etc/eguard-agent/certs/ca.crt",
+    ]
+}
+
+pub fn expected_data_paths() -> &'static [&'static str] {
+    &[
+        "/var/lib/eguard-agent/buffer.db",
+        "/var/lib/eguard-agent/baselines.bin",
+        "/var/lib/eguard-agent/rules/sigma/",
+        "/var/lib/eguard-agent/rules/yara/",
+        "/var/lib/eguard-agent/rules/ioc/",
+        "/var/lib/eguard-agent/quarantine/",
+        "/var/lib/eguard-agent/rules-staging/",
+    ]
+}
+
 fn resolve_path_from_env_or_candidates(
     env_var: &str,
     candidates: &[&str],

@@ -383,3 +383,44 @@ fn resolve_bootstrap_path_fails_for_missing_explicit_env_path() {
 
     clear_env();
 }
+
+#[test]
+// AC-CFG-003
+fn remove_bootstrap_config_deletes_existing_file() {
+    let path = std::env::temp_dir().join(format!(
+        "eguard-bootstrap-remove-{}.conf",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    std::fs::write(&path, "test=true\n").expect("write bootstrap");
+    assert!(path.exists());
+
+    remove_bootstrap_config(&path).expect("remove bootstrap");
+    assert!(!path.exists());
+}
+
+#[test]
+// AC-CFG-022
+fn expected_config_files_match_documented_layout() {
+    let expected = expected_config_files();
+    assert!(expected.contains(&"/etc/eguard-agent/bootstrap.conf"));
+    assert!(expected.contains(&"/etc/eguard-agent/agent.conf"));
+    assert!(expected.contains(&"/etc/eguard-agent/certs/agent.crt"));
+    assert!(expected.contains(&"/etc/eguard-agent/certs/agent.key"));
+    assert!(expected.contains(&"/etc/eguard-agent/certs/ca.crt"));
+}
+
+#[test]
+// AC-CFG-023
+fn expected_data_paths_match_documented_layout() {
+    let expected = expected_data_paths();
+    assert!(expected.contains(&"/var/lib/eguard-agent/buffer.db"));
+    assert!(expected.contains(&"/var/lib/eguard-agent/baselines.bin"));
+    assert!(expected.contains(&"/var/lib/eguard-agent/rules/sigma/"));
+    assert!(expected.contains(&"/var/lib/eguard-agent/rules/yara/"));
+    assert!(expected.contains(&"/var/lib/eguard-agent/rules/ioc/"));
+    assert!(expected.contains(&"/var/lib/eguard-agent/quarantine/"));
+    assert!(expected.contains(&"/var/lib/eguard-agent/rules-staging/"));
+}
