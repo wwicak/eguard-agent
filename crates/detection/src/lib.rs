@@ -31,3 +31,5 @@ pub use yara_engine::{YaraEngine, YaraError, YaraHit};
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_resource_budget;

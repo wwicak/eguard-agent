@@ -285,6 +285,16 @@ impl Layer4Engine {
     pub(crate) fn debug_template_count(&self) -> usize {
         self.templates.len()
     }
+
+    #[cfg(test)]
+    pub(crate) fn debug_graph_edge_count(&self) -> usize {
+        self.graph.children.values().map(|set| set.len()).sum()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn debug_total_template_stages(&self) -> usize {
+        self.templates.iter().map(|t| t.stages.len()).sum()
+    }
 }
 
 impl Default for Layer4Engine {

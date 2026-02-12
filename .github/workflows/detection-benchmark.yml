@@ -1,0 +1,26 @@
+name: detection-benchmark
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main", "feat/eguard-agent"]
+  pull_request:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run detection benchmark harness
+        run: ./scripts/run_detection_benchmark_ci.sh
+
+      - name: Upload detection benchmark artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: detection-benchmark-metrics
+          path: artifacts/detection-benchmark/metrics.json

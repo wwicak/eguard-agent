@@ -302,4 +302,19 @@ impl TemporalEngine {
 
         hits
     }
+
+    #[cfg(test)]
+    pub(crate) fn debug_automata_count(&self) -> usize {
+        self.automata.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn debug_subscription_edges(&self) -> usize {
+        self.subscriptions.values().map(|v| v.len()).sum()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn debug_state_count(&self) -> usize {
+        self.states.len()
+    }
 }
