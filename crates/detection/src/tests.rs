@@ -684,6 +684,32 @@ fn entropy_math_matches_shannon_definition() {
 }
 
 #[test]
+// AC-DET-040 AC-DET-103
+fn anomaly_monitor_state_remains_memory_bounded_under_long_streams() {
+    let mut engine = AnomalyEngine::new(AnomalyConfig {
+        window_size: 32,
+        entropy_history_limit: 64,
+        min_entropy_len: 8,
+        ..AnomalyConfig::default()
+    });
+
+    for i in 0..10_000i64 {
+        let mut ev = event(i, EventClass::ProcessExec, "python", "bash", 1000);
+        ev.command_line = Some(format!("Ab9$Xy2!Qw8#Tn6@{i:04}"));
+        let _ = engine.observe(&ev);
+    }
+
+    let history_len = engine.debug_entropy_history_len("python");
+    assert!(history_len <= 64);
+
+    let pending_window = engine.debug_window_sample_count("python:bash");
+    assert!(pending_window < 32);
+
+    let approx_bytes = history_len * std::mem::size_of::<f64>();
+    assert!(approx_bytes < 1_000_000);
+}
+
+#[test]
 // AC-DET-044
 fn robust_zscore_uses_median_and_mad_baseline() {
     let history: VecDeque<f64> = (1..=11).map(|v| v as f64).collect();

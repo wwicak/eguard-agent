@@ -5,6 +5,7 @@ use super::*;
 #[derive(Default)]
 struct InMemoryRingBufferBackend {
     queue: VecDeque<Vec<u8>>,
+    dropped: u64,
 }
 
 impl InMemoryRingBufferBackend {
@@ -18,7 +19,7 @@ impl RingBufferBackend for InMemoryRingBufferBackend {
         let records: Vec<Vec<u8>> = self.queue.drain(..).collect();
         Ok(PollBatch {
             records,
-            dropped: 0,
+            dropped: self.dropped,
         })
     }
 }
@@ -66,6 +67,52 @@ fn poll_updates_parser_stats() {
     let stats = engine.stats();
     assert_eq!(stats.events_received, 2);
     assert_eq!(stats.parse_errors, 1);
+}
+
+#[test]
+// AC-DET-075 AC-EBP-015
+fn poll_surfaces_backend_drop_counters_in_stats() {
+    let mut backend = InMemoryRingBufferBackend::default();
+    backend.push_event(encode_event(1, 7, 8, 100, b"/usr/bin/bash"));
+    backend.dropped = 17;
+
+    let mut engine = EbpfEngine {
+        backend: Box::new(backend),
+        stats: EbpfStats::default(),
+    };
+
+    let events = engine.poll_once(Duration::from_millis(10)).expect("poll");
+    assert_eq!(events.len(), 1);
+    let stats = engine.stats();
+    assert_eq!(stats.events_received, 1);
+    assert_eq!(stats.events_dropped, 17);
+    assert_eq!(stats.parse_errors, 0);
+}
+
+#[test]
+// AC-DET-089 AC-EBP-016
+fn drop_rate_stays_below_slo_for_reference_10k_event_batch() {
+    let mut backend = InMemoryRingBufferBackend::default();
+    for i in 0..10_000u32 {
+        backend.push_event(encode_event(1, 1_000 + i, 1000, i as u64, b"/usr/bin/bash"));
+    }
+    backend.dropped = 0;
+
+    let mut engine = EbpfEngine {
+        backend: Box::new(backend),
+        stats: EbpfStats::default(),
+    };
+    let events = engine.poll_once(Duration::from_millis(10)).expect("poll");
+    assert_eq!(events.len(), 10_000);
+
+    let stats = engine.stats();
+    let total = stats.events_received + stats.events_dropped;
+    let drop_rate = if total == 0 {
+        0.0
+    } else {
+        stats.events_dropped as f64 / total as f64
+    };
+    assert!(drop_rate < 1e-5, "drop_rate={drop_rate}");
 }
 
 #[test]

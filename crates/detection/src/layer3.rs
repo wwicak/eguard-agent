@@ -166,6 +166,19 @@ impl AnomalyEngine {
         let high = entropy > self.config.entropy_threshold && z > self.config.entropy_z_threshold;
         (Some(entropy), Some(z), high)
     }
+
+    #[cfg(test)]
+    pub(crate) fn debug_entropy_history_len(&self, process: &str) -> usize {
+        self.entropy_history
+            .get(process)
+            .map(|h| h.len())
+            .unwrap_or(0)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn debug_window_sample_count(&self, process_key: &str) -> usize {
+        self.windows.get(process_key).map(|w| w.n).unwrap_or(0)
+    }
 }
 
 impl Default for AnomalyEngine {
