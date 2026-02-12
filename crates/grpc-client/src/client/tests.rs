@@ -82,7 +82,7 @@ fn grpc_max_receive_message_size_matches_contract() {
 }
 
 #[test]
-// AC-EBP-071 AC-EBP-091
+// AC-EBP-071 AC-EBP-072 AC-EBP-085 AC-EBP-091
 fn heartbeat_payload_size_and_compressed_overhead_stay_within_budget() {
     let heartbeat = serde_json::json!({
         "agent_id": "agent-1234",
@@ -95,6 +95,8 @@ fn heartbeat_payload_size_and_compressed_overhead_stay_within_budget() {
     let compressed =
         zstd::encode_all(std::io::Cursor::new(&raw), 3).expect("zstd level3 heartbeat encode");
     assert!(compressed.len() <= 150);
+    let avg_bytes_per_sec = compressed.len() as f64 / 30.0;
+    assert!(avg_bytes_per_sec <= 500.0);
 }
 
 #[test]
