@@ -130,6 +130,22 @@ impl EbpfEngine {
         Ok(events)
     }
 
+    pub fn poll_and_forward(
+        &mut self,
+        timeout: Duration,
+        sender: &std::sync::mpsc::Sender<RawEvent>,
+    ) -> Result<usize> {
+        let events = self.poll_once(timeout)?;
+        let mut forwarded = 0usize;
+        for event in events {
+            sender
+                .send(event)
+                .map_err(|_| EbpfError::Backend("event channel closed".to_string()))?;
+            forwarded += 1;
+        }
+        Ok(forwarded)
+    }
+
     pub fn stats(&self) -> EbpfStats {
         self.stats.clone()
     }
@@ -632,3 +648,6 @@ fn slice_window(raw: &[u8], offset: usize, max_len: usize) -> &[u8] {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod tests_ring_contract;

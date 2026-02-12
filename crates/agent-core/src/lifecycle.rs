@@ -1073,3 +1073,6 @@ fn build_detection_engine() -> DetectionEngine {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod tests_ebpf_policy;
