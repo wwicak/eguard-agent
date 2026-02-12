@@ -24,7 +24,7 @@ fn unknown_command_is_failed() {
 }
 
 #[test]
-// AC-RSP-110
+// AC-RSP-110 AC-DET-162
 fn emergency_rule_push_is_recognized() {
     let cmd = parse_server_command("emergency_rule_push");
     assert_eq!(cmd, ServerCommand::EmergencyRulePush);

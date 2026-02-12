@@ -105,3 +105,6 @@ impl SharedDetectionState {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;
