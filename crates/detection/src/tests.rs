@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::VecDeque;
 
 use crate::*;
 use crate::types::EVENT_CLASSES;
@@ -523,6 +524,52 @@ fn anomaly_entropy_guard_requires_minimum_length() {
 
     let out = engine.observe(&ev);
     assert!(out.is_none());
+}
+
+#[test]
+// AC-DET-041
+fn entropy_math_matches_shannon_definition() {
+    let entropy = crate::math::shannon_entropy_bits("aaab");
+    let expected = -(0.75f64 * 0.75f64.log2() + 0.25f64 * 0.25f64.log2());
+    assert!((entropy - expected).abs() < 1e-12);
+}
+
+#[test]
+// AC-DET-044
+fn robust_zscore_uses_median_and_mad_baseline() {
+    let history: VecDeque<f64> = (1..=11).map(|v| v as f64).collect();
+    let z = crate::math::robust_z(12.0, &history);
+    let expected = (12.0 - 6.0) / (1.4826 * 3.0);
+    assert!((z - expected).abs() < 1e-9);
+}
+
+#[test]
+// AC-DET-045
+fn entropy_flag_policy_requires_min_len_entropy_and_zscore_conditions() {
+    let mut engine = AnomalyEngine::new(AnomalyConfig {
+        window_size: 128,
+        min_entropy_len: 8,
+        entropy_threshold: 3.5,
+        entropy_z_threshold: 2.0,
+        ..AnomalyConfig::default()
+    });
+
+    let mut short = event(1, EventClass::ProcessExec, "python", "bash", 1000);
+    short.command_line = Some("abcd".to_string());
+    assert!(engine.observe(&short).is_none());
+
+    for i in 0..10 {
+        let mut low = event(2 + i, EventClass::ProcessExec, "python", "bash", 1000);
+        low.command_line = Some("aaaaaaaa".to_string());
+        assert!(engine.observe(&low).is_none());
+    }
+
+    let mut high = event(10, EventClass::ProcessExec, "python", "bash", 1000);
+    high.command_line = Some("Ab9$Xy2!Qw8#Tn6@".to_string());
+    let out = engine.observe(&high).expect("high-entropy spike should alert");
+    assert!(out.high);
+    assert!(out.entropy_bits.unwrap_or_default() > 3.5);
+    assert!(out.entropy_z.unwrap_or_default() > 2.0);
 }
 
 #[test]

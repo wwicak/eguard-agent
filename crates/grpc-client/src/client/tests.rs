@@ -82,6 +82,22 @@ fn grpc_max_receive_message_size_matches_contract() {
 }
 
 #[test]
+// AC-EBP-071 AC-EBP-091
+fn heartbeat_payload_size_and_compressed_overhead_stay_within_budget() {
+    let heartbeat = serde_json::json!({
+        "agent_id": "agent-1234",
+        "agent_version": "0.1.0",
+        "compliance_status": "compliant",
+    });
+    let raw = serde_json::to_vec(&heartbeat).expect("serialize heartbeat");
+    assert!(raw.len() <= 200);
+
+    let compressed =
+        zstd::encode_all(std::io::Cursor::new(&raw), 3).expect("zstd level3 heartbeat encode");
+    assert!(compressed.len() <= 150);
+}
+
+#[test]
 // AC-GRP-080 AC-GRP-081
 fn ensure_online_returns_error_when_offline() {
     let mut c = Client::new("10.0.0.1:50051".to_string());

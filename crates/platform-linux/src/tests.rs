@@ -49,6 +49,23 @@ fn enrich_event_with_cache_populates_process_cache() {
 }
 
 #[test]
+// AC-EBP-034
+fn enrich_event_parent_chain_is_bounded_to_five_ancestors() {
+    let mut cache = EnrichmentCache::default();
+    let raw = RawEvent {
+        event_type: EventType::ProcessExec,
+        pid: std::process::id(),
+        uid: 0,
+        ts_ns: 1,
+        payload: "cmdline=/usr/bin/bash -lc whoami".to_string(),
+    };
+
+    let enriched = enrich_event_with_cache(raw, &mut cache);
+    assert!(enriched.parent_chain.len() <= 5);
+    assert!(enriched.parent_chain.iter().all(|pid| *pid > 0));
+}
+
+#[test]
 // AC-EBP-033
 fn payload_parser_extracts_kv_network_fields() {
     let metadata = parse_payload_metadata(

@@ -69,6 +69,26 @@ fn poll_updates_parser_stats() {
 }
 
 #[test]
+// AC-EBP-130
+fn poll_preserves_backend_record_order_for_timestamped_events() {
+    let mut backend = InMemoryRingBufferBackend::default();
+    backend.push_event(encode_event(1, 7, 8, 100, b"/usr/bin/bash"));
+    backend.push_event(encode_event(2, 7, 8, 101, b"/tmp/x"));
+
+    let mut engine = EbpfEngine {
+        backend: Box::new(backend),
+        stats: EbpfStats::default(),
+    };
+
+    let events = engine.poll_once(Duration::from_millis(10)).expect("poll");
+    assert_eq!(events.len(), 2);
+    assert!(matches!(events[0].event_type, EventType::ProcessExec));
+    assert_eq!(events[0].ts_ns, 100);
+    assert!(matches!(events[1].event_type, EventType::FileOpen));
+    assert_eq!(events[1].ts_ns, 101);
+}
+
+#[test]
 // AC-EBP-003 AC-EBP-030
 fn parses_structured_file_open_payload() {
     let mut payload = Vec::new();
