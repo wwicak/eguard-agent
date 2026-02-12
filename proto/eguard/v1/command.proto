@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+package eguard.v1;
+
+service CommandService {
+  rpc PollCommands(PollCommandsRequest) returns (PollCommandsResponse);
+  rpc AckCommand(AckCommandRequest) returns (AckCommandResponse);
+  rpc EnqueueCommand(EnqueueCommandRequest) returns (EnqueueCommandResponse);
+}
+
+message AgentCommand {
+  string command_id = 1;
+  string command_type = 2;
+  string payload_json = 3;
+  string status = 4;
+  string issued_by = 5;
+}
+
+message PollCommandsRequest {
+  string agent_id = 1;
+  int32 limit = 2;
+}
+
+message PollCommandsResponse {
+  repeated AgentCommand commands = 1;
+}
+
+message AckCommandRequest {
+  string command_id = 1;
+  string status = 2;
+}
+
+message AckCommandResponse {
+  string status = 1;
+}
+
+message EnqueueCommandRequest {
+  string agent_id = 1;
+  string command_id = 2;
+  string command_type = 3;
+  string payload_json = 4;
+  string issued_by = 5;
+}
+
+message EnqueueCommandResponse {
+  string status = 1;
+}

@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package eguard.v1;
+
+service ComplianceService {
+  rpc ReportCompliance(ComplianceReport) returns (ComplianceAck);
+}
+
+message ComplianceReport {
+  string agent_id = 1;
+  string policy_id = 2;
+  string check_type = 3;
+  string status = 4;
+  string detail = 5;
+  string expected_value = 6;
+  string actual_value = 7;
+  int64 checked_at_unix = 8;
+}
+
+message ComplianceAck {
+  string status = 1;
+}

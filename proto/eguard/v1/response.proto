@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package eguard.v1;
+
+service ResponseService {
+  rpc ReportResponse(ResponseReport) returns (ResponseAck);
+}
+
+message ResponseReport {
+  string agent_id = 1;
+  string action = 2;
+  string confidence = 3;
+  bool success = 4;
+  string detail = 5;
+  int64 created_at_unix = 6;
+}
+
+message ResponseAck {
+  string status = 1;
+}

@@ -1,0 +1,57 @@
+syntax = "proto3";
+
+package eguard.v1;
+
+service AgentControlService {
+  rpc Ping(PingRequest) returns (PingResponse);
+  rpc Enroll(EnrollRequest) returns (EnrollResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc GetLatestThreatIntel(ThreatIntelRequest) returns (ThreatIntelVersion);
+}
+
+message PingRequest {
+  string agent_id = 1;
+}
+
+message PingResponse {
+  string status = 1;
+}
+
+message EnrollRequest {
+  string agent_id = 1;
+  string mac = 2;
+  string hostname = 3;
+  string os_type = 4;
+  string agent_version = 5;
+}
+
+message EnrollResponse {
+  string status = 1;
+  string issued_profile = 2;
+}
+
+message HeartbeatRequest {
+  string agent_id = 1;
+  string agent_version = 2;
+  string compliance_status = 3;
+  int64 sent_at_unix = 4;
+}
+
+message HeartbeatResponse {
+  string status = 1;
+  string server_time = 2;
+}
+
+message ThreatIntelRequest {
+  string agent_id = 1;
+}
+
+message ThreatIntelVersion {
+  string version = 1;
+  string bundle_path = 2;
+  int64 sigma_count = 3;
+  int64 yara_count = 4;
+  int64 ioc_count = 5;
+  int64 cve_count = 6;
+  int64 published_at_unix = 7;
+}

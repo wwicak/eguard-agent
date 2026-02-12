@@ -1,0 +1,9 @@
+Source: eguard-agent
+Section: net
+Priority: optional
+Maintainer: Eguard <info@eguard.id>
+Standards-Version: 4.7.0
+
+Package: eguard-agent
+Architecture: amd64
+Description: eGuard endpoint agent scaffold package

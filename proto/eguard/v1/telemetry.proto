@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package eguard.v1;
+
+service TelemetryService {
+  rpc SendEvent(TelemetryEvent) returns (TelemetryAck);
+  rpc StreamEvents(stream TelemetryEvent) returns (TelemetryStreamAck);
+}
+
+message TelemetryEvent {
+  string agent_id = 1;
+  string event_type = 2;
+  string severity = 3;
+  string rule_name = 4;
+  string payload_json = 5;
+  map<string, string> labels = 6;
+  int64 created_at_unix = 7;
+}
+
+message TelemetryAck {
+  string status = 1;
+}
+
+message TelemetryStreamAck {
+  string status = 1;
+  int64 accepted_count = 2;
+}

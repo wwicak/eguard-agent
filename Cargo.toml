@@ -1,0 +1,37 @@
+[workspace]
+members = [
+  "crates/agent-core",
+  "crates/grpc-client",
+  "crates/detection",
+  "crates/response",
+  "crates/compliance",
+  "crates/baseline",
+  "crates/nac",
+  "crates/platform-linux",
+  "crates/platform-windows",
+  "crates/platform-macos",
+  "crates/crypto-accel",
+  "crates/self-protect",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-2.0-or-later"
+
+[workspace.dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+toml = "0.8"
+rusqlite = { version = "0.32", features = ["bundled"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde_json = "1"
+tonic = { version = "0.12", features = ["tls", "transport"] }
+prost = "0.13"
+tonic-build = "0.12"
+protoc-bin-vendored = "3"
+aho-corasick = "1.1"

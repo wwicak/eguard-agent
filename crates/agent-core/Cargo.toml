@@ -1,0 +1,20 @@
+[package]
+name = "agent-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+grpc-client = { path = "../grpc-client" }
+detection = { path = "../detection" }
+response = { path = "../response" }
+platform-linux = { path = "../platform-linux" }
+compliance = { path = "../compliance" }
+baseline = { path = "../baseline" }
+nac = { path = "../nac" }
+toml.workspace = true

@@ -1,0 +1,9 @@
+[package]
+name = "response"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+detection = { path = "../detection" }
