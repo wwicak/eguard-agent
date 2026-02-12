@@ -59,35 +59,44 @@ jobs:
             --output bundle \
             --version "${{ steps.version.outputs.version }}"
 
-      - name: Import GPG key
-        run: |
-          echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --import
-          echo "allow-preset-passphrase" >> ~/.gnupg/gpg-agent.conf
-          gpgconf --kill gpg-agent
-
-      - name: Sign manifest
-        run: |
-          gpg --batch --yes --pinentry-mode loopback \
-            --passphrase "${{ secrets.GPG_PASSPHRASE }}" \
-            --detach-sign --armor \
-            -o bundle/manifest.json.asc bundle/manifest.json
-
-      - name: Verify signature
-        run: gpg --verify bundle/manifest.json.asc bundle/manifest.json
-
       - name: Package bundle
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          tar cf - -C bundle/ . | zstd -3 -o "eguard-rules-${VERSION}.bundle.tar.zst"
-          cp bundle/manifest.json.asc .
-          echo "Bundle size: $(du -sh eguard-rules-${VERSION}.bundle.tar.zst | cut -f1)"
+          BUNDLE="eguard-rules-${VERSION}.bundle.tar.zst"
+
+          if [ -z "${THREAT_INTEL_ED25519_PRIVATE_KEY_PEM:-}" ]; then
+            echo "Missing THREAT_INTEL_ED25519_PRIVATE_KEY_PEM secret"
+            exit 1
+          fi
+
+          tar cf - -C bundle/ . | zstd -3 -o "${BUNDLE}"
+          python threat-intel/processing/ed25519_sign.py \
+            --input "${BUNDLE}" \
+            --output-sig "${BUNDLE}.sig" \
+            --public-key-hex-out "${BUNDLE}.pub.hex"
+
+          TMP_KEY="$(mktemp /tmp/eguard-ed25519-key.XXXXXX.pem)"
+          TMP_PUB="$(mktemp /tmp/eguard-ed25519-pub.XXXXXX.pem)"
+          trap 'rm -f "${TMP_KEY}" "${TMP_PUB}"' EXIT
+          printf '%s\n' "${THREAT_INTEL_ED25519_PRIVATE_KEY_PEM}" > "${TMP_KEY}"
+          openssl pkey -in "${TMP_KEY}" -pubout -out "${TMP_PUB}"
+          python threat-intel/processing/ed25519_verify.py \
+            --input "${BUNDLE}" \
+            --signature "${BUNDLE}.sig" \
+            --public-key-file "${TMP_PUB}"
+
+          echo "Bundle size: $(du -sh "${BUNDLE}" | cut -f1)"
+        env:
+          THREAT_INTEL_ED25519_PRIVATE_KEY_PEM: ${{ secrets.THREAT_INTEL_ED25519_PRIVATE_KEY_PEM }}
 
       - name: Create GitHub Release
         run: |
           VERSION="${{ steps.version.outputs.version }}"
+          BUNDLE="eguard-rules-${VERSION}.bundle.tar.zst"
           gh release create "rules-${VERSION}" \
-            "eguard-rules-${VERSION}.bundle.tar.zst" \
-            manifest.json.asc \
+            "${BUNDLE}" \
+            "${BUNDLE}.sig" \
+            "${BUNDLE}.pub.hex" \
             --title "Rule Bundle ${VERSION}" \
             --notes "Automated threat intelligence bundle.
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for eGuard threat intel bundle structure and GPG signature."""
+"""Tests for eGuard threat intel bundle structure and Ed25519 artifacts."""
 
 import hashlib
 import json
@@ -76,27 +76,28 @@ class TestBundleStructure(unittest.TestCase):
             self.assertGreaterEqual(manifest.get(key, 0), 0, f"{key} must be >= 0")
 
 
-class TestGPGSignature(unittest.TestCase):
-    """Validate GPG signature on manifest."""
+class TestEd25519BundleArtifacts(unittest.TestCase):
+    """Validate expected Ed25519 signature artifacts for packed bundle."""
 
-    BUNDLE_DIR = os.environ.get("BUNDLE_DIR", os.path.join(REPO_ROOT, "bundle"))
+    BUNDLE_ARCHIVE = os.environ.get(
+        "BUNDLE_ARCHIVE", os.path.join(REPO_ROOT, "eguard-rules.bundle.tar.zst")
+    )
 
     def setUp(self):
-        manifest = os.path.join(self.BUNDLE_DIR, "manifest.json")
-        sig = os.path.join(self.BUNDLE_DIR, "manifest.json.asc")
-        if not os.path.isfile(manifest) or not os.path.isfile(sig):
-            self.skipTest("Bundle or signature not found")
+        if not os.path.isfile(self.BUNDLE_ARCHIVE):
+            self.skipTest(f"Bundle archive not found: {self.BUNDLE_ARCHIVE}")
 
-    def test_gpg_verify(self):
-        """GPG signature must verify against manifest."""
-        result = subprocess.run(
-            ["gpg", "--verify",
-             os.path.join(self.BUNDLE_DIR, "manifest.json.asc"),
-             os.path.join(self.BUNDLE_DIR, "manifest.json")],
-            capture_output=True, text=True,
-        )
-        self.assertEqual(result.returncode, 0,
-                         f"GPG verification failed:\n{result.stderr}")
+    def test_signature_sidecar_exists(self):
+        sig = f"{self.BUNDLE_ARCHIVE}.sig"
+        self.assertTrue(os.path.isfile(sig), "bundle signature sidecar must exist")
+        self.assertGreater(os.path.getsize(sig), 0, "signature sidecar must be non-empty")
+
+    def test_public_key_hex_exists(self):
+        pub_hex = f"{self.BUNDLE_ARCHIVE}.pub.hex"
+        self.assertTrue(os.path.isfile(pub_hex), "bundle public key hex sidecar must exist")
+        with open(pub_hex, "r", encoding="utf-8") as f:
+            content = f.read().strip()
+        self.assertEqual(len(content), 64, "public key hex must be 32 bytes")
 
 
 class TestProcessingScripts(unittest.TestCase):
@@ -121,6 +122,26 @@ class TestProcessingScripts(unittest.TestCase):
             capture_output=True, text=True,
         )
         self.assertEqual(result.returncode, 0, f"build_bundle.py import failed: {result.stderr}")
+
+    def test_ed25519_sign_importable(self):
+        result = subprocess.run(
+            [sys.executable, "-c",
+             "import importlib.util; spec = importlib.util.spec_from_file_location('ed25519_sign', "
+             f"'{os.path.join(REPO_ROOT, 'threat-intel/processing/ed25519_sign.py')}'); "
+             "mod = importlib.util.module_from_spec(spec)"],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, f"ed25519_sign.py import failed: {result.stderr}")
+
+    def test_ed25519_verify_importable(self):
+        result = subprocess.run(
+            [sys.executable, "-c",
+             "import importlib.util; spec = importlib.util.spec_from_file_location('ed25519_verify', "
+             f"'{os.path.join(REPO_ROOT, 'threat-intel/processing/ed25519_verify.py')}'); "
+             "mod = importlib.util.module_from_spec(spec)"],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, f"ed25519_verify.py import failed: {result.stderr}")
 
 
 if __name__ == "__main__":
