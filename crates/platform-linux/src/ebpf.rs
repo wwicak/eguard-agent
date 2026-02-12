@@ -561,4 +561,79 @@ mod tests {
             .payload
             .contains("subject=/tmp/eguard-malware-test-marker"));
     }
+
+    #[test]
+    fn parses_structured_process_exec_payload() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&321u32.to_le_bytes());
+        payload.extend_from_slice(&777u64.to_le_bytes());
+
+        let mut comm = [0u8; 32];
+        comm[..5].copy_from_slice(b"bash\0");
+        payload.extend_from_slice(&comm);
+
+        let mut filename = [0u8; 160];
+        filename[..14].copy_from_slice(b"/usr/bin/bash\0");
+        payload.extend_from_slice(&filename);
+
+        let mut argv = [0u8; 160];
+        argv[..16].copy_from_slice(b"bash -lc whoami\0");
+        payload.extend_from_slice(&argv);
+
+        let event =
+            parse_raw_event(&encode_event(1, 900, 1000, 22, &payload)).expect("parse process");
+        assert!(matches!(event.event_type, EventType::ProcessExec));
+        assert!(event.payload.contains("ppid=321"));
+        assert!(event.payload.contains("cgroup_id=777"));
+        assert!(event.payload.contains("comm=bash"));
+        assert!(event.payload.contains("path=/usr/bin/bash"));
+        assert!(event.payload.contains("cmdline=bash -lc whoami"));
+    }
+
+    #[test]
+    fn parses_structured_tcp_connect_payload() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&2u16.to_le_bytes());
+        payload.extend_from_slice(&12345u16.to_le_bytes());
+        payload.extend_from_slice(&4444u16.to_le_bytes());
+        payload.push(6u8);
+        payload.push(0u8);
+        payload.extend_from_slice(&0x0A000001u32.to_le_bytes());
+        payload.extend_from_slice(&0xC0A8012Au32.to_le_bytes());
+        payload.extend_from_slice(&[0u8; 16]);
+        payload.extend_from_slice(&[0u8; 16]);
+
+        let event =
+            parse_raw_event(&encode_event(3, 901, 1001, 23, &payload)).expect("parse tcp");
+        assert!(matches!(event.event_type, EventType::TcpConnect));
+        assert!(event.payload.contains("family=2"));
+        assert!(event.payload.contains("protocol=6"));
+        assert!(event.payload.contains("src_ip=10.0.0.1"));
+        assert!(event.payload.contains("dst_ip=192.168.1.42"));
+        assert!(event.payload.contains("dst_port=4444"));
+    }
+
+    #[test]
+    fn parses_structured_dns_and_module_payloads() {
+        let mut dns = Vec::new();
+        dns.extend_from_slice(&1u16.to_le_bytes());
+        dns.extend_from_slice(&1u16.to_le_bytes());
+        dns.extend_from_slice(b"c2.bad.example\0");
+
+        let dns_event = parse_raw_event(&encode_event(4, 902, 1002, 24, &dns)).expect("dns");
+        assert!(matches!(dns_event.event_type, EventType::DnsQuery));
+        assert!(dns_event.payload.contains("qname=c2.bad.example"));
+        assert!(dns_event.payload.contains("qtype=1"));
+
+        let module_event = parse_raw_event(&encode_event(5, 903, 1003, 25, b"kernel_rootkit\0"))
+            .expect("module");
+        assert!(matches!(module_event.event_type, EventType::ModuleLoad));
+        assert!(module_event.payload.contains("module=kernel_rootkit"));
+    }
+
+    #[test]
+    fn rejects_unknown_event_type() {
+        let err = parse_raw_event(&encode_event(99, 1, 1, 1, b"x")).expect_err("parse error");
+        assert!(matches!(err, EbpfError::Parse(_)));
+    }
 }
