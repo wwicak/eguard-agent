@@ -1,1 +1,4 @@
-{"value":"59.110.7.32","confidence":"low","sources":["otx"],"first_seen":"2026-02-12T11:14:06.214910+00:00","last_seen":"2026-02-12T11:14:06.214910+00:00"}
+{"value":"59.110.7.32","confidence":"low","sources":["otx"],"first_seen":"2026-02-12T11:24:05.413102+00:00","last_seen":"2026-02-12T11:24:05.413102+00:00"}
+{"value":"162.243.103.246","confidence":"medium","sources":["feodo"],"first_seen":"2026-02-12T11:24:05.413167+00:00","last_seen":"2026-02-12T11:24:05.413167+00:00"}
+{"value":"172.232.59.14","confidence":"medium","sources":["feodo"],"first_seen":"2026-02-12T11:24:05.413178+00:00","last_seen":"2026-02-12T11:24:05.413178+00:00"}
+{"value":"34.204.119.63","confidence":"medium","sources":["feodo"],"first_seen":"2026-02-12T11:24:05.413185+00:00","last_seen":"2026-02-12T11:24:05.413185+00:00"}
