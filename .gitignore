@@ -3,8 +3,7 @@
 /.zig-cache/
 /zig-out/
 
-# Threat intel pipeline (collected data, not checked in)
-/sources/
+# Threat intel pipeline (build artifacts only)
 /bundle/
 /bundles/
 *.bundle.tar.zst
