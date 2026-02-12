@@ -40,6 +40,31 @@ fn emitFileOpen(ctx: *const FileOpenCtx) i32 {
     };
 
     common.readCString(ctx.path_ptr, event.path[0..]);
+    if (!shouldEmitFileOpen(ctx, event.path[0..])) {
+        return 0;
+    }
     common.emitRecord(FileOpenEvent, &event);
     return 0;
+}
+
+fn shouldEmitFileOpen(ctx: *const FileOpenCtx, path: []const u8) bool {
+    if ((ctx.mode & 0o111) != 0) {
+        return true;
+    }
+    return hasPrefix(path, "/etc/eguard-agent/") or
+        hasPrefix(path, "/var/lib/eguard-agent/") or
+        hasPrefix(path, "/opt/eguard-agent/");
+}
+
+fn hasPrefix(path: []const u8, prefix: []const u8) bool {
+    var i: usize = 0;
+    while (i < prefix.len) : (i += 1) {
+        if (i >= path.len or path[i] == 0) {
+            return false;
+        }
+        if (path[i] != prefix[i]) {
+            return false;
+        }
+    }
+    return true;
 }

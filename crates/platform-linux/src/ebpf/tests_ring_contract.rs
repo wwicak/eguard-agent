@@ -70,11 +70,14 @@ fn workspace_root() -> PathBuf {
 }
 
 #[test]
-// AC-EBP-010 AC-EBP-101
+// AC-EBP-010 AC-EBP-011 AC-EBP-101
 fn zig_ebpf_programs_share_single_default_8mb_ring_buffer_definition() {
     let root = workspace_root();
     let common = std::fs::read_to_string(root.join("zig/ebpf/common.zig")).expect("read common");
-    assert!(common.contains("pub const RINGBUF_CAPACITY: u32 = 8 * 1024 * 1024;"));
+    assert!(common.contains("pub const DEFAULT_RINGBUF_CAPACITY: u32 = 8 * 1024 * 1024;"));
+    assert!(common.contains("pub const RINGBUF_CAPACITY: u32 = resolveRingbufCapacity();"));
+    assert!(common.contains("@hasDecl(root, \"RINGBUF_CAPACITY\")"));
+    assert!(common.contains("return DEFAULT_RINGBUF_CAPACITY;"));
     assert!(common.contains("pub export var events: MapDef"));
     assert!(common.contains(".max_entries = RINGBUF_CAPACITY"));
 
@@ -177,4 +180,27 @@ fn poll_once_uses_single_blocking_backend_poll_invocation_per_call() {
     let guard = observation.lock().expect("lock observation");
     assert_eq!(guard.calls, 1);
     assert_eq!(guard.seen_timeouts, vec![timeout]);
+}
+
+#[test]
+// AC-EBP-005 AC-EBP-008
+fn zig_programs_apply_kernel_side_filters_for_new_connections_and_file_open_scope() {
+    let root = workspace_root();
+
+    let tcp = std::fs::read_to_string(root.join("zig/ebpf/tcp_connect.zig"))
+        .expect("read tcp_connect.zig");
+    assert!(tcp.contains("pub export fn kprobe_tcp_v4_connect"));
+    assert!(tcp.contains("_ = ctx;\n    return 0;"));
+    assert!(tcp.contains("pub export fn kretprobe_tcp_v4_connect"));
+    assert!(tcp.contains("return emitTcpConnect(ctx);"));
+    assert!(tcp.contains("pub export fn kprobe_tcp_v6_connect"));
+    assert!(tcp.contains("pub export fn kretprobe_tcp_v6_connect"));
+
+    let file_open =
+        std::fs::read_to_string(root.join("zig/ebpf/file_open.zig")).expect("read file_open.zig");
+    assert!(file_open.contains("if (!shouldEmitFileOpen(ctx, event.path[0..]))"));
+    assert!(file_open.contains("(ctx.mode & 0o111) != 0"));
+    assert!(file_open.contains("hasPrefix(path, \"/etc/eguard-agent/\")"));
+    assert!(file_open.contains("hasPrefix(path, \"/var/lib/eguard-agent/\")"));
+    assert!(file_open.contains("hasPrefix(path, \"/opt/eguard-agent/\")"));
 }

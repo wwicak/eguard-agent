@@ -1,7 +1,17 @@
+const root = @import("root");
+
 pub const MAX_EVENT_SIZE: usize = 512;
-pub const RINGBUF_CAPACITY: u32 = 8 * 1024 * 1024;
+pub const DEFAULT_RINGBUF_CAPACITY: u32 = 8 * 1024 * 1024;
+pub const RINGBUF_CAPACITY: u32 = resolveRingbufCapacity();
 
 pub const BPF_MAP_TYPE_RINGBUF: u32 = 27;
+
+fn resolveRingbufCapacity() u32 {
+    if (@hasDecl(root, "RINGBUF_CAPACITY")) {
+        return @as(u32, @intCast(root.RINGBUF_CAPACITY));
+    }
+    return DEFAULT_RINGBUF_CAPACITY;
+}
 
 pub const EventType = enum(u8) {
     process_exec = 1,

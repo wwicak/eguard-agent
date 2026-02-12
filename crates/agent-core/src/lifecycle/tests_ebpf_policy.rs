@@ -1,3 +1,4 @@
+use super::*;
 use std::path::PathBuf;
 
 fn workspace_root() -> PathBuf {
@@ -142,4 +143,14 @@ fn ebpf_resource_budget_workflow_runs_harness_and_publishes_artifacts() {
             "missing workflow contract: {required}"
         );
     }
+}
+
+#[test]
+// AC-EBP-055
+fn sampling_stride_increases_only_when_drop_backpressure_is_observed() {
+    assert_eq!(compute_sampling_stride(0, 0), 1);
+    assert_eq!(compute_sampling_stride(9_000, 0), 1);
+    assert_eq!(compute_sampling_stride(1_500, 1), 2);
+    assert_eq!(compute_sampling_stride(5_000, 7), 4);
+    assert_eq!(compute_sampling_stride(9_000, 3), 8);
 }

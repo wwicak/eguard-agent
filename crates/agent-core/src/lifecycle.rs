@@ -498,12 +498,22 @@ impl AgentRuntime {
 
     fn next_raw_event(&mut self, now_unix: i64) -> RawEvent {
         let timeout = self.adaptive_poll_timeout();
+        let sampling_stride =
+            compute_sampling_stride(self.buffer.pending_count(), self.recent_ebpf_drops);
         let polled = self.ebpf_engine.poll_once(timeout);
         self.observe_ebpf_stats();
 
         match polled {
             Ok(events) => {
-                if let Some(event) = events.into_iter().next() {
+                if sampling_stride > 1 {
+                    info!(
+                        sampling_stride,
+                        backlog = self.buffer.pending_count(),
+                        recent_ebpf_drops = self.recent_ebpf_drops,
+                        "applying statistical sampling due to backpressure"
+                    );
+                }
+                if let Some(event) = events.into_iter().step_by(sampling_stride).next() {
                     return event;
                 }
             }
@@ -803,6 +813,21 @@ fn compute_poll_timeout(pending: usize, recent_ebpf_drops: u64) -> std::time::Du
     }
 }
 
+fn compute_sampling_stride(pending: usize, recent_ebpf_drops: u64) -> usize {
+    if recent_ebpf_drops == 0 {
+        return 1;
+    }
+    if pending > 8_192 {
+        8
+    } else if pending > 4_096 {
+        4
+    } else if pending > 1_024 {
+        2
+    } else {
+        1
+    }
+}
+
 struct LocalActionResult {
     success: bool,
     detail: String,
@@ -1076,3 +1101,6 @@ mod tests;
 
 #[cfg(test)]
 mod tests_ebpf_policy;
+
+#[cfg(test)]
+mod tests_ebpf_memory;

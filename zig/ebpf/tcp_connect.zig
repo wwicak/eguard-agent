@@ -29,7 +29,8 @@ const TcpConnectEvent = extern struct {
 };
 
 pub export fn kprobe_tcp_v4_connect(ctx: *const TcpConnectCtx) linksection("kprobe/tcp_v4_connect") callconv(.c) i32 {
-    return emitTcpConnect(ctx);
+    _ = ctx;
+    return 0;
 }
 
 pub export fn kretprobe_tcp_v4_connect(ctx: *const TcpConnectCtx) linksection("kretprobe/tcp_v4_connect") callconv(.c) i32 {
@@ -37,7 +38,8 @@ pub export fn kretprobe_tcp_v4_connect(ctx: *const TcpConnectCtx) linksection("k
 }
 
 pub export fn kprobe_tcp_v6_connect(ctx: *const TcpConnectCtx) linksection("kprobe/tcp_v6_connect") callconv(.c) i32 {
-    return emitTcpConnect(ctx);
+    _ = ctx;
+    return 0;
 }
 
 pub export fn kretprobe_tcp_v6_connect(ctx: *const TcpConnectCtx) linksection("kretprobe/tcp_v6_connect") callconv(.c) i32 {
