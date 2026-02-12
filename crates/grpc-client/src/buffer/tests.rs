@@ -1,4 +1,3 @@
-
 use super::*;
 
 fn sample_event(i: i64) -> EventEnvelope {

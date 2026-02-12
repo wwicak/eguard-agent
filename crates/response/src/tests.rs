@@ -1,4 +1,3 @@
-
 use super::*;
 use std::path::Path;
 
@@ -89,7 +88,7 @@ fn dry_run_forces_alert_only() {
 }
 
 #[test]
-// AC-RSP-033 AC-RSP-094
+// AC-RSP-033 AC-RSP-094 AC-CFG-016
 fn default_linux_protected_paths_match_acceptance_baseline() {
     let protected = ProtectedList::default_linux();
 
@@ -103,7 +102,7 @@ fn default_linux_protected_paths_match_acceptance_baseline() {
 }
 
 #[test]
-// AC-RSP-085 AC-RSP-086 AC-RSP-087 AC-RSP-088 AC-RSP-089 AC-RSP-090 AC-RSP-091 AC-RSP-092
+// AC-RSP-085 AC-RSP-086 AC-RSP-087 AC-RSP-088 AC-RSP-089 AC-RSP-090 AC-RSP-091 AC-RSP-092 AC-CFG-015
 fn default_linux_protected_processes_match_acceptance_baseline() {
     let protected = ProtectedList::default_linux();
     assert!(protected.is_protected_process("init"));

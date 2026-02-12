@@ -1,4 +1,3 @@
-
 use super::*;
 
 #[test]
@@ -265,4 +264,36 @@ fn missing_probe_values_fail_strict_checks() {
         .checks
         .iter()
         .any(|c| c.check == "ssh_root_login" && c.status == "fail"));
+}
+
+#[test]
+// AC-CMP-003
+fn parse_root_fs_encrypted_from_mounts_detects_mapper_and_plain_devices() {
+    let encrypted = "/dev/mapper/ubuntu--vg-root / ext4 rw,relatime 0 0\n";
+    assert_eq!(parse_root_fs_encrypted_from_mounts(encrypted), Some(true));
+
+    let luks_named = "/dev/nvme0n1p3_crypt / ext4 rw,relatime 0 0\n";
+    assert_eq!(parse_root_fs_encrypted_from_mounts(luks_named), Some(true));
+
+    let plain = "/dev/sda2 / ext4 rw,relatime 0 0\n";
+    assert_eq!(parse_root_fs_encrypted_from_mounts(plain), Some(false));
+}
+
+#[test]
+// AC-CMP-010
+fn parse_ssh_root_login_from_config_honors_explicit_directive() {
+    let allowed = r#"
+# comment
+PermitRootLogin yes
+"#;
+    assert_eq!(parse_ssh_root_login_from_config(allowed), Some(true));
+
+    let disallowed = "PermitRootLogin no\n";
+    assert_eq!(parse_ssh_root_login_from_config(disallowed), Some(false));
+
+    let default_when_missing = "# no directive\n";
+    assert_eq!(
+        parse_ssh_root_login_from_config(default_when_missing),
+        Some(false)
+    );
 }

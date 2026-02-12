@@ -426,7 +426,21 @@ fn detect_os_version() -> Option<String> {
 
 fn detect_root_fs_encrypted() -> Option<bool> {
     let raw = fs::read_to_string("/proc/mounts").ok()?;
+    parse_root_fs_encrypted_from_mounts(&raw)
+}
+
+fn detect_ssh_root_login_permitted() -> Option<bool> {
+    let raw = fs::read_to_string("/etc/ssh/sshd_config").ok()?;
+    parse_ssh_root_login_from_config(&raw)
+}
+
+fn parse_root_fs_encrypted_from_mounts(raw: &str) -> Option<bool> {
     for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
         let mut parts = line.split_whitespace();
         let source = parts.next()?;
         let mountpoint = parts.next()?;
@@ -443,16 +457,20 @@ fn detect_root_fs_encrypted() -> Option<bool> {
     None
 }
 
-fn detect_ssh_root_login_permitted() -> Option<bool> {
-    let raw = fs::read_to_string("/etc/ssh/sshd_config").ok()?;
+fn parse_ssh_root_login_from_config(raw: &str) -> Option<bool> {
     for line in raw.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
 
-        if let Some(value) = line.strip_prefix("PermitRootLogin") {
-            let value = value.trim().to_ascii_lowercase();
+        let value = line
+            .strip_prefix("PermitRootLogin")
+            .map(|v| v.trim())
+            .or_else(|| line.strip_prefix("permitrootlogin").map(|v| v.trim()));
+
+        if let Some(value) = value {
+            let value = value.to_ascii_lowercase();
             return Some(matches!(value.as_str(), "yes" | "without-password"));
         }
     }
