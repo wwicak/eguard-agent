@@ -199,6 +199,18 @@ impl BaselineStore {
     pub fn check_transition(&mut self) -> BaselineStoreResult<Option<BaselineTransition>> {
         Ok(self.check_transition_with_now(now_unix()?))
     }
+
+    pub fn seed_with_defaults_if_empty(&mut self) -> usize {
+        if !self.baselines.is_empty() {
+            return 0;
+        }
+
+        for (key, profile) in default_seed_profiles() {
+            self.baselines.insert(key, profile);
+        }
+        self.last_refresh_unix = now_unix().unwrap_or(self.last_refresh_unix);
+        self.baselines.len()
+    }
 }
 
 fn now_unix() -> BaselineStoreResult<u64> {
@@ -213,5 +225,91 @@ fn derive_entropy_threshold(sample_count: u64) -> f64 {
     1.0 + x.log10()
 }
 
+fn default_seed_profiles() -> Vec<(ProcessKey, ProcessProfile)> {
+    vec![
+        seed_profile(
+            "bash",
+            "sshd",
+            &[
+                ("process_exec", 30),
+                ("file_open", 25),
+                ("network_connect", 5),
+                ("dns_query", 2),
+                ("alert", 1),
+            ],
+        ),
+        seed_profile(
+            "nginx",
+            "systemd",
+            &[
+                ("process_exec", 1),
+                ("file_open", 15),
+                ("network_connect", 60),
+                ("dns_query", 10),
+                ("module_load", 5),
+            ],
+        ),
+        seed_profile(
+            "python3",
+            "bash",
+            &[
+                ("process_exec", 10),
+                ("file_open", 30),
+                ("network_connect", 20),
+                ("dns_query", 5),
+                ("module_load", 10),
+            ],
+        ),
+        seed_profile(
+            "apt",
+            "systemd",
+            &[
+                ("process_exec", 5),
+                ("file_open", 45),
+                ("network_connect", 15),
+                ("dns_query", 10),
+                ("module_load", 5),
+            ],
+        ),
+        seed_profile(
+            "systemd",
+            "kernel",
+            &[
+                ("process_exec", 20),
+                ("file_open", 20),
+                ("network_connect", 8),
+                ("dns_query", 1),
+                ("module_load", 12),
+            ],
+        ),
+    ]
+}
+
+fn seed_profile(
+    comm: &str,
+    parent_comm: &str,
+    counts: &[(&str, u64)],
+) -> (ProcessKey, ProcessProfile) {
+    let mut event_distribution = HashMap::new();
+    for (event, count) in counts {
+        event_distribution.insert((*event).to_string(), *count);
+    }
+
+    let sample_count = event_distribution.values().sum();
+    (
+        ProcessKey {
+            comm: comm.to_string(),
+            parent_comm: parent_comm.to_string(),
+        },
+        ProcessProfile {
+            event_distribution,
+            sample_count,
+            entropy_threshold: derive_entropy_threshold(sample_count),
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_seed;

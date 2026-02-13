@@ -1,0 +1,12 @@
+# Core package payload contract
+/usr/bin/eguard-agent
+/usr/lib/eguard-agent/ebpf/process_exec.bpf.o
+/usr/lib/eguard-agent/ebpf/file_open.bpf.o
+/usr/lib/eguard-agent/ebpf/tcp_connect.bpf.o
+/usr/lib/eguard-agent/ebpf/dns_query.bpf.o
+/usr/lib/eguard-agent/ebpf/module_load.bpf.o
+/usr/lib/eguard-agent/ebpf/lsm_block.bpf.o
+/usr/lib/eguard-agent/lib/libeguard_asm.a
+/var/lib/eguard-agent/baselines/seed.bin
+/usr/lib/systemd/system/eguard-agent.service
+/etc/eguard-agent/agent.conf

@@ -55,7 +55,7 @@ impl Client {
                     os_type: "linux".to_string(),
                     os_version: String::new(),
                     kernel_version: String::new(),
-                    agent_version: "0.1.0".to_string(),
+                    agent_version: self.agent_version.clone(),
                     machine_id: String::new(),
                     csr: b"pkcs10-csr-placeholder".to_vec(),
                     capabilities: Some(pb::AgentCapabilities {
@@ -87,7 +87,7 @@ impl Client {
                 .heartbeat(pb::HeartbeatRequest {
                     agent_id: agent_id.to_string(),
                     timestamp: now_unix(),
-                    agent_version: "0.1.0".to_string(),
+                    agent_version: self.agent_version.clone(),
                     status: None,
                     resource_usage: None,
                     baseline_report: None,

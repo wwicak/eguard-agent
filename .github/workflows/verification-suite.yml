@@ -1,0 +1,23 @@
+name: verification-suite
+
+on:
+  push:
+    branches: ["main", "feat/eguard-agent"]
+  pull_request:
+  release:
+    types: [published]
+  schedule:
+    - cron: "0 2 * * 1"
+
+jobs:
+  verification:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run verification suite contracts
+        run: ./scripts/run_verification_suite_ci.sh

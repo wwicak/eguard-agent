@@ -1,0 +1,30 @@
+[self_protection]
+integrity_check_interval_secs = 60
+prevent_uninstall = true
+
+[capabilities]
+retain = ["CAP_BPF", "CAP_SYS_ADMIN", "CAP_NET_ADMIN", "CAP_DAC_READ_SEARCH"]
+
+[prctl]
+set_dumpable = 0
+set_ptracer_any = true
+
+[seccomp]
+mode = "whitelist"
+allow = ["bpf", "read", "write", "openat", "socket", "connect"]
+
+[file_protection]
+owner = "eguard-agent"
+mode = "0600"
+paths = [
+  "/etc/eguard-agent/bootstrap.conf",
+  "/etc/eguard-agent/agent.conf",
+  "/etc/eguard-agent/certs/agent.crt",
+  "/etc/eguard-agent/certs/agent.key",
+  "/etc/eguard-agent/certs/ca.crt"
+]
+
+[crypto_at_rest]
+algorithm = "AES-256-GCM"
+key_source = "machine-id"
+optional_tpm2 = true

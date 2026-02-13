@@ -1,0 +1,22 @@
+name: baseline-aggregation
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 1 * * 0"
+
+jobs:
+  aggregate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run fleet baseline aggregation contract
+        run: ./scripts/run_baseline_aggregation_ci.sh
+
+      - name: Upload aggregation artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: baseline-aggregation
+          path: artifacts/baseline-aggregation

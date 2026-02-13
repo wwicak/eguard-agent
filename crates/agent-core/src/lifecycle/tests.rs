@@ -93,6 +93,19 @@ fn compute_poll_timeout_prioritizes_drop_backpressure() {
 }
 
 #[test]
+fn interval_due_runs_immediately_then_waits_for_threshold() {
+    assert!(interval_due(None, 100, 30));
+    assert!(!interval_due(Some(100), 120, 30));
+    assert!(interval_due(Some(100), 130, 30));
+}
+
+#[test]
+fn interval_due_tolerates_non_monotonic_wall_clock() {
+    assert!(!interval_due(Some(1_000), 900, 30));
+    assert!(interval_due(Some(1_000), 1_030, 30));
+}
+
+#[test]
 fn load_bundle_rules_reads_sigma_and_yara_dirs() {
     let base = std::env::temp_dir().join(format!(
         "eguard-bundle-rules-{}",

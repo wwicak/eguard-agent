@@ -1,0 +1,13 @@
+Primary API channel:
+- https://<server>/api/v1/agent-install/linux-deb
+- https://<server>/api/v1/agent-install/linux-rpm
+
+Repository mirrors:
+- apt repository (Debian/Ubuntu)
+- yum repository (RHEL/Fedora/Rocky)
+
+Manual install:
+- Admin UI downloadable .deb/.rpm files
+
+Open-source distribution:
+- GitHub Releases

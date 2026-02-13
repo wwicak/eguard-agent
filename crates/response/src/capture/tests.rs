@@ -32,3 +32,42 @@ fn files_larger_than_limit_are_not_captured() {
     let _ = fs::remove_file(path);
     let _ = fs::remove_dir(base);
 }
+
+#[test]
+// AC-RSP-043
+fn file_exactly_at_capture_limit_is_accepted() {
+    let base = std::env::temp_dir().join(format!(
+        "eguard-capture-exact-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    fs::create_dir_all(&base).expect("create temp dir");
+
+    let path = base.join("exact.script");
+    let mut file = std::fs::File::create(&path).expect("create temp file");
+    let payload = vec![b'B'; MAX_CAPTURE_BYTES];
+    file.write_all(&payload).expect("write payload");
+
+    let captured = read_file_capped(&path, MAX_CAPTURE_BYTES).expect("limit-sized file allowed");
+    assert_eq!(captured.len(), MAX_CAPTURE_BYTES);
+
+    let _ = fs::remove_file(path);
+    let _ = fs::remove_dir(base);
+}
+
+#[test]
+// AC-RSP-046
+fn environ_bytes_are_normalized_to_newline_pairs() {
+    let raw = b"USER=root\0SHELL=/bin/bash\0PATH=/usr/bin\0\0";
+    let normalized = normalize_environ_bytes(raw).expect("normalized env");
+    let lines = normalized.lines().collect::<Vec<_>>();
+
+    assert_eq!(lines, vec!["USER=root", "SHELL=/bin/bash", "PATH=/usr/bin"]);
+}
+
+#[test]
+fn empty_environ_bytes_normalize_to_none() {
+    assert!(normalize_environ_bytes(b"\0\0").is_none());
+}

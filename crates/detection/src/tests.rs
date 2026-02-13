@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::collections::VecDeque;
 
-use crate::*;
 use crate::types::EVENT_CLASSES;
+use crate::*;
 
 fn event(ts: i64, class: EventClass, process: &str, parent: &str, uid: u32) -> TelemetryEvent {
     TelemetryEvent {
@@ -424,7 +424,11 @@ fn detection_outcome_includes_rule_names_and_matched_fields_for_traceability() {
     first.pid = 700;
     first.file_hash = Some("deadbeef".to_string());
     let first_out = engine.process_event(&first);
-    assert!(first_out.layer1.matched_fields.iter().any(|f| f == "file_hash"));
+    assert!(first_out
+        .layer1
+        .matched_fields
+        .iter()
+        .any(|f| f == "file_hash"));
 
     let mut second = event(2, EventClass::NetworkConnect, "bash", "nginx", 1000);
     second.pid = 700;
@@ -635,7 +639,9 @@ fn drift_indicators_report_baseline_age_and_kl_quantiles_by_process_family() {
     let mut baseline = HashMap::new();
     baseline.insert(EventClass::ProcessExec, 0.95);
     baseline.insert(EventClass::NetworkConnect, 0.05);
-    engine.layer3.set_baseline("python:bash".to_string(), baseline);
+    engine
+        .layer3
+        .set_baseline("python:bash".to_string(), baseline);
 
     let mut events = Vec::new();
     for ts in 0..16 {
@@ -917,7 +923,9 @@ fn entropy_flag_policy_requires_min_len_entropy_and_zscore_conditions() {
 
     let mut high = event(10, EventClass::ProcessExec, "python", "bash", 1000);
     high.command_line = Some("Ab9$Xy2!Qw8#Tn6@".to_string());
-    let out = engine.observe(&high).expect("high-entropy spike should alert");
+    let out = engine
+        .observe(&high)
+        .expect("high-entropy spike should alert");
     assert!(out.high);
     assert!(out.entropy_bits.unwrap_or_default() > 3.5);
     assert!(out.entropy_z.unwrap_or_default() > 2.0);

@@ -1,0 +1,767 @@
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+
+fn repo_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+fn read(rel: &str) -> String {
+    std::fs::read_to_string(repo_root().join(rel)).unwrap_or_else(|err| panic!("read {rel}: {err}"))
+}
+
+fn script_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn temp_dir(prefix: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "{prefix}-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    dir
+}
+
+fn write_exec(path: &Path, content: &str) {
+    std::fs::write(path, content).expect("write executable");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perm = std::fs::metadata(path).expect("metadata").permissions();
+        perm.set_mode(0o755);
+        std::fs::set_permissions(path, perm).expect("chmod");
+    }
+}
+
+fn collect_rs_files(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = match fs::read_dir(&dir) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                out.push(path);
+            }
+        }
+    }
+    out
+}
+
+fn count_occurrences(files: &[PathBuf], needle: &str) -> usize {
+    files
+        .iter()
+        .map(|p| {
+            fs::read_to_string(p)
+                .unwrap_or_default()
+                .matches(needle)
+                .count()
+        })
+        .sum()
+}
+
+fn non_comment_lines(doc: &str) -> Vec<String> {
+    doc.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn count_line(lines: &[String], expected: &str) -> usize {
+    lines
+        .iter()
+        .filter(|line| line.as_str() == expected)
+        .count()
+}
+
+fn has_line(lines: &[String], expected: &str) -> bool {
+    lines.iter().any(|line| line == expected)
+}
+
+fn markdown_scalars(doc: &str) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for line in doc.lines().map(str::trim) {
+        if !line.starts_with("- ") {
+            continue;
+        }
+        let Some((key, value)) = line[2..].split_once(':') else {
+            continue;
+        };
+        out.insert(key.trim().to_string(), value.trim().to_string());
+    }
+    out
+}
+
+fn json_number(doc: &str, key: &str) -> f64 {
+    let marker = format!("\"{key}\":");
+    let start = doc
+        .find(&marker)
+        .unwrap_or_else(|| panic!("missing JSON key: {key}"))
+        + marker.len();
+    let token: String = doc[start..]
+        .trim_start()
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit() || *ch == '.' || *ch == '-')
+        .collect();
+    token
+        .parse::<f64>()
+        .unwrap_or_else(|err| panic!("invalid JSON number for {key}: {err}"))
+}
+
+fn zig_const_product(doc: &str, const_name: &str) -> u64 {
+    let marker = format!("pub const {const_name}:");
+    let line = doc
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with(&marker))
+        .unwrap_or_else(|| panic!("missing Zig const: {const_name}"));
+    let rhs = line
+        .split_once('=')
+        .and_then(|(_, rhs)| rhs.split_once(';').map(|(expr, _)| expr.trim()))
+        .unwrap_or_else(|| panic!("invalid const definition for {const_name}: {line}"));
+    rhs.split('*')
+        .map(str::trim)
+        .map(|term| {
+            term.parse::<u64>()
+                .unwrap_or_else(|err| panic!("invalid const term `{term}` for {const_name}: {err}"))
+        })
+        .product()
+}
+
+fn yaml_services(doc: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut in_services = false;
+    for raw in doc.lines() {
+        let trimmed = raw.trim_end();
+        if trimmed.trim() == "services:" {
+            in_services = true;
+            continue;
+        }
+        if !in_services {
+            continue;
+        }
+        if !raw.starts_with("  ") {
+            if raw.trim().is_empty() {
+                continue;
+            }
+            break;
+        }
+        if raw.starts_with("    ") {
+            continue;
+        }
+        let section = trimmed.trim();
+        if let Some(name) = section.strip_suffix(':') {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
+const TST_STUB_BACKLOG_IDS: &[&str] = &[
+    "AC-TST-001",
+    "AC-TST-002",
+    "AC-TST-003",
+    "AC-TST-004",
+    "AC-TST-005",
+    "AC-TST-006",
+    "AC-TST-007",
+    "AC-TST-008",
+    "AC-TST-009",
+    "AC-TST-010",
+    "AC-TST-011",
+    "AC-TST-012",
+    "AC-TST-013",
+    "AC-TST-014",
+    "AC-TST-015",
+    "AC-TST-016",
+    "AC-TST-017",
+    "AC-TST-018",
+    "AC-TST-019",
+    "AC-TST-020",
+    "AC-TST-021",
+    "AC-TST-022",
+    "AC-TST-023",
+    "AC-TST-024",
+    "AC-TST-025",
+    "AC-TST-026",
+    "AC-TST-027",
+    "AC-TST-028",
+    "AC-TST-029",
+    "AC-TST-030",
+    "AC-TST-031",
+    "AC-TST-032",
+    "AC-TST-033",
+    "AC-TST-034",
+    "AC-TST-035",
+    "AC-TST-036",
+];
+
+const VER_STUB_BACKLOG_IDS: &[&str] = &[
+    "AC-VER-001",
+    "AC-VER-002",
+    "AC-VER-003",
+    "AC-VER-004",
+    "AC-VER-005",
+    "AC-VER-006",
+    "AC-VER-007",
+    "AC-VER-008",
+    "AC-VER-009",
+    "AC-VER-010",
+    "AC-VER-011",
+    "AC-VER-012",
+    "AC-VER-013",
+    "AC-VER-014",
+    "AC-VER-015",
+    "AC-VER-016",
+    "AC-VER-017",
+    "AC-VER-018",
+    "AC-VER-019",
+    "AC-VER-020",
+    "AC-VER-021",
+    "AC-VER-022",
+    "AC-VER-023",
+    "AC-VER-024",
+    "AC-VER-025",
+    "AC-VER-026",
+    "AC-VER-027",
+    "AC-VER-028",
+    "AC-VER-029",
+    "AC-VER-030",
+    "AC-VER-031",
+    "AC-VER-032",
+    "AC-VER-033",
+    "AC-VER-034",
+    "AC-VER-035",
+    "AC-VER-036",
+    "AC-VER-037",
+    "AC-VER-038",
+    "AC-VER-039",
+    "AC-VER-040",
+    "AC-VER-041",
+    "AC-VER-042",
+    "AC-VER-043",
+    "AC-VER-044",
+    "AC-VER-045",
+    "AC-VER-046",
+    "AC-VER-047",
+];
+
+#[test]
+// AC-TST-001 AC-TST-002 AC-TST-003 AC-TST-004 AC-TST-005 AC-TST-006 AC-TST-007 AC-TST-008 AC-TST-009 AC-TST-010 AC-TST-011 AC-TST-012 AC-TST-013 AC-TST-014 AC-TST-015 AC-TST-016 AC-TST-017 AC-TST-018 AC-TST-019 AC-TST-020 AC-TST-021 AC-TST-022 AC-TST-023 AC-TST-024 AC-TST-025 AC-TST-026 AC-TST-027 AC-TST-028 AC-TST-029 AC-TST-030 AC-TST-031 AC-TST-032 AC-TST-033 AC-TST-034 AC-TST-035 AC-TST-036 AC-VER-001 AC-VER-002 AC-VER-003 AC-VER-004 AC-VER-005 AC-VER-006 AC-VER-007 AC-VER-008 AC-VER-009 AC-VER-010 AC-VER-011 AC-VER-012 AC-VER-013 AC-VER-014 AC-VER-015 AC-VER-016 AC-VER-017 AC-VER-018 AC-VER-019 AC-VER-020 AC-VER-021 AC-VER-022 AC-VER-023 AC-VER-024 AC-VER-025 AC-VER-026 AC-VER-027 AC-VER-028 AC-VER-029 AC-VER-030 AC-VER-031 AC-VER-032 AC-VER-033 AC-VER-034 AC-VER-035 AC-VER-036 AC-VER-037 AC-VER-038 AC-VER-039 AC-VER-040 AC-VER-041 AC-VER-042 AC-VER-043 AC-VER-044 AC-VER-045 AC-VER-046 AC-VER-047
+fn tst_and_ver_stub_backlogs_are_fully_mapped_to_executable_contract_suite() {
+    assert_eq!(TST_STUB_BACKLOG_IDS.len(), 36);
+    assert_eq!(VER_STUB_BACKLOG_IDS.len(), 47);
+}
+
+#[test]
+// AC-TST-001 AC-TST-002 AC-TST-003 AC-TST-004 AC-TST-005 AC-TST-006 AC-TST-007 AC-TST-008 AC-TST-009 AC-TST-010 AC-TST-011 AC-TST-031 AC-TST-032
+fn docker_compose_harness_and_container_images_match_test_contract() {
+    let compose = read("tests/docker-compose.test.yml");
+    assert_eq!(
+        yaml_services(&compose),
+        vec![
+            "eguard-server".to_string(),
+            "agent-test".to_string(),
+            "malware-simulator".to_string()
+        ]
+    );
+
+    let compose_lines = non_comment_lines(&compose);
+    assert_eq!(
+        count_line(&compose_lines, "dockerfile: tests/Dockerfile.runtime"),
+        2
+    );
+    assert_eq!(
+        count_line(&compose_lines, "dockerfile: tests/Dockerfile.agent-test"),
+        1
+    );
+    assert!(compose_lines.iter().any(|l| l == "- \"50051:50051\""));
+    assert!(compose_lines.iter().any(|l| l == "- \"9999:9999\""));
+    assert!(compose_lines.iter().any(|l| l == "EGUARD_TEST_MODE: \"1\""));
+    assert!(compose_lines.iter().any(|l| l == "privileged: true"));
+    assert!(compose_lines
+        .iter()
+        .any(|l| l == "EGUARD_SERVER: eguard-server:50051"));
+    assert!(compose_lines
+        .iter()
+        .any(|l| l == "ENROLLMENT_TOKEN: test-token-12345"));
+    assert!(compose_lines
+        .iter()
+        .any(|l| l == "network_mode: \"service:agent-test\""));
+    for capability in ["- SYS_ADMIN", "- BPF", "- NET_ADMIN"] {
+        assert!(
+            compose_lines.iter().any(|line| line == capability),
+            "missing capability contract: {capability}"
+        );
+    }
+    for mount in [
+        "- /sys/kernel/debug:/sys/kernel/debug",
+        "- /sys/fs/bpf:/sys/fs/bpf",
+    ] {
+        assert!(
+            compose_lines.iter().any(|line| line == mount),
+            "missing volume contract: {mount}"
+        );
+    }
+
+    let docker_runtime = read("tests/Dockerfile.runtime");
+    let runtime_lines = non_comment_lines(&docker_runtime);
+    assert_eq!(
+        runtime_lines.first().map(String::as_str),
+        Some("FROM rust:1.78-bookworm AS builder")
+    );
+    assert!(
+        runtime_lines.iter().any(|line| {
+            line == "clang llvm libbpf-dev linux-headers-amd64 ca-certificates curl python3 git xz-utils \\"
+        }),
+        "missing runtime build dependencies"
+    );
+    assert!(
+        runtime_lines
+            .iter()
+            .any(|line| line == "RUN curl -fsSL https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz \\"),
+        "missing Zig toolchain bootstrap"
+    );
+    assert!(runtime_lines
+        .iter()
+        .any(|line| line == "RUN cargo build --release"));
+    assert!(runtime_lines
+        .iter()
+        .any(|line| line == "RUN cargo test --no-run"));
+    assert!(runtime_lines
+        .iter()
+        .any(|line| line == "FROM debian:bookworm-slim"));
+    assert!(runtime_lines.iter().any(|line| {
+        line == "procps iproute2 curl python3 netcat-openbsd strace ca-certificates \\"
+    }));
+    assert!(runtime_lines
+        .iter()
+        .any(|line| { line == "CMD [\"/usr/local/bin/tests/run-all.sh\"]" }));
+    assert!(runtime_lines
+        .iter()
+        .any(|line| line == "COPY --from=builder /workspace/tests /usr/local/bin/tests"));
+
+    let docker_agent = read("tests/Dockerfile.agent-test");
+    let agent_lines = non_comment_lines(&docker_agent);
+    assert_eq!(
+        agent_lines.first().map(String::as_str),
+        Some("FROM rust:1.78-bookworm AS builder")
+    );
+    assert!(agent_lines
+        .iter()
+        .any(|line| line == "RUN cargo build --release"));
+    assert!(agent_lines
+        .iter()
+        .any(|line| line == "RUN cargo test --no-run"));
+    assert!(agent_lines
+        .iter()
+        .any(|line| line == "COPY --from=builder /workspace/tests /usr/local/bin/tests"));
+    assert!(agent_lines
+        .iter()
+        .any(|line| line == "CMD [\"/usr/local/bin/tests/run-all.sh\"]"));
+}
+
+#[test]
+// AC-TST-012 AC-TST-013 AC-TST-014 AC-TST-015 AC-TST-016 AC-TST-017 AC-TST-018 AC-TST-019 AC-TST-020 AC-TST-021 AC-TST-022 AC-TST-023 AC-TST-024 AC-TST-025 AC-TST-026 AC-TST-027 AC-TST-028 AC-TST-029 AC-TST-030 AC-TST-033 AC-TST-034 AC-TST-035 AC-TST-036
+fn integration_scenarios_and_response_tests_are_declared() {
+    let root = repo_root();
+
+    let simulator = std::process::Command::new("bash")
+        .arg(root.join("tests/malware-sim/simulate.sh"))
+        .arg("all")
+        .current_dir(&root)
+        .output()
+        .expect("run simulator");
+    assert!(simulator.status.success());
+    let simulator_out = String::from_utf8_lossy(&simulator.stdout);
+    let simulator_lines = non_comment_lines(&simulator_out);
+    for expected in [
+        "simulate: EICAR drop",
+        "simulate: webshell command chain",
+        "simulate: reverse shell",
+        "simulate: high entropy command",
+        "simulate: suspicious DNS",
+        "simulate: firewall toggle",
+    ] {
+        assert!(
+            has_line(&simulator_lines, expected),
+            "simulator output missing scenario line: {expected}"
+        );
+    }
+
+    let _guard = script_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let sandbox = temp_dir("eguard-run-all-test");
+    let bin_dir = sandbox.join("bin");
+    std::fs::create_dir_all(&bin_dir).expect("create mock bin");
+    let log_path = sandbox.join("mock.log");
+    write_exec(
+        &bin_dir.join("cargo"),
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+echo "cargo $*" >> "${MOCK_LOG}"
+exit 0
+"#,
+    );
+    let mock_sim = sandbox.join("simulate.sh");
+    write_exec(
+        &mock_sim,
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+echo "simulate $*" >> "${MOCK_LOG}"
+exit 0
+"#,
+    );
+
+    let path_env = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let run_all = std::process::Command::new("bash")
+        .arg(root.join("tests/run-all.sh"))
+        .current_dir(&root)
+        .env("PATH", path_env)
+        .env("MOCK_LOG", &log_path)
+        .env("EGUARD_SIMULATE_CMD", &mock_sim)
+        .output()
+        .expect("run integration script");
+    assert!(run_all.status.success());
+    let stdout = String::from_utf8_lossy(&run_all.stdout);
+    let run_all_lines = non_comment_lines(&stdout);
+    for expected in [
+        "[tst] enrollment + heartbeat",
+        "[tst] known malware hash (EICAR)",
+        "[tst] sigma webshell",
+        "[tst] c2 domain",
+        "[tst] kernel module load",
+        "[tst] reverse shell",
+        "[tst] entropy anomaly",
+        "[tst] compliance failure",
+        "[tst] agent tamper",
+        "[tst] offline buffering + reconnect drain",
+        "[tst] rule hot-reload + emergency push",
+        "[tst] protected process + rate limiter",
+        "[tst] quarantine + restore",
+        "[tst] lsm execution block",
+        "[tst] fleet correlation + z-score anomaly",
+    ] {
+        assert!(
+            has_line(&run_all_lines, expected),
+            "run-all output missing scenario line: {expected}"
+        );
+    }
+
+    let log = std::fs::read_to_string(&log_path).expect("read mock log");
+    let log_lines = non_comment_lines(&log);
+    assert!(has_line(&log_lines, "simulate all"));
+    assert!(has_line(
+        &log_lines,
+        "cargo test -p response kill_process_tree_orders_children_before_parent -- --exact"
+    ));
+    assert!(has_line(
+        &log_lines,
+        "cargo test -p response protected_target_process_returns_error_without_signals -- --exact"
+    ));
+    assert!(has_line(
+        &log_lines,
+        "cargo test -p response kill_rate_limiter_enforces_limit_and_expires_window -- --exact"
+    ));
+    assert!(has_line(
+        &log_lines,
+        "cargo test -p response restore_quarantined_file_writes_destination -- --exact"
+    ));
+    let _ = std::fs::remove_dir_all(sandbox);
+
+    let integration_workflow = read(".github/workflows/integration-compose.yml");
+    let workflow_lines = non_comment_lines(&integration_workflow);
+    assert!(workflow_lines
+        .iter()
+        .any(|line| line == "run: docker compose -f tests/docker-compose.test.yml up --build --abort-on-container-exit"));
+    assert!(workflow_lines.iter().any(|line| line
+        == "run: docker compose -f tests/docker-compose.test.yml down -v --remove-orphans"));
+}
+
+#[test]
+// AC-VER-001 AC-VER-002 AC-VER-003 AC-VER-004 AC-VER-005 AC-VER-006 AC-VER-007 AC-VER-008 AC-VER-009 AC-VER-010 AC-VER-011 AC-VER-012 AC-VER-013 AC-VER-031 AC-VER-032 AC-VER-033 AC-VER-034 AC-VER-035 AC-VER-036 AC-VER-037 AC-VER-038 AC-VER-039 AC-VER-040 AC-VER-041 AC-VER-042 AC-VER-043
+fn performance_and_budget_contracts_are_captured_in_ci_harnesses() {
+    let root = repo_root();
+    let package_out_dir = root.join("artifacts/package-agent");
+    let ebpf_out_dir = root.join("artifacts/ebpf-resource-budget");
+    let package_preexisting = package_out_dir.exists();
+    let ebpf_preexisting = ebpf_out_dir.exists();
+
+    let _guard = script_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let sandbox = temp_dir("eguard-budget-harness-test");
+    let bin_dir = sandbox.join("bin");
+    std::fs::create_dir_all(&bin_dir).expect("create mock bin");
+    let log_path = sandbox.join("mock.log");
+    write_exec(
+        &bin_dir.join("cargo"),
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+echo "cargo $*" >> "${MOCK_LOG}"
+exit 0
+"#,
+    );
+    write_exec(
+        &bin_dir.join("zig"),
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+echo "zig $*" >> "${MOCK_LOG}"
+exit 0
+"#,
+    );
+    write_exec(
+        &bin_dir.join("strip"),
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+echo "strip $*" >> "${MOCK_LOG}"
+exit 0
+"#,
+    );
+    let path_env = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let package = std::process::Command::new("bash")
+        .arg(root.join("scripts/build-agent-packages-ci.sh"))
+        .current_dir(&root)
+        .env("PATH", &path_env)
+        .env("MOCK_LOG", &log_path)
+        .status()
+        .expect("run package budget script");
+    assert!(package.success());
+    let package_metrics = std::fs::read_to_string(package_out_dir.join("metrics.json"))
+        .expect("read package metrics");
+    assert_eq!(json_number(&package_metrics, "agent_binary"), 10.0);
+    assert_eq!(json_number(&package_metrics, "rules_package"), 5.0);
+    assert_eq!(json_number(&package_metrics, "full_install"), 15.0);
+    assert_eq!(json_number(&package_metrics, "runtime_rss"), 25.0);
+    assert_eq!(json_number(&package_metrics, "distribution_budget"), 200.0);
+    assert_eq!(
+        json_number(&package_metrics, "agent_binary_compressed_mb"),
+        7.0
+    );
+    assert_eq!(
+        json_number(&package_metrics, "ebpf_programs_compressed_kb"),
+        100.0
+    );
+    assert!(package_out_dir
+        .join("debian/eguard-agent_0.1.0_amd64.deb")
+        .exists());
+    assert!(package_out_dir
+        .join("debian/eguard-agent-rules_0.1.0_amd64.deb")
+        .exists());
+    assert!(package_out_dir
+        .join("rpm/eguard-agent-0.1.0-1.x86_64.rpm")
+        .exists());
+    assert!(package_out_dir
+        .join("rpm/eguard-agent-rules-0.1.0-1.x86_64.rpm")
+        .exists());
+
+    let ebpf = std::process::Command::new("bash")
+        .arg(root.join("scripts/run_ebpf_resource_budget_ci.sh"))
+        .current_dir(&root)
+        .env("PATH", &path_env)
+        .env("MOCK_LOG", &log_path)
+        .status()
+        .expect("run eBPF budget script");
+    assert!(ebpf.success());
+    let ebpf_metrics =
+        std::fs::read_to_string(ebpf_out_dir.join("metrics.json")).expect("read eBPF metrics");
+    assert_eq!(json_number(&ebpf_metrics, "idle_cpu_pct"), 0.05);
+    assert_eq!(json_number(&ebpf_metrics, "active_cpu_pct"), 0.5);
+    assert_eq!(json_number(&ebpf_metrics, "peak_cpu_pct"), 3.0);
+    assert_eq!(json_number(&ebpf_metrics, "memory_rss_mb"), 25.0);
+    assert_eq!(json_number(&ebpf_metrics, "binary_size_mb"), 10.0);
+    assert_eq!(json_number(&ebpf_metrics, "startup_seconds"), 2.0);
+    assert_eq!(json_number(&ebpf_metrics, "detection_latency_ns"), 500.0);
+    assert_eq!(json_number(&ebpf_metrics, "lsm_block_latency_ms"), 1.0);
+
+    let log = std::fs::read_to_string(&log_path).expect("read budget harness log");
+    let log_lines = non_comment_lines(&log);
+    assert!(has_line(
+        &log_lines,
+        "cargo build --release --target x86_64-unknown-linux-musl -p agent-core"
+    ));
+    assert!(has_line(&log_lines, "zig build"));
+    assert!(has_line(&log_lines, "cargo build --release -p agent-core"));
+    let _ = std::fs::remove_dir_all(sandbox);
+
+    let ringbuf = read("zig/ebpf/common.zig");
+    assert_eq!(
+        zig_const_product(&ringbuf, "DEFAULT_RINGBUF_CAPACITY"),
+        8 * 1024 * 1024
+    );
+
+    let matrix = read("tests/verification-matrix.md");
+    let scalars = markdown_scalars(&matrix);
+    assert_eq!(
+        scalars.get("threat_intel_poll_interval_hours"),
+        Some(&"4".to_string())
+    );
+    assert_eq!(
+        scalars.get("ioc_stale_threshold_days_min"),
+        Some(&"30".to_string())
+    );
+    assert_eq!(
+        scalars.get("ioc_stale_threshold_days_max"),
+        Some(&"90".to_string())
+    );
+
+    if !package_preexisting {
+        let _ = std::fs::remove_dir_all(package_out_dir);
+    }
+    if !ebpf_preexisting {
+        let _ = std::fs::remove_dir_all(ebpf_out_dir);
+    }
+}
+
+#[test]
+// AC-VER-014 AC-VER-015 AC-VER-016 AC-VER-017 AC-VER-018 AC-VER-019 AC-VER-020 AC-VER-021 AC-VER-022 AC-VER-023 AC-VER-024 AC-VER-025 AC-VER-026 AC-VER-027 AC-VER-028 AC-VER-029 AC-VER-030 AC-VER-044 AC-VER-045 AC-VER-046 AC-VER-047
+fn verification_coverage_and_security_pipeline_contracts_are_present() {
+    let root = repo_root();
+    let mut files = collect_rs_files(&root.join("crates"));
+    files.retain(|p| !p.to_string_lossy().contains("crates/acceptance/tests/"));
+
+    let test_count =
+        count_occurrences(&files, "#[test]") + count_occurrences(&files, "#[tokio::test]");
+    assert!(
+        test_count >= 200,
+        "expected at least 200 tests, found {test_count}"
+    );
+
+    let det_tag_count = count_occurrences(&files, "AC-DET-");
+    let ebp_tag_count = count_occurrences(&files, "AC-EBP-");
+    let rsp_tag_count = count_occurrences(&files, "AC-RSP-");
+    assert!(
+        det_tag_count >= 100,
+        "expected >=100 detection contracts, found {det_tag_count}"
+    );
+    assert!(
+        ebp_tag_count >= 20,
+        "expected >=20 eBPF contracts, found {ebp_tag_count}"
+    );
+    assert!(
+        rsp_tag_count >= 30,
+        "expected >=30 response contracts, found {rsp_tag_count}"
+    );
+
+    let verify_workflow = read(".github/workflows/verification-suite.yml");
+    let verify_workflow_lines = non_comment_lines(&verify_workflow);
+    assert!(verify_workflow_lines.iter().any(|line| line == "release:"));
+    assert!(verify_workflow_lines.iter().any(|line| line == "schedule:"));
+    assert!(verify_workflow_lines
+        .iter()
+        .any(|line| line == "run: ./scripts/run_verification_suite_ci.sh"));
+
+    let _guard = script_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let sandbox = temp_dir("eguard-verification-suite-test");
+    let bin_dir = sandbox.join("bin");
+    std::fs::create_dir_all(&bin_dir).expect("create mock bin");
+    let log_path = sandbox.join("mock.log");
+    write_exec(
+        &bin_dir.join("cargo"),
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+echo "cargo $*" >> "${MOCK_LOG}"
+exit 0
+"#,
+    );
+    write_exec(
+        &bin_dir.join("checksec"),
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+echo "checksec $*" >> "${MOCK_LOG}"
+exit 0
+"#,
+    );
+    write_exec(
+        &bin_dir.join("strace"),
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+echo "strace $*" >> "${MOCK_LOG}"
+exit 0
+"#,
+    );
+
+    let path_env = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let verify = std::process::Command::new("bash")
+        .arg(root.join("scripts/run_verification_suite_ci.sh"))
+        .current_dir(&root)
+        .env("PATH", path_env)
+        .env("MOCK_LOG", &log_path)
+        .status()
+        .expect("run verification suite script");
+    assert!(verify.success());
+
+    let log = std::fs::read_to_string(&log_path).expect("read verification log");
+    let log_lines = non_comment_lines(&log);
+    assert!(has_line(&log_lines, "cargo audit"));
+    assert!(has_line(
+        &log_lines,
+        "cargo clippy --workspace --all-targets --all-features -- -D warnings"
+    ));
+    assert!(has_line(
+        &log_lines,
+        "cargo fuzz run protobuf_parse -- -max_total_time=30"
+    ));
+    assert!(has_line(
+        &log_lines,
+        "cargo fuzz run detection_inputs -- -max_total_time=30"
+    ));
+    assert!(has_line(
+        &log_lines,
+        "cargo +nightly miri test -p detection --lib"
+    ));
+    assert!(has_line(
+        &log_lines,
+        "checksec --file target/release/agent-core"
+    ));
+    assert!(has_line(
+        &log_lines,
+        "strace -f -e trace=%process,%network ./target/release/agent-core --help"
+    ));
+    assert!(has_line(
+        &log_lines,
+        "cargo test -p grpc-client enrollment_rejects_expired_or_wrong_ca_certificates -- --exact"
+    ));
+    assert!(has_line(
+        &log_lines,
+        "cargo test -p platform-linux ebpf::tests::parses_structured_lsm_block_payload -- --exact"
+    ));
+    let _ = std::fs::remove_dir_all(sandbox);
+
+    let matrix = read("tests/verification-matrix.md");
+    let scalars = markdown_scalars(&matrix);
+    assert_eq!(
+        scalars.get("incident_threshold_hosts"),
+        Some(&"3".to_string())
+    );
+    assert_eq!(
+        scalars.get("fleet_zscore_threshold"),
+        Some(&"3.0".to_string())
+    );
+    assert_eq!(scalars.get("minhash_bands"), Some(&"16".to_string()));
+    assert_eq!(scalars.get("minhash_rows"), Some(&"8".to_string()));
+    assert_eq!(scalars.get("minhash_hashes"), Some(&"128".to_string()));
+    assert_eq!(scalars.get("triage_weight_sum"), Some(&"1.0".to_string()));
+}

@@ -6,4 +6,12 @@ Standards-Version: 4.7.0
 
 Package: eguard-agent
 Architecture: amd64
-Description: eGuard endpoint agent scaffold package
+Depends: systemd, libc6
+Description: eGuard endpoint agent package
+ Contains the agent binary, eBPF assets, seed baselines, service unit and default config.
+
+Package: eguard-agent-rules
+Architecture: amd64
+Depends: eguard-agent
+Description: eGuard endpoint agent rule bundle package (optional)
+ Contains initial SIGMA, YARA and IOC rule bundle for bootstrapping offline deployments.

@@ -1,8 +1,11 @@
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 use baseline::{BaselineStore, ProcessKey};
 use detection::YaraEngine;
-use grpc_client::{EventBuffer, EventEnvelope};
+use grpc_client::{Client, EventBuffer, EventEnvelope, TlsConfig};
+use platform_linux::{enrich_event_with_cache, EnrichmentCache, EventType, RawEvent};
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -10,57 +13,214 @@ fn workspace_root() -> PathBuf {
         .join("..")
 }
 
-fn parse_ringbuf_capacity_bytes(common_zig: &str) -> Option<u64> {
-    for line in common_zig.lines() {
-        if !line.contains("DEFAULT_RINGBUF_CAPACITY") || !line.contains("=") {
-            continue;
-        }
-        if line.contains("8 * 1024 * 1024") {
-            return Some(8 * 1024 * 1024);
-        }
+fn script_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn write_executable(path: &std::path::Path, body: &str) {
+    std::fs::write(path, body).expect("write script");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(path).expect("stat script").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(path, perms).expect("chmod script");
     }
-    None
+}
+
+fn non_comment_lines(raw: &str) -> Vec<String> {
+    raw.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn has_line(lines: &[String], expected: &str) -> bool {
+    lines.iter().any(|line| line == expected)
+}
+
+fn parse_ringbuf_capacity_bytes(common_zig: &str) -> Option<u64> {
+    let line = common_zig
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("pub const DEFAULT_RINGBUF_CAPACITY:"))?;
+    let rhs = line
+        .split_once('=')
+        .and_then(|(_, rhs)| rhs.split_once(';').map(|(expr, _)| expr.trim()))?;
+    rhs.split('*')
+        .map(str::trim)
+        .map(str::parse::<u64>)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()
+        .map(|terms| terms.into_iter().product())
 }
 
 #[test]
 // AC-DET-106
 fn detection_benchmark_ci_harness_publishes_measured_metrics_artifact() {
+    let _guard = script_lock().lock().unwrap_or_else(|e| e.into_inner());
     let root = workspace_root();
-    let workflow = std::fs::read_to_string(root.join(".github/workflows/detection-benchmark.yml"))
-        .expect("read detection benchmark workflow");
-    let script = std::fs::read_to_string(root.join("scripts/run_detection_benchmark_ci.sh"))
-        .expect("read detection benchmark script");
+    let temp = std::env::temp_dir().join(format!(
+        "eguard-detection-bench-test-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    let bin_dir = temp.join("bin");
+    std::fs::create_dir_all(&bin_dir).expect("create temp bin");
+    let command_log = temp.join("command.log");
 
-    assert!(workflow.contains("scripts/run_detection_benchmark_ci.sh"));
-    assert!(workflow.contains("upload-artifact"));
-    assert!(workflow.contains("artifacts/detection-benchmark/metrics.json"));
-    assert!(script.contains("wall_clock_ms"));
-    assert!(script.contains("metrics.json"));
+    write_executable(
+        &bin_dir.join("cargo"),
+        r#"#!/usr/bin/env bash
+echo "cargo $*" >> "${EGUARD_TEST_COMMAND_LOG}"
+exit 0
+"#,
+    );
+
+    let path_env = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let status = std::process::Command::new("bash")
+        .arg(root.join("scripts/run_detection_benchmark_ci.sh"))
+        .current_dir(&root)
+        .env("PATH", path_env)
+        .env("EGUARD_TEST_COMMAND_LOG", &command_log)
+        .status()
+        .expect("run benchmark harness");
+    assert!(status.success());
+
+    let metrics_raw =
+        std::fs::read_to_string(root.join("artifacts/detection-benchmark/metrics.json"))
+            .expect("read metrics");
+    let metrics: serde_json::Value = serde_json::from_str(&metrics_raw).expect("parse metrics");
+    assert_eq!(metrics["suite"], "detection_latency");
+    assert_eq!(
+        metrics["command"],
+        "cargo test -p detection tests::detection_latency_p99_stays_within_budget_for_reference_workload -- --exact"
+    );
+    assert!(
+        metrics["wall_clock_ms"].as_u64().is_some(),
+        "metrics must include numeric wall_clock_ms"
+    );
+
+    let log = std::fs::read_to_string(&command_log).expect("read command log");
+    let log_lines = non_comment_lines(&log);
+    assert!(has_line(
+        &log_lines,
+        "cargo test -p detection tests::detection_latency_p99_stays_within_budget_for_reference_workload -- --exact"
+    ));
+
+    let _ = std::fs::remove_dir_all(root.join("artifacts/detection-benchmark"));
+    let _ = std::fs::remove_dir_all(temp);
 }
 
 #[test]
 // AC-EBP-100 AC-EBP-103 AC-RES-010 AC-RES-013
-fn runtime_stack_uses_tokio_entrypoint_and_grpc_tls_types() {
-    let root = workspace_root();
-    let agent_main =
-        std::fs::read_to_string(root.join("crates/agent-core/src/main.rs")).expect("main.rs");
-    let grpc_client =
-        std::fs::read_to_string(root.join("crates/grpc-client/src/client.rs")).expect("client.rs");
+fn runtime_stack_runs_async_client_paths_with_tls_configuration() {
+    let temp = std::env::temp_dir().join(format!(
+        "eguard-client-tls-runtime-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    std::fs::create_dir_all(&temp).expect("create tls temp dir");
+    let cert = temp.join("agent.crt");
+    let key = temp.join("agent.key");
+    let ca = temp.join("ca.crt");
+    std::fs::write(&cert, b"cert").expect("write cert");
+    std::fs::write(&key, b"key").expect("write key");
+    std::fs::write(&ca, b"ca").expect("write ca");
 
-    assert!(agent_main.contains("#[tokio::main]"));
-    assert!(grpc_client.contains("ClientTlsConfig"));
-    assert!(grpc_client.contains("Identity"));
-    assert!(grpc_client.contains("Certificate"));
+    let mut client = Client::new("127.0.0.1:50051".to_string());
+    client
+        .configure_tls(TlsConfig {
+            cert_path: cert.to_string_lossy().to_string(),
+            key_path: key.to_string_lossy().to_string(),
+            ca_path: ca.to_string_lossy().to_string(),
+        })
+        .expect("configure tls");
+    assert!(client.is_tls_configured());
+    client.set_online(false);
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let start = std::time::Instant::now();
+    let err = runtime
+        .block_on(async {
+            client
+                .send_events(&[EventEnvelope {
+                    agent_id: "agent-1".to_string(),
+                    event_type: "process_exec".to_string(),
+                    payload_json: "{}".to_string(),
+                    created_at_unix: 1,
+                }])
+                .await
+        })
+        .expect_err("offline send should fail quickly");
+    assert_eq!(err.to_string(), "server unreachable: 127.0.0.1:50051");
+    assert!(start.elapsed() < Duration::from_millis(50));
+
+    let _ = std::fs::remove_dir_all(temp);
 }
 
 #[test]
 // AC-EBP-104 AC-EBP-105 AC-RES-014 AC-RES-015 AC-RES-022
 fn process_and_file_cache_capacities_stay_in_half_megabyte_envelope() {
-    let root = workspace_root();
-    let platform = std::fs::read_to_string(root.join("crates/platform-linux/src/lib.rs"))
-        .expect("platform linux source");
+    let mut default_cache = EnrichmentCache::default();
+    for pid in 20_000u32..20_900u32 {
+        let event = RawEvent {
+            event_type: EventType::ProcessExec,
+            pid,
+            uid: 1000,
+            ts_ns: pid as u64,
+            payload: "cmdline=/usr/bin/python3".to_string(),
+        };
+        let _ = enrich_event_with_cache(event, &mut default_cache);
+    }
+    assert!(
+        default_cache.process_cache_len() <= 500,
+        "default process cache must enforce 500 entry cap"
+    );
+    assert!(
+        default_cache.process_cache_len() >= 450,
+        "cache should stay near configured high-water mark"
+    );
 
-    assert!(platform.contains("Self::new(500, 10_000)"));
+    let temp = std::env::temp_dir().join(format!(
+        "eguard-file-cache-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    std::fs::create_dir_all(&temp).expect("create temp file dir");
+    let mut file_cache = EnrichmentCache::new(500, 128);
+    for idx in 0..256u32 {
+        let path = temp.join(format!("f-{idx:04}.txt"));
+        std::fs::write(&path, format!("content-{idx}")).expect("write file");
+        let event = RawEvent {
+            event_type: EventType::FileOpen,
+            pid: std::process::id(),
+            uid: 1000,
+            ts_ns: idx as u64,
+            payload: path.to_string_lossy().to_string(),
+        };
+        let _ = enrich_event_with_cache(event, &mut file_cache);
+    }
+    assert!(
+        file_cache.file_hash_cache_len() <= 128,
+        "file hash cache must evict above configured limit"
+    );
+    let _ = std::fs::remove_dir_all(temp);
 
     let process_cache_est = 500usize * 1_024usize;
     let file_cache_est = 10_000usize * 50usize;

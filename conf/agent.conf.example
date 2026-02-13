@@ -42,6 +42,12 @@ capture_script = false
 
 [response.rate_limit]
 max_kills_per_minute = 10
+max_quarantines_per_minute = 5
+cooldown_secs = 60
+
+[response.protected]
+process_patterns = ["^systemd", "sshd", "dbus-daemon", "journald", "eguard-agent", "containerd", "dockerd"]
+paths = ["/usr/bin", "/usr/sbin", "/usr/lib", "/lib", "/boot", "/usr/local/eg"]
 
 [storage]
 # sqlite (recommended) or memory

@@ -41,15 +41,7 @@ pub fn capture_script_content(pid: u32) -> ResponseResult<ScriptCapture> {
     }
 
     if let Ok(environ) = fs::read(format!("/proc/{}/environ", pid)) {
-        let normalized = environ
-            .split(|b| *b == 0)
-            .filter(|s| !s.is_empty())
-            .map(|s| String::from_utf8_lossy(s).into_owned())
-            .collect::<Vec<_>>()
-            .join("\n");
-        if !normalized.is_empty() {
-            capture.environment = Some(normalized);
-        }
+        capture.environment = normalize_environ_bytes(&environ);
     }
 
     Ok(capture)
@@ -73,6 +65,20 @@ fn read_file_capped(path: &Path, cap: usize) -> std::io::Result<Vec<u8>> {
         ));
     }
     Ok(data)
+}
+
+fn normalize_environ_bytes(raw: &[u8]) -> Option<String> {
+    let normalized = raw
+        .split(|b| *b == 0)
+        .filter(|s| !s.is_empty())
+        .map(|s| String::from_utf8_lossy(s).into_owned())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
 }
 
 #[cfg(test)]

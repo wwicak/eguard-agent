@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
+use serde_json::json;
 use tracing::{info, warn};
 
 use baseline::{BaselineStatus, BaselineStore, BaselineTransition, ProcessKey};
@@ -22,6 +23,9 @@ use response::{
     capture_script_content, kill_process_tree, plan_action, quarantine_file, HostControlState,
     KillRateLimiter, PlannedAction, ProtectedList, ResponseConfig,
 };
+use self_protect::{
+    apply_linux_hardening, LinuxHardeningConfig, SelfProtectEngine, SelfProtectReport,
+};
 
 use crate::config::{AgentConfig, AgentMode};
 use crate::detection_state::{EmergencyRuleType, SharedDetectionState};
@@ -38,10 +42,10 @@ use bundle_path::{
 
 const DEFAULT_RULES_STAGING_DIR: &str = "/var/lib/eguard-agent/rules-staging";
 const MAX_SIGNED_RULE_BUNDLE_BYTES: u64 = 256 * 1024 * 1024;
-const HEARTBEAT_TICK_INTERVAL: u64 = 6;
-const COMPLIANCE_TICK_INTERVAL: u64 = 12;
-const THREAT_INTEL_TICK_INTERVAL: u64 = 30;
-const BASELINE_SAVE_TICK_INTERVAL: u64 = 60;
+const HEARTBEAT_INTERVAL_SECS: i64 = 30;
+const COMPLIANCE_INTERVAL_SECS: i64 = 60;
+const THREAT_INTEL_INTERVAL_SECS: i64 = 150;
+const BASELINE_SAVE_INTERVAL_SECS: i64 = 300;
 const EVENT_BATCH_SIZE: usize = 256;
 const COMMAND_FETCH_LIMIT: usize = 10;
 const DEGRADE_AFTER_SEND_FAILURES: u32 = 3;
@@ -75,11 +79,19 @@ pub struct AgentRuntime {
     ebpf_engine: EbpfEngine,
     enrichment_cache: EnrichmentCache,
     client: GrpcClient,
+    self_protect_engine: SelfProtectEngine,
     tick_count: u64,
     runtime_mode: AgentMode,
     last_ebpf_stats: EbpfStats,
     recent_ebpf_drops: u64,
     consecutive_send_failures: u32,
+    last_self_protect_check_unix: Option<i64>,
+    last_heartbeat_attempt_unix: Option<i64>,
+    last_compliance_attempt_unix: Option<i64>,
+    last_threat_intel_refresh_unix: Option<i64>,
+    last_baseline_save_unix: Option<i64>,
+    last_recovery_probe_unix: Option<i64>,
+    tamper_forced_degraded: bool,
     enrolled: bool,
     latest_threat_version: Option<String>,
     latest_custom_rule_hash: Option<String>,
@@ -119,6 +131,7 @@ impl AgentRuntime {
             config.server_addr.clone(),
             TransportMode::from_str(&config.transport_mode),
         );
+        let self_protect_engine = SelfProtectEngine::from_env();
         if let (Some(cert), Some(key), Some(ca)) = (
             config.tls_cert_path.clone(),
             config.tls_key_path.clone(),
@@ -139,6 +152,22 @@ impl AgentRuntime {
             payload_json: "{\"scope\":\"quick\"}".to_string(),
         });
 
+        let mut hardening_config = LinuxHardeningConfig::default();
+        hardening_config.drop_capability_bounding_set = config.self_protection_prevent_uninstall;
+        let hardening_report = apply_linux_hardening(&hardening_config);
+        if hardening_report.has_failures() {
+            warn!(
+                failed_steps = ?hardening_report.failed_step_names(),
+                dropped_capabilities = hardening_report.dropped_capability_count,
+                "linux hardening applied with failures"
+            );
+        } else {
+            info!(
+                dropped_capabilities = hardening_report.dropped_capability_count,
+                "linux hardening applied"
+            );
+        }
+
         let initial_mode = derive_runtime_mode(&config.mode, baseline_store.status);
 
         Ok(Self {
@@ -151,12 +180,20 @@ impl AgentRuntime {
             buffer,
             detection_state,
             client,
+            self_protect_engine,
             config,
             tick_count: 0,
             runtime_mode: initial_mode,
             last_ebpf_stats: EbpfStats::default(),
             recent_ebpf_drops: 0,
             consecutive_send_failures: 0,
+            last_self_protect_check_unix: None,
+            last_heartbeat_attempt_unix: None,
+            last_compliance_attempt_unix: None,
+            last_threat_intel_refresh_unix: None,
+            last_baseline_save_unix: None,
+            last_recovery_probe_unix: None,
+            tamper_forced_degraded: false,
             enrolled: false,
             latest_threat_version: None,
             latest_custom_rule_hash: None,
@@ -168,10 +205,11 @@ impl AgentRuntime {
 
     pub async fn tick(&mut self, now_unix: i64) -> Result<()> {
         self.tick_count = self.tick_count.saturating_add(1);
+        self.run_self_protection_if_due(now_unix).await?;
 
         let evaluation = self.evaluate_tick(now_unix)?;
         if matches!(self.runtime_mode, AgentMode::Degraded) {
-            self.handle_degraded_tick(&evaluation).await?;
+            self.handle_degraded_tick(now_unix, &evaluation).await?;
         } else {
             self.handle_connected_tick(now_unix, &evaluation).await?;
             self.log_detection_evaluation(&evaluation);
@@ -209,7 +247,11 @@ impl AgentRuntime {
         })
     }
 
-    async fn handle_degraded_tick(&mut self, evaluation: &TickEvaluation) -> Result<()> {
+    async fn handle_degraded_tick(
+        &mut self,
+        now_unix: i64,
+        evaluation: &TickEvaluation,
+    ) -> Result<()> {
         self.client.set_online(false);
         self.buffer.enqueue(evaluation.event_envelope.clone())?;
         warn!(
@@ -217,7 +259,8 @@ impl AgentRuntime {
             "server unavailable, buffered event"
         );
 
-        if self.should_probe_server_recovery() {
+        if self.should_probe_server_recovery(now_unix) {
+            self.last_recovery_probe_unix = Some(now_unix);
             self.probe_server_recovery(&evaluation.compliance.status)
                 .await;
         }
@@ -225,12 +268,94 @@ impl AgentRuntime {
         Ok(())
     }
 
-    fn should_probe_server_recovery(&self) -> bool {
-        !self.is_forced_degraded() && self.tick_count % HEARTBEAT_TICK_INTERVAL == 0
+    fn should_probe_server_recovery(&self, now_unix: i64) -> bool {
+        !self.is_forced_degraded()
+            && interval_due(
+                self.last_recovery_probe_unix,
+                now_unix,
+                HEARTBEAT_INTERVAL_SECS,
+            )
     }
 
     fn is_forced_degraded(&self) -> bool {
-        matches!(self.config.mode, AgentMode::Degraded)
+        matches!(self.config.mode, AgentMode::Degraded) || self.tamper_forced_degraded
+    }
+
+    async fn run_self_protection_if_due(&mut self, now_unix: i64) -> Result<()> {
+        if self.tamper_forced_degraded {
+            return Ok(());
+        }
+
+        let interval = self.config.self_protection_integrity_check_interval_secs;
+        if interval == 0 {
+            return Ok(());
+        }
+
+        if let Some(last) = self.last_self_protect_check_unix {
+            if now_unix.saturating_sub(last) < interval as i64 {
+                return Ok(());
+            }
+        }
+        self.last_self_protect_check_unix = Some(now_unix);
+
+        let report = self.self_protect_engine.evaluate();
+        if report.is_clean() {
+            return Ok(());
+        }
+
+        self.handle_self_protection_violation(now_unix, &report)
+            .await
+    }
+
+    async fn handle_self_protection_violation(
+        &mut self,
+        now_unix: i64,
+        report: &SelfProtectReport,
+    ) -> Result<()> {
+        if self.tamper_forced_degraded {
+            return Ok(());
+        }
+
+        let alert = EventEnvelope {
+            agent_id: self.config.agent_id.clone(),
+            event_type: "alert".to_string(),
+            payload_json: self.self_protect_alert_payload(report, now_unix),
+            created_at_unix: now_unix,
+        };
+
+        if self.client.is_online() {
+            if let Err(err) = self.client.send_events(&[alert.clone()]).await {
+                warn!(
+                    error = %err,
+                    pending = self.buffer.pending_count(),
+                    "failed sending self-protect alert; buffering locally"
+                );
+                self.buffer.enqueue(alert)?;
+            }
+        } else {
+            self.buffer.enqueue(alert)?;
+        }
+
+        self.tamper_forced_degraded = true;
+        self.runtime_mode = AgentMode::Degraded;
+        warn!(
+            violations = ?report.violation_codes(),
+            summary = %report.summary(),
+            "self-protection violation detected; forcing degraded mode"
+        );
+
+        Ok(())
+    }
+
+    fn self_protect_alert_payload(&self, report: &SelfProtectReport, now_unix: i64) -> String {
+        json!({
+            "rule_name": "agent_tamper",
+            "severity": "critical",
+            "timestamp": now_unix,
+            "violations": report.violation_codes(),
+            "detail": report.summary(),
+        })
+        .to_string()
     }
 
     async fn probe_server_recovery(&mut self, compliance_status: &str) {
@@ -274,10 +399,11 @@ impl AgentRuntime {
 
         self.send_event_batch(evaluation.event_envelope.clone())
             .await?;
-        self.send_heartbeat_if_due(&evaluation.compliance.status)
+        self.send_heartbeat_if_due(now_unix, &evaluation.compliance.status)
             .await;
-        self.send_compliance_if_due(&evaluation.compliance).await;
-        self.refresh_threat_intel_if_due().await?;
+        self.send_compliance_if_due(now_unix, &evaluation.compliance)
+            .await;
+        self.refresh_threat_intel_if_due(now_unix).await?;
         self.sync_pending_commands(now_unix).await;
         self.report_local_action_if_needed(
             evaluation.action,
@@ -342,10 +468,15 @@ impl AgentRuntime {
         Ok(())
     }
 
-    async fn send_heartbeat_if_due(&self, compliance_status: &str) {
-        if self.tick_count % HEARTBEAT_TICK_INTERVAL != 0 {
+    async fn send_heartbeat_if_due(&mut self, now_unix: i64, compliance_status: &str) {
+        if !interval_due(
+            self.last_heartbeat_attempt_unix,
+            now_unix,
+            HEARTBEAT_INTERVAL_SECS,
+        ) {
             return;
         }
+        self.last_heartbeat_attempt_unix = Some(now_unix);
 
         let config_version = self.heartbeat_config_version();
         if let Err(err) = self
@@ -357,10 +488,15 @@ impl AgentRuntime {
         }
     }
 
-    async fn send_compliance_if_due(&self, compliance: &ComplianceResult) {
-        if self.tick_count % COMPLIANCE_TICK_INTERVAL != 0 {
+    async fn send_compliance_if_due(&mut self, now_unix: i64, compliance: &ComplianceResult) {
+        if !interval_due(
+            self.last_compliance_attempt_unix,
+            now_unix,
+            COMPLIANCE_INTERVAL_SECS,
+        ) {
             return;
         }
+        self.last_compliance_attempt_unix = Some(now_unix);
 
         let envelope = ComplianceEnvelope {
             agent_id: self.config.agent_id.clone(),
@@ -377,10 +513,15 @@ impl AgentRuntime {
         }
     }
 
-    async fn refresh_threat_intel_if_due(&mut self) -> Result<()> {
-        if self.tick_count % THREAT_INTEL_TICK_INTERVAL != 0 {
+    async fn refresh_threat_intel_if_due(&mut self, now_unix: i64) -> Result<()> {
+        if !interval_due(
+            self.last_threat_intel_refresh_unix,
+            now_unix,
+            THREAT_INTEL_INTERVAL_SECS,
+        ) {
             return Ok(());
         }
+        self.last_threat_intel_refresh_unix = Some(now_unix);
 
         if let Some(v) = self.client.fetch_latest_threat_intel().await? {
             let latest_hash = v.custom_rule_version_hash.clone();
@@ -584,7 +725,13 @@ impl AgentRuntime {
             if let Err(err) = self.baseline_store.save() {
                 warn!(error = %err, "failed persisting baseline transition state");
             }
-        } else if self.tick_count % BASELINE_SAVE_TICK_INTERVAL == 0 {
+            self.last_baseline_save_unix = Some(now_unix);
+        } else if interval_due(
+            self.last_baseline_save_unix,
+            now_unix,
+            BASELINE_SAVE_INTERVAL_SECS,
+        ) {
+            self.last_baseline_save_unix = Some(now_unix);
             if let Err(err) = self.baseline_store.save() {
                 warn!(error = %err, "failed persisting baseline store snapshot");
             }
@@ -863,6 +1010,13 @@ fn compute_sampling_stride(pending: usize, recent_ebpf_drops: u64) -> usize {
     }
 }
 
+fn interval_due(last_run_unix: Option<i64>, now_unix: i64, interval_secs: i64) -> bool {
+    match last_run_unix {
+        None => true,
+        Some(last) => now_unix.saturating_sub(last) >= interval_secs,
+    }
+}
+
 struct LocalActionResult {
     success: bool,
     detail: String,
@@ -907,20 +1061,46 @@ fn load_baseline_store() -> Result<BaselineStore> {
     let path = PathBuf::from(configured_path);
 
     match BaselineStore::load_or_new(path.clone()) {
-        Ok(store) => Ok(store),
+        Ok(mut store) => {
+            seed_default_baselines_if_needed(&mut store, &path);
+            Ok(store)
+        }
         Err(err) => {
             warn!(error = %err, path = %path.display(), "failed loading baseline store, using temp fallback");
             let fallback = std::env::temp_dir().join("eguard-agent-baselines.bin");
-            BaselineStore::load_or_new(fallback.clone()).map_err(|fallback_err| {
-                anyhow!(
-                    "failed to initialize baseline store at {} and fallback {}: {} / {}",
-                    path.display(),
-                    fallback.display(),
-                    err,
-                    fallback_err
-                )
-            })
+            let mut store =
+                BaselineStore::load_or_new(fallback.clone()).map_err(|fallback_err| {
+                    anyhow!(
+                        "failed to initialize baseline store at {} and fallback {}: {} / {}",
+                        path.display(),
+                        fallback.display(),
+                        err,
+                        fallback_err
+                    )
+                })?;
+            seed_default_baselines_if_needed(&mut store, &fallback);
+            Ok(store)
         }
+    }
+}
+
+fn seed_default_baselines_if_needed(store: &mut BaselineStore, path: &Path) {
+    let seeded = store.seed_with_defaults_if_empty();
+    if seeded == 0 {
+        return;
+    }
+
+    info!(
+        seeded_profiles = seeded,
+        path = %path.display(),
+        "initialized baseline store with built-in seed baselines"
+    );
+    if let Err(err) = store.save() {
+        warn!(
+            error = %err,
+            path = %path.display(),
+            "failed to persist seeded baseline store"
+        );
     }
 }
 
@@ -1139,8 +1319,17 @@ mod tests;
 mod tests_ebpf_policy;
 
 #[cfg(test)]
+mod tests_baseline_seed_policy;
+
+#[cfg(test)]
 mod tests_det_stub_completion;
 #[cfg(test)]
 mod tests_ebpf_memory;
 #[cfg(test)]
+mod tests_pkg_contract;
+#[cfg(test)]
 mod tests_resource_policy;
+#[cfg(test)]
+mod tests_self_protect_hardening;
+#[cfg(test)]
+mod tests_self_protect_policy;

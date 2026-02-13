@@ -20,8 +20,8 @@ IDLE_CPU_CMD="pidstat -p \$(pidof agent-core) 60"
 ACTIVE_CPU_CMD="pidstat -p \$(pidof agent-core) 10 6"
 RSS_CMD="ps -o rss= -p \$(pidof agent-core)"
 DISK_IO_CMD="pidstat -d -p \$(pidof agent-core) 10 6"
-DETECTION_LATENCY_CMD="cargo test -p detection --lib detection_latency_p99_stays_within_budget_for_reference_workload -- --exact"
-LSM_LATENCY_CMD="cargo test -p platform-linux --lib parses_structured_lsm_block_payload -- --exact"
+DETECTION_LATENCY_CMD="cargo test -p detection tests::detection_latency_p99_stays_within_budget_for_reference_workload -- --exact"
+LSM_LATENCY_CMD="cargo test -p platform-linux ebpf::tests::parses_structured_lsm_block_payload -- --exact"
 
 mkdir -p "${OUT_DIR}"
 

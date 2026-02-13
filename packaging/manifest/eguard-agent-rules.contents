@@ -1,0 +1,4 @@
+# Optional rules package payload contract
+/var/lib/eguard-agent/rules/sigma/default_webshell.yml
+/var/lib/eguard-agent/rules/yara/default.yar
+/var/lib/eguard-agent/rules/ioc/default_ioc.txt

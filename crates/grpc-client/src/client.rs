@@ -29,6 +29,7 @@ pub struct Client {
     mode: TransportMode,
     retry: RetryPolicy,
     online: bool,
+    agent_version: String,
     pending_commands: VecDeque<CommandEnvelope>,
     tls: Option<TlsConfig>,
     http: HttpClient,
@@ -45,6 +46,7 @@ impl Client {
             mode,
             retry: RetryPolicy::default(),
             online: true,
+            agent_version: default_agent_version(),
             pending_commands: VecDeque::new(),
             tls: None,
             http: HttpClient::new(),
@@ -55,8 +57,20 @@ impl Client {
         self.online = online;
     }
 
+    pub fn is_online(&self) -> bool {
+        self.online
+    }
+
     pub fn server_addr(&self) -> &str {
         &self.server_addr
+    }
+
+    pub fn set_agent_version(&mut self, version: impl Into<String>) {
+        self.agent_version = version.into();
+    }
+
+    pub fn agent_version(&self) -> &str {
+        &self.agent_version
     }
 
     pub fn configure_tls(&mut self, cfg: TlsConfig) -> Result<()> {
@@ -383,6 +397,10 @@ impl Client {
     }
 }
 
+fn default_agent_version() -> String {
+    std::env::var("EGUARD_AGENT_VERSION").unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string())
+}
+
 fn truncate_commands(mut commands: Vec<CommandEnvelope>, limit: usize) -> Vec<CommandEnvelope> {
     if commands.len() > limit {
         commands.truncate(limit);
@@ -486,3 +504,5 @@ fn now_unix() -> i64 {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_mappings;

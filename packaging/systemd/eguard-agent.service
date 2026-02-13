@@ -1,0 +1,15 @@
+[Unit]
+Description=eGuard Endpoint Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/eguard-agent
+Restart=always
+RestartSec=5
+WatchdogSec=30s
+NotifyAccess=main
+
+[Install]
+WantedBy=multi-user.target

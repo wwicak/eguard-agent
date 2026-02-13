@@ -76,7 +76,7 @@ impl Client {
     ) -> Result<()> {
         let body = json!({
             "agent_id": agent_id,
-            "agent_version": "0.1.0",
+            "agent_version": self.agent_version.clone(),
             "compliance_status": compliance_status,
             "config_version": config_version,
         });

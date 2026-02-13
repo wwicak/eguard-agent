@@ -115,7 +115,7 @@ fn enrollment_contract_includes_capabilities_and_cert_material() {
 }
 
 #[test]
-// AC-GRP-011 AC-GRP-012 AC-GRP-013 AC-GRP-014 AC-GRP-016 AC-GRP-017 AC-GRP-018 AC-GRP-019 AC-GRP-085 AC-DET-140 AC-DET-141
+// AC-GRP-011 AC-GRP-012 AC-GRP-013 AC-GRP-014 AC-GRP-016 AC-GRP-017 AC-GRP-018 AC-GRP-019 AC-GRP-085 AC-DET-140 AC-DET-141 AC-PKG-022
 fn heartbeat_contract_includes_status_usage_policy_rule_and_baselines() {
     assert_contains_all(
         AGENT_PROTO,

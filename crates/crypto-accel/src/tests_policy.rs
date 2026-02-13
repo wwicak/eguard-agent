@@ -53,7 +53,9 @@ fn asm_build_and_abi_contract_are_declared() {
     assert!(ffi.contains("fn sha256_ni_available() -> bool;"));
     assert!(ffi.contains("fn sha256_ni_hash(data: *const u8, len: usize, out: *mut u8) -> i32;"));
     assert!(ffi.contains("fn aes_ni_available() -> bool;"));
-    assert!(ffi.contains("fn aes_ni_encrypt_block(key: *const u8, input: *const u8, out: *mut u8) -> i32;"));
+    assert!(ffi.contains(
+        "fn aes_ni_encrypt_block(key: *const u8, input: *const u8, out: *mut u8) -> i32;"
+    ));
     assert!(ffi.contains(
         "fn integrity_check_sha256(data: *const u8, len: usize, expected_digest: *const u8) -> bool;"
     ));
@@ -89,22 +91,21 @@ fn asm_sources_forbid_heap_state_and_syscalls() {
 
         // No allocator/heap APIs.
         for forbidden in ["std.heap", "allocator", "malloc", "free", "new", "delete"] {
-            assert!(!src.contains(forbidden), "forbidden token in {file}: {forbidden}");
+            assert!(
+                !src.contains(forbidden),
+                "forbidden token in {file}: {forbidden}"
+            );
         }
 
         // No file/network/syscall-like operations.
         for forbidden in [
-            "open(",
-            "read(",
-            "write(",
-            "socket(",
-            "connect(",
-            "bind(",
-            "listen(",
-            "accept(",
+            "open(", "read(", "write(", "socket(", "connect(", "bind(", "listen(", "accept(",
             "mmap(",
         ] {
-            assert!(!src.contains(forbidden), "forbidden token in {file}: {forbidden}");
+            assert!(
+                !src.contains(forbidden),
+                "forbidden token in {file}: {forbidden}"
+            );
         }
     }
 }

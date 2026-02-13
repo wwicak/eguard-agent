@@ -12,3 +12,4 @@ baseline = { path = "../baseline" }
 compliance = { path = "../compliance" }
 nac = { path = "../nac" }
 platform-linux = { path = "../platform-linux" }
+toml.workspace = true

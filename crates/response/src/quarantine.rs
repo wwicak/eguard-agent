@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use crate::errors::{ResponseError, ResponseResult};
 use crate::ProtectedList;
 
+const DEFAULT_QUARANTINE_DIR: &str = "/var/lib/eguard-agent/quarantine";
+
 #[derive(Debug, Clone)]
 pub struct QuarantineReport {
     pub original_path: PathBuf,
@@ -28,6 +30,15 @@ pub fn quarantine_file(
     sha256: &str,
     protected: &ProtectedList,
 ) -> ResponseResult<QuarantineReport> {
+    quarantine_file_with_dir(path, sha256, protected, Path::new(DEFAULT_QUARANTINE_DIR))
+}
+
+pub fn quarantine_file_with_dir(
+    path: &Path,
+    sha256: &str,
+    protected: &ProtectedList,
+    quarantine_dir: &Path,
+) -> ResponseResult<QuarantineReport> {
     if protected.is_protected_path(path) {
         return Err(ResponseError::ProtectedPath(path.to_path_buf()));
     }
@@ -45,15 +56,14 @@ pub fn quarantine_file(
         )));
     }
 
-    let quarantine_dir = Path::new("/var/lib/eguard-agent/quarantine");
     fs::create_dir_all(quarantine_dir)?;
     let quarantine_path = quarantine_dir.join(sha256);
 
     fs::copy(path, &quarantine_path)?;
 
+    let mut original = OpenOptions::new().write(true).open(path)?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o000))?;
-
-    overwrite_file_prefix_with_zeros(path, metadata.len())?;
+    overwrite_file_prefix_with_zeros_file(&mut original, metadata.len())?;
     fs::remove_file(path)?;
 
     Ok(QuarantineReport {
@@ -90,8 +100,16 @@ pub fn restore_quarantined(
     })
 }
 
+#[cfg(test)]
 fn overwrite_file_prefix_with_zeros(path: &Path, file_size: u64) -> ResponseResult<()> {
     let mut file = OpenOptions::new().write(true).open(path)?;
+    overwrite_file_prefix_with_zeros_file(&mut file, file_size)
+}
+
+fn overwrite_file_prefix_with_zeros_file(
+    file: &mut std::fs::File,
+    file_size: u64,
+) -> ResponseResult<()> {
     let overwrite_len = file_size.min(4096) as usize;
     if overwrite_len == 0 {
         return Ok(());

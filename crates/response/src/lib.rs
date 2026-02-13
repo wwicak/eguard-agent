@@ -18,7 +18,9 @@ pub use kill::{
     kill_process_tree, kill_process_tree_with, KillReport, NixSignalSender, ProcessIntrospector,
     ProcfsIntrospector, SignalSender,
 };
-pub use quarantine::{quarantine_file, restore_quarantined, QuarantineReport, RestoreReport};
+pub use quarantine::{
+    quarantine_file, quarantine_file_with_dir, restore_quarantined, QuarantineReport, RestoreReport,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResponsePolicy {
@@ -334,3 +336,5 @@ pub fn execute_server_command_with_state(
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_commands;

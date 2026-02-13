@@ -56,6 +56,11 @@ message RestoreQuarantineParams {
   string original_path = 2;
 }
 
+message UninstallParams {
+  string auth_token = 1;
+  bool wipe_data = 2;
+}
+
 message CommandPollRequest {
   string agent_id = 1;
   repeated string completed_command_ids = 2;
@@ -74,6 +79,7 @@ message ServerCommand {
     ForensicsParams forensics = 13;
     ConfigChangeParams config_change = 14;
     RestoreQuarantineParams restore_quarantine = 15;
+    UninstallParams uninstall = 16;
   }
 }
 

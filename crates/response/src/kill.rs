@@ -81,6 +81,7 @@ pub fn kill_process_tree_with(
 
     let mut descendants = Vec::new();
     let mut seen = HashSet::new();
+    let _ = seen.insert(pid);
     collect_descendants(pid, introspector, &mut descendants, &mut seen);
 
     let mut killed = Vec::new();

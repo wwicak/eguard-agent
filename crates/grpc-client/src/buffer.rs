@@ -9,6 +9,7 @@ use tracing::warn;
 use crate::types::EventEnvelope;
 
 pub const DEFAULT_BUFFER_CAP_BYTES: usize = 100 * 1024 * 1024;
+const OFFLINE_META_ROW_ID: i64 = 1;
 
 #[derive(Debug)]
 pub struct OfflineBuffer {
@@ -102,6 +103,14 @@ impl SqliteBuffer {
                 size_bytes INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_offline_events_id ON offline_events(id);
+            CREATE TABLE IF NOT EXISTS offline_buffer_meta (
+                id INTEGER PRIMARY KEY CHECK(id = 1),
+                total_bytes INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT OR IGNORE INTO offline_buffer_meta(id, total_bytes) VALUES(1, 0);
+            UPDATE offline_buffer_meta
+            SET total_bytes = COALESCE((SELECT SUM(size_bytes) FROM offline_events), 0)
+            WHERE id = 1;
             ",
         )
         .context("failed initializing sqlite schema")?;
@@ -111,16 +120,22 @@ impl SqliteBuffer {
 
     pub fn enqueue(&mut self, event: EventEnvelope) -> Result<()> {
         let size = estimate_event_size(&event) as i64;
-        self.conn.execute(
+        let tx = self.conn.transaction()?;
+        tx.execute(
             "INSERT INTO offline_events(agent_id,event_type,payload_json,created_at_unix,size_bytes) VALUES(?1,?2,?3,?4,?5)",
             params![event.agent_id, event.event_type, event.payload_json, event.created_at_unix, size],
         )?;
+        tx.execute(
+            "UPDATE offline_buffer_meta SET total_bytes = total_bytes + ?1 WHERE id = ?2",
+            params![size, OFFLINE_META_ROW_ID],
+        )?;
+        tx.commit()?;
         self.enforce_cap()
     }
 
     pub fn drain_batch(&mut self, max_items: usize) -> Result<Vec<EventEnvelope>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, agent_id, event_type, payload_json, created_at_unix FROM offline_events ORDER BY id ASC LIMIT ?1",
+            "SELECT id, agent_id, event_type, payload_json, created_at_unix, size_bytes FROM offline_events ORDER BY id ASC LIMIT ?1",
         )?;
 
         let rows = stmt.query_map(params![max_items as i64], |row| {
@@ -132,22 +147,33 @@ impl SqliteBuffer {
                     payload_json: row.get::<_, String>(3)?,
                     created_at_unix: row.get::<_, i64>(4)?,
                 },
+                row.get::<_, i64>(5)?,
             ))
         })?;
 
         let mut ids = Vec::new();
         let mut out = Vec::new();
+        let mut drained_bytes = 0i64;
         for row in rows {
-            let (id, event) = row?;
+            let (id, event, size_bytes) = row?;
             ids.push(id);
             out.push(event);
+            drained_bytes = drained_bytes.saturating_add(size_bytes.max(0));
         }
         drop(stmt);
 
-        for id in ids {
-            self.conn
-                .execute("DELETE FROM offline_events WHERE id = ?1", params![id])?;
+        if ids.is_empty() {
+            return Ok(out);
         }
+        let tx = self.conn.transaction()?;
+        for id in ids {
+            tx.execute("DELETE FROM offline_events WHERE id = ?1", params![id])?;
+        }
+        tx.execute(
+            "UPDATE offline_buffer_meta SET total_bytes = MAX(total_bytes - ?1, 0) WHERE id = ?2",
+            params![drained_bytes, OFFLINE_META_ROW_ID],
+        )?;
+        tx.commit()?;
 
         Ok(out)
     }
@@ -160,30 +186,68 @@ impl SqliteBuffer {
     }
 
     pub fn pending_bytes(&self) -> Result<usize> {
+        let total = self.current_total_bytes()?;
+        Ok(total.max(0) as usize)
+    }
+
+    fn current_total_bytes(&self) -> Result<i64> {
         let total: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT total_bytes FROM offline_buffer_meta WHERE id = ?1",
+                params![OFFLINE_META_ROW_ID],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        if let Some(total_bytes) = total {
+            return Ok(total_bytes);
+        }
+
+        let fallback: Option<i64> = self
             .conn
             .query_row("SELECT SUM(size_bytes) FROM offline_events", [], |row| {
                 row.get(0)
             })
             .optional()?
             .flatten();
-        Ok(total.unwrap_or(0).max(0) as usize)
+        Ok(fallback.unwrap_or(0))
     }
 
     fn enforce_cap(&mut self) -> Result<()> {
         loop {
-            let bytes = self.pending_bytes()?;
-            if bytes <= self.cap_bytes {
+            let bytes = self.current_total_bytes()?;
+            if bytes <= self.cap_bytes as i64 {
                 break;
             }
 
-            let deleted = self.conn.execute(
-                "DELETE FROM offline_events WHERE id = (SELECT id FROM offline_events ORDER BY id ASC LIMIT 1)",
-                [],
-            )?;
+            let oldest: Option<(i64, i64)> = self
+                .conn
+                .query_row(
+                    "SELECT id, size_bytes FROM offline_events ORDER BY id ASC LIMIT 1",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+
+            let Some((id, size_bytes)) = oldest else {
+                self.conn.execute(
+                    "UPDATE offline_buffer_meta SET total_bytes = 0 WHERE id = ?1",
+                    params![OFFLINE_META_ROW_ID],
+                )?;
+                break;
+            };
+
+            let tx = self.conn.transaction()?;
+            let deleted = tx.execute("DELETE FROM offline_events WHERE id = ?1", params![id])?;
             if deleted == 0 {
                 break;
             }
+            tx.execute(
+                "UPDATE offline_buffer_meta SET total_bytes = MAX(total_bytes - ?1, 0) WHERE id = ?2",
+                params![size_bytes.max(0), OFFLINE_META_ROW_ID],
+            )?;
+            tx.commit()?;
         }
         Ok(())
     }

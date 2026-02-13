@@ -76,6 +76,24 @@ fn grpc_base_url_preserves_existing_scheme() {
 }
 
 #[test]
+// AC-PKG-027
+fn client_agent_version_can_be_updated_for_subsequent_heartbeat_reporting() {
+    let mut c = Client::new("127.0.0.1:50051".to_string());
+    assert_eq!(c.agent_version(), env!("CARGO_PKG_VERSION"));
+
+    c.set_agent_version("1.2.3");
+    assert_eq!(c.agent_version(), "1.2.3");
+
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let grpc_src = std::fs::read_to_string(root.join("src/client/client_grpc.rs"))
+        .expect("read client_grpc.rs");
+    let http_src = std::fs::read_to_string(root.join("src/client/client_http.rs"))
+        .expect("read client_http.rs");
+    assert!(grpc_src.contains("agent_version: self.agent_version.clone()"));
+    assert!(http_src.contains("\"agent_version\": self.agent_version.clone()"));
+}
+
+#[test]
 // AC-GRP-095
 fn grpc_max_receive_message_size_matches_contract() {
     assert_eq!(MAX_GRPC_RECV_MSG_SIZE_BYTES, 16 << 20);

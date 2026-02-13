@@ -9,3 +9,11 @@ pub fn criteria_harness_ready() -> bool {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_atp_contract;
+#[cfg(test)]
+mod tests_bsl_contract;
+#[cfg(test)]
+mod tests_rsp_contract;
+#[cfg(test)]
+mod tests_tst_ver_contract;

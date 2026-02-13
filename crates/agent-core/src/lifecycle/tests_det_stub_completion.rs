@@ -1,11 +1,29 @@
 use super::*;
 use detection::DetectionEngine;
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
+}
+
+fn script_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn non_comment_lines(raw: &str) -> Vec<String> {
+    raw.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn has_line(lines: &[String], expected: &str) -> bool {
+    lines.iter().any(|line| line == expected)
 }
 
 #[test]
@@ -46,43 +64,164 @@ fn heartbeat_config_version_prefers_latest_threat_version_then_detection_state()
     assert_eq!(runtime.heartbeat_config_version(), "v-server");
 }
 
-#[test]
+#[tokio::test]
 // AC-DET-166
-fn command_pipeline_ack_and_result_report_paths_are_wired() {
-    let source = std::fs::read_to_string(
-        workspace_root().join("crates/agent-core/src/lifecycle/command_pipeline.rs"),
-    )
-    .expect("read command_pipeline source");
+async fn command_pipeline_executes_offline_and_caps_completed_cursor() {
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    cfg.server_addr = "127.0.0.1:1".to_string();
 
-    assert!(source.contains("self.ack_command_result(&command_id, exec.status).await;"));
-    assert!(source.contains("self.report_command_result(&command, exec.status, &exec.detail)"));
-    assert!(source.contains("action_type: format!(\"command:{}\", command.command_type)"));
+    let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+    runtime.client.set_online(false);
+
+    runtime
+        .handle_command(
+            grpc_client::CommandEnvelope {
+                command_id: "cmd-isolate-1".to_string(),
+                command_type: "isolate".to_string(),
+                payload_json: "{}".to_string(),
+            },
+            10,
+        )
+        .await;
+    assert!(runtime.host_control.isolated);
+
+    runtime
+        .handle_command(
+            grpc_client::CommandEnvelope {
+                command_id: "cmd-unknown-2".to_string(),
+                command_type: "not_supported_command".to_string(),
+                payload_json: "{}".to_string(),
+            },
+            11,
+        )
+        .await;
+    assert_eq!(
+        runtime.completed_command_cursor(),
+        vec!["cmd-isolate-1".to_string(), "cmd-unknown-2".to_string()]
+    );
+
+    for i in 0..300 {
+        runtime
+            .handle_command(
+                grpc_client::CommandEnvelope {
+                    command_id: format!("cmd-{i}"),
+                    command_type: "scan".to_string(),
+                    payload_json: "{}".to_string(),
+                },
+                i as i64,
+            )
+            .await;
+    }
+
+    let cursor = runtime.completed_command_cursor();
+    assert_eq!(cursor.len(), 256);
+    assert_eq!(cursor.first().map(String::as_str), Some("cmd-44"));
+    assert_eq!(cursor.last().map(String::as_str), Some("cmd-299"));
+    assert_eq!(runtime.host_control.last_scan_unix, Some(299));
+    assert!(runtime.host_control.isolated);
+    assert!(runtime.host_control.last_update_unix.is_none());
+    assert!(!runtime.host_control.uninstall_requested);
+}
+
+#[tokio::test]
+// AC-DET-160 AC-DET-161 AC-DET-163
+async fn emergency_command_payload_validation_is_enforced() {
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    cfg.server_addr = "127.0.0.1:1".to_string();
+
+    let runtime = AgentRuntime::new(cfg).expect("runtime");
+
+    let valid_payload = serde_json::json!({
+        "rule_type": "signature",
+        "rule_name": "emergency-signature",
+        "rule_content": "curl|bash",
+        "severity": "high"
+    })
+    .to_string();
+    let valid_name = runtime
+        .apply_emergency_rule_from_payload(&valid_payload)
+        .expect("valid emergency payload");
+    assert_eq!(valid_name, "emergency-signature");
+
+    let invalid_severity = serde_json::json!({
+        "rule_type": "signature",
+        "rule_name": "invalid-severity",
+        "rule_content": "curl|bash",
+        "severity": "urgent"
+    })
+    .to_string();
+    let err = runtime
+        .apply_emergency_rule_from_payload(&invalid_severity)
+        .expect_err("invalid severity must be rejected");
+    assert_eq!(err.to_string(), "unsupported emergency severity: urgent");
+
+    let missing_content = serde_json::json!({
+        "rule_type": "signature",
+        "rule_name": "missing-content",
+        "rule_content": "",
+        "severity": "high"
+    })
+    .to_string();
+    let err = runtime
+        .apply_emergency_rule_from_payload(&missing_content)
+        .expect_err("empty rule content must be rejected");
+    assert_eq!(err.to_string(), "missing emergency rule content");
 }
 
 #[test]
 // AC-DET-174 AC-DET-180
-fn rule_push_slo_harness_and_workflow_define_transfer_and_rollout_budgets() {
+fn rule_push_slo_harness_executes_and_enforces_transfer_and_rollout_budgets() {
+    let _guard = script_lock().lock().unwrap_or_else(|e| e.into_inner());
     let root = workspace_root();
-    let script = std::fs::read_to_string(root.join("scripts/run_rule_push_slo_ci.sh"))
-        .expect("read SLO script");
+    let script_path = root.join("scripts/run_rule_push_slo_ci.sh");
+
+    let success = std::process::Command::new("bash")
+        .arg(&script_path)
+        .current_dir(&root)
+        .env("EGUARD_RULE_PUSH_LINK_MBPS", "1")
+        .env("EGUARD_RULE_PUSH_BUNDLE_BYTES", "625000")
+        .env("EGUARD_RULE_PUSH_AGENT_COUNT", "30000")
+        .env("EGUARD_RULE_PUSH_COMMANDS_PER_SEC", "1000")
+        .status()
+        .expect("run SLO script");
+    assert!(success.success());
+
+    let metrics_path = root.join("artifacts/rule-push-slo/metrics.json");
+    let metrics_raw = std::fs::read_to_string(&metrics_path).expect("read metrics");
+    let metrics: serde_json::Value = serde_json::from_str(&metrics_raw).expect("parse metrics");
+    assert_eq!(metrics["suite"], "rule_push_slo");
+    assert!(
+        metrics["measured"]["transfer_seconds_at_link_rate"]
+            .as_f64()
+            .expect("transfer seconds")
+            <= 5.0
+    );
+    assert!(
+        metrics["measured"]["fleet_rollout_seconds"]
+            .as_f64()
+            .expect("rollout seconds")
+            <= 30.0
+    );
+
+    let failure = std::process::Command::new("bash")
+        .arg(&script_path)
+        .current_dir(&root)
+        .env("EGUARD_RULE_PUSH_LINK_MBPS", "1")
+        .env("EGUARD_RULE_PUSH_BUNDLE_BYTES", "625000")
+        .env("EGUARD_RULE_PUSH_AGENT_COUNT", "30000")
+        .env("EGUARD_RULE_PUSH_COMMANDS_PER_SEC", "500")
+        .status()
+        .expect("run SLO failure scenario");
+    assert!(!failure.success());
+
     let workflow = std::fs::read_to_string(root.join(".github/workflows/rule-push-slo.yml"))
         .expect("read SLO workflow");
-
-    for required in [
-        "TRANSFER_SLO_SECONDS=\"5\"",
-        "ROLLOUT_SLO_SECONDS=\"30\"",
-        "EGUARD_RULE_PUSH_LINK_MBPS",
-        "transfer_seconds_at_link_rate",
-        "fleet_rollout_seconds",
-        "awk \"BEGIN { if (${TRANSFER_SECONDS} > ${TRANSFER_SLO_SECONDS}) exit 1 }\"",
-        "awk \"BEGIN { if (${ROLLOUT_SECONDS} > ${ROLLOUT_SLO_SECONDS}) exit 1 }\"",
-    ] {
-        assert!(
-            script.contains(required),
-            "missing SLO script contract: {required}"
-        );
-    }
-
-    assert!(workflow.contains("run_rule_push_slo_ci.sh"));
-    assert!(workflow.contains("artifacts/rule-push-slo"));
+    let workflow_lines = non_comment_lines(&workflow);
+    assert!(has_line(
+        &workflow_lines,
+        "run: ./scripts/run_rule_push_slo_ci.sh"
+    ));
+    assert!(has_line(&workflow_lines, "path: artifacts/rule-push-slo"));
 }

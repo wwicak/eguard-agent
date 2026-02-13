@@ -1,18 +1,28 @@
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Result};
+use arc_swap::ArcSwap;
 use detection::{DetectionEngine, DetectionOutcome, EventClass, TelemetryEvent};
 use tracing::info;
 
 struct DetectionSnapshot {
-    engine: DetectionEngine,
+    engine: Mutex<DetectionEngine>,
     version: Option<String>,
+}
+
+impl DetectionSnapshot {
+    fn new(engine: DetectionEngine, version: Option<String>) -> Self {
+        Self {
+            engine: Mutex::new(engine),
+            version,
+        }
+    }
 }
 
 #[derive(Clone)]
 pub struct SharedDetectionState {
-    inner: Arc<RwLock<DetectionSnapshot>>,
+    inner: Arc<ArcSwap<DetectionSnapshot>>,
 }
 
 #[derive(Debug, Clone)]
@@ -33,59 +43,53 @@ pub struct EmergencyRule {
 impl SharedDetectionState {
     pub fn new(engine: DetectionEngine, version: Option<String>) -> Self {
         Self {
-            inner: Arc::new(RwLock::new(DetectionSnapshot { engine, version })),
+            inner: Arc::new(ArcSwap::from_pointee(DetectionSnapshot::new(
+                engine, version,
+            ))),
         }
     }
 
     pub fn process_event(&self, event: &TelemetryEvent) -> Result<DetectionOutcome> {
-        let mut guard = self
-            .inner
-            .write()
-            .map_err(|_| anyhow!("detection state lock poisoned"))?;
-        Ok(guard.engine.process_event(event))
+        let snapshot = self.inner.load();
+        let mut engine = snapshot
+            .engine
+            .lock()
+            .map_err(|_| anyhow!("detection engine lock poisoned"))?;
+        Ok(engine.process_event(event))
     }
 
     pub fn swap_engine(&self, version: String, next: DetectionEngine) -> Result<()> {
-        let mut guard = self
-            .inner
-            .write()
-            .map_err(|_| anyhow!("detection state lock poisoned"))?;
-        guard.engine = next;
-        guard.version = Some(version);
+        self.inner
+            .store(Arc::new(DetectionSnapshot::new(next, Some(version))));
         Ok(())
     }
 
     pub fn version(&self) -> Result<Option<String>> {
-        let guard = self
-            .inner
-            .read()
-            .map_err(|_| anyhow!("detection state lock poisoned"))?;
-        Ok(guard.version.clone())
+        let snapshot = self.inner.load();
+        Ok(snapshot.version.clone())
     }
 
     pub fn apply_emergency_rule(&self, rule: EmergencyRule) -> Result<()> {
-        let mut guard = self
-            .inner
-            .write()
-            .map_err(|_| anyhow!("detection state lock poisoned"))?;
+        let snapshot = self.inner.load();
+        let mut engine = snapshot
+            .engine
+            .lock()
+            .map_err(|_| anyhow!("detection engine lock poisoned"))?;
 
         info!(rule_name = %rule.name, rule_type = ?rule.rule_type, "applying emergency rule to detection state");
 
         match rule.rule_type {
             EmergencyRuleType::IocHash => {
-                guard.engine.layer1.load_hashes([rule.rule_content]);
+                engine.layer1.load_hashes([rule.rule_content]);
             }
             EmergencyRuleType::IocDomain => {
-                guard.engine.layer1.load_domains([rule.rule_content]);
+                engine.layer1.load_domains([rule.rule_content]);
             }
             EmergencyRuleType::IocIP => {
-                guard.engine.layer1.load_ips([rule.rule_content]);
+                engine.layer1.load_ips([rule.rule_content]);
             }
             EmergencyRuleType::Signature => {
-                guard
-                    .engine
-                    .layer1
-                    .append_string_signatures([rule.rule_content]);
+                engine.layer1.append_string_signatures([rule.rule_content]);
             }
         }
 
@@ -97,11 +101,12 @@ impl SharedDetectionState {
         process_key: String,
         distribution: HashMap<EventClass, f64>,
     ) -> Result<()> {
-        let mut guard = self
-            .inner
-            .write()
-            .map_err(|_| anyhow!("detection state lock poisoned"))?;
-        guard.engine.layer3.set_baseline(process_key, distribution);
+        let snapshot = self.inner.load();
+        let mut engine = snapshot
+            .engine
+            .lock()
+            .map_err(|_| anyhow!("detection engine lock poisoned"))?;
+        engine.layer3.set_baseline(process_key, distribution);
         Ok(())
     }
 }
