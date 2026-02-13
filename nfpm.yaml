@@ -7,14 +7,77 @@ license: GPL-2.0-or-later
 homepage: https://eguard.id
 vendor: eGuard
 contents:
+  # --- binary ---
   - src: target/release/eguard-agent
     dst: /usr/local/eg/sbin/eguard-agent
     file_info:
       mode: 0755
+
+  # --- systemd ---
   - src: conf/eguard-agent.service
     dst: /lib/systemd/system/eguard-agent.service
     file_info:
       mode: 0644
+
+  # --- eBPF probes (loaded at runtime by platform-linux) ---
+  - src: zig-out/ebpf/process_exec_bpf.o
+    dst: /usr/lib/eguard-agent/ebpf/process_exec_bpf.o
+    file_info:
+      mode: 0644
+  - src: zig-out/ebpf/file_open_bpf.o
+    dst: /usr/lib/eguard-agent/ebpf/file_open_bpf.o
+    file_info:
+      mode: 0644
+  - src: zig-out/ebpf/tcp_connect_bpf.o
+    dst: /usr/lib/eguard-agent/ebpf/tcp_connect_bpf.o
+    file_info:
+      mode: 0644
+  - src: zig-out/ebpf/dns_query_bpf.o
+    dst: /usr/lib/eguard-agent/ebpf/dns_query_bpf.o
+    file_info:
+      mode: 0644
+  - src: zig-out/ebpf/module_load_bpf.o
+    dst: /usr/lib/eguard-agent/ebpf/module_load_bpf.o
+    file_info:
+      mode: 0644
+  - src: zig-out/ebpf/lsm_block_bpf.o
+    dst: /usr/lib/eguard-agent/ebpf/lsm_block_bpf.o
+    file_info:
+      mode: 0644
+
+  # --- example config ---
+  - src: conf/agent.conf.example
+    dst: /etc/eguard-agent/agent.conf.example
+    file_info:
+      mode: 0644
+    type: config|noreplace
+
+  # --- runtime data directories (empty, created by package) ---
+  - dst: /var/lib/eguard-agent/
+    type: dir
+    file_info:
+      mode: 0750
+  - dst: /var/lib/eguard-agent/rules/sigma/
+    type: dir
+    file_info:
+      mode: 0750
+  - dst: /var/lib/eguard-agent/rules/yara/
+    type: dir
+    file_info:
+      mode: 0750
+  - dst: /var/lib/eguard-agent/rules/ioc/
+    type: dir
+    file_info:
+      mode: 0750
+  - dst: /var/lib/eguard-agent/rules-staging/
+    type: dir
+    file_info:
+      mode: 0750
+  - dst: /var/lib/eguard-agent/quarantine/
+    type: dir
+    file_info:
+      mode: 0750
+
 scripts:
   postinstall: packaging/postinstall.sh
   preremove: packaging/preremove.sh
