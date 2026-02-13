@@ -66,6 +66,6 @@ pub fn build(b: *std.Build) void {
         });
         const install_obj = b.addInstallFile(obj.getEmittedBin(), b.fmt("ebpf/{s}.o", .{entry.name}));
         b.getInstallStep().dependOn(&install_obj.step);
-        ebpf_step.dependOn(&obj.step);
+        ebpf_step.dependOn(&install_obj.step);
     }
 }
