@@ -1,0 +1,150 @@
+name: Cleanup Old Artifacts and Releases
+
+on:
+  schedule:
+    - cron: "0 0 * * 0"  # Weekly on Sunday at 00:00 UTC
+  workflow_dispatch:
+    inputs:
+      keep_releases:
+        description: "Number of recent releases to keep"
+        required: false
+        type: number
+        default: 10
+      dry_run:
+        description: "Dry run (show what would be deleted without deleting)"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  cleanup-artifacts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete expired artifacts
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const dryRun = '${{ inputs.dry_run }}' === 'true';
+
+            // Delete artifacts older than 3 days (our retention is 7 days,
+            // but we only need the latest for bundle builds)
+            const cutoff = new Date();
+            cutoff.setDate(cutoff.getDate() - 3);
+
+            let page = 1;
+            let deleted = 0;
+            let freedBytes = 0;
+
+            while (true) {
+              const { data: artifacts } = await github.rest.actions.listArtifactsForRepo({
+                owner, repo, per_page: 100, page,
+              });
+              if (artifacts.artifacts.length === 0) break;
+
+              for (const artifact of artifacts.artifacts) {
+                const created = new Date(artifact.created_at);
+                if (created < cutoff) {
+                  if (dryRun) {
+                    console.log(`[DRY RUN] Would delete: ${artifact.name} (${artifact.size_in_bytes} bytes, created ${artifact.created_at})`);
+                  } else {
+                    await github.rest.actions.deleteArtifact({ owner, repo, artifact_id: artifact.id });
+                    console.log(`Deleted: ${artifact.name} (${artifact.size_in_bytes} bytes)`);
+                  }
+                  deleted++;
+                  freedBytes += artifact.size_in_bytes;
+                }
+              }
+              page++;
+            }
+            console.log(`\nArtifacts: ${deleted} deleted, ${(freedBytes / 1024 / 1024).toFixed(1)} MB freed`);
+
+  cleanup-releases:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete old releases (keep recent N)
+        run: |
+          KEEP=${{ inputs.keep_releases || 10 }}
+          DRY_RUN=${{ inputs.dry_run || false }}
+
+          echo "Keeping ${KEEP} most recent releases"
+
+          # List all releases sorted by date (newest first)
+          RELEASES=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 2>/dev/null | tail -n +$((KEEP + 1)))
+
+          if [ -z "$RELEASES" ]; then
+            echo "No releases to clean up"
+            exit 0
+          fi
+
+          COUNT=0
+          while IFS=$'\t' read -r TITLE TYPE TAG PUBLISHED; do
+            # Only delete rule bundle releases
+            if [[ "$TAG" == rules-* ]]; then
+              if [ "$DRY_RUN" = "true" ]; then
+                echo "[DRY RUN] Would delete: $TAG ($PUBLISHED)"
+              else
+                gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag 2>/dev/null || true
+                echo "Deleted release: $TAG ($PUBLISHED)"
+              fi
+              COUNT=$((COUNT + 1))
+            fi
+          done <<< "$RELEASES"
+
+          echo "Releases: ${COUNT} deleted"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  cleanup-logs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete old workflow run logs
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const dryRun = '${{ inputs.dry_run }}' === 'true';
+
+            // Delete workflow runs older than 14 days
+            const cutoff = new Date();
+            cutoff.setDate(cutoff.getDate() - 14);
+
+            const workflows = await github.rest.actions.listRepoWorkflows({ owner, repo });
+            let deleted = 0;
+
+            for (const workflow of workflows.data.workflows) {
+              let page = 1;
+              while (true) {
+                const { data: runs } = await github.rest.actions.listWorkflowRuns({
+                  owner, repo, workflow_id: workflow.id,
+                  per_page: 100, page, status: 'completed',
+                });
+                if (runs.workflow_runs.length === 0) break;
+
+                for (const run of runs.workflow_runs) {
+                  const created = new Date(run.created_at);
+                  if (created < cutoff) {
+                    if (dryRun) {
+                      console.log(`[DRY RUN] Would delete run: ${workflow.name} #${run.run_number} (${run.created_at})`);
+                    } else {
+                      try {
+                        await github.rest.actions.deleteWorkflowRun({ owner, repo, run_id: run.id });
+                        console.log(`Deleted run: ${workflow.name} #${run.run_number}`);
+                      } catch (e) {
+                        // Some runs can't be deleted, skip
+                      }
+                    }
+                    deleted++;
+                  }
+                }
+                page++;
+                if (page > 5) break; // Limit pages per workflow
+              }
+            }
+            console.log(`\nWorkflow runs: ${deleted} deleted`);
