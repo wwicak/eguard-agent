@@ -1067,6 +1067,7 @@ fn to_detection_event(enriched: &platform_linux::EnrichedEvent, now_unix: i64) -
 fn map_event_class(event_type: &platform_linux::EventType) -> EventClass {
     match event_type {
         platform_linux::EventType::ProcessExec => EventClass::ProcessExec,
+        platform_linux::EventType::ProcessExit => EventClass::ProcessExec,
         platform_linux::EventType::FileOpen => EventClass::FileOpen,
         platform_linux::EventType::TcpConnect => EventClass::NetworkConnect,
         platform_linux::EventType::DnsQuery => EventClass::DnsQuery,
@@ -1141,3 +1142,5 @@ mod tests_ebpf_policy;
 mod tests_det_stub_completion;
 #[cfg(test)]
 mod tests_ebpf_memory;
+#[cfg(test)]
+mod tests_resource_policy;

@@ -97,7 +97,7 @@ fn connected_tick_sends_event_batch_immediately_without_flush_gate() {
 }
 
 #[test]
-// AC-EBP-080 AC-EBP-081 AC-EBP-082 AC-EBP-083 AC-EBP-084 AC-EBP-086 AC-EBP-087 AC-EBP-088 AC-EBP-090
+// AC-EBP-080 AC-EBP-081 AC-EBP-082 AC-EBP-083 AC-EBP-084 AC-EBP-086 AC-EBP-087 AC-EBP-088 AC-EBP-090 AC-RES-001 AC-RES-002 AC-RES-003 AC-RES-004 AC-RES-005 AC-RES-006 AC-RES-007
 fn ebpf_resource_budget_harness_declares_required_limits_and_measurement_commands() {
     let script =
         std::fs::read_to_string(workspace_root().join("scripts/run_ebpf_resource_budget_ci.sh"))
@@ -124,7 +124,7 @@ fn ebpf_resource_budget_harness_declares_required_limits_and_measurement_command
 }
 
 #[test]
-// AC-EBP-080 AC-EBP-081 AC-EBP-082 AC-EBP-083 AC-EBP-084 AC-EBP-086 AC-EBP-087 AC-EBP-088 AC-EBP-090
+// AC-EBP-080 AC-EBP-081 AC-EBP-082 AC-EBP-083 AC-EBP-084 AC-EBP-086 AC-EBP-087 AC-EBP-088 AC-EBP-090 AC-RES-001 AC-RES-003 AC-RES-004 AC-RES-005 AC-RES-006 AC-RES-007
 fn ebpf_resource_budget_workflow_runs_harness_and_publishes_artifacts() {
     let workflow = std::fs::read_to_string(
         workspace_root().join(".github/workflows/ebpf-resource-budget.yml"),
@@ -146,7 +146,7 @@ fn ebpf_resource_budget_workflow_runs_harness_and_publishes_artifacts() {
 }
 
 #[test]
-// AC-EBP-055
+// AC-EBP-055 AC-RES-021
 fn sampling_stride_increases_only_when_drop_backpressure_is_observed() {
     assert_eq!(compute_sampling_stride(0, 0), 1);
     assert_eq!(compute_sampling_stride(9_000, 0), 1);

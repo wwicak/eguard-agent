@@ -151,3 +151,63 @@ fn file_hash_cache_is_lru_bounded() {
 
     let _ = fs::remove_dir_all(base);
 }
+
+#[test]
+// AC-RES-022
+fn default_file_hash_cache_capacity_tracks_ten_thousand_entry_policy_target() {
+    let source = std::fs::read_to_string(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs"),
+    )
+    .expect("read platform source");
+    assert!(source.contains("Self::new(500, 10_000)"));
+
+    let projected_bytes = 10_000usize * 50usize;
+    assert!((450 * 1024..=550 * 1024).contains(&projected_bytes));
+}
+
+#[test]
+// AC-RES-023
+fn process_exit_event_evicts_process_entry_from_cache() {
+    let mut cache = EnrichmentCache::new(500, 10_000);
+    let pid = std::process::id();
+    let raw_exec = RawEvent {
+        event_type: EventType::ProcessExec,
+        pid,
+        uid: 0,
+        ts_ns: 1,
+        payload: "cmdline=/usr/bin/bash".to_string(),
+    };
+    let _ = enrich_event_with_cache(raw_exec, &mut cache);
+    assert_eq!(cache.process_cache_len(), 1);
+
+    let raw_exit = RawEvent {
+        event_type: EventType::ProcessExit,
+        pid,
+        uid: 0,
+        ts_ns: 2,
+        payload: String::new(),
+    };
+    let _ = enrich_event_with_cache(raw_exit, &mut cache);
+    assert_eq!(cache.process_cache_len(), 0);
+}
+
+#[test]
+// AC-RES-025
+fn event_driven_runtime_primitives_include_inotify_watch_support() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..");
+    let main_src =
+        std::fs::read_to_string(root.join("crates/agent-core/src/main.rs")).expect("main.rs");
+    let ebpf_src =
+        std::fs::read_to_string(root.join("crates/platform-linux/src/ebpf.rs")).expect("ebpf.rs");
+    assert!(main_src.contains("time::interval("));
+    assert!(main_src.contains("tokio::select!"));
+    assert!(ebpf_src.contains(".poll(timeout)"));
+
+    let dir = std::env::temp_dir();
+    let fd = open_inotify_nonblocking().expect("open inotify");
+    let _wd = add_inotify_watch(fd, &dir).expect("add inotify watch");
+    let closed = unsafe { libc::close(fd) };
+    assert_eq!(closed, 0);
+}

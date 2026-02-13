@@ -46,7 +46,7 @@ fn sqlite_buffer_roundtrip() {
 }
 
 #[test]
-// AC-GRP-083
+// AC-GRP-083 AC-RES-024
 fn memory_buffer_drain_preserves_fifo_order() {
     let mut b = OfflineBuffer::new(4096);
     b.enqueue(sample_event(1));

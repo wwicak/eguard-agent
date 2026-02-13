@@ -39,7 +39,7 @@ fn detection_benchmark_ci_harness_publishes_measured_metrics_artifact() {
 }
 
 #[test]
-// AC-EBP-100 AC-EBP-103
+// AC-EBP-100 AC-EBP-103 AC-RES-010 AC-RES-013
 fn runtime_stack_uses_tokio_entrypoint_and_grpc_tls_types() {
     let root = workspace_root();
     let agent_main =
@@ -54,23 +54,23 @@ fn runtime_stack_uses_tokio_entrypoint_and_grpc_tls_types() {
 }
 
 #[test]
-// AC-EBP-104 AC-EBP-105
+// AC-EBP-104 AC-EBP-105 AC-RES-014 AC-RES-015 AC-RES-022
 fn process_and_file_cache_capacities_stay_in_half_megabyte_envelope() {
     let root = workspace_root();
     let platform = std::fs::read_to_string(root.join("crates/platform-linux/src/lib.rs"))
         .expect("platform linux source");
 
-    assert!(platform.contains("Self::new(8_192, 4_096)"));
+    assert!(platform.contains("Self::new(500, 10_000)"));
 
-    let process_cache_est = 8_192usize * 64usize;
-    let file_cache_est = 4_096usize * 128usize;
+    let process_cache_est = 500usize * 1_024usize;
+    let file_cache_est = 10_000usize * 50usize;
 
     assert!((200 * 1024..=800 * 1024).contains(&process_cache_est));
     assert!((200 * 1024..=800 * 1024).contains(&file_cache_est));
 }
 
 #[test]
-// AC-EBP-106
+// AC-EBP-106 AC-RES-016
 fn yara_engine_loads_three_megabyte_synthetic_rule_corpus() {
     let mut engine = YaraEngine::new();
 
@@ -91,7 +91,7 @@ fn yara_engine_loads_three_megabyte_synthetic_rule_corpus() {
 }
 
 #[test]
-// AC-EBP-107
+// AC-EBP-107 AC-RES-017
 fn offline_sqlite_buffer_reaches_two_megabyte_working_set_window() {
     let path = std::env::temp_dir().join(format!(
         "eguard-ac-ebp107-runtime-{}.db",
@@ -125,7 +125,7 @@ fn offline_sqlite_buffer_reaches_two_megabyte_working_set_window() {
 }
 
 #[test]
-// AC-EBP-108
+// AC-EBP-108 AC-RES-018
 fn baseline_snapshot_size_fits_half_megabyte_target_band() {
     let path = std::env::temp_dir().join(format!(
         "eguard-ac-ebp108-runtime-{}.bin",
@@ -156,7 +156,7 @@ fn baseline_snapshot_size_fits_half_megabyte_target_band() {
 }
 
 #[test]
-// AC-EBP-102 AC-EBP-109 AC-EBP-110
+// AC-EBP-102 AC-EBP-109 AC-EBP-110 AC-RES-002 AC-RES-011 AC-RES-012
 fn memory_layout_ledger_sums_to_target_rss_envelope() {
     let root = workspace_root();
     let common =

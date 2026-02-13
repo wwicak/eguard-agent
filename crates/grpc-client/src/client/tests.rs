@@ -153,7 +153,7 @@ async fn send_events_offline_returns_error() {
 }
 
 #[test]
-// AC-GRP-029 AC-EBP-070
+// AC-GRP-029 AC-EBP-070 AC-RES-024
 fn zstd_level3_compresses_process_event_payload_close_to_target_ratio() {
     let mut uncompressed = Vec::new();
     for i in 0..240 {

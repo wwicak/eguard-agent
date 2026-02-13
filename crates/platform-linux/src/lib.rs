@@ -1,7 +1,10 @@
 mod ebpf;
 
 use std::collections::{HashMap, VecDeque};
+use std::ffi::CString;
 use std::fs;
+use std::io;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
@@ -13,6 +16,7 @@ pub use ebpf::{EbpfEngine, EbpfError, EbpfStats};
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum EventType {
     ProcessExec,
+    ProcessExit,
     FileOpen,
     TcpConnect,
     DnsQuery,
@@ -72,7 +76,7 @@ pub struct EnrichmentCache {
 
 impl Default for EnrichmentCache {
     fn default() -> Self {
-        Self::new(8_192, 4_096)
+        Self::new(500, 10_000)
     }
 }
 
@@ -94,6 +98,17 @@ impl EnrichmentCache {
 
     pub fn file_hash_cache_len(&self) -> usize {
         self.file_hash_cache.len()
+    }
+
+    pub fn evict_process(&mut self, pid: u32) -> bool {
+        if let Some(pos) = self
+            .process_lru
+            .iter()
+            .position(|existing| *existing == pid)
+        {
+            self.process_lru.remove(pos);
+        }
+        self.process_cache.remove(&pid).is_some()
     }
 
     fn process_entry(&mut self, raw: &RawEvent) -> ProcessCacheEntry {
@@ -170,14 +185,55 @@ pub fn platform_name() -> &'static str {
     "linux"
 }
 
+pub fn open_inotify_nonblocking() -> io::Result<i32> {
+    let fd = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(fd)
+}
+
+pub fn add_inotify_watch(fd: i32, path: &Path) -> io::Result<i32> {
+    let raw = path.as_os_str().as_bytes();
+    let c_path =
+        CString::new(raw).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "nul byte"))?;
+    let mask = libc::IN_CREATE
+        | libc::IN_MODIFY
+        | libc::IN_DELETE
+        | libc::IN_MOVED_FROM
+        | libc::IN_MOVED_TO;
+    let watch_fd = unsafe { libc::inotify_add_watch(fd, c_path.as_ptr(), mask) };
+    if watch_fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(watch_fd)
+}
+
 pub fn enrich_event(raw: RawEvent) -> EnrichedEvent {
     let mut cache = EnrichmentCache::default();
     enrich_event_with_cache(raw, &mut cache)
 }
 
 pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> EnrichedEvent {
-    let entry = cache.process_entry(&raw);
     let payload_meta = parse_payload_metadata(&raw.event_type, &raw.payload);
+    if matches!(raw.event_type, EventType::ProcessExit) {
+        let _ = cache.evict_process(raw.pid);
+        return EnrichedEvent {
+            event: raw,
+            process_exe: None,
+            process_exe_sha256: None,
+            process_cmdline: payload_meta.command_line_hint,
+            parent_process: None,
+            parent_chain: Vec::new(),
+            file_path: payload_meta.file_path,
+            file_sha256: None,
+            dst_ip: payload_meta.dst_ip,
+            dst_port: payload_meta.dst_port,
+            dst_domain: payload_meta.dst_domain,
+        };
+    }
+
+    let entry = cache.process_entry(&raw);
 
     let process_exe_sha256 = entry
         .process_exe
@@ -325,6 +381,7 @@ fn parse_payload_fallback(event_type: &EventType, payload: &str) -> PayloadMetad
             command_line_hint: Some(payload.to_string()),
             ..PayloadMetadata::default()
         },
+        EventType::ProcessExit => PayloadMetadata::default(),
         EventType::ModuleLoad => PayloadMetadata::default(),
         EventType::LsmBlock => PayloadMetadata {
             command_line_hint: Some(payload.to_string()),

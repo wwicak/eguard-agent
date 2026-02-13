@@ -1,4 +1,4 @@
-use super::*;
+use nac::{posture_from_compliance, Posture};
 
 #[test]
 // AC-NAC-005 AC-NAC-006 AC-NAC-007 AC-NAC-008

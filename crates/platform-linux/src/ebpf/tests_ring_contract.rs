@@ -107,7 +107,7 @@ fn zig_ebpf_programs_share_single_default_8mb_ring_buffer_definition() {
 }
 
 #[test]
-// AC-EBP-012
+// AC-EBP-012 AC-RES-020
 fn rust_ebpf_backend_uses_libbpf_ringbuffer_poll_path_without_read_syscall_api() {
     let source =
         std::fs::read_to_string(workspace_root().join("crates/platform-linux/src/ebpf.rs"))
@@ -183,7 +183,7 @@ fn poll_once_uses_single_blocking_backend_poll_invocation_per_call() {
 }
 
 #[test]
-// AC-EBP-005 AC-EBP-008
+// AC-EBP-005 AC-EBP-008 AC-RES-019
 fn zig_programs_apply_kernel_side_filters_for_new_connections_and_file_open_scope() {
     let root = workspace_root();
 

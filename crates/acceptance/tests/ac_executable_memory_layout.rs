@@ -68,10 +68,10 @@ fn ac_ebp_cache_capacities_align_with_half_megabyte_targets() {
     let platform = std::fs::read_to_string(root.join("crates/platform-linux/src/lib.rs"))
         .expect("platform linux source");
 
-    assert!(platform.contains("Self::new(8_192, 4_096)"));
+    assert!(platform.contains("Self::new(500, 10_000)"));
 
-    let process_cache_est = 8_192usize * 64usize;
-    let file_cache_est = 4_096usize * 128usize;
+    let process_cache_est = 500usize * 1_024usize;
+    let file_cache_est = 10_000usize * 50usize;
 
     assert!((200 * 1024..=800 * 1024).contains(&process_cache_est));
     assert!((200 * 1024..=800 * 1024).contains(&file_cache_est));
@@ -92,7 +92,9 @@ fn ac_ebp_yara_engine_accepts_three_megabyte_rule_corpus() {
     let source_bytes = source.len();
     assert!((2 * 1024 * 1024..=4 * 1024 * 1024).contains(&source_bytes));
 
-    let loaded = engine.load_rules_str(&source).expect("load synthetic yara corpus");
+    let loaded = engine
+        .load_rules_str(&source)
+        .expect("load synthetic yara corpus");
     assert_eq!(loaded, 256);
 }
 
@@ -165,8 +167,8 @@ fn ac_ebp_baseline_store_snapshot_fits_half_megabyte_budget() {
 // AC-EBP-102 AC-EBP-109 AC-EBP-110
 fn ac_ebp_memory_layout_ledger_sums_to_target_rss_envelope() {
     let root = repo_root();
-    let common = std::fs::read_to_string(root.join("zig/ebpf/common.zig"))
-        .expect("read ring buffer source");
+    let common =
+        std::fs::read_to_string(root.join("zig/ebpf/common.zig")).expect("read ring buffer source");
     let ring_bytes = parse_ringbuf_capacity_bytes(&common).expect("ring capacity") as f64;
 
     let runtime_tokio_bytes = 3.0 * 1024.0 * 1024.0;

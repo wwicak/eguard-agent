@@ -467,6 +467,7 @@ fn parse_event_type(raw: u8) -> Result<EventType> {
         4 => Ok(EventType::DnsQuery),
         5 => Ok(EventType::ModuleLoad),
         6 => Ok(EventType::LsmBlock),
+        7 => Ok(EventType::ProcessExit),
         other => Err(EbpfError::Parse(format!("unknown event type id {}", other))),
     }
 }
@@ -504,6 +505,7 @@ fn read_u64_le(raw: &[u8], offset: usize) -> Result<u64> {
 fn parse_payload(event_type: EventType, raw: &[u8]) -> String {
     match event_type {
         EventType::ProcessExec => parse_process_exec_payload(raw),
+        EventType::ProcessExit => parse_c_string(raw),
         EventType::FileOpen => parse_file_open_payload(raw),
         EventType::TcpConnect => parse_tcp_connect_payload(raw),
         EventType::DnsQuery => parse_dns_query_payload(raw),
