@@ -55,24 +55,25 @@ jobs:
 
       - name: Install nfpm
         run: |
-          curl -sfL https://github.com/goreleaser/nfpm/releases/download/v2.41.1/nfpm_2.41.1_linux_amd64.tar.gz | \
+          NFPM_VERSION=2.45.0
+          curl -sfL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz" | \
             tar -xz -C /usr/local/bin nfpm
 
-      - name: Build .deb package
+      - name: Strip version prefix
+        id: semver
         run: |
-          VERSION="${{ steps.version.outputs.tag }}"
-          VERSION="${VERSION#v}"
-          nfpm package --packager deb --target "eguard-agent_${VERSION}_amd64.deb"
+          RAW="${{ steps.version.outputs.tag }}"
+          echo "version=${RAW#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build .deb package
+        run: nfpm package --packager deb --target "eguard-agent_${VERSION}_amd64.deb"
         env:
-          VERSION: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.semver.outputs.version }}
 
       - name: Build .rpm package
-        run: |
-          VERSION="${{ steps.version.outputs.tag }}"
-          VERSION="${VERSION#v}"
-          nfpm package --packager rpm --target "eguard-agent-${VERSION}-1.x86_64.rpm"
+        run: nfpm package --packager rpm --target "eguard-agent-${VERSION}-1.x86_64.rpm"
         env:
-          VERSION: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.semver.outputs.version }}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
