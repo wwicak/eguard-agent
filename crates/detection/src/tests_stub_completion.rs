@@ -41,7 +41,11 @@ fn one_stage_rule(name: &str, class: EventClass) -> TemporalRule {
     }
 }
 
-fn run_observe_batch(engine: &mut TemporalEngine, event: &TelemetryEvent, iterations: usize) -> Duration {
+fn run_observe_batch(
+    engine: &mut TemporalEngine,
+    event: &TelemetryEvent,
+    iterations: usize,
+) -> Duration {
     let start = Instant::now();
     for _ in 0..iterations {
         std::hint::black_box(engine.observe(event));
@@ -214,4 +218,22 @@ fn cross_agent_correlation_is_advisory_only_and_requires_three_hosts() {
     assert_eq!(incident.host_count, 3);
     assert_eq!(incident.hosts, vec!["h1", "h2", "h3"]);
     assert!(incident.advisory_only);
+}
+
+#[test]
+// AC-DET-130 AC-DET-131 AC-DET-132 AC-VER-044
+fn cross_agent_correlation_does_not_trigger_below_three_hosts() {
+    let signals = vec![
+        CorrelationSignal {
+            host_id: "h1".to_string(),
+            ioc: "deadbeef".to_string(),
+        },
+        CorrelationSignal {
+            host_id: "h2".to_string(),
+            ioc: "deadbeef".to_string(),
+        },
+    ];
+
+    let incidents = correlate_cross_agent_iocs(&signals);
+    assert!(incidents.is_empty());
 }

@@ -96,6 +96,50 @@ fn sqlite_buffer_enforces_fifo_eviction_when_full() {
 }
 
 #[test]
+// AC-GRP-082 AC-GRP-083 AC-TST-021 AC-VER-013
+fn sqlite_buffer_cap_preserves_fifo_suffix_and_size_accounting() {
+    let unique = format!(
+        "eguard-agent-cap-accounting-{}.db",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    );
+    let path = std::env::temp_dir().join(unique);
+    let path_str = path.to_string_lossy().into_owned();
+
+    let ev1 = sample_event(1);
+    let ev2 = sample_event(2);
+    let ev3 = sample_event(3);
+    let ev4 = sample_event(4);
+    let sample_size = estimate_event_size(&ev1);
+    let cap = sample_size * 2 + 8;
+    let mut b = SqliteBuffer::new(&path_str, cap).expect("sqlite open");
+
+    b.enqueue(ev1).expect("enqueue 1");
+    b.enqueue(ev2).expect("enqueue 2");
+    b.enqueue(ev3).expect("enqueue 3");
+    b.enqueue(ev4).expect("enqueue 4");
+
+    let pending_count = b.pending_count().expect("pending count");
+    let pending_bytes = b.pending_bytes().expect("pending bytes");
+    assert!(pending_count <= 2);
+    assert!(pending_bytes <= cap);
+
+    let drained = b.drain_batch(10).expect("drain");
+    assert!(!drained.is_empty());
+    assert!(drained.iter().all(|ev| ev.created_at_unix >= 3));
+    for pair in drained.windows(2) {
+        assert!(pair[0].created_at_unix < pair[1].created_at_unix);
+    }
+
+    let drained_bytes: usize = drained.iter().map(estimate_event_size).sum();
+    assert_eq!(drained_bytes, pending_bytes);
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 // AC-GRP-084
 fn event_buffer_memory_variant_reports_sizes() {
     let mut b = EventBuffer::memory(1024);

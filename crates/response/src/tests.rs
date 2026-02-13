@@ -102,6 +102,31 @@ fn default_linux_protected_paths_match_acceptance_baseline() {
 }
 
 #[test]
+// AC-RSP-033 AC-RSP-094
+fn protected_paths_reject_parent_directory_escape_sequences() {
+    let protected = ProtectedList::default_linux();
+
+    assert!(!protected.is_protected_path(Path::new(
+        "/usr/local/eg/../tmp/malware.bin"
+    )));
+    assert!(!protected.is_protected_path(Path::new(
+        "/usr/bin/../../opt/custom/dropper.sh"
+    )));
+}
+
+#[test]
+// AC-RSP-033
+fn protected_paths_accept_normalized_equivalents_inside_roots() {
+    let protected = ProtectedList::default_linux();
+
+    assert!(protected.is_protected_path(Path::new("/usr/local/eg/./agent")));
+    assert!(protected.is_protected_path(Path::new(
+        "/usr/local/eg/runtime/../agentd"
+    )));
+    assert!(protected.is_protected_path(Path::new("/usr/bin/./sh")));
+}
+
+#[test]
 // AC-RSP-085 AC-RSP-086 AC-RSP-087 AC-RSP-088 AC-RSP-089 AC-RSP-090 AC-RSP-091 AC-RSP-092 AC-CFG-015
 fn default_linux_protected_processes_match_acceptance_baseline() {
     let protected = ProtectedList::default_linux();
@@ -125,6 +150,20 @@ fn kill_rate_limiter_enforces_limit_and_expires_window() {
     assert!(limiter.allow(t0));
     assert!(limiter.allow(t0 + Duration::from_secs(1)));
     assert!(!limiter.allow(t0 + Duration::from_secs(2)));
+    assert!(limiter.allow(t0 + Duration::from_secs(61)));
+}
+
+#[test]
+// AC-RSP-082 AC-TST-026 AC-VER-040
+fn kill_rate_limiter_respects_default_rate_limit_window() {
+    let max_per_minute = ResponseConfig::default().max_kills_per_minute;
+    let mut limiter = KillRateLimiter::new(max_per_minute);
+    let t0 = Instant::now();
+
+    for i in 0..max_per_minute {
+        assert!(limiter.allow(t0 + Duration::from_secs(i as u64)));
+    }
+    assert!(!limiter.allow(t0 + Duration::from_secs(59)));
     assert!(limiter.allow(t0 + Duration::from_secs(61)));
 }
 

@@ -4,7 +4,7 @@ mod kill;
 mod quarantine;
 
 use std::collections::VecDeque;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use regex::Regex;
@@ -108,8 +108,27 @@ impl ProtectedList {
     }
 
     pub fn is_protected_path(&self, path: &Path) -> bool {
-        self.protected_paths.iter().any(|p| path.starts_with(p))
+        let normalized = normalize_path(path);
+        self.protected_paths
+            .iter()
+            .any(|p| normalized.starts_with(normalize_path(p)))
     }
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(Path::new("/")),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                let _ = normalized.pop();
+            }
+            Component::Normal(part) => normalized.push(part),
+        }
+    }
+    normalized
 }
 
 fn compile_process_pattern(raw: &str) -> Regex {
