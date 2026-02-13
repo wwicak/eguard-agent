@@ -123,6 +123,8 @@ def main():
     parser.add_argument("--yara", default="", help="Directory of validated YARA rules")
     parser.add_argument("--ioc", default="", help="Directory of filtered IOC files")
     parser.add_argument("--cve", default="", help="Path to CVE JSONL file")
+    parser.add_argument("--suricata", default="", help="Directory of Suricata rules")
+    parser.add_argument("--elastic", default="", help="Directory of Elastic detection rules")
     parser.add_argument("--output", required=True, help="Output bundle directory")
     parser.add_argument("--version", default="", help="Bundle version (default: date-based)")
     args = parser.parse_args()
@@ -178,6 +180,37 @@ def main():
             cve_epss_count = count_epss(cve_path)
     print(f"Bundle: {cve_count} CVEs ({cve_kev_count} actively exploited, {cve_epss_count} EPSS-enriched)")
 
+    # Copy Suricata rules
+    suricata_count = 0
+    if args.suricata:
+        suricata_dir = os.path.abspath(args.suricata)
+        if os.path.isdir(suricata_dir):
+            suricata_out = os.path.join(output_dir, "suricata")
+            suricata_count = copy_tree(suricata_dir, suricata_out)
+            # Count actual alert rules (not just files)
+            rule_count = 0
+            for root, _dirs, files in os.walk(suricata_out):
+                for fname in files:
+                    fpath = os.path.join(root, fname)
+                    with open(fpath, "r", encoding="utf-8", errors="replace") as f:
+                        rule_count += sum(1 for line in f if line.strip().startswith("alert "))
+            print(f"Bundle: {suricata_count} Suricata rule files ({rule_count} alert rules)")
+            suricata_count = rule_count  # Report actual rule count
+    else:
+        print("Bundle: 0 Suricata rules")
+
+    # Copy Elastic detection rules
+    elastic_count = 0
+    if args.elastic:
+        elastic_dir = os.path.abspath(args.elastic)
+        if os.path.isdir(elastic_dir):
+            elastic_count = copy_tree(elastic_dir, os.path.join(output_dir, "elastic"))
+            # Count actual rules from JSONL
+            jsonl_path = os.path.join(output_dir, "elastic", "elastic-rules.jsonl")
+            if os.path.isfile(jsonl_path):
+                elastic_count = count_lines(jsonl_path)
+    print(f"Bundle: {elastic_count} Elastic behavioral rules")
+
     # Detect sources
     sources = detect_sources(output_dir)
 
@@ -199,6 +232,8 @@ def main():
         "ioc_domain_count": ioc_domain_count,
         "ioc_ip_count": ioc_ip_count,
         "cve_count": cve_count,
+        "suricata_count": suricata_count,
+        "elastic_count": elastic_count,
         "cve_kev_count": cve_kev_count,
         "cve_epss_count": cve_epss_count,
         "sources": sources,

@@ -15,19 +15,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ── Source 1: YARA Forge Extended ──────────────────────────────
+      # ── Source 1: YARA Forge Full ──────────────────────────────────
       # Aggregates 20+ curated repos (signature-base, Yara-Rules,
       # ReversingLabs, InQuest, Malpedia, ESET, CAPE, and more).
-      # Pre-validated, quality-scored, deduplicated upstream.
-      - name: Download YARA Forge Extended ruleset
+      # "Full" = all functional rules — higher FP rate acceptable
+      # because our validation pipeline catches false positives.
+      - name: Download YARA Forge Full ruleset
         run: |
           mkdir -p /tmp/yara_collected/yara-forge
           curl -sSfL --retry 3 --max-time 300 \
             -o /tmp/yara-forge.zip \
-            "https://github.com/YARAHQ/yara-forge/releases/latest/download/yara-forge-rules-extended.zip"
+            "https://github.com/YARAHQ/yara-forge/releases/latest/download/yara-forge-rules-full.zip"
           unzip -o /tmp/yara-forge.zip -d /tmp/yara_collected/yara-forge
           COUNT=$(find /tmp/yara_collected/yara-forge -name '*.yar' -o -name '*.yara' | wc -l)
-          echo "YARA Forge Extended: ${COUNT} rule files"
+          echo "YARA Forge Full: ${COUNT} rule files"
 
       # ── Source 2: Elastic Security YARA ────────────────────────────
       # Vendor-maintained rules for endpoint malware detection.
@@ -75,10 +76,61 @@ jobs:
           COUNT=$(find /tmp/yara_collected/reversinglabs -name '*.yar' -o -name '*.yara' 2>/dev/null | wc -l)
           echo "ReversingLabs YARA: ${COUNT} rule files"
 
+      # ── Source 5: Malpedia auto-generated signatures ────────────────
+      # Academic-quality rules auto-generated from malware family code.
+      # Covers hundreds of malware families from Fraunhofer FKIE.
+      - name: Download Malpedia auto-generated YARA
+        run: |
+          mkdir -p /tmp/yara_collected/malpedia
+          curl -sSfL --retry 3 --max-time 300 \
+            -o /tmp/malpedia.zip \
+            "https://malpedia.caad.fkie.fraunhofer.de/api/get/yara/auto/zip" 2>/dev/null || true
+          if [ -s /tmp/malpedia.zip ]; then
+            unzip -o /tmp/malpedia.zip -d /tmp/yara_collected/malpedia 2>/dev/null || true
+            COUNT=$(find /tmp/yara_collected/malpedia -name '*.yar' -o -name '*.yara' 2>/dev/null | wc -l)
+            echo "Malpedia auto-gen YARA: ${COUNT} rule files"
+          else
+            echo "Malpedia: download failed or requires auth, skipping"
+          fi
+
+      # ── Source 6: bartblaze community YARA ─────────────────────────
+      # Personal collection by malware researcher bartblaze.
+      - name: Clone bartblaze YARA rules
+        run: |
+          git clone --depth 1 https://github.com/bartblaze/Yara-rules.git /tmp/bartblaze 2>/dev/null || true
+          mkdir -p /tmp/yara_collected/bartblaze
+          if [ -d /tmp/bartblaze ]; then
+            find /tmp/bartblaze -name '*.yar' -o -name '*.yara' | while read -r f; do
+              rel="${f#/tmp/bartblaze/}"
+              dir=$(dirname "$rel")
+              mkdir -p "/tmp/yara_collected/bartblaze/${dir}"
+              cp "$f" "/tmp/yara_collected/bartblaze/${dir}/"
+            done
+            COUNT=$(find /tmp/yara_collected/bartblaze -name '*.yar' -o -name '*.yara' 2>/dev/null | wc -l)
+            echo "bartblaze YARA: ${COUNT} rule files"
+          fi
+
+      # ── Source 7: InQuest YARA rules ───────────────────────────────
+      # Threat hunting rules from InQuest Labs.
+      - name: Clone InQuest YARA rules
+        run: |
+          git clone --depth 1 https://github.com/InQuest/yara-rules.git /tmp/inquest 2>/dev/null || true
+          mkdir -p /tmp/yara_collected/inquest
+          if [ -d /tmp/inquest ]; then
+            find /tmp/inquest -name '*.yar' -o -name '*.yara' | while read -r f; do
+              rel="${f#/tmp/inquest/}"
+              dir=$(dirname "$rel")
+              mkdir -p "/tmp/yara_collected/inquest/${dir}"
+              cp "$f" "/tmp/yara_collected/inquest/${dir}/"
+            done
+            COUNT=$(find /tmp/yara_collected/inquest -name '*.yar' -o -name '*.yara' 2>/dev/null | wc -l)
+            echo "InQuest YARA: ${COUNT} rule files"
+          fi
+
       - name: Summary
         run: |
           echo "=== YARA Collection Summary ==="
-          for src in yara-forge elastic gcti reversinglabs; do
+          for src in yara-forge elastic gcti reversinglabs malpedia bartblaze inquest; do
             COUNT=$(find "/tmp/yara_collected/${src}" -name '*.yar' -o -name '*.yara' 2>/dev/null | wc -l)
             echo "  ${src}: ${COUNT} rule files"
           done

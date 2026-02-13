@@ -1,0 +1,52 @@
+name: Collect Elastic Detection Rules
+
+on:
+  schedule:
+    - cron: "15 2 * * *"  # Daily at 02:15 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  collect-elastic:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Elastic detection-rules ────────────────────────────────────
+      # 700+ detection rules from Elastic Security's Threat Research
+      # team. TOML format with KQL/EQL queries. We extract Linux and
+      # cross-platform rules as behavioral detection patterns.
+      # Elastic License 2.0.
+      - name: Clone Elastic detection-rules
+        run: |
+          git clone --depth 1 --filter=blob:none --sparse \
+            https://github.com/elastic/detection-rules.git /tmp/elastic-rules
+          cd /tmp/elastic-rules && git sparse-checkout set rules rules_building_block
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install toml parser
+        run: pip install tomli
+
+      # Extract Linux and cross-platform rules, convert to JSON
+      # for easier consumption by eGuard detection engine.
+      - name: Filter and extract Linux rules
+        run: |
+          python3 threat-intel/processing/elastic_extract.py \
+            --input /tmp/elastic-rules/rules \
+            --building-blocks /tmp/elastic-rules/rules_building_block \
+            --output /tmp/elastic_filtered \
+            --platforms linux cross-platform
+
+      - name: Upload Elastic rules as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: elastic-rules
+          path: /tmp/elastic_filtered/
+          retention-days: 7

@@ -34,14 +34,14 @@ jobs:
       - name: Download latest collector artifacts
         run: |
           mkdir -p /tmp/artifacts
-          for name in sigma-filtered yara-collected ioc-curated cve-extracted; do
+          for name in sigma-filtered yara-collected ioc-curated cve-extracted suricata-collected elastic-rules; do
             echo "Downloading artifact: $name"
             gh run download --repo "$GITHUB_REPOSITORY" \
               --name "$name" --dir "/tmp/artifacts/$name" 2>/dev/null || \
               echo "  Warning: artifact $name not found (collector may not have run yet)"
           done
           echo "=== Artifacts downloaded ==="
-          for name in sigma-filtered yara-collected ioc-curated cve-extracted; do
+          for name in sigma-filtered yara-collected ioc-curated cve-extracted suricata-collected elastic-rules; do
             COUNT=$(find "/tmp/artifacts/$name" -type f 2>/dev/null | wc -l)
             echo "  $name: $COUNT files"
           done
@@ -58,7 +58,7 @@ jobs:
               --output /tmp/yara_validated \
               --test-files threat-intel/tests/clean_files \
               --deduplicate \
-              --source-priority yara-forge,elastic,gcti,reversinglabs
+              --source-priority yara-forge,elastic,gcti,reversinglabs,malpedia,bartblaze,inquest
           else
             echo "No YARA rules to validate"
           fi
@@ -78,6 +78,8 @@ jobs:
             --yara /tmp/yara_validated \
             --ioc /tmp/ioc_ready \
             --cve /tmp/artifacts/cve-extracted/cves.jsonl \
+            --suricata /tmp/artifacts/suricata-collected \
+            --elastic /tmp/artifacts/elastic-rules \
             --output bundle \
             --version "${{ steps.version.outputs.version }}"
 
@@ -120,11 +122,19 @@ jobs:
           m = json.load(open('bundle/manifest.json'))
           src = m.get('sources', {})
           lines = [
-              'Automated threat intelligence bundle.',
+              'Automated threat intelligence bundle — 6-layer detection.',
               '',
-              '## Detection Rules',
-              f'- **SIGMA rules**: {m[\"sigma_count\"]}',
-              f'- **YARA rules**: {m[\"yara_count\"]}',
+              '## File Detection (YARA)',
+              f'- **{m[\"yara_count\"]}** YARA rules (malware, exploits, C2 frameworks)',
+              '',
+              '## Log Detection (SIGMA)',
+              f'- **{m[\"sigma_count\"]}** SIGMA rules (behavioral, emerging threats, hunting)',
+              '',
+              '## Network Detection (Suricata)',
+              f'- **{m.get(\"suricata_count\", 0)}** Suricata rules (ET Open: C2, exploits, scanning)',
+              '',
+              '## Endpoint Behavior (Elastic)',
+              f'- **{m.get(\"elastic_count\", 0)}** Elastic rules (Linux behavioral detection)',
               '',
               '## Indicators of Compromise',
               f'- IOC hashes: {m[\"ioc_hash_count\"]}',
@@ -139,7 +149,8 @@ jobs:
               '## Sources',
           ]
           for category, names in src.items():
-              lines.append(f'- {category}: {', '.join(names)}')
+              names_str = ', '.join(names) if isinstance(names, list) else str(names)
+              lines.append(f'- {category}: {names_str}')
           open('/tmp/release_notes.md', 'w').write('\n'.join(lines))
           "
           gh release create "rules-${VERSION}" \
