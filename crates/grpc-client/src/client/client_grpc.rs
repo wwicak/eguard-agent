@@ -79,6 +79,7 @@ impl Client {
         &self,
         agent_id: &str,
         compliance_status: &str,
+        config_version: &str,
     ) -> Result<()> {
         self.with_retry("heartbeat_grpc", || async {
             let mut client = self.agent_control_client().await?;
@@ -90,7 +91,7 @@ impl Client {
                     status: None,
                     resource_usage: None,
                     baseline_report: None,
-                    config_version: String::new(),
+                    config_version: config_version.to_string(),
                     buffered_events: 0,
                     compliance_status: compliance_status.to_string(),
                     sent_at_unix: now_unix(),

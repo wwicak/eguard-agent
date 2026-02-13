@@ -55,6 +55,15 @@ struct TickEvaluation {
     event_envelope: EventEnvelope,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReloadReport {
+    old_version: String,
+    new_version: String,
+    sigma_rules: usize,
+    yara_rules: usize,
+    ioc_entries: usize,
+}
+
 pub struct AgentRuntime {
     config: AgentConfig,
     buffer: EventBuffer,
@@ -74,6 +83,7 @@ pub struct AgentRuntime {
     enrolled: bool,
     latest_threat_version: Option<String>,
     latest_custom_rule_hash: Option<String>,
+    last_reload_report: Option<ReloadReport>,
     host_control: HostControlState,
     completed_command_ids: VecDeque<String>,
 }
@@ -150,6 +160,7 @@ impl AgentRuntime {
             enrolled: false,
             latest_threat_version: None,
             latest_custom_rule_hash: None,
+            last_reload_report: None,
             host_control: HostControlState::default(),
             completed_command_ids: VecDeque::new(),
         })
@@ -336,9 +347,10 @@ impl AgentRuntime {
             return;
         }
 
+        let config_version = self.heartbeat_config_version();
         if let Err(err) = self
             .client
-            .send_heartbeat(&self.config.agent_id, compliance_status)
+            .send_heartbeat_with_config(&self.config.agent_id, compliance_status, &config_version)
             .await
         {
             warn!(error = %err, "heartbeat failed");
@@ -692,19 +704,42 @@ impl AgentRuntime {
         }
     }
 
-    fn reload_detection_state(&self, version: &str, bundle_path: &str) -> Result<()> {
+    fn reload_detection_state(&mut self, version: &str, bundle_path: &str) -> Result<()> {
+        let old_version = self.detection_state.version()?.unwrap_or_default();
         let mut next_engine = build_detection_engine();
         let (sigma_loaded, yara_loaded) = load_bundle_rules(&mut next_engine, bundle_path);
+        let ioc_entries = next_engine.layer1.ioc_entry_count();
         self.detection_state
             .swap_engine(version.to_string(), next_engine)?;
+        let report = ReloadReport {
+            old_version,
+            new_version: version.to_string(),
+            sigma_rules: sigma_loaded,
+            yara_rules: yara_loaded,
+            ioc_entries,
+        };
+        self.last_reload_report = Some(report.clone());
         info!(
-            version = %version,
+            old_version = %report.old_version,
+            new_version = %report.new_version,
             bundle = %bundle_path,
-            sigma_loaded,
-            yara_loaded,
+            sigma_rules = report.sigma_rules,
+            yara_rules = report.yara_rules,
+            ioc_entries = report.ioc_entries,
             "detection state hot-reloaded"
         );
         Ok(())
+    }
+
+    fn heartbeat_config_version(&self) -> String {
+        if let Some(version) = &self.latest_threat_version {
+            return version.clone();
+        }
+        self.detection_state
+            .version()
+            .ok()
+            .flatten()
+            .unwrap_or_default()
     }
 
     async fn prepare_bundle_for_reload(&self, version: &str, bundle_path: &str) -> Result<String> {
@@ -1102,5 +1137,7 @@ mod tests;
 #[cfg(test)]
 mod tests_ebpf_policy;
 
+#[cfg(test)]
+mod tests_det_stub_completion;
 #[cfg(test)]
 mod tests_ebpf_memory;

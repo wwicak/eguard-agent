@@ -72,7 +72,7 @@ fn default_ebpf_object_dirs_include_expected_targets() {
 }
 
 #[test]
-// AC-EBP-051 AC-EBP-052 AC-EBP-053 AC-EBP-054
+// AC-EBP-051 AC-EBP-052 AC-EBP-053 AC-EBP-054 AC-DET-184
 fn compute_poll_timeout_prioritizes_drop_backpressure() {
     assert_eq!(
         compute_poll_timeout(0, 1),
@@ -347,12 +347,21 @@ fn signed_bundle_archive_contains_required_manifest_signature_and_rule_paths() {
     std::fs::write(src.join("manifest.json"), "{}").expect("manifest");
     std::fs::write(src.join("signature.ed25519"), [1u8; 64]).expect("signature");
     std::fs::write(src.join("sigma/linux/rule.yml"), "title: x").expect("sigma");
-    std::fs::write(src.join("yara/malware/rule.yar"), "rule a { condition: true }")
-        .expect("yara malware");
-    std::fs::write(src.join("yara/webshell/rule.yar"), "rule b { condition: true }")
-        .expect("yara webshell");
-    std::fs::write(src.join("yara/packer/rule.yar"), "rule c { condition: true }")
-        .expect("yara packer");
+    std::fs::write(
+        src.join("yara/malware/rule.yar"),
+        "rule a { condition: true }",
+    )
+    .expect("yara malware");
+    std::fs::write(
+        src.join("yara/webshell/rule.yar"),
+        "rule b { condition: true }",
+    )
+    .expect("yara webshell");
+    std::fs::write(
+        src.join("yara/packer/rule.yar"),
+        "rule c { condition: true }",
+    )
+    .expect("yara packer");
     std::fs::write(src.join("ioc/hashes.json"), "[]").expect("ioc hashes");
     std::fs::write(src.join("ioc/domains.json"), "[]").expect("ioc domains");
     std::fs::write(src.join("ioc/ips.json"), "[]").expect("ioc ips");
@@ -387,7 +396,10 @@ fn signed_bundle_archive_contains_required_manifest_signature_and_rule_paths() {
         "ioc/ips.json",
         "cve/cve-checks.json",
     ] {
-        assert!(entries.contains(required), "missing required entry {required}");
+        assert!(
+            entries.contains(required),
+            "missing required entry {required}"
+        );
     }
 
     let _ = std::fs::remove_dir_all(base);
@@ -427,12 +439,17 @@ fn synthetic_rule_bundle_sizes_fit_expected_uncompressed_and_zstd_ranges() {
 
     std::fs::write(src.join("manifest.json"), "{}").expect("manifest");
     std::fs::write(src.join("signature.ed25519"), [7u8; 64]).expect("signature");
-    std::fs::write(src.join("sigma/linux/rule.yml"), &payload[..4 * 1024 * 1024])
-        .expect("sigma payload");
-    std::fs::write(src.join("yara/malware/rule.yar"), &payload[4 * 1024 * 1024..8 * 1024 * 1024])
-        .expect("yara payload");
-    std::fs::write(src.join("ioc/hashes.json"), &payload[8 * 1024 * 1024..])
-        .expect("ioc payload");
+    std::fs::write(
+        src.join("sigma/linux/rule.yml"),
+        &payload[..4 * 1024 * 1024],
+    )
+    .expect("sigma payload");
+    std::fs::write(
+        src.join("yara/malware/rule.yar"),
+        &payload[4 * 1024 * 1024..8 * 1024 * 1024],
+    )
+    .expect("yara payload");
+    std::fs::write(src.join("ioc/hashes.json"), &payload[8 * 1024 * 1024..]).expect("ioc payload");
 
     let mut uncompressed_bytes = 0u64;
     for path in [
@@ -470,7 +487,7 @@ fn synthetic_rule_bundle_sizes_fit_expected_uncompressed_and_zstd_ranges() {
 }
 
 #[tokio::test]
-// AC-DET-160 AC-DET-163
+// AC-DET-160 AC-DET-161 AC-DET-163 AC-DET-183
 async fn emergency_command_is_applied_immediately_in_command_path() {
     let mut cfg = AgentConfig::default();
     cfg.offline_buffer_backend = "memory".to_string();

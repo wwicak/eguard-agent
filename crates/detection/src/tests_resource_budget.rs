@@ -51,7 +51,7 @@ fn temporal_rule(name: &str) -> TemporalRule {
 }
 
 #[test]
-// AC-DET-100
+// AC-DET-100 AC-DET-185
 fn ioc_prefilter_and_exact_cache_fit_target_memory_and_keep_constant_lookup_shape() {
     let mut l1 = IocLayer1::new();
 
@@ -122,7 +122,7 @@ fn aho_matcher_budget_fits_target_envelope() {
 }
 
 #[test]
-// AC-DET-102
+// AC-DET-102 AC-DET-185
 fn temporal_monitor_memory_and_per_event_cost_fit_budget() {
     let mut engine = TemporalEngine::new();
     for i in 0..3_500 {
@@ -162,12 +162,15 @@ fn temporal_monitor_memory_and_per_event_cost_fit_budget() {
     let elapsed_high = started_high.elapsed().as_nanos() as f64;
 
     let ratio = elapsed_high / elapsed_low.max(1.0);
-    assert!(ratio > 2.0, "expected higher subscribed-rule cost, got {ratio}");
+    assert!(
+        ratio > 2.0,
+        "expected higher subscribed-rule cost, got {ratio}"
+    );
     assert!(ratio < 100.0, "unexpected superlinear growth, got {ratio}");
 }
 
 #[test]
-// AC-DET-104
+// AC-DET-104 AC-DET-185
 fn process_graph_and_templates_fit_budget_with_bounded_batch_evaluation() {
     let mut l4 = Layer4Engine::new(10_000);
 
@@ -220,7 +223,7 @@ fn process_graph_and_templates_fit_budget_with_bounded_batch_evaluation() {
 }
 
 #[test]
-// AC-DET-105
+// AC-DET-105 AC-DET-181
 fn total_detection_subsystem_budget_is_within_target_range() {
     let layer1_bytes = 602 * 1024usize;
     let matcher_bytes = 2 * 1024 * 1024usize;

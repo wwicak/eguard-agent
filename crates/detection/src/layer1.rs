@@ -5,6 +5,81 @@ use rusqlite::{params, Connection};
 
 use crate::types::TelemetryEvent;
 
+pub(crate) const PREFILTER_MAX_LOAD_FACTOR: f64 = 0.95;
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn cuckoo_false_positive_rate(bucket_size: u32, fingerprint_bits: u32) -> f64 {
+    let numerator = 2.0 * bucket_size as f64;
+    let denominator = 2_f64.powi(fingerprint_bits as i32);
+    numerator / denominator
+}
+
+pub(crate) fn should_rebuild_prefilter(load_factor: f64, insertion_failed: bool) -> bool {
+    insertion_failed || load_factor > PREFILTER_MAX_LOAD_FACTOR
+}
+
+pub(crate) fn normalize_for_matching(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        let c = if ch == '\\' { '/' } else { ch };
+        out.push(c.to_ascii_lowercase());
+    }
+    out
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn base64ish_alphabet_ratio(raw: &str) -> f64 {
+    let mut total = 0usize;
+    let mut in_alphabet = 0usize;
+
+    for b in raw.bytes() {
+        if b.is_ascii_whitespace() {
+            continue;
+        }
+        total += 1;
+        if b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=' | b'-' | b'_') {
+            in_alphabet += 1;
+        }
+    }
+
+    if total == 0 {
+        0.0
+    } else {
+        in_alphabet as f64 / total as f64
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn passes_optional_alphabet_ratio_gate(raw: &str, min_ratio: Option<f64>) -> bool {
+    let Some(min_ratio) = min_ratio else {
+        return true;
+    };
+    base64ish_alphabet_ratio(raw) >= min_ratio
+}
+
+fn hashset_load_factor(set: &HashSet<String>) -> f64 {
+    if set.is_empty() {
+        return 0.0;
+    }
+    let cap = set.capacity().max(1);
+    set.len() as f64 / cap as f64
+}
+
+fn rebuild_prefilter_if_needed(set: &mut HashSet<String>, rebuilds: &mut usize) {
+    let load_factor = hashset_load_factor(set);
+    if !should_rebuild_prefilter(load_factor, false) {
+        return;
+    }
+
+    let target = ((set.len().max(1) as f64) / PREFILTER_MAX_LOAD_FACTOR).ceil() as usize + 1;
+    let mut rebuilt = HashSet::with_capacity(target);
+    for value in set.drain() {
+        rebuilt.insert(value);
+    }
+    *set = rebuilt;
+    *rebuilds = rebuilds.saturating_add(1);
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Layer1Result {
     Clean,
@@ -141,6 +216,7 @@ pub struct IocLayer1 {
     matcher_patterns: Vec<String>,
     matcher: Option<AhoCorasick>,
     exact_store: Option<IocExactStore>,
+    prefilter_rebuilds: usize,
 }
 
 impl IocLayer1 {
@@ -155,6 +231,7 @@ impl IocLayer1 {
             matcher_patterns: Vec::new(),
             matcher: None,
             exact_store: None,
+            prefilter_rebuilds: 0,
         }
     }
 
@@ -178,6 +255,7 @@ impl IocLayer1 {
             self.exact_hashes.insert(v.clone());
             copy.push(v);
         }
+        rebuild_prefilter_if_needed(&mut self.prefilter_hashes, &mut self.prefilter_rebuilds);
         if let Some(store) = &self.exact_store {
             let _ = store.load_hashes(copy);
         }
@@ -194,6 +272,7 @@ impl IocLayer1 {
             self.exact_domains.insert(normalized.clone());
             copy.push(normalized);
         }
+        rebuild_prefilter_if_needed(&mut self.prefilter_domains, &mut self.prefilter_rebuilds);
         if let Some(store) = &self.exact_store {
             let _ = store.load_domains(copy);
         }
@@ -209,6 +288,7 @@ impl IocLayer1 {
             self.exact_ips.insert(v.clone());
             copy.push(v);
         }
+        rebuild_prefilter_if_needed(&mut self.prefilter_ips, &mut self.prefilter_rebuilds);
         if let Some(store) = &self.exact_store {
             let _ = store.load_ips(copy);
         }
@@ -221,7 +301,7 @@ impl IocLayer1 {
         self.matcher_patterns.clear();
         for p in patterns {
             if !p.is_empty() {
-                self.matcher_patterns.push(p);
+                self.matcher_patterns.push(normalize_for_matching(&p));
             }
         }
 
@@ -236,10 +316,15 @@ impl IocLayer1 {
             if p.is_empty() {
                 continue;
             }
-            if self.matcher_patterns.iter().any(|existing| existing == &p) {
+            let normalized = normalize_for_matching(&p);
+            if self
+                .matcher_patterns
+                .iter()
+                .any(|existing| existing == &normalized)
+            {
                 continue;
             }
-            self.matcher_patterns.push(p);
+            self.matcher_patterns.push(normalized);
         }
 
         self.rebuild_matcher();
@@ -296,8 +381,9 @@ impl IocLayer1 {
             return Vec::new();
         };
 
+        let normalized = normalize_for_matching(text);
         let mut matches = Vec::new();
-        for m in matcher.find_iter(text) {
+        for m in matcher.find_iter(&normalized) {
             if let Some(pattern) = self.matcher_patterns.get(m.pattern().as_usize()) {
                 matches.push(pattern.clone());
             }
@@ -386,6 +472,10 @@ impl IocLayer1 {
         hit
     }
 
+    pub fn ioc_entry_count(&self) -> usize {
+        self.exact_hashes.len() + self.exact_domains.len() + self.exact_ips.len()
+    }
+
     fn apply_result(result: Layer1Result, field: &str, hit: &mut Layer1EventHit) {
         match result {
             Layer1Result::Clean => {}
@@ -420,6 +510,20 @@ impl IocLayer1 {
     #[cfg(test)]
     pub(crate) fn debug_matcher_pattern_bytes(&self) -> usize {
         self.matcher_patterns.iter().map(|p| p.len()).sum()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn debug_prefilter_load_factors(&self) -> (f64, f64, f64) {
+        (
+            hashset_load_factor(&self.prefilter_hashes),
+            hashset_load_factor(&self.prefilter_domains),
+            hashset_load_factor(&self.prefilter_ips),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn debug_prefilter_rebuilds(&self) -> usize {
+        self.prefilter_rebuilds
     }
 }
 

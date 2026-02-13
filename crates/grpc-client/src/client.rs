@@ -106,14 +106,24 @@ impl Client {
     }
 
     pub async fn send_heartbeat(&self, agent_id: &str, compliance_status: &str) -> Result<()> {
+        self.send_heartbeat_with_config(agent_id, compliance_status, "")
+            .await
+    }
+
+    pub async fn send_heartbeat_with_config(
+        &self,
+        agent_id: &str,
+        compliance_status: &str,
+        config_version: &str,
+    ) -> Result<()> {
         self.ensure_online()?;
         match self.mode {
             TransportMode::Http => {
-                self.send_heartbeat_http(agent_id, compliance_status)
+                self.send_heartbeat_http(agent_id, compliance_status, config_version)
                     .await?
             }
             TransportMode::Grpc => {
-                self.send_heartbeat_grpc(agent_id, compliance_status)
+                self.send_heartbeat_grpc(agent_id, compliance_status, config_version)
                     .await?
             }
         }

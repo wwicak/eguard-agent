@@ -34,6 +34,20 @@ pub struct DriftIndicators {
     pub kl_quantiles_by_process_family: HashMap<String, ProcessDriftQuantiles>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CorrelationSignal {
+    pub host_id: String,
+    pub ioc: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdvisoryIncident {
+    pub ioc: String,
+    pub host_count: usize,
+    pub hosts: Vec<String>,
+    pub advisory_only: bool,
+}
+
 pub fn replay_events(engine: &mut DetectionEngine, events: &[TelemetryEvent]) -> ReplaySummary {
     let mut summary = ReplaySummary {
         total_events: events.len(),
@@ -92,6 +106,31 @@ pub fn replay_events(engine: &mut DetectionEngine, events: &[TelemetryEvent]) ->
     summary
 }
 
+pub fn correlate_cross_agent_iocs(signals: &[CorrelationSignal]) -> Vec<AdvisoryIncident> {
+    let mut by_ioc: HashMap<String, std::collections::BTreeSet<String>> = HashMap::new();
+    for signal in signals {
+        by_ioc
+            .entry(signal.ioc.clone())
+            .or_default()
+            .insert(signal.host_id.clone());
+    }
+
+    let mut incidents = Vec::new();
+    for (ioc, hosts) in by_ioc {
+        if hosts.len() < 3 {
+            continue;
+        }
+        incidents.push(AdvisoryIncident {
+            ioc,
+            host_count: hosts.len(),
+            hosts: hosts.into_iter().collect(),
+            advisory_only: true,
+        });
+    }
+    incidents.sort_by(|a, b| a.ioc.cmp(&b.ioc));
+    incidents
+}
+
 pub fn report_drift_indicators(
     engine: &mut DetectionEngine,
     events: &[TelemetryEvent],
@@ -125,9 +164,7 @@ pub fn report_drift_indicators(
     }
 
     DriftIndicators {
-        baseline_age_secs: now_unix
-            .saturating_sub(baseline_last_refresh_unix)
-            .max(0) as u64,
+        baseline_age_secs: now_unix.saturating_sub(baseline_last_refresh_unix).max(0) as u64,
         kl_quantiles_by_process_family: quantiles,
     }
 }

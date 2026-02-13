@@ -1,0 +1,21 @@
+name: rule-push-slo
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run rule-push SLO harness
+        run: ./scripts/run_rule_push_slo_ci.sh
+
+      - name: Upload rule-push SLO artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rule-push-slo
+          path: artifacts/rule-push-slo

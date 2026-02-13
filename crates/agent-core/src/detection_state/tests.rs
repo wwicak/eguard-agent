@@ -146,10 +146,7 @@ fn rule_reload_swaps_atomically_and_keeps_old_rules_live_during_build() {
     assert!(swap_elapsed < Duration::from_millis(5));
 
     assert_eq!(
-        state
-            .version()
-            .expect("version after swap")
-            .as_deref(),
+        state.version().expect("version after swap").as_deref(),
         Some("v-new")
     );
     assert_eq!(
@@ -190,6 +187,51 @@ fn emergency_rule_apply_stays_within_single_rule_compile_budget() {
         .process_event(&event_with_command("curl|bash -s https://bad"))
         .expect("process event");
     assert!(out
+        .layer1
+        .matched_signatures
+        .iter()
+        .any(|sig| sig == "curl|bash"));
+}
+
+#[test]
+// AC-DET-167
+fn emergency_rule_is_reconciled_by_next_bundle_swap() {
+    let state = SharedDetectionState::new(
+        DetectionEngine::default_with_rules(),
+        Some("v-emergency".to_string()),
+    );
+
+    state
+        .apply_emergency_rule(EmergencyRule {
+            name: "emergency-sig".to_string(),
+            rule_type: EmergencyRuleType::Signature,
+            rule_content: "curl|bash".to_string(),
+        })
+        .expect("apply emergency signature");
+
+    assert!(state
+        .process_event(&event_with_command("curl|bash -s https://bad"))
+        .expect("evaluate with emergency signature")
+        .layer1
+        .matched_signatures
+        .iter()
+        .any(|sig| sig == "curl|bash"));
+
+    let mut bundle_engine = DetectionEngine::default_with_rules();
+    bundle_engine
+        .layer1
+        .load_string_signatures(["curl|bash".to_string()]);
+    state
+        .swap_engine("v-bundle".to_string(), bundle_engine)
+        .expect("swap to reconciled bundle");
+
+    assert_eq!(
+        state.version().expect("version").as_deref(),
+        Some("v-bundle")
+    );
+    assert!(state
+        .process_event(&event_with_command("curl|bash -s https://bad"))
+        .expect("evaluate with reconciled bundle signature")
         .layer1
         .matched_signatures
         .iter()
