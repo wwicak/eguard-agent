@@ -378,7 +378,7 @@ fn rule_bundle_contract_includes_compression_signature_and_reload_constraints() 
 }
 
 #[test]
-// AC-GRP-092 AC-GRP-093 AC-GRP-094 AC-GRP-095 AC-GRP-096
+// AC-GRP-092 AC-GRP-093 AC-GRP-094 AC-GRP-095 AC-GRP-096 AC-ENR-005
 fn certificate_policy_contract_covers_pinning_rotation_client_cert_and_transport_limits() {
     assert_contains_all(
         AGENT_PROTO,
@@ -388,6 +388,7 @@ fn certificate_policy_contract_covers_pinning_rotation_client_cert_and_transport
             "int32 rotate_before_expiry_days",
             "bool seamless_rotation",
             "bool require_client_cert_for_all_rpcs_except_enroll",
+            "bool require_mtls_after_enroll",
             "int32 grpc_max_recv_msg_size_bytes",
             "int32 grpc_port",
             "CertificatePolicy certificate_policy",
