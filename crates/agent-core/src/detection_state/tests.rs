@@ -37,6 +37,48 @@ fn event_with_command(cmd: &str) -> TelemetryEvent {
     }
 }
 
+fn event_with_hash_for_pid(pid: u32, hash: &str) -> TelemetryEvent {
+    let mut event = event_with_hash(hash);
+    event.pid = pid;
+    event
+}
+
+fn event_process_exec_for_pid(pid: u32, process: &str, parent: &str, ts: i64) -> TelemetryEvent {
+    TelemetryEvent {
+        ts_unix: ts,
+        event_class: EventClass::ProcessExec,
+        pid,
+        ppid: 10,
+        uid: 1000,
+        process: process.to_string(),
+        parent_process: parent.to_string(),
+        file_path: None,
+        file_hash: None,
+        dst_port: None,
+        dst_ip: None,
+        dst_domain: None,
+        command_line: None,
+    }
+}
+
+fn event_network_for_pid(pid: u32, process: &str, parent: &str, ts: i64, port: u16) -> TelemetryEvent {
+    TelemetryEvent {
+        ts_unix: ts,
+        event_class: EventClass::NetworkConnect,
+        pid,
+        ppid: 10,
+        uid: 1000,
+        process: process.to_string(),
+        parent_process: parent.to_string(),
+        file_path: None,
+        file_hash: None,
+        dst_port: Some(port),
+        dst_ip: Some("203.0.113.77".to_string()),
+        dst_domain: Some("c2.shard-test.example".to_string()),
+        command_line: None,
+    }
+}
+
 #[test]
 // AC-DET-165
 fn emergency_hash_rule_is_applied_without_engine_rebuild() {
@@ -236,4 +278,160 @@ fn emergency_rule_is_reconciled_by_next_bundle_swap() {
         .matched_signatures
         .iter()
         .any(|sig| sig == "curl|bash"));
+}
+
+#[test]
+fn sharded_state_routes_events_by_pid_consistently() {
+    let mut shard0 = DetectionEngine::default_with_rules();
+    shard0.layer1.load_hashes(["hash-s0".to_string()]);
+
+    let state =
+        SharedDetectionState::new_with_shards(shard0, Some("v-shard-1".to_string()), 2, || {
+            let mut shard1 = DetectionEngine::default_with_rules();
+            shard1.layer1.load_hashes(["hash-s1".to_string()]);
+            shard1
+        });
+
+    assert_eq!(state.shard_count(), 2);
+    assert_eq!(
+        state.version().expect("version").as_deref(),
+        Some("v-shard-1")
+    );
+
+    assert_eq!(
+        state
+            .process_event(&event_with_hash_for_pid(200, "hash-s0"))
+            .expect("shard-0 match")
+            .confidence,
+        detection::Confidence::Definite
+    );
+    assert_eq!(
+        state
+            .process_event(&event_with_hash_for_pid(201, "hash-s1"))
+            .expect("shard-1 match")
+            .confidence,
+        detection::Confidence::Definite
+    );
+
+    assert_ne!(
+        state
+            .process_event(&event_with_hash_for_pid(200, "hash-s1"))
+            .expect("cross-shard mismatch")
+            .confidence,
+        detection::Confidence::Definite
+    );
+    assert_ne!(
+        state
+            .process_event(&event_with_hash_for_pid(201, "hash-s0"))
+            .expect("cross-shard mismatch")
+            .confidence,
+        detection::Confidence::Definite
+    );
+}
+
+#[test]
+fn sharded_emergency_rule_push_applies_to_all_shards() {
+    let state = SharedDetectionState::new_with_shards(
+        DetectionEngine::default_with_rules(),
+        Some("v-shard-emergency".to_string()),
+        4,
+        DetectionEngine::default_with_rules,
+    );
+
+    state
+        .apply_emergency_rule(EmergencyRule {
+            name: "emergency-hash-all-shards".to_string(),
+            rule_type: EmergencyRuleType::IocHash,
+            rule_content: "deadbeef".to_string(),
+        })
+        .expect("apply emergency hash");
+
+    for pid in 500..504u32 {
+        assert_eq!(
+            state
+                .process_event(&event_with_hash_for_pid(pid, "deadbeef"))
+                .expect("evaluate emergency hash")
+                .confidence,
+            detection::Confidence::Definite
+        );
+    }
+}
+
+#[test]
+fn sharded_swap_engine_with_builder_reloads_every_shard() {
+    let mut shard0 = DetectionEngine::default_with_rules();
+    shard0.layer1.load_hashes(["old-s0".to_string()]);
+
+    let state =
+        SharedDetectionState::new_with_shards(shard0, Some("v-old-sharded".to_string()), 2, || {
+            let mut shard1 = DetectionEngine::default_with_rules();
+            shard1.layer1.load_hashes(["old-s1".to_string()]);
+            shard1
+        });
+
+    let mut next0 = DetectionEngine::default_with_rules();
+    next0.layer1.load_hashes(["new-s0".to_string()]);
+    state
+        .swap_engine_with_builder("v-new-sharded".to_string(), next0, || {
+            let mut next1 = DetectionEngine::default_with_rules();
+            next1.layer1.load_hashes(["new-s1".to_string()]);
+            next1
+        })
+        .expect("swap shard engines");
+
+    assert_eq!(
+        state.version().expect("version after swap").as_deref(),
+        Some("v-new-sharded")
+    );
+    assert_eq!(
+        state
+            .process_event(&event_with_hash_for_pid(700, "new-s0"))
+            .expect("new shard0 hash")
+            .confidence,
+        detection::Confidence::Definite
+    );
+    assert_eq!(
+        state
+            .process_event(&event_with_hash_for_pid(701, "new-s1"))
+            .expect("new shard1 hash")
+            .confidence,
+        detection::Confidence::Definite
+    );
+    assert_ne!(
+        state
+            .process_event(&event_with_hash_for_pid(700, "old-s0"))
+            .expect("old shard0 hash")
+            .confidence,
+        detection::Confidence::Definite
+    );
+    assert_ne!(
+        state
+            .process_event(&event_with_hash_for_pid(701, "old-s1"))
+            .expect("old shard1 hash")
+            .confidence,
+        detection::Confidence::Definite
+    );
+}
+
+#[test]
+fn sharded_workers_preserve_per_entity_event_order_for_temporal_rules() {
+    let state = SharedDetectionState::new_with_shards(
+        DetectionEngine::default_with_rules(),
+        Some("v-order".to_string()),
+        4,
+        DetectionEngine::default_with_rules,
+    );
+
+    let pid = 900u32;
+    let first = event_process_exec_for_pid(pid, "bash", "nginx", 1);
+    let second = event_network_for_pid(pid, "bash", "nginx", 2, 4444);
+
+    let out1 = state.process_event(&first).expect("process first");
+    assert!(out1.temporal_hits.is_empty());
+
+    let out2 = state.process_event(&second).expect("process second");
+    assert!(out2
+        .temporal_hits
+        .iter()
+        .any(|rule| rule == "phi_webshell"));
 }

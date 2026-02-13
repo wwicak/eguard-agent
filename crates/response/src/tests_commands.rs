@@ -1,5 +1,19 @@
 use super::*;
 
+fn state(
+    isolated: bool,
+    last_scan_unix: Option<i64>,
+    last_update_unix: Option<i64>,
+    uninstall_requested: bool,
+) -> HostControlState {
+    HostControlState {
+        isolated,
+        last_scan_unix,
+        last_update_unix,
+        uninstall_requested,
+    }
+}
+
 #[test]
 // AC-RSP-112 AC-RSP-118 AC-RSP-119
 fn parse_server_command_accepts_all_supported_literals_and_aliases() {
@@ -67,6 +81,165 @@ fn execute_server_commands_update_state_and_return_completed_status() {
     let uninstall = execute_server_command_with_state(ServerCommand::Uninstall, 107, &mut state);
     assert_eq!(uninstall.status, "completed");
     assert!(state.uninstall_requested);
+}
+
+#[test]
+// AC-RSP-117 AC-RSP-118 AC-RSP-119
+fn command_alias_table_maps_parse_and_execution_state_effects() {
+    struct Case {
+        raw: &'static str,
+        now_unix: i64,
+        initial_state: HostControlState,
+        expected_command: ServerCommand,
+        expected_state: HostControlState,
+        expected_outcome: CommandOutcome,
+        expected_status: &'static str,
+        expected_detail_contains: &'static str,
+    }
+
+    let cases = [
+        Case {
+            raw: "isolate",
+            now_unix: 100,
+            initial_state: state(false, None, None, false),
+            expected_command: ServerCommand::Isolate,
+            expected_state: state(true, None, None, false),
+            expected_outcome: CommandOutcome::Applied,
+            expected_status: "completed",
+            expected_detail_contains: "isolated mode",
+        },
+        Case {
+            raw: "unisolate",
+            now_unix: 101,
+            initial_state: state(true, Some(7), Some(8), false),
+            expected_command: ServerCommand::Unisolate,
+            expected_state: state(false, Some(7), Some(8), false),
+            expected_outcome: CommandOutcome::Applied,
+            expected_status: "completed",
+            expected_detail_contains: "isolation removed",
+        },
+        Case {
+            raw: "scan",
+            now_unix: 102,
+            initial_state: state(false, Some(1), Some(8), false),
+            expected_command: ServerCommand::Scan,
+            expected_state: state(false, Some(102), Some(8), false),
+            expected_outcome: CommandOutcome::Applied,
+            expected_status: "completed",
+            expected_detail_contains: "scan scheduled",
+        },
+        Case {
+            raw: "update",
+            now_unix: 103,
+            initial_state: state(false, Some(1), Some(2), false),
+            expected_command: ServerCommand::Update,
+            expected_state: state(false, Some(1), Some(103), false),
+            expected_outcome: CommandOutcome::Applied,
+            expected_status: "completed",
+            expected_detail_contains: "update check",
+        },
+        Case {
+            raw: "forensics",
+            now_unix: 104,
+            initial_state: state(false, Some(1), Some(2), false),
+            expected_command: ServerCommand::Forensics,
+            expected_state: state(false, Some(1), Some(2), false),
+            expected_outcome: CommandOutcome::Applied,
+            expected_status: "completed",
+            expected_detail_contains: "forensics snapshot",
+        },
+        Case {
+            raw: "config_change",
+            now_unix: 105,
+            initial_state: state(false, Some(1), Some(2), false),
+            expected_command: ServerCommand::ConfigChange,
+            expected_state: state(false, Some(1), Some(2), false),
+            expected_outcome: CommandOutcome::Applied,
+            expected_status: "completed",
+            expected_detail_contains: "configuration change",
+        },
+        Case {
+            raw: "restore_quarantine",
+            now_unix: 106,
+            initial_state: state(false, Some(1), Some(2), false),
+            expected_command: ServerCommand::RestoreQuarantine,
+            expected_state: state(false, Some(1), Some(2), false),
+            expected_outcome: CommandOutcome::Applied,
+            expected_status: "completed",
+            expected_detail_contains: "quarantine restore",
+        },
+        Case {
+            raw: "uninstall",
+            now_unix: 107,
+            initial_state: state(false, Some(1), Some(2), false),
+            expected_command: ServerCommand::Uninstall,
+            expected_state: state(false, Some(1), Some(2), true),
+            expected_outcome: CommandOutcome::Applied,
+            expected_status: "completed",
+            expected_detail_contains: "uninstall request",
+        },
+        Case {
+            raw: "emergency_rule_push",
+            now_unix: 108,
+            initial_state: state(false, Some(1), Some(2), false),
+            expected_command: ServerCommand::EmergencyRulePush,
+            expected_state: state(false, Some(1), Some(2), false),
+            expected_outcome: CommandOutcome::Applied,
+            expected_status: "completed",
+            expected_detail_contains: "emergency rule push",
+        },
+        Case {
+            raw: " push_emergency_rule ",
+            now_unix: 109,
+            initial_state: state(false, Some(1), Some(2), false),
+            expected_command: ServerCommand::EmergencyRulePush,
+            expected_state: state(false, Some(1), Some(2), false),
+            expected_outcome: CommandOutcome::Applied,
+            expected_status: "completed",
+            expected_detail_contains: "emergency rule push",
+        },
+    ];
+
+    for case in cases {
+        let parsed = parse_server_command(case.raw);
+        assert_eq!(parsed, case.expected_command, "parsed command for {}", case.raw);
+
+        let mut state = case.initial_state;
+        let execution = execute_server_command_with_state(parsed, case.now_unix, &mut state);
+
+        assert_eq!(
+            execution.outcome, case.expected_outcome,
+            "outcome for {}",
+            case.raw
+        );
+        assert_eq!(execution.status, case.expected_status, "status for {}", case.raw);
+        assert!(
+            execution.detail.contains(case.expected_detail_contains),
+            "detail for {} was {}",
+            case.raw,
+            execution.detail
+        );
+        assert_eq!(
+            state.isolated, case.expected_state.isolated,
+            "isolated mismatch for {}",
+            case.raw
+        );
+        assert_eq!(
+            state.last_scan_unix, case.expected_state.last_scan_unix,
+            "last_scan_unix mismatch for {}",
+            case.raw
+        );
+        assert_eq!(
+            state.last_update_unix, case.expected_state.last_update_unix,
+            "last_update_unix mismatch for {}",
+            case.raw
+        );
+        assert_eq!(
+            state.uninstall_requested, case.expected_state.uninstall_requested,
+            "uninstall_requested mismatch for {}",
+            case.raw
+        );
+    }
 }
 
 #[test]

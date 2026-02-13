@@ -1,6 +1,7 @@
 use super::*;
 use crate::ResponseError;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::sync::Mutex;
 
 #[test]
 // AC-RSP-032
@@ -39,6 +40,63 @@ fn protected_path_is_rejected_before_quarantine() {
         quarantine_file(path, "sha256-test", &protected).expect_err("protected path rejected");
 
     assert!(matches!(err, ResponseError::ProtectedPath(p) if p == path));
+}
+
+#[test]
+fn quarantine_runtime_entrypoint_moves_file_and_reports_fields() {
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    let _env_guard = ENV_LOCK.lock().expect("lock env");
+    struct EnvVarReset;
+    impl Drop for EnvVarReset {
+        fn drop(&mut self) {
+            std::env::remove_var("EGUARD_TEST_QUARANTINE_DIR");
+        }
+    }
+
+    let base = std::env::temp_dir().join(format!(
+        "eguard-quarantine-runtime-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    let quarantine_dir = base.join("quarantine");
+    fs::create_dir_all(&base).expect("create base");
+
+    let original = base.join("runtime.bin");
+    let original_bytes = b"runtime quarantine payload".to_vec();
+    fs::write(&original, &original_bytes).expect("write original");
+    std::fs::set_permissions(&original, std::fs::Permissions::from_mode(0o640))
+        .expect("chmod original");
+    let metadata = fs::metadata(&original).expect("stat original");
+
+    let protected = ProtectedList::default_linux();
+    assert!(
+        !protected.is_protected_path(&original),
+        "test source must be outside protected paths"
+    );
+
+    let hash = "sha256-runtime-test";
+    std::env::set_var("EGUARD_TEST_QUARANTINE_DIR", &quarantine_dir);
+    let _env_reset = EnvVarReset;
+    let report = quarantine_file(&original, hash, &protected).expect("quarantine file");
+
+    assert_eq!(report.original_path, original);
+    assert!(!report.sha256.is_empty());
+    assert_eq!(report.sha256, hash);
+    assert_eq!(report.file_size, original_bytes.len() as u64);
+    assert_eq!(report.original_mode, metadata.mode());
+    assert_eq!(report.owner_uid, metadata.uid());
+    assert_eq!(report.owner_gid, metadata.gid());
+    assert_eq!(report.quarantine_path, quarantine_dir.join(hash));
+    assert!(report.quarantine_path.exists());
+    assert_eq!(
+        fs::read(&report.quarantine_path).expect("read quarantined file"),
+        original_bytes
+    );
+    assert!(!original.exists());
+
+    let _ = fs::remove_dir_all(base);
 }
 
 #[test]

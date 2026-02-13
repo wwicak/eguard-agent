@@ -1,6 +1,11 @@
 use super::*;
+use hyper_util::rt::TokioIo;
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use tonic::{Request, Response, Status};
 
 #[test]
@@ -340,11 +345,59 @@ struct EnrollmentMockState {
     endpoint_agents: Vec<String>,
     last_enrollment_token: Option<String>,
     last_csr_len: Option<usize>,
+    heartbeats: Vec<pb::HeartbeatRequest>,
+    threat_intel_requests: Vec<pb::ThreatIntelRequest>,
+    threat_intel_response: Option<pb::ThreatIntelVersion>,
+}
+
+#[derive(Default)]
+struct ComplianceMockState {
+    reports: Vec<pb::ComplianceReport>,
+}
+
+#[derive(Default)]
+struct ResponseMockState {
+    reports: Vec<pb::ResponseReport>,
+}
+
+#[derive(Default)]
+struct TelemetryMockState {
+    batches: Vec<pb::TelemetryBatch>,
 }
 
 #[derive(Clone)]
 struct MockAgentControlService {
     state: Arc<Mutex<EnrollmentMockState>>,
+}
+
+#[derive(Clone)]
+struct MockResponseService {
+    state: Arc<Mutex<ResponseMockState>>,
+}
+
+#[derive(Clone)]
+struct MockComplianceService {
+    state: Arc<Mutex<ComplianceMockState>>,
+}
+
+#[derive(Clone)]
+struct MockCommandService {
+    state: Arc<Mutex<CommandMockState>>,
+}
+
+#[derive(Default)]
+struct CommandMockState {
+    command_channel_should_fail: bool,
+    channel_commands: Vec<pb::ServerCommand>,
+    poll_commands: Vec<pb::AgentCommand>,
+    channel_requests: Vec<pb::CommandPollRequest>,
+    poll_requests: Vec<pb::PollCommandsRequest>,
+    ack_requests: Vec<pb::AckCommandRequest>,
+}
+
+#[derive(Clone)]
+struct MockTelemetryService {
+    state: Arc<Mutex<TelemetryMockState>>,
 }
 
 #[tonic::async_trait]
@@ -402,8 +455,13 @@ impl pb::agent_control_service_server::AgentControlService for MockAgentControlS
 
     async fn heartbeat(
         &self,
-        _request: Request<pb::HeartbeatRequest>,
+        request: Request<pb::HeartbeatRequest>,
     ) -> Result<Response<pb::HeartbeatResponse>, Status> {
+        self.state
+            .lock()
+            .expect("state lock")
+            .heartbeats
+            .push(request.into_inner());
         Ok(Response::new(pb::HeartbeatResponse {
             heartbeat_interval_secs: 30,
             policy_update: None,
@@ -417,46 +475,386 @@ impl pb::agent_control_service_server::AgentControlService for MockAgentControlS
 
     async fn get_latest_threat_intel(
         &self,
-        _request: Request<pb::ThreatIntelRequest>,
+        request: Request<pb::ThreatIntelRequest>,
     ) -> Result<Response<pb::ThreatIntelVersion>, Status> {
-        Ok(Response::new(pb::ThreatIntelVersion {
-            version: String::new(),
-            bundle_path: String::new(),
-            sigma_count: 0,
-            yara_count: 0,
-            ioc_count: 0,
-            cve_count: 0,
-            published_at_unix: 0,
-            custom_rule_count: 0,
-            custom_rule_version_hash: String::new(),
+        let mut guard = self.state.lock().expect("state lock");
+        guard.threat_intel_requests.push(request.into_inner());
+        Ok(Response::new(
+            guard
+                .threat_intel_response
+                .clone()
+                .unwrap_or(pb::ThreatIntelVersion {
+                    version: String::new(),
+                    bundle_path: String::new(),
+                    sigma_count: 0,
+                    yara_count: 0,
+                    ioc_count: 0,
+                    cve_count: 0,
+                    published_at_unix: 0,
+                    custom_rule_count: 0,
+                    custom_rule_version_hash: String::new(),
+                }),
+        ))
+    }
+}
+
+#[tonic::async_trait]
+impl pb::response_service_server::ResponseService for MockResponseService {
+    async fn report_response(
+        &self,
+        request: Request<pb::ResponseReport>,
+    ) -> Result<Response<pb::ResponseAck>, Status> {
+        let mut guard = self.state.lock().expect("state lock");
+        guard.reports.push(request.into_inner());
+        Ok(Response::new(pb::ResponseAck {
+            accepted: true,
+            incident_id: "inc-1".to_string(),
+            status: "ok".to_string(),
         }))
     }
 }
 
-fn free_local_addr() -> std::net::SocketAddr {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
-    let addr = listener.local_addr().expect("local addr");
-    drop(listener);
-    addr
+#[tonic::async_trait]
+impl pb::compliance_service_server::ComplianceService for MockComplianceService {
+    async fn report_compliance(
+        &self,
+        request: Request<pb::ComplianceReport>,
+    ) -> Result<Response<pb::ComplianceAck>, Status> {
+        let mut guard = self.state.lock().expect("state lock");
+        guard.reports.push(request.into_inner());
+        Ok(Response::new(pb::ComplianceAck {
+            accepted: true,
+            next_check_override_secs: 0,
+            status: "ok".to_string(),
+        }))
+    }
 }
 
-async fn spawn_mock_agent_control(
-    state: Arc<Mutex<EnrollmentMockState>>,
-) -> (std::net::SocketAddr, tokio::sync::oneshot::Sender<()>) {
-    let addr = free_local_addr();
+#[tonic::async_trait]
+impl pb::command_service_server::CommandService for MockCommandService {
+    type CommandChannelStream = ReceiverStream<Result<pb::ServerCommand, Status>>;
+
+    async fn command_channel(
+        &self,
+        request: Request<pb::CommandPollRequest>,
+    ) -> Result<Response<Self::CommandChannelStream>, Status> {
+        let (commands, should_fail) = {
+            let mut guard = self.state.lock().expect("state lock");
+            guard.channel_requests.push(request.into_inner());
+            (
+                guard.channel_commands.clone(),
+                guard.command_channel_should_fail,
+            )
+        };
+
+        if should_fail {
+            return Err(Status::unavailable("command channel disabled for test"));
+        }
+
+        let (tx, rx) = tokio::sync::mpsc::channel(commands.len().max(1));
+        for command in commands {
+            tx.send(Ok(command))
+                .await
+                .map_err(|_| Status::internal("failed to send command stream item"))?;
+        }
+        drop(tx);
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+
+    async fn poll_commands(
+        &self,
+        request: Request<pb::PollCommandsRequest>,
+    ) -> Result<Response<pb::PollCommandsResponse>, Status> {
+        let mut guard = self.state.lock().expect("state lock");
+        guard.poll_requests.push(request.into_inner());
+        Ok(Response::new(pb::PollCommandsResponse {
+            commands: guard.poll_commands.clone(),
+        }))
+    }
+
+    async fn ack_command(
+        &self,
+        request: Request<pb::AckCommandRequest>,
+    ) -> Result<Response<pb::AckCommandResponse>, Status> {
+        let ack = request.into_inner();
+        let status = ack.status.clone();
+        self.state
+            .lock()
+            .expect("state lock")
+            .ack_requests
+            .push(ack);
+        Ok(Response::new(pb::AckCommandResponse { status }))
+    }
+
+    async fn enqueue_command(
+        &self,
+        _request: Request<pb::EnqueueCommandRequest>,
+    ) -> Result<Response<pb::EnqueueCommandResponse>, Status> {
+        Ok(Response::new(pb::EnqueueCommandResponse {
+            status: "ok".to_string(),
+        }))
+    }
+}
+
+#[tonic::async_trait]
+impl pb::telemetry_service_server::TelemetryService for MockTelemetryService {
+    async fn send_event(
+        &self,
+        request: Request<pb::TelemetryEvent>,
+    ) -> Result<Response<pb::TelemetryAck>, Status> {
+        let event = request.into_inner();
+        let mut guard = self.state.lock().expect("state lock");
+        guard.batches.push(pb::TelemetryBatch {
+            agent_id: event.agent_id.clone(),
+            events: vec![event],
+            compressed: false,
+            events_compressed: Vec::new(),
+        });
+        Ok(Response::new(pb::TelemetryAck {
+            status: "ok".to_string(),
+        }))
+    }
+
+    type StreamEventsStream = ReceiverStream<Result<pb::EventAck, Status>>;
+
+    async fn stream_events(
+        &self,
+        request: Request<tonic::Streaming<pb::TelemetryBatch>>,
+    ) -> Result<Response<Self::StreamEventsStream>, Status> {
+        let mut stream = request.into_inner();
+        let mut accepted = 0i64;
+        while let Some(batch) = stream.message().await? {
+            accepted += batch.events.len() as i64;
+            self.state.lock().expect("state lock").batches.push(batch);
+        }
+
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        tx.send(Ok(pb::EventAck {
+            last_event_offset: accepted,
+            events_accepted: accepted,
+        }))
+        .await
+        .map_err(|_| Status::internal("failed to send telemetry ack"))?;
+        drop(tx);
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+}
+
+struct MockServerHandle {
+    channel: tonic::transport::Channel,
+    shutdown_tx: tokio::sync::oneshot::Sender<()>,
+}
+
+impl MockServerHandle {
+    fn channel(&self) -> tonic::transport::Channel {
+        self.channel.clone()
+    }
+
+    async fn shutdown(self) {
+        let _ = self.shutdown_tx.send(());
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+#[derive(Clone)]
+struct InMemoryConnector {
+    incoming_tx: tokio::sync::mpsc::Sender<InMemoryIo>,
+}
+
+impl InMemoryConnector {
+    fn new(incoming_tx: tokio::sync::mpsc::Sender<InMemoryIo>) -> Self {
+        Self { incoming_tx }
+    }
+}
+
+impl tonic::codegen::Service<tonic::codegen::http::Uri> for InMemoryConnector {
+    type Response = TokioIo<tokio::io::DuplexStream>;
+    type Error = std::io::Error;
+    type Future =
+        Pin<Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, _req: tonic::codegen::http::Uri) -> Self::Future {
+        let incoming_tx = self.incoming_tx.clone();
+        Box::pin(async move {
+            let (client_side, server_side) = tokio::io::duplex(64 * 1024);
+            incoming_tx
+                .send(InMemoryIo::new(server_side))
+                .await
+                .map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::BrokenPipe,
+                        "in-memory server channel closed",
+                    )
+                })?;
+            Ok(TokioIo::new(client_side))
+        })
+    }
+}
+
+struct InMemoryIo {
+    inner: tokio::io::DuplexStream,
+}
+
+impl InMemoryIo {
+    fn new(inner: tokio::io::DuplexStream) -> Self {
+        Self { inner }
+    }
+}
+
+impl AsyncRead for InMemoryIo {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for InMemoryIo {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+impl tonic::transport::server::Connected for InMemoryIo {
+    type ConnectInfo = ();
+
+    fn connect_info(&self) -> Self::ConnectInfo {}
+}
+
+async fn connect_in_memory_channel(
+    incoming_tx: tokio::sync::mpsc::Sender<InMemoryIo>,
+) -> tonic::transport::Channel {
+    tonic::transport::Endpoint::from_static("http://[::]:50051")
+        .connect_with_connector(InMemoryConnector::new(incoming_tx))
+        .await
+        .expect("connect mock in-memory gRPC channel")
+}
+
+async fn spawn_mock_agent_control(state: Arc<Mutex<EnrollmentMockState>>) -> MockServerHandle {
+    let (incoming_tx, incoming_rx) = tokio::sync::mpsc::channel::<InMemoryIo>(8);
+    let incoming = ReceiverStream::new(incoming_rx).map(Ok::<InMemoryIo, std::io::Error>);
     let svc = MockAgentControlService { state };
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     tokio::spawn(async move {
         tonic::transport::Server::builder()
             .add_service(pb::agent_control_service_server::AgentControlServiceServer::new(svc))
-            .serve_with_shutdown(addr, async move {
+            .serve_with_incoming_shutdown(incoming, async move {
                 let _ = shutdown_rx.await;
             })
             .await
             .expect("serve mock agent-control");
     });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    (addr, shutdown_tx)
+    let channel = connect_in_memory_channel(incoming_tx).await;
+    MockServerHandle {
+        channel,
+        shutdown_tx,
+    }
+}
+
+async fn spawn_mock_response_service(state: Arc<Mutex<ResponseMockState>>) -> MockServerHandle {
+    let (incoming_tx, incoming_rx) = tokio::sync::mpsc::channel::<InMemoryIo>(8);
+    let incoming = ReceiverStream::new(incoming_rx).map(Ok::<InMemoryIo, std::io::Error>);
+    let svc = MockResponseService { state };
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    tokio::spawn(async move {
+        tonic::transport::Server::builder()
+            .add_service(pb::response_service_server::ResponseServiceServer::new(svc))
+            .serve_with_incoming_shutdown(incoming, async move {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .expect("serve mock response");
+    });
+    let channel = connect_in_memory_channel(incoming_tx).await;
+    MockServerHandle {
+        channel,
+        shutdown_tx,
+    }
+}
+
+async fn spawn_mock_compliance_service(state: Arc<Mutex<ComplianceMockState>>) -> MockServerHandle {
+    let (incoming_tx, incoming_rx) = tokio::sync::mpsc::channel::<InMemoryIo>(8);
+    let incoming = ReceiverStream::new(incoming_rx).map(Ok::<InMemoryIo, std::io::Error>);
+    let svc = MockComplianceService { state };
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    tokio::spawn(async move {
+        tonic::transport::Server::builder()
+            .add_service(pb::compliance_service_server::ComplianceServiceServer::new(
+                svc,
+            ))
+            .serve_with_incoming_shutdown(incoming, async move {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .expect("serve mock compliance");
+    });
+    let channel = connect_in_memory_channel(incoming_tx).await;
+    MockServerHandle {
+        channel,
+        shutdown_tx,
+    }
+}
+
+async fn spawn_mock_command_service(state: Arc<Mutex<CommandMockState>>) -> MockServerHandle {
+    let (incoming_tx, incoming_rx) = tokio::sync::mpsc::channel::<InMemoryIo>(8);
+    let incoming = ReceiverStream::new(incoming_rx).map(Ok::<InMemoryIo, std::io::Error>);
+    let svc = MockCommandService { state };
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    tokio::spawn(async move {
+        tonic::transport::Server::builder()
+            .add_service(pb::command_service_server::CommandServiceServer::new(svc))
+            .serve_with_incoming_shutdown(incoming, async move {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .expect("serve mock command");
+    });
+    let channel = connect_in_memory_channel(incoming_tx).await;
+    MockServerHandle {
+        channel,
+        shutdown_tx,
+    }
+}
+
+async fn spawn_mock_telemetry_service(state: Arc<Mutex<TelemetryMockState>>) -> MockServerHandle {
+    let (incoming_tx, incoming_rx) = tokio::sync::mpsc::channel::<InMemoryIo>(8);
+    let incoming = ReceiverStream::new(incoming_rx).map(Ok::<InMemoryIo, std::io::Error>);
+    let svc = MockTelemetryService { state };
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    tokio::spawn(async move {
+        tonic::transport::Server::builder()
+            .add_service(pb::telemetry_service_server::TelemetryServiceServer::new(
+                svc,
+            ))
+            .serve_with_incoming_shutdown(incoming, async move {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .expect("serve mock telemetry");
+    });
+    let channel = connect_in_memory_channel(incoming_tx).await;
+    MockServerHandle {
+        channel,
+        shutdown_tx,
+    }
 }
 
 #[tokio::test]
@@ -472,9 +870,9 @@ async fn enroll_grpc_validates_token_issues_cert_and_tracks_endpoint_agent_recor
         },
     );
 
-    let (addr, shutdown_tx) = spawn_mock_agent_control(state.clone()).await;
-
-    let client = Client::with_mode(addr.to_string(), TransportMode::Grpc);
+    let server = spawn_mock_agent_control(state.clone()).await;
+    let mut client = Client::with_mode("inproc-agent-control".to_string(), TransportMode::Grpc);
+    client.set_test_channel_override(server.channel());
     client
         .enroll(&EnrollmentEnvelope {
             agent_id: "agent-1".to_string(),
@@ -498,7 +896,7 @@ async fn enroll_grpc_validates_token_issues_cert_and_tracks_endpoint_agent_recor
     assert!(guard.last_csr_len.unwrap_or_default() > 0);
     drop(guard);
 
-    let _ = shutdown_tx.send(());
+    server.shutdown().await;
 }
 
 #[tokio::test]
@@ -525,8 +923,9 @@ async fn enroll_grpc_rejects_expired_or_exhausted_tokens() {
         );
     }
 
-    let (addr, shutdown_tx) = spawn_mock_agent_control(state.clone()).await;
-    let client = Client::with_mode(addr.to_string(), TransportMode::Grpc);
+    let server = spawn_mock_agent_control(state.clone()).await;
+    let mut client = Client::with_mode("inproc-agent-control".to_string(), TransportMode::Grpc);
+    client.set_test_channel_override(server.channel());
 
     let expired_err = client
         .enroll(&EnrollmentEnvelope {
@@ -576,7 +975,7 @@ async fn enroll_grpc_rejects_expired_or_exhausted_tokens() {
     );
     drop(guard);
 
-    let _ = shutdown_tx.send(());
+    server.shutdown().await;
 }
 
 #[tokio::test]
@@ -592,8 +991,9 @@ async fn enroll_grpc_allows_unlimited_token_when_max_uses_zero() {
         },
     );
 
-    let (addr, shutdown_tx) = spawn_mock_agent_control(state.clone()).await;
-    let client = Client::with_mode(addr.to_string(), TransportMode::Grpc);
+    let server = spawn_mock_agent_control(state.clone()).await;
+    let mut client = Client::with_mode("inproc-agent-control".to_string(), TransportMode::Grpc);
+    client.set_test_channel_override(server.channel());
     for i in 0..3 {
         client
             .enroll(&EnrollmentEnvelope {
@@ -615,5 +1015,326 @@ async fn enroll_grpc_allows_unlimited_token_when_max_uses_zero() {
     assert_eq!(token.used, 3);
     drop(guard);
 
-    let _ = shutdown_tx.send(());
+    server.shutdown().await;
+}
+
+#[tokio::test]
+// AC-GRP-050
+async fn send_response_grpc_reports_payload_to_server() {
+    let state = Arc::new(Mutex::new(ResponseMockState::default()));
+    let server = spawn_mock_response_service(state.clone()).await;
+    let mut client = Client::with_mode("inproc-response".to_string(), TransportMode::Grpc);
+    client.set_test_channel_override(server.channel());
+
+    client
+        .send_response(&ResponseEnvelope {
+            agent_id: "agent-1".to_string(),
+            action_type: "kill_tree".to_string(),
+            confidence: "very_high".to_string(),
+            success: false,
+            error_message: "access denied".to_string(),
+        })
+        .await
+        .expect("send_response should succeed");
+
+    let guard = state.lock().expect("state lock");
+    assert_eq!(guard.reports.len(), 1);
+    let report = &guard.reports[0];
+    assert_eq!(report.agent_id, "agent-1");
+    assert_eq!(report.action, pb::ResponseAction::KillTree as i32);
+    assert_eq!(report.confidence, pb::ResponseConfidence::VeryHigh as i32);
+    assert!(!report.success);
+    assert_eq!(report.error_message, "access denied");
+    assert!(report.created_at_unix > 0);
+    drop(guard);
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
+// AC-GRP-028
+async fn send_events_grpc_streams_batch_to_server_with_expected_fields() {
+    let state = Arc::new(Mutex::new(TelemetryMockState::default()));
+    let server = spawn_mock_telemetry_service(state.clone()).await;
+    let mut client = Client::with_mode("inproc-telemetry".to_string(), TransportMode::Grpc);
+    client.set_test_channel_override(server.channel());
+
+    client
+        .send_events(&[EventEnvelope {
+            agent_id: "agent-telemetry".to_string(),
+            event_type: "alert".to_string(),
+            payload_json: "{\"reason\":\"unit-test\"}".to_string(),
+            created_at_unix: 4242,
+        }])
+        .await
+        .expect("send_events should succeed");
+
+    let guard = state.lock().expect("state lock");
+    assert_eq!(guard.batches.len(), 1);
+    let batch = &guard.batches[0];
+    assert_eq!(batch.agent_id, "agent-telemetry");
+    assert_eq!(batch.events.len(), 1);
+    assert!(!batch.compressed);
+    assert!(batch.events_compressed.is_empty());
+    let event = &batch.events[0];
+    assert_eq!(event.agent_id, "agent-telemetry");
+    assert_eq!(event.event_type, pb::EventType::Alert as i32);
+    assert_eq!(event.payload_json, "{\"reason\":\"unit-test\"}");
+    assert_eq!(event.created_at_unix, 4242);
+    drop(guard);
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
+// AC-GRP-010
+async fn send_heartbeat_grpc_captures_agent_and_compliance_and_config_version() {
+    let state = Arc::new(Mutex::new(EnrollmentMockState::default()));
+    let server = spawn_mock_agent_control(state.clone()).await;
+    let mut client = Client::with_mode("inproc-agent-control".to_string(), TransportMode::Grpc);
+    client.set_test_channel_override(server.channel());
+
+    client
+        .send_heartbeat_with_config("agent-heartbeat-1", "compliant", "cfg-v7")
+        .await
+        .expect("send_heartbeat should succeed");
+
+    let guard = state.lock().expect("state lock");
+    assert_eq!(guard.heartbeats.len(), 1);
+    let heartbeat = &guard.heartbeats[0];
+    assert_eq!(heartbeat.agent_id, "agent-heartbeat-1");
+    assert_eq!(heartbeat.compliance_status, "compliant");
+    assert_eq!(heartbeat.config_version, "cfg-v7");
+    drop(guard);
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
+// AC-GRP-030 AC-CMP-032
+async fn send_compliance_grpc_captures_report_fields() {
+    let state = Arc::new(Mutex::new(ComplianceMockState::default()));
+    let server = spawn_mock_compliance_service(state.clone()).await;
+    let mut client = Client::with_mode("inproc-compliance".to_string(), TransportMode::Grpc);
+    client.set_test_channel_override(server.channel());
+
+    client
+        .send_compliance(&ComplianceEnvelope {
+            agent_id: "agent-comp-1".to_string(),
+            policy_id: "policy-xyz".to_string(),
+            check_type: "firewall_enabled".to_string(),
+            status: "fail".to_string(),
+            detail: "firewall disabled".to_string(),
+            expected_value: "true".to_string(),
+            actual_value: "false".to_string(),
+        })
+        .await
+        .expect("send_compliance should succeed");
+
+    let guard = state.lock().expect("state lock");
+    assert_eq!(guard.reports.len(), 1);
+    let report = &guard.reports[0];
+    assert_eq!(report.agent_id, "agent-comp-1");
+    assert_eq!(report.policy_id, "policy-xyz");
+    assert_eq!(report.check_type, "firewall_enabled");
+    assert_eq!(report.status, "fail");
+    assert_eq!(report.detail, "firewall disabled");
+    assert_eq!(report.expected_value, "true");
+    assert_eq!(report.actual_value, "false");
+    drop(guard);
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
+// AC-GRP-040
+async fn fetch_commands_grpc_uses_poll_commands_fallback_path() {
+    let state = Arc::new(Mutex::new(CommandMockState {
+        command_channel_should_fail: true,
+        channel_commands: Vec::new(),
+        poll_commands: vec![
+            pb::AgentCommand {
+                command_id: "cmd-poll-1".to_string(),
+                command_type: "run_scan".to_string(),
+                payload_json: "{\"scope\":\"quick\"}".to_string(),
+                status: "pending".to_string(),
+                issued_by: "control".to_string(),
+            },
+            pb::AgentCommand {
+                command_id: "cmd-poll-2".to_string(),
+                command_type: "update_rules".to_string(),
+                payload_json: "{\"target\":\"v2\"}".to_string(),
+                status: "pending".to_string(),
+                issued_by: "control".to_string(),
+            },
+        ],
+        channel_requests: Vec::new(),
+        poll_requests: Vec::new(),
+        ack_requests: Vec::new(),
+    }));
+    let server = spawn_mock_command_service(state.clone()).await;
+    let mut client = Client::with_mode("inproc-command".to_string(), TransportMode::Grpc);
+    client.set_test_channel_override(server.channel());
+
+    let commands = client
+        .fetch_commands("agent-cmd-1", &["cmd-done-1".to_string()], 2)
+        .await
+        .expect("fetch_commands should succeed");
+
+    assert_eq!(commands.len(), 2);
+    assert_eq!(commands[0].command_id, "cmd-poll-1");
+    assert_eq!(commands[0].command_type, "run_scan");
+    assert_eq!(commands[0].payload_json, "{\"scope\":\"quick\"}");
+    assert_eq!(commands[1].command_id, "cmd-poll-2");
+    assert_eq!(commands[1].command_type, "update_rules");
+    assert_eq!(commands[1].payload_json, "{\"target\":\"v2\"}");
+
+    let guard = state.lock().expect("state lock");
+    assert_eq!(
+        guard.channel_requests.len(),
+        client.retry_policy().max_attempts as usize
+    );
+    for channel_req in &guard.channel_requests {
+        assert_eq!(channel_req.agent_id, "agent-cmd-1");
+        assert_eq!(channel_req.completed_command_ids, vec!["cmd-done-1"]);
+    }
+    assert_eq!(guard.poll_requests.len(), 1);
+    let poll_req = &guard.poll_requests[0];
+    assert_eq!(poll_req.agent_id, "agent-cmd-1");
+    assert_eq!(poll_req.limit, 2);
+    drop(guard);
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
+// AC-GRP-041
+async fn stream_command_channel_grpc_streams_commands_from_command_channel() {
+    let state = Arc::new(Mutex::new(CommandMockState {
+        command_channel_should_fail: false,
+        channel_commands: vec![
+            pb::ServerCommand {
+                command_id: "cmd-stream-1".to_string(),
+                command_type: pb::CommandType::UpdateRules as i32,
+                issued_at: 1_700_000_001,
+                issued_by: "control".to_string(),
+                params: None,
+            },
+            pb::ServerCommand {
+                command_id: "cmd-stream-2".to_string(),
+                command_type: pb::CommandType::Uninstall as i32,
+                issued_at: 1_700_000_002,
+                issued_by: "control".to_string(),
+                params: None,
+            },
+        ],
+        poll_commands: Vec::new(),
+        channel_requests: Vec::new(),
+        poll_requests: Vec::new(),
+        ack_requests: Vec::new(),
+    }));
+    let server = spawn_mock_command_service(state.clone()).await;
+    let mut client = Client::with_mode("inproc-command".to_string(), TransportMode::Grpc);
+    client.set_test_channel_override(server.channel());
+
+    let commands = client
+        .stream_command_channel(
+            "agent-stream-1",
+            &["cmd-completed-1".to_string(), "cmd-completed-2".to_string()],
+            2,
+        )
+        .await
+        .expect("stream_command_channel should succeed");
+
+    assert_eq!(commands.len(), 2);
+    assert_eq!(commands[0].command_id, "cmd-stream-1");
+    assert_eq!(commands[0].command_type, "update_rules");
+    assert_eq!(commands[0].payload_json, "");
+    assert_eq!(commands[1].command_id, "cmd-stream-2");
+    assert_eq!(commands[1].command_type, "uninstall");
+    assert_eq!(commands[1].payload_json, "");
+
+    let guard = state.lock().expect("state lock");
+    assert_eq!(guard.channel_requests.len(), 1);
+    let req = &guard.channel_requests[0];
+    assert_eq!(req.agent_id, "agent-stream-1");
+    assert_eq!(
+        req.completed_command_ids,
+        vec!["cmd-completed-1", "cmd-completed-2"]
+    );
+    assert!(guard.poll_requests.is_empty());
+    drop(guard);
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
+// AC-GRP-042
+async fn ack_command_grpc_captures_command_id_and_status() {
+    let state = Arc::new(Mutex::new(CommandMockState::default()));
+    let server = spawn_mock_command_service(state.clone()).await;
+    let mut client = Client::with_mode("inproc-command".to_string(), TransportMode::Grpc);
+    client.set_test_channel_override(server.channel());
+
+    client
+        .ack_command("cmd-ack-77", "completed")
+        .await
+        .expect("ack_command should succeed");
+
+    let guard = state.lock().expect("state lock");
+    assert_eq!(guard.ack_requests.len(), 1);
+    let ack = &guard.ack_requests[0];
+    assert_eq!(ack.command_id, "cmd-ack-77");
+    assert_eq!(ack.status, "completed");
+    drop(guard);
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
+// AC-GRP-060
+async fn fetch_latest_threat_intel_grpc_returns_some_with_expected_fields() {
+    let state = Arc::new(Mutex::new(EnrollmentMockState {
+        threat_intel_response: Some(pb::ThreatIntelVersion {
+            version: "2026.02.13".to_string(),
+            bundle_path: "/api/v1/endpoint/threat-intel/bundle/rules-2026.02.13.tar.zst"
+                .to_string(),
+            sigma_count: 11,
+            yara_count: 7,
+            ioc_count: 3,
+            cve_count: 5,
+            published_at_unix: 1_700_000_999,
+            custom_rule_count: 2,
+            custom_rule_version_hash: "hash-rules-v2026-02-13".to_string(),
+        }),
+        ..EnrollmentMockState::default()
+    }));
+    let server = spawn_mock_agent_control(state.clone()).await;
+    let mut client = Client::with_mode("inproc-agent-control".to_string(), TransportMode::Grpc);
+    client.set_test_channel_override(server.channel());
+
+    let intel = client
+        .fetch_latest_threat_intel()
+        .await
+        .expect("fetch_latest_threat_intel should succeed")
+        .expect("threat intel response should be Some");
+
+    assert_eq!(intel.version, "2026.02.13");
+    assert_eq!(
+        intel.bundle_path,
+        "/api/v1/endpoint/threat-intel/bundle/rules-2026.02.13.tar.zst"
+    );
+    assert_eq!(intel.sigma_count, 11);
+    assert_eq!(intel.yara_count, 7);
+    assert_eq!(intel.ioc_count, 3);
+    assert_eq!(intel.cve_count, 5);
+    assert_eq!(intel.custom_rule_count, 2);
+    assert_eq!(intel.custom_rule_version_hash, "hash-rules-v2026-02-13");
+
+    let guard = state.lock().expect("state lock");
+    assert_eq!(guard.threat_intel_requests.len(), 1);
+    assert_eq!(guard.threat_intel_requests[0].agent_id, "");
+    drop(guard);
+
+    server.shutdown().await;
 }

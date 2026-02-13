@@ -36,6 +36,18 @@ pub struct EbpfStats {
     pub events_received: u64,
     pub events_dropped: u64,
     pub parse_errors: u64,
+    /// Per-probe event counters (event_type → count).
+    pub per_probe_events: std::collections::HashMap<String, u64>,
+    /// Per-probe error counters (event_type → error_count).
+    pub per_probe_errors: std::collections::HashMap<String, u64>,
+    /// List of probes that failed to attach (graceful degradation).
+    pub failed_probes: Vec<String>,
+    /// Kernel version string (for capability reporting).
+    pub kernel_version: String,
+    /// Whether BTF (BPF Type Format) is available.
+    pub btf_available: bool,
+    /// Whether LSM BPF is available.
+    pub lsm_available: bool,
 }
 
 #[derive(Debug)]
@@ -78,9 +90,11 @@ pub struct EbpfEngine {
 
 impl EbpfEngine {
     pub fn disabled() -> Self {
+        let mut stats = EbpfStats::default();
+        detect_kernel_capabilities(&mut stats);
         Self {
             backend: Box::<NoopRingBufferBackend>::default(),
-            stats: EbpfStats::default(),
+            stats,
         }
     }
 
@@ -120,9 +134,45 @@ impl EbpfEngine {
         for record in batch.records {
             self.stats.events_received = self.stats.events_received.saturating_add(1);
             match parse_raw_event(&record) {
-                Ok(event) => events.push(event),
-                Err(_) => {
+                Ok(event) => {
+                    // Track per-probe event counts
+                    let probe_name = match event.event_type {
+                        EventType::ProcessExec => "process_exec",
+                        EventType::ProcessExit => "process_exit",
+                        EventType::FileOpen => "file_open",
+                        EventType::TcpConnect => "tcp_connect",
+                        EventType::DnsQuery => "dns_query",
+                        EventType::ModuleLoad => "module_load",
+                        EventType::LsmBlock => "lsm_block",
+                    };
+                    *self
+                        .stats
+                        .per_probe_events
+                        .entry(probe_name.to_string())
+                        .or_insert(0) += 1;
+                    events.push(event);
+                }
+                Err(e) => {
                     self.stats.parse_errors = self.stats.parse_errors.saturating_add(1);
+                    // Track which probe type failed if we can determine it
+                    if record.len() >= EVENT_HEADER_SIZE {
+                        let probe_name = match record[0] {
+                            1 => "process_exec",
+                            2 => "file_open",
+                            3 => "tcp_connect",
+                            4 => "dns_query",
+                            5 => "module_load",
+                            6 => "lsm_block",
+                            7 => "process_exit",
+                            _ => "unknown",
+                        };
+                        *self
+                            .stats
+                            .per_probe_errors
+                            .entry(probe_name.to_string())
+                            .or_insert(0) += 1;
+                    }
+                    let _ = e; // suppress unused warning
                 }
             }
         }
@@ -217,6 +267,21 @@ impl LibbpfRingBufferBackend {
 
 #[cfg(feature = "ebpf-libbpf")]
 fn load_object(path: &Path, ring_buffer_map: &str) -> Result<LoadedObject> {
+    load_object_with_degradation(path, ring_buffer_map, &mut Vec::new())
+}
+
+/// Load eBPF object with graceful degradation.
+///
+/// Attempts to attach each program individually. Programs that fail to attach
+/// (e.g., LSM hooks on kernels without BPF LSM enabled) are recorded in
+/// `failed_probes` but don't prevent the engine from working with the
+/// remaining probes.
+#[cfg(feature = "ebpf-libbpf")]
+fn load_object_with_degradation(
+    path: &Path,
+    ring_buffer_map: &str,
+    failed_probes: &mut Vec<String>,
+) -> Result<LoadedObject> {
     let object = libbpf_rs::ObjectBuilder::default()
         .open_file(path)
         .map_err(|err| EbpfError::Backend(format!("open ELF '{}': {}", path.display(), err)))?
@@ -234,24 +299,50 @@ fn load_object(path: &Path, ring_buffer_map: &str) -> Result<LoadedObject> {
 
     let mut links = Vec::new();
     let mut attached_programs = Vec::new();
+    let mut total_programs = 0usize;
+
     for program in object.progs_mut() {
         let name = program.name().to_string_lossy().into_owned();
-        let link = program.attach().map_err(|err| {
-            EbpfError::Backend(format!(
-                "attach program '{}' from '{}': {}",
-                name,
-                path.display(),
-                err
-            ))
-        })?;
-        links.push(link);
-        attached_programs.push(name);
+        total_programs += 1;
+
+        match program.attach() {
+            Ok(link) => {
+                links.push(link);
+                attached_programs.push(name);
+            }
+            Err(err) => {
+                // LSM and some tracepoint hooks may fail on older kernels
+                // or kernels without specific features enabled — record
+                // the failure but continue with remaining probes.
+                let is_optional = name.contains("lsm")
+                    || name.contains("block")
+                    || name.contains("module_load");
+
+                if is_optional {
+                    failed_probes.push(format!("{}:{}", name, err));
+                    eprintln!(
+                        "eg-agent: optional eBPF probe '{}' from '{}' failed to attach (non-fatal): {}",
+                        name,
+                        path.display(),
+                        err
+                    );
+                } else {
+                    return Err(EbpfError::Backend(format!(
+                        "attach program '{}' from '{}': {}",
+                        name,
+                        path.display(),
+                        err
+                    )));
+                }
+            }
+        }
     }
 
-    if attached_programs.is_empty() {
+    if attached_programs.is_empty() && total_programs > 0 {
         return Err(EbpfError::Backend(format!(
-            "no programs found in '{}'",
-            path.display()
+            "no programs attached from '{}' ({} total, all failed)",
+            path.display(),
+            total_programs
         )));
     }
 
@@ -648,8 +739,80 @@ fn slice_window(raw: &[u8], offset: usize, max_len: usize) -> &[u8] {
     &raw[offset..end]
 }
 
+/// Detect kernel capabilities for eBPF features.
+fn detect_kernel_capabilities(stats: &mut EbpfStats) {
+    // Read kernel version
+    if let Ok(version) = std::fs::read_to_string("/proc/version") {
+        let first_line = version.lines().next().unwrap_or("");
+        // Extract "X.Y.Z" from "Linux version X.Y.Z ..."
+        let parts: Vec<&str> = first_line.split_whitespace().collect();
+        if parts.len() >= 3 {
+            stats.kernel_version = parts[2].to_string();
+        }
+    }
+
+    // Check BTF availability (needed for CO-RE eBPF programs)
+    stats.btf_available = std::path::Path::new("/sys/kernel/btf/vmlinux").exists();
+
+    // Check LSM BPF availability
+    if let Ok(lsm) = std::fs::read_to_string("/sys/kernel/security/lsm") {
+        stats.lsm_available = lsm.contains("bpf");
+    }
+}
+
+/// Parse kernel version string into (major, minor, patch).
+pub fn parse_kernel_version(version: &str) -> Option<(u32, u32, u32)> {
+    let stripped = version.split(['-', ' ']).next()?;
+    let parts: Vec<&str> = stripped.split('.').collect();
+    if parts.len() < 2 {
+        return None;
+    }
+
+    let major = parts[0].parse::<u32>().ok()?;
+    let minor = parts[1].parse::<u32>().ok()?;
+    let patch = parts.get(2).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+    Some((major, minor, patch))
+}
+
+/// Check if kernel meets minimum version requirement for a feature.
+pub fn kernel_supports(version_str: &str, min_major: u32, min_minor: u32) -> bool {
+    match parse_kernel_version(version_str) {
+        Some((major, minor, _)) => (major, minor) >= (min_major, min_minor),
+        None => false,
+    }
+}
+
+/// Build a capability report suitable for telemetry.
+pub fn capability_report(stats: &EbpfStats) -> std::collections::HashMap<String, String> {
+    let mut report = std::collections::HashMap::new();
+    report.insert("kernel_version".to_string(), stats.kernel_version.clone());
+    report.insert("btf_available".to_string(), stats.btf_available.to_string());
+    report.insert("lsm_available".to_string(), stats.lsm_available.to_string());
+    report.insert(
+        "ebpf_ring_buffer".to_string(),
+        kernel_supports(&stats.kernel_version, 5, 8).to_string(),
+    );
+    report.insert(
+        "ebpf_lsm_hooks".to_string(),
+        (stats.lsm_available && kernel_supports(&stats.kernel_version, 5, 7)).to_string(),
+    );
+    report.insert(
+        "failed_probes".to_string(),
+        stats.failed_probes.join(","),
+    );
+
+    for (probe, count) in &stats.per_probe_events {
+        report.insert(format!("probe_{}_events", probe), count.to_string());
+    }
+
+    report
+}
+
 #[cfg(test)]
 mod tests;
 
 #[cfg(test)]
 mod tests_ring_contract;
+
+#[cfg(test)]
+mod tests_kernel_caps;

@@ -30,7 +30,19 @@ pub fn quarantine_file(
     sha256: &str,
     protected: &ProtectedList,
 ) -> ResponseResult<QuarantineReport> {
-    quarantine_file_with_dir(path, sha256, protected, Path::new(DEFAULT_QUARANTINE_DIR))
+    let quarantine_dir = resolve_default_quarantine_dir();
+    quarantine_file_with_dir(path, sha256, protected, &quarantine_dir)
+}
+
+fn resolve_default_quarantine_dir() -> PathBuf {
+    #[cfg(test)]
+    if let Some(dir) = std::env::var_os("EGUARD_TEST_QUARANTINE_DIR") {
+        if !dir.is_empty() {
+            return PathBuf::from(dir);
+        }
+    }
+
+    PathBuf::from(DEFAULT_QUARANTINE_DIR)
 }
 
 pub fn quarantine_file_with_dir(

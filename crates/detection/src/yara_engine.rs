@@ -35,13 +35,13 @@ impl std::error::Error for YaraError {}
 
 pub type Result<T> = std::result::Result<T, YaraError>;
 
-trait YaraBackend {
+trait YaraBackend: Send {
     fn load_rules_str(&mut self, source: &str) -> Result<usize>;
     fn scan_bytes(&self, source: &str, bytes: &[u8]) -> Vec<YaraHit>;
 }
 
 pub struct YaraEngine {
-    backend: Box<dyn YaraBackend>,
+    backend: Box<dyn YaraBackend + Send>,
     max_scan_bytes: usize,
 }
 
@@ -88,6 +88,14 @@ impl YaraEngine {
         Ok(loaded)
     }
 
+    /// Scan raw bytes with all loaded YARA rules.
+    ///
+    /// `source` is an identifier for the data source (e.g., file path,
+    /// "mem:PID:0xADDR" for memory regions).
+    pub fn scan_bytes(&self, source: &str, bytes: &[u8]) -> Vec<YaraHit> {
+        dedup_hits(self.backend.scan_bytes(source, bytes))
+    }
+
     pub fn scan_event(&self, event: &TelemetryEvent) -> Vec<YaraHit> {
         let mut hits = Vec::new();
 
@@ -111,7 +119,7 @@ impl Default for YaraEngine {
     }
 }
 
-fn default_backend() -> Box<dyn YaraBackend> {
+fn default_backend() -> Box<dyn YaraBackend + Send> {
     #[cfg(feature = "yara-rust")]
     {
         if let Ok(backend) = YaraRustBackend::new() {

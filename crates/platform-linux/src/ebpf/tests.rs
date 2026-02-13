@@ -290,7 +290,13 @@ fn disabled_engine_poll_returns_no_events() {
         .poll_once(Duration::from_millis(1))
         .expect("poll disabled backend");
     assert!(events.is_empty());
-    assert_eq!(engine.stats(), EbpfStats::default());
+    let stats = engine.stats();
+    assert_eq!(stats.events_received, 0);
+    assert_eq!(stats.events_dropped, 0);
+    assert_eq!(stats.parse_errors, 0);
+    assert!(stats.per_probe_events.is_empty());
+    assert!(stats.per_probe_errors.is_empty());
+    assert!(stats.failed_probes.is_empty());
 }
 
 #[test]

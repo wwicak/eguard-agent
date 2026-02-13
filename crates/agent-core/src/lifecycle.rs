@@ -102,7 +102,14 @@ pub struct AgentRuntime {
 
 impl AgentRuntime {
     pub fn new(config: AgentConfig) -> Result<Self> {
-        let detection_state = SharedDetectionState::new(build_detection_engine(), None);
+        let detection_shards = resolve_detection_shard_count();
+        let detection_state = SharedDetectionState::new_with_shards(
+            build_detection_engine(),
+            None,
+            detection_shards,
+            build_detection_engine,
+        );
+        info!(detection_shards, "initialized detection shard pool");
         let baseline_store = load_baseline_store()?;
         seed_anomaly_baselines(&detection_state, &baseline_store)?;
         let compliance_policy = load_compliance_policy();
@@ -370,6 +377,7 @@ impl AgentRuntime {
                     Ok(_) => {
                         self.runtime_mode = self.config.mode.clone();
                         self.consecutive_send_failures = 0;
+                        self.last_recovery_probe_unix = None;
                         info!(mode = ?self.runtime_mode, "server reachable again, leaving degraded mode");
                     }
                     Err(err) => {
@@ -856,8 +864,22 @@ impl AgentRuntime {
         let mut next_engine = build_detection_engine();
         let (sigma_loaded, yara_loaded) = load_bundle_rules(&mut next_engine, bundle_path);
         let ioc_entries = next_engine.layer1.ioc_entry_count();
-        self.detection_state
-            .swap_engine(version.to_string(), next_engine)?;
+        let shard_count = self.detection_state.shard_count();
+        if shard_count <= 1 {
+            self.detection_state
+                .swap_engine(version.to_string(), next_engine)?;
+        } else {
+            let bundle_path = bundle_path.to_string();
+            self.detection_state.swap_engine_with_builder(
+                version.to_string(),
+                next_engine,
+                move || {
+                    let mut shard_engine = build_detection_engine();
+                    let _ = load_bundle_rules(&mut shard_engine, &bundle_path);
+                    shard_engine
+                },
+            )?;
+        }
         let report = ReloadReport {
             old_version,
             new_version: version.to_string(),
@@ -1010,10 +1032,27 @@ fn compute_sampling_stride(pending: usize, recent_ebpf_drops: u64) -> usize {
     }
 }
 
+fn resolve_detection_shard_count() -> usize {
+    const MAX_DETECTION_SHARDS: usize = 16;
+    if let Ok(raw) = std::env::var("EGUARD_DETECTION_SHARDS") {
+        match raw.trim().parse::<usize>() {
+            Ok(value) if value > 0 => return value.min(MAX_DETECTION_SHARDS),
+            _ => warn!(
+                value = %raw,
+                "invalid EGUARD_DETECTION_SHARDS value; falling back to CPU-based default"
+            ),
+        }
+    }
+
+    std::thread::available_parallelism()
+        .map(|n| n.get().clamp(1, MAX_DETECTION_SHARDS))
+        .unwrap_or(1)
+}
+
 fn interval_due(last_run_unix: Option<i64>, now_unix: i64, interval_secs: i64) -> bool {
     match last_run_unix {
         None => true,
-        Some(last) => now_unix.saturating_sub(last) >= interval_secs,
+        Some(last) => now_unix < last || now_unix.saturating_sub(last) >= interval_secs,
     }
 }
 

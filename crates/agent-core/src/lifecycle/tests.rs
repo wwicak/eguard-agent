@@ -101,8 +101,35 @@ fn interval_due_runs_immediately_then_waits_for_threshold() {
 
 #[test]
 fn interval_due_tolerates_non_monotonic_wall_clock() {
-    assert!(!interval_due(Some(1_000), 900, 30));
+    assert!(interval_due(Some(1_000), 900, 30));
     assert!(interval_due(Some(1_000), 1_030, 30));
+}
+
+#[test]
+fn interval_due_uses_runtime_interval_constants() {
+    assert!(!interval_due(Some(1_000), 1_029, HEARTBEAT_INTERVAL_SECS));
+    assert!(interval_due(Some(1_000), 1_030, HEARTBEAT_INTERVAL_SECS));
+
+    assert!(!interval_due(Some(2_000), 2_059, COMPLIANCE_INTERVAL_SECS));
+    assert!(interval_due(Some(2_000), 2_060, COMPLIANCE_INTERVAL_SECS));
+
+    assert!(!interval_due(
+        Some(3_000),
+        3_149,
+        THREAT_INTEL_INTERVAL_SECS
+    ));
+    assert!(interval_due(Some(3_000), 3_150, THREAT_INTEL_INTERVAL_SECS));
+
+    assert!(!interval_due(
+        Some(4_000),
+        4_299,
+        BASELINE_SAVE_INTERVAL_SECS
+    ));
+    assert!(interval_due(
+        Some(4_000),
+        4_300,
+        BASELINE_SAVE_INTERVAL_SECS
+    ));
 }
 
 #[test]
@@ -161,6 +188,130 @@ rule bundle_marker {
     let (sigma, yara) = load_bundle_rules(&mut engine, base.to_string_lossy().as_ref());
     assert!(sigma <= 1);
     assert_eq!(yara, 1);
+
+    let _ = std::fs::remove_file(sigma_dir.join("rule.yml"));
+    let _ = std::fs::remove_file(yara_dir.join("rule.yar"));
+    let _ = std::fs::remove_dir_all(base);
+}
+
+#[test]
+// AC-DET-143 AC-DET-170
+fn reload_detection_state_from_bundle_swaps_runtime_engine_and_emits_bundle_hits() {
+    let base = std::env::temp_dir().join(format!(
+        "eguard-bundle-runtime-hit-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    let sigma_dir = base.join("sigma");
+    let yara_dir = base.join("yara");
+    std::fs::create_dir_all(&sigma_dir).expect("create sigma dir");
+    std::fs::create_dir_all(&yara_dir).expect("create yara dir");
+
+    std::fs::write(
+        sigma_dir.join("rule.yml"),
+        r#"
+title: sigma_bundle_runtime_hit
+detection:
+  sequence:
+    - event_class: process_exec
+      process_any_of: [bundleproc]
+      parent_any_of: [bundleparent]
+      within_secs: 30
+    - event_class: network_connect
+      dst_port_not_in: [443]
+      within_secs: 10
+"#,
+    )
+    .expect("write sigma rule");
+
+    std::fs::write(
+        yara_dir.join("rule.yar"),
+        r#"
+rule bundle_runtime_marker {
+  strings:
+    $m = "bundle-runtime-marker-8844"
+  condition:
+    $m
+}
+"#,
+    )
+    .expect("write yara rule");
+
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    cfg.server_addr = "127.0.0.1:1".to_string();
+
+    let mut runtime = AgentRuntime::new(cfg).expect("build runtime");
+    runtime
+        .reload_detection_state("bundle-runtime-v1", base.to_string_lossy().as_ref())
+        .expect("reload detection state from bundle");
+
+    assert_eq!(
+        runtime
+            .detection_state
+            .version()
+            .expect("state version")
+            .as_deref(),
+        Some("bundle-runtime-v1")
+    );
+    let report = runtime
+        .last_reload_report
+        .clone()
+        .expect("recorded reload report");
+    assert!(report.sigma_rules >= 1);
+    assert!(report.yara_rules >= 1);
+
+    let stage_one = detection::TelemetryEvent {
+        ts_unix: 10_000,
+        event_class: detection::EventClass::ProcessExec,
+        pid: 4242,
+        ppid: 1,
+        uid: 1000,
+        process: "bundleproc".to_string(),
+        parent_process: "bundleparent".to_string(),
+        file_path: None,
+        file_hash: None,
+        dst_port: None,
+        dst_ip: None,
+        dst_domain: None,
+        command_line: Some("echo bundle-runtime-marker-8844".to_string()),
+    };
+    let stage_one_out = runtime
+        .detection_state
+        .process_event(&stage_one)
+        .expect("evaluate stage one event");
+    assert!(stage_one_out
+        .yara_hits
+        .iter()
+        .any(|hit| hit.rule_name == "bundle_runtime_marker"));
+    assert_eq!(stage_one_out.confidence, detection::Confidence::Definite);
+
+    let stage_two = detection::TelemetryEvent {
+        ts_unix: 10_005,
+        event_class: detection::EventClass::NetworkConnect,
+        pid: 4242,
+        ppid: 1,
+        uid: 1000,
+        process: "bundleproc".to_string(),
+        parent_process: "bundleparent".to_string(),
+        file_path: None,
+        file_hash: None,
+        dst_port: Some(31337),
+        dst_ip: Some("203.0.113.8".to_string()),
+        dst_domain: None,
+        command_line: None,
+    };
+    let stage_two_out = runtime
+        .detection_state
+        .process_event(&stage_two)
+        .expect("evaluate stage two event");
+    assert!(stage_two_out.signals.z2_temporal);
+    assert!(stage_two_out
+        .temporal_hits
+        .iter()
+        .any(|hit| hit == "sigma_bundle_runtime_hit"));
 
     let _ = std::fs::remove_file(sigma_dir.join("rule.yml"));
     let _ = std::fs::remove_file(yara_dir.join("rule.yar"));

@@ -33,6 +33,8 @@ pub struct Client {
     pending_commands: VecDeque<CommandEnvelope>,
     tls: Option<TlsConfig>,
     http: HttpClient,
+    #[cfg(test)]
+    grpc_channel_override: Option<Channel>,
 }
 
 impl Client {
@@ -50,6 +52,8 @@ impl Client {
             pending_commands: VecDeque::new(),
             tls: None,
             http: HttpClient::new(),
+            #[cfg(test)]
+            grpc_channel_override: None,
         }
     }
 
@@ -354,7 +358,17 @@ impl Client {
             .ca_certificate(Certificate::from_pem(ca)))
     }
 
+    #[cfg(test)]
+    fn set_test_channel_override(&mut self, channel: Channel) {
+        self.grpc_channel_override = Some(channel);
+    }
+
     async fn connect_channel(&self) -> Result<Channel> {
+        #[cfg(test)]
+        if let Some(channel) = &self.grpc_channel_override {
+            return Ok(channel.clone());
+        }
+
         let endpoint = self.grpc_endpoint()?;
         endpoint
             .connect()

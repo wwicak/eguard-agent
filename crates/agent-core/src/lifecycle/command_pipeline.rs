@@ -97,7 +97,11 @@ impl AgentRuntime {
         Ok(rule_name)
     }
 
-    fn apply_emergency_rule_push(&self, payload_json: &str, exec: &mut response::CommandExecution) {
+    pub(super) fn apply_emergency_rule_push(
+        &self,
+        payload_json: &str,
+        exec: &mut response::CommandExecution,
+    ) {
         match self.apply_emergency_rule_from_payload(payload_json) {
             Ok(rule_name) => {
                 exec.detail = format!("emergency rule applied: {}", rule_name);

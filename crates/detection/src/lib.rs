@@ -5,6 +5,7 @@ mod layer2;
 mod layer3;
 mod layer4;
 mod math;
+pub mod memory_scanner;
 mod policy;
 mod replay;
 mod sigma;

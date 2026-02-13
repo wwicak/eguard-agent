@@ -4,6 +4,7 @@ mod lifecycle;
 
 use anyhow::Result;
 use tokio::signal;
+use tokio::time::{self, Duration, MissedTickBehavior};
 use tracing::info;
 
 use config::AgentConfig;
@@ -24,19 +25,21 @@ async fn main() -> Result<()> {
         "eguard-agent core started"
     );
 
-    loop {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or_default();
+    let mut tick = time::interval(Duration::from_millis(100));
+    tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
+    loop {
         tokio::select! {
             _ = signal::ctrl_c() => {
                 info!("shutdown signal received");
                 break;
             }
-            tick_result = runtime.tick(now) => {
-                tick_result?;
+            _ = tick.tick() => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or_default();
+                runtime.tick(now).await?;
             }
         }
     }

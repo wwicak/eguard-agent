@@ -4,6 +4,7 @@ use crate::layer1::{
     PREFILTER_MAX_LOAD_FACTOR,
 };
 use crate::*;
+use std::time::{Duration, Instant};
 
 fn event(ts: i64, class: EventClass) -> TelemetryEvent {
     TelemetryEvent {
@@ -38,6 +39,45 @@ fn one_stage_rule(name: &str, class: EventClass) -> TemporalRule {
             within_secs: 15,
         }],
     }
+}
+
+fn run_observe_batch(engine: &mut TemporalEngine, event: &TelemetryEvent, iterations: usize) -> Duration {
+    let start = Instant::now();
+    for _ in 0..iterations {
+        std::hint::black_box(engine.observe(event));
+    }
+    start.elapsed()
+}
+
+fn average_observe_ns(engine: &mut TemporalEngine, event: &TelemetryEvent) -> f64 {
+    let min_duration = Duration::from_millis(5);
+    let mut warmup_iterations: usize = 64;
+
+    // Warm up allocator and branch predictors before timing.
+    while run_observe_batch(engine, event, warmup_iterations) < min_duration {
+        warmup_iterations = warmup_iterations
+            .checked_mul(2)
+            .expect("warm-up iteration overflow");
+    }
+
+    let mut iterations = warmup_iterations;
+    let mut samples_ns = [0.0_f64; 5];
+
+    for sample in &mut samples_ns {
+        loop {
+            let elapsed = run_observe_batch(engine, event, iterations);
+            if elapsed >= min_duration {
+                *sample = elapsed.as_nanos() as f64 / iterations as f64;
+                break;
+            }
+            iterations = iterations
+                .checked_mul(2)
+                .expect("measurement iteration overflow");
+        }
+    }
+
+    samples_ns.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    samples_ns[samples_ns.len() / 2]
 }
 
 #[test]
@@ -119,19 +159,10 @@ fn temporal_runtime_cost_scales_with_subscribed_rule_count() {
     }
 
     let e = event(10, EventClass::ProcessExec);
-    let start_low = std::time::Instant::now();
-    for _ in 0..512 {
-        std::hint::black_box(low.observe(&e));
-    }
-    let elapsed_low = start_low.elapsed().as_nanos() as f64;
+    let elapsed_low = average_observe_ns(&mut low, &e);
+    let elapsed_high = average_observe_ns(&mut high, &e);
 
-    let start_high = std::time::Instant::now();
-    for _ in 0..512 {
-        std::hint::black_box(high.observe(&e));
-    }
-    let elapsed_high = start_high.elapsed().as_nanos() as f64;
-
-    let ratio = elapsed_high / elapsed_low.max(1.0);
+    let ratio = elapsed_high / elapsed_low;
     assert!(
         ratio > 2.0,
         "expected higher cost with more subscribed rules, got {ratio}"

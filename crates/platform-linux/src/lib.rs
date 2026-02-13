@@ -1,3 +1,4 @@
+pub mod container;
 mod ebpf;
 
 use std::collections::{HashMap, VecDeque};
@@ -11,6 +12,10 @@ use std::path::Path;
 use crypto_accel::sha256_file_hex;
 use serde::{Deserialize, Serialize};
 
+pub use container::{
+    container_labels, detect_container, detect_container_escape, get_namespace_info,
+    ContainerContext, ContainerRuntime, NamespaceInfo,
+};
 pub use ebpf::{EbpfEngine, EbpfError, EbpfStats};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -46,6 +51,12 @@ pub struct EnrichedEvent {
     pub dst_ip: Option<String>,
     pub dst_port: Option<u16>,
     pub dst_domain: Option<String>,
+    /// Container runtime (e.g., "docker", "containerd", "host").
+    pub container_runtime: Option<String>,
+    /// Short container ID (12 chars).
+    pub container_id: Option<String>,
+    /// Whether the process may have escaped its container.
+    pub container_escape: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -230,6 +241,9 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
             dst_ip: payload_meta.dst_ip,
             dst_port: payload_meta.dst_port,
             dst_domain: payload_meta.dst_domain,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
         };
     }
 
@@ -244,6 +258,21 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
         .as_deref()
         .and_then(|path| cache.hash_for_path(path));
 
+    // Container detection: extract runtime and ID from cgroup
+    let (container_runtime, container_id, container_escape) = {
+        match container::detect_container(raw.pid) {
+            Some(ctx) => {
+                let escape = container::detect_container_escape(raw.pid);
+                (
+                    Some(ctx.runtime.as_str().to_string()),
+                    Some(ctx.container_id_short),
+                    escape,
+                )
+            }
+            None => (Some("host".to_string()), None, false),
+        }
+    };
+
     EnrichedEvent {
         event: raw,
         process_exe: entry.process_exe,
@@ -256,6 +285,9 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
         dst_ip: payload_meta.dst_ip,
         dst_port: payload_meta.dst_port,
         dst_domain: payload_meta.dst_domain,
+        container_runtime,
+        container_id,
+        container_escape,
     }
 }
 

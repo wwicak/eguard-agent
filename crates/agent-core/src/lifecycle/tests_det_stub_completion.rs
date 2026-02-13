@@ -26,6 +26,29 @@ fn has_line(lines: &[String], expected: &str) -> bool {
     lines.iter().any(|line| line == expected)
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct CommandReportProjection {
+    action_type: String,
+    success: bool,
+    error_message: String,
+}
+
+fn project_command_report_fields(
+    command_type: &str,
+    status: &str,
+    detail: &str,
+) -> CommandReportProjection {
+    CommandReportProjection {
+        action_type: format!("command:{}", command_type),
+        success: status == "completed",
+        error_message: if status == "completed" {
+            String::new()
+        } else {
+            detail.to_string()
+        },
+    }
+}
+
 #[test]
 // AC-DET-151
 fn reload_detection_state_records_reload_report_fields() {
@@ -122,6 +145,136 @@ async fn command_pipeline_executes_offline_and_caps_completed_cursor() {
     assert!(runtime.host_control.isolated);
     assert!(runtime.host_control.last_update_unix.is_none());
     assert!(!runtime.host_control.uninstall_requested);
+}
+
+#[test]
+// AC-DET-166
+fn command_pipeline_maps_command_outcomes_to_reporting_fields() {
+    let mut state = response::HostControlState::default();
+    let isolate_exec = response::execute_server_command_with_state(
+        response::parse_server_command("isolate"),
+        170,
+        &mut state,
+    );
+    assert_eq!(isolate_exec.outcome, response::CommandOutcome::Applied);
+    assert_eq!(isolate_exec.status, "completed");
+    assert_eq!(isolate_exec.detail, "host switched to isolated mode");
+    assert!(state.isolated);
+
+    let isolate_report =
+        project_command_report_fields("isolate", isolate_exec.status, &isolate_exec.detail);
+    assert_eq!(
+        isolate_report,
+        CommandReportProjection {
+            action_type: "command:isolate".to_string(),
+            success: true,
+            error_message: String::new(),
+        }
+    );
+
+    let unknown_exec = response::execute_server_command_with_state(
+        response::parse_server_command("not_supported_command"),
+        171,
+        &mut state,
+    );
+    assert_eq!(unknown_exec.outcome, response::CommandOutcome::Ignored);
+    assert_eq!(unknown_exec.status, "failed");
+    assert_eq!(unknown_exec.detail, "unknown command type");
+    assert!(state.isolated);
+
+    let unknown_report = project_command_report_fields(
+        "not_supported_command",
+        unknown_exec.status,
+        &unknown_exec.detail,
+    );
+    assert_eq!(
+        unknown_report,
+        CommandReportProjection {
+            action_type: "command:not_supported_command".to_string(),
+            success: false,
+            error_message: "unknown command type".to_string(),
+        }
+    );
+}
+
+#[test]
+// AC-DET-160 AC-DET-161 AC-DET-163
+fn command_pipeline_maps_emergency_rule_push_rejections_to_failed_reporting_fields() {
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    let runtime = AgentRuntime::new(cfg).expect("runtime");
+
+    let mut state = response::HostControlState::default();
+    let mut exec = response::execute_server_command_with_state(
+        response::parse_server_command("emergency_rule_push"),
+        172,
+        &mut state,
+    );
+
+    let invalid_payload = serde_json::json!({
+        "rule_type": "signature",
+        "rule_name": "cmd-emergency-invalid",
+        "rule_content": "curl|bash",
+        "severity": "urgent"
+    })
+    .to_string();
+    runtime.apply_emergency_rule_push(&invalid_payload, &mut exec);
+
+    assert_eq!(exec.outcome, response::CommandOutcome::Ignored);
+    assert_eq!(exec.status, "failed");
+    assert_eq!(
+        exec.detail,
+        "emergency rule push rejected: unsupported emergency severity: urgent"
+    );
+
+    let report = project_command_report_fields("emergency_rule_push", exec.status, &exec.detail);
+    assert_eq!(
+        report,
+        CommandReportProjection {
+            action_type: "command:emergency_rule_push".to_string(),
+            success: false,
+            error_message: "emergency rule push rejected: unsupported emergency severity: urgent"
+                .to_string(),
+        }
+    );
+}
+
+#[test]
+// AC-DET-160 AC-DET-161 AC-DET-163
+fn command_pipeline_maps_emergency_rule_push_success_to_completed_reporting_fields() {
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    let runtime = AgentRuntime::new(cfg).expect("runtime");
+
+    let mut state = response::HostControlState::default();
+    let mut exec = response::execute_server_command_with_state(
+        response::parse_server_command("emergency_rule_push"),
+        173,
+        &mut state,
+    );
+
+    let valid_payload = serde_json::json!({
+        "rule_type": "signature",
+        "rule_name": "cmd-emergency-valid",
+        "rule_content": "curl|bash",
+        "severity": "high"
+    })
+    .to_string();
+    runtime.apply_emergency_rule_push(&valid_payload, &mut exec);
+
+    assert_eq!(exec.outcome, response::CommandOutcome::Applied);
+    assert_eq!(exec.status, "completed");
+    assert_eq!(exec.detail, "emergency rule applied: cmd-emergency-valid");
+
+    let report = project_command_report_fields("emergency_rule_push", exec.status, &exec.detail);
+    assert_eq!(
+        report,
+        CommandReportProjection {
+            action_type: "command:emergency_rule_push".to_string(),
+            success: true,
+            error_message: String::new(),
+        }
+    );
 }
 
 #[tokio::test]

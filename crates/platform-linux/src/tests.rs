@@ -154,15 +154,46 @@ fn file_hash_cache_is_lru_bounded() {
 
 #[test]
 // AC-RES-022
-fn default_file_hash_cache_capacity_tracks_ten_thousand_entry_policy_target() {
-    let source = std::fs::read_to_string(
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs"),
-    )
-    .expect("read platform source");
-    assert!(source.contains("Self::new(500, 10_000)"));
+fn default_file_hash_cache_capacity_is_bounded_to_ten_thousand_under_churn() {
+    let base = std::env::temp_dir().join(format!(
+        "eguard-platform-linux-default-cache-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    fs::create_dir_all(&base).expect("create temp dir");
 
-    let projected_bytes = 10_000usize * 50usize;
-    assert!((450 * 1024..=550 * 1024).contains(&projected_bytes));
+    let mut cache = EnrichmentCache::default();
+    let mut first_path = String::new();
+    let mut latest_path = String::new();
+
+    for idx in 0..10_128usize {
+        let file = base.join(format!("file-{idx}.bin"));
+        fs::write(&file, [idx as u8]).expect("write file");
+        let path = file.to_string_lossy().into_owned();
+        if idx == 0 {
+            first_path = path.clone();
+        }
+        latest_path = path.clone();
+        let _ = cache.hash_for_path(&path).expect("hash path");
+        assert!(
+            cache.file_hash_cache_len() <= 10_000,
+            "default cache exceeded ten-thousand cap at index {idx}"
+        );
+    }
+
+    assert_eq!(cache.file_hash_cache_len(), 10_000);
+    assert!(
+        !cache.file_hash_cache.contains_key(&first_path),
+        "oldest file path should be evicted under churn"
+    );
+    assert!(
+        cache.file_hash_cache.contains_key(&latest_path),
+        "most recent file path should remain cached"
+    );
+
+    let _ = fs::remove_dir_all(base);
 }
 
 #[test]

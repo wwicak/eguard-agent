@@ -664,16 +664,103 @@ fn drift_indicators_report_baseline_age_and_kl_quantiles_by_process_family() {
 #[test]
 // AC-DET-182
 fn detection_workspace_excludes_ml_framework_dependencies() {
-    let cargo_lock = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.lock");
-    let lock_content = std::fs::read_to_string(&cargo_lock).expect("read Cargo.lock");
-    let lower = lock_content.to_ascii_lowercase();
-
-    for blocked in ["tensorflow", "tch", "pytorch", "onnxruntime", "candle"] {
-        assert!(
-            !lower.contains(&format!("name = \"{}\"", blocked)),
-            "unexpected ML framework dependency present: {blocked}"
-        );
+    #[derive(serde::Deserialize)]
+    struct Metadata {
+        packages: Vec<MetadataPackage>,
+        resolve: Option<MetadataResolve>,
     }
+
+    #[derive(serde::Deserialize)]
+    struct MetadataPackage {
+        id: String,
+        name: String,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct MetadataResolve {
+        nodes: Vec<MetadataNode>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct MetadataNode {
+        id: String,
+    }
+
+    let rustc_output = std::process::Command::new("rustc")
+        .arg("-vV")
+        .output()
+        .expect("run rustc -vV");
+    assert!(
+        rustc_output.status.success(),
+        "rustc -vV failed (status={}): {}",
+        rustc_output.status,
+        String::from_utf8_lossy(&rustc_output.stderr)
+    );
+
+    let rustc_stdout = String::from_utf8(rustc_output.stdout).expect("rustc -vV stdout is UTF-8");
+    let host_triple = rustc_stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("host: "))
+        .expect("rustc host triple line");
+
+    let manifest_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+    let output = std::process::Command::new("cargo")
+        .args([
+            "metadata",
+            "--format-version",
+            "1",
+            "--locked",
+            "--offline",
+            "--filter-platform",
+            host_triple,
+            "--manifest-path",
+        ])
+        .arg(&manifest_path)
+        .output()
+        .expect("run cargo metadata");
+
+    assert!(
+        output.status.success(),
+        "cargo metadata failed (status={}): {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let metadata: Metadata =
+        serde_yaml::from_slice(&output.stdout).expect("parse cargo metadata JSON");
+    let resolved = metadata
+        .resolve
+        .expect("cargo metadata resolve section is missing");
+
+    let id_to_name: std::collections::HashMap<String, String> = metadata
+        .packages
+        .into_iter()
+        .map(|package| (package.id, package.name))
+        .collect();
+
+    let resolved_package_names: std::collections::HashSet<String> = resolved
+        .nodes
+        .into_iter()
+        .map(|node| {
+            id_to_name
+                .get(&node.id)
+                .cloned()
+                .unwrap_or_else(|| panic!("missing package for resolved node id: {}", node.id))
+        })
+        .collect();
+
+    let blocked = ["tensorflow", "tch", "pytorch", "onnxruntime", "candle"];
+    let present: Vec<&str> = blocked
+        .iter()
+        .copied()
+        .filter(|name| resolved_package_names.contains(*name))
+        .collect();
+
+    assert!(
+        present.is_empty(),
+        "unexpected ML framework dependencies present in resolved graph: {}",
+        present.join(", ")
+    );
 }
 
 #[test]

@@ -9,6 +9,15 @@ fn sample_event(i: i64) -> EventEnvelope {
     }
 }
 
+fn large_event(i: i64, payload_bytes: usize) -> EventEnvelope {
+    EventEnvelope {
+        agent_id: "a1".to_string(),
+        event_type: "process_exec".to_string(),
+        payload_json: "x".repeat(payload_bytes),
+        created_at_unix: i,
+    }
+}
+
 #[test]
 // AC-GRP-082 AC-EBP-044 AC-CFG-020
 fn memory_buffer_enforces_cap() {
@@ -99,6 +108,40 @@ fn event_buffer_memory_variant_reports_sizes() {
 // AC-GRP-082 AC-EBP-044 AC-CFG-020
 fn default_buffer_cap_matches_acceptance_limit() {
     assert_eq!(DEFAULT_BUFFER_CAP_BYTES, 100 * 1024 * 1024);
+}
+
+#[test]
+// AC-GRP-082 AC-GRP-083 AC-GRP-084
+fn default_memory_event_buffer_never_exceeds_100mb_and_evicts_fifo() {
+    let payload_bytes = 8 * 1024 * 1024;
+    let event_size = estimate_event_size(&large_event(0, payload_bytes));
+    assert!(event_size < DEFAULT_BUFFER_CAP_BYTES);
+
+    let max_retained = DEFAULT_BUFFER_CAP_BYTES / event_size;
+    assert!(max_retained > 0);
+
+    let total_events = max_retained + 6;
+    let mut b = EventBuffer::Memory(OfflineBuffer::default());
+    for i in 0..total_events {
+        b.enqueue(large_event(i as i64, payload_bytes))
+            .expect("enqueue");
+        assert!(
+            b.pending_bytes() <= DEFAULT_BUFFER_CAP_BYTES,
+            "pending bytes exceeded default cap after enqueue {i}"
+        );
+    }
+
+    let drained = b.drain_batch(total_events).expect("drain");
+    let expected_len = max_retained.min(total_events);
+    assert_eq!(drained.len(), expected_len);
+
+    let expected_start = (total_events - expected_len) as i64;
+    for (offset, event) in drained.iter().enumerate() {
+        assert_eq!(event.created_at_unix, expected_start + offset as i64);
+    }
+
+    assert_eq!(b.pending_count(), 0);
+    assert_eq!(b.pending_bytes(), 0);
 }
 
 #[test]
