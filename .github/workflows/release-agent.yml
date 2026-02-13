@@ -39,10 +39,7 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
 
       - name: Build Zig artifacts (eBPF probes + ASM libs)
-        run: |
-          zig build agent-artifacts
-          echo "=== zig-out contents ==="
-          find zig-out -type f | sort
+        run: zig build agent-artifacts
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
