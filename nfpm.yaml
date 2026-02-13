@@ -1,0 +1,26 @@
+name: eguard-agent
+arch: amd64
+version: "${VERSION}"
+maintainer: eGuard Team <info@eguard.id>
+description: eGuard endpoint security agent
+license: GPL-2.0-or-later
+homepage: https://eguard.id
+vendor: eGuard
+contents:
+  - src: target/release/eguard-agent
+    dst: /usr/local/eg/sbin/eguard-agent
+    file_info:
+      mode: 0755
+  - src: conf/eguard-agent.service
+    dst: /lib/systemd/system/eguard-agent.service
+    file_info:
+      mode: 0644
+scripts:
+  postinstall: packaging/postinstall.sh
+  preremove: packaging/preremove.sh
+depends:
+  - systemd
+overrides:
+  rpm:
+    depends:
+      - systemd

@@ -1,0 +1,85 @@
+name: Release Agent Packages
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g. v0.1.0)'
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  ZIG_VERSION: "0.14.1"
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Build Zig artifacts (eBPF probes + ASM libs)
+        run: zig build agent-artifacts
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build agent binary
+        run: cargo build --release -p agent-core
+
+      - name: Rename binary
+        run: mv target/release/agent-core target/release/eguard-agent
+
+      - name: Install nfpm
+        run: |
+          curl -sfL https://github.com/goreleaser/nfpm/releases/download/v2.41.1/nfpm_2.41.1_linux_amd64.tar.gz | \
+            tar -xz -C /usr/local/bin nfpm
+
+      - name: Build .deb package
+        run: |
+          VERSION="${{ steps.version.outputs.tag }}"
+          VERSION="${VERSION#v}"
+          nfpm package --packager deb --target "eguard-agent_${VERSION}_amd64.deb"
+        env:
+          VERSION: ${{ steps.version.outputs.tag }}
+
+      - name: Build .rpm package
+        run: |
+          VERSION="${{ steps.version.outputs.tag }}"
+          VERSION="${VERSION#v}"
+          nfpm package --packager rpm --target "eguard-agent-${VERSION}-1.x86_64.rpm"
+        env:
+          VERSION: ${{ steps.version.outputs.tag }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "eGuard Agent ${{ steps.version.outputs.tag }}"
+          generate_release_notes: true
+          files: |
+            eguard-agent_*.deb
+            eguard-agent-*.rpm

@@ -1,0 +1,17 @@
+[Unit]
+Description=eGuard Endpoint Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/eg/sbin/eguard-agent
+Restart=always
+RestartSec=5s
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
