@@ -95,12 +95,38 @@ jobs:
           done
           echo "Downloaded $PAGE NVD pages total"
 
-      - name: Extract Linux CVEs
+      # ── CISA Known Exploited Vulnerabilities (KEV) ─────────────────
+      # Actively exploited CVEs confirmed by CISA. Used for priority
+      # flagging — any CVE in KEV is actively weaponized.
+      - name: Fetch CISA KEV catalog
+        run: |
+          curl -sSfL --retry 3 --max-time 120 \
+            "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json" \
+            -o /tmp/cisa_kev.json
+          COUNT=$(python3 -c "import json; print(len(json.load(open('/tmp/cisa_kev.json')).get('vulnerabilities', [])))")
+          echo "CISA KEV: ${COUNT} actively exploited vulnerabilities"
+
+      # ── EPSS (Exploit Prediction Scoring System) ───────────────────
+      # Probability of exploitation in the next 30 days. Maintained by
+      # FIRST.org. Downloaded as CSV with CVE ID → EPSS score mapping.
+      - name: Fetch EPSS scores
+        run: |
+          curl -sSfL --retry 3 --max-time 300 \
+            "https://epss.cyentia.com/epss_scores-current.csv.gz" \
+            -o /tmp/epss.csv.gz
+          gunzip -f /tmp/epss.csv.gz
+          # Skip header comment line and CSV header
+          LINES=$(wc -l < /tmp/epss.csv)
+          echo "EPSS: ${LINES} CVE scores downloaded"
+
+      - name: Extract and enrich Linux CVEs
         run: |
           python threat-intel/processing/cve_extract.py \
             --input /tmp/nvd_data \
             --output /tmp/cves.jsonl \
-            --min-cvss 4.0
+            --min-cvss 4.0 \
+            --kev /tmp/cisa_kev.json \
+            --epss /tmp/epss.csv
 
       - name: Upload CVE data as artifact
         uses: actions/upload-artifact@v4

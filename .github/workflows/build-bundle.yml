@@ -34,19 +34,21 @@ jobs:
       - name: Download latest collector artifacts
         run: |
           mkdir -p /tmp/artifacts
-          # Download latest artifacts from each collector workflow
           for name in sigma-filtered yara-collected ioc-curated cve-extracted; do
             echo "Downloading artifact: $name"
             gh run download --repo "$GITHUB_REPOSITORY" \
               --name "$name" --dir "/tmp/artifacts/$name" 2>/dev/null || \
               echo "  Warning: artifact $name not found (collector may not have run yet)"
           done
-          echo "Artifacts downloaded:"
-          find /tmp/artifacts -type f | head -20
+          echo "=== Artifacts downloaded ==="
+          for name in sigma-filtered yara-collected ioc-curated cve-extracted; do
+            COUNT=$(find "/tmp/artifacts/$name" -type f 2>/dev/null | wc -l)
+            echo "  $name: $COUNT files"
+          done
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Validate YARA rules
+      - name: Validate and deduplicate YARA rules
         run: |
           mkdir -p /tmp/yara_validated
           YARA_DIR="/tmp/artifacts/yara-collected"
@@ -54,7 +56,9 @@ jobs:
             python threat-intel/processing/yara_validate.py \
               --input "$YARA_DIR" \
               --output /tmp/yara_validated \
-              --test-files threat-intel/tests/clean_files
+              --test-files threat-intel/tests/clean_files \
+              --deduplicate \
+              --source-priority yara-forge,elastic,gcti,reversinglabs
           else
             echo "No YARA rules to validate"
           fi
@@ -114,16 +118,28 @@ jobs:
           python3 -c "
           import json
           m = json.load(open('bundle/manifest.json'))
+          src = m.get('sources', {})
           lines = [
               'Automated threat intelligence bundle.',
               '',
-              f'- SIGMA rules: {m[\"sigma_count\"]}',
-              f'- YARA rules: {m[\"yara_count\"]}',
+              '## Detection Rules',
+              f'- **SIGMA rules**: {m[\"sigma_count\"]}',
+              f'- **YARA rules**: {m[\"yara_count\"]}',
+              '',
+              '## Indicators of Compromise',
               f'- IOC hashes: {m[\"ioc_hash_count\"]}',
               f'- IOC domains: {m[\"ioc_domain_count\"]}',
               f'- IOC IPs: {m[\"ioc_ip_count\"]}',
+              '',
+              '## Vulnerability Intelligence',
               f'- CVEs: {m[\"cve_count\"]}',
+              f'- CISA KEV (actively exploited): {m.get(\"cve_kev_count\", \"n/a\")}',
+              f'- EPSS-enriched: {m.get(\"cve_epss_count\", \"n/a\")}',
+              '',
+              '## Sources',
           ]
+          for category, names in src.items():
+              lines.append(f'- {category}: {', '.join(names)}')
           open('/tmp/release_notes.md', 'w').write('\n'.join(lines))
           "
           gh release create "rules-${VERSION}" \

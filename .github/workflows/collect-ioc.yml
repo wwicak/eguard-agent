@@ -23,9 +23,42 @@ jobs:
       - name: Create source directories
         run: mkdir -p sources/ioc/{hashes,domains,ips}
 
-      - name: Fetch MalwareBazaar hashes (abuse.ch)
+      # ────────────────────────────────────────────────────────────────
+      # Tier 1: Government / Premium Blocklists (highest confidence)
+      # ────────────────────────────────────────────────────────────────
+
+      - name: "Fetch Spamhaus DROP + EDROP (Tier 1)"
         run: |
-          # Recent hashes (last 24h) — curated, manageable size
+          # DROP: most conservative, zero false-positive IP blocklist
+          curl -sSfL --retry 3 --max-time 60 \
+            "https://www.spamhaus.org/drop/drop.txt" \
+            -o /tmp/spamhaus_drop.txt 2>/dev/null || true
+          curl -sSfL --retry 3 --max-time 60 \
+            "https://www.spamhaus.org/drop/edrop.txt" \
+            -o /tmp/spamhaus_edrop.txt 2>/dev/null || true
+          {
+            grep -v '^;' /tmp/spamhaus_drop.txt 2>/dev/null | awk '{print $1}' | grep -E '^[0-9]'
+            grep -v '^;' /tmp/spamhaus_edrop.txt 2>/dev/null | awk '{print $1}' | grep -E '^[0-9]'
+          } | sort -u > sources/ioc/ips/spamhaus.txt
+          echo "Spamhaus DROP+EDROP: $(wc -l < sources/ioc/ips/spamhaus.txt) entries"
+
+      - name: "Fetch FireHOL Level 1 (Tier 1)"
+        run: |
+          # Aggregated from DShield, Spamhaus, blocklist.de, etc. — highest confidence tier
+          curl -sSfL --retry 3 --max-time 120 \
+            "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level1.netset" \
+            -o /tmp/firehol.txt 2>/dev/null || true
+          if [ -s /tmp/firehol.txt ]; then
+            grep -v '^#' /tmp/firehol.txt | grep -v '^$' | sort -u > sources/ioc/ips/firehol_l1.txt
+            echo "FireHOL L1: $(wc -l < sources/ioc/ips/firehol_l1.txt) entries"
+          fi
+
+      # ────────────────────────────────────────────────────────────────
+      # Tier 2: Community-Vetted Sources (abuse.ch, SANS, DigitalSide)
+      # ────────────────────────────────────────────────────────────────
+
+      - name: "Fetch MalwareBazaar hashes (Tier 2 — abuse.ch)"
+        run: |
           curl -sSfL --retry 3 --max-time 120 \
             "https://bazaar.abuse.ch/export/txt/sha256/recent/" \
             -o /tmp/bazaar_hashes.txt
@@ -33,12 +66,11 @@ jobs:
             awk '{print $1}' > sources/ioc/hashes/malwarebazaar.txt
           echo "MalwareBazaar hashes: $(wc -l < sources/ioc/hashes/malwarebazaar.txt)"
 
-      - name: Fetch ThreatFox IOCs (abuse.ch)
+      - name: "Fetch ThreatFox IOCs (Tier 2 — abuse.ch)"
         run: |
           curl -sSfL --retry 3 --max-time 120 \
             "https://threatfox.abuse.ch/export/csv/recent/" \
             -o /tmp/threatfox.csv
-          # Extract domains and IPs from ThreatFox CSV
           grep -v '^#' /tmp/threatfox.csv | grep -v '^$' | \
             awk -F'","' '{
               type=$5; ioc=$6;
@@ -51,10 +83,16 @@ jobs:
               gsub(/"/, "", type); gsub(/"/, "", ioc);
               if (type ~ /ip/) { split(ioc, a, ":"); print a[1]; }
             }' | sort -u > sources/ioc/ips/threatfox.txt
+          # Also extract SHA-256 hashes from ThreatFox
+          grep -v '^#' /tmp/threatfox.csv | grep -v '^$' | \
+            awk -F'","' '{
+              type=$5; ioc=$6;
+              gsub(/"/, "", type); gsub(/"/, "", ioc);
+              if (type ~ /sha256/) print ioc;
+            }' | sort -u > sources/ioc/hashes/threatfox.txt
 
-      - name: Fetch Feodo C2 IPs (abuse.ch)
+      - name: "Fetch Feodo C2 IPs (Tier 2 — abuse.ch)"
         run: |
-          # Aggressive blocklist — curated by abuse.ch analysts
           curl -sSfL --retry 3 --max-time 60 \
             "https://feodotracker.abuse.ch/downloads/ipblocklist_aggressive.txt" \
             -o /tmp/feodo.txt
@@ -62,17 +100,16 @@ jobs:
             sort -u > sources/ioc/ips/feodo.txt
           echo "Feodo C2 IPs: $(wc -l < sources/ioc/ips/feodo.txt)"
 
-      - name: Fetch URLhaus domains (abuse.ch)
+      - name: "Fetch URLhaus domains (Tier 2 — abuse.ch)"
         run: |
           curl -sSfL --retry 3 --max-time 120 \
             "https://urlhaus.abuse.ch/downloads/text_online/" \
             -o /tmp/urlhaus.txt
-          # Extract domains from URLs
           grep -v '^#' /tmp/urlhaus.txt | grep -v '^$' | \
             sed 's|https\?://||; s|/.*||; s|:.*||' | \
             sort -u > sources/ioc/domains/urlhaus.txt
 
-      - name: Fetch SSL Blacklist (abuse.ch)
+      - name: "Fetch SSL Blacklist (Tier 2 — abuse.ch)"
         run: |
           curl -sSfL --retry 3 --max-time 60 \
             "https://sslbl.abuse.ch/blacklist/sslipblacklist_aggressive.csv" \
@@ -81,8 +118,44 @@ jobs:
             awk -F, '{print $1}' | grep -E '^[0-9]' | \
             sort -u > sources/ioc/ips/sslbl.txt
           echo "SSL Blacklist IPs: $(wc -l < sources/ioc/ips/sslbl.txt)"
+          # Also extract SHA1 fingerprints as supplementary hashes
+          grep -v '^#' /tmp/sslbl.csv | grep -v '^$' | \
+            awk -F, '{print $2}' | grep -E '^[0-9a-f]{40}$' | \
+            sort -u > sources/ioc/hashes/sslbl_sha1.txt
 
-      - name: Fetch Botvrij.eu IOCs
+      - name: "Fetch DShield top attackers (Tier 2 — SANS ISC)"
+        run: |
+          curl -sSfL --retry 3 --max-time 60 \
+            "https://www.dshield.org/block.txt" \
+            -o /tmp/dshield.txt 2>/dev/null || true
+          if [ -s /tmp/dshield.txt ]; then
+            # Format: Start_IP\tEnd_IP\tAttacks\tName...
+            awk '/^[0-9]/ {print $1}' /tmp/dshield.txt | sort -u > sources/ioc/ips/dshield.txt
+            echo "DShield IPs: $(wc -l < sources/ioc/ips/dshield.txt)"
+          fi
+
+      - name: "Fetch DigitalSide OSINT (Tier 2)"
+        run: |
+          curl -sSfL --retry 3 --max-time 60 \
+            "https://osint.digitalside.it/Threat-Intel/lists/latestips.txt" \
+            -o /tmp/digitalside_ips.txt 2>/dev/null || true
+          curl -sSfL --retry 3 --max-time 60 \
+            "https://osint.digitalside.it/Threat-Intel/lists/latestdomains.txt" \
+            -o /tmp/digitalside_domains.txt 2>/dev/null || true
+          if [ -s /tmp/digitalside_ips.txt ]; then
+            grep -v '^#' /tmp/digitalside_ips.txt | grep -v '^$' | sort -u > sources/ioc/ips/digitalside.txt
+            echo "DigitalSide IPs: $(wc -l < sources/ioc/ips/digitalside.txt)"
+          fi
+          if [ -s /tmp/digitalside_domains.txt ]; then
+            grep -v '^#' /tmp/digitalside_domains.txt | grep -v '^$' | sort -u > sources/ioc/domains/digitalside.txt
+            echo "DigitalSide domains: $(wc -l < sources/ioc/domains/digitalside.txt)"
+          fi
+
+      # ────────────────────────────────────────────────────────────────
+      # Tier 3: Community / Aggregator Sources
+      # ────────────────────────────────────────────────────────────────
+
+      - name: "Fetch Botvrij.eu IOCs (Tier 3)"
         run: |
           curl -sSfL --retry 3 --max-time 60 \
             "https://www.botvrij.eu/data/ioclist.domain.raw" \
@@ -97,7 +170,7 @@ jobs:
             grep -v '^#' /tmp/botvrij_ips.txt | grep -v '^$' | sort -u > sources/ioc/ips/botvrij.txt
           fi
 
-      - name: Fetch CINSscore threat IPs
+      - name: "Fetch CINSscore threat IPs (Tier 3)"
         run: |
           curl -sSfL --retry 3 --max-time 60 \
             "https://cinsscore.com/list/ci-badguys.txt" \
@@ -107,7 +180,7 @@ jobs:
             echo "CINS IPs: $(wc -l < sources/ioc/ips/cins.txt)"
           fi
 
-      - name: Fetch Blocklist.de
+      - name: "Fetch Blocklist.de (Tier 3)"
         run: |
           curl -sSfL --retry 3 --max-time 60 \
             "https://lists.blocklist.de/lists/all.txt" \
@@ -117,7 +190,7 @@ jobs:
             echo "Blocklist.de IPs: $(wc -l < sources/ioc/ips/blocklist_de.txt)"
           fi
 
-      - name: Fetch AlienVault OTX (optional)
+      - name: "Fetch AlienVault OTX (Tier 3 — optional)"
         if: ${{ env.OTX_API_KEY != '' }}
         env:
           OTX_API_KEY: ${{ secrets.OTX_API_KEY }}
@@ -142,6 +215,10 @@ jobs:
           open('sources/ioc/ips/otx.txt', 'w').write('\n'.join(sorted(ips)))
           "
 
+      # ────────────────────────────────────────────────────────────────
+      # Dedup, corroborate, and allowlist
+      # ────────────────────────────────────────────────────────────────
+
       - name: Deduplicate and corroborate IOCs
         run: |
           python threat-intel/processing/ioc_dedup.py \
@@ -154,7 +231,8 @@ jobs:
             --input /tmp/ioc_deduped \
             --output sources/ioc/consolidated \
             --hash-allowlist threat-intel/allowlists/known_good_hashes.txt \
-            --domain-allowlist threat-intel/allowlists/known_good_domains.txt
+            --domain-allowlist threat-intel/allowlists/known_good_domains.txt \
+            --ip-allowlist threat-intel/allowlists/known_good_ips.txt
 
       - name: Upload curated IOCs as artifact
         uses: actions/upload-artifact@v4

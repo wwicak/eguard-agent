@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Filter SigmaHQ rules by platform and status for eGuard threat intel."""
+"""Filter and deduplicate SIGMA rules from multiple sources for eGuard."""
 
 import argparse
 import os
@@ -45,7 +45,6 @@ def should_keep_rule(path: str, platforms: set[str], min_status: str) -> bool:
 
     product = (logsource.get("product") or "").lower()
     service = (logsource.get("service") or "").lower()
-    category = (logsource.get("category") or "").lower()
 
     # Exclude explicitly Windows-only rules
     if product in WINDOWS_ONLY_PRODUCTS:
@@ -67,9 +66,24 @@ def should_keep_rule(path: str, platforms: set[str], min_status: str) -> bool:
     return False
 
 
+def get_rule_id(path: str) -> str | None:
+    """Extract the rule UUID from a SIGMA YAML file."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            docs = list(yaml.safe_load_all(f))
+        if docs and docs[0] and isinstance(docs[0], dict):
+            return docs[0].get("id")
+    except Exception:
+        pass
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(description="Filter SigmaHQ rules for eGuard")
-    parser.add_argument("--input", required=True, help="Input directory of SIGMA rules")
+    parser.add_argument(
+        "--input", required=True, action="append",
+        help="Input directory of SIGMA rules (can be specified multiple times)",
+    )
     parser.add_argument("--output", required=True, help="Output directory for filtered rules")
     parser.add_argument(
         "--platforms", default="linux",
@@ -82,29 +96,54 @@ def main():
     args = parser.parse_args()
 
     platforms = {p.strip().lower() for p in args.platforms.split(",")}
-    input_dir = os.path.abspath(args.input)
     output_dir = os.path.abspath(args.output)
-
     os.makedirs(output_dir, exist_ok=True)
 
     total = 0
     kept = 0
+    dedup_skipped = 0
+    seen_ids: set[str] = set()
 
-    for root, _dirs, files in os.walk(input_dir):
-        for fname in files:
-            if not fname.endswith((".yml", ".yaml")):
-                continue
-            total += 1
-            src = os.path.join(root, fname)
-            if should_keep_rule(src, platforms, args.min_status):
-                # Preserve subdirectory structure
-                rel = os.path.relpath(src, input_dir)
-                dst = os.path.join(output_dir, rel)
-                os.makedirs(os.path.dirname(dst), exist_ok=True)
-                shutil.copy2(src, dst)
-                kept += 1
+    for input_path in args.input:
+        input_dir = os.path.abspath(input_path)
+        if not os.path.isdir(input_dir):
+            print(f"  SKIP (not a directory): {input_dir}", file=sys.stderr)
+            continue
 
-    print(f"Sigma filter: {kept}/{total} rules kept (platforms={platforms}, min_status={args.min_status})")
+        source_name = os.path.basename(input_dir)
+        source_kept = 0
+
+        for root, _dirs, files in os.walk(input_dir):
+            for fname in files:
+                if not fname.endswith((".yml", ".yaml")):
+                    continue
+                total += 1
+                src = os.path.join(root, fname)
+
+                # Dedup by rule ID (UUID)
+                rule_id = get_rule_id(src)
+                if rule_id:
+                    if rule_id in seen_ids:
+                        dedup_skipped += 1
+                        continue
+                    seen_ids.add(rule_id)
+
+                if should_keep_rule(src, platforms, args.min_status):
+                    # Preserve subdirectory structure, prefixed by source
+                    rel = os.path.relpath(src, input_dir)
+                    dst = os.path.join(output_dir, source_name, rel)
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    shutil.copy2(src, dst)
+                    kept += 1
+                    source_kept += 1
+
+        print(f"  {source_name}: {source_kept} rules kept")
+
+    print(
+        f"Sigma filter: {kept}/{total} rules kept "
+        f"(platforms={platforms}, min_status={args.min_status}, "
+        f"{dedup_skipped} dedup skipped)"
+    )
 
 
 if __name__ == "__main__":

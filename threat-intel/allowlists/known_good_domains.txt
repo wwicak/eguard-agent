@@ -2,7 +2,7 @@
 # Format: one domain per line. Subdomains are NOT automatically included;
 # add specific subdomains if needed.
 #
-# Last updated: 2026-02-12
+# Last updated: 2026-02-13
 
 # --- Major CDNs ---
 cdn.cloudflare.com
@@ -14,6 +14,8 @@ fastly.net
 akamai.net
 akamaized.net
 cloudfront.net
+maxcdn.bootstrapcdn.com
+stackpath.bootstrapcdn.com
 
 # --- Cloud providers ---
 amazonaws.com
@@ -22,6 +24,8 @@ ec2.amazonaws.com
 blob.core.windows.net
 storage.googleapis.com
 compute.googleapis.com
+azure.microsoft.com
+login.microsoftonline.com
 
 # --- Package repositories ---
 deb.debian.org
@@ -48,11 +52,14 @@ plugins.gradle.org
 registry.hub.docker.com
 ghcr.io
 quay.io
+downloads.mariadb.com
+repo.percona.com
 
 # --- Version control ---
 github.com
 raw.githubusercontent.com
 objects.githubusercontent.com
+github.githubassets.com
 gitlab.com
 bitbucket.org
 
@@ -62,17 +69,22 @@ time.nist.gov
 pool.ntp.org
 dns.google
 dns.cloudflare.com
-1.1.1.1
-8.8.8.8
-8.8.4.4
 
-# --- OS update services ---
+# --- Certificate / OCSP ---
 ocsp.digicert.com
 ocsp.letsencrypt.org
+ocsp.pki.goog
 crl.microsoft.com
+r3.o.lencr.org
+x1.c.lencr.org
+
+# --- OS update services ---
 update.microsoft.com
 download.docker.com
 apt.releases.hashicorp.com
+dl.google.com
+tools.google.com
+releases.hashicorp.com
 
 # --- Monitoring / telemetry (common enterprise) ---
 incoming.telemetry.mozilla.org
@@ -80,6 +92,31 @@ safebrowsing.googleapis.com
 detectportal.firefox.com
 connectivity-check.ubuntu.com
 nmcheck.gnome.org
+
+# --- Threat intel sources (our own feeds — don't block ourselves) ---
+bazaar.abuse.ch
+threatfox.abuse.ch
+feodotracker.abuse.ch
+urlhaus.abuse.ch
+sslbl.abuse.ch
+otx.alienvault.com
+www.cisa.gov
+services.nvd.nist.gov
+epss.cyentia.com
+www.spamhaus.org
+www.dshield.org
+osint.digitalside.it
+cinsscore.com
+lists.blocklist.de
+www.botvrij.eu
+
+# --- Search engines / common services ---
+www.google.com
+www.bing.com
+www.microsoft.com
+login.live.com
+accounts.google.com
+www.apple.com
 
 # --- eGuard infrastructure ---
 # Add your own eGuard server domains here

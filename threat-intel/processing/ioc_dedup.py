@@ -1,5 +1,18 @@
 #!/usr/bin/env python3
-"""Deduplicate and corroborate IOCs across multiple sources for eGuard threat intel."""
+"""Deduplicate and corroborate IOCs across multiple sources for eGuard threat intel.
+
+Tier system:
+  0 — Government / zero-FP (CISA, Spamhaus DROP)
+  1 — Premium aggregated (FireHOL level 1)
+  2 — Community-vetted (abuse.ch, SANS DShield, DigitalSide)
+  3 — Community / aggregators (OTX, Botvrij, CINS, Blocklist.de)
+  4 — Unvetted / unknown
+
+Confidence scoring:
+  high   — 2+ sources with at least one Tier 0-2, or any Tier 0 source
+  medium — single Tier 1-2 source, or 2+ Tier 3 sources
+  low    — single Tier 3-4 source
+"""
 
 import argparse
 import json
@@ -8,16 +21,22 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 # Source tier classification
-SOURCE_TIERS = {
-    # Tier 1: curated commercial / government
-    "cisa": 1,
-    # Tier 2: community-vetted
+SOURCE_TIERS: dict[str, int] = {
+    # Tier 0: government / zero false-positive
+    "cisa": 0,
+    "spamhaus": 0,
+    # Tier 1: premium aggregated blocklists
+    "firehol_l1": 1,
+    # Tier 2: community-vetted, researcher-curated
     "malwarebazaar": 2,
     "threatfox": 2,
     "feodo": 2,
     "urlhaus": 2,
     "abusech": 2,
     "sslbl": 2,
+    "sslbl_sha1": 2,
+    "dshield": 2,
+    "digitalside": 2,
     # Tier 3: aggregators / community blocklists
     "otx": 3,
     "alienvault": 3,
@@ -35,7 +54,6 @@ STALENESS = {
     "ips": 30,
 }
 
-# Confidence levels
 CONFIDENCE_HIGH = "high"
 CONFIDENCE_MEDIUM = "medium"
 CONFIDENCE_LOW = "low"
@@ -86,6 +104,10 @@ def determine_confidence(sources: set[str]) -> str:
     tiers = [get_tier(s) for s in sources]
     min_tier = min(tiers)
 
+    # Any Tier 0 source → high confidence
+    if min_tier == 0:
+        return CONFIDENCE_HIGH
+
     # Multiple sources with at least one Tier 1-2 → high
     if len(sources) >= 2 and min_tier <= 2:
         return CONFIDENCE_HIGH
@@ -115,7 +137,6 @@ def is_stale(timestamp_str: str, ioc_type: str) -> bool:
 
 def deduplicate(entries: list[dict], ioc_type: str) -> list[dict]:
     """Deduplicate IOCs, apply corroboration and staleness rules."""
-    # Group by IOC value
     by_value: dict[str, dict] = {}
     for entry in entries:
         val = entry.get("value", "").strip().lower()
@@ -136,7 +157,6 @@ def deduplicate(entries: list[dict], ioc_type: str) -> list[dict]:
             if not by_value[val]["last_seen"] or ts > by_value[val]["last_seen"]:
                 by_value[val]["last_seen"] = ts
 
-    # Apply staleness and confidence
     results = []
     stale_count = 0
     for ioc in by_value.values():
@@ -153,7 +173,15 @@ def deduplicate(entries: list[dict], ioc_type: str) -> list[dict]:
             "last_seen": ioc["last_seen"],
         })
 
+    # Sort: high confidence first, then medium, then low
+    priority = {CONFIDENCE_HIGH: 0, CONFIDENCE_MEDIUM: 1, CONFIDENCE_LOW: 2}
+    results.sort(key=lambda x: (priority.get(x["confidence"], 3), x["value"]))
+
     print(f"  {ioc_type}: {len(results)} unique IOCs ({stale_count} stale removed)")
+    for conf in (CONFIDENCE_HIGH, CONFIDENCE_MEDIUM, CONFIDENCE_LOW):
+        count = sum(1 for r in results if r["confidence"] == conf)
+        if count:
+            print(f"    {conf}: {count}")
     return results
 
 

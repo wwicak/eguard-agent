@@ -15,8 +15,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # ── Source 1: SigmaHQ ──────────────────────────────────────────
+      # The canonical SIGMA repository (3000+ rules).
+      # We process rules/, rules-emerging-threats/, and rules-threat-hunting/.
       - name: Clone SigmaHQ
         run: git clone --depth 1 https://github.com/SigmaHQ/sigma.git /tmp/sigma
+
+      # ── Source 2: mdecrevoisier advanced correlation rules ─────────
+      # 350+ advanced detection rules mapped to MITRE ATT&CK.
+      # Complements SigmaHQ with correlation-based detections.
+      - name: Clone mdecrevoisier SIGMA rules
+        run: git clone --depth 1 https://github.com/mdecrevoisier/SIGMA-detection-rules.git /tmp/mdecrevoisier
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -30,6 +39,9 @@ jobs:
         run: |
           python threat-intel/processing/sigma_filter.py \
             --input /tmp/sigma/rules \
+            --input /tmp/sigma/rules-emerging-threats \
+            --input /tmp/sigma/rules-threat-hunting \
+            --input /tmp/mdecrevoisier \
             --output /tmp/sigma_filtered \
             --platforms linux \
             --min-status test

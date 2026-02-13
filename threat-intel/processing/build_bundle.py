@@ -52,6 +52,71 @@ def count_lines(path: str) -> int:
         return sum(1 for line in f if line.strip())
 
 
+def count_kev(path: str) -> int:
+    """Count CVEs flagged as actively exploited."""
+    if not os.path.isfile(path):
+        return 0
+    count = 0
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+                if record.get("actively_exploited"):
+                    count += 1
+            except json.JSONDecodeError:
+                pass
+    return count
+
+
+def count_epss(path: str) -> int:
+    """Count CVEs with EPSS scores."""
+    if not os.path.isfile(path):
+        return 0
+    count = 0
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+                if "epss_score" in record:
+                    count += 1
+            except json.JSONDecodeError:
+                pass
+    return count
+
+
+def detect_sources(output_dir: str) -> dict[str, list[str]]:
+    """Detect which sources contributed to the bundle."""
+    sources: dict[str, list[str]] = {}
+
+    # YARA sources: top-level subdirs under yara/
+    yara_dir = os.path.join(output_dir, "yara")
+    if os.path.isdir(yara_dir):
+        yara_sources = []
+        for entry in sorted(os.listdir(yara_dir)):
+            if os.path.isdir(os.path.join(yara_dir, entry)):
+                yara_sources.append(entry)
+        if yara_sources:
+            sources["yara"] = yara_sources
+
+    # SIGMA sources: top-level subdirs under sigma/
+    sigma_dir = os.path.join(output_dir, "sigma")
+    if os.path.isdir(sigma_dir):
+        sigma_sources = []
+        for entry in sorted(os.listdir(sigma_dir)):
+            if os.path.isdir(os.path.join(sigma_dir, entry)):
+                sigma_sources.append(entry)
+        if sigma_sources:
+            sources["sigma"] = sigma_sources
+
+    return sources
+
+
 def main():
     parser = argparse.ArgumentParser(description="Build eGuard threat intel bundle")
     parser.add_argument("--sigma", default="", help="Directory of filtered SIGMA rules")
@@ -102,11 +167,19 @@ def main():
 
     # Copy CVE data
     cve_count = 0
+    cve_kev_count = 0
+    cve_epss_count = 0
+    cve_path = os.path.join(output_dir, "cve", "cves.jsonl")
     if args.cve:
         cve_src = os.path.abspath(args.cve)
-        if copy_file(cve_src, os.path.join(output_dir, "cve", "cves.jsonl")):
-            cve_count = count_lines(os.path.join(output_dir, "cve", "cves.jsonl"))
-    print(f"Bundle: {cve_count} CVEs")
+        if copy_file(cve_src, cve_path):
+            cve_count = count_lines(cve_path)
+            cve_kev_count = count_kev(cve_path)
+            cve_epss_count = count_epss(cve_path)
+    print(f"Bundle: {cve_count} CVEs ({cve_kev_count} actively exploited, {cve_epss_count} EPSS-enriched)")
+
+    # Detect sources
+    sources = detect_sources(output_dir)
 
     # Build file hash index
     file_hashes = {}
@@ -126,6 +199,9 @@ def main():
         "ioc_domain_count": ioc_domain_count,
         "ioc_ip_count": ioc_ip_count,
         "cve_count": cve_count,
+        "cve_kev_count": cve_kev_count,
+        "cve_epss_count": cve_epss_count,
+        "sources": sources,
         "files": file_hashes,
     }
 
@@ -134,7 +210,8 @@ def main():
         json.dump(manifest, f, indent=2)
         f.write("\n")
 
-    print(f"Bundle v{version} assembled: {len(file_hashes)} files, manifest at {manifest_path}")
+    total_files = len(file_hashes)
+    print(f"\nBundle v{version} assembled: {total_files} files, manifest at {manifest_path}")
 
 
 if __name__ == "__main__":

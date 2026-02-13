@@ -1,0 +1,39 @@
+# Known-good IP addresses and CIDR ranges — never flag as IOCs.
+# These are infrastructure IPs that may appear in threat feeds
+# due to hosting shared services or acting as DNS resolvers.
+#
+# Format: one IP or CIDR per line. Lines starting with # are comments.
+# Last updated: 2026-02-13
+
+# ── Public DNS Resolvers ─────────────────────────────────────────
+# Google Public DNS
+8.8.8.8
+8.8.4.4
+# Cloudflare DNS
+1.1.1.1
+1.0.0.1
+# Quad9
+9.9.9.9
+149.112.112.112
+# OpenDNS
+208.67.222.222
+208.67.220.220
+
+# ── NTP Pool ─────────────────────────────────────────────────────
+# NIST NTP
+132.163.96.1
+132.163.97.1
+
+# ── Cloud Provider Metadata ──────────────────────────────────────
+# AWS instance metadata
+169.254.169.254
+# Link-local range (not routable)
+169.254.0.0/16
+
+# ── Private / RFC1918 (should never appear but safety net) ───────
+10.0.0.0/8
+172.16.0.0/12
+192.168.0.0/16
+
+# ── Loopback ─────────────────────────────────────────────────────
+127.0.0.0/8

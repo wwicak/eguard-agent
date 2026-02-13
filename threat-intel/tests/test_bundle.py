@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-"""Tests for eGuard threat intel bundle structure and Ed25519 artifacts."""
+"""Tests for eGuard threat intel bundle structure, processing scripts, and enrichment."""
 
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 
 # Allow running from repo root or from tests/ dir
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+PROCESSING_DIR = os.path.join(REPO_ROOT, "threat-intel/processing")
 
 
 def sha256_file(path: str) -> str:
@@ -49,7 +52,8 @@ class TestBundleStructure(unittest.TestCase):
         required = [
             "version", "timestamp", "sigma_count", "yara_count",
             "ioc_hash_count", "ioc_domain_count", "ioc_ip_count",
-            "cve_count", "files",
+            "cve_count", "cve_kev_count", "cve_epss_count",
+            "sources", "files",
         ]
         for field in required:
             self.assertIn(field, manifest, f"Missing required field: {field}")
@@ -72,7 +76,8 @@ class TestBundleStructure(unittest.TestCase):
         with open(manifest_path) as f:
             manifest = json.load(f)
         for key in ("sigma_count", "yara_count", "ioc_hash_count",
-                     "ioc_domain_count", "ioc_ip_count", "cve_count"):
+                     "ioc_domain_count", "ioc_ip_count", "cve_count",
+                     "cve_kev_count", "cve_epss_count"):
             self.assertGreaterEqual(manifest.get(key, 0), 0, f"{key} must be >= 0")
 
 
@@ -103,45 +108,181 @@ class TestEd25519BundleArtifacts(unittest.TestCase):
 class TestProcessingScripts(unittest.TestCase):
     """Smoke tests for processing scripts (import check)."""
 
-    def test_sigma_filter_importable(self):
-        result = subprocess.run(
-            [sys.executable, "-c",
-             "import importlib.util; spec = importlib.util.spec_from_file_location('sigma_filter', "
-             f"'{os.path.join(REPO_ROOT, 'threat-intel/processing/sigma_filter.py')}'); "
-             "mod = importlib.util.module_from_spec(spec)"],
-            capture_output=True, text=True,
-        )
-        self.assertEqual(result.returncode, 0, f"sigma_filter.py import failed: {result.stderr}")
+    SCRIPTS = [
+        "sigma_filter", "yara_validate", "ioc_dedup",
+        "ioc_allowlist", "cve_extract", "build_bundle",
+        "ed25519_sign", "ed25519_verify",
+    ]
 
-    def test_build_bundle_importable(self):
-        result = subprocess.run(
-            [sys.executable, "-c",
-             "import importlib.util; spec = importlib.util.spec_from_file_location('build_bundle', "
-             f"'{os.path.join(REPO_ROOT, 'threat-intel/processing/build_bundle.py')}'); "
-             "mod = importlib.util.module_from_spec(spec)"],
-            capture_output=True, text=True,
-        )
-        self.assertEqual(result.returncode, 0, f"build_bundle.py import failed: {result.stderr}")
+    def test_all_scripts_importable(self):
+        for name in self.SCRIPTS:
+            path = os.path.join(PROCESSING_DIR, f"{name}.py")
+            result = subprocess.run(
+                [sys.executable, "-c",
+                 f"import importlib.util; spec = importlib.util.spec_from_file_location('{name}', '{path}'); "
+                 f"mod = importlib.util.module_from_spec(spec)"],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, f"{name}.py import failed: {result.stderr}")
 
-    def test_ed25519_sign_importable(self):
-        result = subprocess.run(
-            [sys.executable, "-c",
-             "import importlib.util; spec = importlib.util.spec_from_file_location('ed25519_sign', "
-             f"'{os.path.join(REPO_ROOT, 'threat-intel/processing/ed25519_sign.py')}'); "
-             "mod = importlib.util.module_from_spec(spec)"],
-            capture_output=True, text=True,
-        )
-        self.assertEqual(result.returncode, 0, f"ed25519_sign.py import failed: {result.stderr}")
 
-    def test_ed25519_verify_importable(self):
+class TestIOCTierSystem(unittest.TestCase):
+    """Validate IOC corroboration tier logic."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        for subdir in ("ips", "hashes", "domains"):
+            os.makedirs(os.path.join(self.tmpdir, "input", subdir))
+        self.output = os.path.join(self.tmpdir, "output")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir)
+
+    def _write_ioc(self, ioc_type: str, source: str, values: list[str]):
+        path = os.path.join(self.tmpdir, "input", ioc_type, f"{source}.txt")
+        with open(path, "w") as f:
+            f.write("\n".join(values) + "\n")
+
+    def _run_dedup(self):
         result = subprocess.run(
-            [sys.executable, "-c",
-             "import importlib.util; spec = importlib.util.spec_from_file_location('ed25519_verify', "
-             f"'{os.path.join(REPO_ROOT, 'threat-intel/processing/ed25519_verify.py')}'); "
-             "mod = importlib.util.module_from_spec(spec)"],
+            [sys.executable, os.path.join(PROCESSING_DIR, "ioc_dedup.py"),
+             "--input", os.path.join(self.tmpdir, "input"),
+             "--output", self.output],
             capture_output=True, text=True,
         )
-        self.assertEqual(result.returncode, 0, f"ed25519_verify.py import failed: {result.stderr}")
+        self.assertEqual(result.returncode, 0, f"ioc_dedup failed: {result.stderr}")
+
+    def _read_output(self, ioc_type: str) -> list[dict]:
+        path = os.path.join(self.output, ioc_type, "consolidated.jsonl")
+        if not os.path.isfile(path):
+            return []
+        with open(path) as f:
+            return [json.loads(line) for line in f if line.strip()]
+
+    def test_tier0_single_source_is_high(self):
+        """A single Tier 0 source (Spamhaus) should yield high confidence."""
+        self._write_ioc("ips", "spamhaus", ["1.2.3.4"])
+        self._run_dedup()
+        ips = self._read_output("ips")
+        self.assertEqual(len(ips), 1)
+        self.assertEqual(ips[0]["confidence"], "high")
+
+    def test_multi_source_corroboration(self):
+        """IP seen by 3 sources (Tier 0 + Tier 1 + Tier 2) should be high."""
+        self._write_ioc("ips", "spamhaus", ["5.5.5.5"])
+        self._write_ioc("ips", "firehol_l1", ["5.5.5.5"])
+        self._write_ioc("ips", "feodo", ["5.5.5.5"])
+        self._run_dedup()
+        ips = self._read_output("ips")
+        ip = next(i for i in ips if i["value"] == "5.5.5.5")
+        self.assertEqual(ip["confidence"], "high")
+        self.assertEqual(len(ip["sources"]), 3)
+
+    def test_single_tier3_is_low(self):
+        """A single Tier 3 source should yield low confidence."""
+        self._write_ioc("ips", "cins", ["9.9.9.1"])
+        self._run_dedup()
+        ips = self._read_output("ips")
+        ip = next(i for i in ips if i["value"] == "9.9.9.1")
+        self.assertEqual(ip["confidence"], "low")
+
+    def test_two_tier3_is_medium(self):
+        """Two Tier 3 sources should yield medium confidence."""
+        self._write_ioc("ips", "cins", ["8.8.8.1"])
+        self._write_ioc("ips", "blocklist_de", ["8.8.8.1"])
+        self._run_dedup()
+        ips = self._read_output("ips")
+        ip = next(i for i in ips if i["value"] == "8.8.8.1")
+        self.assertEqual(ip["confidence"], "medium")
+
+
+class TestCVEEnrichment(unittest.TestCase):
+    """Validate CVE extract with KEV and EPSS enrichment."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir)
+
+    def test_kev_flag_and_epss_score(self):
+        nvd = {
+            "vulnerabilities": [{
+                "cve": {
+                    "id": "CVE-2024-0001",
+                    "descriptions": [{"lang": "en", "value": "Kernel vuln"}],
+                    "metrics": {"cvssMetricV31": [{"cvssData": {"baseScore": 9.0}, "baseSeverity": "CRITICAL"}]},
+                    "configurations": [{"nodes": [{"cpeMatch": [{"criteria": "cpe:2.3:o:linux:linux_kernel:*:*:*:*:*:*:*:*"}]}]}],
+                    "published": "2024-01-01T00:00:00Z",
+                }
+            }],
+        }
+        kev = {"vulnerabilities": [{"cveID": "CVE-2024-0001", "dateAdded": "2024-01-15", "dueDate": "2024-02-01", "knownRansomwareCampaignUse": "Known"}]}
+        epss_csv = "#comment\ncve,epss,percentile\nCVE-2024-0001,0.95,0.99\n"
+
+        nvd_dir = os.path.join(self.tmpdir, "nvd")
+        os.makedirs(nvd_dir)
+        with open(os.path.join(nvd_dir, "test.json"), "w") as f:
+            json.dump(nvd, f)
+        with open(os.path.join(self.tmpdir, "kev.json"), "w") as f:
+            json.dump(kev, f)
+        with open(os.path.join(self.tmpdir, "epss.csv"), "w") as f:
+            f.write(epss_csv)
+
+        output = os.path.join(self.tmpdir, "cves.jsonl")
+        result = subprocess.run(
+            [sys.executable, os.path.join(PROCESSING_DIR, "cve_extract.py"),
+             "--input", nvd_dir, "--output", output,
+             "--kev", os.path.join(self.tmpdir, "kev.json"),
+             "--epss", os.path.join(self.tmpdir, "epss.csv")],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, f"cve_extract failed: {result.stderr}")
+
+        with open(output) as f:
+            cves = [json.loads(line) for line in f if line.strip()]
+        self.assertEqual(len(cves), 1)
+        self.assertTrue(cves[0]["actively_exploited"])
+        self.assertEqual(cves[0]["kev_ransomware"], "Known")
+        self.assertAlmostEqual(cves[0]["epss_score"], 0.95, places=2)
+
+    def test_kev_bypasses_cvss_filter(self):
+        """A CVE in CISA KEV should be included even if CVSS < min threshold."""
+        nvd = {
+            "vulnerabilities": [{
+                "cve": {
+                    "id": "CVE-2024-0002",
+                    "descriptions": [{"lang": "en", "value": "Low CVSS but actively exploited"}],
+                    "metrics": {"cvssMetricV31": [{"cvssData": {"baseScore": 3.5}, "baseSeverity": "LOW"}]},
+                    "configurations": [{"nodes": [{"cpeMatch": [{"criteria": "cpe:2.3:a:openssl:openssl:1.1.1:*:*:*:*:*:*:*"}]}]}],
+                    "published": "2024-06-01T00:00:00Z",
+                }
+            }],
+        }
+        kev = {"vulnerabilities": [{"cveID": "CVE-2024-0002", "dateAdded": "2024-07-01", "dueDate": "2024-07-15", "knownRansomwareCampaignUse": "Unknown"}]}
+
+        nvd_dir = os.path.join(self.tmpdir, "nvd")
+        os.makedirs(nvd_dir)
+        with open(os.path.join(nvd_dir, "test.json"), "w") as f:
+            json.dump(nvd, f)
+        with open(os.path.join(self.tmpdir, "kev.json"), "w") as f:
+            json.dump(kev, f)
+
+        output = os.path.join(self.tmpdir, "cves.jsonl")
+        result = subprocess.run(
+            [sys.executable, os.path.join(PROCESSING_DIR, "cve_extract.py"),
+             "--input", nvd_dir, "--output", output,
+             "--min-cvss", "7.0",
+             "--kev", os.path.join(self.tmpdir, "kev.json")],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0)
+
+        with open(output) as f:
+            cves = [json.loads(line) for line in f if line.strip()]
+        # Should be included despite CVSS 3.5 < min 7.0, because it's in KEV
+        self.assertEqual(len(cves), 1)
+        self.assertTrue(cves[0]["actively_exploited"])
 
 
 if __name__ == "__main__":

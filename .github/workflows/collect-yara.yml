@@ -15,18 +15,75 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Clone YARA rule repositories
+      # ── Source 1: YARA Forge Extended ──────────────────────────────
+      # Aggregates 20+ curated repos (signature-base, Yara-Rules,
+      # ReversingLabs, InQuest, Malpedia, ESET, CAPE, and more).
+      # Pre-validated, quality-scored, deduplicated upstream.
+      - name: Download YARA Forge Extended ruleset
         run: |
-          git clone --depth 1 https://github.com/Yara-Rules/rules.git /tmp/yara-rules
+          mkdir -p /tmp/yara_collected/yara-forge
+          curl -sSfL --retry 3 --max-time 300 \
+            -o /tmp/yara-forge.zip \
+            "https://github.com/YARAHQ/yara-forge/releases/latest/download/yara-forge-rules-extended.zip"
+          unzip -o /tmp/yara-forge.zip -d /tmp/yara_collected/yara-forge
+          COUNT=$(find /tmp/yara_collected/yara-forge -name '*.yar' -o -name '*.yara' | wc -l)
+          echo "YARA Forge Extended: ${COUNT} rule files"
 
-      - name: Collect relevant rules
+      # ── Source 2: Elastic Security YARA ────────────────────────────
+      # Vendor-maintained rules for endpoint malware detection.
+      # NOT included in YARA Forge — genuinely new content.
+      - name: Clone Elastic protections-artifacts
         run: |
-          mkdir -p /tmp/yara_collected
-          for dir in malware CVE crypto packers; do
-            if [ -d "/tmp/yara-rules/${dir}" ]; then
-              cp -r "/tmp/yara-rules/${dir}" "/tmp/yara_collected/" 2>/dev/null || true
-            fi
+          git clone --depth 1 --filter=blob:none --sparse \
+            https://github.com/elastic/protections-artifacts.git /tmp/elastic-pa
+          cd /tmp/elastic-pa && git sparse-checkout set yara
+          mkdir -p /tmp/yara_collected/elastic
+          if [ -d "/tmp/elastic-pa/yara" ]; then
+            cp -r /tmp/elastic-pa/yara/* /tmp/yara_collected/elastic/ 2>/dev/null || true
+          fi
+          COUNT=$(find /tmp/yara_collected/elastic -name '*.yar' -o -name '*.yara' 2>/dev/null | wc -l)
+          echo "Elastic YARA: ${COUNT} rule files"
+
+      # ── Source 3: Google Cloud Threat Intelligence YARA ────────────
+      # CobaltStrike, Sliver, and other C2 framework detection.
+      # NOT included in YARA Forge — genuinely new content.
+      - name: Clone Google GCTI
+        run: |
+          git clone --depth 1 https://github.com/chronicle/GCTI.git /tmp/gcti
+          mkdir -p /tmp/yara_collected/gcti
+          find /tmp/gcti -name '*.yar' -o -name '*.yara' | while read -r f; do
+            rel="${f#/tmp/gcti/}"
+            dir=$(dirname "$rel")
+            mkdir -p "/tmp/yara_collected/gcti/${dir}"
+            cp "$f" "/tmp/yara_collected/gcti/${dir}/"
           done
+          COUNT=$(find /tmp/yara_collected/gcti -name '*.yar' -o -name '*.yara' 2>/dev/null | wc -l)
+          echo "Google GCTI YARA: ${COUNT} rule files"
+
+      # ── Source 4: ReversingLabs YARA ───────────────────────────────
+      # Focused coverage: exploits, infostealers, ransomware, trojans.
+      - name: Clone ReversingLabs YARA rules
+        run: |
+          git clone --depth 1 https://github.com/reversinglabs/reversinglabs-yara-rules.git /tmp/rl-yara
+          mkdir -p /tmp/yara_collected/reversinglabs
+          find /tmp/rl-yara -name '*.yar' -o -name '*.yara' | while read -r f; do
+            rel="${f#/tmp/rl-yara/}"
+            dir=$(dirname "$rel")
+            mkdir -p "/tmp/yara_collected/reversinglabs/${dir}"
+            cp "$f" "/tmp/yara_collected/reversinglabs/${dir}/"
+          done
+          COUNT=$(find /tmp/yara_collected/reversinglabs -name '*.yar' -o -name '*.yara' 2>/dev/null | wc -l)
+          echo "ReversingLabs YARA: ${COUNT} rule files"
+
+      - name: Summary
+        run: |
+          echo "=== YARA Collection Summary ==="
+          for src in yara-forge elastic gcti reversinglabs; do
+            COUNT=$(find "/tmp/yara_collected/${src}" -name '*.yar' -o -name '*.yara' 2>/dev/null | wc -l)
+            echo "  ${src}: ${COUNT} rule files"
+          done
+          TOTAL=$(find /tmp/yara_collected -name '*.yar' -o -name '*.yara' | wc -l)
+          echo "  TOTAL: ${TOTAL} rule files (pre-validation)"
 
       - name: Upload collected rules as artifact
         uses: actions/upload-artifact@v4
