@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use grpc_client::{pb, Client};
@@ -52,7 +52,7 @@ fn temp_dir(prefix: &str) -> PathBuf {
     dir
 }
 
-fn write_exec(path: &PathBuf, content: &str) {
+fn write_exec(path: &Path, content: &str) {
     std::fs::write(path, content).expect("write mock executable");
     #[cfg(unix)]
     {
@@ -63,7 +63,7 @@ fn write_exec(path: &PathBuf, content: &str) {
     }
 }
 
-fn install_mock_tools(bin_dir: &PathBuf) {
+fn install_mock_tools(bin_dir: &Path) {
     for tool in [
         "curl",
         "dpkg",
@@ -206,7 +206,7 @@ fn package_build_harness_executes_and_emits_metrics_with_mocked_toolchain() {
     let metrics_raw = std::fs::read_to_string(&metrics_path).expect("read metrics");
     let metrics: serde_json::Value = serde_json::from_str(&metrics_raw).expect("parse metrics");
     assert_eq!(metrics["suite"], "package-agent");
-    assert_eq!(metrics["targets_mb"]["agent_binary"], 10);
+    assert!(metrics["targets_mb"]["agent_binary"].is_null());
     assert_eq!(metrics["targets_mb"]["rules_package"], 5);
     assert_eq!(metrics["targets_mb"]["full_install"], 15);
     assert_eq!(metrics["targets_mb"]["runtime_rss"], 25);
@@ -328,9 +328,7 @@ fn install_script_executes_with_mocked_package_manager_and_systemd() {
     assert!(run.status.success());
     let stdout_text = String::from_utf8_lossy(&run.stdout);
     let stdout_lines: Vec<&str> = stdout_text.lines().collect();
-    assert!(stdout_lines
-        .iter()
-        .any(|line| *line == "eguard-agent installed from https://example.local/pkg.deb"));
+    assert!(stdout_lines.contains(&"eguard-agent installed from https://example.local/pkg.deb"));
 
     let log = std::fs::read_to_string(&log_path).expect("read mock log");
     let log_lines = non_comment_lines(&log);

@@ -202,7 +202,11 @@ fn command_alias_table_maps_parse_and_execution_state_effects() {
 
     for case in cases {
         let parsed = parse_server_command(case.raw);
-        assert_eq!(parsed, case.expected_command, "parsed command for {}", case.raw);
+        assert_eq!(
+            parsed, case.expected_command,
+            "parsed command for {}",
+            case.raw
+        );
 
         let mut state = case.initial_state;
         let execution = execute_server_command_with_state(parsed, case.now_unix, &mut state);
@@ -212,7 +216,11 @@ fn command_alias_table_maps_parse_and_execution_state_effects() {
             "outcome for {}",
             case.raw
         );
-        assert_eq!(execution.status, case.expected_status, "status for {}", case.raw);
+        assert_eq!(
+            execution.status, case.expected_status,
+            "status for {}",
+            case.raw
+        );
         assert!(
             execution.detail.contains(case.expected_detail_contains),
             "detail for {} was {}",

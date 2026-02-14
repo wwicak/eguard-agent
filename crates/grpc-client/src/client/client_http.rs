@@ -8,8 +8,8 @@ use serde_json::json;
 use tracing::warn;
 
 use crate::types::{
-    CommandEnvelope, ComplianceEnvelope, EnrollmentEnvelope, EventEnvelope, ResponseEnvelope,
-    ServerState, ThreatIntelVersionEnvelope,
+    CommandEnvelope, ComplianceEnvelope, EnrollmentEnvelope, EventEnvelope, FleetBaselineEnvelope,
+    PolicyEnvelope, ResponseEnvelope, ServerState, ThreatIntelVersionEnvelope,
 };
 
 use super::Client;
@@ -23,6 +23,8 @@ const PATH_COMMAND_CHANNEL: &str = "/api/v1/endpoint/command/channel";
 const PATH_COMMAND_PENDING: &str = "/api/v1/endpoint/command/pending";
 const PATH_COMMAND_ACK: &str = "/api/v1/endpoint/command/ack";
 const PATH_THREAT_INTEL_VERSION: &str = "/api/v1/endpoint/threat-intel/version";
+const PATH_BASELINE_FLEET: &str = "/api/v1/endpoint/baseline/fleet";
+const PATH_POLICY: &str = "/api/v1/endpoint/policy";
 const PATH_SERVER_STATE: &str = "/api/v1/endpoint/state";
 
 #[derive(Debug, Deserialize)]
@@ -38,6 +40,12 @@ struct ThreatIntelVersionsResponse {
 #[derive(Debug, Deserialize)]
 struct StateResponse {
     state: Option<HashMap<String, serde_json::Value>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FleetBaselineResponse {
+    #[serde(default)]
+    fleet_baselines: Vec<FleetBaselineEnvelope>,
 }
 
 impl Client {
@@ -169,6 +177,40 @@ impl Client {
                 warn!(error = %err, "failed to fetch threat intel version");
                 Ok(None)
             }
+        }
+    }
+
+    pub(super) async fn fetch_fleet_baselines_http(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<FleetBaselineEnvelope>> {
+        let bounded_limit = if limit == 0 { 1 } else { limit.min(1000) };
+        let query = vec![("limit".to_string(), bounded_limit.to_string())];
+        let response: FleetBaselineResponse = self
+            .get_json_with_retry(
+                "fleet_baseline_http",
+                PATH_BASELINE_FLEET,
+                query,
+                "fleet baseline",
+            )
+            .await?;
+        Ok(response.fleet_baselines)
+    }
+
+    pub(super) async fn fetch_policy_http(&self, agent_id: &str) -> Result<Option<PolicyEnvelope>> {
+        let query = vec![("agent_id".to_string(), agent_id.to_string())];
+        let response: PolicyEnvelope = self
+            .get_json_with_retry("fetch_policy_http", PATH_POLICY, query, "policy")
+            .await?;
+
+        if response.policy_id.trim().is_empty()
+            && response.config_version.trim().is_empty()
+            && response.policy_json.trim().is_empty()
+            && response.certificate_policy.is_none()
+        {
+            Ok(None)
+        } else {
+            Ok(Some(response))
         }
     }
 

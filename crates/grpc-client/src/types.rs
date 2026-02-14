@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -7,10 +9,18 @@ pub enum TransportMode {
 }
 
 impl TransportMode {
-    pub fn from_str(raw: &str) -> Self {
+    pub fn parse(raw: &str) -> Self {
+        raw.parse().unwrap_or(Self::Http)
+    }
+}
+
+impl std::str::FromStr for TransportMode {
+    type Err = std::convert::Infallible;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
         match raw.trim().to_ascii_lowercase().as_str() {
-            "grpc" | "tonic" => Self::Grpc,
-            _ => Self::Http,
+            "grpc" | "tonic" => Ok(Self::Grpc),
+            _ => Ok(Self::Http),
         }
     }
 }
@@ -42,6 +52,17 @@ pub struct EnrollmentEnvelope {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnrollmentResultEnvelope {
+    pub agent_id: String,
+    #[serde(default)]
+    pub signed_certificate: Vec<u8>,
+    #[serde(default)]
+    pub ca_certificate: Vec<u8>,
+    #[serde(default)]
+    pub initial_policy: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComplianceEnvelope {
     pub agent_id: String,
     pub policy_id: String,
@@ -65,6 +86,8 @@ pub struct ResponseEnvelope {
 pub struct ThreatIntelVersionEnvelope {
     pub version: String,
     pub bundle_path: String,
+    #[serde(default)]
+    pub published_at_unix: i64,
     pub sigma_count: i64,
     pub yara_count: i64,
     pub ioc_count: i64,
@@ -73,13 +96,59 @@ pub struct ThreatIntelVersionEnvelope {
     pub custom_rule_count: i64,
     #[serde(default)]
     pub custom_rule_version_hash: String,
+    #[serde(default)]
+    pub bundle_signature_path: String,
+    #[serde(default)]
+    pub bundle_sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CertificatePolicyEnvelope {
+    #[serde(default)]
+    pub pinned_ca_sha256: String,
+    #[serde(default)]
+    pub rotate_before_expiry_days: i32,
+    #[serde(default)]
+    pub seamless_rotation: bool,
+    #[serde(default)]
+    pub require_client_cert_for_all_rpcs_except_enroll: bool,
+    #[serde(default)]
+    pub grpc_max_recv_msg_size_bytes: i32,
+    #[serde(default)]
+    pub grpc_port: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PolicyEnvelope {
+    #[serde(default)]
+    pub policy_id: String,
+    #[serde(default)]
+    pub config_version: String,
+    #[serde(default)]
+    pub policy_json: String,
+    #[serde(default)]
+    pub certificate_policy: Option<CertificatePolicyEnvelope>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FleetBaselineEnvelope {
+    pub process_key: String,
+    pub median_distribution: HashMap<String, f64>,
+    pub agent_count: i64,
+    pub stddev_kl: f64,
+    #[serde(default)]
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TlsConfig {
     pub cert_path: String,
     pub key_path: String,
     pub ca_path: String,
+    #[serde(default)]
+    pub pinned_ca_sha256: Option<String>,
+    #[serde(default)]
+    pub ca_pin_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

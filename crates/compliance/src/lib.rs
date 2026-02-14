@@ -23,7 +23,7 @@ impl std::error::Error for ComplianceError {}
 
 pub type Result<T> = std::result::Result<T, ComplianceError>;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CompliancePolicy {
     #[serde(default)]
     pub firewall_required: bool,
@@ -57,29 +57,6 @@ pub struct CompliancePolicy {
     pub grace_period_secs: Option<u64>,
     #[serde(default)]
     pub auto_remediate: Option<bool>,
-}
-
-impl Default for CompliancePolicy {
-    fn default() -> Self {
-        Self {
-            firewall_required: false,
-            min_kernel_prefix: None,
-            os_version_prefix: None,
-            min_os_version: None,
-            disk_encryption_required: false,
-            require_ssh_root_login_disabled: false,
-            required_packages: Vec::new(),
-            forbidden_packages: Vec::new(),
-            required_services: Vec::new(),
-            password_policy_required: false,
-            screen_lock_required: false,
-            auto_updates_required: false,
-            antivirus_required: false,
-            check_interval_secs: None,
-            grace_period_secs: None,
-            auto_remediate: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -669,7 +646,7 @@ fn parse_password_policy(
                 continue;
             }
             if let Some(v) = line.strip_prefix("PASS_MAX_DAYS") {
-                let days = v.trim().split_whitespace().next()?.parse::<u64>().ok()?;
+                let days = v.split_whitespace().next()?.parse::<u64>().ok()?;
                 max_days_ok = days <= 90;
             }
         }

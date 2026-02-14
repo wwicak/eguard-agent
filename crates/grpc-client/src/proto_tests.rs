@@ -82,6 +82,20 @@ fn service_protos_declare_streaming_and_reporting_rpcs() {
 }
 
 #[test]
+// AC-GRP-100
+fn threat_intel_contract_includes_explicit_signature_and_digest_fields() {
+    assert_contains_all(
+        AGENT_PROTO,
+        &[
+            "message ThreatIntelVersion",
+            "string bundle_path",
+            "string bundle_signature_path",
+            "string bundle_sha256",
+        ],
+    );
+}
+
+#[test]
 // AC-GRP-002 AC-GRP-003 AC-GRP-004 AC-GRP-005
 fn enrollment_contract_includes_capabilities_and_cert_material() {
     assert_contains_all(

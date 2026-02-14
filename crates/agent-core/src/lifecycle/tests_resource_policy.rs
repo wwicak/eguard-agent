@@ -70,7 +70,7 @@ fn runtime_dependency_set_excludes_ml_frameworks_and_keeps_zig_build_path() {
 }
 
 #[test]
-// AC-RES-009
+// AC-RES-009 AC-OPT-005
 fn runtime_loop_progresses_without_busy_wait_under_offline_conditions() {
     let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
     let mut cfg = AgentConfig::default();
@@ -118,7 +118,7 @@ fn runtime_loop_progresses_without_busy_wait_under_offline_conditions() {
         elapsed < Duration::from_secs(20),
         "tick took too long: {elapsed:?}"
     );
-    assert!(runtime.buffer.pending_count() >= 1);
+    assert_eq!(runtime.buffer.pending_count(), 0);
 }
 
 #[test]

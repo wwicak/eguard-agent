@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use tonic::{Request, Response, Status};
 
@@ -40,6 +40,8 @@ fn url_scheme_switches_to_https_with_tls() {
         cert_path: cert.to_string_lossy().into_owned(),
         key_path: key.to_string_lossy().into_owned(),
         ca_path: ca.to_string_lossy().into_owned(),
+        pinned_ca_sha256: None,
+        ca_pin_path: None,
     })
     .expect("configure tls");
 
@@ -49,7 +51,165 @@ fn url_scheme_switches_to_https_with_tls() {
     let _ = std::fs::remove_file(cert);
     let _ = std::fs::remove_file(key);
     let _ = std::fs::remove_file(ca);
-    let _ = std::fs::remove_dir(base);
+    let _ = std::fs::remove_dir_all(base);
+}
+
+#[test]
+// AC-ATP-082
+fn configure_tls_persists_ca_pin_on_first_use() {
+    let base = std::env::temp_dir().join(format!(
+        "eguard-agent-tls-pin-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    let _ = std::fs::create_dir_all(&base);
+
+    let cert = base.join("agent.crt");
+    let key = base.join("agent.key");
+    let ca = base.join("ca.crt");
+    let _ = std::fs::write(&cert, b"cert");
+    let _ = std::fs::write(&key, b"key");
+    let _ = std::fs::write(&ca, b"ca-v1");
+
+    let mut c = Client::new("10.0.0.1:50051".to_string());
+    c.configure_tls(TlsConfig {
+        cert_path: cert.to_string_lossy().into_owned(),
+        key_path: key.to_string_lossy().into_owned(),
+        ca_path: ca.to_string_lossy().into_owned(),
+        pinned_ca_sha256: None,
+        ca_pin_path: None,
+    })
+    .expect("configure tls should persist CA pin");
+
+    let pin_path = resolve_pin_path(&ca.to_string_lossy(), None);
+    let pin_raw = std::fs::read_to_string(&pin_path).expect("read persisted pin");
+    assert_eq!(pin_raw.trim().len(), 64);
+    assert!(pin_raw.trim().chars().all(|c| c.is_ascii_hexdigit()));
+
+    let _ = std::fs::remove_dir_all(base);
+}
+
+#[test]
+// AC-ATP-083
+fn configure_tls_rejects_changed_ca_when_pin_exists() {
+    let base = std::env::temp_dir().join(format!(
+        "eguard-agent-tls-pin-mismatch-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    let _ = std::fs::create_dir_all(&base);
+
+    let cert = base.join("agent.crt");
+    let key = base.join("agent.key");
+    let ca = base.join("ca.crt");
+    let _ = std::fs::write(&cert, b"cert");
+    let _ = std::fs::write(&key, b"key");
+    let _ = std::fs::write(&ca, b"ca-v1");
+
+    let mut first_client = Client::new("10.0.0.1:50051".to_string());
+    first_client
+        .configure_tls(TlsConfig {
+            cert_path: cert.to_string_lossy().into_owned(),
+            key_path: key.to_string_lossy().into_owned(),
+            ca_path: ca.to_string_lossy().into_owned(),
+            pinned_ca_sha256: None,
+            ca_pin_path: None,
+        })
+        .expect("initial configure should persist pin");
+
+    let _ = std::fs::write(&ca, b"ca-v2");
+
+    let mut second_client = Client::new("10.0.0.1:50051".to_string());
+    let err = second_client
+        .configure_tls(TlsConfig {
+            cert_path: cert.to_string_lossy().into_owned(),
+            key_path: key.to_string_lossy().into_owned(),
+            ca_path: ca.to_string_lossy().into_owned(),
+            pinned_ca_sha256: None,
+            ca_pin_path: None,
+        })
+        .expect_err("changed CA should be rejected by pin check");
+    assert!(err.to_string().contains("TLS CA pin mismatch"));
+
+    let _ = std::fs::remove_dir_all(base);
+}
+
+#[test]
+// AC-ATP-082 AC-ATP-083
+fn configure_tls_rejects_mismatched_explicit_pinned_hash() {
+    let base = std::env::temp_dir().join(format!(
+        "eguard-agent-tls-explicit-pin-mismatch-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    let _ = std::fs::create_dir_all(&base);
+
+    let cert = base.join("agent.crt");
+    let key = base.join("agent.key");
+    let ca = base.join("ca.crt");
+    let _ = std::fs::write(&cert, b"cert");
+    let _ = std::fs::write(&key, b"key");
+    let _ = std::fs::write(&ca, b"ca-v1");
+
+    let mut c = Client::new("10.0.0.1:50051".to_string());
+    let err = c
+        .configure_tls(TlsConfig {
+            cert_path: cert.to_string_lossy().into_owned(),
+            key_path: key.to_string_lossy().into_owned(),
+            ca_path: ca.to_string_lossy().into_owned(),
+            pinned_ca_sha256: Some(
+                "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            ),
+            ca_pin_path: None,
+        })
+        .expect_err("mismatched explicit pinned hash should fail");
+    assert!(err
+        .to_string()
+        .contains("TLS CA pin mismatch from TLS config"));
+
+    let _ = std::fs::remove_dir_all(base);
+}
+
+#[test]
+// AC-ATP-082
+fn configure_tls_persists_pin_to_explicit_path() {
+    let base = std::env::temp_dir().join(format!(
+        "eguard-agent-tls-explicit-pin-path-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    let _ = std::fs::create_dir_all(&base);
+
+    let cert = base.join("agent.crt");
+    let key = base.join("agent.key");
+    let ca = base.join("ca.crt");
+    let pin_path = base.join("custom-ca.pin.sha256");
+    let _ = std::fs::write(&cert, b"cert");
+    let _ = std::fs::write(&key, b"key");
+    let _ = std::fs::write(&ca, b"ca-v1");
+
+    let mut c = Client::new("10.0.0.1:50051".to_string());
+    c.configure_tls(TlsConfig {
+        cert_path: cert.to_string_lossy().into_owned(),
+        key_path: key.to_string_lossy().into_owned(),
+        ca_path: ca.to_string_lossy().into_owned(),
+        pinned_ca_sha256: None,
+        ca_pin_path: Some(pin_path.to_string_lossy().into_owned()),
+    })
+    .expect("configure tls should persist explicit pin path");
+
+    let persisted_pin = std::fs::read_to_string(&pin_path).expect("read explicit pin file");
+    assert_eq!(persisted_pin.trim().len(), 64);
+
+    let _ = std::fs::remove_dir_all(base);
 }
 
 #[test]
@@ -61,6 +221,8 @@ fn configure_tls_rejects_missing_files() {
             cert_path: "/tmp/definitely-missing-cert.pem".to_string(),
             key_path: "/tmp/definitely-missing-key.pem".to_string(),
             ca_path: "/tmp/definitely-missing-ca.pem".to_string(),
+            pinned_ca_sha256: None,
+            ca_pin_path: None,
         })
         .expect_err("missing tls files must fail");
     assert!(err.to_string().contains("TLS file does not exist"));
@@ -237,6 +399,120 @@ async fn send_heartbeat_offline_returns_error() {
 }
 
 #[tokio::test]
+// AC-BSL-031 AC-BSL-032 AC-BSL-033
+async fn fetch_fleet_baselines_http_returns_seed_rows() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind fleet baseline mock server");
+    let addr = listener.local_addr().expect("local addr");
+
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("accept client");
+        let mut request_buf = vec![0u8; 4096];
+        let _ = stream.read(&mut request_buf).await;
+
+        let body = r#"{
+  "status":"ok",
+  "seeded":true,
+  "fleet_baselines":[
+    {
+      "process_key":"bash:sshd",
+      "median_distribution":{
+        "process_exec":0.55,
+        "dns_query":0.45
+      },
+      "agent_count":12,
+      "stddev_kl":0.07,
+      "source":"fleet_aggregated"
+    }
+  ]
+}"#;
+
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body,
+        );
+        stream
+            .write_all(response.as_bytes())
+            .await
+            .expect("write mock response");
+    });
+
+    let client = Client::new(addr.to_string());
+    let baselines = client
+        .fetch_fleet_baselines(32)
+        .await
+        .expect("fetch fleet baselines");
+
+    assert_eq!(baselines.len(), 1);
+    assert_eq!(baselines[0].process_key, "bash:sshd");
+    assert_eq!(baselines[0].agent_count, 12);
+    assert!(baselines[0]
+        .median_distribution
+        .contains_key("process_exec"));
+
+    server.await.expect("mock server join");
+}
+
+#[tokio::test]
+// AC-REM-002 AC-REM-004
+async fn fetch_policy_http_returns_certificate_policy_payload() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind policy mock server");
+    let addr = listener.local_addr().expect("local addr");
+
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("accept client");
+        let mut request_buf = vec![0u8; 4096];
+        let _ = stream.read(&mut request_buf).await;
+
+        let body = r#"{
+  "policy_id":"policy-7",
+  "config_version":"cfg-9",
+  "policy_json":"{\"firewall_required\":true}",
+  "certificate_policy":{
+    "pinned_ca_sha256":"abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+    "rotate_before_expiry_days":21,
+    "seamless_rotation":true,
+    "require_client_cert_for_all_rpcs_except_enroll":true,
+    "grpc_max_recv_msg_size_bytes":16777216,
+    "grpc_port":50051
+  }
+}"#;
+
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body,
+        );
+        stream
+            .write_all(response.as_bytes())
+            .await
+            .expect("write mock response");
+    });
+
+    let client = Client::new(addr.to_string());
+    let policy = client
+        .fetch_policy("agent-1")
+        .await
+        .expect("fetch policy")
+        .expect("expected policy payload");
+
+    assert_eq!(policy.policy_id, "policy-7");
+    assert_eq!(policy.config_version, "cfg-9");
+    assert!(policy.policy_json.contains("firewall_required"));
+    let cert_policy = policy
+        .certificate_policy
+        .expect("certificate policy should be present");
+    assert_eq!(cert_policy.rotate_before_expiry_days, 21);
+    assert_eq!(cert_policy.grpc_port, 50051);
+
+    server.await.expect("mock server join");
+}
+
+#[tokio::test]
 // AC-GRP-030 AC-CMP-032 AC-GRP-081
 async fn send_compliance_offline_returns_error() {
     let mut c = Client::new("127.0.0.1:1".to_string());
@@ -283,6 +559,18 @@ async fn fetch_latest_threat_intel_offline_returns_error() {
         .fetch_latest_threat_intel()
         .await
         .expect_err("offline threat-intel query should fail");
+    assert!(err.to_string().contains("server unreachable"));
+}
+
+#[tokio::test]
+// AC-REM-002 AC-REM-004
+async fn fetch_policy_offline_returns_error() {
+    let mut c = Client::new("127.0.0.1:1".to_string());
+    c.set_online(false);
+    let err = c
+        .fetch_policy("agent-1")
+        .await
+        .expect_err("offline policy query should fail");
     assert!(err.to_string().contains("server unreachable"));
 }
 
@@ -493,6 +781,8 @@ impl pb::agent_control_service_server::AgentControlService for MockAgentControlS
                     published_at_unix: 0,
                     custom_rule_count: 0,
                     custom_rule_version_hash: String::new(),
+                    bundle_signature_path: String::new(),
+                    bundle_sha256: String::new(),
                 }),
         ))
     }
@@ -900,6 +1190,41 @@ async fn enroll_grpc_validates_token_issues_cert_and_tracks_endpoint_agent_recor
 }
 
 #[tokio::test]
+// AC-GRP-004
+async fn enroll_with_material_returns_certificate_payloads() {
+    let state = Arc::new(Mutex::new(EnrollmentMockState::default()));
+    state.lock().expect("state lock").token_table.insert(
+        "tok-valid-material".to_string(),
+        EnrollmentTokenRecord {
+            expires_at_unix: i64::MAX,
+            max_uses: 1,
+            used: 0,
+        },
+    );
+
+    let server = spawn_mock_agent_control(state).await;
+    let mut client = Client::with_mode("inproc-agent-control".to_string(), TransportMode::Grpc);
+    client.set_test_channel_override(server.channel());
+    let material = client
+        .enroll_with_material(&EnrollmentEnvelope {
+            agent_id: "agent-material".to_string(),
+            mac: "00:11:22:33:44:11".to_string(),
+            hostname: "host-material".to_string(),
+            enrollment_token: Some("tok-valid-material".to_string()),
+            tenant_id: None,
+        })
+        .await
+        .expect("enroll_with_material should succeed")
+        .expect("grpc enroll should return material");
+
+    assert!(material.agent_id.starts_with("agent-created-"));
+    assert_eq!(material.signed_certificate, b"signed-by-scep-ca".to_vec());
+    assert_eq!(material.ca_certificate, b"ca-cert".to_vec());
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
 // AC-GRP-007 AC-ENR-006
 async fn enroll_grpc_rejects_expired_or_exhausted_tokens() {
     let state = Arc::new(Mutex::new(EnrollmentMockState::default()));
@@ -1014,6 +1339,53 @@ async fn enroll_grpc_allows_unlimited_token_when_max_uses_zero() {
         .expect("unlimited token");
     assert_eq!(token.used, 3);
     drop(guard);
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
+// AC-VER-029 AC-ENR-006
+async fn enrollment_rejects_expired_or_wrong_ca_certificates() {
+    let state = Arc::new(Mutex::new(EnrollmentMockState::default()));
+    state.lock().expect("state lock").token_table.insert(
+        "tok-expired".to_string(),
+        EnrollmentTokenRecord {
+            expires_at_unix: 1,
+            max_uses: 1,
+            used: 0,
+        },
+    );
+
+    let server = spawn_mock_agent_control(state.clone()).await;
+    let mut grpc_client =
+        Client::with_mode("inproc-agent-control".to_string(), TransportMode::Grpc);
+    grpc_client.set_test_channel_override(server.channel());
+
+    let enrollment_err = grpc_client
+        .enroll(&EnrollmentEnvelope {
+            agent_id: "agent-expired-cert".to_string(),
+            mac: "00:11:22:33:44:55".to_string(),
+            hostname: "host-expired-cert".to_string(),
+            enrollment_token: Some("tok-expired".to_string()),
+            tenant_id: None,
+        })
+        .await
+        .expect_err("expired enrollment token must fail");
+    assert!(enrollment_err
+        .to_string()
+        .contains("operation enroll_grpc failed"));
+
+    let mut tls_client = Client::new("127.0.0.1:50051".to_string());
+    let ca_err = tls_client
+        .configure_tls(TlsConfig {
+            cert_path: "/tmp/eguard-cert-missing.pem".to_string(),
+            key_path: "/tmp/eguard-key-missing.pem".to_string(),
+            ca_path: "/tmp/eguard-ca-wrong.pem".to_string(),
+            pinned_ca_sha256: None,
+            ca_pin_path: None,
+        })
+        .expect_err("wrong CA path must fail TLS configuration");
+    assert!(ca_err.to_string().contains("TLS file does not exist"));
 
     server.shutdown().await;
 }
@@ -1306,6 +1678,10 @@ async fn fetch_latest_threat_intel_grpc_returns_some_with_expected_fields() {
             published_at_unix: 1_700_000_999,
             custom_rule_count: 2,
             custom_rule_version_hash: "hash-rules-v2026-02-13".to_string(),
+            bundle_signature_path:
+                "/api/v1/endpoint/threat-intel/bundle/rules-2026.02.13.tar.zst.sig".to_string(),
+            bundle_sha256: "7f8e2ec8d80f12d8a9ef89f0f14bd06f26f8b4fcaef48ec6f7ccf4ec3d88f571"
+                .to_string(),
         }),
         ..EnrollmentMockState::default()
     }));
@@ -1328,8 +1704,17 @@ async fn fetch_latest_threat_intel_grpc_returns_some_with_expected_fields() {
     assert_eq!(intel.yara_count, 7);
     assert_eq!(intel.ioc_count, 3);
     assert_eq!(intel.cve_count, 5);
+    assert_eq!(intel.published_at_unix, 1_700_000_999);
     assert_eq!(intel.custom_rule_count, 2);
     assert_eq!(intel.custom_rule_version_hash, "hash-rules-v2026-02-13");
+    assert_eq!(
+        intel.bundle_signature_path,
+        "/api/v1/endpoint/threat-intel/bundle/rules-2026.02.13.tar.zst.sig"
+    );
+    assert_eq!(
+        intel.bundle_sha256,
+        "7f8e2ec8d80f12d8a9ef89f0f14bd06f26f8b4fcaef48ec6f7ccf4ec3d88f571"
+    );
 
     let guard = state.lock().expect("state lock");
     assert_eq!(guard.threat_intel_requests.len(), 1);

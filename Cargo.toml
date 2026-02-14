@@ -14,6 +14,7 @@ members = [
   "crates/crypto-accel",
   "crates/self-protect",
 ]
+exclude = ["fuzz"]
 resolver = "2"
 
 [workspace.package]
@@ -42,3 +43,10 @@ prost = "0.13"
 tonic-build = "0.12"
 protoc-bin-vendored = "3"
 aho-corasick = "1.1"
+lru = "0.12"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+panic = "abort"
+strip = "symbols"

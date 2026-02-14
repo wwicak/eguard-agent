@@ -64,3 +64,8 @@ cap_mb = 100
 cert_path = "/etc/eguard-agent/tls/agent.crt"
 key_path = "/etc/eguard-agent/tls/agent.key"
 ca_path = "/etc/eguard-agent/tls/ca.crt"
+
+# Optional CA pinning and renewal policy
+pinned_ca_sha256 = ""
+ca_pin_path = "/etc/eguard-agent/tls/ca.crt.pin.sha256"
+rotate_before_expiry_days = 30

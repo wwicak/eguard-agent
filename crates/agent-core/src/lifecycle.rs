@@ -1,24 +1,27 @@
 use std::collections::HashMap;
 use std::collections::VecDeque;
+#[cfg(test)]
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
 use serde_json::json;
+use tokio::task::JoinSet;
 use tracing::{info, warn};
 
 use baseline::{BaselineStatus, BaselineStore, BaselineTransition, ProcessKey};
 use compliance::{evaluate, evaluate_linux, parse_policy_json, CompliancePolicy, ComplianceResult};
 use detection::{Confidence, DetectionEngine, DetectionOutcome, EventClass, TelemetryEvent};
+#[cfg(test)]
+use grpc_client::PolicyEnvelope;
 use grpc_client::{
     Client as GrpcClient, CommandEnvelope, ComplianceEnvelope, EnrollmentEnvelope, EventBuffer,
     EventEnvelope, ResponseEnvelope, TlsConfig, TransportMode,
 };
 use nac::{posture_from_compliance, Posture};
-use platform_linux::{
-    enrich_event_with_cache, EbpfEngine, EbpfStats, EnrichmentCache, EventType, RawEvent,
-};
+use platform_linux::{enrich_event_with_cache, EbpfEngine, EbpfStats, EnrichmentCache, RawEvent};
 use response::{
     capture_script_content, kill_process_tree, plan_action, quarantine_file, HostControlState,
     KillRateLimiter, PlannedAction, ProtectedList, ResponseConfig,
@@ -26,19 +29,26 @@ use response::{
 use self_protect::{
     apply_linux_hardening, LinuxHardeningConfig, SelfProtectEngine, SelfProtectReport,
 };
+#[cfg(test)]
+use x509_parser::pem::parse_x509_pem;
+#[cfg(test)]
+use x509_parser::prelude::parse_x509_certificate;
 
 use crate::config::{AgentConfig, AgentMode};
 use crate::detection_state::{EmergencyRuleType, SharedDetectionState};
 
 mod bundle_path;
+mod command_control_pipeline;
 mod command_pipeline;
+mod control_plane_pipeline;
 mod detection_bootstrap;
 mod ebpf_bootstrap;
+mod response_pipeline;
 mod rule_bundle_loader;
 mod rule_bundle_verify;
-use bundle_path::{
-    is_remote_bundle_reference, resolve_rules_staging_root, staging_bundle_archive_path,
-};
+mod telemetry_pipeline;
+mod threat_intel_pipeline;
+use bundle_path::resolve_rules_staging_root;
 
 const DEFAULT_RULES_STAGING_DIR: &str = "/var/lib/eguard-agent/rules-staging";
 const MAX_SIGNED_RULE_BUNDLE_BYTES: u64 = 256 * 1024 * 1024;
@@ -46,8 +56,21 @@ const HEARTBEAT_INTERVAL_SECS: i64 = 30;
 const COMPLIANCE_INTERVAL_SECS: i64 = 60;
 const THREAT_INTEL_INTERVAL_SECS: i64 = 150;
 const BASELINE_SAVE_INTERVAL_SECS: i64 = 300;
+#[cfg(test)]
+const SECONDS_PER_DAY: i64 = 86_400;
 const EVENT_BATCH_SIZE: usize = 256;
 const COMMAND_FETCH_LIMIT: usize = 10;
+const COMMAND_FETCH_INTERVAL_SECS: i64 = 5;
+const COMMAND_EXECUTION_BUDGET_PER_TICK: usize = 4;
+const COMMAND_BACKLOG_CAPACITY: usize = 256;
+const CONTROL_PLANE_TASK_EXECUTION_BUDGET_PER_TICK: usize = 6;
+const CONTROL_PLANE_TASK_QUEUE_CAPACITY: usize = 64;
+const CONTROL_PLANE_SEND_QUEUE_CAPACITY: usize = 128;
+const CONTROL_PLANE_SEND_CONCURRENCY: usize = 4;
+const RESPONSE_EXECUTION_BUDGET_PER_TICK: usize = 4;
+const RESPONSE_QUEUE_CAPACITY: usize = 128;
+const RESPONSE_REPORT_QUEUE_CAPACITY: usize = 256;
+const RESPONSE_REPORT_CONCURRENCY: usize = 8;
 const DEGRADE_AFTER_SEND_FAILURES: u32 = 3;
 
 struct TickEvaluation {
@@ -59,6 +82,63 @@ struct TickEvaluation {
     event_envelope: EventEnvelope,
 }
 
+#[derive(Debug, Clone)]
+struct PendingCommand {
+    envelope: CommandEnvelope,
+    enqueued_at_unix: i64,
+}
+
+#[derive(Debug, Clone)]
+enum ControlPlaneTaskKind {
+    Heartbeat { compliance_status: String },
+    Compliance { compliance: ComplianceResult },
+    ThreatIntelRefresh,
+    CommandSync,
+}
+
+#[derive(Debug, Clone)]
+struct PendingControlPlaneTask {
+    kind: ControlPlaneTaskKind,
+    enqueued_at_unix: i64,
+}
+
+#[derive(Debug, Clone)]
+struct PendingResponseAction {
+    action: PlannedAction,
+    confidence: Confidence,
+    event: TelemetryEvent,
+    enqueued_at_unix: i64,
+}
+
+#[derive(Debug, Clone)]
+enum PendingControlPlaneSend {
+    Heartbeat {
+        agent_id: String,
+        compliance_status: String,
+        config_version: String,
+    },
+    Compliance {
+        envelope: ComplianceEnvelope,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct PendingResponseReport {
+    envelope: ResponseEnvelope,
+}
+
+#[derive(Debug)]
+enum AsyncWorkerResult {
+    ControlPlaneSend {
+        kind: &'static str,
+        error: Option<String>,
+    },
+    ResponseReport {
+        action_type: String,
+        error: Option<String>,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ReloadReport {
     old_version: String,
@@ -66,6 +146,105 @@ struct ReloadReport {
     sigma_rules: usize,
     yara_rules: usize,
     ioc_entries: usize,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct RuntimeObservabilitySnapshot {
+    pub tick_count: u64,
+    pub runtime_mode: String,
+    pub pending_event_count: usize,
+    pub pending_event_bytes: usize,
+    pub consecutive_send_failures: u32,
+    pub recent_ebpf_drops: u64,
+    pub ebpf_failed_probe_count: usize,
+    pub ebpf_attach_degraded: bool,
+    pub ebpf_btf_available: bool,
+    pub ebpf_lsm_available: bool,
+    pub ebpf_kernel_version: String,
+    pub degraded_due_to_send_failures: u64,
+    pub degraded_due_to_self_protection: u64,
+    pub last_degraded_cause: Option<String>,
+    pub last_tick_total_micros: u64,
+    pub max_tick_total_micros: u64,
+    pub last_evaluate_micros: u64,
+    pub last_connected_tick_micros: u64,
+    pub last_degraded_tick_micros: u64,
+    pub last_send_event_batch_micros: u64,
+    pub last_heartbeat_micros: u64,
+    pub last_compliance_micros: u64,
+    pub last_threat_intel_refresh_micros: u64,
+    pub last_control_plane_sync_micros: u64,
+    pub pending_control_plane_task_count: usize,
+    pub last_control_plane_execute_count: usize,
+    pub last_control_plane_queue_depth: usize,
+    pub max_control_plane_queue_depth: usize,
+    pub last_control_plane_oldest_age_secs: u64,
+    pub max_control_plane_oldest_age_secs: u64,
+    pub last_command_sync_micros: u64,
+    pub pending_command_count: usize,
+    pub last_command_fetch_count: usize,
+    pub last_command_execute_count: usize,
+    pub last_command_backlog_depth: usize,
+    pub max_command_backlog_depth: usize,
+    pub last_command_backlog_oldest_age_secs: u64,
+    pub max_command_backlog_oldest_age_secs: u64,
+    pub pending_response_count: usize,
+    pub last_response_execute_count: usize,
+    pub last_response_queue_depth: usize,
+    pub max_response_queue_depth: usize,
+    pub last_response_oldest_age_secs: u64,
+    pub max_response_oldest_age_secs: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DegradedCause {
+    SendFailures,
+    SelfProtection,
+}
+
+impl DegradedCause {
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn label(self) -> &'static str {
+        match self {
+            Self::SendFailures => "send_failures",
+            Self::SelfProtection => "self_protection",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct RuntimeMetrics {
+    degraded_due_to_send_failures: u64,
+    degraded_due_to_self_protection: u64,
+    last_degraded_cause: Option<DegradedCause>,
+    last_tick_total_micros: u64,
+    max_tick_total_micros: u64,
+    last_evaluate_micros: u64,
+    last_connected_tick_micros: u64,
+    last_degraded_tick_micros: u64,
+    last_send_event_batch_micros: u64,
+    last_heartbeat_micros: u64,
+    last_compliance_micros: u64,
+    last_threat_intel_refresh_micros: u64,
+    last_control_plane_sync_micros: u64,
+    last_control_plane_execute_count: usize,
+    last_control_plane_queue_depth: usize,
+    max_control_plane_queue_depth: usize,
+    last_control_plane_oldest_age_secs: u64,
+    max_control_plane_oldest_age_secs: u64,
+    last_command_sync_micros: u64,
+    last_command_fetch_count: usize,
+    last_command_execute_count: usize,
+    last_command_backlog_depth: usize,
+    max_command_backlog_depth: usize,
+    last_command_backlog_oldest_age_secs: u64,
+    max_command_backlog_oldest_age_secs: u64,
+    last_response_execute_count: usize,
+    last_response_queue_depth: usize,
+    max_response_queue_depth: usize,
+    last_response_oldest_age_secs: u64,
+    max_response_oldest_age_secs: u64,
 }
 
 pub struct AgentRuntime {
@@ -88,16 +267,27 @@ pub struct AgentRuntime {
     last_self_protect_check_unix: Option<i64>,
     last_heartbeat_attempt_unix: Option<i64>,
     last_compliance_attempt_unix: Option<i64>,
+    last_command_fetch_attempt_unix: Option<i64>,
     last_threat_intel_refresh_unix: Option<i64>,
     last_baseline_save_unix: Option<i64>,
     last_recovery_probe_unix: Option<i64>,
     tamper_forced_degraded: bool,
     enrolled: bool,
     latest_threat_version: Option<String>,
+    threat_intel_version_floor: Option<String>,
+    latest_threat_published_at_unix: Option<i64>,
     latest_custom_rule_hash: Option<String>,
     last_reload_report: Option<ReloadReport>,
+    metrics: RuntimeMetrics,
     host_control: HostControlState,
+    pending_control_plane_tasks: VecDeque<PendingControlPlaneTask>,
+    pending_control_plane_sends: VecDeque<PendingControlPlaneSend>,
     completed_command_ids: VecDeque<String>,
+    pending_commands: VecDeque<PendingCommand>,
+    pending_response_actions: VecDeque<PendingResponseAction>,
+    pending_response_reports: VecDeque<PendingResponseReport>,
+    control_plane_send_tasks: JoinSet<AsyncWorkerResult>,
+    response_report_tasks: JoinSet<AsyncWorkerResult>,
 }
 
 impl AgentRuntime {
@@ -136,7 +326,7 @@ impl AgentRuntime {
 
         let mut client = GrpcClient::with_mode(
             config.server_addr.clone(),
-            TransportMode::from_str(&config.transport_mode),
+            TransportMode::parse(&config.transport_mode),
         );
         let self_protect_engine = SelfProtectEngine::from_env();
         if let (Some(cert), Some(key), Some(ca)) = (
@@ -148,6 +338,8 @@ impl AgentRuntime {
                 cert_path: cert,
                 key_path: key,
                 ca_path: ca,
+                pinned_ca_sha256: config.tls_pinned_ca_sha256.clone(),
+                ca_pin_path: config.tls_ca_pin_path.clone(),
             }) {
                 warn!(error = %err, "failed to configure TLS; continuing without TLS");
             }
@@ -159,8 +351,10 @@ impl AgentRuntime {
             payload_json: "{\"scope\":\"quick\"}".to_string(),
         });
 
-        let mut hardening_config = LinuxHardeningConfig::default();
-        hardening_config.drop_capability_bounding_set = config.self_protection_prevent_uninstall;
+        let hardening_config = LinuxHardeningConfig {
+            drop_capability_bounding_set: config.self_protection_prevent_uninstall,
+            ..LinuxHardeningConfig::default()
+        };
         let hardening_report = apply_linux_hardening(&hardening_config);
         if hardening_report.has_failures() {
             warn!(
@@ -177,7 +371,7 @@ impl AgentRuntime {
 
         let initial_mode = derive_runtime_mode(&config.mode, baseline_store.status);
 
-        Ok(Self {
+        let mut runtime = Self {
             limiter: KillRateLimiter::new(config.response.max_kills_per_minute),
             protected: ProtectedList::default_linux(),
             compliance_policy,
@@ -197,37 +391,175 @@ impl AgentRuntime {
             last_self_protect_check_unix: None,
             last_heartbeat_attempt_unix: None,
             last_compliance_attempt_unix: None,
+            last_command_fetch_attempt_unix: None,
             last_threat_intel_refresh_unix: None,
             last_baseline_save_unix: None,
             last_recovery_probe_unix: None,
             tamper_forced_degraded: false,
             enrolled: false,
             latest_threat_version: None,
+            threat_intel_version_floor: None,
+            latest_threat_published_at_unix: None,
             latest_custom_rule_hash: None,
             last_reload_report: None,
+            metrics: RuntimeMetrics::default(),
             host_control: HostControlState::default(),
+            pending_control_plane_tasks: VecDeque::new(),
+            pending_control_plane_sends: VecDeque::new(),
             completed_command_ids: VecDeque::new(),
-        })
+            pending_commands: VecDeque::new(),
+            pending_response_actions: VecDeque::new(),
+            pending_response_reports: VecDeque::new(),
+            control_plane_send_tasks: JoinSet::new(),
+            response_report_tasks: JoinSet::new(),
+        };
+        runtime.bootstrap_threat_intel_replay_floor();
+        runtime.bootstrap_last_known_good_bundle();
+        Ok(runtime)
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn observability_snapshot(&self) -> RuntimeObservabilitySnapshot {
+        RuntimeObservabilitySnapshot {
+            tick_count: self.tick_count,
+            runtime_mode: runtime_mode_label(&self.runtime_mode).to_string(),
+            pending_event_count: self.buffer.pending_count(),
+            pending_event_bytes: self.buffer.pending_bytes(),
+            consecutive_send_failures: self.consecutive_send_failures,
+            recent_ebpf_drops: self.recent_ebpf_drops,
+            ebpf_failed_probe_count: self.last_ebpf_stats.failed_probes.len(),
+            ebpf_attach_degraded: !self.last_ebpf_stats.failed_probes.is_empty(),
+            ebpf_btf_available: self.last_ebpf_stats.btf_available,
+            ebpf_lsm_available: self.last_ebpf_stats.lsm_available,
+            ebpf_kernel_version: self.last_ebpf_stats.kernel_version.clone(),
+            degraded_due_to_send_failures: self.metrics.degraded_due_to_send_failures,
+            degraded_due_to_self_protection: self.metrics.degraded_due_to_self_protection,
+            last_degraded_cause: self
+                .metrics
+                .last_degraded_cause
+                .map(|cause| cause.label().to_string()),
+            last_tick_total_micros: self.metrics.last_tick_total_micros,
+            max_tick_total_micros: self.metrics.max_tick_total_micros,
+            last_evaluate_micros: self.metrics.last_evaluate_micros,
+            last_connected_tick_micros: self.metrics.last_connected_tick_micros,
+            last_degraded_tick_micros: self.metrics.last_degraded_tick_micros,
+            last_send_event_batch_micros: self.metrics.last_send_event_batch_micros,
+            last_heartbeat_micros: self.metrics.last_heartbeat_micros,
+            last_compliance_micros: self.metrics.last_compliance_micros,
+            last_threat_intel_refresh_micros: self.metrics.last_threat_intel_refresh_micros,
+            last_control_plane_sync_micros: self.metrics.last_control_plane_sync_micros,
+            pending_control_plane_task_count: self.pending_control_plane_tasks.len(),
+            last_control_plane_execute_count: self.metrics.last_control_plane_execute_count,
+            last_control_plane_queue_depth: self.metrics.last_control_plane_queue_depth,
+            max_control_plane_queue_depth: self.metrics.max_control_plane_queue_depth,
+            last_control_plane_oldest_age_secs: self.metrics.last_control_plane_oldest_age_secs,
+            max_control_plane_oldest_age_secs: self.metrics.max_control_plane_oldest_age_secs,
+            last_command_sync_micros: self.metrics.last_command_sync_micros,
+            pending_command_count: self.pending_commands.len(),
+            last_command_fetch_count: self.metrics.last_command_fetch_count,
+            last_command_execute_count: self.metrics.last_command_execute_count,
+            last_command_backlog_depth: self.metrics.last_command_backlog_depth,
+            max_command_backlog_depth: self.metrics.max_command_backlog_depth,
+            last_command_backlog_oldest_age_secs: self.metrics.last_command_backlog_oldest_age_secs,
+            max_command_backlog_oldest_age_secs: self.metrics.max_command_backlog_oldest_age_secs,
+            pending_response_count: self.pending_response_actions.len(),
+            last_response_execute_count: self.metrics.last_response_execute_count,
+            last_response_queue_depth: self.metrics.last_response_queue_depth,
+            max_response_queue_depth: self.metrics.max_response_queue_depth,
+            last_response_oldest_age_secs: self.metrics.last_response_oldest_age_secs,
+            max_response_oldest_age_secs: self.metrics.max_response_oldest_age_secs,
+        }
+    }
+
+    fn transition_to_degraded(&mut self, cause: DegradedCause) {
+        let was_degraded = matches!(self.runtime_mode, AgentMode::Degraded);
+        self.runtime_mode = AgentMode::Degraded;
+        self.metrics.last_degraded_cause = Some(cause);
+        if was_degraded {
+            return;
+        }
+
+        match cause {
+            DegradedCause::SendFailures => {
+                self.metrics.degraded_due_to_send_failures =
+                    self.metrics.degraded_due_to_send_failures.saturating_add(1);
+            }
+            DegradedCause::SelfProtection => {
+                self.metrics.degraded_due_to_self_protection = self
+                    .metrics
+                    .degraded_due_to_self_protection
+                    .saturating_add(1);
+            }
+        }
+    }
+
+    fn reset_tick_stage_metrics(&mut self) {
+        self.metrics.last_connected_tick_micros = 0;
+        self.metrics.last_degraded_tick_micros = 0;
+        self.metrics.last_send_event_batch_micros = 0;
+        self.metrics.last_heartbeat_micros = 0;
+        self.metrics.last_compliance_micros = 0;
+        self.metrics.last_threat_intel_refresh_micros = 0;
+        self.metrics.last_control_plane_sync_micros = 0;
+        self.metrics.last_control_plane_execute_count = 0;
+        self.metrics.last_control_plane_queue_depth = self.pending_control_plane_tasks.len();
+        self.metrics.last_control_plane_oldest_age_secs = 0;
+        self.metrics.max_control_plane_queue_depth = self
+            .metrics
+            .max_control_plane_queue_depth
+            .max(self.pending_control_plane_tasks.len());
+        self.metrics.last_command_sync_micros = 0;
+        self.metrics.last_command_fetch_count = 0;
+        self.metrics.last_command_execute_count = 0;
+        self.metrics.last_command_backlog_depth = self.pending_commands.len();
+        self.metrics.last_command_backlog_oldest_age_secs = 0;
+        self.metrics.max_command_backlog_depth = self
+            .metrics
+            .max_command_backlog_depth
+            .max(self.pending_commands.len());
+        self.metrics.last_response_execute_count = 0;
+        self.metrics.last_response_queue_depth = self.pending_response_actions.len();
+        self.metrics.last_response_oldest_age_secs = 0;
+        self.metrics.max_response_queue_depth = self
+            .metrics
+            .max_response_queue_depth
+            .max(self.pending_response_actions.len());
     }
 
     pub async fn tick(&mut self, now_unix: i64) -> Result<()> {
+        let tick_started = Instant::now();
+        self.reset_tick_stage_metrics();
         self.tick_count = self.tick_count.saturating_add(1);
         self.run_self_protection_if_due(now_unix).await?;
 
+        let evaluate_started = Instant::now();
         let evaluation = self.evaluate_tick(now_unix)?;
+        self.metrics.last_evaluate_micros = elapsed_micros(evaluate_started);
         if matches!(self.runtime_mode, AgentMode::Degraded) {
-            self.handle_degraded_tick(now_unix, &evaluation).await?;
+            self.handle_degraded_tick(now_unix, evaluation.as_ref())
+                .await?;
         } else {
-            self.handle_connected_tick(now_unix, &evaluation).await?;
-            self.log_detection_evaluation(&evaluation);
+            self.handle_connected_tick(now_unix, evaluation.as_ref())
+                .await?;
+            if let Some(evaluation) = evaluation.as_ref() {
+                self.log_detection_evaluation(evaluation);
+            }
         }
 
+        self.metrics.last_tick_total_micros = elapsed_micros(tick_started);
+        self.metrics.max_tick_total_micros = self
+            .metrics
+            .max_tick_total_micros
+            .max(self.metrics.last_tick_total_micros);
         let _ = self.protected.is_protected_process("systemd");
         Ok(())
     }
 
-    fn evaluate_tick(&mut self, now_unix: i64) -> Result<TickEvaluation> {
-        let raw = self.next_raw_event(now_unix);
+    fn evaluate_tick(&mut self, now_unix: i64) -> Result<Option<TickEvaluation>> {
+        let Some(raw) = self.next_raw_event() else {
+            return Ok(None);
+        };
+
         let enriched = enrich_event_with_cache(raw, &mut self.enrichment_cache);
 
         let detection_event = to_detection_event(&enriched, now_unix);
@@ -244,35 +576,63 @@ impl AgentRuntime {
 
         let event_envelope = self.build_event_envelope(enriched.process_exe.as_deref(), now_unix);
 
-        Ok(TickEvaluation {
+        Ok(Some(TickEvaluation {
             detection_event,
             detection_outcome,
             confidence,
             action,
             compliance,
             event_envelope,
-        })
+        }))
     }
 
     async fn handle_degraded_tick(
         &mut self,
         now_unix: i64,
-        evaluation: &TickEvaluation,
+        evaluation: Option<&TickEvaluation>,
     ) -> Result<()> {
+        let degraded_started = Instant::now();
         self.client.set_online(false);
+
+        self.buffer_degraded_telemetry_if_present(evaluation)?;
+        self.run_degraded_control_plane_stage(now_unix, evaluation)
+            .await;
+        self.drive_async_workers();
+
+        self.metrics.last_degraded_tick_micros = elapsed_micros(degraded_started);
+        Ok(())
+    }
+
+    fn buffer_degraded_telemetry_if_present(
+        &mut self,
+        evaluation: Option<&TickEvaluation>,
+    ) -> Result<()> {
+        let Some(evaluation) = evaluation else {
+            return Ok(());
+        };
+
         self.buffer.enqueue(evaluation.event_envelope.clone())?;
         warn!(
             pending = self.buffer.pending_count(),
             "server unavailable, buffered event"
         );
+        Ok(())
+    }
 
-        if self.should_probe_server_recovery(now_unix) {
-            self.last_recovery_probe_unix = Some(now_unix);
-            self.probe_server_recovery(&evaluation.compliance.status)
-                .await;
+    async fn run_degraded_control_plane_stage(
+        &mut self,
+        now_unix: i64,
+        evaluation: Option<&TickEvaluation>,
+    ) {
+        if !self.should_probe_server_recovery(now_unix) {
+            return;
         }
 
-        Ok(())
+        self.last_recovery_probe_unix = Some(now_unix);
+        let compliance_status = evaluation
+            .map(|eval| eval.compliance.status.as_str())
+            .unwrap_or("unknown");
+        self.probe_server_recovery(compliance_status).await;
     }
 
     fn should_probe_server_recovery(&self, now_unix: i64) -> bool {
@@ -331,7 +691,7 @@ impl AgentRuntime {
         };
 
         if self.client.is_online() {
-            if let Err(err) = self.client.send_events(&[alert.clone()]).await {
+            if let Err(err) = self.client.send_events(std::slice::from_ref(&alert)).await {
                 warn!(
                     error = %err,
                     pending = self.buffer.pending_count(),
@@ -344,7 +704,7 @@ impl AgentRuntime {
         }
 
         self.tamper_forced_degraded = true;
-        self.runtime_mode = AgentMode::Degraded;
+        self.transition_to_degraded(DegradedCause::SelfProtection);
         warn!(
             violations = ?report.violation_codes(),
             summary = %report.summary(),
@@ -400,27 +760,20 @@ impl AgentRuntime {
     async fn handle_connected_tick(
         &mut self,
         now_unix: i64,
-        evaluation: &TickEvaluation,
+        evaluation: Option<&TickEvaluation>,
     ) -> Result<()> {
+        let connected_started = Instant::now();
         self.client.set_online(true);
         self.ensure_enrolled().await;
 
-        self.send_event_batch(evaluation.event_envelope.clone())
+        self.run_connected_telemetry_stage(evaluation).await?;
+        self.run_connected_control_plane_stage(now_unix, evaluation)
             .await?;
-        self.send_heartbeat_if_due(now_unix, &evaluation.compliance.status)
+        self.run_connected_response_stage(now_unix, evaluation)
             .await;
-        self.send_compliance_if_due(now_unix, &evaluation.compliance)
-            .await;
-        self.refresh_threat_intel_if_due(now_unix).await?;
-        self.sync_pending_commands(now_unix).await;
-        self.report_local_action_if_needed(
-            evaluation.action,
-            evaluation.confidence,
-            &evaluation.detection_event,
-            now_unix,
-        )
-        .await;
+        self.drive_async_workers();
 
+        self.metrics.last_connected_tick_micros = elapsed_micros(connected_started);
         Ok(())
     }
 
@@ -450,137 +803,6 @@ impl AgentRuntime {
         }
     }
 
-    async fn send_event_batch(&mut self, envelope: EventEnvelope) -> Result<()> {
-        let mut batch = self.buffer.drain_batch(EVENT_BATCH_SIZE)?;
-        batch.push(envelope);
-
-        if let Err(err) = self.client.send_events(&batch).await {
-            for ev in batch {
-                self.buffer.enqueue(ev)?;
-            }
-
-            self.consecutive_send_failures = self.consecutive_send_failures.saturating_add(1);
-            if self.consecutive_send_failures >= DEGRADE_AFTER_SEND_FAILURES {
-                self.runtime_mode = AgentMode::Degraded;
-            }
-
-            warn!(
-                error = %err,
-                pending = self.buffer.pending_count(),
-                "send failed, events re-buffered"
-            );
-        } else {
-            self.consecutive_send_failures = 0;
-        }
-
-        Ok(())
-    }
-
-    async fn send_heartbeat_if_due(&mut self, now_unix: i64, compliance_status: &str) {
-        if !interval_due(
-            self.last_heartbeat_attempt_unix,
-            now_unix,
-            HEARTBEAT_INTERVAL_SECS,
-        ) {
-            return;
-        }
-        self.last_heartbeat_attempt_unix = Some(now_unix);
-
-        let config_version = self.heartbeat_config_version();
-        if let Err(err) = self
-            .client
-            .send_heartbeat_with_config(&self.config.agent_id, compliance_status, &config_version)
-            .await
-        {
-            warn!(error = %err, "heartbeat failed");
-        }
-    }
-
-    async fn send_compliance_if_due(&mut self, now_unix: i64, compliance: &ComplianceResult) {
-        if !interval_due(
-            self.last_compliance_attempt_unix,
-            now_unix,
-            COMPLIANCE_INTERVAL_SECS,
-        ) {
-            return;
-        }
-        self.last_compliance_attempt_unix = Some(now_unix);
-
-        let envelope = ComplianceEnvelope {
-            agent_id: self.config.agent_id.clone(),
-            policy_id: "default".to_string(),
-            check_type: "runtime_health".to_string(),
-            status: compliance.status.clone(),
-            detail: compliance.detail.clone(),
-            expected_value: "firewall_enabled=true".to_string(),
-            actual_value: "firewall_enabled=true".to_string(),
-        };
-
-        if let Err(err) = self.client.send_compliance(&envelope).await {
-            warn!(error = %err, "compliance send failed");
-        }
-    }
-
-    async fn refresh_threat_intel_if_due(&mut self, now_unix: i64) -> Result<()> {
-        if !interval_due(
-            self.last_threat_intel_refresh_unix,
-            now_unix,
-            THREAT_INTEL_INTERVAL_SECS,
-        ) {
-            return Ok(());
-        }
-        self.last_threat_intel_refresh_unix = Some(now_unix);
-
-        if let Some(v) = self.client.fetch_latest_threat_intel().await? {
-            let latest_hash = v.custom_rule_version_hash.clone();
-            let known_version = self
-                .latest_threat_version
-                .clone()
-                .or(self.detection_state.version()?);
-            let changed = known_version.as_deref() != Some(v.version.as_str())
-                || self.latest_custom_rule_hash.as_deref() != Some(latest_hash.as_str());
-            if changed {
-                info!(
-                    version = %v.version,
-                    bundle = %v.bundle_path,
-                    custom_rule_count = v.custom_rule_count,
-                    custom_rule_hash = %latest_hash,
-                    "new threat intel version available"
-                );
-                let local_bundle_path = self
-                    .prepare_bundle_for_reload(&v.version, &v.bundle_path)
-                    .await?;
-                self.reload_detection_state(&v.version, &local_bundle_path)?;
-            }
-            self.latest_threat_version = Some(v.version);
-            self.latest_custom_rule_hash = Some(latest_hash);
-        }
-
-        Ok(())
-    }
-
-    async fn sync_pending_commands(&mut self, now_unix: i64) {
-        let completed_cursor = self.completed_command_cursor();
-        match self
-            .client
-            .fetch_commands(
-                &self.config.agent_id,
-                &completed_cursor,
-                COMMAND_FETCH_LIMIT,
-            )
-            .await
-        {
-            Ok(commands) => {
-                for command in commands {
-                    self.handle_command(command, now_unix).await;
-                }
-            }
-            Err(err) => {
-                warn!(error = %err, "command fetch failed");
-            }
-        }
-    }
-
     async fn report_local_action_if_needed(
         &mut self,
         action: PlannedAction,
@@ -600,8 +822,135 @@ impl AgentRuntime {
             success: local.success,
             error_message: local.detail,
         };
-        if let Err(err) = self.client.send_response(&response).await {
-            warn!(error = %err, "response report send failed");
+        self.enqueue_response_report(response);
+    }
+
+    fn enqueue_control_plane_send(&mut self, send: PendingControlPlaneSend) {
+        if self.pending_control_plane_sends.len() >= CONTROL_PLANE_SEND_QUEUE_CAPACITY {
+            warn!(
+                queue_depth = self.pending_control_plane_sends.len(),
+                capacity = CONTROL_PLANE_SEND_QUEUE_CAPACITY,
+                "control-plane send queue reached capacity; dropping oldest pending send"
+            );
+            self.pending_control_plane_sends.pop_front();
+        }
+
+        self.pending_control_plane_sends.push_back(send);
+    }
+
+    fn enqueue_response_report(&mut self, envelope: ResponseEnvelope) {
+        if self.pending_response_reports.len() >= RESPONSE_REPORT_QUEUE_CAPACITY {
+            warn!(
+                queue_depth = self.pending_response_reports.len(),
+                capacity = RESPONSE_REPORT_QUEUE_CAPACITY,
+                "response report queue reached capacity; dropping oldest pending report"
+            );
+            self.pending_response_reports.pop_front();
+        }
+
+        self.pending_response_reports
+            .push_back(PendingResponseReport { envelope });
+    }
+
+    fn drive_async_workers(&mut self) {
+        self.collect_control_plane_send_results();
+        self.collect_response_report_results();
+        self.dispatch_control_plane_send_tasks();
+        self.dispatch_response_report_tasks();
+    }
+
+    fn collect_control_plane_send_results(&mut self) {
+        while let Some(joined) = self.control_plane_send_tasks.try_join_next() {
+            match joined {
+                Ok(AsyncWorkerResult::ControlPlaneSend { kind, error }) => {
+                    if let Some(err) = error {
+                        warn!(kind, error = %err, "control-plane async send failed");
+                    }
+                }
+                Ok(AsyncWorkerResult::ResponseReport { .. }) => {}
+                Err(err) => {
+                    warn!(error = %err, "control-plane async worker task join failed");
+                }
+            }
+        }
+    }
+
+    fn collect_response_report_results(&mut self) {
+        while let Some(joined) = self.response_report_tasks.try_join_next() {
+            match joined {
+                Ok(AsyncWorkerResult::ResponseReport { action_type, error }) => {
+                    if let Some(err) = error {
+                        warn!(action_type = %action_type, error = %err, "response report async send failed");
+                    }
+                }
+                Ok(AsyncWorkerResult::ControlPlaneSend { .. }) => {}
+                Err(err) => {
+                    warn!(error = %err, "response report async worker task join failed");
+                }
+            }
+        }
+    }
+
+    fn dispatch_control_plane_send_tasks(&mut self) {
+        while self.control_plane_send_tasks.len() < CONTROL_PLANE_SEND_CONCURRENCY {
+            let Some(send) = self.pending_control_plane_sends.pop_front() else {
+                break;
+            };
+
+            let client = self.client.clone();
+            self.control_plane_send_tasks.spawn(async move {
+                match send {
+                    PendingControlPlaneSend::Heartbeat {
+                        agent_id,
+                        compliance_status,
+                        config_version,
+                    } => {
+                        let error = client
+                            .send_heartbeat_with_config(
+                                &agent_id,
+                                &compliance_status,
+                                &config_version,
+                            )
+                            .await
+                            .err()
+                            .map(|err| err.to_string());
+                        AsyncWorkerResult::ControlPlaneSend {
+                            kind: "heartbeat",
+                            error,
+                        }
+                    }
+                    PendingControlPlaneSend::Compliance { envelope } => {
+                        let error = client
+                            .send_compliance(&envelope)
+                            .await
+                            .err()
+                            .map(|err| err.to_string());
+                        AsyncWorkerResult::ControlPlaneSend {
+                            kind: "compliance",
+                            error,
+                        }
+                    }
+                }
+            });
+        }
+    }
+
+    fn dispatch_response_report_tasks(&mut self) {
+        while self.response_report_tasks.len() < RESPONSE_REPORT_CONCURRENCY {
+            let Some(report) = self.pending_response_reports.pop_front() else {
+                break;
+            };
+
+            let client = self.client.clone();
+            self.response_report_tasks.spawn(async move {
+                let action_type = report.envelope.action_type.clone();
+                let error = client
+                    .send_response(&report.envelope)
+                    .await
+                    .err()
+                    .map(|err| err.to_string());
+                AsyncWorkerResult::ResponseReport { action_type, error }
+            });
         }
     }
 
@@ -655,47 +1004,6 @@ impl AgentRuntime {
                 warn!(error = %err, path = %path.display(), "failed consuming bootstrap config")
             }
         }
-    }
-
-    fn next_raw_event(&mut self, now_unix: i64) -> RawEvent {
-        let timeout = self.adaptive_poll_timeout();
-        let sampling_stride =
-            compute_sampling_stride(self.buffer.pending_count(), self.recent_ebpf_drops);
-        let polled = self.ebpf_engine.poll_once(timeout);
-        self.observe_ebpf_stats();
-
-        match polled {
-            Ok(events) => {
-                if sampling_stride > 1 {
-                    info!(
-                        sampling_stride,
-                        backlog = self.buffer.pending_count(),
-                        recent_ebpf_drops = self.recent_ebpf_drops,
-                        "applying statistical sampling due to backpressure"
-                    );
-                }
-                if let Some(event) = events.into_iter().step_by(sampling_stride).next() {
-                    return event;
-                }
-            }
-            Err(err) => {
-                warn!(error = %err, "eBPF poll failed, falling back to synthetic event");
-            }
-        }
-
-        synthetic_raw_event(now_unix)
-    }
-
-    fn adaptive_poll_timeout(&self) -> std::time::Duration {
-        compute_poll_timeout(self.buffer.pending_count(), self.recent_ebpf_drops)
-    }
-
-    fn observe_ebpf_stats(&mut self) {
-        let stats = self.ebpf_engine.stats();
-        self.recent_ebpf_drops = stats
-            .events_dropped
-            .saturating_sub(self.last_ebpf_stats.events_dropped);
-        self.last_ebpf_stats = stats;
     }
 
     fn effective_response_config(&self) -> ResponseConfig {
@@ -859,47 +1167,6 @@ impl AgentRuntime {
         }
     }
 
-    fn reload_detection_state(&mut self, version: &str, bundle_path: &str) -> Result<()> {
-        let old_version = self.detection_state.version()?.unwrap_or_default();
-        let mut next_engine = build_detection_engine();
-        let (sigma_loaded, yara_loaded) = load_bundle_rules(&mut next_engine, bundle_path);
-        let ioc_entries = next_engine.layer1.ioc_entry_count();
-        let shard_count = self.detection_state.shard_count();
-        if shard_count <= 1 {
-            self.detection_state
-                .swap_engine(version.to_string(), next_engine)?;
-        } else {
-            let bundle_path = bundle_path.to_string();
-            self.detection_state.swap_engine_with_builder(
-                version.to_string(),
-                next_engine,
-                move || {
-                    let mut shard_engine = build_detection_engine();
-                    let _ = load_bundle_rules(&mut shard_engine, &bundle_path);
-                    shard_engine
-                },
-            )?;
-        }
-        let report = ReloadReport {
-            old_version,
-            new_version: version.to_string(),
-            sigma_rules: sigma_loaded,
-            yara_rules: yara_loaded,
-            ioc_entries,
-        };
-        self.last_reload_report = Some(report.clone());
-        info!(
-            old_version = %report.old_version,
-            new_version = %report.new_version,
-            bundle = %bundle_path,
-            sigma_rules = report.sigma_rules,
-            yara_rules = report.yara_rules,
-            ioc_entries = report.ioc_entries,
-            "detection state hot-reloaded"
-        );
-        Ok(())
-    }
-
     fn heartbeat_config_version(&self) -> String {
         if let Some(version) = &self.latest_threat_version {
             return version.clone();
@@ -909,62 +1176,6 @@ impl AgentRuntime {
             .ok()
             .flatten()
             .unwrap_or_default()
-    }
-
-    async fn prepare_bundle_for_reload(&self, version: &str, bundle_path: &str) -> Result<String> {
-        let bundle_path = bundle_path.trim();
-        if bundle_path.is_empty() {
-            return Ok(String::new());
-        }
-
-        if !is_remote_bundle_reference(bundle_path) {
-            return Ok(bundle_path.to_string());
-        }
-
-        let local_bundle = self
-            .download_remote_bundle_archive(version, bundle_path)
-            .await?;
-        self.download_remote_bundle_signature_if_needed(bundle_path, &local_bundle)
-            .await?;
-
-        Ok(local_bundle.to_string_lossy().into_owned())
-    }
-
-    async fn download_remote_bundle_archive(
-        &self,
-        version: &str,
-        bundle_url: &str,
-    ) -> Result<PathBuf> {
-        let local_bundle = staging_bundle_archive_path(version, bundle_url)?;
-        self.client
-            .download_bundle(bundle_url, &local_bundle)
-            .await
-            .map_err(|err| anyhow!("download threat-intel bundle '{}': {}", bundle_url, err))?;
-        Ok(local_bundle)
-    }
-
-    async fn download_remote_bundle_signature_if_needed(
-        &self,
-        bundle_url: &str,
-        local_bundle: &Path,
-    ) -> Result<()> {
-        if !is_signed_bundle_archive(local_bundle) {
-            return Ok(());
-        }
-
-        let signature_url = format!("{}.sig", bundle_url);
-        let signature_dst = PathBuf::from(format!("{}.sig", local_bundle.to_string_lossy()));
-        self.client
-            .download_bundle(&signature_url, &signature_dst)
-            .await
-            .map_err(|err| {
-                anyhow!(
-                    "download threat-intel bundle signature '{}': {}",
-                    signature_url,
-                    err
-                )
-            })?;
-        Ok(())
     }
 }
 
@@ -1091,6 +1302,54 @@ fn synthetic_quarantine_id(event: &TelemetryEvent) -> String {
     format!("pid{}-ts{}", event.pid, event.ts_unix)
 }
 
+#[cfg(test)]
+fn update_tls_policy_from_server(config: &mut AgentConfig, policy: &PolicyEnvelope) -> bool {
+    let Some(cert_policy) = policy.certificate_policy.as_ref() else {
+        return false;
+    };
+
+    let mut changed = false;
+
+    let pinned = cert_policy.pinned_ca_sha256.trim();
+    if !pinned.is_empty() && config.tls_pinned_ca_sha256.as_deref() != Some(pinned) {
+        config.tls_pinned_ca_sha256 = Some(pinned.to_string());
+        changed = true;
+    }
+
+    if cert_policy.rotate_before_expiry_days > 0 {
+        let days = cert_policy.rotate_before_expiry_days as u64;
+        if config.tls_rotate_before_expiry_days != days {
+            config.tls_rotate_before_expiry_days = days;
+            changed = true;
+        }
+    }
+
+    changed
+}
+
+#[cfg(test)]
+fn days_until_certificate_expiry(cert_path: &str, now_unix: i64) -> Result<i64> {
+    let cert_bytes =
+        fs::read(cert_path).map_err(|err| anyhow!("read certificate '{}': {}", cert_path, err))?;
+    let not_after_unix = parse_certificate_not_after_unix(&cert_bytes)?;
+    Ok((not_after_unix - now_unix) / SECONDS_PER_DAY)
+}
+
+#[cfg(test)]
+fn parse_certificate_not_after_unix(cert_bytes: &[u8]) -> Result<i64> {
+    let der = if cert_bytes.starts_with(b"-----BEGIN") {
+        let (_, pem) =
+            parse_x509_pem(cert_bytes).map_err(|err| anyhow!("parse certificate PEM: {}", err))?;
+        pem.contents
+    } else {
+        cert_bytes.to_vec()
+    };
+
+    let (_, cert) = parse_x509_certificate(&der)
+        .map_err(|err| anyhow!("parse X509 certificate DER payload: {}", err))?;
+    Ok(cert.validity().not_after.timestamp())
+}
+
 fn load_baseline_store() -> Result<BaselineStore> {
     let default_path = "/var/lib/eguard-agent/baselines.bin".to_string();
     let configured_path = std::env::var("EGUARD_BASELINE_PATH")
@@ -1172,9 +1431,29 @@ fn seed_anomaly_baselines(
     Ok(())
 }
 
+#[cfg(test)]
+fn apply_fleet_baseline_seeds(
+    baseline_store: &mut BaselineStore,
+    fleet_baselines: &[grpc_client::FleetBaselineEnvelope],
+) -> usize {
+    let mut seeded = 0usize;
+    for baseline in fleet_baselines {
+        let sample_hint = (baseline.agent_count.max(1) as u64).saturating_mul(100);
+        if baseline_store.seed_from_fleet_baseline(
+            &baseline.process_key,
+            &baseline.median_distribution,
+            sample_hint,
+        ) {
+            seeded = seeded.saturating_add(1);
+        }
+    }
+    seeded
+}
+
 fn parse_event_class_name(raw: &str) -> Option<EventClass> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "process_exec" => Some(EventClass::ProcessExec),
+        "process_exit" => Some(EventClass::ProcessExit),
         "file_open" => Some(EventClass::FileOpen),
         "network_connect" | "tcp_connect" => Some(EventClass::NetworkConnect),
         "dns_query" => Some(EventClass::DnsQuery),
@@ -1199,26 +1478,33 @@ fn derive_runtime_mode(config_mode: &AgentMode, baseline_status: BaselineStatus)
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
+fn runtime_mode_label(mode: &AgentMode) -> &'static str {
+    match mode {
+        AgentMode::Learning => "learning",
+        AgentMode::Active => "active",
+        AgentMode::Degraded => "degraded",
+    }
+}
+
+fn elapsed_micros(started: Instant) -> u64 {
+    let micros = started.elapsed().as_micros();
+    let bounded = micros.min(u64::MAX as u128) as u64;
+    bounded.max(1)
+}
+
 fn init_ebpf_engine() -> EbpfEngine {
     ebpf_bootstrap::init_ebpf_engine()
 }
 
+#[cfg(test)]
 fn default_ebpf_objects_dirs() -> Vec<PathBuf> {
     ebpf_bootstrap::default_ebpf_objects_dirs()
 }
 
+#[cfg(test)]
 fn candidate_ebpf_object_paths(objects_dir: &Path) -> Vec<PathBuf> {
     ebpf_bootstrap::candidate_ebpf_object_paths(objects_dir)
-}
-
-fn synthetic_raw_event(now_unix: i64) -> RawEvent {
-    RawEvent {
-        event_type: EventType::ProcessExec,
-        pid: std::process::id(),
-        uid: 0,
-        ts_ns: (now_unix.max(0) as u64) * 1_000_000_000,
-        payload: "simulated_event".to_string(),
-    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1286,7 +1572,7 @@ fn to_detection_event(enriched: &platform_linux::EnrichedEvent, now_unix: i64) -
 fn map_event_class(event_type: &platform_linux::EventType) -> EventClass {
     match event_type {
         platform_linux::EventType::ProcessExec => EventClass::ProcessExec,
-        platform_linux::EventType::ProcessExit => EventClass::ProcessExec,
+        platform_linux::EventType::ProcessExit => EventClass::ProcessExit,
         platform_linux::EventType::FileOpen => EventClass::FileOpen,
         platform_linux::EventType::TcpConnect => EventClass::NetworkConnect,
         platform_linux::EventType::DnsQuery => EventClass::DnsQuery,
@@ -1295,14 +1581,23 @@ fn map_event_class(event_type: &platform_linux::EventType) -> EventClass {
     }
 }
 
+#[cfg(test)]
 fn load_bundle_rules(detection: &mut DetectionEngine, bundle_path: &str) -> (usize, usize) {
     rule_bundle_loader::load_bundle_rules(detection, bundle_path)
+}
+
+fn load_bundle_full(
+    detection: &mut DetectionEngine,
+    bundle_path: &str,
+) -> rule_bundle_loader::BundleLoadSummary {
+    rule_bundle_loader::load_bundle_full(detection, bundle_path)
 }
 
 fn is_signed_bundle_archive(path: &Path) -> bool {
     rule_bundle_loader::is_signed_bundle_archive(path)
 }
 
+#[cfg(test)]
 fn sanitize_archive_relative_path(path: &Path) -> Option<PathBuf> {
     rule_bundle_loader::sanitize_archive_relative_path(path)
 }
@@ -1311,14 +1606,7 @@ fn verify_bundle_signature(bundle_path: &Path) -> bool {
     rule_bundle_verify::verify_bundle_signature(bundle_path)
 }
 
-fn resolve_rule_bundle_public_key() -> Option<[u8; 32]> {
-    rule_bundle_verify::resolve_rule_bundle_public_key()
-}
-
-fn resolve_bundle_signature_path(bundle_path: &Path) -> Option<PathBuf> {
-    rule_bundle_verify::resolve_bundle_signature_path(bundle_path)
-}
-
+#[cfg(test)]
 fn verify_bundle_signature_with_material(
     bundle_path: &Path,
     signature_path: &Path,
@@ -1331,44 +1619,37 @@ fn verify_bundle_signature_with_material(
     )
 }
 
-fn read_file_limited(path: &Path, max_bytes: u64) -> std::result::Result<Vec<u8>, String> {
-    rule_bundle_verify::read_file_limited(path, max_bytes)
-}
-
-fn parse_ed25519_key_material(raw: &[u8]) -> Option<[u8; 32]> {
-    rule_bundle_verify::parse_ed25519_key_material(raw)
-}
-
-fn decode_hex_bytes(raw: &str) -> Option<Vec<u8>> {
-    rule_bundle_verify::decode_hex_bytes(raw)
-}
-
-fn push_unique_dir(out: &mut Vec<PathBuf>, path: PathBuf) {
-    rule_bundle_loader::push_unique_dir(out, path)
-}
-
 fn build_detection_engine() -> DetectionEngine {
     detection_bootstrap::build_detection_engine()
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests;
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests_ebpf_policy;
 
 #[cfg(test)]
 mod tests_baseline_seed_policy;
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests_det_stub_completion;
 #[cfg(test)]
 mod tests_ebpf_memory;
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
+mod tests_observability;
+#[cfg(test)]
 mod tests_pkg_contract;
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests_resource_policy;
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests_self_protect_hardening;
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests_self_protect_policy;

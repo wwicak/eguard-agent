@@ -27,6 +27,11 @@ fn clear_env() {
         "EGUARD_TLS_CERT",
         "EGUARD_TLS_KEY",
         "EGUARD_TLS_CA",
+        "EGUARD_TLS_PINNED_CA_SHA256",
+        "EGUARD_TLS_CA_PIN_PATH",
+        "EGUARD_TLS_ROTATE_BEFORE_DAYS",
+        "EGUARD_MACHINE_ID_PATH",
+        "EGUARD_CONFIG_TPM2_SEAL",
     ];
     for v in vars {
         std::env::remove_var(v);
@@ -71,6 +76,78 @@ fn file_config_is_loaded() {
 
     clear_env();
     let _ = std::fs::remove_file(path);
+}
+
+#[test]
+// AC-ATP-095 AC-ATP-096
+fn encrypted_file_config_is_loaded_with_machine_id_key() {
+    let _guard = env_lock().lock().expect("env lock");
+    clear_env();
+
+    let suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let config_path =
+        std::env::temp_dir().join(format!("eguard-agent-config-encrypted-{suffix}.toml"));
+    let machine_id_path =
+        std::env::temp_dir().join(format!("eguard-agent-machine-id-encrypted-{suffix}.txt"));
+
+    let plaintext = "[agent]\nserver_addr=\"10.8.8.8:50051\"\n[transport]\nmode=\"grpc\"\n";
+    let encrypted = encrypt_agent_config_for_tests(plaintext, "machine-a", None, [7u8; 12])
+        .expect("encrypt config for tests");
+
+    std::fs::write(&config_path, encrypted).expect("write encrypted config");
+    std::fs::write(&machine_id_path, "machine-a\n").expect("write machine id");
+
+    std::env::set_var("EGUARD_AGENT_CONFIG", &config_path);
+    std::env::set_var("EGUARD_MACHINE_ID_PATH", &machine_id_path);
+    let cfg = AgentConfig::load().expect("load encrypted config");
+
+    assert_eq!(cfg.server_addr, "10.8.8.8:50051");
+    assert_eq!(cfg.transport_mode, "grpc");
+
+    clear_env();
+    let _ = std::fs::remove_file(config_path);
+    let _ = std::fs::remove_file(machine_id_path);
+}
+
+#[test]
+// AC-ATP-095 AC-ATP-097
+fn encrypted_file_config_fails_when_authentication_fails() {
+    let _guard = env_lock().lock().expect("env lock");
+    clear_env();
+
+    let suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let config_path =
+        std::env::temp_dir().join(format!("eguard-agent-config-encrypted-fail-{suffix}.toml"));
+    let machine_id_path = std::env::temp_dir().join(format!(
+        "eguard-agent-machine-id-encrypted-fail-{suffix}.txt"
+    ));
+
+    let plaintext = "[agent]\nserver_addr=\"10.7.7.7:50051\"\n";
+    let encrypted = encrypt_agent_config_for_tests(plaintext, "machine-a", None, [8u8; 12])
+        .expect("encrypt config for tests");
+
+    std::fs::write(&config_path, encrypted).expect("write encrypted config");
+    std::fs::write(&machine_id_path, "machine-b\n").expect("write machine id");
+
+    std::env::set_var("EGUARD_AGENT_CONFIG", &config_path);
+    std::env::set_var("EGUARD_MACHINE_ID_PATH", &machine_id_path);
+    let err = AgentConfig::load().expect_err("decryption auth failure must fail startup");
+    let err_text = err.to_string();
+    assert!(
+        err_text.contains("failed decrypting encrypted agent config")
+            || err_text.contains("failed reading config file"),
+        "unexpected error: {err_text}"
+    );
+
+    clear_env();
+    let _ = std::fs::remove_file(config_path);
+    let _ = std::fs::remove_file(machine_id_path);
 }
 
 #[test]
@@ -271,6 +348,9 @@ fn default_config_matches_expected_baseline_values() {
     assert_eq!(cfg.baseline_stale_after_days, 30);
     assert_eq!(cfg.self_protection_integrity_check_interval_secs, 60);
     assert!(cfg.self_protection_prevent_uninstall);
+    assert!(cfg.tls_pinned_ca_sha256.is_none());
+    assert!(cfg.tls_ca_pin_path.is_none());
+    assert_eq!(cfg.tls_rotate_before_expiry_days, 30);
     assert!(!cfg.response.autonomous_response);
     assert!(!cfg.response.dry_run);
 }
@@ -294,6 +374,7 @@ fn file_config_loads_extended_sections() {
         f,
         "[agent]\nid=\"agent-123\"\nmachine_id=\"machine-xyz\"\n\
          [server]\naddress=\"10.20.30.40\"\ngrpc_port=50051\ncert_file=\"/tmp/agent.crt\"\nkey_file=\"/tmp/agent.key\"\nca_file=\"/tmp/ca.crt\"\n\
+         [tls]\npinned_ca_sha256=\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"\nca_pin_path=\"/tmp/ca.pin.sha256\"\nrotate_before_expiry_days=45\n\
          [heartbeat]\ninterval_secs=45\nreconnect_backoff_max_secs=120\n\
          [telemetry]\nprocess_exec=true\nfile_events=false\nnetwork_connections=true\ndns_queries=false\nmodule_loads=true\nuser_logins=false\nflush_interval_ms=250\nmax_batch_size=64\n\
          [detection]\nsigma_rules_dir=\"/opt/rules/sigma\"\nyara_rules_dir=\"/opt/rules/yara\"\nioc_dir=\"/opt/rules/ioc\"\nscan_on_create=false\nmax_file_scan_size_mb=42\n\
@@ -312,6 +393,12 @@ fn file_config_loads_extended_sections() {
     assert_eq!(cfg.tls_cert_path.as_deref(), Some("/tmp/agent.crt"));
     assert_eq!(cfg.tls_key_path.as_deref(), Some("/tmp/agent.key"));
     assert_eq!(cfg.tls_ca_path.as_deref(), Some("/tmp/ca.crt"));
+    assert_eq!(
+        cfg.tls_pinned_ca_sha256.as_deref(),
+        Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+    );
+    assert_eq!(cfg.tls_ca_pin_path.as_deref(), Some("/tmp/ca.pin.sha256"));
+    assert_eq!(cfg.tls_rotate_before_expiry_days, 45);
     assert_eq!(cfg.heartbeat_interval_secs, 45);
     assert_eq!(cfg.reconnect_backoff_max_secs, 120);
     assert!(cfg.telemetry_process_exec);
@@ -364,6 +451,34 @@ fn eguard_server_addr_takes_precedence_over_eguard_server() {
     let mut cfg = AgentConfig::default();
     cfg.apply_env_overrides();
     assert_eq!(cfg.server_addr, "10.9.9.9:50051");
+
+    clear_env();
+}
+
+#[test]
+// AC-ATP-082 AC-ATP-085
+fn tls_policy_env_overrides_are_applied() {
+    let _guard = env_lock().lock().expect("env lock");
+    clear_env();
+    std::env::set_var(
+        "EGUARD_TLS_PINNED_CA_SHA256",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    std::env::set_var("EGUARD_TLS_CA_PIN_PATH", "/tmp/eguard-ca.pin.sha256");
+    std::env::set_var("EGUARD_TLS_ROTATE_BEFORE_DAYS", "12");
+
+    let mut cfg = AgentConfig::default();
+    cfg.apply_env_overrides();
+
+    assert_eq!(
+        cfg.tls_pinned_ca_sha256.as_deref(),
+        Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    );
+    assert_eq!(
+        cfg.tls_ca_pin_path.as_deref(),
+        Some("/tmp/eguard-ca.pin.sha256")
+    );
+    assert_eq!(cfg.tls_rotate_before_expiry_days, 12);
 
     clear_env();
 }

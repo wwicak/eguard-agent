@@ -22,7 +22,7 @@ enum ShardCommand {
         response: mpsc::Sender<std::result::Result<(), String>>,
     },
     SwapEngine {
-        engine: DetectionEngine,
+        engine: Box<DetectionEngine>,
         response: mpsc::Sender<std::result::Result<(), String>>,
     },
 }
@@ -101,7 +101,7 @@ impl DetectionShard {
         let (response_tx, response_rx) = mpsc::channel();
         self.tx
             .send(ShardCommand::SwapEngine {
-                engine,
+                engine: Box::new(engine),
                 response: response_tx,
             })
             .map_err(|_| anyhow!("detection shard channel closed"))?;
@@ -139,7 +139,7 @@ fn shard_worker_loop(mut engine: DetectionEngine, rx: mpsc::Receiver<ShardComman
                 engine: replacement,
                 response,
             } => {
-                engine = replacement;
+                engine = *replacement;
                 let _ = response.send(Ok(()));
             }
         }
@@ -195,6 +195,7 @@ pub struct EmergencyRule {
 }
 
 impl SharedDetectionState {
+    #[cfg(test)]
     pub fn new(engine: DetectionEngine, version: Option<String>) -> Self {
         Self::new_with_shards(engine, version, 1, DetectionEngine::default_with_rules)
     }

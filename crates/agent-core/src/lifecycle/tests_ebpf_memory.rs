@@ -144,6 +144,8 @@ fn runtime_stack_runs_async_client_paths_with_tls_configuration() {
             cert_path: cert.to_string_lossy().to_string(),
             key_path: key.to_string_lossy().to_string(),
             ca_path: ca.to_string_lossy().to_string(),
+            pinned_ca_sha256: None,
+            ca_pin_path: None,
         })
         .expect("configure tls");
     assert!(client.is_tls_configured());

@@ -53,7 +53,26 @@ fn tick_pipeline_produces_detection_compliance_envelope_and_baseline_learning() 
         .sum();
 
     let now = 1_700_000_000i64;
-    let evaluation = runtime.evaluate_tick(now).expect("evaluate tick");
+    let raw = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::ProcessExec,
+        pid: std::process::id(),
+        uid: 0,
+        ts_ns: (now as u64) * 1_000_000_000,
+        payload: "cmdline=/usr/bin/bash -lc whoami".to_string(),
+    };
+    let enriched = platform_linux::enrich_event_with_cache(raw, &mut runtime.enrichment_cache);
+    let detection_event = to_detection_event(&enriched, now);
+    runtime.observe_baseline(&detection_event, now);
+
+    let detection_outcome = runtime
+        .detection_state
+        .process_event(&detection_event)
+        .expect("detect event");
+    let confidence = detection_outcome.confidence;
+    let action = plan_action(confidence, &runtime.effective_response_config());
+    let compliance = runtime.evaluate_compliance();
+    let event_envelope = runtime.build_event_envelope(enriched.process_exe.as_deref(), now);
+
     let after_samples: u64 = runtime
         .baseline_store
         .baselines
@@ -62,13 +81,22 @@ fn tick_pipeline_produces_detection_compliance_envelope_and_baseline_learning() 
         .sum();
 
     assert_eq!(after_samples, before_samples.saturating_add(1));
-    assert_eq!(evaluation.detection_event.ts_unix, now);
-    assert_eq!(evaluation.event_envelope.event_type, "process_exec");
-    assert_eq!(evaluation.event_envelope.created_at_unix, now);
+    assert_eq!(detection_event.ts_unix, now);
+    assert_eq!(event_envelope.event_type, "process_exec");
+    assert_eq!(event_envelope.created_at_unix, now);
     let payload: serde_json::Value =
-        serde_json::from_str(&evaluation.event_envelope.payload_json).expect("parse payload");
+        serde_json::from_str(&event_envelope.payload_json).expect("parse payload");
     assert!(payload.get("exe").is_some());
-    assert!(!evaluation.compliance.status.trim().is_empty());
+    assert!(!compliance.status.trim().is_empty());
+    assert!(matches!(
+        action,
+        response::PlannedAction::AlertOnly
+            | response::PlannedAction::CaptureScript
+            | response::PlannedAction::KillOnly
+            | response::PlannedAction::QuarantineOnly
+            | response::PlannedAction::KillAndQuarantine
+            | response::PlannedAction::None
+    ));
 }
 
 #[tokio::test]
@@ -180,7 +208,8 @@ exit 0
     assert_eq!(metrics["limits"]["active_cpu_pct"], 0.5);
     assert_eq!(metrics["limits"]["peak_cpu_pct"], 3);
     assert_eq!(metrics["limits"]["memory_rss_mb"], 25);
-    assert_eq!(metrics["limits"]["binary_size_mb"], 10);
+    assert!(metrics["limits"]["binary_size_mb"].is_null());
+    assert_eq!(metrics["limits"]["binary_size_enforced"], false);
     assert_eq!(
         metrics["measured"]["binary_size_bytes"].as_u64(),
         Some(fake_bin.len() as u64)
@@ -200,6 +229,26 @@ exit 0
     assert_eq!(
         metrics["measurement_commands"]["lsm_block_latency"],
         "cargo test -p platform-linux ebpf::tests::parses_structured_lsm_block_payload -- --exact"
+    );
+    assert!(
+        metrics["measured"]["detection_latency_probe_wall_ms"]
+            .as_u64()
+            .is_some(),
+        "detection latency probe wall time must be emitted"
+    );
+    assert!(
+        metrics["measured"]["lsm_block_probe_wall_ms"]
+            .as_u64()
+            .is_some(),
+        "lsm block probe wall time must be emitted"
+    );
+    assert_eq!(
+        metrics["probe_status"]["detection_latency"],
+        serde_json::Value::from(0)
+    );
+    assert_eq!(
+        metrics["probe_status"]["lsm_block_latency"],
+        serde_json::Value::from(0)
     );
 
     let command_log_raw = std::fs::read_to_string(&command_log).expect("read command log");
@@ -253,20 +302,18 @@ fn sampling_stride_increases_only_when_drop_backpressure_is_observed() {
 }
 
 #[test]
-// AC-EBP-035
-fn evaluate_tick_produces_detection_compliance_and_event_envelope() {
+// AC-EBP-035 AC-OPT-005
+fn evaluate_tick_returns_none_when_no_ebpf_events_are_available() {
     let mut cfg = AgentConfig::default();
     cfg.offline_buffer_backend = "memory".to_string();
     cfg.server_addr = "127.0.0.1:1".to_string();
 
     let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+    runtime.ebpf_engine = platform_linux::EbpfEngine::disabled();
+
     let now = 1_700_000_000i64;
     let evaluation = runtime.evaluate_tick(now).expect("evaluate tick");
-
-    assert_eq!(evaluation.event_envelope.event_type, "process_exec");
-    assert_eq!(evaluation.event_envelope.created_at_unix, now);
-    assert_eq!(evaluation.detection_event.ts_unix, now);
-    assert!(!evaluation.compliance.status.trim().is_empty());
+    assert!(evaluation.is_none());
 }
 
 #[tokio::test]

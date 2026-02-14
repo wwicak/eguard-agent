@@ -1,5 +1,6 @@
 use super::*;
 use baseline::{BaselineStore, ProcessKey};
+use grpc_client::FleetBaselineEnvelope;
 use std::sync::{Mutex, OnceLock};
 
 fn env_lock() -> &'static Mutex<()> {
@@ -76,6 +77,53 @@ fn baseline_store_loading_preserves_existing_profiles_without_reseeding_defaults
     assert!(!loaded.baselines.contains_key(&ProcessKey {
         comm: "bash".to_string(),
         parent_comm: "sshd".to_string(),
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn apply_fleet_baseline_seeds_adds_missing_learning_profiles() {
+    let path = unique_baseline_path("eguard-fleet-seed-apply");
+    let _ = std::fs::remove_file(&path);
+
+    let mut store = BaselineStore::new(path.clone()).expect("create baseline store");
+    store.learn_event(
+        ProcessKey {
+            comm: "bash".to_string(),
+            parent_comm: "sshd".to_string(),
+        },
+        "process_exec",
+    );
+
+    let mut distribution = std::collections::HashMap::new();
+    distribution.insert("process_exec".to_string(), 0.7);
+    distribution.insert("dns_query".to_string(), 0.3);
+
+    let seeded = apply_fleet_baseline_seeds(
+        &mut store,
+        &[
+            FleetBaselineEnvelope {
+                process_key: "bash:sshd".to_string(),
+                median_distribution: distribution.clone(),
+                agent_count: 9,
+                stddev_kl: 0.2,
+                source: "fleet_aggregated".to_string(),
+            },
+            FleetBaselineEnvelope {
+                process_key: "nginx:systemd".to_string(),
+                median_distribution: distribution,
+                agent_count: 12,
+                stddev_kl: 0.1,
+                source: "fleet_aggregated".to_string(),
+            },
+        ],
+    );
+
+    assert_eq!(seeded, 1, "existing local key must not be overwritten");
+    assert!(store.baselines.contains_key(&ProcessKey {
+        comm: "nginx".to_string(),
+        parent_comm: "systemd".to_string(),
     }));
 
     let _ = std::fs::remove_file(path);

@@ -61,7 +61,13 @@ fn event_process_exec_for_pid(pid: u32, process: &str, parent: &str, ts: i64) ->
     }
 }
 
-fn event_network_for_pid(pid: u32, process: &str, parent: &str, ts: i64, port: u16) -> TelemetryEvent {
+fn event_network_for_pid(
+    pid: u32,
+    process: &str,
+    parent: &str,
+    ts: i64,
+    port: u16,
+) -> TelemetryEvent {
     TelemetryEvent {
         ts_unix: ts,
         event_class: EventClass::NetworkConnect,
@@ -430,8 +436,5 @@ fn sharded_workers_preserve_per_entity_event_order_for_temporal_rules() {
     assert!(out1.temporal_hits.is_empty());
 
     let out2 = state.process_event(&second).expect("process second");
-    assert!(out2
-        .temporal_hits
-        .iter()
-        .any(|rule| rule == "phi_webshell"));
+    assert!(out2.temporal_hits.iter().any(|rule| rule == "phi_webshell"));
 }

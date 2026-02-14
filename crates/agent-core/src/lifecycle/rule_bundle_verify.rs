@@ -65,12 +65,7 @@ pub(super) fn resolve_bundle_signature_path(bundle_path: &Path) -> Option<PathBu
     )));
     candidates.push(bundle_path.with_extension("sig"));
 
-    for candidate in candidates {
-        if candidate.exists() {
-            return Some(candidate);
-        }
-    }
-    None
+    candidates.into_iter().find(|candidate| candidate.exists())
 }
 
 pub(super) fn verify_bundle_signature_with_material(

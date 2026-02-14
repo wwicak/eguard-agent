@@ -167,6 +167,8 @@ message ThreatIntelVersion {
   int64 published_at_unix = 7;
   int64 custom_rule_count = 8;
   string custom_rule_version_hash = 9;
+  string bundle_signature_path = 10;
+  string bundle_sha256 = 11;
 }
 
 message PolicyRequest {

@@ -7,8 +7,9 @@ use tracing::warn;
 
 use crate::pb;
 use crate::types::{
-    CommandEnvelope, ComplianceEnvelope, EnrollmentEnvelope, EventEnvelope, ResponseEnvelope,
-    ServerState, ThreatIntelVersionEnvelope,
+    CertificatePolicyEnvelope, CommandEnvelope, ComplianceEnvelope, EnrollmentEnvelope,
+    EnrollmentResultEnvelope, EventEnvelope, PolicyEnvelope, ResponseEnvelope, ServerState,
+    ThreatIntelVersionEnvelope,
 };
 
 use super::{
@@ -40,14 +41,17 @@ impl Client {
         .await
     }
 
-    pub(super) async fn enroll_grpc(&self, enrollment: &EnrollmentEnvelope) -> Result<()> {
+    pub(super) async fn enroll_grpc(
+        &self,
+        enrollment: &EnrollmentEnvelope,
+    ) -> Result<Option<EnrollmentResultEnvelope>> {
         self.with_retry("enroll_grpc", || async {
             if enrollment.enrollment_token.is_some() {
                 warn!("sending enrollment token via EnrollRequest");
             }
 
             let mut client = self.agent_control_client().await?;
-            client
+            let response = client
                 .enroll(pb::EnrollRequest {
                     enrollment_token: enrollment.enrollment_token.clone().unwrap_or_default(),
                     hostname: enrollment.hostname.clone(),
@@ -69,8 +73,14 @@ impl Client {
                     mac: enrollment.mac.clone(),
                 })
                 .await
-                .context("enroll RPC failed")?;
-            Ok(())
+                .context("enroll RPC failed")?
+                .into_inner();
+            Ok(Some(EnrollmentResultEnvelope {
+                agent_id: response.agent_id,
+                signed_certificate: response.signed_certificate,
+                ca_certificate: response.ca_certificate,
+                initial_policy: response.initial_policy,
+            }))
         })
         .await
     }
@@ -266,6 +276,47 @@ impl Client {
         .await
     }
 
+    pub(super) async fn fetch_policy_grpc(&self, agent_id: &str) -> Result<Option<PolicyEnvelope>> {
+        self.with_retry("fetch_policy_grpc", || async {
+            let mut client = self.agent_service_client().await?;
+            let response = client
+                .get_policy(pb::PolicyRequest {
+                    agent_id: agent_id.to_string(),
+                })
+                .await
+                .context("get_policy RPC failed")?
+                .into_inner();
+
+            let cert_policy = response
+                .certificate_policy
+                .map(|policy| CertificatePolicyEnvelope {
+                    pinned_ca_sha256: policy.pinned_ca_sha256,
+                    rotate_before_expiry_days: policy.rotate_before_expiry_days,
+                    seamless_rotation: policy.seamless_rotation,
+                    require_client_cert_for_all_rpcs_except_enroll: policy
+                        .require_client_cert_for_all_rpcs_except_enroll,
+                    grpc_max_recv_msg_size_bytes: policy.grpc_max_recv_msg_size_bytes,
+                    grpc_port: policy.grpc_port,
+                });
+
+            if response.policy_id.trim().is_empty()
+                && response.config_version.trim().is_empty()
+                && response.policy_json.trim().is_empty()
+                && cert_policy.is_none()
+            {
+                Ok(None)
+            } else {
+                Ok(Some(PolicyEnvelope {
+                    policy_id: response.policy_id,
+                    config_version: response.config_version,
+                    policy_json: response.policy_json,
+                    certificate_policy: cert_policy,
+                }))
+            }
+        })
+        .await
+    }
+
     async fn telemetry_client(
         &self,
     ) -> Result<pb::telemetry_service_client::TelemetryServiceClient<Channel>> {
@@ -315,6 +366,14 @@ impl Client {
                 .max_decoding_message_size(MAX_GRPC_RECV_MSG_SIZE_BYTES),
         )
     }
+
+    async fn agent_service_client(
+        &self,
+    ) -> Result<pb::agent_service_client::AgentServiceClient<Channel>> {
+        let channel = self.connect_channel().await?;
+        Ok(pb::agent_service_client::AgentServiceClient::new(channel)
+            .max_decoding_message_size(MAX_GRPC_RECV_MSG_SIZE_BYTES))
+    }
 }
 
 fn map_threat_intel_response(res: pb::ThreatIntelVersion) -> Option<ThreatIntelVersionEnvelope> {
@@ -325,11 +384,14 @@ fn map_threat_intel_response(res: pb::ThreatIntelVersion) -> Option<ThreatIntelV
     Some(ThreatIntelVersionEnvelope {
         version: res.version,
         bundle_path: res.bundle_path,
+        published_at_unix: res.published_at_unix,
         sigma_count: res.sigma_count,
         yara_count: res.yara_count,
         ioc_count: res.ioc_count,
         cve_count: res.cve_count,
         custom_rule_count: res.custom_rule_count,
         custom_rule_version_hash: res.custom_rule_version_hash,
+        bundle_signature_path: res.bundle_signature_path,
+        bundle_sha256: res.bundle_sha256,
     })
 }

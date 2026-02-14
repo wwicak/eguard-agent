@@ -1,8 +1,11 @@
+use std::collections::HashMap;
 use std::fs;
-use std::io::BufRead;
+use std::io::{BufRead, Read};
 use std::path::{Component, Path, PathBuf};
 
 use detection::DetectionEngine;
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 
 use super::{resolve_rules_staging_root, verify_bundle_signature};
@@ -32,11 +35,30 @@ impl BundleLoadSummary {
             + self.cve_entries
     }
 
+    #[cfg(test)]
     pub fn as_tuple(&self) -> (usize, usize) {
         (self.sigma_loaded, self.yara_loaded)
     }
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct BundleManifest {
+    version: Option<String>,
+    sigma_count: Option<usize>,
+    yara_count: Option<usize>,
+    ioc_hash_count: Option<usize>,
+    ioc_domain_count: Option<usize>,
+    ioc_ip_count: Option<usize>,
+    cve_count: Option<usize>,
+    #[serde(default)]
+    suricata_count: Option<usize>,
+    #[serde(default)]
+    elastic_count: Option<usize>,
+    #[serde(default)]
+    files: HashMap<String, String>,
+}
+
+#[cfg(test)]
 pub(super) fn load_bundle_rules(
     detection: &mut DetectionEngine,
     bundle_path: &str,
@@ -134,34 +156,102 @@ fn load_bundle_rules_from_dir(detection: &mut DetectionEngine, path: &Path) -> (
         if !dir.is_dir() {
             continue;
         }
-        match detection.load_sigma_rules_from_dir(&dir) {
-            Ok(count) => sigma_loaded += count,
-            Err(err) => {
-                warn!(error = %err, path = %dir.display(), "failed loading SIGMA bundle directory")
-            }
-        }
+        sigma_loaded += load_sigma_rules_recursive(detection, &dir);
     }
 
     for dir in yara_dirs {
         if !dir.is_dir() {
             continue;
         }
-        match detection.load_yara_rules_from_dir(&dir) {
-            Ok(count) => yara_loaded += count,
-            Err(err) => {
-                warn!(error = %err, path = %dir.display(), "failed loading YARA bundle directory")
-            }
-        }
+        yara_loaded += load_yara_rules_recursive(detection, &dir);
     }
 
     (sigma_loaded, yara_loaded)
 }
 
-fn load_signed_bundle_archive_rules(
-    detection: &mut DetectionEngine,
-    bundle_path: &Path,
-) -> (usize, usize) {
-    load_signed_bundle_archive_full(detection, bundle_path).as_tuple()
+fn load_sigma_rules_recursive(detection: &mut DetectionEngine, dir: &Path) -> usize {
+    let mut loaded = 0usize;
+    let rule_files = collect_rule_files_recursive(dir, &["yml", "yaml"]);
+
+    for path in rule_files {
+        match fs::read_to_string(&path) {
+            Ok(source) => match detection.load_sigma_rule_yaml(&source) {
+                Ok(_) => loaded += 1,
+                Err(err) => {
+                    warn!(error = %err, path = %path.display(), "failed loading SIGMA bundle rule")
+                }
+            },
+            Err(err) => {
+                warn!(error = %err, path = %path.display(), "failed reading SIGMA bundle rule")
+            }
+        }
+    }
+
+    loaded
+}
+
+fn load_yara_rules_recursive(detection: &mut DetectionEngine, dir: &Path) -> usize {
+    let mut loaded = 0usize;
+    let rule_files = collect_rule_files_recursive(dir, &["yar", "yara"]);
+
+    for path in rule_files {
+        match fs::read_to_string(&path) {
+            Ok(source) => match detection.load_yara_rules_str(&source) {
+                Ok(count) => loaded += count,
+                Err(err) => {
+                    warn!(error = %err, path = %path.display(), "failed loading YARA bundle rule")
+                }
+            },
+            Err(err) => {
+                warn!(error = %err, path = %path.display(), "failed reading YARA bundle rule")
+            }
+        }
+    }
+
+    loaded
+}
+
+fn collect_rule_files_recursive(base: &Path, extensions: &[&str]) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![base.to_path_buf()];
+
+    while let Some(dir) = stack.pop() {
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(err) => {
+                warn!(error = %err, path = %dir.display(), "failed reading bundle rule directory");
+                continue;
+            }
+        };
+
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(err) => {
+                    warn!(error = %err, path = %dir.display(), "failed iterating bundle rule directory");
+                    continue;
+                }
+            };
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+
+            let Some(ext) = path.extension().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if extensions
+                .iter()
+                .any(|allowed| ext.eq_ignore_ascii_case(allowed))
+            {
+                out.push(path);
+            }
+        }
+    }
+
+    out.sort();
+    out
 }
 
 fn load_signed_bundle_archive_full(
@@ -187,7 +277,28 @@ fn load_signed_bundle_archive_full(
         return BundleLoadSummary::default();
     }
 
+    let manifest = match read_bundle_manifest(&extraction_dir) {
+        Ok(manifest) => manifest,
+        Err(err) => {
+            warn!(error = %err, path = %bundle_path.display(), "signed bundle is missing a valid manifest");
+            let _ = fs::remove_dir_all(&extraction_dir);
+            return BundleLoadSummary::default();
+        }
+    };
+
+    if let Err(err) = verify_manifest_file_hashes(&extraction_dir, &manifest) {
+        warn!(error = %err, path = %bundle_path.display(), "signed bundle manifest file hash verification failed");
+        let _ = fs::remove_dir_all(&extraction_dir);
+        return BundleLoadSummary::default();
+    }
+
     let summary = load_bundle_all_layers(detection, &extraction_dir);
+    if let Err(err) = corroborate_summary_against_manifest(&summary, &manifest) {
+        warn!(error = %err, path = %bundle_path.display(), "signed bundle manifest count corroboration failed");
+        let _ = fs::remove_dir_all(&extraction_dir);
+        return BundleLoadSummary::default();
+    }
+
     if let Err(err) = fs::remove_dir_all(&extraction_dir) {
         warn!(error = %err, path = %extraction_dir.display(), "failed cleaning extracted bundle directory");
     }
@@ -195,10 +306,7 @@ fn load_signed_bundle_archive_full(
 }
 
 /// Load all 6 detection layers from an extracted bundle directory.
-fn load_bundle_all_layers(
-    detection: &mut DetectionEngine,
-    path: &Path,
-) -> BundleLoadSummary {
+fn load_bundle_all_layers(detection: &mut DetectionEngine, path: &Path) -> BundleLoadSummary {
     let (sigma_loaded, yara_loaded) = load_bundle_rules_from_dir(detection, path);
 
     // Layer 3: IOC indicators (hashes, domains, IPs)
@@ -238,6 +346,162 @@ fn load_bundle_all_layers(
     );
 
     summary
+}
+
+fn read_bundle_manifest(bundle_dir: &Path) -> std::result::Result<BundleManifest, String> {
+    let manifest_path = bundle_dir.join("manifest.json");
+    let raw = fs::read_to_string(&manifest_path)
+        .map_err(|err| format!("read manifest {}: {}", manifest_path.display(), err))?;
+    serde_json::from_str::<BundleManifest>(&raw)
+        .map_err(|err| format!("parse manifest {}: {}", manifest_path.display(), err))
+}
+
+fn verify_manifest_file_hashes(
+    bundle_dir: &Path,
+    manifest: &BundleManifest,
+) -> std::result::Result<(), String> {
+    for (rel_path, expected_hash) in &manifest.files {
+        let rel = Path::new(rel_path);
+        let Some(safe_rel) = sanitize_archive_relative_path(rel) else {
+            return Err(format!("manifest contains unsafe path: {}", rel_path));
+        };
+
+        let full_path = bundle_dir.join(&safe_rel);
+        if !full_path.is_file() {
+            return Err(format!(
+                "manifest referenced file does not exist: {}",
+                full_path.display()
+            ));
+        }
+
+        if let Some(expected_sha) = expected_hash.strip_prefix("sha256:") {
+            let actual = sha256_file_hex(&full_path)?;
+            if !actual.eq_ignore_ascii_case(expected_sha) {
+                return Err(format!(
+                    "manifest sha256 mismatch for {}",
+                    safe_rel.display()
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn corroborate_summary_against_manifest(
+    summary: &BundleLoadSummary,
+    manifest: &BundleManifest,
+) -> std::result::Result<(), String> {
+    let mut mismatches = Vec::new();
+
+    if let Some(expected_version) = manifest.version.as_deref() {
+        if expected_version.trim().is_empty() {
+            mismatches.push("manifest version is empty".to_string());
+        }
+    } else {
+        mismatches.push("manifest version missing".to_string());
+    }
+    if manifest.files.is_empty() {
+        mismatches.push("manifest files index is empty".to_string());
+    }
+
+    record_manifest_count_mismatch(
+        &mut mismatches,
+        "sigma_count",
+        manifest.sigma_count,
+        summary.sigma_loaded,
+    );
+    record_manifest_count_mismatch(
+        &mut mismatches,
+        "yara_count",
+        manifest.yara_count,
+        summary.yara_loaded,
+    );
+    record_manifest_count_mismatch(
+        &mut mismatches,
+        "ioc_hash_count",
+        manifest.ioc_hash_count,
+        summary.ioc_hashes,
+    );
+    record_manifest_count_mismatch(
+        &mut mismatches,
+        "ioc_domain_count",
+        manifest.ioc_domain_count,
+        summary.ioc_domains,
+    );
+    record_manifest_count_mismatch(
+        &mut mismatches,
+        "ioc_ip_count",
+        manifest.ioc_ip_count,
+        summary.ioc_ips,
+    );
+    record_manifest_count_mismatch(
+        &mut mismatches,
+        "cve_count",
+        manifest.cve_count,
+        summary.cve_entries,
+    );
+    if let Some(expected_suricata) = manifest.suricata_count {
+        if summary.suricata_rules < expected_suricata {
+            mismatches.push(format!(
+                "suricata_count expected at least {} got {}",
+                expected_suricata, summary.suricata_rules
+            ));
+        }
+    }
+    if let Some(expected_elastic) = manifest.elastic_count {
+        if summary.elastic_rules < expected_elastic {
+            mismatches.push(format!(
+                "elastic_count expected at least {} got {}",
+                expected_elastic, summary.elastic_rules
+            ));
+        }
+    }
+
+    if mismatches.is_empty() {
+        Ok(())
+    } else {
+        Err(mismatches.join(", "))
+    }
+}
+
+fn record_manifest_count_mismatch(
+    out: &mut Vec<String>,
+    field: &str,
+    expected: Option<usize>,
+    actual: usize,
+) {
+    let Some(expected) = expected else {
+        out.push(format!("{} missing", field));
+        return;
+    };
+
+    if actual != expected {
+        out.push(format!("{} expected {} got {}", field, expected, actual));
+    }
+}
+
+fn sha256_file_hex(path: &Path) -> std::result::Result<String, String> {
+    let mut file =
+        fs::File::open(path).map_err(|err| format!("open {}: {}", path.display(), err))?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 8192];
+
+    loop {
+        let read = file
+            .read(&mut buf)
+            .map_err(|err| format!("read {}: {}", path.display(), err))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buf[..read]);
+    }
+
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect())
 }
 
 /// Load IOC indicators from the bundle's ioc/ directory.
@@ -349,7 +613,7 @@ fn load_elastic_rules(bundle_dir: &Path) -> usize {
     let reader = std::io::BufReader::new(file);
     reader
         .lines()
-        .filter_map(|line| line.ok())
+        .map_while(std::result::Result::ok)
         .filter(|line| !line.trim().is_empty())
         .count()
 }
@@ -369,7 +633,7 @@ fn load_cve_data(bundle_dir: &Path) -> usize {
     let reader = std::io::BufReader::new(file);
     reader
         .lines()
-        .filter_map(|line| line.ok())
+        .map_while(std::result::Result::ok)
         .filter(|line| !line.trim().is_empty())
         .count()
 }

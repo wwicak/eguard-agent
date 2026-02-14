@@ -14,6 +14,11 @@ fn script_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+fn env_var_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
 fn non_comment_lines(raw: &str) -> Vec<String> {
     raw.lines()
         .map(str::trim)
@@ -57,7 +62,7 @@ fn reload_detection_state_records_reload_report_fields() {
     let mut runtime = AgentRuntime::new(cfg).expect("runtime");
 
     runtime
-        .reload_detection_state("v-next", "")
+        .reload_detection_state("v-next", "", None)
         .expect("reload state");
 
     let report = runtime
@@ -68,6 +73,46 @@ fn reload_detection_state_records_reload_report_fields() {
     assert_eq!(report.sigma_rules, 0);
     assert_eq!(report.yara_rules, 0);
     assert!(report.ioc_entries <= 1_000_000);
+}
+
+#[test]
+// AC-DET-006 AC-DET-151
+fn reload_detection_state_rejects_corroboration_mismatch_before_swap() {
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+
+    let before = runtime
+        .detection_state
+        .version()
+        .expect("read version")
+        .unwrap_or_default();
+
+    let expected = grpc_client::ThreatIntelVersionEnvelope {
+        version: "v-next".to_string(),
+        bundle_path: "/tmp/non-existent-bundle".to_string(),
+        published_at_unix: 0,
+        sigma_count: 5,
+        yara_count: 2,
+        ioc_count: 100,
+        cve_count: 10,
+        custom_rule_count: 0,
+        custom_rule_version_hash: String::new(),
+        bundle_signature_path: String::new(),
+        bundle_sha256: String::new(),
+    };
+
+    let err = runtime
+        .reload_detection_state("v-next", "", Some(&expected))
+        .expect_err("corroboration must reject mismatched counts");
+    assert!(err.to_string().contains("corroboration"));
+
+    let after = runtime
+        .detection_state
+        .version()
+        .expect("read version after")
+        .unwrap_or_default();
+    assert_eq!(after, before);
 }
 
 #[test]
@@ -85,6 +130,109 @@ fn heartbeat_config_version_prefers_latest_threat_version_then_detection_state()
 
     runtime.latest_threat_version = Some("v-server".to_string());
     assert_eq!(runtime.heartbeat_config_version(), "v-server");
+}
+
+#[test]
+// AC-DET-006 AC-DET-151 AC-DET-184
+fn runtime_bootstrap_restores_last_known_good_bundle_after_restart() {
+    let _guard = env_var_lock().lock().expect("lock env vars");
+
+    let root = std::env::temp_dir().join(format!(
+        "eguard-last-good-bootstrap-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    let bundle_root = root.join("bundle");
+    let sigma_dir = bundle_root.join("sigma");
+    let yara_dir = bundle_root.join("yara");
+    std::fs::create_dir_all(&sigma_dir).expect("create sigma dir");
+    std::fs::create_dir_all(&yara_dir).expect("create yara dir");
+
+    std::fs::write(
+        sigma_dir.join("rule.yml"),
+        r#"
+title: bootstrap_last_known_good_sigma
+detection:
+  sequence:
+    - event_class: process_exec
+      process_any_of: [bash]
+      parent_any_of: [sshd]
+      within_secs: 30
+"#,
+    )
+    .expect("write sigma rule");
+    std::fs::write(
+        yara_dir.join("rule.yar"),
+        r#"
+rule bootstrap_last_known_good_yara {
+  strings:
+    $m = "bootstrap-last-known-good-marker"
+  condition:
+    $m
+}
+"#,
+    )
+    .expect("write yara rule");
+
+    let replay_floor_path = root.join("replay-floor.json");
+    let last_known_good_path = root.join("last-known-good.json");
+    std::env::set_var("EGUARD_THREAT_INTEL_REPLAY_FLOOR_PATH", &replay_floor_path);
+    std::env::set_var(
+        "EGUARD_THREAT_INTEL_LAST_KNOWN_GOOD_PATH",
+        &last_known_good_path,
+    );
+
+    let version = "rules-2026.02.14.42";
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+
+    {
+        let mut runtime = AgentRuntime::new(cfg.clone()).expect("runtime");
+        runtime
+            .reload_detection_state(version, bundle_root.to_string_lossy().as_ref(), None)
+            .expect("reload with local bundle");
+    }
+
+    let runtime = AgentRuntime::new(cfg).expect("runtime after restart");
+    assert_eq!(
+        runtime
+            .detection_state
+            .version()
+            .expect("read version")
+            .as_deref(),
+        Some(version)
+    );
+    assert_eq!(runtime.heartbeat_config_version(), version);
+
+    let event = detection::TelemetryEvent {
+        ts_unix: 123,
+        event_class: detection::EventClass::ProcessExec,
+        pid: 100,
+        ppid: 1,
+        uid: 1000,
+        process: "bash".to_string(),
+        parent_process: "sshd".to_string(),
+        file_path: None,
+        file_hash: None,
+        dst_port: None,
+        dst_ip: None,
+        dst_domain: None,
+        command_line: Some("echo bootstrap-last-known-good-marker".to_string()),
+    };
+    let out = runtime
+        .detection_state
+        .process_event(&event)
+        .expect("evaluate event");
+    assert!(out
+        .yara_hits
+        .iter()
+        .any(|hit| hit.rule_name == "bootstrap_last_known_good_yara"));
+
+    std::env::remove_var("EGUARD_THREAT_INTEL_REPLAY_FLOOR_PATH");
+    std::env::remove_var("EGUARD_THREAT_INTEL_LAST_KNOWN_GOOD_PATH");
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[tokio::test]
@@ -356,6 +504,18 @@ fn rule_push_slo_harness_executes_and_enforces_transfer_and_rollout_budgets() {
             .as_f64()
             .expect("rollout seconds")
             <= 30.0
+    );
+    assert!(
+        metrics["measured"]["dispatch_probe_seconds"]
+            .as_f64()
+            .is_some(),
+        "dispatch probe wall seconds must be present"
+    );
+    assert!(
+        metrics["measured"]["effective_commands_per_sec_used_for_rollout"]
+            .as_f64()
+            .is_some(),
+        "effective command throughput must be present"
     );
 
     let failure = std::process::Command::new("bash")

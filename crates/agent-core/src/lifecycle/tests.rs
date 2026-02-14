@@ -1,5 +1,37 @@
 use super::*;
 use ed25519_dalek::{Signer, SigningKey};
+use grpc_client::{CertificatePolicyEnvelope, PolicyEnvelope};
+use sha2::{Digest, Sha256};
+
+const TEST_CERT_PEM: &str = "-----BEGIN CERTIFICATE-----\n\
+MIIDDTCCAfWgAwIBAgIUG1RpSsAZxqzhHCoL473XsyD9hlcwDQYJKoZIhvcNAQEL\n\
+BQAwFjEUMBIGA1UEAwwLZWd1YXJkLXRlc3QwHhcNMjYwMjEzMTI0MDE4WhcNMzYw\n\
+MjExMTI0MDE4WjAWMRQwEgYDVQQDDAtlZ3VhcmQtdGVzdDCCASIwDQYJKoZIhvcN\n\
+AQEBBQADggEPADCCAQoCggEBAKk2momq5fBplRm+Wm6LTgTZb75brV0G++bHTR1+\n\
+dYGuY3RV+5MQ06O5iKaQBeoNMNQ5PtK5CZL/BRd2pPmYVZdez6CImCtmY6jjaIlA\n\
+LJTuhjxgJT6t6N03UVm9EuBvx90c4sQ7ZlXGdXNz8LlIWaFiQGWA8Gp3IoC5SdLt\n\
+pkw4B8g1UFBgWgVHW4OucqQAGK9kESJssQO6lqGYx8MCBOsf/KVfN3GGcd4jbHLQ\n\
+1d8BuW6T3BIxm9VubcuoGzpoNyCeWPcjpCJ+i9IxKCIV/1/Z0UBAdkh5eFxQUNrL\n\
+rWVg6pf1GayrhwJtWk0xkk/cAH/xaZAH7gs0RdX2RMKqkekCAwEAAaNTMFEwHQYD\n\
+VR0OBBYEFA96oAcppUC9w2vay+M/RXgZocyWMB8GA1UdIwQYMBaAFA96oAcppUC9\n\
+w2vay+M/RXgZocyWMA8GA1UdEwEB/wQFMAMBAf8wDQYJKoZIhvcNAQELBQADggEB\n\
+ACclf3E4MeBJaB1h5QLiBrT1MkepdRSfLZKoQWDLvfbLI+HLm5DJs2HRB407u92a\n\
+aLSoImIFf/8Om95GtM1Ys7/ViskaLtRvcoRpndCtXuMMb78NL2/KcIul9K8VsRTP\n\
+yEVUVnNeqAg7wFvTFntHuMpeIdOOw0EfncifFcm8bU7nWNvWGnJU00GtbbIWPbFM\n\
+BUXtvynj+IpUYX+71Q9iMSTUGPOyoLZqe/0CQ3jhS/cJ+ACcz3twv/9iH68H6LOP\n\
+qtOeacCdUvKD1rtdLF2VFDvEBncUdvQ0IM2isK8qJvEQ7mFTPa+4bS8urSAtQHa9\n\
+avL4/CXZNaqR1xewDR9ipTA=\n\
+-----END CERTIFICATE-----\n";
+
+fn sha256_bytes_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect()
+}
 
 #[test]
 fn candidate_ebpf_object_paths_uses_known_order() {
@@ -69,6 +101,86 @@ fn default_ebpf_object_dirs_include_expected_targets() {
     assert!(dirs
         .iter()
         .any(|d| d == &PathBuf::from("/usr/lib/eguard-agent/ebpf")));
+}
+
+#[test]
+// AC-ATP-084
+fn parse_certificate_not_after_unix_reads_pem_validity() {
+    let not_after =
+        parse_certificate_not_after_unix(TEST_CERT_PEM.as_bytes()).expect("parse test cert");
+    assert!(not_after > 2_000_000_000);
+}
+
+#[test]
+// AC-ATP-084 AC-ATP-085
+fn days_until_certificate_expiry_is_positive_for_future_cert() {
+    let path = std::env::temp_dir().join(format!(
+        "eguard-renew-cert-{}.pem",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    std::fs::write(&path, TEST_CERT_PEM.as_bytes()).expect("write test cert");
+
+    let days = days_until_certificate_expiry(&path.to_string_lossy(), 1_700_000_000)
+        .expect("calculate cert expiry days");
+    assert!(days > 1000);
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+// AC-ATP-084
+fn parse_certificate_not_after_unix_rejects_invalid_payload() {
+    let err = parse_certificate_not_after_unix(b"not-a-certificate")
+        .expect_err("invalid cert payload must fail");
+    assert!(err
+        .to_string()
+        .contains("parse X509 certificate DER payload"));
+}
+
+#[test]
+// AC-REM-002 AC-REM-004
+fn update_tls_policy_from_server_updates_pin_and_rotation_window() {
+    let mut cfg = AgentConfig::default();
+    let policy = PolicyEnvelope {
+        certificate_policy: Some(CertificatePolicyEnvelope {
+            pinned_ca_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+            rotate_before_expiry_days: 14,
+            ..CertificatePolicyEnvelope::default()
+        }),
+        ..PolicyEnvelope::default()
+    };
+
+    let changed = update_tls_policy_from_server(&mut cfg, &policy);
+    assert!(changed);
+    assert_eq!(
+        cfg.tls_pinned_ca_sha256.as_deref(),
+        Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    );
+    assert_eq!(cfg.tls_rotate_before_expiry_days, 14);
+}
+
+#[test]
+// AC-REM-002 AC-REM-004
+fn update_tls_policy_from_server_ignores_empty_values() {
+    let mut cfg = AgentConfig::default();
+    let original_days = cfg.tls_rotate_before_expiry_days;
+    let policy = PolicyEnvelope {
+        certificate_policy: Some(CertificatePolicyEnvelope {
+            pinned_ca_sha256: String::new(),
+            rotate_before_expiry_days: 0,
+            ..CertificatePolicyEnvelope::default()
+        }),
+        ..PolicyEnvelope::default()
+    };
+
+    let changed = update_tls_policy_from_server(&mut cfg, &policy);
+    assert!(!changed);
+    assert!(cfg.tls_pinned_ca_sha256.is_none());
+    assert_eq!(cfg.tls_rotate_before_expiry_days, original_days);
 }
 
 #[test]
@@ -195,6 +307,60 @@ rule bundle_marker {
 }
 
 #[test]
+fn load_bundle_rules_reads_nested_source_directories() {
+    let base = std::env::temp_dir().join(format!(
+        "eguard-bundle-nested-rules-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    let sigma_nested = base.join("sigma/rules-emerging-threats");
+    let yara_nested = base.join("yara/yara-forge");
+    std::fs::create_dir_all(&sigma_nested).expect("create nested sigma dir");
+    std::fs::create_dir_all(&yara_nested).expect("create nested yara dir");
+
+    std::fs::write(
+        sigma_nested.join("rule.yml"),
+        r#"
+title: sigma_rule_from_nested_bundle
+detection:
+  sequence:
+    - event_class: process_exec
+      process_any_of: [bash]
+      parent_any_of: [nginx]
+      within_secs: 30
+    - event_class: network_connect
+      dst_port_not_in: [80, 443]
+      within_secs: 10
+"#,
+    )
+    .expect("write nested sigma rule");
+
+    std::fs::write(
+        yara_nested.join("rule.yar"),
+        r#"
+rule nested_bundle_marker {
+  strings:
+    $m = "nested-bundle-marker"
+  condition:
+    $m
+}
+"#,
+    )
+    .expect("write nested yara rule");
+
+    let mut engine = DetectionEngine::default_with_rules();
+    let (sigma, yara) = load_bundle_rules(&mut engine, base.to_string_lossy().as_ref());
+    assert!(sigma >= 1);
+    assert_eq!(yara, 1);
+
+    let _ = std::fs::remove_file(sigma_nested.join("rule.yml"));
+    let _ = std::fs::remove_file(yara_nested.join("rule.yar"));
+    let _ = std::fs::remove_dir_all(base);
+}
+
+#[test]
 // AC-DET-143 AC-DET-170
 fn reload_detection_state_from_bundle_swaps_runtime_engine_and_emits_bundle_hits() {
     let base = std::env::temp_dir().join(format!(
@@ -245,7 +411,7 @@ rule bundle_runtime_marker {
 
     let mut runtime = AgentRuntime::new(cfg).expect("build runtime");
     runtime
-        .reload_detection_state("bundle-runtime-v1", base.to_string_lossy().as_ref())
+        .reload_detection_state("bundle-runtime-v1", base.to_string_lossy().as_ref(), None)
         .expect("reload detection state from bundle");
 
     assert_eq!(
@@ -319,6 +485,71 @@ rule bundle_runtime_marker {
 }
 
 #[test]
+fn reload_detection_state_from_bundle_populates_ioc_layers_on_all_shards() {
+    let base = std::env::temp_dir().join(format!(
+        "eguard-bundle-sharded-ioc-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    let ioc_dir = base.join("ioc");
+    std::fs::create_dir_all(&ioc_dir).expect("create ioc dir");
+    std::fs::write(ioc_dir.join("hashes.txt"), "bundle-ioc-hash-9911\n")
+        .expect("write hash ioc list");
+
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    cfg.server_addr = "127.0.0.1:1".to_string();
+
+    let mut runtime = AgentRuntime::new(cfg).expect("build runtime");
+    runtime.detection_state = SharedDetectionState::new_with_shards(
+        build_detection_engine(),
+        runtime
+            .detection_state
+            .version()
+            .expect("state version before reset"),
+        2,
+        build_detection_engine,
+    );
+
+    runtime
+        .reload_detection_state("bundle-ioc-v1", base.to_string_lossy().as_ref(), None)
+        .expect("reload detection state from IOC bundle");
+
+    let event_for_pid = |pid| detection::TelemetryEvent {
+        ts_unix: 20_000,
+        event_class: detection::EventClass::ProcessExec,
+        pid,
+        ppid: 1,
+        uid: 1000,
+        process: "bash".to_string(),
+        parent_process: "sshd".to_string(),
+        file_path: None,
+        file_hash: Some("bundle-ioc-hash-9911".to_string()),
+        dst_port: None,
+        dst_ip: None,
+        dst_domain: None,
+        command_line: None,
+    };
+
+    for pid in [9000u32, 9001u32] {
+        let out = runtime
+            .detection_state
+            .process_event(&event_for_pid(pid))
+            .expect("evaluate IOC event across shards");
+        assert_eq!(
+            out.confidence,
+            detection::Confidence::Definite,
+            "ioc hit should be loaded on shard for pid {pid}"
+        );
+    }
+
+    let _ = std::fs::remove_file(ioc_dir.join("hashes.txt"));
+    let _ = std::fs::remove_dir_all(base);
+}
+
+#[test]
 // AC-DET-143 AC-DET-077
 fn verify_bundle_signature_with_material_accepts_signed_payload() {
     let base = std::env::temp_dir().join(format!(
@@ -353,6 +584,7 @@ fn verify_bundle_signature_with_material_accepts_signed_payload() {
 #[test]
 // AC-DET-143 AC-DET-144 AC-DET-170 AC-EBP-092
 fn load_bundle_rules_reads_signed_archive_bundle() {
+    let _env_guard = env_var_lock().lock().expect("lock env vars");
     let base = std::env::temp_dir().join(format!(
         "eguard-signed-bundle-load-{}",
         std::time::SystemTime::now()
@@ -367,9 +599,7 @@ fn load_bundle_rules_reads_signed_archive_bundle() {
     std::fs::create_dir_all(&sigma_dir).expect("create sigma dir");
     std::fs::create_dir_all(&yara_dir).expect("create yara dir");
 
-    std::fs::write(
-        sigma_dir.join("rule.yml"),
-        r#"
+    let sigma_rule = r#"
 title: sigma_rule_from_signed_bundle
 detection:
   sequence:
@@ -380,25 +610,46 @@ detection:
     - event_class: network_connect
       dst_port_not_in: [80, 443]
       within_secs: 10
-"#,
-    )
-    .expect("write sigma rule");
-    std::fs::write(
-        yara_dir.join("rule.yar"),
-        r#"
+"#;
+    std::fs::write(sigma_dir.join("rule.yml"), sigma_rule).expect("write sigma rule");
+
+    let yara_rule = r#"
 rule signed_bundle_marker {
   strings:
     $m = "signed-bundle-marker"
   condition:
     $m
 }
-"#,
+"#;
+    std::fs::write(yara_dir.join("rule.yar"), yara_rule).expect("write yara rule");
+
+    let manifest = serde_json::json!({
+        "version": "2026.02.13",
+        "sigma_count": 1,
+        "yara_count": 1,
+        "ioc_hash_count": 0,
+        "ioc_domain_count": 0,
+        "ioc_ip_count": 0,
+        "cve_count": 0,
+        "suricata_count": 0,
+        "elastic_count": 0,
+        "files": {
+            "sigma/rule.yml": format!("sha256:{}", sha256_bytes_hex(sigma_rule.as_bytes())),
+            "yara/rule.yar": format!("sha256:{}", sha256_bytes_hex(yara_rule.as_bytes())),
+        }
+    });
+    std::fs::write(
+        src.join("manifest.json"),
+        serde_json::to_vec(&manifest).expect("serialize manifest"),
     )
-    .expect("write yara rule");
+    .expect("write manifest");
 
     let tar_path = base.join("bundle.tar");
     let tar_file = std::fs::File::create(&tar_path).expect("create tar file");
     let mut tar_builder = tar::Builder::new(tar_file);
+    tar_builder
+        .append_path_with_name(src.join("manifest.json"), "manifest.json")
+        .expect("append manifest to tar");
     tar_builder
         .append_path_with_name(sigma_dir.join("rule.yml"), "sigma/rule.yml")
         .expect("append sigma file to tar");
@@ -431,10 +682,149 @@ rule signed_bundle_marker {
     let (_sigma, yara) = load_bundle_rules(&mut engine, bundle_path.to_string_lossy().as_ref());
     assert_eq!(yara, 1);
     assert!(started.elapsed() < std::time::Duration::from_secs(5));
-    let staging_entries = std::fs::read_dir(&staging)
-        .expect("staging root exists")
-        .count();
-    assert_eq!(staging_entries, 0);
+
+    std::env::remove_var("EGUARD_RULE_BUNDLE_PUBKEY");
+    std::env::remove_var("EGUARD_RULES_STAGING_DIR");
+
+    let _ = std::fs::remove_file(signature_path);
+    let _ = std::fs::remove_file(bundle_path);
+    let _ = std::fs::remove_file(tar_path);
+    let _ = std::fs::remove_dir_all(base);
+}
+
+#[test]
+fn load_bundle_rules_reads_signed_archive_with_nested_source_layout() {
+    let _env_guard = env_var_lock().lock().expect("lock env vars");
+    let base = std::env::temp_dir().join(format!(
+        "eguard-signed-bundle-nested-load-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    let src = base.join("src");
+    let staging = base.join("staging");
+    let sigma_dir = src.join("sigma/rules-emerging-threats");
+    let yara_dir = src.join("yara/yara-forge");
+    std::fs::create_dir_all(&sigma_dir).expect("create nested sigma dir");
+    std::fs::create_dir_all(&yara_dir).expect("create nested yara dir");
+
+    let sigma_rule = r#"
+title: sigma_rule_from_nested_signed_bundle
+detection:
+  sequence:
+    - event_class: process_exec
+      process_any_of: [bash]
+      parent_any_of: [nginx]
+      within_secs: 30
+    - event_class: network_connect
+      dst_port_not_in: [80, 443]
+      within_secs: 10
+"#;
+    std::fs::write(sigma_dir.join("rule.yml"), sigma_rule).expect("write nested sigma rule");
+
+    let yara_rule = r#"
+rule nested_signed_bundle_marker {
+  strings:
+    $m = "nested-signed-bundle-marker"
+  condition:
+    $m
+}
+"#;
+    std::fs::write(yara_dir.join("rule.yar"), yara_rule).expect("write nested yara rule");
+
+    let manifest = serde_json::json!({
+        "version": "2026.02.14",
+        "sigma_count": 1,
+        "yara_count": 1,
+        "ioc_hash_count": 0,
+        "ioc_domain_count": 0,
+        "ioc_ip_count": 0,
+        "cve_count": 0,
+        "suricata_count": 0,
+        "elastic_count": 0,
+        "sources": {
+            "sigma": ["rules-emerging-threats"],
+            "yara": ["yara-forge"],
+        },
+        "source_rule_counts": {
+            "sigma": {"rules-emerging-threats": 1},
+            "yara": {"yara-forge": 1},
+        },
+        "files": {
+            "sigma/rules-emerging-threats/rule.yml":
+                format!("sha256:{}", sha256_bytes_hex(sigma_rule.as_bytes())),
+            "yara/yara-forge/rule.yar":
+                format!("sha256:{}", sha256_bytes_hex(yara_rule.as_bytes())),
+        }
+    });
+    std::fs::write(
+        src.join("manifest.json"),
+        serde_json::to_vec(&manifest).expect("serialize nested manifest"),
+    )
+    .expect("write nested manifest");
+
+    let tar_path = base.join("bundle.tar");
+    let tar_file = std::fs::File::create(&tar_path).expect("create tar file");
+    let mut tar_builder = tar::Builder::new(tar_file);
+    tar_builder
+        .append_path_with_name(src.join("manifest.json"), "manifest.json")
+        .expect("append manifest");
+    tar_builder
+        .append_path_with_name(
+            sigma_dir.join("rule.yml"),
+            "sigma/rules-emerging-threats/rule.yml",
+        )
+        .expect("append nested sigma rule");
+    tar_builder
+        .append_path_with_name(yara_dir.join("rule.yar"), "yara/yara-forge/rule.yar")
+        .expect("append nested yara rule");
+    tar_builder.finish().expect("finish tar");
+
+    let bundle_path = base.join("bundle.tar.zst");
+    let mut tar_input = std::fs::File::open(&tar_path).expect("open tar input");
+    let zstd_output = std::fs::File::create(&bundle_path).expect("create zstd output");
+    let mut encoder = zstd::stream::write::Encoder::new(zstd_output, 1).expect("init zstd");
+    std::io::copy(&mut tar_input, &mut encoder).expect("compress tar");
+    encoder.finish().expect("finish zstd");
+
+    let signing = SigningKey::from_bytes(&[13u8; 32]);
+    let bundle_bytes = std::fs::read(&bundle_path).expect("read compressed nested bundle");
+    let sig = signing.sign(&bundle_bytes);
+    let signature_path = PathBuf::from(format!("{}.sig", bundle_path.to_string_lossy()));
+    std::fs::write(&signature_path, sig.to_bytes()).expect("write signature sidecar");
+
+    std::env::set_var(
+        "EGUARD_RULE_BUNDLE_PUBKEY",
+        to_hex(&signing.verifying_key().to_bytes()),
+    );
+    std::env::set_var("EGUARD_RULES_STAGING_DIR", &staging);
+
+    let mut engine = DetectionEngine::default_with_rules();
+    let (sigma, yara) = load_bundle_rules(&mut engine, bundle_path.to_string_lossy().as_ref());
+    assert!(sigma >= 1);
+    assert_eq!(yara, 1);
+
+    let nested_event = detection::TelemetryEvent {
+        ts_unix: 42_000,
+        event_class: detection::EventClass::ProcessExec,
+        pid: 10,
+        ppid: 1,
+        uid: 1000,
+        process: "bash".to_string(),
+        parent_process: "nginx".to_string(),
+        file_path: None,
+        file_hash: None,
+        dst_port: None,
+        dst_ip: None,
+        dst_domain: None,
+        command_line: Some("echo nested-signed-bundle-marker".to_string()),
+    };
+    let out = engine.process_event(&nested_event);
+    assert!(out
+        .yara_hits
+        .iter()
+        .any(|hit| hit.rule_name == "nested_signed_bundle_marker"));
 
     std::env::remove_var("EGUARD_RULE_BUNDLE_PUBKEY");
     std::env::remove_var("EGUARD_RULES_STAGING_DIR");
@@ -448,6 +838,7 @@ rule signed_bundle_marker {
 #[test]
 // AC-DET-006 AC-DET-143 AC-DET-077
 fn load_bundle_rules_rejects_invalid_signature_archive() {
+    let _env_guard = env_var_lock().lock().expect("lock env vars");
     let base = std::env::temp_dir().join(format!(
         "eguard-bundle-bad-signature-{}",
         std::time::SystemTime::now()
@@ -471,6 +862,82 @@ fn load_bundle_rules_rejects_invalid_signature_archive() {
     std::env::remove_var("EGUARD_RULE_BUNDLE_PUBKEY");
     let _ = std::fs::remove_file(signature_path);
     let _ = std::fs::remove_file(bundle_path);
+    let _ = std::fs::remove_dir_all(base);
+}
+
+#[test]
+// AC-DET-006 AC-DET-143 AC-DET-171
+fn load_bundle_rules_rejects_signed_bundle_with_manifest_hash_mismatch() {
+    let _env_guard = env_var_lock().lock().expect("lock env vars");
+    let base = std::env::temp_dir().join(format!(
+        "eguard-bundle-manifest-mismatch-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    let src = base.join("src");
+    let sigma_dir = src.join("sigma");
+    std::fs::create_dir_all(&sigma_dir).expect("create sigma dir");
+
+    let sigma_rule = "title: manifest_mismatch";
+    std::fs::write(sigma_dir.join("rule.yml"), sigma_rule).expect("write sigma rule");
+
+    let manifest = serde_json::json!({
+        "version": "2026.02.14",
+        "sigma_count": 1,
+        "yara_count": 0,
+        "ioc_hash_count": 0,
+        "ioc_domain_count": 0,
+        "ioc_ip_count": 0,
+        "cve_count": 0,
+        "files": {
+            "sigma/rule.yml": "sha256:deadbeef"
+        }
+    });
+    std::fs::write(
+        src.join("manifest.json"),
+        serde_json::to_vec(&manifest).expect("serialize manifest"),
+    )
+    .expect("write manifest");
+
+    let tar_path = base.join("bundle.tar");
+    let tar_file = std::fs::File::create(&tar_path).expect("create tar file");
+    let mut tar_builder = tar::Builder::new(tar_file);
+    tar_builder
+        .append_path_with_name(src.join("manifest.json"), "manifest.json")
+        .expect("append manifest");
+    tar_builder
+        .append_path_with_name(sigma_dir.join("rule.yml"), "sigma/rule.yml")
+        .expect("append sigma");
+    tar_builder.finish().expect("finish tar");
+
+    let bundle_path = base.join("bundle.tar.zst");
+    let mut tar_input = std::fs::File::open(&tar_path).expect("open tar");
+    let zstd_output = std::fs::File::create(&bundle_path).expect("create zstd");
+    let mut encoder = zstd::stream::write::Encoder::new(zstd_output, 1).expect("init zstd");
+    std::io::copy(&mut tar_input, &mut encoder).expect("compress tar");
+    encoder.finish().expect("finish zstd");
+
+    let signing = SigningKey::from_bytes(&[11u8; 32]);
+    let bundle_bytes = std::fs::read(&bundle_path).expect("read bundle bytes");
+    let sig = signing.sign(&bundle_bytes);
+    let signature_path = PathBuf::from(format!("{}.sig", bundle_path.to_string_lossy()));
+    std::fs::write(&signature_path, sig.to_bytes()).expect("write signature sidecar");
+
+    std::env::set_var(
+        "EGUARD_RULE_BUNDLE_PUBKEY",
+        to_hex(&signing.verifying_key().to_bytes()),
+    );
+
+    let mut engine = DetectionEngine::default_with_rules();
+    let loaded = load_bundle_rules(&mut engine, bundle_path.to_string_lossy().as_ref());
+    assert_eq!(loaded, (0, 0));
+
+    std::env::remove_var("EGUARD_RULE_BUNDLE_PUBKEY");
+    let _ = std::fs::remove_file(signature_path);
+    let _ = std::fs::remove_file(bundle_path);
+    let _ = std::fs::remove_file(tar_path);
     let _ = std::fs::remove_dir_all(base);
 }
 
@@ -705,4 +1172,9 @@ async fn emergency_command_is_applied_immediately_in_command_path() {
 
 fn to_hex(raw: &[u8]) -> String {
     raw.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+}
+
+fn env_var_lock() -> &'static std::sync::Mutex<()> {
+    static ENV_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    ENV_LOCK.get_or_init(|| std::sync::Mutex::new(()))
 }

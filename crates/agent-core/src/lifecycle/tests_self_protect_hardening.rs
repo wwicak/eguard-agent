@@ -52,8 +52,7 @@ fn unknown_retained_capability_name_surfaces_failure_in_drop_caps_step() {
         assert!(report.has_failures());
         assert!(report
             .failed_step_names()
-            .iter()
-            .any(|name| *name == "capability_bounding_set"));
+            .contains(&"capability_bounding_set"));
         let step = report
             .steps
             .iter()

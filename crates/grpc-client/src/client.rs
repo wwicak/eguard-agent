@@ -1,19 +1,23 @@
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use reqwest::Client as HttpClient;
+use sha2::{Digest, Sha256};
 use tokio::time::sleep;
-use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
+use tonic::transport::{
+    Certificate as TonicCertificate, Channel, ClientTlsConfig, Endpoint, Identity as TonicIdentity,
+};
 use tracing::{info, warn};
 
 use crate::pb;
 use crate::retry::RetryPolicy;
 use crate::types::{
-    CommandEnvelope, ComplianceEnvelope, EnrollmentEnvelope, EventEnvelope, ResponseEnvelope,
-    ServerState, ThreatIntelVersionEnvelope, TlsConfig, TransportMode,
+    CommandEnvelope, ComplianceEnvelope, EnrollmentEnvelope, EnrollmentResultEnvelope,
+    EventEnvelope, FleetBaselineEnvelope, PolicyEnvelope, ResponseEnvelope, ServerState,
+    ThreatIntelVersionEnvelope, TlsConfig, TransportMode,
 };
 
 #[path = "client/client_grpc.rs"]
@@ -22,6 +26,8 @@ mod client_grpc;
 mod client_http;
 
 pub(crate) const MAX_GRPC_RECV_MSG_SIZE_BYTES: usize = 16 << 20;
+const TLS_PINNED_CA_SHA256_ENV: &str = "EGUARD_TLS_PINNED_CA_SHA256";
+const TLS_CA_PIN_PATH_ENV: &str = "EGUARD_TLS_CA_PIN_PATH";
 
 #[derive(Debug, Clone)]
 pub struct Client {
@@ -83,6 +89,8 @@ impl Client {
                 anyhow::bail!("TLS file does not exist: {}", path);
             }
         }
+
+        self.enforce_ca_pin(&cfg)?;
         self.tls = Some(cfg);
         Ok(())
     }
@@ -115,12 +123,21 @@ impl Client {
     }
 
     pub async fn enroll(&self, enrollment: &EnrollmentEnvelope) -> Result<()> {
+        self.enroll_with_material(enrollment).await.map(|_| ())
+    }
+
+    pub async fn enroll_with_material(
+        &self,
+        enrollment: &EnrollmentEnvelope,
+    ) -> Result<Option<EnrollmentResultEnvelope>> {
         self.ensure_online()?;
         match self.mode {
-            TransportMode::Http => self.enroll_http(enrollment).await?,
-            TransportMode::Grpc => self.enroll_grpc(enrollment).await?,
+            TransportMode::Http => {
+                self.enroll_http(enrollment).await?;
+                Ok(None)
+            }
+            TransportMode::Grpc => self.enroll_grpc(enrollment).await,
         }
-        Ok(())
     }
 
     pub async fn send_heartbeat(&self, agent_id: &str, compliance_status: &str) -> Result<()> {
@@ -196,6 +213,15 @@ impl Client {
         completed_command_ids: &[String],
         limit: usize,
     ) -> Result<Vec<CommandEnvelope>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let local = self.take_pending_commands(limit);
+        if !local.is_empty() {
+            return Ok(local);
+        }
+
         self.ensure_online()?;
 
         match self
@@ -245,6 +271,28 @@ impl Client {
         match self.mode {
             TransportMode::Http => self.fetch_latest_threat_intel_http().await,
             TransportMode::Grpc => self.fetch_latest_threat_intel_grpc().await,
+        }
+    }
+
+    pub async fn fetch_fleet_baselines(&self, limit: usize) -> Result<Vec<FleetBaselineEnvelope>> {
+        self.ensure_online()?;
+        self.fetch_fleet_baselines_http(limit).await
+    }
+
+    pub async fn fetch_policy(&self, agent_id: &str) -> Result<Option<PolicyEnvelope>> {
+        self.ensure_online()?;
+        match self.mode {
+            TransportMode::Http => self.fetch_policy_http(agent_id).await,
+            TransportMode::Grpc => match self.fetch_policy_grpc(agent_id).await {
+                Ok(policy) => Ok(policy),
+                Err(err) => {
+                    warn!(
+                        error = %err,
+                        "gRPC policy fetch failed, falling back to HTTP policy endpoint"
+                    );
+                    self.fetch_policy_http(agent_id).await
+                }
+            },
         }
     }
 
@@ -354,8 +402,67 @@ impl Client {
             .with_context(|| format!("failed reading TLS CA {}", tls.ca_path))?;
 
         Ok(ClientTlsConfig::new()
-            .identity(Identity::from_pem(cert, key))
-            .ca_certificate(Certificate::from_pem(ca)))
+            .identity(TonicIdentity::from_pem(cert, key))
+            .ca_certificate(TonicCertificate::from_pem(ca)))
+    }
+
+    fn enforce_ca_pin(&self, tls: &TlsConfig) -> Result<()> {
+        let ca_bytes = std::fs::read(&tls.ca_path)
+            .with_context(|| format!("failed reading TLS CA {}", tls.ca_path))?;
+        let actual_hash = sha256_hex(&ca_bytes);
+
+        if let Some(expected_hash) = read_pinned_hash_from_literal(tls.pinned_ca_sha256.as_deref())?
+        {
+            if expected_hash != actual_hash {
+                anyhow::bail!(
+                    "TLS CA pin mismatch from TLS config: expected {}, got {}",
+                    expected_hash,
+                    actual_hash
+                );
+            }
+            return Ok(());
+        }
+
+        if let Some(expected_hash) = read_pinned_hash_from_env()? {
+            if expected_hash != actual_hash {
+                anyhow::bail!(
+                    "TLS CA pin mismatch from {}: expected {}, got {}",
+                    TLS_PINNED_CA_SHA256_ENV,
+                    expected_hash,
+                    actual_hash
+                );
+            }
+            return Ok(());
+        }
+
+        let pin_path = resolve_pin_path(&tls.ca_path, tls.ca_pin_path.as_deref());
+        if pin_path.exists() {
+            let pinned_hash = read_pinned_hash_from_file(&pin_path)?;
+            if pinned_hash != actual_hash {
+                anyhow::bail!(
+                    "TLS CA pin mismatch at {}: expected {}, got {}",
+                    pin_path.display(),
+                    pinned_hash,
+                    actual_hash
+                );
+            }
+            return Ok(());
+        }
+
+        if let Some(parent) = pin_path.parent() {
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("failed creating TLS pin directory {}", parent.display())
+            })?;
+        }
+        std::fs::write(&pin_path, format!("{}\n", actual_hash))
+            .with_context(|| format!("failed writing TLS CA pin {}", pin_path.display()))?;
+        info!(
+            pin_path = %pin_path.display(),
+            ca_path = %tls.ca_path,
+            "persisted TLS CA pin"
+        );
+
+        Ok(())
     }
 
     #[cfg(test)]
@@ -395,7 +502,7 @@ impl Client {
                         });
                     }
 
-                    let delay = self.retry.next_delay(attempt.saturating_sub(1));
+                    let delay = self.retry.next_delay_with_jitter(attempt.saturating_sub(1));
                     warn!(
                         operation = operation_name,
                         attempt,
@@ -413,6 +520,85 @@ impl Client {
 
 fn default_agent_version() -> String {
     std::env::var("EGUARD_AGENT_VERSION").unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string())
+}
+
+fn resolve_pin_path(ca_path: &str, configured_pin_path: Option<&str>) -> PathBuf {
+    if let Some(path) = configured_pin_path {
+        let path = path.trim();
+        if !path.is_empty() {
+            return PathBuf::from(path);
+        }
+    }
+
+    if let Ok(path) = std::env::var(TLS_CA_PIN_PATH_ENV) {
+        let path = path.trim();
+        if !path.is_empty() {
+            return PathBuf::from(path);
+        }
+    }
+
+    let ca = PathBuf::from(ca_path);
+    let file_name = ca
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("ca.crt");
+    ca.with_file_name(format!("{}.pin.sha256", file_name))
+}
+
+fn read_pinned_hash_from_literal(raw: Option<&str>) -> Result<Option<String>> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let normalized = normalize_sha256_hex(raw)?;
+    Ok(Some(normalized))
+}
+
+fn read_pinned_hash_from_env() -> Result<Option<String>> {
+    let raw = match std::env::var(TLS_PINNED_CA_SHA256_ENV) {
+        Ok(raw) => raw,
+        Err(_) => return Ok(None),
+    };
+    let normalized = normalize_sha256_hex(&raw)?;
+    Ok(Some(normalized))
+}
+
+fn read_pinned_hash_from_file(path: &Path) -> Result<String> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("failed reading TLS CA pin {}", path.display()))?;
+    normalize_sha256_hex(&raw)
+}
+
+fn normalize_sha256_hex(raw: &str) -> Result<String> {
+    let value = raw
+        .trim()
+        .strip_prefix("sha256:")
+        .unwrap_or(raw.trim())
+        .to_ascii_lowercase();
+    if value.len() != 64 || !value.bytes().all(|ch| ch.is_ascii_hexdigit()) {
+        anyhow::bail!(
+            "invalid SHA-256 fingerprint '{}': expected 64 hex chars",
+            value
+        );
+    }
+    Ok(value)
+}
+
+fn sha256_hex(data: &[u8]) -> String {
+    let digest = Sha256::digest(data);
+    let mut out = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        out.push(hex_digit(byte >> 4));
+        out.push(hex_digit(byte & 0x0f));
+    }
+    out
+}
+
+fn hex_digit(value: u8) -> char {
+    match value {
+        0..=9 => (b'0' + value) as char,
+        10..=15 => (b'a' + (value - 10)) as char,
+        _ => '0',
+    }
 }
 
 fn truncate_commands(mut commands: Vec<CommandEnvelope>, limit: usize) -> Vec<CommandEnvelope> {
@@ -517,6 +703,7 @@ fn now_unix() -> i64 {
 }
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock)]
 mod tests;
 #[cfg(test)]
 mod tests_mappings;

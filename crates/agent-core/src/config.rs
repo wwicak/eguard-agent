@@ -1,9 +1,13 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use aes_gcm::aead::{Aead, KeyInit, Payload};
+use aes_gcm::{Aes256Gcm, Nonce};
 use anyhow::{Context, Result};
+use base64::Engine;
 use response::{ResponseConfig, ResponsePolicy};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 const AGENT_CONFIG_CANDIDATES: [&str; 3] = [
     "/etc/eguard-agent/agent.conf",
@@ -16,6 +20,11 @@ const BOOTSTRAP_CONFIG_CANDIDATES: [&str; 3] = [
     "./conf/bootstrap.conf",
     "./bootstrap.conf",
 ];
+
+const ENCRYPTED_CONFIG_PREFIX: &str = "eguardcfg:v1:";
+const ENCRYPTED_CONFIG_AAD: &[u8] = b"eguard-agent-config-v1";
+const MACHINE_ID_PATH_ENV: &str = "EGUARD_MACHINE_ID_PATH";
+const TPM2_MATERIAL_ENV: &str = "EGUARD_CONFIG_TPM2_SEAL";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AgentMode {
@@ -41,6 +50,9 @@ pub struct AgentConfig {
     pub tls_cert_path: Option<String>,
     pub tls_key_path: Option<String>,
     pub tls_ca_path: Option<String>,
+    pub tls_pinned_ca_sha256: Option<String>,
+    pub tls_ca_pin_path: Option<String>,
+    pub tls_rotate_before_expiry_days: u64,
     pub heartbeat_interval_secs: u64,
     pub reconnect_backoff_max_secs: u64,
     pub telemetry_process_exec: bool,
@@ -85,6 +97,9 @@ impl Default for AgentConfig {
             tls_cert_path: None,
             tls_key_path: None,
             tls_ca_path: None,
+            tls_pinned_ca_sha256: None,
+            tls_ca_pin_path: None,
+            tls_rotate_before_expiry_days: 30,
             heartbeat_interval_secs: 30,
             reconnect_backoff_max_secs: 300,
             telemetry_process_exec: true,
@@ -141,7 +156,7 @@ impl AgentConfig {
             return Ok(false);
         };
 
-        let raw = fs::read_to_string(&path)
+        let raw = read_agent_config_text(&path)
             .with_context(|| format!("failed reading config file {}", path.display()))?;
         let file_cfg: FileConfig = toml::from_str(&raw)
             .with_context(|| format!("failed parsing TOML config {}", path.display()))?;
@@ -265,6 +280,19 @@ impl AgentConfig {
         if let Ok(v) = std::env::var("EGUARD_TLS_CA") {
             self.tls_ca_path = non_empty(Some(v));
         }
+        if let Ok(v) = std::env::var("EGUARD_TLS_PINNED_CA_SHA256") {
+            self.tls_pinned_ca_sha256 = non_empty(Some(v));
+        }
+        if let Ok(v) = std::env::var("EGUARD_TLS_CA_PIN_PATH") {
+            self.tls_ca_pin_path = non_empty(Some(v));
+        }
+        if let Ok(v) = std::env::var("EGUARD_TLS_ROTATE_BEFORE_DAYS") {
+            if let Ok(days) = v.trim().parse::<u64>() {
+                if days > 0 {
+                    self.tls_rotate_before_expiry_days = days;
+                }
+            }
+        }
     }
 
     fn ensure_valid_agent_id(&mut self) {
@@ -375,6 +403,17 @@ impl AgentConfig {
         }
         if let Some(v) = non_empty(tls.ca_path) {
             self.tls_ca_path = Some(v);
+        }
+        if let Some(v) = non_empty(tls.pinned_ca_sha256) {
+            self.tls_pinned_ca_sha256 = Some(v);
+        }
+        if let Some(v) = non_empty(tls.ca_pin_path) {
+            self.tls_ca_pin_path = Some(v);
+        }
+        if let Some(days) = tls.rotate_before_expiry_days {
+            if days > 0 {
+                self.tls_rotate_before_expiry_days = days;
+            }
         }
     }
 
@@ -591,6 +630,12 @@ struct FileTlsConfig {
     key_path: Option<String>,
     #[serde(default)]
     ca_path: Option<String>,
+    #[serde(default)]
+    pinned_ca_sha256: Option<String>,
+    #[serde(default)]
+    ca_pin_path: Option<String>,
+    #[serde(default)]
+    rotate_before_expiry_days: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -675,6 +720,111 @@ struct BootstrapConfig {
     tenant_id: Option<String>,
 }
 
+fn read_agent_config_text(path: &Path) -> Result<String> {
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("failed reading config file {}", path.display()))?;
+    if !raw.trim_start().starts_with(ENCRYPTED_CONFIG_PREFIX) {
+        return Ok(raw);
+    }
+
+    decrypt_agent_config_payload(raw.trim())
+}
+
+fn decrypt_agent_config_payload(raw: &str) -> Result<String> {
+    let encoded = raw
+        .strip_prefix(ENCRYPTED_CONFIG_PREFIX)
+        .context("invalid encrypted config prefix")?
+        .trim();
+    let blob = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .context("invalid base64 payload for encrypted agent config")?;
+    if blob.len() <= 12 {
+        anyhow::bail!("encrypted agent config payload is too short");
+    }
+
+    let (nonce_bytes, ciphertext) = blob.split_at(12);
+    let key = derive_encryption_key()?;
+    let cipher = Aes256Gcm::new_from_slice(&key).context("invalid AES-256 key material")?;
+    let plaintext = cipher
+        .decrypt(
+            Nonce::from_slice(nonce_bytes),
+            Payload {
+                msg: ciphertext,
+                aad: ENCRYPTED_CONFIG_AAD,
+            },
+        )
+        .map_err(|_| anyhow::anyhow!("failed decrypting encrypted agent config"))?;
+
+    String::from_utf8(plaintext).context("decrypted agent config is not valid UTF-8")
+}
+
+fn derive_encryption_key() -> Result<[u8; 32]> {
+    let machine_id = read_machine_id_material()?;
+    let tpm_material = env_non_empty(TPM2_MATERIAL_ENV);
+    Ok(derive_encryption_key_from_material(
+        &machine_id,
+        tpm_material.as_deref(),
+    ))
+}
+
+fn read_machine_id_material() -> Result<String> {
+    let path = std::env::var(MACHINE_ID_PATH_ENV)
+        .ok()
+        .and_then(|v| non_empty(Some(v)))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/etc/machine-id"));
+    let raw = fs::read_to_string(&path)
+        .with_context(|| format!("failed reading machine-id from {}", path.display()))?;
+    let machine_id = raw.trim();
+    if machine_id.is_empty() {
+        anyhow::bail!("machine-id from {} is empty", path.display());
+    }
+    Ok(machine_id.to_string())
+}
+
+fn derive_encryption_key_from_material(machine_id: &str, tpm_material: Option<&str>) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(machine_id.as_bytes());
+    hasher.update(b"\n");
+    if let Some(tpm_material) = tpm_material {
+        hasher.update(tpm_material.as_bytes());
+    }
+    let digest = hasher.finalize();
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&digest);
+    key
+}
+
+#[cfg(test)]
+fn encrypt_agent_config_for_tests(
+    plaintext: &str,
+    machine_id: &str,
+    tpm_material: Option<&str>,
+    nonce_bytes: [u8; 12],
+) -> Result<String> {
+    let key = derive_encryption_key_from_material(machine_id, tpm_material);
+    let cipher = Aes256Gcm::new_from_slice(&key).context("invalid AES-256 key material")?;
+    let ciphertext = cipher
+        .encrypt(
+            Nonce::from_slice(&nonce_bytes),
+            Payload {
+                msg: plaintext.as_bytes(),
+                aad: ENCRYPTED_CONFIG_AAD,
+            },
+        )
+        .map_err(|_| anyhow::anyhow!("failed encrypting test agent config"))?;
+
+    let mut blob = Vec::with_capacity(nonce_bytes.len() + ciphertext.len());
+    blob.extend_from_slice(&nonce_bytes);
+    blob.extend_from_slice(&ciphertext);
+
+    Ok(format!(
+        "{}{}",
+        ENCRYPTED_CONFIG_PREFIX,
+        base64::engine::general_purpose::STANDARD.encode(blob)
+    ))
+}
+
 fn resolve_config_path() -> Result<Option<PathBuf>> {
     resolve_path_from_env_or_candidates("EGUARD_AGENT_CONFIG", &AGENT_CONFIG_CANDIDATES)
 }
@@ -683,6 +833,7 @@ fn resolve_bootstrap_path() -> Result<Option<PathBuf>> {
     resolve_path_from_env_or_candidates("EGUARD_BOOTSTRAP_CONFIG", &BOOTSTRAP_CONFIG_CANDIDATES)
 }
 
+#[cfg(test)]
 pub fn remove_bootstrap_config(path: &Path) -> Result<()> {
     if path.exists() {
         fs::remove_file(path)
@@ -691,6 +842,7 @@ pub fn remove_bootstrap_config(path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 pub fn expected_config_files() -> &'static [&'static str] {
     &[
         "/etc/eguard-agent/bootstrap.conf",
@@ -701,6 +853,7 @@ pub fn expected_config_files() -> &'static [&'static str] {
     ]
 }
 
+#[cfg(test)]
 pub fn expected_data_paths() -> &'static [&'static str] {
     &[
         "/var/lib/eguard-agent/buffer.db",

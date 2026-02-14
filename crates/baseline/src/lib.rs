@@ -211,6 +211,46 @@ impl BaselineStore {
         self.last_refresh_unix = now_unix().unwrap_or(self.last_refresh_unix);
         self.baselines.len()
     }
+
+    pub fn seed_from_fleet_baseline(
+        &mut self,
+        process_key: &str,
+        median_distribution: &HashMap<String, f64>,
+        sample_count_hint: u64,
+    ) -> bool {
+        let Some(key) = parse_process_key(process_key) else {
+            return false;
+        };
+        if self.baselines.contains_key(&key) {
+            return false;
+        }
+
+        let normalized = normalize_fleet_distribution(median_distribution);
+        if normalized.is_empty() {
+            return false;
+        }
+
+        let seed_sample_count = sample_count_hint.clamp(100, 5000).max(1000);
+        let mut profile = ProcessProfile {
+            event_distribution: HashMap::new(),
+            sample_count: 0,
+            entropy_threshold: 0.0,
+        };
+
+        for (event_name, probability) in normalized {
+            let count = ((probability * seed_sample_count as f64).round() as u64).max(1);
+            profile.event_distribution.insert(event_name, count);
+            profile.sample_count = profile.sample_count.saturating_add(count);
+        }
+        if profile.sample_count == 0 {
+            return false;
+        }
+
+        profile.entropy_threshold = derive_entropy_threshold(profile.sample_count);
+        self.baselines.insert(key, profile);
+        self.last_refresh_unix = now_unix().unwrap_or(self.last_refresh_unix);
+        true
+    }
 }
 
 fn now_unix() -> BaselineStoreResult<u64> {
@@ -283,6 +323,62 @@ fn default_seed_profiles() -> Vec<(ProcessKey, ProcessProfile)> {
             ],
         ),
     ]
+}
+
+fn parse_process_key(raw: &str) -> Option<ProcessKey> {
+    let value = raw.trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    if let Some((comm, parent)) = value.split_once(':') {
+        let comm = comm.trim();
+        let parent = parent.trim();
+        if !comm.is_empty() && !parent.is_empty() {
+            return Some(ProcessKey {
+                comm: comm.to_string(),
+                parent_comm: parent.to_string(),
+            });
+        }
+    }
+
+    let comm = Path::new(value)
+        .file_name()
+        .and_then(|v| v.to_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or(value)
+        .to_string();
+
+    if comm.is_empty() {
+        return None;
+    }
+
+    Some(ProcessKey {
+        comm,
+        parent_comm: "fleet".to_string(),
+    })
+}
+
+fn normalize_fleet_distribution(input: &HashMap<String, f64>) -> HashMap<String, f64> {
+    let mut non_negative = HashMap::new();
+    let mut total = 0.0;
+    for (event_name, probability) in input {
+        if !probability.is_finite() || *probability <= 0.0 {
+            continue;
+        }
+        non_negative.insert(event_name.clone(), *probability);
+        total += *probability;
+    }
+
+    if total <= f64::EPSILON {
+        return HashMap::new();
+    }
+
+    for probability in non_negative.values_mut() {
+        *probability /= total;
+    }
+    non_negative
 }
 
 fn seed_profile(

@@ -106,12 +106,8 @@ fn default_linux_protected_paths_match_acceptance_baseline() {
 fn protected_paths_reject_parent_directory_escape_sequences() {
     let protected = ProtectedList::default_linux();
 
-    assert!(!protected.is_protected_path(Path::new(
-        "/usr/local/eg/../tmp/malware.bin"
-    )));
-    assert!(!protected.is_protected_path(Path::new(
-        "/usr/bin/../../opt/custom/dropper.sh"
-    )));
+    assert!(!protected.is_protected_path(Path::new("/usr/local/eg/../tmp/malware.bin")));
+    assert!(!protected.is_protected_path(Path::new("/usr/bin/../../opt/custom/dropper.sh")));
 }
 
 #[test]
@@ -120,9 +116,7 @@ fn protected_paths_accept_normalized_equivalents_inside_roots() {
     let protected = ProtectedList::default_linux();
 
     assert!(protected.is_protected_path(Path::new("/usr/local/eg/./agent")));
-    assert!(protected.is_protected_path(Path::new(
-        "/usr/local/eg/runtime/../agentd"
-    )));
+    assert!(protected.is_protected_path(Path::new("/usr/local/eg/runtime/../agentd")));
     assert!(protected.is_protected_path(Path::new("/usr/bin/./sh")));
 }
 

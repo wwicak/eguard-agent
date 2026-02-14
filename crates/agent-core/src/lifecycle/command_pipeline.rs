@@ -1,8 +1,13 @@
+use std::path::PathBuf;
+use std::time::Duration;
+
 use anyhow::{anyhow, Result};
 use grpc_client::{CommandEnvelope, ResponseEnvelope};
+use nac::apply_network_profile_config_change;
 use response::{
     execute_server_command_with_state, parse_server_command, CommandOutcome, ServerCommand,
 };
+use tokio::time::timeout;
 use tracing::{info, warn};
 
 use crate::detection_state::EmergencyRule;
@@ -10,6 +15,8 @@ use crate::detection_state::EmergencyRule;
 use super::{parse_emergency_rule_type, AgentRuntime, EmergencyRulePayload};
 
 const COMPLETED_COMMAND_CURSOR_CAP: usize = 256;
+const COMMAND_ACK_TIMEOUT_MS: u64 = 250;
+const COMMAND_REPORT_TIMEOUT_MS: u64 = 250;
 
 impl AgentRuntime {
     pub(super) fn completed_command_cursor(&self) -> Vec<String> {
@@ -34,6 +41,10 @@ impl AgentRuntime {
 
         if parsed == ServerCommand::EmergencyRulePush {
             self.apply_emergency_rule_push(&command.payload_json, &mut exec);
+        }
+
+        if parsed == ServerCommand::ConfigChange {
+            self.apply_config_change(&command.payload_json, &mut exec);
         }
 
         info!(
@@ -114,9 +125,45 @@ impl AgentRuntime {
         }
     }
 
+    pub(super) fn apply_config_change(
+        &self,
+        payload_json: &str,
+        exec: &mut response::CommandExecution,
+    ) {
+        let profile_dir = resolve_network_profile_dir();
+        match apply_network_profile_config_change(payload_json, &profile_dir) {
+            Ok(Some(report)) => {
+                exec.detail = format!(
+                    "network profile applied: {} ({})",
+                    report.profile_id,
+                    report.connection_path.display()
+                );
+            }
+            Ok(None) => {
+                // Non-network config payloads remain backward-compatible no-ops.
+            }
+            Err(err) => {
+                exec.outcome = CommandOutcome::Ignored;
+                exec.status = "failed";
+                exec.detail = format!("config_change rejected: {}", err);
+            }
+        }
+    }
+
     async fn ack_command_result(&self, command_id: &str, status: &str) {
-        if let Err(err) = self.client.ack_command(command_id, status).await {
-            warn!(error = %err, command_id = %command_id, "failed to ack command");
+        let ack = self.client.ack_command(command_id, status);
+        match timeout(Duration::from_millis(COMMAND_ACK_TIMEOUT_MS), ack).await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                warn!(error = %err, command_id = %command_id, "failed to ack command");
+            }
+            Err(_) => {
+                warn!(
+                    command_id = %command_id,
+                    timeout_ms = COMMAND_ACK_TIMEOUT_MS,
+                    "timed out while acking command"
+                );
+            }
         }
     }
 
@@ -133,12 +180,32 @@ impl AgentRuntime {
             },
         };
 
-        if let Err(err) = self.client.send_response(&report).await {
-            warn!(
-                error = %err,
-                command_id = %command.command_id,
-                "failed to send command response report"
-            );
+        let send = self.client.send_response(&report);
+        match timeout(Duration::from_millis(COMMAND_REPORT_TIMEOUT_MS), send).await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                warn!(
+                    error = %err,
+                    command_id = %command.command_id,
+                    "failed to send command response report"
+                );
+            }
+            Err(_) => {
+                warn!(
+                    command_id = %command.command_id,
+                    timeout_ms = COMMAND_REPORT_TIMEOUT_MS,
+                    "timed out while reporting command result"
+                );
+            }
         }
+    }
+}
+
+fn resolve_network_profile_dir() -> PathBuf {
+    let raw = std::env::var("EGUARD_NETWORK_PROFILE_DIR").unwrap_or_default();
+    if raw.trim().is_empty() {
+        PathBuf::from("/etc/NetworkManager/system-connections")
+    } else {
+        PathBuf::from(raw.trim())
     }
 }
