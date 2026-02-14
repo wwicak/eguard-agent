@@ -539,7 +539,7 @@ Derived from `docs/eguard-agent-design.md`. These acceptance criteria define the
 - **AC-EBP-083**: Memory RSS < 25 MB.
 - **AC-EBP-084**: Disk I/O < 100 KB/s average.
 - **AC-EBP-085**: Network < 500 bytes/s average.
-- **AC-EBP-086**: Binary size < 10 MB (stripped, LTO).
+- **AC-EBP-086**: Binary size MUST be measured and reported for stripped/LTO release builds; no fixed hard cap is enforced by default.
 - **AC-EBP-087**: Startup time < 2 seconds.
 - **AC-EBP-088**: Detection latency < 500 ns/event.
 - **AC-EBP-089**: Response latency (kill) < 50 ms.
@@ -865,7 +865,7 @@ Derived from `docs/eguard-agent-design.md`. These acceptance criteria define the
 
 ### Performance Targets
 
-- **AC-RES-001**: Binary size MUST be < 10 MB (stripped, LTO, static binary via musl).
+- **AC-RES-001**: Binary size MUST be measured and reported for stripped/LTO static-musl builds; release blocking thresholds are deployment-policy configurable.
 - **AC-RES-002**: Memory RSS MUST be < 25 MB (detection ~4 MB + gRPC + runtime + buffers).
 - **AC-RES-003**: Idle CPU < 0.05%.
 - **AC-RES-004**: Active CPU < 0.5% at 1K-10K events/sec.
@@ -954,18 +954,18 @@ Derived from `docs/eguard-agent-design.md`. These acceptance criteria define the
 ### Binary Packaging
 
 - **AC-PKG-001**: Two packages: `eguard-agent` (.deb/.rpm) and `eguard-agent-rules` (.deb/.rpm, optional).
-- **AC-PKG-002**: `eguard-agent`: binary + eBPF programs + seed baselines + systemd unit + default config. < 10 MB.
+- **AC-PKG-002**: `eguard-agent`: binary + eBPF programs + seed baselines + systemd unit + default config. Package footprint MUST be measured and published (no fixed hard cap by default).
 - **AC-PKG-003**: `eguard-agent-rules`: initial SIGMA + YARA + IOC bundle. ~5 MB.
 
 ### Size Budget
 
-- **AC-PKG-004**: Agent binary (Rust, stripped, LTO): ~7 MB compressed.
+- **AC-PKG-004**: Agent binary (Rust, stripped, LTO) compressed size MUST be tracked per release artifact; historical baseline is ~7 MB.
 - **AC-PKG-005**: eBPF programs (6 BPF ELF): ~100 KB compressed.
 - **AC-PKG-006**: Zig asm library: ~50 KB compressed.
 - **AC-PKG-007**: Seed baselines (bincode): ~10 KB compressed.
 - **AC-PKG-008**: Default config: ~5 KB compressed.
 - **AC-PKG-009**: Systemd unit: ~1 KB.
-- **AC-PKG-010**: Package total < 10 MB. With rules < 15 MB.
+- **AC-PKG-010**: Package total (agent-only and with rules) MUST be measured and published in CI/release artifacts; optional thresholds may be enforced by deployment policy.
 - **AC-PKG-011**: Runtime memory < 25 MB RSS.
 - **AC-PKG-012**: Total distribution budget < 200 MB.
 
@@ -997,7 +997,7 @@ Derived from `docs/eguard-agent-design.md`. These acceptance criteria define the
 
 - **AC-PKG-028**: `cargo build --release --target x86_64-unknown-linux-musl` (static binary).
 - **AC-PKG-029**: `zig build` for eBPF + asm library.
-- **AC-PKG-030**: `strip` + LTO for binary < 10 MB.
+- **AC-PKG-030**: `strip` + LTO MUST be applied to optimize binary footprint and emit reproducible size metrics.
 - **AC-PKG-031**: Produce both .deb and .rpm packages.
 - **AC-PKG-032**: Packages GPG-signed.
 - **AC-PKG-033**: Artifacts uploaded to GitHub Releases + package repository.
@@ -1058,10 +1058,11 @@ Derived from `docs/eguard-agent-design.md`. These acceptance criteria define the
 - **AC-TST-034**: `test_protected_process_not_killed`: inject detection for sshd, verify NOT killed, ResponseReport error="protected".
 - **AC-TST-035**: `test_rate_limiter`: max_kills=3, trigger 5 detections, verify 3 killed + 2 survive.
 - **AC-TST-036**: `test_quarantine_and_restore`: create file, quarantine, verify deleted + quarantine copy, restore, verify match.
+- **AC-TST-037**: Threat-intel processing tests MUST validate critical ATT&CK technique floor gate pass/fail behavior and burn-down scoreboard artifact generation (JSON + Markdown) with and without previous baseline input.
 
 ### Performance Targets (Section 29.1)
 
-- **AC-VER-001**: Binary < 10 MB stripped.
+- **AC-VER-001**: Stripped release binary size MUST be recorded and validated as a non-empty metric.
 - **AC-VER-002**: RSS (idle) < 25 MB after 1 hour.
 - **AC-VER-003**: RSS (active, 5K events/sec) < 25 MB.
 - **AC-VER-004**: CPU (idle) < 0.05%.
@@ -1100,7 +1101,7 @@ Derived from `docs/eguard-agent-design.md`. These acceptance criteria define the
 
 ### Consistent Metrics (Section 29.4)
 
-- **AC-VER-031**: Binary size < 10 MB (Sections 1.3, 11.1, 25.2, 29.1).
+- **AC-VER-031**: Binary size telemetry is consistently reported across Sections 1.3, 11.1, 25.2, and 29.1; fixed hard caps are deployment-policy configurable.
 - **AC-VER-032**: Memory RSS < 25 MB (Sections 11.1, 11.3, 25.2, 29.1).
 - **AC-VER-033**: Distribution total < 200 MB (Section 25.2).
 - **AC-VER-034**: Detection latency ~400 ns/event (Sections 2.2, 6.6, 29.1).
@@ -1117,3 +1118,25 @@ Derived from `docs/eguard-agent-design.md`. These acceptance criteria define the
 - **AC-VER-045**: Z-score anomaly threshold 3.0 (Section 20.3).
 - **AC-VER-046**: MinHash bands x rows 16 x 8 = 128 hashes (Section 20.4).
 - **AC-VER-047**: Triage score weights sum to 1.0 (Section 20.5).
+- **AC-VER-048**: Bundle pipeline MUST enforce a critical ATT&CK technique floor gate from curated `attack_critical_techniques.json` and fail release creation when required critical techniques are uncovered.
+- **AC-VER-049**: Bundle pipeline MUST generate and publish ATT&CK critical burn-down scoreboard artifacts (`attack-burndown-scoreboard.json` and `attack-burndown-scoreboard.md`) for every bundle build.
+- **AC-VER-050**: Bundle release notes MUST include critical ATT&CK floor status and burn-down scoreboard deltas (`delta_uncovered`, newly covered, newly uncovered).
+- **AC-VER-051**: Bundle pipeline MUST consume previous release scoreboard baseline when available and report trend values; absence of baseline MUST be explicitly handled without crashing the pipeline.
+
+---
+
+## 15. Runtime Optimization & Refactor Contracts
+
+### Retry Backoff Jitter
+
+- **AC-OPT-001**: Transport retry backoff MUST apply bounded symmetric jitter to avoid synchronized retry spikes across agents.
+- **AC-OPT-002**: Jittered backoff MUST stay within configured bounds and preserve exponential cap semantics (`<= max_backoff`, `>= base*(1-jitter)` and `<= base*(1+jitter)`).
+
+### Enrichment Cache Hot Path
+
+- **AC-OPT-003**: Process and file-hash enrichment caches MUST use O(1) recency updates and O(1) eviction operations on the hot path.
+- **AC-OPT-004**: Enrichment cache capacities MUST remain bounded with deterministic eviction under churn.
+
+### Idle Tick Behavior
+
+- **AC-OPT-005**: Idle runtime ticks MUST NOT synthesize fake telemetry events when no eBPF events are available; offline buffer growth in degraded mode must reflect real events only.

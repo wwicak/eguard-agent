@@ -264,6 +264,8 @@ fn mtls_and_offline_buffer_contracts_are_present_in_runtime_and_ci() {
             cert_path: "/tmp/definitely-missing-cert.pem".to_string(),
             key_path: "/tmp/definitely-missing-key.pem".to_string(),
             ca_path: "/tmp/definitely-missing-ca.pem".to_string(),
+            pinned_ca_sha256: None,
+            ca_pin_path: None,
         })
         .expect_err("missing cert/key/ca should be rejected");
     assert!(tls_err.to_string().contains("TLS file does not exist"));

@@ -152,18 +152,9 @@ fn ac_grp_offline_buffer_cap_executable() {
 #[test]
 // AC-GRP-090
 fn ac_grp_transport_mode_parse_executable() {
-    assert!(matches!(
-        TransportMode::from_str("grpc"),
-        TransportMode::Grpc
-    ));
-    assert!(matches!(
-        TransportMode::from_str("tonic"),
-        TransportMode::Grpc
-    ));
-    assert!(matches!(
-        TransportMode::from_str("http"),
-        TransportMode::Http
-    ));
+    assert!(matches!(TransportMode::parse("grpc"), TransportMode::Grpc));
+    assert!(matches!(TransportMode::parse("tonic"), TransportMode::Grpc));
+    assert!(matches!(TransportMode::parse("http"), TransportMode::Http));
 }
 
 #[test]

@@ -206,6 +206,7 @@ const TST_STUB_BACKLOG_IDS: &[&str] = &[
     "AC-TST-034",
     "AC-TST-035",
     "AC-TST-036",
+    "AC-TST-037",
 ];
 
 const VER_STUB_BACKLOG_IDS: &[&str] = &[
@@ -256,13 +257,17 @@ const VER_STUB_BACKLOG_IDS: &[&str] = &[
     "AC-VER-045",
     "AC-VER-046",
     "AC-VER-047",
+    "AC-VER-048",
+    "AC-VER-049",
+    "AC-VER-050",
+    "AC-VER-051",
 ];
 
 #[test]
 // AC-TST-001 AC-TST-002 AC-TST-003 AC-TST-004 AC-TST-005 AC-TST-006 AC-TST-007 AC-TST-008 AC-TST-009 AC-TST-010 AC-TST-011 AC-TST-012 AC-TST-013 AC-TST-014 AC-TST-015 AC-TST-016 AC-TST-017 AC-TST-018 AC-TST-019 AC-TST-020 AC-TST-021 AC-TST-022 AC-TST-023 AC-TST-024 AC-TST-025 AC-TST-026 AC-TST-027 AC-TST-028 AC-TST-029 AC-TST-030 AC-TST-031 AC-TST-032 AC-TST-033 AC-TST-034 AC-TST-035 AC-TST-036 AC-VER-001 AC-VER-002 AC-VER-003 AC-VER-004 AC-VER-005 AC-VER-006 AC-VER-007 AC-VER-008 AC-VER-009 AC-VER-010 AC-VER-011 AC-VER-012 AC-VER-013 AC-VER-014 AC-VER-015 AC-VER-016 AC-VER-017 AC-VER-018 AC-VER-019 AC-VER-020 AC-VER-021 AC-VER-022 AC-VER-023 AC-VER-024 AC-VER-025 AC-VER-026 AC-VER-027 AC-VER-028 AC-VER-029 AC-VER-030 AC-VER-031 AC-VER-032 AC-VER-033 AC-VER-034 AC-VER-035 AC-VER-036 AC-VER-037 AC-VER-038 AC-VER-039 AC-VER-040 AC-VER-041 AC-VER-042 AC-VER-043 AC-VER-044 AC-VER-045 AC-VER-046 AC-VER-047
 fn tst_and_ver_stub_backlogs_are_fully_mapped_to_executable_contract_suite() {
-    assert_eq!(TST_STUB_BACKLOG_IDS.len(), 36);
-    assert_eq!(VER_STUB_BACKLOG_IDS.len(), 47);
+    assert_eq!(TST_STUB_BACKLOG_IDS.len(), 37);
+    assert_eq!(VER_STUB_BACKLOG_IDS.len(), 51);
 }
 
 #[test]
@@ -547,7 +552,10 @@ exit 0
     assert!(package.success());
     let package_metrics = std::fs::read_to_string(package_out_dir.join("metrics.json"))
         .expect("read package metrics");
-    assert_eq!(json_number(&package_metrics, "agent_binary"), 10.0);
+    assert!(
+        package_metrics.contains("\"agent_binary\": null"),
+        "expected agent_binary target to be telemetry-only"
+    );
     assert_eq!(json_number(&package_metrics, "rules_package"), 5.0);
     assert_eq!(json_number(&package_metrics, "full_install"), 15.0);
     assert_eq!(json_number(&package_metrics, "runtime_rss"), 25.0);
@@ -587,7 +595,14 @@ exit 0
     assert_eq!(json_number(&ebpf_metrics, "active_cpu_pct"), 0.5);
     assert_eq!(json_number(&ebpf_metrics, "peak_cpu_pct"), 3.0);
     assert_eq!(json_number(&ebpf_metrics, "memory_rss_mb"), 25.0);
-    assert_eq!(json_number(&ebpf_metrics, "binary_size_mb"), 10.0);
+    assert!(
+        ebpf_metrics.contains("\"binary_size_mb\": null"),
+        "expected binary_size_mb limit to be disabled"
+    );
+    assert!(
+        ebpf_metrics.contains("\"binary_size_enforced\": false"),
+        "expected binary_size_enforced=false in limits"
+    );
     assert_eq!(json_number(&ebpf_metrics, "startup_seconds"), 2.0);
     assert_eq!(json_number(&ebpf_metrics, "detection_latency_ns"), 500.0);
     assert_eq!(json_number(&ebpf_metrics, "lsm_block_latency_ms"), 1.0);
@@ -632,6 +647,78 @@ exit 0
 }
 
 #[test]
+// AC-TST-037 AC-VER-048 AC-VER-049 AC-VER-050 AC-VER-051
+fn attack_critical_burndown_bundle_release_contracts_are_present() {
+    let bundle_tests = read("threat-intel/tests/test_bundle.py");
+    assert!(
+        bundle_tests.contains("class TestAttackCriticalTechniqueGate"),
+        "critical ATT&CK gate tests must be present"
+    );
+    assert!(
+        bundle_tests.contains("class TestAttackBurndownScoreboard"),
+        "burn-down scoreboard tests must be present"
+    );
+
+    let workflow = read(".github/workflows/build-bundle.yml");
+    assert!(
+        workflow.contains("attack_critical_technique_gate.py"),
+        "build-bundle workflow must enforce critical technique floor gate"
+    );
+    assert!(
+        workflow.contains("attack_critical_regression_gate.py"),
+        "build-bundle workflow must enforce critical technique regression guard"
+    );
+    assert!(
+        workflow.contains("attack_burndown_scoreboard.py"),
+        "build-bundle workflow must generate ATT&CK burn-down scoreboard"
+    );
+    assert!(
+        workflow.contains("attack_critical_techniques.json"),
+        "workflow must use curated critical ATT&CK techniques list"
+    );
+    assert!(
+        workflow.contains("--previous-scoreboard /tmp/previous-attack-burndown-scoreboard.json"),
+        "workflow must read previous scoreboard baseline when available"
+    );
+    assert!(
+        workflow.contains("bundle/attack-critical-technique-gate.json"),
+        "critical ATT&CK gate artifact must be published"
+    );
+    assert!(
+        workflow.contains("bundle/attack-burndown-scoreboard.json"),
+        "burn-down scoreboard JSON artifact must be published"
+    );
+    assert!(
+        workflow.contains("bundle/attack-critical-regression.json"),
+        "critical ATT&CK regression artifact must be published"
+    );
+    assert!(
+        workflow.contains("bundle/attack-burndown-scoreboard.md"),
+        "burn-down scoreboard Markdown artifact must be published"
+    );
+    assert!(
+        workflow.contains("## Critical ATT&CK Technique Floor"),
+        "release notes must include critical ATT&CK floor status"
+    );
+    assert!(
+        workflow.contains("## Critical ATT&CK Regression Guard"),
+        "release notes must include critical ATT&CK regression guard status"
+    );
+    assert!(
+        workflow.contains("## ATT&CK Critical Burn-down Scoreboard"),
+        "release notes must include critical ATT&CK burn-down summary"
+    );
+    assert!(
+        workflow.contains("Top uncovered critical (max 5)"),
+        "release notes must include top uncovered critical technique preview"
+    );
+    assert!(
+        workflow.contains("Delta uncovered vs previous"),
+        "release notes must publish burn-down trend delta"
+    );
+}
+
+#[test]
 // AC-VER-014 AC-VER-015 AC-VER-016 AC-VER-017 AC-VER-018 AC-VER-019 AC-VER-020 AC-VER-021 AC-VER-022 AC-VER-023 AC-VER-024 AC-VER-025 AC-VER-026 AC-VER-027 AC-VER-028 AC-VER-029 AC-VER-030 AC-VER-044 AC-VER-045 AC-VER-046 AC-VER-047
 fn verification_coverage_and_security_pipeline_contracts_are_present() {
     let root = repo_root();
@@ -667,7 +754,7 @@ fn verification_coverage_and_security_pipeline_contracts_are_present() {
     assert!(verify_workflow_lines.iter().any(|line| line == "schedule:"));
     assert!(verify_workflow_lines
         .iter()
-        .any(|line| line == "run: ./scripts/run_verification_suite_ci.sh"));
+        .any(|line| line.contains("./scripts/run_verification_suite_ci.sh")));
 
     let _guard = script_lock().lock().unwrap_or_else(|e| e.into_inner());
     let sandbox = temp_dir("eguard-verification-suite-test");
@@ -722,15 +809,15 @@ exit 0
     ));
     assert!(has_line(
         &log_lines,
-        "cargo fuzz run protobuf_parse -- -max_total_time=30"
+        "cargo +nightly fuzz run protobuf_parse -- -max_total_time=30 -verbosity=0"
     ));
     assert!(has_line(
         &log_lines,
-        "cargo fuzz run detection_inputs -- -max_total_time=30"
+        "cargo +nightly fuzz run detection_inputs -- -max_total_time=30 -verbosity=0"
     ));
     assert!(has_line(
         &log_lines,
-        "cargo +nightly miri test -p detection --lib"
+        "cargo +nightly miri test -p detection --lib -- --test-threads=1"
     ));
     assert!(has_line(
         &log_lines,

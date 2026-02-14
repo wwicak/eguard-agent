@@ -489,6 +489,11 @@ const EXPECTED_IDS: &[&str] = &[
     "AC-NAC-018",
     "AC-NAC-019",
     "AC-NAC-020",
+    "AC-OPT-001",
+    "AC-OPT-002",
+    "AC-OPT-003",
+    "AC-OPT-004",
+    "AC-OPT-005",
     "AC-PKG-001",
     "AC-PKG-002",
     "AC-PKG-003",
@@ -669,6 +674,7 @@ const EXPECTED_IDS: &[&str] = &[
     "AC-TST-034",
     "AC-TST-035",
     "AC-TST-036",
+    "AC-TST-037",
     "AC-VER-001",
     "AC-VER-002",
     "AC-VER-003",
@@ -716,6 +722,10 @@ const EXPECTED_IDS: &[&str] = &[
     "AC-VER-045",
     "AC-VER-046",
     "AC-VER-047",
+    "AC-VER-048",
+    "AC-VER-049",
+    "AC-VER-050",
+    "AC-VER-051",
 ];
 
 fn extract_document_ids(doc: &str) -> Vec<String> {
@@ -3222,6 +3232,31 @@ fn ac_nac_020_exists_in_acceptance_document() {
 }
 
 #[test]
+fn ac_opt_001_exists_in_acceptance_document() {
+    assert_criterion_present("AC-OPT-001");
+}
+
+#[test]
+fn ac_opt_002_exists_in_acceptance_document() {
+    assert_criterion_present("AC-OPT-002");
+}
+
+#[test]
+fn ac_opt_003_exists_in_acceptance_document() {
+    assert_criterion_present("AC-OPT-003");
+}
+
+#[test]
+fn ac_opt_004_exists_in_acceptance_document() {
+    assert_criterion_present("AC-OPT-004");
+}
+
+#[test]
+fn ac_opt_005_exists_in_acceptance_document() {
+    assert_criterion_present("AC-OPT-005");
+}
+
+#[test]
 fn ac_pkg_001_exists_in_acceptance_document() {
     assert_criterion_present("AC-PKG-001");
 }
@@ -4122,6 +4157,11 @@ fn ac_tst_036_exists_in_acceptance_document() {
 }
 
 #[test]
+fn ac_tst_037_exists_in_acceptance_document() {
+    assert_criterion_present("AC-TST-037");
+}
+
+#[test]
 fn ac_ver_001_exists_in_acceptance_document() {
     assert_criterion_present("AC-VER-001");
 }
@@ -4354,4 +4394,24 @@ fn ac_ver_046_exists_in_acceptance_document() {
 #[test]
 fn ac_ver_047_exists_in_acceptance_document() {
     assert_criterion_present("AC-VER-047");
+}
+
+#[test]
+fn ac_ver_048_exists_in_acceptance_document() {
+    assert_criterion_present("AC-VER-048");
+}
+
+#[test]
+fn ac_ver_049_exists_in_acceptance_document() {
+    assert_criterion_present("AC-VER-049");
+}
+
+#[test]
+fn ac_ver_050_exists_in_acceptance_document() {
+    assert_criterion_present("AC-VER-050");
+}
+
+#[test]
+fn ac_ver_051_exists_in_acceptance_document() {
+    assert_criterion_present("AC-VER-051");
 }
