@@ -25,11 +25,13 @@ fn test_detect_kernel_capabilities() {
 
 #[test]
 fn test_capability_report() {
-    let mut stats = EbpfStats::default();
-    stats.kernel_version = "6.1.0".to_string();
-    stats.btf_available = true;
-    stats.lsm_available = true;
-    let report = capability_report(&stats);
+    let stats = EbpfStats {
+        kernel_version: "6.1.0".to_string(),
+        btf_available: true,
+        lsm_available: true,
+        ..Default::default()
+    };
+    let report = build_capability_report(&stats);
     assert_eq!(report.get("kernel_version").unwrap(), "6.1.0");
     assert_eq!(report.get("ebpf_ring_buffer").unwrap(), "true");
     assert_eq!(report.get("ebpf_lsm_hooks").unwrap(), "true");

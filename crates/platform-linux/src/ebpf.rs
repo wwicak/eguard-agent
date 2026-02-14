@@ -81,6 +81,8 @@ pub struct PollBatch {
 
 trait RingBufferBackend {
     fn poll_raw_events(&mut self, timeout: Duration) -> Result<PollBatch>;
+
+    fn reclaim_raw_records(&mut self, _records: Vec<Vec<u8>>) {}
 }
 
 pub struct EbpfEngine {
@@ -101,18 +103,22 @@ impl EbpfEngine {
     #[cfg(feature = "ebpf-libbpf")]
     pub fn from_elf(elf_path: &Path, ring_buffer_map: &str) -> Result<Self> {
         let backend = LibbpfRingBufferBackend::new(elf_path.to_path_buf(), ring_buffer_map)?;
+        let mut stats = EbpfStats::default();
+        detect_kernel_capabilities(&mut stats);
         Ok(Self {
             backend: Box::new(backend),
-            stats: EbpfStats::default(),
+            stats,
         })
     }
 
     #[cfg(feature = "ebpf-libbpf")]
     pub fn from_elfs(elf_paths: &[PathBuf], ring_buffer_map: &str) -> Result<Self> {
         let backend = LibbpfRingBufferBackend::new_many(elf_paths, ring_buffer_map)?;
+        let mut stats = EbpfStats::default();
+        detect_kernel_capabilities(&mut stats);
         Ok(Self {
             backend: Box::new(backend),
-            stats: EbpfStats::default(),
+            stats,
         })
     }
 
@@ -130,10 +136,11 @@ impl EbpfEngine {
         let batch = self.backend.poll_raw_events(timeout)?;
         self.stats.events_dropped = self.stats.events_dropped.saturating_add(batch.dropped);
 
-        let mut events = Vec::with_capacity(batch.records.len());
-        for record in batch.records {
+        let mut records = batch.records;
+        let mut events = Vec::with_capacity(records.len());
+        for record in &records {
             self.stats.events_received = self.stats.events_received.saturating_add(1);
-            match parse_raw_event(&record) {
+            match parse_raw_event(record) {
                 Ok(event) => {
                     // Track per-probe event counts
                     let probe_name = match event.event_type {
@@ -152,7 +159,7 @@ impl EbpfEngine {
                         .or_insert(0) += 1;
                     events.push(event);
                 }
-                Err(e) => {
+                Err(_e) => {
                     self.stats.parse_errors = self.stats.parse_errors.saturating_add(1);
                     // Track which probe type failed if we can determine it
                     if record.len() >= EVENT_HEADER_SIZE {
@@ -172,11 +179,12 @@ impl EbpfEngine {
                             .entry(probe_name.to_string())
                             .or_insert(0) += 1;
                     }
-                    let _ = e; // suppress unused warning
                 }
             }
         }
 
+        self.backend
+            .reclaim_raw_records(std::mem::take(&mut records));
         Ok(events)
     }
 
@@ -199,6 +207,10 @@ impl EbpfEngine {
     pub fn stats(&self) -> EbpfStats {
         self.stats.clone()
     }
+
+    pub fn capability_report(&self) -> std::collections::HashMap<String, String> {
+        build_capability_report(&self.stats)
+    }
 }
 
 #[derive(Default)]
@@ -216,10 +228,13 @@ struct LibbpfRingBufferBackend {
     drop_counter_sources: Vec<DropCounterSource>,
     ring_buffer: libbpf_rs::RingBuffer<'static>,
     records: RecordSink,
+    record_pool: RecordPool,
 }
 
 #[cfg(feature = "ebpf-libbpf")]
 type RecordSink = Arc<Mutex<Vec<Vec<u8>>>>;
+#[cfg(feature = "ebpf-libbpf")]
+type RecordPool = Arc<Mutex<Vec<Vec<u8>>>>;
 
 #[cfg(feature = "ebpf-libbpf")]
 struct LoadedObject {
@@ -254,13 +269,14 @@ impl LibbpfRingBufferBackend {
 
         let drop_counter_sources = collect_drop_counter_sources(&loaded)?;
 
-        let (ring_buffer, records) = build_ring_buffer(&mut loaded, ring_buffer_map)?;
+        let (ring_buffer, records, record_pool) = build_ring_buffer(&mut loaded, ring_buffer_map)?;
 
         Ok(Self {
             _loaded: loaded,
             drop_counter_sources,
             ring_buffer,
             records,
+            record_pool,
         })
     }
 }
@@ -314,9 +330,8 @@ fn load_object_with_degradation(
                 // LSM and some tracepoint hooks may fail on older kernels
                 // or kernels without specific features enabled — record
                 // the failure but continue with remaining probes.
-                let is_optional = name.contains("lsm")
-                    || name.contains("block")
-                    || name.contains("module_load");
+                let is_optional =
+                    name.contains("lsm") || name.contains("block") || name.contains("module_load");
 
                 if is_optional {
                     failed_probes.push(format!("{}:{}", name, err));
@@ -366,6 +381,27 @@ impl RingBufferBackend for LibbpfRingBufferBackend {
 
         Ok(PollBatch { records, dropped })
     }
+
+    fn reclaim_raw_records(&mut self, mut records: Vec<Vec<u8>>) {
+        const MAX_RECORD_POOL_ENTRIES: usize = 4_096;
+        let Ok(mut pool) = self.record_pool.lock() else {
+            return;
+        };
+
+        let available = MAX_RECORD_POOL_ENTRIES.saturating_sub(pool.len());
+        if available == 0 {
+            return;
+        }
+
+        if records.len() > available {
+            records.truncate(available);
+        }
+
+        for mut record in records {
+            record.clear();
+            pool.push(record);
+        }
+    }
 }
 
 #[cfg(feature = "ebpf-libbpf")]
@@ -408,7 +444,7 @@ fn is_bss_map_name(raw: &str) -> bool {
 fn build_ring_buffer(
     loaded: &mut [LoadedObject],
     ring_buffer_map: &str,
-) -> Result<(libbpf_rs::RingBuffer<'static>, RecordSink)> {
+) -> Result<(libbpf_rs::RingBuffer<'static>, RecordSink, RecordPool)> {
     struct RingBufferMapSource {
         owner_path: PathBuf,
         attached_programs: usize,
@@ -416,6 +452,7 @@ fn build_ring_buffer(
     }
 
     let records = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+    let record_pool = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
     let mut map_sources = Vec::<RingBufferMapSource>::new();
 
     for loaded_object in loaded {
@@ -452,10 +489,19 @@ fn build_ring_buffer(
 
     for source in &map_sources {
         let records_sink = Arc::clone(&records);
+        let pool_sink = Arc::clone(&record_pool);
         builder
             .add(&source.map_handle, move |raw| {
+                let mut record = if let Ok(mut pool) = pool_sink.lock() {
+                    pool.pop().unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                record.clear();
+                record.extend_from_slice(raw);
+
                 if let Ok(mut guard) = records_sink.lock() {
-                    guard.push(raw.to_vec());
+                    guard.push(record);
                 }
                 0
             })
@@ -473,7 +519,7 @@ fn build_ring_buffer(
         .build()
         .map_err(|err| EbpfError::Backend(format!("build ring buffer: {}", err)))?;
 
-    Ok((ring_buffer, records))
+    Ok((ring_buffer, records, record_pool))
 }
 
 #[cfg(feature = "ebpf-libbpf")]
@@ -761,7 +807,7 @@ fn detect_kernel_capabilities(stats: &mut EbpfStats) {
 }
 
 /// Parse kernel version string into (major, minor, patch).
-pub fn parse_kernel_version(version: &str) -> Option<(u32, u32, u32)> {
+fn parse_kernel_version(version: &str) -> Option<(u32, u32, u32)> {
     let stripped = version.split(['-', ' ']).next()?;
     let parts: Vec<&str> = stripped.split('.').collect();
     if parts.len() < 2 {
@@ -770,12 +816,15 @@ pub fn parse_kernel_version(version: &str) -> Option<(u32, u32, u32)> {
 
     let major = parts[0].parse::<u32>().ok()?;
     let minor = parts[1].parse::<u32>().ok()?;
-    let patch = parts.get(2).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+    let patch = parts
+        .get(2)
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(0);
     Some((major, minor, patch))
 }
 
 /// Check if kernel meets minimum version requirement for a feature.
-pub fn kernel_supports(version_str: &str, min_major: u32, min_minor: u32) -> bool {
+fn kernel_supports(version_str: &str, min_major: u32, min_minor: u32) -> bool {
     match parse_kernel_version(version_str) {
         Some((major, minor, _)) => (major, minor) >= (min_major, min_minor),
         None => false,
@@ -783,7 +832,7 @@ pub fn kernel_supports(version_str: &str, min_major: u32, min_minor: u32) -> boo
 }
 
 /// Build a capability report suitable for telemetry.
-pub fn capability_report(stats: &EbpfStats) -> std::collections::HashMap<String, String> {
+fn build_capability_report(stats: &EbpfStats) -> std::collections::HashMap<String, String> {
     let mut report = std::collections::HashMap::new();
     report.insert("kernel_version".to_string(), stats.kernel_version.clone());
     report.insert("btf_available".to_string(), stats.btf_available.to_string());
@@ -796,10 +845,7 @@ pub fn capability_report(stats: &EbpfStats) -> std::collections::HashMap<String,
         "ebpf_lsm_hooks".to_string(),
         (stats.lsm_available && kernel_supports(&stats.kernel_version, 5, 7)).to_string(),
     );
-    report.insert(
-        "failed_probes".to_string(),
-        stats.failed_probes.join(","),
-    );
+    report.insert("failed_probes".to_string(), stats.failed_probes.join(","));
 
     for (probe, count) in &stats.per_probe_events {
         report.insert(format!("probe_{}_events", probe), count.to_string());

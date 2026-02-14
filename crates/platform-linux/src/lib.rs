@@ -1,15 +1,17 @@
 pub mod container;
 mod ebpf;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::ffi::CString;
 use std::fs;
 use std::io;
+use std::num::NonZeroUsize;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 use crypto_accel::sha256_file_hex;
+use lru::LruCache;
 use serde::{Deserialize, Serialize};
 
 pub use container::{
@@ -77,12 +79,8 @@ struct FileHashCacheEntry {
 
 #[derive(Debug)]
 pub struct EnrichmentCache {
-    process_cache: HashMap<u32, ProcessCacheEntry>,
-    process_lru: VecDeque<u32>,
-    file_hash_cache: HashMap<String, FileHashCacheEntry>,
-    file_lru: VecDeque<String>,
-    max_process_entries: usize,
-    max_file_hash_entries: usize,
+    process_cache: LruCache<u32, ProcessCacheEntry>,
+    file_hash_cache: LruCache<String, FileHashCacheEntry>,
 }
 
 impl Default for EnrichmentCache {
@@ -94,12 +92,8 @@ impl Default for EnrichmentCache {
 impl EnrichmentCache {
     pub fn new(max_process_entries: usize, max_file_hash_entries: usize) -> Self {
         Self {
-            process_cache: HashMap::new(),
-            process_lru: VecDeque::new(),
-            file_hash_cache: HashMap::new(),
-            file_lru: VecDeque::new(),
-            max_process_entries: max_process_entries.max(128),
-            max_file_hash_entries: max_file_hash_entries.max(128),
+            process_cache: LruCache::new(capacity_from(max_process_entries)),
+            file_hash_cache: LruCache::new(capacity_from(max_file_hash_entries)),
         }
     }
 
@@ -111,21 +105,18 @@ impl EnrichmentCache {
         self.file_hash_cache.len()
     }
 
+    #[cfg(test)]
+    pub(crate) fn file_hash_cache_contains_path(&self, path: &str) -> bool {
+        self.file_hash_cache.peek(path).is_some()
+    }
+
     pub fn evict_process(&mut self, pid: u32) -> bool {
-        if let Some(pos) = self
-            .process_lru
-            .iter()
-            .position(|existing| *existing == pid)
-        {
-            self.process_lru.remove(pos);
-        }
-        self.process_cache.remove(&pid).is_some()
+        self.process_cache.pop(&pid).is_some()
     }
 
     fn process_entry(&mut self, raw: &RawEvent) -> ProcessCacheEntry {
         if let Some(entry) = self.process_cache.get_mut(&raw.pid) {
             entry.last_seen_ns = raw.ts_ns;
-            touch_lru_u32(&mut self.process_lru, raw.pid);
             return entry.clone();
         }
 
@@ -159,9 +150,7 @@ impl EnrichmentCache {
             last_seen_ns: raw.ts_ns,
         };
 
-        self.process_cache.insert(raw.pid, entry.clone());
-        touch_lru_u32(&mut self.process_lru, raw.pid);
-        trim_process_cache(self);
+        self.process_cache.put(raw.pid, entry.clone());
         entry
     }
 
@@ -172,13 +161,12 @@ impl EnrichmentCache {
 
         if let Some(cached) = self.file_hash_cache.get(path) {
             if cached.mtime_secs == mtime_secs && cached.size_bytes == size_bytes {
-                touch_lru_str(&mut self.file_lru, path);
                 return Some(cached.sha256.clone());
             }
         }
 
         let hash = compute_sha256_file(path).ok()?;
-        self.file_hash_cache.insert(
+        self.file_hash_cache.put(
             path.to_string(),
             FileHashCacheEntry {
                 mtime_secs,
@@ -186,8 +174,6 @@ impl EnrichmentCache {
                 sha256: hash.clone(),
             },
         );
-        touch_lru_str(&mut self.file_lru, path);
-        trim_file_hash_cache(self);
         Some(hash)
     }
 }
@@ -462,38 +448,9 @@ fn collect_parent_chain(pid: u32, depth: usize) -> Vec<u32> {
     out
 }
 
-fn touch_lru_u32(lru: &mut VecDeque<u32>, key: u32) {
-    if let Some(pos) = lru.iter().position(|existing| *existing == key) {
-        lru.remove(pos);
-    }
-    lru.push_back(key);
-}
-
-fn touch_lru_str(lru: &mut VecDeque<String>, key: &str) {
-    if let Some(pos) = lru.iter().position(|existing| existing == key) {
-        lru.remove(pos);
-    }
-    lru.push_back(key.to_string());
-}
-
-fn trim_process_cache(cache: &mut EnrichmentCache) {
-    while cache.process_cache.len() > cache.max_process_entries {
-        if let Some(oldest) = cache.process_lru.pop_front() {
-            cache.process_cache.remove(&oldest);
-        } else {
-            break;
-        }
-    }
-}
-
-fn trim_file_hash_cache(cache: &mut EnrichmentCache) {
-    while cache.file_hash_cache.len() > cache.max_file_hash_entries {
-        if let Some(oldest) = cache.file_lru.pop_front() {
-            cache.file_hash_cache.remove(&oldest);
-        } else {
-            break;
-        }
-    }
+fn capacity_from(raw: usize) -> NonZeroUsize {
+    let bounded = raw.max(128);
+    NonZeroUsize::new(bounded).expect("cache capacity is always non-zero")
 }
 
 fn compute_sha256_file(path: &str) -> std::io::Result<String> {

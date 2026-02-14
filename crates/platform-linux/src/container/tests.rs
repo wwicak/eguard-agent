@@ -32,8 +32,7 @@ fn test_containerd_cgroup() {
 
 #[test]
 fn test_crio_cgroup() {
-    let content =
-        "0::/crio-abcdef123456789012345678901234567890123456789012345678901234.scope\n";
+    let content = "0::/crio-abcdef123456789012345678901234567890123456789012345678901234.scope\n";
     let ctx = parse_container_from_cgroup(content).unwrap();
     assert_eq!(ctx.runtime, ContainerRuntime::CriO);
 }
@@ -87,7 +86,10 @@ fn test_is_hex_id() {
 fn test_container_labels_self() {
     // Our test process should be host
     let labels = container_labels(std::process::id());
-    assert_eq!(labels.get("container_runtime").map(|s| s.as_str()), Some("host"));
+    assert_eq!(
+        labels.get("container_runtime").map(|s| s.as_str()),
+        Some("host")
+    );
 }
 
 #[test]

@@ -32,6 +32,44 @@ struct PollObservation {
     seen_timeouts: Vec<Duration>,
 }
 
+#[derive(Default)]
+struct RecycleObservation {
+    reclaimed_records: usize,
+    reclaimed_bytes: usize,
+}
+
+struct RecyclingBackend {
+    queue: VecDeque<Vec<u8>>,
+    observation: Arc<Mutex<RecycleObservation>>,
+}
+
+impl RecyclingBackend {
+    fn new(observation: Arc<Mutex<RecycleObservation>>) -> Self {
+        Self {
+            queue: VecDeque::new(),
+            observation,
+        }
+    }
+}
+
+impl RingBufferBackend for RecyclingBackend {
+    fn poll_raw_events(&mut self, _timeout: Duration) -> Result<PollBatch> {
+        let records = self.queue.drain(..).collect();
+        Ok(PollBatch {
+            records,
+            dropped: 0,
+        })
+    }
+
+    fn reclaim_raw_records(&mut self, records: Vec<Vec<u8>>) {
+        let mut guard = self.observation.lock().expect("recycle observation");
+        guard.reclaimed_records = guard.reclaimed_records.saturating_add(records.len());
+        guard.reclaimed_bytes = guard
+            .reclaimed_bytes
+            .saturating_add(records.iter().map(|r| r.len()).sum::<usize>());
+    }
+}
+
 #[derive(Clone)]
 struct ObservedPollBackend {
     state: Arc<Mutex<PollObservation>>,
@@ -180,6 +218,33 @@ fn poll_once_uses_single_blocking_backend_poll_invocation_per_call() {
     let guard = observation.lock().expect("lock observation");
     assert_eq!(guard.calls, 1);
     assert_eq!(guard.seen_timeouts, vec![timeout]);
+}
+
+#[test]
+// AC-EBP-015
+fn poll_once_reclaims_raw_record_buffers_for_backend_pooling() {
+    let observation = Arc::new(Mutex::new(RecycleObservation::default()));
+    let mut backend = RecyclingBackend::new(observation.clone());
+    backend
+        .queue
+        .push_back(encode_event(1, 4242, 1000, 55, b"/usr/bin/bash"));
+    backend
+        .queue
+        .push_back(encode_event(2, 4242, 1000, 56, b"/tmp/file"));
+
+    let mut engine = EbpfEngine {
+        backend: Box::new(backend),
+        stats: EbpfStats::default(),
+    };
+
+    let events = engine
+        .poll_once(Duration::from_millis(10))
+        .expect("poll once with recycling");
+    assert_eq!(events.len(), 2);
+
+    let guard = observation.lock().expect("recycle observation");
+    assert_eq!(guard.reclaimed_records, 2);
+    assert!(guard.reclaimed_bytes > 0);
 }
 
 #[test]

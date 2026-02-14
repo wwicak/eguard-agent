@@ -402,7 +402,10 @@ pub fn container_labels(pid: u32) -> HashMap<String, String> {
 
     match detect_container(pid) {
         Some(ctx) => {
-            labels.insert("container_runtime".to_string(), ctx.runtime.as_str().to_string());
+            labels.insert(
+                "container_runtime".to_string(),
+                ctx.runtime.as_str().to_string(),
+            );
             labels.insert("container_id".to_string(), ctx.container_id_short.clone());
             labels.insert("container_id_full".to_string(), ctx.container_id);
             if let Some(pod_uid) = ctx.pod_uid {

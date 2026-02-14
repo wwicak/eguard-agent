@@ -185,11 +185,11 @@ fn default_file_hash_cache_capacity_is_bounded_to_ten_thousand_under_churn() {
 
     assert_eq!(cache.file_hash_cache_len(), 10_000);
     assert!(
-        !cache.file_hash_cache.contains_key(&first_path),
+        !cache.file_hash_cache_contains_path(&first_path),
         "oldest file path should be evicted under churn"
     );
     assert!(
-        cache.file_hash_cache.contains_key(&latest_path),
+        cache.file_hash_cache_contains_path(&latest_path),
         "most recent file path should remain cached"
     );
 
@@ -241,4 +241,16 @@ fn event_driven_runtime_primitives_include_inotify_watch_support() {
     let _wd = add_inotify_watch(fd, &dir).expect("add inotify watch");
     let closed = unsafe { libc::close(fd) };
     assert_eq!(closed, 0);
+}
+
+#[test]
+// AC-OPT-003 AC-OPT-004
+fn enrichment_cache_uses_ootb_o1_lru_implementation_for_recency_updates() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..");
+    let src = std::fs::read_to_string(root.join("crates/platform-linux/src/lib.rs"))
+        .expect("platform-linux lib.rs");
+    assert!(src.contains("LruCache<u32, ProcessCacheEntry>"));
+    assert!(src.contains("LruCache<String, FileHashCacheEntry>"));
 }

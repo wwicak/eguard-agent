@@ -53,7 +53,7 @@ pub fn sha256_available() -> bool {
     #[cfg(crypto_accel_zig)]
     {
         // SAFETY: No preconditions for the C ABI availability probe.
-        return unsafe { sha256_ni_available() };
+        unsafe { sha256_ni_available() }
     }
 
     #[cfg(not(crypto_accel_zig))]
@@ -66,7 +66,7 @@ pub fn aes_available() -> bool {
     #[cfg(crypto_accel_zig)]
     {
         // SAFETY: No preconditions for the C ABI availability probe.
-        return unsafe { aes_ni_available() };
+        unsafe { aes_ni_available() }
     }
 
     #[cfg(not(crypto_accel_zig))]
@@ -136,7 +136,7 @@ pub fn aes256_encrypt_block(
         if status == 0 {
             return Ok(out);
         }
-        return Err(CryptoAccelError::ZigBackend(status));
+        Err(CryptoAccelError::ZigBackend(status))
     }
 
     #[cfg(not(crypto_accel_zig))]
@@ -151,9 +151,7 @@ pub fn verify_integrity_sha256(data: &[u8], expected_digest: &[u8; SHA256_DIGEST
     #[cfg(crypto_accel_zig)]
     {
         // SAFETY: pointers are valid and expected_digest is exactly 32 bytes.
-        return unsafe {
-            integrity_check_sha256(data.as_ptr(), data.len(), expected_digest.as_ptr())
-        };
+        unsafe { integrity_check_sha256(data.as_ptr(), data.len(), expected_digest.as_ptr()) }
     }
 
     #[cfg(not(crypto_accel_zig))]
