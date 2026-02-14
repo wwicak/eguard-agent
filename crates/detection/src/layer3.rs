@@ -1,10 +1,9 @@
 use std::collections::{HashMap, VecDeque};
 
 use crate::math::{
-    default_uniform_baseline, distributions, kl_divergence_bits, robust_z, shannon_entropy_bits,
-    tau_delta_bits,
+    default_uniform_baseline, kl_divergence_bits, robust_z, shannon_entropy_bits, tau_delta_bits,
 };
-use crate::types::{EventClass, TelemetryEvent, EVENT_CLASSES};
+use crate::types::{EventClass, TelemetryEvent, EVENT_CLASSES, EVENT_CLASS_COUNT};
 
 #[derive(Debug, Clone)]
 pub struct AnomalyConfig {
@@ -37,10 +36,19 @@ impl Default for AnomalyConfig {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 struct WindowState {
-    counts: HashMap<EventClass, u64>,
+    counts: [u64; EVENT_CLASS_COUNT],
     n: usize,
+}
+
+impl Default for WindowState {
+    fn default() -> Self {
+        Self {
+            counts: [0u64; EVENT_CLASS_COUNT],
+            n: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -81,8 +89,9 @@ impl AnomalyEngine {
         let key = event.process_key();
         let (counts, sample_count) = {
             let window = self.windows.entry(key.clone()).or_default();
-            *window.counts.entry(event.event_class).or_insert(0) += 1;
-            window.n += 1;
+            window.counts[event.event_class.index()] =
+                window.counts[event.event_class.index()].saturating_add(1);
+            window.n = window.n.saturating_add(1);
 
             if window.n < self.config.window_size {
                 if entropy_high {
@@ -99,10 +108,9 @@ impl AnomalyEngine {
                 return None;
             }
 
-            (
-                std::mem::take(&mut window.counts),
-                std::mem::take(&mut window.n),
-            )
+            let counts = std::mem::take(&mut window.counts);
+            let sample_count = std::mem::take(&mut window.n);
+            (counts, sample_count)
         };
 
         let baseline = self
@@ -111,7 +119,7 @@ impl AnomalyEngine {
             .cloned()
             .unwrap_or_else(default_uniform_baseline);
 
-        let (p, q) = distributions(&counts, sample_count, &baseline, self.config.alpha);
+        let (p, q) = self.distributions_from_window_counts(&counts, sample_count, &baseline);
         let kl = kl_divergence_bits(&p, &q);
 
         let tau_high = self.config.tau_floor_high.max(tau_delta_bits(
@@ -141,6 +149,33 @@ impl AnomalyEngine {
         }
 
         None
+    }
+
+    fn distributions_from_window_counts(
+        &self,
+        counts: &[u64; EVENT_CLASS_COUNT],
+        sample_count: usize,
+        baseline: &HashMap<EventClass, f64>,
+    ) -> (Vec<f64>, Vec<f64>) {
+        let n = sample_count.max(1) as f64;
+        let bsum: f64 = EVENT_CLASSES
+            .iter()
+            .map(|class| baseline.get(class).copied().unwrap_or(0.0))
+            .sum();
+        let denom = bsum + self.config.alpha * EVENT_CLASS_COUNT as f64;
+
+        let mut p = Vec::with_capacity(EVENT_CLASS_COUNT);
+        let mut q = Vec::with_capacity(EVENT_CLASS_COUNT);
+
+        for class in EVENT_CLASSES {
+            let idx = class.index();
+            p.push(counts[idx] as f64 / n);
+
+            let base = baseline.get(&class).copied().unwrap_or(0.0);
+            q.push((base + self.config.alpha) / denom);
+        }
+
+        (p, q)
     }
 
     fn observe_entropy(&mut self, event: &TelemetryEvent) -> (Option<f64>, Option<f64>, bool) {

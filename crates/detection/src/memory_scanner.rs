@@ -208,11 +208,7 @@ fn read_region(pid: u32, region: &MemoryRegion) -> io::Result<Vec<u8>> {
 /// Requires CAP_SYS_PTRACE or same-user access to read /proc/[pid]/mem.
 /// The process should be stopped (SIGSTOP) before scanning for consistency,
 /// but this function does NOT stop the process — the caller is responsible.
-pub fn scan_process_memory(
-    yara: &YaraEngine,
-    pid: u32,
-    mode: ScanMode,
-) -> MemoryScanResult {
+pub fn scan_process_memory(yara: &YaraEngine, pid: u32, mode: ScanMode) -> MemoryScanResult {
     let mut result = MemoryScanResult {
         pid,
         hits: Vec::new(),

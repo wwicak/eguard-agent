@@ -11,6 +11,7 @@ pub(crate) fn default_uniform_baseline() -> HashMap<EventClass, f64> {
     out
 }
 
+#[cfg(test)]
 pub(crate) fn distributions(
     counts: &HashMap<EventClass, u64>,
     total: usize,

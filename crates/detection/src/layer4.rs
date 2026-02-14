@@ -14,6 +14,14 @@ struct GraphNode {
     sensitive_file_access: bool,
 }
 
+impl GraphNode {
+    fn reset_runtime_signals(&mut self) {
+        self.network_non_web = false;
+        self.module_loaded = false;
+        self.sensitive_file_access = false;
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TemplatePredicate {
     pub process_any_of: Option<HashSet<String>>,
@@ -79,51 +87,140 @@ impl ProcessGraph {
     }
 
     fn observe(&mut self, event: &TelemetryEvent) {
-        let node = self.nodes.entry(event.pid).or_insert_with(|| GraphNode {
-            ppid: event.ppid,
-            process: event.process.clone(),
-            uid: event.uid,
-            last_seen: event.ts_unix,
-            network_non_web: false,
-            module_loaded: false,
-            sensitive_file_access: false,
-        });
+        if matches!(event.event_class, EventClass::ProcessExit) {
+            self.observe_process_exit(event.pid, event.ts_unix);
+            self.prune(event.ts_unix);
+            return;
+        }
 
-        node.ppid = event.ppid;
-        node.process = event.process.clone();
-        node.uid = event.uid;
-        node.last_seen = event.ts_unix;
+        let reset_for_exec = matches!(event.event_class, EventClass::ProcessExec);
+
+        let previous_ppid = {
+            let node = self.nodes.entry(event.pid).or_insert_with(|| GraphNode {
+                ppid: event.ppid,
+                process: event.process.clone(),
+                uid: event.uid,
+                last_seen: event.ts_unix,
+                network_non_web: false,
+                module_loaded: false,
+                sensitive_file_access: false,
+            });
+
+            let previous_ppid = node.ppid;
+
+            if reset_for_exec {
+                node.reset_runtime_signals();
+            }
+
+            node.ppid = event.ppid;
+            node.process = event.process.clone();
+            node.uid = event.uid;
+            node.last_seen = event.ts_unix;
+
+            match event.event_class {
+                EventClass::NetworkConnect => {
+                    if let Some(port) = event.dst_port {
+                        if port != 80 && port != 443 {
+                            node.network_non_web = true;
+                        }
+                    }
+                }
+                EventClass::ModuleLoad => {
+                    node.module_loaded = true;
+                }
+                EventClass::FileOpen => {
+                    if let Some(path) = &event.file_path {
+                        if path.starts_with("/etc/shadow")
+                            || path.starts_with("/etc/passwd")
+                            || path.contains("credential")
+                        {
+                            node.sensitive_file_access = true;
+                        }
+                    }
+                }
+                _ => {}
+            }
+
+            previous_ppid
+        };
+
+        if reset_for_exec {
+            self.children.remove(&event.pid);
+        }
+
+        if previous_ppid != event.ppid {
+            self.remove_child_link(previous_ppid, event.pid);
+        }
 
         self.children
             .entry(event.ppid)
             .or_default()
             .insert(event.pid);
 
-        match event.event_class {
-            EventClass::NetworkConnect => {
-                if let Some(port) = event.dst_port {
-                    if port != 80 && port != 443 {
-                        node.network_non_web = true;
-                    }
-                }
-            }
-            EventClass::ModuleLoad => {
-                node.module_loaded = true;
-            }
-            EventClass::FileOpen => {
-                if let Some(path) = &event.file_path {
-                    if path.starts_with("/etc/shadow")
-                        || path.starts_with("/etc/passwd")
-                        || path.contains("credential")
-                    {
-                        node.sensitive_file_access = true;
-                    }
-                }
-            }
-            _ => {}
+        self.prune(event.ts_unix);
+    }
+
+    fn remove_child_link(&mut self, parent_pid: u32, child_pid: u32) {
+        let mut remove_parent = false;
+        if let Some(children) = self.children.get_mut(&parent_pid) {
+            children.remove(&child_pid);
+            remove_parent = children.is_empty();
         }
 
-        self.prune(event.ts_unix);
+        if remove_parent {
+            self.children.remove(&parent_pid);
+        }
+    }
+
+    fn observe_process_exit(&mut self, pid: u32, event_ts: i64) {
+        let Some(node) = self.nodes.get(&pid) else {
+            return;
+        };
+
+        // Ignore stale out-of-order exit records relative to the latest node observation.
+        if event_ts < node.last_seen {
+            return;
+        }
+
+        let parent_pid = node.ppid;
+        self.nodes.remove(&pid);
+        self.children.remove(&pid);
+        self.remove_child_link(parent_pid, pid);
+        for child_set in self.children.values_mut() {
+            child_set.remove(&pid);
+        }
+    }
+
+    fn candidate_roots(&self, start_pid: u32, max_depth: usize) -> Vec<u32> {
+        let mut out = Vec::with_capacity(max_depth.saturating_add(1));
+        let mut visited = HashSet::new();
+
+        let mut current = Some(start_pid);
+        let mut depth = 0usize;
+
+        while let Some(pid) = current {
+            if !visited.insert(pid) {
+                break;
+            }
+            out.push(pid);
+
+            if depth >= max_depth {
+                break;
+            }
+
+            let Some(node) = self.nodes.get(&pid) else {
+                break;
+            };
+
+            if node.ppid == 0 || node.ppid == pid {
+                break;
+            }
+
+            current = Some(node.ppid);
+            depth = depth.saturating_add(1);
+        }
+
+        out
     }
 
     fn prune(&mut self, now: i64) {
@@ -225,9 +322,11 @@ impl Layer4Engine {
         self.graph.observe(event);
 
         let mut hits = Vec::new();
-        let node_ids: Vec<u32> = self.graph.nodes.keys().copied().collect();
+        let candidate_roots = self
+            .graph
+            .candidate_roots(event.pid, self.max_template_depth());
         for template in &self.templates {
-            for pid in &node_ids {
+            for pid in &candidate_roots {
                 if self.match_from(*pid, template, 0, 0, 0) {
                     hits.push(template.name.clone());
                     break;
@@ -236,6 +335,14 @@ impl Layer4Engine {
         }
 
         hits
+    }
+
+    fn max_template_depth(&self) -> usize {
+        self.templates
+            .iter()
+            .map(|template| template.max_depth.max(template.stages.len()))
+            .max()
+            .unwrap_or(0)
     }
 
     fn match_from(
@@ -286,12 +393,12 @@ impl Layer4Engine {
         self.templates.len()
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, not(miri)))]
     pub(crate) fn debug_graph_edge_count(&self) -> usize {
         self.graph.children.values().map(|set| set.len()).sum()
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, not(miri)))]
     pub(crate) fn debug_total_template_stages(&self) -> usize {
         self.templates.iter().map(|t| t.stages.len()).sum()
     }

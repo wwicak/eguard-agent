@@ -51,6 +51,10 @@ fn temporal_rule(name: &str) -> TemporalRule {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "runtime scaling assertions are not meaningful under miri"
+)]
 // AC-DET-100 AC-DET-185
 fn ioc_prefilter_and_exact_cache_fit_target_memory_and_keep_constant_lookup_shape() {
     let mut l1 = IocLayer1::new();
@@ -118,10 +122,14 @@ fn aho_matcher_budget_fits_target_envelope() {
 
     l1.load_string_signatures(patterns);
     let bytes = l1.debug_matcher_pattern_bytes();
-    assert!((1 * 1024 * 1024..=3 * 1024 * 1024).contains(&bytes));
+    assert!((1024 * 1024..=3 * 1024 * 1024).contains(&bytes));
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "runtime scaling assertions are not meaningful under miri"
+)]
 // AC-DET-102 AC-DET-185
 fn temporal_monitor_memory_and_per_event_cost_fit_budget() {
     let mut engine = TemporalEngine::new();
@@ -170,6 +178,10 @@ fn temporal_monitor_memory_and_per_event_cost_fit_budget() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "runtime envelope assertions are not meaningful under miri"
+)]
 // AC-DET-104 AC-DET-185
 fn process_graph_and_templates_fit_budget_with_bounded_batch_evaluation() {
     let mut l4 = Layer4Engine::new(10_000);
@@ -219,7 +231,7 @@ fn process_graph_and_templates_fit_budget_with_bounded_batch_evaluation() {
     let stages = l4.debug_total_template_stages();
 
     let approx_bytes = nodes * 160 + edges * 16 + stages * 64;
-    assert!((1 * 1024 * 1024..=2 * 1024 * 1024).contains(&approx_bytes));
+    assert!((1024 * 1024..=2 * 1024 * 1024).contains(&approx_bytes));
 }
 
 #[test]
@@ -245,7 +257,8 @@ fn hot_path_runtime_state_remains_bounded_under_long_streams() {
         ..AnomalyConfig::default()
     });
 
-    for i in 0..20_000i64 {
+    let stream_len: i64 = if cfg!(miri) { 1_024 } else { 20_000 };
+    for i in 0..stream_len {
         let mut ev = event(i, EventClass::ProcessExec, "python", "bash", 1000);
         ev.command_line = Some(format!("Ab9$Xy2!Qw8#Tn6@-{i:04}"));
         let _ = anomaly.observe(&ev);

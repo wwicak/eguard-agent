@@ -16,7 +16,9 @@ mod yara_engine;
 pub use calibration::{calibrate_thresholds, sanov_upper_bound, tau_delta, ThresholdCalibration};
 pub use engine::{DetectionEngine, DetectionOutcome, SigmaLoadError};
 pub use layer1::{IocExactStore, IocLayer1, Layer1EventHit, Layer1Result};
-pub use layer2::{TemporalEngine, TemporalPredicate, TemporalRule, TemporalStage};
+pub use layer2::{
+    TemporalEngine, TemporalEvictionCounters, TemporalPredicate, TemporalRule, TemporalStage,
+};
 pub use layer3::{AnomalyConfig, AnomalyDecision, AnomalyEngine};
 pub use layer4::{KillChainTemplate, Layer4Engine, TemplatePredicate};
 pub use policy::confidence_policy;
@@ -32,7 +34,7 @@ pub use yara_engine::{YaraEngine, YaraError, YaraHit};
 
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod tests_resource_budget;
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod tests_stub_completion;

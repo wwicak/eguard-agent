@@ -194,6 +194,7 @@ fn into_set(values: Vec<String>) -> Option<HashSet<String>> {
 fn parse_event_class(raw: &str) -> Result<EventClass> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "process_exec" => Ok(EventClass::ProcessExec),
+        "process_exit" => Ok(EventClass::ProcessExit),
         "file_open" => Ok(EventClass::FileOpen),
         "network_connect" | "tcp_connect" => Ok(EventClass::NetworkConnect),
         "dns_query" => Ok(EventClass::DnsQuery),

@@ -138,6 +138,10 @@ fn normalization_policy_is_fixed_for_casefolding_and_path_canonicalization() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "runtime scaling assertions are not meaningful under miri"
+)]
 // AC-DET-025
 fn temporal_runtime_cost_scales_with_subscribed_rule_count() {
     let mut low = TemporalEngine::new();

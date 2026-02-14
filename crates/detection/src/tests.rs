@@ -22,6 +22,36 @@ fn event(ts: i64, class: EventClass, process: &str, parent: &str, uid: u32) -> T
     }
 }
 
+fn temporal_cap_rule(name: &str) -> TemporalRule {
+    TemporalRule {
+        name: name.to_string(),
+        stages: vec![
+            TemporalStage {
+                predicate: TemporalPredicate {
+                    event_class: EventClass::ProcessExec,
+                    process_any_of: Some(std::iter::once("bash".to_string()).collect()),
+                    parent_any_of: Some(std::iter::once("nginx".to_string()).collect()),
+                    uid_eq: None,
+                    uid_ne: None,
+                    dst_port_not_in: None,
+                },
+                within_secs: 30,
+            },
+            TemporalStage {
+                predicate: TemporalPredicate {
+                    event_class: EventClass::NetworkConnect,
+                    process_any_of: None,
+                    parent_any_of: None,
+                    uid_eq: None,
+                    uid_ne: None,
+                    dst_port_not_in: Some(std::collections::HashSet::from([80, 443])),
+                },
+                within_secs: 10,
+            },
+        ],
+    }
+}
+
 #[test]
 // AC-DET-060 AC-DET-061 AC-DET-062 AC-DET-063 AC-DET-064 AC-DET-065
 fn confidence_ordering_matches_policy() {
@@ -66,6 +96,7 @@ fn layer1_exact_verification_works() {
     l1.load_string_signatures(["curl|bash".to_string()]);
 
     assert_eq!(l1.check_hash("abc"), Layer1Result::ExactMatch);
+    assert_eq!(l1.check_hash("ABC"), Layer1Result::ExactMatch);
     assert_eq!(l1.check_hash("nope"), Layer1Result::Clean);
     assert_eq!(l1.check_domain("BAD.EXAMPLE"), Layer1Result::ExactMatch);
     assert_eq!(l1.check_ip("1.2.3.4"), Layer1Result::ExactMatch);
@@ -141,6 +172,10 @@ fn aho_matcher_space_scales_with_total_pattern_bytes() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "runtime envelope assertions are not meaningful under miri"
+)]
 // AC-DET-010
 fn aho_matcher_scan_runtime_scales_approximately_linearly_with_input_bytes() {
     let mut l1 = IocLayer1::new();
@@ -221,6 +256,299 @@ fn temporal_engine_entity_isolation_prevents_cross_pid_matches() {
 }
 
 #[test]
+// AC-DET-024 AC-DET-028 AC-DET-076
+fn temporal_engine_pid_reuse_process_exec_clears_stale_pending_webshell_state() {
+    let mut t = TemporalEngine::with_default_rules();
+
+    let mut stage1 = event(100, EventClass::ProcessExec, "bash", "nginx", 33);
+    stage1.pid = 777;
+    assert!(t.observe(&stage1).is_empty());
+
+    // Reused pid starts a different process image before the second stage arrives.
+    let mut reused_exec = event(103, EventClass::ProcessExec, "python", "systemd", 1000);
+    reused_exec.pid = 777;
+    assert!(t.observe(&reused_exec).is_empty());
+
+    let mut stale_followup = event(106, EventClass::NetworkConnect, "python", "systemd", 1000);
+    stale_followup.pid = 777;
+    stale_followup.dst_port = Some(9001);
+    let stale_hits = t.observe(&stale_followup);
+    assert!(stale_hits.iter().all(|h| h != "phi_webshell"));
+
+    // A fresh matching chain on the same pid must still detect correctly.
+    let mut fresh_stage1 = event(110, EventClass::ProcessExec, "bash", "nginx", 33);
+    fresh_stage1.pid = 777;
+    assert!(t.observe(&fresh_stage1).is_empty());
+
+    let mut fresh_stage2 = event(114, EventClass::NetworkConnect, "bash", "nginx", 33);
+    fresh_stage2.pid = 777;
+    fresh_stage2.dst_port = Some(9001);
+    let fresh_hits = t.observe(&fresh_stage2);
+    assert!(fresh_hits.iter().any(|h| h == "phi_webshell"));
+}
+
+#[test]
+// AC-DET-024 AC-DET-028 AC-DET-076
+fn temporal_engine_pid_reuse_without_exec_observation_does_not_continue_stale_chain() {
+    let mut t = TemporalEngine::with_default_rules();
+
+    let mut stage1 = event(600, EventClass::ProcessExec, "bash", "nginx", 33);
+    stage1.pid = 889;
+    assert!(t.observe(&stage1).is_empty());
+
+    // Simulate missing exec telemetry for a PID reuse: identity drift on non-process stage
+    // must not continue stale pending stages.
+    let mut stale_followup = event(605, EventClass::NetworkConnect, "python", "systemd", 1000);
+    stale_followup.pid = 889;
+    stale_followup.dst_port = Some(9001);
+    let stale_hits = t.observe(&stale_followup);
+    assert!(stale_hits.iter().all(|h| h != "phi_webshell"));
+
+    // A fresh in-order chain on the same PID must still detect correctly.
+    let mut fresh_stage1 = event(610, EventClass::ProcessExec, "bash", "nginx", 33);
+    fresh_stage1.pid = 889;
+    assert!(t.observe(&fresh_stage1).is_empty());
+
+    let mut fresh_stage2 = event(614, EventClass::NetworkConnect, "bash", "nginx", 33);
+    fresh_stage2.pid = 889;
+    fresh_stage2.dst_port = Some(9001);
+    let fresh_hits = t.observe(&fresh_stage2);
+    assert!(fresh_hits.iter().any(|h| h == "phi_webshell"));
+}
+
+#[test]
+fn temporal_engine_process_exit_tears_down_state_and_metadata_immediately() {
+    let mut t = TemporalEngine::with_default_rules();
+
+    let mut stage1 = event(900, EventClass::ProcessExec, "bash", "nginx", 33);
+    stage1.pid = 9_001;
+    assert!(t.observe(&stage1).is_empty());
+    assert!(t.debug_state_count() > 0);
+    assert!(t.debug_has_pid_metadata(9_001));
+
+    let mut exit = event(901, EventClass::ProcessExit, "bash", "nginx", 33);
+    exit.pid = 9_001;
+    assert!(t.observe(&exit).is_empty());
+
+    assert_eq!(t.debug_state_count(), 0);
+    assert!(!t.debug_has_pid_metadata(9_001));
+
+    let mut stale_followup = event(903, EventClass::NetworkConnect, "bash", "nginx", 33);
+    stale_followup.pid = 9_001;
+    stale_followup.dst_port = Some(9001);
+    let stale_hits = t.observe(&stale_followup);
+    assert!(stale_hits.iter().all(|h| h != "phi_webshell"));
+
+    let mut fresh_stage1 = event(905, EventClass::ProcessExec, "bash", "nginx", 33);
+    fresh_stage1.pid = 9_001;
+    assert!(t.observe(&fresh_stage1).is_empty());
+
+    let mut fresh_stage2 = event(908, EventClass::NetworkConnect, "bash", "nginx", 33);
+    fresh_stage2.pid = 9_001;
+    fresh_stage2.dst_port = Some(9001);
+    let fresh_hits = t.observe(&fresh_stage2);
+    assert!(fresh_hits.iter().any(|h| h == "phi_webshell"));
+}
+
+#[test]
+fn temporal_engine_process_exit_teardown_is_idempotent_and_ignores_stale_out_of_order_exit() {
+    let mut t = TemporalEngine::with_default_rules();
+
+    let mut stage1 = event(1_000, EventClass::ProcessExec, "bash", "nginx", 33);
+    stage1.pid = 9_101;
+    assert!(t.observe(&stage1).is_empty());
+
+    let mut first_exit = event(1_005, EventClass::ProcessExit, "bash", "nginx", 33);
+    first_exit.pid = 9_101;
+    assert!(t.observe(&first_exit).is_empty());
+
+    let mut duplicate_exit = event(1_005, EventClass::ProcessExit, "bash", "nginx", 33);
+    duplicate_exit.pid = 9_101;
+    assert!(t.observe(&duplicate_exit).is_empty());
+    assert_eq!(t.debug_state_count(), 0);
+    assert!(!t.debug_has_pid_metadata(9_101));
+
+    let mut fresh_stage1 = event(1_010, EventClass::ProcessExec, "bash", "nginx", 33);
+    fresh_stage1.pid = 9_101;
+    assert!(t.observe(&fresh_stage1).is_empty());
+
+    let mut stale_exit = event(1_002, EventClass::ProcessExit, "bash", "nginx", 33);
+    stale_exit.pid = 9_101;
+    assert!(t.observe(&stale_exit).is_empty());
+
+    let mut fresh_stage2 = event(1_013, EventClass::NetworkConnect, "bash", "nginx", 33);
+    fresh_stage2.pid = 9_101;
+    fresh_stage2.dst_port = Some(9001);
+    let hits = t.observe(&fresh_stage2);
+    assert!(hits.iter().any(|h| h == "phi_webshell"));
+}
+
+#[test]
+fn temporal_engine_eviction_counters_track_retention_and_capacity_reasons() {
+    let mut t = TemporalEngine::with_capacity_limits_for_test(1, 1);
+    t.add_rule(temporal_cap_rule("counter_rule"));
+
+    let mut first = event(2_000, EventClass::ProcessExec, "bash", "nginx", 33);
+    first.pid = 9_201;
+    assert!(t.observe(&first).is_empty());
+
+    let mut second = event(2_010, EventClass::ProcessExec, "bash", "nginx", 33);
+    second.pid = 9_202;
+    assert!(t.observe(&second).is_empty());
+
+    let counters_after_capacity = t.debug_eviction_counters();
+    assert!(counters_after_capacity.state_cap_evict >= 1);
+    assert!(counters_after_capacity.metadata_cap_evict >= 1);
+
+    let mut horizon = event(3_000, EventClass::FileOpen, "python", "systemd", 1000);
+    horizon.pid = 9_203;
+    let _ = t.observe(&horizon);
+
+    let counters_after_retention = t.debug_eviction_counters();
+    assert!(counters_after_retention.retention_prune >= 1);
+}
+
+#[test]
+// AC-DET-024 AC-DET-119
+fn temporal_engine_prunes_stale_state_and_pid_metadata_after_retention_horizon() {
+    let mut t = TemporalEngine::with_default_rules();
+
+    let mut stale_stage1 = event(100, EventClass::ProcessExec, "bash", "nginx", 33);
+    stale_stage1.pid = 990;
+    assert!(t.observe(&stale_stage1).is_empty());
+    assert!(t.debug_state_count() > 0);
+    assert!(t.debug_has_pid_metadata(990));
+
+    // Advance horizon well past temporal retention to force stale state/metadata pruning.
+    let mut horizon_advance = event(500, EventClass::FileOpen, "python", "systemd", 1000);
+    horizon_advance.pid = 991;
+    let _ = t.observe(&horizon_advance);
+
+    assert_eq!(t.debug_state_count(), 0);
+    assert!(!t.debug_has_pid_metadata(990));
+    assert_eq!(t.debug_pid_last_seen_count(), 1);
+    assert_eq!(t.debug_pid_exec_epoch_count(), 1);
+
+    // Stale follow-up must not trigger on the old pending chain.
+    let mut stale_followup = event(505, EventClass::NetworkConnect, "bash", "nginx", 33);
+    stale_followup.pid = 990;
+    stale_followup.dst_port = Some(9001);
+    let stale_hits = t.observe(&stale_followup);
+    assert!(stale_hits.iter().all(|h| h != "phi_webshell"));
+
+    // Fresh chain on reused pid must still detect.
+    let mut fresh_stage1 = event(510, EventClass::ProcessExec, "bash", "nginx", 33);
+    fresh_stage1.pid = 990;
+    assert!(t.observe(&fresh_stage1).is_empty());
+
+    let mut fresh_stage2 = event(513, EventClass::NetworkConnect, "bash", "nginx", 33);
+    fresh_stage2.pid = 990;
+    fresh_stage2.dst_port = Some(9001);
+    let fresh_hits = t.observe(&fresh_stage2);
+    assert!(fresh_hits.iter().any(|h| h == "phi_webshell"));
+}
+
+#[test]
+// AC-DET-024 AC-DET-119
+fn temporal_engine_state_capacity_evicts_oldest_pending_chain_deterministically() {
+    let mut t = TemporalEngine::with_capacity_limits_for_test(1, 128);
+    t.add_rule(temporal_cap_rule("cap_rule"));
+
+    let mut oldest_stage1 = event(700, EventClass::ProcessExec, "bash", "nginx", 33);
+    oldest_stage1.pid = 5_001;
+    assert!(t.observe(&oldest_stage1).is_empty());
+
+    let mut newest_stage1 = event(705, EventClass::ProcessExec, "bash", "nginx", 33);
+    newest_stage1.pid = 5_002;
+    assert!(t.observe(&newest_stage1).is_empty());
+
+    assert_eq!(t.debug_state_count(), 1);
+
+    // Oldest pending stage should have been evicted by capacity pressure.
+    let mut evicted_followup = event(709, EventClass::NetworkConnect, "bash", "nginx", 33);
+    evicted_followup.pid = 5_001;
+    evicted_followup.dst_port = Some(9001);
+    let evicted_hits = t.observe(&evicted_followup);
+    assert!(evicted_hits.iter().all(|h| h != "cap_rule"));
+
+    // Newest pending stage remains valid and should detect.
+    let mut retained_followup = event(710, EventClass::NetworkConnect, "bash", "nginx", 33);
+    retained_followup.pid = 5_002;
+    retained_followup.dst_port = Some(9001);
+    let retained_hits = t.observe(&retained_followup);
+    assert!(retained_hits.iter().any(|h| h == "cap_rule"));
+}
+
+#[test]
+// AC-DET-024 AC-DET-119
+fn temporal_engine_pid_metadata_capacity_evicts_oldest_then_tie_breaks_by_pid() {
+    let mut oldest = TemporalEngine::with_capacity_limits_for_test(64, 2);
+
+    let mut pid1 = event(800, EventClass::ProcessExec, "python", "systemd", 0);
+    pid1.pid = 6_001;
+    assert!(oldest.observe(&pid1).is_empty());
+
+    let mut pid2 = event(805, EventClass::ProcessExec, "python", "systemd", 0);
+    pid2.pid = 6_002;
+    assert!(oldest.observe(&pid2).is_empty());
+
+    let mut pid3 = event(810, EventClass::ProcessExec, "python", "systemd", 0);
+    pid3.pid = 6_003;
+    assert!(oldest.observe(&pid3).is_empty());
+
+    assert!(!oldest.debug_has_pid_metadata(6_001));
+    assert!(oldest.debug_has_pid_metadata(6_002));
+    assert!(oldest.debug_has_pid_metadata(6_003));
+    assert_eq!(oldest.debug_pid_exec_epoch_count(), 2);
+    assert_eq!(oldest.debug_pid_last_seen_count(), 2);
+
+    let mut tie = TemporalEngine::with_capacity_limits_for_test(64, 1);
+
+    let mut tie_low_pid = event(900, EventClass::ProcessExec, "python", "systemd", 0);
+    tie_low_pid.pid = 7_001;
+    assert!(tie.observe(&tie_low_pid).is_empty());
+
+    let mut tie_high_pid = event(900, EventClass::ProcessExec, "python", "systemd", 0);
+    tie_high_pid.pid = 7_002;
+    assert!(tie.observe(&tie_high_pid).is_empty());
+
+    assert!(!tie.debug_has_pid_metadata(7_001));
+    assert!(tie.debug_has_pid_metadata(7_002));
+}
+
+#[test]
+// AC-DET-028 AC-DET-076
+fn temporal_engine_rejects_stage_restart_from_timestamp_skew_beyond_tolerance() {
+    let mut t = TemporalEngine::with_default_rules();
+
+    let mut first = event(500, EventClass::ProcessExec, "bash", "nginx", 33);
+    first.pid = 888;
+    assert!(t.observe(&first).is_empty());
+
+    // Out-of-order process_exec beyond reorder tolerance must be ignored.
+    let mut skewed_restart = event(450, EventClass::ProcessExec, "bash", "nginx", 33);
+    skewed_restart.pid = 888;
+    assert!(t.observe(&skewed_restart).is_empty());
+
+    let mut skewed_followup = event(455, EventClass::NetworkConnect, "bash", "nginx", 33);
+    skewed_followup.pid = 888;
+    skewed_followup.dst_port = Some(9001);
+    let skewed_hits = t.observe(&skewed_followup);
+    assert!(skewed_hits.iter().all(|h| h != "phi_webshell"));
+
+    // Fresh in-order chain on same pid must still detect correctly.
+    let mut fresh_stage1 = event(506, EventClass::ProcessExec, "bash", "nginx", 33);
+    fresh_stage1.pid = 888;
+    assert!(t.observe(&fresh_stage1).is_empty());
+
+    let mut fresh_stage2 = event(509, EventClass::NetworkConnect, "bash", "nginx", 33);
+    fresh_stage2.pid = 888;
+    fresh_stage2.dst_port = Some(9001);
+    let fresh_hits = t.observe(&fresh_stage2);
+    assert!(fresh_hits.iter().any(|h| h == "phi_webshell"));
+}
+
+#[test]
 // AC-DET-028 AC-DET-076
 fn temporal_engine_rejects_reorder_beyond_tolerance() {
     let mut t = TemporalEngine::with_default_rules();
@@ -281,6 +609,85 @@ fn layer4_matches_default_template() {
 }
 
 #[test]
+// AC-DET-050 AC-DET-088
+fn layer4_hit_is_scoped_to_current_event_lineage_and_does_not_replay_on_unrelated_events() {
+    let mut l4 = Layer4Engine::with_default_templates();
+
+    let mut parent = event(1, EventClass::ProcessExec, "nginx", "systemd", 33);
+    parent.pid = 50;
+    parent.ppid = 1;
+    let _ = l4.observe(&parent);
+
+    let mut child = event(2, EventClass::ProcessExec, "bash", "nginx", 33);
+    child.pid = 51;
+    child.ppid = 50;
+    let _ = l4.observe(&child);
+
+    let mut trigger = event(3, EventClass::NetworkConnect, "bash", "nginx", 33);
+    trigger.pid = 51;
+    trigger.ppid = 50;
+    trigger.dst_port = Some(9001);
+    let hits = l4.observe(&trigger);
+    assert!(hits.iter().any(|h| h == "killchain_webshell_network"));
+
+    let mut unrelated = event(4, EventClass::ProcessExec, "cron", "systemd", 1000);
+    unrelated.pid = 99;
+    unrelated.ppid = 1;
+    let unrelated_hits = l4.observe(&unrelated);
+    assert!(
+        unrelated_hits
+            .iter()
+            .all(|h| h != "killchain_webshell_network"),
+        "stale kill-chain hit leaked into unrelated event context"
+    );
+}
+
+#[test]
+// AC-DET-050 AC-DET-088
+fn layer4_pid_reuse_does_not_inherit_stale_non_web_network_signal() {
+    let mut l4 = Layer4Engine::with_default_templates();
+
+    let mut parent = event(1, EventClass::ProcessExec, "nginx", "systemd", 33);
+    parent.pid = 60;
+    parent.ppid = 1;
+    let _ = l4.observe(&parent);
+
+    let mut child = event(2, EventClass::ProcessExec, "bash", "nginx", 33);
+    child.pid = 61;
+    child.ppid = 60;
+    let _ = l4.observe(&child);
+
+    let mut malicious_net = event(3, EventClass::NetworkConnect, "bash", "nginx", 33);
+    malicious_net.pid = 61;
+    malicious_net.ppid = 60;
+    malicious_net.dst_port = Some(9001);
+    let hits = l4.observe(&malicious_net);
+    assert!(hits.iter().any(|h| h == "killchain_webshell_network"));
+
+    // Simulate PID reuse / new process image: process_exec on same pid must reset stale runtime flags.
+    let mut reused_pid_exec = event(20, EventClass::ProcessExec, "bash", "nginx", 33);
+    reused_pid_exec.pid = 61;
+    reused_pid_exec.ppid = 60;
+    let reuse_hits = l4.observe(&reused_pid_exec);
+    assert!(
+        reuse_hits.iter().all(|h| h != "killchain_webshell_network"),
+        "reused pid inherited stale network_non_web signal"
+    );
+
+    let mut benign_net = event(22, EventClass::NetworkConnect, "bash", "nginx", 33);
+    benign_net.pid = 61;
+    benign_net.ppid = 60;
+    benign_net.dst_port = Some(443);
+    let benign_hits = l4.observe(&benign_net);
+    assert!(
+        benign_hits
+            .iter()
+            .all(|h| h != "killchain_webshell_network"),
+        "reused pid produced stale hit on benign web traffic"
+    );
+}
+
+#[test]
 // AC-DET-052 AC-DET-088
 fn layer4_template_matching_is_bounded_by_declared_depth() {
     let mut l4 = Layer4Engine::new(300);
@@ -335,11 +742,13 @@ fn layer4_template_matching_is_bounded_by_declared_depth() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "graph pruning stress test is too slow under miri")]
 // AC-DET-054
 fn layer4_graph_state_is_pruned_by_sliding_window_to_stay_bounded() {
     let mut l4 = Layer4Engine::new(10);
 
-    for i in 0..1_000u32 {
+    let node_count: u32 = if cfg!(miri) { 128 } else { 1_000 };
+    for i in 0..node_count {
         let mut ev = event(0, EventClass::ProcessExec, "bash", "init", 1000);
         ev.pid = 10_000 + i;
         ev.ppid = 1;
@@ -355,6 +764,10 @@ fn layer4_graph_state_is_pruned_by_sliding_window_to_stay_bounded() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "runtime envelope assertions are not meaningful under miri"
+)]
 // AC-DET-053
 fn layer4_evaluation_runtime_is_bounded_with_depth_limited_templates() {
     let mut l4 = Layer4Engine::new(300);
@@ -662,6 +1075,10 @@ fn drift_indicators_report_baseline_age_and_kl_quantiles_by_process_family() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "spawning rustc/cargo subprocesses is unsupported under miri"
+)]
 // AC-DET-182
 fn detection_workspace_excludes_ml_framework_dependencies() {
     #[derive(serde::Deserialize)]
@@ -764,6 +1181,10 @@ fn detection_workspace_excludes_ml_framework_dependencies() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "runtime latency assertions are not meaningful under miri"
+)]
 // AC-DET-091
 fn detection_latency_p99_stays_within_budget_for_reference_workload() {
     let mut engine = DetectionEngine::default_with_rules();
@@ -786,57 +1207,831 @@ fn detection_latency_p99_stays_within_budget_for_reference_workload() {
     assert!(p99 < std::time::Duration::from_millis(10).as_nanos() as u64);
 }
 
-#[test]
-// AC-DET-093 AC-DET-094
-fn replay_reports_precision_recall_and_false_alarm_upper_bound_by_confidence() {
-    let mut events = Vec::new();
-    let mut malicious = std::collections::HashSet::new();
-    for i in 0..30i64 {
-        let mut ev = event(i, EventClass::ProcessExec, "bash", "sshd", 1000);
-        if i % 10 == 0 {
-            ev.file_hash = Some("deadbeef".to_string());
-            malicious.insert(i as usize);
-        }
-        events.push(ev);
+#[derive(Debug, Clone, Copy)]
+struct ReplayQualityMetrics {
+    tp: usize,
+    fp: usize,
+    fn_: usize,
+    benign_trials: usize,
+    precision: f64,
+    recall: f64,
+    upper_false_alarm: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ReplayConfidenceThresholdMetrics {
+    threshold: Confidence,
+    tp: usize,
+    fp: usize,
+    fn_: usize,
+    actual_positive: usize,
+    predicted_positive: usize,
+    benign_trials: usize,
+    precision: f64,
+    recall: f64,
+    upper_false_alarm: f64,
+}
+
+#[derive(Debug, Clone)]
+struct ReplayQualityCorpusMetrics {
+    scenario_count: usize,
+    total_events: usize,
+    malicious_events: usize,
+    threshold_focus: Confidence,
+    focus_metrics: ReplayQualityMetrics,
+    by_confidence_threshold: Vec<ReplayConfidenceThresholdMetrics>,
+}
+
+impl ReplayQualityCorpusMetrics {
+    fn threshold_metrics(
+        &self,
+        threshold: Confidence,
+    ) -> Option<&ReplayConfidenceThresholdMetrics> {
+        self.by_confidence_threshold
+            .iter()
+            .find(|metrics| metrics.threshold == threshold)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct LabeledReplayEvent {
+    event: TelemetryEvent,
+    expected_min_confidence: Option<Confidence>,
+}
+
+fn labeled_event(
+    event: TelemetryEvent,
+    expected_min_confidence: Option<Confidence>,
+) -> LabeledReplayEvent {
+    LabeledReplayEvent {
+        event,
+        expected_min_confidence,
+    }
+}
+
+fn confidence_rank(confidence: Confidence) -> u8 {
+    match confidence {
+        Confidence::Definite => 0,
+        Confidence::VeryHigh => 1,
+        Confidence::High => 2,
+        Confidence::Medium => 3,
+        Confidence::Low => 4,
+        Confidence::None => 5,
+    }
+}
+
+fn confidence_meets_threshold(confidence: Confidence, threshold: Confidence) -> bool {
+    confidence_rank(confidence) <= confidence_rank(threshold)
+}
+
+fn confidence_label(confidence: Confidence) -> &'static str {
+    match confidence {
+        Confidence::Definite => "definite",
+        Confidence::VeryHigh => "very_high",
+        Confidence::High => "high",
+        Confidence::Medium => "medium",
+        Confidence::Low => "low",
+        Confidence::None => "none",
+    }
+}
+
+fn false_alarm_upper_bound(fp: usize, benign_trials: usize) -> f64 {
+    if benign_trials == 0 {
+        return 0.0;
     }
 
-    let mut engine = DetectionEngine::default_with_rules();
+    if fp == 0 {
+        return 1.0 - 0.05f64.powf(1.0 / benign_trials as f64);
+    }
+
+    1.0
+}
+
+fn is_expected_positive(
+    expected_min_confidence: Option<Confidence>,
+    threshold: Confidence,
+) -> bool {
+    expected_min_confidence
+        .map(|expected| confidence_meets_threshold(expected, threshold))
+        .unwrap_or(false)
+}
+
+fn is_predicted_positive(predicted: Option<Confidence>, threshold: Confidence) -> bool {
+    predicted
+        .map(|confidence| confidence_meets_threshold(confidence, threshold))
+        .unwrap_or(false)
+}
+
+fn build_adversarial_replay_corpus() -> (Vec<LabeledReplayEvent>, usize) {
+    let mut corpus = Vec::new();
+
+    // Scenario 1: exact IOC detections mixed with benign process activity.
+    for i in 0..30i64 {
+        let mut ev = event(i, EventClass::ProcessExec, "bash", "sshd", 1000);
+        ev.pid = 10_000 + i as u32;
+
+        if i % 10 == 0 {
+            ev.file_hash = Some("deadbeef".to_string());
+            corpus.push(labeled_event(ev, Some(Confidence::Definite)));
+        } else {
+            corpus.push(labeled_event(ev, None));
+        }
+    }
+
+    // Scenario 2: temporal privilege escalation chains with near-miss adversarial variants.
+    for seq in 0..3i64 {
+        let base = 1_000 + seq * 40;
+        let pid = 20_000 + seq as u32;
+
+        let mut stage1 = event(base, EventClass::ProcessExec, "bash", "sshd", 1000);
+        stage1.pid = pid;
+        corpus.push(labeled_event(stage1, None));
+
+        let mut stage2 = event(base + 5, EventClass::ProcessExec, "su", "bash", 0);
+        stage2.pid = pid;
+        corpus.push(labeled_event(stage2, Some(Confidence::High)));
+
+        let miss_pid = 21_000 + seq as u32;
+        let mut miss_stage1 = event(base + 10, EventClass::ProcessExec, "bash", "sshd", 1000);
+        miss_stage1.pid = miss_pid;
+        corpus.push(labeled_event(miss_stage1, None));
+
+        let mut miss_stage2 = event(base + 35, EventClass::ProcessExec, "su", "bash", 0);
+        miss_stage2.pid = miss_pid;
+        corpus.push(labeled_event(miss_stage2, None));
+    }
+
+    // Scenario 3: dual-signal webshell chains (temporal + killchain) and close benign lookalikes.
+    for seq in 0..2i64 {
+        let base = 2_000 + seq * 60;
+        let parent_pid = 30_000 + (seq as u32) * 20;
+        let child_pid = parent_pid + 1;
+
+        let mut parent = event(base, EventClass::ProcessExec, "nginx", "systemd", 33);
+        parent.pid = parent_pid;
+        parent.ppid = 1;
+        corpus.push(labeled_event(parent, None));
+
+        let mut child = event(base + 2, EventClass::ProcessExec, "bash", "nginx", 33);
+        child.pid = child_pid;
+        child.ppid = parent_pid;
+        corpus.push(labeled_event(child, None));
+
+        let mut net = event(base + 5, EventClass::NetworkConnect, "bash", "nginx", 33);
+        net.pid = child_pid;
+        net.ppid = parent_pid;
+        net.dst_port = Some(9001);
+        corpus.push(labeled_event(net, Some(Confidence::VeryHigh)));
+
+        let benign_parent_pid = parent_pid + 10;
+        let benign_child_pid = benign_parent_pid + 1;
+
+        let mut benign_parent = event(base + 20, EventClass::ProcessExec, "nginx", "systemd", 33);
+        benign_parent.pid = benign_parent_pid;
+        benign_parent.ppid = 1;
+        corpus.push(labeled_event(benign_parent, None));
+
+        let mut benign_child = event(base + 22, EventClass::ProcessExec, "bash", "nginx", 33);
+        benign_child.pid = benign_child_pid;
+        benign_child.ppid = benign_parent_pid;
+        corpus.push(labeled_event(benign_child, None));
+
+        let mut benign_net = event(base + 25, EventClass::NetworkConnect, "bash", "nginx", 33);
+        benign_net.pid = benign_child_pid;
+        benign_net.ppid = benign_parent_pid;
+        benign_net.dst_port = Some(443);
+        corpus.push(labeled_event(benign_net, None));
+    }
+
+    // Scenario 4: benign noisy telemetry across classes (adversarial pressure without true threats).
+    for i in 0..24i64 {
+        let class = match i % 4 {
+            0 => EventClass::FileOpen,
+            1 => EventClass::NetworkConnect,
+            2 => EventClass::DnsQuery,
+            _ => EventClass::ModuleLoad,
+        };
+
+        let mut ev = event(3_000 + i, class, "agentd", "systemd", 1000);
+        ev.pid = 40_000 + i as u32;
+
+        match class {
+            EventClass::FileOpen => {
+                ev.file_path = Some("/var/log/eguard-agent/telemetry.log".to_string());
+            }
+            EventClass::NetworkConnect => {
+                ev.dst_port = Some(443);
+                ev.dst_ip = Some("203.0.113.20".to_string());
+            }
+            EventClass::DnsQuery => {
+                ev.dst_domain = Some("updates.example.org".to_string());
+            }
+            EventClass::ModuleLoad => {
+                ev.file_path = Some("/lib/modules/normal_observer.ko".to_string());
+            }
+            _ => {}
+        }
+
+        corpus.push(labeled_event(ev, None));
+    }
+
+    // Scenario 5: PID reuse after a malicious chain must not inherit stale Layer4 state.
+    for seq in 0..2i64 {
+        let base = 4_000 + seq * 40;
+        let parent_pid = 50_000 + (seq as u32) * 10;
+        let child_pid = parent_pid + 1;
+
+        let mut parent = event(base, EventClass::ProcessExec, "nginx", "systemd", 33);
+        parent.pid = parent_pid;
+        parent.ppid = 1;
+        corpus.push(labeled_event(parent, None));
+
+        let mut child = event(base + 2, EventClass::ProcessExec, "bash", "nginx", 33);
+        child.pid = child_pid;
+        child.ppid = parent_pid;
+        corpus.push(labeled_event(child, None));
+
+        let mut malicious_net = event(base + 5, EventClass::NetworkConnect, "bash", "nginx", 33);
+        malicious_net.pid = child_pid;
+        malicious_net.ppid = parent_pid;
+        malicious_net.dst_port = Some(9001);
+        corpus.push(labeled_event(malicious_net, Some(Confidence::VeryHigh)));
+
+        let mut reused_pid_exec = event(base + 20, EventClass::ProcessExec, "bash", "nginx", 33);
+        reused_pid_exec.pid = child_pid;
+        reused_pid_exec.ppid = parent_pid;
+        corpus.push(labeled_event(reused_pid_exec, None));
+
+        let mut benign_net = event(base + 22, EventClass::NetworkConnect, "bash", "nginx", 33);
+        benign_net.pid = child_pid;
+        benign_net.ppid = parent_pid;
+        benign_net.dst_port = Some(443);
+        corpus.push(labeled_event(benign_net, None));
+    }
+
+    // Scenario 6: L2 stale pending stage must be cleared when pid is reused with a new exec image.
+    for seq in 0..2i64 {
+        let base = 5_000 + seq * 40;
+        let pid = 60_000 + seq as u32;
+
+        let mut stale_stage1 = event(base, EventClass::ProcessExec, "bash", "nginx", 33);
+        stale_stage1.pid = pid;
+        stale_stage1.ppid = 1;
+        corpus.push(labeled_event(stale_stage1, None));
+
+        let mut reused_exec = event(base + 3, EventClass::ProcessExec, "python", "systemd", 1000);
+        reused_exec.pid = pid;
+        reused_exec.ppid = 1;
+        corpus.push(labeled_event(reused_exec, None));
+
+        let mut stale_followup = event(
+            base + 6,
+            EventClass::NetworkConnect,
+            "python",
+            "systemd",
+            1000,
+        );
+        stale_followup.pid = pid;
+        stale_followup.ppid = 1;
+        stale_followup.dst_port = Some(9001);
+        corpus.push(labeled_event(stale_followup, None));
+    }
+
+    // Scenario 7: timestamp-skewed restart attempts beyond reorder tolerance must be ignored.
+    for seq in 0..2i64 {
+        let base = 6_000 + seq * 40;
+        let pid = 70_000 + seq as u32;
+
+        let mut first_stage1 = event(base, EventClass::ProcessExec, "bash", "nginx", 33);
+        first_stage1.pid = pid;
+        first_stage1.ppid = 1;
+        corpus.push(labeled_event(first_stage1, None));
+
+        let mut skewed_restart = event(base - 50, EventClass::ProcessExec, "bash", "nginx", 33);
+        skewed_restart.pid = pid;
+        skewed_restart.ppid = 1;
+        corpus.push(labeled_event(skewed_restart, None));
+
+        let mut skewed_followup = event(base - 45, EventClass::NetworkConnect, "bash", "nginx", 33);
+        skewed_followup.pid = pid;
+        skewed_followup.ppid = 1;
+        skewed_followup.dst_port = Some(9001);
+        corpus.push(labeled_event(skewed_followup, None));
+
+        let mut fresh_stage1 = event(base + 5, EventClass::ProcessExec, "bash", "nginx", 33);
+        fresh_stage1.pid = pid;
+        fresh_stage1.ppid = 1;
+        corpus.push(labeled_event(fresh_stage1, None));
+
+        let mut fresh_stage2 = event(base + 8, EventClass::NetworkConnect, "bash", "nginx", 33);
+        fresh_stage2.pid = pid;
+        fresh_stage2.ppid = 1;
+        fresh_stage2.dst_port = Some(9001);
+        corpus.push(labeled_event(fresh_stage2, Some(Confidence::High)));
+    }
+
+    // Scenario 8: PID reuse without an observed exec must not carry stale pending stage via identity drift.
+    for seq in 0..2i64 {
+        let base = 7_000 + seq * 40;
+        let pid = 80_000 + seq as u32;
+
+        let mut stale_stage1 = event(base, EventClass::ProcessExec, "bash", "nginx", 33);
+        stale_stage1.pid = pid;
+        stale_stage1.ppid = 1;
+        corpus.push(labeled_event(stale_stage1, None));
+
+        let mut identity_drift_followup = event(
+            base + 4,
+            EventClass::NetworkConnect,
+            "python",
+            "systemd",
+            1000,
+        );
+        identity_drift_followup.pid = pid;
+        identity_drift_followup.ppid = 1;
+        identity_drift_followup.dst_port = Some(9001);
+        corpus.push(labeled_event(identity_drift_followup, None));
+
+        let mut fresh_stage1 = event(base + 8, EventClass::ProcessExec, "bash", "nginx", 33);
+        fresh_stage1.pid = pid;
+        fresh_stage1.ppid = 1;
+        corpus.push(labeled_event(fresh_stage1, None));
+
+        let mut fresh_stage2 = event(base + 11, EventClass::NetworkConnect, "bash", "nginx", 33);
+        fresh_stage2.pid = pid;
+        fresh_stage2.ppid = 1;
+        fresh_stage2.dst_port = Some(9001);
+        corpus.push(labeled_event(fresh_stage2, Some(Confidence::High)));
+    }
+
+    // Scenario 9: stale per-pid temporal state/metadata must age out under long-horizon churn.
+    for seq in 0..2i64 {
+        let base = 8_000 + seq * 100;
+        let pid = 90_000 + seq as u32;
+
+        let mut stale_stage1 = event(base, EventClass::ProcessExec, "bash", "nginx", 33);
+        stale_stage1.pid = pid;
+        stale_stage1.ppid = 1;
+        corpus.push(labeled_event(stale_stage1, None));
+
+        let mut horizon_advance =
+            event(base + 500, EventClass::FileOpen, "python", "systemd", 1000);
+        horizon_advance.pid = pid + 1;
+        horizon_advance.ppid = 1;
+        horizon_advance.file_path = Some("/tmp/harmless.log".to_string());
+        corpus.push(labeled_event(horizon_advance, None));
+
+        let mut stale_followup = event(base + 505, EventClass::NetworkConnect, "bash", "nginx", 33);
+        stale_followup.pid = pid;
+        stale_followup.ppid = 1;
+        stale_followup.dst_port = Some(9001);
+        corpus.push(labeled_event(stale_followup, None));
+
+        let mut fresh_stage1 = event(base + 510, EventClass::ProcessExec, "bash", "nginx", 33);
+        fresh_stage1.pid = pid;
+        fresh_stage1.ppid = 1;
+        corpus.push(labeled_event(fresh_stage1, None));
+
+        let mut fresh_stage2 = event(base + 513, EventClass::NetworkConnect, "bash", "nginx", 33);
+        fresh_stage2.pid = pid;
+        fresh_stage2.ppid = 1;
+        fresh_stage2.dst_port = Some(9001);
+        corpus.push(labeled_event(fresh_stage2, Some(Confidence::High)));
+    }
+
+    // Scenario 10: timestamp-tie state-cap pressure must evict oldest/lowest pid chains deterministically.
+    for seq in 0..2i64 {
+        let base = 9_000 + seq * 200;
+        let start_pid = 100_000 + (seq as u32) * 1_000;
+
+        for offset in 0..220u32 {
+            let mut tied_stage1 = event(base, EventClass::ProcessExec, "bash", "nginx", 0);
+            tied_stage1.pid = start_pid + offset;
+            tied_stage1.ppid = 1;
+            corpus.push(labeled_event(tied_stage1, None));
+        }
+
+        let mut evicted_followup = event(base + 5, EventClass::NetworkConnect, "bash", "nginx", 0);
+        evicted_followup.pid = start_pid;
+        evicted_followup.ppid = 1;
+        evicted_followup.dst_port = Some(9001);
+        corpus.push(labeled_event(evicted_followup, None));
+
+        let mut retained_followup = event(base + 5, EventClass::NetworkConnect, "bash", "nginx", 0);
+        retained_followup.pid = start_pid + 219;
+        retained_followup.ppid = 1;
+        retained_followup.dst_port = Some(9001);
+        corpus.push(labeled_event(retained_followup, Some(Confidence::High)));
+    }
+
+    // Scenario 11: combined cap-pressure + reorder-skew abuse must not revive stale chains.
+    for seq in 0..2i64 {
+        let base = 10_000 + seq * 300;
+        let victim_pid = 110_000 + (seq as u32) * 1_000;
+
+        let mut victim_stage1 = event(base, EventClass::ProcessExec, "bash", "nginx", 0);
+        victim_stage1.pid = victim_pid;
+        victim_stage1.ppid = 1;
+        corpus.push(labeled_event(victim_stage1, None));
+
+        for offset in 0..220u32 {
+            let mut pressure_stage1 = event(base + 1, EventClass::ProcessExec, "bash", "nginx", 0);
+            pressure_stage1.pid = victim_pid + 10 + offset;
+            pressure_stage1.ppid = 1;
+            corpus.push(labeled_event(pressure_stage1, None));
+        }
+
+        let mut skewed_restart = event(base - 20, EventClass::ProcessExec, "bash", "nginx", 0);
+        skewed_restart.pid = victim_pid;
+        skewed_restart.ppid = 1;
+        corpus.push(labeled_event(skewed_restart, None));
+
+        let mut skewed_followup = event(base - 15, EventClass::NetworkConnect, "bash", "nginx", 0);
+        skewed_followup.pid = victim_pid;
+        skewed_followup.ppid = 1;
+        skewed_followup.dst_port = Some(9001);
+        corpus.push(labeled_event(skewed_followup, None));
+
+        let mut fresh_stage1 = event(base + 10, EventClass::ProcessExec, "bash", "nginx", 0);
+        fresh_stage1.pid = victim_pid;
+        fresh_stage1.ppid = 1;
+        corpus.push(labeled_event(fresh_stage1, None));
+
+        let mut fresh_stage2 = event(base + 13, EventClass::NetworkConnect, "bash", "nginx", 0);
+        fresh_stage2.pid = victim_pid;
+        fresh_stage2.ppid = 1;
+        fresh_stage2.dst_port = Some(9001);
+        corpus.push(labeled_event(fresh_stage2, Some(Confidence::High)));
+    }
+
+    // Scenario 12: cross-layer churn with process-exit + pid reuse must not leak stale L2/L4 state.
+    for seq in 0..2i64 {
+        let base = 11_000 + seq * 200;
+        let parent_pid = 120_000 + (seq as u32) * 100;
+        let child_pid = parent_pid + 1;
+
+        let mut parent = event(base, EventClass::ProcessExec, "nginx", "systemd", 33);
+        parent.pid = parent_pid;
+        parent.ppid = 1;
+        corpus.push(labeled_event(parent, None));
+
+        let mut child = event(base + 2, EventClass::ProcessExec, "bash", "nginx", 33);
+        child.pid = child_pid;
+        child.ppid = parent_pid;
+        corpus.push(labeled_event(child, None));
+
+        let mut malicious_net = event(base + 5, EventClass::NetworkConnect, "bash", "nginx", 33);
+        malicious_net.pid = child_pid;
+        malicious_net.ppid = parent_pid;
+        malicious_net.dst_port = Some(9001);
+        corpus.push(labeled_event(malicious_net, Some(Confidence::VeryHigh)));
+
+        let mut exit = event(base + 6, EventClass::ProcessExit, "bash", "nginx", 33);
+        exit.pid = child_pid;
+        exit.ppid = parent_pid;
+        corpus.push(labeled_event(exit, None));
+
+        let mut reused_exec = event(base + 8, EventClass::ProcessExec, "python", "systemd", 1000);
+        reused_exec.pid = child_pid;
+        reused_exec.ppid = 1;
+        corpus.push(labeled_event(reused_exec, None));
+
+        let mut stale_net = event(
+            base + 10,
+            EventClass::NetworkConnect,
+            "python",
+            "systemd",
+            1000,
+        );
+        stale_net.pid = child_pid;
+        stale_net.ppid = 1;
+        stale_net.dst_port = Some(9001);
+        corpus.push(labeled_event(stale_net, None));
+
+        let fresh_parent_pid = parent_pid + 10;
+        let mut fresh_parent = event(base + 12, EventClass::ProcessExec, "nginx", "systemd", 33);
+        fresh_parent.pid = fresh_parent_pid;
+        fresh_parent.ppid = 1;
+        corpus.push(labeled_event(fresh_parent, None));
+
+        let mut fresh_child = event(base + 13, EventClass::ProcessExec, "bash", "nginx", 33);
+        fresh_child.pid = child_pid;
+        fresh_child.ppid = fresh_parent_pid;
+        corpus.push(labeled_event(fresh_child, None));
+
+        let mut fresh_net = event(base + 16, EventClass::NetworkConnect, "bash", "nginx", 33);
+        fresh_net.pid = child_pid;
+        fresh_net.ppid = fresh_parent_pid;
+        fresh_net.dst_port = Some(9001);
+        corpus.push(labeled_event(fresh_net, Some(Confidence::VeryHigh)));
+    }
+
+    (corpus, 12)
+}
+
+fn replay_quality_metrics_for_adversarial_corpus() -> ReplayQualityCorpusMetrics {
+    let (labeled_events, scenario_count) = build_adversarial_replay_corpus();
+
+    let mut engine = DetectionEngine::new(
+        IocLayer1::new(),
+        TemporalEngine::with_default_rules_and_capacity_for_test(192, 4_096),
+        AnomalyEngine::default(),
+        Layer4Engine::with_default_templates(),
+    );
     engine.layer1.load_hashes(["deadbeef".to_string()]);
+
+    let events: Vec<TelemetryEvent> = labeled_events
+        .iter()
+        .map(|entry| entry.event.clone())
+        .collect();
     let summary = replay_events(&mut engine, &events);
 
-    let predicted_definite: std::collections::HashSet<usize> = summary
+    let predicted_by_index: std::collections::HashMap<usize, Confidence> = summary
         .alerts
         .iter()
-        .filter(|a| a.confidence == Confidence::Definite)
-        .map(|a| a.index)
+        .map(|alert| (alert.index, alert.confidence))
         .collect();
 
-    let tp = predicted_definite.intersection(&malicious).count();
-    let fp = predicted_definite.difference(&malicious).count();
-    let fn_ = malicious.difference(&predicted_definite).count();
+    let thresholds = [
+        Confidence::Definite,
+        Confidence::VeryHigh,
+        Confidence::High,
+        Confidence::Medium,
+        Confidence::Low,
+    ];
 
-    let precision = if tp + fp == 0 {
-        0.0
-    } else {
-        tp as f64 / (tp + fp) as f64
-    };
-    let recall = if tp + fn_ == 0 {
-        0.0
-    } else {
-        tp as f64 / (tp + fn_) as f64
-    };
-    assert!(precision >= 0.99);
-    assert!(recall >= 0.99);
+    let mut by_confidence_threshold = Vec::with_capacity(thresholds.len());
+    for threshold in thresholds {
+        let mut tp = 0usize;
+        let mut fp = 0usize;
+        let mut fn_ = 0usize;
+        let mut actual_positive = 0usize;
+        let mut predicted_positive = 0usize;
 
-    let benign_trials = events.len() - malicious.len();
-    let false_alarms = fp;
-    let upper_false_alarm = if false_alarms == 0 {
-        1.0 - 0.05f64.powf(1.0 / benign_trials as f64)
-    } else {
-        1.0
-    };
-    assert!(upper_false_alarm >= 0.0);
-    assert!(upper_false_alarm <= 1.0);
+        for (index, labeled) in labeled_events.iter().enumerate() {
+            let actual = is_expected_positive(labeled.expected_min_confidence, threshold);
+            let predicted =
+                is_predicted_positive(predicted_by_index.get(&index).copied(), threshold);
+
+            if actual {
+                actual_positive = actual_positive.saturating_add(1);
+            }
+            if predicted {
+                predicted_positive = predicted_positive.saturating_add(1);
+            }
+
+            match (actual, predicted) {
+                (true, true) => tp = tp.saturating_add(1),
+                (false, true) => fp = fp.saturating_add(1),
+                (true, false) => fn_ = fn_.saturating_add(1),
+                (false, false) => {}
+            }
+        }
+
+        let benign_trials = labeled_events.len().saturating_sub(actual_positive);
+        let precision = if predicted_positive == 0 {
+            if actual_positive == 0 {
+                1.0
+            } else {
+                0.0
+            }
+        } else {
+            tp as f64 / predicted_positive as f64
+        };
+        let recall = if actual_positive == 0 {
+            1.0
+        } else {
+            tp as f64 / actual_positive as f64
+        };
+        let upper_false_alarm = false_alarm_upper_bound(fp, benign_trials);
+
+        by_confidence_threshold.push(ReplayConfidenceThresholdMetrics {
+            threshold,
+            tp,
+            fp,
+            fn_,
+            actual_positive,
+            predicted_positive,
+            benign_trials,
+            precision,
+            recall,
+            upper_false_alarm,
+        });
+    }
+
+    let threshold_focus = Confidence::VeryHigh;
+    let focus = by_confidence_threshold
+        .iter()
+        .find(|metrics| metrics.threshold == threshold_focus)
+        .expect("focus threshold metrics")
+        .to_owned();
+
+    ReplayQualityCorpusMetrics {
+        scenario_count,
+        total_events: labeled_events.len(),
+        malicious_events: labeled_events
+            .iter()
+            .filter(|entry| entry.expected_min_confidence.is_some())
+            .count(),
+        threshold_focus,
+        focus_metrics: ReplayQualityMetrics {
+            tp: focus.tp,
+            fp: focus.fp,
+            fn_: focus.fn_,
+            benign_trials: focus.benign_trials,
+            precision: focus.precision,
+            recall: focus.recall,
+            upper_false_alarm: focus.upper_false_alarm,
+        },
+        by_confidence_threshold,
+    }
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "adversarial replay quality corpus is too slow under miri"
+)]
+// AC-DET-093 AC-DET-094
+fn replay_reports_precision_recall_and_false_alarm_upper_bound_by_confidence() {
+    let metrics = replay_quality_metrics_for_adversarial_corpus();
+    assert!(metrics.scenario_count >= 12);
+    assert!(metrics.total_events >= 60);
+    assert!(metrics.malicious_events >= 5);
+
+    for threshold in [Confidence::Definite, Confidence::VeryHigh, Confidence::High] {
+        let class_metrics = metrics
+            .threshold_metrics(threshold)
+            .expect("threshold metrics should exist");
+        assert!(
+            class_metrics.precision >= 0.99,
+            "precision below threshold for {}: {}",
+            confidence_label(threshold),
+            class_metrics.precision
+        );
+        assert!(
+            class_metrics.recall >= 0.99,
+            "recall below threshold for {}: {}",
+            confidence_label(threshold),
+            class_metrics.recall
+        );
+        assert!(
+            class_metrics.upper_false_alarm <= 0.20,
+            "false alarm upper bound too high for {}: {}",
+            confidence_label(threshold),
+            class_metrics.upper_false_alarm
+        );
+    }
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "artifact-writing replay quality gate is too slow under miri"
+)]
+// AC-DET-093 AC-DET-094
+fn replay_quality_gate_emits_metrics_artifact() {
+    use std::fmt::Write as _;
+
+    let metrics = replay_quality_metrics_for_adversarial_corpus();
+    let focus = metrics.focus_metrics;
+
+    assert!(focus.precision >= 0.99);
+    assert!(focus.recall >= 0.99);
+    assert!(focus.upper_false_alarm <= 0.20);
+
+    let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..");
+    let out_dir = repo_root.join("artifacts/detection-quality-gate");
+    std::fs::create_dir_all(&out_dir).expect("create detection quality artifact dir");
+
+    let out_json = out_dir.join("metrics.json");
+    let mut payload = String::new();
+
+    writeln!(&mut payload, "{{").expect("write json header");
+    writeln!(&mut payload, r#"  "suite": "detection_quality_gate","#).expect("write suite");
+    writeln!(&mut payload, r#"  "thresholds": {{"#).expect("write thresholds header");
+    writeln!(&mut payload, r#"    "precision_min": 0.99,"#).expect("write precision threshold");
+    writeln!(&mut payload, r#"    "recall_min": 0.99,"#).expect("write recall threshold");
+    writeln!(&mut payload, r#"    "false_alarm_upper_max": 0.20,"#).expect("write far threshold");
+    writeln!(&mut payload, r#"    "minimum_scenarios": 12"#).expect("write scenario threshold");
+    writeln!(&mut payload, "  }},").expect("close thresholds");
+
+    writeln!(&mut payload, r#"  "corpus": {{"#).expect("write corpus header");
+    writeln!(&mut payload, r#"    "name": "adversarial_reference_v2","#)
+        .expect("write corpus name");
+    writeln!(
+        &mut payload,
+        r#"    "scenario_count": {},"#,
+        metrics.scenario_count
+    )
+    .expect("write scenario count");
+    writeln!(
+        &mut payload,
+        r#"    "total_events": {},"#,
+        metrics.total_events
+    )
+    .expect("write total events");
+    writeln!(
+        &mut payload,
+        r#"    "malicious_events": {}"#,
+        metrics.malicious_events
+    )
+    .expect("write malicious events");
+    writeln!(&mut payload, "  }},").expect("close corpus");
+
+    writeln!(&mut payload, r#"  "measured": {{"#).expect("write measured header");
+    writeln!(
+        &mut payload,
+        r#"    "threshold_focus": "{}","#,
+        confidence_label(metrics.threshold_focus)
+    )
+    .expect("write threshold focus");
+    writeln!(&mut payload, r#"    "tp": {},"#, focus.tp).expect("write tp");
+    writeln!(&mut payload, r#"    "fp": {},"#, focus.fp).expect("write fp");
+    writeln!(&mut payload, r#"    "fn": {},"#, focus.fn_).expect("write fn");
+    writeln!(
+        &mut payload,
+        r#"    "benign_trials": {},"#,
+        focus.benign_trials
+    )
+    .expect("write benign trials");
+    writeln!(&mut payload, r#"    "precision": {:.6},"#, focus.precision).expect("write precision");
+    writeln!(&mut payload, r#"    "recall": {:.6},"#, focus.recall).expect("write recall");
+    writeln!(
+        &mut payload,
+        r#"    "false_alarm_upper_bound": {:.6},"#,
+        focus.upper_false_alarm
+    )
+    .expect("write false alarm upper bound");
+    writeln!(&mut payload, r#"    "by_confidence_threshold": {{"#)
+        .expect("write by confidence header");
+
+    for (index, class_metrics) in metrics.by_confidence_threshold.iter().enumerate() {
+        let suffix = if index + 1 == metrics.by_confidence_threshold.len() {
+            ""
+        } else {
+            ","
+        };
+
+        writeln!(
+            &mut payload,
+            r#"      "{}": {{"#,
+            confidence_label(class_metrics.threshold)
+        )
+        .expect("write class name");
+        writeln!(&mut payload, r#"        "tp": {},"#, class_metrics.tp).expect("write class tp");
+        writeln!(&mut payload, r#"        "fp": {},"#, class_metrics.fp).expect("write class fp");
+        writeln!(&mut payload, r#"        "fn": {},"#, class_metrics.fn_).expect("write class fn");
+        writeln!(
+            &mut payload,
+            r#"        "actual_positive": {},"#,
+            class_metrics.actual_positive
+        )
+        .expect("write class actual positive");
+        writeln!(
+            &mut payload,
+            r#"        "predicted_positive": {},"#,
+            class_metrics.predicted_positive
+        )
+        .expect("write class predicted positive");
+        writeln!(
+            &mut payload,
+            r#"        "benign_trials": {},"#,
+            class_metrics.benign_trials
+        )
+        .expect("write class benign trials");
+        writeln!(
+            &mut payload,
+            r#"        "precision": {:.6},"#,
+            class_metrics.precision
+        )
+        .expect("write class precision");
+        writeln!(
+            &mut payload,
+            r#"        "recall": {:.6},"#,
+            class_metrics.recall
+        )
+        .expect("write class recall");
+        writeln!(
+            &mut payload,
+            r#"        "false_alarm_upper_bound": {:.6}"#,
+            class_metrics.upper_false_alarm
+        )
+        .expect("write class far upper bound");
+        writeln!(&mut payload, "      }}{}", suffix).expect("close class block");
+    }
+
+    writeln!(&mut payload, "    }}").expect("close by confidence block");
+    writeln!(&mut payload, "  }}").expect("close measured block");
+    writeln!(&mut payload, "}}").expect("close json");
+
+    std::fs::write(&out_json, payload).expect("write detection quality metrics");
+    println!(
+        "wrote detection quality gate metrics to {}",
+        out_json.display()
+    );
 }
 
 #[test]
@@ -953,6 +2148,7 @@ fn entropy_math_matches_shannon_definition() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "long-stream anomaly churn test is too slow under miri")]
 // AC-DET-040 AC-DET-103
 fn anomaly_monitor_state_remains_memory_bounded_under_long_streams() {
     let mut engine = AnomalyEngine::new(AnomalyConfig {
@@ -1069,6 +2265,7 @@ fn confidence_policy_is_first_match_wins() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "sqlite FFI is unsupported under miri")]
 fn layer1_prefilter_negative_short_circuits_to_clean() {
     let mut l1 = IocLayer1::new();
     let store = IocExactStore::in_memory().expect("in-memory sqlite store");

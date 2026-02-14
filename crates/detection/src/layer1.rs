@@ -7,7 +7,7 @@ use crate::types::TelemetryEvent;
 
 pub(crate) const PREFILTER_MAX_LOAD_FACTOR: f64 = 0.95;
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(all(test, not(miri)))]
 pub(crate) fn cuckoo_false_positive_rate(bucket_size: u32, fingerprint_bits: u32) -> f64 {
     let numerator = 2.0 * bucket_size as f64;
     let denominator = 2_f64.powi(fingerprint_bits as i32);
@@ -27,7 +27,7 @@ pub(crate) fn normalize_for_matching(raw: &str) -> String {
     out
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(all(test, not(miri)))]
 pub(crate) fn base64ish_alphabet_ratio(raw: &str) -> f64 {
     let mut total = 0usize;
     let mut in_alphabet = 0usize;
@@ -49,7 +49,7 @@ pub(crate) fn base64ish_alphabet_ratio(raw: &str) -> f64 {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(all(test, not(miri)))]
 pub(crate) fn passes_optional_alphabet_ratio_gate(raw: &str, min_ratio: Option<f64>) -> bool {
     let Some(min_ratio) = min_ratio else {
         return true;
@@ -149,7 +149,7 @@ impl IocExactStore {
             .conn
             .prepare("INSERT OR IGNORE INTO ioc_hashes(hash) VALUES(?1)")?;
         for v in values {
-            stmt.execute(params![v])?;
+            stmt.execute(params![v.to_ascii_lowercase()])?;
         }
         Ok(())
     }
@@ -184,7 +184,7 @@ impl IocExactStore {
         let mut stmt = self
             .conn
             .prepare("SELECT 1 FROM ioc_hashes WHERE hash = ?1 LIMIT 1")?;
-        let mut rows = stmt.query(params![hash])?;
+        let mut rows = stmt.query(params![hash.to_ascii_lowercase()])?;
         Ok(rows.next()?.is_some())
     }
 
@@ -251,9 +251,10 @@ impl IocLayer1 {
     {
         let mut copy = Vec::new();
         for v in values {
-            self.prefilter_hashes.insert(v.clone());
-            self.exact_hashes.insert(v.clone());
-            copy.push(v);
+            let normalized = v.to_ascii_lowercase();
+            self.prefilter_hashes.insert(normalized.clone());
+            self.exact_hashes.insert(normalized.clone());
+            copy.push(normalized);
         }
         rebuild_prefilter_if_needed(&mut self.prefilter_hashes, &mut self.prefilter_rebuilds);
         if let Some(store) = &self.exact_store {
@@ -331,14 +332,15 @@ impl IocLayer1 {
     }
 
     pub fn check_hash(&self, hash: &str) -> Layer1Result {
-        if !self.prefilter_hashes.contains(hash) {
+        let normalized = hash.to_ascii_lowercase();
+        if !self.prefilter_hashes.contains(&normalized) {
             return Layer1Result::Clean;
         }
-        if self.exact_hashes.contains(hash) {
+        if self.exact_hashes.contains(&normalized) {
             return Layer1Result::ExactMatch;
         }
         if let Some(store) = &self.exact_store {
-            if store.contains_hash(hash).unwrap_or(false) {
+            if store.contains_hash(&normalized).unwrap_or(false) {
                 return Layer1Result::ExactMatch;
             }
         }
@@ -396,10 +398,11 @@ impl IocLayer1 {
         I: IntoIterator<Item = String>,
     {
         for hash in sample {
-            if !self.prefilter_hashes.contains(&hash) {
+            let normalized = hash.to_ascii_lowercase();
+            if !self.prefilter_hashes.contains(&normalized) {
                 return false;
             }
-            if !matches!(self.check_hash(&hash), Layer1Result::ExactMatch) {
+            if !matches!(self.check_hash(&normalized), Layer1Result::ExactMatch) {
                 return false;
             }
         }
@@ -512,7 +515,7 @@ impl IocLayer1 {
         self.matcher_patterns.iter().map(|p| p.len()).sum()
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, not(miri)))]
     pub(crate) fn debug_prefilter_load_factors(&self) -> (f64, f64, f64) {
         (
             hashset_load_factor(&self.prefilter_hashes),
@@ -521,7 +524,7 @@ impl IocLayer1 {
         )
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, not(miri)))]
     pub(crate) fn debug_prefilter_rebuilds(&self) -> usize {
         self.prefilter_rebuilds
     }

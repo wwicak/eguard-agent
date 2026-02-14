@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-pub(crate) const EVENT_CLASSES: [EventClass; 7] = [
+pub(crate) const EVENT_CLASSES: [EventClass; 8] = [
     EventClass::ProcessExec,
+    EventClass::ProcessExit,
     EventClass::FileOpen,
     EventClass::NetworkConnect,
     EventClass::DnsQuery,
@@ -9,10 +10,12 @@ pub(crate) const EVENT_CLASSES: [EventClass; 7] = [
     EventClass::Login,
     EventClass::Alert,
 ];
+pub(crate) const EVENT_CLASS_COUNT: usize = EVENT_CLASSES.len();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EventClass {
     ProcessExec,
+    ProcessExit,
     FileOpen,
     NetworkConnect,
     DnsQuery,
@@ -25,12 +28,26 @@ impl EventClass {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::ProcessExec => "process_exec",
+            Self::ProcessExit => "process_exit",
             Self::FileOpen => "file_open",
             Self::NetworkConnect => "network_connect",
             Self::DnsQuery => "dns_query",
             Self::ModuleLoad => "module_load",
             Self::Login => "login",
             Self::Alert => "alert",
+        }
+    }
+
+    pub(crate) const fn index(self) -> usize {
+        match self {
+            Self::ProcessExec => 0,
+            Self::ProcessExit => 1,
+            Self::FileOpen => 2,
+            Self::NetworkConnect => 3,
+            Self::DnsQuery => 4,
+            Self::ModuleLoad => 5,
+            Self::Login => 6,
+            Self::Alert => 7,
         }
     }
 }
