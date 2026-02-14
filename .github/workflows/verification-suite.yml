@@ -9,6 +9,14 @@ on:
   schedule:
     - cron: "0 2 * * 1"
 
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: verification-suite-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   verification:
     runs-on: ubuntu-latest
@@ -19,5 +27,252 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install nightly toolchain for miri
+        run: |
+          rustup toolchain install nightly --component miri,rust-src
+
+      - name: Install verification dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y checksec strace yq
+
+      - name: Install cargo security tools
+        run: |
+          cargo install cargo-audit --locked
+          cargo install cargo-fuzz --locked
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install threat-intel test dependencies
+        run: pip install pytest pyyaml yara-python
+
+      - name: Run threat-intel processing tests
+        run: pytest -q threat-intel/tests/test_bundle.py
+
+      - name: Lint workflow YAML contracts
+        run: bash scripts/run_workflow_yaml_lint_ci.sh
+
       - name: Run verification suite contracts
-        run: ./scripts/run_verification_suite_ci.sh
+        run: |
+          mkdir -p artifacts/verification-suite
+          set -o pipefail
+          ./scripts/run_verification_suite_ci.sh 2>&1 | tee artifacts/verification-suite/run.log
+
+      - name: Seed optimization guardrail baselines (best effort)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EGUARD_GUARDRAIL_TARGET_BRANCH: ${{ github.ref_name }}
+          EGUARD_GUARDRAIL_FALLBACK_BRANCH: "main"
+        run: |
+          python3 - <<'PY'
+          import json
+          import shutil
+          import subprocess
+          from pathlib import Path
+          import os
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          target_branch = os.environ.get("EGUARD_GUARDRAIL_TARGET_BRANCH", "").strip()
+          fallback_branch = os.environ.get("EGUARD_GUARDRAIL_FALLBACK_BRANCH", "").strip()
+
+          def branch_priority(head_branch: str) -> int:
+              if target_branch and head_branch == target_branch:
+                  return 0
+              if fallback_branch and head_branch == fallback_branch:
+                  return 1
+              if not target_branch and not fallback_branch:
+                  return 0
+              return 2
+
+          try:
+              artifacts = []
+              for page in range(1, 6):
+                  raw = subprocess.check_output(
+                      ["gh", "api", f"repos/{repo}/actions/artifacts?per_page=100&page={page}"],
+                      text=True,
+                  )
+                  page_artifacts = json.loads(raw).get("artifacts", [])
+                  if not page_artifacts:
+                      break
+                  artifacts.extend(page_artifacts)
+          except Exception as exc:
+              print(f"guardrail baseline seed skipped: failed to query artifacts ({exc})")
+              raise SystemExit(0)
+
+          selected = None
+          for artifact in artifacts:
+              if artifact.get("name") != "optimization-guardrail-metrics" or artifact.get("expired"):
+                  continue
+              run_info = artifact.get("workflow_run") or {}
+              head_branch = str(run_info.get("head_branch") or "")
+              priority = branch_priority(head_branch)
+              if priority >= 2:
+                  continue
+
+              created_at = str(artifact.get("created_at") or "")
+              if not created_at:
+                  continue
+
+              artifact["_priority"] = priority
+              if (
+                  selected is None
+                  or priority < selected["_priority"]
+                  or (priority == selected["_priority"] and created_at > selected.get("created_at", ""))
+              ):
+                  selected = artifact
+
+          if selected is None:
+              print("guardrail baseline seed skipped: no compatible previous optimization artifact")
+              raise SystemExit(0)
+
+          run_id = (selected.get("workflow_run") or {}).get("id")
+          if not run_id:
+              print("guardrail baseline seed skipped: selected artifact has no workflow run id")
+              raise SystemExit(0)
+
+          download_dir = Path("/tmp/optimization-guardrail-baseline")
+          if download_dir.exists():
+              shutil.rmtree(download_dir)
+          download_dir.mkdir(parents=True, exist_ok=True)
+
+          cmd = [
+              "gh",
+              "run",
+              "download",
+              str(run_id),
+              "--repo",
+              repo,
+              "--name",
+              "optimization-guardrail-metrics",
+              "--dir",
+              str(download_dir),
+          ]
+          result = subprocess.run(cmd, capture_output=True, text=True)
+          if result.returncode != 0:
+              print(
+                  "guardrail baseline seed skipped: "
+                  f"download failed for run {run_id} ({result.stderr.strip() or result.stdout.strip()})"
+              )
+              raise SystemExit(0)
+
+          seeded = []
+
+          trend_candidates = sorted(download_dir.rglob("per-confidence-trend.ndjson"))
+          if trend_candidates:
+              trend_out = Path("artifacts/detection-quality-gate/per-confidence-trend.ndjson")
+              trend_out.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copy2(trend_candidates[0], trend_out)
+              seeded.append(str(trend_out))
+
+          bench_candidates = []
+          for candidate in download_dir.rglob("metrics.json"):
+              parts = list(candidate.parts)
+              if len(parts) >= 2 and parts[-2:] == ["detection-benchmark", "metrics.json"]:
+                  bench_candidates.append(candidate)
+          bench_candidates = sorted(bench_candidates)
+          if bench_candidates:
+              bench_out = Path("artifacts/detection-benchmark/baseline-metrics.json")
+              bench_out.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copy2(bench_candidates[0], bench_out)
+              seeded.append(str(bench_out))
+
+          rule_push_candidates = []
+          for candidate in download_dir.rglob("metrics.json"):
+              parts = list(candidate.parts)
+              if len(parts) >= 2 and parts[-2:] == ["rule-push-slo", "metrics.json"]:
+                  rule_push_candidates.append(candidate)
+          rule_push_candidates = sorted(rule_push_candidates)
+          if rule_push_candidates:
+              rule_push_out = Path("artifacts/rule-push-slo/baseline-metrics.json")
+              rule_push_out.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copy2(rule_push_candidates[0], rule_push_out)
+              seeded.append(str(rule_push_out))
+
+          if seeded:
+              print(
+                  "seeded optimization baselines from run "
+                  f"{run_id} (branch={(selected.get('workflow_run') or {}).get('head_branch')}):"
+              )
+              for item in seeded:
+                  print(f"- {item}")
+          else:
+              print("guardrail baseline seed completed but no expected baseline files were found")
+          PY
+
+      - name: Run optimization guardrail harnesses
+        run: |
+          bash scripts/run_detection_benchmark_ci.sh
+          bash scripts/run_runtime_tick_slo_ci.sh
+          bash scripts/run_replay_determinism_ci.sh
+          bash scripts/run_detection_quality_gate_ci.sh
+          bash scripts/run_ebpf_drop_rate_pressure_ci.sh
+          bash scripts/run_rule_push_slo_ci.sh
+          bash scripts/run_ebpf_resource_budget_ci.sh
+          bash scripts/run_perf_profile_gate_ci.sh
+          bash scripts/run_release_profile_opt_ci.sh
+
+      - name: Enforce detection benchmark regression gate
+        env:
+          EGUARD_BENCHMARK_MAX_REGRESSION_PCT: "25"
+          EGUARD_BENCHMARK_MAX_WALL_MS: "60000"
+        run: |
+          python3 scripts/check_detection_benchmark_regression.py \
+            --current artifacts/detection-benchmark/metrics.json \
+            --previous artifacts/detection-benchmark/baseline-metrics.json \
+            --output artifacts/detection-benchmark/regression-report.json \
+            --max-wall-clock-increase-pct "${EGUARD_BENCHMARK_MAX_REGRESSION_PCT}" \
+            --max-wall-clock-ms "${EGUARD_BENCHMARK_MAX_WALL_MS}"
+
+      - name: Enforce rule-push regression gate
+        env:
+          EGUARD_RULE_PUSH_MAX_TRANSFER_SECONDS: "5"
+          EGUARD_RULE_PUSH_MAX_ROLLOUT_SECONDS: "30"
+          EGUARD_RULE_PUSH_MAX_TRANSFER_INCREASE_PCT: "25"
+          EGUARD_RULE_PUSH_MAX_ROLLOUT_INCREASE_PCT: "25"
+        run: |
+          python3 scripts/check_rule_push_regression.py \
+            --current artifacts/rule-push-slo/metrics.json \
+            --previous artifacts/rule-push-slo/baseline-metrics.json \
+            --output artifacts/rule-push-slo/regression-report.json \
+            --max-transfer-seconds "${EGUARD_RULE_PUSH_MAX_TRANSFER_SECONDS}" \
+            --max-rollout-seconds "${EGUARD_RULE_PUSH_MAX_ROLLOUT_SECONDS}" \
+            --max-transfer-increase-pct "${EGUARD_RULE_PUSH_MAX_TRANSFER_INCREASE_PCT}" \
+            --max-rollout-increase-pct "${EGUARD_RULE_PUSH_MAX_ROLLOUT_INCREASE_PCT}"
+
+      - name: Enforce optimization guardrail thresholds
+        run: python3 scripts/check_optimization_guardrail_thresholds.py --root .
+
+      - name: Run cold/warm guardrail threshold realism sweep
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: bash scripts/run_guardrail_threshold_realism_ci.sh
+
+      - name: Upload optimization guardrail artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: optimization-guardrail-metrics
+          path: |
+            artifacts/workflow-lint/metrics.json
+            artifacts/verification-suite/run.log
+            artifacts/detection-benchmark/metrics.json
+            artifacts/detection-benchmark/baseline-metrics.json
+            artifacts/detection-benchmark/regression-report.json
+            artifacts/runtime-tick-slo/metrics.json
+            artifacts/replay-determinism/metrics.json
+            artifacts/detection-quality-gate/metrics.json
+            artifacts/detection-quality-gate/per-confidence-trend.ndjson
+            artifacts/detection-quality-gate/trend-drift-report.json
+            artifacts/detection-quality-gate/adversary-emulation-score.json
+            artifacts/ebpf-drop-rate-pressure/metrics.json
+            artifacts/rule-push-slo/metrics.json
+            artifacts/rule-push-slo/baseline-metrics.json
+            artifacts/rule-push-slo/regression-report.json
+            artifacts/ebpf-resource-budget/metrics.json
+            artifacts/perf-profile-gate/metrics.json
+            artifacts/release-profile-opt/metrics.json
+            artifacts/optimization-guardrail-summary/metrics.json
+            artifacts/guardrail-threshold-realism/summary.json
+            artifacts/guardrail-threshold-realism/cold/**
+            artifacts/guardrail-threshold-realism/warm/**

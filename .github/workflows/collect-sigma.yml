@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: collect-sigma-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   collect-sigma:
     runs-on: ubuntu-latest
@@ -45,6 +49,47 @@ jobs:
             --output /tmp/sigma_filtered \
             --platforms linux \
             --min-status test
+
+      - name: Enforce SIGMA collector coverage
+        env:
+          EGUARD_MIN_SIGMA_FILTERED: "150"
+          EGUARD_REQUIRED_SIGMA_SOURCES: "rules,rules-emerging-threats,rules-threat-hunting"
+        run: |
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import sys
+
+          root = pathlib.Path('/tmp/sigma_filtered')
+          minimum = int(os.environ.get('EGUARD_MIN_SIGMA_FILTERED', '150'))
+          required_sources = [
+              s.strip() for s in os.environ.get('EGUARD_REQUIRED_SIGMA_SOURCES', '').split(',') if s.strip()
+          ]
+
+          total = sum(1 for _ in root.rglob('*.yml')) + sum(1 for _ in root.rglob('*.yaml'))
+          print(f'total filtered sigma rules: {total}')
+
+          failures = []
+          if total < minimum:
+              failures.append(f'sigma_count too low: {total} < {minimum}')
+
+          for source in required_sources:
+              src_dir = root / source
+              src_total = 0
+              if src_dir.is_dir():
+                  src_total = sum(1 for _ in src_dir.rglob('*.yml')) + sum(1 for _ in src_dir.rglob('*.yaml'))
+              print(f'source {source}: {src_total}')
+              if src_total <= 0:
+                  failures.append(f'missing sigma source coverage: {source}')
+
+          if failures:
+              print('sigma collector coverage gate failed:')
+              for failure in failures:
+                  print(f'- {failure}')
+              sys.exit(1)
+
+          print('sigma collector coverage gate passed')
+          PY
 
       - name: Upload filtered rules as artifact
         uses: actions/upload-artifact@v4

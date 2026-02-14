@@ -38,26 +38,24 @@ jobs:
         with:
           version: ${{ env.ZIG_VERSION }}
 
-      - name: Build Zig artifacts (eBPF probes + ASM libs)
-        run: zig build agent-artifacts
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
 
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
-
-      - name: Build agent binary
-        run: cargo build --release -p agent-core
-
-      - name: Rename binary
-        run: mv target/release/agent-core target/release/eguard-agent
+      - name: Install Linux packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev rpm gnupg musl-tools
 
       - name: Install nfpm
         run: |
           NFPM_VERSION=2.45.0
           curl -sfL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz" | \
-            tar -xz -C /usr/local/bin nfpm
+            sudo tar -xz -C /usr/local/bin nfpm
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
 
       - name: Strip version prefix
         id: semver
@@ -65,15 +63,39 @@ jobs:
           RAW="${{ steps.version.outputs.tag }}"
           echo "version=${RAW#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Build .deb package
-        run: nfpm package --packager deb --target "eguard-agent_${VERSION}_amd64.deb"
-        env:
-          VERSION: ${{ steps.semver.outputs.version }}
+      - name: Run release optimization preflight
+        run: bash scripts/run_release_profile_opt_ci.sh
 
-      - name: Build .rpm package
-        run: nfpm package --packager rpm --target "eguard-agent-${VERSION}-1.x86_64.rpm"
+      - name: Enforce release optimization preflight threshold
+        run: |
+          python3 - <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          path = pathlib.Path('artifacts/release-profile-opt/metrics.json')
+          if not path.exists():
+              raise SystemExit('missing release profile optimization metrics artifact')
+
+          metrics = json.loads(path.read_text())
+          build_ms = int(metrics.get('baseline_release_build_ms', 10**9))
+          if build_ms > 120_000:
+              print(f'release optimization preflight build too high: {build_ms} ms > 120000 ms')
+              sys.exit(1)
+
+          print(f'release optimization preflight threshold passed: {build_ms} ms')
+          PY
+
+      - name: Build .deb and .rpm packages
         env:
+          EGUARD_PACKAGE_REAL_BUILD: "1"
+          EGUARD_PACKAGE_GENERATE_EPHEMERAL_GPG: "1"
           VERSION: ${{ steps.semver.outputs.version }}
+          EGUARD_AGENT_VERSION: ${{ steps.semver.outputs.version }}
+        run: ./scripts/build-agent-packages-ci.sh
+
+      - name: Validate package artifact structure
+        run: python3 scripts/verify_package_artifacts_ci.py --artifact-dir artifacts/package-agent
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -82,5 +104,5 @@ jobs:
           name: "eGuard Agent ${{ steps.version.outputs.tag }}"
           generate_release_notes: true
           files: |
-            eguard-agent_*.deb
-            eguard-agent-*.rpm
+            artifacts/package-agent/debian/*.deb
+            artifacts/package-agent/rpm/*.rpm

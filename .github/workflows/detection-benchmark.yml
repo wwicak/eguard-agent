@@ -6,6 +6,14 @@ on:
     branches: ["main", "feat/eguard-agent"]
   pull_request:
 
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: detection-benchmark-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   benchmark:
     runs-on: ubuntu-latest
@@ -13,14 +21,165 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Seed benchmark baseline metrics (best effort)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EGUARD_BENCHMARK_TARGET_BRANCH: ${{ github.ref_name }}
+          EGUARD_BENCHMARK_FALLBACK_BRANCH: "main"
+        run: |
+          python3 - <<'PY'
+          import json
+          import shutil
+          import subprocess
+          from pathlib import Path
+          import os
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          target_branch = os.environ.get("EGUARD_BENCHMARK_TARGET_BRANCH", "").strip()
+          fallback_branch = os.environ.get("EGUARD_BENCHMARK_FALLBACK_BRANCH", "").strip()
+
+          def branch_priority(head_branch: str) -> int:
+              if target_branch and head_branch == target_branch:
+                  return 0
+              if fallback_branch and head_branch == fallback_branch:
+                  return 1
+              if not target_branch and not fallback_branch:
+                  return 0
+              return 2
+
+          try:
+              artifacts = []
+              for page in range(1, 6):
+                  raw = subprocess.check_output(
+                      ["gh", "api", f"repos/{repo}/actions/artifacts?per_page=100&page={page}"],
+                      text=True,
+                  )
+                  page_artifacts = json.loads(raw).get("artifacts", [])
+                  if not page_artifacts:
+                      break
+                  artifacts.extend(page_artifacts)
+          except Exception as exc:
+              print(f"benchmark baseline seed skipped: failed to query artifacts ({exc})")
+              raise SystemExit(0)
+
+          selected = None
+          for artifact in artifacts:
+              if artifact.get("name") != "detection-benchmark-metrics" or artifact.get("expired"):
+                  continue
+              run_info = artifact.get("workflow_run") or {}
+              head_branch = str(run_info.get("head_branch") or "")
+              priority = branch_priority(head_branch)
+              if priority >= 2:
+                  continue
+
+              created_at = str(artifact.get("created_at") or "")
+              if not created_at:
+                  continue
+
+              artifact["_priority"] = priority
+              if (
+                  selected is None
+                  or priority < selected["_priority"]
+                  or (priority == selected["_priority"] and created_at > selected.get("created_at", ""))
+              ):
+                  selected = artifact
+
+          if selected is None:
+              print("benchmark baseline seed skipped: no compatible previous metrics artifact")
+              raise SystemExit(0)
+
+          run_id = (selected.get("workflow_run") or {}).get("id")
+          if not run_id:
+              print("benchmark baseline seed skipped: selected artifact has no workflow run id")
+              raise SystemExit(0)
+
+          download_dir = Path("/tmp/detection-benchmark-baseline")
+          if download_dir.exists():
+              shutil.rmtree(download_dir)
+          download_dir.mkdir(parents=True, exist_ok=True)
+
+          cmd = [
+              "gh",
+              "run",
+              "download",
+              str(run_id),
+              "--repo",
+              repo,
+              "--name",
+              "detection-benchmark-metrics",
+              "--dir",
+              str(download_dir),
+          ]
+          result = subprocess.run(cmd, capture_output=True, text=True)
+          if result.returncode != 0:
+              print(
+                  "benchmark baseline seed skipped: "
+                  f"download failed for run {run_id} ({result.stderr.strip() or result.stdout.strip()})"
+              )
+              raise SystemExit(0)
+
+          benchmark_candidates = []
+          for candidate in download_dir.rglob("metrics.json"):
+              parts = list(candidate.parts)
+              if len(parts) >= 2 and parts[-2:] == ["detection-benchmark", "metrics.json"]:
+                  benchmark_candidates.append(candidate)
+          candidates = sorted(benchmark_candidates)
+          if not candidates:
+              print("benchmark baseline seed skipped: downloaded artifact missing metrics.json")
+              raise SystemExit(0)
+
+          baseline_path = Path("artifacts/detection-benchmark/baseline-metrics.json")
+          baseline_path.parent.mkdir(parents=True, exist_ok=True)
+          shutil.copy2(candidates[0], baseline_path)
+
+          trend_candidates = sorted(download_dir.rglob("per-confidence-trend.ndjson"))
+          if trend_candidates:
+              trend_path = Path("artifacts/detection-quality-gate/per-confidence-trend.ndjson")
+              trend_path.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copy2(trend_candidates[0], trend_path)
+              print("seeded detection quality trend baseline")
+
+          print(
+              "seeded benchmark baseline metrics from run "
+              f"{run_id} (branch={(selected.get('workflow_run') or {}).get('head_branch')})"
+          )
+          PY
+
       - name: Run detection benchmark harness
         run: ./scripts/run_detection_benchmark_ci.sh
+
+      - name: Enforce benchmark regression gate
+        env:
+          EGUARD_BENCHMARK_MAX_REGRESSION_PCT: "25"
+          EGUARD_BENCHMARK_MAX_WALL_MS: "60000"
+        run: |
+          python3 scripts/check_detection_benchmark_regression.py \
+            --current artifacts/detection-benchmark/metrics.json \
+            --previous artifacts/detection-benchmark/baseline-metrics.json \
+            --output artifacts/detection-benchmark/regression-report.json \
+            --max-wall-clock-increase-pct "${EGUARD_BENCHMARK_MAX_REGRESSION_PCT}" \
+            --max-wall-clock-ms "${EGUARD_BENCHMARK_MAX_WALL_MS}"
+
+      - name: Run adversary emulation quality gate
+        run: bash scripts/run_detection_quality_gate_ci.sh
 
       - name: Upload detection benchmark artifact
         uses: actions/upload-artifact@v4
         with:
           name: detection-benchmark-metrics
-          path: artifacts/detection-benchmark/metrics.json
+          path: |
+            artifacts/detection-benchmark/metrics.json
+            artifacts/detection-benchmark/baseline-metrics.json
+            artifacts/detection-benchmark/regression-report.json
+            artifacts/detection-quality-gate/metrics.json
+            artifacts/detection-quality-gate/per-confidence-trend.ndjson
+            artifacts/detection-quality-gate/trend-drift-report.json
+            artifacts/detection-quality-gate/adversary-emulation-score.json

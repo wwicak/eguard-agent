@@ -12,6 +12,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
       - name: Install Zig
         uses: mlugg/setup-zig@v1
         with:
@@ -20,10 +25,55 @@ jobs:
       - name: Install Linux packaging tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y dpkg-dev rpm gnupg
+          sudo apt-get install -y dpkg-dev rpm gnupg musl-tools
+
+      - name: Install nfpm
+        run: |
+          NFPM_VERSION=2.45.0
+          curl -sfL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz" | \
+            sudo tar -xz -C /usr/local/bin nfpm
+
+      - name: Resolve package version
+        id: package-version
+        run: |
+          if [[ "${GITHUB_REF:-}" == refs/tags/agent-v* ]]; then
+            echo "version=${GITHUB_REF_NAME#agent-v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.1.0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run release optimization preflight
+        run: bash scripts/run_release_profile_opt_ci.sh
+
+      - name: Enforce release optimization preflight threshold
+        run: |
+          python3 - <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          path = pathlib.Path('artifacts/release-profile-opt/metrics.json')
+          if not path.exists():
+              raise SystemExit('missing release profile optimization metrics artifact')
+
+          metrics = json.loads(path.read_text())
+          build_ms = int(metrics.get('baseline_release_build_ms', 10**9))
+          if build_ms > 120_000:
+              print(f'release optimization preflight build too high: {build_ms} ms > 120000 ms')
+              sys.exit(1)
+
+          print(f'release optimization preflight threshold passed: {build_ms} ms')
+          PY
 
       - name: Build .deb and .rpm artifacts
+        env:
+          EGUARD_PACKAGE_REAL_BUILD: "1"
+          EGUARD_PACKAGE_GENERATE_EPHEMERAL_GPG: "1"
+          EGUARD_AGENT_VERSION: ${{ steps.package-version.outputs.version }}
         run: ./scripts/build-agent-packages-ci.sh
+
+      - name: Validate package artifact structure
+        run: python3 scripts/verify_package_artifacts_ci.py --artifact-dir artifacts/package-agent
 
       - name: Upload package artifacts
         uses: actions/upload-artifact@v4

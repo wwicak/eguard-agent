@@ -18,22 +18,31 @@ WINDOWS_ONLY_SERVICES = {
 }
 
 
-def should_keep_rule(path: str, platforms: set[str], min_status: str) -> bool:
-    """Decide whether a SIGMA rule file should be included."""
+def load_first_rule_doc(path: str) -> dict | None:
+    """Load and validate the first YAML document in a SIGMA file."""
     try:
         with open(path, "r", encoding="utf-8") as f:
             docs = list(yaml.safe_load_all(f))
     except Exception as exc:
         print(f"  SKIP (parse error): {path}: {exc}", file=sys.stderr)
-        return False
+        return None
 
     if not docs or docs[0] is None:
-        return False
+        return None
 
     rule = docs[0]
+    if not isinstance(rule, dict):
+        print(f"  SKIP (invalid top-level rule doc): {path}", file=sys.stderr)
+        return None
+
+    return rule
+
+
+def should_keep_rule(rule: dict, platforms: set[str], min_status: str) -> bool:
+    """Decide whether a parsed SIGMA rule should be included."""
 
     # Check status
-    status = rule.get("status", "").lower()
+    status = str(rule.get("status") or "").strip().lower()
     allowed = VALID_STATUSES if min_status == "test" else {"stable"}
     if status not in allowed:
         return False
@@ -68,13 +77,9 @@ def should_keep_rule(path: str, platforms: set[str], min_status: str) -> bool:
 
 def get_rule_id(path: str) -> str | None:
     """Extract the rule UUID from a SIGMA YAML file."""
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            docs = list(yaml.safe_load_all(f))
-        if docs and docs[0] and isinstance(docs[0], dict):
-            return docs[0].get("id")
-    except Exception:
-        pass
+    rule = load_first_rule_doc(path)
+    if isinstance(rule, dict):
+        return rule.get("id")
     return None
 
 
@@ -120,15 +125,19 @@ def main():
                 total += 1
                 src = os.path.join(root, fname)
 
+                rule = load_first_rule_doc(src)
+                if not isinstance(rule, dict):
+                    continue
+
                 # Dedup by rule ID (UUID)
-                rule_id = get_rule_id(src)
+                rule_id = rule.get("id")
                 if rule_id:
                     if rule_id in seen_ids:
                         dedup_skipped += 1
                         continue
                     seen_ids.add(rule_id)
 
-                if should_keep_rule(src, platforms, args.min_status):
+                if should_keep_rule(rule, platforms, args.min_status):
                     # Preserve subdirectory structure, prefixed by source
                     rel = os.path.relpath(src, input_dir)
                     dst = os.path.join(output_dir, source_name, rel)

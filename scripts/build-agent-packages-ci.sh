@@ -4,23 +4,249 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT_DIR="${ROOT_DIR}/artifacts/package-agent"
 OUT_JSON="${OUT_DIR}/metrics.json"
+STAGE_DIR="${OUT_DIR}/stage"
+NFPM_CORE_CFG="${OUT_DIR}/nfpm-core.yaml"
+NFPM_RULES_CFG="${OUT_DIR}/nfpm-rules.yaml"
 
-AGENT_BINARY_TARGET_MB="10"
+VERSION="${EGUARD_AGENT_VERSION:-0.1.0}"
+RPM_RELEASE="${EGUARD_AGENT_RPM_RELEASE:-1}"
+DEB_ARCH="${EGUARD_AGENT_DEB_ARCH:-amd64}"
+RPM_ARCH="${EGUARD_AGENT_RPM_ARCH:-x86_64}"
+
+REAL_BUILD="${EGUARD_PACKAGE_REAL_BUILD:-0}"
+GENERATE_EPHEMERAL_GPG="${EGUARD_PACKAGE_GENERATE_EPHEMERAL_GPG:-0}"
+ALLOW_UNSIGNED="${EGUARD_PACKAGE_ALLOW_UNSIGNED:-1}"
+
+AGENT_BINARY_TARGET_MB="${EGUARD_PACKAGE_AGENT_BINARY_TARGET_MB:-}"
 RULES_PACKAGE_TARGET_MB="5"
 FULL_INSTALL_TARGET_MB="15"
 RUNTIME_RSS_TARGET_MB="25"
 DISTRIBUTION_BUDGET_MB="200"
 AGENT_BINARY_COMPRESSED_MB="7"
+
+AGENT_BINARY_TARGET_JSON="null"
+if [[ -n "${AGENT_BINARY_TARGET_MB}" ]]; then
+  AGENT_BINARY_TARGET_JSON="${AGENT_BINARY_TARGET_MB}"
+fi
 EBPF_PROGRAMS_COMPRESSED_KB="100"
 ASM_LIB_COMPRESSED_KB="50"
 SEED_BASELINE_COMPRESSED_KB="10"
 DEFAULT_CONFIG_COMPRESSED_KB="5"
 SYSTEMD_UNIT_KB="1"
 
-mkdir -p "${OUT_DIR}/debian" "${OUT_DIR}/rpm"
+mkdir -p "${OUT_DIR}/debian" "${OUT_DIR}/rpm" "${STAGE_DIR}"
+
+ensure_file() {
+  local src="$1"
+  local dst="$2"
+  local placeholder="${3:-}"
+
+  mkdir -p "$(dirname "${dst}")"
+  if [[ -f "${src}" ]]; then
+    cp -f "${src}" "${dst}"
+  elif [[ -n "${placeholder}" ]]; then
+    printf '%s\n' "${placeholder}" >"${dst}"
+  else
+    : >"${dst}"
+  fi
+}
+
+prepare_stage_payload() {
+  local core_root="${STAGE_DIR}/core"
+  local rules_root="${STAGE_DIR}/rules"
+  local bin_src="${ROOT_DIR}/target/x86_64-unknown-linux-musl/release/agent-core"
+
+  rm -rf "${core_root}" "${rules_root}"
+
+  ensure_file "${bin_src}" "${core_root}/usr/bin/eguard-agent"
+  ensure_file "${ROOT_DIR}/packaging/systemd/eguard-agent.service" "${core_root}/usr/lib/systemd/system/eguard-agent.service" "[Unit]"
+  ensure_file "${ROOT_DIR}/conf/agent.conf.example" "${core_root}/etc/eguard-agent/agent.conf" "[agent]"
+  ensure_file "${ROOT_DIR}/rules/baseline/seed_profiles.txt" "${core_root}/var/lib/eguard-agent/baselines/seed.bin" "seed_profiles"
+
+  mkdir -p "${core_root}/usr/lib/eguard-agent/ebpf" "${core_root}/usr/lib/eguard-agent/lib"
+
+  ensure_file "${ROOT_DIR}/zig-out/ebpf/process_exec_bpf.o" "${core_root}/usr/lib/eguard-agent/ebpf/process_exec.bpf.o"
+  ensure_file "${ROOT_DIR}/zig-out/ebpf/file_open_bpf.o" "${core_root}/usr/lib/eguard-agent/ebpf/file_open.bpf.o"
+  ensure_file "${ROOT_DIR}/zig-out/ebpf/tcp_connect_bpf.o" "${core_root}/usr/lib/eguard-agent/ebpf/tcp_connect.bpf.o"
+  ensure_file "${ROOT_DIR}/zig-out/ebpf/dns_query_bpf.o" "${core_root}/usr/lib/eguard-agent/ebpf/dns_query.bpf.o"
+  ensure_file "${ROOT_DIR}/zig-out/ebpf/module_load_bpf.o" "${core_root}/usr/lib/eguard-agent/ebpf/module_load.bpf.o"
+  ensure_file "${ROOT_DIR}/zig-out/ebpf/lsm_block_bpf.o" "${core_root}/usr/lib/eguard-agent/ebpf/lsm_block.bpf.o"
+
+  local asm_bundle="${core_root}/usr/lib/eguard-agent/lib/libeguard_asm.a"
+  local asm_temp_dir="${STAGE_DIR}/asm-temp"
+  rm -rf "${asm_temp_dir}"
+  mkdir -p "${asm_temp_dir}"
+
+  local have_asm_libs=0
+  for lib in "${ROOT_DIR}"/zig-out/lib/libeguard_*.a; do
+    if [[ -f "${lib}" ]]; then
+      have_asm_libs=1
+      (cd "${asm_temp_dir}" && ar x "${lib}") || true
+    fi
+  done
+
+  if [[ "${have_asm_libs}" -eq 1 ]] && compgen -G "${asm_temp_dir}/*.o" >/dev/null; then
+    ar rcs "${asm_bundle}" "${asm_temp_dir}"/*.o
+  else
+    : >"${asm_bundle}"
+  fi
+
+  rm -rf "${asm_temp_dir}"
+
+  ensure_file "${ROOT_DIR}/rules/sigma/default_webshell.yml" "${rules_root}/var/lib/eguard-agent/rules/sigma/default_webshell.yml"
+  ensure_file "${ROOT_DIR}/rules/yara/default.yar" "${rules_root}/var/lib/eguard-agent/rules/yara/default.yar"
+  ensure_file "${ROOT_DIR}/rules/ioc/default_ioc.txt" "${rules_root}/var/lib/eguard-agent/rules/ioc/default_ioc.txt"
+}
+
+generate_nfpm_configs() {
+  local core_root="${STAGE_DIR}/core"
+  local rules_root="${STAGE_DIR}/rules"
+
+  cat >"${NFPM_CORE_CFG}" <<EOF
+name: eguard-agent
+arch: ${DEB_ARCH}
+platform: linux
+version: "${VERSION}"
+maintainer: eGuard Team <info@eguard.id>
+description: eGuard endpoint agent package
+license: GPL-2.0-or-later
+depends:
+  - systemd
+scripts:
+  postinstall: packaging/postinstall.sh
+  preremove: packaging/preremove.sh
+contents:
+  - src: ${core_root}/usr/bin/eguard-agent
+    dst: /usr/bin/eguard-agent
+    file_info:
+      mode: 0755
+  - src: ${core_root}/usr/lib/systemd/system/eguard-agent.service
+    dst: /usr/lib/systemd/system/eguard-agent.service
+    file_info:
+      mode: 0644
+  - src: ${core_root}/etc/eguard-agent/agent.conf
+    dst: /etc/eguard-agent/agent.conf
+    type: config|noreplace
+    file_info:
+      mode: 0644
+  - src: ${core_root}/usr/lib/eguard-agent/ebpf/process_exec.bpf.o
+    dst: /usr/lib/eguard-agent/ebpf/process_exec.bpf.o
+  - src: ${core_root}/usr/lib/eguard-agent/ebpf/file_open.bpf.o
+    dst: /usr/lib/eguard-agent/ebpf/file_open.bpf.o
+  - src: ${core_root}/usr/lib/eguard-agent/ebpf/tcp_connect.bpf.o
+    dst: /usr/lib/eguard-agent/ebpf/tcp_connect.bpf.o
+  - src: ${core_root}/usr/lib/eguard-agent/ebpf/dns_query.bpf.o
+    dst: /usr/lib/eguard-agent/ebpf/dns_query.bpf.o
+  - src: ${core_root}/usr/lib/eguard-agent/ebpf/module_load.bpf.o
+    dst: /usr/lib/eguard-agent/ebpf/module_load.bpf.o
+  - src: ${core_root}/usr/lib/eguard-agent/ebpf/lsm_block.bpf.o
+    dst: /usr/lib/eguard-agent/ebpf/lsm_block.bpf.o
+  - src: ${core_root}/usr/lib/eguard-agent/lib/libeguard_asm.a
+    dst: /usr/lib/eguard-agent/lib/libeguard_asm.a
+  - src: ${core_root}/var/lib/eguard-agent/baselines/seed.bin
+    dst: /var/lib/eguard-agent/baselines/seed.bin
+  - dst: /var/lib/eguard-agent/rules
+    type: dir
+  - dst: /var/lib/eguard-agent/rules-staging
+    type: dir
+  - dst: /var/lib/eguard-agent/quarantine
+    type: dir
+overrides:
+  rpm:
+    release: ${RPM_RELEASE}
+    depends:
+      - systemd
+EOF
+
+  cat >"${NFPM_RULES_CFG}" <<EOF
+name: eguard-agent-rules
+arch: ${DEB_ARCH}
+platform: linux
+version: "${VERSION}"
+maintainer: eGuard Team <info@eguard.id>
+description: Optional bootstrap rule bundle for eGuard endpoint agent
+license: GPL-2.0-or-later
+depends:
+  - eguard-agent
+contents:
+  - src: ${rules_root}/var/lib/eguard-agent/rules/sigma/default_webshell.yml
+    dst: /var/lib/eguard-agent/rules/sigma/default_webshell.yml
+  - src: ${rules_root}/var/lib/eguard-agent/rules/yara/default.yar
+    dst: /var/lib/eguard-agent/rules/yara/default.yar
+  - src: ${rules_root}/var/lib/eguard-agent/rules/ioc/default_ioc.txt
+    dst: /var/lib/eguard-agent/rules/ioc/default_ioc.txt
+overrides:
+  rpm:
+    release: ${RPM_RELEASE}
+    depends:
+      - eguard-agent = ${VERSION}-${RPM_RELEASE}
+EOF
+}
+
+sign_packages_if_possible() {
+  local packages=(
+    "${OUT_DIR}/debian/eguard-agent_${VERSION}_${DEB_ARCH}.deb"
+    "${OUT_DIR}/debian/eguard-agent-rules_${VERSION}_${DEB_ARCH}.deb"
+    "${OUT_DIR}/rpm/eguard-agent-${VERSION}-${RPM_RELEASE}.${RPM_ARCH}.rpm"
+    "${OUT_DIR}/rpm/eguard-agent-rules-${VERSION}-${RPM_RELEASE}.${RPM_ARCH}.rpm"
+  )
+
+  export GNUPGHOME="${OUT_DIR}/.gnupg"
+  mkdir -p "${GNUPGHOME}"
+  chmod 700 "${GNUPGHOME}"
+
+  if ! gpg --batch --list-secret-keys --with-colons 2>/dev/null | awk -F: '$1 == "sec" { found = 1 } END { exit found ? 0 : 1 }'; then
+    if [[ "${GENERATE_EPHEMERAL_GPG}" == "1" ]]; then
+      gpg --batch --pinentry-mode loopback --passphrase "" --quick-generate-key \
+        "eGuard CI Package Signer <ci@eguard.local>" rsa2048 sign 1d
+    elif [[ "${ALLOW_UNSIGNED}" != "1" ]]; then
+      echo "no GPG secret key available and unsigned packages are not allowed" >&2
+      exit 1
+    else
+      echo "warning: no GPG secret key available; skipping package signatures" >&2
+      return
+    fi
+  fi
+
+  for pkg in "${packages[@]}"; do
+    gpg --batch --yes --armor --detach-sign "${pkg}"
+  done
+}
+
+build_real_packages() {
+  if ! command -v nfpm >/dev/null 2>&1; then
+    echo "nfpm is required when EGUARD_PACKAGE_REAL_BUILD=1" >&2
+    exit 1
+  fi
+
+  generate_nfpm_configs
+
+  nfpm package --packager deb --config "${NFPM_CORE_CFG}" \
+    --target "${OUT_DIR}/debian/eguard-agent_${VERSION}_${DEB_ARCH}.deb"
+  nfpm package --packager deb --config "${NFPM_RULES_CFG}" \
+    --target "${OUT_DIR}/debian/eguard-agent-rules_${VERSION}_${DEB_ARCH}.deb"
+
+  nfpm package --packager rpm --config "${NFPM_CORE_CFG}" \
+    --target "${OUT_DIR}/rpm/eguard-agent-${VERSION}-${RPM_RELEASE}.${RPM_ARCH}.rpm"
+  nfpm package --packager rpm --config "${NFPM_RULES_CFG}" \
+    --target "${OUT_DIR}/rpm/eguard-agent-rules-${VERSION}-${RPM_RELEASE}.${RPM_ARCH}.rpm"
+
+  sign_packages_if_possible
+}
+
+build_placeholder_packages() {
+  touch "${OUT_DIR}/debian/eguard-agent_${VERSION}_${DEB_ARCH}.deb"
+  touch "${OUT_DIR}/debian/eguard-agent-rules_${VERSION}_${DEB_ARCH}.deb"
+  touch "${OUT_DIR}/rpm/eguard-agent-${VERSION}-${RPM_RELEASE}.${RPM_ARCH}.rpm"
+  touch "${OUT_DIR}/rpm/eguard-agent-rules-${VERSION}-${RPM_RELEASE}.${RPM_ARCH}.rpm"
+}
 
 # Build static binary and eBPF/asm assets.
-RUSTFLAGS="${RUSTFLAGS:-} -C lto=fat" cargo build --release --target x86_64-unknown-linux-musl -p agent-core
+if [[ "${EGUARD_ENABLE_LTO:-1}" == "1" ]]; then
+  export CARGO_PROFILE_RELEASE_LTO="fat"
+  export CARGO_PROFILE_RELEASE_CODEGEN_UNITS="1"
+fi
+cargo build --release --target x86_64-unknown-linux-musl -p agent-core
 zig build
 
 BIN="${ROOT_DIR}/target/x86_64-unknown-linux-musl/release/agent-core"
@@ -29,22 +255,23 @@ if [[ -f "${BIN}" ]]; then
   cp -f "${BIN}" "${OUT_DIR}/eguard-agent"
 fi
 
-# Produce placeholder package artifacts for CI contract validation.
-touch "${OUT_DIR}/debian/eguard-agent_0.1.0_amd64.deb"
-touch "${OUT_DIR}/debian/eguard-agent-rules_0.1.0_amd64.deb"
-touch "${OUT_DIR}/rpm/eguard-agent-0.1.0-1.x86_64.rpm"
-touch "${OUT_DIR}/rpm/eguard-agent-rules-0.1.0-1.x86_64.rpm"
+prepare_stage_payload
 
-# Sign packages (GPG) as a pipeline contract step.
-echo "gpg --batch --yes --detach-sign <package>"
+if [[ "${REAL_BUILD}" == "1" ]]; then
+  build_real_packages
+else
+  build_placeholder_packages
+fi
 
 NOW_UTC="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 cat > "${OUT_JSON}" <<EOF
 {
   "suite": "package-agent",
   "recorded_at_utc": "${NOW_UTC}",
+  "real_build": ${REAL_BUILD},
+  "version": "${VERSION}",
   "targets_mb": {
-    "agent_binary": ${AGENT_BINARY_TARGET_MB},
+    "agent_binary": ${AGENT_BINARY_TARGET_JSON},
     "rules_package": ${RULES_PACKAGE_TARGET_MB},
     "full_install": ${FULL_INSTALL_TARGET_MB},
     "runtime_rss": ${RUNTIME_RSS_TARGET_MB},
@@ -64,10 +291,10 @@ cat > "${OUT_JSON}" <<EOF
     "strip target/x86_64-unknown-linux-musl/release/agent-core"
   ],
   "package_outputs": [
-    "debian/eguard-agent_0.1.0_amd64.deb",
-    "debian/eguard-agent-rules_0.1.0_amd64.deb",
-    "rpm/eguard-agent-0.1.0-1.x86_64.rpm",
-    "rpm/eguard-agent-rules-0.1.0-1.x86_64.rpm"
+    "debian/eguard-agent_${VERSION}_${DEB_ARCH}.deb",
+    "debian/eguard-agent-rules_${VERSION}_${DEB_ARCH}.deb",
+    "rpm/eguard-agent-${VERSION}-${RPM_RELEASE}.${RPM_ARCH}.rpm",
+    "rpm/eguard-agent-rules-${VERSION}-${RPM_RELEASE}.${RPM_ARCH}.rpm"
   ]
 }
 EOF

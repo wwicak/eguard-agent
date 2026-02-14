@@ -14,6 +14,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: collect-cve-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   collect-cve:
     runs-on: ubuntu-latest
@@ -127,6 +131,55 @@ jobs:
             --min-cvss 4.0 \
             --kev /tmp/cisa_kev.json \
             --epss /tmp/epss.csv
+
+      - name: Enforce CVE collector coverage
+        env:
+          EGUARD_MIN_CVE: "1000"
+          EGUARD_MIN_KEV: "50"
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          import sys
+
+          path = pathlib.Path('/tmp/cves.jsonl')
+          if not path.is_file():
+              print('cve collector coverage gate failed: missing /tmp/cves.jsonl')
+              sys.exit(1)
+
+          cve_count = 0
+          kev_count = 0
+          for line in path.read_text(encoding='utf-8').splitlines():
+              if not line.strip():
+                  continue
+              cve_count += 1
+              try:
+                  record = json.loads(line)
+              except json.JSONDecodeError:
+                  continue
+              if record.get('actively_exploited'):
+                  kev_count += 1
+
+          min_cve = int(os.environ.get('EGUARD_MIN_CVE', '1000'))
+          min_kev = int(os.environ.get('EGUARD_MIN_KEV', '50'))
+          print(f'cve extracted count: {cve_count}')
+          print(f'cve kev count: {kev_count}')
+
+          failures = []
+          if cve_count < min_cve:
+              failures.append(f'cve_count too low: {cve_count} < {min_cve}')
+          if kev_count < min_kev:
+              failures.append(f'cve_kev_count too low: {kev_count} < {min_kev}')
+
+          if failures:
+              print('cve collector coverage gate failed:')
+              for failure in failures:
+                  print(f'- {failure}')
+              sys.exit(1)
+
+          print('cve collector coverage gate passed')
+          PY
 
       - name: Upload CVE data as artifact
         uses: actions/upload-artifact@v4

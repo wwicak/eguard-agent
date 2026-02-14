@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: collect-elastic-rules-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   collect-elastic:
     runs-on: ubuntu-latest
@@ -43,6 +47,39 @@ jobs:
             --building-blocks /tmp/elastic-rules/rules_building_block \
             --output /tmp/elastic_filtered \
             --platforms linux cross-platform
+
+      - name: Enforce Elastic collector coverage
+        env:
+          EGUARD_MIN_ELASTIC_RULES: "100"
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          import sys
+
+          root = pathlib.Path('/tmp/elastic_filtered')
+          jsonl = root / 'elastic-rules.jsonl'
+          index = root / 'index.json'
+          minimum = int(os.environ.get('EGUARD_MIN_ELASTIC_RULES', '100'))
+
+          if not jsonl.is_file():
+              print('elastic collector coverage gate failed: missing elastic-rules.jsonl')
+              sys.exit(1)
+
+          rule_count = sum(1 for line in jsonl.read_text(encoding='utf-8').splitlines() if line.strip())
+          print(f'elastic extracted rules: {rule_count}')
+
+          if index.is_file():
+              idx = json.loads(index.read_text(encoding='utf-8'))
+              print(f'elastic severity breakdown: {idx.get("severity_breakdown", {})}')
+
+          if rule_count < minimum:
+              print(f'elastic collector coverage gate failed: {rule_count} < {minimum}')
+              sys.exit(1)
+
+          print('elastic collector coverage gate passed')
+          PY
 
       - name: Upload Elastic rules as artifact
         uses: actions/upload-artifact@v4

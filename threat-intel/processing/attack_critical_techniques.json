@@ -1,0 +1,212 @@
+[
+  {
+    "technique": "T1059",
+    "name": "Command and Scripting Interpreter",
+    "owner": "detections-core",
+    "eta": "2026-03-15",
+    "priority": "P0"
+  },
+  {
+    "technique": "T1055",
+    "name": "Process Injection",
+    "owner": "detections-core",
+    "eta": "2026-03-22",
+    "priority": "P0"
+  },
+  {
+    "technique": "T1078",
+    "name": "Valid Accounts",
+    "owner": "identity-defense",
+    "eta": "2026-03-20",
+    "priority": "P0"
+  },
+  {
+    "technique": "T1021",
+    "name": "Remote Services",
+    "owner": "network-defense",
+    "eta": "2026-03-30",
+    "priority": "P0"
+  },
+  {
+    "technique": "T1047",
+    "name": "Windows Management Instrumentation",
+    "owner": "detections-core",
+    "eta": "2026-04-05",
+    "priority": "P1"
+  },
+  {
+    "technique": "T1105",
+    "name": "Ingress Tool Transfer",
+    "owner": "network-defense",
+    "eta": "2026-03-19",
+    "priority": "P0"
+  },
+  {
+    "technique": "T1562",
+    "name": "Impair Defenses",
+    "owner": "detections-core",
+    "eta": "2026-03-25",
+    "priority": "P0"
+  },
+  {
+    "technique": "T1110",
+    "name": "Brute Force",
+    "owner": "identity-defense",
+    "eta": "2026-03-29",
+    "priority": "P1"
+  },
+  {
+    "technique": "T1003",
+    "name": "OS Credential Dumping",
+    "owner": "detections-core",
+    "eta": "2026-03-18",
+    "priority": "P0"
+  },
+  {
+    "technique": "T1082",
+    "name": "System Information Discovery",
+    "owner": "detections-core",
+    "eta": "2026-04-07",
+    "priority": "P1"
+  },
+  {
+    "technique": "T1083",
+    "name": "File and Directory Discovery",
+    "owner": "detections-core",
+    "eta": "2026-04-07",
+    "priority": "P1"
+  },
+  {
+    "technique": "T1053",
+    "name": "Scheduled Task/Job",
+    "owner": "detections-core",
+    "eta": "2026-03-26",
+    "priority": "P0"
+  },
+  {
+    "technique": "T1547",
+    "name": "Boot or Logon Autostart Execution",
+    "owner": "detections-core",
+    "eta": "2026-04-02",
+    "priority": "P0"
+  },
+  {
+    "technique": "T1548",
+    "name": "Abuse Elevation Control Mechanism",
+    "owner": "detections-core",
+    "eta": "2026-04-04",
+    "priority": "P1"
+  },
+  {
+    "technique": "T1570",
+    "name": "Lateral Tool Transfer",
+    "owner": "network-defense",
+    "eta": "2026-04-06",
+    "priority": "P1"
+  },
+  {
+    "technique": "T1218",
+    "name": "System Binary Proxy Execution",
+    "owner": "detections-core",
+    "eta": "2026-03-31",
+    "priority": "P0"
+  },
+  {
+    "technique": "T1027",
+    "name": "Obfuscated/Compressed Files and Information",
+    "owner": "detections-core",
+    "eta": "2026-03-27",
+    "priority": "P0"
+  },
+  {
+    "technique": "T1056",
+    "name": "Input Capture",
+    "owner": "detections-core",
+    "eta": "2026-04-10",
+    "priority": "P1"
+  },
+  {
+    "technique": "T1057",
+    "name": "Process Discovery",
+    "owner": "detections-core",
+    "eta": "2026-04-01",
+    "priority": "P1"
+  },
+  {
+    "technique": "T1041",
+    "name": "Exfiltration Over C2 Channel",
+    "owner": "network-defense",
+    "eta": "2026-03-24",
+    "priority": "P0"
+  },
+  {
+    "technique": "T1071",
+    "name": "Application Layer Protocol",
+    "owner": "network-defense",
+    "eta": "2026-03-23",
+    "priority": "P0"
+  },
+  {
+    "technique": "T1496",
+    "name": "Resource Hijacking",
+    "owner": "detections-core",
+    "eta": "2026-04-11",
+    "priority": "P1"
+  },
+  {
+    "technique": "T1486",
+    "name": "Data Encrypted for Impact",
+    "owner": "detections-core",
+    "eta": "2026-03-21",
+    "priority": "P0"
+  },
+  {
+    "technique": "T1489",
+    "name": "Service Stop",
+    "owner": "detections-core",
+    "eta": "2026-04-03",
+    "priority": "P1"
+  },
+  {
+    "technique": "T1090",
+    "name": "Proxy",
+    "owner": "network-defense",
+    "eta": "2026-04-08",
+    "priority": "P1"
+  },
+  {
+    "technique": "T1140",
+    "name": "Deobfuscate/Decode Files or Information",
+    "owner": "detections-core",
+    "eta": "2026-04-09",
+    "priority": "P1"
+  },
+  {
+    "technique": "T1204",
+    "name": "User Execution",
+    "owner": "detections-core",
+    "eta": "2026-04-12",
+    "priority": "P1"
+  },
+  {
+    "technique": "T1136",
+    "name": "Create Account",
+    "owner": "identity-defense",
+    "eta": "2026-04-13",
+    "priority": "P1"
+  },
+  {
+    "technique": "T1018",
+    "name": "Remote System Discovery",
+    "owner": "network-defense",
+    "eta": "2026-04-14",
+    "priority": "P1"
+  },
+  {
+    "technique": "T1569",
+    "name": "System Services",
+    "owner": "detections-core",
+    "eta": "2026-04-15",
+    "priority": "P1"
+  }
+]

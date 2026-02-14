@@ -24,9 +24,10 @@ for archive in "${ARCHIVES[@]}"; do
     fi
   done
 
-  size_kb="$(( ( $(wc -c <"${archive}") + 1023 ) / 1024 ))"
-  if [[ "${size_kb}" -gt "${MAX_COMPRESSED_KB}" ]]; then
-    echo "archive too large (${size_kb} KB > ${MAX_COMPRESSED_KB} KB): ${archive}"
+  compressed_bytes="$(gzip -c "${archive}" | wc -c | tr -d '[:space:]')"
+  compressed_kb="$(( ( compressed_bytes + 1023 ) / 1024 ))"
+  if [[ "${compressed_kb}" -gt "${MAX_COMPRESSED_KB}" ]]; then
+    echo "archive too large when compressed (${compressed_kb} KB > ${MAX_COMPRESSED_KB} KB): ${archive}"
     exit 1
   fi
 done

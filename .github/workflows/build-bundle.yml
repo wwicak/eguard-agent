@@ -9,6 +9,10 @@ permissions:
   contents: write
   actions: read
 
+concurrency:
+  group: build-threat-intel-bundle-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build-bundle:
     runs-on: ubuntu-latest
@@ -22,7 +26,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install yara-python pyyaml
+        run: pip install yara-python pyyaml pytest
 
       - name: Install zstd
         run: sudo apt-get update && sudo apt-get install -y zstd
@@ -31,20 +35,241 @@ jobs:
         id: version
         run: echo "version=$(date -u +%Y.%m.%d.%H%M)" >> "$GITHUB_OUTPUT"
 
-      - name: Download latest collector artifacts
+      - name: Validate collector artifact freshness
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EGUARD_ARTIFACT_MAX_AGE_HOURS: "30"
+          EGUARD_ARTIFACT_TARGET_BRANCH: ${{ github.ref_name }}
+          EGUARD_ARTIFACT_FALLBACK_BRANCH: "main"
         run: |
-          mkdir -p /tmp/artifacts
-          for name in sigma-filtered yara-collected ioc-curated cve-extracted suricata-collected elastic-rules; do
-            echo "Downloading artifact: $name"
-            gh run download --repo "$GITHUB_REPOSITORY" \
-              --name "$name" --dir "/tmp/artifacts/$name" 2>/dev/null || \
-              echo "  Warning: artifact $name not found (collector may not have run yet)"
-          done
-          echo "=== Artifacts downloaded ==="
-          for name in sigma-filtered yara-collected ioc-curated cve-extracted suricata-collected elastic-rules; do
-            COUNT=$(find "/tmp/artifacts/$name" -type f 2>/dev/null | wc -l)
-            echo "  $name: $COUNT files"
-          done
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+          from datetime import datetime, timezone
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          max_age_hours = int(os.environ.get("EGUARD_ARTIFACT_MAX_AGE_HOURS", "30"))
+          target_branch = os.environ.get("EGUARD_ARTIFACT_TARGET_BRANCH", "").strip()
+          fallback_branch = os.environ.get("EGUARD_ARTIFACT_FALLBACK_BRANCH", "").strip()
+          required = [
+              "sigma-filtered",
+              "yara-collected",
+              "ioc-curated",
+              "cve-extracted",
+              "suricata-collected",
+              "elastic-rules",
+          ]
+
+          artifacts = []
+          for page in range(1, 6):
+              raw = subprocess.check_output(
+                  ["gh", "api", f"repos/{repo}/actions/artifacts?per_page=100&page={page}"],
+                  text=True,
+              )
+              page_artifacts = json.loads(raw).get("artifacts", [])
+              if not page_artifacts:
+                  break
+              artifacts.extend(page_artifacts)
+
+          def branch_priority(head_branch: str) -> int:
+              if target_branch and head_branch == target_branch:
+                  return 0
+              if fallback_branch and head_branch == fallback_branch:
+                  return 1
+              if not target_branch and not fallback_branch:
+                  return 0
+              return 2
+
+          latest = {}
+          for artifact in artifacts:
+              if artifact.get("expired"):
+                  continue
+              name = artifact.get("name")
+              if name not in required:
+                  continue
+
+              workflow_run = artifact.get("workflow_run") or {}
+              head_branch = str(workflow_run.get("head_branch") or "")
+              if head_branch and branch_priority(head_branch) >= 2:
+                  continue
+
+              created = artifact.get("created_at", "")
+              if not name or not created:
+                  continue
+              priority = branch_priority(head_branch)
+              if (
+                  name not in latest
+                  or priority < latest[name]["_priority"]
+                  or (priority == latest[name]["_priority"] and created > latest[name]["created_at"])
+              ):
+                  artifact["_priority"] = priority
+                  latest[name] = artifact
+
+          now = datetime.now(timezone.utc)
+          failures = []
+
+          for name in required:
+              artifact = latest.get(name)
+              if not artifact:
+                  failures.append(f"missing artifact metadata: {name}")
+                  continue
+
+              created_at = datetime.fromisoformat(artifact["created_at"].replace("Z", "+00:00"))
+              age_hours = (now - created_at).total_seconds() / 3600.0
+              run_info = artifact.get("workflow_run") or {}
+              print(
+                  f"{name}: id={artifact.get('id')} run={run_info.get('id')} "
+                  f"branch={run_info.get('head_branch')} created_at={artifact['created_at']} "
+                  f"age_hours={age_hours:.2f}"
+              )
+
+              if age_hours > max_age_hours:
+                  failures.append(
+                      f"artifact too old: {name} age {age_hours:.2f}h > {max_age_hours}h"
+                  )
+
+          if failures:
+              print("artifact freshness gate failed:")
+              for failure in failures:
+                  print(f"- {failure}")
+              sys.exit(1)
+
+          selected = []
+          for name in required:
+              artifact = latest[name]
+              run_info = artifact.get("workflow_run") or {}
+              selected.append(
+                  {
+                      "name": name,
+                      "artifact_id": artifact.get("id"),
+                      "run_id": run_info.get("id"),
+                      "head_branch": run_info.get("head_branch"),
+                      "created_at": artifact.get("created_at"),
+                      "selection_priority": artifact.get("_priority"),
+                  }
+              )
+
+          with open("/tmp/collector-artifacts.json", "w", encoding="utf-8") as f:
+              json.dump(
+                  {
+                      "target_branch": target_branch,
+                      "required": required,
+                      "selected_artifacts": selected,
+                  },
+                  f,
+                  indent=2,
+              )
+              f.write("\n")
+
+          print("artifact freshness gate passed")
+          PY
+
+      - name: Download latest collector artifacts (strict)
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import shutil
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          required = [
+              "sigma-filtered",
+              "yara-collected",
+              "ioc-curated",
+              "cve-extracted",
+              "suricata-collected",
+              "elastic-rules",
+          ]
+
+          metadata_path = Path("/tmp/collector-artifacts.json")
+          if not metadata_path.is_file():
+              print("ERROR: missing artifact metadata from freshness gate")
+              sys.exit(1)
+
+          metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+          selected = {item.get("name"): item for item in metadata.get("selected_artifacts", [])}
+
+          root = Path("/tmp/artifacts")
+          root.mkdir(parents=True, exist_ok=True)
+
+          failures: list[str] = []
+          for name in required:
+              item = selected.get(name)
+              if not item:
+                  failures.append(f"missing selected artifact metadata: {name}")
+                  continue
+
+              run_id = item.get("run_id")
+              if not run_id:
+                  failures.append(f"artifact {name} missing run_id")
+                  continue
+
+              target = root / name
+              if target.exists():
+                  shutil.rmtree(target)
+              target.mkdir(parents=True, exist_ok=True)
+
+              print(f"Downloading artifact {name} from run {run_id}")
+              cmd = [
+                  "gh",
+                  "run",
+                  "download",
+                  str(run_id),
+                  "--repo",
+                  repo,
+                  "--name",
+                  name,
+                  "--dir",
+                  str(target),
+              ]
+              result = subprocess.run(cmd, capture_output=True, text=True)
+              if result.returncode != 0:
+                  failures.append(
+                      f"failed to download {name} from run {run_id}: {result.stderr.strip() or result.stdout.strip()}"
+                  )
+
+          if failures:
+              print("artifact download step failed:")
+              for failure in failures:
+                  print(f"- {failure}")
+              sys.exit(1)
+
+          def file_count(path: Path) -> int:
+              return sum(1 for p in path.rglob("*") if p.is_file())
+
+          print("=== Artifacts downloaded ===")
+          for name in required:
+              print(f"  {name}: {file_count(root / name)} files")
+
+          sigma_count = sum(1 for p in (root / "sigma-filtered").rglob("*") if p.is_file() and p.suffix.lower() in {".yml", ".yaml"})
+          yara_count = sum(1 for p in (root / "yara-collected").rglob("*") if p.is_file() and p.suffix.lower() in {".yar", ".yara"})
+          if sigma_count <= 0:
+              failures.append("sigma-filtered artifact has no SIGMA rules")
+          if yara_count <= 0:
+              failures.append("yara-collected artifact has no YARA rules")
+
+          for ioc_file in ("hashes.txt", "domains.txt", "ips.txt"):
+              path = root / "ioc-curated" / ioc_file
+              if not path.is_file() or path.stat().st_size <= 0:
+                  failures.append(f"missing or empty IOC file: {ioc_file}")
+
+          cve_path = root / "cve-extracted" / "cves.jsonl"
+          if not cve_path.is_file() or cve_path.stat().st_size <= 0:
+              failures.append("cve-extracted/cves.jsonl is missing or empty")
+
+          if failures:
+              print("artifact content validation failed:")
+              for failure in failures:
+                  print(f"- {failure}")
+              sys.exit(1)
+
+          print("artifact download + content validation passed")
+          PY
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -83,6 +308,305 @@ jobs:
             --output bundle \
             --version "${{ steps.version.outputs.version }}"
 
+      - name: Enforce signature database coverage gate
+        env:
+          EGUARD_MIN_SIGMA: "150"
+          EGUARD_MIN_YARA: "600"
+          EGUARD_MIN_IOC_HASH: "1000"
+          EGUARD_MIN_IOC_DOMAIN: "300"
+          EGUARD_MIN_IOC_IP: "1500"
+          EGUARD_MIN_CVE: "1000"
+          EGUARD_MIN_CVE_KEV: "50"
+          EGUARD_MIN_SIGNATURE_TOTAL: "900"
+          EGUARD_MIN_DATABASE_TOTAL: "5000"
+          EGUARD_MIN_YARA_SOURCES: "3"
+          EGUARD_MIN_SIGMA_SOURCES: "2"
+          EGUARD_MIN_SURICATA: "1000"
+          EGUARD_MIN_ELASTIC: "100"
+          EGUARD_REQUIRE_SURICATA: "true"
+          EGUARD_REQUIRE_ELASTIC: "true"
+          EGUARD_REQUIRED_YARA_SOURCES: "yara-forge,gcti,reversinglabs"
+          EGUARD_REQUIRED_SIGMA_SOURCES: "rules,rules-emerging-threats,rules-threat-hunting"
+          EGUARD_MIN_YARA_SOURCE_RULES: "yara-forge=250,gcti=40,reversinglabs=40"
+          EGUARD_MIN_SIGMA_SOURCE_RULES: "rules=100,rules-emerging-threats=20,rules-threat-hunting=20"
+        run: |
+          EXTRA_FLAGS=()
+          if [ "${EGUARD_REQUIRE_SURICATA}" = "true" ]; then
+            EXTRA_FLAGS+=(--require-suricata)
+          fi
+          if [ "${EGUARD_REQUIRE_ELASTIC}" = "true" ]; then
+            EXTRA_FLAGS+=(--require-elastic)
+          fi
+          for src in ${EGUARD_REQUIRED_YARA_SOURCES//,/ }; do
+            if [ -n "${src}" ]; then
+              EXTRA_FLAGS+=(--require-yara-source "${src}")
+            fi
+          done
+          for src in ${EGUARD_REQUIRED_SIGMA_SOURCES//,/ }; do
+            if [ -n "${src}" ]; then
+              EXTRA_FLAGS+=(--require-sigma-source "${src}")
+            fi
+          done
+          for src_rule in ${EGUARD_MIN_YARA_SOURCE_RULES//,/ }; do
+            if [ -n "${src_rule}" ]; then
+              EXTRA_FLAGS+=(--min-yara-source-rules "${src_rule}")
+            fi
+          done
+          for src_rule in ${EGUARD_MIN_SIGMA_SOURCE_RULES//,/ }; do
+            if [ -n "${src_rule}" ]; then
+              EXTRA_FLAGS+=(--min-sigma-source-rules "${src_rule}")
+            fi
+          done
+
+          python threat-intel/processing/bundle_coverage_gate.py \
+            --manifest bundle/manifest.json \
+            --output bundle/coverage-metrics.json \
+            --min-sigma "${EGUARD_MIN_SIGMA}" \
+            --min-yara "${EGUARD_MIN_YARA}" \
+            --min-ioc-hash "${EGUARD_MIN_IOC_HASH}" \
+            --min-ioc-domain "${EGUARD_MIN_IOC_DOMAIN}" \
+            --min-ioc-ip "${EGUARD_MIN_IOC_IP}" \
+            --min-cve "${EGUARD_MIN_CVE}" \
+            --min-cve-kev "${EGUARD_MIN_CVE_KEV}" \
+            --min-signature-total "${EGUARD_MIN_SIGNATURE_TOTAL}" \
+            --min-database-total "${EGUARD_MIN_DATABASE_TOTAL}" \
+            --min-yara-sources "${EGUARD_MIN_YARA_SOURCES}" \
+            --min-sigma-sources "${EGUARD_MIN_SIGMA_SOURCES}" \
+            --min-suricata "${EGUARD_MIN_SURICATA}" \
+            --min-elastic "${EGUARD_MIN_ELASTIC}" \
+            "${EXTRA_FLAGS[@]}"
+
+      - name: Enforce ATT&CK coverage gate
+        env:
+          EGUARD_MIN_ATTACK_TECHNIQUES: "80"
+          EGUARD_MIN_ATTACK_TACTICS: "10"
+          EGUARD_MIN_SIGMA_ATTACK_RULES: "150"
+          EGUARD_MIN_ELASTIC_ATTACK_RULES: "50"
+          EGUARD_MIN_SIGMA_ATTACK_TECHNIQUES: "60"
+          EGUARD_MIN_ELASTIC_ATTACK_TECHNIQUES: "20"
+          EGUARD_REQUIRED_ATTACK_TACTICS: "execution,persistence,privilege_escalation,defense_evasion,credential_access,discovery,lateral_movement,collection,command_and_control,impact"
+        run: |
+          EXTRA_FLAGS=()
+          for tactic in ${EGUARD_REQUIRED_ATTACK_TACTICS//,/ }; do
+            if [ -n "${tactic}" ]; then
+              EXTRA_FLAGS+=(--require-tactic "${tactic}")
+            fi
+          done
+
+          python threat-intel/processing/attack_coverage_gate.py \
+            --sigma-dir bundle/sigma \
+            --elastic-jsonl bundle/elastic/elastic-rules.jsonl \
+            --output bundle/attack-coverage.json \
+            --min-techniques "${EGUARD_MIN_ATTACK_TECHNIQUES}" \
+            --min-tactics "${EGUARD_MIN_ATTACK_TACTICS}" \
+            --min-sigma-rules-with-attack "${EGUARD_MIN_SIGMA_ATTACK_RULES}" \
+            --min-elastic-rules-with-attack "${EGUARD_MIN_ELASTIC_ATTACK_RULES}" \
+            --min-sigma-techniques "${EGUARD_MIN_SIGMA_ATTACK_TECHNIQUES}" \
+            --min-elastic-techniques "${EGUARD_MIN_ELASTIC_ATTACK_TECHNIQUES}" \
+            "${EXTRA_FLAGS[@]}"
+
+      - name: Download previous coverage baseline (best effort)
+        run: |
+          rm -f \
+            /tmp/coverage-metrics.json \
+            /tmp/previous-coverage-metrics.json \
+            /tmp/attack-coverage.json \
+            /tmp/previous-attack-coverage.json \
+            /tmp/attack-critical-technique-gate.json \
+            /tmp/previous-attack-critical-technique-gate.json \
+            /tmp/attack-burndown-scoreboard.json \
+            /tmp/previous-attack-burndown-scoreboard.json
+          LATEST_TAG="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=1" --jq '.[0].tag_name // ""' 2>/dev/null || true)"
+          if [ -z "${LATEST_TAG}" ]; then
+            echo "No previous release found; skipping regression baseline download"
+            exit 0
+          fi
+
+          echo "Latest release tag: ${LATEST_TAG}"
+          if gh release download "${LATEST_TAG}" --repo "${GITHUB_REPOSITORY}" --pattern "coverage-metrics.json" --dir /tmp 2>/dev/null; then
+            if [ -f /tmp/coverage-metrics.json ]; then
+              mv /tmp/coverage-metrics.json /tmp/previous-coverage-metrics.json
+              echo "Downloaded previous coverage baseline"
+            fi
+          else
+            echo "No previous coverage metrics asset found on ${LATEST_TAG}"
+          fi
+
+          if gh release download "${LATEST_TAG}" --repo "${GITHUB_REPOSITORY}" --pattern "attack-coverage.json" --dir /tmp 2>/dev/null; then
+            if [ -f /tmp/attack-coverage.json ]; then
+              mv /tmp/attack-coverage.json /tmp/previous-attack-coverage.json
+              echo "Downloaded previous ATT&CK coverage baseline"
+            fi
+          else
+            echo "No previous ATT&CK coverage asset found on ${LATEST_TAG}"
+          fi
+
+          if gh release download "${LATEST_TAG}" --repo "${GITHUB_REPOSITORY}" --pattern "attack-critical-technique-gate.json" --dir /tmp 2>/dev/null; then
+            if [ -f /tmp/attack-critical-technique-gate.json ]; then
+              mv /tmp/attack-critical-technique-gate.json /tmp/previous-attack-critical-technique-gate.json
+              echo "Downloaded previous critical ATT&CK gate baseline"
+            fi
+          else
+            echo "No previous critical ATT&CK gate asset found on ${LATEST_TAG}"
+          fi
+
+          if gh release download "${LATEST_TAG}" --repo "${GITHUB_REPOSITORY}" --pattern "attack-burndown-scoreboard.json" --dir /tmp 2>/dev/null; then
+            if [ -f /tmp/attack-burndown-scoreboard.json ]; then
+              mv /tmp/attack-burndown-scoreboard.json /tmp/previous-attack-burndown-scoreboard.json
+              echo "Downloaded previous ATT&CK burn-down scoreboard baseline"
+            fi
+          else
+            echo "No previous ATT&CK burn-down scoreboard asset found on ${LATEST_TAG}"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Enforce signature coverage regression gate
+        env:
+          EGUARD_MAX_DROP_SIGMA_PCT: "25"
+          EGUARD_MAX_DROP_YARA_PCT: "25"
+          EGUARD_MAX_DROP_SURICATA_PCT: "25"
+          EGUARD_MAX_DROP_ELASTIC_PCT: "25"
+          EGUARD_MAX_DROP_IOC_TOTAL_PCT: "25"
+          EGUARD_MAX_DROP_CVE_PCT: "25"
+          EGUARD_MAX_DROP_SIGNATURE_TOTAL_PCT: "15"
+          EGUARD_MAX_DROP_DATABASE_TOTAL_PCT: "15"
+          EGUARD_MAX_DROP_YARA_SOURCES: "1"
+          EGUARD_MAX_DROP_SIGMA_SOURCES: "1"
+        run: |
+          python threat-intel/processing/coverage_regression_gate.py \
+            --current bundle/coverage-metrics.json \
+            --previous /tmp/previous-coverage-metrics.json \
+            --output bundle/coverage-regression.json \
+            --max-drop-sigma-pct "${EGUARD_MAX_DROP_SIGMA_PCT}" \
+            --max-drop-yara-pct "${EGUARD_MAX_DROP_YARA_PCT}" \
+            --max-drop-suricata-pct "${EGUARD_MAX_DROP_SURICATA_PCT}" \
+            --max-drop-elastic-pct "${EGUARD_MAX_DROP_ELASTIC_PCT}" \
+            --max-drop-ioc-total-pct "${EGUARD_MAX_DROP_IOC_TOTAL_PCT}" \
+            --max-drop-cve-pct "${EGUARD_MAX_DROP_CVE_PCT}" \
+            --max-drop-signature-total-pct "${EGUARD_MAX_DROP_SIGNATURE_TOTAL_PCT}" \
+            --max-drop-database-total-pct "${EGUARD_MAX_DROP_DATABASE_TOTAL_PCT}" \
+            --max-drop-yara-sources "${EGUARD_MAX_DROP_YARA_SOURCES}" \
+            --max-drop-sigma-sources "${EGUARD_MAX_DROP_SIGMA_SOURCES}"
+
+      - name: Enforce ATT&CK coverage regression gate
+        env:
+          EGUARD_MAX_DROP_TOTAL_TECHNIQUES_PCT: "20"
+          EGUARD_MAX_DROP_TOTAL_TACTICS_PCT: "20"
+          EGUARD_MAX_DROP_SIGMA_ATTACK_RULES_PCT: "25"
+          EGUARD_MAX_DROP_ELASTIC_ATTACK_RULES_PCT: "25"
+          EGUARD_MAX_DROP_SIGMA_ATTACK_TECHNIQUES_PCT: "25"
+          EGUARD_MAX_DROP_ELASTIC_ATTACK_TECHNIQUES_PCT: "25"
+        run: |
+          python threat-intel/processing/attack_regression_gate.py \
+            --current bundle/attack-coverage.json \
+            --previous /tmp/previous-attack-coverage.json \
+            --output bundle/attack-regression.json \
+            --max-drop-total-techniques-pct "${EGUARD_MAX_DROP_TOTAL_TECHNIQUES_PCT}" \
+            --max-drop-total-tactics-pct "${EGUARD_MAX_DROP_TOTAL_TACTICS_PCT}" \
+            --max-drop-sigma-rules-with-attack-pct "${EGUARD_MAX_DROP_SIGMA_ATTACK_RULES_PCT}" \
+            --max-drop-elastic-rules-with-attack-pct "${EGUARD_MAX_DROP_ELASTIC_ATTACK_RULES_PCT}" \
+            --max-drop-sigma-techniques-pct "${EGUARD_MAX_DROP_SIGMA_ATTACK_TECHNIQUES_PCT}" \
+            --max-drop-elastic-techniques-pct "${EGUARD_MAX_DROP_ELASTIC_ATTACK_TECHNIQUES_PCT}"
+
+      - name: Enforce ATT&CK gap burn-down gate
+        env:
+          EGUARD_ATTACK_GOAL_TECHNIQUES: "120"
+          EGUARD_ATTACK_GOAL_TACTICS: "12"
+          EGUARD_ATTACK_REQUIRED_TACTICS: "execution,persistence,privilege_escalation,defense_evasion,credential_access,discovery,lateral_movement,collection,command_and_control,impact"
+          EGUARD_ATTACK_MAX_TECHNIQUE_GAP_INCREASE: "0"
+          EGUARD_ATTACK_MAX_TACTIC_GAP_INCREASE: "0"
+          EGUARD_ATTACK_MAX_NEW_MISSING_TACTICS: "0"
+        run: |
+          EXTRA_FLAGS=()
+          for tactic in ${EGUARD_ATTACK_REQUIRED_TACTICS//,/ }; do
+            if [ -n "${tactic}" ]; then
+              EXTRA_FLAGS+=(--require-tactic "${tactic}")
+            fi
+          done
+
+          python threat-intel/processing/attack_gap_burndown_gate.py \
+            --current bundle/attack-coverage.json \
+            --previous /tmp/previous-attack-coverage.json \
+            --output bundle/attack-gap-burndown.json \
+            --goal-techniques "${EGUARD_ATTACK_GOAL_TECHNIQUES}" \
+            --goal-tactics "${EGUARD_ATTACK_GOAL_TACTICS}" \
+            --max-technique-gap-increase "${EGUARD_ATTACK_MAX_TECHNIQUE_GAP_INCREASE}" \
+            --max-tactic-gap-increase "${EGUARD_ATTACK_MAX_TACTIC_GAP_INCREASE}" \
+            --max-new-missing-required-tactics "${EGUARD_ATTACK_MAX_NEW_MISSING_TACTICS}" \
+            "${EXTRA_FLAGS[@]}"
+
+      - name: Enforce critical ATT&CK technique floor gate
+        env:
+          EGUARD_CRITICAL_TECHNIQUES_FILE: "threat-intel/processing/attack_critical_techniques.json"
+          EGUARD_CRITICAL_MIN_COVERED: "20"
+          EGUARD_CRITICAL_MIN_COVERED_RATIO: "0.65"
+          EGUARD_CRITICAL_MAX_MISSING: "12"
+          EGUARD_REQUIRED_CRITICAL_TECHNIQUES: "T1059,T1078,T1021,T1562,T1486"
+        run: |
+          EXTRA_FLAGS=()
+          for technique in ${EGUARD_REQUIRED_CRITICAL_TECHNIQUES//,/ }; do
+            if [ -n "${technique}" ]; then
+              EXTRA_FLAGS+=(--require-technique "${technique}")
+            fi
+          done
+
+          python threat-intel/processing/attack_critical_technique_gate.py \
+            --attack-coverage bundle/attack-coverage.json \
+            --critical-techniques "${EGUARD_CRITICAL_TECHNIQUES_FILE}" \
+            --output bundle/attack-critical-technique-gate.json \
+            --min-covered-count "${EGUARD_CRITICAL_MIN_COVERED}" \
+            --min-covered-ratio "${EGUARD_CRITICAL_MIN_COVERED_RATIO}" \
+            --max-missing-count "${EGUARD_CRITICAL_MAX_MISSING}" \
+            "${EXTRA_FLAGS[@]}"
+
+      - name: Enforce critical ATT&CK regression gate
+        env:
+          EGUARD_CRITICAL_MAX_COVERED_COUNT_DROP: "2"
+          EGUARD_CRITICAL_MAX_COVERED_RATIO_DROP: "0.08"
+          EGUARD_CRITICAL_MAX_MISSING_COUNT_INCREASE: "2"
+          EGUARD_CRITICAL_MAX_MISSING_REQUIRED_INCREASE: "0"
+        run: |
+          python threat-intel/processing/attack_critical_regression_gate.py \
+            --current bundle/attack-critical-technique-gate.json \
+            --previous /tmp/previous-attack-critical-technique-gate.json \
+            --output bundle/attack-critical-regression.json \
+            --max-covered-count-drop "${EGUARD_CRITICAL_MAX_COVERED_COUNT_DROP}" \
+            --max-covered-ratio-drop "${EGUARD_CRITICAL_MAX_COVERED_RATIO_DROP}" \
+            --max-missing-count-increase "${EGUARD_CRITICAL_MAX_MISSING_COUNT_INCREASE}" \
+            --max-missing-required-increase "${EGUARD_CRITICAL_MAX_MISSING_REQUIRED_INCREASE}"
+
+      - name: Generate ATT&CK burn-down scoreboard
+        run: |
+          python threat-intel/processing/attack_burndown_scoreboard.py \
+            --attack-coverage bundle/attack-coverage.json \
+            --critical-techniques threat-intel/processing/attack_critical_techniques.json \
+            --attack-gap bundle/attack-gap-burndown.json \
+            --previous-scoreboard /tmp/previous-attack-burndown-scoreboard.json \
+            --output-json bundle/attack-burndown-scoreboard.json \
+            --output-md bundle/attack-burndown-scoreboard.md
+
+      - name: Run threat-intel tests
+        run: pytest -q threat-intel/tests/test_bundle.py
+        env:
+          BUNDLE_DIR: bundle
+
+      - name: Upload signature coverage metrics
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundle-signature-coverage
+          path: |
+            bundle/coverage-metrics.json
+            bundle/coverage-regression.json
+            bundle/attack-coverage.json
+            bundle/attack-regression.json
+            bundle/attack-gap-burndown.json
+            bundle/attack-critical-technique-gate.json
+            bundle/attack-critical-regression.json
+            bundle/attack-burndown-scoreboard.json
+            bundle/attack-burndown-scoreboard.md
+          retention-days: 14
+
       - name: Package bundle
         run: |
           VERSION="${{ steps.version.outputs.version }}"
@@ -120,6 +644,38 @@ jobs:
           python3 -c "
           import json
           m = json.load(open('bundle/manifest.json'))
+          try:
+              coverage = json.load(open('bundle/coverage-metrics.json'))
+          except Exception:
+              coverage = {}
+          try:
+              regression = json.load(open('bundle/coverage-regression.json'))
+          except Exception:
+              regression = {}
+          try:
+              attack_coverage = json.load(open('bundle/attack-coverage.json'))
+          except Exception:
+              attack_coverage = {}
+          try:
+              attack_regression = json.load(open('bundle/attack-regression.json'))
+          except Exception:
+              attack_regression = {}
+          try:
+              attack_gap = json.load(open('bundle/attack-gap-burndown.json'))
+          except Exception:
+              attack_gap = {}
+          try:
+              attack_critical = json.load(open('bundle/attack-critical-technique-gate.json'))
+          except Exception:
+              attack_critical = {}
+          try:
+              attack_critical_regression = json.load(open('bundle/attack-critical-regression.json'))
+          except Exception:
+              attack_critical_regression = {}
+          try:
+              attack_burndown = json.load(open('bundle/attack-burndown-scoreboard.json'))
+          except Exception:
+              attack_burndown = {}
           src = m.get('sources', {})
           lines = [
               'Automated threat intelligence bundle — 6-layer detection.',
@@ -148,6 +704,143 @@ jobs:
               '',
               '## Sources',
           ]
+
+          if coverage:
+              measured = coverage.get('measured', {})
+              lines.extend([
+                  '',
+                  '## Signature DB Coverage Gate',
+                  f'- Status: {coverage.get(\"status\", \"unknown\")}',
+                  f'- Signature total: {measured.get(\"signature_total\", \"n/a\")}',
+                  f'- Database total: {measured.get(\"database_total\", \"n/a\")}',
+                  f'- YARA source count: {measured.get(\"yara_source_count\", \"n/a\")}',
+                  f'- SIGMA source count: {measured.get(\"sigma_source_count\", \"n/a\")}',
+              ])
+
+          if regression:
+              lines.extend([
+                  '',
+                  '## Coverage Regression Guard',
+                  f'- Status: {regression.get(\"status\", \"unknown\")}',
+              ])
+              regressions = regression.get('regressions', [])
+              if regressions:
+                  lines.append(f'- Regressions: {\"; \".join(regressions)}')
+
+          if attack_coverage:
+              measured_attack = attack_coverage.get('measured', {})
+              lines.extend([
+                  '',
+                  '## ATT&CK Coverage Gate',
+                  f'- Status: {attack_coverage.get(\"status\", \"unknown\")}',
+                  f'- Total techniques: {measured_attack.get(\"total_techniques\", \"n/a\")}',
+                  f'- Total tactics: {measured_attack.get(\"total_tactics\", \"n/a\")}',
+                  f'- Sigma rules with ATT&CK mapping: {measured_attack.get(\"sigma_rules_with_attack\", \"n/a\")}',
+                  f'- Elastic rules with ATT&CK mapping: {measured_attack.get(\"elastic_rules_with_attack\", \"n/a\")}',
+              ])
+
+          if attack_regression:
+              lines.extend([
+                  '',
+                  '## ATT&CK Regression Guard',
+                  f'- Status: {attack_regression.get(\"status\", \"unknown\")}',
+              ])
+              attack_regressions = attack_regression.get('regressions', [])
+              if attack_regressions:
+                  lines.append(f'- Regressions: {\"; \".join(attack_regressions)}')
+
+          if attack_gap:
+              current_gap = attack_gap.get('current', {})
+              burn_down = attack_gap.get('burn_down', {})
+              missing_required = current_gap.get('missing_required_tactics', [])
+              if not isinstance(missing_required, list):
+                  missing_required = []
+              lines.extend([
+                  '',
+                  '## ATT&CK Gap Burn-down',
+                  f'- Status: {attack_gap.get(\"status\", \"unknown\")}',
+                  f'- Technique gap remaining: {current_gap.get(\"technique_gap\", \"n/a\")}',
+                  f'- Tactic gap remaining: {current_gap.get(\"tactic_gap\", \"n/a\")}',
+                  f'- Missing required tactics: {len(missing_required)}',
+                  f'- Technique gap reduced by: {burn_down.get(\"technique_gap_reduced_by\", \"n/a\")}',
+                  f'- Tactic gap reduced by: {burn_down.get(\"tactic_gap_reduced_by\", \"n/a\")}',
+              ])
+
+          if attack_critical:
+              measured_critical = attack_critical.get('measured', {})
+              missing_required_critical = attack_critical.get('missing_required_techniques', [])
+              if not isinstance(missing_required_critical, list):
+                  missing_required_critical = []
+              covered_ratio = measured_critical.get('covered_ratio', None)
+              if isinstance(covered_ratio, (int, float)):
+                  covered_ratio_display = f'{round(float(covered_ratio) * 100.0, 2)}%'
+              else:
+                  covered_ratio_display = 'n/a'
+              lines.extend([
+                  '',
+                  '## Critical ATT&CK Technique Floor',
+                  f'- Status: {attack_critical.get(\"status\", \"unknown\")}',
+                  f'- Critical covered count: {measured_critical.get(\"covered_count\", \"n/a\")}',
+                  f'- Critical covered ratio: {covered_ratio_display}',
+                  f'- Critical missing count: {measured_critical.get(\"missing_count\", \"n/a\")}',
+                  f'- Missing required critical techniques: {len(missing_required_critical)}',
+              ])
+
+          if attack_critical_regression:
+              deltas = attack_critical_regression.get('deltas', {})
+              if not isinstance(deltas, dict):
+                  deltas = {}
+              regressions = attack_critical_regression.get('regressions', [])
+              if not isinstance(regressions, list):
+                  regressions = []
+              lines.extend([
+                  '',
+                  '## Critical ATT&CK Regression Guard',
+                  f'- Status: {attack_critical_regression.get(\"status\", \"unknown\")}',
+                  f'- Covered count delta: {deltas.get(\"covered_count_delta\", \"n/a\")}',
+                  f'- Covered ratio delta: {deltas.get(\"covered_ratio_delta\", \"n/a\")}',
+                  f'- Missing count delta: {deltas.get(\"missing_count_delta\", \"n/a\")}',
+                  f'- Missing required count delta: {deltas.get(\"missing_required_count_delta\", \"n/a\")}',
+              ])
+              if regressions:
+                  lines.append(f'- Regressions: {"; ".join(regressions)}')
+
+          if attack_burndown:
+              trend = attack_burndown.get('trend', {})
+              if not isinstance(trend, dict):
+                  trend = {}
+              uncovered = attack_burndown.get('uncovered_critical_techniques', [])
+              if not isinstance(uncovered, list):
+                  uncovered = []
+              top_uncovered = attack_burndown.get('top_uncovered_critical_techniques', [])
+              if not isinstance(top_uncovered, list):
+                  top_uncovered = []
+              newly_covered = trend.get('newly_covered', [])
+              if not isinstance(newly_covered, list):
+                  newly_covered = []
+              newly_uncovered = trend.get('newly_uncovered', [])
+              if not isinstance(newly_uncovered, list):
+                  newly_uncovered = []
+              top_preview = []
+              for row in top_uncovered[:5]:
+                  if not isinstance(row, dict):
+                      continue
+                  technique = str(row.get('technique', '')).strip().upper()
+                  owner = str(row.get('owner', 'unassigned')).strip() or 'unassigned'
+                  if technique:
+                      top_preview.append(f'{technique}({owner})')
+              top_preview_line = '; '.join(top_preview) if top_preview else 'none'
+              lines.extend([
+                  '',
+                  '## ATT&CK Critical Burn-down Scoreboard',
+                  f'- Critical coverage: {attack_burndown.get(\"critical_coverage_pct\", \"n/a\")}%',
+                  f'- Uncovered critical techniques: {len(uncovered)}',
+                  f'- Delta uncovered vs previous: {trend.get(\"delta_uncovered\", \"n/a\")}',
+                  f'- Newly covered: {len(newly_covered)}',
+                  f'- Newly uncovered: {len(newly_uncovered)}',
+                  f'- Top uncovered critical (max 5): {top_preview_line}',
+              ])
+
           for category, names in src.items():
               names_str = ', '.join(names) if isinstance(names, list) else str(names)
               lines.append(f'- {category}: {names_str}')
@@ -157,6 +850,15 @@ jobs:
             "${BUNDLE}" \
             "${BUNDLE}.sig" \
             "${BUNDLE}.pub.hex" \
+            "bundle/coverage-metrics.json" \
+            "bundle/coverage-regression.json" \
+            "bundle/attack-coverage.json" \
+            "bundle/attack-regression.json" \
+            "bundle/attack-gap-burndown.json" \
+            "bundle/attack-critical-technique-gate.json" \
+            "bundle/attack-critical-regression.json" \
+            "bundle/attack-burndown-scoreboard.json" \
+            "bundle/attack-burndown-scoreboard.md" \
             --title "Rule Bundle ${VERSION}" \
             --notes-file /tmp/release_notes.md
         env:

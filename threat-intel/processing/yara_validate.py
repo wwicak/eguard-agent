@@ -39,11 +39,12 @@ def compile_rule(path: str) -> "yara.Rules | None":
         return None
 
 
-def scan_clean_files(rules: "yara.Rules", test_dir: str) -> list[str]:
-    """Scan clean test files; return list of matched file paths (false positives)."""
+def scan_clean_files(rules: "yara.Rules", test_dir: str) -> tuple[list[str], list[str]]:
+    """Scan clean files; return (false-positive matches, scan errors)."""
     matches = []
+    errors = []
     if not os.path.isdir(test_dir):
-        return matches
+        return matches, errors
     for fname in os.listdir(test_dir):
         fpath = os.path.join(test_dir, fname)
         if not os.path.isfile(fpath):
@@ -52,9 +53,9 @@ def scan_clean_files(rules: "yara.Rules", test_dir: str) -> list[str]:
             result = rules.match(fpath)
             if result:
                 matches.append(fpath)
-        except yara.Error:
-            pass
-    return matches
+        except yara.Error as exc:
+            errors.append(f"{fpath}: {exc}")
+    return matches, errors
 
 
 def discover_sources(input_dir: str) -> list[str]:
@@ -120,6 +121,7 @@ def main():
     dedup_skipped = 0
     compile_fail = 0
     fp_removed = 0
+    scan_fail = 0
     source_counts: dict[str, int] = {}
 
     for source in sources:
@@ -152,7 +154,17 @@ def main():
 
             # ── False-positive scan ──────────────────────────────────
             if test_dir:
-                fp_files = scan_clean_files(compiled, test_dir)
+                fp_files, scan_errors = scan_clean_files(compiled, test_dir)
+                if scan_errors:
+                    for scan_error in scan_errors[:5]:
+                        print(f"  INVALID (scan error): {src}: {scan_error}", file=sys.stderr)
+                    if len(scan_errors) > 5:
+                        print(
+                            f"  INVALID (scan error): {src}: {len(scan_errors) - 5} additional scan errors",
+                            file=sys.stderr,
+                        )
+                    scan_fail += 1
+                    continue
                 if fp_files:
                     print(f"  FP REMOVED: {src} matched {len(fp_files)} clean file(s)", file=sys.stderr)
                     fp_removed += 1
@@ -176,7 +188,7 @@ def main():
 
     print(
         f"\nYARA validate: {valid}/{total} rules valid "
-        f"({compile_fail} compile errors, {fp_removed} false-positive removals, "
+        f"({compile_fail} compile errors, {scan_fail} scan errors, {fp_removed} false-positive removals, "
         f"{dedup_skipped} dedup skipped)"
     )
     print("Per-source breakdown:")

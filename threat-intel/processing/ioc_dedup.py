@@ -5,12 +5,12 @@ Tier system:
   0 — Government / zero-FP (CISA, Spamhaus DROP)
   1 — Premium aggregated (FireHOL level 1)
   2 — Community-vetted (abuse.ch, SANS DShield, DigitalSide)
-  3 — Community / aggregators (OTX, Botvrij, CINS, Blocklist.de)
-  4 — Unvetted / unknown
+  3 — Community / aggregators (Botvrij, CINS, Blocklist.de)
+  4 — Low-confidence aggregators and unvetted sources (OTX/alienvault, unknown)
 
 Confidence scoring:
   high   — 2+ sources with at least one Tier 0-2, or any Tier 0 source
-  medium — single Tier 1-2 source, or 2+ Tier 3 sources
+  medium — single Tier 2 source, or corroborated Tier 3/4 sources
   low    — single Tier 3-4 source
 """
 
@@ -37,13 +37,14 @@ SOURCE_TIERS: dict[str, int] = {
     "sslbl_sha1": 2,
     "dshield": 2,
     "digitalside": 2,
+    "phishtank": 2,
     # Tier 3: aggregators / community blocklists
-    "otx": 3,
-    "alienvault": 3,
     "botvrij": 3,
     "cins": 3,
     "blocklist_de": 3,
-    # Tier 4: unvetted
+    # Tier 4: low-confidence aggregators / unvetted
+    "otx": 4,
+    "alienvault": 4,
     "other": 4,
 }
 
@@ -101,6 +102,9 @@ def get_tier(source: str) -> int:
 
 def determine_confidence(sources: set[str]) -> str:
     """Determine confidence based on source tiers and corroboration."""
+    if not sources:
+        return CONFIDENCE_LOW
+
     tiers = [get_tier(s) for s in sources]
     min_tier = min(tiers)
 
@@ -108,16 +112,20 @@ def determine_confidence(sources: set[str]) -> str:
     if min_tier == 0:
         return CONFIDENCE_HIGH
 
+    # Single Tier 1 source → high confidence
+    if len(sources) == 1 and min_tier == 1:
+        return CONFIDENCE_HIGH
+
     # Multiple sources with at least one Tier 1-2 → high
     if len(sources) >= 2 and min_tier <= 2:
         return CONFIDENCE_HIGH
 
-    # Single Tier 1-2 source → medium
-    if min_tier <= 2:
+    # Single Tier 2 source → medium
+    if len(sources) == 1 and min_tier == 2:
         return CONFIDENCE_MEDIUM
 
-    # Multiple Tier 3 sources → medium
-    if len(sources) >= 2 and min_tier <= 3:
+    # Corroborated Tier 3/4 sources → medium
+    if len(sources) >= 2:
         return CONFIDENCE_MEDIUM
 
     # Single Tier 4 or single Tier 3 → low

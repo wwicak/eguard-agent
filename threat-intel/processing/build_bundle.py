@@ -117,6 +117,47 @@ def detect_sources(output_dir: str) -> dict[str, list[str]]:
     return sources
 
 
+def count_files_by_ext(base_dir: str, extensions: tuple[str, ...]) -> int:
+    """Count files recursively by extension under base_dir."""
+    if not os.path.isdir(base_dir):
+        return 0
+
+    allowed = tuple(ext.lower() for ext in extensions)
+    count = 0
+    for root, _dirs, files in os.walk(base_dir):
+        for fname in files:
+            if fname.lower().endswith(allowed):
+                count += 1
+    return count
+
+
+def detect_source_rule_counts(output_dir: str) -> dict[str, dict[str, int]]:
+    """Detect per-source rule counts for bundled rule families."""
+    source_rule_counts: dict[str, dict[str, int]] = {}
+
+    yara_dir = os.path.join(output_dir, "yara")
+    if os.path.isdir(yara_dir):
+        yara_counts: dict[str, int] = {}
+        for entry in sorted(os.listdir(yara_dir)):
+            source_path = os.path.join(yara_dir, entry)
+            if os.path.isdir(source_path):
+                yara_counts[entry] = count_files_by_ext(source_path, (".yar", ".yara"))
+        if yara_counts:
+            source_rule_counts["yara"] = yara_counts
+
+    sigma_dir = os.path.join(output_dir, "sigma")
+    if os.path.isdir(sigma_dir):
+        sigma_counts: dict[str, int] = {}
+        for entry in sorted(os.listdir(sigma_dir)):
+            source_path = os.path.join(sigma_dir, entry)
+            if os.path.isdir(source_path):
+                sigma_counts[entry] = count_files_by_ext(source_path, (".yml", ".yaml"))
+        if sigma_counts:
+            source_rule_counts["sigma"] = sigma_counts
+
+    return source_rule_counts
+
+
 def main():
     parser = argparse.ArgumentParser(description="Build eGuard threat intel bundle")
     parser.add_argument("--sigma", default="", help="Directory of filtered SIGMA rules")
@@ -213,6 +254,7 @@ def main():
 
     # Detect sources
     sources = detect_sources(output_dir)
+    source_rule_counts = detect_source_rule_counts(output_dir)
 
     # Build file hash index
     file_hashes = {}
@@ -237,6 +279,7 @@ def main():
         "cve_kev_count": cve_kev_count,
         "cve_epss_count": cve_epss_count,
         "sources": sources,
+        "source_rule_counts": source_rule_counts,
         "files": file_hashes,
     }
 

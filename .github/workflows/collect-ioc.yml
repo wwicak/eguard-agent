@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: collect-ioc-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   collect-ioc:
     runs-on: ubuntu-latest
@@ -233,6 +237,35 @@ jobs:
             --hash-allowlist threat-intel/allowlists/known_good_hashes.txt \
             --domain-allowlist threat-intel/allowlists/known_good_domains.txt \
             --ip-allowlist threat-intel/allowlists/known_good_ips.txt
+
+      - name: Enforce IOC collector coverage
+        env:
+          EGUARD_MIN_IOC_HASH: "1000"
+          EGUARD_MIN_IOC_DOMAIN: "300"
+          EGUARD_MIN_IOC_IP: "1500"
+        run: |
+          HASH_COUNT=$(wc -l < sources/ioc/consolidated/hashes.txt 2>/dev/null || echo 0)
+          DOMAIN_COUNT=$(wc -l < sources/ioc/consolidated/domains.txt 2>/dev/null || echo 0)
+          IP_COUNT=$(wc -l < sources/ioc/consolidated/ips.txt 2>/dev/null || echo 0)
+
+          echo "IOC hashes: ${HASH_COUNT}"
+          echo "IOC domains: ${DOMAIN_COUNT}"
+          echo "IOC IPs: ${IP_COUNT}"
+
+          if [ "${HASH_COUNT}" -lt "${EGUARD_MIN_IOC_HASH}" ]; then
+            echo "IOC collector coverage gate failed: hashes ${HASH_COUNT} < ${EGUARD_MIN_IOC_HASH}"
+            exit 1
+          fi
+          if [ "${DOMAIN_COUNT}" -lt "${EGUARD_MIN_IOC_DOMAIN}" ]; then
+            echo "IOC collector coverage gate failed: domains ${DOMAIN_COUNT} < ${EGUARD_MIN_IOC_DOMAIN}"
+            exit 1
+          fi
+          if [ "${IP_COUNT}" -lt "${EGUARD_MIN_IOC_IP}" ]; then
+            echo "IOC collector coverage gate failed: ips ${IP_COUNT} < ${EGUARD_MIN_IOC_IP}"
+            exit 1
+          fi
+
+          echo "IOC collector coverage gate passed"
 
       - name: Upload curated IOCs as artifact
         uses: actions/upload-artifact@v4

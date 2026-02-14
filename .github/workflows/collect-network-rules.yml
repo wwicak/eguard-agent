@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: collect-network-rules-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   collect-suricata:
     runs-on: ubuntu-latest
@@ -78,6 +82,19 @@ jobs:
           done
           KEPT=$(grep -rc '^alert ' /tmp/suricata_filtered/ 2>/dev/null | awk -F: '{s+=$2} END {print s}')
           echo "Suricata filtered: ${KEPT} alert rules kept"
+
+      - name: Enforce Suricata collector coverage
+        env:
+          EGUARD_MIN_SURICATA_ALERTS: "1000"
+        run: |
+          KEPT=$(grep -rc '^alert ' /tmp/suricata_filtered/ 2>/dev/null | awk -F: '{s+=$2} END {print s}')
+          KEPT=${KEPT:-0}
+          echo "Suricata filtered alert count: ${KEPT}"
+          if [ "${KEPT}" -lt "${EGUARD_MIN_SURICATA_ALERTS}" ]; then
+            echo "Suricata collector coverage gate failed: ${KEPT} < ${EGUARD_MIN_SURICATA_ALERTS}"
+            exit 1
+          fi
+          echo "Suricata collector coverage gate passed"
 
       - name: Upload Suricata rules as artifact
         uses: actions/upload-artifact@v4
