@@ -94,4 +94,4 @@ Implemented automation in this tranche:
 - [x] Confirm release/package workflows still produce `.deb` and `.rpm`
 - [x] Upload and inspect optimization artifacts from workflow runs
 - [x] Run `bash scripts/run_verification_suite_ci.sh` in an environment with `cargo-audit` available and archive log evidence (`artifacts/verification-suite/run-20260214-203041.log`)
-- [ ] Land commit slices as isolated PR-ready commits with per-slice validation attached
+- [x] Land commit slices as isolated PR-ready commits with per-slice validation attached (`12198f2`, `70c34da`, `a24d2d0`, `330e46d`, `1e311ef`)

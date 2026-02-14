@@ -125,7 +125,7 @@ Reference acceptance criteria: `tasks/next-job-acceptance-criteria.md`
 ### Operational Closure
 
 - [x] Run `bash scripts/run_verification_suite_ci.sh` end-to-end in an environment with `cargo-audit` available
-- [ ] Complete commit slicing / PR hygiene by landing isolated slices with per-slice validation evidence
+- [x] Complete commit slicing / PR hygiene by landing isolated slices with per-slice validation evidence
 
 ### Detection Hardening — Next Technical Tranche
 

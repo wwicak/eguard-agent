@@ -259,11 +259,9 @@ Completed in this tranche:
 
 ### Operational Closure
 
-Remaining:
-- Finalize commit slicing into reviewable, rollback-safe slices with per-slice validation.
-
 Completed:
 - Ran `bash scripts/run_verification_suite_ci.sh` end-to-end with `cargo-audit` available; archived evidence at `artifacts/verification-suite/run-20260214-203041.log`.
+- Finalized commit slicing into reviewable, rollback-safe slices with per-slice validation evidence (`12198f2`, `70c34da`, `a24d2d0`, `330e46d`, `1e311ef`).
 
 ### Detection Hardening Follow-Up
 
