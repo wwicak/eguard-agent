@@ -1,6 +1,6 @@
 # Commit Slicing + Release Prep Plan
 
-Last updated: 2026-02-14
+Last updated: 2026-02-15
 
 Reference backlog acceptance criteria: `tasks/next-job-acceptance-criteria.md`
 
@@ -73,10 +73,10 @@ Validation:
 
 ## Per-slice Validation Evidence (2026-02-14)
 
-- Slice 1 runtime orchestration validation: `cargo test -p agent-core --bin agent-core` (evidence in `artifacts/verification-suite/run-20260214-203041.log` at stage `agent-core shard IOC reload test`)
-- Slice 2 detection hot-path validation: `cargo test -p detection` + replay determinism and quality gates (evidence in `artifacts/verification-suite/run-20260214-203041.log` and `artifacts/detection-quality-gate/metrics.json`)
-- Slice 3 eBPF ingest validation: `cargo test -p platform-linux` + drop-rate pressure harness (evidence in `artifacts/verification-suite/run-20260214-203041.log` and `artifacts/ebpf-drop-rate-pressure/metrics.json`)
-- Slice 4 CI/workflow validation: full suite pass + workflow lint/guardrail scripts (evidence in `artifacts/verification-suite/run-20260214-203041.log`)
+- Slice 1 runtime orchestration validation: `cargo test -p agent-core --bin agent-core` (evidence in `artifacts/verification-suite/run-20260214-205256.log` at stage `agent-core shard IOC reload test`)
+- Slice 2 detection hot-path validation: `cargo test -p detection` + replay determinism and quality gates (evidence in `artifacts/verification-suite/run-20260214-205256.log` and `artifacts/detection-quality-gate/metrics.json`)
+- Slice 3 eBPF ingest validation: `cargo test -p platform-linux` + drop-rate pressure harness (evidence in `artifacts/verification-suite/run-20260214-205256.log` and `artifacts/ebpf-drop-rate-pressure/metrics.json`)
+- Slice 4 CI/workflow validation: full suite pass + workflow lint/guardrail scripts (evidence in `artifacts/verification-suite/run-20260214-205256.log`)
 - Slice 5 docs validation: consistency refresh in `tasks/*.md` with synchronized evidence paths
 
 ## Release Prep Checklist
@@ -92,6 +92,7 @@ Implemented automation in this tranche:
 - [x] Confirm threshold values are realistic on CI runners (cold + warm)
 - [x] Ensure perf gate remains non-blocking when perf is unavailable on hosted runners
 - [x] Confirm release/package workflows still produce `.deb` and `.rpm`
+  - Local real-build evidence: `artifacts/package-agent/metrics.json` (`real_build: 1`) + `artifacts/package-agent/verification.json` (`status: ok`, validated via `dpkg-deb --info` / `rpm -qpi`)
 - [x] Upload and inspect optimization artifacts from workflow runs
-- [x] Run `bash scripts/run_verification_suite_ci.sh` in an environment with `cargo-audit` available and archive log evidence (`artifacts/verification-suite/run-20260214-203041.log`)
+- [x] Run `bash scripts/run_verification_suite_ci.sh` in an environment with `cargo-audit` available and archive log evidence (`artifacts/verification-suite/run-20260214-205256.log`, latest rerun: `artifacts/verification-suite/run-20260215-101200.log`)
 - [x] Land commit slices as isolated PR-ready commits with per-slice validation attached (`12198f2`, `70c34da`, `a24d2d0`, `330e46d`, `1e311ef`)

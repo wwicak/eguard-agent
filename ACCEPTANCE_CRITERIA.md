@@ -161,6 +161,10 @@ Derived from `docs/eguard-agent-design.md`. These acceptance criteria define the
 - **AC-DET-130**: Server-side intelligence MUST be advisory ONLY — MUST NEVER trigger automatic enforcement actions.
 - **AC-DET-131**: Cross-agent correlation MUST use threshold: same IOC on 3+ hosts constitutes an incident.
 - **AC-DET-132**: Mathematical detection on the agent MUST remain the sole enforcement authority.
+- **AC-DET-186**: Cross-endpoint campaign correlation MUST compute a weighted campaign score per IOC using the strongest per-host confidence weight (`Definite=5`, `VeryHigh=4`, `High=3`, `Medium=2`, `Low=1`, `None=0`).
+- **AC-DET-187**: Campaign correlation MUST deduplicate duplicate host/IOC signals by retaining the strongest confidence per host and MUST ignore empty host or IOC identifiers.
+- **AC-DET-188**: Campaign severity MUST be tiered deterministically: `Advisory` for 3+ hosts, `Elevated` for 5+ hosts or weighted score >= 18, and `Outbreak` for 8+ hosts or weighted score >= 30.
+- **AC-DET-189**: Campaign incidents MUST remain advisory-only and emit deterministic ordering (severity desc, weighted score desc, IOC asc) with lexicographically sorted host lists.
 
 ### Rule Hot-Reload (Section 15)
 
@@ -321,6 +325,9 @@ Derived from `docs/eguard-agent-design.md`. These acceptance criteria define the
 - **AC-RSP-121**: On kernel < 5.7 with HIGH+ confidence, pipeline MUST execute: (1) capture_script, (2) kill(pid, SIGKILL), (3) kill_process_tree(ppid), (4) quarantine_file(exe_path).
 - **AC-RSP-122**: After response actions, Alert + ResponseReport MUST be sent to server.
 - **AC-RSP-123**: Detection rule evaluation on post-exec path MUST complete in < 50 ms.
+- **AC-RSP-124**: Optional confidence-banded auto-isolation MUST only consider `Definite` and `VeryHigh` events and MUST remain disabled by default.
+- **AC-RSP-125**: Auto-isolation MUST trigger only after `min_incidents_in_window` qualifying events within `window_secs` and MUST enforce `max_isolations_per_hour` blast-radius limits.
+- **AC-RSP-126**: Auto-isolation decisions MUST emit explicit response reports with `action_type="auto_isolate"` and must update host isolation state deterministically.
 
 ---
 
@@ -1122,6 +1129,9 @@ Derived from `docs/eguard-agent-design.md`. These acceptance criteria define the
 - **AC-VER-049**: Bundle pipeline MUST generate and publish ATT&CK critical burn-down scoreboard artifacts (`attack-burndown-scoreboard.json` and `attack-burndown-scoreboard.md`) for every bundle build.
 - **AC-VER-050**: Bundle release notes MUST include critical ATT&CK floor status and burn-down scoreboard deltas (`delta_uncovered`, newly covered, newly uncovered).
 - **AC-VER-051**: Bundle pipeline MUST consume previous release scoreboard baseline when available and report trend values; absence of baseline MUST be explicitly handled without crashing the pipeline.
+- **AC-VER-052**: Verification suite MUST run a bundle-signature contract harness that builds a minimal processed bundle, signs it with Ed25519, verifies the signature, and emits `artifacts/bundle-signature-contract/metrics.json`.
+- **AC-VER-053**: Bundle-signature contract harness MUST reject a tampered archive when verified against the original detached signature.
+- **AC-VER-054**: Verification artifacts MUST include bundle signature contract metrics (`signature_verified`, `tamper_rejected`) and measured signature/database totals from `bundle_coverage_gate.py`.
 
 ---
 

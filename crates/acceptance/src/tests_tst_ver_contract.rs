@@ -669,6 +669,46 @@ fn attack_critical_burndown_bundle_release_contracts_are_present() {
         "build-bundle workflow must enforce critical technique regression guard"
     );
     assert!(
+        workflow.contains("--max-owner-p0-uncovered-increase"),
+        "critical regression gate must enforce owner-level P0 threshold"
+    );
+    assert!(
+        workflow.contains("update_attack_critical_regression_history.py"),
+        "build-bundle workflow must update critical regression history"
+    );
+    assert!(
+        workflow.contains("attack_critical_owner_streak_gate.py"),
+        "build-bundle workflow must enforce owner-level critical regression streak gate"
+    );
+    assert!(
+        workflow.contains("Verify agent can ingest generated bundle output"),
+        "build-bundle workflow must verify generated bundle can be ingested by agent runtime"
+    );
+    assert!(
+        workflow.contains("load_bundle_rules_reads_ci_generated_signed_bundle"),
+        "build-bundle workflow must run agent runtime ingestion test against generated bundle"
+    );
+    assert!(
+        workflow.contains("load_bundle_rules_rejects_tampered_ci_generated_signed_bundle"),
+        "build-bundle workflow must run tampered bundle rejection test against generated bundle"
+    );
+    assert!(
+        workflow.contains("run_agent_bundle_ingestion_contract_ci.sh"),
+        "build-bundle workflow must use shared bundle ingestion contract harness"
+    );
+    assert!(
+        workflow.contains("EGUARD_CI_BUNDLE_PATH"),
+        "build-bundle workflow must wire generated bundle path into agent ingestion test"
+    );
+    assert!(
+        workflow.contains("EGUARD_CI_BUNDLE_PUBHEX"),
+        "build-bundle workflow must wire generated bundle public key into agent ingestion test"
+    );
+    assert!(
+        workflow.contains("--max-consecutive-owner-regression"),
+        "owner-level streak gate must enforce max-consecutive owner regression threshold"
+    );
+    assert!(
         workflow.contains("attack_burndown_scoreboard.py"),
         "build-bundle workflow must generate ATT&CK burn-down scoreboard"
     );
@@ -693,6 +733,18 @@ fn attack_critical_burndown_bundle_release_contracts_are_present() {
         "critical ATT&CK regression artifact must be published"
     );
     assert!(
+        workflow.contains("bundle/attack-critical-regression-history.ndjson"),
+        "critical ATT&CK regression history artifact must be published"
+    );
+    assert!(
+        workflow.contains("bundle/attack-critical-regression-history-summary.json"),
+        "critical ATT&CK regression history summary artifact must be published"
+    );
+    assert!(
+        workflow.contains("bundle/attack-critical-owner-streak-gate.json"),
+        "critical ATT&CK owner streak gate artifact must be published"
+    );
+    assert!(
         workflow.contains("bundle/attack-burndown-scoreboard.md"),
         "burn-down scoreboard Markdown artifact must be published"
     );
@@ -703,6 +755,18 @@ fn attack_critical_burndown_bundle_release_contracts_are_present() {
     assert!(
         workflow.contains("## Critical ATT&CK Regression Guard"),
         "release notes must include critical ATT&CK regression guard status"
+    );
+    assert!(
+        workflow.contains("Owner P0 regressions"),
+        "release notes must include owner-level P0 regression signal"
+    );
+    assert!(
+        workflow.contains("## Critical ATT&CK Regression History"),
+        "release notes must include critical ATT&CK regression history status"
+    );
+    assert!(
+        workflow.contains("## Critical ATT&CK Owner Streak Guard"),
+        "release notes must include critical ATT&CK owner streak guard status"
     );
     assert!(
         workflow.contains("## ATT&CK Critical Burn-down Scoreboard"),
@@ -719,7 +783,7 @@ fn attack_critical_burndown_bundle_release_contracts_are_present() {
 }
 
 #[test]
-// AC-VER-014 AC-VER-015 AC-VER-016 AC-VER-017 AC-VER-018 AC-VER-019 AC-VER-020 AC-VER-021 AC-VER-022 AC-VER-023 AC-VER-024 AC-VER-025 AC-VER-026 AC-VER-027 AC-VER-028 AC-VER-029 AC-VER-030 AC-VER-044 AC-VER-045 AC-VER-046 AC-VER-047
+// AC-VER-014 AC-VER-015 AC-VER-016 AC-VER-017 AC-VER-018 AC-VER-019 AC-VER-020 AC-VER-021 AC-VER-022 AC-VER-023 AC-VER-024 AC-VER-025 AC-VER-026 AC-VER-027 AC-VER-028 AC-VER-029 AC-VER-030 AC-VER-044 AC-VER-045 AC-VER-046 AC-VER-047 AC-VER-052 AC-VER-053 AC-VER-054
 fn verification_coverage_and_security_pipeline_contracts_are_present() {
     let root = repo_root();
     let mut files = collect_rs_files(&root.join("crates"));
@@ -755,6 +819,12 @@ fn verification_coverage_and_security_pipeline_contracts_are_present() {
     assert!(verify_workflow_lines
         .iter()
         .any(|line| line.contains("./scripts/run_verification_suite_ci.sh")));
+
+    let verify_script = read("scripts/run_verification_suite_ci.sh");
+    assert!(
+        verify_script.contains("run_agent_bundle_ingestion_contract_ci.sh"),
+        "verification suite must run shared bundle-agent ingestion contract harness"
+    );
 
     let _guard = script_lock().lock().unwrap_or_else(|e| e.into_inner());
     let sandbox = temp_dir("eguard-verification-suite-test");
@@ -821,6 +891,22 @@ exit 0
     ));
     assert!(has_line(
         &log_lines,
+        "python threat-intel/processing/build_bundle.py --sigma <mock> --yara <mock> --ioc <mock> --cve <mock> --output <mock> --version ci.mock"
+    ));
+    assert!(has_line(
+        &log_lines,
+        "python threat-intel/processing/bundle_coverage_gate.py --manifest <mock> --output <mock>"
+    ));
+    assert!(has_line(
+        &log_lines,
+        "python threat-intel/processing/ed25519_sign.py --input <mock> --output-sig <mock>"
+    ));
+    assert!(has_line(
+        &log_lines,
+        "python threat-intel/processing/ed25519_verify.py --input <mock> --signature <mock>"
+    ));
+    assert!(has_line(
+        &log_lines,
         "checksec --file target/release/agent-core"
     ));
     assert!(has_line(
@@ -835,6 +921,24 @@ exit 0
         &log_lines,
         "cargo test -p platform-linux ebpf::tests::parses_structured_lsm_block_payload -- --exact"
     ));
+    assert!(has_line(
+        &log_lines,
+        "cargo test -p agent-core lifecycle::tests::load_bundle_rules_reads_ci_generated_signed_bundle -- --exact"
+    ));
+    assert!(has_line(
+        &log_lines,
+        "cargo test -p agent-core lifecycle::tests::load_bundle_rules_rejects_tampered_ci_generated_signed_bundle -- --exact"
+    ));
+    assert!(has_line(
+        &log_lines,
+        "cargo test -p agent-core lifecycle::tests::reload_detection_state_from_bundle_populates_ioc_layers_on_all_shards -- --exact"
+    ));
+
+    let bundle_signature_metrics = read("artifacts/bundle-signature-contract/metrics.json");
+    assert!(bundle_signature_metrics.contains("\"suite\": \"bundle_signature_contract\""));
+    assert!(bundle_signature_metrics.contains("\"signature_verified\": true"));
+    assert!(bundle_signature_metrics.contains("\"tamper_rejected\": true"));
+
     let _ = std::fs::remove_dir_all(sandbox);
 
     let matrix = read("tests/verification-matrix.md");

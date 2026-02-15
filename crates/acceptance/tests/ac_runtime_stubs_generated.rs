@@ -1527,6 +1527,26 @@ fn ac_det_185_runtime_validation_stub() {
 }
 
 #[test]
+fn ac_det_186_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-186", "Cross-endpoint campaign correlation MUST compute a weighted campaign score per IOC using the strongest per-host confidence weight (`Definite=5`, `VeryHigh=4`, `High=3`, `Medium=2`, `Low=1`, `None=0`).");
+}
+
+#[test]
+fn ac_det_187_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-187", "Campaign correlation MUST deduplicate duplicate host/IOC signals by retaining the strongest confidence per host and MUST ignore empty host or IOC identifiers.");
+}
+
+#[test]
+fn ac_det_188_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-188", "Campaign severity MUST be tiered deterministically: `Advisory` for 3+ hosts, `Elevated` for 5+ hosts or weighted score >= 18, and `Outbreak` for 8+ hosts or weighted score >= 30.");
+}
+
+#[test]
+fn ac_det_189_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-189", "Campaign incidents MUST remain advisory-only and emit deterministic ordering (severity desc, weighted score desc, IOC asc) with lexicographically sorted host lists.");
+}
+
+#[test]
 fn ac_ebp_001_runtime_validation_stub() {
     assert_runtime_validation_backed_by_executable_suite("AC-EBP-001", "Agent MUST load exactly 5 eBPF programs: `process_exec.zig`, `file_open.zig`, `tcp_connect.zig`, `dns_query.zig`, `module_load.zig`. Compiled by Zig to BPF ELF, embedded via `include_bytes!()`, loaded via `libbpf-rs`.");
 }
@@ -3172,6 +3192,21 @@ fn ac_rsp_123_runtime_validation_stub() {
 }
 
 #[test]
+fn ac_rsp_124_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-124", "Optional confidence-banded auto-isolation MUST only consider `Definite` and `VeryHigh` events and MUST remain disabled by default.");
+}
+
+#[test]
+fn ac_rsp_125_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-125", "Auto-isolation MUST trigger only after `min_incidents_in_window` qualifying events within `window_secs` and MUST enforce `max_isolations_per_hour` blast-radius limits.");
+}
+
+#[test]
+fn ac_rsp_126_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-126", "Auto-isolation decisions MUST emit explicit response reports with `action_type=\"auto_isolate\"` and must update host isolation state deterministically.");
+}
+
+#[test]
 fn ac_tst_001_runtime_validation_stub() {
     assert_runtime_validation_backed_by_executable_suite("AC-TST-001", "Docker Compose at `tests/docker-compose.test.yml` with 3 services: `eguard-server`, `agent-test`, `malware-simulator`.");
 }
@@ -3609,4 +3644,19 @@ fn ac_ver_050_runtime_validation_stub() {
 #[test]
 fn ac_ver_051_runtime_validation_stub() {
     assert_runtime_validation_backed_by_executable_suite("AC-VER-051", "Bundle pipeline MUST consume previous release scoreboard baseline when available and report trend values; absence of baseline MUST be explicitly handled without crashing the pipeline.");
+}
+
+#[test]
+fn ac_ver_052_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-052", "Verification suite MUST run a bundle-signature contract harness that builds a minimal processed bundle, signs it with Ed25519, verifies the signature, and emits `artifacts/bundle-signature-contract/metrics.json`.");
+}
+
+#[test]
+fn ac_ver_053_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-053", "Bundle-signature contract harness MUST reject a tampered archive when verified against the original detached signature.");
+}
+
+#[test]
+fn ac_ver_054_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-054", "Verification artifacts MUST include bundle signature contract metrics (`signature_verified`, `tamper_rejected`) and measured signature/database totals from `bundle_coverage_gate.py`.");
 }

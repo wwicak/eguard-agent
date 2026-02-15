@@ -177,3 +177,139 @@ fn scan_update_and_uninstall_commands_update_state() {
     assert_eq!(uninstall.outcome, CommandOutcome::Applied);
     assert!(state.uninstall_requested);
 }
+
+#[test]
+// AC-RSP-124 AC-RSP-126
+fn auto_isolation_is_disabled_by_default() {
+    let cfg = ResponseConfig::default();
+    let mut state = AutoIsolationState::default();
+
+    assert!(!cfg.auto_isolation.enabled);
+    assert!(!evaluate_auto_isolation(
+        Confidence::Definite,
+        1_700_000_000,
+        &cfg,
+        &mut state,
+    ));
+}
+
+#[test]
+// AC-RSP-124 AC-RSP-125
+fn auto_isolation_triggers_after_window_threshold_and_respects_hourly_cap() {
+    let mut cfg = ResponseConfig {
+        autonomous_response: true,
+        ..ResponseConfig::default()
+    };
+    cfg.auto_isolation.enabled = true;
+    cfg.auto_isolation.min_incidents_in_window = 3;
+    cfg.auto_isolation.window_secs = 60;
+    cfg.auto_isolation.max_isolations_per_hour = 1;
+
+    let mut state = AutoIsolationState::default();
+
+    assert!(!evaluate_auto_isolation(
+        Confidence::VeryHigh,
+        1_700_000_000,
+        &cfg,
+        &mut state,
+    ));
+    assert!(!evaluate_auto_isolation(
+        Confidence::Definite,
+        1_700_000_020,
+        &cfg,
+        &mut state,
+    ));
+    assert!(evaluate_auto_isolation(
+        Confidence::VeryHigh,
+        1_700_000_040,
+        &cfg,
+        &mut state,
+    ));
+
+    // Hourly cap reached.
+    assert!(!evaluate_auto_isolation(
+        Confidence::Definite,
+        1_700_000_050,
+        &cfg,
+        &mut state,
+    ));
+    assert!(!evaluate_auto_isolation(
+        Confidence::VeryHigh,
+        1_700_000_060,
+        &cfg,
+        &mut state,
+    ));
+    assert!(!evaluate_auto_isolation(
+        Confidence::Definite,
+        1_700_000_070,
+        &cfg,
+        &mut state,
+    ));
+
+    // After one hour the cap window expires and a new threshold burst can isolate again.
+    assert!(!evaluate_auto_isolation(
+        Confidence::VeryHigh,
+        1_700_003_700,
+        &cfg,
+        &mut state,
+    ));
+    assert!(!evaluate_auto_isolation(
+        Confidence::Definite,
+        1_700_003_710,
+        &cfg,
+        &mut state,
+    ));
+    assert!(evaluate_auto_isolation(
+        Confidence::VeryHigh,
+        1_700_003_720,
+        &cfg,
+        &mut state,
+    ));
+}
+
+#[test]
+// AC-RSP-124
+fn auto_isolation_ignores_high_and_lower_confidence_events() {
+    let mut cfg = ResponseConfig {
+        autonomous_response: true,
+        ..ResponseConfig::default()
+    };
+    cfg.auto_isolation.enabled = true;
+    cfg.auto_isolation.min_incidents_in_window = 2;
+    cfg.auto_isolation.window_secs = 120;
+    cfg.auto_isolation.max_isolations_per_hour = 3;
+
+    let mut state = AutoIsolationState::default();
+    assert!(!evaluate_auto_isolation(
+        Confidence::High,
+        1_700_000_000,
+        &cfg,
+        &mut state,
+    ));
+    assert!(!evaluate_auto_isolation(
+        Confidence::Medium,
+        1_700_000_020,
+        &cfg,
+        &mut state,
+    ));
+    assert!(!evaluate_auto_isolation(
+        Confidence::Low,
+        1_700_000_030,
+        &cfg,
+        &mut state,
+    ));
+
+    // Two qualifying events still trigger as expected.
+    assert!(!evaluate_auto_isolation(
+        Confidence::VeryHigh,
+        1_700_000_050,
+        &cfg,
+        &mut state,
+    ));
+    assert!(evaluate_auto_isolation(
+        Confidence::Definite,
+        1_700_000_060,
+        &cfg,
+        &mut state,
+    ));
+}

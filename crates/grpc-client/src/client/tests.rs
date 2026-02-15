@@ -1174,17 +1174,18 @@ async fn enroll_grpc_validates_token_issues_cert_and_tracks_endpoint_agent_recor
         .await
         .expect("enroll must succeed for valid token");
 
-    let guard = state.lock().expect("state lock");
-    let token = guard
-        .token_table
-        .get("tok-valid")
-        .expect("existing token record");
-    assert_eq!(token.used, 1);
-    assert_eq!(guard.endpoint_agents.len(), 1);
-    assert_eq!(guard.endpoint_agents[0], "host-a");
-    assert_eq!(guard.last_enrollment_token.as_deref(), Some("tok-valid"));
-    assert!(guard.last_csr_len.unwrap_or_default() > 0);
-    drop(guard);
+    {
+        let guard = state.lock().expect("state lock");
+        let token = guard
+            .token_table
+            .get("tok-valid")
+            .expect("existing token record");
+        assert_eq!(token.used, 1);
+        assert_eq!(guard.endpoint_agents.len(), 1);
+        assert_eq!(guard.endpoint_agents[0], "host-a");
+        assert_eq!(guard.last_enrollment_token.as_deref(), Some("tok-valid"));
+        assert!(guard.last_csr_len.unwrap_or_default() > 0);
+    }
 
     server.shutdown().await;
 }
@@ -1280,25 +1281,26 @@ async fn enroll_grpc_rejects_expired_or_exhausted_tokens() {
         .to_string()
         .contains("operation enroll_grpc failed"));
 
-    let guard = state.lock().expect("state lock");
-    assert!(guard.endpoint_agents.is_empty());
-    assert_eq!(
-        guard
-            .token_table
-            .get("tok-expired")
-            .expect("expired token")
-            .used,
-        0
-    );
-    assert_eq!(
-        guard
-            .token_table
-            .get("tok-maxed")
-            .expect("maxed token")
-            .used,
-        1
-    );
-    drop(guard);
+    {
+        let guard = state.lock().expect("state lock");
+        assert!(guard.endpoint_agents.is_empty());
+        assert_eq!(
+            guard
+                .token_table
+                .get("tok-expired")
+                .expect("expired token")
+                .used,
+            0
+        );
+        assert_eq!(
+            guard
+                .token_table
+                .get("tok-maxed")
+                .expect("maxed token")
+                .used,
+            1
+        );
+    }
 
     server.shutdown().await;
 }
@@ -1332,13 +1334,14 @@ async fn enroll_grpc_allows_unlimited_token_when_max_uses_zero() {
             .expect("unlimited token should not be usage-capped");
     }
 
-    let guard = state.lock().expect("state lock");
-    let token = guard
-        .token_table
-        .get("tok-unlimited")
-        .expect("unlimited token");
-    assert_eq!(token.used, 3);
-    drop(guard);
+    {
+        let guard = state.lock().expect("state lock");
+        let token = guard
+            .token_table
+            .get("tok-unlimited")
+            .expect("unlimited token");
+        assert_eq!(token.used, 3);
+    }
 
     server.shutdown().await;
 }
@@ -1409,16 +1412,17 @@ async fn send_response_grpc_reports_payload_to_server() {
         .await
         .expect("send_response should succeed");
 
-    let guard = state.lock().expect("state lock");
-    assert_eq!(guard.reports.len(), 1);
-    let report = &guard.reports[0];
-    assert_eq!(report.agent_id, "agent-1");
-    assert_eq!(report.action, pb::ResponseAction::KillTree as i32);
-    assert_eq!(report.confidence, pb::ResponseConfidence::VeryHigh as i32);
-    assert!(!report.success);
-    assert_eq!(report.error_message, "access denied");
-    assert!(report.created_at_unix > 0);
-    drop(guard);
+    {
+        let guard = state.lock().expect("state lock");
+        assert_eq!(guard.reports.len(), 1);
+        let report = &guard.reports[0];
+        assert_eq!(report.agent_id, "agent-1");
+        assert_eq!(report.action, pb::ResponseAction::KillTree as i32);
+        assert_eq!(report.confidence, pb::ResponseConfidence::VeryHigh as i32);
+        assert!(!report.success);
+        assert_eq!(report.error_message, "access denied");
+        assert!(report.created_at_unix > 0);
+    }
 
     server.shutdown().await;
 }
@@ -1441,19 +1445,20 @@ async fn send_events_grpc_streams_batch_to_server_with_expected_fields() {
         .await
         .expect("send_events should succeed");
 
-    let guard = state.lock().expect("state lock");
-    assert_eq!(guard.batches.len(), 1);
-    let batch = &guard.batches[0];
-    assert_eq!(batch.agent_id, "agent-telemetry");
-    assert_eq!(batch.events.len(), 1);
-    assert!(!batch.compressed);
-    assert!(batch.events_compressed.is_empty());
-    let event = &batch.events[0];
-    assert_eq!(event.agent_id, "agent-telemetry");
-    assert_eq!(event.event_type, pb::EventType::Alert as i32);
-    assert_eq!(event.payload_json, "{\"reason\":\"unit-test\"}");
-    assert_eq!(event.created_at_unix, 4242);
-    drop(guard);
+    {
+        let guard = state.lock().expect("state lock");
+        assert_eq!(guard.batches.len(), 1);
+        let batch = &guard.batches[0];
+        assert_eq!(batch.agent_id, "agent-telemetry");
+        assert_eq!(batch.events.len(), 1);
+        assert!(!batch.compressed);
+        assert!(batch.events_compressed.is_empty());
+        let event = &batch.events[0];
+        assert_eq!(event.agent_id, "agent-telemetry");
+        assert_eq!(event.event_type, pb::EventType::Alert as i32);
+        assert_eq!(event.payload_json, "{\"reason\":\"unit-test\"}");
+        assert_eq!(event.created_at_unix, 4242);
+    }
 
     server.shutdown().await;
 }
@@ -1471,13 +1476,14 @@ async fn send_heartbeat_grpc_captures_agent_and_compliance_and_config_version() 
         .await
         .expect("send_heartbeat should succeed");
 
-    let guard = state.lock().expect("state lock");
-    assert_eq!(guard.heartbeats.len(), 1);
-    let heartbeat = &guard.heartbeats[0];
-    assert_eq!(heartbeat.agent_id, "agent-heartbeat-1");
-    assert_eq!(heartbeat.compliance_status, "compliant");
-    assert_eq!(heartbeat.config_version, "cfg-v7");
-    drop(guard);
+    {
+        let guard = state.lock().expect("state lock");
+        assert_eq!(guard.heartbeats.len(), 1);
+        let heartbeat = &guard.heartbeats[0];
+        assert_eq!(heartbeat.agent_id, "agent-heartbeat-1");
+        assert_eq!(heartbeat.compliance_status, "compliant");
+        assert_eq!(heartbeat.config_version, "cfg-v7");
+    }
 
     server.shutdown().await;
 }
@@ -1503,17 +1509,18 @@ async fn send_compliance_grpc_captures_report_fields() {
         .await
         .expect("send_compliance should succeed");
 
-    let guard = state.lock().expect("state lock");
-    assert_eq!(guard.reports.len(), 1);
-    let report = &guard.reports[0];
-    assert_eq!(report.agent_id, "agent-comp-1");
-    assert_eq!(report.policy_id, "policy-xyz");
-    assert_eq!(report.check_type, "firewall_enabled");
-    assert_eq!(report.status, "fail");
-    assert_eq!(report.detail, "firewall disabled");
-    assert_eq!(report.expected_value, "true");
-    assert_eq!(report.actual_value, "false");
-    drop(guard);
+    {
+        let guard = state.lock().expect("state lock");
+        assert_eq!(guard.reports.len(), 1);
+        let report = &guard.reports[0];
+        assert_eq!(report.agent_id, "agent-comp-1");
+        assert_eq!(report.policy_id, "policy-xyz");
+        assert_eq!(report.check_type, "firewall_enabled");
+        assert_eq!(report.status, "fail");
+        assert_eq!(report.detail, "firewall disabled");
+        assert_eq!(report.expected_value, "true");
+        assert_eq!(report.actual_value, "false");
+    }
 
     server.shutdown().await;
 }
@@ -1561,20 +1568,21 @@ async fn fetch_commands_grpc_uses_poll_commands_fallback_path() {
     assert_eq!(commands[1].command_type, "update_rules");
     assert_eq!(commands[1].payload_json, "{\"target\":\"v2\"}");
 
-    let guard = state.lock().expect("state lock");
-    assert_eq!(
-        guard.channel_requests.len(),
-        client.retry_policy().max_attempts as usize
-    );
-    for channel_req in &guard.channel_requests {
-        assert_eq!(channel_req.agent_id, "agent-cmd-1");
-        assert_eq!(channel_req.completed_command_ids, vec!["cmd-done-1"]);
+    {
+        let guard = state.lock().expect("state lock");
+        assert_eq!(
+            guard.channel_requests.len(),
+            client.retry_policy().max_attempts as usize
+        );
+        for channel_req in &guard.channel_requests {
+            assert_eq!(channel_req.agent_id, "agent-cmd-1");
+            assert_eq!(channel_req.completed_command_ids, vec!["cmd-done-1"]);
+        }
+        assert_eq!(guard.poll_requests.len(), 1);
+        let poll_req = &guard.poll_requests[0];
+        assert_eq!(poll_req.agent_id, "agent-cmd-1");
+        assert_eq!(poll_req.limit, 2);
     }
-    assert_eq!(guard.poll_requests.len(), 1);
-    let poll_req = &guard.poll_requests[0];
-    assert_eq!(poll_req.agent_id, "agent-cmd-1");
-    assert_eq!(poll_req.limit, 2);
-    drop(guard);
 
     server.shutdown().await;
 }
@@ -1626,16 +1634,17 @@ async fn stream_command_channel_grpc_streams_commands_from_command_channel() {
     assert_eq!(commands[1].command_type, "uninstall");
     assert_eq!(commands[1].payload_json, "");
 
-    let guard = state.lock().expect("state lock");
-    assert_eq!(guard.channel_requests.len(), 1);
-    let req = &guard.channel_requests[0];
-    assert_eq!(req.agent_id, "agent-stream-1");
-    assert_eq!(
-        req.completed_command_ids,
-        vec!["cmd-completed-1", "cmd-completed-2"]
-    );
-    assert!(guard.poll_requests.is_empty());
-    drop(guard);
+    {
+        let guard = state.lock().expect("state lock");
+        assert_eq!(guard.channel_requests.len(), 1);
+        let req = &guard.channel_requests[0];
+        assert_eq!(req.agent_id, "agent-stream-1");
+        assert_eq!(
+            req.completed_command_ids,
+            vec!["cmd-completed-1", "cmd-completed-2"]
+        );
+        assert!(guard.poll_requests.is_empty());
+    }
 
     server.shutdown().await;
 }
@@ -1653,12 +1662,13 @@ async fn ack_command_grpc_captures_command_id_and_status() {
         .await
         .expect("ack_command should succeed");
 
-    let guard = state.lock().expect("state lock");
-    assert_eq!(guard.ack_requests.len(), 1);
-    let ack = &guard.ack_requests[0];
-    assert_eq!(ack.command_id, "cmd-ack-77");
-    assert_eq!(ack.status, "completed");
-    drop(guard);
+    {
+        let guard = state.lock().expect("state lock");
+        assert_eq!(guard.ack_requests.len(), 1);
+        let ack = &guard.ack_requests[0];
+        assert_eq!(ack.command_id, "cmd-ack-77");
+        assert_eq!(ack.status, "completed");
+    }
 
     server.shutdown().await;
 }
@@ -1716,10 +1726,11 @@ async fn fetch_latest_threat_intel_grpc_returns_some_with_expected_fields() {
         "7f8e2ec8d80f12d8a9ef89f0f14bd06f26f8b4fcaef48ec6f7ccf4ec3d88f571"
     );
 
-    let guard = state.lock().expect("state lock");
-    assert_eq!(guard.threat_intel_requests.len(), 1);
-    assert_eq!(guard.threat_intel_requests[0].agent_id, "");
-    drop(guard);
+    {
+        let guard = state.lock().expect("state lock");
+        assert_eq!(guard.threat_intel_requests.len(), 1);
+        assert_eq!(guard.threat_intel_requests[0].agent_id, "");
+    }
 
     server.shutdown().await;
 }

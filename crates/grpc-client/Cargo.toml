@@ -14,12 +14,13 @@ rusqlite.workspace = true
 reqwest.workspace = true
 serde_json.workspace = true
 tonic.workspace = true
+tonic-prost.workspace = true
 prost.workspace = true
 sha2.workspace = true
 zstd = "0.13"
 
 [build-dependencies]
-tonic-build.workspace = true
+tonic-prost-build.workspace = true
 protoc-bin-vendored.workspace = true
 
 [dev-dependencies]

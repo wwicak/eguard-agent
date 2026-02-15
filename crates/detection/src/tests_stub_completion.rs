@@ -241,3 +241,96 @@ fn cross_agent_correlation_does_not_trigger_below_three_hosts() {
     let incidents = correlate_cross_agent_iocs(&signals);
     assert!(incidents.is_empty());
 }
+
+#[test]
+// AC-DET-186 AC-DET-187 AC-DET-189
+fn campaign_correlation_deduplicates_host_signals_and_ignores_empty_fields() {
+    let signals = vec![
+        CampaignSignal {
+            host_id: "h1".to_string(),
+            ioc: "deadbeef".to_string(),
+            confidence: Confidence::High,
+        },
+        CampaignSignal {
+            host_id: "h1".to_string(),
+            ioc: "deadbeef".to_string(),
+            confidence: Confidence::Definite,
+        },
+        CampaignSignal {
+            host_id: "h2".to_string(),
+            ioc: "deadbeef".to_string(),
+            confidence: Confidence::VeryHigh,
+        },
+        CampaignSignal {
+            host_id: "h3".to_string(),
+            ioc: "deadbeef".to_string(),
+            confidence: Confidence::Medium,
+        },
+        CampaignSignal {
+            host_id: "".to_string(),
+            ioc: "deadbeef".to_string(),
+            confidence: Confidence::Definite,
+        },
+        CampaignSignal {
+            host_id: "h9".to_string(),
+            ioc: " ".to_string(),
+            confidence: Confidence::Definite,
+        },
+    ];
+
+    let incidents = correlate_campaign_iocs(&signals);
+    assert_eq!(incidents.len(), 1);
+
+    let incident = &incidents[0];
+    assert_eq!(incident.ioc, "deadbeef");
+    assert_eq!(incident.host_count, 3);
+    assert_eq!(incident.hosts, vec!["h1", "h2", "h3"]);
+    assert_eq!(incident.weighted_score, 11);
+    assert_eq!(incident.severity, CampaignSeverity::Advisory);
+    assert!(incident.advisory_only);
+}
+
+#[test]
+// AC-DET-186 AC-DET-188 AC-DET-189
+fn campaign_correlation_assigns_elevated_and_outbreak_severity_tiers() {
+    let mut signals = Vec::new();
+
+    for host in 0..8 {
+        signals.push(CampaignSignal {
+            host_id: format!("ob-host-{host}"),
+            ioc: "ioc-outbreak".to_string(),
+            confidence: Confidence::Low,
+        });
+    }
+
+    for host in 0..5 {
+        signals.push(CampaignSignal {
+            host_id: format!("el-host-{host}"),
+            ioc: "ioc-elevated".to_string(),
+            confidence: Confidence::Medium,
+        });
+    }
+
+    for host in 0..3 {
+        signals.push(CampaignSignal {
+            host_id: format!("ad-host-{host}"),
+            ioc: "ioc-advisory".to_string(),
+            confidence: Confidence::High,
+        });
+    }
+
+    let incidents = correlate_campaign_iocs(&signals);
+    assert_eq!(incidents.len(), 3);
+
+    assert_eq!(incidents[0].ioc, "ioc-outbreak");
+    assert_eq!(incidents[0].severity, CampaignSeverity::Outbreak);
+    assert_eq!(incidents[0].host_count, 8);
+
+    assert_eq!(incidents[1].ioc, "ioc-elevated");
+    assert_eq!(incidents[1].severity, CampaignSeverity::Elevated);
+    assert_eq!(incidents[1].host_count, 5);
+
+    assert_eq!(incidents[2].ioc, "ioc-advisory");
+    assert_eq!(incidents[2].severity, CampaignSeverity::Advisory);
+    assert_eq!(incidents[2].host_count, 3);
+}

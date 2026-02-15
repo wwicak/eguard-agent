@@ -21,6 +21,10 @@ fn clear_env() {
         "EGUARD_AUTONOMOUS_RESPONSE",
         "EGUARD_RESPONSE_DRY_RUN",
         "EGUARD_RESPONSE_MAX_KILLS_PER_MINUTE",
+        "EGUARD_RESPONSE_AUTO_ISOLATION_ENABLED",
+        "EGUARD_RESPONSE_AUTO_ISOLATION_MIN_INCIDENTS",
+        "EGUARD_RESPONSE_AUTO_ISOLATION_WINDOW_SECS",
+        "EGUARD_RESPONSE_AUTO_ISOLATION_MAX_PER_HOUR",
         "EGUARD_BUFFER_BACKEND",
         "EGUARD_BUFFER_PATH",
         "EGUARD_BUFFER_CAP_MB",
@@ -55,7 +59,7 @@ fn file_config_is_loaded() {
     let mut f = std::fs::File::create(&path).expect("create file");
     writeln!(
             f,
-            "[agent]\nserver_addr=\"10.0.0.1:50051\"\nmode=\"active\"\n[transport]\nmode=\"grpc\"\n[response]\nautonomous_response=true\ndry_run=true\n[response.high]\nkill=true\nquarantine=false\ncapture_script=true\n[response.rate_limit]\nmax_kills_per_minute=21\n[storage]\nbackend=\"memory\"\ncap_mb=10"
+            "[agent]\nserver_addr=\"10.0.0.1:50051\"\nmode=\"active\"\n[transport]\nmode=\"grpc\"\n[response]\nautonomous_response=true\ndry_run=true\n[response.high]\nkill=true\nquarantine=false\ncapture_script=true\n[response.rate_limit]\nmax_kills_per_minute=21\n[response.auto_isolation]\nenabled=true\nmin_incidents_in_window=4\nwindow_secs=180\nmax_isolations_per_hour=6\n[storage]\nbackend=\"memory\"\ncap_mb=10"
         )
         .expect("write file");
 
@@ -70,6 +74,10 @@ fn file_config_is_loaded() {
     assert!(!cfg.response.high.quarantine);
     assert!(cfg.response.high.capture_script);
     assert_eq!(cfg.response.max_kills_per_minute, 21);
+    assert!(cfg.response.auto_isolation.enabled);
+    assert_eq!(cfg.response.auto_isolation.min_incidents_in_window, 4);
+    assert_eq!(cfg.response.auto_isolation.window_secs, 180);
+    assert_eq!(cfg.response.auto_isolation.max_isolations_per_hour, 6);
     assert_eq!(cfg.transport_mode, "grpc");
     assert_eq!(cfg.offline_buffer_backend, "memory");
     assert_eq!(cfg.offline_buffer_cap_bytes, 10 * 1024 * 1024);
@@ -171,11 +179,15 @@ fn env_overrides_file_config() {
     std::env::set_var("EGUARD_SERVER_ADDR", "10.9.9.9:50051");
     std::env::set_var("EGUARD_TRANSPORT_MODE", "http");
     std::env::set_var("EGUARD_AUTONOMOUS_RESPONSE", "true");
+    std::env::set_var("EGUARD_RESPONSE_AUTO_ISOLATION_ENABLED", "true");
+    std::env::set_var("EGUARD_RESPONSE_AUTO_ISOLATION_MIN_INCIDENTS", "5");
     let cfg = AgentConfig::load().expect("load config");
 
     assert_eq!(cfg.server_addr, "10.9.9.9:50051");
     assert_eq!(cfg.transport_mode, "http");
     assert!(cfg.response.autonomous_response);
+    assert!(cfg.response.auto_isolation.enabled);
+    assert_eq!(cfg.response.auto_isolation.min_incidents_in_window, 5);
 
     clear_env();
     let _ = std::fs::remove_file(path);

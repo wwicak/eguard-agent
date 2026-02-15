@@ -20,6 +20,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -414,6 +417,8 @@ jobs:
             /tmp/previous-attack-coverage.json \
             /tmp/attack-critical-technique-gate.json \
             /tmp/previous-attack-critical-technique-gate.json \
+            /tmp/attack-critical-regression-history.ndjson \
+            /tmp/previous-attack-critical-regression-history.ndjson \
             /tmp/attack-burndown-scoreboard.json \
             /tmp/previous-attack-burndown-scoreboard.json
           LATEST_TAG="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=1" --jq '.[0].tag_name // ""' 2>/dev/null || true)"
@@ -457,6 +462,15 @@ jobs:
             fi
           else
             echo "No previous ATT&CK burn-down scoreboard asset found on ${LATEST_TAG}"
+          fi
+
+          if gh release download "${LATEST_TAG}" --repo "${GITHUB_REPOSITORY}" --pattern "attack-critical-regression-history.ndjson" --dir /tmp 2>/dev/null; then
+            if [ -f /tmp/attack-critical-regression-history.ndjson ]; then
+              mv /tmp/attack-critical-regression-history.ndjson /tmp/previous-attack-critical-regression-history.ndjson
+              echo "Downloaded previous critical ATT&CK regression history"
+            fi
+          else
+            echo "No previous critical ATT&CK regression history asset found on ${LATEST_TAG}"
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -566,6 +580,8 @@ jobs:
           EGUARD_CRITICAL_MAX_COVERED_RATIO_DROP: "0.08"
           EGUARD_CRITICAL_MAX_MISSING_COUNT_INCREASE: "2"
           EGUARD_CRITICAL_MAX_MISSING_REQUIRED_INCREASE: "0"
+          EGUARD_CRITICAL_MAX_P0_UNCOVERED_INCREASE: "0"
+          EGUARD_CRITICAL_MAX_OWNER_P0_UNCOVERED_INCREASE: "1"
         run: |
           python threat-intel/processing/attack_critical_regression_gate.py \
             --current bundle/attack-critical-technique-gate.json \
@@ -574,7 +590,33 @@ jobs:
             --max-covered-count-drop "${EGUARD_CRITICAL_MAX_COVERED_COUNT_DROP}" \
             --max-covered-ratio-drop "${EGUARD_CRITICAL_MAX_COVERED_RATIO_DROP}" \
             --max-missing-count-increase "${EGUARD_CRITICAL_MAX_MISSING_COUNT_INCREASE}" \
-            --max-missing-required-increase "${EGUARD_CRITICAL_MAX_MISSING_REQUIRED_INCREASE}"
+            --max-missing-required-increase "${EGUARD_CRITICAL_MAX_MISSING_REQUIRED_INCREASE}" \
+            --max-p0-uncovered-increase "${EGUARD_CRITICAL_MAX_P0_UNCOVERED_INCREASE}" \
+            --max-owner-p0-uncovered-increase "${EGUARD_CRITICAL_MAX_OWNER_P0_UNCOVERED_INCREASE}"
+
+      - name: Update critical ATT&CK regression history
+        env:
+          EGUARD_CRITICAL_HISTORY_MAX_ENTRIES: "180"
+        run: |
+          python threat-intel/processing/update_attack_critical_regression_history.py \
+            --current-report bundle/attack-critical-regression.json \
+            --previous-history /tmp/previous-attack-critical-regression-history.ndjson \
+            --output-history bundle/attack-critical-regression-history.ndjson \
+            --output-summary bundle/attack-critical-regression-history-summary.json \
+            --max-entries "${EGUARD_CRITICAL_HISTORY_MAX_ENTRIES}"
+
+      - name: Enforce critical ATT&CK owner streak gate
+        env:
+          EGUARD_CRITICAL_OWNER_STREAK_WINDOW_SIZE: "10"
+          EGUARD_CRITICAL_OWNER_STREAK_MIN_HISTORY: "3"
+          EGUARD_CRITICAL_MAX_CONSEC_OWNER_REGRESSION: "2"
+        run: |
+          python threat-intel/processing/attack_critical_owner_streak_gate.py \
+            --history bundle/attack-critical-regression-history.ndjson \
+            --output bundle/attack-critical-owner-streak-gate.json \
+            --window-size "${EGUARD_CRITICAL_OWNER_STREAK_WINDOW_SIZE}" \
+            --min-history-length "${EGUARD_CRITICAL_OWNER_STREAK_MIN_HISTORY}" \
+            --max-consecutive-owner-regression "${EGUARD_CRITICAL_MAX_CONSEC_OWNER_REGRESSION}"
 
       - name: Generate ATT&CK burn-down scoreboard
         run: |
@@ -603,6 +645,9 @@ jobs:
             bundle/attack-gap-burndown.json
             bundle/attack-critical-technique-gate.json
             bundle/attack-critical-regression.json
+            bundle/attack-critical-regression-history.ndjson
+            bundle/attack-critical-regression-history-summary.json
+            bundle/attack-critical-owner-streak-gate.json
             bundle/attack-burndown-scoreboard.json
             bundle/attack-burndown-scoreboard.md
           retention-days: 14
@@ -636,6 +681,21 @@ jobs:
           echo "Bundle size: $(du -sh "${BUNDLE}" | cut -f1)"
         env:
           THREAT_INTEL_ED25519_PRIVATE_KEY_PEM: ${{ secrets.THREAT_INTEL_ED25519_PRIVATE_KEY_PEM }}
+
+      - name: Verify agent can ingest generated bundle output
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          BUNDLE="eguard-rules-${VERSION}.bundle.tar.zst"
+          BUNDLE_ABS="${GITHUB_WORKSPACE}/${BUNDLE}"
+          BUNDLE_PUBHEX="$(tr -d '\r\n' < "${BUNDLE}.pub.hex")"
+          EGUARD_CI_BUNDLE_PATH="${BUNDLE_ABS}" \
+          EGUARD_CI_BUNDLE_PUBHEX="${BUNDLE_PUBHEX}" \
+            bash scripts/run_agent_bundle_ingestion_contract_ci.sh \
+              --test-selector lifecycle::tests::load_bundle_rules_reads_ci_generated_signed_bundle
+          EGUARD_CI_BUNDLE_PATH="${BUNDLE_ABS}" \
+          EGUARD_CI_BUNDLE_PUBHEX="${BUNDLE_PUBHEX}" \
+            bash scripts/run_agent_bundle_ingestion_contract_ci.sh \
+              --test-selector lifecycle::tests::load_bundle_rules_rejects_tampered_ci_generated_signed_bundle
 
       - name: Create GitHub Release
         run: |
@@ -672,6 +732,14 @@ jobs:
               attack_critical_regression = json.load(open('bundle/attack-critical-regression.json'))
           except Exception:
               attack_critical_regression = {}
+          try:
+              attack_critical_history = json.load(open('bundle/attack-critical-regression-history-summary.json'))
+          except Exception:
+              attack_critical_history = {}
+          try:
+              attack_critical_owner_streak = json.load(open('bundle/attack-critical-owner-streak-gate.json'))
+          except Exception:
+              attack_critical_owner_streak = {}
           try:
               attack_burndown = json.load(open('bundle/attack-burndown-scoreboard.json'))
           except Exception:
@@ -793,6 +861,24 @@ jobs:
               regressions = attack_critical_regression.get('regressions', [])
               if not isinstance(regressions, list):
                   regressions = []
+              owner_p0_increase = deltas.get('owner_p0_increase_by_owner', {})
+              if not isinstance(owner_p0_increase, dict):
+                  owner_p0_increase = {}
+              def _as_int(value):
+                  try:
+                      return int(value)
+                  except Exception:
+                      try:
+                          return int(float(value))
+                      except Exception:
+                          return 0
+              owner_p0_preview_items = sorted(
+                  owner_p0_increase.items(),
+                  key=lambda item: (-_as_int(item[1]), str(item[0])),
+              )[:5]
+              owner_p0_preview = '; '.join(
+                  f'{owner}(+{increase})' for owner, increase in owner_p0_preview_items
+              ) if owner_p0_preview_items else 'none'
               lines.extend([
                   '',
                   '## Critical ATT&CK Regression Guard',
@@ -801,9 +887,64 @@ jobs:
                   f'- Covered ratio delta: {deltas.get(\"covered_ratio_delta\", \"n/a\")}',
                   f'- Missing count delta: {deltas.get(\"missing_count_delta\", \"n/a\")}',
                   f'- Missing required count delta: {deltas.get(\"missing_required_count_delta\", \"n/a\")}',
+                  f'- P0 uncovered count delta: {deltas.get(\"p0_uncovered_count_delta\", \"n/a\")}',
+                  f'- Owner P0 regressions: {deltas.get(\"owner_p0_regression_count\", \"n/a\")}',
+                  f'- Owner P0 increase preview (max 5): {owner_p0_preview}',
               ])
               if regressions:
                   lines.append(f'- Regressions: {"; ".join(regressions)}')
+
+          if attack_critical_history:
+              owner_totals = attack_critical_history.get('window_owner_p0_regression_totals', {})
+              if not isinstance(owner_totals, dict):
+                  owner_totals = {}
+              owner_totals_preview = sorted(
+                  owner_totals.items(),
+                  key=lambda item: (-_as_int(item[1]), str(item[0])),
+              )[:5]
+              owner_totals_line = '; '.join(
+                  f'{owner}({count})' for owner, count in owner_totals_preview
+              ) if owner_totals_preview else 'none'
+              lines.extend([
+                  '',
+                  '## Critical ATT&CK Regression History',
+                  f'- History points: {attack_critical_history.get(\"history_points\", \"n/a\")}',
+                  f'- Last-10 failures: {attack_critical_history.get(\"window_failures\", \"n/a\")}',
+                  f'- Last-10 passes: {attack_critical_history.get(\"window_passes\", \"n/a\")}',
+                  f'- Consecutive passes: {attack_critical_history.get(\"consecutive_passes\", \"n/a\")}',
+                  f'- Last-10 owner regression totals (max 5): {owner_totals_line}',
+              ])
+
+          if attack_critical_owner_streak:
+              violating = attack_critical_owner_streak.get('violating_owner_streaks', {})
+              if not isinstance(violating, dict):
+                  violating = {}
+              violating_preview = sorted(
+                  violating.items(),
+                  key=lambda item: (-_as_int(item[1]), str(item[0])),
+              )[:5]
+              violating_line = '; '.join(
+                  f'{owner}(streak={streak})' for owner, streak in violating_preview
+              ) if violating_preview else 'none'
+              current_regressing = attack_critical_owner_streak.get('current_regressing_owners', {})
+              if not isinstance(current_regressing, dict):
+                  current_regressing = {}
+              current_preview = sorted(
+                  current_regressing.items(),
+                  key=lambda item: (-_as_int(item[1]), str(item[0])),
+              )[:5]
+              current_line = '; '.join(
+                  f'{owner}(+{count})' for owner, count in current_preview
+              ) if current_preview else 'none'
+              lines.extend([
+                  '',
+                  '## Critical ATT&CK Owner Streak Guard',
+                  f'- Status: {attack_critical_owner_streak.get(\"status\", \"unknown\")}',
+                  f'- Evaluated points: {attack_critical_owner_streak.get(\"evaluated_points\", \"n/a\")}',
+                  f'- Violating owner streaks: {len(violating)}',
+                  f'- Violating preview (max 5): {violating_line}',
+                  f'- Current regressing owners (max 5): {current_line}',
+              ])
 
           if attack_burndown:
               trend = attack_burndown.get('trend', {})
@@ -857,6 +998,9 @@ jobs:
             "bundle/attack-gap-burndown.json" \
             "bundle/attack-critical-technique-gate.json" \
             "bundle/attack-critical-regression.json" \
+            "bundle/attack-critical-regression-history.ndjson" \
+            "bundle/attack-critical-regression-history-summary.json" \
+            "bundle/attack-critical-owner-streak-gate.json" \
             "bundle/attack-burndown-scoreboard.json" \
             "bundle/attack-burndown-scoreboard.md" \
             --title "Rule Bundle ${VERSION}" \

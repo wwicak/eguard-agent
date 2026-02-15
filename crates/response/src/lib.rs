@@ -44,10 +44,36 @@ pub struct ResponseConfig {
     pub autonomous_response: bool,
     pub dry_run: bool,
     pub max_kills_per_minute: usize,
+    pub auto_isolation: AutoIsolationPolicy,
     pub definite: ResponsePolicy,
     pub very_high: ResponsePolicy,
     pub high: ResponsePolicy,
     pub medium: ResponsePolicy,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoIsolationPolicy {
+    pub enabled: bool,
+    pub min_incidents_in_window: usize,
+    pub window_secs: u64,
+    pub max_isolations_per_hour: usize,
+}
+
+impl Default for AutoIsolationPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            min_incidents_in_window: 3,
+            window_secs: 300,
+            max_isolations_per_hour: 2,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AutoIsolationState {
+    incident_timestamps: VecDeque<i64>,
+    isolation_timestamps: VecDeque<i64>,
 }
 
 impl Default for ResponseConfig {
@@ -56,6 +82,7 @@ impl Default for ResponseConfig {
             autonomous_response: false,
             dry_run: false,
             max_kills_per_minute: 10,
+            auto_isolation: AutoIsolationPolicy::default(),
             definite: ResponsePolicy::new(true, true, true),
             very_high: ResponsePolicy::new(true, true, true),
             high: ResponsePolicy::new(false, false, true),
@@ -210,6 +237,64 @@ pub fn plan_action(confidence: Confidence, config: &ResponseConfig) -> PlannedAc
         (false, true, _) => PlannedAction::QuarantineOnly,
         (false, false, true) => PlannedAction::CaptureScript,
         (false, false, false) => PlannedAction::AlertOnly,
+    }
+}
+
+pub fn evaluate_auto_isolation(
+    confidence: Confidence,
+    now_unix: i64,
+    config: &ResponseConfig,
+    state: &mut AutoIsolationState,
+) -> bool {
+    if !config.autonomous_response || config.dry_run {
+        return false;
+    }
+
+    if !config.auto_isolation.enabled {
+        return false;
+    }
+
+    if !matches!(confidence, Confidence::Definite | Confidence::VeryHigh) {
+        return false;
+    }
+
+    if config.auto_isolation.max_isolations_per_hour == 0 {
+        return false;
+    }
+
+    let window_secs = config.auto_isolation.window_secs.max(1) as i64;
+    let min_incidents = config.auto_isolation.min_incidents_in_window.max(1);
+
+    prune_old(
+        &mut state.incident_timestamps,
+        now_unix.saturating_sub(window_secs),
+    );
+    prune_old(
+        &mut state.isolation_timestamps,
+        now_unix.saturating_sub(3600),
+    );
+
+    state.incident_timestamps.push_back(now_unix);
+    if state.incident_timestamps.len() < min_incidents {
+        return false;
+    }
+
+    if state.isolation_timestamps.len() >= config.auto_isolation.max_isolations_per_hour {
+        return false;
+    }
+
+    state.isolation_timestamps.push_back(now_unix);
+    state.incident_timestamps.clear();
+    true
+}
+
+fn prune_old(queue: &mut VecDeque<i64>, cutoff_ts: i64) {
+    while let Some(ts) = queue.front() {
+        if *ts < cutoff_ts {
+            let _ = queue.pop_front();
+        } else {
+            break;
+        }
     }
 }
 

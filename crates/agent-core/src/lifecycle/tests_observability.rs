@@ -28,6 +28,36 @@ fn detection_event(ts: i64, pid: u32) -> TelemetryEvent {
     }
 }
 
+fn tick_evaluation_for_confidence(confidence: Confidence, ts: i64, pid: u32) -> TickEvaluation {
+    TickEvaluation {
+        detection_event: detection_event(ts, pid),
+        detection_outcome: detection::DetectionOutcome {
+            confidence,
+            signals: detection::DetectionSignals {
+                z1_exact_ioc: false,
+                z2_temporal: false,
+                z3_anomaly_high: false,
+                z3_anomaly_med: false,
+                z4_kill_chain: false,
+                l1_prefilter_hit: false,
+            },
+            temporal_hits: Vec::new(),
+            kill_chain_hits: Vec::new(),
+            yara_hits: Vec::new(),
+            anomaly: None,
+            layer1: detection::Layer1EventHit::default(),
+        },
+        confidence,
+        action: PlannedAction::AlertOnly,
+        compliance: compliance::ComplianceResult {
+            status: "ok".to_string(),
+            detail: "ok".to_string(),
+            checks: Vec::new(),
+        },
+        event_envelope: event(ts),
+    }
+}
+
 #[tokio::test]
 // AC-OBS-001 AC-OBS-003 AC-OBS-005
 async fn observability_snapshot_tracks_send_failure_degraded_transition_and_queue_depth() {
@@ -37,6 +67,8 @@ async fn observability_snapshot_tracks_send_failure_degraded_transition_and_queu
     cfg.self_protection_integrity_check_interval_secs = 0;
 
     let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+    runtime.runtime_mode = AgentMode::Active;
+    runtime.baseline_store.status = baseline::BaselineStatus::Active;
     runtime.client.set_online(false);
     runtime.runtime_mode = AgentMode::Active;
 
@@ -75,6 +107,8 @@ async fn observability_snapshot_tracks_self_protect_degraded_transition_once() {
     cfg.self_protection_integrity_check_interval_secs = 0;
 
     let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+    runtime.runtime_mode = AgentMode::Active;
+    runtime.baseline_store.status = baseline::BaselineStatus::Active;
     runtime.client.set_online(false);
     runtime.runtime_mode = AgentMode::Active;
 
@@ -235,6 +269,75 @@ async fn observability_snapshot_reports_bounded_response_queue_progress() {
     assert!(snapshot.max_response_queue_depth >= 6);
     assert!(snapshot.last_response_oldest_age_secs >= 10);
     assert!(snapshot.max_response_oldest_age_secs >= snapshot.last_response_oldest_age_secs);
+}
+
+#[tokio::test]
+// AC-RSP-124 AC-RSP-125 AC-RSP-126
+async fn auto_isolation_policy_updates_host_state_and_emits_response_report() {
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    cfg.server_addr = "127.0.0.1:1".to_string();
+    cfg.self_protection_integrity_check_interval_secs = 0;
+    cfg.response.autonomous_response = true;
+    cfg.response.auto_isolation.enabled = true;
+    cfg.response.auto_isolation.min_incidents_in_window = 2;
+    cfg.response.auto_isolation.window_secs = 120;
+    cfg.response.auto_isolation.max_isolations_per_hour = 1;
+
+    let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+    runtime.runtime_mode = AgentMode::Active;
+    runtime.baseline_store.status = baseline::BaselineStatus::Active;
+
+    let eval1 = tick_evaluation_for_confidence(Confidence::VeryHigh, 1_700_010_000, 41_001);
+    runtime.maybe_apply_auto_isolation(1_700_010_000, Some(&eval1));
+    assert!(!runtime.host_control.isolated);
+    assert!(runtime.pending_response_reports.is_empty());
+
+    let eval2 = tick_evaluation_for_confidence(Confidence::Definite, 1_700_010_030, 41_002);
+    runtime.maybe_apply_auto_isolation(1_700_010_030, Some(&eval2));
+
+    assert!(runtime.host_control.isolated);
+    assert_eq!(runtime.pending_response_reports.len(), 1);
+    let report = runtime
+        .pending_response_reports
+        .front()
+        .expect("auto-isolation report queued");
+    assert_eq!(report.envelope.action_type, "auto_isolate");
+    assert_eq!(report.envelope.confidence, "definite");
+    assert!(report.envelope.success);
+}
+
+#[tokio::test]
+// AC-RSP-124 AC-RSP-125
+async fn auto_isolation_policy_ignores_high_confidence_and_hourly_cap() {
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    cfg.server_addr = "127.0.0.1:1".to_string();
+    cfg.self_protection_integrity_check_interval_secs = 0;
+    cfg.response.autonomous_response = true;
+    cfg.response.auto_isolation.enabled = true;
+    cfg.response.auto_isolation.min_incidents_in_window = 2;
+    cfg.response.auto_isolation.window_secs = 60;
+    cfg.response.auto_isolation.max_isolations_per_hour = 1;
+
+    let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+    runtime.runtime_mode = AgentMode::Active;
+    runtime.baseline_store.status = baseline::BaselineStatus::Active;
+
+    let high = tick_evaluation_for_confidence(Confidence::High, 1_700_020_000, 42_001);
+    runtime.maybe_apply_auto_isolation(1_700_020_000, Some(&high));
+    runtime.maybe_apply_auto_isolation(1_700_020_010, Some(&high));
+    assert!(!runtime.host_control.isolated);
+
+    let very_high = tick_evaluation_for_confidence(Confidence::VeryHigh, 1_700_020_020, 42_002);
+    runtime.maybe_apply_auto_isolation(1_700_020_020, Some(&very_high));
+    runtime.maybe_apply_auto_isolation(1_700_020_030, Some(&very_high));
+    assert!(runtime.host_control.isolated);
+
+    runtime.host_control.isolated = false;
+    runtime.maybe_apply_auto_isolation(1_700_020_040, Some(&very_high));
+    runtime.maybe_apply_auto_isolation(1_700_020_050, Some(&very_high));
+    assert!(!runtime.host_control.isolated);
 }
 
 #[tokio::test]

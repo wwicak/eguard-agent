@@ -7,12 +7,30 @@ log_stage() {
 
 artifact_dir="artifacts/verification-suite"
 mkdir -p "$artifact_dir"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # AC-VER-023 / AC-VER-024
 log_stage "cargo audit"
 cargo audit
 log_stage "cargo clippy"
 cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+# AC-VER-052 / AC-VER-053 / AC-VER-054
+log_stage "bundle signature contract gate"
+bash scripts/run_bundle_signature_contract_ci.sh
+
+# Ensure agent runtime ingests the generated signed bundle artifact.
+log_stage "agent-core signed bundle ingestion contract"
+bundle_fixture="${repo_root}/artifacts/bundle-signature-contract/fixture.bundle.tar.zst"
+bundle_pubhex_file="${bundle_fixture}.pub.hex"
+bash scripts/run_agent_bundle_ingestion_contract_ci.sh \
+  --bundle "${bundle_fixture}" \
+  --pubhex-file "${bundle_pubhex_file}" \
+  --test-selector lifecycle::tests::load_bundle_rules_reads_ci_generated_signed_bundle
+bash scripts/run_agent_bundle_ingestion_contract_ci.sh \
+  --bundle "${bundle_fixture}" \
+  --pubhex-file "${bundle_pubhex_file}" \
+  --test-selector lifecycle::tests::load_bundle_rules_rejects_tampered_ci_generated_signed_bundle
 
 # AC-VER-025
 log_stage "cargo fuzz protobuf_parse"

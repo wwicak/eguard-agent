@@ -850,7 +850,40 @@ class TestAttackCriticalRegressionGate(unittest.TestCase):
         covered_ratio: float = 0.7333,
         missing_count: int = 8,
         missing_required_techniques: list[str] | None = None,
+        p0_uncovered_count: int = 0,
+        p0_by_owner: dict[str, int] | None = None,
     ):
+        critical_rows = []
+        if p0_by_owner:
+            idx = 0
+            for owner, count in p0_by_owner.items():
+                for _ in range(count):
+                    critical_rows.append(
+                        {
+                            "technique": f"T900{idx}",
+                            "priority": "P0",
+                            "owner": owner,
+                            "covered": False,
+                        }
+                    )
+                    idx += 1
+        else:
+            for idx in range(p0_uncovered_count):
+                critical_rows.append(
+                    {
+                        "technique": f"T900{idx}",
+                        "priority": "P0",
+                        "covered": False,
+                    }
+                )
+        critical_rows.append(
+            {
+                "technique": "T1001",
+                "priority": "P1",
+                "covered": True,
+            }
+        )
+
         report = {
             "suite": "attack_critical_technique_gate",
             "status": "pass",
@@ -861,6 +894,7 @@ class TestAttackCriticalRegressionGate(unittest.TestCase):
                 "missing_count": missing_count,
             },
             "missing_required_techniques": missing_required_techniques or [],
+            "critical_techniques": critical_rows,
         }
         with open(path, "w", encoding="utf-8") as f:
             json.dump(report, f)
@@ -957,6 +991,302 @@ class TestAttackCriticalRegressionGate(unittest.TestCase):
         self.assertEqual(report.get("status"), "fail")
         deltas = report.get("deltas", {})
         self.assertEqual(deltas.get("missing_required_count_delta"), 2)
+
+    def test_attack_critical_regression_gate_fails_on_p0_uncovered_increase(self):
+        self._write_report(self.previous_path, p0_uncovered_count=1)
+        self._write_report(self.current_path, p0_uncovered_count=3)
+
+        result = self._run_gate(
+            "--max-covered-count-drop",
+            "10",
+            "--max-covered-ratio-drop",
+            "1",
+            "--max-missing-count-increase",
+            "10",
+            "--max-missing-required-increase",
+            "10",
+            "--max-p0-uncovered-increase",
+            "1",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        out = f"{result.stdout}\n{result.stderr}"
+        self.assertIn("p0_uncovered_count increased", out)
+        with open(self.output_path, "r", encoding="utf-8") as f:
+            report = json.load(f)
+        self.assertEqual(report.get("status"), "fail")
+        self.assertEqual(report.get("deltas", {}).get("p0_uncovered_count_delta"), 2)
+
+    def test_attack_critical_regression_gate_fails_on_owner_level_p0_increase(self):
+        self._write_report(self.previous_path, p0_by_owner={"core": 1, "identity": 1})
+        self._write_report(self.current_path, p0_by_owner={"core": 4, "identity": 1})
+
+        result = self._run_gate(
+            "--max-covered-count-drop",
+            "10",
+            "--max-covered-ratio-drop",
+            "1",
+            "--max-missing-count-increase",
+            "10",
+            "--max-missing-required-increase",
+            "10",
+            "--max-p0-uncovered-increase",
+            "10",
+            "--max-owner-p0-uncovered-increase",
+            "1",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        out = f"{result.stdout}\n{result.stderr}"
+        self.assertIn("owner-level P0 uncovered regressions", out)
+        with open(self.output_path, "r", encoding="utf-8") as f:
+            report = json.load(f)
+        self.assertEqual(report.get("status"), "fail")
+        owner_increase = report.get("deltas", {}).get("owner_p0_increase_by_owner", {})
+        owner_regressions = report.get("deltas", {}).get("owner_p0_regression_by_owner", {})
+        self.assertEqual(owner_increase.get("core"), 3)
+        self.assertEqual(owner_regressions.get("core"), 3)
+        self.assertEqual(report.get("deltas", {}).get("owner_p0_regression_count"), 1)
+
+
+class TestAttackCriticalRegressionHistory(unittest.TestCase):
+    """Validate critical ATT&CK regression history updater behavior."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.current_report = os.path.join(self.tmpdir, "critical-regression.json")
+        self.previous_history = os.path.join(self.tmpdir, "previous-history.ndjson")
+        self.output_history = os.path.join(self.tmpdir, "history.ndjson")
+        self.output_summary = os.path.join(self.tmpdir, "history-summary.json")
+        self.script_path = os.path.join(
+            PROCESSING_DIR,
+            "update_attack_critical_regression_history.py",
+        )
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir)
+
+    def _write_current_report(
+        self,
+        *,
+        status: str = "pass",
+        recorded_at_utc: str = "2026-02-14T10:00:00Z",
+        covered_count: int = 22,
+        covered_ratio: float = 0.7333,
+        missing_count: int = 8,
+        missing_required_count: int = 1,
+        p0_uncovered_count: int = 2,
+        owner_p0_regression_by_owner: dict[str, int] | None = None,
+    ):
+        owner_regression_map = owner_p0_regression_by_owner or {"core": 1}
+        report = {
+            "suite": "attack_critical_regression_gate",
+            "recorded_at_utc": recorded_at_utc,
+            "status": status,
+            "current": {
+                "covered_count": covered_count,
+                "covered_ratio": covered_ratio,
+                "missing_count": missing_count,
+                "missing_required_count": missing_required_count,
+                "p0_uncovered_count": p0_uncovered_count,
+            },
+            "deltas": {
+                "covered_count_delta": -1,
+                "covered_ratio_delta": -0.01,
+                "missing_count_delta": 1,
+                "missing_required_count_delta": 0,
+                "p0_uncovered_count_delta": 1,
+                "owner_p0_regression_by_owner": owner_regression_map,
+                "owner_p0_regression_count": len(owner_regression_map),
+                "owner_p0_increase_by_owner": owner_regression_map,
+            },
+        }
+        with open(self.current_report, "w", encoding="utf-8") as f:
+            json.dump(report, f)
+
+    def _write_previous_history(self):
+        rows = [
+            {
+                "recorded_at_utc": "2026-02-13T10:00:00Z",
+                "status": "pass",
+                "covered_count": 23,
+                "covered_ratio": 0.75,
+                "missing_count": 7,
+                "missing_required_count": 1,
+                "p0_uncovered_count": 1,
+                "owner_p0_regression_by_owner": {},
+            },
+            {
+                "recorded_at_utc": "2026-02-14T09:00:00Z",
+                "status": "fail",
+                "covered_count": 21,
+                "covered_ratio": 0.70,
+                "missing_count": 9,
+                "missing_required_count": 2,
+                "p0_uncovered_count": 3,
+                "owner_p0_regression_by_owner": {"core": 2, "identity": 1},
+            },
+        ]
+        with open(self.previous_history, "w", encoding="utf-8") as f:
+            for row in rows:
+                f.write(json.dumps(row) + "\n")
+
+    def _run_history(self, *extra_args):
+        cmd = [
+            sys.executable,
+            self.script_path,
+            "--current-report",
+            self.current_report,
+            "--previous-history",
+            self.previous_history,
+            "--output-history",
+            self.output_history,
+            "--output-summary",
+            self.output_summary,
+            *extra_args,
+        ]
+        return subprocess.run(cmd, capture_output=True, text=True)
+
+    def test_attack_critical_regression_history_appends_snapshot(self):
+        self._write_current_report()
+        self._write_previous_history()
+
+        result = self._run_history()
+        self.assertEqual(result.returncode, 0, msg=f"history failed: {result.stdout}\n{result.stderr}")
+
+        with open(self.output_history, "r", encoding="utf-8") as f:
+            rows = [json.loads(line) for line in f if line.strip()]
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(rows[-1].get("recorded_at_utc"), "2026-02-14T10:00:00Z")
+        self.assertEqual(rows[-1].get("p0_uncovered_count"), 2)
+
+        with open(self.output_summary, "r", encoding="utf-8") as f:
+            summary = json.load(f)
+        self.assertEqual(summary.get("history_points"), 3)
+        self.assertEqual(summary.get("window_failures"), 1)
+        self.assertEqual(summary.get("window_passes"), 2)
+        owner_totals = summary.get("window_owner_p0_regression_totals", {})
+        self.assertEqual(owner_totals.get("core"), 3)
+        self.assertEqual(owner_totals.get("identity"), 1)
+
+    def test_attack_critical_regression_history_enforces_max_entries(self):
+        self._write_current_report(recorded_at_utc="2026-02-14T10:00:00Z")
+        self._write_previous_history()
+
+        result = self._run_history("--max-entries", "2")
+        self.assertEqual(result.returncode, 0, msg=f"history failed: {result.stdout}\n{result.stderr}")
+
+        with open(self.output_history, "r", encoding="utf-8") as f:
+            rows = [json.loads(line) for line in f if line.strip()]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0].get("recorded_at_utc"), "2026-02-14T09:00:00Z")
+        self.assertEqual(rows[1].get("recorded_at_utc"), "2026-02-14T10:00:00Z")
+
+
+class TestAttackCriticalOwnerStreakGate(unittest.TestCase):
+    """Validate owner-level critical regression streak guard behavior."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.history_path = os.path.join(self.tmpdir, "critical-history.ndjson")
+        self.output_path = os.path.join(self.tmpdir, "owner-streak-gate.json")
+        self.script_path = os.path.join(PROCESSING_DIR, "attack_critical_owner_streak_gate.py")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir)
+
+    def _write_history(self, rows: list[dict]):
+        with open(self.history_path, "w", encoding="utf-8") as f:
+            for row in rows:
+                f.write(json.dumps(row) + "\n")
+
+    def _run_gate(self, *extra_args):
+        cmd = [
+            sys.executable,
+            self.script_path,
+            "--history",
+            self.history_path,
+            "--output",
+            self.output_path,
+            *extra_args,
+        ]
+        return subprocess.run(cmd, capture_output=True, text=True)
+
+    def test_attack_critical_owner_streak_gate_skips_missing_history(self):
+        os.remove(self.history_path) if os.path.exists(self.history_path) else None
+        result = self._run_gate()
+        self.assertEqual(result.returncode, 0, msg=f"gate failed: {result.stdout}\n{result.stderr}")
+        with open(self.output_path, "r", encoding="utf-8") as f:
+            report = json.load(f)
+        self.assertEqual(report.get("status"), "skipped_no_history")
+
+    def test_attack_critical_owner_streak_gate_passes_with_short_streaks(self):
+        rows = [
+            {
+                "recorded_at_utc": "2026-02-14T08:00:00Z",
+                "status": "pass",
+                "owner_p0_regression_by_owner": {"core": 1},
+            },
+            {
+                "recorded_at_utc": "2026-02-14T09:00:00Z",
+                "status": "pass",
+                "owner_p0_regression_by_owner": {},
+            },
+            {
+                "recorded_at_utc": "2026-02-14T10:00:00Z",
+                "status": "pass",
+                "owner_p0_regression_by_owner": {"core": 1, "identity": 1},
+            },
+        ]
+        self._write_history(rows)
+
+        result = self._run_gate(
+            "--window-size",
+            "10",
+            "--min-history-length",
+            "3",
+            "--max-consecutive-owner-regression",
+            "2",
+        )
+        self.assertEqual(result.returncode, 0, msg=f"gate failed: {result.stdout}\n{result.stderr}")
+        with open(self.output_path, "r", encoding="utf-8") as f:
+            report = json.load(f)
+        self.assertEqual(report.get("status"), "pass")
+        self.assertEqual(report.get("violating_owner_streaks"), {})
+
+    def test_attack_critical_owner_streak_gate_fails_on_consecutive_owner_regressions(self):
+        rows = [
+            {
+                "recorded_at_utc": "2026-02-14T08:00:00Z",
+                "status": "pass",
+                "owner_p0_regression_by_owner": {"core": 1},
+            },
+            {
+                "recorded_at_utc": "2026-02-14T09:00:00Z",
+                "status": "pass",
+                "owner_p0_regression_by_owner": {"core": 2},
+            },
+            {
+                "recorded_at_utc": "2026-02-14T10:00:00Z",
+                "status": "pass",
+                "owner_p0_regression_by_owner": {"core": 1, "identity": 1},
+            },
+        ]
+        self._write_history(rows)
+
+        result = self._run_gate(
+            "--window-size",
+            "10",
+            "--min-history-length",
+            "3",
+            "--max-consecutive-owner-regression",
+            "2",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        out = f"{result.stdout}\n{result.stderr}"
+        self.assertIn("owner-level P0 regression streak exceeded", out)
+        with open(self.output_path, "r", encoding="utf-8") as f:
+            report = json.load(f)
+        self.assertEqual(report.get("status"), "fail")
+        self.assertEqual(report.get("violating_owner_streaks", {}).get("core"), 3)
 
 
 class TestAttackBurndownScoreboard(unittest.TestCase):
@@ -1077,8 +1407,8 @@ class TestProcessingScripts(unittest.TestCase):
         "ioc_allowlist", "cve_extract", "build_bundle", "bundle_coverage_gate",
         "coverage_regression_gate", "attack_coverage_gate", "attack_regression_gate",
         "attack_gap_burndown_gate", "attack_critical_technique_gate",
-        "attack_critical_regression_gate",
-        "attack_burndown_scoreboard",
+        "attack_critical_regression_gate", "attack_critical_owner_streak_gate",
+        "attack_burndown_scoreboard", "update_attack_critical_regression_history",
         "ed25519_sign", "ed25519_verify",
     ]
 

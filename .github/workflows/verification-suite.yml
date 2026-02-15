@@ -256,6 +256,7 @@ jobs:
           path: |
             artifacts/workflow-lint/metrics.json
             artifacts/verification-suite/run.log
+            artifacts/bundle-signature-contract/metrics.json
             artifacts/detection-benchmark/metrics.json
             artifacts/detection-benchmark/baseline-metrics.json
             artifacts/detection-benchmark/regression-report.json

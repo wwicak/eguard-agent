@@ -92,12 +92,16 @@ fn rsp_stub_backlog_is_fully_mapped_to_executable_contract_suite() {
 }
 
 #[test]
-// AC-RSP-020 AC-RSP-021 AC-RSP-022 AC-RSP-023 AC-RSP-048 AC-RSP-051 AC-RSP-081 AC-RSP-083 AC-RSP-093 AC-RSP-100 AC-RSP-104 AC-RSP-105 AC-RSP-106
+// AC-RSP-020 AC-RSP-021 AC-RSP-022 AC-RSP-023 AC-RSP-048 AC-RSP-051 AC-RSP-081 AC-RSP-083 AC-RSP-093 AC-RSP-100 AC-RSP-104 AC-RSP-105 AC-RSP-106 AC-RSP-124 AC-RSP-125 AC-RSP-126
 fn response_policy_defaults_and_rate_limits_match_contract() {
     let cfg = ResponseConfig::default();
     assert!(!cfg.autonomous_response);
     assert!(!cfg.dry_run);
     assert_eq!(cfg.max_kills_per_minute, 10);
+    assert!(!cfg.auto_isolation.enabled);
+    assert_eq!(cfg.auto_isolation.min_incidents_in_window, 3);
+    assert_eq!(cfg.auto_isolation.window_secs, 300);
+    assert_eq!(cfg.auto_isolation.max_isolations_per_hour, 2);
 
     let active = ResponseConfig {
         autonomous_response: true,
@@ -158,6 +162,33 @@ fn response_policy_defaults_and_rate_limits_match_contract() {
             .get("cooldown_secs")
             .and_then(TomlValue::as_integer),
         Some(60)
+    );
+
+    let auto_isolation = response_table
+        .get("auto_isolation")
+        .and_then(TomlValue::as_table)
+        .expect("table [response.auto_isolation]");
+    assert_eq!(
+        auto_isolation.get("enabled").and_then(TomlValue::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        auto_isolation
+            .get("min_incidents_in_window")
+            .and_then(TomlValue::as_integer),
+        Some(3)
+    );
+    assert_eq!(
+        auto_isolation
+            .get("window_secs")
+            .and_then(TomlValue::as_integer),
+        Some(300)
+    );
+    assert_eq!(
+        auto_isolation
+            .get("max_isolations_per_hour")
+            .and_then(TomlValue::as_integer),
+        Some(2)
     );
     let protected = response_table
         .get("protected")

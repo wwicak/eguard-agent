@@ -23,8 +23,9 @@ use grpc_client::{
 use nac::{posture_from_compliance, Posture};
 use platform_linux::{enrich_event_with_cache, EbpfEngine, EbpfStats, EnrichmentCache, RawEvent};
 use response::{
-    capture_script_content, kill_process_tree, plan_action, quarantine_file, HostControlState,
-    KillRateLimiter, PlannedAction, ProtectedList, ResponseConfig,
+    capture_script_content, evaluate_auto_isolation, execute_server_command_with_state,
+    kill_process_tree, plan_action, quarantine_file, AutoIsolationState, HostControlState,
+    KillRateLimiter, PlannedAction, ProtectedList, ResponseConfig, ServerCommand,
 };
 use self_protect::{
     apply_linux_hardening, LinuxHardeningConfig, SelfProtectEngine, SelfProtectReport,
@@ -280,6 +281,7 @@ pub struct AgentRuntime {
     last_reload_report: Option<ReloadReport>,
     metrics: RuntimeMetrics,
     host_control: HostControlState,
+    auto_isolation_state: AutoIsolationState,
     pending_control_plane_tasks: VecDeque<PendingControlPlaneTask>,
     pending_control_plane_sends: VecDeque<PendingControlPlaneSend>,
     completed_command_ids: VecDeque<String>,
@@ -404,6 +406,7 @@ impl AgentRuntime {
             last_reload_report: None,
             metrics: RuntimeMetrics::default(),
             host_control: HostControlState::default(),
+            auto_isolation_state: AutoIsolationState::default(),
             pending_control_plane_tasks: VecDeque::new(),
             pending_control_plane_sends: VecDeque::new(),
             completed_command_ids: VecDeque::new(),

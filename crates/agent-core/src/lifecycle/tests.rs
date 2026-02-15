@@ -582,6 +582,42 @@ fn verify_bundle_signature_with_material_accepts_signed_payload() {
 }
 
 #[test]
+// AC-VER-053 AC-DET-143
+fn verify_bundle_signature_with_material_rejects_tampered_payload() {
+    let base = std::env::temp_dir().join(format!(
+        "eguard-bundle-signature-tamper-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    std::fs::create_dir_all(&base).expect("create temp dir");
+
+    let bundle = base.join("bundle.tar.zst");
+    let tampered = base.join("bundle.tampered.tar.zst");
+    let signature = base.join("bundle.tar.zst.sig");
+    std::fs::write(&bundle, b"signed-bundle-content").expect("write bundle bytes");
+    std::fs::write(&tampered, b"signed-bundle-content-tampered")
+        .expect("write tampered bundle bytes");
+
+    let signing = SigningKey::from_bytes(&[11u8; 32]);
+    let sig = signing.sign(b"signed-bundle-content");
+    std::fs::write(&signature, sig.to_bytes()).expect("write signature bytes");
+
+    let verified = verify_bundle_signature_with_material(
+        &tampered,
+        &signature,
+        signing.verifying_key().to_bytes(),
+    );
+    assert!(verified.is_err());
+
+    let _ = std::fs::remove_file(bundle);
+    let _ = std::fs::remove_file(tampered);
+    let _ = std::fs::remove_file(signature);
+    let _ = std::fs::remove_dir(base);
+}
+
+#[test]
 // AC-DET-143 AC-DET-144 AC-DET-170 AC-EBP-092
 fn load_bundle_rules_reads_signed_archive_bundle() {
     let _env_guard = env_var_lock().lock().expect("lock env vars");
@@ -832,6 +868,123 @@ rule nested_signed_bundle_marker {
     let _ = std::fs::remove_file(signature_path);
     let _ = std::fs::remove_file(bundle_path);
     let _ = std::fs::remove_file(tar_path);
+    let _ = std::fs::remove_dir_all(base);
+}
+
+#[test]
+// AC-DET-170
+fn load_bundle_rules_reads_ci_generated_signed_bundle() {
+    let _env_guard = env_var_lock().lock().expect("lock env vars");
+
+    let bundle_path_raw = match std::env::var("EGUARD_CI_BUNDLE_PATH") {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => return,
+    };
+    let bundle_pubkey_raw = match std::env::var("EGUARD_CI_BUNDLE_PUBHEX") {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => return,
+    };
+
+    let bundle_path = PathBuf::from(bundle_path_raw.trim());
+    assert!(
+        bundle_path.is_file(),
+        "ci generated bundle path must exist: {}",
+        bundle_path.display()
+    );
+
+    let signature_path = PathBuf::from(format!("{}.sig", bundle_path.to_string_lossy()));
+    assert!(
+        signature_path.is_file(),
+        "ci generated bundle signature path must exist: {}",
+        signature_path.display()
+    );
+
+    let staging = std::env::temp_dir().join(format!(
+        "eguard-ci-generated-bundle-stage-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    std::fs::create_dir_all(&staging).expect("create CI staging dir");
+
+    std::env::set_var("EGUARD_RULE_BUNDLE_PUBKEY", bundle_pubkey_raw.trim());
+    std::env::set_var("EGUARD_RULES_STAGING_DIR", &staging);
+
+    let mut engine = DetectionEngine::default_with_rules();
+    let (sigma, yara) = load_bundle_rules(&mut engine, bundle_path.to_string_lossy().as_ref());
+    assert!(
+        sigma > 0,
+        "ci generated bundle should load sigma rules through agent runtime"
+    );
+    assert!(
+        yara > 0,
+        "ci generated bundle should load yara rules through agent runtime"
+    );
+
+    std::env::remove_var("EGUARD_RULE_BUNDLE_PUBKEY");
+    std::env::remove_var("EGUARD_RULES_STAGING_DIR");
+    let _ = std::fs::remove_dir_all(staging);
+}
+
+#[test]
+// AC-DET-143 AC-DET-170
+fn load_bundle_rules_rejects_tampered_ci_generated_signed_bundle() {
+    let _env_guard = env_var_lock().lock().expect("lock env vars");
+
+    let bundle_path_raw = match std::env::var("EGUARD_CI_BUNDLE_PATH") {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => return,
+    };
+    let bundle_pubkey_raw = match std::env::var("EGUARD_CI_BUNDLE_PUBHEX") {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => return,
+    };
+
+    let source_bundle = PathBuf::from(bundle_path_raw.trim());
+    assert!(
+        source_bundle.is_file(),
+        "ci generated bundle path must exist: {}",
+        source_bundle.display()
+    );
+    let source_signature = PathBuf::from(format!("{}.sig", source_bundle.to_string_lossy()));
+    assert!(
+        source_signature.is_file(),
+        "ci generated bundle signature path must exist: {}",
+        source_signature.display()
+    );
+
+    let base = std::env::temp_dir().join(format!(
+        "eguard-ci-generated-bundle-tamper-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    let staging = base.join("staging");
+    std::fs::create_dir_all(&staging).expect("create tamper staging dir");
+
+    let tampered_bundle = base.join("bundle.tar.zst");
+    let mut tampered_bytes = std::fs::read(&source_bundle).expect("read source bundle bytes");
+    tampered_bytes.extend_from_slice(b"ci-tamper-marker-eguard");
+    std::fs::write(&tampered_bundle, tampered_bytes).expect("write tampered bundle bytes");
+
+    let tampered_signature = PathBuf::from(format!("{}.sig", tampered_bundle.to_string_lossy()));
+    std::fs::copy(&source_signature, &tampered_signature).expect("copy source signature sidecar");
+
+    std::env::set_var("EGUARD_RULE_BUNDLE_PUBKEY", bundle_pubkey_raw.trim());
+    std::env::set_var("EGUARD_RULES_STAGING_DIR", &staging);
+
+    let mut engine = DetectionEngine::default_with_rules();
+    let loaded = load_bundle_rules(&mut engine, tampered_bundle.to_string_lossy().as_ref());
+    assert_eq!(
+        loaded,
+        (0, 0),
+        "tampered ci bundle must be rejected by agent runtime loader"
+    );
+
+    std::env::remove_var("EGUARD_RULE_BUNDLE_PUBKEY");
+    std::env::remove_var("EGUARD_RULES_STAGING_DIR");
     let _ = std::fs::remove_dir_all(base);
 }
 

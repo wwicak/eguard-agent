@@ -1,6 +1,6 @@
 # eGuard Agent Refactor / Optimization TODO
 
-Last updated: 2026-02-14
+Last updated: 2026-02-15
 Mode: Plan-first (next-job tranche implemented; operational closure pending)
 
 ## Objective
@@ -287,7 +287,7 @@ Reference acceptance criteria: `tasks/next-job-acceptance-criteria.md`
   - `bash scripts/run_perf_profile_gate_ci.sh` => pass (skipped: `perf` unavailable)
   - `bash scripts/run_release_profile_opt_ci.sh` => pass
     - baseline release build wall-clock: `396 ms`
-  - `bash scripts/run_verification_suite_ci.sh` => pass (end-to-end) with archived log: `artifacts/verification-suite/run-20260214-203041.log`
+  - `bash scripts/run_verification_suite_ci.sh` => pass (end-to-end) with archived log: `artifacts/verification-suite/run-20260214-205256.log`
 
 - 2026-02-14 outcome-quality update:
   - Removed default hard binary-size enforcement in `scripts/run_ebpf_resource_budget_ci.sh` (size now measured + reported)
@@ -357,4 +357,115 @@ Reference acceptance criteria: `tasks/next-job-acceptance-criteria.md`
     - guardrail harness matrix rerun => pass
     - `python3 scripts/check_optimization_guardrail_thresholds.py --root .` => pass
     - `EGUARD_GUARDRAIL_REALISM_COLD_CLEAN=0 bash scripts/run_guardrail_threshold_realism_ci.sh` => pass
-    - `bash scripts/run_verification_suite_ci.sh` => pass (`artifacts/verification-suite/run-20260214-203041.log`)
+    - `bash scripts/run_verification_suite_ci.sh` => pass (`artifacts/verification-suite/run-20260214-205256.log`)
+
+- 2026-02-14 campaign + bundle-signature hardening update:
+  - Added cross-endpoint campaign correlation scoring API (`correlate_campaign_iocs`) with deterministic severity tiers (`advisory`, `elevated`, `outbreak`) and strongest-per-host confidence deduplication.
+  - Added campaign regression coverage:
+    - `campaign_correlation_deduplicates_host_signals_and_ignores_empty_fields`
+    - `campaign_correlation_assigns_elevated_and_outbreak_severity_tiers`
+  - Added end-to-end bundle signature contract harness:
+    - `scripts/run_bundle_signature_contract_ci.sh`
+    - includes processed bundle fixture build, coverage gate snapshot, Ed25519 sign/verify, and tamper rejection check
+  - Wired bundle signature contract into verification suite (`scripts/run_verification_suite_ci.sh`) and artifact upload (`.github/workflows/verification-suite.yml`).
+  - Added acceptance criteria coverage for campaign correlation + bundle signature verification (`AC-DET-186..189`, `AC-VER-052..054`) and regenerated acceptance artifacts/status.
+  - Verification reruns:
+    - `bash scripts/run_bundle_signature_contract_ci.sh` => pass
+    - `cargo test -p detection tests_stub_completion::campaign_correlation_deduplicates_host_signals_and_ignores_empty_fields -- --exact` => pass
+    - `cargo test -p detection tests_stub_completion::campaign_correlation_assigns_elevated_and_outbreak_severity_tiers -- --exact` => pass
+    - `cargo test -p agent-core lifecycle::tests::verify_bundle_signature_with_material_rejects_tampered_payload -- --exact` => pass
+    - `cargo test -p acceptance tests_tst_ver_contract::verification_coverage_and_security_pipeline_contracts_are_present -- --exact` => pass
+    - `bash scripts/run_verification_suite_ci.sh` => pass (`artifacts/verification-suite/run-20260214-205256.log`)
+
+- 2026-02-14 response + bundle-ingest contract completion update:
+  - Finalized optional auto-isolation observability/runtime coverage by running in explicit active-baseline mode for deterministic enforcement assertions.
+  - Hardened bundle-ingest contract pathing by passing absolute bundle fixture paths into runtime ingestion tests (`EGUARD_CI_BUNDLE_PATH`) in both verification suite and build-bundle workflow.
+  - Added workflow path wiring so generated signed bundles are validated by agent runtime in CI without crate-working-directory path drift.
+  - Verification reruns:
+    - `cargo test -p agent-core --bin agent-core` => pass (`120 passed`)
+    - `cargo test -p detection` => pass (`76 passed`)
+    - `pytest -q threat-intel/tests/test_bundle.py` => pass (`43 passed, 7 skipped`)
+    - `bash scripts/run_workflow_yaml_lint_ci.sh` => pass
+    - `bash scripts/run_verification_suite_ci.sh` => pass (includes bundle-signature gate + signed bundle ingestion contract)
+    - `cargo test --workspace` => pass
+
+- 2026-02-14 dependency risk burn-down update:
+  - Replaced unmaintained baseline serialization dependency with maintained `wincode` while preserving bincode-compatible wire behavior (`crates/baseline`).
+  - Upgraded `lru` to a RustSec-patched release (`>=0.16.3`) to remove unsound `IterMut` advisory exposure in enrichment cache.
+  - Upgraded gRPC/protobuf toolchain from `tonic 0.12`/`prost 0.13` to `tonic 0.14`/`prost 0.14`, migrated build generation to `tonic-prost-build`, and added `tonic-prost` runtime codec dependency.
+  - Aligned fuzz harness protobuf dependency to `prost 0.14` to eliminate mixed-prost trait mismatch under CI fuzz stages.
+  - Kept baseline persistence semantics and budget envelopes intact (`baselines.bin` path + save/load + snapshot-size tests remain green).
+  - Verification reruns:
+    - `cargo test -p baseline` => pass (`15 passed`)
+    - `cargo test -p platform-linux` => pass (`53 passed`)
+    - `cargo test -p grpc-client` => pass (`79 passed`)
+    - `cargo test -p agent-core --bin agent-core` => pass (`120 passed`)
+    - `cargo test --workspace` => pass
+    - `bash scripts/run_verification_suite_ci.sh` => pass
+    - `cargo audit` => pass with `0` warnings (`3` warnings eliminated: `bincode`, `lru`, `rustls-pemfile`)
+
+## Active Plan — Clippy + Acceptance Closure Sweep (2026-02-15)
+
+- [x] Scan broad repo/file/markdown state (`git status`, `git diff --stat`, task docs + acceptance docs)
+- [x] Clear strict clippy blockers in touched test files (`grpc-client`, `agent-core`)
+- [x] Re-run strict clippy gate (`cargo clippy --workspace --all-targets --all-features -- -D warnings`)
+- [x] Re-run touched crate tests (`grpc-client`, `agent-core`)
+- [x] Resolve acceptance generated-id drift after AC updates by regenerating acceptance artifacts
+- [x] Re-run acceptance suite and confirm green after regeneration
+- [x] Re-run full end-to-end `bash scripts/run_verification_suite_ci.sh` and archive fresh log evidence for this sweep
+
+## Review — 2026-02-15
+
+- Fixed clippy duplicate-attribute regression introduced during test-module cleanup:
+  - Removed redundant file-level `#![allow(clippy::field_reassign_with_default)]` from:
+    - `crates/agent-core/src/lifecycle/tests.rs`
+    - `crates/agent-core/src/lifecycle/tests_ebpf_policy.rs`
+    - `crates/agent-core/src/lifecycle/tests_det_stub_completion.rs`
+    - `crates/agent-core/src/lifecycle/tests_observability.rs`
+- Clippy verification:
+  - `cargo clippy -p grpc-client --tests -- -D warnings` => pass
+  - `cargo clippy -p agent-core --tests -- -D warnings` => pass
+  - `cargo clippy --workspace --all-targets --all-features -- -D warnings` => pass
+- Runtime/contract verification:
+  - `cargo test -p grpc-client` => pass (`79 passed`)
+  - `cargo test -p agent-core --bin agent-core` => pass (`121 passed`)
+- Acceptance drift found and fixed:
+  - `cargo test -p acceptance` initially failed at `generated_id_list_matches_acceptance_document` because generated IDs missed `AC-RSP-124..126`.
+  - Regenerated acceptance artifacts:
+    - `python3 scripts/generate_acceptance_tests.py`
+    - `python3 scripts/generate_acceptance_status_report.py`
+  - Post-regeneration:
+    - `cargo test -p acceptance --test acceptance_criteria_generated` => pass (`734 passed`)
+    - `cargo test -p acceptance` => pass
+  - `crates/acceptance/AC_STATUS.md` now reports `730` total executable AC IDs.
+- End-to-end verification suite rerun:
+  - `bash scripts/run_verification_suite_ci.sh` => pass
+  - Archived log: `artifacts/verification-suite/run-20260215-101200.log`
+  - Includes bundle-signature contract, signed-bundle ingestion contract, fuzz, miri, hardening probe, and guardrail stages.
+
+## Active Plan — Real Package Artifact Closure (2026-02-15)
+
+- [x] Add packaging-script fallback for environments without `x86_64-linux-musl-gcc` (use Zig musl cc wrapper for ring/cc-rs compatibility)
+- [x] Add `nfpm` auto-bootstrap fallback (local tool path) when real package build is requested and `nfpm` is not on PATH
+- [x] Build real `.deb`/`.rpm` artifacts locally (`EGUARD_PACKAGE_REAL_BUILD=1`) and validate with `scripts/verify_package_artifacts_ci.py`
+- [x] Capture/update evidence paths in task docs after successful local real-build validation
+
+## Review — 2026-02-15 (real package artifact closure)
+
+- Packaging script hardening (`scripts/build-agent-packages-ci.sh`):
+  - Added Zig-based musl toolchain fallback when `x86_64-linux-musl-gcc` is unavailable:
+    - wrapper binaries under `artifacts/package-agent/tools/` (`zig-musl-cc`, `zig-musl-cxx`, `zig-musl-ar`)
+    - target triple normalization from `x86_64-unknown-linux-musl` to Zig-accepted `x86_64-linux-musl` for cc-rs/ring compile paths
+    - Rust musl linker fallback to rust-lld (`.../rustlib/x86_64-unknown-linux-gnu/bin/rust-lld`) to avoid duplicate musl CRT symbol collisions
+  - Added automatic `nfpm` bootstrap when absent on PATH:
+    - downloads `nfpm v2.45.0` to `artifacts/package-agent/tools/nfpm`
+  - Updated nfpm config rendering to emit `release` at top-level schema (instead of unsupported `overrides.rpm.release`) for real RPM packaging compatibility.
+  - Fixed asm static-archive bundling for Zig archives with nested member paths (creates member directory tree before `ar x`, then repacks recursively found `.o` files), producing a non-empty `libeguard_asm.a` in package stage.
+- Local real-build validation:
+  - `EGUARD_PACKAGE_REAL_BUILD=1 EGUARD_PACKAGE_GENERATE_EPHEMERAL_GPG=1 bash scripts/build-agent-packages-ci.sh` => pass
+  - `python3 scripts/verify_package_artifacts_ci.py --artifact-dir artifacts/package-agent` => pass
+  - Validation artifact: `artifacts/package-agent/verification.json` (`status: "ok"`, `debian_count: 2`, `rpm_count: 2`)
+  - Package metrics artifact: `artifacts/package-agent/metrics.json` (`real_build: 1`)
+  - Staged asm archive is non-empty after fix: `artifacts/package-agent/stage/core/usr/lib/eguard-agent/lib/libeguard_asm.a` (`319386 bytes`)
+- Targeted contract regression check:
+  - `cargo test -p agent-core lifecycle::tests_pkg_contract::package_build_harness_executes_and_emits_metrics_with_mocked_toolchain -- --exact` => pass

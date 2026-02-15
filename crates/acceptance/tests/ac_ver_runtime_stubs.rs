@@ -265,3 +265,18 @@ fn ac_ver_050_runtime_stub() {
 fn ac_ver_051_runtime_stub() {
     assert_runtime_validation_backed_by_executable_suite("AC-VER-051", "Bundle pipeline MUST consume previous release scoreboard baseline when available and report trend values; absence of baseline MUST be explicitly handled without crashing the pipeline.");
 }
+
+#[test]
+fn ac_ver_052_runtime_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-052", "Verification suite MUST run a bundle-signature contract harness that builds a minimal processed bundle, signs it with Ed25519, verifies the signature, and emits `artifacts/bundle-signature-contract/metrics.json`.");
+}
+
+#[test]
+fn ac_ver_053_runtime_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-053", "Bundle-signature contract harness MUST reject a tampered archive when verified against the original detached signature.");
+}
+
+#[test]
+fn ac_ver_054_runtime_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-054", "Verification artifacts MUST include bundle signature contract metrics (`signature_verified`, `tamper_rejected`) and measured signature/database totals from `bundle_coverage_gate.py`.");
+}

@@ -45,6 +45,13 @@ max_kills_per_minute = 10
 max_quarantines_per_minute = 5
 cooldown_secs = 60
 
+[response.auto_isolation]
+# Optional confidence-banded containment guard (Definite/VeryHigh only)
+enabled = false
+min_incidents_in_window = 3
+window_secs = 300
+max_isolations_per_hour = 2
+
 [response.protected]
 process_patterns = ["^systemd", "sshd", "dbus-daemon", "journald", "eguard-agent", "containerd", "dockerd"]
 paths = ["/usr/bin", "/usr/sbin", "/usr/lib", "/lib", "/boot", "/usr/local/eg"]

@@ -57,7 +57,10 @@ for workflow in "${WORKFLOWS[@]}"; do
     required_steps=(
       "Enforce critical ATT&CK technique floor gate"
       "Enforce critical ATT&CK regression gate"
+      "Update critical ATT&CK regression history"
+      "Enforce critical ATT&CK owner streak gate"
       "Generate ATT&CK burn-down scoreboard"
+      "Verify agent can ingest generated bundle output"
       "Create GitHub Release"
     )
 
@@ -69,15 +72,24 @@ for workflow in "${WORKFLOWS[@]}"; do
     done
 
     release_run="$(yq -r '.jobs."build-bundle".steps[] | select(.name == "Create GitHub Release") | .run' "${path}" 2>/dev/null || true)"
+    critical_regression_run="$(yq -r '.jobs."build-bundle".steps[] | select(.name == "Enforce critical ATT&CK regression gate") | .run' "${path}" 2>/dev/null || true)"
+    owner_streak_run="$(yq -r '.jobs."build-bundle".steps[] | select(.name == "Enforce critical ATT&CK owner streak gate") | .run' "${path}" 2>/dev/null || true)"
+    agent_ingest_run="$(yq -r '.jobs."build-bundle".steps[] | select(.name == "Verify agent can ingest generated bundle output") | .run' "${path}" 2>/dev/null || true)"
     required_release_tokens=(
       "bundle/attack-critical-technique-gate.json"
       "bundle/attack-critical-regression.json"
+      "bundle/attack-critical-regression-history.ndjson"
+      "bundle/attack-critical-regression-history-summary.json"
+      "bundle/attack-critical-owner-streak-gate.json"
       "bundle/attack-burndown-scoreboard.json"
       "bundle/attack-burndown-scoreboard.md"
       "## Critical ATT&CK Technique Floor"
       "## Critical ATT&CK Regression Guard"
+      "## Critical ATT&CK Regression History"
+      "## Critical ATT&CK Owner Streak Guard"
       "## ATT&CK Critical Burn-down Scoreboard"
       "Delta uncovered vs previous"
+      "Owner P0 regressions"
     )
 
     for token in "${required_release_tokens[@]}"; do
@@ -86,6 +98,33 @@ for workflow in "${WORKFLOWS[@]}"; do
         attack_contract_ok=false
       fi
     done
+
+    if [[ "${critical_regression_run}" != *"--max-owner-p0-uncovered-increase"* ]]; then
+      echo "build-bundle critical regression gate missing owner-level P0 threshold flag" >&2
+      attack_contract_ok=false
+    fi
+
+    if [[ "${owner_streak_run}" != *"--max-consecutive-owner-regression"* ]]; then
+      echo "build-bundle owner streak gate missing max-consecutive threshold flag" >&2
+      attack_contract_ok=false
+    fi
+
+    if [[ "${agent_ingest_run}" != *"load_bundle_rules_reads_ci_generated_signed_bundle"* ]]; then
+      echo "build-bundle agent ingest step missing CI generated bundle runtime test selector" >&2
+      attack_contract_ok=false
+    fi
+    if [[ "${agent_ingest_run}" != *"load_bundle_rules_rejects_tampered_ci_generated_signed_bundle"* ]]; then
+      echo "build-bundle agent ingest step missing tampered bundle rejection test selector" >&2
+      attack_contract_ok=false
+    fi
+    if [[ "${agent_ingest_run}" != *"run_agent_bundle_ingestion_contract_ci.sh"* ]]; then
+      echo "build-bundle agent ingest step missing shared bundle ingestion contract harness" >&2
+      attack_contract_ok=false
+    fi
+    if [[ "${agent_ingest_run}" != *"EGUARD_CI_BUNDLE_PATH"* || "${agent_ingest_run}" != *"EGUARD_CI_BUNDLE_PUBHEX"* ]]; then
+      echo "build-bundle agent ingest step missing bundle path/pubkey environment wiring" >&2
+      attack_contract_ok=false
+    fi
 
     if [[ "${attack_contract_ok}" != "true" ]]; then
       status="missing_attack_contracts"

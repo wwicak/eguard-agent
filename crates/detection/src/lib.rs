@@ -23,8 +23,9 @@ pub use layer3::{AnomalyConfig, AnomalyDecision, AnomalyEngine};
 pub use layer4::{KillChainTemplate, Layer4Engine, TemplatePredicate};
 pub use policy::confidence_policy;
 pub use replay::{
-    correlate_cross_agent_iocs, replay_events, report_drift_indicators, AdvisoryIncident,
-    CorrelationSignal, DriftIndicators, ProcessDriftQuantiles, ReplayAlert, ReplaySummary,
+    correlate_campaign_iocs, correlate_cross_agent_iocs, replay_events, report_drift_indicators,
+    AdvisoryIncident, CampaignIncident, CampaignSeverity, CampaignSignal, CorrelationSignal,
+    DriftIndicators, ProcessDriftQuantiles, ReplayAlert, ReplaySummary,
 };
 pub use sigma::{
     compile_sigma_ast, compile_sigma_rule, BoundedTemporalAst, SigmaCompileError, TemporalExpr,

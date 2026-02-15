@@ -254,6 +254,18 @@ impl AgentConfig {
         if let Some(v) = env_usize("EGUARD_RESPONSE_MAX_KILLS_PER_MINUTE") {
             self.response.max_kills_per_minute = v;
         }
+        if let Ok(v) = std::env::var("EGUARD_RESPONSE_AUTO_ISOLATION_ENABLED") {
+            self.response.auto_isolation.enabled = parse_bool(&v);
+        }
+        if let Some(v) = env_usize("EGUARD_RESPONSE_AUTO_ISOLATION_MIN_INCIDENTS") {
+            self.response.auto_isolation.min_incidents_in_window = v;
+        }
+        if let Some(v) = env_usize("EGUARD_RESPONSE_AUTO_ISOLATION_WINDOW_SECS") {
+            self.response.auto_isolation.window_secs = v as u64;
+        }
+        if let Some(v) = env_usize("EGUARD_RESPONSE_AUTO_ISOLATION_MAX_PER_HOUR") {
+            self.response.auto_isolation.max_isolations_per_hour = v;
+        }
     }
 
     fn apply_env_storage(&mut self) {
@@ -346,6 +358,20 @@ impl AgentConfig {
         if let Some(rate_limit) = response.rate_limit {
             if let Some(v) = rate_limit.max_kills_per_minute {
                 self.response.max_kills_per_minute = v;
+            }
+        }
+        if let Some(auto_isolation) = response.auto_isolation {
+            if let Some(v) = auto_isolation.enabled {
+                self.response.auto_isolation.enabled = v;
+            }
+            if let Some(v) = auto_isolation.min_incidents_in_window {
+                self.response.auto_isolation.min_incidents_in_window = v;
+            }
+            if let Some(v) = auto_isolation.window_secs {
+                self.response.auto_isolation.window_secs = v;
+            }
+            if let Some(v) = auto_isolation.max_isolations_per_hour {
+                self.response.auto_isolation.max_isolations_per_hour = v;
             }
         }
 
@@ -580,6 +606,20 @@ struct FileResponseConfig {
     medium: Option<FileResponsePolicy>,
     #[serde(default)]
     rate_limit: Option<FileResponseRateLimitConfig>,
+    #[serde(default)]
+    auto_isolation: Option<FileResponseAutoIsolationConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct FileResponseAutoIsolationConfig {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    min_incidents_in_window: Option<usize>,
+    #[serde(default)]
+    window_secs: Option<u64>,
+    #[serde(default)]
+    max_isolations_per_hour: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

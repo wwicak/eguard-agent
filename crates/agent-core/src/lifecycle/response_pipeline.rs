@@ -11,6 +11,7 @@ impl AgentRuntime {
         now_unix: i64,
         evaluation: Option<&TickEvaluation>,
     ) {
+        self.maybe_apply_auto_isolation(now_unix, evaluation);
         self.enqueue_response_action_if_present(now_unix, evaluation);
         let executed = self.execute_response_backlog_budget(now_unix).await;
         let oldest_age_secs = self.response_queue_oldest_age_secs(now_unix);
@@ -26,6 +27,45 @@ impl AgentRuntime {
             .metrics
             .max_response_oldest_age_secs
             .max(oldest_age_secs);
+    }
+
+    pub(super) fn maybe_apply_auto_isolation(
+        &mut self,
+        now_unix: i64,
+        evaluation: Option<&TickEvaluation>,
+    ) {
+        let Some(evaluation) = evaluation else {
+            return;
+        };
+
+        if self.host_control.isolated {
+            return;
+        }
+
+        let response_cfg = self.effective_response_config();
+        let should_isolate = super::evaluate_auto_isolation(
+            evaluation.confidence,
+            now_unix,
+            &response_cfg,
+            &mut self.auto_isolation_state,
+        );
+        if !should_isolate {
+            return;
+        }
+
+        let outcome = super::execute_server_command_with_state(
+            super::ServerCommand::Isolate,
+            now_unix,
+            &mut self.host_control,
+        );
+
+        self.enqueue_response_report(super::ResponseEnvelope {
+            agent_id: self.config.agent_id.clone(),
+            action_type: "auto_isolate".to_string(),
+            confidence: super::confidence_label(evaluation.confidence),
+            success: outcome.status == "completed",
+            error_message: outcome.detail,
+        });
     }
 
     fn enqueue_response_action_if_present(

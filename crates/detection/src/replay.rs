@@ -48,6 +48,30 @@ pub struct AdvisoryIncident {
     pub advisory_only: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CampaignSeverity {
+    Advisory,
+    Elevated,
+    Outbreak,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CampaignSignal {
+    pub host_id: String,
+    pub ioc: String,
+    pub confidence: Confidence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CampaignIncident {
+    pub ioc: String,
+    pub host_count: usize,
+    pub hosts: Vec<String>,
+    pub weighted_score: u32,
+    pub severity: CampaignSeverity,
+    pub advisory_only: bool,
+}
+
 pub fn replay_events(engine: &mut DetectionEngine, events: &[TelemetryEvent]) -> ReplaySummary {
     let mut summary = ReplaySummary {
         total_events: events.len(),
@@ -131,6 +155,62 @@ pub fn correlate_cross_agent_iocs(signals: &[CorrelationSignal]) -> Vec<Advisory
     incidents
 }
 
+pub fn correlate_campaign_iocs(signals: &[CampaignSignal]) -> Vec<CampaignIncident> {
+    let mut by_ioc: HashMap<String, HashMap<String, Confidence>> = HashMap::new();
+
+    for signal in signals {
+        let host_id = signal.host_id.trim();
+        let ioc = signal.ioc.trim();
+        if host_id.is_empty() || ioc.is_empty() {
+            continue;
+        }
+
+        let host_confidence = by_ioc.entry(ioc.to_string()).or_default();
+        host_confidence
+            .entry(host_id.to_string())
+            .and_modify(|existing| {
+                if confidence_weight(signal.confidence) > confidence_weight(*existing) {
+                    *existing = signal.confidence;
+                }
+            })
+            .or_insert(signal.confidence);
+    }
+
+    let mut incidents = Vec::new();
+    for (ioc, hosts_to_confidence) in by_ioc {
+        let host_count = hosts_to_confidence.len();
+        if host_count < 3 {
+            continue;
+        }
+
+        let weighted_score = hosts_to_confidence
+            .values()
+            .map(|confidence| confidence_weight(*confidence))
+            .sum();
+        let mut hosts = hosts_to_confidence.keys().cloned().collect::<Vec<_>>();
+        hosts.sort();
+
+        incidents.push(CampaignIncident {
+            ioc,
+            host_count,
+            hosts,
+            weighted_score,
+            severity: classify_campaign_severity(host_count, weighted_score),
+            advisory_only: true,
+        });
+    }
+
+    incidents.sort_by(|left, right| {
+        right
+            .severity
+            .rank()
+            .cmp(&left.severity.rank())
+            .then_with(|| right.weighted_score.cmp(&left.weighted_score))
+            .then_with(|| left.ioc.cmp(&right.ioc))
+    });
+    incidents
+}
+
 pub fn report_drift_indicators(
     engine: &mut DetectionEngine,
     events: &[TelemetryEvent],
@@ -185,5 +265,36 @@ fn bump_confidence_count(summary: &mut ReplaySummary, confidence: Confidence) {
         Confidence::Medium => summary.medium += 1,
         Confidence::Low => summary.low += 1,
         Confidence::None => {}
+    }
+}
+
+fn classify_campaign_severity(host_count: usize, weighted_score: u32) -> CampaignSeverity {
+    if host_count >= 8 || weighted_score >= 30 {
+        return CampaignSeverity::Outbreak;
+    }
+    if host_count >= 5 || weighted_score >= 18 {
+        return CampaignSeverity::Elevated;
+    }
+    CampaignSeverity::Advisory
+}
+
+fn confidence_weight(confidence: Confidence) -> u32 {
+    match confidence {
+        Confidence::Definite => 5,
+        Confidence::VeryHigh => 4,
+        Confidence::High => 3,
+        Confidence::Medium => 2,
+        Confidence::Low => 1,
+        Confidence::None => 0,
+    }
+}
+
+impl CampaignSeverity {
+    fn rank(self) -> u8 {
+        match self {
+            Self::Advisory => 0,
+            Self::Elevated => 1,
+            Self::Outbreak => 2,
+        }
     }
 }

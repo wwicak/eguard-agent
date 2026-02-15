@@ -4,11 +4,12 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use wincode::{SchemaRead, SchemaWrite};
 
 const LEARNING_WINDOW_SECS: u64 = 7 * 24 * 3600;
 const STALE_WINDOW_SECS: u64 = 30 * 24 * 3600;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead)]
 pub struct ProcessBaseline {
     pub process_key: String,
     pub counts: HashMap<String, u64>,
@@ -32,7 +33,7 @@ impl ProcessBaseline {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SchemaWrite, SchemaRead)]
 pub enum BaselineStatus {
     Learning,
     Active,
@@ -45,20 +46,20 @@ pub enum BaselineTransition {
     BecameStale,
 }
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize, SchemaWrite, SchemaRead)]
 pub struct ProcessKey {
     pub comm: String,
     pub parent_comm: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, SchemaWrite, SchemaRead)]
 pub struct ProcessProfile {
     pub event_distribution: HashMap<String, u64>,
     pub sample_count: u64,
     pub entropy_threshold: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead)]
 pub struct BaselineStore {
     pub status: BaselineStatus,
     pub learning_started_unix: u64,
@@ -66,6 +67,7 @@ pub struct BaselineStore {
     pub last_refresh_unix: u64,
     pub baselines: HashMap<ProcessKey, ProcessProfile>,
     #[serde(skip)]
+    #[wincode(skip)]
     path: PathBuf,
 }
 
@@ -129,7 +131,7 @@ impl BaselineStore {
     pub fn load(path: impl AsRef<Path>) -> BaselineStoreResult<Self> {
         let path = path.as_ref();
         let bytes = std::fs::read(path)?;
-        let mut store: BaselineStore = bincode::deserialize(&bytes)
+        let mut store: BaselineStore = wincode::deserialize(&bytes)
             .map_err(|err| BaselineStoreError::Deserialize(err.to_string()))?;
         store.path = path.to_path_buf();
         Ok(store)
@@ -139,7 +141,7 @@ impl BaselineStore {
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let bytes = bincode::serialize(self)
+        let bytes = wincode::serialize(self)
             .map_err(|err| BaselineStoreError::Serialize(err.to_string()))?;
         std::fs::write(&self.path, bytes)?;
         Ok(())

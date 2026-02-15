@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT_DIR="${ROOT_DIR}/artifacts/package-agent"
 OUT_JSON="${OUT_DIR}/metrics.json"
 STAGE_DIR="${OUT_DIR}/stage"
+TOOLS_DIR="${OUT_DIR}/tools"
 NFPM_CORE_CFG="${OUT_DIR}/nfpm-core.yaml"
 NFPM_RULES_CFG="${OUT_DIR}/nfpm-rules.yaml"
 
@@ -16,6 +17,7 @@ RPM_ARCH="${EGUARD_AGENT_RPM_ARCH:-x86_64}"
 REAL_BUILD="${EGUARD_PACKAGE_REAL_BUILD:-0}"
 GENERATE_EPHEMERAL_GPG="${EGUARD_PACKAGE_GENERATE_EPHEMERAL_GPG:-0}"
 ALLOW_UNSIGNED="${EGUARD_PACKAGE_ALLOW_UNSIGNED:-1}"
+NFPM_VERSION="${EGUARD_NFPM_VERSION:-2.45.0}"
 
 AGENT_BINARY_TARGET_MB="${EGUARD_PACKAGE_AGENT_BINARY_TARGET_MB:-}"
 RULES_PACKAGE_TARGET_MB="5"
@@ -34,7 +36,9 @@ SEED_BASELINE_COMPRESSED_KB="10"
 DEFAULT_CONFIG_COMPRESSED_KB="5"
 SYSTEMD_UNIT_KB="1"
 
-mkdir -p "${OUT_DIR}/debian" "${OUT_DIR}/rpm" "${STAGE_DIR}"
+NFPM_BIN="nfpm"
+
+mkdir -p "${OUT_DIR}/debian" "${OUT_DIR}/rpm" "${STAGE_DIR}" "${TOOLS_DIR}"
 
 ensure_file() {
   local src="$1"
@@ -49,6 +53,95 @@ ensure_file() {
   else
     : >"${dst}"
   fi
+}
+
+create_zig_musl_wrapper() {
+  local path="$1"
+  local subcommand="$2"
+
+  cat >"${path}" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+args=()
+for arg in "\$@"; do
+  case "\${arg}" in
+    --target=x86_64-unknown-linux-musl)
+      args+=("--target=x86_64-linux-musl")
+      ;;
+    x86_64-unknown-linux-musl)
+      args+=("x86_64-linux-musl")
+      ;;
+    *)
+      args+=("\${arg}")
+      ;;
+  esac
+done
+exec zig ${subcommand} "\${args[@]}"
+EOF
+
+  chmod +x "${path}"
+}
+
+configure_musl_toolchain() {
+  if command -v x86_64-linux-musl-gcc >/dev/null 2>&1; then
+    return
+  fi
+
+  if ! command -v zig >/dev/null 2>&1; then
+    echo "x86_64-linux-musl-gcc not found and zig is unavailable" >&2
+    exit 1
+  fi
+
+  local cc_wrapper="${TOOLS_DIR}/zig-musl-cc"
+  local cxx_wrapper="${TOOLS_DIR}/zig-musl-cxx"
+  local ar_wrapper="${TOOLS_DIR}/zig-musl-ar"
+
+  if [[ ! -x "${cc_wrapper}" ]]; then
+    create_zig_musl_wrapper "${cc_wrapper}" "cc"
+  fi
+  if [[ ! -x "${cxx_wrapper}" ]]; then
+    create_zig_musl_wrapper "${cxx_wrapper}" "c++"
+  fi
+  if [[ ! -x "${ar_wrapper}" ]]; then
+    cat >"${ar_wrapper}" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+exec zig ar "$@"
+EOF
+    chmod +x "${ar_wrapper}"
+  fi
+
+  export CC_x86_64_unknown_linux_musl="${cc_wrapper}"
+  export CXX_x86_64_unknown_linux_musl="${cxx_wrapper}"
+  export AR_x86_64_unknown_linux_musl="${ar_wrapper}"
+
+  local rust_lld="${RUST_LLD_PATH:-$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld}"
+  if [[ -x "${rust_lld}" ]]; then
+    export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER="${rust_lld}"
+  else
+    export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER="${cc_wrapper}"
+  fi
+
+  echo "warning: x86_64-linux-musl-gcc missing; using zig-based musl wrappers in ${TOOLS_DIR}" >&2
+}
+
+ensure_nfpm() {
+  if command -v nfpm >/dev/null 2>&1; then
+    NFPM_BIN="$(command -v nfpm)"
+    return
+  fi
+
+  local archive="${TOOLS_DIR}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz"
+  local extracted="${TOOLS_DIR}/nfpm"
+
+  if [[ ! -x "${extracted}" ]]; then
+    echo "nfpm not found on PATH; downloading nfpm v${NFPM_VERSION} to ${TOOLS_DIR}" >&2
+    curl -sfL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz" -o "${archive}"
+    tar -xzf "${archive}" -C "${TOOLS_DIR}" nfpm
+    chmod +x "${extracted}"
+  fi
+
+  NFPM_BIN="${extracted}"
 }
 
 prepare_stage_payload() {
@@ -81,12 +174,17 @@ prepare_stage_payload() {
   for lib in "${ROOT_DIR}"/zig-out/lib/libeguard_*.a; do
     if [[ -f "${lib}" ]]; then
       have_asm_libs=1
+      while IFS= read -r member; do
+        [[ -n "${member}" ]] || continue
+        mkdir -p "${asm_temp_dir}/$(dirname "${member}")"
+      done < <(ar t "${lib}" 2>/dev/null || true)
       (cd "${asm_temp_dir}" && ar x "${lib}") || true
     fi
   done
 
-  if [[ "${have_asm_libs}" -eq 1 ]] && compgen -G "${asm_temp_dir}/*.o" >/dev/null; then
-    ar rcs "${asm_bundle}" "${asm_temp_dir}"/*.o
+  mapfile -t asm_objects < <(find "${asm_temp_dir}" -type f -name '*.o' | sort)
+  if [[ "${have_asm_libs}" -eq 1 ]] && [[ "${#asm_objects[@]}" -gt 0 ]]; then
+    ar rcs "${asm_bundle}" "${asm_objects[@]}"
   else
     : >"${asm_bundle}"
   fi
@@ -107,6 +205,7 @@ name: eguard-agent
 arch: ${DEB_ARCH}
 platform: linux
 version: "${VERSION}"
+release: "${RPM_RELEASE}"
 maintainer: eGuard Team <info@eguard.id>
 description: eGuard endpoint agent package
 license: GPL-2.0-or-later
@@ -153,7 +252,6 @@ contents:
     type: dir
 overrides:
   rpm:
-    release: ${RPM_RELEASE}
     depends:
       - systemd
 EOF
@@ -163,6 +261,7 @@ name: eguard-agent-rules
 arch: ${DEB_ARCH}
 platform: linux
 version: "${VERSION}"
+release: "${RPM_RELEASE}"
 maintainer: eGuard Team <info@eguard.id>
 description: Optional bootstrap rule bundle for eGuard endpoint agent
 license: GPL-2.0-or-later
@@ -177,7 +276,6 @@ contents:
     dst: /var/lib/eguard-agent/rules/ioc/default_ioc.txt
 overrides:
   rpm:
-    release: ${RPM_RELEASE}
     depends:
       - eguard-agent = ${VERSION}-${RPM_RELEASE}
 EOF
@@ -214,21 +312,18 @@ sign_packages_if_possible() {
 }
 
 build_real_packages() {
-  if ! command -v nfpm >/dev/null 2>&1; then
-    echo "nfpm is required when EGUARD_PACKAGE_REAL_BUILD=1" >&2
-    exit 1
-  fi
+  ensure_nfpm
 
   generate_nfpm_configs
 
-  nfpm package --packager deb --config "${NFPM_CORE_CFG}" \
+  "${NFPM_BIN}" package --packager deb --config "${NFPM_CORE_CFG}" \
     --target "${OUT_DIR}/debian/eguard-agent_${VERSION}_${DEB_ARCH}.deb"
-  nfpm package --packager deb --config "${NFPM_RULES_CFG}" \
+  "${NFPM_BIN}" package --packager deb --config "${NFPM_RULES_CFG}" \
     --target "${OUT_DIR}/debian/eguard-agent-rules_${VERSION}_${DEB_ARCH}.deb"
 
-  nfpm package --packager rpm --config "${NFPM_CORE_CFG}" \
+  "${NFPM_BIN}" package --packager rpm --config "${NFPM_CORE_CFG}" \
     --target "${OUT_DIR}/rpm/eguard-agent-${VERSION}-${RPM_RELEASE}.${RPM_ARCH}.rpm"
-  nfpm package --packager rpm --config "${NFPM_RULES_CFG}" \
+  "${NFPM_BIN}" package --packager rpm --config "${NFPM_RULES_CFG}" \
     --target "${OUT_DIR}/rpm/eguard-agent-rules-${VERSION}-${RPM_RELEASE}.${RPM_ARCH}.rpm"
 
   sign_packages_if_possible
@@ -246,6 +341,9 @@ if [[ "${EGUARD_ENABLE_LTO:-1}" == "1" ]]; then
   export CARGO_PROFILE_RELEASE_LTO="fat"
   export CARGO_PROFILE_RELEASE_CODEGEN_UNITS="1"
 fi
+
+configure_musl_toolchain
+
 cargo build --release --target x86_64-unknown-linux-musl -p agent-core
 zig build
 
