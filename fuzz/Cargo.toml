@@ -1,0 +1,29 @@
+[package]
+name = "eguard-agent-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+prost = "0.14"
+once_cell = "1"
+grpc-client = { path = "../crates/grpc-client" }
+detection = { path = "../crates/detection" }
+
+[[bin]]
+name = "protobuf_parse"
+path = "fuzz_targets/protobuf_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "detection_inputs"
+path = "fuzz_targets/detection_inputs.rs"
+test = false
+doc = false
+bench = false

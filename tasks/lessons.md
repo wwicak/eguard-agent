@@ -22,3 +22,4 @@
 - After AC document edits, always regenerate acceptance generated artifacts before claiming green; otherwise `generated_id_list_matches_acceptance_document` can fail despite most tests passing.
 - On hosts without `x86_64-linux-musl-gcc`, musl package builds can be recovered by using Zig wrappers for cc-rs/ring compilation and rust-lld for final musl linking; using Zig as both compiler and linker can trigger duplicate CRT symbol failures.
 - Zig-produced static archives may contain nested member paths (e.g., `.zig-cache/.../*.o`); package-stage archive extraction must create member directories before `ar x` and repack objects recursively, otherwise asm bundles can silently collapse to zero-byte archives.
+- When workflows/scripts rely on newly added files (fuzz harnesses, CI helper scripts, threat-intel gates), ensure those files are staged/tracked explicitly; leaving them untracked can create false-local-green runs that fail in CI/release branches.

@@ -1,0 +1,16 @@
+{
+  "suite": "release_profile_opt",
+  "recorded_at_utc": "2026-02-15T04:24:02Z",
+  "baseline_release_build_ms": 9,
+  "lto_mode": "thin",
+  "pgo": {
+    "enabled": 0,
+    "status": "disabled",
+    "llvm_profdata_available": false
+  },
+  "bolt": {
+    "enabled": 0,
+    "status": "disabled",
+    "llvm_bolt_available": false
+  }
+}

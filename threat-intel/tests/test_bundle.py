@@ -1399,6 +1399,245 @@ class TestAttackBurndownScoreboard(unittest.TestCase):
         self.assertIsNone(report.get("trend", {}).get("delta_uncovered"))
 
 
+class TestSignatureMLReadinessGate(unittest.TestCase):
+    """Validate signature ML readiness scoring behavior."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.manifest_path = os.path.join(self.tmpdir, "manifest.json")
+        self.coverage_path = os.path.join(self.tmpdir, "coverage.json")
+        self.attack_coverage_path = os.path.join(self.tmpdir, "attack-coverage.json")
+        self.critical_gate_path = os.path.join(self.tmpdir, "attack-critical-technique-gate.json")
+        self.critical_regression_path = os.path.join(self.tmpdir, "attack-critical-regression.json")
+        self.owner_streak_path = os.path.join(self.tmpdir, "attack-critical-owner-streak-gate.json")
+        self.burndown_path = os.path.join(self.tmpdir, "attack-burndown-scoreboard.json")
+        self.previous_path = os.path.join(self.tmpdir, "previous-signature-ml-readiness.json")
+        self.output_path = os.path.join(self.tmpdir, "signature-ml-readiness.json")
+        self.script_path = os.path.join(PROCESSING_DIR, "signature_ml_readiness_gate.py")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir)
+
+    def _write_manifest(self, **overrides):
+        payload = {
+            "version": "2026.02.15.0100",
+            "cve_epss_count": 12000,
+        }
+        payload.update(overrides)
+        with open(self.manifest_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+
+    def _write_coverage(self, *, strong: bool):
+        if strong:
+            measured = {
+                "signature_total": 7200,
+                "database_total": 26400,
+                "cve_count": 22000,
+                "cve_kev_count": 320,
+                "yara_source_count": 5,
+                "sigma_source_count": 4,
+            }
+            observed_source_rule_counts = {
+                "yara": {
+                    "yara-forge": 1200,
+                    "elastic": 900,
+                    "gcti": 600,
+                    "reversinglabs": 300,
+                    "bartblaze": 200,
+                },
+                "sigma": {
+                    "rules": 220,
+                    "rules-emerging-threats": 130,
+                    "rules-threat-hunting": 90,
+                    "mdecrevoisier": 60,
+                },
+            }
+        else:
+            measured = {
+                "signature_total": 950,
+                "database_total": 5200,
+                "cve_count": 1100,
+                "cve_kev_count": 55,
+                "yara_source_count": 1,
+                "sigma_source_count": 1,
+            }
+            observed_source_rule_counts = {
+                "yara": {
+                    "yara-forge": 950,
+                },
+                "sigma": {
+                    "rules": 120,
+                },
+            }
+
+        payload = {
+            "suite": "bundle_signature_coverage_gate",
+            "status": "pass",
+            "thresholds": {
+                "min_signature_total": 900,
+                "min_database_total": 5000,
+                "min_cve": 1000,
+                "min_cve_kev": 50,
+                "min_yara_sources": 3,
+                "min_sigma_sources": 2,
+            },
+            "measured": measured,
+            "observed_source_rule_counts": observed_source_rule_counts,
+        }
+        with open(self.coverage_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+
+    def _write_attack_coverage(self):
+        payload = {
+            "suite": "attack_coverage_gate",
+            "status": "pass",
+            "thresholds": {
+                "min_techniques": 80,
+                "min_tactics": 10,
+                "min_sigma_rules_with_attack": 150,
+                "min_elastic_rules_with_attack": 50,
+            },
+            "measured": {
+                "total_techniques": 132,
+                "total_tactics": 13,
+                "sigma_rules_with_attack": 260,
+                "elastic_rules_with_attack": 120,
+            },
+        }
+        with open(self.attack_coverage_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+
+    def _write_critical_reports(self):
+        critical_gate = {
+            "suite": "attack_critical_technique_gate",
+            "status": "pass",
+            "measured": {
+                "critical_total": 24,
+                "covered_count": 22,
+                "covered_ratio": 0.9167,
+                "missing_count": 2,
+            },
+        }
+        with open(self.critical_gate_path, "w", encoding="utf-8") as f:
+            json.dump(critical_gate, f)
+
+        critical_regression = {
+            "suite": "attack_critical_regression_gate",
+            "status": "pass",
+        }
+        with open(self.critical_regression_path, "w", encoding="utf-8") as f:
+            json.dump(critical_regression, f)
+
+        owner_streak = {
+            "suite": "attack_critical_owner_streak_gate",
+            "status": "pass",
+        }
+        with open(self.owner_streak_path, "w", encoding="utf-8") as f:
+            json.dump(owner_streak, f)
+
+        burndown = {
+            "suite": "attack_burndown_scoreboard",
+            "trend": {
+                "delta_uncovered": -1,
+            },
+        }
+        with open(self.burndown_path, "w", encoding="utf-8") as f:
+            json.dump(burndown, f)
+
+    def _write_previous(self, final_score: float):
+        payload = {
+            "suite": "signature_ml_readiness_gate",
+            "scores": {
+                "final_score": final_score,
+            },
+        }
+        with open(self.previous_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+
+    def _run_gate(self, include_optional: bool, *extra_args: str):
+        cmd = [
+            sys.executable,
+            self.script_path,
+            "--manifest",
+            self.manifest_path,
+            "--coverage",
+            self.coverage_path,
+            "--output",
+            self.output_path,
+        ]
+        if include_optional:
+            cmd.extend(
+                [
+                    "--attack-coverage",
+                    self.attack_coverage_path,
+                    "--critical-gate",
+                    self.critical_gate_path,
+                    "--critical-regression",
+                    self.critical_regression_path,
+                    "--critical-owner-streak",
+                    self.owner_streak_path,
+                    "--burndown-scoreboard",
+                    self.burndown_path,
+                ]
+            )
+        cmd.extend(extra_args)
+        return subprocess.run(cmd, capture_output=True, text=True)
+
+    def test_signature_ml_readiness_scores_strong_bundle(self):
+        self._write_manifest(cve_epss_count=12000)
+        self._write_coverage(strong=True)
+        self._write_attack_coverage()
+        self._write_critical_reports()
+
+        result = self._run_gate(True, "--min-final-score", "88")
+        self.assertEqual(result.returncode, 0, msg=f"gate failed: {result.stdout}\n{result.stderr}")
+
+        with open(self.output_path, "r", encoding="utf-8") as f:
+            report = json.load(f)
+        self.assertEqual(report.get("status"), "pass")
+        self.assertIn(report.get("readiness_tier"), {"strong", "elite"})
+        self.assertGreaterEqual(report.get("scores", {}).get("final_score", 0), 88)
+
+    def test_signature_ml_readiness_shadow_alerts_on_large_drop(self):
+        self._write_manifest(cve_epss_count=50)
+        self._write_coverage(strong=False)
+        self._write_previous(95.0)
+
+        result = self._run_gate(
+            False,
+            "--previous",
+            self.previous_path,
+            "--min-final-score",
+            "88",
+            "--max-score-drop",
+            "2",
+        )
+        self.assertEqual(result.returncode, 0, msg=f"gate failed: {result.stdout}\n{result.stderr}")
+
+        with open(self.output_path, "r", encoding="utf-8") as f:
+            report = json.load(f)
+        self.assertEqual(report.get("status"), "shadow_alert")
+        failures = report.get("failures", [])
+        self.assertTrue(any("final_score below threshold" in item for item in failures))
+        self.assertTrue(any("score_drop beyond threshold" in item for item in failures))
+
+    def test_signature_ml_readiness_enforced_mode_fails(self):
+        self._write_manifest(cve_epss_count=0)
+        self._write_coverage(strong=False)
+
+        result = self._run_gate(
+            False,
+            "--min-final-score",
+            "88",
+            "--fail-on-threshold",
+            "1",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        with open(self.output_path, "r", encoding="utf-8") as f:
+            report = json.load(f)
+        self.assertEqual(report.get("status"), "fail")
+
+
 class TestProcessingScripts(unittest.TestCase):
     """Smoke tests for processing scripts (import check)."""
 
@@ -1409,6 +1648,7 @@ class TestProcessingScripts(unittest.TestCase):
         "attack_gap_burndown_gate", "attack_critical_technique_gate",
         "attack_critical_regression_gate", "attack_critical_owner_streak_gate",
         "attack_burndown_scoreboard", "update_attack_critical_regression_history",
+        "signature_ml_readiness_gate",
         "ed25519_sign", "ed25519_verify",
     ]
 

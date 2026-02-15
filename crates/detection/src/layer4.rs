@@ -70,19 +70,37 @@ pub struct KillChainTemplate {
     pub max_inter_stage_secs: i64,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Layer4EvictionCounters {
+    pub retention_prune: u64,
+    pub node_cap_evict: u64,
+    pub edge_cap_evict: u64,
+}
+
+const DEFAULT_LAYER4_MAX_NODES: usize = 8_192;
+const DEFAULT_LAYER4_MAX_EDGES: usize = 32_768;
+
 #[derive(Debug, Clone)]
 struct ProcessGraph {
     nodes: HashMap<u32, GraphNode>,
     children: HashMap<u32, HashSet<u32>>,
     window_secs: i64,
+    max_nodes: usize,
+    max_edges: usize,
+    edge_count: usize,
+    eviction_counters: Layer4EvictionCounters,
 }
 
 impl ProcessGraph {
-    fn new(window_secs: i64) -> Self {
+    fn with_capacity(window_secs: i64, max_nodes: usize, max_edges: usize) -> Self {
         Self {
             nodes: HashMap::new(),
             children: HashMap::new(),
             window_secs,
+            max_nodes: max_nodes.max(1),
+            max_edges: max_edges.max(1),
+            edge_count: 0,
+            eviction_counters: Layer4EvictionCounters::default(),
         }
     }
 
@@ -90,6 +108,7 @@ impl ProcessGraph {
         if matches!(event.event_class, EventClass::ProcessExit) {
             self.observe_process_exit(event.pid, event.ts_unix);
             self.prune(event.ts_unix);
+            self.enforce_capacity();
             return;
         }
 
@@ -145,31 +164,76 @@ impl ProcessGraph {
         };
 
         if reset_for_exec {
-            self.children.remove(&event.pid);
+            self.remove_outgoing_links(event.pid);
         }
 
         if previous_ppid != event.ppid {
             self.remove_child_link(previous_ppid, event.pid);
         }
 
-        self.children
-            .entry(event.ppid)
-            .or_default()
-            .insert(event.pid);
+        self.insert_child_link(event.ppid, event.pid);
 
         self.prune(event.ts_unix);
+        self.enforce_capacity();
+    }
+
+    fn insert_child_link(&mut self, parent_pid: u32, child_pid: u32) {
+        let inserted = self
+            .children
+            .entry(parent_pid)
+            .or_default()
+            .insert(child_pid);
+        if inserted {
+            self.edge_count = self.edge_count.saturating_add(1);
+        }
     }
 
     fn remove_child_link(&mut self, parent_pid: u32, child_pid: u32) {
+        let mut removed = false;
         let mut remove_parent = false;
         if let Some(children) = self.children.get_mut(&parent_pid) {
-            children.remove(&child_pid);
+            removed = children.remove(&child_pid);
             remove_parent = children.is_empty();
+        }
+
+        if removed {
+            self.edge_count = self.edge_count.saturating_sub(1);
         }
 
         if remove_parent {
             self.children.remove(&parent_pid);
         }
+    }
+
+    fn remove_outgoing_links(&mut self, pid: u32) {
+        if let Some(children) = self.children.remove(&pid) {
+            self.edge_count = self.edge_count.saturating_sub(children.len());
+        }
+    }
+
+    fn remove_incoming_links(&mut self, pid: u32) {
+        let mut empty_parents = Vec::new();
+        for (parent_pid, children) in self.children.iter_mut() {
+            if children.remove(&pid) {
+                self.edge_count = self.edge_count.saturating_sub(1);
+            }
+            if children.is_empty() {
+                empty_parents.push(*parent_pid);
+            }
+        }
+
+        for parent_pid in empty_parents {
+            self.children.remove(&parent_pid);
+        }
+    }
+
+    fn remove_node(&mut self, pid: u32) -> bool {
+        if self.nodes.remove(&pid).is_none() {
+            return false;
+        }
+        self.remove_outgoing_links(pid);
+        self.remove_incoming_links(pid);
+        true
     }
 
     fn observe_process_exit(&mut self, pid: u32, event_ts: i64) {
@@ -182,12 +246,40 @@ impl ProcessGraph {
             return;
         }
 
-        let parent_pid = node.ppid;
-        self.nodes.remove(&pid);
-        self.children.remove(&pid);
-        self.remove_child_link(parent_pid, pid);
-        for child_set in self.children.values_mut() {
-            child_set.remove(&pid);
+        let _ = self.remove_node(pid);
+    }
+
+    fn select_oldest_pid(&self) -> Option<u32> {
+        self.nodes
+            .iter()
+            .min_by(|(left_pid, left_node), (right_pid, right_node)| {
+                left_node
+                    .last_seen
+                    .cmp(&right_node.last_seen)
+                    .then_with(|| left_pid.cmp(right_pid))
+            })
+            .map(|(pid, _)| *pid)
+    }
+
+    fn enforce_capacity(&mut self) {
+        while self.nodes.len() > self.max_nodes {
+            let Some(evict_pid) = self.select_oldest_pid() else {
+                break;
+            };
+            if self.remove_node(evict_pid) {
+                self.eviction_counters.node_cap_evict =
+                    self.eviction_counters.node_cap_evict.saturating_add(1);
+            }
+        }
+
+        while self.edge_count > self.max_edges {
+            let Some(evict_pid) = self.select_oldest_pid() else {
+                break;
+            };
+            if self.remove_node(evict_pid) {
+                self.eviction_counters.edge_cap_evict =
+                    self.eviction_counters.edge_cap_evict.saturating_add(1);
+            }
         }
     }
 
@@ -237,13 +329,17 @@ impl ProcessGraph {
             })
             .collect();
 
+        let mut pruned = 0u64;
         for pid in stale {
-            self.nodes.remove(&pid);
-            self.children.remove(&pid);
-            for child_set in self.children.values_mut() {
-                child_set.remove(&pid);
+            if self.remove_node(pid) {
+                pruned = pruned.saturating_add(1);
             }
         }
+
+        self.eviction_counters.retention_prune = self
+            .eviction_counters
+            .retention_prune
+            .saturating_add(pruned);
     }
 }
 
@@ -254,8 +350,16 @@ pub struct Layer4Engine {
 
 impl Layer4Engine {
     pub fn new(window_secs: i64) -> Self {
+        Self::with_capacity(
+            window_secs,
+            DEFAULT_LAYER4_MAX_NODES,
+            DEFAULT_LAYER4_MAX_EDGES,
+        )
+    }
+
+    pub fn with_capacity(window_secs: i64, max_nodes: usize, max_edges: usize) -> Self {
         Self {
-            graph: ProcessGraph::new(window_secs),
+            graph: ProcessGraph::with_capacity(window_secs, max_nodes, max_edges),
             templates: Vec::new(),
         }
     }
@@ -337,6 +441,10 @@ impl Layer4Engine {
         hits
     }
 
+    pub fn eviction_counters(&self) -> Layer4EvictionCounters {
+        self.graph.eviction_counters
+    }
+
     fn max_template_depth(&self) -> usize {
         self.templates
             .iter()
@@ -393,9 +501,19 @@ impl Layer4Engine {
         self.templates.len()
     }
 
+    #[cfg(test)]
+    pub(crate) fn debug_contains_pid(&self, pid: u32) -> bool {
+        self.graph.nodes.contains_key(&pid)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn debug_eviction_counters(&self) -> Layer4EvictionCounters {
+        self.graph.eviction_counters
+    }
+
     #[cfg(all(test, not(miri)))]
     pub(crate) fn debug_graph_edge_count(&self) -> usize {
-        self.graph.children.values().map(|set| set.len()).sum()
+        self.graph.edge_count
     }
 
     #[cfg(all(test, not(miri)))]

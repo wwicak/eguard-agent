@@ -1,0 +1,32 @@
+{
+  "suite": "package-agent",
+  "recorded_at_utc": "2026-02-15T04:08:10Z",
+  "real_build": 1,
+  "version": "0.1.0",
+  "targets_mb": {
+    "agent_binary": null,
+    "rules_package": 5,
+    "full_install": 15,
+    "runtime_rss": 25,
+    "distribution_budget": 200
+  },
+  "component_budget": {
+    "agent_binary_compressed_mb": 7,
+    "ebpf_programs_compressed_kb": 100,
+    "asm_lib_compressed_kb": 50,
+    "seed_baseline_compressed_kb": 10,
+    "default_config_compressed_kb": 5,
+    "systemd_unit_kb": 1
+  },
+  "build_commands": [
+    "cargo build --release --target x86_64-unknown-linux-musl -p agent-core",
+    "zig build",
+    "strip target/x86_64-unknown-linux-musl/release/agent-core"
+  ],
+  "package_outputs": [
+    "debian/eguard-agent_0.1.0_amd64.deb",
+    "debian/eguard-agent-rules_0.1.0_amd64.deb",
+    "rpm/eguard-agent-0.1.0-1.x86_64.rpm",
+    "rpm/eguard-agent-rules-0.1.0-1.x86_64.rpm"
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "suite": "adversary_emulation_score_gate",
+  "status": "pass",
+  "history_status": "history_available",
+  "thresholds": {
+    "target_precision": 0.99,
+    "target_recall": 0.99,
+    "target_far_max": 0.2,
+    "weight_precision": 0.4,
+    "weight_recall": 0.4,
+    "weight_far": 0.2,
+    "focus_weight": 0.4,
+    "definite_weight": 0.25,
+    "very_high_weight": 0.2,
+    "high_weight": 0.15,
+    "min_scenarios": 12,
+    "min_malicious_events": 5,
+    "min_focus_score": 95.0,
+    "min_final_score": 92.0,
+    "max_score_drop": 2.0,
+    "fail_on_score_drop": true
+  },
+  "corpus": {
+    "scenario_count": 12,
+    "malicious_events": 24
+  },
+  "scores": {
+    "labels": {
+      "focus": 99.70760000000001,
+      "definite": 99.7099,
+      "very_high": 99.70760000000001,
+      "high": 99.70380000000002
+    },
+    "portfolio_score": 99.707605,
+    "coverage_multiplier": 1.0,
+    "scenario_coverage": 1.0,
+    "malicious_coverage": 1.0,
+    "focus_score": 99.70760000000001,
+    "final_score": 99.707605,
+    "previous_final_score": 99.707605,
+    "final_score_drop": 0.0
+  },
+  "failures": []
+}

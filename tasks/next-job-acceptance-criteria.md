@@ -8,7 +8,7 @@ These are intentionally kept outside `ACCEPTANCE_CRITERIA.md` until implementati
 ## Implementation Status (2026-02-15)
 
 - ✅ Implemented: `NXT-CR-001..005`, `NXT-CR-008..012`, `NXT-CR-013..016`
-- ✅ Completed operational closure: `NXT-CR-006` (verification-suite run in cargo-audit-enabled env; evidence: `artifacts/verification-suite/run-20260215-101200.log`)
+- ✅ Completed operational closure: `NXT-CR-006` (verification-suite run in cargo-audit-enabled env; latest evidence: `artifacts/verification-suite/run-20260215-110333.log`)
 - ✅ Completed operational closure: `NXT-CR-007` (commit slicing/PR hygiene finalized in isolated slices: `12198f2`, `70c34da`, `a24d2d0`, `330e46d`, `1e311ef`)
 - ✅ Local real package validation evidence added for `NXT-CR-004`: `artifacts/package-agent/metrics.json` (`real_build: 1`) and `artifacts/package-agent/verification.json` (`status: ok`, 2 deb + 2 rpm artifacts validated).
 

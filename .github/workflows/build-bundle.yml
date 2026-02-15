@@ -420,7 +420,11 @@ jobs:
             /tmp/attack-critical-regression-history.ndjson \
             /tmp/previous-attack-critical-regression-history.ndjson \
             /tmp/attack-burndown-scoreboard.json \
-            /tmp/previous-attack-burndown-scoreboard.json
+            /tmp/previous-attack-burndown-scoreboard.json \
+            /tmp/signature-ml-readiness.json \
+            /tmp/previous-signature-ml-readiness.json \
+            /tmp/signature-ml-readiness-trend.ndjson \
+            /tmp/previous-signature-ml-readiness-trend.ndjson
           LATEST_TAG="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=1" --jq '.[0].tag_name // ""' 2>/dev/null || true)"
           if [ -z "${LATEST_TAG}" ]; then
             echo "No previous release found; skipping regression baseline download"
@@ -471,6 +475,24 @@ jobs:
             fi
           else
             echo "No previous critical ATT&CK regression history asset found on ${LATEST_TAG}"
+          fi
+
+          if gh release download "${LATEST_TAG}" --repo "${GITHUB_REPOSITORY}" --pattern "signature-ml-readiness.json" --dir /tmp 2>/dev/null; then
+            if [ -f /tmp/signature-ml-readiness.json ]; then
+              mv /tmp/signature-ml-readiness.json /tmp/previous-signature-ml-readiness.json
+              echo "Downloaded previous signature ML readiness baseline"
+            fi
+          else
+            echo "No previous signature ML readiness asset found on ${LATEST_TAG}"
+          fi
+
+          if gh release download "${LATEST_TAG}" --repo "${GITHUB_REPOSITORY}" --pattern "signature-ml-readiness-trend.ndjson" --dir /tmp 2>/dev/null; then
+            if [ -f /tmp/signature-ml-readiness-trend.ndjson ]; then
+              mv /tmp/signature-ml-readiness-trend.ndjson /tmp/previous-signature-ml-readiness-trend.ndjson
+              echo "Downloaded previous signature ML readiness trend baseline"
+            fi
+          else
+            echo "No previous signature ML readiness trend asset found on ${LATEST_TAG}"
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -628,6 +650,47 @@ jobs:
             --output-json bundle/attack-burndown-scoreboard.json \
             --output-md bundle/attack-burndown-scoreboard.md
 
+      - name: Generate signature ML readiness report (shadow)
+        env:
+          EGUARD_ML_MIN_FINAL_SCORE: "88"
+          EGUARD_ML_MAX_SCORE_DROP: "3"
+          EGUARD_ML_FAIL_ON_THRESHOLD: "0"
+          EGUARD_ML_FAIL_ON_SCORE_DROP: "0"
+        run: |
+          python threat-intel/processing/signature_ml_readiness_gate.py \
+            --manifest bundle/manifest.json \
+            --coverage bundle/coverage-metrics.json \
+            --attack-coverage bundle/attack-coverage.json \
+            --critical-gate bundle/attack-critical-technique-gate.json \
+            --critical-regression bundle/attack-critical-regression.json \
+            --critical-owner-streak bundle/attack-critical-owner-streak-gate.json \
+            --burndown-scoreboard bundle/attack-burndown-scoreboard.json \
+            --previous /tmp/previous-signature-ml-readiness.json \
+            --output bundle/signature-ml-readiness.json \
+            --min-final-score "${EGUARD_ML_MIN_FINAL_SCORE}" \
+            --max-score-drop "${EGUARD_ML_MAX_SCORE_DROP}" \
+            --fail-on-threshold "${EGUARD_ML_FAIL_ON_THRESHOLD}" \
+            --fail-on-score-drop "${EGUARD_ML_FAIL_ON_SCORE_DROP}"
+
+      - name: Generate signature ML readiness trend report (shadow)
+        env:
+          EGUARD_ML_TREND_MAX_SCORE_DROP: "2.5"
+          EGUARD_ML_TREND_MAX_COMPONENT_DROP: "8"
+          EGUARD_ML_TREND_MAX_TIER_DROP: "1"
+          EGUARD_ML_TREND_MAX_CONSECUTIVE_ALERTS: "3"
+          EGUARD_ML_TREND_FAIL_ON_REGRESSION: "0"
+        run: |
+          python threat-intel/processing/signature_ml_readiness_trend_gate.py \
+            --current bundle/signature-ml-readiness.json \
+            --previous-trend /tmp/previous-signature-ml-readiness-trend.ndjson \
+            --output-trend bundle/signature-ml-readiness-trend.ndjson \
+            --output-report bundle/signature-ml-readiness-trend-report.json \
+            --max-score-drop "${EGUARD_ML_TREND_MAX_SCORE_DROP}" \
+            --max-component-drop "${EGUARD_ML_TREND_MAX_COMPONENT_DROP}" \
+            --max-tier-drop "${EGUARD_ML_TREND_MAX_TIER_DROP}" \
+            --max-consecutive-alerts "${EGUARD_ML_TREND_MAX_CONSECUTIVE_ALERTS}" \
+            --fail-on-regression "${EGUARD_ML_TREND_FAIL_ON_REGRESSION}"
+
       - name: Run threat-intel tests
         run: pytest -q threat-intel/tests/test_bundle.py
         env:
@@ -650,6 +713,9 @@ jobs:
             bundle/attack-critical-owner-streak-gate.json
             bundle/attack-burndown-scoreboard.json
             bundle/attack-burndown-scoreboard.md
+            bundle/signature-ml-readiness.json
+            bundle/signature-ml-readiness-trend.ndjson
+            bundle/signature-ml-readiness-trend-report.json
           retention-days: 14
 
       - name: Package bundle
@@ -744,6 +810,14 @@ jobs:
               attack_burndown = json.load(open('bundle/attack-burndown-scoreboard.json'))
           except Exception:
               attack_burndown = {}
+          try:
+              signature_ml_readiness = json.load(open('bundle/signature-ml-readiness.json'))
+          except Exception:
+              signature_ml_readiness = {}
+          try:
+              signature_ml_readiness_trend = json.load(open('bundle/signature-ml-readiness-trend-report.json'))
+          except Exception:
+              signature_ml_readiness_trend = {}
           src = m.get('sources', {})
           lines = [
               'Automated threat intelligence bundle — 6-layer detection.',
@@ -982,6 +1056,44 @@ jobs:
                   f'- Top uncovered critical (max 5): {top_preview_line}',
               ])
 
+          if signature_ml_readiness:
+              readiness_scores = signature_ml_readiness.get('scores', {})
+              if not isinstance(readiness_scores, dict):
+                  readiness_scores = {}
+              lines.extend([
+                  '',
+                  '## Signature ML Readiness (Shadow)',
+                  f'- Status: {signature_ml_readiness.get("status", "unknown")}',
+                  f'- Mode: {signature_ml_readiness.get("mode", "unknown")}',
+                  f'- Readiness tier: {signature_ml_readiness.get("readiness_tier", "unknown")}',
+                  f'- Final score: {readiness_scores.get("final_score", "n/a")}',
+                  f'- Previous final score: {readiness_scores.get("previous_final_score", "n/a")}',
+                  f'- Score delta: {readiness_scores.get("score_delta", "n/a")}',
+              ])
+
+          if signature_ml_readiness_trend:
+              trend_scores = signature_ml_readiness_trend.get('scores', {})
+              if not isinstance(trend_scores, dict):
+                  trend_scores = {}
+              trend_alerts = signature_ml_readiness_trend.get('alerts', {})
+              if not isinstance(trend_alerts, dict):
+                  trend_alerts = {}
+              trend_regressions = signature_ml_readiness_trend.get('regressions', [])
+              if not isinstance(trend_regressions, list):
+                  trend_regressions = []
+              lines.extend([
+                  '',
+                  '## Signature ML Readiness Trend (Shadow)',
+                  f'- Status: {signature_ml_readiness_trend.get("status", "unknown")}',
+                  f'- History status: {signature_ml_readiness_trend.get("history_status", "unknown")}',
+                  f'- Current final score: {trend_scores.get("current_final_score", "n/a")}',
+                  f'- Previous final score: {trend_scores.get("previous_final_score", "n/a")}',
+                  f'- Score drop: {trend_scores.get("score_drop", "n/a")}',
+                  f'- Projected consecutive alerts: {trend_alerts.get("projected_consecutive_alerts", "n/a")}',
+              ])
+              if trend_regressions:
+                  lines.append(f'- Regressions: {"; ".join(str(item) for item in trend_regressions)}')
+
           for category, names in src.items():
               names_str = ', '.join(names) if isinstance(names, list) else str(names)
               lines.append(f'- {category}: {names_str}')
@@ -1003,6 +1115,9 @@ jobs:
             "bundle/attack-critical-owner-streak-gate.json" \
             "bundle/attack-burndown-scoreboard.json" \
             "bundle/attack-burndown-scoreboard.md" \
+            "bundle/signature-ml-readiness.json" \
+            "bundle/signature-ml-readiness-trend.ndjson" \
+            "bundle/signature-ml-readiness-trend-report.json" \
             --title "Rule Bundle ${VERSION}" \
             --notes-file /tmp/release_notes.md
         env:

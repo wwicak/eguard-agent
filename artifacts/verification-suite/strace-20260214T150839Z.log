@@ -1,0 +1,95 @@
+execve("./target/release/agent-core", ["./target/release/agent-core", "--help"], 0x7fff51a86880 /* 34 vars */) = 0
+socketpair(AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK, 0, [6, 7]) = 0
+clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7f77d1a74990, parent_tid=0x7f77d1a74990, exit_signal=0, stack=0x7f77d1874000, stack_size=0x1ffd80, tls=0x7f77d1a746c0}strace: Process 1456569 attached
+ => {parent_tid=[1456569]}, 88) = 1456569
+[pid 1456568] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7f77d1873990, parent_tid=0x7f77d1873990, exit_signal=0, stack=0x7f77d1673000, stack_size=0x1ffd80, tls=0x7f77d18736c0}strace: Process 1456570 attached
+ => {parent_tid=[1456570]}, 88) = 1456570
+[pid 1456568] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7f77d1672990, parent_tid=0x7f77d1672990, exit_signal=0, stack=0x7f77d1472000, stack_size=0x1ffd80, tls=0x7f77d16726c0}strace: Process 1456571 attached
+ => {parent_tid=[1456571]}, 88) = 1456571
+[pid 1456568] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7f77d1471990, parent_tid=0x7f77d1471990, exit_signal=0, stack=0x7f77d1271000, stack_size=0x1ffd80, tls=0x7f77d14716c0}strace: Process 1456572 attached
+ => {parent_tid=[1456572]}, 88) = 1456572
+[pid 1456568] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7f77d1270990, parent_tid=0x7f77d1270990, exit_signal=0, stack=0x7f77d1070000, stack_size=0x1ffd80, tls=0x7f77d12706c0}strace: Process 1456573 attached
+ => {parent_tid=[1456573]}, 88) = 1456573
+[pid 1456568] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7f77d106f990, parent_tid=0x7f77d106f990, exit_signal=0, stack=0x7f77d0e6f000, stack_size=0x1ffd80, tls=0x7f77d106f6c0}strace: Process 1456574 attached
+ => {parent_tid=[1456574]}, 88) = 1456574
+[pid 1456568] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7f77d0e6e990, parent_tid=0x7f77d0e6e990, exit_signal=0, stack=0x7f77d0c6e000, stack_size=0x1ffd80, tls=0x7f77d0e6e6c0}strace: Process 1456575 attached
+ => {parent_tid=[1456575]}, 88) = 1456575
+[pid 1456568] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7f77d0c6a990, parent_tid=0x7f77d0c6a990, exit_signal=0, stack=0x7f77d0a6a000, stack_size=0x1ffd80, tls=0x7f77d0c6a6c0}strace: Process 1456576 attached
+ => {parent_tid=[1456576]}, 88) = 1456576
+[pid 1456568] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7f77d0a60990, parent_tid=0x7f77d0a60990, exit_signal=0, stack=0x7f77d0860000, stack_size=0x1ffd80, tls=0x7f77d0a606c0}strace: Process 1456577 attached
+ => {parent_tid=[1456577]}, 88) = 1456577
+[pid 1456568] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7f77d085c990, parent_tid=0x7f77d085c990, exit_signal=0, stack=0x7f77d065c000, stack_size=0x1ffd80, tls=0x7f77d085c6c0}strace: Process 1456578 attached
+ => {parent_tid=[1456578]}, 88) = 1456578
+[pid 1456568] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7f77d0658990, parent_tid=0x7f77d0658990, exit_signal=0, stack=0x7f77d0458000, stack_size=0x1ffd80, tls=0x7f77d06586c0}strace: Process 1456579 attached
+ => {parent_tid=[1456579]}, 88) = 1456579
+[pid 1456568] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7f77d0454990, parent_tid=0x7f77d0454990, exit_signal=0, stack=0x7f77d0254000, stack_size=0x1ffd80, tls=0x7f77d04546c0}strace: Process 1456580 attached
+ => {parent_tid=[1456580]}, 88) = 1456580
+[pid 1456568] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7f77d0250990, parent_tid=0x7f77d0250990, exit_signal=0, stack=0x7f77d0050000, stack_size=0x1ffd80, tls=0x7f77d02506c0}strace: Process 1456581 attached
+ => {parent_tid=[1456581]}, 88) = 1456581
+[pid 1456568] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7f779bfff990, parent_tid=0x7f779bfff990, exit_signal=0, stack=0x7f779bdff000, stack_size=0x1ffd80, tls=0x7f779bfff6c0}strace: Process 1456582 attached
+ => {parent_tid=[1456582]}, 88) = 1456582
+[pid 1456568] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7f779bdfe990, parent_tid=0x7f779bdfe990, exit_signal=0, stack=0x7f779bbfe000, stack_size=0x1ffd80, tls=0x7f779bdfe6c0}strace: Process 1456583 attached
+ => {parent_tid=[1456583]}, 88) = 1456583
+[pid 1456568] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7f779bbfd990, parent_tid=0x7f779bbfd990, exit_signal=0, stack=0x7f779b9fd000, stack_size=0x1ffd80, tls=0x7f779bbfd6c0}strace: Process 1456584 attached
+ => {parent_tid=[1456584]}, 88) = 1456584
+[pid 1456568] clone3(0x7ffc3ad7d140, 88strace: Process 1456585 attached
+) = 1456585
+[pid 1456585] socket(AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK, 0) = 9
+[pid 1456585] connect(9, 0x7f779b9b5c70, 110) = -1 ENOENT (No such file or directory)
+[pid 1456585] socket(AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK, 0) = 9
+[pid 1456585] connect(9, 0x7f779b9b5e60, 110) = -1 ENOENT (No such file or directory)
+[pid 1456585] socket(AF_INET, SOCK_DGRAM|SOCK_CLOEXEC|SOCK_NONBLOCK, IPPROTO_IP) = 9
+[pid 1456585] setsockopt(9, SOL_IP, IP_RECVERR, 0x7f779b9b42a4, 4) = 0
+[pid 1456585] connect(9, 0x7f779b9b7d8c, 16) = 0
+[pid 1456585] sendmmsg(9, 0x7f779b9b4440, 2, MSG_NOSIGNAL) = 2
+[pid 1456585] recvfrom(9, 0x7f779b9b5790, 2048, 0, 0x7f779b9b4420, 0x7f779b9b4400) = 43
+[pid 1456585] recvfrom(9, 0x7f7784003ab0, 65536, 0, 0x7f779b9b4420, 0x7f779b9b4400) = 43
+[pid 1456585] socket(AF_INET, SOCK_DGRAM|SOCK_CLOEXEC|SOCK_NONBLOCK, IPPROTO_IP) = 9
+[pid 1456585] setsockopt(9, SOL_IP, IP_RECVERR, 0x7f779b9b4754, 4) = 0
+[pid 1456585] connect(9, 0x7f779b9b7d8c, 16) = 0
+[pid 1456585] sendmmsg(9, 0x7f779b9b48f0, 2, MSG_NOSIGNAL) = 2
+[pid 1456585] recvfrom(9, 0x7f779b9b5790, 2048, 0, 0x7f779b9b48d0, 0x7f779b9b48b0) = 31
+[pid 1456585] recvfrom(9, 0x7f7784003ab0, 65536, 0, 0x7f779b9b48d0, 0x7f779b9b48b0) = 31
+[pid 1456585] socket(AF_INET, SOCK_DGRAM|SOCK_CLOEXEC|SOCK_NONBLOCK, IPPROTO_IP) = 9
+[pid 1456585] setsockopt(9, SOL_IP, IP_RECVERR, 0x7f779b9b42a4, 4) = 0
+[pid 1456585] connect(9, 0x7f779b9b7d8c, 16) = 0
+[pid 1456585] sendmmsg(9, 0x7f779b9b4440, 2, MSG_NOSIGNAL) = 2
+[pid 1456585] recvfrom(9, 0x7f779b9b5790, 2048, 0, 0x7f779b9b4420, 0x7f779b9b4400) = 43
+[pid 1456585] recvfrom(9, 0x7f7784003b00, 65536, 0, 0x7f779b9b4420, 0x7f779b9b4400) = 43
+[pid 1456585] socket(AF_INET, SOCK_DGRAM|SOCK_CLOEXEC|SOCK_NONBLOCK, IPPROTO_IP) = 9
+[pid 1456585] setsockopt(9, SOL_IP, IP_RECVERR, 0x7f779b9b4754, 4) = 0
+[pid 1456585] connect(9, 0x7f779b9b7d8c, 16) = 0
+[pid 1456585] sendmmsg(9, 0x7f779b9b48f0, 2, MSG_NOSIGNAL) = 2
+[pid 1456585] recvfrom(9, 0x7f779b9b5790, 2048, 0, 0x7f779b9b48d0, 0x7f779b9b48b0) = 31
+[pid 1456585] recvfrom(9, 0x7f7784003b00, 65536, 0, 0x7f779b9b48d0, 0x7f779b9b48b0) = 31
+[pid 1456585] socket(AF_INET, SOCK_DGRAM|SOCK_CLOEXEC|SOCK_NONBLOCK, IPPROTO_IP) = 9
+[pid 1456585] setsockopt(9, SOL_IP, IP_RECVERR, 0x7f779b9b42a4, 4) = 0
+[pid 1456585] connect(9, 0x7f779b9b7d8c, 16) = 0
+[pid 1456585] sendmmsg(9, 0x7f779b9b4440, 2, MSG_NOSIGNAL) = 2
+[pid 1456585] recvfrom(9, 0x7f779b9b5790, 2048, 0, 0x7f779b9b4420, 0x7f779b9b4400) = 43
+[pid 1456585] recvfrom(9, 0x7f7784003b50, 65536, 0, 0x7f779b9b4420, 0x7f779b9b4400) = 43
+[pid 1456585] socket(AF_INET, SOCK_DGRAM|SOCK_CLOEXEC|SOCK_NONBLOCK, IPPROTO_IP) = 9
+[pid 1456585] setsockopt(9, SOL_IP, IP_RECVERR, 0x7f779b9b4754, 4) = 0
+[pid 1456585] connect(9, 0x7f779b9b7d8c, 16) = 0
+[pid 1456585] sendmmsg(9, 0x7f779b9b48f0, 2, MSG_NOSIGNAL) = 2
+[pid 1456585] recvfrom(9, 0x7f779b9b5790, 2048, 0, 0x7f779b9b48d0, 0x7f779b9b48b0) = 31
+[pid 1456585] recvfrom(9, 0x7f7784003b50, 65536, 0, 0x7f779b9b48d0, 0x7f779b9b48b0) = 31
+[pid 1456585] exit(0)                   = ?
+[pid 1456585] +++ exited with 0 +++
+strace: Process 1456568 detached
+strace: Process 1456569 detached
+strace: Process 1456570 detached
+strace: Process 1456571 detached
+strace: Process 1456572 detached
+strace: Process 1456573 detached
+strace: Process 1456574 detached
+strace: Process 1456575 detached
+strace: Process 1456576 detached
+strace: Process 1456577 detached
+strace: Process 1456578 detached
+strace: Process 1456579 detached
+strace: Process 1456580 detached
+strace: Process 1456581 detached
+strace: Process 1456582 detached
+strace: Process 1456583 detached
+strace: Process 1456584 detached

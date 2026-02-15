@@ -1,0 +1,85 @@
+{
+  "suite": "detection_quality_gate",
+  "thresholds": {
+    "precision_min": 0.99,
+    "recall_min": 0.99,
+    "false_alarm_upper_max": 0.2,
+    "minimum_scenarios": 12
+  },
+  "corpus": {
+    "name": "adversarial_reference_v2",
+    "scenario_count": 12,
+    "total_events": 1034,
+    "malicious_events": 24
+  },
+  "measured": {
+    "threshold_focus": "very_high",
+    "tp": 11,
+    "fp": 0,
+    "fn": 0,
+    "benign_trials": 1023,
+    "precision": 1.0,
+    "recall": 1.0,
+    "false_alarm_upper_bound": 0.002924,
+    "by_confidence_threshold": {
+      "definite": {
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
+        "actual_positive": 3,
+        "predicted_positive": 3,
+        "benign_trials": 1031,
+        "precision": 1.0,
+        "recall": 1.0,
+        "false_alarm_upper_bound": 0.002901
+      },
+      "very_high": {
+        "tp": 11,
+        "fp": 0,
+        "fn": 0,
+        "actual_positive": 11,
+        "predicted_positive": 11,
+        "benign_trials": 1023,
+        "precision": 1.0,
+        "recall": 1.0,
+        "false_alarm_upper_bound": 0.002924
+      },
+      "high": {
+        "tp": 24,
+        "fp": 0,
+        "fn": 0,
+        "actual_positive": 24,
+        "predicted_positive": 24,
+        "benign_trials": 1010,
+        "precision": 1.0,
+        "recall": 1.0,
+        "false_alarm_upper_bound": 0.002962
+      },
+      "medium": {
+        "tp": 24,
+        "fp": 7,
+        "fn": 0,
+        "actual_positive": 24,
+        "predicted_positive": 31,
+        "benign_trials": 1010,
+        "precision": 0.774194,
+        "recall": 1.0,
+        "false_alarm_upper_bound": 1.0
+      },
+      "low": {
+        "tp": 24,
+        "fp": 7,
+        "fn": 0,
+        "actual_positive": 24,
+        "predicted_positive": 31,
+        "benign_trials": 1010,
+        "precision": 0.774194,
+        "recall": 1.0,
+        "false_alarm_upper_bound": 1.0
+      }
+    }
+  },
+  "recorded_at_utc": "2026-02-15T04:24:02Z",
+  "command": "cargo test -p detection tests::replay_quality_gate_emits_metrics_artifact -- --exact",
+  "wall_clock_ms": 12
+}

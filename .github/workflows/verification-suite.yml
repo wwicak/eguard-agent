@@ -257,6 +257,9 @@ jobs:
             artifacts/workflow-lint/metrics.json
             artifacts/verification-suite/run.log
             artifacts/bundle-signature-contract/metrics.json
+            artifacts/bundle-signature-contract/signature-ml-readiness.json
+            artifacts/bundle-signature-contract/signature-ml-readiness-trend.ndjson
+            artifacts/bundle-signature-contract/signature-ml-readiness-trend-report.json
             artifacts/detection-benchmark/metrics.json
             artifacts/detection-benchmark/baseline-metrics.json
             artifacts/detection-benchmark/regression-report.json

@@ -1,0 +1,7 @@
+{
+  "suite": "perf_profile_gate",
+  "recorded_at_utc": "2026-02-14T05:23:24Z",
+  "status": "skipped",
+  "reason": "perf_not_available",
+  "require_tools": 0
+}

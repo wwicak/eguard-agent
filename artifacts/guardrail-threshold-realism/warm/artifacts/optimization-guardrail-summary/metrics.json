@@ -1,0 +1,291 @@
+{
+  "suite": "optimization_guardrail_thresholds",
+  "status": "ok",
+  "failures": [],
+  "artifacts": {
+    "detection_benchmark": {
+      "suite": "detection_latency",
+      "recorded_at_utc": "2026-02-14T05:23:25Z",
+      "command": "cargo test -p detection tests::detection_latency_p99_stays_within_budget_for_reference_workload -- --exact",
+      "wall_clock_ms": 263
+    },
+    "runtime_tick_slo": {
+      "suite": "runtime_tick_slo",
+      "recorded_at_utc": "2026-02-14T05:23:25Z",
+      "command": "cargo test -p agent-core lifecycle::tests_observability::runtime_tick_p99_and_degraded_churn_stay_within_guardrails -- --exact",
+      "wall_clock_ms": 419
+    },
+    "replay_determinism": {
+      "suite": "replay_determinism",
+      "recorded_at_utc": "2026-02-14T05:23:26Z",
+      "command": "cargo test -p detection tests::replay_harness_is_deterministic -- --exact",
+      "wall_clock_ms": 218
+    },
+    "detection_quality_gate": {
+      "suite": "detection_quality_gate",
+      "thresholds": {
+        "precision_min": 0.99,
+        "recall_min": 0.99,
+        "false_alarm_upper_max": 0.2,
+        "minimum_scenarios": 12
+      },
+      "corpus": {
+        "name": "adversarial_reference_v2",
+        "scenario_count": 12,
+        "total_events": 1034,
+        "malicious_events": 24
+      },
+      "measured": {
+        "threshold_focus": "very_high",
+        "tp": 11,
+        "fp": 0,
+        "fn": 0,
+        "benign_trials": 1023,
+        "precision": 1.0,
+        "recall": 1.0,
+        "false_alarm_upper_bound": 0.002924,
+        "by_confidence_threshold": {
+          "definite": {
+            "tp": 3,
+            "fp": 0,
+            "fn": 0,
+            "actual_positive": 3,
+            "predicted_positive": 3,
+            "benign_trials": 1031,
+            "precision": 1.0,
+            "recall": 1.0,
+            "false_alarm_upper_bound": 0.002901
+          },
+          "very_high": {
+            "tp": 11,
+            "fp": 0,
+            "fn": 0,
+            "actual_positive": 11,
+            "predicted_positive": 11,
+            "benign_trials": 1023,
+            "precision": 1.0,
+            "recall": 1.0,
+            "false_alarm_upper_bound": 0.002924
+          },
+          "high": {
+            "tp": 24,
+            "fp": 0,
+            "fn": 0,
+            "actual_positive": 24,
+            "predicted_positive": 24,
+            "benign_trials": 1010,
+            "precision": 1.0,
+            "recall": 1.0,
+            "false_alarm_upper_bound": 0.002962
+          },
+          "medium": {
+            "tp": 24,
+            "fp": 7,
+            "fn": 0,
+            "actual_positive": 24,
+            "predicted_positive": 31,
+            "benign_trials": 1010,
+            "precision": 0.774194,
+            "recall": 1.0,
+            "false_alarm_upper_bound": 1.0
+          },
+          "low": {
+            "tp": 24,
+            "fp": 7,
+            "fn": 0,
+            "actual_positive": 24,
+            "predicted_positive": 31,
+            "benign_trials": 1010,
+            "precision": 0.774194,
+            "recall": 1.0,
+            "false_alarm_upper_bound": 1.0
+          }
+        }
+      },
+      "recorded_at_utc": "2026-02-14T05:23:26Z",
+      "command": "cargo test -p detection tests::replay_quality_gate_emits_metrics_artifact -- --exact",
+      "wall_clock_ms": 535
+    },
+    "ebpf_drop_rate_pressure": {
+      "suite": "ebpf_drop_rate_pressure",
+      "recorded_at_utc": "2026-02-14T05:23:26Z",
+      "command": "cargo test -p platform-linux ebpf::tests::drop_rate_stays_below_slo_for_reference_10k_event_batch -- --exact",
+      "wall_clock_ms": 219,
+      "drop_rate_slo": "< 1e-5"
+    },
+    "rule_push_slo": {
+      "suite": "rule_push_slo",
+      "recorded_at_utc": "2026-02-14T05:23:27Z",
+      "limits": {
+        "transfer_slo_seconds": 5,
+        "rollout_slo_seconds": 30,
+        "link_mbps": 1
+      },
+      "inputs": {
+        "bundle_bytes": 625000,
+        "agent_count": 30000,
+        "command_dispatch_per_sec": 1000,
+        "dispatch_probe_commands": 5000
+      },
+      "measured": {
+        "transfer_seconds_at_link_rate": 5.0,
+        "fleet_rollout_seconds": 30.0,
+        "transfer_probe_seconds_local_io": 0.003183,
+        "transfer_probe_effective_mbps_local_io": 1570.95,
+        "dispatch_probe_seconds": 0.050895,
+        "dispatch_probe_commands_per_sec": 98241.78,
+        "effective_commands_per_sec_used_for_rollout": 1000.0
+      }
+    },
+    "ebpf_resource_budget": {
+      "suite": "ebpf_resource_budget",
+      "recorded_at_utc": "2026-02-14T05:23:28Z",
+      "limits": {
+        "idle_cpu_pct": 0.05,
+        "active_cpu_pct": 0.5,
+        "peak_cpu_pct": 3,
+        "memory_rss_mb": 25,
+        "disk_io_kbps": 100,
+        "binary_size_mb": null,
+        "binary_size_enforced": false,
+        "startup_seconds": 2,
+        "detection_latency_ns": 500,
+        "lsm_block_latency_ms": 1
+      },
+      "measurement_commands": {
+        "idle_cpu": "pidstat -p $(pidof agent-core) 60",
+        "active_cpu": "pidstat -p $(pidof agent-core) 10 6",
+        "memory_rss": "ps -o rss= -p $(pidof agent-core)",
+        "disk_io": "pidstat -d -p $(pidof agent-core) 10 6",
+        "detection_latency": "cargo test -p detection tests::detection_latency_p99_stays_within_budget_for_reference_workload -- --exact",
+        "lsm_block_latency": "cargo test -p platform-linux ebpf::tests::parses_structured_lsm_block_payload -- --exact"
+      },
+      "measured": {
+        "release_build_wall_ms": 382,
+        "binary_size_bytes": 10362768,
+        "binary_size_mb": 9.882706,
+        "detection_latency_probe_wall_ms": 258,
+        "lsm_block_probe_wall_ms": 207,
+        "startup_probe_wall_ms": -1
+      },
+      "probe_status": {
+        "detection_latency": 0,
+        "lsm_block_latency": 0,
+        "startup": 0
+      }
+    },
+    "perf_profile_gate": {
+      "suite": "perf_profile_gate",
+      "recorded_at_utc": "2026-02-14T05:23:28Z",
+      "status": "skipped",
+      "reason": "perf_not_available",
+      "require_tools": 0
+    },
+    "release_profile_opt": {
+      "suite": "release_profile_opt",
+      "recorded_at_utc": "2026-02-14T05:23:28Z",
+      "baseline_release_build_ms": 384,
+      "lto_mode": "thin",
+      "pgo": {
+        "enabled": 0,
+        "status": "disabled",
+        "llvm_profdata_available": false
+      },
+      "bolt": {
+        "enabled": 0,
+        "status": "disabled",
+        "llvm_bolt_available": false
+      }
+    },
+    "detection_quality_trend_drift": {
+      "suite": "detection_quality_trend_drift",
+      "trend_path": "/home/dimas/eguard-agent/artifacts/detection-quality-gate/per-confidence-trend.ndjson",
+      "labels": [
+        "focus",
+        "definite",
+        "very_high",
+        "high"
+      ],
+      "bounds": {
+        "precision_drop_max": 0.01,
+        "recall_drop_max": 0.01,
+        "far_increase_max": 0.02
+      },
+      "comparisons": {
+        "focus": {
+          "previous": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "false_alarm_upper_bound": 0.002924
+          },
+          "current": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "false_alarm_upper_bound": 0.002924
+          },
+          "deltas": {
+            "precision_drop": 0.0,
+            "recall_drop": 0.0,
+            "false_alarm_upper_increase": 0.0
+          }
+        },
+        "definite": {
+          "previous": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "false_alarm_upper_bound": 0.002901
+          },
+          "current": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "false_alarm_upper_bound": 0.002901
+          },
+          "deltas": {
+            "precision_drop": 0.0,
+            "recall_drop": 0.0,
+            "false_alarm_upper_increase": 0.0
+          }
+        },
+        "very_high": {
+          "previous": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "false_alarm_upper_bound": 0.002924
+          },
+          "current": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "false_alarm_upper_bound": 0.002924
+          },
+          "deltas": {
+            "precision_drop": 0.0,
+            "recall_drop": 0.0,
+            "false_alarm_upper_increase": 0.0
+          }
+        },
+        "high": {
+          "previous": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "false_alarm_upper_bound": 0.002962
+          },
+          "current": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "false_alarm_upper_bound": 0.002962
+          },
+          "deltas": {
+            "precision_drop": 0.0,
+            "recall_drop": 0.0,
+            "false_alarm_upper_increase": 0.0
+          }
+        }
+      },
+      "regressions": [],
+      "status": "ok",
+      "entry_count": 34,
+      "previous_recorded_at_utc": "2026-02-14T05:23:23Z",
+      "current_recorded_at_utc": "2026-02-14T05:23:26Z"
+    }
+  }
+}

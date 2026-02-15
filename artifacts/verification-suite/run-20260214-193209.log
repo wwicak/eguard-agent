@@ -1,0 +1,306 @@
+    Fetching advisory database from `https://github.com/RustSec/advisory-db.git`
+      Loaded 920 security advisories (from /home/dimas/.cargo/advisory-db)
+    Updating crates.io index
+    Scanning Cargo.lock for vulnerabilities (337 crate dependencies)
+Crate:     bincode
+Version:   1.3.3
+Warning:   unmaintained
+Title:     Bincode is unmaintained
+Date:      2025-12-16
+ID:        RUSTSEC-2025-0141
+URL:       https://rustsec.org/advisories/RUSTSEC-2025-0141
+Dependency tree:
+bincode 1.3.3
+└── baseline 0.1.0
+    ├── agent-core 0.1.0
+    └── acceptance 0.1.0
+
+Crate:     rustls-pemfile
+Version:   2.2.0
+Warning:   unmaintained
+Title:     rustls-pemfile is unmaintained
+Date:      2025-11-28
+ID:        RUSTSEC-2025-0134
+URL:       https://rustsec.org/advisories/RUSTSEC-2025-0134
+Dependency tree:
+rustls-pemfile 2.2.0
+└── tonic 0.12.3
+    └── grpc-client 0.1.0
+        ├── agent-core 0.1.0
+        └── acceptance 0.1.0
+
+Crate:     lru
+Version:   0.12.5
+Warning:   unsound
+Title:     `IterMut` violates Stacked Borrows by invalidating internal pointer
+Date:      2026-01-07
+ID:        RUSTSEC-2026-0002
+URL:       https://rustsec.org/advisories/RUSTSEC-2026-0002
+Dependency tree:
+lru 0.12.5
+└── platform-linux 0.1.0
+    ├── agent-core 0.1.0
+    └── acceptance 0.1.0
+
+warning: 3 allowed warnings found
+    Checking detection v0.1.0 (/home/dimas/eguard-agent/crates/detection)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.22s
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.22s
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.21s
+     Running `fuzz/target/x86_64-unknown-linux-gnu/release/protobuf_parse -artifact_prefix=/home/dimas/eguard-agent/fuzz/artifacts/protobuf_parse/ -max_total_time=30 -verbosity=0 /home/dimas/eguard-agent/fuzz/corpus/protobuf_parse`
+INFO: Running with entropic power schedule (0xFF, 100).
+INFO:     4150 files found in /home/dimas/eguard-agent/fuzz/corpus/protobuf_parse
+INFO: -max_len is not provided; libFuzzer will not generate inputs larger than 4096 bytes
+INFO: seed corpus: files: 4150 min: 1b max: 3909b total: 335744b rss: 69Mb
+###### Recommended dictionary. ######
+"\006\000\000\000\000\000\000\000" # Uses: 12964
+"\377\377\377\377\377\377\377U" # Uses: 8931
+"          (     " # Uses: 5334
+"\002\377\377\377\377\377\377\377" # Uses: 5998
+"\377\377\377\377" # Uses: 5558
+"\001\000\000Q" # Uses: 5210
+"\002\017\000\000           (" # Uses: 3733
+"\001\000\000\000\000\000\000\000" # Uses: 2838
+"\000\000\000\223" # Uses: 2969
+"\005\000" # Uses: 2760
+"\001\000" # Uses: 1513
+"\000\000" # Uses: 943
+###### End of recommended dictionary. ######
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.21s
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.22s
+     Running `fuzz/target/x86_64-unknown-linux-gnu/release/detection_inputs -artifact_prefix=/home/dimas/eguard-agent/fuzz/artifacts/detection_inputs/ -max_total_time=30 -verbosity=0 /home/dimas/eguard-agent/fuzz/corpus/detection_inputs`
+INFO: Running with entropic power schedule (0xFF, 100).
+INFO:     2951 files found in /home/dimas/eguard-agent/fuzz/corpus/detection_inputs
+INFO: -max_len is not provided; libFuzzer will not generate inputs larger than 4096 bytes
+INFO: seed corpus: files: 2951 min: 1b max: 608b total: 614554b rss: 69Mb
+###### Recommended dictionary. ######
+"\030\000" # Uses: 608
+"-\000" # Uses: 392
+"/etc/passwd" # Uses: 361
+"\001\000\000\000\000\000\000\000" # Uses: 319
+"\377\377\377\377\377\377\377\377" # Uses: 350
+"\000\000\000\000\000\000\000\000" # Uses: 302
+"\016\000\000\000" # Uses: 318
+"\000\000\000\000\004\000\000\000\000\000\000" # Uses: 304
+"T\000\000\000\000\000\000\000" # Uses: 239
+"\022\000" # Uses: 254
+"\001\304" # Uses: 219
+"\000\000\000\226" # Uses: 227
+"\001\000\000\234" # Uses: 151
+"\001\307\034q\307\034q\310" # Uses: 125
+"\277\275\357\277\275\357\277\275\357\277" # Uses: 128
+"\013\000" # Uses: 132
+"\267\000" # Uses: 104
+")\000" # Uses: 74
+"\034\034\034\034\034" # Uses: 51
+"\006\000\000\000\000\000\000\000" # Uses: 36
+"::credentia" # Uses: 13
+"d\000" # Uses: 7
+"\020\000\000\000\000\000\000\000" # Uses: 5
+"L7!\253\226\004\000\000" # Uses: 2
+###### End of recommended dictionary. ######
+A sysroot for Miri is already available in `/home/dimas/.cache/miri`.
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running unittests src/lib.rs (target/miri/x86_64-unknown-linux-gnu/debug/deps/detection-bc35fd366712299c)
+warning: function `cuckoo_false_positive_rate` is never used
+  --> crates/detection/src/layer1.rs:11:15
+   |
+11 | pub(crate) fn cuckoo_false_positive_rate(bucket_size: u32, fingerprint_bits: u32) -> f64 {
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `base64ish_alphabet_ratio` is never used
+  --> crates/detection/src/layer1.rs:31:15
+   |
+31 | pub(crate) fn base64ish_alphabet_ratio(raw: &str) -> f64 {
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `passes_optional_alphabet_ratio_gate` is never used
+  --> crates/detection/src/layer1.rs:53:15
+   |
+53 | pub(crate) fn passes_optional_alphabet_ratio_gate(raw: &str, min_ratio: Option<f64>) -> bool {
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `debug_prefilter_load_factors` and `debug_prefilter_rebuilds` are never used
+   --> crates/detection/src/layer1.rs:519:19
+    |
+222 | impl IocLayer1 {
+    | -------------- methods in this implementation
+...
+519 |     pub(crate) fn debug_prefilter_load_factors(&self) -> (f64, f64, f64) {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+528 |     pub(crate) fn debug_prefilter_rebuilds(&self) -> usize {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `debug_automata_count` and `debug_subscription_edges` are never used
+   --> crates/detection/src/layer2.rs:645:19
+    |
+148 | impl TemporalEngine {
+    | ------------------- methods in this implementation
+...
+645 |     pub(crate) fn debug_automata_count(&self) -> usize {
+    |                   ^^^^^^^^^^^^^^^^^^^^
+...
+650 |     pub(crate) fn debug_subscription_edges(&self) -> usize {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `debug_graph_edge_count` and `debug_total_template_stages` are never used
+   --> crates/detection/src/layer4.rs:397:19
+    |
+255 | impl Layer4Engine {
+    | ----------------- methods in this implementation
+...
+397 |     pub(crate) fn debug_graph_edge_count(&self) -> usize {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^
+...
+402 |     pub(crate) fn debug_total_template_stages(&self) -> usize {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+running 61 tests
+test memory_scanner::tests::test_filter_regions_executable_and_anonymous ... ok
+test memory_scanner::tests::test_filter_regions_executable_only ... ok
+test memory_scanner::tests::test_find_suspicious_self ... ok
+test memory_scanner::tests::test_parse_maps_content ... ok
+test memory_scanner::tests::test_region_size ... ok
+test memory_scanner::tests::test_skip_special_regions ... ok
+test memory_scanner::tests::test_skip_tiny_regions ... ok
+test tests::aho_matcher_scan_runtime_scales_approximately_linearly_with_input_bytes ... ignored, runtime envelope assertions are not meaningful under miri
+test tests::aho_matcher_space_scales_with_total_pattern_bytes ... ok
+test tests::anomaly_engine_emits_medium_when_above_medium_threshold_only ... ok
+test tests::anomaly_engine_flags_distribution_shift ... ok
+test tests::anomaly_entropy_guard_requires_minimum_length ... ok
+test tests::anomaly_math_matches_probability_and_kl_formulas ... ok
+test tests::anomaly_monitor_state_remains_memory_bounded_under_long_streams ... ignored, long-stream anomaly churn test is too slow under miri
+test tests::calibration_threshold_matches_sanov_bound ... ok
+test tests::confidence_ordering_matches_policy ... ok
+test tests::confidence_policy_is_first_match_wins ... ok
+test tests::detection_latency_p99_stays_within_budget_for_reference_workload ... ignored, runtime latency assertions are not meaningful under miri
+test tests::detection_outcome_includes_rule_names_and_matched_fields_for_traceability ... ok
+test tests::detection_workspace_excludes_ml_framework_dependencies ... ignored, spawning rustc/cargo subprocesses is unsupported under miri
+test tests::drift_indicators_report_baseline_age_and_kl_quantiles_by_process_family ... ok
+test tests::engine_runs_all_layers ... ok
+test tests::entropy_flag_policy_requires_min_len_entropy_and_zscore_conditions ... ok
+test tests::entropy_math_matches_shannon_definition ... ok
+test tests::layer1_append_string_signatures_preserves_existing_patterns ... ok
+test tests::layer1_exact_verification_works ... ok
+test tests::layer1_loaded_entries_have_no_algorithmic_fn_and_unloaded_have_no_fp ... ok
+test tests::layer1_prefilter_negative_short_circuits_to_clean ... ignored, sqlite FFI is unsupported under miri
+test tests::layer1_startup_self_check_validates_known_entries_across_prefilter_and_exact_store ... ok
+test tests::layer4_evaluation_runtime_is_bounded_with_depth_limited_templates ... ignored, runtime envelope assertions are not meaningful under miri
+test tests::layer4_graph_state_is_pruned_by_sliding_window_to_stay_bounded ... ignored, graph pruning stress test is too slow under miri
+test tests::layer4_hit_is_scoped_to_current_event_lineage_and_does_not_replay_on_unrelated_events ... ok
+test tests::layer4_matches_default_template ... ok
+test tests::layer4_pid_reuse_does_not_inherit_stale_non_web_network_signal ... ok
+test tests::layer4_template_matching_is_bounded_by_declared_depth ... ok
+test tests::replay_harness_is_deterministic ... ok
+test tests::replay_quality_gate_emits_metrics_artifact ... ignored, artifact-writing replay quality gate is too slow under miri
+test tests::replay_reports_precision_recall_and_false_alarm_upper_bound_by_confidence ... ignored, adversarial replay quality corpus is too slow under miri
+test tests::robust_zscore_uses_median_and_mad_baseline ... ok
+test tests::sigma_rules_load_from_directory ... ok
+test tests::sigma_yaml_compiles_to_bounded_temporal_ast ... ok
+test tests::sigma_yaml_missing_within_secs_is_rejected ... ok
+test tests::sigma_yaml_rule_compiles_and_fires ... ok
+test tests::temporal_engine_accepts_events_within_reorder_tolerance ... ok
+test tests::temporal_engine_detects_privilege_escalation_pattern ... ok
+test tests::temporal_engine_detects_webshell_pattern ... ok
+test tests::temporal_engine_enforces_stage_window ... ok
+test tests::temporal_engine_entity_isolation_prevents_cross_pid_matches ... ok
+test tests::temporal_engine_eviction_counters_track_retention_and_capacity_reasons ... ok
+test tests::temporal_engine_pid_metadata_capacity_evicts_oldest_then_tie_breaks_by_pid ... ok
+test tests::temporal_engine_pid_reuse_process_exec_clears_stale_pending_webshell_state ... ok
+test tests::temporal_engine_pid_reuse_without_exec_observation_does_not_continue_stale_chain ... ok
+test tests::temporal_engine_process_exit_teardown_is_idempotent_and_ignores_stale_out_of_order_exit ... ok
+test tests::temporal_engine_process_exit_tears_down_state_and_metadata_immediately ... ok
+test tests::temporal_engine_prunes_stale_state_and_pid_metadata_after_retention_horizon ... ok
+test tests::temporal_engine_rejects_reorder_beyond_tolerance ... ok
+test tests::temporal_engine_rejects_stage_restart_from_timestamp_skew_beyond_tolerance ... ok
+test tests::temporal_engine_state_capacity_evicts_oldest_pending_chain_deterministically ... ok
+test tests::yara_rule_match_escalates_to_definite ... ok
+test yara_engine::tests::loads_rules_from_directory ... ok
+test yara_engine::tests::parses_and_scans_rule_source ... ok
+
+test result: ok. 52 passed; 0 failed; 9 ignored; 0 measured; 0 filtered out; finished in 103.62s
+
+    Finished `release` profile [optimized] target(s) in 0.35s
+[verification-suite] checksec unavailable; skipping AC-VER-027 hardening probe
+execve("./target/release/agent-core", ["./target/release/agent-core", "--help"], 0x7ffeffd4ee80 /* 34 vars */) = 0
+socketpair(AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK, 0, [6, 7]) = 0
+clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7fc4fcd44990, parent_tid=0x7fc4fcd44990, exit_signal=0, stack=0x7fc4fcb44000, stack_size=0x1ffd80, tls=0x7fc4fcd446c0}strace: Process 949942 attached
+ => {parent_tid=[949942]}, 88) = 949942
+[pid 949941] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7fc4fcb43990, parent_tid=0x7fc4fcb43990, exit_signal=0, stack=0x7fc4fc943000, stack_size=0x1ffd80, tls=0x7fc4fcb436c0}strace: Process 949943 attached
+ => {parent_tid=[949943]}, 88) = 949943
+[pid 949941] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7fc4fc942990, parent_tid=0x7fc4fc942990, exit_signal=0, stack=0x7fc4fc742000, stack_size=0x1ffd80, tls=0x7fc4fc9426c0}strace: Process 949944 attached
+ => {parent_tid=[949944]}, 88) = 949944
+[pid 949941] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7fc4fc741990, parent_tid=0x7fc4fc741990, exit_signal=0, stack=0x7fc4fc541000, stack_size=0x1ffd80, tls=0x7fc4fc7416c0}strace: Process 949945 attached
+ => {parent_tid=[949945]}, 88) = 949945
+[pid 949941] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7fc4fc540990, parent_tid=0x7fc4fc540990, exit_signal=0, stack=0x7fc4fc340000, stack_size=0x1ffd80, tls=0x7fc4fc5406c0}strace: Process 949946 attached
+ => {parent_tid=[949946]}, 88) = 949946
+[pid 949941] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7fc4fc33f990, parent_tid=0x7fc4fc33f990, exit_signal=0, stack=0x7fc4fc13f000, stack_size=0x1ffd80, tls=0x7fc4fc33f6c0}strace: Process 949947 attached
+ => {parent_tid=[949947]}, 88) = 949947
+[pid 949941] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7fc4e7fff990, parent_tid=0x7fc4e7fff990, exit_signal=0, stack=0x7fc4e7dff000, stack_size=0x1ffd80, tls=0x7fc4e7fff6c0}strace: Process 949948 attached
+ => {parent_tid=[949948]}, 88) = 949948
+[pid 949941] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7fc4e7dfe990, parent_tid=0x7fc4e7dfe990, exit_signal=0, stack=0x7fc4e7bfe000, stack_size=0x1ffd80, tls=0x7fc4e7dfe6c0}strace: Process 949949 attached
+ => {parent_tid=[949949]}, 88) = 949949
+[pid 949941] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7fc4e7bfd990, parent_tid=0x7fc4e7bfd990, exit_signal=0, stack=0x7fc4e79fd000, stack_size=0x1ffd80, tls=0x7fc4e7bfd6c0}strace: Process 949950 attached
+ => {parent_tid=[949950]}, 88) = 949950
+[pid 949941] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7fc4e79fc990, parent_tid=0x7fc4e79fc990, exit_signal=0, stack=0x7fc4e77fc000, stack_size=0x1ffd80, tls=0x7fc4e79fc6c0}strace: Process 949951 attached
+ => {parent_tid=[949951]}, 88) = 949951
+[pid 949941] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7fc4e77fb990, parent_tid=0x7fc4e77fb990, exit_signal=0, stack=0x7fc4e75fb000, stack_size=0x1ffd80, tls=0x7fc4e77fb6c0}strace: Process 949952 attached
+ => {parent_tid=[949952]}, 88) = 949952
+[pid 949941] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7fc4e75fa990, parent_tid=0x7fc4e75fa990, exit_signal=0, stack=0x7fc4e73fa000, stack_size=0x1ffd80, tls=0x7fc4e75fa6c0}strace: Process 949953 attached
+ => {parent_tid=[949953]}, 88) = 949953
+[pid 949941] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7fc4e73f9990, parent_tid=0x7fc4e73f9990, exit_signal=0, stack=0x7fc4e71f9000, stack_size=0x1ffd80, tls=0x7fc4e73f96c0}strace: Process 949954 attached
+ => {parent_tid=[949954]}, 88) = 949954
+[pid 949941] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7fc4e71f8990, parent_tid=0x7fc4e71f8990, exit_signal=0, stack=0x7fc4e6ff8000, stack_size=0x1ffd80, tls=0x7fc4e71f86c0}strace: Process 949955 attached
+ => {parent_tid=[949955]}, 88) = 949955
+[pid 949941] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7fc4e6ff7990, parent_tid=0x7fc4e6ff7990, exit_signal=0, stack=0x7fc4e6df7000, stack_size=0x1ffd80, tls=0x7fc4e6ff76c0}strace: Process 949956 attached
+ => {parent_tid=[949956]}, 88) = 949956
+[pid 949941] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7fc4e6df6990, parent_tid=0x7fc4e6df6990, exit_signal=0, stack=0x7fc4e6bf6000, stack_size=0x1ffd80, tls=0x7fc4e6df66c0}strace: Process 949957 attached
+ => {parent_tid=[949957]}, 88) = 949957
+[pid 949941] clone3(0x7ffcb34dfec0, 88strace: Process 949958 attached
+) = 949958
+[pid 949958] socket(AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK, 0) = 9
+[pid 949958] connect(9, 0x7fc4e6bf3c70, 110) = -1 ENOENT (No such file or directory)
+[pid 949958] socket(AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK, 0) = 9
+[pid 949958] connect(9, 0x7fc4e6bf3e60, 110) = -1 ENOENT (No such file or directory)
+[pid 949958] socket(AF_INET, SOCK_DGRAM|SOCK_CLOEXEC|SOCK_NONBLOCK, IPPROTO_IP) = 9
+[pid 949958] setsockopt(9, SOL_IP, IP_RECVERR, 0x7fc4e6bf22a4, 4) = 0
+[pid 949958] connect(9, 0x7fc4e6bf5d8c, 16) = 0
+[pid 949958] sendmmsg(9, 0x7fc4e6bf2440, 2, MSG_NOSIGNAL) = 2
+[pid 949958] recvfrom(9, 0x7fc4e6bf3790, 2048, 0, 0x7fc4e6bf2420, 0x7fc4e6bf2400) = 43
+[pid 949958] recvfrom(9, 0x7fc4b0003aa0, 65536, 0, 0x7fc4e6bf2420, 0x7fc4e6bf2400) = 43
+[pid 949958] socket(AF_INET, SOCK_DGRAM|SOCK_CLOEXEC|SOCK_NONBLOCK, IPPROTO_IP) = 9
+[pid 949958] setsockopt(9, SOL_IP, IP_RECVERR, 0x7fc4e6bf2754, 4) = 0
+[pid 949958] connect(9, 0x7fc4e6bf5d8c, 16) = 0
+[pid 949958] sendmmsg(9, 0x7fc4e6bf28f0, 2, MSG_NOSIGNAL) = 2
+[pid 949958] recvfrom(9, 0x7fc4e6bf3790, 2048, 0, 0x7fc4e6bf28d0, 0x7fc4e6bf28b0) = 31
+[pid 949958] recvfrom(9, 0x7fc4b0003aa0, 65536, 0, 0x7fc4e6bf28d0, 0x7fc4e6bf28b0) = 31
+[pid 949958] socket(AF_INET, SOCK_DGRAM|SOCK_CLOEXEC|SOCK_NONBLOCK, IPPROTO_IP) = 9
+[pid 949958] setsockopt(9, SOL_IP, IP_RECVERR, 0x7fc4e6bf22a4, 4) = 0
+[pid 949958] connect(9, 0x7fc4e6bf5d8c, 16) = 0
+[pid 949958] sendmmsg(9, 0x7fc4e6bf2440, 2, MSG_NOSIGNAL) = 2
+[pid 949958] recvfrom(9, 0x7fc4e6bf3790, 2048, 0, 0x7fc4e6bf2420, 0x7fc4e6bf2400) = 43
+[pid 949958] recvfrom(9, 0x7fc4b0003af0, 65536, 0, 0x7fc4e6bf2420, 0x7fc4e6bf2400) = 43
+[pid 949958] socket(AF_INET, SOCK_DGRAM|SOCK_CLOEXEC|SOCK_NONBLOCK, IPPROTO_IP) = 9
+[pid 949958] setsockopt(9, SOL_IP, IP_RECVERR, 0x7fc4e6bf2754, 4) = 0
+[pid 949958] connect(9, 0x7fc4e6bf5d8c, 16) = 0
+[pid 949958] sendmmsg(9, 0x7fc4e6bf28f0, 2, MSG_NOSIGNAL) = 2
+[pid 949958] recvfrom(9, 0x7fc4e6bf3790, 2048, 0, 0x7fc4e6bf28d0, 0x7fc4e6bf28b0) = 31
+[pid 949958] recvfrom(9, 0x7fc4b0003af0, 65536, 0, 0x7fc4e6bf28d0, 0x7fc4e6bf28b0) = 31
+[pid 949958] socket(AF_INET, SOCK_DGRAM|SOCK_CLOEXEC|SOCK_NONBLOCK, IPPROTO_IP) = 9
+[pid 949958] setsockopt(9, SOL_IP, IP_RECVERR, 0x7fc4e6bf22a4, 4) = 0
+[pid 949958] connect(9, 0x7fc4e6bf5d8c, 16) = 0
+[pid 949958] sendmmsg(9, 0x7fc4e6bf2440, 2, MSG_NOSIGNAL) = 2
+[pid 949958] recvfrom(9, 0x7fc4e6bf3790, 2048, 0, 0x7fc4e6bf2420, 0x7fc4e6bf2400) = 43
+[pid 949958] recvfrom(9, 0x7fc4b0003b40, 65536, 0, 0x7fc4e6bf2420, 0x7fc4e6bf2400) = 43
+[pid 949958] socket(AF_INET, SOCK_DGRAM|SOCK_CLOEXEC|SOCK_NONBLOCK, IPPROTO_IP) = 9
+[pid 949958] setsockopt(9, SOL_IP, IP_RECVERR, 0x7fc4e6bf2754, 4) = 0
+[pid 949958] connect(9, 0x7fc4e6bf5d8c, 16) = 0
+[pid 949958] sendmmsg(9, 0x7fc4e6bf28f0, 2, MSG_NOSIGNAL) = 2
+[pid 949958] recvfrom(9, 0x7fc4e6bf3790, 2048, 0, 0x7fc4e6bf28d0, 0x7fc4e6bf28b0) = 31
+[pid 949958] recvfrom(9, 0x7fc4b0003b40, 65536, 0, 0x7fc4e6bf28d0, 0x7fc4e6bf28b0) = 31
+[pid 949958] exit(0)                    = ?
+[pid 949958] +++ exited with 0 +++

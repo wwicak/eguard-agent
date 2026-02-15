@@ -1,0 +1,124 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running unittests src/lib.rs (target/miri/x86_64-unknown-linux-gnu/debug/deps/detection-bc35fd366712299c)
+warning: function `cuckoo_false_positive_rate` is never used
+  --> crates/detection/src/layer1.rs:11:15
+   |
+11 | pub(crate) fn cuckoo_false_positive_rate(bucket_size: u32, fingerprint_bits: u32) -> f64 {
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `base64ish_alphabet_ratio` is never used
+  --> crates/detection/src/layer1.rs:31:15
+   |
+31 | pub(crate) fn base64ish_alphabet_ratio(raw: &str) -> f64 {
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `passes_optional_alphabet_ratio_gate` is never used
+  --> crates/detection/src/layer1.rs:53:15
+   |
+53 | pub(crate) fn passes_optional_alphabet_ratio_gate(raw: &str, min_ratio: Option<f64>) -> bool {
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `debug_prefilter_load_factors` and `debug_prefilter_rebuilds` are never used
+   --> crates/detection/src/layer1.rs:519:19
+    |
+222 | impl IocLayer1 {
+    | -------------- methods in this implementation
+...
+519 |     pub(crate) fn debug_prefilter_load_factors(&self) -> (f64, f64, f64) {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+528 |     pub(crate) fn debug_prefilter_rebuilds(&self) -> usize {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `debug_automata_count` and `debug_subscription_edges` are never used
+   --> crates/detection/src/layer2.rs:645:19
+    |
+148 | impl TemporalEngine {
+    | ------------------- methods in this implementation
+...
+645 |     pub(crate) fn debug_automata_count(&self) -> usize {
+    |                   ^^^^^^^^^^^^^^^^^^^^
+...
+650 |     pub(crate) fn debug_subscription_edges(&self) -> usize {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `debug_graph_edge_count` and `debug_total_template_stages` are never used
+   --> crates/detection/src/layer4.rs:397:19
+    |
+255 | impl Layer4Engine {
+    | ----------------- methods in this implementation
+...
+397 |     pub(crate) fn debug_graph_edge_count(&self) -> usize {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^
+...
+402 |     pub(crate) fn debug_total_template_stages(&self) -> usize {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+running 61 tests
+test memory_scanner::tests::test_filter_regions_executable_and_anonymous ... ok
+test memory_scanner::tests::test_filter_regions_executable_only ... ok
+test memory_scanner::tests::test_find_suspicious_self ... ok
+test memory_scanner::tests::test_parse_maps_content ... ok
+test memory_scanner::tests::test_region_size ... ok
+test memory_scanner::tests::test_skip_special_regions ... ok
+test memory_scanner::tests::test_skip_tiny_regions ... ok
+test tests::aho_matcher_scan_runtime_scales_approximately_linearly_with_input_bytes ... ignored, runtime envelope assertions are not meaningful under miri
+test tests::aho_matcher_space_scales_with_total_pattern_bytes ... ok
+test tests::anomaly_engine_emits_medium_when_above_medium_threshold_only ... ok
+test tests::anomaly_engine_flags_distribution_shift ... ok
+test tests::anomaly_entropy_guard_requires_minimum_length ... ok
+test tests::anomaly_math_matches_probability_and_kl_formulas ... ok
+test tests::anomaly_monitor_state_remains_memory_bounded_under_long_streams ... ok
+test tests::calibration_threshold_matches_sanov_bound ... ok
+test tests::confidence_ordering_matches_policy ... ok
+test tests::confidence_policy_is_first_match_wins ... ok
+test tests::detection_latency_p99_stays_within_budget_for_reference_workload ... ignored, runtime latency assertions are not meaningful under miri
+test tests::detection_outcome_includes_rule_names_and_matched_fields_for_traceability ... ok
+test tests::detection_workspace_excludes_ml_framework_dependencies ... ignored, spawning rustc/cargo subprocesses is unsupported under miri
+test tests::drift_indicators_report_baseline_age_and_kl_quantiles_by_process_family ... ok
+test tests::engine_runs_all_layers ... ok
+test tests::entropy_flag_policy_requires_min_len_entropy_and_zscore_conditions ... ok
+test tests::entropy_math_matches_shannon_definition ... ok
+test tests::layer1_append_string_signatures_preserves_existing_patterns ... ok
+test tests::layer1_exact_verification_works ... ok
+test tests::layer1_loaded_entries_have_no_algorithmic_fn_and_unloaded_have_no_fp ... ok
+test tests::layer1_prefilter_negative_short_circuits_to_clean ... ignored, sqlite FFI is unsupported under miri
+test tests::layer1_startup_self_check_validates_known_entries_across_prefilter_and_exact_store ... ok
+test tests::layer4_evaluation_runtime_is_bounded_with_depth_limited_templates ... ignored, runtime envelope assertions are not meaningful under miri
+test tests::layer4_graph_state_is_pruned_by_sliding_window_to_stay_bounded ... ignored, graph pruning stress test is too slow under miri
+test tests::layer4_hit_is_scoped_to_current_event_lineage_and_does_not_replay_on_unrelated_events ... ok
+test tests::layer4_matches_default_template ... ok
+test tests::layer4_pid_reuse_does_not_inherit_stale_non_web_network_signal ... ok
+test tests::layer4_template_matching_is_bounded_by_declared_depth ... ok
+test tests::replay_harness_is_deterministic ... ok
+test tests::replay_quality_gate_emits_metrics_artifact ... ignored, artifact-writing replay quality gate is too slow under miri
+test tests::replay_reports_precision_recall_and_false_alarm_upper_bound_by_confidence ... ignored, adversarial replay quality corpus is too slow under miri
+test tests::robust_zscore_uses_median_and_mad_baseline ... ok
+test tests::sigma_rules_load_from_directory ... ok
+test tests::sigma_yaml_compiles_to_bounded_temporal_ast ... ok
+test tests::sigma_yaml_missing_within_secs_is_rejected ... ok
+test tests::sigma_yaml_rule_compiles_and_fires ... ok
+test tests::temporal_engine_accepts_events_within_reorder_tolerance ... ok
+test tests::temporal_engine_detects_privilege_escalation_pattern ... ok
+test tests::temporal_engine_detects_webshell_pattern ... ok
+test tests::temporal_engine_enforces_stage_window ... ok
+test tests::temporal_engine_entity_isolation_prevents_cross_pid_matches ... ok
+test tests::temporal_engine_eviction_counters_track_retention_and_capacity_reasons ... ok
+test tests::temporal_engine_pid_metadata_capacity_evicts_oldest_then_tie_breaks_by_pid ... ok
+test tests::temporal_engine_pid_reuse_process_exec_clears_stale_pending_webshell_state ... ok
+test tests::temporal_engine_pid_reuse_without_exec_observation_does_not_continue_stale_chain ... ok
+test tests::temporal_engine_process_exit_teardown_is_idempotent_and_ignores_stale_out_of_order_exit ... ok
+test tests::temporal_engine_process_exit_tears_down_state_and_metadata_immediately ... ok
+test tests::temporal_engine_prunes_stale_state_and_pid_metadata_after_retention_horizon ... ok
+test tests::temporal_engine_rejects_reorder_beyond_tolerance ... ok
+test tests::temporal_engine_rejects_stage_restart_from_timestamp_skew_beyond_tolerance ... ok
+test tests::temporal_engine_state_capacity_evicts_oldest_pending_chain_deterministically ... ok
+test tests::yara_rule_match_escalates_to_definite ... ok
+test yara_engine::tests::loads_rules_from_directory ... ok
+test yara_engine::tests::parses_and_scans_rule_source ... ok
+
+test result: ok. 53 passed; 0 failed; 8 ignored; 0 measured; 0 filtered out; finished in 251.29s
+

@@ -60,6 +60,8 @@ for workflow in "${WORKFLOWS[@]}"; do
       "Update critical ATT&CK regression history"
       "Enforce critical ATT&CK owner streak gate"
       "Generate ATT&CK burn-down scoreboard"
+      "Generate signature ML readiness report (shadow)"
+      "Generate signature ML readiness trend report (shadow)"
       "Verify agent can ingest generated bundle output"
       "Create GitHub Release"
     )
@@ -74,6 +76,8 @@ for workflow in "${WORKFLOWS[@]}"; do
     release_run="$(yq -r '.jobs."build-bundle".steps[] | select(.name == "Create GitHub Release") | .run' "${path}" 2>/dev/null || true)"
     critical_regression_run="$(yq -r '.jobs."build-bundle".steps[] | select(.name == "Enforce critical ATT&CK regression gate") | .run' "${path}" 2>/dev/null || true)"
     owner_streak_run="$(yq -r '.jobs."build-bundle".steps[] | select(.name == "Enforce critical ATT&CK owner streak gate") | .run' "${path}" 2>/dev/null || true)"
+    ml_readiness_run="$(yq -r '.jobs."build-bundle".steps[] | select(.name == "Generate signature ML readiness report (shadow)") | .run' "${path}" 2>/dev/null || true)"
+    ml_readiness_trend_run="$(yq -r '.jobs."build-bundle".steps[] | select(.name == "Generate signature ML readiness trend report (shadow)") | .run' "${path}" 2>/dev/null || true)"
     agent_ingest_run="$(yq -r '.jobs."build-bundle".steps[] | select(.name == "Verify agent can ingest generated bundle output") | .run' "${path}" 2>/dev/null || true)"
     required_release_tokens=(
       "bundle/attack-critical-technique-gate.json"
@@ -83,11 +87,16 @@ for workflow in "${WORKFLOWS[@]}"; do
       "bundle/attack-critical-owner-streak-gate.json"
       "bundle/attack-burndown-scoreboard.json"
       "bundle/attack-burndown-scoreboard.md"
+      "bundle/signature-ml-readiness.json"
+      "bundle/signature-ml-readiness-trend.ndjson"
+      "bundle/signature-ml-readiness-trend-report.json"
       "## Critical ATT&CK Technique Floor"
       "## Critical ATT&CK Regression Guard"
       "## Critical ATT&CK Regression History"
       "## Critical ATT&CK Owner Streak Guard"
       "## ATT&CK Critical Burn-down Scoreboard"
+      "## Signature ML Readiness (Shadow)"
+      "## Signature ML Readiness Trend (Shadow)"
       "Delta uncovered vs previous"
       "Owner P0 regressions"
     )
@@ -106,6 +115,36 @@ for workflow in "${WORKFLOWS[@]}"; do
 
     if [[ "${owner_streak_run}" != *"--max-consecutive-owner-regression"* ]]; then
       echo "build-bundle owner streak gate missing max-consecutive threshold flag" >&2
+      attack_contract_ok=false
+    fi
+
+    if [[ "${ml_readiness_run}" != *"signature_ml_readiness_gate.py"* ]]; then
+      echo "build-bundle ML readiness step missing signature ML readiness script invocation" >&2
+      attack_contract_ok=false
+    fi
+    if [[ "${ml_readiness_run}" != *"--previous /tmp/previous-signature-ml-readiness.json"* ]]; then
+      echo "build-bundle ML readiness step missing previous readiness baseline wiring" >&2
+      attack_contract_ok=false
+    fi
+    if [[ "${ml_readiness_run}" != *"--output bundle/signature-ml-readiness.json"* ]]; then
+      echo "build-bundle ML readiness step missing readiness output artifact wiring" >&2
+      attack_contract_ok=false
+    fi
+
+    if [[ "${ml_readiness_trend_run}" != *"signature_ml_readiness_trend_gate.py"* ]]; then
+      echo "build-bundle ML readiness trend step missing trend gate script invocation" >&2
+      attack_contract_ok=false
+    fi
+    if [[ "${ml_readiness_trend_run}" != *"--previous-trend /tmp/previous-signature-ml-readiness-trend.ndjson"* ]]; then
+      echo "build-bundle ML readiness trend step missing previous trend baseline wiring" >&2
+      attack_contract_ok=false
+    fi
+    if [[ "${ml_readiness_trend_run}" != *"--output-trend bundle/signature-ml-readiness-trend.ndjson"* ]]; then
+      echo "build-bundle ML readiness trend step missing trend output wiring" >&2
+      attack_contract_ok=false
+    fi
+    if [[ "${ml_readiness_trend_run}" != *"--output-report bundle/signature-ml-readiness-trend-report.json"* ]]; then
+      echo "build-bundle ML readiness trend step missing trend report output wiring" >&2
       attack_contract_ok=false
     fi
 

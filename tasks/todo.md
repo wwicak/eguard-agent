@@ -442,6 +442,9 @@ Reference acceptance criteria: `tasks/next-job-acceptance-criteria.md`
   - `bash scripts/run_verification_suite_ci.sh` => pass
   - Archived log: `artifacts/verification-suite/run-20260215-101200.log`
   - Includes bundle-signature contract, signed-bundle ingestion contract, fuzz, miri, hardening probe, and guardrail stages.
+- Post-packaging-hardening verification suite rerun:
+  - `bash scripts/run_verification_suite_ci.sh` => pass
+  - Archived log: `artifacts/verification-suite/run-20260215-110333.log`
 
 ## Active Plan — Real Package Artifact Closure (2026-02-15)
 
@@ -469,3 +472,61 @@ Reference acceptance criteria: `tasks/next-job-acceptance-criteria.md`
   - Staged asm archive is non-empty after fix: `artifacts/package-agent/stage/core/usr/lib/eguard-agent/lib/libeguard_asm.a` (`319386 bytes`)
 - Targeted contract regression check:
   - `cargo test -p agent-core lifecycle::tests_pkg_contract::package_build_harness_executes_and_emits_metrics_with_mocked_toolchain -- --exact` => pass
+- Repository hygiene closure for CI-critical new files:
+  - Staged previously untracked verification/build assets to avoid release-time omissions:
+    - `fuzz/Cargo.toml`, `fuzz/Cargo.lock`, `fuzz/fuzz_targets/*.rs`
+    - `scripts/run_bundle_signature_contract_ci.sh`, `scripts/run_agent_bundle_ingestion_contract_ci.sh`
+    - `threat-intel/processing/attack_critical_owner_streak_gate.py`, `threat-intel/processing/update_attack_critical_regression_history.py`
+
+## Active Plan — Layer4 Graph Capacity Hardening (2026-02-15)
+
+- [x] Add deterministic Layer4 process-graph capacity controls (node + edge caps) with bounded eviction policy
+- [x] Add Layer4 eviction telemetry counters with reason tags (retention prune / node-cap evict / edge-cap evict)
+- [x] Add Layer4 regression coverage for process-exit stale-order behavior and capacity-eviction determinism
+- [x] Run targeted verification (`cargo test -p detection`, `cargo clippy -p detection --tests -- -D warnings`) and record evidence
+
+## Review — 2026-02-15 (Layer4 graph capacity hardening)
+
+- Implemented deterministic Layer4 graph-capacity controls in `crates/detection/src/layer4.rs`:
+  - Added bounded graph capacities with defaults (`DEFAULT_LAYER4_MAX_NODES`, `DEFAULT_LAYER4_MAX_EDGES`) and constructor override `Layer4Engine::with_capacity(...)`.
+  - Added deterministic oldest-first eviction (`last_seen`, then `pid` tiebreak) for both node and edge pressure.
+  - Added explicit edge accounting (`edge_count`) and consistent link teardown helpers (`insert_child_link`, `remove_child_link`, `remove_outgoing_links`, `remove_incoming_links`, `remove_node`).
+- Added Layer4 eviction observability via `Layer4EvictionCounters`:
+  - reason-tagged counters for `retention_prune`, `node_cap_evict`, `edge_cap_evict`.
+  - public accessor `Layer4Engine::eviction_counters()` and test helper `debug_eviction_counters()`.
+  - exported counter type from `crates/detection/src/lib.rs`.
+- Added/updated Layer4 regressions in `crates/detection/src/tests.rs`:
+  - `layer4_process_exit_tears_down_node_and_ignores_stale_out_of_order_exit`
+  - `layer4_node_capacity_evicts_oldest_then_lowest_pid_deterministically`
+  - `layer4_edge_capacity_evicts_oldest_nodes_until_edge_budget_is_met`
+  - strengthened `layer4_graph_state_is_pruned_by_sliding_window_to_stay_bounded` with retention-counter assertion.
+- Verification evidence:
+  - `cargo test -p detection` => pass (`79 passed`)
+  - `cargo clippy -p detection --tests -- -D warnings` => pass
+
+## Active Plan — Signature ML Readiness Integration Closure (2026-02-15)
+
+- [x] Verify `threat-intel/processing/signature_ml_readiness_gate.py` behavior via targeted threat-intel tests
+- [x] Validate bundle-signature contract harness executes ML readiness gate and emits readiness artifact + metrics
+- [x] Validate verification contract acceptance test still passes with bundle-signature + readiness wiring
+
+## Review — 2026-02-15 (signature ML readiness integration closure)
+
+- Verified script behavior and contract coverage:
+  - `pytest -q threat-intel/tests/test_bundle.py -k "signature_ml_readiness"` => pass (`3 passed`)
+  - Confirms strong-bundle pass behavior, shadow-alert behavior on score/drop breaches, and enforced fail mode when threshold gating is enabled.
+- Verified bundle-signature harness integration:
+  - `bash scripts/run_bundle_signature_contract_ci.sh` => pass
+  - Confirms harness executes `signature_ml_readiness_gate.py` and emits:
+    - `artifacts/bundle-signature-contract/signature-ml-readiness.json`
+    - `artifacts/bundle-signature-contract/metrics.json` with `ml_readiness` summary fields.
+- Verified acceptance contract fidelity after readiness wiring:
+  - `cargo test -p acceptance tests_tst_ver_contract::verification_coverage_and_security_pipeline_contracts_are_present -- --exact` => pass
+  - Contract checks still assert ML readiness invocation tokens and emitted release artifacts.
+
+## Active Plan — Endpoint Signature-DB Runtime Hardening (2026-02-15)
+
+- [ ] Enforce endpoint-side signature database floor on hot-reload so runtime cannot downgrade to empty/near-empty bundle content
+- [ ] Harden multi-shard reload to prebuild + validate every shard engine before swap, rejecting cross-shard bundle-load divergence
+- [ ] Add regression tests for signature-floor rejection and shard consistency reload behavior
+- [ ] Run targeted verification (`cargo test -p agent-core --bin agent-core`, `cargo clippy -p agent-core --tests -- -D warnings`) and record evidence

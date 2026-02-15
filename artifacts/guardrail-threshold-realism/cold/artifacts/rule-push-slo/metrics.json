@@ -1,0 +1,24 @@
+{
+  "suite": "rule_push_slo",
+  "recorded_at_utc": "2026-02-14T05:23:23Z",
+  "limits": {
+    "transfer_slo_seconds": 5,
+    "rollout_slo_seconds": 30,
+    "link_mbps": 1
+  },
+  "inputs": {
+    "bundle_bytes": 625000,
+    "agent_count": 30000,
+    "command_dispatch_per_sec": 1000,
+    "dispatch_probe_commands": 5000
+  },
+  "measured": {
+    "transfer_seconds_at_link_rate": 5.000000,
+    "fleet_rollout_seconds": 30.000000,
+    "transfer_probe_seconds_local_io": 0.004196,
+    "transfer_probe_effective_mbps_local_io": 1191.55,
+    "dispatch_probe_seconds": 0.053468,
+    "dispatch_probe_commands_per_sec": 93513.67,
+    "effective_commands_per_sec_used_for_rollout": 1000.000000
+  }
+}

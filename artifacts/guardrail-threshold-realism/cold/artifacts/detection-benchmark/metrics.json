@@ -1,0 +1,6 @@
+{
+  "suite": "detection_latency",
+  "recorded_at_utc": "2026-02-14T05:23:21Z",
+  "command": "cargo test -p detection tests::detection_latency_p99_stays_within_budget_for_reference_workload -- --exact",
+  "wall_clock_ms": 254
+}

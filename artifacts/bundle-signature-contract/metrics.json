@@ -1,0 +1,16 @@
+{
+  "suite": "bundle_signature_contract",
+  "status": "pass",
+  "signature_verified": true,
+  "tamper_rejected": true,
+  "coverage": {
+    "signature_total": 2,
+    "database_total": 6
+  },
+  "ml_readiness": {
+    "status": "pass",
+    "mode": "shadow",
+    "readiness_tier": "strong",
+    "final_score": 90.0
+  }
+}

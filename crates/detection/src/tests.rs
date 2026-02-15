@@ -688,6 +688,105 @@ fn layer4_pid_reuse_does_not_inherit_stale_non_web_network_signal() {
 }
 
 #[test]
+// AC-DET-050 AC-DET-088
+fn layer4_process_exit_tears_down_node_and_ignores_stale_out_of_order_exit() {
+    let mut l4 = Layer4Engine::with_capacity(300, 16, 16);
+
+    let mut proc = event(10, EventClass::ProcessExec, "bash", "init", 1000);
+    proc.pid = 700;
+    proc.ppid = 1;
+    let _ = l4.observe(&proc);
+    assert!(l4.debug_contains_pid(700));
+
+    let mut stale_exit = event(9, EventClass::ProcessExit, "bash", "init", 1000);
+    stale_exit.pid = 700;
+    stale_exit.ppid = 1;
+    let _ = l4.observe(&stale_exit);
+    assert!(
+        l4.debug_contains_pid(700),
+        "stale out-of-order process_exit should be ignored"
+    );
+
+    let mut fresh_exit = event(11, EventClass::ProcessExit, "bash", "init", 1000);
+    fresh_exit.pid = 700;
+    fresh_exit.ppid = 1;
+    let _ = l4.observe(&fresh_exit);
+    assert!(!l4.debug_contains_pid(700));
+
+    let counters = l4.debug_eviction_counters();
+    assert_eq!(counters.retention_prune, 0);
+    assert_eq!(counters.node_cap_evict, 0);
+    assert_eq!(counters.edge_cap_evict, 0);
+}
+
+#[test]
+// AC-DET-054 AC-DET-088
+fn layer4_node_capacity_evicts_oldest_then_lowest_pid_deterministically() {
+    let mut l4 = Layer4Engine::with_capacity(300, 2, 16);
+
+    let mut first = event(1, EventClass::ProcessExec, "bash", "init", 1000);
+    first.pid = 410;
+    first.ppid = 1;
+    let _ = l4.observe(&first);
+
+    let mut second = event(1, EventClass::ProcessExec, "bash", "init", 1000);
+    second.pid = 405;
+    second.ppid = 1;
+    let _ = l4.observe(&second);
+
+    let mut third = event(2, EventClass::ProcessExec, "bash", "init", 1000);
+    third.pid = 420;
+    third.ppid = 1;
+    let _ = l4.observe(&third);
+
+    assert_eq!(l4.debug_graph_node_count(), 2);
+    assert!(l4.debug_contains_pid(410));
+    assert!(l4.debug_contains_pid(420));
+    assert!(
+        !l4.debug_contains_pid(405),
+        "oldest timestamp tie should evict lowest pid deterministically"
+    );
+
+    let counters = l4.debug_eviction_counters();
+    assert_eq!(counters.node_cap_evict, 1);
+    assert_eq!(counters.edge_cap_evict, 0);
+}
+
+#[test]
+#[cfg(all(test, not(miri)))]
+// AC-DET-054 AC-DET-088
+fn layer4_edge_capacity_evicts_oldest_nodes_until_edge_budget_is_met() {
+    let mut l4 = Layer4Engine::with_capacity(300, 16, 2);
+
+    let mut root = event(1, EventClass::ProcessExec, "root", "init", 1000);
+    root.pid = 500;
+    root.ppid = 1;
+    let _ = l4.observe(&root);
+
+    let mut child_a = event(2, EventClass::ProcessExec, "child-a", "root", 1000);
+    child_a.pid = 501;
+    child_a.ppid = 500;
+    let _ = l4.observe(&child_a);
+    assert_eq!(l4.debug_graph_edge_count(), 2);
+
+    let mut child_b = event(3, EventClass::ProcessExec, "child-b", "root", 1000);
+    child_b.pid = 502;
+    child_b.ppid = 500;
+    let _ = l4.observe(&child_b);
+
+    assert!(
+        !l4.debug_contains_pid(500),
+        "oldest root should be evicted when edge budget is exceeded"
+    );
+    assert!(l4.debug_contains_pid(501));
+    assert!(l4.debug_contains_pid(502));
+    assert!(l4.debug_graph_edge_count() <= 1);
+
+    let counters = l4.debug_eviction_counters();
+    assert_eq!(counters.edge_cap_evict, 1);
+}
+
+#[test]
 // AC-DET-052 AC-DET-088
 fn layer4_template_matching_is_bounded_by_declared_depth() {
     let mut l4 = Layer4Engine::new(300);
@@ -761,6 +860,10 @@ fn layer4_graph_state_is_pruned_by_sliding_window_to_stay_bounded() {
     let _ = l4.observe(&now);
 
     assert!(l4.debug_graph_node_count() <= 2);
+    assert!(
+        l4.debug_eviction_counters().retention_prune > 0,
+        "retention prune counter should track stale graph eviction"
+    );
 }
 
 #[test]

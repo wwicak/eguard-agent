@@ -1,0 +1,254 @@
+[verification-suite] 2026-02-15T03:06:56Z :: cargo audit
+    Fetching advisory database from `https://github.com/RustSec/advisory-db.git`
+      Loaded 920 security advisories (from /home/dimas/.cargo/advisory-db)
+    Updating crates.io index
+    Scanning Cargo.lock for vulnerabilities (328 crate dependencies)
+[verification-suite] 2026-02-15T03:06:59Z :: cargo clippy
+    Checking acceptance v0.1.0 (/home/dimas/eguard-agent/crates/acceptance)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.60s
+[verification-suite] 2026-02-15T03:07:01Z :: bundle signature contract gate
+Bundle: 1 SIGMA rules
+Bundle: 1 YARA rules
+Bundle: 1 hash IOCs, 1 domain IOCs, 1 IP IOCs
+Bundle: 1 CVEs (1 actively exploited, 0 EPSS-enriched)
+Bundle: 0 Suricata rules
+Bundle: 0 Elastic behavioral rules
+
+Bundle vci.signature.contract assembled: 6 files, manifest at /tmp/tmp.r8l7Sa7GxY/bundle/manifest.json
+Bundle signature database coverage snapshot:
+- sigma_count: 1
+- yara_count: 1
+- suricata_count: 0
+- elastic_count: 0
+- ioc_hash_count: 1
+- ioc_domain_count: 1
+- ioc_ip_count: 1
+- cve_count: 1
+- cve_kev_count: 1
+- signature_total: 2
+- database_total: 6
+- yara_source_count: 1
+- sigma_source_count: 1
+
+Bundle signature coverage gate passed
+wrote bundle signature contract metrics to /home/dimas/eguard-agent/artifacts/bundle-signature-contract/metrics.json
+[verification-suite] 2026-02-15T03:07:01Z :: agent-core signed bundle ingestion contract
+[bundle-agent-contract] bundle=/home/dimas/eguard-agent/artifacts/bundle-signature-contract/fixture.bundle.tar.zst
+[bundle-agent-contract] signature=/home/dimas/eguard-agent/artifacts/bundle-signature-contract/fixture.bundle.tar.zst.sig
+[bundle-agent-contract] test_selector=lifecycle::tests::load_bundle_rules_reads_ci_generated_signed_bundle
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.35s
+     Running unittests src/main.rs (target/debug/deps/agent_core-103541b8e7df1621)
+
+running 1 test
+test lifecycle::tests::load_bundle_rules_reads_ci_generated_signed_bundle ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 120 filtered out; finished in 0.02s
+
+[bundle-agent-contract] bundle=/home/dimas/eguard-agent/artifacts/bundle-signature-contract/fixture.bundle.tar.zst
+[bundle-agent-contract] signature=/home/dimas/eguard-agent/artifacts/bundle-signature-contract/fixture.bundle.tar.zst.sig
+[bundle-agent-contract] test_selector=lifecycle::tests::load_bundle_rules_rejects_tampered_ci_generated_signed_bundle
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.28s
+     Running unittests src/main.rs (target/debug/deps/agent_core-103541b8e7df1621)
+
+running 1 test
+test lifecycle::tests::load_bundle_rules_rejects_tampered_ci_generated_signed_bundle ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 120 filtered out; finished in 0.01s
+
+[verification-suite] 2026-02-15T03:07:02Z :: cargo fuzz protobuf_parse
+   Compiling grpc-client v0.1.0 (/home/dimas/eguard-agent/crates/grpc-client)
+   Compiling eguard-agent-fuzz v0.0.0 (/home/dimas/eguard-agent/fuzz)
+    Finished `release` profile [optimized + debuginfo] target(s) in 9.86s
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.21s
+     Running `fuzz/target/x86_64-unknown-linux-gnu/release/protobuf_parse -artifact_prefix=/home/dimas/eguard-agent/fuzz/artifacts/protobuf_parse/ -max_total_time=30 -verbosity=0 /home/dimas/eguard-agent/fuzz/corpus/protobuf_parse`
+INFO: Running with entropic power schedule (0xFF, 100).
+INFO:     5587 files found in /home/dimas/eguard-agent/fuzz/corpus/protobuf_parse
+INFO: -max_len is not provided; libFuzzer will not generate inputs larger than 4096 bytes
+INFO: seed corpus: files: 5587 min: 1b max: 4090b total: 838493b rss: 71Mb
+###### Recommended dictionary. ######
+"\000\000\000\000\000\000\0007" # Uses: 19136
+"\002\017\000\000\\           " # Uses: 14767
+"\377\377\377\377\377\377\377Q" # Uses: 15829
+"\000\000\000\004" # Uses: 6575
+"\005\000\000\000\000\000\000\200" # Uses: 3653
+"\002\002\017\000\000           " # Uses: 1075
+"\012\000\000\000\000\000\000\200" # Uses: 769
+###### End of recommended dictionary. ######
+[verification-suite] 2026-02-15T03:07:44Z :: cargo fuzz detection_inputs
+   Compiling eguard-agent-fuzz v0.0.0 (/home/dimas/eguard-agent/fuzz)
+    Finished `release` profile [optimized + debuginfo] target(s) in 1.41s
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.25s
+     Running `fuzz/target/x86_64-unknown-linux-gnu/release/detection_inputs -artifact_prefix=/home/dimas/eguard-agent/fuzz/artifacts/detection_inputs/ -max_total_time=30 -verbosity=0 /home/dimas/eguard-agent/fuzz/corpus/detection_inputs`
+INFO: Running with entropic power schedule (0xFF, 100).
+INFO:     4779 files found in /home/dimas/eguard-agent/fuzz/corpus/detection_inputs
+INFO: -max_len is not provided; libFuzzer will not generate inputs larger than 4096 bytes
+INFO: seed corpus: files: 4779 min: 1b max: 696b total: 1038444b rss: 71Mb
+###### Recommended dictionary. ######
+"\000\000\000\000\000\000\000\000" # Uses: 712
+"\001\000\000\342" # Uses: 603
+"\001\000\000\313" # Uses: 597
+"\377\027" # Uses: 572
+"/etc/passwd" # Uses: 359
+"\377 " # Uses: 386
+"c\000" # Uses: 247
+"\000\360" # Uses: 249
+"\022\000\000\000\000\000\000\000" # Uses: 233
+"^^^^^^^^^^^" # Uses: 133
+"\001\000\000\000\000\000\000\000" # Uses: 86
+"\001\000\000D" # Uses: 70
+"\023\000" # Uses: 33
+"/etcpa/sswd" # Uses: 21
+###### End of recommended dictionary. ######
+[verification-suite] 2026-02-15T03:08:17Z :: cargo miri setup
+A sysroot for Miri is already available in `/home/dimas/.cache/miri`.
+[verification-suite] 2026-02-15T03:08:18Z :: cargo miri detection tests
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.13s
+     Running unittests src/lib.rs (target/miri/x86_64-unknown-linux-gnu/debug/deps/detection-bc35fd366712299c)
+
+running 61 tests
+test memory_scanner::tests::test_filter_regions_executable_and_anonymous ... ok
+test memory_scanner::tests::test_filter_regions_executable_only ... ok
+test memory_scanner::tests::test_find_suspicious_self ... ok
+test memory_scanner::tests::test_parse_maps_content ... ok
+test memory_scanner::tests::test_region_size ... ok
+test memory_scanner::tests::test_skip_special_regions ... ok
+test memory_scanner::tests::test_skip_tiny_regions ... ok
+test tests::aho_matcher_scan_runtime_scales_approximately_linearly_with_input_bytes ... ignored, runtime envelope assertions are not meaningful under miri
+test tests::aho_matcher_space_scales_with_total_pattern_bytes ... ok
+test tests::anomaly_engine_emits_medium_when_above_medium_threshold_only ... ok
+test tests::anomaly_engine_flags_distribution_shift ... ok
+test tests::anomaly_entropy_guard_requires_minimum_length ... ok
+test tests::anomaly_math_matches_probability_and_kl_formulas ... ok
+test tests::anomaly_monitor_state_remains_memory_bounded_under_long_streams ... ignored, long-stream anomaly churn test is too slow under miri
+test tests::calibration_threshold_matches_sanov_bound ... ok
+test tests::confidence_ordering_matches_policy ... ok
+test tests::confidence_policy_is_first_match_wins ... ok
+test tests::detection_latency_p99_stays_within_budget_for_reference_workload ... ignored, runtime latency assertions are not meaningful under miri
+test tests::detection_outcome_includes_rule_names_and_matched_fields_for_traceability ... ok
+test tests::detection_workspace_excludes_ml_framework_dependencies ... ignored, spawning rustc/cargo subprocesses is unsupported under miri
+test tests::drift_indicators_report_baseline_age_and_kl_quantiles_by_process_family ... ok
+test tests::engine_runs_all_layers ... ok
+test tests::entropy_flag_policy_requires_min_len_entropy_and_zscore_conditions ... ok
+test tests::entropy_math_matches_shannon_definition ... ok
+test tests::layer1_append_string_signatures_preserves_existing_patterns ... ok
+test tests::layer1_exact_verification_works ... ok
+test tests::layer1_loaded_entries_have_no_algorithmic_fn_and_unloaded_have_no_fp ... ok
+test tests::layer1_prefilter_negative_short_circuits_to_clean ... ignored, sqlite FFI is unsupported under miri
+test tests::layer1_startup_self_check_validates_known_entries_across_prefilter_and_exact_store ... ok
+test tests::layer4_evaluation_runtime_is_bounded_with_depth_limited_templates ... ignored, runtime envelope assertions are not meaningful under miri
+test tests::layer4_graph_state_is_pruned_by_sliding_window_to_stay_bounded ... ignored, graph pruning stress test is too slow under miri
+test tests::layer4_hit_is_scoped_to_current_event_lineage_and_does_not_replay_on_unrelated_events ... ok
+test tests::layer4_matches_default_template ... ok
+test tests::layer4_pid_reuse_does_not_inherit_stale_non_web_network_signal ... ok
+test tests::layer4_template_matching_is_bounded_by_declared_depth ... ok
+test tests::replay_harness_is_deterministic ... ok
+test tests::replay_quality_gate_emits_metrics_artifact ... ignored, artifact-writing replay quality gate is too slow under miri
+test tests::replay_reports_precision_recall_and_false_alarm_upper_bound_by_confidence ... ignored, adversarial replay quality corpus is too slow under miri
+test tests::robust_zscore_uses_median_and_mad_baseline ... ok
+test tests::sigma_rules_load_from_directory ... ok
+test tests::sigma_yaml_compiles_to_bounded_temporal_ast ... ok
+test tests::sigma_yaml_missing_within_secs_is_rejected ... ok
+test tests::sigma_yaml_rule_compiles_and_fires ... ok
+test tests::temporal_engine_accepts_events_within_reorder_tolerance ... ok
+test tests::temporal_engine_detects_privilege_escalation_pattern ... ok
+test tests::temporal_engine_detects_webshell_pattern ... ok
+test tests::temporal_engine_enforces_stage_window ... ok
+test tests::temporal_engine_entity_isolation_prevents_cross_pid_matches ... ok
+test tests::temporal_engine_eviction_counters_track_retention_and_capacity_reasons ... ok
+test tests::temporal_engine_pid_metadata_capacity_evicts_oldest_then_tie_breaks_by_pid ... ok
+test tests::temporal_engine_pid_reuse_process_exec_clears_stale_pending_webshell_state ... ok
+test tests::temporal_engine_pid_reuse_without_exec_observation_does_not_continue_stale_chain ... ok
+test tests::temporal_engine_process_exit_teardown_is_idempotent_and_ignores_stale_out_of_order_exit ... ok
+test tests::temporal_engine_process_exit_tears_down_state_and_metadata_immediately ... ok
+test tests::temporal_engine_prunes_stale_state_and_pid_metadata_after_retention_horizon ... ok
+test tests::temporal_engine_rejects_reorder_beyond_tolerance ... ok
+test tests::temporal_engine_rejects_stage_restart_from_timestamp_skew_beyond_tolerance ... ok
+test tests::temporal_engine_state_capacity_evicts_oldest_pending_chain_deterministically ... ok
+test tests::yara_rule_match_escalates_to_definite ... ok
+test yara_engine::tests::loads_rules_from_directory ... ok
+test yara_engine::tests::parses_and_scans_rule_source ... ok
+
+test result: ok. 52 passed; 0 failed; 9 ignored; 0 measured; 0 filtered out; finished in 99.43s
+
+[verification-suite] 2026-02-15T03:10:00Z :: cargo build release agent-core
+   Compiling grpc-client v0.1.0 (/home/dimas/eguard-agent/crates/grpc-client)
+   Compiling agent-core v0.1.0 (/home/dimas/eguard-agent/crates/agent-core)
+    Finished `release` profile [optimized] target(s) in 44.63s
+[verification-suite] 2026-02-15T03:10:44Z :: binary hardening probe
+[hardening] checker=readelf-fallback binary=target/release/agent-core
+[hardening] full_relro=1 pie=1 nx=1 canary=0
+[hardening] WARN: stack canary symbol not found (set EGUARD_HARDENING_REQUIRE_CANARY=1 to enforce)
+[hardening] all checks passed
+[verification-suite] 2026-02-15T03:10:44Z :: strace process/network probe
+[verification-suite] strace output captured: artifacts/verification-suite/strace-20260215T031044Z.log
+[verification-suite] 2026-02-15T03:11:44Z :: grpc-client enrollment test aliases
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.22s
+     Running unittests src/lib.rs (target/debug/deps/grpc_client-baa6bc1e54a62687)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 79 filtered out; finished in 0.00s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
+     Running unittests src/lib.rs (target/debug/deps/grpc_client-baa6bc1e54a62687)
+
+running 1 test
+test client::tests::enrollment_rejects_expired_or_wrong_ca_certificates ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 78 filtered out; finished in 2.72s
+
+[verification-suite] 2026-02-15T03:11:48Z :: platform-linux lsm payload parse test
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
+     Running unittests src/lib.rs (target/debug/deps/platform_linux-a3b08c755285476c)
+
+running 1 test
+test ebpf::tests::parses_structured_lsm_block_payload ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 52 filtered out; finished in 0.00s
+
+[verification-suite] 2026-02-15T03:11:48Z :: agent-core shard IOC reload test
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.28s
+     Running unittests src/main.rs (target/debug/deps/agent_core-103541b8e7df1621)
+
+running 1 test
+test lifecycle::tests::reload_detection_state_from_bundle_populates_ioc_layers_on_all_shards ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 120 filtered out; finished in 0.03s
+
+[verification-suite] 2026-02-15T03:11:49Z :: perf profile gate
+perf unavailable; wrote skipped profile gate metrics to /home/dimas/eguard-agent/artifacts/perf-profile-gate/metrics.json
+[verification-suite] 2026-02-15T03:11:49Z :: release profile optimization gate
+    Finished `release` profile [optimized] target(s) in 0.28s
+wrote release profile optimization metrics to /home/dimas/eguard-agent/artifacts/release-profile-opt/metrics.json
+[verification-suite] 2026-02-15T03:11:49Z :: detection quality gate
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running unittests src/lib.rs (target/debug/deps/detection-d2b994980045afa0)
+
+running 1 test
+test tests::replay_quality_gate_emits_metrics_artifact ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 75 filtered out; finished in 0.32s
+
+detection-quality trend drift check passed
+Adversary-emulation score snapshot:
+- focus score: 99.7076
+- final score: 99.7076
+- previous final score: 99.7076
+- final score drop: 0.0000
+
+Adversary-emulation score gate passed
+wrote detection quality gate metrics to /home/dimas/eguard-agent/artifacts/detection-quality-gate/metrics.json
+updated detection quality trend artifact /home/dimas/eguard-agent/artifacts/detection-quality-gate/per-confidence-trend.ndjson
+wrote detection quality trend drift report /home/dimas/eguard-agent/artifacts/detection-quality-gate/trend-drift-report.json
+wrote adversary-emulation score report /home/dimas/eguard-agent/artifacts/detection-quality-gate/adversary-emulation-score.json
+[verification-suite] 2026-02-15T03:11:50Z :: ebpf drop-rate pressure gate
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
+     Running unittests src/lib.rs (target/debug/deps/platform_linux-a3b08c755285476c)
+
+running 1 test
+test ebpf::tests::drop_rate_stays_below_slo_for_reference_10k_event_batch ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 52 filtered out; finished in 0.02s
+
+wrote eBPF drop-rate pressure metrics to /home/dimas/eguard-agent/artifacts/ebpf-drop-rate-pressure/metrics.json
+[verification-suite] 2026-02-15T03:11:50Z :: verification suite completed

@@ -1,0 +1,680 @@
+    Fetching advisory database from `https://github.com/RustSec/advisory-db.git`
+      Loaded 920 security advisories (from /home/dimas/.cargo/advisory-db)
+    Updating crates.io index
+    Scanning Cargo.lock for vulnerabilities (337 crate dependencies)
+Crate:     bincode
+Version:   1.3.3
+Warning:   unmaintained
+Title:     Bincode is unmaintained
+Date:      2025-12-16
+ID:        RUSTSEC-2025-0141
+URL:       https://rustsec.org/advisories/RUSTSEC-2025-0141
+Dependency tree:
+bincode 1.3.3
+└── baseline 0.1.0
+    ├── agent-core 0.1.0
+    └── acceptance 0.1.0
+
+Crate:     rustls-pemfile
+Version:   2.2.0
+Warning:   unmaintained
+Title:     rustls-pemfile is unmaintained
+Date:      2025-11-28
+ID:        RUSTSEC-2025-0134
+URL:       https://rustsec.org/advisories/RUSTSEC-2025-0134
+Dependency tree:
+rustls-pemfile 2.2.0
+└── tonic 0.12.3
+    └── grpc-client 0.1.0
+        ├── agent-core 0.1.0
+        └── acceptance 0.1.0
+
+Crate:     lru
+Version:   0.12.5
+Warning:   unsound
+Title:     `IterMut` violates Stacked Borrows by invalidating internal pointer
+Date:      2026-01-07
+ID:        RUSTSEC-2026-0002
+URL:       https://rustsec.org/advisories/RUSTSEC-2026-0002
+Dependency tree:
+lru 0.12.5
+└── platform-linux 0.1.0
+    ├── agent-core 0.1.0
+    └── acceptance 0.1.0
+
+warning: 3 allowed warnings found
+   Compiling libc v0.2.181
+    Checking crypto-common v0.1.7
+    Checking tinystr v0.8.2
+    Checking thiserror v1.0.69
+    Checking zerotrie v0.2.3
+    Checking icu_collections v2.1.1
+    Checking nac v0.1.0 (/home/dimas/eguard-agent/crates/nac)
+   Compiling crypto-accel v0.1.0 (/home/dimas/eguard-agent/crates/crypto-accel)
+    Checking foldhash v0.1.5
+    Checking digest v0.10.7
+    Checking icu_locale_core v2.1.1
+    Checking allocator-api2 v0.2.21
+    Checking baseline v0.1.0 (/home/dimas/eguard-agent/crates/baseline)
+    Checking sha2 v0.10.9
+    Checking compliance v0.1.0 (/home/dimas/eguard-agent/crates/compliance)
+    Checking num-traits v0.2.19
+   Compiling time-core v0.1.8
+    Checking hashbrown v0.15.5
+    Checking self-protect v0.1.0 (/home/dimas/eguard-agent/crates/self-protect)
+   Compiling num-conv v0.2.0
+    Checking powerfmt v0.2.0
+    Checking minimal-lexical v0.2.1
+    Checking deranged v0.5.6
+    Checking icu_provider v2.1.1
+   Compiling time-macros v0.2.27
+    Checking nom v7.1.3
+    Checking lru v0.12.5
+    Checking icu_normalizer v2.1.1
+    Checking icu_properties v2.1.2
+    Checking inout v0.1.4
+   Compiling jobserver v0.1.34
+   Compiling getrandom v0.4.1
+   Compiling tempfile v3.25.0
+   Compiling nix v0.30.1
+   Compiling cc v1.2.55
+   Compiling prost-build v0.13.5
+    Checking time v0.3.47
+    Checking cipher v0.4.4
+    Checking num-integer v0.1.46
+    Checking rusticata-macros v4.1.0
+    Checking idna_adapter v1.2.1
+    Checking universal-hash v0.5.1
+    Checking opaque-debug v0.3.1
+    Checking num-bigint v0.4.6
+   Compiling tonic-build v0.12.3
+    Checking idna v1.1.0
+    Checking polyval v0.6.2
+    Checking url v2.5.8
+    Checking curve25519-dalek v4.1.3
+    Checking ghash v0.5.1
+    Checking aes v0.8.4
+    Checking ctr v0.9.2
+    Checking aead v0.5.2
+    Checking asn1-rs v0.6.2
+    Checking data-encoding v2.10.0
+   Compiling ring v0.17.14
+   Compiling libsqlite3-sys v0.30.1
+   Compiling zstd-sys v2.0.16+zstd.1.5.7
+   Compiling yara-sys v0.31.0
+   Compiling vsprintf v2.0.0
+   Compiling libbpf-sys v1.6.2+v1.6.2
+   Compiling grpc-client v0.1.0 (/home/dimas/eguard-agent/crates/grpc-client)
+    Checking ed25519-dalek v2.2.0
+    Checking aes-gcm v0.10.3
+    Checking der-parser v9.0.0
+    Checking oid-registry v0.7.1
+    Checking x509-parser v0.16.0
+    Checking platform-windows v0.1.0 (/home/dimas/eguard-agent/crates/platform-windows)
+    Checking platform-macos v0.1.0 (/home/dimas/eguard-agent/crates/platform-macos)
+    Checking libbpf-rs v0.24.8
+   Compiling rustls v0.23.36
+    Checking platform-linux v0.1.0 (/home/dimas/eguard-agent/crates/platform-linux)
+    Checking rustls-webpki v0.103.9
+    Checking yara v0.31.0
+   Compiling zstd-safe v7.2.4
+    Checking zstd v0.13.3
+    Checking tokio-rustls v0.26.4
+    Checking hyper-rustls v0.27.7
+    Checking tonic v0.12.3
+    Checking reqwest v0.12.28
+    Checking rusqlite v0.32.1
+    Checking detection v0.1.0 (/home/dimas/eguard-agent/crates/detection)
+    Checking response v0.1.0 (/home/dimas/eguard-agent/crates/response)
+    Checking acceptance v0.1.0 (/home/dimas/eguard-agent/crates/acceptance)
+    Checking agent-core v0.1.0 (/home/dimas/eguard-agent/crates/agent-core)
+error: this `MutexGuard` is held across an await point
+    --> crates/grpc-client/src/client/tests.rs:1175:9
+     |
+1175 |     let guard = state.lock().expect("state lock");
+     |         ^^^^^
+     |
+     = help: consider using an async-aware `Mutex` type or ensuring the `MutexGuard` is dropped before calling `await`
+note: these are all the await points this lock is held through
+    --> crates/grpc-client/src/client/tests.rs:1187:23
+     |
+1187 |     server.shutdown().await;
+     |                       ^^^^^
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#await_holding_lock
+     = note: `-D clippy::await-holding-lock` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::await_holding_lock)]`
+
+error: this `MutexGuard` is held across an await point
+    --> crates/grpc-client/src/client/tests.rs:1281:9
+     |
+1281 |     let guard = state.lock().expect("state lock");
+     |         ^^^^^
+     |
+     = help: consider using an async-aware `Mutex` type or ensuring the `MutexGuard` is dropped before calling `await`
+note: these are all the await points this lock is held through
+    --> crates/grpc-client/src/client/tests.rs:1301:23
+     |
+1301 |     server.shutdown().await;
+     |                       ^^^^^
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#await_holding_lock
+
+error: this `MutexGuard` is held across an await point
+    --> crates/grpc-client/src/client/tests.rs:1333:9
+     |
+1333 |     let guard = state.lock().expect("state lock");
+     |         ^^^^^
+     |
+     = help: consider using an async-aware `Mutex` type or ensuring the `MutexGuard` is dropped before calling `await`
+note: these are all the await points this lock is held through
+    --> crates/grpc-client/src/client/tests.rs:1341:23
+     |
+1341 |     server.shutdown().await;
+     |                       ^^^^^
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#await_holding_lock
+
+error: this `MutexGuard` is held across an await point
+    --> crates/grpc-client/src/client/tests.rs:1410:9
+     |
+1410 |     let guard = state.lock().expect("state lock");
+     |         ^^^^^
+     |
+     = help: consider using an async-aware `Mutex` type or ensuring the `MutexGuard` is dropped before calling `await`
+note: these are all the await points this lock is held through
+    --> crates/grpc-client/src/client/tests.rs:1421:23
+     |
+1421 |     server.shutdown().await;
+     |                       ^^^^^
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#await_holding_lock
+
+error: this `MutexGuard` is held across an await point
+    --> crates/grpc-client/src/client/tests.rs:1442:9
+     |
+1442 |     let guard = state.lock().expect("state lock");
+     |         ^^^^^
+     |
+     = help: consider using an async-aware `Mutex` type or ensuring the `MutexGuard` is dropped before calling `await`
+note: these are all the await points this lock is held through
+    --> crates/grpc-client/src/client/tests.rs:1456:23
+     |
+1456 |     server.shutdown().await;
+     |                       ^^^^^
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#await_holding_lock
+
+error: this `MutexGuard` is held across an await point
+    --> crates/grpc-client/src/client/tests.rs:1472:9
+     |
+1472 |     let guard = state.lock().expect("state lock");
+     |         ^^^^^
+     |
+     = help: consider using an async-aware `Mutex` type or ensuring the `MutexGuard` is dropped before calling `await`
+note: these are all the await points this lock is held through
+    --> crates/grpc-client/src/client/tests.rs:1480:23
+     |
+1480 |     server.shutdown().await;
+     |                       ^^^^^
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#await_holding_lock
+
+error: this `MutexGuard` is held across an await point
+    --> crates/grpc-client/src/client/tests.rs:1504:9
+     |
+1504 |     let guard = state.lock().expect("state lock");
+     |         ^^^^^
+     |
+     = help: consider using an async-aware `Mutex` type or ensuring the `MutexGuard` is dropped before calling `await`
+note: these are all the await points this lock is held through
+    --> crates/grpc-client/src/client/tests.rs:1516:23
+     |
+1516 |     server.shutdown().await;
+     |                       ^^^^^
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#await_holding_lock
+
+error: this `MutexGuard` is held across an await point
+    --> crates/grpc-client/src/client/tests.rs:1562:9
+     |
+1562 |     let guard = state.lock().expect("state lock");
+     |         ^^^^^
+     |
+     = help: consider using an async-aware `Mutex` type or ensuring the `MutexGuard` is dropped before calling `await`
+note: these are all the await points this lock is held through
+    --> crates/grpc-client/src/client/tests.rs:1577:23
+     |
+1577 |     server.shutdown().await;
+     |                       ^^^^^
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#await_holding_lock
+
+error: this `MutexGuard` is held across an await point
+    --> crates/grpc-client/src/client/tests.rs:1627:9
+     |
+1627 |     let guard = state.lock().expect("state lock");
+     |         ^^^^^
+     |
+     = help: consider using an async-aware `Mutex` type or ensuring the `MutexGuard` is dropped before calling `await`
+note: these are all the await points this lock is held through
+    --> crates/grpc-client/src/client/tests.rs:1638:23
+     |
+1638 |     server.shutdown().await;
+     |                       ^^^^^
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#await_holding_lock
+
+error: this `MutexGuard` is held across an await point
+    --> crates/grpc-client/src/client/tests.rs:1654:9
+     |
+1654 |     let guard = state.lock().expect("state lock");
+     |         ^^^^^
+     |
+     = help: consider using an async-aware `Mutex` type or ensuring the `MutexGuard` is dropped before calling `await`
+note: these are all the await points this lock is held through
+    --> crates/grpc-client/src/client/tests.rs:1661:23
+     |
+1661 |     server.shutdown().await;
+     |                       ^^^^^
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#await_holding_lock
+
+error: this `MutexGuard` is held across an await point
+    --> crates/grpc-client/src/client/tests.rs:1704:9
+     |
+1704 |     let guard = state.lock().expect("state lock");
+     |         ^^^^^
+     |
+     = help: consider using an async-aware `Mutex` type or ensuring the `MutexGuard` is dropped before calling `await`
+note: these are all the await points this lock is held through
+    --> crates/grpc-client/src/client/tests.rs:1709:23
+     |
+1709 |     server.shutdown().await;
+     |                       ^^^^^
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#await_holding_lock
+
+error: could not compile `grpc-client` (lib test) due to 11 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: field assignment outside of initializer for an instance created with Default::default()
+   --> crates/agent-core/src/lifecycle.rs:353:9
+    |
+353 |         hardening_config.drop_capability_bounding_set = config.self_protection_prevent_uninstall;
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+note: consider initializing the variable with `self_protect::LinuxHardeningConfig { drop_capability_bounding_set: config.self_protection_prevent_uninstall, ..Default::default() }` and removing relevant reassignments
+   --> crates/agent-core/src/lifecycle.rs:352:9
+    |
+352 |         let mut hardening_config = LinuxHardeningConfig::default();
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#field_reassign_with_default
+    = note: `-D clippy::field-reassign-with-default` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::field_reassign_with_default)]`
+
+error: this call to `clone` can be replaced with `std::slice::from_ref`
+   --> crates/agent-core/src/lifecycle.rs:685:55
+    |
+685 |             if let Err(err) = self.client.send_events(&[alert.clone()]).await {
+    |                                                       ^^^^^^^^^^^^^^^^ help: try: `std::slice::from_ref(&alert)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#cloned_ref_to_slice_refs
+    = note: `-D clippy::cloned-ref-to-slice-refs` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::cloned_ref_to_slice_refs)]`
+
+error: could not compile `agent-core` (bin "agent-core") due to 2 previous errors
+error: field assignment outside of initializer for an instance created with Default::default()
+   --> crates/agent-core/src/lifecycle/tests.rs:355:5
+    |
+355 |     cfg.offline_buffer_backend = "memory".to_string();
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+note: consider initializing the variable with `config::AgentConfig { offline_buffer_backend: "memory".to_string(), server_addr: "127.0.0.1:1".to_string(), ..Default::default() }` and removing relevant reassignments
+   --> crates/agent-core/src/lifecycle/tests.rs:354:5
+    |
+354 |     let mut cfg = AgentConfig::default();
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#field_reassign_with_default
+
+error: field assignment outside of initializer for an instance created with Default::default()
+   --> crates/agent-core/src/lifecycle/tests.rs:863:5
+    |
+863 |     cfg.offline_buffer_backend = "memory".to_string();
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+note: consider initializing the variable with `config::AgentConfig { offline_buffer_backend: "memory".to_string(), server_addr: "127.0.0.1:1".to_string(), ..Default::default() }` and removing relevant reassignments
+   --> crates/agent-core/src/lifecycle/tests.rs:862:5
+    |
+862 |     let mut cfg = AgentConfig::default();
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#field_reassign_with_default
+
+error: field assignment outside of initializer for an instance created with Default::default()
+  --> crates/agent-core/src/lifecycle/tests_ebpf_policy.rs:43:5
+   |
+43 |     cfg.offline_buffer_backend = "memory".to_string();
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+note: consider initializing the variable with `config::AgentConfig { offline_buffer_backend: "memory".to_string(), server_addr: "127.0.0.1:1".to_string(), self_protection_integrity_check_interval_secs: 0, ..Default::default() }` and removing relevant reassignments
+  --> crates/agent-core/src/lifecycle/tests_ebpf_policy.rs:42:5
+   |
+42 |     let mut cfg = AgentConfig::default();
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#field_reassign_with_default
+
+error: field assignment outside of initializer for an instance created with Default::default()
+   --> crates/agent-core/src/lifecycle/tests_ebpf_policy.rs:106:5
+    |
+106 |     cfg.offline_buffer_backend = "memory".to_string();
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+note: consider initializing the variable with `config::AgentConfig { offline_buffer_backend: "memory".to_string(), server_addr: "127.0.0.1:1".to_string(), self_protection_integrity_check_interval_secs: 0, ..Default::default() }` and removing relevant reassignments
+   --> crates/agent-core/src/lifecycle/tests_ebpf_policy.rs:105:5
+    |
+105 |     let mut cfg = AgentConfig::default();
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#field_reassign_with_default
+
+error: field assignment outside of initializer for an instance created with Default::default()
+   --> crates/agent-core/src/lifecycle/tests_ebpf_policy.rs:308:5
+    |
+308 |     cfg.offline_buffer_backend = "memory".to_string();
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+note: consider initializing the variable with `config::AgentConfig { offline_buffer_backend: "memory".to_string(), server_addr: "127.0.0.1:1".to_string(), ..Default::default() }` and removing relevant reassignments
+   --> crates/agent-core/src/lifecycle/tests_ebpf_policy.rs:307:5
+    |
+307 |     let mut cfg = AgentConfig::default();
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#field_reassign_with_default
+
+error: field assignment outside of initializer for an instance created with Default::default()
+   --> crates/agent-core/src/lifecycle/tests_ebpf_policy.rs:323:5
+    |
+323 |     cfg.offline_buffer_backend = "memory".to_string();
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+note: consider initializing the variable with `config::AgentConfig { offline_buffer_backend: "memory".to_string(), server_addr: "127.0.0.1:1".to_string(), ..Default::default() }` and removing relevant reassignments
+   --> crates/agent-core/src/lifecycle/tests_ebpf_policy.rs:322:5
+    |
+322 |     let mut cfg = AgentConfig::default();
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#field_reassign_with_default
+
+error: field assignment outside of initializer for an instance created with Default::default()
+  --> crates/agent-core/src/lifecycle/tests_det_stub_completion.rs:56:5
+   |
+56 |     cfg.offline_buffer_backend = "memory".to_string();
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+note: consider initializing the variable with `config::AgentConfig { offline_buffer_backend: "memory".to_string(), ..Default::default() }` and removing relevant reassignments
+  --> crates/agent-core/src/lifecycle/tests_det_stub_completion.rs:55:5
+   |
+55 |     let mut cfg = AgentConfig::default();
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#field_reassign_with_default
+
+error: field assignment outside of initializer for an instance created with Default::default()
+  --> crates/agent-core/src/lifecycle/tests_det_stub_completion.rs:77:5
+   |
+77 |     cfg.offline_buffer_backend = "memory".to_string();
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+note: consider initializing the variable with `config::AgentConfig { offline_buffer_backend: "memory".to_string(), ..Default::default() }` and removing relevant reassignments
+  --> crates/agent-core/src/lifecycle/tests_det_stub_completion.rs:76:5
+   |
+76 |     let mut cfg = AgentConfig::default();
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#field_reassign_with_default
+
+error: field assignment outside of initializer for an instance created with Default::default()
+   --> crates/agent-core/src/lifecycle/tests_det_stub_completion.rs:114:5
+    |
+114 |     cfg.offline_buffer_backend = "memory".to_string();
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+note: consider initializing the variable with `config::AgentConfig { offline_buffer_backend: "memory".to_string(), ..Default::default() }` and removing relevant reassignments
+   --> crates/agent-core/src/lifecycle/tests_det_stub_completion.rs:113:5
+    |
+113 |     let mut cfg = AgentConfig::default();
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#field_reassign_with_default
+
+error: field assignment outside of initializer for an instance created with Default::default()
+   --> crates/agent-core/src/lifecycle/tests_det_stub_completion.rs:131:5
+    |
+131 |     cfg.offline_buffer_backend = "memory".to_string();
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+note: consider initializing the variable with `config::AgentConfig { offline_buffer_backend: "memory".to_string(), server_addr: "127.0.0.1:1".to_string(), ..Default::default() }` and removing relevant reassignments
+   --> crates/agent-core/src/lifecycle/tests_det_stub_completion.rs:130:5
+    |
+130 |     let mut cfg = AgentConfig::default();
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#field_reassign_with_default
+
+error: field assignment outside of initializer for an instance created with Default::default()
+   --> crates/agent-core/src/lifecycle/tests_det_stub_completion.rs:241:5
+    |
+241 |     cfg.offline_buffer_backend = "memory".to_string();
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+note: consider initializing the variable with `config::AgentConfig { offline_buffer_backend: "memory".to_string(), ..Default::default() }` and removing relevant reassignments
+   --> crates/agent-core/src/lifecycle/tests_det_stub_completion.rs:240:5
+    |
+240 |     let mut cfg = AgentConfig::default();
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#field_reassign_with_default
+
+error: field assignment outside of initializer for an instance created with Default::default()
+   --> crates/agent-core/src/lifecycle/tests_det_stub_completion.rs:283:5
+    |
+283 |     cfg.offline_buffer_backend = "memory".to_string();
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+note: consider initializing the variable with `config::AgentConfig { offline_buffer_backend: "memory".to_string(), ..Default::default() }` and removing relevant reassignments
+   --> crates/agent-core/src/lifecycle/tests_det_stub_completion.rs:282:5
+    |
+282 |     let mut cfg = AgentConfig::default();
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#field_reassign_with_default
+
+error: field assignment outside of initializer for an instance created with Default::default()
+   --> crates/agent-core/src/lifecycle/tests_det_stub_completion.rs:321:5
+    |
+321 |     cfg.offline_buffer_backend = "memory".to_string();
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+note: consider initializing the variable with `config::AgentConfig { offline_buffer_backend: "memory".to_string(), server_addr: "127.0.0.1:1".to_string(), ..Default::default() }` and removing relevant reassignments
+   --> crates/agent-core/src/lifecycle/tests_det_stub_completion.rs:320:5
+    |
+320 |     let mut cfg = AgentConfig::default();
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#field_reassign_with_default
+
+error: field assignment outside of initializer for an instance created with Default::default()
+  --> crates/agent-core/src/lifecycle/tests_observability.rs:35:5
+   |
+35 |     cfg.offline_buffer_backend = "memory".to_string();
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+note: consider initializing the variable with `config::AgentConfig { offline_buffer_backend: "memory".to_string(), server_addr: "127.0.0.1:1".to_string(), self_protection_integrity_check_interval_secs: 0, ..Default::default() }` and removing relevant reassignments
+  --> crates/agent-core/src/lifecycle/tests_observability.rs:34:5
+   |
+34 |     let mut cfg = AgentConfig::default();
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#field_reassign_with_default
+
+error: field assignment outside of initializer for an instance created with Default::default()
+  --> crates/agent-core/src/lifecycle/tests_observability.rs:73:5
+   |
+73 |     cfg.offline_buffer_backend = "memory".to_string();
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+note: consider initializing the variable with `config::AgentConfig { offline_buffer_backend: "memory".to_string(), server_addr: "127.0.0.1:1".to_string(), self_protection_integrity_check_interval_secs: 0, ..Default::default() }` and removing relevant reassignments
+  --> crates/agent-core/src/lifecycle/tests_observability.rs:72:5
+   |
+72 |     let mut cfg = AgentConfig::default();
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#field_reassign_with_default
+
+error: field assignment outside of initializer for an instance created with Default::default()
+   --> crates/agent-core/src/lifecycle/tests_observability.rs:112:5
+    |
+112 |     cfg.offline_buffer_backend = "memory".to_string();
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+note: consider initializing the variable with `config::AgentConfig { offline_buffer_backend: "memory".to_string(), server_addr: "127.0.0.1:1".to_string(), self_protection_integrity_check_interval_secs: 0, ..Default::default() }` and removing relevant reassignments
+   --> crates/agent-core/src/lifecycle/tests_observability.rs:111:5
+    |
+111 |     let mut cfg = AgentConfig::default();
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#field_reassign_with_default
+
+error: field assignment outside of initializer for an instance created with Default::default()
+   --> crates/agent-core/src/lifecycle/tests_observability.rs:145:5
+    |
+145 |     cfg.offline_buffer_backend = "memory".to_string();
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+note: consider initializing the variable with `config::AgentConfig { offline_buffer_backend: "memory".to_string(), server_addr: "127.0.0.1:1".to_string(), self_protection_integrity_check_interval_secs: 0, ..Default::default() }` and removing relevant reassignments
+   --> crates/agent-core/src/lifecycle/tests_observability.rs:144:5
+    |
+144 |     let mut cfg = AgentConfig::default();
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#field_reassign_with_default
+
+error: field assignment outside of initializer for an instance created with Default::default()
+   --> crates/agent-core/src/lifecycle/tests_observability.rs:206:5
+    |
+206 |     cfg.offline_buffer_backend = "memory".to_string();
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+note: consider initializing the variable with `config::AgentConfig { offline_buffer_backend: "memory".to_string(), server_addr: "127.0.0.1:1".to_string(), self_protection_integrity_check_interval_secs: 0, ..Default::default() }` and removing relevant reassignments
+   --> crates/agent-core/src/lifecycle/tests_observability.rs:205:5
+    |
+205 |     let mut cfg = AgentConfig::default();
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#field_reassign_with_default
+
+error: field assignment outside of initializer for an instance created with Default::default()
+   --> crates/agent-core/src/lifecycle/tests_observability.rs:244:5
+    |
+244 |     cfg.offline_buffer_backend = "memory".to_string();
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+note: consider initializing the variable with `config::AgentConfig { offline_buffer_backend: "memory".to_string(), server_addr: "127.0.0.1:1".to_string(), self_protection_integrity_check_interval_secs: 0, ..Default::default() }` and removing relevant reassignments
+   --> crates/agent-core/src/lifecycle/tests_observability.rs:243:5
+    |
+243 |     let mut cfg = AgentConfig::default();
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#field_reassign_with_default
+
+error: field assignment outside of initializer for an instance created with Default::default()
+   --> crates/agent-core/src/lifecycle/tests_observability.rs:274:5
+    |
+274 |     cfg.offline_buffer_backend = "memory".to_string();
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+note: consider initializing the variable with `config::AgentConfig { offline_buffer_backend: "memory".to_string(), server_addr: "127.0.0.1:1".to_string(), self_protection_integrity_check_interval_secs: 0, ..Default::default() }` and removing relevant reassignments
+   --> crates/agent-core/src/lifecycle/tests_observability.rs:273:5
+    |
+273 |     let mut cfg = AgentConfig::default();
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#field_reassign_with_default
+
+error: field assignment outside of initializer for an instance created with Default::default()
+   --> crates/agent-core/src/lifecycle/tests_observability.rs:304:5
+    |
+304 |     cfg.offline_buffer_backend = "memory".to_string();
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+note: consider initializing the variable with `config::AgentConfig { offline_buffer_backend: "memory".to_string(), server_addr: "127.0.0.1:1".to_string(), self_protection_integrity_check_interval_secs: 0, ..Default::default() }` and removing relevant reassignments
+   --> crates/agent-core/src/lifecycle/tests_observability.rs:303:5
+    |
+303 |     let mut cfg = AgentConfig::default();
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#field_reassign_with_default
+
+error: writing `&PathBuf` instead of `&Path` involves a new object where a slice will do
+  --> crates/agent-core/src/lifecycle/tests_pkg_contract.rs:66:32
+   |
+66 | fn install_mock_tools(bin_dir: &PathBuf) {
+   |                                ^^^^^^^^ help: change this to: `&Path`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#ptr_arg
+   = note: `-D clippy::ptr-arg` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::ptr_arg)]`
+
+error: using `contains()` instead of `iter().any()` is more efficient
+   --> crates/agent-core/src/lifecycle/tests_pkg_contract.rs:331:13
+    |
+331 |       assert!(stdout_lines
+    |  _____________^
+332 | |         .iter()
+333 | |         .any(|line| *line == "eguard-agent installed from https://example.local/pkg.deb"));
+    | |_________________________________________________________________________________________^ help: try: `stdout_lines.contains(&"eguard-agent installed from https://example.local/pkg.deb")`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#manual_contains
+    = note: `-D clippy::manual-contains` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::manual_contains)]`
+
+error: field assignment outside of initializer for an instance created with Default::default()
+  --> crates/agent-core/src/lifecycle/tests_resource_policy.rs:77:5
+   |
+77 |     cfg.offline_buffer_backend = "memory".to_string();
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+note: consider initializing the variable with `config::AgentConfig { offline_buffer_backend: "memory".to_string(), server_addr: "127.0.0.1:1".to_string(), self_protection_integrity_check_interval_secs: 0, ..Default::default() }` and removing relevant reassignments
+  --> crates/agent-core/src/lifecycle/tests_resource_policy.rs:76:5
+   |
+76 |     let mut cfg = AgentConfig::default();
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#field_reassign_with_default
+
+error: using `contains()` instead of `iter().any()` is more efficient
+  --> crates/agent-core/src/lifecycle/tests_self_protect_hardening.rs:53:17
+   |
+53 |           assert!(report
+   |  _________________^
+54 | |             .failed_step_names()
+55 | |             .iter()
+56 | |             .any(|name| *name == "capability_bounding_set"));
+   | |___________________________________________________________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#manual_contains
+help: try
+   |
+53 ~         assert!(report
+54 ~             .failed_step_names().contains(&"capability_bounding_set"));
+   |
+
+error: field assignment outside of initializer for an instance created with Default::default()
+  --> crates/agent-core/src/lifecycle/tests_self_protect_hardening.rs:91:5
+   |
+91 |     cfg_disabled.offline_buffer_backend = "memory".to_string();
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+note: consider initializing the variable with `config::AgentConfig { offline_buffer_backend: "memory".to_string(), self_protection_prevent_uninstall: false, ..Default::default() }` and removing relevant reassignments
+  --> crates/agent-core/src/lifecycle/tests_self_protect_hardening.rs:90:5
+   |
+90 |     let mut cfg_disabled = AgentConfig::default();
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#field_reassign_with_default
+
+error: field assignment outside of initializer for an instance created with Default::default()
+  --> crates/agent-core/src/lifecycle/tests_self_protect_hardening.rs:97:5
+   |
+97 |     cfg_enabled.offline_buffer_backend = "memory".to_string();
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+note: consider initializing the variable with `config::AgentConfig { offline_buffer_backend: "memory".to_string(), self_protection_prevent_uninstall: true, ..Default::default() }` and removing relevant reassignments
+  --> crates/agent-core/src/lifecycle/tests_self_protect_hardening.rs:96:5
+   |
+96 |     let mut cfg_enabled = AgentConfig::default();
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#field_reassign_with_default
+
+error: field assignment outside of initializer for an instance created with Default::default()
+  --> crates/agent-core/src/lifecycle/tests_self_protect_policy.rs:47:5
+   |
+47 |     cfg.offline_buffer_backend = "memory".to_string();
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+note: consider initializing the variable with `config::AgentConfig { offline_buffer_backend: "memory".to_string(), self_protection_integrity_check_interval_secs: 1, ..Default::default() }` and removing relevant reassignments
+  --> crates/agent-core/src/lifecycle/tests_self_protect_policy.rs:46:5
+   |
+46 |     let mut cfg = AgentConfig::default();
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#field_reassign_with_default
+
+error: could not compile `agent-core` (bin "agent-core" test) due to 30 previous errors

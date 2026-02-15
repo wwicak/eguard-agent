@@ -1,0 +1,17 @@
+title: eguard_default_webshell
+detection:
+  sequence:
+    - event_class: process_exec
+      process_any_of:
+        - bash
+        - sh
+      parent_any_of:
+        - nginx
+        - apache2
+        - caddy
+      within_secs: 30
+    - event_class: network_connect
+      dst_port_not_in:
+        - 80
+        - 443
+      within_secs: 10

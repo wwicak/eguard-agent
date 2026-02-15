@@ -1,0 +1,6 @@
+{
+  "suite": "replay_determinism",
+  "recorded_at_utc": "2026-02-14T05:29:28Z",
+  "command": "cargo test -p detection tests::replay_harness_is_deterministic -- --exact",
+  "wall_clock_ms": 215
+}

@@ -1,0 +1,12 @@
+{
+  "suite": "signature_ml_readiness_gate",
+  "status": "pass",
+  "mode": "shadow",
+  "readiness_tier": "strong",
+  "scores": {
+    "final_score": 90.0,
+    "previous_final_score": null,
+    "score_delta": null,
+    "score_drop": null
+  }
+}

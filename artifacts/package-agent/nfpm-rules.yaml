@@ -1,0 +1,21 @@
+name: eguard-agent-rules
+arch: amd64
+platform: linux
+version: "0.1.0"
+release: "1"
+maintainer: eGuard Team <info@eguard.id>
+description: Optional bootstrap rule bundle for eGuard endpoint agent
+license: GPL-2.0-or-later
+depends:
+  - eguard-agent
+contents:
+  - src: /home/dimas/eguard-agent/artifacts/package-agent/stage/rules/var/lib/eguard-agent/rules/sigma/default_webshell.yml
+    dst: /var/lib/eguard-agent/rules/sigma/default_webshell.yml
+  - src: /home/dimas/eguard-agent/artifacts/package-agent/stage/rules/var/lib/eguard-agent/rules/yara/default.yar
+    dst: /var/lib/eguard-agent/rules/yara/default.yar
+  - src: /home/dimas/eguard-agent/artifacts/package-agent/stage/rules/var/lib/eguard-agent/rules/ioc/default_ioc.txt
+    dst: /var/lib/eguard-agent/rules/ioc/default_ioc.txt
+overrides:
+  rpm:
+    depends:
+      - eguard-agent = 0.1.0-1

@@ -1,0 +1,37 @@
+{
+  "suite": "ebpf_resource_budget",
+  "recorded_at_utc": "2026-02-14T05:23:28Z",
+  "limits": {
+    "idle_cpu_pct": 0.05,
+    "active_cpu_pct": 0.5,
+    "peak_cpu_pct": 3,
+    "memory_rss_mb": 25,
+    "disk_io_kbps": 100,
+    "binary_size_mb": null,
+    "binary_size_enforced": false,
+    "startup_seconds": 2,
+    "detection_latency_ns": 500,
+    "lsm_block_latency_ms": 1
+  },
+  "measurement_commands": {
+    "idle_cpu": "pidstat -p $(pidof agent-core) 60",
+    "active_cpu": "pidstat -p $(pidof agent-core) 10 6",
+    "memory_rss": "ps -o rss= -p $(pidof agent-core)",
+    "disk_io": "pidstat -d -p $(pidof agent-core) 10 6",
+    "detection_latency": "cargo test -p detection tests::detection_latency_p99_stays_within_budget_for_reference_workload -- --exact",
+    "lsm_block_latency": "cargo test -p platform-linux ebpf::tests::parses_structured_lsm_block_payload -- --exact"
+  },
+  "measured": {
+    "release_build_wall_ms": 382,
+    "binary_size_bytes": 10362768,
+    "binary_size_mb": 9.882706,
+    "detection_latency_probe_wall_ms": 258,
+    "lsm_block_probe_wall_ms": 207,
+    "startup_probe_wall_ms": -1
+  },
+  "probe_status": {
+    "detection_latency": 0,
+    "lsm_block_latency": 0,
+    "startup": 0
+  }
+}

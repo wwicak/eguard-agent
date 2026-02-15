@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+args=()
+for arg in "$@"; do
+  case "${arg}" in
+    --target=x86_64-unknown-linux-musl)
+      args+=("--target=x86_64-linux-musl")
+      ;;
+    x86_64-unknown-linux-musl)
+      args+=("x86_64-linux-musl")
+      ;;
+    *)
+      args+=("${arg}")
+      ;;
+  esac
+done
+exec zig c++ "${args[@]}"

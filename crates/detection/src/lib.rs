@@ -20,7 +20,7 @@ pub use layer2::{
     TemporalEngine, TemporalEvictionCounters, TemporalPredicate, TemporalRule, TemporalStage,
 };
 pub use layer3::{AnomalyConfig, AnomalyDecision, AnomalyEngine};
-pub use layer4::{KillChainTemplate, Layer4Engine, TemplatePredicate};
+pub use layer4::{KillChainTemplate, Layer4Engine, Layer4EvictionCounters, TemplatePredicate};
 pub use policy::confidence_policy;
 pub use replay::{
     correlate_campaign_iocs, correlate_cross_agent_iocs, replay_events, report_drift_indicators,

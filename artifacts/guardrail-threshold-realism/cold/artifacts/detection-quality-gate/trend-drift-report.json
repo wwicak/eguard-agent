@@ -1,0 +1,90 @@
+{
+  "suite": "detection_quality_trend_drift",
+  "trend_path": "/home/dimas/eguard-agent/artifacts/detection-quality-gate/per-confidence-trend.ndjson",
+  "labels": [
+    "focus",
+    "definite",
+    "very_high",
+    "high"
+  ],
+  "bounds": {
+    "precision_drop_max": 0.01,
+    "recall_drop_max": 0.01,
+    "far_increase_max": 0.02
+  },
+  "comparisons": {
+    "focus": {
+      "previous": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "false_alarm_upper_bound": 0.002924
+      },
+      "current": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "false_alarm_upper_bound": 0.002924
+      },
+      "deltas": {
+        "precision_drop": 0.0,
+        "recall_drop": 0.0,
+        "false_alarm_upper_increase": 0.0
+      }
+    },
+    "definite": {
+      "previous": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "false_alarm_upper_bound": 0.002901
+      },
+      "current": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "false_alarm_upper_bound": 0.002901
+      },
+      "deltas": {
+        "precision_drop": 0.0,
+        "recall_drop": 0.0,
+        "false_alarm_upper_increase": 0.0
+      }
+    },
+    "very_high": {
+      "previous": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "false_alarm_upper_bound": 0.002924
+      },
+      "current": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "false_alarm_upper_bound": 0.002924
+      },
+      "deltas": {
+        "precision_drop": 0.0,
+        "recall_drop": 0.0,
+        "false_alarm_upper_increase": 0.0
+      }
+    },
+    "high": {
+      "previous": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "false_alarm_upper_bound": 0.002962
+      },
+      "current": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "false_alarm_upper_bound": 0.002962
+      },
+      "deltas": {
+        "precision_drop": 0.0,
+        "recall_drop": 0.0,
+        "false_alarm_upper_increase": 0.0
+      }
+    }
+  },
+  "regressions": [],
+  "status": "ok",
+  "entry_count": 33,
+  "previous_recorded_at_utc": "2026-02-14T05:22:15Z",
+  "current_recorded_at_utc": "2026-02-14T05:23:23Z"
+}

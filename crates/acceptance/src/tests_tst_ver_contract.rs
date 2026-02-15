@@ -713,6 +713,18 @@ fn attack_critical_burndown_bundle_release_contracts_are_present() {
         "build-bundle workflow must generate ATT&CK burn-down scoreboard"
     );
     assert!(
+        workflow.contains("Generate signature ML readiness report (shadow)"),
+        "build-bundle workflow must generate signature ML readiness report"
+    );
+    assert!(
+        workflow.contains("signature_ml_readiness_gate.py"),
+        "build-bundle workflow must invoke signature ML readiness gate script"
+    );
+    assert!(
+        workflow.contains("--previous /tmp/previous-signature-ml-readiness.json"),
+        "build-bundle workflow must consume previous signature ML readiness baseline"
+    );
+    assert!(
         workflow.contains("attack_critical_techniques.json"),
         "workflow must use curated critical ATT&CK techniques list"
     );
@@ -749,6 +761,10 @@ fn attack_critical_burndown_bundle_release_contracts_are_present() {
         "burn-down scoreboard Markdown artifact must be published"
     );
     assert!(
+        workflow.contains("bundle/signature-ml-readiness.json"),
+        "signature ML readiness artifact must be published"
+    );
+    assert!(
         workflow.contains("## Critical ATT&CK Technique Floor"),
         "release notes must include critical ATT&CK floor status"
     );
@@ -779,6 +795,14 @@ fn attack_critical_burndown_bundle_release_contracts_are_present() {
     assert!(
         workflow.contains("Delta uncovered vs previous"),
         "release notes must publish burn-down trend delta"
+    );
+    assert!(
+        workflow.contains("## Signature ML Readiness (Shadow)"),
+        "release notes must include signature ML readiness summary"
+    );
+    assert!(
+        workflow.contains("Readiness tier"),
+        "release notes must include signature ML readiness tier"
     );
 }
 
@@ -899,6 +923,10 @@ exit 0
     ));
     assert!(has_line(
         &log_lines,
+        "python threat-intel/processing/signature_ml_readiness_gate.py --manifest <mock> --coverage <mock> --output <mock>"
+    ));
+    assert!(has_line(
+        &log_lines,
         "python threat-intel/processing/ed25519_sign.py --input <mock> --output-sig <mock>"
     ));
     assert!(has_line(
@@ -938,6 +966,12 @@ exit 0
     assert!(bundle_signature_metrics.contains("\"suite\": \"bundle_signature_contract\""));
     assert!(bundle_signature_metrics.contains("\"signature_verified\": true"));
     assert!(bundle_signature_metrics.contains("\"tamper_rejected\": true"));
+    assert!(bundle_signature_metrics.contains("\"ml_readiness\""));
+
+    let signature_ml_readiness =
+        read("artifacts/bundle-signature-contract/signature-ml-readiness.json");
+    assert!(signature_ml_readiness.contains("\"suite\": \"signature_ml_readiness_gate\""));
+    assert!(signature_ml_readiness.contains("\"scores\""));
 
     let _ = std::fs::remove_dir_all(sandbox);
 

@@ -94,5 +94,5 @@ Implemented automation in this tranche:
 - [x] Confirm release/package workflows still produce `.deb` and `.rpm`
   - Local real-build evidence: `artifacts/package-agent/metrics.json` (`real_build: 1`) + `artifacts/package-agent/verification.json` (`status: ok`, validated via `dpkg-deb --info` / `rpm -qpi`)
 - [x] Upload and inspect optimization artifacts from workflow runs
-- [x] Run `bash scripts/run_verification_suite_ci.sh` in an environment with `cargo-audit` available and archive log evidence (`artifacts/verification-suite/run-20260214-205256.log`, latest rerun: `artifacts/verification-suite/run-20260215-101200.log`)
+- [x] Run `bash scripts/run_verification_suite_ci.sh` in an environment with `cargo-audit` available and archive log evidence (`artifacts/verification-suite/run-20260214-205256.log`, latest rerun: `artifacts/verification-suite/run-20260215-110333.log`)
 - [x] Land commit slices as isolated PR-ready commits with per-slice validation attached (`12198f2`, `70c34da`, `a24d2d0`, `330e46d`, `1e311ef`)

@@ -1,0 +1,355 @@
+[verification-suite] 2026-02-14T13:07:58Z :: cargo audit
+    Fetching advisory database from `https://github.com/RustSec/advisory-db.git`
+      Loaded 920 security advisories (from /home/dimas/.cargo/advisory-db)
+    Updating crates.io index
+    Scanning Cargo.lock for vulnerabilities (337 crate dependencies)
+Crate:     bincode
+Version:   1.3.3
+Warning:   unmaintained
+Title:     Bincode is unmaintained
+Date:      2025-12-16
+ID:        RUSTSEC-2025-0141
+URL:       https://rustsec.org/advisories/RUSTSEC-2025-0141
+Dependency tree:
+bincode 1.3.3
+└── baseline 0.1.0
+    ├── agent-core 0.1.0
+    └── acceptance 0.1.0
+
+Crate:     rustls-pemfile
+Version:   2.2.0
+Warning:   unmaintained
+Title:     rustls-pemfile is unmaintained
+Date:      2025-11-28
+ID:        RUSTSEC-2025-0134
+URL:       https://rustsec.org/advisories/RUSTSEC-2025-0134
+Dependency tree:
+rustls-pemfile 2.2.0
+└── tonic 0.12.3
+    └── grpc-client 0.1.0
+        ├── agent-core 0.1.0
+        └── acceptance 0.1.0
+
+Crate:     lru
+Version:   0.12.5
+Warning:   unsound
+Title:     `IterMut` violates Stacked Borrows by invalidating internal pointer
+Date:      2026-01-07
+ID:        RUSTSEC-2026-0002
+URL:       https://rustsec.org/advisories/RUSTSEC-2026-0002
+Dependency tree:
+lru 0.12.5
+└── platform-linux 0.1.0
+    ├── agent-core 0.1.0
+    └── acceptance 0.1.0
+
+warning: 3 allowed warnings found
+[verification-suite] 2026-02-14T13:08:01Z :: cargo clippy
+   Compiling crypto-accel v0.1.0 (/home/dimas/eguard-agent/crates/crypto-accel)
+    Checking platform-linux v0.1.0 (/home/dimas/eguard-agent/crates/platform-linux)
+    Checking acceptance v0.1.0 (/home/dimas/eguard-agent/crates/acceptance)
+    Checking agent-core v0.1.0 (/home/dimas/eguard-agent/crates/agent-core)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.03s
+[verification-suite] 2026-02-14T13:08:06Z :: cargo fuzz protobuf_parse
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.22s
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.22s
+     Running `fuzz/target/x86_64-unknown-linux-gnu/release/protobuf_parse -artifact_prefix=/home/dimas/eguard-agent/fuzz/artifacts/protobuf_parse/ -max_total_time=30 -verbosity=0 /home/dimas/eguard-agent/fuzz/corpus/protobuf_parse`
+INFO: Running with entropic power schedule (0xFF, 100).
+INFO:     4838 files found in /home/dimas/eguard-agent/fuzz/corpus/protobuf_parse
+INFO: -max_len is not provided; libFuzzer will not generate inputs larger than 4096 bytes
+INFO: seed corpus: files: 4838 min: 1b max: 4090b total: 554407b rss: 68Mb
+###### Recommended dictionary. ######
+"\\\000" # Uses: 14985
+"\001\000\000\036" # Uses: 12441
+"\002\017\000\000           (" # Uses: 6640
+">\000" # Uses: 6899
+"\377\377\377\377\377\377\377\010" # Uses: 3260
+"\014\000" # Uses: 3305
+"*\012\012\012\012\012\012   " # Uses: 1463
+"\026\000" # Uses: 1307
+"\002\017\012\012\012       (   " # Uses: 596
+"c\000\000\000" # Uses: 612
+###### End of recommended dictionary. ######
+[verification-suite] 2026-02-14T13:08:38Z :: cargo fuzz detection_inputs
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.22s
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.22s
+     Running `fuzz/target/x86_64-unknown-linux-gnu/release/detection_inputs -artifact_prefix=/home/dimas/eguard-agent/fuzz/artifacts/detection_inputs/ -max_total_time=30 -verbosity=0 /home/dimas/eguard-agent/fuzz/corpus/detection_inputs`
+INFO: Running with entropic power schedule (0xFF, 100).
+INFO:     3795 files found in /home/dimas/eguard-agent/fuzz/corpus/detection_inputs
+INFO: -max_len is not provided; libFuzzer will not generate inputs larger than 4096 bytes
+INFO: seed corpus: files: 3795 min: 1b max: 696b total: 812940b rss: 68Mb
+###### Recommended dictionary. ######
+"\000\000\000\000\000\000\000\020" # Uses: 371
+"\357\277\275\357\277\275\357\277\275cr" # Uses: 267
+"\326\000" # Uses: 337
+"\377\377\377\377\377\377\377\006" # Uses: 296
+"6\000" # Uses: 319
+"\001\000" # Uses: 312
+"\230\000\000\000" # Uses: 249
+"\357\277\275B\357\277\275\012\357\277\275" # Uses: 187
+"\016\000\000\000\000\000\000\000" # Uses: 190
+"\022\000\000\000" # Uses: 193
+"\177\177\177\177\177\177\177::\177" # Uses: 169
+"\001U" # Uses: 214
+"/etc/passwd" # Uses: 161
+"\001\000\0000" # Uses: 164
+"\350}\337\313\327\003\000\000" # Uses: 170
+",\377\377\377\377\377\377\377" # Uses: 140
+"\276\000" # Uses: 170
+"\003\000\000\000\000\000\000\000" # Uses: 153
+"\000\000\000\000\000\000\000\002" # Uses: 121
+"\001\000\000\000" # Uses: 139
+"\377\377" # Uses: 87
+"\032\000\000\000\000\000\000\000" # Uses: 77
+"\020\000" # Uses: 35
+"k\000" # Uses: 18
+###### End of recommended dictionary. ######
+[verification-suite] 2026-02-14T13:09:10Z :: cargo miri setup
+A sysroot for Miri is already available in `/home/dimas/.cache/miri`.
+[verification-suite] 2026-02-14T13:09:11Z :: cargo miri detection tests
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running unittests src/lib.rs (target/miri/x86_64-unknown-linux-gnu/debug/deps/detection-bc35fd366712299c)
+
+running 61 tests
+test memory_scanner::tests::test_filter_regions_executable_and_anonymous ... ok
+test memory_scanner::tests::test_filter_regions_executable_only ... ok
+test memory_scanner::tests::test_find_suspicious_self ... ok
+test memory_scanner::tests::test_parse_maps_content ... ok
+test memory_scanner::tests::test_region_size ... ok
+test memory_scanner::tests::test_skip_special_regions ... ok
+test memory_scanner::tests::test_skip_tiny_regions ... ok
+test tests::aho_matcher_scan_runtime_scales_approximately_linearly_with_input_bytes ... ignored, runtime envelope assertions are not meaningful under miri
+test tests::aho_matcher_space_scales_with_total_pattern_bytes ... ok
+test tests::anomaly_engine_emits_medium_when_above_medium_threshold_only ... ok
+test tests::anomaly_engine_flags_distribution_shift ... ok
+test tests::anomaly_entropy_guard_requires_minimum_length ... ok
+test tests::anomaly_math_matches_probability_and_kl_formulas ... ok
+test tests::anomaly_monitor_state_remains_memory_bounded_under_long_streams ... ignored, long-stream anomaly churn test is too slow under miri
+test tests::calibration_threshold_matches_sanov_bound ... ok
+test tests::confidence_ordering_matches_policy ... ok
+test tests::confidence_policy_is_first_match_wins ... ok
+test tests::detection_latency_p99_stays_within_budget_for_reference_workload ... ignored, runtime latency assertions are not meaningful under miri
+test tests::detection_outcome_includes_rule_names_and_matched_fields_for_traceability ... ok
+test tests::detection_workspace_excludes_ml_framework_dependencies ... ignored, spawning rustc/cargo subprocesses is unsupported under miri
+test tests::drift_indicators_report_baseline_age_and_kl_quantiles_by_process_family ... ok
+test tests::engine_runs_all_layers ... ok
+test tests::entropy_flag_policy_requires_min_len_entropy_and_zscore_conditions ... ok
+test tests::entropy_math_matches_shannon_definition ... ok
+test tests::layer1_append_string_signatures_preserves_existing_patterns ... ok
+test tests::layer1_exact_verification_works ... ok
+test tests::layer1_loaded_entries_have_no_algorithmic_fn_and_unloaded_have_no_fp ... ok
+test tests::layer1_prefilter_negative_short_circuits_to_clean ... ignored, sqlite FFI is unsupported under miri
+test tests::layer1_startup_self_check_validates_known_entries_across_prefilter_and_exact_store ... ok
+test tests::layer4_evaluation_runtime_is_bounded_with_depth_limited_templates ... ignored, runtime envelope assertions are not meaningful under miri
+test tests::layer4_graph_state_is_pruned_by_sliding_window_to_stay_bounded ... ignored, graph pruning stress test is too slow under miri
+test tests::layer4_hit_is_scoped_to_current_event_lineage_and_does_not_replay_on_unrelated_events ... ok
+test tests::layer4_matches_default_template ... ok
+test tests::layer4_pid_reuse_does_not_inherit_stale_non_web_network_signal ... ok
+test tests::layer4_template_matching_is_bounded_by_declared_depth ... ok
+test tests::replay_harness_is_deterministic ... ok
+test tests::replay_quality_gate_emits_metrics_artifact ... ignored, artifact-writing replay quality gate is too slow under miri
+test tests::replay_reports_precision_recall_and_false_alarm_upper_bound_by_confidence ... ignored, adversarial replay quality corpus is too slow under miri
+test tests::robust_zscore_uses_median_and_mad_baseline ... ok
+test tests::sigma_rules_load_from_directory ... ok
+test tests::sigma_yaml_compiles_to_bounded_temporal_ast ... ok
+test tests::sigma_yaml_missing_within_secs_is_rejected ... ok
+test tests::sigma_yaml_rule_compiles_and_fires ... ok
+test tests::temporal_engine_accepts_events_within_reorder_tolerance ... ok
+test tests::temporal_engine_detects_privilege_escalation_pattern ... ok
+test tests::temporal_engine_detects_webshell_pattern ... ok
+test tests::temporal_engine_enforces_stage_window ... ok
+test tests::temporal_engine_entity_isolation_prevents_cross_pid_matches ... ok
+test tests::temporal_engine_eviction_counters_track_retention_and_capacity_reasons ... ok
+test tests::temporal_engine_pid_metadata_capacity_evicts_oldest_then_tie_breaks_by_pid ... ok
+test tests::temporal_engine_pid_reuse_process_exec_clears_stale_pending_webshell_state ... ok
+test tests::temporal_engine_pid_reuse_without_exec_observation_does_not_continue_stale_chain ... ok
+test tests::temporal_engine_process_exit_teardown_is_idempotent_and_ignores_stale_out_of_order_exit ... ok
+test tests::temporal_engine_process_exit_tears_down_state_and_metadata_immediately ... ok
+test tests::temporal_engine_prunes_stale_state_and_pid_metadata_after_retention_horizon ... ok
+test tests::temporal_engine_rejects_reorder_beyond_tolerance ... ok
+test tests::temporal_engine_rejects_stage_restart_from_timestamp_skew_beyond_tolerance ... ok
+test tests::temporal_engine_state_capacity_evicts_oldest_pending_chain_deterministically ... ok
+test tests::yara_rule_match_escalates_to_definite ... ok
+test yara_engine::tests::loads_rules_from_directory ... ok
+test yara_engine::tests::parses_and_scans_rule_source ... ok
+
+test result: ok. 52 passed; 0 failed; 9 ignored; 0 measured; 0 filtered out; finished in 102.76s
+
+[verification-suite] 2026-02-14T13:10:56Z :: cargo build release agent-core
+    Finished `release` profile [optimized] target(s) in 0.35s
+[verification-suite] 2026-02-14T13:10:57Z :: checksec probe
+[verification-suite] checksec unavailable; skipping AC-VER-027 hardening probe
+[verification-suite] 2026-02-14T13:10:57Z :: strace process/network probe
+execve("./target/release/agent-core", ["./target/release/agent-core", "--help"], 0x7ffc13ac5220 /* 34 vars */) = 0
+socketpair(AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK, 0, [6, 7]) = 0
+clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7f0bb5f51990, parent_tid=0x7f0bb5f51990, exit_signal=0, stack=0x7f0bb5d51000, stack_size=0x1ffd80, tls=0x7f0bb5f516c0}strace: Process 1061305 attached
+ => {parent_tid=[1061305]}, 88) = 1061305
+[pid 1061304] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7f0bb5d50990, parent_tid=0x7f0bb5d50990, exit_signal=0, stack=0x7f0bb5b50000, stack_size=0x1ffd80, tls=0x7f0bb5d506c0}strace: Process 1061306 attached
+ => {parent_tid=[1061306]}, 88) = 1061306
+[pid 1061304] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7f0baffff990, parent_tid=0x7f0baffff990, exit_signal=0, stack=0x7f0bafdff000, stack_size=0x1ffd80, tls=0x7f0baffff6c0}strace: Process 1061307 attached
+ => {parent_tid=[1061307]}, 88) = 1061307
+[pid 1061304] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7f0bb5b4f990, parent_tid=0x7f0bb5b4f990, exit_signal=0, stack=0x7f0bb594f000, stack_size=0x1ffd80, tls=0x7f0bb5b4f6c0}strace: Process 1061308 attached
+ => {parent_tid=[1061308]}, 88) = 1061308
+[pid 1061304] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7f0bb594e990, parent_tid=0x7f0bb594e990, exit_signal=0, stack=0x7f0bb574e000, stack_size=0x1ffd80, tls=0x7f0bb594e6c0}strace: Process 1061309 attached
+ => {parent_tid=[1061309]}, 88) = 1061309
+[pid 1061304] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7f0bb574d990, parent_tid=0x7f0bb574d990, exit_signal=0, stack=0x7f0bb554d000, stack_size=0x1ffd80, tls=0x7f0bb574d6c0}strace: Process 1061310 attached
+ => {parent_tid=[1061310]}, 88) = 1061310
+[pid 1061304] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7f0bb554c990, parent_tid=0x7f0bb554c990, exit_signal=0, stack=0x7f0bb534c000, stack_size=0x1ffd80, tls=0x7f0bb554c6c0}strace: Process 1061311 attached
+ => {parent_tid=[1061311]}, 88) = 1061311
+[pid 1061304] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7f0bb5348990, parent_tid=0x7f0bb5348990, exit_signal=0, stack=0x7f0bb5148000, stack_size=0x1ffd80, tls=0x7f0bb53486c0}strace: Process 1061312 attached
+ => {parent_tid=[1061312]}, 88) = 1061312
+[pid 1061304] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7f0bb513e990, parent_tid=0x7f0bb513e990, exit_signal=0, stack=0x7f0bb4f3e000, stack_size=0x1ffd80, tls=0x7f0bb513e6c0}strace: Process 1061313 attached
+ => {parent_tid=[1061313]}, 88) = 1061313
+[pid 1061304] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7f0bb4f3a990, parent_tid=0x7f0bb4f3a990, exit_signal=0, stack=0x7f0bb4d3a000, stack_size=0x1ffd80, tls=0x7f0bb4f3a6c0}strace: Process 1061314 attached
+ => {parent_tid=[1061314]}, 88) = 1061314
+[pid 1061304] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7f0bb4d36990, parent_tid=0x7f0bb4d36990, exit_signal=0, stack=0x7f0bb4b36000, stack_size=0x1ffd80, tls=0x7f0bb4d366c0}strace: Process 1061315 attached
+ => {parent_tid=[1061315]}, 88) = 1061315
+[pid 1061304] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7f0bb4b32990, parent_tid=0x7f0bb4b32990, exit_signal=0, stack=0x7f0bb4932000, stack_size=0x1ffd80, tls=0x7f0bb4b326c0}strace: Process 1061316 attached
+ => {parent_tid=[1061316]}, 88) = 1061316
+[pid 1061304] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7f0bb492e990, parent_tid=0x7f0bb492e990, exit_signal=0, stack=0x7f0bb472e000, stack_size=0x1ffd80, tls=0x7f0bb492e6c0}strace: Process 1061317 attached
+ => {parent_tid=[1061317]}, 88) = 1061317
+[pid 1061304] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7f0bb472a990, parent_tid=0x7f0bb472a990, exit_signal=0, stack=0x7f0bb452a000, stack_size=0x1ffd80, tls=0x7f0bb472a6c0}strace: Process 1061318 attached
+ => {parent_tid=[1061318]}, 88) = 1061318
+[pid 1061304] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7f0bb4526990, parent_tid=0x7f0bb4526990, exit_signal=0, stack=0x7f0bb4326000, stack_size=0x1ffd80, tls=0x7f0bb45266c0}strace: Process 1061319 attached
+ => {parent_tid=[1061319]}, 88) = 1061319
+[pid 1061304] clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7f0bb4322990, parent_tid=0x7f0bb4322990, exit_signal=0, stack=0x7f0bb4122000, stack_size=0x1ffd80, tls=0x7f0bb43226c0}strace: Process 1061320 attached
+ => {parent_tid=[1061320]}, 88) = 1061320
+[pid 1061304] clone3(0x7ffd78e80740, 88strace: Process 1061321 attached
+) = 1061321
+[pid 1061321] socket(AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK, 0) = 9
+[pid 1061321] connect(9, 0x7f0bafdfcc70, 110) = -1 ENOENT (No such file or directory)
+[pid 1061321] socket(AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK, 0) = 9
+[pid 1061321] connect(9, 0x7f0bafdfce60, 110) = -1 ENOENT (No such file or directory)
+[pid 1061321] socket(AF_INET, SOCK_DGRAM|SOCK_CLOEXEC|SOCK_NONBLOCK, IPPROTO_IP) = 9
+[pid 1061321] setsockopt(9, SOL_IP, IP_RECVERR, 0x7f0bafdfb2a4, 4) = 0
+[pid 1061321] connect(9, 0x7f0bafdfed8c, 16) = 0
+[pid 1061321] sendmmsg(9, 0x7f0bafdfb440, 2, MSG_NOSIGNAL) = 2
+[pid 1061321] recvfrom(9, 0x7f0bafdfc790, 2048, 0, 0x7f0bafdfb420, 0x7f0bafdfb400) = 43
+[pid 1061321] recvfrom(9, 0x7f0b68003ab0, 65536, 0, 0x7f0bafdfb420, 0x7f0bafdfb400) = 43
+[pid 1061321] socket(AF_INET, SOCK_DGRAM|SOCK_CLOEXEC|SOCK_NONBLOCK, IPPROTO_IP) = 9
+[pid 1061321] setsockopt(9, SOL_IP, IP_RECVERR, 0x7f0bafdfb754, 4) = 0
+[pid 1061321] connect(9, 0x7f0bafdfed8c, 16) = 0
+[pid 1061321] sendmmsg(9, 0x7f0bafdfb8f0, 2, MSG_NOSIGNAL) = 2
+[pid 1061321] recvfrom(9, 0x7f0bafdfc790, 2048, 0, 0x7f0bafdfb8d0, 0x7f0bafdfb8b0) = 31
+[pid 1061321] recvfrom(9, 0x7f0b68003ab0, 65536, 0, 0x7f0bafdfb8d0, 0x7f0bafdfb8b0) = 31
+[pid 1061321] socket(AF_INET, SOCK_DGRAM|SOCK_CLOEXEC|SOCK_NONBLOCK, IPPROTO_IP) = 9
+[pid 1061321] setsockopt(9, SOL_IP, IP_RECVERR, 0x7f0bafdfb2a4, 4) = 0
+[pid 1061321] connect(9, 0x7f0bafdfed8c, 16) = 0
+[pid 1061321] sendmmsg(9, 0x7f0bafdfb440, 2, MSG_NOSIGNAL) = 2
+[pid 1061321] recvfrom(9, 0x7f0bafdfc790, 2048, 0, 0x7f0bafdfb420, 0x7f0bafdfb400) = 43
+[pid 1061321] recvfrom(9, 0x7f0b68003b00, 65536, 0, 0x7f0bafdfb420, 0x7f0bafdfb400) = 43
+[pid 1061321] socket(AF_INET, SOCK_DGRAM|SOCK_CLOEXEC|SOCK_NONBLOCK, IPPROTO_IP) = 9
+[pid 1061321] setsockopt(9, SOL_IP, IP_RECVERR, 0x7f0bafdfb754, 4) = 0
+[pid 1061321] connect(9, 0x7f0bafdfed8c, 16) = 0
+[pid 1061321] sendmmsg(9, 0x7f0bafdfb8f0, 2, MSG_NOSIGNAL) = 2
+[pid 1061321] recvfrom(9, 0x7f0bafdfc790, 2048, 0, 0x7f0bafdfb8d0, 0x7f0bafdfb8b0) = 31
+[pid 1061321] recvfrom(9, 0x7f0b68003b00, 65536, 0, 0x7f0bafdfb8d0, 0x7f0bafdfb8b0) = 31
+[pid 1061321] socket(AF_INET, SOCK_DGRAM|SOCK_CLOEXEC|SOCK_NONBLOCK, IPPROTO_IP) = 9
+[pid 1061321] setsockopt(9, SOL_IP, IP_RECVERR, 0x7f0bafdfb2a4, 4) = 0
+[pid 1061321] connect(9, 0x7f0bafdfed8c, 16) = 0
+[pid 1061321] sendmmsg(9, 0x7f0bafdfb440, 2, MSG_NOSIGNAL) = 2
+[pid 1061321] recvfrom(9, 0x7f0bafdfc790, 2048, 0, 0x7f0bafdfb420, 0x7f0bafdfb400) = 43
+[pid 1061321] recvfrom(9, 0x7f0b68003b50, 65536, 0, 0x7f0bafdfb420, 0x7f0bafdfb400) = 43
+[pid 1061321] socket(AF_INET, SOCK_DGRAM|SOCK_CLOEXEC|SOCK_NONBLOCK, IPPROTO_IP) = 9
+[pid 1061321] setsockopt(9, SOL_IP, IP_RECVERR, 0x7f0bafdfb754, 4) = 0
+[pid 1061321] connect(9, 0x7f0bafdfed8c, 16) = 0
+[pid 1061321] sendmmsg(9, 0x7f0bafdfb8f0, 2, MSG_NOSIGNAL) = 2
+[pid 1061321] recvfrom(9, 0x7f0bafdfc790, 2048, 0, 0x7f0bafdfb8d0, 0x7f0bafdfb8b0) = 31
+[pid 1061321] recvfrom(9, 0x7f0b68003b50, 65536, 0, 0x7f0bafdfb8d0, 0x7f0bafdfb8b0) = 31
+[pid 1061321] exit(0)                   = ?
+[pid 1061321] +++ exited with 0 +++
+strace: Process 1061304 detached
+strace: Process 1061305 detached
+strace: Process 1061306 detached
+strace: Process 1061307 detached
+strace: Process 1061308 detached
+strace: Process 1061309 detached
+strace: Process 1061310 detached
+strace: Process 1061311 detached
+strace: Process 1061312 detached
+strace: Process 1061313 detached
+strace: Process 1061314 detached
+strace: Process 1061315 detached
+strace: Process 1061316 detached
+strace: Process 1061317 detached
+strace: Process 1061318 detached
+strace: Process 1061319 detached
+strace: Process 1061320 detached
+[verification-suite] 2026-02-14T13:11:57Z :: grpc-client enrollment test aliases
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
+     Running unittests src/lib.rs (target/debug/deps/grpc_client-e8d3c22ab94ee9c0)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 79 filtered out; finished in 0.00s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
+     Running unittests src/lib.rs (target/debug/deps/grpc_client-e8d3c22ab94ee9c0)
+
+running 1 test
+test client::tests::enrollment_rejects_expired_or_wrong_ca_certificates ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 78 filtered out; finished in 3.35s
+
+[verification-suite] 2026-02-14T13:12:01Z :: platform-linux lsm payload parse test
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running unittests src/lib.rs (target/debug/deps/platform_linux-80117e0f4d703077)
+
+running 1 test
+test ebpf::tests::parses_structured_lsm_block_payload ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 52 filtered out; finished in 0.00s
+
+[verification-suite] 2026-02-14T13:12:01Z :: agent-core shard IOC reload test
+   Compiling libc v0.2.181
+   Compiling bitflags v2.10.0
+   Compiling tracing-core v0.1.36
+   Compiling log v0.4.29
+   Compiling linux-raw-sys v0.11.0
+   Compiling tinystr v0.8.2
+   Compiling zerotrie v0.2.3
+   Compiling icu_collections v2.1.1
+   Compiling icu_locale_core v2.1.1
+   Compiling num-traits v0.2.19
+   Compiling rustix v1.1.3
+   Compiling tracing v0.1.44
+   Compiling aho-corasick v1.1.4
+   Compiling powerfmt v0.2.0
+   Compiling time-core v0.1.8
+   Compiling jobserver v0.1.34
+   Compiling getrandom v0.4.1
+   Compiling minimal-lexical v0.2.1
+   Compiling icu_provider v2.1.1
+   Compiling cc v1.2.55
+   Compiling num-conv v0.2.0
+   Compiling icu_properties v2.1.2
+   Compiling icu_normalizer v2.1.1
+   Compiling getrandom v0.2.17
+   Compiling errno v0.3.14
+   Compiling socket2 v0.6.2
+   Compiling rand_core v0.6.4
+   Compiling signal-hook-registry v1.4.8
+   Compiling crypto-common v0.1.7
+   Compiling mio v1.1.1
+   Compiling digest v0.10.7
+   Compiling tempfile v3.25.0
+   Compiling time-macros v0.2.27
+   Compiling sha2 v0.10.9
+   Compiling tokio v1.49.0
+   Compiling nom v7.1.3
+   Compiling deranged v0.5.6
+   Compiling regex-syntax v0.8.9
+   Compiling ring v0.17.14
+   Compiling libsqlite3-sys v0.30.1
+   Compiling zstd-sys v2.0.16+zstd.1.5.7
+   Compiling prost-build v0.13.5
+   Compiling time v0.3.47
+   Compiling rusticata-macros v4.1.0
+   Compiling regex-automata v0.4.14
+   Compiling thiserror v1.0.69
+   Compiling rand_chacha v0.3.1
+   Compiling idna_adapter v1.2.1
+   Compiling inout v0.1.4
+   Compiling idna v1.1.0
+   Compiling asn1-rs v0.6.2
+   Compiling cipher v0.4.4
