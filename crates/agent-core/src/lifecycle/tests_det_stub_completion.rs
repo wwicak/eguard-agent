@@ -1,6 +1,6 @@
 use super::*;
 use detection::DetectionEngine;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 fn workspace_root() -> PathBuf {
@@ -29,6 +29,27 @@ fn non_comment_lines(raw: &str) -> Vec<String> {
 
 fn has_line(lines: &[String], expected: &str) -> bool {
     lines.iter().any(|line| line == expected)
+}
+
+fn unique_temp_dir(prefix: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "{prefix}-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ))
+}
+
+fn write_ioc_hash_bundle(bundle_root: &Path, hash_count: usize) {
+    let ioc_dir = bundle_root.join("ioc");
+    std::fs::create_dir_all(&ioc_dir).expect("create ioc dir");
+
+    let mut payload = String::new();
+    for idx in 0..hash_count {
+        payload.push_str(&format!("bundle-ioc-hash-{idx:04}\n"));
+    }
+    std::fs::write(ioc_dir.join("hashes.txt"), payload).expect("write ioc hashes");
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -113,6 +134,197 @@ fn reload_detection_state_rejects_corroboration_mismatch_before_swap() {
         .expect("read version after")
         .unwrap_or_default();
     assert_eq!(after, before);
+}
+
+#[test]
+// AC-DET-006 AC-DET-151
+fn reload_detection_state_corroborates_ioc_count_from_bundle_payload_not_seeded_defaults() {
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+
+    let bundle_root = std::env::temp_dir().join(format!(
+        "eguard-ioc-corroboration-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    let ioc_dir = bundle_root.join("ioc");
+    std::fs::create_dir_all(&ioc_dir).expect("create ioc dir");
+    std::fs::write(
+        ioc_dir.join("hashes.txt"),
+        "bundle-ioc-hash-corroboration\n",
+    )
+    .expect("write ioc hashes");
+
+    let expected = grpc_client::ThreatIntelVersionEnvelope {
+        version: "v-ioc-corroborated".to_string(),
+        bundle_path: bundle_root.to_string_lossy().into_owned(),
+        published_at_unix: 0,
+        sigma_count: 0,
+        yara_count: 0,
+        ioc_count: 1,
+        cve_count: 0,
+        custom_rule_count: 0,
+        custom_rule_version_hash: String::new(),
+        bundle_signature_path: String::new(),
+        bundle_sha256: String::new(),
+    };
+
+    runtime
+        .reload_detection_state(
+            "v-ioc-corroborated",
+            bundle_root.to_string_lossy().as_ref(),
+            Some(&expected),
+        )
+        .expect("bundle IOC count corroboration should succeed");
+
+    let report = runtime
+        .last_reload_report
+        .clone()
+        .expect("reload report should be recorded");
+    assert_eq!(report.ioc_entries, 1);
+
+    let _ = std::fs::remove_dir_all(bundle_root);
+}
+
+#[test]
+// AC-DET-006 AC-DET-145 AC-DET-184
+fn reload_detection_state_rejects_signature_database_floor_violation_before_swap() {
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+
+    let before = runtime
+        .detection_state
+        .version()
+        .expect("read version")
+        .unwrap_or_default();
+
+    let bundle_root = std::env::temp_dir().join(format!(
+        "eguard-signature-floor-violation-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    std::fs::create_dir_all(&bundle_root).expect("create bundle root");
+
+    let err = runtime
+        .reload_detection_state(
+            "v-signature-floor",
+            bundle_root.to_string_lossy().as_ref(),
+            None,
+        )
+        .expect_err("signature floor violation must reject bundle swap");
+    assert!(err
+        .to_string()
+        .contains("signature database floor violation"));
+
+    let after = runtime
+        .detection_state
+        .version()
+        .expect("read version after")
+        .unwrap_or_default();
+    assert_eq!(after, before);
+
+    let _ = std::fs::remove_dir_all(bundle_root);
+}
+
+#[test]
+// AC-DET-006 AC-DET-145 AC-DET-184
+fn reload_detection_state_rejects_signature_drop_guard_regression_and_keeps_last_good_version() {
+    let _guard = env_var_lock().lock().expect("lock env vars");
+    std::env::set_var("EGUARD_RULE_BUNDLE_MAX_SIGNATURE_DROP_PCT", "20");
+
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+
+    let bundle_v1 = unique_temp_dir("eguard-signature-drop-guard-v1");
+    write_ioc_hash_bundle(&bundle_v1, 10);
+    runtime
+        .reload_detection_state("v-drop-guard-1", bundle_v1.to_string_lossy().as_ref(), None)
+        .expect("initial bundle reload should pass");
+
+    let bundle_v2 = unique_temp_dir("eguard-signature-drop-guard-v2");
+    write_ioc_hash_bundle(&bundle_v2, 1);
+    let err = runtime
+        .reload_detection_state("v-drop-guard-2", bundle_v2.to_string_lossy().as_ref(), None)
+        .expect_err("large signature drop should be blocked by guard");
+    assert!(err.to_string().contains("drop guard violation"));
+
+    assert_eq!(
+        runtime
+            .detection_state
+            .version()
+            .expect("read version after rejected reload")
+            .as_deref(),
+        Some("v-drop-guard-1")
+    );
+    assert_eq!(
+        runtime
+            .last_reload_report
+            .as_ref()
+            .map(|report| report.new_version.as_str()),
+        Some("v-drop-guard-1")
+    );
+
+    std::env::remove_var("EGUARD_RULE_BUNDLE_MAX_SIGNATURE_DROP_PCT");
+    let _ = std::fs::remove_dir_all(bundle_v1);
+    let _ = std::fs::remove_dir_all(bundle_v2);
+}
+
+#[test]
+// AC-DET-006 AC-DET-145 AC-DET-184
+fn reload_detection_state_accepts_signature_drop_within_guard_threshold() {
+    let _guard = env_var_lock().lock().expect("lock env vars");
+    std::env::set_var("EGUARD_RULE_BUNDLE_MAX_SIGNATURE_DROP_PCT", "20");
+
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+
+    let bundle_v1 = unique_temp_dir("eguard-signature-drop-guard-pass-v1");
+    write_ioc_hash_bundle(&bundle_v1, 10);
+    runtime
+        .reload_detection_state(
+            "v-drop-guard-pass-1",
+            bundle_v1.to_string_lossy().as_ref(),
+            None,
+        )
+        .expect("initial bundle reload should pass");
+
+    let bundle_v2 = unique_temp_dir("eguard-signature-drop-guard-pass-v2");
+    write_ioc_hash_bundle(&bundle_v2, 8);
+    runtime
+        .reload_detection_state(
+            "v-drop-guard-pass-2",
+            bundle_v2.to_string_lossy().as_ref(),
+            None,
+        )
+        .expect("in-range signature drop should be accepted");
+
+    assert_eq!(
+        runtime
+            .detection_state
+            .version()
+            .expect("read version after accepted reload")
+            .as_deref(),
+        Some("v-drop-guard-pass-2")
+    );
+    assert_eq!(
+        runtime
+            .last_reload_report
+            .as_ref()
+            .map(|report| report.ioc_entries),
+        Some(8)
+    );
+
+    std::env::remove_var("EGUARD_RULE_BUNDLE_MAX_SIGNATURE_DROP_PCT");
+    let _ = std::fs::remove_dir_all(bundle_v1);
+    let _ = std::fs::remove_dir_all(bundle_v2);
 }
 
 #[test]

@@ -1,0 +1,12 @@
+{
+  "suite": "signature_ml_readiness_trend_gate",
+  "status": "pass_no_baseline",
+  "history_status": "no_baseline",
+  "scores": {
+    "current_final_score": 90.0,
+    "previous_final_score": null,
+    "score_delta": null,
+    "score_drop": null
+  },
+  "regressions": []
+}

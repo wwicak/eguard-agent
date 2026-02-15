@@ -11,3 +11,4 @@
 /bundle/
 /bundles/
 *.bundle.tar.zst
+artifacts/verification-suite/*.log

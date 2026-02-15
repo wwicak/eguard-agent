@@ -260,6 +260,20 @@ jobs:
             artifacts/bundle-signature-contract/signature-ml-readiness.json
             artifacts/bundle-signature-contract/signature-ml-readiness-trend.ndjson
             artifacts/bundle-signature-contract/signature-ml-readiness-trend-report.json
+            artifacts/bundle-signature-contract/signature-ml-training-corpus-summary.json
+            artifacts/bundle-signature-contract/signature-ml-signals.ndjson
+            artifacts/bundle-signature-contract/signature-ml-label-quality-report.json
+            artifacts/bundle-signature-contract/signature-ml-labels.ndjson
+            artifacts/bundle-signature-contract/signature-ml-feature-snapshot-report.json
+            artifacts/bundle-signature-contract/signature-ml-features.ndjson
+            artifacts/bundle-signature-contract/signature-ml-feature-schema.json
+            artifacts/bundle-signature-contract/signature-ml-model.json
+            artifacts/bundle-signature-contract/signature-ml-model.json.sig
+            artifacts/bundle-signature-contract/signature-ml-model-metadata.json
+            artifacts/bundle-signature-contract/signature-ml-offline-eval-report.json
+            artifacts/bundle-signature-contract/signature-ml-offline-eval-trend.ndjson
+            artifacts/bundle-signature-contract/signature-ml-offline-eval-trend-report.json
+            artifacts/bundle-signature-contract/signature-ml-model-registry.json
             artifacts/detection-benchmark/metrics.json
             artifacts/detection-benchmark/baseline-metrics.json
             artifacts/detection-benchmark/regression-report.json

@@ -110,6 +110,7 @@ message PollCommandsResponse {
 message AckCommandRequest {
   string command_id = 1;
   string status = 2;
+  string agent_id = 3;
 }
 
 message AckCommandResponse {

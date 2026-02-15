@@ -12,5 +12,39 @@
     "mode": "shadow",
     "readiness_tier": "strong",
     "final_score": 90.0
+  },
+  "ml_readiness_trend": {
+    "status": "pass_no_baseline",
+    "history_status": "no_baseline",
+    "score_drop": null,
+    "regression_count": 0
+  },
+  "ml_battle_ready": {
+    "corpus": {
+      "status": "pass",
+      "dataset_mode": "synthetic_ci"
+    },
+    "label_quality": {
+      "status": "pass",
+      "adjudicated_count": 662
+    },
+    "feature_snapshot": {
+      "status": "pass",
+      "row_count": 662
+    },
+    "offline_eval": {
+      "status": "pass",
+      "pr_auc": 0.9,
+      "roc_auc": 0.91
+    },
+    "offline_eval_trend": {
+      "status": "pass_no_baseline",
+      "history_status": "no_baseline",
+      "regression_count": 0
+    },
+    "model_registry": {
+      "status": "pass",
+      "model_version": "ci.signature.ml.v1"
+    }
   }
 }

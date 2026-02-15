@@ -1638,6 +1638,707 @@ class TestSignatureMLReadinessGate(unittest.TestCase):
         self.assertEqual(report.get("status"), "fail")
 
 
+class TestSignatureMLReadinessTrendGate(unittest.TestCase):
+    """Validate signature ML readiness trend gate behavior."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.current_path = os.path.join(self.tmpdir, "signature-ml-readiness.json")
+        self.previous_trend_path = os.path.join(self.tmpdir, "previous-signature-ml-readiness-trend.ndjson")
+        self.output_trend_path = os.path.join(self.tmpdir, "signature-ml-readiness-trend.ndjson")
+        self.output_report_path = os.path.join(self.tmpdir, "signature-ml-readiness-trend-report.json")
+        self.script_path = os.path.join(PROCESSING_DIR, "signature_ml_readiness_trend_gate.py")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir)
+
+    def _write_current(self, *, final_score: float, tier: str, signature_scale: float, source_diversity: float):
+        payload = {
+            "suite": "signature_ml_readiness_gate",
+            "recorded_at_utc": "2026-02-15T10:00:00Z",
+            "status": "pass",
+            "mode": "shadow",
+            "readiness_tier": tier,
+            "scores": {
+                "final_score": final_score,
+            },
+            "components": {
+                "signature_scale": {"available": True, "score": signature_scale},
+                "source_diversity": {"available": True, "score": source_diversity},
+            },
+            "warnings": [],
+            "failures": [],
+        }
+        with open(self.current_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+
+    def _write_previous_trend(self, rows: list[dict]):
+        with open(self.previous_trend_path, "w", encoding="utf-8") as f:
+            for row in rows:
+                f.write(json.dumps(row) + "\n")
+
+    def _run_gate(self, include_previous: bool, *extra_args: str):
+        cmd = [
+            sys.executable,
+            self.script_path,
+            "--current",
+            self.current_path,
+            "--output-trend",
+            self.output_trend_path,
+            "--output-report",
+            self.output_report_path,
+        ]
+        if include_previous:
+            cmd.extend(["--previous-trend", self.previous_trend_path])
+        cmd.extend(extra_args)
+        return subprocess.run(cmd, capture_output=True, text=True)
+
+    def test_signature_ml_trend_passes_without_baseline(self):
+        self._write_current(final_score=91.5, tier="strong", signature_scale=92.0, source_diversity=88.0)
+
+        result = self._run_gate(False)
+        self.assertEqual(result.returncode, 0, msg=f"trend gate failed: {result.stdout}\n{result.stderr}")
+
+        with open(self.output_report_path, "r", encoding="utf-8") as f:
+            report = json.load(f)
+        self.assertEqual(report.get("status"), "pass_no_baseline")
+        self.assertEqual(report.get("history_status"), "no_baseline")
+
+    def test_signature_ml_trend_shadow_alerts_on_large_score_drop(self):
+        self._write_current(final_score=83.0, tier="competitive", signature_scale=84.0, source_diversity=79.0)
+        self._write_previous_trend(
+            [
+                {
+                    "recorded_at_utc": "2026-02-14T10:00:00Z",
+                    "status": "pass",
+                    "readiness_tier": "strong",
+                    "final_score": 92.0,
+                    "component_scores": {
+                        "signature_scale": 93.0,
+                        "source_diversity": 90.0,
+                    },
+                }
+            ]
+        )
+
+        result = self._run_gate(
+            True,
+            "--max-score-drop",
+            "3",
+            "--max-component-drop",
+            "5",
+            "--fail-on-regression",
+            "0",
+        )
+        self.assertEqual(result.returncode, 0, msg=f"trend gate failed: {result.stdout}\n{result.stderr}")
+
+        with open(self.output_report_path, "r", encoding="utf-8") as f:
+            report = json.load(f)
+        self.assertEqual(report.get("status"), "shadow_alert")
+        regressions = report.get("regressions", [])
+        self.assertTrue(any("final_score drop too high" in item for item in regressions))
+        self.assertTrue(any("component score drop too high" in item for item in regressions))
+
+    def test_signature_ml_trend_fails_when_regression_enforced(self):
+        self._write_current(final_score=80.0, tier="competitive", signature_scale=78.0, source_diversity=76.0)
+        self._write_previous_trend(
+            [
+                {
+                    "recorded_at_utc": "2026-02-14T08:00:00Z",
+                    "status": "shadow_alert",
+                    "readiness_tier": "strong",
+                    "final_score": 90.0,
+                    "component_scores": {
+                        "signature_scale": 90.0,
+                        "source_diversity": 88.0,
+                    },
+                },
+                {
+                    "recorded_at_utc": "2026-02-14T09:00:00Z",
+                    "status": "shadow_alert",
+                    "readiness_tier": "strong",
+                    "final_score": 89.0,
+                    "component_scores": {
+                        "signature_scale": 89.0,
+                        "source_diversity": 87.0,
+                    },
+                },
+            ]
+        )
+
+        result = self._run_gate(
+            True,
+            "--max-score-drop",
+            "2",
+            "--max-component-drop",
+            "4",
+            "--max-consecutive-alerts",
+            "2",
+            "--fail-on-regression",
+            "1",
+        )
+        self.assertNotEqual(result.returncode, 0)
+
+        with open(self.output_report_path, "r", encoding="utf-8") as f:
+            report = json.load(f)
+        self.assertEqual(report.get("status"), "fail")
+        regressions = report.get("regressions", [])
+        self.assertTrue(any("consecutive trend alerts exceeded max" in item for item in regressions))
+
+
+class TestSignatureMLOfflineEvalTrendGate(unittest.TestCase):
+    """Validate signature ML offline eval trend gate behavior."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.trend_path = os.path.join(self.tmpdir, "signature-ml-offline-eval-trend.ndjson")
+        self.output_path = os.path.join(self.tmpdir, "signature-ml-offline-eval-trend-report.json")
+        self.script_path = os.path.join(PROCESSING_DIR, "signature_ml_offline_eval_trend_gate.py")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir)
+
+    def _write_trend(self, rows: list[dict]):
+        with open(self.trend_path, "w", encoding="utf-8") as f:
+            for row in rows:
+                f.write(json.dumps(row) + "\n")
+
+    def _run_gate(self, *extra_args: str):
+        cmd = [
+            sys.executable,
+            self.script_path,
+            "--trend",
+            self.trend_path,
+            "--output",
+            self.output_path,
+        ]
+        cmd.extend(extra_args)
+        return subprocess.run(cmd, capture_output=True, text=True)
+
+    def test_signature_ml_offline_eval_trend_passes_without_baseline(self):
+        self._write_trend(
+            [
+                {
+                    "suite": "signature_ml_offline_eval_trend",
+                    "status": "pass",
+                    "precision": 0.31,
+                    "recall": 0.95,
+                    "pr_auc": 0.72,
+                    "roc_auc": 0.82,
+                    "brier_score": 0.19,
+                    "ece": 0.15,
+                    "operating_threshold": 0.23,
+                    "operating_threshold_strategy": "max_recall_with_precision_floor",
+                }
+            ]
+        )
+
+        result = self._run_gate("--fail-on-regression", "1")
+        self.assertEqual(result.returncode, 0, msg=f"trend gate failed: {result.stdout}\n{result.stderr}")
+
+        with open(self.output_path, "r", encoding="utf-8") as f:
+            report = json.load(f)
+        self.assertEqual(report.get("status"), "pass_no_baseline")
+        self.assertEqual(report.get("history_status"), "no_baseline")
+
+    def test_signature_ml_offline_eval_trend_shadow_alerts_on_metric_drop(self):
+        self._write_trend(
+            [
+                {
+                    "suite": "signature_ml_offline_eval_trend",
+                    "status": "pass",
+                    "precision": 0.30,
+                    "recall": 0.92,
+                    "pr_auc": 0.74,
+                    "roc_auc": 0.85,
+                    "brier_score": 0.18,
+                    "ece": 0.13,
+                    "operating_threshold": 0.22,
+                    "operating_threshold_strategy": "max_recall_with_precision_floor",
+                },
+                {
+                    "suite": "signature_ml_offline_eval_trend",
+                    "status": "pass",
+                    "precision": 0.26,
+                    "recall": 0.84,
+                    "pr_auc": 0.62,
+                    "roc_auc": 0.72,
+                    "brier_score": 0.27,
+                    "ece": 0.25,
+                    "operating_threshold": 0.55,
+                    "operating_threshold_strategy": "max_recall_fallback",
+                },
+            ]
+        )
+
+        result = self._run_gate(
+            "--max-pr-auc-drop",
+            "0.05",
+            "--max-roc-auc-drop",
+            "0.05",
+            "--max-brier-increase",
+            "0.03",
+            "--max-ece-increase",
+            "0.05",
+            "--max-threshold-drift",
+            "0.20",
+            "--fail-on-regression",
+            "0",
+        )
+        self.assertEqual(result.returncode, 0, msg=f"trend gate failed: {result.stdout}\n{result.stderr}")
+
+        with open(self.output_path, "r", encoding="utf-8") as f:
+            report = json.load(f)
+        self.assertEqual(report.get("status"), "shadow_alert")
+        regressions = report.get("regressions", [])
+        self.assertTrue(any("pr_auc drop too high" in item for item in regressions))
+        self.assertTrue(any("ece increase too high" in item for item in regressions))
+
+    def test_signature_ml_offline_eval_trend_fails_on_alert_streak(self):
+        self._write_trend(
+            [
+                {
+                    "suite": "signature_ml_offline_eval_trend",
+                    "status": "shadow_alert",
+                    "precision": 0.22,
+                    "recall": 0.80,
+                    "pr_auc": 0.60,
+                    "roc_auc": 0.76,
+                    "brier_score": 0.23,
+                    "ece": 0.20,
+                    "operating_threshold": 0.24,
+                },
+                {
+                    "suite": "signature_ml_offline_eval_trend",
+                    "status": "shadow_alert",
+                    "precision": 0.21,
+                    "recall": 0.78,
+                    "pr_auc": 0.58,
+                    "roc_auc": 0.74,
+                    "brier_score": 0.24,
+                    "ece": 0.21,
+                    "operating_threshold": 0.26,
+                },
+                {
+                    "suite": "signature_ml_offline_eval_trend",
+                    "status": "fail",
+                    "precision": 0.19,
+                    "recall": 0.75,
+                    "pr_auc": 0.54,
+                    "roc_auc": 0.70,
+                    "brier_score": 0.28,
+                    "ece": 0.25,
+                    "operating_threshold": 0.29,
+                },
+            ]
+        )
+
+        result = self._run_gate(
+            "--max-consecutive-alerts",
+            "2",
+            "--fail-on-regression",
+            "1",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        with open(self.output_path, "r", encoding="utf-8") as f:
+            report = json.load(f)
+        self.assertEqual(report.get("status"), "fail")
+        regressions = report.get("regressions", [])
+        self.assertTrue(any("consecutive offline-eval alerts exceeded max" in item for item in regressions))
+
+
+class TestSignatureMLBattleReadyPipeline(unittest.TestCase):
+    """Validate end-to-end battle-ready signature ML prep pipeline scripts."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.bundle_dir = os.path.join(self.tmpdir, "bundle")
+        os.makedirs(self.bundle_dir, exist_ok=True)
+
+        self.manifest_path = os.path.join(self.bundle_dir, "manifest.json")
+        self.coverage_path = os.path.join(self.bundle_dir, "coverage-metrics.json")
+        self.readiness_path = os.path.join(self.bundle_dir, "signature-ml-readiness.json")
+        self.corpus_signals = os.path.join(self.bundle_dir, "signature-ml-signals.ndjson")
+        self.corpus_summary = os.path.join(self.bundle_dir, "signature-ml-training-corpus-summary.json")
+        self.label_report = os.path.join(self.bundle_dir, "signature-ml-label-quality-report.json")
+        self.labels_ndjson = os.path.join(self.bundle_dir, "signature-ml-labels.ndjson")
+        self.feature_report = os.path.join(self.bundle_dir, "signature-ml-feature-snapshot-report.json")
+        self.features_ndjson = os.path.join(self.bundle_dir, "signature-ml-features.ndjson")
+        self.feature_schema = os.path.join(self.bundle_dir, "signature-ml-feature-schema.json")
+        self.model_path = os.path.join(self.bundle_dir, "signature-ml-model.json")
+        self.model_metadata = os.path.join(self.bundle_dir, "signature-ml-model-metadata.json")
+        self.previous_eval_report = os.path.join(self.bundle_dir, "previous-signature-ml-offline-eval-report.json")
+        self.previous_eval_trend = os.path.join(self.bundle_dir, "previous-signature-ml-offline-eval-trend.ndjson")
+        self.offline_eval_report = os.path.join(self.bundle_dir, "signature-ml-offline-eval-report.json")
+        self.offline_eval_trend = os.path.join(self.bundle_dir, "signature-ml-offline-eval-trend.ndjson")
+        self.offline_eval_trend_report = os.path.join(self.bundle_dir, "signature-ml-offline-eval-trend-report.json")
+        self.registry_report = os.path.join(self.bundle_dir, "signature-ml-model-registry.json")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir)
+
+    def _run(self, cmd: list[str]):
+        return subprocess.run(cmd, capture_output=True, text=True)
+
+    def _write_bundle_inputs(self):
+        manifest = {
+            "version": "2026.02.15.1234",
+            "cve_epss_count": 12000,
+        }
+        coverage = {
+            "suite": "bundle_signature_coverage_gate",
+            "status": "pass",
+            "thresholds": {
+                "min_signature_total": 900,
+                "min_database_total": 5000,
+                "min_cve": 1000,
+                "min_cve_kev": 50,
+                "min_yara_sources": 3,
+                "min_sigma_sources": 2,
+            },
+            "measured": {
+                "signature_total": 7400,
+                "database_total": 26800,
+                "cve_count": 22000,
+                "cve_kev_count": 320,
+                "yara_source_count": 5,
+                "sigma_source_count": 4,
+            },
+            "observed_source_rule_counts": {
+                "yara": {
+                    "yara-forge": 1200,
+                    "elastic": 900,
+                    "gcti": 600,
+                    "reversinglabs": 300,
+                    "bartblaze": 200,
+                },
+                "sigma": {
+                    "rules": 220,
+                    "rules-emerging-threats": 130,
+                    "rules-threat-hunting": 90,
+                    "mdecrevoisier": 60,
+                },
+            },
+        }
+        readiness = {
+            "suite": "signature_ml_readiness_gate",
+            "status": "pass",
+            "mode": "shadow",
+            "readiness_tier": "strong",
+            "scores": {
+                "final_score": 91.2,
+            },
+            "components": {
+                "source_diversity": {"available": True, "score": 90.1},
+                "attack_surface": {"available": True, "score": 88.4},
+                "critical_resilience": {"available": True, "score": 86.8},
+            },
+        }
+        with open(self.manifest_path, "w", encoding="utf-8") as f:
+            json.dump(manifest, f)
+        with open(self.coverage_path, "w", encoding="utf-8") as f:
+            json.dump(coverage, f)
+        with open(self.readiness_path, "w", encoding="utf-8") as f:
+            json.dump(readiness, f)
+
+    def test_signature_ml_battle_ready_pipeline_passes(self):
+        self._write_bundle_inputs()
+
+        build_corpus = self._run(
+            [
+                sys.executable,
+                os.path.join(PROCESSING_DIR, "signature_ml_build_training_corpus.py"),
+                "--manifest",
+                self.manifest_path,
+                "--coverage",
+                self.coverage_path,
+                "--readiness",
+                self.readiness_path,
+                "--output-signals",
+                self.corpus_signals,
+                "--output-summary",
+                self.corpus_summary,
+                "--sample-count",
+                "480",
+                "--window-days",
+                "45",
+            ]
+        )
+        self.assertEqual(build_corpus.returncode, 0, msg=f"build corpus failed: {build_corpus.stdout}\n{build_corpus.stderr}")
+
+        label_gate = self._run(
+            [
+                sys.executable,
+                os.path.join(PROCESSING_DIR, "signature_ml_label_quality_gate.py"),
+                "--signals",
+                self.corpus_signals,
+                "--output-report",
+                self.label_report,
+                "--output-labels",
+                self.labels_ndjson,
+                "--min-adjudicated",
+                "300",
+                "--min-positive",
+                "60",
+                "--min-negative",
+                "140",
+                "--min-unique-hosts",
+                "70",
+                "--min-unique-rules",
+                "100",
+                "--max-unresolved-ratio",
+                "0.2",
+                "--max-p95-label-latency-days",
+                "6",
+                "--fail-on-threshold",
+                "1",
+            ]
+        )
+        self.assertEqual(label_gate.returncode, 0, msg=f"label quality failed: {label_gate.stdout}\n{label_gate.stderr}")
+
+        feature_gate = self._run(
+            [
+                sys.executable,
+                os.path.join(PROCESSING_DIR, "signature_ml_feature_snapshot_gate.py"),
+                "--labels",
+                self.labels_ndjson,
+                "--output-features",
+                self.features_ndjson,
+                "--output-schema",
+                self.feature_schema,
+                "--output-report",
+                self.feature_report,
+                "--min-rows",
+                "300",
+                "--min-unique-hosts",
+                "70",
+                "--min-unique-rules",
+                "100",
+                "--max-missing-feature-ratio",
+                "0.05",
+                "--min-temporal-span-days",
+                "20",
+                "--fail-on-threshold",
+                "1",
+            ]
+        )
+        self.assertEqual(feature_gate.returncode, 0, msg=f"feature snapshot failed: {feature_gate.stdout}\n{feature_gate.stderr}")
+
+        train_model = self._run(
+            [
+                sys.executable,
+                os.path.join(PROCESSING_DIR, "signature_ml_train_model.py"),
+                "--dataset",
+                self.features_ndjson,
+                "--feature-schema",
+                self.feature_schema,
+                "--labels-report",
+                self.label_report,
+                "--model-version",
+                "ci.signature.ml.v1",
+                "--model-out",
+                self.model_path,
+                "--metadata-out",
+                self.model_metadata,
+            ]
+        )
+        self.assertEqual(train_model.returncode, 0, msg=f"train model failed: {train_model.stdout}\n{train_model.stderr}")
+
+        with open(self.previous_eval_report, "w", encoding="utf-8") as f:
+            json.dump({"suite": "signature_ml_offline_eval_gate", "metrics": {"pr_auc": 0.62, "roc_auc": 0.80}}, f)
+        with open(self.previous_eval_trend, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"suite": "signature_ml_offline_eval_trend", "pr_auc": 0.62, "roc_auc": 0.80}) + "\n")
+
+        eval_gate = self._run(
+            [
+                sys.executable,
+                os.path.join(PROCESSING_DIR, "signature_ml_offline_eval_gate.py"),
+                "--dataset",
+                self.features_ndjson,
+                "--model",
+                self.model_path,
+                "--previous-report",
+                self.previous_eval_report,
+                "--previous-trend",
+                self.previous_eval_trend,
+                "--output-report",
+                self.offline_eval_report,
+                "--output-trend",
+                self.offline_eval_trend,
+                "--threshold",
+                "0.20",
+                "--auto-threshold",
+                "1",
+                "--min-eval-samples",
+                "120",
+                "--min-precision",
+                "0.22",
+                "--min-recall",
+                "0.80",
+                "--min-pr-auc",
+                "0.60",
+                "--min-roc-auc",
+                "0.76",
+                "--max-brier-score",
+                "0.25",
+                "--max-ece",
+                "0.22",
+                "--max-pr-auc-drop",
+                "0.15",
+                "--max-roc-auc-drop",
+                "0.15",
+                "--fail-on-threshold",
+                "1",
+                "--fail-on-regression",
+                "1",
+            ]
+        )
+        self.assertEqual(eval_gate.returncode, 0, msg=f"offline eval failed: {eval_gate.stdout}\n{eval_gate.stderr}")
+
+        eval_trend_gate = self._run(
+            [
+                sys.executable,
+                os.path.join(PROCESSING_DIR, "signature_ml_offline_eval_trend_gate.py"),
+                "--trend",
+                self.offline_eval_trend,
+                "--output",
+                self.offline_eval_trend_report,
+                "--max-pr-auc-drop",
+                "0.15",
+                "--max-roc-auc-drop",
+                "0.15",
+                "--max-brier-increase",
+                "0.08",
+                "--max-ece-increase",
+                "0.10",
+                "--max-threshold-drift",
+                "0.25",
+                "--max-consecutive-alerts",
+                "3",
+                "--window-size",
+                "8",
+                "--min-window-pass-rate",
+                "0.60",
+                "--fail-on-regression",
+                "1",
+            ]
+        )
+        self.assertEqual(eval_trend_gate.returncode, 0, msg=f"offline eval trend failed: {eval_trend_gate.stdout}\n{eval_trend_gate.stderr}")
+
+        registry_gate = self._run(
+            [
+                sys.executable,
+                os.path.join(PROCESSING_DIR, "signature_ml_model_registry_gate.py"),
+                "--model-artifact",
+                self.model_path,
+                "--metadata",
+                self.model_metadata,
+                "--offline-eval",
+                self.offline_eval_report,
+                "--offline-eval-trend-report",
+                self.offline_eval_trend_report,
+                "--feature-schema",
+                self.feature_schema,
+                "--labels-report",
+                self.label_report,
+                "--output",
+                self.registry_report,
+                "--min-pr-auc",
+                "0.60",
+                "--min-roc-auc",
+                "0.76",
+                "--require-signed-model",
+                "0",
+                "--verify-signature",
+                "0",
+                "--require-offline-eval-trend-pass",
+                "1",
+                "--fail-on-threshold",
+                "1",
+            ]
+        )
+        self.assertEqual(registry_gate.returncode, 0, msg=f"model registry failed: {registry_gate.stdout}\n{registry_gate.stderr}")
+
+        with open(self.registry_report, "r", encoding="utf-8") as f:
+            registry = json.load(f)
+        self.assertEqual(registry.get("status"), "pass")
+
+    def test_signature_ml_label_quality_enforced_fails_with_sparse_labels(self):
+        with open(self.corpus_signals, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"sample_id": "x1", "observed_at_utc": "2026-02-15T00:00:00Z", "label": None}) + "\n")
+            f.write(json.dumps({"sample_id": "x2", "observed_at_utc": "2026-02-15T01:00:00Z", "label": 1}) + "\n")
+
+        result = self._run(
+            [
+                sys.executable,
+                os.path.join(PROCESSING_DIR, "signature_ml_label_quality_gate.py"),
+                "--signals",
+                self.corpus_signals,
+                "--output-report",
+                self.label_report,
+                "--min-adjudicated",
+                "10",
+                "--min-positive",
+                "5",
+                "--min-negative",
+                "5",
+                "--fail-on-threshold",
+                "1",
+            ]
+        )
+        self.assertNotEqual(result.returncode, 0)
+        with open(self.label_report, "r", encoding="utf-8") as f:
+            report = json.load(f)
+        self.assertEqual(report.get("status"), "fail")
+
+    def test_signature_ml_offline_eval_enforced_fails_on_degraded_scores(self):
+        with open(self.features_ndjson, "w", encoding="utf-8") as f:
+            for idx in range(120):
+                label = 1 if idx % 2 == 0 else 0
+                row = {
+                    "sample_id": f"s-{idx:03d}",
+                    "observed_at_utc": f"2026-02-15T{idx % 24:02d}:00:00Z",
+                    "host_id": f"h-{idx % 20}",
+                    "rule_id": f"r-{idx % 30}",
+                    "label": label,
+                    "model_score": 0.5,
+                    "rule_severity": 3,
+                    "signature_total": 1000,
+                    "database_total": 5000,
+                    "source_diversity_score": 60,
+                    "attack_surface_score": 60,
+                    "critical_resilience_score": 60,
+                }
+                f.write(json.dumps(row) + "\n")
+
+        result = self._run(
+            [
+                sys.executable,
+                os.path.join(PROCESSING_DIR, "signature_ml_offline_eval_gate.py"),
+                "--dataset",
+                self.features_ndjson,
+                "--output-report",
+                self.offline_eval_report,
+                "--min-eval-samples",
+                "60",
+                "--min-precision",
+                "0.9",
+                "--min-recall",
+                "0.9",
+                "--min-pr-auc",
+                "0.9",
+                "--min-roc-auc",
+                "0.9",
+                "--fail-on-threshold",
+                "1",
+            ]
+        )
+        self.assertNotEqual(result.returncode, 0)
+        with open(self.offline_eval_report, "r", encoding="utf-8") as f:
+            report = json.load(f)
+        self.assertEqual(report.get("status"), "fail")
+
+
 class TestProcessingScripts(unittest.TestCase):
     """Smoke tests for processing scripts (import check)."""
 
@@ -1648,7 +2349,15 @@ class TestProcessingScripts(unittest.TestCase):
         "attack_gap_burndown_gate", "attack_critical_technique_gate",
         "attack_critical_regression_gate", "attack_critical_owner_streak_gate",
         "attack_burndown_scoreboard", "update_attack_critical_regression_history",
+        "signature_ml_build_training_corpus",
+        "signature_ml_label_quality_gate",
+        "signature_ml_feature_snapshot_gate",
+        "signature_ml_train_model",
+        "signature_ml_offline_eval_gate",
+        "signature_ml_offline_eval_trend_gate",
+        "signature_ml_model_registry_gate",
         "signature_ml_readiness_gate",
+        "signature_ml_readiness_trend_gate",
         "ed25519_sign", "ed25519_verify",
     ]
 

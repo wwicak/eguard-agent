@@ -242,15 +242,37 @@ impl SharedDetectionState {
     where
         F: FnMut() -> DetectionEngine,
     {
-        let mut primary = Some(next);
-        for (idx, shard) in self.inner.shards.iter().enumerate() {
-            let shard_engine = if idx == 0 {
-                primary
-                    .take()
-                    .ok_or_else(|| anyhow!("missing primary detection engine for shard 0"))?
-            } else {
-                shard_engine_builder()
-            };
+        let shard_count = self.inner.shards.len();
+        let mut engines = Vec::with_capacity(shard_count);
+        engines.push(next);
+        for _ in 1..shard_count {
+            engines.push(shard_engine_builder());
+        }
+
+        self.swap_prebuilt_engines(version, engines)
+    }
+
+    pub fn swap_prebuilt_engines(
+        &self,
+        version: String,
+        engines: Vec<DetectionEngine>,
+    ) -> Result<()> {
+        let shard_count = self.inner.shards.len();
+        if engines.len() != shard_count {
+            return Err(anyhow!(
+                "swap detection engines failed: expected {} engines, got {}",
+                shard_count,
+                engines.len()
+            ));
+        }
+
+        for (idx, (shard, shard_engine)) in self
+            .inner
+            .shards
+            .iter()
+            .zip(engines.into_iter())
+            .enumerate()
+        {
             shard
                 .swap_engine(shard_engine)
                 .map_err(|err| anyhow!("swap detection shard {idx} failed: {err}"))?;

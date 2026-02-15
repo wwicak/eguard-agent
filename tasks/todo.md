@@ -526,7 +526,128 @@ Reference acceptance criteria: `tasks/next-job-acceptance-criteria.md`
 
 ## Active Plan — Endpoint Signature-DB Runtime Hardening (2026-02-15)
 
-- [ ] Enforce endpoint-side signature database floor on hot-reload so runtime cannot downgrade to empty/near-empty bundle content
-- [ ] Harden multi-shard reload to prebuild + validate every shard engine before swap, rejecting cross-shard bundle-load divergence
-- [ ] Add regression tests for signature-floor rejection and shard consistency reload behavior
-- [ ] Run targeted verification (`cargo test -p agent-core --bin agent-core`, `cargo clippy -p agent-core --tests -- -D warnings`) and record evidence
+- [x] Enforce endpoint-side signature database floor on hot-reload so runtime cannot downgrade to empty/near-empty bundle content
+- [x] Harden multi-shard reload to prebuild + validate every shard engine before swap, rejecting cross-shard bundle-load divergence
+- [x] Add regression tests for signature-floor rejection and shard consistency reload behavior
+- [x] Run targeted verification (`cargo test -p agent-core --bin agent-core`, `cargo clippy -p agent-core --tests -- -D warnings`) and record evidence
+
+## Review — 2026-02-15 (endpoint signature-DB runtime hardening)
+
+- Tightened endpoint threat-intel hot-reload integrity in `crates/agent-core/src/lifecycle/threat_intel_pipeline.rs`:
+  - Added signature database floor gate (`enforce_bundle_signature_database_floor`) using `signature_total = sigma + yara + IOC(hash/domain/ip)`.
+  - Added env-controlled floor threshold (`EGUARD_RULE_BUNDLE_MIN_SIGNATURE_TOTAL`, default `1`) to prevent swaps to empty/near-empty signature material.
+  - Added optional signature-regression guard (`enforce_signature_drop_guard`) controlled by `EGUARD_RULE_BUNDLE_MAX_SIGNATURE_DROP_PCT` to block large unexpected signature database drops during hot-reload.
+  - Added prebuilt multi-shard swap flow: all shard engines are built + validated before swap, then atomically committed with `SharedDetectionState::swap_prebuilt_engines(...)`.
+  - Added explicit shard summary consistency guard (`ensure_shard_bundle_summary_matches`) to reject divergent shard loads.
+  - Corrected threat-intel IOC corroboration to compare server `ioc_count` against bundle IOC payload totals (hash/domain/ip), not seeded default IOC entries.
+- Detection-state orchestration hardening in `crates/agent-core/src/detection_state.rs`:
+  - Added `swap_prebuilt_engines(version, engines)` with strict shard-count validation.
+  - Updated `swap_engine_with_builder(...)` to stage all engines first, then swap, preventing partial cross-shard update windows.
+- Made bundle summary comparable for deterministic shard consistency checks:
+  - `crates/agent-core/src/lifecycle/rule_bundle_loader.rs`: `BundleLoadSummary` now derives `PartialEq, Eq`.
+- Added regression coverage:
+  - `crates/agent-core/src/lifecycle/threat_intel_pipeline.rs` tests:
+    - `signature_database_floor_rejects_bundle_without_signature_material`
+    - `signature_database_floor_accepts_bundle_with_sufficient_signature_material`
+    - `signature_drop_guard_rejects_large_regression_when_enabled`
+    - `signature_drop_guard_accepts_in_range_regression_when_enabled`
+    - `signature_drop_guard_is_disabled_when_env_not_set`
+    - `shard_bundle_summary_mismatch_is_rejected`
+    - `shard_bundle_summary_match_is_accepted`
+  - `crates/agent-core/src/lifecycle/tests_det_stub_completion.rs`:
+    - `reload_detection_state_rejects_signature_database_floor_violation_before_swap`
+    - `reload_detection_state_corroborates_ioc_count_from_bundle_payload_not_seeded_defaults`.
+- Verification evidence:
+  - `cargo test -p agent-core --bin agent-core` => pass (`130 passed`)
+  - `cargo clippy -p agent-core --tests -- -D warnings` => pass
+  - `cargo test -p acceptance tests_tst_ver_contract::verification_coverage_and_security_pipeline_contracts_are_present -- --exact` => pass
+
+## Active Plan — Endpoint Signature Drop-Guard Runtime Enforcement (2026-02-15)
+
+- [x] Add end-to-end runtime regression test proving drop-guard blocks large signature DB downgrade while preserving previous active version
+- [x] Add positive runtime regression test proving in-range signature DB reduction is accepted when within configured drop threshold
+- [x] Run targeted verification (`cargo test -p agent-core --bin agent-core`, `cargo clippy -p agent-core --tests -- -D warnings`, acceptance contract test) and record evidence
+
+## Active Plan — Isolated Container Install Validation (2026-02-15)
+
+- [x] Build real package artifacts needed for container install validation (`.deb` focus)
+- [x] Run Debian container install flow (`dpkg -i`) and validate package payload/service wiring in-container
+- [x] Execute live runtime smoke in container (`timeout` agent run) and capture startup behavior/log evidence
+- [x] Document “real case” evidence (what worked/what failed) and remaining gaps vs production host deployment
+
+## Review — 2026-02-15 (isolated container install + real runtime case)
+
+- Real package build + validation executed locally:
+  - `EGUARD_PACKAGE_REAL_BUILD=1 EGUARD_PACKAGE_GENERATE_EPHEMERAL_GPG=1 bash scripts/build-agent-packages-ci.sh` => pass
+  - `python3 scripts/verify_package_artifacts_ci.py --artifact-dir artifacts/package-agent` => pass
+- Isolated container install validation (Debian 12) executed with Docker:
+  - Installed packages in clean container using `dpkg -i`:
+    - `artifacts/package-agent/debian/eguard-agent_0.1.0_amd64.deb`
+    - `artifacts/package-agent/debian/eguard-agent-rules_0.1.0_amd64.deb`
+  - Verified installed payloads in-container:
+    - `/usr/bin/eguard-agent`
+    - `/usr/lib/systemd/system/eguard-agent.service`
+    - `/var/lib/eguard-agent/rules/sigma/default_webshell.yml`
+    - `/var/lib/eguard-agent/rules/yara/default.yar`
+    - `/var/lib/eguard-agent/rules/ioc/default_ioc.txt`
+- Real runtime case evidence (5-second bounded run in isolated container):
+  - Command: `RUST_LOG=info timeout 5 /usr/bin/eguard-agent`
+  - Process remained alive for timeout window (`agent-exit-code.txt = 124`), proving successful startup loop.
+  - Captured runtime logs in `artifacts/container-install/agent-start.log` show:
+    - detection layers initialized with rules (`loaded_sigma_rules=2`, `loaded_yara_rules=2`)
+    - detection shard pool initialized (`detection_shards=8`)
+    - baseline store seeded/loaded (`seeded_profiles=5`)
+    - runtime start banner emitted (`eguard-agent core started`)
+    - network outage behavior: enrollment/threat-intel retries + warnings (expected in isolated no-server scenario)
+- Observed deployment caveats from real-case logs:
+  - eBPF feature warning in this build (`feature 'ebpf-libbpf' is disabled in this build`), so this package run validates install/startup and control-plane behavior, but not kernel-hook telemetry capture.
+  - TLS files missing in container default config path caused graceful warning fallback (`failed to configure TLS; continuing without TLS`).
+
+## Active Plan — Collector Plumbing Contract Verification + Hardening (2026-02-15)
+
+- [x] Verify agent→collector HTTP contract parity against `/home/dimas/fe_eguard/go/agent/server` handlers for enroll/telemetry/command/ack flows
+- [x] Fix client command-ack payload contract to include `agent_id` on both HTTP and gRPC paths (collector ownership requirement)
+- [x] Harden gRPC command fetch strategy to avoid incompatible command-channel framing against collector legacy contract (use poll path with payload fidelity)
+- [x] Add grpc-client regression tests for collector contract payload shape (`/command/ack` includes `agent_id`; telemetry HTTP maps `payload_json` into `event_data`)
+- [x] Run targeted verification (`cargo test -p grpc-client`, `cargo test -p agent-core --bin agent-core`, clippy on touched crates) and document results
+
+## Review — 2026-02-15 (collector plumbing contract hardening)
+
+- Contract reconnaissance completed against collector implementation in `/home/dimas/fe_eguard/go/agent/server`:
+  - confirmed `/api/v1/endpoint/command/ack` requires `agent_id` + `command_id` on HTTP and gRPC (`commandAckHandler`, `grpc_command.go`).
+  - confirmed collector telemetry HTTP expects `event_data` object payload (`telemetryHandler`).
+  - confirmed collector gRPC command-channel framing remains legacy/incompatible with agent-side `ServerCommand` path, while `PollCommands` is payload-safe.
+- Implemented client plumbing fixes:
+  - `crates/grpc-client/src/client.rs`:
+    - `Client::ack_command(...)` now requires `agent_id` and propagates it to HTTP + gRPC paths.
+    - `Client::fetch_commands(...)` now uses polling directly in gRPC mode for collector compatibility and payload fidelity, with HTTP poll fallback if gRPC poll fails.
+    - gRPC telemetry/compliance/response sends now fail over to HTTP endpoints on gRPC transport/protocol failures to preserve collector interoperability.
+  - `crates/grpc-client/src/client/client_http.rs`:
+    - telemetry HTTP payload now maps `EventEnvelope.payload_json` into collector-compatible `event_data` JSON.
+    - command-ack HTTP payload now includes `agent_id`.
+  - `crates/grpc-client/src/client/client_grpc.rs` + `proto/eguard/v1/command.proto`:
+    - added `AckCommandRequest.agent_id` (field `3`) and gRPC ack sender wiring.
+  - `crates/agent-core/src/lifecycle/command_pipeline.rs`:
+    - ack call now passes runtime agent identity (`self.config.agent_id`).
+- Added regression coverage in `crates/grpc-client/src/client/tests.rs`:
+  - `ack_command_http_includes_agent_id_for_collector_contract`
+  - `send_events_http_maps_payload_json_into_event_data_object`
+  - `send_events_grpc_falls_back_to_http_when_grpc_stream_is_unavailable`
+  - updated gRPC fetch-commands compatibility test to assert poll-first behavior for collector compatibility.
+  - updated gRPC ack test to assert propagated `agent_id`.
+- Verification evidence:
+  - `cargo fmt --all` => pass
+  - `cargo test -p grpc-client` => pass (`82 passed`)
+  - `cargo test -p agent-core --bin agent-core -- --test-threads=1` => pass (`132 passed`)
+  - `cargo clippy -p grpc-client --tests -- -D warnings` => pass
+  - `cargo clippy -p agent-core --tests -- -D warnings` => pass
+  - `cargo test -p acceptance tests_tst_ver_contract::verification_coverage_and_security_pipeline_contracts_are_present -- --exact` => pass
+  - `cd /home/dimas/fe_eguard/go && go test ./agent/server -run 'TestHTTPEnrollmentHeartbeatTelemetryCommandFlow|TestGRPCEnrollmentHeartbeatTelemetryCommandFlow'` => pass
+
+## Active Plan — Isolated Docker Malware Scenario Validation (2026-02-15)
+
+- [ ] Stand up `/home/dimas/fe_eguard/tests/docker-compose.test.yml` stack with `agent` + `malware` profiles in isolated containers
+- [ ] Launch live `eguard-agent` runtime in `agent-test` container with explicit collector-compatible env and capture runtime log
+- [ ] Execute malware simulator scenarios (`eicar`, `webshell`, `reverse-shell`, `high-entropy`, `suspicious-dns`, `firewall-toggle`) and capture simulator log output
+- [ ] Collect server-side evidence via API/state/logs (enrollment/heartbeat/events/responses/state counters) and summarize observed detections/responses
+- [ ] Produce written report artifact under `artifacts/` and tear down stack cleanly

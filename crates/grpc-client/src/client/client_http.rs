@@ -54,7 +54,13 @@ impl Client {
         let payloads = batch
             .iter()
             .map(|event| {
-                serde_json::to_value(event).context("failed serializing telemetry event payload")
+                Ok(json!({
+                    "agent_id": event.agent_id,
+                    "event_type": event.event_type,
+                    "severity": "info",
+                    "rule_name": "",
+                    "event_data": payload_json_to_event_data(&event.payload_json),
+                }))
             })
             .collect::<Result<Vec<_>>>()?;
 
@@ -147,8 +153,17 @@ impl Client {
         Ok(payload.commands)
     }
 
-    pub(super) async fn ack_command_http(&self, command_id: &str, status: &str) -> Result<()> {
-        let payload = json!({"command_id": command_id, "status": status});
+    pub(super) async fn ack_command_http(
+        &self,
+        agent_id: &str,
+        command_id: &str,
+        status: &str,
+    ) -> Result<()> {
+        let payload = json!({
+            "agent_id": agent_id,
+            "command_id": command_id,
+            "status": status,
+        });
         self.post_json_with_retry(
             "ack_command_http",
             PATH_COMMAND_ACK,
@@ -364,6 +379,19 @@ impl Client {
             })?;
         }
         Ok(())
+    }
+}
+
+fn payload_json_to_event_data(raw_payload: &str) -> serde_json::Value {
+    let trimmed = raw_payload.trim();
+    if trimmed.is_empty() {
+        return json!({});
+    }
+
+    match serde_json::from_str::<serde_json::Value>(trimmed) {
+        Ok(serde_json::Value::Object(map)) => serde_json::Value::Object(map),
+        Ok(value) => json!({"value": value}),
+        Err(_) => json!({"raw": raw_payload}),
     }
 }
 

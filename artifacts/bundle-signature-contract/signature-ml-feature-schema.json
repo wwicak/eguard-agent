@@ -1,0 +1,14 @@
+{
+  "suite": "signature_ml_feature_schema",
+  "version": 1,
+  "features": [
+    "rule_severity",
+    "signature_total",
+    "database_total",
+    "source_diversity_score",
+    "attack_surface_score",
+    "critical_resilience_score"
+  ],
+  "label_field": "label",
+  "score_field": "model_score"
+}

@@ -725,6 +725,82 @@ fn attack_critical_burndown_bundle_release_contracts_are_present() {
         "build-bundle workflow must consume previous signature ML readiness baseline"
     );
     assert!(
+        workflow.contains("Generate signature ML readiness trend report (shadow)"),
+        "build-bundle workflow must generate signature ML readiness trend report"
+    );
+    assert!(
+        workflow.contains("signature_ml_readiness_trend_gate.py"),
+        "build-bundle workflow must invoke signature ML readiness trend gate script"
+    );
+    assert!(
+        workflow.contains("--previous-trend /tmp/previous-signature-ml-readiness-trend.ndjson"),
+        "build-bundle workflow must consume previous signature ML readiness trend baseline"
+    );
+    assert!(
+        workflow.contains("Build signature ML training corpus"),
+        "build-bundle workflow must build signature ML training corpus"
+    );
+    assert!(
+        workflow.contains("signature_ml_build_training_corpus.py"),
+        "build-bundle workflow must invoke signature ML corpus builder"
+    );
+    assert!(
+        workflow.contains("Validate signature ML label quality (shadow)"),
+        "build-bundle workflow must validate signature ML label quality"
+    );
+    assert!(
+        workflow.contains("signature_ml_label_quality_gate.py"),
+        "build-bundle workflow must invoke signature ML label quality gate"
+    );
+    assert!(
+        workflow.contains("Build signature ML feature snapshot (shadow)"),
+        "build-bundle workflow must build signature ML feature snapshot"
+    );
+    assert!(
+        workflow.contains("signature_ml_feature_snapshot_gate.py"),
+        "build-bundle workflow must invoke signature ML feature snapshot gate"
+    );
+    assert!(
+        workflow.contains("Train signature ML model artifact"),
+        "build-bundle workflow must train signature ML model artifact"
+    );
+    assert!(
+        workflow.contains("signature_ml_train_model.py"),
+        "build-bundle workflow must invoke signature ML train model script"
+    );
+    assert!(
+        workflow.contains("Evaluate signature ML offline metrics (shadow)"),
+        "build-bundle workflow must evaluate signature ML offline metrics"
+    );
+    assert!(
+        workflow.contains("signature_ml_offline_eval_gate.py"),
+        "build-bundle workflow must invoke signature ML offline eval gate"
+    );
+    assert!(
+        workflow.contains("--auto-threshold 1"),
+        "build-bundle workflow must use auto-threshold operating point selection for offline eval"
+    );
+    assert!(
+        workflow.contains("Validate signature ML offline eval trend (shadow)"),
+        "build-bundle workflow must validate signature ML offline eval trend"
+    );
+    assert!(
+        workflow.contains("signature_ml_offline_eval_trend_gate.py"),
+        "build-bundle workflow must invoke signature ML offline eval trend gate"
+    );
+    assert!(
+        workflow.contains("Sign signature ML model artifact"),
+        "build-bundle workflow must sign signature ML model artifact"
+    );
+    assert!(
+        workflow.contains("Validate signature ML model registry contract (shadow)"),
+        "build-bundle workflow must validate signature ML model registry contract"
+    );
+    assert!(
+        workflow.contains("signature_ml_model_registry_gate.py"),
+        "build-bundle workflow must invoke signature ML model registry gate"
+    );
+    assert!(
         workflow.contains("attack_critical_techniques.json"),
         "workflow must use curated critical ATT&CK techniques list"
     );
@@ -765,6 +841,38 @@ fn attack_critical_burndown_bundle_release_contracts_are_present() {
         "signature ML readiness artifact must be published"
     );
     assert!(
+        workflow.contains("bundle/signature-ml-readiness-trend.ndjson"),
+        "signature ML readiness trend artifact must be published"
+    );
+    assert!(
+        workflow.contains("bundle/signature-ml-readiness-trend-report.json"),
+        "signature ML readiness trend report artifact must be published"
+    );
+    assert!(
+        workflow.contains("bundle/signature-ml-training-corpus-summary.json"),
+        "signature ML training corpus summary artifact must be published"
+    );
+    assert!(
+        workflow.contains("bundle/signature-ml-label-quality-report.json"),
+        "signature ML label quality report artifact must be published"
+    );
+    assert!(
+        workflow.contains("bundle/signature-ml-feature-snapshot-report.json"),
+        "signature ML feature snapshot report artifact must be published"
+    );
+    assert!(
+        workflow.contains("bundle/signature-ml-offline-eval-report.json"),
+        "signature ML offline eval report artifact must be published"
+    );
+    assert!(
+        workflow.contains("bundle/signature-ml-offline-eval-trend-report.json"),
+        "signature ML offline eval trend report artifact must be published"
+    );
+    assert!(
+        workflow.contains("bundle/signature-ml-model-registry.json"),
+        "signature ML model registry artifact must be published"
+    );
+    assert!(
         workflow.contains("## Critical ATT&CK Technique Floor"),
         "release notes must include critical ATT&CK floor status"
     );
@@ -803,6 +911,46 @@ fn attack_critical_burndown_bundle_release_contracts_are_present() {
     assert!(
         workflow.contains("Readiness tier"),
         "release notes must include signature ML readiness tier"
+    );
+    assert!(
+        workflow.contains("## Signature ML Readiness Trend (Shadow)"),
+        "release notes must include signature ML readiness trend summary"
+    );
+    assert!(
+        workflow.contains("Projected consecutive alerts"),
+        "release notes must include projected signature ML trend alert streak"
+    );
+    assert!(
+        workflow.contains("## Signature ML Training Corpus"),
+        "release notes must include signature ML corpus summary"
+    );
+    assert!(
+        workflow.contains("## Signature ML Label Quality (Shadow)"),
+        "release notes must include signature ML label quality summary"
+    );
+    assert!(
+        workflow.contains("## Signature ML Feature Snapshot (Shadow)"),
+        "release notes must include signature ML feature snapshot summary"
+    );
+    assert!(
+        workflow.contains("## Signature ML Offline Eval (Shadow)"),
+        "release notes must include signature ML offline eval summary"
+    );
+    assert!(
+        workflow.contains("Operating threshold"),
+        "release notes must include signature ML offline eval operating threshold"
+    );
+    assert!(
+        workflow.contains("## Signature ML Offline Eval Trend (Shadow)"),
+        "release notes must include signature ML offline eval trend summary"
+    );
+    assert!(
+        workflow.contains("Consecutive alerts"),
+        "release notes must include signature ML offline eval consecutive alert count"
+    );
+    assert!(
+        workflow.contains("## Signature ML Model Registry (Shadow)"),
+        "release notes must include signature ML model registry summary"
     );
 }
 
@@ -927,6 +1075,38 @@ exit 0
     ));
     assert!(has_line(
         &log_lines,
+        "python threat-intel/processing/signature_ml_readiness_trend_gate.py --current <mock> --previous-trend <mock> --output-trend <mock> --output-report <mock>"
+    ));
+    assert!(has_line(
+        &log_lines,
+        "python threat-intel/processing/signature_ml_build_training_corpus.py --manifest <mock> --coverage <mock> --readiness <mock> --output-signals <mock> --output-summary <mock>"
+    ));
+    assert!(has_line(
+        &log_lines,
+        "python threat-intel/processing/signature_ml_label_quality_gate.py --signals <mock> --output-report <mock> --output-labels <mock>"
+    ));
+    assert!(has_line(
+        &log_lines,
+        "python threat-intel/processing/signature_ml_feature_snapshot_gate.py --labels <mock> --output-features <mock> --output-schema <mock> --output-report <mock>"
+    ));
+    assert!(has_line(
+        &log_lines,
+        "python threat-intel/processing/signature_ml_train_model.py --dataset <mock> --feature-schema <mock> --labels-report <mock> --model-version <mock> --model-out <mock> --metadata-out <mock>"
+    ));
+    assert!(has_line(
+        &log_lines,
+        "python threat-intel/processing/signature_ml_offline_eval_gate.py --dataset <mock> --model <mock> --previous-report <mock> --auto-threshold <mock> --output-report <mock> --output-trend <mock>"
+    ));
+    assert!(has_line(
+        &log_lines,
+        "python threat-intel/processing/signature_ml_offline_eval_trend_gate.py --trend <mock> --output <mock>"
+    ));
+    assert!(has_line(
+        &log_lines,
+        "python threat-intel/processing/signature_ml_model_registry_gate.py --model-artifact <mock> --metadata <mock> --offline-eval <mock> --offline-eval-trend-report <mock> --feature-schema <mock> --labels-report <mock> --signature-file <mock> --public-key-file <mock> --output <mock>"
+    ));
+    assert!(has_line(
+        &log_lines,
         "python threat-intel/processing/ed25519_sign.py --input <mock> --output-sig <mock>"
     ));
     assert!(has_line(
@@ -967,11 +1147,52 @@ exit 0
     assert!(bundle_signature_metrics.contains("\"signature_verified\": true"));
     assert!(bundle_signature_metrics.contains("\"tamper_rejected\": true"));
     assert!(bundle_signature_metrics.contains("\"ml_readiness\""));
+    assert!(bundle_signature_metrics.contains("\"ml_readiness_trend\""));
+    assert!(bundle_signature_metrics.contains("\"ml_battle_ready\""));
+    assert!(bundle_signature_metrics.contains("\"offline_eval_trend\""));
 
     let signature_ml_readiness =
         read("artifacts/bundle-signature-contract/signature-ml-readiness.json");
     assert!(signature_ml_readiness.contains("\"suite\": \"signature_ml_readiness_gate\""));
     assert!(signature_ml_readiness.contains("\"scores\""));
+
+    let signature_ml_readiness_trend =
+        read("artifacts/bundle-signature-contract/signature-ml-readiness-trend.ndjson");
+    assert!(signature_ml_readiness_trend.contains("\"signature_ml_readiness_trend\""));
+
+    let signature_ml_readiness_trend_report =
+        read("artifacts/bundle-signature-contract/signature-ml-readiness-trend-report.json");
+    assert!(signature_ml_readiness_trend_report
+        .contains("\"suite\": \"signature_ml_readiness_trend_gate\""));
+
+    let signature_ml_corpus =
+        read("artifacts/bundle-signature-contract/signature-ml-training-corpus-summary.json");
+    assert!(signature_ml_corpus.contains("\"suite\": \"signature_ml_build_training_corpus\""));
+
+    let signature_ml_label_quality =
+        read("artifacts/bundle-signature-contract/signature-ml-label-quality-report.json");
+    assert!(signature_ml_label_quality.contains("\"suite\": \"signature_ml_label_quality_gate\""));
+
+    let signature_ml_feature_snapshot =
+        read("artifacts/bundle-signature-contract/signature-ml-feature-snapshot-report.json");
+    assert!(
+        signature_ml_feature_snapshot.contains("\"suite\": \"signature_ml_feature_snapshot_gate\"")
+    );
+
+    let signature_ml_offline_eval =
+        read("artifacts/bundle-signature-contract/signature-ml-offline-eval-report.json");
+    assert!(signature_ml_offline_eval.contains("\"suite\": \"signature_ml_offline_eval_gate\""));
+
+    let signature_ml_offline_eval_trend_report =
+        read("artifacts/bundle-signature-contract/signature-ml-offline-eval-trend-report.json");
+    assert!(
+        signature_ml_offline_eval_trend_report
+            .contains("\"suite\": \"signature_ml_offline_eval_trend_gate\"")
+    );
+
+    let signature_ml_registry =
+        read("artifacts/bundle-signature-contract/signature-ml-model-registry.json");
+    assert!(signature_ml_registry.contains("\"suite\": \"signature_ml_model_registry_gate\""));
 
     let _ = std::fs::remove_dir_all(sandbox);
 

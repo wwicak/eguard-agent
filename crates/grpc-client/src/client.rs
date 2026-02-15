@@ -1,6 +1,8 @@
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -39,6 +41,7 @@ pub struct Client {
     pending_commands: VecDeque<CommandEnvelope>,
     tls: Option<TlsConfig>,
     http: HttpClient,
+    grpc_reporting_force_http: Arc<AtomicBool>,
     #[cfg(test)]
     grpc_channel_override: Option<Channel>,
 }
@@ -58,6 +61,7 @@ impl Client {
             pending_commands: VecDeque::new(),
             tls: None,
             http: HttpClient::new(),
+            grpc_reporting_force_http: Arc::new(AtomicBool::new(false)),
             #[cfg(test)]
             grpc_channel_override: None,
         }
@@ -115,7 +119,19 @@ impl Client {
 
         match self.mode {
             TransportMode::Http => self.send_events_http(batch).await?,
-            TransportMode::Grpc => self.send_events_grpc(batch).await?,
+            TransportMode::Grpc => {
+                if self.grpc_reporting_force_http.load(Ordering::Relaxed) {
+                    self.send_events_http(batch).await?;
+                } else if let Err(err) = self.send_events_grpc(batch).await {
+                    warn!(
+                        error = %err,
+                        "gRPC telemetry send failed, forcing HTTP telemetry fallback"
+                    );
+                    self.grpc_reporting_force_http
+                        .store(true, Ordering::Relaxed);
+                    self.send_events_http(batch).await?;
+                }
+            }
         }
 
         info!(count = batch.len(), server = %self.server_addr, mode = ?self.mode, "sent event batch");
@@ -169,7 +185,19 @@ impl Client {
         self.ensure_online()?;
         match self.mode {
             TransportMode::Http => self.send_compliance_http(compliance).await?,
-            TransportMode::Grpc => self.send_compliance_grpc(compliance).await?,
+            TransportMode::Grpc => {
+                if self.grpc_reporting_force_http.load(Ordering::Relaxed) {
+                    self.send_compliance_http(compliance).await?;
+                } else if let Err(err) = self.send_compliance_grpc(compliance).await {
+                    warn!(
+                        error = %err,
+                        "gRPC compliance report failed, forcing HTTP compliance fallback"
+                    );
+                    self.grpc_reporting_force_http
+                        .store(true, Ordering::Relaxed);
+                    self.send_compliance_http(compliance).await?;
+                }
+            }
         }
         Ok(())
     }
@@ -178,7 +206,19 @@ impl Client {
         self.ensure_online()?;
         match self.mode {
             TransportMode::Http => self.send_response_http(response).await?,
-            TransportMode::Grpc => self.send_response_grpc(response).await?,
+            TransportMode::Grpc => {
+                if self.grpc_reporting_force_http.load(Ordering::Relaxed) {
+                    self.send_response_http(response).await?;
+                } else if let Err(err) = self.send_response_grpc(response).await {
+                    warn!(
+                        error = %err,
+                        "gRPC response report failed, forcing HTTP response fallback"
+                    );
+                    self.grpc_reporting_force_http
+                        .store(true, Ordering::Relaxed);
+                    self.send_response_http(response).await?;
+                }
+            }
         }
         Ok(())
     }
@@ -224,28 +264,39 @@ impl Client {
 
         self.ensure_online()?;
 
-        match self
-            .stream_command_channel(agent_id, completed_command_ids, limit)
-            .await
-        {
-            Ok(commands) => {
-                let commands = truncate_commands(commands, limit);
-                if !commands.is_empty() {
-                    return Ok(commands);
+        if matches!(self.mode, TransportMode::Http) {
+            match self
+                .stream_command_channel(agent_id, completed_command_ids, limit)
+                .await
+            {
+                Ok(commands) => {
+                    let commands = truncate_commands(commands, limit);
+                    if !commands.is_empty() {
+                        return Ok(commands);
+                    }
                 }
-            }
-            Err(err) => {
-                warn!(
-                    error = %err,
-                    mode = ?self.mode,
-                    "command channel unavailable, falling back to polling"
-                );
+                Err(err) => {
+                    warn!(
+                        error = %err,
+                        mode = ?self.mode,
+                        "command channel unavailable, falling back to polling"
+                    );
+                }
             }
         }
 
         let server_result: Result<Vec<CommandEnvelope>> = match self.mode {
             TransportMode::Http => self.poll_commands_http(agent_id, limit).await,
-            TransportMode::Grpc => self.poll_commands_grpc(agent_id, limit).await,
+            TransportMode::Grpc => match self.poll_commands_grpc(agent_id, limit).await {
+                Ok(commands) => Ok(commands),
+                Err(err) => {
+                    warn!(
+                        error = %err,
+                        "gRPC command poll failed, falling back to HTTP command poll endpoint"
+                    );
+                    self.poll_commands_http(agent_id, limit).await
+                }
+            },
         };
 
         match server_result {
@@ -257,11 +308,11 @@ impl Client {
         }
     }
 
-    pub async fn ack_command(&self, command_id: &str, status: &str) -> Result<()> {
+    pub async fn ack_command(&self, agent_id: &str, command_id: &str, status: &str) -> Result<()> {
         self.ensure_online()?;
         match self.mode {
-            TransportMode::Http => self.ack_command_http(command_id, status).await?,
-            TransportMode::Grpc => self.ack_command_grpc(command_id, status).await?,
+            TransportMode::Http => self.ack_command_http(agent_id, command_id, status).await?,
+            TransportMode::Grpc => self.ack_command_grpc(agent_id, command_id, status).await?,
         }
         Ok(())
     }

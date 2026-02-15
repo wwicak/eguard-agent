@@ -62,6 +62,14 @@ for workflow in "${WORKFLOWS[@]}"; do
       "Generate ATT&CK burn-down scoreboard"
       "Generate signature ML readiness report (shadow)"
       "Generate signature ML readiness trend report (shadow)"
+      "Build signature ML training corpus"
+      "Validate signature ML label quality (shadow)"
+      "Build signature ML feature snapshot (shadow)"
+      "Train signature ML model artifact"
+      "Evaluate signature ML offline metrics (shadow)"
+      "Validate signature ML offline eval trend (shadow)"
+      "Sign signature ML model artifact"
+      "Validate signature ML model registry contract (shadow)"
       "Verify agent can ingest generated bundle output"
       "Create GitHub Release"
     )
@@ -78,6 +86,14 @@ for workflow in "${WORKFLOWS[@]}"; do
     owner_streak_run="$(yq -r '.jobs."build-bundle".steps[] | select(.name == "Enforce critical ATT&CK owner streak gate") | .run' "${path}" 2>/dev/null || true)"
     ml_readiness_run="$(yq -r '.jobs."build-bundle".steps[] | select(.name == "Generate signature ML readiness report (shadow)") | .run' "${path}" 2>/dev/null || true)"
     ml_readiness_trend_run="$(yq -r '.jobs."build-bundle".steps[] | select(.name == "Generate signature ML readiness trend report (shadow)") | .run' "${path}" 2>/dev/null || true)"
+    ml_corpus_run="$(yq -r '.jobs."build-bundle".steps[] | select(.name == "Build signature ML training corpus") | .run' "${path}" 2>/dev/null || true)"
+    ml_label_run="$(yq -r '.jobs."build-bundle".steps[] | select(.name == "Validate signature ML label quality (shadow)") | .run' "${path}" 2>/dev/null || true)"
+    ml_feature_run="$(yq -r '.jobs."build-bundle".steps[] | select(.name == "Build signature ML feature snapshot (shadow)") | .run' "${path}" 2>/dev/null || true)"
+    ml_train_run="$(yq -r '.jobs."build-bundle".steps[] | select(.name == "Train signature ML model artifact") | .run' "${path}" 2>/dev/null || true)"
+    ml_eval_run="$(yq -r '.jobs."build-bundle".steps[] | select(.name == "Evaluate signature ML offline metrics (shadow)") | .run' "${path}" 2>/dev/null || true)"
+    ml_eval_trend_run="$(yq -r '.jobs."build-bundle".steps[] | select(.name == "Validate signature ML offline eval trend (shadow)") | .run' "${path}" 2>/dev/null || true)"
+    ml_sign_run="$(yq -r '.jobs."build-bundle".steps[] | select(.name == "Sign signature ML model artifact") | .run' "${path}" 2>/dev/null || true)"
+    ml_registry_run="$(yq -r '.jobs."build-bundle".steps[] | select(.name == "Validate signature ML model registry contract (shadow)") | .run' "${path}" 2>/dev/null || true)"
     agent_ingest_run="$(yq -r '.jobs."build-bundle".steps[] | select(.name == "Verify agent can ingest generated bundle output") | .run' "${path}" 2>/dev/null || true)"
     required_release_tokens=(
       "bundle/attack-critical-technique-gate.json"
@@ -90,6 +106,21 @@ for workflow in "${WORKFLOWS[@]}"; do
       "bundle/signature-ml-readiness.json"
       "bundle/signature-ml-readiness-trend.ndjson"
       "bundle/signature-ml-readiness-trend-report.json"
+      "bundle/signature-ml-training-corpus-summary.json"
+      "bundle/signature-ml-signals.ndjson"
+      "bundle/signature-ml-label-quality-report.json"
+      "bundle/signature-ml-labels.ndjson"
+      "bundle/signature-ml-feature-snapshot-report.json"
+      "bundle/signature-ml-features.ndjson"
+      "bundle/signature-ml-feature-schema.json"
+      "bundle/signature-ml-model.json"
+      "bundle/signature-ml-model.json.sig"
+      "bundle/signature-ml-model.pub.pem"
+      "bundle/signature-ml-model-metadata.json"
+      "bundle/signature-ml-offline-eval-report.json"
+      "bundle/signature-ml-offline-eval-trend.ndjson"
+      "bundle/signature-ml-offline-eval-trend-report.json"
+      "bundle/signature-ml-model-registry.json"
       "## Critical ATT&CK Technique Floor"
       "## Critical ATT&CK Regression Guard"
       "## Critical ATT&CK Regression History"
@@ -97,6 +128,15 @@ for workflow in "${WORKFLOWS[@]}"; do
       "## ATT&CK Critical Burn-down Scoreboard"
       "## Signature ML Readiness (Shadow)"
       "## Signature ML Readiness Trend (Shadow)"
+      "## Signature ML Training Corpus"
+      "## Signature ML Label Quality (Shadow)"
+      "## Signature ML Feature Snapshot (Shadow)"
+      "## Signature ML Offline Eval (Shadow)"
+      "## Signature ML Offline Eval Trend (Shadow)"
+      "## Signature ML Model Registry (Shadow)"
+      "Operating threshold"
+      "Consecutive alerts"
+      "Projected consecutive alerts"
       "Delta uncovered vs previous"
       "Owner P0 regressions"
     )
@@ -145,6 +185,102 @@ for workflow in "${WORKFLOWS[@]}"; do
     fi
     if [[ "${ml_readiness_trend_run}" != *"--output-report bundle/signature-ml-readiness-trend-report.json"* ]]; then
       echo "build-bundle ML readiness trend step missing trend report output wiring" >&2
+      attack_contract_ok=false
+    fi
+
+    if [[ "${ml_corpus_run}" != *"signature_ml_build_training_corpus.py"* ]]; then
+      echo "build-bundle ML corpus step missing training corpus script invocation" >&2
+      attack_contract_ok=false
+    fi
+    if [[ "${ml_corpus_run}" != *"--output-signals bundle/signature-ml-signals.ndjson"* ]]; then
+      echo "build-bundle ML corpus step missing output-signals wiring" >&2
+      attack_contract_ok=false
+    fi
+
+    if [[ "${ml_label_run}" != *"signature_ml_label_quality_gate.py"* ]]; then
+      echo "build-bundle ML label quality step missing label quality script invocation" >&2
+      attack_contract_ok=false
+    fi
+    if [[ "${ml_label_run}" != *"--output-labels bundle/signature-ml-labels.ndjson"* ]]; then
+      echo "build-bundle ML label quality step missing output-labels wiring" >&2
+      attack_contract_ok=false
+    fi
+
+    if [[ "${ml_feature_run}" != *"signature_ml_feature_snapshot_gate.py"* ]]; then
+      echo "build-bundle ML feature snapshot step missing feature snapshot script invocation" >&2
+      attack_contract_ok=false
+    fi
+    if [[ "${ml_feature_run}" != *"--output-schema bundle/signature-ml-feature-schema.json"* ]]; then
+      echo "build-bundle ML feature snapshot step missing schema output wiring" >&2
+      attack_contract_ok=false
+    fi
+
+    if [[ "${ml_train_run}" != *"signature_ml_train_model.py"* ]]; then
+      echo "build-bundle ML train step missing train model script invocation" >&2
+      attack_contract_ok=false
+    fi
+    if [[ "${ml_train_run}" != *"--model-out bundle/signature-ml-model.json"* ]]; then
+      echo "build-bundle ML train step missing model output wiring" >&2
+      attack_contract_ok=false
+    fi
+
+    if [[ "${ml_eval_run}" != *"signature_ml_offline_eval_gate.py"* ]]; then
+      echo "build-bundle ML eval step missing offline eval script invocation" >&2
+      attack_contract_ok=false
+    fi
+    if [[ "${ml_eval_run}" != *"--previous-report /tmp/previous-signature-ml-offline-eval-report.json"* ]]; then
+      echo "build-bundle ML eval step missing previous offline eval baseline wiring" >&2
+      attack_contract_ok=false
+    fi
+    if [[ "${ml_eval_run}" != *"--output-report bundle/signature-ml-offline-eval-report.json"* ]]; then
+      echo "build-bundle ML eval step missing offline eval output wiring" >&2
+      attack_contract_ok=false
+    fi
+    if [[ "${ml_eval_run}" != *"--auto-threshold 1"* ]]; then
+      echo "build-bundle ML eval step missing auto-threshold operating point selection" >&2
+      attack_contract_ok=false
+    fi
+
+    if [[ "${ml_eval_trend_run}" != *"signature_ml_offline_eval_trend_gate.py"* ]]; then
+      echo "build-bundle ML eval trend step missing offline eval trend gate script invocation" >&2
+      attack_contract_ok=false
+    fi
+    if [[ "${ml_eval_trend_run}" != *"--trend bundle/signature-ml-offline-eval-trend.ndjson"* ]]; then
+      echo "build-bundle ML eval trend step missing trend input wiring" >&2
+      attack_contract_ok=false
+    fi
+    if [[ "${ml_eval_trend_run}" != *"--output bundle/signature-ml-offline-eval-trend-report.json"* ]]; then
+      echo "build-bundle ML eval trend step missing trend report output wiring" >&2
+      attack_contract_ok=false
+    fi
+
+    if [[ "${ml_sign_run}" != *"ed25519_sign.py"* ]]; then
+      echo "build-bundle ML model sign step missing ed25519 signing invocation" >&2
+      attack_contract_ok=false
+    fi
+    if [[ "${ml_sign_run}" != *"bundle/signature-ml-model.json.sig"* ]]; then
+      echo "build-bundle ML model sign step missing signature output wiring" >&2
+      attack_contract_ok=false
+    fi
+
+    if [[ "${ml_registry_run}" != *"signature_ml_model_registry_gate.py"* ]]; then
+      echo "build-bundle ML registry step missing model registry gate script invocation" >&2
+      attack_contract_ok=false
+    fi
+    if [[ "${ml_registry_run}" != *"--offline-eval-trend-report bundle/signature-ml-offline-eval-trend-report.json"* ]]; then
+      echo "build-bundle ML registry step missing offline eval trend report wiring" >&2
+      attack_contract_ok=false
+    fi
+    if [[ "${ml_registry_run}" != *"--require-offline-eval-trend-pass 1"* ]]; then
+      echo "build-bundle ML registry step missing offline eval trend pass requirement" >&2
+      attack_contract_ok=false
+    fi
+    if [[ "${ml_registry_run}" != *"--signature-file bundle/signature-ml-model.json.sig"* ]]; then
+      echo "build-bundle ML registry step missing model signature wiring" >&2
+      attack_contract_ok=false
+    fi
+    if [[ "${ml_registry_run}" != *"--output bundle/signature-ml-model-registry.json"* ]]; then
+      echo "build-bundle ML registry step missing registry output wiring" >&2
       attack_contract_ok=false
     fi
 

@@ -151,7 +151,9 @@ impl AgentRuntime {
     }
 
     async fn ack_command_result(&self, command_id: &str, status: &str) {
-        let ack = self.client.ack_command(command_id, status);
+        let ack = self
+            .client
+            .ack_command(&self.config.agent_id, command_id, status);
         match timeout(Duration::from_millis(COMMAND_ACK_TIMEOUT_MS), ack).await {
             Ok(Ok(())) => {}
             Ok(Err(err)) => {

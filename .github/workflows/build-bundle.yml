@@ -424,7 +424,11 @@ jobs:
             /tmp/signature-ml-readiness.json \
             /tmp/previous-signature-ml-readiness.json \
             /tmp/signature-ml-readiness-trend.ndjson \
-            /tmp/previous-signature-ml-readiness-trend.ndjson
+            /tmp/previous-signature-ml-readiness-trend.ndjson \
+            /tmp/signature-ml-offline-eval-report.json \
+            /tmp/previous-signature-ml-offline-eval-report.json \
+            /tmp/signature-ml-offline-eval-trend.ndjson \
+            /tmp/previous-signature-ml-offline-eval-trend.ndjson
           LATEST_TAG="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=1" --jq '.[0].tag_name // ""' 2>/dev/null || true)"
           if [ -z "${LATEST_TAG}" ]; then
             echo "No previous release found; skipping regression baseline download"
@@ -493,6 +497,24 @@ jobs:
             fi
           else
             echo "No previous signature ML readiness trend asset found on ${LATEST_TAG}"
+          fi
+
+          if gh release download "${LATEST_TAG}" --repo "${GITHUB_REPOSITORY}" --pattern "signature-ml-offline-eval-report.json" --dir /tmp 2>/dev/null; then
+            if [ -f /tmp/signature-ml-offline-eval-report.json ]; then
+              mv /tmp/signature-ml-offline-eval-report.json /tmp/previous-signature-ml-offline-eval-report.json
+              echo "Downloaded previous signature ML offline eval baseline"
+            fi
+          else
+            echo "No previous signature ML offline eval asset found on ${LATEST_TAG}"
+          fi
+
+          if gh release download "${LATEST_TAG}" --repo "${GITHUB_REPOSITORY}" --pattern "signature-ml-offline-eval-trend.ndjson" --dir /tmp 2>/dev/null; then
+            if [ -f /tmp/signature-ml-offline-eval-trend.ndjson ]; then
+              mv /tmp/signature-ml-offline-eval-trend.ndjson /tmp/previous-signature-ml-offline-eval-trend.ndjson
+              echo "Downloaded previous signature ML offline eval trend baseline"
+            fi
+          else
+            echo "No previous signature ML offline eval trend asset found on ${LATEST_TAG}"
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -691,6 +713,173 @@ jobs:
             --max-consecutive-alerts "${EGUARD_ML_TREND_MAX_CONSECUTIVE_ALERTS}" \
             --fail-on-regression "${EGUARD_ML_TREND_FAIL_ON_REGRESSION}"
 
+      - name: Build signature ML training corpus
+        run: |
+          python threat-intel/processing/signature_ml_build_training_corpus.py \
+            --manifest bundle/manifest.json \
+            --coverage bundle/coverage-metrics.json \
+            --readiness bundle/signature-ml-readiness.json \
+            --attack-coverage bundle/attack-coverage.json \
+            --critical-gate bundle/attack-critical-technique-gate.json \
+            --output-signals bundle/signature-ml-signals.ndjson \
+            --output-summary bundle/signature-ml-training-corpus-summary.json \
+            --sample-count 960 \
+            --window-days 60
+
+      - name: Validate signature ML label quality (shadow)
+        env:
+          EGUARD_ML_LABEL_MIN_ADJUDICATED: "700"
+          EGUARD_ML_LABEL_MIN_POSITIVE: "120"
+          EGUARD_ML_LABEL_MIN_NEGATIVE: "260"
+          EGUARD_ML_LABEL_MIN_UNIQUE_HOSTS: "80"
+          EGUARD_ML_LABEL_MIN_UNIQUE_RULES: "140"
+          EGUARD_ML_LABEL_MAX_UNRESOLVED_RATIO: "0.15"
+          EGUARD_ML_LABEL_MAX_P95_LATENCY_DAYS: "6"
+          EGUARD_ML_LABEL_FAIL_ON_THRESHOLD: "1"
+        run: |
+          python threat-intel/processing/signature_ml_label_quality_gate.py \
+            --signals bundle/signature-ml-signals.ndjson \
+            --output-report bundle/signature-ml-label-quality-report.json \
+            --output-labels bundle/signature-ml-labels.ndjson \
+            --min-adjudicated "${EGUARD_ML_LABEL_MIN_ADJUDICATED}" \
+            --min-positive "${EGUARD_ML_LABEL_MIN_POSITIVE}" \
+            --min-negative "${EGUARD_ML_LABEL_MIN_NEGATIVE}" \
+            --min-unique-hosts "${EGUARD_ML_LABEL_MIN_UNIQUE_HOSTS}" \
+            --min-unique-rules "${EGUARD_ML_LABEL_MIN_UNIQUE_RULES}" \
+            --max-unresolved-ratio "${EGUARD_ML_LABEL_MAX_UNRESOLVED_RATIO}" \
+            --max-p95-label-latency-days "${EGUARD_ML_LABEL_MAX_P95_LATENCY_DAYS}" \
+            --fail-on-threshold "${EGUARD_ML_LABEL_FAIL_ON_THRESHOLD}"
+
+      - name: Build signature ML feature snapshot (shadow)
+        env:
+          EGUARD_ML_FEATURE_MIN_ROWS: "700"
+          EGUARD_ML_FEATURE_MIN_UNIQUE_HOSTS: "80"
+          EGUARD_ML_FEATURE_MIN_UNIQUE_RULES: "140"
+          EGUARD_ML_FEATURE_MAX_MISSING_RATIO: "0.05"
+          EGUARD_ML_FEATURE_MIN_SPAN_DAYS: "30"
+          EGUARD_ML_FEATURE_FAIL_ON_THRESHOLD: "1"
+        run: |
+          python threat-intel/processing/signature_ml_feature_snapshot_gate.py \
+            --labels bundle/signature-ml-labels.ndjson \
+            --output-features bundle/signature-ml-features.ndjson \
+            --output-schema bundle/signature-ml-feature-schema.json \
+            --output-report bundle/signature-ml-feature-snapshot-report.json \
+            --min-rows "${EGUARD_ML_FEATURE_MIN_ROWS}" \
+            --min-unique-hosts "${EGUARD_ML_FEATURE_MIN_UNIQUE_HOSTS}" \
+            --min-unique-rules "${EGUARD_ML_FEATURE_MIN_UNIQUE_RULES}" \
+            --max-missing-feature-ratio "${EGUARD_ML_FEATURE_MAX_MISSING_RATIO}" \
+            --min-temporal-span-days "${EGUARD_ML_FEATURE_MIN_SPAN_DAYS}" \
+            --fail-on-threshold "${EGUARD_ML_FEATURE_FAIL_ON_THRESHOLD}"
+
+      - name: Train signature ML model artifact
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          python threat-intel/processing/signature_ml_train_model.py \
+            --dataset bundle/signature-ml-features.ndjson \
+            --feature-schema bundle/signature-ml-feature-schema.json \
+            --labels-report bundle/signature-ml-label-quality-report.json \
+            --model-version "rules-${VERSION}.ml.v1" \
+            --model-out bundle/signature-ml-model.json \
+            --metadata-out bundle/signature-ml-model-metadata.json
+
+      - name: Evaluate signature ML offline metrics (shadow)
+        env:
+          EGUARD_ML_EVAL_MIN_SAMPLES: "220"
+          EGUARD_ML_EVAL_MIN_PRECISION: "0.22"
+          EGUARD_ML_EVAL_MIN_RECALL: "0.80"
+          EGUARD_ML_EVAL_MIN_PR_AUC: "0.60"
+          EGUARD_ML_EVAL_MIN_ROC_AUC: "0.76"
+          EGUARD_ML_EVAL_MAX_BRIER: "0.25"
+          EGUARD_ML_EVAL_MAX_ECE: "0.22"
+          EGUARD_ML_EVAL_MAX_PR_DROP: "0.15"
+          EGUARD_ML_EVAL_MAX_ROC_DROP: "0.15"
+          EGUARD_ML_EVAL_FAIL_ON_THRESHOLD: "1"
+          EGUARD_ML_EVAL_FAIL_ON_REGRESSION: "1"
+        run: |
+          python threat-intel/processing/signature_ml_offline_eval_gate.py \
+            --dataset bundle/signature-ml-features.ndjson \
+            --model bundle/signature-ml-model.json \
+            --previous-report /tmp/previous-signature-ml-offline-eval-report.json \
+            --previous-trend /tmp/previous-signature-ml-offline-eval-trend.ndjson \
+            --output-report bundle/signature-ml-offline-eval-report.json \
+            --output-trend bundle/signature-ml-offline-eval-trend.ndjson \
+            --threshold 0.20 \
+            --auto-threshold 1 \
+            --eval-ratio 0.35 \
+            --min-eval-samples "${EGUARD_ML_EVAL_MIN_SAMPLES}" \
+            --min-precision "${EGUARD_ML_EVAL_MIN_PRECISION}" \
+            --min-recall "${EGUARD_ML_EVAL_MIN_RECALL}" \
+            --min-pr-auc "${EGUARD_ML_EVAL_MIN_PR_AUC}" \
+            --min-roc-auc "${EGUARD_ML_EVAL_MIN_ROC_AUC}" \
+            --max-brier-score "${EGUARD_ML_EVAL_MAX_BRIER}" \
+            --max-ece "${EGUARD_ML_EVAL_MAX_ECE}" \
+            --max-pr-auc-drop "${EGUARD_ML_EVAL_MAX_PR_DROP}" \
+            --max-roc-auc-drop "${EGUARD_ML_EVAL_MAX_ROC_DROP}" \
+            --fail-on-threshold "${EGUARD_ML_EVAL_FAIL_ON_THRESHOLD}" \
+            --fail-on-regression "${EGUARD_ML_EVAL_FAIL_ON_REGRESSION}"
+
+      - name: Validate signature ML offline eval trend (shadow)
+        env:
+          EGUARD_ML_EVAL_TREND_MAX_PR_DROP: "0.15"
+          EGUARD_ML_EVAL_TREND_MAX_ROC_DROP: "0.15"
+          EGUARD_ML_EVAL_TREND_MAX_BRIER_INCREASE: "0.08"
+          EGUARD_ML_EVAL_TREND_MAX_ECE_INCREASE: "0.10"
+          EGUARD_ML_EVAL_TREND_MAX_THRESHOLD_DRIFT: "0.25"
+          EGUARD_ML_EVAL_TREND_MAX_CONSEC_ALERTS: "3"
+          EGUARD_ML_EVAL_TREND_WINDOW_SIZE: "8"
+          EGUARD_ML_EVAL_TREND_MIN_PASS_RATE: "0.60"
+          EGUARD_ML_EVAL_TREND_FAIL_ON_REGRESSION: "1"
+        run: |
+          python threat-intel/processing/signature_ml_offline_eval_trend_gate.py \
+            --trend bundle/signature-ml-offline-eval-trend.ndjson \
+            --output bundle/signature-ml-offline-eval-trend-report.json \
+            --max-pr-auc-drop "${EGUARD_ML_EVAL_TREND_MAX_PR_DROP}" \
+            --max-roc-auc-drop "${EGUARD_ML_EVAL_TREND_MAX_ROC_DROP}" \
+            --max-brier-increase "${EGUARD_ML_EVAL_TREND_MAX_BRIER_INCREASE}" \
+            --max-ece-increase "${EGUARD_ML_EVAL_TREND_MAX_ECE_INCREASE}" \
+            --max-threshold-drift "${EGUARD_ML_EVAL_TREND_MAX_THRESHOLD_DRIFT}" \
+            --max-consecutive-alerts "${EGUARD_ML_EVAL_TREND_MAX_CONSEC_ALERTS}" \
+            --window-size "${EGUARD_ML_EVAL_TREND_WINDOW_SIZE}" \
+            --min-window-pass-rate "${EGUARD_ML_EVAL_TREND_MIN_PASS_RATE}" \
+            --fail-on-regression "${EGUARD_ML_EVAL_TREND_FAIL_ON_REGRESSION}"
+
+      - name: Sign signature ML model artifact
+        run: |
+          TMP_KEY="$(mktemp /tmp/eguard-ml-model-key.XXXXXX.pem)"
+          TMP_PUB="$(mktemp /tmp/eguard-ml-model-pub.XXXXXX.pem)"
+          trap 'rm -f "${TMP_KEY}" "${TMP_PUB}"' EXIT
+          printf '%s\n' "${THREAT_INTEL_ED25519_PRIVATE_KEY_PEM}" > "${TMP_KEY}"
+          openssl pkey -in "${TMP_KEY}" -pubout -out "${TMP_PUB}"
+          python threat-intel/processing/ed25519_sign.py \
+            --input bundle/signature-ml-model.json \
+            --output-sig bundle/signature-ml-model.json.sig
+          cp "${TMP_PUB}" bundle/signature-ml-model.pub.pem
+        env:
+          THREAT_INTEL_ED25519_PRIVATE_KEY_PEM: ${{ secrets.THREAT_INTEL_ED25519_PRIVATE_KEY_PEM }}
+
+      - name: Validate signature ML model registry contract (shadow)
+        env:
+          EGUARD_ML_REGISTRY_MIN_PR_AUC: "0.60"
+          EGUARD_ML_REGISTRY_MIN_ROC_AUC: "0.76"
+          EGUARD_ML_REGISTRY_FAIL_ON_THRESHOLD: "1"
+        run: |
+          python threat-intel/processing/signature_ml_model_registry_gate.py \
+            --model-artifact bundle/signature-ml-model.json \
+            --metadata bundle/signature-ml-model-metadata.json \
+            --offline-eval bundle/signature-ml-offline-eval-report.json \
+            --offline-eval-trend-report bundle/signature-ml-offline-eval-trend-report.json \
+            --feature-schema bundle/signature-ml-feature-schema.json \
+            --labels-report bundle/signature-ml-label-quality-report.json \
+            --signature-file bundle/signature-ml-model.json.sig \
+            --public-key-file bundle/signature-ml-model.pub.pem \
+            --output bundle/signature-ml-model-registry.json \
+            --min-pr-auc "${EGUARD_ML_REGISTRY_MIN_PR_AUC}" \
+            --min-roc-auc "${EGUARD_ML_REGISTRY_MIN_ROC_AUC}" \
+            --require-signed-model 1 \
+            --verify-signature 1 \
+            --require-offline-eval-trend-pass 1 \
+            --fail-on-threshold "${EGUARD_ML_REGISTRY_FAIL_ON_THRESHOLD}"
+
       - name: Run threat-intel tests
         run: pytest -q threat-intel/tests/test_bundle.py
         env:
@@ -716,6 +905,21 @@ jobs:
             bundle/signature-ml-readiness.json
             bundle/signature-ml-readiness-trend.ndjson
             bundle/signature-ml-readiness-trend-report.json
+            bundle/signature-ml-training-corpus-summary.json
+            bundle/signature-ml-signals.ndjson
+            bundle/signature-ml-label-quality-report.json
+            bundle/signature-ml-labels.ndjson
+            bundle/signature-ml-feature-snapshot-report.json
+            bundle/signature-ml-features.ndjson
+            bundle/signature-ml-feature-schema.json
+            bundle/signature-ml-model.json
+            bundle/signature-ml-model.json.sig
+            bundle/signature-ml-model.pub.pem
+            bundle/signature-ml-model-metadata.json
+            bundle/signature-ml-offline-eval-report.json
+            bundle/signature-ml-offline-eval-trend.ndjson
+            bundle/signature-ml-offline-eval-trend-report.json
+            bundle/signature-ml-model-registry.json
           retention-days: 14
 
       - name: Package bundle
@@ -818,6 +1022,30 @@ jobs:
               signature_ml_readiness_trend = json.load(open('bundle/signature-ml-readiness-trend-report.json'))
           except Exception:
               signature_ml_readiness_trend = {}
+          try:
+              signature_ml_corpus = json.load(open('bundle/signature-ml-training-corpus-summary.json'))
+          except Exception:
+              signature_ml_corpus = {}
+          try:
+              signature_ml_label_quality = json.load(open('bundle/signature-ml-label-quality-report.json'))
+          except Exception:
+              signature_ml_label_quality = {}
+          try:
+              signature_ml_feature_snapshot = json.load(open('bundle/signature-ml-feature-snapshot-report.json'))
+          except Exception:
+              signature_ml_feature_snapshot = {}
+          try:
+              signature_ml_offline_eval = json.load(open('bundle/signature-ml-offline-eval-report.json'))
+          except Exception:
+              signature_ml_offline_eval = {}
+          try:
+              signature_ml_offline_eval_trend = json.load(open('bundle/signature-ml-offline-eval-trend-report.json'))
+          except Exception:
+              signature_ml_offline_eval_trend = {}
+          try:
+              signature_ml_model_registry = json.load(open('bundle/signature-ml-model-registry.json'))
+          except Exception:
+              signature_ml_model_registry = {}
           src = m.get('sources', {})
           lines = [
               'Automated threat intelligence bundle — 6-layer detection.',
@@ -1094,6 +1322,99 @@ jobs:
               if trend_regressions:
                   lines.append(f'- Regressions: {"; ".join(str(item) for item in trend_regressions)}')
 
+          if signature_ml_corpus:
+              corpus_measured = signature_ml_corpus.get('measured', {})
+              if not isinstance(corpus_measured, dict):
+                  corpus_measured = {}
+              lines.extend([
+                  '',
+                  '## Signature ML Training Corpus',
+                  f'- Status: {signature_ml_corpus.get("status", "unknown")}',
+                  f'- Dataset mode: {signature_ml_corpus.get("dataset_mode", "unknown")}',
+                  f'- Sample count: {corpus_measured.get("sample_count", "n/a")}',
+                  f'- Adjudicated count: {corpus_measured.get("adjudicated_count", "n/a")}',
+                  f'- Positive count: {corpus_measured.get("positive_count", "n/a")}',
+                  f'- Negative count: {corpus_measured.get("negative_count", "n/a")}',
+              ])
+
+          if signature_ml_label_quality:
+              label_measured = signature_ml_label_quality.get('measured', {})
+              if not isinstance(label_measured, dict):
+                  label_measured = {}
+              lines.extend([
+                  '',
+                  '## Signature ML Label Quality (Shadow)',
+                  f'- Status: {signature_ml_label_quality.get("status", "unknown")}',
+                  f'- Adjudicated count: {label_measured.get("adjudicated_count", "n/a")}',
+                  f'- Unresolved ratio: {label_measured.get("unresolved_ratio", "n/a")}',
+                  f'- P95 label latency days: {label_measured.get("p95_label_latency_days", "n/a")}',
+                  f'- Unique hosts: {label_measured.get("unique_hosts", "n/a")}',
+                  f'- Unique rules: {label_measured.get("unique_rules", "n/a")}',
+              ])
+
+          if signature_ml_feature_snapshot:
+              feature_measured = signature_ml_feature_snapshot.get('measured', {})
+              if not isinstance(feature_measured, dict):
+                  feature_measured = {}
+              lines.extend([
+                  '',
+                  '## Signature ML Feature Snapshot (Shadow)',
+                  f'- Status: {signature_ml_feature_snapshot.get("status", "unknown")}',
+                  f'- Row count: {feature_measured.get("row_count", "n/a")}',
+                  f'- Missing feature ratio: {feature_measured.get("missing_feature_ratio", "n/a")}',
+                  f'- Temporal span days: {feature_measured.get("temporal_span_days", "n/a")}',
+              ])
+
+          if signature_ml_offline_eval:
+              eval_metrics = signature_ml_offline_eval.get('metrics', {})
+              if not isinstance(eval_metrics, dict):
+                  eval_metrics = {}
+              lines.extend([
+                  '',
+                  '## Signature ML Offline Eval (Shadow)',
+                  f'- Status: {signature_ml_offline_eval.get("status", "unknown")}',
+                  f'- Operating threshold: {eval_metrics.get("operating_threshold", "n/a")}',
+                  f'- Precision: {eval_metrics.get("precision", "n/a")}',
+                  f'- Recall: {eval_metrics.get("recall", "n/a")}',
+                  f'- PR-AUC: {eval_metrics.get("pr_auc", "n/a")}',
+                  f'- ROC-AUC: {eval_metrics.get("roc_auc", "n/a")}',
+                  f'- Brier score: {eval_metrics.get("brier_score", "n/a")}',
+                  f'- ECE: {eval_metrics.get("ece", "n/a")}',
+              ])
+
+          if signature_ml_offline_eval_trend:
+              trend_alerts = signature_ml_offline_eval_trend.get('alerts', {})
+              if not isinstance(trend_alerts, dict):
+                  trend_alerts = {}
+              trend_deltas = signature_ml_offline_eval_trend.get('deltas', {})
+              if not isinstance(trend_deltas, dict):
+                  trend_deltas = {}
+              lines.extend([
+                  '',
+                  '## Signature ML Offline Eval Trend (Shadow)',
+                  f'- Status: {signature_ml_offline_eval_trend.get("status", "unknown")}',
+                  f'- History status: {signature_ml_offline_eval_trend.get("history_status", "unknown")}',
+                  f'- Consecutive alerts: {trend_alerts.get("consecutive_alerts", "n/a")}',
+                  f'- Window pass rate: {trend_alerts.get("window_pass_rate", "n/a")}',
+                  f'- PR-AUC drop: {trend_deltas.get("pr_auc_drop", "n/a")}',
+                  f'- ROC-AUC drop: {trend_deltas.get("roc_auc_drop", "n/a")}',
+                  f'- Brier increase: {trend_deltas.get("brier_increase", "n/a")}',
+                  f'- ECE increase: {trend_deltas.get("ece_increase", "n/a")}',
+              ])
+
+          if signature_ml_model_registry:
+              registry_metrics = signature_ml_model_registry.get('offline_metrics', {})
+              if not isinstance(registry_metrics, dict):
+                  registry_metrics = {}
+              lines.extend([
+                  '',
+                  '## Signature ML Model Registry (Shadow)',
+                  f'- Status: {signature_ml_model_registry.get("status", "unknown")}',
+                  f'- Model version: {signature_ml_model_registry.get("model_version", "unknown")}',
+                  f'- Registry PR-AUC: {registry_metrics.get("pr_auc", "n/a")}',
+                  f'- Registry ROC-AUC: {registry_metrics.get("roc_auc", "n/a")}',
+              ])
+
           for category, names in src.items():
               names_str = ', '.join(names) if isinstance(names, list) else str(names)
               lines.append(f'- {category}: {names_str}')
@@ -1118,6 +1439,21 @@ jobs:
             "bundle/signature-ml-readiness.json" \
             "bundle/signature-ml-readiness-trend.ndjson" \
             "bundle/signature-ml-readiness-trend-report.json" \
+            "bundle/signature-ml-training-corpus-summary.json" \
+            "bundle/signature-ml-signals.ndjson" \
+            "bundle/signature-ml-label-quality-report.json" \
+            "bundle/signature-ml-labels.ndjson" \
+            "bundle/signature-ml-feature-snapshot-report.json" \
+            "bundle/signature-ml-features.ndjson" \
+            "bundle/signature-ml-feature-schema.json" \
+            "bundle/signature-ml-model.json" \
+            "bundle/signature-ml-model.json.sig" \
+            "bundle/signature-ml-model.pub.pem" \
+            "bundle/signature-ml-model-metadata.json" \
+            "bundle/signature-ml-offline-eval-report.json" \
+            "bundle/signature-ml-offline-eval-trend.ndjson" \
+            "bundle/signature-ml-offline-eval-trend-report.json" \
+            "bundle/signature-ml-model-registry.json" \
             --title "Rule Bundle ${VERSION}" \
             --notes-file /tmp/release_notes.md
         env:

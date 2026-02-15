@@ -1,0 +1,27 @@
+[2m2026-02-15T05:47:39.363570Z[0m [32m INFO[0m [2magent_core::lifecycle::detection_bootstrap[0m[2m:[0m SIGMA rules initialized [3mloaded_sigma_rules[0m[2m=[0m1
+[2m2026-02-15T05:47:39.363640Z[0m [32m INFO[0m [2magent_core::lifecycle::detection_bootstrap[0m[2m:[0m YARA rules initialized [3mloaded_yara_rules[0m[2m=[0m1
+[2m2026-02-15T05:47:39.364301Z[0m [32m INFO[0m [2magent_core::lifecycle::detection_bootstrap[0m[2m:[0m SIGMA rules initialized [3mloaded_sigma_rules[0m[2m=[0m1
+[2m2026-02-15T05:47:39.364335Z[0m [32m INFO[0m [2magent_core::lifecycle::detection_bootstrap[0m[2m:[0m YARA rules initialized [3mloaded_yara_rules[0m[2m=[0m1
+[2m2026-02-15T05:47:39.364822Z[0m [32m INFO[0m [2magent_core::lifecycle::detection_bootstrap[0m[2m:[0m SIGMA rules initialized [3mloaded_sigma_rules[0m[2m=[0m1
+[2m2026-02-15T05:47:39.364855Z[0m [32m INFO[0m [2magent_core::lifecycle::detection_bootstrap[0m[2m:[0m YARA rules initialized [3mloaded_yara_rules[0m[2m=[0m1
+[2m2026-02-15T05:47:39.365437Z[0m [32m INFO[0m [2magent_core::lifecycle::detection_bootstrap[0m[2m:[0m SIGMA rules initialized [3mloaded_sigma_rules[0m[2m=[0m1
+[2m2026-02-15T05:47:39.365484Z[0m [32m INFO[0m [2magent_core::lifecycle::detection_bootstrap[0m[2m:[0m YARA rules initialized [3mloaded_yara_rules[0m[2m=[0m1
+[2m2026-02-15T05:47:39.366117Z[0m [32m INFO[0m [2magent_core::lifecycle::detection_bootstrap[0m[2m:[0m SIGMA rules initialized [3mloaded_sigma_rules[0m[2m=[0m1
+[2m2026-02-15T05:47:39.366148Z[0m [32m INFO[0m [2magent_core::lifecycle::detection_bootstrap[0m[2m:[0m YARA rules initialized [3mloaded_yara_rules[0m[2m=[0m1
+[2m2026-02-15T05:47:39.366776Z[0m [32m INFO[0m [2magent_core::lifecycle::detection_bootstrap[0m[2m:[0m SIGMA rules initialized [3mloaded_sigma_rules[0m[2m=[0m1
+[2m2026-02-15T05:47:39.366808Z[0m [32m INFO[0m [2magent_core::lifecycle::detection_bootstrap[0m[2m:[0m YARA rules initialized [3mloaded_yara_rules[0m[2m=[0m1
+[2m2026-02-15T05:47:39.367416Z[0m [32m INFO[0m [2magent_core::lifecycle::detection_bootstrap[0m[2m:[0m SIGMA rules initialized [3mloaded_sigma_rules[0m[2m=[0m1
+[2m2026-02-15T05:47:39.367448Z[0m [32m INFO[0m [2magent_core::lifecycle::detection_bootstrap[0m[2m:[0m YARA rules initialized [3mloaded_yara_rules[0m[2m=[0m1
+[2m2026-02-15T05:47:39.368107Z[0m [32m INFO[0m [2magent_core::lifecycle::detection_bootstrap[0m[2m:[0m SIGMA rules initialized [3mloaded_sigma_rules[0m[2m=[0m1
+[2m2026-02-15T05:47:39.368138Z[0m [32m INFO[0m [2magent_core::lifecycle::detection_bootstrap[0m[2m:[0m YARA rules initialized [3mloaded_yara_rules[0m[2m=[0m1
+[2m2026-02-15T05:47:39.368229Z[0m [32m INFO[0m [2magent_core::lifecycle[0m[2m:[0m initialized detection shard pool [3mdetection_shards[0m[2m=[0m8
+[2m2026-02-15T05:47:39.368348Z[0m [32m INFO[0m [2magent_core::lifecycle[0m[2m:[0m initialized baseline store with built-in seed baselines [3mseeded_profiles[0m[2m=[0m5 [3mpath[0m[2m=[0m/var/lib/eguard-agent/baselines.bin
+[2m2026-02-15T05:47:39.370259Z[0m [32m INFO[0m [2magent_core::lifecycle[0m[2m:[0m initialized anomaly baselines from baseline store [3mseeded_baselines[0m[2m=[0m5
+[2m2026-02-15T05:47:39.375179Z[0m [33m WARN[0m [2magent_core::lifecycle[0m[2m:[0m failed to configure TLS; continuing without TLS [3merror[0m[2m=[0mTLS file does not exist: /etc/eguard-agent/tls/agent.crt
+[2m2026-02-15T05:47:39.375366Z[0m [32m INFO[0m [2magent_core::lifecycle[0m[2m:[0m linux hardening applied [3mdropped_capabilities[0m[2m=[0m37
+[2m2026-02-15T05:47:39.376891Z[0m [32m INFO[0m [2magent_core[0m[2m:[0m eguard-agent core started [3magent_id[0m[2m=[0maac0da74656b [3mmac[0m[2m=[0maa:bb:cc:dd:ee:ff [3mserver[0m[2m=[0m10.20.30.40:50051 [3mtransport[0m[2m=[0mhttp [3mtls_configured[0m[2m=[0mtrue
+[2m2026-02-15T05:47:39.380569Z[0m [33m WARN[0m [2mgrpc_client::client[0m[2m:[0m transport call failed, retrying [3moperation[0m[2m=[0m"enroll_http" [3mattempt[0m[2m=[0m1 [3mdelay_ms[0m[2m=[0m1111 [3merror[0m[2m=[0mfailed sending enrollment to http://10.20.30.40:50051/api/v1/endpoint/enroll
+[2m2026-02-15T05:47:40.494018Z[0m [33m WARN[0m [2mgrpc_client::client[0m[2m:[0m transport call failed, retrying [3moperation[0m[2m=[0m"enroll_http" [3mattempt[0m[2m=[0m2 [3mdelay_ms[0m[2m=[0m2075 [3merror[0m[2m=[0mfailed sending enrollment to http://10.20.30.40:50051/api/v1/endpoint/enroll
+[2m2026-02-15T05:47:42.572244Z[0m [33m WARN[0m [2magent_core::lifecycle[0m[2m:[0m enrollment failed [3merror[0m[2m=[0moperation enroll_http failed after 3 attempts
+[2m2026-02-15T05:47:42.590603Z[0m [33m WARN[0m [2mgrpc_client::client[0m[2m:[0m transport call failed, retrying [3moperation[0m[2m=[0m"threat_intel_http" [3mattempt[0m[2m=[0m1 [3mdelay_ms[0m[2m=[0m1075 [3merror[0m[2m=[0mfailed fetching threat intel from http://10.20.30.40:50051/api/v1/endpoint/threat-intel/version
+[2m2026-02-15T05:47:43.667823Z[0m [33m WARN[0m [2mgrpc_client::client[0m[2m:[0m transport call failed, retrying [3moperation[0m[2m=[0m"threat_intel_http" [3mattempt[0m[2m=[0m2 [3mdelay_ms[0m[2m=[0m2266 [3merror[0m[2m=[0mfailed fetching threat intel from http://10.20.30.40:50051/api/v1/endpoint/threat-intel/version

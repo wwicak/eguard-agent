@@ -1,0 +1,12 @@
+{
+  "suite": "signature_ml_offline_eval_trend_gate",
+  "status": "pass_no_baseline",
+  "history_status": "no_baseline",
+  "alerts": {
+    "entry_count": 1,
+    "consecutive_alerts": 0,
+    "window_pass_rate": 1.0,
+    "regression_count": 0
+  },
+  "regressions": []
+}

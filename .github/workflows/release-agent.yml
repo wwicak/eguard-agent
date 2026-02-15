@@ -97,6 +97,11 @@ jobs:
       - name: Validate package artifact structure
         run: python3 scripts/verify_package_artifacts_ci.py --artifact-dir artifacts/package-agent
 
+      - name: Validate package install smoke in isolated container
+        env:
+          EGUARD_CONTAINER_REQUIRE_EBPF_LIBBPF: "0"
+        run: bash scripts/run_package_container_install_smoke_ci.sh
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:

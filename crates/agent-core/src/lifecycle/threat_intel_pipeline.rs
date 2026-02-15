@@ -27,6 +27,9 @@ const THREAT_INTEL_LAST_KNOWN_GOOD_PATH_ENV: &str = "EGUARD_THREAT_INTEL_LAST_KN
 const THREAT_INTEL_LAST_KNOWN_GOOD_SIG_CONTEXT: &str = "eguard-threat-intel-last-known-good-v1";
 const MACHINE_ID_PATH_ENV: &str = "EGUARD_MACHINE_ID_PATH";
 const DEFAULT_MACHINE_ID_PATH: &str = "/etc/machine-id";
+const RULE_BUNDLE_MIN_SIGNATURE_TOTAL_ENV: &str = "EGUARD_RULE_BUNDLE_MIN_SIGNATURE_TOTAL";
+const DEFAULT_RULE_BUNDLE_MIN_SIGNATURE_TOTAL: usize = 1;
+const RULE_BUNDLE_MAX_SIGNATURE_DROP_PCT_ENV: &str = "EGUARD_RULE_BUNDLE_MAX_SIGNATURE_DROP_PCT";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ThreatIntelReplayFloorState {
@@ -215,28 +218,44 @@ impl AgentRuntime {
         expected_intel: Option<&ThreatIntelVersionEnvelope>,
     ) -> Result<()> {
         let old_version = self.detection_state.version()?.unwrap_or_default();
+        let previous_signature_total = self
+            .last_reload_report
+            .as_ref()
+            .map(|report| report.sigma_rules + report.yara_rules + report.ioc_entries);
+
         let mut next_engine = build_detection_engine();
         let summary = load_bundle_full(&mut next_engine, bundle_path);
-        let ioc_entries = next_engine.layer1.ioc_entry_count();
+        let ioc_entries = bundle_ioc_total(&summary);
+        let signature_total = signature_database_total(&summary);
 
-        self.corroborate_threat_intel_update(version, expected_intel, &summary, ioc_entries)?;
+        self.corroborate_threat_intel_update(version, expected_intel, &summary)?;
+        enforce_bundle_signature_database_floor(bundle_path, &summary)?;
+        enforce_signature_drop_guard(bundle_path, previous_signature_total, signature_total)?;
 
         let shard_count = self.detection_state.shard_count();
         if shard_count <= 1 {
             self.detection_state
                 .swap_engine(version.to_string(), next_engine)?;
         } else {
-            let bundle_path = bundle_path.to_string();
-            self.detection_state.swap_engine_with_builder(
-                version.to_string(),
-                next_engine,
-                move || {
-                    let mut shard_engine = build_detection_engine();
-                    let _ = load_bundle_full(&mut shard_engine, &bundle_path);
-                    shard_engine
-                },
-            )?;
+            let mut shard_engines = Vec::with_capacity(shard_count);
+            shard_engines.push(next_engine);
+
+            for shard_idx in 1..shard_count {
+                let mut shard_engine = build_detection_engine();
+                let shard_summary = load_bundle_full(&mut shard_engine, bundle_path);
+
+                self.corroborate_threat_intel_update(version, expected_intel, &shard_summary)?;
+                enforce_bundle_signature_database_floor(bundle_path, &shard_summary)?;
+                ensure_shard_bundle_summary_matches(shard_idx, &summary, &shard_summary)?;
+
+                shard_engines.push(shard_engine);
+            }
+
+            self.detection_state
+                .swap_prebuilt_engines(version.to_string(), shard_engines)?;
         }
+
+        let database_total = summary.total_rules();
         let report = ReloadReport {
             old_version,
             new_version: version.to_string(),
@@ -252,6 +271,8 @@ impl AgentRuntime {
             sigma_rules = report.sigma_rules,
             yara_rules = report.yara_rules,
             ioc_entries = report.ioc_entries,
+            signature_total,
+            database_total,
             "detection state hot-reloaded"
         );
 
@@ -272,7 +293,6 @@ impl AgentRuntime {
         version: &str,
         expected_intel: Option<&ThreatIntelVersionEnvelope>,
         summary: &super::rule_bundle_loader::BundleLoadSummary,
-        ioc_entries: usize,
     ) -> Result<()> {
         let Some(expected) = expected_intel else {
             return Ok(());
@@ -303,7 +323,7 @@ impl AgentRuntime {
             &mut mismatches,
             "ioc_count",
             expected.ioc_count,
-            ioc_entries,
+            bundle_ioc_total(summary),
         );
         push_count_mismatch(
             &mut mismatches,
@@ -910,17 +930,117 @@ fn push_count_mismatch(out: &mut Vec<String>, field: &str, expected: i64, actual
     }
 }
 
+fn ensure_shard_bundle_summary_matches(
+    shard_idx: usize,
+    primary: &super::rule_bundle_loader::BundleLoadSummary,
+    shard: &super::rule_bundle_loader::BundleLoadSummary,
+) -> Result<()> {
+    if shard == primary {
+        return Ok(());
+    }
+
+    Err(anyhow!(
+        "threat-intel shard {} load diverged: primary {:?} vs shard {:?}",
+        shard_idx,
+        primary,
+        shard
+    ))
+}
+
+fn bundle_ioc_total(summary: &super::rule_bundle_loader::BundleLoadSummary) -> usize {
+    summary.ioc_hashes + summary.ioc_domains + summary.ioc_ips
+}
+
+fn signature_database_total(summary: &super::rule_bundle_loader::BundleLoadSummary) -> usize {
+    summary.sigma_loaded + summary.yara_loaded + bundle_ioc_total(summary)
+}
+
+fn resolve_rule_bundle_min_signature_total() -> usize {
+    std::env::var(RULE_BUNDLE_MIN_SIGNATURE_TOTAL_ENV)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_RULE_BUNDLE_MIN_SIGNATURE_TOTAL)
+}
+
+fn resolve_rule_bundle_max_signature_drop_pct() -> Option<f64> {
+    std::env::var(RULE_BUNDLE_MAX_SIGNATURE_DROP_PCT_ENV)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value >= 0.0 && *value <= 100.0)
+}
+
+fn enforce_signature_drop_guard(
+    bundle_path: &str,
+    previous_signature_total: Option<usize>,
+    incoming_signature_total: usize,
+) -> Result<()> {
+    if bundle_path.trim().is_empty() {
+        return Ok(());
+    }
+
+    let Some(max_drop_pct) = resolve_rule_bundle_max_signature_drop_pct() else {
+        return Ok(());
+    };
+    let Some(previous_signature_total) = previous_signature_total else {
+        return Ok(());
+    };
+    if previous_signature_total == 0 {
+        return Ok(());
+    }
+
+    let min_allowed =
+        ((previous_signature_total as f64) * (1.0 - (max_drop_pct / 100.0))).ceil() as usize;
+    if incoming_signature_total < min_allowed {
+        return Err(anyhow!(
+            "threat-intel signature database drop guard violation for '{}': incoming signature_total {} below minimum {} (previous {}, max_drop_pct {})",
+            bundle_path,
+            incoming_signature_total,
+            min_allowed,
+            previous_signature_total,
+            max_drop_pct
+        ));
+    }
+
+    Ok(())
+}
+
+fn enforce_bundle_signature_database_floor(
+    bundle_path: &str,
+    summary: &super::rule_bundle_loader::BundleLoadSummary,
+) -> Result<()> {
+    if bundle_path.trim().is_empty() {
+        return Ok(());
+    }
+
+    let signature_total = signature_database_total(summary);
+    let min_signature_total = resolve_rule_bundle_min_signature_total();
+    if signature_total < min_signature_total {
+        return Err(anyhow!(
+            "threat-intel signature database floor violation for '{}': signature_total {} below floor {}",
+            bundle_path,
+            signature_total,
+            min_signature_total
+        ));
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 
     use super::{
-        compare_version_natural, compute_file_sha256_hex, ensure_publish_timestamp_floor,
-        ensure_version_monotonicity, load_threat_intel_last_known_good_state,
-        load_threat_intel_replay_floor_state, persist_threat_intel_last_known_good_state,
-        persist_threat_intel_replay_floor_state, resolve_signature_reference,
-        resolve_threat_intel_last_known_good_path, resolve_threat_intel_replay_floor_path,
-        verify_bundle_sha256_if_present, THREAT_INTEL_LAST_KNOWN_GOOD_PATH_ENV,
+        compare_version_natural, compute_file_sha256_hex, enforce_bundle_signature_database_floor,
+        enforce_signature_drop_guard, ensure_publish_timestamp_floor,
+        ensure_shard_bundle_summary_matches, ensure_version_monotonicity,
+        load_threat_intel_last_known_good_state, load_threat_intel_replay_floor_state,
+        persist_threat_intel_last_known_good_state, persist_threat_intel_replay_floor_state,
+        resolve_signature_reference, resolve_threat_intel_last_known_good_path,
+        resolve_threat_intel_replay_floor_path, signature_database_total,
+        verify_bundle_sha256_if_present, RULE_BUNDLE_MAX_SIGNATURE_DROP_PCT_ENV,
+        RULE_BUNDLE_MIN_SIGNATURE_TOTAL_ENV, THREAT_INTEL_LAST_KNOWN_GOOD_PATH_ENV,
         THREAT_INTEL_REPLAY_FLOOR_PATH_ENV,
     };
     use std::cmp::Ordering;
@@ -1110,6 +1230,98 @@ mod tests {
         std::env::remove_var(THREAT_INTEL_LAST_KNOWN_GOOD_PATH_ENV);
         let _ = std::fs::remove_file(state_path);
         let _ = std::fs::remove_file(bundle_path);
+    }
+
+    #[test]
+    fn signature_database_floor_rejects_bundle_without_signature_material() {
+        let _guard = env_lock().lock().expect("lock env vars");
+        std::env::set_var(RULE_BUNDLE_MIN_SIGNATURE_TOTAL_ENV, "2");
+
+        let summary = bundle_summary([0, 0, 1, 0, 0, 3, 10, 5]);
+        let err = enforce_bundle_signature_database_floor("/tmp/bundle-empty-signatures", &summary)
+            .expect_err("bundle should violate signature database floor");
+        assert!(err
+            .to_string()
+            .contains("signature database floor violation"));
+
+        std::env::remove_var(RULE_BUNDLE_MIN_SIGNATURE_TOTAL_ENV);
+    }
+
+    #[test]
+    fn signature_database_floor_accepts_bundle_with_sufficient_signature_material() {
+        let _guard = env_lock().lock().expect("lock env vars");
+        std::env::set_var(RULE_BUNDLE_MIN_SIGNATURE_TOTAL_ENV, "5");
+
+        let summary = bundle_summary([2, 2, 1, 0, 0, 3, 10, 5]);
+        enforce_bundle_signature_database_floor("/tmp/bundle-good-signatures", &summary)
+            .expect("bundle should satisfy signature database floor");
+        assert_eq!(signature_database_total(&summary), 5);
+
+        std::env::remove_var(RULE_BUNDLE_MIN_SIGNATURE_TOTAL_ENV);
+    }
+
+    #[test]
+    fn signature_drop_guard_rejects_large_regression_when_enabled() {
+        let _guard = env_lock().lock().expect("lock env vars");
+        std::env::set_var(RULE_BUNDLE_MAX_SIGNATURE_DROP_PCT_ENV, "20");
+
+        let err = enforce_signature_drop_guard("/tmp/bundle-drop-guard", Some(100), 60)
+            .expect_err("large signature_total drop should be rejected");
+        assert!(err.to_string().contains("drop guard violation"));
+
+        std::env::remove_var(RULE_BUNDLE_MAX_SIGNATURE_DROP_PCT_ENV);
+    }
+
+    #[test]
+    fn signature_drop_guard_accepts_in_range_regression_when_enabled() {
+        let _guard = env_lock().lock().expect("lock env vars");
+        std::env::set_var(RULE_BUNDLE_MAX_SIGNATURE_DROP_PCT_ENV, "20");
+
+        enforce_signature_drop_guard("/tmp/bundle-drop-guard", Some(100), 80)
+            .expect("in-range signature_total drop should pass");
+        enforce_signature_drop_guard("/tmp/bundle-drop-guard", None, 80)
+            .expect("first observed bundle should bypass drop guard");
+
+        std::env::remove_var(RULE_BUNDLE_MAX_SIGNATURE_DROP_PCT_ENV);
+    }
+
+    #[test]
+    fn signature_drop_guard_is_disabled_when_env_not_set() {
+        let _guard = env_lock().lock().expect("lock env vars");
+        std::env::remove_var(RULE_BUNDLE_MAX_SIGNATURE_DROP_PCT_ENV);
+
+        enforce_signature_drop_guard("/tmp/bundle-drop-guard", Some(100), 1)
+            .expect("drop guard should be disabled when env is unset");
+    }
+
+    #[test]
+    fn shard_bundle_summary_mismatch_is_rejected() {
+        let primary = bundle_summary([2, 2, 1, 0, 0, 3, 10, 5]);
+        let shard = bundle_summary([2, 1, 1, 0, 0, 3, 10, 5]);
+        let err = ensure_shard_bundle_summary_matches(3, &primary, &shard)
+            .expect_err("shard summary mismatch should be rejected");
+        assert!(err.to_string().contains("shard 3 load diverged"));
+    }
+
+    #[test]
+    fn shard_bundle_summary_match_is_accepted() {
+        let primary = bundle_summary([2, 2, 1, 0, 0, 3, 10, 5]);
+        let shard = bundle_summary([2, 2, 1, 0, 0, 3, 10, 5]);
+        ensure_shard_bundle_summary_matches(1, &primary, &shard)
+            .expect("identical shard summary should pass");
+    }
+
+    fn bundle_summary(counts: [usize; 8]) -> super::super::rule_bundle_loader::BundleLoadSummary {
+        super::super::rule_bundle_loader::BundleLoadSummary {
+            sigma_loaded: counts[0],
+            yara_loaded: counts[1],
+            ioc_hashes: counts[2],
+            ioc_domains: counts[3],
+            ioc_ips: counts[4],
+            suricata_rules: counts[5],
+            elastic_rules: counts[6],
+            cve_entries: counts[7],
+        }
     }
 
     fn write_temp_bundle_file(name: &str, payload: &[u8]) -> PathBuf {

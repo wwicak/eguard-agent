@@ -1,0 +1,12 @@
+{
+  "suite": "signature_ml_offline_eval_gate",
+  "status": "pass",
+  "metrics": {
+    "precision": 0.84,
+    "recall": 0.79,
+    "pr_auc": 0.90,
+    "roc_auc": 0.91,
+    "brier_score": 0.11,
+    "ece": 0.04
+  }
+}

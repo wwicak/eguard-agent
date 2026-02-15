@@ -11,7 +11,7 @@ use tracing::{info, warn};
 use super::{resolve_rules_staging_root, verify_bundle_signature};
 
 /// Summary of rules loaded from a 6-layer threat intel bundle.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BundleLoadSummary {
     pub sigma_loaded: usize,
     pub yara_loaded: usize,

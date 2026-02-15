@@ -1,0 +1,13 @@
+{
+  "suite": "signature_ml_label_quality_gate",
+  "status": "pass",
+  "measured": {
+    "adjudicated_count": 662,
+    "positive_count": 176,
+    "negative_count": 486,
+    "unresolved_ratio": 0.0806,
+    "unique_hosts": 160,
+    "unique_rules": 220,
+    "p95_label_latency_days": 2.4
+  }
+}

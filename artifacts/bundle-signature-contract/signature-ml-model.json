@@ -1,0 +1,5 @@
+{
+  "suite": "signature_ml_linear_logit_model",
+  "model_type": "linear_logit_v1",
+  "model_version": "ci.signature.ml.v1"
+}

@@ -513,6 +513,169 @@ async fn fetch_policy_http_returns_certificate_policy_payload() {
 }
 
 #[tokio::test]
+// AC-GRP-042
+async fn ack_command_http_includes_agent_id_for_collector_contract() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ack mock server");
+    let addr = listener.local_addr().expect("local addr");
+
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("accept client");
+        let mut request_buf = vec![0u8; 4096];
+        let read_len = stream.read(&mut request_buf).await.expect("read request");
+        let request = std::str::from_utf8(&request_buf[..read_len]).expect("utf8 request");
+        assert!(request.starts_with("POST /api/v1/endpoint/command/ack "));
+
+        let body = request
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| body)
+            .expect("split request body");
+        let payload: serde_json::Value = serde_json::from_str(body).expect("parse request json");
+        assert_eq!(payload["agent_id"], "agent-http-1");
+        assert_eq!(payload["command_id"], "cmd-http-1");
+        assert_eq!(payload["status"], "completed");
+
+        let response_body = r#"{"status":"ack_saved"}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            response_body.len(),
+            response_body,
+        );
+        stream
+            .write_all(response.as_bytes())
+            .await
+            .expect("write mock response");
+    });
+
+    let client = Client::new(addr.to_string());
+    client
+        .ack_command("agent-http-1", "cmd-http-1", "completed")
+        .await
+        .expect("ack command should succeed");
+
+    server.await.expect("mock server join");
+}
+
+#[tokio::test]
+// AC-GRP-020
+async fn send_events_http_maps_payload_json_into_event_data_object() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind telemetry mock server");
+    let addr = listener.local_addr().expect("local addr");
+
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("accept client");
+        let mut request_buf = vec![0u8; 8192];
+        let read_len = stream.read(&mut request_buf).await.expect("read request");
+        let request = std::str::from_utf8(&request_buf[..read_len]).expect("utf8 request");
+        assert!(request.starts_with("POST /api/v1/endpoint/telemetry "));
+
+        let body = request
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| body)
+            .expect("split request body");
+        let payload: serde_json::Value = serde_json::from_str(body).expect("parse request json");
+        assert_eq!(payload["agent_id"], "agent-http-telemetry");
+        assert_eq!(payload["event_type"], "process_exec");
+        assert_eq!(payload["event_data"]["pid"], 4242);
+        assert_eq!(payload["event_data"]["exe"], "/bin/sh");
+
+        let response_body = r#"{"status":"telemetry_accepted"}"#;
+        let response = format!(
+            "HTTP/1.1 202 Accepted\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            response_body.len(),
+            response_body,
+        );
+        stream
+            .write_all(response.as_bytes())
+            .await
+            .expect("write mock response");
+    });
+
+    let client = Client::new(addr.to_string());
+    client
+        .send_events(&[EventEnvelope {
+            agent_id: "agent-http-telemetry".to_string(),
+            event_type: "process_exec".to_string(),
+            payload_json: "{\"pid\":4242,\"exe\":\"/bin/sh\"}".to_string(),
+            created_at_unix: 1_700_000_000,
+        }])
+        .await
+        .expect("send events should succeed");
+
+    server.await.expect("mock server join");
+}
+
+#[tokio::test]
+// AC-GRP-020
+async fn send_events_grpc_falls_back_to_http_when_grpc_stream_is_unavailable() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind telemetry fallback mock server");
+    let addr = listener.local_addr().expect("local addr");
+
+    let server = tokio::spawn(async move {
+        let result = tokio::time::timeout(std::time::Duration::from_secs(12), async move {
+            for _ in 0..8 {
+                let (mut stream, _) = listener.accept().await.expect("accept client");
+                let mut request_buf = vec![0u8; 8192];
+                let read_len = stream.read(&mut request_buf).await.expect("read request");
+                if read_len == 0 {
+                    continue;
+                }
+
+                let request = String::from_utf8_lossy(&request_buf[..read_len]);
+                if !request.starts_with("POST /api/v1/endpoint/telemetry ") {
+                    continue;
+                }
+
+                let body = request
+                    .split_once("\r\n\r\n")
+                    .map(|(_, body)| body)
+                    .expect("split request body");
+                let payload: serde_json::Value =
+                    serde_json::from_str(body).expect("parse request json");
+                assert_eq!(payload["agent_id"], "agent-grpc-fallback");
+                assert_eq!(payload["event_type"], "process_exec");
+
+                let response_body = r#"{"status":"telemetry_accepted"}"#;
+                let response = format!(
+                    "HTTP/1.1 202 Accepted\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response_body.len(),
+                    response_body,
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("write mock response");
+                return;
+            }
+            panic!("did not observe HTTP telemetry fallback request");
+        })
+        .await;
+
+        if let Err(err) = result {
+            panic!("timeout waiting for HTTP telemetry fallback request: {err}");
+        }
+    });
+
+    let client = Client::with_mode(addr.to_string(), TransportMode::Grpc);
+    client
+        .send_events(&[EventEnvelope {
+            agent_id: "agent-grpc-fallback".to_string(),
+            event_type: "process_exec".to_string(),
+            payload_json: "{\"pid\":7}".to_string(),
+            created_at_unix: 1_700_000_123,
+        }])
+        .await
+        .expect("telemetry send should fall back to HTTP");
+
+    server.await.expect("mock server join");
+}
+
+#[tokio::test]
 // AC-GRP-030 AC-CMP-032 AC-GRP-081
 async fn send_compliance_offline_returns_error() {
     let mut c = Client::new("127.0.0.1:1".to_string());
@@ -591,7 +754,7 @@ async fn ack_command_offline_returns_error() {
     let mut c = Client::new("127.0.0.1:1".to_string());
     c.set_online(false);
     let err = c
-        .ack_command("cmd-1", "completed")
+        .ack_command("agent-1", "cmd-1", "completed")
         .await
         .expect_err("offline ack should fail");
     assert!(err.to_string().contains("server unreachable"));
@@ -1527,7 +1690,7 @@ async fn send_compliance_grpc_captures_report_fields() {
 
 #[tokio::test]
 // AC-GRP-040
-async fn fetch_commands_grpc_uses_poll_commands_fallback_path() {
+async fn fetch_commands_grpc_uses_poll_commands_path_for_collector_compat() {
     let state = Arc::new(Mutex::new(CommandMockState {
         command_channel_should_fail: true,
         channel_commands: Vec::new(),
@@ -1570,14 +1733,7 @@ async fn fetch_commands_grpc_uses_poll_commands_fallback_path() {
 
     {
         let guard = state.lock().expect("state lock");
-        assert_eq!(
-            guard.channel_requests.len(),
-            client.retry_policy().max_attempts as usize
-        );
-        for channel_req in &guard.channel_requests {
-            assert_eq!(channel_req.agent_id, "agent-cmd-1");
-            assert_eq!(channel_req.completed_command_ids, vec!["cmd-done-1"]);
-        }
+        assert!(guard.channel_requests.is_empty());
         assert_eq!(guard.poll_requests.len(), 1);
         let poll_req = &guard.poll_requests[0];
         assert_eq!(poll_req.agent_id, "agent-cmd-1");
@@ -1658,7 +1814,7 @@ async fn ack_command_grpc_captures_command_id_and_status() {
     client.set_test_channel_override(server.channel());
 
     client
-        .ack_command("cmd-ack-77", "completed")
+        .ack_command("agent-ack-77", "cmd-ack-77", "completed")
         .await
         .expect("ack_command should succeed");
 
@@ -1666,6 +1822,7 @@ async fn ack_command_grpc_captures_command_id_and_status() {
         let guard = state.lock().expect("state lock");
         assert_eq!(guard.ack_requests.len(), 1);
         let ack = &guard.ack_requests[0];
+        assert_eq!(ack.agent_id, "agent-ack-77");
         assert_eq!(ack.command_id, "cmd-ack-77");
         assert_eq!(ack.status, "completed");
     }

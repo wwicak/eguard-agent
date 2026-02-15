@@ -1,0 +1,12 @@
+{
+  "suite": "signature_ml_build_training_corpus",
+  "status": "pass",
+  "dataset_mode": "synthetic_ci",
+  "measured": {
+    "sample_count": 720,
+    "adjudicated_count": 662,
+    "unresolved_count": 58,
+    "positive_count": 176,
+    "negative_count": 486
+  }
+}

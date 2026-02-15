@@ -222,13 +222,19 @@ impl Client {
         .await
     }
 
-    pub(super) async fn ack_command_grpc(&self, command_id: &str, status: &str) -> Result<()> {
+    pub(super) async fn ack_command_grpc(
+        &self,
+        agent_id: &str,
+        command_id: &str,
+        status: &str,
+    ) -> Result<()> {
         self.with_retry("ack_command_grpc", || async {
             let mut client = self.command_client().await?;
             client
                 .ack_command(pb::AckCommandRequest {
                     command_id: command_id.to_string(),
                     status: status.to_string(),
+                    agent_id: agent_id.to_string(),
                 })
                 .await
                 .context("ack_command RPC failed")?;

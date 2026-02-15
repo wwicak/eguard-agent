@@ -1,0 +1,9 @@
+{
+  "suite": "signature_ml_model_registry_gate",
+  "status": "pass",
+  "model_version": "ci.signature.ml.v1",
+  "offline_metrics": {
+    "pr_auc": 0.90,
+    "roc_auc": 0.91
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "suite": "signature_ml_feature_snapshot_gate",
+  "status": "pass",
+  "measured": {
+    "row_count": 662,
+    "unique_hosts": 160,
+    "unique_rules": 220,
+    "missing_feature_ratio": 0.0,
+    "temporal_span_days": 44.9
+  }
+}

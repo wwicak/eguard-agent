@@ -1,6 +1,6 @@
 {
   "suite": "workflow_yaml_lint",
-  "recorded_at_utc": "2026-02-15T04:18:50Z",
+  "recorded_at_utc": "2026-02-15T06:12:42Z",
   "entries": [
     {"workflow":".github/workflows/build-bundle.yml","status":"ok","jobs_count":1,"has_name":true,"has_on":true,"has_jobs":true,"attack_contract_ok":true},
     {"workflow":".github/workflows/verification-suite.yml","status":"ok","jobs_count":1,"has_name":true,"has_on":true,"has_jobs":true,"attack_contract_ok":true},
