@@ -4,6 +4,8 @@ fn sample_event(i: i64) -> EventEnvelope {
     EventEnvelope {
         agent_id: "a1".to_string(),
         event_type: "process_exec".to_string(),
+        severity: String::new(),
+        rule_name: String::new(),
         payload_json: format!("{{\"n\":{i}}}"),
         created_at_unix: i,
     }
@@ -13,6 +15,8 @@ fn large_event(i: i64, payload_bytes: usize) -> EventEnvelope {
     EventEnvelope {
         agent_id: "a1".to_string(),
         event_type: "process_exec".to_string(),
+        severity: String::new(),
+        rule_name: String::new(),
         payload_json: "x".repeat(payload_bytes),
         created_at_unix: i,
     }

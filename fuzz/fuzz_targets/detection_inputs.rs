@@ -45,12 +45,15 @@ fuzz_target!(|data: &[u8]| {
         uid,
         process: bounded_text(data, 5, 32),
         parent_process: bounded_text(data, 37, 32),
+        session_id: ppid,
         file_path: Some(bounded_text(data, 69, 48)),
+        file_write: data.get(68).map(|v| v % 2 == 0).unwrap_or(false),
         file_hash: Some(bounded_text(data, 117, 64)),
         dst_port: data.get(181).copied().map(u16::from),
         dst_ip: Some(bounded_text(data, 182, 32)),
         dst_domain: Some(bounded_text(data, 214, 64)),
         command_line: Some(bounded_text(data, 278, 96)),
+        event_size: data.get(374).copied().map(u64::from),
     };
 
     if let Ok(mut engine) = DETECTION_ENGINE.lock() {

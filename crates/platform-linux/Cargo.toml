@@ -10,6 +10,7 @@ ebpf-libbpf = ["dep:libbpf-rs"]
 
 [dependencies]
 serde.workspace = true
+serde_json.workspace = true
 libc.workspace = true
 lru.workspace = true
 crypto-accel = { path = "../crypto-accel" }

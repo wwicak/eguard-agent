@@ -66,8 +66,23 @@ pub struct AgentConfig {
     pub detection_sigma_rules_dir: String,
     pub detection_yara_rules_dir: String,
     pub detection_ioc_dir: String,
+    pub detection_bundle_path: String,
     pub detection_scan_on_create: bool,
     pub detection_max_file_scan_size_mb: usize,
+    pub detection_memory_scan_enabled: bool,
+    pub detection_memory_scan_interval_secs: u64,
+    pub detection_memory_scan_mode: String,
+    pub detection_memory_scan_max_pids: usize,
+    pub detection_ransomware_write_threshold: u32,
+    pub detection_ransomware_write_window_secs: u64,
+    pub detection_ransomware_adaptive_delta: f64,
+    pub detection_ransomware_adaptive_min_samples: usize,
+    pub detection_ransomware_adaptive_floor: u32,
+    pub detection_ransomware_learned_root_min_hits: u32,
+    pub detection_ransomware_learned_root_max: usize,
+    pub detection_ransomware_user_path_prefixes: Vec<String>,
+    pub detection_ransomware_system_path_prefixes: Vec<String>,
+    pub detection_ransomware_temp_path_tokens: Vec<String>,
     pub compliance_check_interval_secs: u64,
     pub compliance_auto_remediate: bool,
     pub baseline_learning_period_days: u64,
@@ -113,8 +128,23 @@ impl Default for AgentConfig {
             detection_sigma_rules_dir: "/var/lib/eguard-agent/rules/sigma".to_string(),
             detection_yara_rules_dir: "/var/lib/eguard-agent/rules/yara".to_string(),
             detection_ioc_dir: "/var/lib/eguard-agent/rules/ioc".to_string(),
+            detection_bundle_path: String::new(),
             detection_scan_on_create: true,
             detection_max_file_scan_size_mb: 100,
+            detection_memory_scan_enabled: false,
+            detection_memory_scan_interval_secs: 900,
+            detection_memory_scan_mode: "executable".to_string(),
+            detection_memory_scan_max_pids: 8,
+            detection_ransomware_write_threshold: 25,
+            detection_ransomware_write_window_secs: 20,
+            detection_ransomware_adaptive_delta: 1e-6,
+            detection_ransomware_adaptive_min_samples: 6,
+            detection_ransomware_adaptive_floor: 5,
+            detection_ransomware_learned_root_min_hits: 3,
+            detection_ransomware_learned_root_max: 64,
+            detection_ransomware_user_path_prefixes: Vec::new(),
+            detection_ransomware_system_path_prefixes: Vec::new(),
+            detection_ransomware_temp_path_tokens: Vec::new(),
             compliance_check_interval_secs: 300,
             compliance_auto_remediate: false,
             baseline_learning_period_days: 7,
@@ -147,7 +177,76 @@ impl AgentConfig {
         self.apply_env_response();
         self.apply_env_storage();
         self.apply_env_tls();
+        self.apply_env_detection();
         self.ensure_valid_agent_id();
+    }
+
+    fn apply_env_detection(&mut self) {
+        if let Some(v) = env_non_empty("EGUARD_BUNDLE_PATH") {
+            self.detection_bundle_path = v;
+        }
+        if let Some(v) = env_non_empty("EGUARD_MEMORY_SCAN_MODE") {
+            self.detection_memory_scan_mode = v;
+        }
+        if let Some(v) = env_non_empty("EGUARD_MEMORY_SCAN_ENABLED") {
+            if let Ok(parsed) = v.parse::<bool>() {
+                self.detection_memory_scan_enabled = parsed;
+            }
+        }
+        if let Some(v) = env_non_empty("EGUARD_MEMORY_SCAN_INTERVAL_SECS") {
+            if let Ok(parsed) = v.parse::<u64>() {
+                self.detection_memory_scan_interval_secs = parsed;
+            }
+        }
+        if let Some(v) = env_non_empty("EGUARD_MEMORY_SCAN_MAX_PIDS") {
+            if let Ok(parsed) = v.parse::<usize>() {
+                self.detection_memory_scan_max_pids = parsed;
+            }
+        }
+        if let Some(v) = env_non_empty("EGUARD_RANSOMWARE_WRITE_THRESHOLD") {
+            if let Ok(parsed) = v.parse::<u32>() {
+                self.detection_ransomware_write_threshold = parsed;
+            }
+        }
+        if let Some(v) = env_non_empty("EGUARD_RANSOMWARE_WRITE_WINDOW_SECS") {
+            if let Ok(parsed) = v.parse::<u64>() {
+                self.detection_ransomware_write_window_secs = parsed;
+            }
+        }
+        if let Some(v) = env_non_empty("EGUARD_RANSOMWARE_ADAPTIVE_DELTA") {
+            if let Ok(parsed) = v.parse::<f64>() {
+                self.detection_ransomware_adaptive_delta = parsed;
+            }
+        }
+        if let Some(v) = env_non_empty("EGUARD_RANSOMWARE_ADAPTIVE_MIN_SAMPLES") {
+            if let Ok(parsed) = v.parse::<usize>() {
+                self.detection_ransomware_adaptive_min_samples = parsed;
+            }
+        }
+        if let Some(v) = env_non_empty("EGUARD_RANSOMWARE_ADAPTIVE_FLOOR") {
+            if let Ok(parsed) = v.parse::<u32>() {
+                self.detection_ransomware_adaptive_floor = parsed;
+            }
+        }
+        if let Some(v) = env_non_empty("EGUARD_RANSOMWARE_LEARNED_ROOT_MIN_HITS") {
+            if let Ok(parsed) = v.parse::<u32>() {
+                self.detection_ransomware_learned_root_min_hits = parsed;
+            }
+        }
+        if let Some(v) = env_non_empty("EGUARD_RANSOMWARE_LEARNED_ROOT_MAX") {
+            if let Ok(parsed) = v.parse::<usize>() {
+                self.detection_ransomware_learned_root_max = parsed;
+            }
+        }
+        if let Some(v) = env_non_empty("EGUARD_RANSOMWARE_USER_PATH_PREFIXES") {
+            self.detection_ransomware_user_path_prefixes = split_csv(&v);
+        }
+        if let Some(v) = env_non_empty("EGUARD_RANSOMWARE_SYSTEM_PATH_PREFIXES") {
+            self.detection_ransomware_system_path_prefixes = split_csv(&v);
+        }
+        if let Some(v) = env_non_empty("EGUARD_RANSOMWARE_TEMP_PATH_TOKENS") {
+            self.detection_ransomware_temp_path_tokens = split_csv(&v);
+        }
     }
 
     fn apply_file_config(&mut self) -> Result<bool> {
@@ -498,11 +597,56 @@ impl AgentConfig {
         if let Some(v) = non_empty(detection.ioc_dir) {
             self.detection_ioc_dir = v;
         }
+        if let Some(v) = non_empty(detection.bundle_path) {
+            self.detection_bundle_path = v;
+        }
         if let Some(v) = detection.scan_on_create {
             self.detection_scan_on_create = v;
         }
         if let Some(v) = detection.max_file_scan_size_mb {
             self.detection_max_file_scan_size_mb = v;
+        }
+        if let Some(v) = detection.memory_scan_enabled {
+            self.detection_memory_scan_enabled = v;
+        }
+        if let Some(v) = detection.memory_scan_interval_secs {
+            self.detection_memory_scan_interval_secs = v;
+        }
+        if let Some(v) = detection.memory_scan_mode.clone() {
+            self.detection_memory_scan_mode = v;
+        }
+        if let Some(v) = detection.memory_scan_max_pids {
+            self.detection_memory_scan_max_pids = v;
+        }
+        if let Some(v) = detection.ransomware_write_threshold {
+            self.detection_ransomware_write_threshold = v;
+        }
+        if let Some(v) = detection.ransomware_write_window_secs {
+            self.detection_ransomware_write_window_secs = v;
+        }
+        if let Some(v) = detection.ransomware_adaptive_delta {
+            self.detection_ransomware_adaptive_delta = v;
+        }
+        if let Some(v) = detection.ransomware_adaptive_min_samples {
+            self.detection_ransomware_adaptive_min_samples = v;
+        }
+        if let Some(v) = detection.ransomware_adaptive_floor {
+            self.detection_ransomware_adaptive_floor = v;
+        }
+        if let Some(v) = detection.ransomware_learned_root_min_hits {
+            self.detection_ransomware_learned_root_min_hits = v;
+        }
+        if let Some(v) = detection.ransomware_learned_root_max {
+            self.detection_ransomware_learned_root_max = v;
+        }
+        if let Some(v) = detection.ransomware_user_path_prefixes {
+            self.detection_ransomware_user_path_prefixes = v;
+        }
+        if let Some(v) = detection.ransomware_system_path_prefixes {
+            self.detection_ransomware_system_path_prefixes = v;
+        }
+        if let Some(v) = detection.ransomware_temp_path_tokens {
+            self.detection_ransomware_temp_path_tokens = v;
         }
     }
 
@@ -721,9 +865,39 @@ struct FileDetectionConfig {
     #[serde(default)]
     ioc_dir: Option<String>,
     #[serde(default)]
+    bundle_path: Option<String>,
+    #[serde(default)]
     scan_on_create: Option<bool>,
     #[serde(default)]
     max_file_scan_size_mb: Option<usize>,
+    #[serde(default)]
+    memory_scan_enabled: Option<bool>,
+    #[serde(default)]
+    memory_scan_interval_secs: Option<u64>,
+    #[serde(default)]
+    memory_scan_mode: Option<String>,
+    #[serde(default)]
+    memory_scan_max_pids: Option<usize>,
+    #[serde(default)]
+    ransomware_write_threshold: Option<u32>,
+    #[serde(default)]
+    ransomware_write_window_secs: Option<u64>,
+    #[serde(default)]
+    ransomware_adaptive_delta: Option<f64>,
+    #[serde(default)]
+    ransomware_adaptive_min_samples: Option<usize>,
+    #[serde(default)]
+    ransomware_adaptive_floor: Option<u32>,
+    #[serde(default)]
+    ransomware_learned_root_min_hits: Option<u32>,
+    #[serde(default)]
+    ransomware_learned_root_max: Option<usize>,
+    #[serde(default)]
+    ransomware_user_path_prefixes: Option<Vec<String>>,
+    #[serde(default)]
+    ransomware_system_path_prefixes: Option<Vec<String>>,
+    #[serde(default)]
+    ransomware_temp_path_tokens: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -1060,6 +1234,14 @@ fn env_usize(name: &str) -> Option<usize> {
     std::env::var(name)
         .ok()
         .and_then(|v| v.trim().parse::<usize>().ok())
+}
+
+fn split_csv(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_string())
+        .collect()
 }
 
 fn default_agent_id() -> String {

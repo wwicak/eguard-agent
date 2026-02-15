@@ -313,6 +313,10 @@ const EXPECTED_IDS: &[&str] = &[
     "AC-DET-187",
     "AC-DET-188",
     "AC-DET-189",
+    "AC-DET-190",
+    "AC-DET-191",
+    "AC-DET-192",
+    "AC-DET-193",
     "AC-EBP-001",
     "AC-EBP-002",
     "AC-EBP-003",
@@ -387,6 +391,9 @@ const EXPECTED_IDS: &[&str] = &[
     "AC-EBP-123",
     "AC-EBP-130",
     "AC-EBP-131",
+    "AC-EBP-190",
+    "AC-EBP-191",
+    "AC-EBP-192",
     "AC-ENR-001",
     "AC-ENR-002",
     "AC-ENR-003",
@@ -2362,6 +2369,26 @@ fn ac_det_189_exists_in_acceptance_document() {
 }
 
 #[test]
+fn ac_det_190_exists_in_acceptance_document() {
+    assert_criterion_present("AC-DET-190");
+}
+
+#[test]
+fn ac_det_191_exists_in_acceptance_document() {
+    assert_criterion_present("AC-DET-191");
+}
+
+#[test]
+fn ac_det_192_exists_in_acceptance_document() {
+    assert_criterion_present("AC-DET-192");
+}
+
+#[test]
+fn ac_det_193_exists_in_acceptance_document() {
+    assert_criterion_present("AC-DET-193");
+}
+
+#[test]
 fn ac_ebp_001_exists_in_acceptance_document() {
     assert_criterion_present("AC-EBP-001");
 }
@@ -2729,6 +2756,21 @@ fn ac_ebp_130_exists_in_acceptance_document() {
 #[test]
 fn ac_ebp_131_exists_in_acceptance_document() {
     assert_criterion_present("AC-EBP-131");
+}
+
+#[test]
+fn ac_ebp_190_exists_in_acceptance_document() {
+    assert_criterion_present("AC-EBP-190");
+}
+
+#[test]
+fn ac_ebp_191_exists_in_acceptance_document() {
+    assert_criterion_present("AC-EBP-191");
+}
+
+#[test]
+fn ac_ebp_192_exists_in_acceptance_document() {
+    assert_criterion_present("AC-EBP-192");
 }
 
 #[test]

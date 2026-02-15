@@ -8,14 +8,12 @@ fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-fn parse_ringbuf_capacity_bytes(common_zig: &str) -> Option<u64> {
-    for line in common_zig.lines() {
-        if !line.contains("RINGBUF_CAPACITY") || !line.contains("=") {
+fn parse_ringbuf_capacity_bytes(source: &str) -> Option<u64> {
+    for line in source.lines() {
+        if !line.contains("8 * 1024 * 1024") {
             continue;
         }
-        if line.contains("8 * 1024 * 1024") {
-            return Some(8 * 1024 * 1024);
-        }
+        return Some(8 * 1024 * 1024);
     }
     None
 }
@@ -40,9 +38,9 @@ fn ac_det_benchmark_harness_ci_publishes_measured_artifact() {
 // AC-EBP-101
 fn ac_ebp_ring_buffer_capacity_is_eight_megabytes() {
     let root = repo_root();
-    let common = std::fs::read_to_string(root.join("zig/ebpf/common.zig"))
-        .expect("read zig ring buffer definition");
-    let capacity = parse_ringbuf_capacity_bytes(&common).expect("parse ringbuf capacity");
+    let helpers = std::fs::read_to_string(root.join("zig/ebpf/bpf_helpers.h"))
+        .expect("read bpf ring buffer definition");
+    let capacity = parse_ringbuf_capacity_bytes(&helpers).expect("parse ringbuf capacity");
     assert_eq!(capacity, 8 * 1024 * 1024);
 }
 
@@ -117,6 +115,8 @@ fn ac_ebp_offline_sqlite_buffer_has_two_megabyte_working_set() {
         let event = EventEnvelope {
             agent_id: "agent-1".to_string(),
             event_type: "telemetry".to_string(),
+            severity: String::new(),
+            rule_name: String::new(),
             payload_json: payload.clone(),
             created_at_unix: 1,
         };
@@ -167,9 +167,9 @@ fn ac_ebp_baseline_store_snapshot_fits_half_megabyte_budget() {
 // AC-EBP-102 AC-EBP-109 AC-EBP-110
 fn ac_ebp_memory_layout_ledger_sums_to_target_rss_envelope() {
     let root = repo_root();
-    let common =
-        std::fs::read_to_string(root.join("zig/ebpf/common.zig")).expect("read ring buffer source");
-    let ring_bytes = parse_ringbuf_capacity_bytes(&common).expect("ring capacity") as f64;
+    let helpers =
+        std::fs::read_to_string(root.join("zig/ebpf/bpf_helpers.h")).expect("read ring buffer source");
+    let ring_bytes = parse_ringbuf_capacity_bytes(&helpers).expect("ring capacity") as f64;
 
     let runtime_tokio_bytes = 3.0 * 1024.0 * 1024.0;
     let detection_bytes = 3.8 * 1024.0 * 1024.0;

@@ -136,7 +136,7 @@ fn poll_preserves_backend_record_order_for_timestamped_events() {
 }
 
 #[test]
-// AC-EBP-003 AC-EBP-030
+// AC-EBP-003 AC-EBP-030 AC-EBP-190
 fn parses_structured_file_open_payload() {
     let mut payload = Vec::new();
     payload.extend_from_slice(&0x1234u32.to_le_bytes());
@@ -148,6 +148,45 @@ fn parses_structured_file_open_payload() {
     assert!(event.payload.contains("path=/tmp/dropper.sh"));
     assert!(event.payload.contains("flags=4660"));
     assert!(event.payload.contains("mode=493"));
+}
+
+#[test]
+// AC-EBP-190
+fn parses_structured_file_write_payload() {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&3u32.to_le_bytes());
+    payload.extend_from_slice(&4096u64.to_le_bytes());
+    payload.extend_from_slice(b"/var/log/app.log\0");
+
+    let event = parse_raw_event(&encode_event(8, 400, 1000, 99, &payload)).expect("parse event");
+    assert!(matches!(event.event_type, EventType::FileWrite));
+    assert!(event.payload.contains("path=/var/log/app.log"));
+    assert!(event.payload.contains("size=4096"));
+}
+
+#[test]
+// AC-EBP-191
+fn parses_structured_file_rename_payload() {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(b"/tmp/a\0");
+    payload.extend_from_slice(&[0u8; 256 - 7]);
+    payload.extend_from_slice(b"/tmp/b\0");
+
+    let event = parse_raw_event(&encode_event(9, 401, 1000, 100, &payload)).expect("parse event");
+    assert!(matches!(event.event_type, EventType::FileRename));
+    assert!(event.payload.contains("src=/tmp/a"));
+    assert!(event.payload.contains("dst=/tmp/b"));
+}
+
+#[test]
+// AC-EBP-192
+fn parses_structured_file_unlink_payload() {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(b"/tmp/old\0");
+
+    let event = parse_raw_event(&encode_event(10, 402, 1000, 101, &payload)).expect("parse event");
+    assert!(matches!(event.event_type, EventType::FileUnlink));
+    assert!(event.payload.contains("path=/tmp/old"));
 }
 
 #[test]
@@ -328,4 +367,137 @@ fn parse_event_type_maps_known_ids() {
         parse_event_type(4).expect("dns"),
         EventType::DnsQuery
     ));
+    assert!(matches!(
+        parse_event_type(8).expect("write"),
+        EventType::FileWrite
+    ));
+    assert!(matches!(
+        parse_event_type(9).expect("rename"),
+        EventType::FileRename
+    ));
+    assert!(matches!(
+        parse_event_type(10).expect("unlink"),
+        EventType::FileUnlink
+    ));
+}
+
+#[test]
+fn replay_encode_process_exec_round_trips() {
+    let json = r#"{"event_type":"process_exec","pid":1234,"uid":0,"ts_ns":999,"ppid":100,"comm":"bash","path":"/usr/bin/bash","cmdline":"bash -c whoami"}"#;
+    let raw = encode_replay_event(json).unwrap();
+    let event = parse_raw_event(&raw).unwrap();
+    assert!(matches!(event.event_type, EventType::ProcessExec));
+    assert_eq!(event.pid, 1234);
+    assert_eq!(event.uid, 0);
+    assert_eq!(event.ts_ns, 999);
+    assert!(event.payload.contains("bash"));
+    assert!(event.payload.contains("whoami"));
+}
+
+#[test]
+fn replay_encode_file_open_round_trips() {
+    let json = r#"{"event_type":"file_open","pid":42,"uid":1000,"ts_ns":0,"file_path":"/etc/shadow"}"#;
+    let raw = encode_replay_event(json).unwrap();
+    let event = parse_raw_event(&raw).unwrap();
+    assert!(matches!(event.event_type, EventType::FileOpen));
+    assert_eq!(event.pid, 42);
+    assert!(event.payload.contains("/etc/shadow"));
+}
+
+#[test]
+fn replay_encode_file_write_round_trips() {
+    let json = r#"{"event_type":"file_write","pid":42,"uid":1000,"ts_ns":0,"file_path":"/var/log/app.log","fd":3,"size":4096}"#;
+    let raw = encode_replay_event(json).unwrap();
+    let event = parse_raw_event(&raw).unwrap();
+    assert!(matches!(event.event_type, EventType::FileWrite));
+    assert!(event.payload.contains("path=/var/log/app.log"));
+    assert!(event.payload.contains("size=4096"));
+}
+
+#[test]
+fn replay_encode_file_rename_round_trips() {
+    let json = r#"{"event_type":"file_rename","pid":42,"uid":1000,"ts_ns":0,"src":"/tmp/a","dst":"/tmp/b"}"#;
+    let raw = encode_replay_event(json).unwrap();
+    let event = parse_raw_event(&raw).unwrap();
+    assert!(matches!(event.event_type, EventType::FileRename));
+    assert!(event.payload.contains("src=/tmp/a"));
+    assert!(event.payload.contains("dst=/tmp/b"));
+}
+
+#[test]
+fn replay_encode_file_unlink_round_trips() {
+    let json = r#"{"event_type":"file_unlink","pid":42,"uid":1000,"ts_ns":0,"file_path":"/tmp/old"}"#;
+    let raw = encode_replay_event(json).unwrap();
+    let event = parse_raw_event(&raw).unwrap();
+    assert!(matches!(event.event_type, EventType::FileUnlink));
+    assert!(event.payload.contains("path=/tmp/old"));
+}
+
+#[test]
+fn replay_encode_tcp_connect_round_trips() {
+    let json = r#"{"event_type":"tcp_connect","pid":55,"uid":0,"ts_ns":0,"dst_ip":"203.0.113.10","dst_port":4444}"#;
+    let raw = encode_replay_event(json).unwrap();
+    let event = parse_raw_event(&raw).unwrap();
+    assert!(matches!(event.event_type, EventType::TcpConnect));
+    assert!(event.payload.contains("203.0.113.10"));
+    assert!(event.payload.contains("4444"));
+}
+
+#[test]
+fn replay_encode_dns_query_round_trips() {
+    let json = r#"{"event_type":"dns_query","pid":77,"uid":0,"ts_ns":0,"domain":"evil.example.com"}"#;
+    let raw = encode_replay_event(json).unwrap();
+    let event = parse_raw_event(&raw).unwrap();
+    assert!(matches!(event.event_type, EventType::DnsQuery));
+    assert!(event.payload.contains("evil.example.com"));
+}
+
+#[test]
+fn replay_encode_module_load_round_trips() {
+    let json = r#"{"event_type":"module_load","pid":88,"uid":0,"ts_ns":0,"module_name":"fake_rootkit"}"#;
+    let raw = encode_replay_event(json).unwrap();
+    let event = parse_raw_event(&raw).unwrap();
+    assert!(matches!(event.event_type, EventType::ModuleLoad));
+    assert!(event.payload.contains("fake_rootkit"));
+}
+
+#[test]
+fn replay_backend_reads_ndjson_file() {
+    use std::io::Write;
+    let dir = std::env::temp_dir().join("eguard-replay-test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("events.ndjson");
+    {
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(f, r#"{{"event_type":"process_exec","pid":1,"uid":0,"ts_ns":100,"comm":"bash","path":"/bin/bash","cmdline":"bash"}}"#).unwrap();
+        writeln!(f, "# comment line — should be skipped").unwrap();
+        writeln!(f, r#"{{"event_type":"file_open","pid":2,"uid":0,"ts_ns":200,"file_path":"/etc/passwd"}}"#).unwrap();
+        writeln!(f, "").unwrap(); // blank line
+        writeln!(f, r#"{{"event_type":"tcp_connect","pid":3,"uid":0,"ts_ns":300,"dst_ip":"10.0.0.1","dst_port":443}}"#).unwrap();
+    }
+
+    let mut backend = ReplayBackend::open(&path).unwrap();
+
+    // Replay yields 1 event per poll (matching tick-loop consumption rate)
+    let b0 = backend.poll_raw_events(Duration::from_millis(10)).unwrap();
+    assert_eq!(b0.records.len(), 1);
+    let e0 = parse_raw_event(&b0.records[0]).unwrap();
+    assert!(matches!(e0.event_type, EventType::ProcessExec));
+    assert_eq!(e0.pid, 1);
+
+    let b1 = backend.poll_raw_events(Duration::from_millis(10)).unwrap();
+    assert_eq!(b1.records.len(), 1);
+    let e1 = parse_raw_event(&b1.records[0]).unwrap();
+    assert!(matches!(e1.event_type, EventType::FileOpen));
+
+    let b2 = backend.poll_raw_events(Duration::from_millis(10)).unwrap();
+    assert_eq!(b2.records.len(), 1);
+    let e2 = parse_raw_event(&b2.records[0]).unwrap();
+    assert!(matches!(e2.event_type, EventType::TcpConnect));
+
+    // Fourth poll should return empty (EOF)
+    let b3 = backend.poll_raw_events(Duration::from_millis(10)).unwrap();
+    assert_eq!(b3.records.len(), 0);
+
+    std::fs::remove_dir_all(&dir).ok();
 }

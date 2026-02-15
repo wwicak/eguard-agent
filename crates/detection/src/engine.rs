@@ -5,6 +5,8 @@ use crate::layer1::{IocLayer1, Layer1EventHit, Layer1Result};
 use crate::layer2::TemporalEngine;
 use crate::layer3::{AnomalyDecision, AnomalyEngine};
 use crate::layer4::Layer4Engine;
+use crate::behavioral::{BehavioralAlarm, BehavioralEngine};
+use crate::layer5::{MlEngine, MlFeatures, MlScore};
 use crate::policy::confidence_policy;
 use crate::types::{Confidence, DetectionSignals, TelemetryEvent};
 use crate::yara_engine::{Result as YaraResult, YaraEngine, YaraHit};
@@ -43,6 +45,8 @@ pub struct DetectionOutcome {
     pub yara_hits: Vec<YaraHit>,
     pub anomaly: Option<AnomalyDecision>,
     pub layer1: Layer1EventHit,
+    pub ml_score: Option<MlScore>,
+    pub behavioral_alarms: Vec<BehavioralAlarm>,
 }
 
 pub struct DetectionEngine {
@@ -50,6 +54,8 @@ pub struct DetectionEngine {
     pub layer2: TemporalEngine,
     pub layer3: AnomalyEngine,
     pub layer4: Layer4Engine,
+    pub layer5: MlEngine,
+    pub behavioral: BehavioralEngine,
     pub yara: YaraEngine,
 }
 
@@ -65,6 +71,8 @@ impl DetectionEngine {
             layer2,
             layer3,
             layer4,
+            layer5: MlEngine::new(),
+            behavioral: BehavioralEngine::new(),
             yara: YaraEngine::new(),
         }
     }
@@ -81,6 +89,8 @@ impl DetectionEngine {
             layer2,
             layer3,
             layer4,
+            layer5: MlEngine::new(),
+            behavioral: BehavioralEngine::new(),
             yara,
         }
     }
@@ -91,6 +101,8 @@ impl DetectionEngine {
             layer2: TemporalEngine::with_default_rules(),
             layer3: AnomalyEngine::default(),
             layer4: Layer4Engine::with_default_templates(),
+            layer5: MlEngine::new(),
+            behavioral: BehavioralEngine::new(),
             yara: YaraEngine::new(),
         }
     }
@@ -142,22 +154,50 @@ impl DetectionEngine {
     }
 
     pub fn process_event(&mut self, event: &TelemetryEvent) -> DetectionOutcome {
+        // ── Layer 1: IOC/signature matching ─────────────────────
         let layer1 = self.layer1.check_event(event);
         let yara_hits = self.yara.scan_event(event);
+
+        // ── Layer 2: Temporal pattern correlation ───────────────
         let temporal_hits = self.layer2.observe(event);
+
+        // ── Layer 3: Statistical anomaly (KL-divergence) ────────
         let anomaly = self.layer3.observe(event);
+
+        // ── Layer 4: Kill chain graph matching ──────────────────
         let kill_chain_hits = self.layer4.observe(event);
 
+        // ── Behavioral engine: CUSUM + entropy + spectral ───────
+        let behavioral_alarms = self.behavioral.observe(event);
+
+        let behavioral_high = behavioral_alarms.iter().any(|a| a.gated && a.magnitude > 2.0);
+        let behavioral_med = behavioral_alarms.iter().any(|a| a.gated && a.magnitude > 1.0);
         let signals = DetectionSignals {
             z1_exact_ioc: layer1.result == Layer1Result::ExactMatch || !yara_hits.is_empty(),
             z2_temporal: !temporal_hits.is_empty(),
-            z3_anomaly_high: anomaly.as_ref().map(|a| a.high).unwrap_or(false),
-            z3_anomaly_med: anomaly.as_ref().map(|a| a.medium).unwrap_or(false),
+            z3_anomaly_high: anomaly.as_ref().map(|a| a.high).unwrap_or(false) || behavioral_high,
+            z3_anomaly_med: anomaly.as_ref().map(|a| a.medium).unwrap_or(false) || behavioral_med,
             z4_kill_chain: !kill_chain_hits.is_empty(),
             l1_prefilter_hit: layer1.prefilter_hit,
         };
 
-        let confidence = confidence_policy(&signals);
+        // ── Layer 5: ML meta-scoring ────────────────────────────
+        // Combines all signals + event metadata + information theory
+        let features = MlFeatures::extract(
+            event,
+            &signals,
+            temporal_hits.len(),
+            kill_chain_hits.len(),
+            yara_hits.len(),
+            layer1.matched_signatures.len(),
+        );
+        let ml_result = self.layer5.score(&features);
+
+        // ── Confidence aggregation ──────────────────────────────
+        // Deterministic confidence from L1–L4, then ML can escalate
+        let base_confidence = confidence_policy(&signals);
+        let confidence = ml_enhanced_confidence(base_confidence, &ml_result);
+
         DetectionOutcome {
             confidence,
             signals,
@@ -166,7 +206,25 @@ impl DetectionEngine {
             yara_hits,
             anomaly,
             layer1,
+            ml_score: Some(ml_result),
+            behavioral_alarms,
         }
+    }
+}
+
+/// ML can escalate confidence but never downgrade deterministic decisions.
+/// This keeps CrowdStrike-style "ML overrules everything" from causing FPs
+/// while letting ML catch things the rule layers miss.
+fn ml_enhanced_confidence(base: Confidence, ml: &MlScore) -> Confidence {
+    match base {
+        // Deterministic decisions are authoritative — ML cannot override
+        Confidence::Definite | Confidence::VeryHigh => base,
+        // ML can escalate from None/Low/Medium to Medium/High
+        Confidence::None if ml.positive && ml.score >= 0.85 => Confidence::Medium,
+        Confidence::Low if ml.positive && ml.score >= 0.80 => Confidence::Medium,
+        Confidence::Medium if ml.positive && ml.score >= 0.90 => Confidence::High,
+        Confidence::High if ml.positive && ml.score >= 0.95 => Confidence::VeryHigh,
+        _ => base,
     }
 }
 

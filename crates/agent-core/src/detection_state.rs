@@ -11,6 +11,11 @@ enum ShardCommand {
         event: TelemetryEvent,
         response: mpsc::Sender<std::result::Result<DetectionOutcome, String>>,
     },
+    ScanProcessMemory {
+        pid: u32,
+        mode: detection::memory_scanner::ScanMode,
+        response: mpsc::Sender<std::result::Result<detection::memory_scanner::MemoryScanResult, String>>,
+    },
     ApplyEmergencyRule {
         rule_type: EmergencyRuleType,
         rule_content: String,
@@ -110,6 +115,25 @@ impl DetectionShard {
             .map_err(|_| anyhow!("detection shard response channel closed"))?
             .map_err(|err| anyhow!(err))
     }
+
+    fn scan_process_memory(
+        &self,
+        pid: u32,
+        mode: detection::memory_scanner::ScanMode,
+    ) -> Result<detection::memory_scanner::MemoryScanResult> {
+        let (response_tx, response_rx) = mpsc::channel();
+        self.tx
+            .send(ShardCommand::ScanProcessMemory {
+                pid,
+                mode,
+                response: response_tx,
+            })
+            .map_err(|_| anyhow!("detection shard channel closed"))?;
+        response_rx
+            .recv()
+            .map_err(|_| anyhow!("detection shard response channel closed"))?
+            .map_err(|err| anyhow!(err))
+    }
 }
 
 fn shard_worker_loop(mut engine: DetectionEngine, rx: mpsc::Receiver<ShardCommand>) {
@@ -118,6 +142,10 @@ fn shard_worker_loop(mut engine: DetectionEngine, rx: mpsc::Receiver<ShardComman
             ShardCommand::ProcessEvent { event, response } => {
                 let outcome = engine.process_event(&event);
                 let _ = response.send(Ok(outcome));
+            }
+            ShardCommand::ScanProcessMemory { pid, mode, response } => {
+                let result = detection::memory_scanner::scan_process_memory(&engine.yara, pid, mode);
+                let _ = response.send(Ok(result));
             }
             ShardCommand::ApplyEmergencyRule {
                 rule_type,
@@ -229,6 +257,15 @@ impl SharedDetectionState {
         self.inner.shards[idx].process_event(event.clone())
     }
 
+    pub fn scan_process_memory(
+        &self,
+        pid: u32,
+        mode: detection::memory_scanner::ScanMode,
+    ) -> Result<detection::memory_scanner::MemoryScanResult> {
+        let idx = (pid as usize) % self.inner.shards.len();
+        self.inner.shards[idx].scan_process_memory(pid, mode)
+    }
+
     pub fn swap_engine(&self, version: String, next: DetectionEngine) -> Result<()> {
         self.swap_engine_with_builder(version, next, DetectionEngine::default_with_rules)
     }
@@ -316,7 +353,7 @@ impl SharedDetectionState {
     }
 
     fn shard_index_for_event(&self, event: &TelemetryEvent) -> usize {
-        event.pid as usize % self.inner.shards.len()
+        event.session_id as usize % self.inner.shards.len()
     }
 }
 

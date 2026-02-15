@@ -209,6 +209,10 @@ Derived from `docs/eguard-agent-design.md`. These acceptance criteria define the
 - **AC-DET-183**: Detection MUST operate at full capability in offline mode.
 - **AC-DET-184**: System MUST be event-driven and sleep when idle.
 - **AC-DET-185**: All detection algorithms MUST be lightweight online: O(1) or O(k) per event/window.
+- **AC-DET-190**: Ransomware burst detection MUST flag a process that performs >= 25 write-intent file opens to user-data paths within 20 seconds (defaults; configurable).
+- **AC-DET-191**: Ransomware burst detection MUST ignore write-intent opens confined to system or temporary paths (e.g., /tmp, /proc, /Windows, /Program Files, /Library) unless explicitly overridden by policy.
+- **AC-DET-192**: Ransomware burst detection MUST support an adaptive threshold based on per-process baseline write rates, using concentration bounds (Hoeffding/Bernstein) with configurable delta, minimum samples, and minimum floor.
+- **AC-DET-193**: Ransomware burst detection MUST learn non-default user-data roots by observing repeated write-intent paths, promoting roots after a configurable minimum hit count up to a bounded maximum.
 
 ---
 
@@ -472,15 +476,18 @@ Derived from `docs/eguard-agent-design.md`. These acceptance criteria define the
 
 ### eBPF Programs
 
-- **AC-EBP-001**: Agent MUST load exactly 5 eBPF programs: `process_exec.zig`, `file_open.zig`, `tcp_connect.zig`, `dns_query.zig`, `module_load.zig`. Compiled by Zig to BPF ELF, embedded via `include_bytes!()`, loaded via `libbpf-rs`.
-- **AC-EBP-002**: `process_exec.zig`: attach to `tracepoint/sched/sched_process_exec`, collect pid/ppid/uid/comm/filename/argv(256B)/cgroup_id. Event ~512 bytes.
-- **AC-EBP-003**: `file_open.zig`: attach to `lsm/file_open` or `kprobe/security_file_open`, collect pid/path(256B)/flags/mode. Event ~384 bytes.
-- **AC-EBP-004**: `tcp_connect.zig`: attach to `kprobe/tcp_v4_connect` + `kretprobe/tcp_v4_connect`, collect pid/saddr/daddr/sport/dport/protocol. Event ~64 bytes.
-- **AC-EBP-005**: `tcp_connect.zig` MUST only emit events for NEW connections (not keepalives/retransmits).
-- **AC-EBP-006**: `dns_query.zig`: attach to `kprobe/udp_sendmsg` with port 53 filter, collect pid/qname(128B)/qtype. Event ~256 bytes.
-- **AC-EBP-007**: `module_load.zig`: attach to `kprobe/__do_sys_finit_module`, collect pid/module_name(64B). Event ~128 bytes.
-- **AC-EBP-008**: `file_open.zig` MUST only emit for executable files or monitored directories (kernel-side filtering).
+- **AC-EBP-001**: Agent MUST load exactly 8 eBPF programs: `process_exec.c`, `file_open.c`, `file_write.c`, `file_rename.c`, `file_unlink.c`, `tcp_connect.c`, `dns_query.c`, `module_load.c`. Compiled by Zig to BPF ELF, loaded via `libbpf-rs`.
+- **AC-EBP-002**: `process_exec.c`: attach to `tracepoint/sched/sched_process_exec`, collect pid/ppid/uid/comm/filename/argv(256B)/cgroup_id. Event ~512 bytes.
+- **AC-EBP-003**: `file_open.c`: attach to `tracepoint/syscalls/sys_enter_openat`, collect pid/path(256B)/flags/mode. Event ~384 bytes.
+- **AC-EBP-004**: `tcp_connect.c`: attach to `tracepoint/sock/inet_sock_set_state`, collect pid/saddr/daddr/sport/dport/protocol. Event ~64 bytes.
+- **AC-EBP-005**: `tcp_connect.c` MUST only emit events for NEW connections (not keepalives/retransmits).
+- **AC-EBP-006**: `dns_query.c`: attach to `kprobe/udp_sendmsg` with port 53 filter, collect pid/qname(128B)/qtype. Event ~256 bytes.
+- **AC-EBP-007**: `module_load.c`: attach to `kprobe/__do_sys_finit_module`, collect pid/module_name(64B). Event ~128 bytes.
+- **AC-EBP-008**: `file_open.c` MUST only emit for executable files or monitored directories (kernel-side filtering).
 - **AC-EBP-009**: All 5 programs MUST pass kernel BPF verifier on kernel 5.10+.
+- **AC-EBP-190**: `file_write.c`: attach to `tracepoint/syscalls/sys_enter_write`, collect pid/fd/size/path(256B). Event includes `size` for telemetry `event_size`.
+- **AC-EBP-191**: `file_rename.c`: attach to `tracepoint/syscalls/sys_enter_renameat2`, collect pid/src_path(256B)/dst_path(256B).
+- **AC-EBP-192**: `file_unlink.c`: attach to `tracepoint/syscalls/sys_enter_unlinkat`, collect pid/path(256B).
 
 ### Ring Buffer
 

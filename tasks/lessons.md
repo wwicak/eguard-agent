@@ -1,27 +1,132 @@
-# Lessons
+# Lessons Learned
 
-## 2026-02-13
-- When the user asks to use multiple sub-agents, start parallel sub-agent execution immediately for independent workstreams (analysis + implementation) instead of doing sequential local-only work.
-- For sandbox-sensitive test work, assign one sub-agent to implementation and one to coverage-gap analysis, then integrate both outcomes in the main branch.
-- When the user corrects repository/doc location, immediately switch all discovery and planning references to the corrected path (e.g., `fe_eguard/docs/eguard-agent-design.md`) before continuing analysis.
-- When the user explicitly asks for full-batch implementation ("implement all of it"), avoid single-slice pacing: convert all remaining TODO items into one execution batch plan and deliver them in the same pass with full verification.
+## Struct Field Changes Cascade
+When adding fields to a widely-used struct (like `EventEnvelope`), search the
+entire workspace for every constructor site. Use `rg 'StructName {' --glob '*.rs'`
+and fix ALL of them before attempting to compile.
 
-## 2026-02-14
-- When the user prioritizes outcome quality over footprint, remove hard binary-size gates in CI/harnesses and keep binary size as an observed metric rather than a release-blocking threshold.
-- When the user says to keep polishing after an initial CI gate implementation, add layered guardrails in the same pass (collector-level minimums, bundle-level minimums, freshness checks, and regression checks) instead of stopping at absolute count thresholds.
-- When Rust toolchain commands fail in this environment, source cargo env first (`source $HOME/.cargo/env`) before rerunning `cargo` commands so validation can proceed without user interruption.
-- When warnings appear only in Miri due to test-module gating, prefer precise `cfg(all(test, not(miri)))` scoping over `allow(dead_code)` so real dead code still fails loudly.
-- For long-running CI-style scripts, run them in tracked background mode (`current-run.pid` + `current-run.logpath` + `current-run.exit`) and report incremental log progress instead of waiting silently.
-- For verification parity with workflow security posture, include bundle-signature contract checks (build fixture bundle, sign, verify, and tamper rejection) in the runnable verification suite rather than only in release workflows.
-- When a Rust test consumes artifact paths from env vars, pass absolute paths from CI/shell scripts (`${GITHUB_WORKSPACE}` or repo-root absolute) because unit-test working directories can resolve relative paths against crate roots.
-- When the user emphasizes bundle↔agent integration, enforce a CI contract that tests agent ingestion against the freshly produced signed bundle artifact (path + pubkey wiring), not only standalone bundle validation.
-- When upgrading to `tonic` 0.14, migrate build scripts from `tonic-build::configure()` to `tonic_prost_build::configure()`, add `tonic-prost` runtime dependency for generated codecs, and align any standalone fuzz/proto crates to the same `prost` major to avoid trait-version mismatch.
+## Enum Ordering Matters for Derive
+When adding `PartialOrd`/`Ord` to enums, the discriminant order determines the
+comparison. List variants from lowest to highest (None, Low, Medium, High, VeryHigh,
+Definite) to get natural ordering. Custom `Ord` impl is safer when semantics differ.
 
-## 2026-02-15
-- When the user asks for a broad repo health scan (especially with many edits), report both file-level churn (`git status`/`diff --stat`) and markdown/contract state together so implementation and planning drift are visible in one snapshot.
-- After AC document edits, always regenerate acceptance generated artifacts before claiming green; otherwise `generated_id_list_matches_acceptance_document` can fail despite most tests passing.
-- On hosts without `x86_64-linux-musl-gcc`, musl package builds can be recovered by using Zig wrappers for cc-rs/ring compilation and rust-lld for final musl linking; using Zig as both compiler and linker can trigger duplicate CRT symbol failures.
-- Zig-produced static archives may contain nested member paths (e.g., `.zig-cache/.../*.o`); package-stage archive extraction must create member directories before `ar x` and repack objects recursively, otherwise asm bundles can silently collapse to zero-byte archives.
-- When workflows/scripts rely on newly added files (fuzz harnesses, CI helper scripts, threat-intel gates), ensure those files are staged/tracked explicitly; leaving them untracked can create false-local-green runs that fail in CI/release branches.
-- When the user delegates ML work to another agent, keep implementation scope strictly on endpoint runtime/detection/response hardening and avoid spending cycles on ML-readiness pipeline changes unless explicitly asked.
-- When the user explicitly rejects a "fastest path" and asks for "battle ready" execution, implement the full reliability stack in one pass (data quality, feature integrity, offline eval, registry provenance, workflow contracts, and verification artifacts) instead of proposing phased shortcuts.
+## Compression Ratio on Short Strings
+LZ77-style compression gives ratio > 1.0 for very short strings (overhead > savings).
+Gate information-theoretic analysis behind minimum length (≥20 bytes) to avoid
+false signals.
+
+## CUSUM False Alarms During Warmup
+CUSUM detectors need a stabilization period. Don't feed behavioral CUSUM alarms
+directly into anomaly signals without a magnitude threshold. Use `magnitude > 1.0`
+for medium anomaly and `magnitude > 2.0` for high to avoid warmup FPs.
+
+## Test Data Must Match IOC Database
+Benchmark tests creating malicious events must seed the detection engine with
+matching IOCs. `default_with_rules()` has minimal seed IOCs — use `load_ips()`,
+`load_domains()`, `load_string_signatures()` in test setup.
+
+## ts_unix is i64, not u64
+The TelemetryEvent timestamp field is `i64` (signed). Always check field types
+in the source struct before using them in new code.
+
+## ML Should Only Escalate, Not Override
+ML confidence should never downgrade deterministic decisions (IOC matches,
+temporal rules). Design: `ml_enhanced_confidence(base, ml_score)` can only
+move None→Medium, Low→Medium, Medium→High, High→VeryHigh when ML agrees
+with high confidence. Never touches Definite/VeryHigh.
+
+## Don't Plant IOCs In Benchmarks
+Seeding the detection engine with the same IPs/domains used in test events
+is circular testing — proves nothing except string matching works. Honest
+benchmarks use `default_with_rules()` with zero planted IOCs and let the
+engine detect through structural signals (entropy, port risk, uid=0, etc).
+
+## CI Model Format ≠ Runtime Model Format
+The Python training pipeline (`signature_ml_train_model.py`) outputs
+`weights: {name: float}` + `feature_scales: {name: float}` (dict format).
+The Rust runtime uses `weights: [float]` (positional array). Added
+`CiTrainedModel` struct + `from_json_auto()` to bridge the two formats
+in `layer5.rs`. Also wired `load_ml_model()` into `rule_bundle_loader.rs`.
+
+## EICAR Test File and Shell Echo
+`echo` adds a trailing newline which changes the SHA-256 hash.
+Use `printf` instead: `printf 'X5O!P%%@AP[4\\PZX54(P^)7CC)7}$EICAR-...'`
+
+## VM Test With 9p Virtfs
+QEMU 9p virtfs shares require `security_model=mapped-xattr` and the VM
+must `mount -t 9p -o trans=virtio <tag> /mnt/<dir>`. Works well for
+injecting agent binaries without modifying the base image.
+
+## Layer 1 String Signature Result Must Be Set
+**CRITICAL BUG FIXED**: `check_event()` in `layer1.rs` called `check_text()`
+for `command_line` and `file_path` but only stored matches in
+`matched_signatures` — it never set `hit.result = Layer1Result::ExactMatch`.
+This meant `z1_exact_ioc` was false for ALL string signature matches.
+Only hash/IP/domain matches were setting the result via `apply_result()`.
+**Impact**: 0% → 80.8% TPR on 26 replay events after fix.
+**Rule**: When adding new match paths in `check_event()`, always verify
+the `result` field is upgraded, not just the match lists.
+
+## Mock Server Flags
+The Go mock `eg-agent-server` uses `-listen` (not `--listen-addr`), no
+`-data-dir` or `--enrollment-token` flags. Check `--help` before scripting.
+
+## Agent Logs Go To Stdout
+The agent's tracing subscriber writes to stdout by default, not stderr.
+Redirect stdout when capturing agent logs: `> log 2>&1`
+
+## process_exe Fallback for Replay Events
+For ProcessExec events, `process_exe` comes from `/proc/<pid>/exe` via
+the enrichment cache. For replay PIDs that don't exist, this is `None`,
+making `detection_event.process = "unknown"`. Fix: fall back to
+`payload_meta.file_path` (which contains the executable path from
+the binary payload's `path=` field) when `entry.process_exe` is None.
+
+## Baseline Learning Disables Autonomous Response
+`effective_response_config()` sets `autonomous_response = false` when
+`baseline_store.status == Learning`. This means `plan_action()` always
+returns `AlertOnly` during the learning phase. Detection still fires
+(z1=true, confidence=Definite) but no kill/quarantine happens.
+This is correct CrowdStrike-style behavior — learn first, enforce later.
+
+## Heredoc $$ In VM Scripts
+When generating VM scripts with nested heredocs, `$$` inside single-quoted
+heredoc (`<< 'TAG'`) is literal and NOT expanded by bash. However, the
+JSON parser in the agent sees `$$` as invalid JSON (not a number).
+Use fixed PIDs (1001, 1002, etc.) instead.
+
+## grep -c Returns Exit Code 1 When Count Is 0
+`grep -c 'pattern' file || echo 0` produces "0\n0" because grep exits 1
+when no matches. Use: `VAL=$(grep -c ... 2>/dev/null) || VAL=0`
+
+## Cargo Env Not Loaded
+If `cargo` is missing, source `"$HOME/.cargo/env"` before rerunning tests.
+
+## Warn Before Ignoring Legitimate Request
+When a user asks to "beat" a competitor, respond with scope-safe language
+focused on defensive quality improvements. Don't interpret it as evasion or
+offensive bypass. Keep guidance on reliability, accuracy, and safety.
+
+## Bundle Loading Was Not Wired Into Agent Startup
+The `load_bundle_full()` and `load_bundle_rules()` functions existed in
+`rule_bundle_loader.rs` but were NEVER called from `AgentRuntime::new()`.
+The agent only used `build_detection_engine()` which loads hardcoded rules
+from `detection_bootstrap.rs`. Fix: Added `detection_bundle_path` config
+field + `EGUARD_BUNDLE_PATH` env var, and wired `load_bundle_full()` into
+the shard builder closure in `new()`.
+
+## ML Model Path in Bundle vs Runtime
+CI `build_bundle.py` puts the ML model at `bundle/signature-ml-model.json`.
+Agent `load_ml_model()` looked for `bundle_dir/signature-ml-model.json`.
+When using separate dirs (rules/ml/), the model wasn't found. Fix: Added
+fallback paths `ml/signature-ml-model.json` and `models/signature-ml-model.json`.
+
+## Rust Borrow Checker — Self + Field Mut Borrow
+`self.push_baseline(&mut self.info_entropy_baseline, value)` fails because
+it borrows `self` mutably twice. Fix: Extract `push_baseline()` as a free
+    function that takes `&mut VecDeque<f64>` instead of `&mut self`.
+
+## Cross-Platform Path Heuristics
+Detection logic must not hardcode Linux-only paths like `/home/`. Use
+cross-platform path heuristics (Linux, macOS, Windows) and explicit
+system/temp exclusions when gating file activity.

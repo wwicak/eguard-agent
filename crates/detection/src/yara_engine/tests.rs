@@ -24,12 +24,15 @@ rule test_rule {
         uid: 0,
         process: "bash".to_string(),
         parent_process: "sshd".to_string(),
+        session_id: 0,
         file_path: None,
+        file_write: false,
         file_hash: None,
         dst_port: None,
         dst_ip: None,
         dst_domain: None,
         command_line: Some("echo evil_payload".to_string()),
+        event_size: None,
     };
 
     let hits = engine.scan_event(&event);
@@ -75,12 +78,15 @@ rule sample_from_dir {
         uid: 0,
         process: "cat".to_string(),
         parent_process: "bash".to_string(),
+        session_id: 0,
         file_path: Some(path.to_string_lossy().into_owned()),
+        file_write: false,
         file_hash: None,
         dst_port: None,
         dst_ip: None,
         dst_domain: None,
         command_line: None,
+        event_size: None,
     };
 
     let sample = base.join("payload.bin");

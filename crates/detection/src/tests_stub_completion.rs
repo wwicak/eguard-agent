@@ -15,12 +15,15 @@ fn event(ts: i64, class: EventClass) -> TelemetryEvent {
         uid: 1000,
         process: "bash".to_string(),
         parent_process: "sshd".to_string(),
+        session_id: 1,
         file_path: None,
+        file_write: false,
         file_hash: None,
         dst_port: Some(9001),
         dst_ip: None,
         dst_domain: None,
         command_line: None,
+        event_size: None,
     }
 }
 

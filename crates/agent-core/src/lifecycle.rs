@@ -13,7 +13,15 @@ use tracing::{info, warn};
 
 use baseline::{BaselineStatus, BaselineStore, BaselineTransition, ProcessKey};
 use compliance::{evaluate, evaluate_linux, parse_policy_json, CompliancePolicy, ComplianceResult};
-use detection::{Confidence, DetectionEngine, DetectionOutcome, EventClass, TelemetryEvent};
+use detection::{
+    Confidence,
+    DetectionEngine,
+    DetectionOutcome,
+    EventClass,
+    RansomwarePolicy,
+    TelemetryEvent,
+};
+use detection::memory_scanner::{find_suspicious_pids, MemoryScanResult, ScanMode};
 #[cfg(test)]
 use grpc_client::PolicyEnvelope;
 use grpc_client::{
@@ -272,6 +280,7 @@ pub struct AgentRuntime {
     last_threat_intel_refresh_unix: Option<i64>,
     last_baseline_save_unix: Option<i64>,
     last_recovery_probe_unix: Option<i64>,
+    last_memory_scan_unix: Option<i64>,
     tamper_forced_degraded: bool,
     enrolled: bool,
     latest_threat_version: Option<String>,
@@ -295,11 +304,22 @@ pub struct AgentRuntime {
 impl AgentRuntime {
     pub fn new(config: AgentConfig) -> Result<Self> {
         let detection_shards = resolve_detection_shard_count();
+        let bundle_path = config.detection_bundle_path.clone();
+        let ransomware_policy = build_ransomware_policy(&config);
+        let shard_builder = move || {
+            let mut engine = detection_bootstrap::build_detection_engine_with_ransomware_policy(
+                ransomware_policy.clone(),
+            );
+            if !bundle_path.is_empty() {
+                load_bundle_full(&mut engine, &bundle_path);
+            }
+            engine
+        };
         let detection_state = SharedDetectionState::new_with_shards(
-            build_detection_engine(),
+            shard_builder(),
             None,
             detection_shards,
-            build_detection_engine,
+            shard_builder,
         );
         info!(detection_shards, "initialized detection shard pool");
         let baseline_store = load_baseline_store()?;
@@ -397,6 +417,7 @@ impl AgentRuntime {
             last_threat_intel_refresh_unix: None,
             last_baseline_save_unix: None,
             last_recovery_probe_unix: None,
+            last_memory_scan_unix: None,
             tamper_forced_degraded: false,
             enrolled: false,
             latest_threat_version: None,
@@ -566,6 +587,7 @@ impl AgentRuntime {
         let enriched = enrich_event_with_cache(raw, &mut self.enrichment_cache);
 
         let detection_event = to_detection_event(&enriched, now_unix);
+
         self.observe_baseline(&detection_event, now_unix);
 
         let detection_outcome = self.detection_state.process_event(&detection_event)?;
@@ -577,7 +599,20 @@ impl AgentRuntime {
         let posture = posture_from_compliance(&compliance.status);
         self.log_posture(posture);
 
-        let event_envelope = self.build_event_envelope(enriched.process_exe.as_deref(), now_unix);
+        let mut event_envelope = self.build_event_envelope(enriched.process_exe.as_deref(), now_unix);
+
+        // Enrich envelope with detection results
+        event_envelope.event_type = detection_event.event_class.as_str().to_string();
+        event_envelope.severity = confidence_to_severity(confidence).to_string();
+        if !detection_outcome.temporal_hits.is_empty() {
+            event_envelope.rule_name = detection_outcome.temporal_hits[0].clone();
+        } else if !detection_outcome.kill_chain_hits.is_empty() {
+            event_envelope.rule_name = detection_outcome.kill_chain_hits[0].clone();
+        } else if !detection_outcome.yara_hits.is_empty() {
+            event_envelope.rule_name = detection_outcome.yara_hits[0].rule_name.clone();
+        } else if !detection_outcome.layer1.matched_signatures.is_empty() {
+            event_envelope.rule_name = format!("ioc_sig:{}", detection_outcome.layer1.matched_signatures[0]);
+        }
 
         Ok(Some(TickEvaluation {
             detection_event,
@@ -689,6 +724,8 @@ impl AgentRuntime {
         let alert = EventEnvelope {
             agent_id: self.config.agent_id.clone(),
             event_type: "alert".to_string(),
+            severity: "critical".to_string(),
+            rule_name: "agent_tamper".to_string(),
             payload_json: self.self_protect_alert_payload(report, now_unix),
             created_at_unix: now_unix,
         };
@@ -774,10 +811,110 @@ impl AgentRuntime {
             .await?;
         self.run_connected_response_stage(now_unix, evaluation)
             .await;
+        self.run_memory_scan_if_due(now_unix);
         self.drive_async_workers();
 
         self.metrics.last_connected_tick_micros = elapsed_micros(connected_started);
         Ok(())
+    }
+
+    fn run_memory_scan_if_due(&mut self, now_unix: i64) {
+        if !self.config.detection_memory_scan_enabled {
+            return;
+        }
+        if !interval_due(
+            self.last_memory_scan_unix,
+            now_unix,
+            self.config.detection_memory_scan_interval_secs as i64,
+        ) {
+            return;
+        }
+        self.last_memory_scan_unix = Some(now_unix);
+
+        let mode = match self.config.detection_memory_scan_mode.as_str() {
+            "all" => ScanMode::AllReadable,
+            "exec+anon" => ScanMode::ExecutableAndAnonymous,
+            _ => ScanMode::ExecutableOnly,
+        };
+
+        let mut pids = match find_suspicious_pids() {
+            Ok(list) => list,
+            Err(err) => {
+                warn!(error = %err, "memory scan failed to enumerate pids");
+                return;
+            }
+        };
+
+        if pids.len() > self.config.detection_memory_scan_max_pids {
+            pids.truncate(self.config.detection_memory_scan_max_pids);
+        }
+
+        let detections = self.scan_memory_pids(&pids, mode);
+        for detection in detections {
+            self.handle_memory_scan_detection(&detection, now_unix);
+        }
+    }
+
+    fn scan_memory_pids(&self, pids: &[u32], mode: ScanMode) -> Vec<MemoryScanResult> {
+        let mut results = Vec::new();
+        for pid in pids {
+            match self.detection_state.scan_process_memory(*pid, mode) {
+                Ok(res) => {
+                    if !res.hits.is_empty() {
+                        results.push(res);
+                    }
+                }
+                Err(err) => {
+                    warn!(pid = *pid, error = %err, "memory scan failed on shard");
+                }
+            }
+        }
+        results
+    }
+
+    fn handle_memory_scan_detection(&mut self, detection: &MemoryScanResult, now_unix: i64) {
+        let mut notes = Vec::new();
+        notes.push(format!("memory_hits={}", detection.hits.len()));
+        notes.push(format!("bytes_scanned={}", detection.bytes_scanned));
+        if let Some(first) = detection.hits.first() {
+            notes.push(format!("rule_name={}", first.rule_name));
+            notes.push(format!("region_perms={}", first.region_perms));
+        }
+        if !detection.errors.is_empty() {
+            notes.push(format!("scan_errors={}", detection.errors.len()));
+        }
+
+        let event = TelemetryEvent {
+            ts_unix: now_unix,
+            event_class: EventClass::Alert,
+            pid: detection.pid,
+            ppid: 0,
+            uid: 0,
+            process: "memory_scan".to_string(),
+            parent_process: String::new(),
+            session_id: detection.pid,
+            file_path: None,
+            file_write: false,
+            file_hash: None,
+            dst_port: None,
+            dst_ip: None,
+            dst_domain: None,
+            command_line: Some(notes.join(";")),
+            event_size: Some(detection.bytes_scanned as u64),
+        };
+
+        let detection_outcome = match self.detection_state.process_event(&event) {
+            Ok(outcome) => outcome,
+            Err(err) => {
+                warn!(error = %err, "memory scan event processing failed");
+                return;
+            }
+        };
+
+        let confidence = detection_outcome.confidence.max(Confidence::VeryHigh);
+        let response_cfg = self.effective_response_config();
+        let action = plan_action(confidence, &response_cfg);
+        let _ = self.report_local_action_if_needed(action, confidence, &event, now_unix);
     }
 
     async fn ensure_enrolled(&mut self) {
@@ -961,6 +1098,8 @@ impl AgentRuntime {
         EventEnvelope {
             agent_id: self.config.agent_id.clone(),
             event_type: "process_exec".to_string(),
+            severity: "info".to_string(),
+            rule_name: String::new(),
             payload_json: format!("{{\"exe\":\"{}\"}}", process_exe.unwrap_or_default()),
             created_at_unix: now_unix,
         }
@@ -1361,9 +1500,18 @@ fn load_baseline_store() -> Result<BaselineStore> {
         .unwrap_or(default_path);
     let path = PathBuf::from(configured_path);
 
+    let skip_learning = std::env::var("EGUARD_BASELINE_SKIP_LEARNING")
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+
     match BaselineStore::load_or_new(path.clone()) {
         Ok(mut store) => {
             seed_default_baselines_if_needed(&mut store, &path);
+            if skip_learning && matches!(store.status, baseline::BaselineStatus::Learning) {
+                store.status = baseline::BaselineStatus::Active;
+                info!("baseline learning skipped via EGUARD_BASELINE_SKIP_LEARNING");
+            }
             Ok(store)
         }
         Err(err) => {
@@ -1538,6 +1686,17 @@ fn confidence_label(c: Confidence) -> String {
     format!("{:?}", c).to_ascii_lowercase()
 }
 
+fn confidence_to_severity(c: Confidence) -> &'static str {
+    match c {
+        Confidence::Definite => "critical",
+        Confidence::VeryHigh => "high",
+        Confidence::High => "high",
+        Confidence::Medium => "medium",
+        Confidence::Low => "low",
+        Confidence::None => "info",
+    }
+}
+
 fn to_detection_event(enriched: &platform_linux::EnrichedEvent, now_unix: i64) -> TelemetryEvent {
     let process = enriched
         .process_exe
@@ -1545,6 +1704,12 @@ fn to_detection_event(enriched: &platform_linux::EnrichedEvent, now_unix: i64) -
         .and_then(|p| p.rsplit('/').next())
         .unwrap_or("unknown")
         .to_string();
+
+    let session_id = enriched
+        .parent_chain
+        .last()
+        .copied()
+        .unwrap_or(enriched.event.pid);
 
     TelemetryEvent {
         ts_unix: now_unix,
@@ -1557,10 +1722,12 @@ fn to_detection_event(enriched: &platform_linux::EnrichedEvent, now_unix: i64) -
             .parent_process
             .clone()
             .unwrap_or_else(|| "unknown".to_string()),
+        session_id,
         file_path: enriched
             .file_path
             .clone()
             .or_else(|| enriched.process_exe.clone()),
+        file_write: enriched.file_write,
         file_hash: enriched
             .file_sha256
             .clone()
@@ -1569,6 +1736,7 @@ fn to_detection_event(enriched: &platform_linux::EnrichedEvent, now_unix: i64) -
         dst_ip: enriched.dst_ip.clone(),
         dst_domain: enriched.dst_domain.clone(),
         command_line: enriched.process_cmdline.clone(),
+        event_size: enriched.event_size,
     }
 }
 
@@ -1577,6 +1745,9 @@ fn map_event_class(event_type: &platform_linux::EventType) -> EventClass {
         platform_linux::EventType::ProcessExec => EventClass::ProcessExec,
         platform_linux::EventType::ProcessExit => EventClass::ProcessExit,
         platform_linux::EventType::FileOpen => EventClass::FileOpen,
+        platform_linux::EventType::FileWrite => EventClass::FileOpen,
+        platform_linux::EventType::FileRename => EventClass::FileOpen,
+        platform_linux::EventType::FileUnlink => EventClass::FileOpen,
         platform_linux::EventType::TcpConnect => EventClass::NetworkConnect,
         platform_linux::EventType::DnsQuery => EventClass::DnsQuery,
         platform_linux::EventType::ModuleLoad => EventClass::ModuleLoad,
@@ -1622,8 +1793,25 @@ fn verify_bundle_signature_with_material(
     )
 }
 
-fn build_detection_engine() -> DetectionEngine {
-    detection_bootstrap::build_detection_engine()
+fn build_ransomware_policy(config: &AgentConfig) -> RansomwarePolicy {
+    let mut policy = RansomwarePolicy::default();
+    policy.write_threshold = config.detection_ransomware_write_threshold;
+    policy.write_window_secs = config.detection_ransomware_write_window_secs as i64;
+    policy.adaptive_delta = config.detection_ransomware_adaptive_delta;
+    policy.adaptive_min_samples = config.detection_ransomware_adaptive_min_samples;
+    policy.adaptive_floor = config.detection_ransomware_adaptive_floor;
+    policy.learned_root_min_hits = config.detection_ransomware_learned_root_min_hits;
+    policy.learned_root_max = config.detection_ransomware_learned_root_max;
+    if !config.detection_ransomware_user_path_prefixes.is_empty() {
+        policy.user_path_prefixes = config.detection_ransomware_user_path_prefixes.clone();
+    }
+    if !config.detection_ransomware_system_path_prefixes.is_empty() {
+        policy.system_path_prefixes = config.detection_ransomware_system_path_prefixes.clone();
+    }
+    if !config.detection_ransomware_temp_path_tokens.is_empty() {
+        policy.temp_path_tokens = config.detection_ransomware_temp_path_tokens.clone();
+    }
+    policy.sanitized()
 }
 
 #[cfg(test)]

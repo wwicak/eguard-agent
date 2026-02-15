@@ -86,6 +86,9 @@ fn payload_parser_fallbacks_for_dns_and_file_open() {
 
     let file = parse_payload_metadata(&EventType::FileOpen, "/tmp/dropper.sh");
     assert_eq!(file.file_path.as_deref(), Some("/tmp/dropper.sh"));
+
+    let unlink = parse_payload_metadata(&EventType::FileUnlink, "/tmp/old");
+    assert_eq!(unlink.file_path.as_deref(), Some("/tmp/old"));
 }
 
 #[test]

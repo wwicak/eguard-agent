@@ -116,6 +116,8 @@ async fn send_event_batch_attempts_delivery_on_each_call_without_flush_gates() {
         .send_event_batch(EventEnvelope {
             agent_id: "agent-test".to_string(),
             event_type: "process_exec".to_string(),
+            severity: String::new(),
+            rule_name: String::new(),
             payload_json: "{\"tick\":1}".to_string(),
             created_at_unix: 1_700_000_001,
         })
@@ -129,6 +131,8 @@ async fn send_event_batch_attempts_delivery_on_each_call_without_flush_gates() {
         .send_event_batch(EventEnvelope {
             agent_id: "agent-test".to_string(),
             event_type: "process_exec".to_string(),
+            severity: String::new(),
+            rule_name: String::new(),
             payload_json: "{\"tick\":2}".to_string(),
             created_at_unix: 1_700_000_002,
         })
@@ -142,6 +146,8 @@ async fn send_event_batch_attempts_delivery_on_each_call_without_flush_gates() {
         .send_event_batch(EventEnvelope {
             agent_id: "agent-test".to_string(),
             event_type: "process_exec".to_string(),
+            severity: String::new(),
+            rule_name: String::new(),
             payload_json: "{\"tick\":3}".to_string(),
             created_at_unix: 1_700_000_003,
         })
@@ -330,6 +336,8 @@ async fn send_event_batch_failures_rebuffer_events_and_trigger_degraded_mode() {
     let event = |ts| EventEnvelope {
         agent_id: "agent-test".to_string(),
         event_type: "process_exec".to_string(),
+        severity: String::new(),
+        rule_name: String::new(),
         payload_json: format!("{{\"ts\":{ts}}}"),
         created_at_unix: ts,
     };

@@ -25,6 +25,9 @@ pub enum EventType {
     ProcessExec,
     ProcessExit,
     FileOpen,
+    FileWrite,
+    FileRename,
+    FileUnlink,
     TcpConnect,
     DnsQuery,
     ModuleLoad,
@@ -49,7 +52,10 @@ pub struct EnrichedEvent {
     pub parent_process: Option<String>,
     pub parent_chain: Vec<u32>,
     pub file_path: Option<String>,
+    pub file_path_secondary: Option<String>,
+    pub file_write: bool,
     pub file_sha256: Option<String>,
+    pub event_size: Option<u64>,
     pub dst_ip: Option<String>,
     pub dst_port: Option<u16>,
     pub dst_domain: Option<String>,
@@ -222,8 +228,13 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
             process_cmdline: payload_meta.command_line_hint,
             parent_process: None,
             parent_chain: Vec::new(),
-            file_path: payload_meta.file_path,
+            file_path: payload_meta
+                .file_path
+                .or_else(|| payload_meta.file_path_secondary),
+            file_path_secondary: None,
+            file_write: payload_meta.file_write,
             file_sha256: None,
+            event_size: payload_meta.event_size,
             dst_ip: payload_meta.dst_ip,
             dst_port: payload_meta.dst_port,
             dst_domain: payload_meta.dst_domain,
@@ -244,6 +255,13 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
         .as_deref()
         .and_then(|path| cache.hash_for_path(path));
 
+    let file_sha256 = file_sha256.or_else(|| {
+        payload_meta
+            .file_path_secondary
+            .as_deref()
+            .and_then(|path| cache.hash_for_path(path))
+    });
+
     // Container detection: extract runtime and ID from cgroup
     let (container_runtime, container_id, container_escape) = {
         match container::detect_container(raw.pid) {
@@ -259,15 +277,32 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
         }
     };
 
+    // For process_exec events, fall back to the payload's executable path
+    // when /proc/<pid>/exe is unavailable (e.g., replay or short-lived PIDs).
+    let process_exe = entry
+        .process_exe
+        .or_else(|| {
+            if matches!(raw.event_type, EventType::ProcessExec) {
+                payload_meta.file_path.clone()
+            } else {
+                None
+            }
+        });
+
     EnrichedEvent {
         event: raw,
-        process_exe: entry.process_exe,
+        process_exe,
         process_exe_sha256,
         process_cmdline: entry.process_cmdline.or(payload_meta.command_line_hint),
         parent_process: entry.parent_process,
         parent_chain: entry.parent_chain,
-        file_path: payload_meta.file_path,
+        file_path: payload_meta
+            .file_path
+            .or_else(|| payload_meta.file_path_secondary),
+        file_path_secondary: None,
+        file_write: payload_meta.file_write,
         file_sha256,
+        event_size: payload_meta.event_size,
         dst_ip: payload_meta.dst_ip,
         dst_port: payload_meta.dst_port,
         dst_domain: payload_meta.dst_domain,
@@ -300,10 +335,13 @@ fn read_process_name(pid: u32) -> Option<String> {
 #[derive(Debug, Default)]
 struct PayloadMetadata {
     file_path: Option<String>,
+    file_path_secondary: Option<String>,
     command_line_hint: Option<String>,
     dst_ip: Option<String>,
     dst_port: Option<u16>,
     dst_domain: Option<String>,
+    file_write: bool,
+    event_size: Option<u64>,
 }
 
 fn parse_payload_metadata(event_type: &EventType, payload: &str) -> PayloadMetadata {
@@ -322,6 +360,11 @@ fn parse_payload_metadata(event_type: &EventType, payload: &str) -> PayloadMetad
             .get("path")
             .cloned()
             .or_else(|| fields.get("file").cloned()),
+        file_path_secondary: fields
+            .get("dst")
+            .cloned()
+            .or_else(|| fields.get("target").cloned())
+            .or_else(|| fields.get("new").cloned()),
         command_line_hint: fields
             .get("cmdline")
             .cloned()
@@ -340,6 +383,11 @@ fn parse_payload_metadata(event_type: &EventType, payload: &str) -> PayloadMetad
             .cloned()
             .or_else(|| fields.get("domain").cloned())
             .or_else(|| fields.get("qname").cloned()),
+        file_write: parse_file_write_flags(fields.get("flags"), fields.get("mode")),
+        event_size: fields
+            .get("size")
+            .or_else(|| fields.get("bytes"))
+            .and_then(|value| value.parse::<u64>().ok()),
     };
 
     if metadata.dst_ip.is_none() || metadata.dst_port.is_none() {
@@ -379,10 +427,64 @@ fn parse_kv_fields(payload: &str) -> HashMap<String, String> {
 
 fn parse_payload_fallback(event_type: &EventType, payload: &str) -> PayloadMetadata {
     match event_type {
-        EventType::FileOpen => PayloadMetadata {
-            file_path: Some(payload.to_string()),
-            ..PayloadMetadata::default()
-        },
+        EventType::FileOpen | EventType::FileWrite => {
+            let fields = parse_kv_fields(payload);
+            if fields.is_empty() {
+                return PayloadMetadata {
+                    file_path: Some(payload.to_string()),
+                    file_write: matches!(event_type, EventType::FileWrite),
+                    ..PayloadMetadata::default()
+                };
+            }
+            PayloadMetadata {
+                file_path: fields
+                    .get("path")
+                    .cloned()
+                    .or_else(|| fields.get("file").cloned()),
+                file_write: matches!(event_type, EventType::FileWrite)
+                    || parse_file_write_flags(fields.get("flags"), fields.get("mode")),
+                event_size: fields
+                    .get("size")
+                    .or_else(|| fields.get("bytes"))
+                    .and_then(|value| value.parse::<u64>().ok()),
+                ..PayloadMetadata::default()
+            }
+        }
+        EventType::FileRename => {
+            let fields = parse_kv_fields(payload);
+            if fields.is_empty() {
+                return PayloadMetadata::default();
+            }
+            PayloadMetadata {
+                file_path: fields
+                    .get("src")
+                    .cloned()
+                    .or_else(|| fields.get("old").cloned())
+                    .or_else(|| fields.get("path").cloned()),
+                file_path_secondary: fields
+                    .get("dst")
+                    .cloned()
+                    .or_else(|| fields.get("new").cloned())
+                    .or_else(|| fields.get("target").cloned()),
+                ..PayloadMetadata::default()
+            }
+        }
+        EventType::FileUnlink => {
+            let fields = parse_kv_fields(payload);
+            if fields.is_empty() {
+                return PayloadMetadata {
+                    file_path: Some(payload.to_string()),
+                    ..PayloadMetadata::default()
+                };
+            }
+            PayloadMetadata {
+                file_path: fields
+                    .get("path")
+                    .cloned()
+                    .or_else(|| fields.get("file").cloned()),
+                ..PayloadMetadata::default()
+            }
+        }
         EventType::DnsQuery => PayloadMetadata {
             dst_domain: Some(payload.to_string()),
             ..PayloadMetadata::default()
@@ -406,6 +508,26 @@ fn parse_payload_fallback(event_type: &EventType, payload: &str) -> PayloadMetad
             ..PayloadMetadata::default()
         },
     }
+}
+
+fn parse_file_write_flags(flags: Option<&String>, mode: Option<&String>) -> bool {
+    let flags_val = flags
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(0);
+    let mode_val = mode
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(0);
+
+    const O_WRONLY: u32 = 1;
+    const O_RDWR: u32 = 2;
+    const O_CREAT: u32 = 0x40;
+    const O_TRUNC: u32 = 0x200;
+
+    let write_intent = (flags_val & O_WRONLY) != 0 || (flags_val & O_RDWR) != 0;
+    let destructive = (flags_val & O_TRUNC) != 0 || (flags_val & O_CREAT) != 0;
+    let executable_bit = (mode_val & 0o111) != 0;
+
+    write_intent || destructive || executable_bit
 }
 
 fn parse_endpoint(raw: &str) -> (Option<String>, Option<u16>) {

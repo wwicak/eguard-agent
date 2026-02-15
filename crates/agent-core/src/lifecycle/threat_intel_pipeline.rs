@@ -15,8 +15,8 @@ use super::bundle_path::{
     is_remote_bundle_reference, resolve_rules_staging_root, staging_bundle_archive_path,
 };
 use super::{
-    build_detection_engine, interval_due, is_signed_bundle_archive, load_bundle_full, AgentRuntime,
-    ReloadReport, THREAT_INTEL_INTERVAL_SECS,
+    build_ransomware_policy, detection_bootstrap, interval_due, is_signed_bundle_archive,
+    load_bundle_full, AgentRuntime, ReloadReport, THREAT_INTEL_INTERVAL_SECS,
 };
 
 const THREAT_INTEL_REPLAY_FLOOR_FILENAME: &str = "threat-intel-replay-floor.v1.json";
@@ -223,7 +223,9 @@ impl AgentRuntime {
             .as_ref()
             .map(|report| report.sigma_rules + report.yara_rules + report.ioc_entries);
 
-        let mut next_engine = build_detection_engine();
+        let mut next_engine = detection_bootstrap::build_detection_engine_with_ransomware_policy(
+            build_ransomware_policy(&self.config),
+        );
         let summary = load_bundle_full(&mut next_engine, bundle_path);
         let ioc_entries = bundle_ioc_total(&summary);
         let signature_total = signature_database_total(&summary);
@@ -241,7 +243,9 @@ impl AgentRuntime {
             shard_engines.push(next_engine);
 
             for shard_idx in 1..shard_count {
-                let mut shard_engine = build_detection_engine();
+                let mut shard_engine = detection_bootstrap::build_detection_engine_with_ransomware_policy(
+                    build_ransomware_policy(&self.config),
+                );
                 let shard_summary = load_bundle_full(&mut shard_engine, bundle_path);
 
                 self.corroborate_threat_intel_update(version, expected_intel, &shard_summary)?;

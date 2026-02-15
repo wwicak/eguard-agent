@@ -309,7 +309,7 @@ fn load_signed_bundle_archive_full(
 fn load_bundle_all_layers(detection: &mut DetectionEngine, path: &Path) -> BundleLoadSummary {
     let (sigma_loaded, yara_loaded) = load_bundle_rules_from_dir(detection, path);
 
-    // Layer 3: IOC indicators (hashes, domains, IPs)
+    // Layer 1-3: IOC indicators (hashes, domains, IPs)
     let (ioc_hashes, ioc_domains, ioc_ips) = load_ioc_indicators(detection, path);
 
     // Layer 4: Suricata network detection rules
@@ -320,6 +320,9 @@ fn load_bundle_all_layers(detection: &mut DetectionEngine, path: &Path) -> Bundl
 
     // Layer 6: CVE vulnerability intelligence
     let cve_entries = load_cve_data(path);
+
+    // ML model: signature-ml-model.json from CI training pipeline
+    load_ml_model(detection, path);
 
     let summary = BundleLoadSummary {
         sigma_loaded,
@@ -346,6 +349,52 @@ fn load_bundle_all_layers(detection: &mut DetectionEngine, path: &Path) -> Bundl
     );
 
     summary
+}
+
+/// Load the ML model from the bundle if present.
+///
+/// Tries both the CI-trained format (`signature-ml-model.json` with named
+/// weights + feature scales) and the native runtime format. Falls back
+/// to the compiled-in default if the bundle model is missing or invalid.
+fn load_ml_model(detection: &mut DetectionEngine, bundle_dir: &Path) {
+    // Look for the ML model in standard locations
+    let candidates = [
+        bundle_dir.join("signature-ml-model.json"),
+        bundle_dir.join("ml/signature-ml-model.json"),
+        bundle_dir.join("models/signature-ml-model.json"),
+    ];
+    let model_path = match candidates.iter().find(|p| p.is_file()) {
+        Some(p) => p.clone(),
+        None => return,
+    };
+
+    let content = match fs::read_to_string(&model_path) {
+        Ok(c) => c,
+        Err(err) => {
+            warn!(error = %err, path = %model_path.display(), "failed reading ML model from bundle");
+            return;
+        }
+    };
+
+    match detection::MlModel::from_json_auto(&content) {
+        Ok(model) => {
+            match detection.layer5.reload_model(model) {
+                Ok(()) => {
+                    info!(
+                        model_id = %detection.layer5.model_id(),
+                        model_version = %detection.layer5.model_version(),
+                        "loaded ML model from threat-intel bundle"
+                    );
+                }
+                Err(err) => {
+                    warn!(error = %err, "ML model from bundle failed validation; keeping default");
+                }
+            }
+        }
+        Err(err) => {
+            warn!(error = %err, path = %model_path.display(), "failed parsing ML model from bundle");
+        }
+    }
 }
 
 fn read_bundle_manifest(bundle_dir: &Path) -> std::result::Result<BundleManifest, String> {

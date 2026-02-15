@@ -1,16 +1,20 @@
+pub mod behavioral;
+mod bench_detection;
 mod calibration;
 mod engine;
+pub mod information;
 mod layer1;
 mod layer2;
 mod layer3;
 mod layer4;
+pub mod layer5;
 mod math;
 pub mod memory_scanner;
 mod policy;
 mod replay;
 mod sigma;
 mod types;
-mod util;
+pub mod util;
 mod yara_engine;
 
 pub use calibration::{calibrate_thresholds, sanov_upper_bound, tau_delta, ThresholdCalibration};
@@ -20,7 +24,15 @@ pub use layer2::{
     TemporalEngine, TemporalEvictionCounters, TemporalPredicate, TemporalRule, TemporalStage,
 };
 pub use layer3::{AnomalyConfig, AnomalyDecision, AnomalyEngine};
-pub use layer4::{KillChainTemplate, Layer4Engine, Layer4EvictionCounters, TemplatePredicate};
+pub use layer4::{
+    KillChainTemplate,
+    Layer4Engine,
+    Layer4EvictionCounters,
+    RansomwarePolicy,
+    TemplatePredicate,
+};
+pub use layer5::{MlEngine, MlError, MlFeatures, MlModel, MlScore};
+pub use behavioral::{BehavioralAlarm, BehavioralEngine};
 pub use policy::confidence_policy;
 pub use replay::{
     correlate_campaign_iocs, correlate_cross_agent_iocs, replay_events, report_drift_indicators,

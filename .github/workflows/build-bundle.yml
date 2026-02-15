@@ -967,6 +967,60 @@ jobs:
             bash scripts/run_agent_bundle_ingestion_contract_ci.sh \
               --test-selector lifecycle::tests::load_bundle_rules_rejects_tampered_ci_generated_signed_bundle
 
+      - name: Verify agent loads ML model from bundle (full 7-layer ingestion)
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          BUNDLE="eguard-rules-${VERSION}.bundle.tar.zst"
+          BUNDLE_ABS="${GITHUB_WORKSPACE}/${BUNDLE}"
+          BUNDLE_PUBHEX="$(tr -d '\r\n' < "${BUNDLE}.pub.hex")"
+          EGUARD_CI_BUNDLE_PATH="${BUNDLE_ABS}" \
+          EGUARD_CI_BUNDLE_PUBHEX="${BUNDLE_PUBHEX}" \
+            bash scripts/run_agent_bundle_ingestion_contract_ci.sh \
+              --test-selector lifecycle::tests::load_bundle_full_loads_ml_model_from_ci_generated_bundle
+
+      - name: Validate ML model runtime compatibility
+        run: |
+          echo "Validating CI-trained ML model can be loaded by agent runtime..."
+          python3 - <<'PYCHECK'
+          import json, sys
+          model = json.load(open("bundle/signature-ml-model.json"))
+          required = ["suite", "model_type", "model_version", "features", "weights", "bias"]
+          missing = [k for k in required if k not in model]
+          if missing:
+              print(f"FAIL: ML model missing required fields: {missing}")
+              sys.exit(1)
+          if model.get("suite") != "signature_ml_linear_logit_model":
+              print(f"FAIL: unexpected suite: {model.get('suite')}")
+              sys.exit(1)
+          feature_count = len(model.get("features", []))
+          weight_count = len(model.get("weights", {}))
+          if feature_count == 0:
+              print("FAIL: ML model has 0 features")
+              sys.exit(1)
+          if weight_count != feature_count:
+              print(f"FAIL: feature/weight mismatch: {feature_count} features vs {weight_count} weights")
+              sys.exit(1)
+          # Verify the 18 runtime features are present
+          RUNTIME_FEATURES = [
+              "z1_ioc_hit", "z2_temporal_count", "z3_anomaly_high", "z3_anomaly_med",
+              "z4_killchain_count", "yara_hit_count", "string_sig_count", "event_class_risk",
+              "uid_is_root", "dst_port_risk", "has_command_line", "cmdline_length_norm",
+              "prefilter_hit", "multi_layer_count",
+              "cmdline_renyi_h2", "cmdline_compression", "cmdline_min_entropy", "cmdline_entropy_gap",
+          ]
+          model_features = set(model.get("features", []))
+          covered = [f for f in RUNTIME_FEATURES if f in model_features]
+          missing_runtime = [f for f in RUNTIME_FEATURES if f not in model_features]
+          print(f"ML model: {model.get('model_version')}")
+          print(f"  Features: {feature_count}")
+          print(f"  Runtime features covered: {len(covered)}/{len(RUNTIME_FEATURES)}")
+          if missing_runtime:
+              print(f"  Missing runtime features: {missing_runtime}")
+          print(f"  Training samples: {model.get('training_samples', 'n/a')}")
+          print(f"  Bias: {model.get('bias', 'n/a')}")
+          print("ML model runtime compatibility: PASS")
+          PYCHECK
+
       - name: Create GitHub Release
         run: |
           VERSION="${{ steps.version.outputs.version }}"

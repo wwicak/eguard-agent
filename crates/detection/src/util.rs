@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-pub(crate) fn set_of<const N: usize>(values: [&str; N]) -> HashSet<String> {
+pub fn set_of<const N: usize>(values: [&str; N]) -> HashSet<String> {
     let mut out = HashSet::new();
     for v in values {
         out.insert(v.to_string());

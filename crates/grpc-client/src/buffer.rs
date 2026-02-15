@@ -144,6 +144,8 @@ impl SqliteBuffer {
                 EventEnvelope {
                     agent_id: row.get::<_, String>(1)?,
                     event_type: row.get::<_, String>(2)?,
+                    severity: String::new(),
+                    rule_name: String::new(),
                     payload_json: row.get::<_, String>(3)?,
                     created_at_unix: row.get::<_, i64>(4)?,
                 },

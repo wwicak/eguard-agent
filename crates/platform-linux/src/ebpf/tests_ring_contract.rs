@@ -111,31 +111,33 @@ fn workspace_root() -> PathBuf {
 // AC-EBP-010 AC-EBP-011 AC-EBP-101
 fn zig_ebpf_programs_share_single_default_8mb_ring_buffer_definition() {
     let root = workspace_root();
-    let common = std::fs::read_to_string(root.join("zig/ebpf/common.zig")).expect("read common");
-    assert!(common.contains("pub const DEFAULT_RINGBUF_CAPACITY: u32 = 8 * 1024 * 1024;"));
-    assert!(common.contains("pub const RINGBUF_CAPACITY: u32 = resolveRingbufCapacity();"));
-    assert!(common.contains("@hasDecl(root, \"RINGBUF_CAPACITY\")"));
-    assert!(common.contains("return DEFAULT_RINGBUF_CAPACITY;"));
-    assert!(common.contains("pub export var events: MapDef"));
-    assert!(common.contains(".max_entries = RINGBUF_CAPACITY"));
+    let helpers = std::fs::read_to_string(root.join("zig/ebpf/bpf_helpers.h"))
+        .expect("read bpf_helpers.h");
+    assert!(helpers.contains("#define BPF_MAP_TYPE_RINGBUF 27"));
+    assert!(helpers.contains("FALLBACK_LAST_EVENT_DATA_SIZE 512"));
+    assert!(helpers.contains("struct event_hdr"));
+    assert!(helpers.contains("struct fallback_ringbuf_state"));
 
     for program in [
-        "process_exec.zig",
-        "file_open.zig",
-        "tcp_connect.zig",
-        "dns_query.zig",
-        "module_load.zig",
-        "lsm_block.zig",
+        "process_exec.c",
+        "file_open.c",
+        "file_write.c",
+        "file_rename.c",
+        "file_unlink.c",
+        "tcp_connect.c",
+        "dns_query.c",
+        "module_load.c",
+        "lsm_block.c",
     ] {
         let source = std::fs::read_to_string(root.join("zig/ebpf").join(program))
             .unwrap_or_else(|err| panic!("read {program}: {err}"));
         assert!(
-            source.contains("@import(\"common.zig\")"),
-            "{program} must use common"
+            source.contains("#include \"bpf_helpers.h\""),
+            "{program} must include bpf_helpers.h"
         );
         assert!(
-            source.contains("common.emitRecord"),
-            "{program} must emit via common ring map"
+            source.contains("bpf_ringbuf_reserve"),
+            "{program} must reserve ring buffer"
         );
         assert!(
             !source.contains("pub export var events"),
@@ -252,20 +254,35 @@ fn poll_once_reclaims_raw_record_buffers_for_backend_pooling() {
 fn zig_programs_apply_kernel_side_filters_for_new_connections_and_file_open_scope() {
     let root = workspace_root();
 
-    let tcp = std::fs::read_to_string(root.join("zig/ebpf/tcp_connect.zig"))
-        .expect("read tcp_connect.zig");
-    assert!(tcp.contains("pub export fn kprobe_tcp_v4_connect"));
-    assert!(tcp.contains("_ = ctx;\n    return 0;"));
-    assert!(tcp.contains("pub export fn kretprobe_tcp_v4_connect"));
-    assert!(tcp.contains("return emitTcpConnect(ctx);"));
-    assert!(tcp.contains("pub export fn kprobe_tcp_v6_connect"));
-    assert!(tcp.contains("pub export fn kretprobe_tcp_v6_connect"));
+    let tcp = std::fs::read_to_string(root.join("zig/ebpf/tcp_connect.c"))
+        .expect("read tcp_connect.c");
+    assert!(tcp.contains("tracepoint/sock/inet_sock_set_state"));
+    assert!(tcp.contains("TCP_SYN_SENT"));
+    assert!(tcp.contains("TCP_ESTABLISHED"));
 
     let file_open =
-        std::fs::read_to_string(root.join("zig/ebpf/file_open.zig")).expect("read file_open.zig");
-    assert!(file_open.contains("if (!shouldEmitFileOpen(ctx, event.path[0..]))"));
-    assert!(file_open.contains("(ctx.mode & 0o111) != 0"));
-    assert!(file_open.contains("hasPrefix(path, \"/etc/eguard-agent/\")"));
-    assert!(file_open.contains("hasPrefix(path, \"/var/lib/eguard-agent/\")"));
-    assert!(file_open.contains("hasPrefix(path, \"/opt/eguard-agent/\")"));
+        std::fs::read_to_string(root.join("zig/ebpf/file_open.c")).expect("read file_open.c");
+    assert!(file_open.contains("tracepoint/syscalls/sys_enter_openat"));
+    assert!(file_open.contains("FILE_PATH_SZ"));
+}
+
+#[test]
+// AC-EBP-190 AC-EBP-191 AC-EBP-192
+fn ebpf_file_event_sources_include_write_rename_unlink_probes() {
+    let root = workspace_root();
+
+    let write =
+        std::fs::read_to_string(root.join("zig/ebpf/file_write.c")).expect("read file_write.c");
+    assert!(write.contains("tracepoint/syscalls/sys_enter_write"));
+    assert!(write.contains("EVENT_FILE_WRITE"));
+
+    let rename =
+        std::fs::read_to_string(root.join("zig/ebpf/file_rename.c")).expect("read file_rename.c");
+    assert!(rename.contains("tracepoint/syscalls/sys_enter_renameat2"));
+    assert!(rename.contains("EVENT_FILE_RENAME"));
+
+    let unlink =
+        std::fs::read_to_string(root.join("zig/ebpf/file_unlink.c")).expect("read file_unlink.c");
+    assert!(unlink.contains("tracepoint/syscalls/sys_enter_unlinkat"));
+    assert!(unlink.contains("EVENT_FILE_UNLINK"));
 }

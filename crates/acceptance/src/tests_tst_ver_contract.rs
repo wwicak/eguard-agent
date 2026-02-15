@@ -617,10 +617,14 @@ exit 0
     assert!(has_line(&log_lines, "cargo build --release -p agent-core"));
     let _ = std::fs::remove_dir_all(sandbox);
 
-    let ringbuf = read("zig/ebpf/common.zig");
-    assert_eq!(
-        zig_const_product(&ringbuf, "DEFAULT_RINGBUF_CAPACITY"),
-        8 * 1024 * 1024
+    let ringbuf = read("zig/ebpf/bpf_helpers.h");
+    assert!(
+        ringbuf.contains("FALLBACK_LAST_EVENT_DATA_SIZE 512"),
+        "expected fallback buffer size in bpf_helpers.h"
+    );
+    assert!(
+        ringbuf.contains("BPF_MAP_TYPE_RINGBUF 27"),
+        "expected ring buffer map definition in bpf_helpers.h"
     );
 
     let matrix = read("tests/verification-matrix.md");

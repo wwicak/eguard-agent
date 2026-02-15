@@ -11,12 +11,15 @@ fn event(ts: i64, class: EventClass, process: &str, parent: &str, uid: u32) -> T
         uid,
         process: process.to_string(),
         parent_process: parent.to_string(),
+        session_id: 10,
         file_path: None,
+        file_write: false,
         file_hash: None,
         dst_port: None,
         dst_ip: None,
         dst_domain: None,
         command_line: None,
+        event_size: None,
     }
 }
 
@@ -204,6 +207,7 @@ fn process_graph_and_templates_fit_budget_with_bounded_batch_evaluation() {
                     require_network_non_web: false,
                     require_module_loaded: false,
                     require_sensitive_file_access: false,
+                    require_ransomware_write_burst: false,
                 },
                 TemplatePredicate {
                     process_any_of: Some(HashSet::from(["bash".to_string()])),
@@ -212,6 +216,7 @@ fn process_graph_and_templates_fit_budget_with_bounded_batch_evaluation() {
                     require_network_non_web: false,
                     require_module_loaded: false,
                     require_sensitive_file_access: false,
+                    require_ransomware_write_burst: false,
                 },
             ],
             max_depth: 8,

@@ -4,6 +4,24 @@ use platform_linux::EbpfEngine;
 use tracing::{info, warn};
 
 pub(super) fn init_ebpf_engine() -> EbpfEngine {
+    // Priority 1: Replay backend (for testing without kernel hooks)
+    if let Some(replay_path) = std::env::var("EGUARD_EBPF_REPLAY_PATH")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(PathBuf::from)
+    {
+        match EbpfEngine::from_replay(&replay_path) {
+            Ok(engine) => {
+                info!(path = %replay_path.display(), "eBPF replay backend initialized");
+                return engine;
+            }
+            Err(err) => {
+                warn!(error = %err, path = %replay_path.display(), "failed to open replay backend; falling through to eBPF/disabled");
+            }
+        }
+    }
+
+    // Priority 2: Real eBPF from object directory
     let objects_dir = std::env::var("EGUARD_EBPF_OBJECTS_DIR")
         .ok()
         .filter(|v| !v.trim().is_empty())
@@ -85,9 +103,12 @@ pub(super) fn default_ebpf_objects_dirs() -> Vec<PathBuf> {
 }
 
 pub(super) fn candidate_ebpf_object_paths(objects_dir: &Path) -> Vec<PathBuf> {
-    const OBJECT_NAMES: [&str; 6] = [
+    const OBJECT_NAMES: [&str; 9] = [
         "process_exec_bpf.o",
         "file_open_bpf.o",
+        "file_write_bpf.o",
+        "file_rename_bpf.o",
+        "file_unlink_bpf.o",
         "tcp_connect_bpf.o",
         "dns_query_bpf.o",
         "module_load_bpf.o",

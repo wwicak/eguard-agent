@@ -328,6 +328,8 @@ async fn send_events_offline_returns_error() {
         .send_events(&[EventEnvelope {
             agent_id: "a1".to_string(),
             event_type: "alert".to_string(),
+            severity: String::new(),
+            rule_name: String::new(),
             payload_json: "{}".to_string(),
             created_at_unix: 1,
         }])
@@ -599,6 +601,8 @@ async fn send_events_http_maps_payload_json_into_event_data_object() {
         .send_events(&[EventEnvelope {
             agent_id: "agent-http-telemetry".to_string(),
             event_type: "process_exec".to_string(),
+            severity: String::new(),
+            rule_name: String::new(),
             payload_json: "{\"pid\":4242,\"exe\":\"/bin/sh\"}".to_string(),
             created_at_unix: 1_700_000_000,
         }])
@@ -666,6 +670,8 @@ async fn send_events_grpc_falls_back_to_http_when_grpc_stream_is_unavailable() {
         .send_events(&[EventEnvelope {
             agent_id: "agent-grpc-fallback".to_string(),
             event_type: "process_exec".to_string(),
+            severity: String::new(),
+            rule_name: String::new(),
             payload_json: "{\"pid\":7}".to_string(),
             created_at_unix: 1_700_000_123,
         }])
@@ -1602,6 +1608,8 @@ async fn send_events_grpc_streams_batch_to_server_with_expected_fields() {
         .send_events(&[EventEnvelope {
             agent_id: "agent-telemetry".to_string(),
             event_type: "alert".to_string(),
+            severity: String::new(),
+            rule_name: String::new(),
             payload_json: "{\"reason\":\"unit-test\"}".to_string(),
             created_at_unix: 4242,
         }])

@@ -41,14 +41,17 @@ fn has_line(lines: &[String], expected: &str) -> bool {
     lines.iter().any(|line| line == expected)
 }
 
-fn parse_ringbuf_capacity_bytes(common_zig: &str) -> Option<u64> {
-    let line = common_zig
+fn parse_ringbuf_capacity_bytes(helper_header: &str) -> Option<u64> {
+    let line = helper_header
         .lines()
         .map(str::trim)
-        .find(|line| line.starts_with("pub const DEFAULT_RINGBUF_CAPACITY:"))?;
-    let rhs = line
-        .split_once('=')
-        .and_then(|(_, rhs)| rhs.split_once(';').map(|(expr, _)| expr.trim()))?;
+        .find(|line| line.starts_with("#define DEFAULT_RINGBUF_CAPACITY"))?;
+    let tokens: Vec<&str> = line.split_whitespace().collect();
+    if tokens.len() < 3 {
+        return None;
+    }
+    let rhs = tokens[2..].join(" ");
+    let rhs = rhs.trim_start_matches('(').trim_end_matches(')').trim();
     rhs.split('*')
         .map(str::trim)
         .map(str::parse::<u64>)
@@ -162,6 +165,8 @@ fn runtime_stack_runs_async_client_paths_with_tls_configuration() {
                 .send_events(&[EventEnvelope {
                     agent_id: "agent-1".to_string(),
                     event_type: "process_exec".to_string(),
+                    severity: String::new(),
+                    rule_name: String::new(),
                     payload_json: "{}".to_string(),
                     created_at_unix: 1,
                 }])
@@ -271,6 +276,8 @@ fn offline_sqlite_buffer_reaches_two_megabyte_working_set_window() {
         let event = EventEnvelope {
             agent_id: "agent-1".to_string(),
             event_type: "telemetry".to_string(),
+            severity: String::new(),
+            rule_name: String::new(),
             payload_json: payload.clone(),
             created_at_unix: 1,
         };
@@ -321,9 +328,9 @@ fn baseline_snapshot_size_fits_half_megabyte_target_band() {
 // AC-EBP-102 AC-EBP-109 AC-EBP-110 AC-RES-002 AC-RES-011 AC-RES-012
 fn memory_layout_ledger_sums_to_target_rss_envelope() {
     let root = workspace_root();
-    let common =
-        std::fs::read_to_string(root.join("zig/ebpf/common.zig")).expect("read ring buffer source");
-    let ring_bytes = parse_ringbuf_capacity_bytes(&common).expect("ring capacity") as f64;
+    let helpers = std::fs::read_to_string(root.join("zig/ebpf/bpf_helpers.h"))
+        .expect("read ring buffer source");
+    let ring_bytes = parse_ringbuf_capacity_bytes(&helpers).expect("ring capacity") as f64;
 
     let runtime_tokio_bytes = 3.0 * 1024.0 * 1024.0;
     let detection_bytes = 3.8 * 1024.0 * 1024.0;

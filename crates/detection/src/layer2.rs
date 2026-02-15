@@ -273,7 +273,7 @@ impl TemporalEngine {
         let horizon_ts = self.advance_observation_horizon(event.ts_unix);
         self.prune_stale_temporal_entries(horizon_ts);
 
-        let entity = event.pid;
+        let entity = event.session_id;
         if self.event_is_reorder_stale(entity, event.ts_unix) {
             return hits;
         }
@@ -399,10 +399,11 @@ impl TemporalEngine {
         self.enforce_pid_metadata_capacity();
     }
 
-    fn teardown_entity(&mut self, pid: u32) {
-        self.states.retain(|(_, state_pid), _| *state_pid != pid);
-        self.pid_last_seen_ts.remove(&pid);
-        self.pid_exec_epoch.remove(&pid);
+    fn teardown_entity(&mut self, session_id: u32) {
+        self.states
+            .retain(|(_, state_session), _| *state_session != session_id);
+        self.pid_last_seen_ts.remove(&session_id);
+        self.pid_exec_epoch.remove(&session_id);
     }
 
     fn enforce_state_capacity(&mut self) {
@@ -634,6 +635,7 @@ impl TemporalEngine {
         event.process.hash(&mut hasher);
         event.parent_process.hash(&mut hasher);
         event.uid.hash(&mut hasher);
+        event.session_id.hash(&mut hasher);
         hasher.finish()
     }
 

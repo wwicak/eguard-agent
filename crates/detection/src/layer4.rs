@@ -1,5 +1,6 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
+use crate::information;
 use crate::types::{EventClass, TelemetryEvent};
 use crate::util::set_of;
 
@@ -12,6 +13,262 @@ struct GraphNode {
     network_non_web: bool,
     module_loaded: bool,
     sensitive_file_access: bool,
+    ransomware_write_burst: bool,
+}
+
+const DEFAULT_RANSOMWARE_WINDOW_SECS: i64 = 20;
+const DEFAULT_RANSOMWARE_WRITE_THRESHOLD: u32 = 25;
+
+const DEFAULT_RANSOMWARE_USER_PATH_PREFIXES: &[&str] = &[
+    "/home/",
+    "/users/",
+    "/srv/",
+    "/var/www/",
+    "/mnt/",
+    "/media/",
+    "/volumes/",
+    "\\\\",
+];
+
+const DEFAULT_RANSOMWARE_SYSTEM_PATH_PREFIXES: &[&str] = &[
+    "/proc/",
+    "/sys/",
+    "/dev/",
+    "/run/",
+    "/tmp/",
+    "/var/tmp/",
+    "/var/run/",
+    "/private/tmp/",
+    "/private/var/",
+    "/etc/",
+    "/bin/",
+    "/sbin/",
+    "/lib/",
+    "/lib64/",
+    "/usr/",
+    "/boot/",
+    "/system/",
+    "/library/",
+    "c:\\windows",
+    "c:/windows",
+    "c:\\program files",
+    "c:/program files",
+    "c:\\program files (x86)",
+    "c:/program files (x86)",
+    "c:\\programdata",
+    "c:/programdata",
+    "c:\\temp",
+    "c:/temp",
+];
+
+const DEFAULT_RANSOMWARE_TEMP_PATH_TOKENS: &[&str] = &[
+    "/tmp/",
+    "/temp/",
+    "\\temp\\",
+    "\\appdata\\",
+    "/appdata/",
+    "\\appdata\\local\\temp",
+    "/appdata/local/temp",
+];
+
+#[derive(Debug, Clone)]
+pub struct RansomwarePolicy {
+    pub write_window_secs: i64,
+    pub write_threshold: u32,
+    pub adaptive_delta: f64,
+    pub adaptive_min_samples: usize,
+    pub adaptive_floor: u32,
+    pub learned_root_min_hits: u32,
+    pub learned_root_max: usize,
+    pub user_path_prefixes: Vec<String>,
+    pub system_path_prefixes: Vec<String>,
+    pub temp_path_tokens: Vec<String>,
+}
+
+impl Default for RansomwarePolicy {
+    fn default() -> Self {
+        Self {
+            write_window_secs: DEFAULT_RANSOMWARE_WINDOW_SECS,
+            write_threshold: DEFAULT_RANSOMWARE_WRITE_THRESHOLD,
+            adaptive_delta: 1e-6,
+            adaptive_min_samples: 6,
+            adaptive_floor: 5,
+            learned_root_min_hits: 3,
+            learned_root_max: 64,
+            user_path_prefixes: DEFAULT_RANSOMWARE_USER_PATH_PREFIXES
+                .iter()
+                .map(|v| v.to_string())
+                .collect(),
+            system_path_prefixes: DEFAULT_RANSOMWARE_SYSTEM_PATH_PREFIXES
+                .iter()
+                .map(|v| v.to_string())
+                .collect(),
+            temp_path_tokens: DEFAULT_RANSOMWARE_TEMP_PATH_TOKENS
+                .iter()
+                .map(|v| v.to_string())
+                .collect(),
+        }
+        .sanitized()
+    }
+}
+
+impl RansomwarePolicy {
+    pub fn sanitized(mut self) -> Self {
+        if self.write_window_secs <= 0 {
+            self.write_window_secs = DEFAULT_RANSOMWARE_WINDOW_SECS;
+        }
+        if self.write_threshold == 0 {
+            self.write_threshold = DEFAULT_RANSOMWARE_WRITE_THRESHOLD;
+        }
+        if !(0.0..=1.0).contains(&self.adaptive_delta) {
+            self.adaptive_delta = 1e-6;
+        }
+        if self.adaptive_min_samples == 0 {
+            self.adaptive_min_samples = 6;
+        }
+        if self.adaptive_floor == 0 {
+            self.adaptive_floor = 5;
+        }
+        if self.learned_root_min_hits == 0 {
+            self.learned_root_min_hits = 3;
+        }
+        if self.learned_root_max == 0 {
+            self.learned_root_max = 64;
+        }
+        self.user_path_prefixes = normalize_list(self.user_path_prefixes);
+        self.system_path_prefixes = normalize_list(self.system_path_prefixes);
+        self.temp_path_tokens = normalize_list(self.temp_path_tokens);
+        if self.user_path_prefixes.is_empty() {
+            self.user_path_prefixes = DEFAULT_RANSOMWARE_USER_PATH_PREFIXES
+                .iter()
+                .map(|v| v.to_string())
+                .collect();
+        }
+        if self.system_path_prefixes.is_empty() {
+            self.system_path_prefixes = DEFAULT_RANSOMWARE_SYSTEM_PATH_PREFIXES
+                .iter()
+                .map(|v| v.to_string())
+                .collect();
+        }
+        if self.temp_path_tokens.is_empty() {
+            self.temp_path_tokens = DEFAULT_RANSOMWARE_TEMP_PATH_TOKENS
+                .iter()
+                .map(|v| v.to_string())
+                .collect();
+        }
+        self
+    }
+
+    fn is_system_or_temp(&self, path: &str) -> bool {
+        let lower = path.to_ascii_lowercase();
+        if lower.is_empty() {
+            return false;
+        }
+
+        if self
+            .system_path_prefixes
+            .iter()
+            .any(|prefix| lower.starts_with(prefix))
+        {
+            return true;
+        }
+        if self
+            .temp_path_tokens
+            .iter()
+            .any(|token| lower.contains(token))
+        {
+            return true;
+        }
+        false
+    }
+
+    fn is_candidate_path(&self, path: &str) -> bool {
+        let lower = path.to_ascii_lowercase();
+        if lower.is_empty() {
+            return false;
+        }
+
+        if self.is_system_or_temp(&lower) {
+            return false;
+        }
+        if self
+            .user_path_prefixes
+            .iter()
+            .any(|prefix| lower.starts_with(prefix))
+        {
+            return true;
+        }
+
+        let bytes = lower.as_bytes();
+        if bytes.len() >= 3 && bytes[1] == b':' && (bytes[2] == b'\\' || bytes[2] == b'/') {
+            return true;
+        }
+
+        false
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct WriteBaseline {
+    samples: usize,
+    mean: f64,
+    m2: f64,
+    max_rate: f64,
+}
+
+impl WriteBaseline {
+    fn observe(&mut self, rate: f64) {
+        self.samples = self.samples.saturating_add(1);
+        let delta = rate - self.mean;
+        self.mean += delta / self.samples as f64;
+        let delta2 = rate - self.mean;
+        self.m2 += delta * delta2;
+        if rate > self.max_rate {
+            self.max_rate = rate;
+        }
+    }
+
+    fn variance(&self) -> f64 {
+        if self.samples > 1 {
+            self.m2 / (self.samples as f64 - 1.0)
+        } else {
+            0.0
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct WriteBaselineWindow {
+    window_start: i64,
+    count: u32,
+}
+
+impl WriteBaselineWindow {
+    fn new(ts: i64) -> Self {
+        Self {
+            window_start: ts,
+            count: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct WriteWindowState {
+    timestamps: VecDeque<i64>,
+    baseline: WriteBaseline,
+    baseline_window: WriteBaselineWindow,
+    last_seen: i64,
+}
+
+impl WriteWindowState {
+    fn new(ts: i64) -> Self {
+        Self {
+            timestamps: VecDeque::new(),
+            baseline: WriteBaseline::default(),
+            baseline_window: WriteBaselineWindow::new(ts),
+            last_seen: ts,
+        }
+    }
 }
 
 impl GraphNode {
@@ -19,6 +276,7 @@ impl GraphNode {
         self.network_non_web = false;
         self.module_loaded = false;
         self.sensitive_file_access = false;
+        self.ransomware_write_burst = false;
     }
 }
 
@@ -30,6 +288,7 @@ pub struct TemplatePredicate {
     pub require_network_non_web: bool,
     pub require_module_loaded: bool,
     pub require_sensitive_file_access: bool,
+    pub require_ransomware_write_burst: bool,
 }
 
 impl TemplatePredicate {
@@ -56,6 +315,9 @@ impl TemplatePredicate {
             return false;
         }
         if self.require_sensitive_file_access && !node.sensitive_file_access {
+            return false;
+        }
+        if self.require_ransomware_write_burst && !node.ransomware_write_burst {
             return false;
         }
         true
@@ -89,6 +351,10 @@ struct ProcessGraph {
     max_edges: usize,
     edge_count: usize,
     eviction_counters: Layer4EvictionCounters,
+    ransomware_policy: RansomwarePolicy,
+    ransomware_write_state: HashMap<u32, WriteWindowState>,
+    ransomware_learned_roots: HashSet<String>,
+    ransomware_root_hits: HashMap<String, u32>,
 }
 
 impl ProcessGraph {
@@ -101,6 +367,31 @@ impl ProcessGraph {
             max_edges: max_edges.max(1),
             edge_count: 0,
             eviction_counters: Layer4EvictionCounters::default(),
+            ransomware_policy: RansomwarePolicy::default(),
+            ransomware_write_state: HashMap::new(),
+            ransomware_learned_roots: HashSet::new(),
+            ransomware_root_hits: HashMap::new(),
+        }
+    }
+
+    fn with_capacity_and_policy(
+        window_secs: i64,
+        max_nodes: usize,
+        max_edges: usize,
+        ransomware_policy: RansomwarePolicy,
+    ) -> Self {
+        Self {
+            nodes: HashMap::new(),
+            children: HashMap::new(),
+            window_secs,
+            max_nodes: max_nodes.max(1),
+            max_edges: max_edges.max(1),
+            edge_count: 0,
+            eviction_counters: Layer4EvictionCounters::default(),
+            ransomware_policy: ransomware_policy.sanitized(),
+            ransomware_write_state: HashMap::new(),
+            ransomware_learned_roots: HashSet::new(),
+            ransomware_root_hits: HashMap::new(),
         }
     }
 
@@ -113,6 +404,33 @@ impl ProcessGraph {
         }
 
         let reset_for_exec = matches!(event.event_class, EventClass::ProcessExec);
+        let (sensitive_access, ransomware_burst) = match event.event_class {
+            EventClass::FileOpen => {
+                if let Some(path) = &event.file_path {
+                    let sensitive = path.starts_with("/etc/shadow")
+                        || path.starts_with("/etc/passwd")
+                        || path.contains("credential");
+                    if event.file_write {
+                        self.learn_ransomware_root(path);
+                        if !self.ransomware_policy.is_system_or_temp(path) {
+                            self.update_ransomware_baseline(event.pid, event.ts_unix);
+                        }
+                    }
+                    let burst =
+                        if event.file_write && self.is_ransomware_candidate_path(path) {
+                            let (hits, threshold) =
+                                self.note_ransomware_write(event.pid, event.ts_unix);
+                            hits >= threshold
+                        } else {
+                            false
+                        };
+                    (sensitive, burst)
+                } else {
+                    (false, false)
+                }
+            }
+            _ => (false, false),
+        };
 
         let previous_ppid = {
             let node = self.nodes.entry(event.pid).or_insert_with(|| GraphNode {
@@ -123,6 +441,7 @@ impl ProcessGraph {
                 network_non_web: false,
                 module_loaded: false,
                 sensitive_file_access: false,
+                ransomware_write_burst: false,
             });
 
             let previous_ppid = node.ppid;
@@ -148,13 +467,11 @@ impl ProcessGraph {
                     node.module_loaded = true;
                 }
                 EventClass::FileOpen => {
-                    if let Some(path) = &event.file_path {
-                        if path.starts_with("/etc/shadow")
-                            || path.starts_with("/etc/passwd")
-                            || path.contains("credential")
-                        {
-                            node.sensitive_file_access = true;
-                        }
+                    if sensitive_access {
+                        node.sensitive_file_access = true;
+                    }
+                    if ransomware_burst {
+                        node.ransomware_write_burst = true;
                     }
                 }
                 _ => {}
@@ -162,6 +479,10 @@ impl ProcessGraph {
 
             previous_ppid
         };
+
+        if reset_for_exec {
+            self.ransomware_write_state.remove(&event.pid);
+        }
 
         if reset_for_exec {
             self.remove_outgoing_links(event.pid);
@@ -231,6 +552,7 @@ impl ProcessGraph {
         if self.nodes.remove(&pid).is_none() {
             return false;
         }
+        self.ransomware_write_state.remove(&pid);
         self.remove_outgoing_links(pid);
         self.remove_incoming_links(pid);
         true
@@ -340,6 +662,135 @@ impl ProcessGraph {
             .eviction_counters
             .retention_prune
             .saturating_add(pruned);
+
+        self.prune_ransomware_counts(now);
+    }
+
+    fn note_ransomware_write(&mut self, pid: u32, ts: i64) -> (u32, u32) {
+        let window = self.ransomware_policy.write_window_secs;
+        let cutoff = ts - window;
+        let (hits, baseline) = {
+            let state = self
+                .ransomware_write_state
+                .entry(pid)
+                .or_insert_with(|| WriteWindowState::new(ts));
+            state.last_seen = ts;
+            state.timestamps.push_back(ts);
+            while let Some(front) = state.timestamps.front() {
+                if *front < cutoff {
+                    state.timestamps.pop_front();
+                } else {
+                    break;
+                }
+            }
+
+            (state.timestamps.len() as u32, state.baseline.clone())
+        };
+
+        let threshold = self.ransomware_threshold(&baseline);
+        (hits, threshold)
+    }
+
+    fn update_ransomware_baseline(&mut self, pid: u32, ts: i64) {
+        let window = self.ransomware_policy.write_window_secs;
+        let state = self
+            .ransomware_write_state
+            .entry(pid)
+            .or_insert_with(|| WriteWindowState::new(ts));
+
+        if ts - state.baseline_window.window_start >= window {
+            state.baseline.observe(state.baseline_window.count as f64);
+            state.baseline_window = WriteBaselineWindow::new(ts);
+        }
+        state.baseline_window.count = state.baseline_window.count.saturating_add(1);
+        state.last_seen = ts;
+    }
+
+    fn prune_ransomware_counts(&mut self, now: i64) {
+        let cutoff = now - self.ransomware_policy.write_window_secs;
+        self.ransomware_write_state
+            .retain(|_, state| {
+                while let Some(front) = state.timestamps.front() {
+                    if *front < cutoff {
+                        state.timestamps.pop_front();
+                    } else {
+                        break;
+                    }
+                }
+                state.last_seen >= cutoff || !state.timestamps.is_empty()
+            });
+    }
+
+    fn ransomware_threshold(&self, baseline: &WriteBaseline) -> u32 {
+        if baseline.samples < self.ransomware_policy.adaptive_min_samples {
+            return self.ransomware_policy.write_threshold;
+        }
+
+        let range = baseline.max_rate.max(1.0);
+        let variance = baseline.variance().max(0.0);
+        let delta = self.ransomware_policy.adaptive_delta.max(1e-12);
+
+        let h = information::hoeffding_threshold(baseline.samples, range, delta);
+        let b = information::bernstein_threshold(baseline.samples, variance, range, delta);
+        let drift = h.min(b).max(0.0);
+        let threshold = (baseline.mean + drift).ceil() as u32;
+        threshold.max(self.ransomware_policy.adaptive_floor)
+    }
+
+    fn is_ransomware_candidate_path(&self, path: &str) -> bool {
+        if self.ransomware_policy.is_candidate_path(path) {
+            return true;
+        }
+        let lower = path.to_ascii_lowercase();
+        if lower.is_empty() {
+            return false;
+        }
+        if self.ransomware_policy.is_system_or_temp(&lower) {
+            return false;
+        }
+        self.ransomware_learned_roots
+            .iter()
+            .any(|root| lower.starts_with(root))
+    }
+
+    fn learn_ransomware_root(&mut self, path: &str) {
+        if self.ransomware_learned_roots.len() >= self.ransomware_policy.learned_root_max {
+            return;
+        }
+        if self.ransomware_policy.is_candidate_path(path) {
+            return;
+        }
+        let lower = path.to_ascii_lowercase();
+        if lower.is_empty() || self.ransomware_policy.is_system_or_temp(&lower) {
+            return;
+        }
+        let Some(root) = path_root_prefix(&lower) else {
+            return;
+        };
+        if self
+            .ransomware_policy
+            .user_path_prefixes
+            .iter()
+            .any(|prefix| root.starts_with(prefix))
+        {
+            return;
+        }
+        if self
+            .ransomware_policy
+            .system_path_prefixes
+            .iter()
+            .any(|prefix| root.starts_with(prefix))
+        {
+            return;
+        }
+        if self.ransomware_learned_roots.contains(&root) {
+            return;
+        }
+        let hits = self.ransomware_root_hits.entry(root.clone()).or_insert(0);
+        *hits = hits.saturating_add(1);
+        if *hits >= self.ransomware_policy.learned_root_min_hits {
+            self.ransomware_learned_roots.insert(root);
+        }
     }
 }
 
@@ -364,8 +815,30 @@ impl Layer4Engine {
         }
     }
 
+    pub fn with_capacity_and_policy(
+        window_secs: i64,
+        max_nodes: usize,
+        max_edges: usize,
+        ransomware_policy: RansomwarePolicy,
+    ) -> Self {
+        Self {
+            graph: ProcessGraph::with_capacity_and_policy(
+                window_secs,
+                max_nodes,
+                max_edges,
+                ransomware_policy,
+            ),
+            templates: Vec::new(),
+        }
+    }
+
     pub fn with_default_templates() -> Self {
-        let mut engine = Self::new(300);
+        let mut engine = Self::with_capacity_and_policy(
+            300,
+            DEFAULT_LAYER4_MAX_NODES,
+            DEFAULT_LAYER4_MAX_EDGES,
+            RansomwarePolicy::default(),
+        );
 
         engine.templates.push(KillChainTemplate {
             name: "killchain_webshell_network".to_string(),
@@ -377,6 +850,7 @@ impl Layer4Engine {
                     require_network_non_web: false,
                     require_module_loaded: false,
                     require_sensitive_file_access: false,
+                    require_ransomware_write_burst: false,
                 },
                 TemplatePredicate {
                     process_any_of: Some(set_of(["bash", "sh", "dash", "zsh", "python", "perl"])),
@@ -385,6 +859,7 @@ impl Layer4Engine {
                     require_network_non_web: true,
                     require_module_loaded: false,
                     require_sensitive_file_access: false,
+                    require_ransomware_write_burst: false,
                 },
             ],
             max_depth: 6,
@@ -401,6 +876,7 @@ impl Layer4Engine {
                     require_network_non_web: false,
                     require_module_loaded: false,
                     require_sensitive_file_access: false,
+                    require_ransomware_write_burst: false,
                 },
                 TemplatePredicate {
                     process_any_of: None,
@@ -409,10 +885,26 @@ impl Layer4Engine {
                     require_network_non_web: false,
                     require_module_loaded: true,
                     require_sensitive_file_access: false,
+                    require_ransomware_write_burst: false,
                 },
             ],
             max_depth: 6,
             max_inter_stage_secs: 60,
+        });
+
+        engine.templates.push(KillChainTemplate {
+            name: "killchain_ransomware_write_burst".to_string(),
+            stages: vec![TemplatePredicate {
+                process_any_of: None,
+                uid_eq: None,
+                uid_ne: None,
+                require_network_non_web: false,
+                require_module_loaded: false,
+                require_sensitive_file_access: false,
+                require_ransomware_write_burst: true,
+            }],
+            max_depth: 2,
+            max_inter_stage_secs: 15,
         });
 
         engine
@@ -526,4 +1018,77 @@ impl Default for Layer4Engine {
     fn default() -> Self {
         Self::with_default_templates()
     }
+}
+
+fn normalize_list(values: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = values
+        .into_iter()
+        .filter_map(|v| {
+            let trimmed = v.trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_ascii_lowercase())
+            }
+        })
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn path_root_prefix(path: &str) -> Option<String> {
+    if path.is_empty() {
+        return None;
+    }
+    let bytes = path.as_bytes();
+    if bytes.len() >= 3 && bytes[1] == b':' && (bytes[2] == b'\\' || bytes[2] == b'/') {
+        let drive = &path[..2];
+        let sep = if bytes[2] == b'\\' { '\\' } else { '/' };
+        let rest = &path[3..];
+        let components: Vec<&str> = rest
+            .split(|c| c == '/' || c == '\\')
+            .filter(|c| !c.is_empty())
+            .collect();
+        if components.is_empty() {
+            return Some(format!("{drive}{sep}"));
+        }
+        let mut root = format!("{drive}{sep}{}", components[0]);
+        if components.len() > 1 {
+            root.push(sep);
+            root.push_str(components[1]);
+        }
+        root.push(sep);
+        return Some(root);
+    }
+
+    if path.starts_with("\\\\") {
+        let rest = &path[2..];
+        let components: Vec<&str> = rest
+            .split('\\')
+            .filter(|c| !c.is_empty())
+            .collect();
+        if components.len() >= 2 {
+            return Some(format!("\\\\{}\\{}\\", components[0], components[1]));
+        }
+        return None;
+    }
+
+    if path.starts_with('/') {
+        let components: Vec<&str> = path
+            .split('/')
+            .filter(|c| !c.is_empty())
+            .collect();
+        if components.is_empty() {
+            return None;
+        }
+        let mut root = format!("/{}/", components[0]);
+        if components.len() > 1 {
+            root.push_str(components[1]);
+            root.push('/');
+        }
+        return Some(root);
+    }
+
+    None
 }

@@ -62,7 +62,7 @@ fn candidate_ebpf_object_paths_uses_known_order() {
 
 #[test]
 // AC-EBP-001
-fn candidate_ebpf_object_paths_discovers_five_core_program_objects() {
+fn candidate_ebpf_object_paths_discovers_core_program_objects() {
     let base = std::env::temp_dir().join(format!(
         "eguard-ebpf-core-objects-{}",
         std::time::SystemTime::now()
@@ -75,6 +75,9 @@ fn candidate_ebpf_object_paths_discovers_five_core_program_objects() {
     let names = [
         "process_exec_bpf.o",
         "file_open_bpf.o",
+        "file_write_bpf.o",
+        "file_rename_bpf.o",
+        "file_unlink_bpf.o",
         "tcp_connect_bpf.o",
         "dns_query_bpf.o",
         "module_load_bpf.o",
@@ -84,7 +87,7 @@ fn candidate_ebpf_object_paths_discovers_five_core_program_objects() {
     }
 
     let paths = candidate_ebpf_object_paths(&base);
-    assert_eq!(paths.len(), 5);
+    assert_eq!(paths.len(), 8);
     for name in names {
         assert!(paths.iter().any(|p| p.ends_with(name)));
     }
@@ -409,7 +412,7 @@ rule bundle_runtime_marker {
     cfg.offline_buffer_backend = "memory".to_string();
     cfg.server_addr = "127.0.0.1:1".to_string();
 
-    let mut runtime = AgentRuntime::new(cfg).expect("build runtime");
+    let mut runtime = AgentRuntime::new(cfg.clone()).expect("build runtime");
     runtime
         .reload_detection_state("bundle-runtime-v1", base.to_string_lossy().as_ref(), None)
         .expect("reload detection state from bundle");
@@ -437,12 +440,15 @@ rule bundle_runtime_marker {
         uid: 1000,
         process: "bundleproc".to_string(),
         parent_process: "bundleparent".to_string(),
+        session_id: 1,
         file_path: None,
+        file_write: false,
         file_hash: None,
         dst_port: None,
         dst_ip: None,
         dst_domain: None,
         command_line: Some("echo bundle-runtime-marker-8844".to_string()),
+        event_size: None,
     };
     let stage_one_out = runtime
         .detection_state
@@ -462,12 +468,15 @@ rule bundle_runtime_marker {
         uid: 1000,
         process: "bundleproc".to_string(),
         parent_process: "bundleparent".to_string(),
+        session_id: 1,
         file_path: None,
+        file_write: false,
         file_hash: None,
         dst_port: Some(31337),
         dst_ip: Some("203.0.113.8".to_string()),
         dst_domain: None,
         command_line: None,
+        event_size: None,
     };
     let stage_two_out = runtime
         .detection_state
@@ -502,15 +511,21 @@ fn reload_detection_state_from_bundle_populates_ioc_layers_on_all_shards() {
     cfg.offline_buffer_backend = "memory".to_string();
     cfg.server_addr = "127.0.0.1:1".to_string();
 
-    let mut runtime = AgentRuntime::new(cfg).expect("build runtime");
+    let mut runtime = AgentRuntime::new(cfg.clone()).expect("build runtime");
     runtime.detection_state = SharedDetectionState::new_with_shards(
-        build_detection_engine(),
+        detection_bootstrap::build_detection_engine_with_ransomware_policy(
+            build_ransomware_policy(&cfg),
+        ),
         runtime
             .detection_state
             .version()
             .expect("state version before reset"),
         2,
-        build_detection_engine,
+        || {
+            detection_bootstrap::build_detection_engine_with_ransomware_policy(
+                build_ransomware_policy(&cfg),
+            )
+        },
     );
 
     runtime
@@ -525,12 +540,15 @@ fn reload_detection_state_from_bundle_populates_ioc_layers_on_all_shards() {
         uid: 1000,
         process: "bash".to_string(),
         parent_process: "sshd".to_string(),
+        session_id: 1,
         file_path: None,
+        file_write: false,
         file_hash: Some("bundle-ioc-hash-9911".to_string()),
         dst_port: None,
         dst_ip: None,
         dst_domain: None,
         command_line: None,
+        event_size: None,
     };
 
     for pid in [9000u32, 9001u32] {
@@ -849,12 +867,15 @@ rule nested_signed_bundle_marker {
         uid: 1000,
         process: "bash".to_string(),
         parent_process: "nginx".to_string(),
+        session_id: 1,
         file_path: None,
+        file_write: false,
         file_hash: None,
         dst_port: None,
         dst_ip: None,
         dst_domain: None,
         command_line: Some("echo nested-signed-bundle-marker".to_string()),
+        event_size: None,
     };
     let out = engine.process_event(&nested_event);
     assert!(out
@@ -920,6 +941,78 @@ fn load_bundle_rules_reads_ci_generated_signed_bundle() {
     assert!(
         yara > 0,
         "ci generated bundle should load yara rules through agent runtime"
+    );
+
+    std::env::remove_var("EGUARD_RULE_BUNDLE_PUBKEY");
+    std::env::remove_var("EGUARD_RULES_STAGING_DIR");
+    let _ = std::fs::remove_dir_all(staging);
+}
+
+#[test]
+// AC-DET-ML-001: Full bundle load including ML model
+fn load_bundle_full_loads_ml_model_from_ci_generated_bundle() {
+    let _env_guard = env_var_lock().lock().expect("lock env vars");
+
+    let bundle_path_raw = match std::env::var("EGUARD_CI_BUNDLE_PATH") {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => return,
+    };
+    let bundle_pubkey_raw = match std::env::var("EGUARD_CI_BUNDLE_PUBHEX") {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => return,
+    };
+
+    let bundle_path = PathBuf::from(bundle_path_raw.trim());
+    assert!(
+        bundle_path.is_file(),
+        "ci generated bundle path must exist: {}",
+        bundle_path.display()
+    );
+
+    let staging = std::env::temp_dir().join(format!(
+        "eguard-ci-bundle-full-load-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    std::fs::create_dir_all(&staging).expect("create CI staging dir");
+
+    std::env::set_var("EGUARD_RULE_BUNDLE_PUBKEY", bundle_pubkey_raw.trim());
+    std::env::set_var("EGUARD_RULES_STAGING_DIR", &staging);
+
+    let mut engine = DetectionEngine::default_with_rules();
+    let summary = load_bundle_full(&mut engine, bundle_path.to_string_lossy().as_ref());
+    assert!(
+        summary.sigma_loaded > 0,
+        "ci bundle should load sigma rules: got {}",
+        summary.sigma_loaded
+    );
+    assert!(
+        summary.yara_loaded > 0,
+        "ci bundle should load yara rules: got {}",
+        summary.yara_loaded
+    );
+    assert!(
+        summary.ioc_hashes > 0 || summary.ioc_domains > 0 || summary.ioc_ips > 0,
+        "ci bundle should load IOC indicators: hashes={} domains={} ips={}",
+        summary.ioc_hashes,
+        summary.ioc_domains,
+        summary.ioc_ips
+    );
+
+    // Verify ML model was loaded from bundle — model version should contain "ml.v1"
+    let model_id = engine.layer5.model_id().to_string();
+    let model_version = engine.layer5.model_version().to_string();
+    assert!(
+        !model_id.is_empty() && model_id != "default-v1",
+        "ci bundle should load ML model: got model_id='{}'",
+        model_id
+    );
+    assert!(
+        model_version.contains("ml.v1"),
+        "ci bundle ML model version should contain 'ml.v1': got '{}'",
+        model_version
     );
 
     std::env::remove_var("EGUARD_RULE_BUNDLE_PUBKEY");
@@ -1304,12 +1397,15 @@ async fn emergency_command_is_applied_immediately_in_command_path() {
         uid: 1000,
         process: "bash".to_string(),
         parent_process: "sshd".to_string(),
+        session_id: 1,
         file_path: None,
+        file_write: false,
         file_hash: None,
         dst_port: None,
         dst_ip: None,
         dst_domain: None,
         command_line: Some("curl|bash -s https://bad".to_string()),
+        event_size: None,
     };
 
     let out = runtime

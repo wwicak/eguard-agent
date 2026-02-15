@@ -6,9 +6,49 @@
 /.zig-cache/
 /zig-out/
 
+# Rust build outputs
+**/target/
+**/*.rlib
+**/*.rmeta
+**/*.dSYM/
+
+# Logs and crash dumps
+**/*.log
+**/*.log.*
+**/*.out
+**/*.trace
+**/*.stackdump
+**/*.core
+
+# Profiling/coverage
+**/*.profraw
+**/*.profdata
+**/*.gcda
+**/*.gcno
+**/*.lcov
+**/coverage/
+**/coverage-*/
+**/.coverage
+
+# Temp files
+**/*.tmp
+**/*.temp
+**/*.swp
+**/*.swo
+**/.DS_Store
+**/Thumbs.db
+
+# Node/JS artifacts (if present in tooling)
+**/node_modules/
+**/dist/
+**/build/
+**/.cache/
+
 # Threat intel pipeline (ephemeral data + build artifacts)
 /sources/
 /bundle/
 /bundles/
 *.bundle.tar.zst
-artifacts/verification-suite/*.log
+*.log
+tests/e2e-pipeline/results/cloud-init.iso
+tests/e2e-pipeline/results/overlay.qcow2

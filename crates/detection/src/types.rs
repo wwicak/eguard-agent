@@ -61,17 +61,21 @@ pub struct TelemetryEvent {
     pub uid: u32,
     pub process: String,
     pub parent_process: String,
+    /// Top-level ancestor (session-like) PID for correlation.
+    pub session_id: u32,
     pub file_path: Option<String>,
+    pub file_write: bool,
     pub file_hash: Option<String>,
     pub dst_port: Option<u16>,
     pub dst_ip: Option<String>,
     pub dst_domain: Option<String>,
     pub command_line: Option<String>,
+    pub event_size: Option<u64>,
 }
 
 impl TelemetryEvent {
     pub fn entity_key(&self) -> String {
-        self.pid.to_string()
+        self.session_id.to_string()
     }
 
     pub fn process_key(&self) -> String {
@@ -81,12 +85,38 @@ impl TelemetryEvent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Confidence {
-    Definite,
-    VeryHigh,
-    High,
-    Medium,
-    Low,
     None,
+    Low,
+    Medium,
+    High,
+    VeryHigh,
+    Definite,
+}
+
+impl PartialOrd for Confidence {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Confidence {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.numeric().cmp(&other.numeric())
+    }
+}
+
+impl Confidence {
+    /// Numeric severity level for ordering (0=None, 5=Definite).
+    pub fn numeric(&self) -> u8 {
+        match self {
+            Self::None => 0,
+            Self::Low => 1,
+            Self::Medium => 2,
+            Self::High => 3,
+            Self::VeryHigh => 4,
+            Self::Definite => 5,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

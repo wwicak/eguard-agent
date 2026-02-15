@@ -5,6 +5,8 @@ fn event(ts: i64) -> EventEnvelope {
     EventEnvelope {
         agent_id: "agent-test".to_string(),
         event_type: "process_exec".to_string(),
+        severity: String::new(),
+        rule_name: String::new(),
         payload_json: format!("{{\"ts\":{ts}}}"),
         created_at_unix: ts,
     }
@@ -19,12 +21,15 @@ fn detection_event(ts: i64, pid: u32) -> TelemetryEvent {
         uid: 1000,
         process: "bash".to_string(),
         parent_process: "systemd".to_string(),
+        session_id: 1,
         file_path: None,
+        file_write: false,
         file_hash: None,
         dst_port: None,
         dst_ip: None,
         dst_domain: None,
         command_line: None,
+        event_size: None,
     }
 }
 
@@ -46,6 +51,8 @@ fn tick_evaluation_for_confidence(confidence: Confidence, ts: i64, pid: u32) -> 
             yara_hits: Vec::new(),
             anomaly: None,
             layer1: detection::Layer1EventHit::default(),
+            ml_score: None,
+            behavioral_alarms: Vec::new(),
         },
         confidence,
         action: PlannedAction::AlertOnly,

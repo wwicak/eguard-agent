@@ -16,20 +16,7 @@ const EVENT_HEADER_SIZE: usize = 1 + 4 + 4 + 4 + 8;
 const FALLBACK_LAST_EVENT_DATA_SIZE: usize = 512;
 
 #[cfg(any(test, feature = "ebpf-libbpf"))]
-const fn align_up(value: usize, align: usize) -> usize {
-    let rem = value % align;
-    if rem == 0 {
-        value
-    } else {
-        value + (align - rem)
-    }
-}
-
-#[cfg(any(test, feature = "ebpf-libbpf"))]
-const FALLBACK_DROPPED_OFFSET: usize = align_up(
-    std::mem::size_of::<u32>() + FALLBACK_LAST_EVENT_DATA_SIZE,
-    std::mem::size_of::<u64>(),
-);
+const FALLBACK_DROPPED_OFFSET: usize = std::mem::size_of::<u32>() + FALLBACK_LAST_EVENT_DATA_SIZE;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EbpfStats {
@@ -132,6 +119,20 @@ impl EbpfEngine {
         Err(EbpfError::FeatureDisabled("ebpf-libbpf"))
     }
 
+    /// Create an engine that reads NDJSON events from a file or FIFO.
+    ///
+    /// Each line is a JSON object with fields matching the eBPF event schema.
+    /// Useful for detection-pipeline testing without kernel hooks.
+    pub fn from_replay(path: &Path) -> Result<Self> {
+        let backend = ReplayBackend::open(path)?;
+        let mut stats = EbpfStats::default();
+        detect_kernel_capabilities(&mut stats);
+        Ok(Self {
+            backend: Box::new(backend),
+            stats,
+        })
+    }
+
     pub fn poll_once(&mut self, timeout: Duration) -> Result<Vec<RawEvent>> {
         let batch = self.backend.poll_raw_events(timeout)?;
         self.stats.events_dropped = self.stats.events_dropped.saturating_add(batch.dropped);
@@ -144,14 +145,17 @@ impl EbpfEngine {
                 Ok(event) => {
                     // Track per-probe event counts
                     let probe_name = match event.event_type {
-                        EventType::ProcessExec => "process_exec",
-                        EventType::ProcessExit => "process_exit",
-                        EventType::FileOpen => "file_open",
-                        EventType::TcpConnect => "tcp_connect",
-                        EventType::DnsQuery => "dns_query",
-                        EventType::ModuleLoad => "module_load",
-                        EventType::LsmBlock => "lsm_block",
-                    };
+        EventType::ProcessExec => "process_exec",
+        EventType::ProcessExit => "process_exit",
+        EventType::FileOpen => "file_open",
+        EventType::FileWrite => "file_write",
+        EventType::FileRename => "file_rename",
+        EventType::FileUnlink => "file_unlink",
+        EventType::TcpConnect => "tcp_connect",
+        EventType::DnsQuery => "dns_query",
+        EventType::ModuleLoad => "module_load",
+        EventType::LsmBlock => "lsm_block",
+    };
                     *self
                         .stats
                         .per_probe_events
@@ -171,6 +175,9 @@ impl EbpfEngine {
                             5 => "module_load",
                             6 => "lsm_block",
                             7 => "process_exit",
+                            8 => "file_write",
+                            9 => "file_rename",
+                            10 => "file_unlink",
                             _ => "unknown",
                         };
                         *self
@@ -219,6 +226,276 @@ struct NoopRingBufferBackend;
 impl RingBufferBackend for NoopRingBufferBackend {
     fn poll_raw_events(&mut self, _timeout: Duration) -> Result<PollBatch> {
         Ok(PollBatch::default())
+    }
+}
+
+// ────────────────────────────────────────────────────────────────
+// Replay backend: reads NDJSON events from a file/FIFO and
+// converts them into the same binary `RawEvent` format that real
+// eBPF probes produce.  This enables full detection-pipeline
+// testing in environments without kernel hooks (Docker, CI).
+//
+// Controlled by `EGUARD_EBPF_REPLAY_PATH`.
+//
+// NDJSON line format:
+// {"event_type":"process_exec","pid":1234,"uid":0,"ts_ns":0,
+//  "ppid":999,"comm":"bash","path":"/usr/bin/bash",
+//  "cmdline":"bash -c whoami","cgroup_id":0}
+// ────────────────────────────────────────────────────────────────
+
+/// Maximum events to yield per poll call.
+///
+/// The agent tick loop calls `poll_once()` and then picks at most one event
+/// from the returned batch.  To avoid discarding lines we yield only a small
+/// batch per poll so every event gets processed across successive ticks.
+const REPLAY_BATCH_LIMIT: usize = 1;
+
+struct ReplayBackend {
+    reader: std::io::BufReader<std::fs::File>,
+}
+
+impl ReplayBackend {
+    fn open(path: &Path) -> Result<Self> {
+        let file = std::fs::File::open(path).map_err(|e| {
+            EbpfError::Backend(format!("open replay file '{}': {}", path.display(), e))
+        })?;
+        Ok(Self {
+            reader: std::io::BufReader::new(file),
+        })
+    }
+}
+
+impl RingBufferBackend for ReplayBackend {
+    fn poll_raw_events(&mut self, _timeout: Duration) -> Result<PollBatch> {
+        use std::io::BufRead;
+
+        let mut records = Vec::new();
+        while records.len() < REPLAY_BATCH_LIMIT {
+            let mut line = String::new();
+            match self.reader.read_line(&mut line) {
+                Ok(0) => break,                     // EOF
+                Ok(_) => {}
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) => {
+                    return Err(EbpfError::Backend(format!("replay read: {}", e)));
+                }
+            }
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            match encode_replay_event(trimmed) {
+                Ok(raw) => records.push(raw),
+                Err(e) => {
+                    eprintln!("eg-agent: replay parse warning: {}", e);
+                }
+            }
+        }
+        Ok(PollBatch {
+            records,
+            dropped: 0,
+        })
+    }
+}
+
+/// Convert a single NDJSON line into the binary format that `parse_raw_event` expects.
+fn encode_replay_event(json_line: &str) -> Result<Vec<u8>> {
+    let v: serde_json::Value = serde_json::from_str(json_line)
+        .map_err(|e| EbpfError::Parse(format!("replay JSON: {}", e)))?;
+
+    let event_type_str = v
+        .get("event_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("process_exec");
+
+    let type_id: u8 = match event_type_str {
+        "process_exec" => 1,
+        "file_open" => 2,
+        "tcp_connect" | "network_connect" => 3,
+        "dns_query" => 4,
+        "module_load" => 5,
+        "lsm_block" => 6,
+        "process_exit" => 7,
+        "file_write" => 8,
+        "file_rename" => 9,
+        "file_unlink" => 10,
+        other => {
+            return Err(EbpfError::Parse(format!(
+                "unknown replay event_type: {}",
+                other
+            )));
+        }
+    };
+
+    let pid = v.get("pid").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let uid = v.get("uid").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let ts_ns = v.get("ts_ns").and_then(|v| v.as_u64()).unwrap_or(0);
+
+    // Build header: type(1) + pid(4) + ???(4 — uid occupies offset 9..13) + uid(4) + ts_ns(8)
+    // Header layout from parse_raw_event:
+    //   offset 0:  event_type (u8)
+    //   offset 1:  pid        (u32 LE)
+    //   offset 5:  ??? 4 bytes (from read_u32_le(raw, 9) → uid at byte 9)
+    // Wait, let me re-read the header parsing:
+    //   let event_type = parse_event_type(raw[0])?;         // offset 0, 1 byte
+    //   let pid = read_u32_le(raw, 1)?;                     // offset 1, 4 bytes  → [1..5)
+    //   let uid = read_u32_le(raw, 9)?;                     // offset 9, 4 bytes  → [9..13)
+    //   let timestamp_ns = read_u64_le(raw, 13)?;           // offset 13, 8 bytes → [13..21)
+    // EVENT_HEADER_SIZE = 1 + 4 + 4 + 4 + 8 = 21
+    // So bytes [5..9) are 4 padding/unused bytes (likely ppid in the kernel struct).
+
+    let ppid_field = v.get("ppid").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+
+    let mut buf = Vec::with_capacity(256);
+    buf.push(type_id);                          // offset 0
+    buf.extend_from_slice(&pid.to_le_bytes());  // offset 1..5
+    buf.extend_from_slice(&ppid_field.to_le_bytes()); // offset 5..9 (unused in parse but keep layout)
+    buf.extend_from_slice(&uid.to_le_bytes());  // offset 9..13
+    buf.extend_from_slice(&ts_ns.to_le_bytes()); // offset 13..21
+
+    // Append payload based on event type
+    match type_id {
+        1 => encode_process_exec_payload(&v, &mut buf),
+        2 => encode_file_open_payload(&v, &mut buf),
+        3 => encode_tcp_connect_payload(&v, &mut buf),
+        4 => encode_dns_query_payload(&v, &mut buf),
+        5 => encode_module_load_payload(&v, &mut buf),
+        6 => encode_lsm_block_payload(&v, &mut buf),
+        7 => encode_process_exit_payload(&v, &mut buf),
+        8 => encode_file_write_payload(&v, &mut buf),
+        9 => encode_file_rename_payload(&v, &mut buf),
+        10 => encode_file_unlink_payload(&v, &mut buf),
+        _ => {}
+    }
+
+    Ok(buf)
+}
+
+fn push_c_string_padded(buf: &mut Vec<u8>, value: &str, max_len: usize) {
+    let bytes = value.as_bytes();
+    let copy_len = bytes.len().min(max_len.saturating_sub(1));
+    buf.extend_from_slice(&bytes[..copy_len]);
+    // Pad remainder with NUL
+    for _ in copy_len..max_len {
+        buf.push(0);
+    }
+}
+
+fn encode_process_exec_payload(v: &serde_json::Value, buf: &mut Vec<u8>) {
+    let ppid = v.get("ppid").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let cgroup_id = v.get("cgroup_id").and_then(|v| v.as_u64()).unwrap_or(0);
+    let comm = v.get("comm").and_then(|v| v.as_str()).unwrap_or("");
+    let path = v.get("path").and_then(|v| v.as_str()).unwrap_or("");
+    let cmdline = v.get("cmdline").and_then(|v| v.as_str()).unwrap_or("");
+
+    buf.extend_from_slice(&ppid.to_le_bytes());      // 4 bytes
+    buf.extend_from_slice(&cgroup_id.to_le_bytes());  // 8 bytes
+    push_c_string_padded(buf, comm, 32);              // 32 bytes
+    push_c_string_padded(buf, path, 160);             // 160 bytes
+    push_c_string_padded(buf, cmdline, 160);          // 160 bytes
+}
+
+fn encode_file_open_payload(v: &serde_json::Value, buf: &mut Vec<u8>) {
+    let flags = v.get("flags").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let mode = v.get("mode").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let path = v.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+
+    buf.extend_from_slice(&flags.to_le_bytes());
+    buf.extend_from_slice(&mode.to_le_bytes());
+    push_c_string_padded(buf, path, 256);
+}
+
+fn encode_file_write_payload(v: &serde_json::Value, buf: &mut Vec<u8>) {
+    let fd = v.get("fd").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let size = v.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+    let path = v.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+
+    buf.extend_from_slice(&fd.to_le_bytes());
+    buf.extend_from_slice(&size.to_le_bytes());
+    push_c_string_padded(buf, path, 256);
+}
+
+fn encode_file_rename_payload(v: &serde_json::Value, buf: &mut Vec<u8>) {
+    let src = v
+        .get("src")
+        .or_else(|| v.get("old_path"))
+        .or_else(|| v.get("old"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let dst = v
+        .get("dst")
+        .or_else(|| v.get("new_path"))
+        .or_else(|| v.get("new"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    push_c_string_padded(buf, src, 256);
+    push_c_string_padded(buf, dst, 256);
+}
+
+fn encode_file_unlink_payload(v: &serde_json::Value, buf: &mut Vec<u8>) {
+    let path = v.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+    push_c_string_padded(buf, path, 256);
+}
+
+fn encode_tcp_connect_payload(v: &serde_json::Value, buf: &mut Vec<u8>) {
+    let family: u16 = 2; // AF_INET
+    let sport: u16 = v.get("src_port").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
+    let dport: u16 = v.get("dst_port").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
+    let protocol: u8 = 6; // TCP
+
+    let dst_ip_str = v.get("dst_ip").and_then(|v| v.as_str()).unwrap_or("0.0.0.0");
+    let src_ip_str = v.get("src_ip").and_then(|v| v.as_str()).unwrap_or("0.0.0.0");
+
+    let saddr = parse_ipv4_to_u32(src_ip_str);
+    let daddr = parse_ipv4_to_u32(dst_ip_str);
+
+    buf.extend_from_slice(&family.to_le_bytes());     // 2 bytes
+    buf.extend_from_slice(&sport.to_le_bytes());      // 2 bytes
+    buf.extend_from_slice(&dport.to_le_bytes());      // 2 bytes
+    buf.push(protocol);                               // 1 byte
+    buf.push(0);                                      // 1 byte padding
+    buf.extend_from_slice(&saddr.to_le_bytes());      // 4 bytes
+    buf.extend_from_slice(&daddr.to_le_bytes());      // 4 bytes
+}
+
+fn encode_dns_query_payload(v: &serde_json::Value, buf: &mut Vec<u8>) {
+    let qtype: u16 = v.get("qtype").and_then(|v| v.as_u64()).unwrap_or(1) as u16; // A record
+    let qclass: u16 = v.get("qclass").and_then(|v| v.as_u64()).unwrap_or(1) as u16; // IN
+    let qname = v.get("domain").and_then(|v| v.as_str()).unwrap_or("");
+
+    buf.extend_from_slice(&qtype.to_le_bytes());
+    buf.extend_from_slice(&qclass.to_le_bytes());
+    push_c_string_padded(buf, qname, 128);
+}
+
+fn encode_module_load_payload(v: &serde_json::Value, buf: &mut Vec<u8>) {
+    let module = v.get("module_name").and_then(|v| v.as_str()).unwrap_or("");
+    push_c_string_padded(buf, module, 64);
+}
+
+fn encode_lsm_block_payload(v: &serde_json::Value, buf: &mut Vec<u8>) {
+    let reason: u8 = v.get("reason").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
+    buf.push(reason);
+    buf.extend_from_slice(&[0u8; 3]); // padding to offset 4
+    let subject = v.get("subject").and_then(|v| v.as_str()).unwrap_or("");
+    push_c_string_padded(buf, subject, 128);
+}
+
+fn encode_process_exit_payload(v: &serde_json::Value, buf: &mut Vec<u8>) {
+    let comm = v.get("comm").and_then(|v| v.as_str()).unwrap_or("");
+    push_c_string_padded(buf, comm, 32);
+}
+
+fn parse_ipv4_to_u32(ip: &str) -> u32 {
+    let parts: Vec<u8> = ip
+        .split('.')
+        .filter_map(|s| s.parse::<u8>().ok())
+        .collect();
+    if parts.len() == 4 {
+        u32::from_be_bytes([parts[0], parts[1], parts[2], parts[3]])
+    } else {
+        0
     }
 }
 
@@ -605,6 +882,9 @@ fn parse_event_type(raw: u8) -> Result<EventType> {
         5 => Ok(EventType::ModuleLoad),
         6 => Ok(EventType::LsmBlock),
         7 => Ok(EventType::ProcessExit),
+        8 => Ok(EventType::FileWrite),
+        9 => Ok(EventType::FileRename),
+        10 => Ok(EventType::FileUnlink),
         other => Err(EbpfError::Parse(format!("unknown event type id {}", other))),
     }
 }
@@ -644,6 +924,9 @@ fn parse_payload(event_type: EventType, raw: &[u8]) -> String {
         EventType::ProcessExec => parse_process_exec_payload(raw),
         EventType::ProcessExit => parse_c_string(raw),
         EventType::FileOpen => parse_file_open_payload(raw),
+        EventType::FileWrite => parse_file_write_payload(raw),
+        EventType::FileRename => parse_file_rename_payload(raw),
+        EventType::FileUnlink => parse_file_unlink_payload(raw),
         EventType::TcpConnect => parse_tcp_connect_payload(raw),
         EventType::DnsQuery => parse_dns_query_payload(raw),
         EventType::ModuleLoad => parse_module_load_payload(raw),
@@ -685,6 +968,38 @@ fn parse_file_open_payload(raw: &[u8]) -> String {
     }
 
     format!("path={};flags={};mode={}", path, flags, mode)
+}
+
+fn parse_file_write_payload(raw: &[u8]) -> String {
+    if raw.len() < 12 {
+        return parse_c_string(raw);
+    }
+
+    let fd = read_u32_le(raw, 0).unwrap_or_default();
+    let size = read_u64_le(raw, 4).unwrap_or_default();
+    let path = parse_c_string(slice_window(raw, 12, 256));
+    if path.is_empty() {
+        return format!("fd={};size={}", fd, size);
+    }
+
+    format!("path={};fd={};size={}", path, fd, size)
+}
+
+fn parse_file_rename_payload(raw: &[u8]) -> String {
+    let old_path = parse_c_string(slice_window(raw, 0, 256));
+    let new_path = parse_c_string(slice_window(raw, 256, 256));
+    if old_path.is_empty() && new_path.is_empty() {
+        return parse_c_string(raw);
+    }
+    format!("src={};dst={}", old_path, new_path)
+}
+
+fn parse_file_unlink_payload(raw: &[u8]) -> String {
+    let path = parse_c_string(slice_window(raw, 0, 256));
+    if path.is_empty() {
+        return parse_c_string(raw);
+    }
+    format!("path={}", path)
 }
 
 fn parse_tcp_connect_payload(raw: &[u8]) -> String {

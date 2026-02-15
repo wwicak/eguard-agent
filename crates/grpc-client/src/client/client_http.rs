@@ -54,11 +54,12 @@ impl Client {
         let payloads = batch
             .iter()
             .map(|event| {
+                let severity = if event.severity.is_empty() { "info" } else { &event.severity };
                 Ok(json!({
                     "agent_id": event.agent_id,
                     "event_type": event.event_type,
-                    "severity": "info",
-                    "rule_name": "",
+                    "severity": severity,
+                    "rule_name": event.rule_name,
                     "event_data": payload_json_to_event_data(&event.payload_json),
                 }))
             })

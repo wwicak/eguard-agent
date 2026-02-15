@@ -29,8 +29,24 @@ impl std::str::FromStr for TransportMode {
 pub struct EventEnvelope {
     pub agent_id: String,
     pub event_type: String,
+    pub severity: String,
+    pub rule_name: String,
     pub payload_json: String,
     pub created_at_unix: i64,
+}
+
+impl EventEnvelope {
+    /// Convenience constructor with info severity (used for non-detection events).
+    pub fn info(agent_id: String, event_type: String, payload_json: String, created_at_unix: i64) -> Self {
+        Self {
+            agent_id,
+            event_type,
+            severity: "info".to_string(),
+            rule_name: String::new(),
+            payload_json,
+            created_at_unix,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

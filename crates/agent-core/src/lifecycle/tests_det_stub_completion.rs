@@ -426,12 +426,15 @@ rule bootstrap_last_known_good_yara {
         uid: 1000,
         process: "bash".to_string(),
         parent_process: "sshd".to_string(),
+        session_id: 1,
         file_path: None,
+        file_write: false,
         file_hash: None,
         dst_port: None,
         dst_ip: None,
         dst_domain: None,
         command_line: Some("echo bootstrap-last-known-good-marker".to_string()),
+        event_size: None,
     };
     let out = runtime
         .detection_state

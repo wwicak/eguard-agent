@@ -10,8 +10,12 @@ yara-rust = ["dep:yara"]
 
 [dependencies]
 serde.workspace = true
+serde_json.workspace = true
 serde_yaml.workspace = true
 rusqlite.workspace = true
 aho-corasick.workspace = true
 libc.workspace = true
 yara = { version = "0.31", optional = true, default-features = false, features = ["vendored", "bundled-4_5_5"] }
+
+[dev-dependencies]
+proptest = "1.6"
