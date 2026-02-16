@@ -30,6 +30,13 @@
 - [x] Add contract tests enforcing exploit detection AC entries (no stubs)
 - [x] Document scope limitations (Linux-only, NAC + Windows/macOS deferred)
 
+## 🧭 Plan: Tier 4.2 exploit detection implementation (Linux tests, cross-platform signals) (2026-02-16)
+- [x] Add exploit indicators (memfd/\"(deleted)\"/procfd) to detection signals and confidence policy
+- [x] Extend detection heuristics to include Windows/macOS fileless exec path patterns (forward-compatible)
+- [x] Add tests for exploit indicator matching + confidence escalation
+- [x] Add QEMU harness for exploit fileless exec replay (Linux only) + acceptance criteria/contracts
+- [x] Validate in QEMU only and document results
+
 ## 🧭 Plan: Refine ML pipeline, detection, telemetry, MDM wiring
 - [x] Review /home/dimas/fe_eguard/docs/eguard-agent-design.md and summarize ML pipeline, detection, telemetry, MDM requirements
 - [x] Audit GitHub Actions ML pipeline under .github/workflows for gaps vs design; propose concrete improvements
@@ -112,6 +119,7 @@
 - QEMU memory scan validation: tests/qemu/run_agent_memory_scan.sh succeeded (shellcode marker detected via memory scan).
 - QEMU container escape validation: tests/qemu/run_agent_container_escape.sh succeeded (container escape + privileged container killchain).
 - QEMU credential theft validation: tests/qemu/run_agent_credential_theft.sh succeeded (credential killchain on /etc/shadow and SSH key).
+- QEMU exploit detection validation: tests/qemu/run_agent_exploit_harness.sh succeeded (memfd/procfd/tmp fileless exec indicators at High+ confidence).
 - Sigma file path predicates: extended compiler with file_path_any_of/contains, added credential_access rule, and expanded cross-platform sensitive path heuristics; re-validated QEMU credential harness.
 - Exploit detection acceptance criteria: added Linux-only fileless-exec indicators (memfd/deleted/procfd/tmp), QEMU exploit harness AC, and contract checks; documented Windows/macOS + NAC deferral.
 

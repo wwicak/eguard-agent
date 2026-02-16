@@ -105,6 +105,7 @@ fn cmdline_information_consistency_between_layers() {
         z3_anomaly_med: false,
         z4_kill_chain: false,
         l1_prefilter_hit: false,
+        exploit_indicator: false,
     };
 
     let features = layer5::MlFeatures::extract(&event, &signals, 0, 0, 0, 0);
@@ -138,6 +139,7 @@ fn dns_entropy_feature_is_stable_and_high_for_dga_like_domains() {
         z3_anomaly_med: false,
         z4_kill_chain: false,
         l1_prefilter_hit: false,
+        exploit_indicator: false,
     };
     let mut event = TelemetryEvent {
         ts_unix: 1,
@@ -226,6 +228,7 @@ fn confidence_ordering_matches_policy() {
         z3_anomaly_med: false,
         z4_kill_chain: false,
         l1_prefilter_hit: false,
+        exploit_indicator: false,
     };
 
     let mut s = base.clone();
@@ -1460,6 +1463,67 @@ fn credential_theft_killchain_triggers_on_macos_paths() {
         hits.iter().any(|h| h == "killchain_credential_theft"),
         "macOS keychain access should trigger credential theft killchain"
     );
+}
+
+#[test]
+// AC-DET-217
+fn exploit_indicator_memfd_triggers_high_confidence() {
+    let mut engine = DetectionEngine::default_with_rules();
+
+    let mut ev = event(20, EventClass::ProcessExec, "memfd", "init", 1000);
+    ev.pid = 7100;
+    ev.ppid = 1;
+    ev.session_id = ev.pid;
+    ev.file_path = Some("memfd:payload (deleted)".to_string());
+
+    let out = engine.process_event(&ev);
+    assert!(out.signals.exploit_indicator);
+    assert!(out
+        .exploit_indicators
+        .iter()
+        .any(|v| v == "fileless_memfd"));
+    assert_eq!(out.confidence, Confidence::High);
+}
+
+#[test]
+// AC-DET-218
+fn exploit_indicator_procfd_triggers_high_confidence() {
+    let mut engine = DetectionEngine::default_with_rules();
+
+    let mut ev = event(21, EventClass::ProcessExec, "fdexec", "init", 1000);
+    ev.pid = 7200;
+    ev.ppid = 1;
+    ev.session_id = ev.pid;
+    ev.file_path = Some("/proc/self/fd/3".to_string());
+
+    let out = engine.process_event(&ev);
+    assert!(out.signals.exploit_indicator);
+    assert!(out
+        .exploit_indicators
+        .iter()
+        .any(|v| v == "fileless_procfd"));
+    assert_eq!(out.confidence, Confidence::High);
+}
+
+#[test]
+// AC-DET-219
+fn exploit_indicator_tmp_interpreter_triggers_high_confidence() {
+    let mut engine = DetectionEngine::default_with_rules();
+
+    let mut ev = event(22, EventClass::ProcessExec, "python", "init", 1000);
+    ev.pid = 7300;
+    ev.ppid = 1;
+    ev.session_id = ev.pid;
+    ev.file_path = Some("/tmp/evil".to_string());
+    ev.command_line = Some("python -c 'print(1)'".to_string());
+
+    let out = engine.process_event(&ev);
+    assert!(out.signals.exploit_indicator);
+    assert!(out
+        .exploit_indicators
+        .iter()
+        .any(|v| v == "fileless_tmp_interpreter"));
+    assert_eq!(out.confidence, Confidence::High);
 }
 
 #[test]
@@ -2983,6 +3047,7 @@ fn confidence_policy_is_first_match_wins() {
         z3_anomaly_med: true,
         z4_kill_chain: true,
         l1_prefilter_hit: true,
+        exploit_indicator: false,
     };
     assert_eq!(confidence_policy(&s), Confidence::Definite);
 
@@ -2993,6 +3058,7 @@ fn confidence_policy_is_first_match_wins() {
         z3_anomaly_med: true,
         z4_kill_chain: false,
         l1_prefilter_hit: true,
+        exploit_indicator: false,
     };
     assert_eq!(confidence_policy(&s), Confidence::VeryHigh);
 }

@@ -644,6 +644,7 @@ impl AgentRuntime {
                 container_escape = detection_event.container_escape,
                 container_privileged = detection_event.container_privileged,
                 kill_chain_hits = ?detection_outcome.kill_chain_hits,
+                exploit_indicators = ?detection_outcome.exploit_indicators,
                 confidence = ?confidence,
                 action = ?action,
                 mode = ?self.runtime_mode,
@@ -1331,6 +1332,7 @@ impl AgentRuntime {
                 "detection_layers": detection_layers,
                 "temporal_hits": &outcome.temporal_hits,
                 "kill_chain_hits": &outcome.kill_chain_hits,
+                "exploit_indicators": &outcome.exploit_indicators,
                 "ioc_matches": &outcome.layer1.matched_signatures,
                 "yara_hits": yara_hits,
                 "anomaly": anomaly,
@@ -1343,6 +1345,7 @@ impl AgentRuntime {
                     "z3_anomaly_med": outcome.signals.z3_anomaly_med,
                     "z4_kill_chain": outcome.signals.z4_kill_chain,
                     "l1_prefilter_hit": outcome.signals.l1_prefilter_hit,
+                    "exploit_indicator": outcome.signals.exploit_indicator,
                 },
             }
         })
@@ -1358,6 +1361,9 @@ impl AgentRuntime {
         }
         if outcome.signals.z1_exact_ioc {
             return "ioc";
+        }
+        if !outcome.exploit_indicators.is_empty() {
+            return "exploit";
         }
         if !outcome.kill_chain_hits.is_empty() {
             return "kill_chain";
@@ -1385,6 +1391,9 @@ impl AgentRuntime {
         if !outcome.kill_chain_hits.is_empty() {
             layers.push("L4_kill_chain".to_string());
         }
+        if !outcome.exploit_indicators.is_empty() {
+            layers.push("EXP_exploit".to_string());
+        }
         if outcome
             .ml_score
             .as_ref()
@@ -1410,6 +1419,7 @@ impl AgentRuntime {
             z2 = evaluation.detection_outcome.signals.z2_temporal,
             z3h = evaluation.detection_outcome.signals.z3_anomaly_high,
             z4 = evaluation.detection_outcome.signals.z4_kill_chain,
+            exploit = evaluation.detection_outcome.signals.exploit_indicator,
             yara_hits = evaluation.detection_outcome.yara_hits.len(),
             "event evaluated"
         );

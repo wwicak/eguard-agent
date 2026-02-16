@@ -336,6 +336,7 @@ mod tests {
                 z3_anomaly_med: false,
                 z4_kill_chain: false,
                 l1_prefilter_hit: false,
+                exploit_indicator: false,
             };
             let features = MlFeatures::extract(&event, &signals, 0, 0, 0, 0);
             let result = engine.score(&features);
@@ -360,6 +361,7 @@ mod tests {
                 z3_anomaly_med: i % 3 == 0, // occasional behavioral anomaly
                 z4_kill_chain: false,
                 l1_prefilter_hit: i % 2 == 0, // prefilter catches ~50%
+                exploit_indicator: false,
             };
             let sig_count = if i % 2 == 0 { 1 } else { 0 }; // string sig match
             let features = MlFeatures::extract(&event, &signals, 0, 0, 0, sig_count);

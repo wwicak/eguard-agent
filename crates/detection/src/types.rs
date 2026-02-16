@@ -131,4 +131,5 @@ pub struct DetectionSignals {
     pub z3_anomaly_med: bool,
     pub z4_kill_chain: bool,
     pub l1_prefilter_hit: bool,
+    pub exploit_indicator: bool,
 }

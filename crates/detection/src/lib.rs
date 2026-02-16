@@ -2,6 +2,7 @@ pub mod behavioral;
 mod bench_detection;
 mod calibration;
 mod engine;
+mod exploit;
 pub mod information;
 mod layer1;
 mod layer2;

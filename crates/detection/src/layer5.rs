@@ -514,6 +514,7 @@ mod tests {
             z3_anomaly_med: false,
             z4_kill_chain: false,
             l1_prefilter_hit: false,
+            exploit_indicator: false,
         };
         let features = MlFeatures::extract(&event, &signals, 0, 0, 0, 0);
         let result = engine.score(&features);
@@ -532,6 +533,7 @@ mod tests {
             z3_anomaly_med: false,
             z4_kill_chain: false,
             l1_prefilter_hit: true,
+            exploit_indicator: false,
         };
         let features = MlFeatures::extract(&event, &signals, 0, 0, 0, 2);
         let result = engine.score(&features);
@@ -550,6 +552,7 @@ mod tests {
             z3_anomaly_med: false,
             z4_kill_chain: true,
             l1_prefilter_hit: true,
+            exploit_indicator: false,
         };
         let features = MlFeatures::extract(&event, &signals, 2, 1, 1, 3);
         let result = engine.score(&features);
@@ -568,6 +571,7 @@ mod tests {
             z3_anomaly_med: false,
             z4_kill_chain: false,
             l1_prefilter_hit: false,
+            exploit_indicator: false,
         };
         let features = MlFeatures::extract(&event, &signals, 0, 0, 0, 0);
         let result = engine.score(&features);
@@ -611,6 +615,7 @@ mod tests {
             z3_anomaly_med: false,
             z4_kill_chain: false,
             l1_prefilter_hit: true,
+            exploit_indicator: false,
         };
         let features = MlFeatures::extract(&event, &signals, 1, 0, 0, 1);
         let result = engine.score(&features);

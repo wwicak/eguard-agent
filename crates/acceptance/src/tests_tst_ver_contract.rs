@@ -1261,6 +1261,28 @@ fn exploit_detection_acceptance_criteria_are_defined() {
 }
 
 #[test]
+// AC-TST-052
+fn qemu_exploit_harness_is_defined() {
+    let script = read("tests/qemu/run_agent_exploit_harness.sh");
+    assert!(
+        script.contains("agent-core"),
+        "QEMU exploit harness must build agent-core"
+    );
+    assert!(
+        script.contains("run_qemu_command.sh"),
+        "QEMU exploit harness must invoke QEMU runner"
+    );
+
+    let cmd = read("tests/qemu/agent_exploit_harness_cmd.sh");
+    for marker in ["memfd:payload", "/proc/self/fd/", "fileless_tmp_interpreter"] {
+        assert!(
+            cmd.contains(marker),
+            "Exploit harness must include {marker}"
+        );
+    }
+}
+
+#[test]
 // AC-DET-182 AC-VER-024 AC-VER-054
 fn signature_ml_runtime_feature_contracts_are_enforced() {
     let feature_gate = read("threat-intel/processing/signature_ml_feature_snapshot_gate.py");
