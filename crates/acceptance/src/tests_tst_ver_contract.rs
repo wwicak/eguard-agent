@@ -1243,6 +1243,24 @@ fn sigma_file_path_predicates_are_supported() {
 }
 
 #[test]
+// AC-TST-052 AC-VER-058
+fn exploit_detection_acceptance_criteria_are_defined() {
+    let ac = read("ACCEPTANCE_CRITERIA.md");
+    for entry in [
+        "AC-DET-217",
+        "AC-DET-218",
+        "AC-DET-219",
+        "AC-TST-052",
+        "AC-VER-058",
+    ] {
+        assert!(
+            ac.contains(entry),
+            "Exploit detection acceptance criteria must include {entry}"
+        );
+    }
+}
+
+#[test]
 // AC-DET-182 AC-VER-024 AC-VER-054
 fn signature_ml_runtime_feature_contracts_are_enforced() {
     let feature_gate = read("threat-intel/processing/signature_ml_feature_snapshot_gate.py");

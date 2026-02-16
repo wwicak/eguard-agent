@@ -90,6 +90,12 @@ Derived from `docs/eguard-agent-design.md`. These acceptance criteria define the
 - **AC-DET-053**: Complexity per evaluation MUST be `O(|V| * |templates| * depth_max * b_eff)` where `b_eff` is effective branching factor after predicate pruning.
 - **AC-DET-054**: Process graph + templates memory MUST fit within 1-2 MB. Evaluation is periodic batch check.
 
+### Exploit Detection (Linux-only, telemetry-aligned)
+
+- **AC-DET-217**: ProcessExec events with `file_path` containing `memfd:` or ending with ` (deleted)` MUST emit an exploit/fileless-exec indicator and elevate confidence to **High** or higher.
+- **AC-DET-218**: ProcessExec events with `file_path` under `/proc/self/fd/` or `/dev/fd/` MUST emit an exploit/fileless-exec indicator and elevate confidence to **High** or higher.
+- **AC-DET-219**: ProcessExec events from `/dev/shm/` or `/tmp/` with command-line interpreter patterns (`python -c`, `perl -e`, `ruby -e`, `bash -c`, `base64 -d`) MUST emit an exploit/dropper indicator and elevate confidence to **High** or higher.
+
 ### Multi-Layer Decision Policy
 
 - **AC-DET-060**: Confidence class **Definite** MUST be assigned if and only if L1 exact IOC match (`z1`).
@@ -1087,7 +1093,9 @@ Derived from `docs/eguard-agent-design.md`. These acceptance criteria define the
 - **AC-TST-049**: QEMU container escape harness MUST flag container escape + privileged container kill chain detections.
 - **AC-TST-050**: QEMU credential theft harness MUST flag sensitive credential access kill chain detections.
 - **AC-TST-051**: Sigma compiler MUST accept file path predicates and ship a credential access rule that uses them.
+- **AC-TST-052**: QEMU exploit detection harness MUST replay fileless-exec indicators (`memfd:`/`(deleted)`/`/proc/self/fd`) and produce High-or-higher confidence detections.
 - **AC-VER-057**: QEMU harness MUST use user-mode networking with no host forwards and explicit RFC1918/link-local blackhole routes inside the guest (outbound HTTPS allowed).
+- **AC-VER-058**: Exploit detection validation is Linux-only until Windows/macOS backends (Tier 4.3) and NAC harness are ready.
 
 ### Performance Targets (Section 29.1)
 
