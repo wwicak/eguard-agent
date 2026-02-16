@@ -1,14 +1,42 @@
 # eGuard Agent — Battle Plan to Beat CrowdStrike
 
 ## 🧭 Plan: Refine ML pipeline, detection, telemetry, MDM wiring
-- [ ] Review /home/dimas/fe_eguard/docs/eguard-agent-design.md and summarize ML pipeline, detection, telemetry, MDM requirements
-- [ ] Audit GitHub Actions ML pipeline under .github/workflows for gaps vs design; propose concrete improvements
-- [ ] Audit crates/detection ML detection layer for feature parity, thresholds, and wiring; align with design
-- [ ] Audit telemetry pipeline to eguard server in /home/dimas/fe_eguard; verify schema, batching, auth, and error handling
-- [ ] Audit MDM feature wiring end-to-end; verify agent ↔ server flows and config/telemetry hooks
-- [ ] Improve signature ML math: runtime-aligned feature generation + deterministic logistic training (no ML frameworks), strict runtime-feature gates
-- [ ] Implement agreed changes with minimal impact, add acceptance tests (no stubs)
+- [x] Review /home/dimas/fe_eguard/docs/eguard-agent-design.md and summarize ML pipeline, detection, telemetry, MDM requirements
+- [x] Audit GitHub Actions ML pipeline under .github/workflows for gaps vs design; propose concrete improvements
+- [x] Audit crates/detection ML detection layer for feature parity, thresholds, and wiring; align with design
+- [x] Audit telemetry pipeline to eguard server in /home/dimas/fe_eguard; verify schema, batching, auth, and error handling
+- [x] Audit MDM feature wiring end-to-end; verify agent ↔ server flows and config/telemetry hooks
+- [x] Improve signature ML math: runtime-aligned feature generation + deterministic logistic training (no ML frameworks), strict runtime-feature gates
+- [x] Implement agreed changes with minimal impact, add acceptance tests (no stubs)
 - [ ] Verify behavior (lint/tests if applicable) and document results in this plan
+
+## 🧭 Plan: Advanced signature ML training upgrade (2026-02-16)
+- [x] Review current `signature_ml_train_model.py` outputs + gates to preserve schema/runtime compatibility
+- [x] Design advanced deterministic training: robust scaling + class weighting + Newton/IRLS optimizer with regularization sweep
+- [x] Add calibration + richer metrics (ROC/PR AUC, log-loss/Brier) while keeping output schema stable
+- [x] Implement changes and update metadata/diagnostics (no new dependencies)
+- [x] Add acceptance criteria + contract tests for advanced ML training pipeline
+- [ ] Verify behavior (do not run tests on VM) and document results
+
+## 🧭 Plan: Execute Tier 1–4 roadmap (2026-02-16)
+- [ ] Tier 1.1: provision QEMU VM with BTF/BPF LSM, compile agent with ebpf-libbpf, run live eBPF event verification + kill/quarantine
+- [ ] Tier 1.2: real malware sample testing in isolated VM, collect TPR/FPR metrics, wire acceptance artifacts
+- [ ] Tier 1.3: implement multi-PID correlation (session_id), update SIGMA/kill-chain correlation, add tests
+- [ ] Tier 2.1: add DNS tunneling/DGA/anomaly signals + tests
+- [ ] Tier 2.2: wire memory scanner + YARA shellcode rules + tests
+- [ ] Tier 2.3: container/namespace awareness + escape detection + tests
+- [ ] Tier 2.4: credential theft detections + tests
+- [ ] Tier 3/4 items: NAC tests, detection explanations, ML latency benchmark, roadmap prep
+- [ ] Update acceptance criteria + contract tests for QEMU-isolated verification
+- [ ] Run tests in isolated QEMU (no host execution) and document results
+
+## Review / Results (2026-02-16)
+- Updated agent ML pipeline gates, runtime feature alignment, and model threshold handling.
+- Upgraded signature ML training to IRLS/Newton optimization with class weighting, regularization sweep, and temperature scaling diagnostics.
+- Wired telemetry payload enrichment, gRPC severity/rule mapping, and compliance envelope with checks + remediation metadata.
+- Added policy refresh loop with TLS policy updates plus compliance caching/interval override; server protos/handlers aligned to TelemetryBatch + ComplianceReport.
+- Added bufconn gRPC acceptance tests for telemetry batches and compliance checks (no stubs), plus contract test for advanced ML training pipeline and new AC entries.
+- Verification: Not run (per instruction).
 
 ## ✅ Completed (Foundation)
 - [x] 5-layer detection engine (IOC, SIGMA, anomaly, kill chain, ML)

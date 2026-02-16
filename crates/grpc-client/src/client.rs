@@ -664,14 +664,14 @@ fn to_pb_telemetry_event(event: &EventEnvelope) -> pb::TelemetryEvent {
         event_id: format!("{}-{}", event.agent_id, event.created_at_unix),
         agent_id: event.agent_id.clone(),
         event_type: map_event_type(&event.event_type) as i32,
-        severity: pb::Severity::Info as i32,
+        severity: map_severity(&event.severity) as i32,
         timestamp: event.created_at_unix,
         pid: 0,
         ppid: 0,
         uid: 0,
         comm: String::new(),
         parent_comm: String::new(),
-        rule_name: String::new(),
+        rule_name: event.rule_name.clone(),
         payload_json: event.payload_json.clone(),
         labels: HashMap::new(),
         created_at_unix: event.created_at_unix,
@@ -705,6 +705,16 @@ fn map_event_type(raw: &str) -> pb::EventType {
         "user_login" | "login" => pb::EventType::UserLogin,
         "alert" => pb::EventType::Alert,
         _ => pb::EventType::ProcessExec,
+    }
+}
+
+fn map_severity(raw: &str) -> pb::Severity {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "low" => pb::Severity::Low,
+        "medium" | "med" => pb::Severity::Medium,
+        "high" => pb::Severity::High,
+        "critical" => pb::Severity::Critical,
+        _ => pb::Severity::Info,
     }
 }
 

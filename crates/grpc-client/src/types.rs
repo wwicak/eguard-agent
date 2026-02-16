@@ -79,9 +79,33 @@ pub struct EnrollmentResultEnvelope {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComplianceCheckEnvelope {
+    pub check_type: String,
+    pub status: String,
+    #[serde(default)]
+    pub actual_value: String,
+    #[serde(default)]
+    pub expected_value: String,
+    #[serde(default)]
+    pub detail: String,
+    #[serde(default)]
+    pub auto_remediated: bool,
+    #[serde(default)]
+    pub remediation_detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComplianceEnvelope {
     pub agent_id: String,
     pub policy_id: String,
+    #[serde(default)]
+    pub policy_version: String,
+    #[serde(default)]
+    pub checked_at_unix: i64,
+    #[serde(default)]
+    pub overall_status: String,
+    #[serde(default)]
+    pub checks: Vec<ComplianceCheckEnvelope>,
     pub check_type: String,
     pub status: String,
     pub detail: String,

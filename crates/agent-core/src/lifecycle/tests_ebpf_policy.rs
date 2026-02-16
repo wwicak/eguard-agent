@@ -71,7 +71,13 @@ fn tick_pipeline_produces_detection_compliance_envelope_and_baseline_learning() 
     let confidence = detection_outcome.confidence;
     let action = plan_action(confidence, &runtime.effective_response_config());
     let compliance = runtime.evaluate_compliance();
-    let event_envelope = runtime.build_event_envelope(enriched.process_exe.as_deref(), now);
+    let event_envelope = runtime.build_event_envelope(
+        &enriched,
+        &detection_event,
+        &detection_outcome,
+        confidence,
+        now,
+    );
 
     let after_samples: u64 = runtime
         .baseline_store
@@ -86,7 +92,8 @@ fn tick_pipeline_produces_detection_compliance_envelope_and_baseline_learning() 
     assert_eq!(event_envelope.created_at_unix, now);
     let payload: serde_json::Value =
         serde_json::from_str(&event_envelope.payload_json).expect("parse payload");
-    assert!(payload.get("exe").is_some());
+    assert!(payload.get("event").is_some());
+    assert!(payload.get("detection").is_some());
     assert!(!compliance.status.trim().is_empty());
     assert!(matches!(
         action,

@@ -107,6 +107,11 @@ When a user asks to "beat" a competitor, respond with scope-safe language
 focused on defensive quality improvements. Don't interpret it as evasion or
 offensive bypass. Keep guidance on reliability, accuracy, and safety.
 
+## Acceptance Criteria Must Be Enforced
+When the user emphasizes acceptance criteria, add or update tests tagged with
+AC-\* identifiers and ensure CI gates fail on violations. Never ship changes
+without updating acceptance/contract tests when behavior changes.
+
 ## Bundle Loading Was Not Wired Into Agent Startup
 The `load_bundle_full()` and `load_bundle_rules()` functions existed in
 `rule_bundle_loader.rs` but were NEVER called from `AgentRuntime::new()`.
@@ -141,6 +146,12 @@ and align integration notes and fixes to that repo.
 Do not embed server IPs in agent binaries or default configs. Always rely on
 bootstrap enrollment (`bootstrap.conf`), environment overrides, or DNS names
 so deployments can change server addresses without rebuilding agents.
+
+## Honor Advanced ML Requests
+When the user asks for advanced/sophisticated ML math, do not keep a minimal
+"lightweight" optimizer. Upgrade to stronger optimization (e.g., Newton/IRLS
+or L-BFGS), add calibration/metrics, and document the advanced approach in the
+training pipeline.
 
 ## Do Not Run Tests On User VM
 When asked to verify or test, do not execute services or tests directly on the

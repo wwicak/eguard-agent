@@ -1073,6 +1073,9 @@ Derived from `docs/eguard-agent-design.md`. These acceptance criteria define the
 - **AC-TST-035**: `test_rate_limiter`: max_kills=3, trigger 5 detections, verify 3 killed + 2 survive.
 - **AC-TST-036**: `test_quarantine_and_restore`: create file, quarantine, verify deleted + quarantine copy, restore, verify match.
 - **AC-TST-037**: Threat-intel processing tests MUST validate critical ATT&CK technique floor gate pass/fail behavior and burn-down scoreboard artifact generation (JSON + Markdown) with and without previous baseline input.
+- **AC-TST-038**: Signature-ML training MUST use deterministic second-order optimization (IRLS/Newton) with class weighting + regularization sweep.
+- **AC-TST-039**: Signature-ML training MUST remain framework-free (no numpy/sklearn/torch/tensorflow) and emit calibration via temperature scaling.
+- **AC-TST-040**: Signature-ML training artifacts MUST include advanced metrics: PR/ROC AUC, log-loss, Brier score, and ECE.
 
 ### Performance Targets (Section 29.1)
 

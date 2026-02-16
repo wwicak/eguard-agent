@@ -116,20 +116,42 @@ impl Client {
     pub(super) async fn send_compliance_grpc(&self, compliance: &ComplianceEnvelope) -> Result<()> {
         self.with_retry("compliance_grpc", || async {
             let mut client = self.compliance_client().await?;
+            let checked_at = if compliance.checked_at_unix > 0 {
+                compliance.checked_at_unix
+            } else {
+                now_unix()
+            };
+            let checks = compliance
+                .checks
+                .iter()
+                .map(|check| pb::ComplianceCheckResult {
+                    check_type: check.check_type.clone(),
+                    status: map_check_status(&check.status) as i32,
+                    actual_value: check.actual_value.clone(),
+                    expected_value: check.expected_value.clone(),
+                    detail: check.detail.clone(),
+                    auto_remediated: check.auto_remediated,
+                    remediation_detail: check.remediation_detail.clone(),
+                })
+                .collect::<Vec<_>>();
+            let overall_status = map_overall_status(
+                &compliance.overall_status,
+                &compliance.status,
+            ) as i32;
             client
                 .report_compliance(pb::ComplianceReport {
                     agent_id: compliance.agent_id.clone(),
                     policy_id: compliance.policy_id.clone(),
-                    policy_version: String::new(),
-                    checked_at: now_unix(),
-                    checks: Vec::new(),
-                    overall_status: pb::ComplianceStatus::Compliant as i32,
+                    policy_version: compliance.policy_version.clone(),
+                    checked_at,
+                    checks,
+                    overall_status,
                     check_type: compliance.check_type.clone(),
                     status: compliance.status.clone(),
                     detail: compliance.detail.clone(),
                     expected_value: compliance.expected_value.clone(),
                     actual_value: compliance.actual_value.clone(),
-                    checked_at_unix: now_unix(),
+                    checked_at_unix: checked_at,
                 })
                 .await
                 .context("report_compliance RPC failed")?;
@@ -400,4 +422,25 @@ fn map_threat_intel_response(res: pb::ThreatIntelVersion) -> Option<ThreatIntelV
         bundle_signature_path: res.bundle_signature_path,
         bundle_sha256: res.bundle_sha256,
     })
+}
+
+fn map_check_status(raw: &str) -> pb::CheckStatus {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "pass" | "ok" | "compliant" => pb::CheckStatus::Pass,
+        "fail" | "non_compliant" | "non-compliant" => pb::CheckStatus::Fail,
+        _ => pb::CheckStatus::CheckError,
+    }
+}
+
+fn map_overall_status(overall: &str, fallback: &str) -> pb::ComplianceStatus {
+    let candidate = if overall.trim().is_empty() {
+        fallback
+    } else {
+        overall
+    };
+    match candidate.trim().to_ascii_lowercase().as_str() {
+        "pass" | "compliant" => pb::ComplianceStatus::Compliant,
+        "fail" | "non_compliant" | "non-compliant" => pb::ComplianceStatus::NonCompliant,
+        _ => pb::ComplianceStatus::Error,
+    }
 }

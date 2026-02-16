@@ -959,6 +959,88 @@ fn attack_critical_burndown_bundle_release_contracts_are_present() {
 }
 
 #[test]
+// AC-TST-038 AC-TST-039 AC-TST-040
+fn signature_ml_training_pipeline_is_framework_free_and_advanced() {
+    let script = read("threat-intel/processing/signature_ml_train_model.py");
+    assert!(
+        script.contains("irls_newton"),
+        "training script must use IRLS/Newton optimizer"
+    );
+    assert!(
+        script.contains("l2_sweep"),
+        "training script must include L2 regularization sweep diagnostics"
+    );
+    assert!(
+        script.contains("temperature"),
+        "training script must include temperature scaling"
+    );
+    for metric in ["pr_auc", "roc_auc", "log_loss", "brier", "ece"] {
+        assert!(
+            script.contains(metric),
+            "training script must emit training metric {metric}"
+        );
+    }
+    for forbidden in ["numpy", "sklearn", "torch", "tensorflow"] {
+        assert!(
+            !script.contains(forbidden),
+            "training script must not depend on {forbidden}"
+        );
+    }
+}
+
+#[test]
+// AC-DET-182 AC-VER-024 AC-VER-054
+fn signature_ml_runtime_feature_contracts_are_enforced() {
+    let feature_gate = read("threat-intel/processing/signature_ml_feature_snapshot_gate.py");
+    let runtime_features = [
+        "z1_ioc_hit",
+        "z2_temporal_count",
+        "z3_anomaly_high",
+        "z3_anomaly_med",
+        "z4_killchain_count",
+        "yara_hit_count",
+        "string_sig_count",
+        "event_class_risk",
+        "uid_is_root",
+        "dst_port_risk",
+        "has_command_line",
+        "cmdline_length_norm",
+        "prefilter_hit",
+        "multi_layer_count",
+        "cmdline_renyi_h2",
+        "cmdline_compression",
+        "cmdline_min_entropy",
+        "cmdline_entropy_gap",
+        "dns_entropy",
+        "event_size_norm",
+    ];
+    for feature in runtime_features {
+        assert!(
+            feature_gate.contains(&format!("\"{}\"", feature)),
+            "feature snapshot gate must include runtime feature {feature}"
+        );
+    }
+
+    let workflow = read(".github/workflows/build-bundle.yml");
+    assert!(
+        workflow.contains("dns_entropy"),
+        "build bundle workflow must include dns_entropy in runtime feature gate"
+    );
+    assert!(
+        workflow.contains("event_size_norm"),
+        "build bundle workflow must include event_size_norm in runtime feature gate"
+    );
+    assert!(
+        workflow.contains("FAIL: ML model missing runtime features"),
+        "build bundle workflow must fail on missing runtime features"
+    );
+    assert!(
+        workflow.contains("ML model threshold out of range"),
+        "build bundle workflow must validate ML threshold range"
+    );
+}
+
+#[test]
 // AC-VER-014 AC-VER-015 AC-VER-016 AC-VER-017 AC-VER-018 AC-VER-019 AC-VER-020 AC-VER-021 AC-VER-022 AC-VER-023 AC-VER-024 AC-VER-025 AC-VER-026 AC-VER-027 AC-VER-028 AC-VER-029 AC-VER-030 AC-VER-044 AC-VER-045 AC-VER-046 AC-VER-047 AC-VER-052 AC-VER-053 AC-VER-054
 fn verification_coverage_and_security_pipeline_contracts_are_present() {
     let root = repo_root();

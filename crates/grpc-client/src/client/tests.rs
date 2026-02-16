@@ -1,4 +1,5 @@
 use super::*;
+use crate::types::ComplianceCheckEnvelope;
 use hyper_util::rt::TokioIo;
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -690,6 +691,10 @@ async fn send_compliance_offline_returns_error() {
         .send_compliance(&ComplianceEnvelope {
             agent_id: "agent-1".to_string(),
             policy_id: "policy-1".to_string(),
+            policy_version: String::new(),
+            checked_at_unix: 0,
+            overall_status: String::new(),
+            checks: Vec::new(),
             check_type: "firewall_enabled".to_string(),
             status: "fail".to_string(),
             detail: "firewall off".to_string(),
@@ -1608,8 +1613,8 @@ async fn send_events_grpc_streams_batch_to_server_with_expected_fields() {
         .send_events(&[EventEnvelope {
             agent_id: "agent-telemetry".to_string(),
             event_type: "alert".to_string(),
-            severity: String::new(),
-            rule_name: String::new(),
+            severity: "high".to_string(),
+            rule_name: "unit-test-rule".to_string(),
             payload_json: "{\"reason\":\"unit-test\"}".to_string(),
             created_at_unix: 4242,
         }])
@@ -1627,6 +1632,8 @@ async fn send_events_grpc_streams_batch_to_server_with_expected_fields() {
         let event = &batch.events[0];
         assert_eq!(event.agent_id, "agent-telemetry");
         assert_eq!(event.event_type, pb::EventType::Alert as i32);
+        assert_eq!(event.severity, pb::Severity::High as i32);
+        assert_eq!(event.rule_name, "unit-test-rule");
         assert_eq!(event.payload_json, "{\"reason\":\"unit-test\"}");
         assert_eq!(event.created_at_unix, 4242);
     }
@@ -1671,6 +1678,18 @@ async fn send_compliance_grpc_captures_report_fields() {
         .send_compliance(&ComplianceEnvelope {
             agent_id: "agent-comp-1".to_string(),
             policy_id: "policy-xyz".to_string(),
+            policy_version: "v2".to_string(),
+            checked_at_unix: 4242,
+            overall_status: "non_compliant".to_string(),
+            checks: vec![ComplianceCheckEnvelope {
+                check_type: "firewall_enabled".to_string(),
+                status: "fail".to_string(),
+                actual_value: "false".to_string(),
+                expected_value: "true".to_string(),
+                detail: "firewall disabled".to_string(),
+                auto_remediated: false,
+                remediation_detail: String::new(),
+            }],
             check_type: "firewall_enabled".to_string(),
             status: "fail".to_string(),
             detail: "firewall disabled".to_string(),
@@ -1686,11 +1705,21 @@ async fn send_compliance_grpc_captures_report_fields() {
         let report = &guard.reports[0];
         assert_eq!(report.agent_id, "agent-comp-1");
         assert_eq!(report.policy_id, "policy-xyz");
+        assert_eq!(report.policy_version, "v2");
+        assert_eq!(report.checked_at, 4242);
         assert_eq!(report.check_type, "firewall_enabled");
         assert_eq!(report.status, "fail");
         assert_eq!(report.detail, "firewall disabled");
         assert_eq!(report.expected_value, "true");
         assert_eq!(report.actual_value, "false");
+        assert_eq!(report.overall_status, pb::ComplianceStatus::NonCompliant as i32);
+        assert_eq!(report.checks.len(), 1);
+        let check = &report.checks[0];
+        assert_eq!(check.check_type, "firewall_enabled");
+        assert_eq!(check.status, pb::CheckStatus::Fail as i32);
+        assert_eq!(check.actual_value, "false");
+        assert_eq!(check.expected_value, "true");
+        assert_eq!(check.detail, "firewall disabled");
     }
 
     server.shutdown().await;

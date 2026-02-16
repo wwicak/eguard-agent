@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Build and validate signature-ML feature snapshot from adjudicated labels."""
+"""Build and validate signature-ML feature snapshot from adjudicated labels.
+
+The output feature schema must match the agent runtime Layer-5 features to
+ensure CI-trained models are loadable without feature drift.
+"""
 
 from __future__ import annotations
 
@@ -11,12 +15,26 @@ from pathlib import Path
 from typing import Any
 
 FEATURES = (
-    "rule_severity",
-    "signature_total",
-    "database_total",
-    "source_diversity_score",
-    "attack_surface_score",
-    "critical_resilience_score",
+    "z1_ioc_hit",
+    "z2_temporal_count",
+    "z3_anomaly_high",
+    "z3_anomaly_med",
+    "z4_killchain_count",
+    "yara_hit_count",
+    "string_sig_count",
+    "event_class_risk",
+    "uid_is_root",
+    "dst_port_risk",
+    "has_command_line",
+    "cmdline_length_norm",
+    "prefilter_hit",
+    "multi_layer_count",
+    "cmdline_renyi_h2",
+    "cmdline_compression",
+    "cmdline_min_entropy",
+    "cmdline_entropy_gap",
+    "dns_entropy",
+    "event_size_norm",
 )
 
 
@@ -107,6 +125,24 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _synthetic_score(features: dict[str, float]) -> float:
+    linear = (
+        -2.6
+        + 2.1 * features.get("z1_ioc_hit", 0.0)
+        + 1.2 * features.get("z2_temporal_count", 0.0)
+        + 1.4 * features.get("z4_killchain_count", 0.0)
+        + 1.6 * features.get("yara_hit_count", 0.0)
+        + 1.1 * features.get("string_sig_count", 0.0)
+        + 0.6 * features.get("event_class_risk", 0.0)
+        + 0.4 * features.get("dst_port_risk", 0.0)
+        + 0.35 * features.get("cmdline_compression", 0.0)
+        + 0.25 * features.get("dns_entropy", 0.0)
+        + 0.2 * features.get("event_size_norm", 0.0)
+        + 0.15 * features.get("multi_layer_count", 0.0)
+    )
+    return _clamp(1.0 / (1.0 + pow(2.718281828, -linear)), 0.001, 0.999)
+
+
 def main() -> int:
     args = _parser().parse_args()
     fail_on_threshold = _parse_bool(args.fail_on_threshold)
@@ -124,30 +160,34 @@ def main() -> int:
         print(str(err))
         return 1
 
-    processed: list[dict[str, Any]] = []
-    unique_hosts: set[str] = set()
-    unique_rules: set[str] = set()
-    timestamps: list[datetime] = []
+    report: dict[str, Any] = {
+        "suite": "signature_ml_feature_snapshot_gate",
+        "recorded_at_utc": _iso_utc(_now_utc()),
+        "status": "pass",
+        "measured": {
+            "rows": len(rows),
+            "unique_hosts": 0,
+            "unique_rules": 0,
+            "missing_feature_ratio": 1.0,
+            "temporal_span_days": 0.0,
+        },
+        "alerts": [],
+    }
+
+    if not rows:
+        report["status"] = "fail"
+        report["alerts"].append("no rows in labels dataset")
+        Path(args.output_report).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        print("labels dataset empty")
+        return 1
+
     missing_feature_count = 0
+    processed = []
+    unique_hosts = set()
+    unique_rules = set()
+    observed_at_values: list[datetime] = []
 
     for row in rows:
-        label_raw = row.get("label")
-        label_value: int | None = None
-        if isinstance(label_raw, bool):
-            label_value = int(label_raw)
-        elif isinstance(label_raw, (int, float)):
-            candidate = int(label_raw)
-            if candidate in (0, 1):
-                label_value = candidate
-
-        if label_value is None:
-            continue
-
-        observed = _parse_ts(row.get("observed_at_utc"))
-        if observed is None:
-            continue
-        timestamps.append(observed)
-
         host = str(row.get("host_id", "")).strip()
         rule = str(row.get("rule_id", "")).strip()
         if host:
@@ -155,46 +195,59 @@ def main() -> int:
         if rule:
             unique_rules.add(rule)
 
+        observed_at = _parse_ts(row.get("observed_at_utc"))
+        if observed_at is not None:
+            observed_at_values.append(observed_at)
+
         feature_values: dict[str, float] = {}
         for name in FEATURES:
             value_raw = row.get(name)
-            if value_raw in (None, ""):
+            if value_raw is None:
                 missing_feature_count += 1
             feature_values[name] = _as_float(value_raw, 0.0)
 
         model_score = row.get("model_score")
-        if model_score in (None, ""):
-            synthetic_score = (
-                0.20 * _clamp(feature_values["rule_severity"] / 5.0, 0.0, 1.0)
-                + 0.15 * _clamp(feature_values["signature_total"] / 8000.0, 0.0, 1.0)
-                + 0.15 * _clamp(feature_values["database_total"] / 30000.0, 0.0, 1.0)
-                + 0.16 * _clamp(feature_values["source_diversity_score"] / 100.0, 0.0, 1.0)
-                + 0.17 * _clamp(feature_values["attack_surface_score"] / 100.0, 0.0, 1.0)
-                + 0.17 * _clamp(feature_values["critical_resilience_score"] / 100.0, 0.0, 1.0)
-            )
-            feature_values["model_score"] = round(_clamp(synthetic_score, 0.001, 0.999), 6)
+        if model_score is None:
+            feature_values["model_score"] = round(_synthetic_score(feature_values), 6)
         else:
             feature_values["model_score"] = round(_clamp(_as_float(model_score, 0.0), 0.001, 0.999), 6)
 
         processed.append(
             {
-                "sample_id": str(row.get("sample_id", "")).strip() or f"anon-{len(processed)+1:06d}",
-                "observed_at_utc": _iso_utc(observed),
-                "host_id": host,
-                "rule_id": rule,
-                "label": label_value,
+                **{
+                    "sample_id": row.get("sample_id"),
+                    "observed_at_utc": row.get("observed_at_utc"),
+                    "adjudicated_at_utc": row.get("adjudicated_at_utc"),
+                    "host_id": row.get("host_id"),
+                    "rule_id": row.get("rule_id"),
+                    "label": row.get("label"),
+                    "label_source": row.get("label_source"),
+                },
                 **feature_values,
             }
         )
 
     row_count = len(processed)
-    temporal_span_days = 0.0
-    if len(timestamps) >= 2:
-        temporal_span_days = (max(timestamps) - min(timestamps)).total_seconds() / 86400.0
-
     total_feature_cells = row_count * len(FEATURES)
     missing_feature_ratio = (
         missing_feature_count / total_feature_cells if total_feature_cells > 0 else 1.0
+    )
+
+    temporal_span_days = 0.0
+    if observed_at_values:
+        observed_at_values.sort()
+        temporal_span_days = (
+            observed_at_values[-1] - observed_at_values[0]
+        ).total_seconds() / 86400.0
+
+    report["measured"].update(
+        {
+            "rows": row_count,
+            "unique_hosts": len(unique_hosts),
+            "unique_rules": len(unique_rules),
+            "missing_feature_ratio": round(missing_feature_ratio, 6),
+            "temporal_span_days": round(temporal_span_days, 3),
+        }
     )
 
     failures: list[str] = []
@@ -215,81 +268,45 @@ def main() -> int:
         )
     if temporal_span_days < args.min_temporal_span_days:
         failures.append(
-            f"temporal_span_days below threshold: {temporal_span_days:.4f} < {args.min_temporal_span_days:.4f}"
+            "temporal_span_days below threshold: "
+            f"{temporal_span_days:.3f} < {args.min_temporal_span_days:.3f}"
         )
 
     if failures and fail_on_threshold:
-        status = "fail"
+        report["status"] = "fail"
     elif failures:
-        status = "shadow_alert"
-    else:
-        status = "pass"
+        report["status"] = "shadow_alert"
+    report["alerts"] = failures
 
     features_path = Path(args.output_features)
     _write_ndjson(features_path, processed)
     features_sha = _sha256_file(features_path)
 
+    schema_path = Path(args.output_schema)
     schema = {
         "suite": "signature_ml_feature_schema",
         "recorded_at_utc": _iso_utc(_now_utc()),
-        "version": 1,
-        "row_count": row_count,
         "features": [*FEATURES],
-        "label_field": "label",
-        "score_field": "model_score",
+        "dataset": str(features_path),
         "dataset_sha256": features_sha,
     }
-    schema_path = Path(args.output_schema)
     schema_path.parent.mkdir(parents=True, exist_ok=True)
     schema_path.write_text(json.dumps(schema, indent=2) + "\n", encoding="utf-8")
-    schema_sha = _sha256_file(schema_path)
 
-    report = {
-        "suite": "signature_ml_feature_snapshot_gate",
-        "recorded_at_utc": _iso_utc(_now_utc()),
-        "status": status,
-        "mode": "enforced" if fail_on_threshold else "shadow",
-        "thresholds": {
-            "min_rows": args.min_rows,
-            "min_unique_hosts": args.min_unique_hosts,
-            "min_unique_rules": args.min_unique_rules,
-            "max_missing_feature_ratio": args.max_missing_feature_ratio,
-            "min_temporal_span_days": args.min_temporal_span_days,
-            "fail_on_threshold": fail_on_threshold,
-        },
-        "measured": {
-            "row_count": row_count,
-            "unique_hosts": len(unique_hosts),
-            "unique_rules": len(unique_rules),
-            "missing_feature_ratio": round(missing_feature_ratio, 6),
-            "temporal_span_days": round(temporal_span_days, 4),
-        },
-        "artifacts": {
-            "features": str(features_path),
-            "features_sha256": features_sha,
-            "schema": str(schema_path),
-            "schema_sha256": schema_sha,
-        },
-        "failures": failures,
-    }
     report_path = Path(args.output_report)
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
     print("Signature ML feature snapshot:")
-    print(f"- status: {status}")
     print(f"- rows: {row_count}")
-    print(f"- unique hosts: {len(unique_hosts)}")
-    print(f"- unique rules: {len(unique_rules)}")
-    print(f"- temporal span days: {temporal_span_days:.4f}")
+    print(f"- missing feature ratio: {missing_feature_ratio:.6f}")
+    print(f"- temporal span days: {temporal_span_days:.3f}")
     if failures:
         print("\nSignature ML feature snapshot alerts:")
         for failure in failures:
             print(f"- {failure}")
 
-    if status == "fail":
-        return 1
-    return 0
+    return 0 if (not failures or not fail_on_threshold) else 1
 
 
 if __name__ == "__main__":

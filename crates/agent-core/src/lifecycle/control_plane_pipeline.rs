@@ -3,9 +3,12 @@ use std::time::Instant;
 use anyhow::Result;
 use tracing::warn;
 
+use compliance::parse_policy_json;
+use grpc_client::{ComplianceCheckEnvelope, PolicyEnvelope, TlsConfig};
+
 use super::{
-    elapsed_micros, interval_due, AgentRuntime, ComplianceResult, ControlPlaneTaskKind,
-    PendingControlPlaneSend, PendingControlPlaneTask, TickEvaluation, COMPLIANCE_INTERVAL_SECS,
+    elapsed_micros, interval_due, update_tls_policy_from_server, AgentRuntime, ComplianceResult,
+    ControlPlaneTaskKind, PendingControlPlaneSend, PendingControlPlaneTask, TickEvaluation,
     CONTROL_PLANE_TASK_EXECUTION_BUDGET_PER_TICK, CONTROL_PLANE_TASK_QUEUE_CAPACITY,
     HEARTBEAT_INTERVAL_SECS,
 };
@@ -62,7 +65,7 @@ impl AgentRuntime {
         let compliance_due = interval_due(
             self.last_compliance_attempt_unix,
             now_unix,
-            COMPLIANCE_INTERVAL_SECS,
+            self.compliance_interval_secs(),
         );
         if compliance_due {
             let compliance = evaluation
@@ -72,6 +75,10 @@ impl AgentRuntime {
                 ControlPlaneTaskKind::Compliance { compliance },
                 now_unix,
             );
+        }
+
+        if self.policy_refresh_due(now_unix) {
+            self.try_enqueue_control_plane_task(ControlPlaneTaskKind::PolicySync, now_unix);
         }
 
         if self.threat_intel_refresh_due(now_unix) {
@@ -127,6 +134,9 @@ impl AgentRuntime {
                     self.send_compliance_if_due(now_unix, &compliance);
                     self.metrics.last_compliance_micros = elapsed_micros(compliance_started);
                 }
+                ControlPlaneTaskKind::PolicySync => {
+                    self.refresh_policy_if_due(now_unix).await?;
+                }
                 ControlPlaneTaskKind::ThreatIntelRefresh => {
                     let threat_refresh_started = Instant::now();
                     self.refresh_threat_intel_if_due(now_unix).await?;
@@ -160,6 +170,91 @@ impl AgentRuntime {
         )
     }
 
+    fn policy_refresh_due(&self, now_unix: i64) -> bool {
+        interval_due(
+            self.last_policy_fetch_unix,
+            now_unix,
+            super::POLICY_REFRESH_INTERVAL_SECS,
+        )
+    }
+
+    fn compliance_interval_secs(&self) -> i64 {
+        let policy_interval = self
+            .compliance_policy
+            .check_interval_secs
+            .unwrap_or(self.config.compliance_check_interval_secs);
+        if policy_interval == 0 {
+            super::COMPLIANCE_INTERVAL_SECS
+        } else {
+            policy_interval as i64
+        }
+    }
+
+    async fn refresh_policy_if_due(&mut self, now_unix: i64) -> Result<()> {
+        if !self.policy_refresh_due(now_unix) {
+            return Ok(());
+        }
+        self.last_policy_fetch_unix = Some(now_unix);
+        match self.client.fetch_policy(&self.config.agent_id).await {
+            Ok(Some(policy)) => {
+                self.apply_policy_from_server(policy);
+            }
+            Ok(None) => {}
+            Err(err) => {
+                warn!(error = %err, "failed to refresh policy from server");
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_policy_from_server(&mut self, policy: PolicyEnvelope) {
+        let mut policy_changed = false;
+        if !policy.policy_id.trim().is_empty() && self.compliance_policy_id != policy.policy_id {
+            self.compliance_policy_id = policy.policy_id.clone();
+            policy_changed = true;
+        }
+        if !policy.config_version.trim().is_empty()
+            && self.compliance_policy_version != policy.config_version
+        {
+            self.compliance_policy_version = policy.config_version.clone();
+            policy_changed = true;
+        }
+        if !policy.policy_json.trim().is_empty() {
+            match parse_policy_json(&policy.policy_json) {
+                Ok(parsed) => {
+                    self.compliance_policy = parsed;
+                    policy_changed = true;
+                }
+                Err(err) => {
+                    warn!(error = %err, "invalid compliance policy JSON from server; keeping current");
+                }
+            }
+        }
+
+        if policy_changed {
+            self.last_compliance_checked_unix = None;
+            self.last_compliance_result = None;
+        }
+
+        if update_tls_policy_from_server(&mut self.config, &policy) && self.client.is_tls_configured() {
+            if let (Some(cert), Some(key), Some(ca)) = (
+                self.config.tls_cert_path.clone(),
+                self.config.tls_key_path.clone(),
+                self.config.tls_ca_path.clone(),
+            ) {
+                if let Err(err) = self.client.configure_tls(TlsConfig {
+                    cert_path: cert,
+                    key_path: key,
+                    ca_path: ca,
+                    pinned_ca_sha256: self.config.tls_pinned_ca_sha256.clone(),
+                    ca_pin_path: self.config.tls_ca_pin_path.clone(),
+                }) {
+                    warn!(error = %err, "failed to apply updated TLS policy");
+                }
+            }
+        }
+    }
+
     fn send_heartbeat_if_due(&mut self, now_unix: i64, compliance_status: &str) {
         if !interval_due(
             self.last_heartbeat_attempt_unix,
@@ -182,20 +277,49 @@ impl AgentRuntime {
         if !interval_due(
             self.last_compliance_attempt_unix,
             now_unix,
-            COMPLIANCE_INTERVAL_SECS,
+            self.compliance_interval_secs(),
         ) {
             return;
         }
         self.last_compliance_attempt_unix = Some(now_unix);
 
+        let checks = compliance
+            .checks
+            .iter()
+            .map(|check| {
+                let remediation = self.last_compliance_remediations.get(&check.check);
+                ComplianceCheckEnvelope {
+                    check_type: check.check.clone(),
+                    status: check.status.clone(),
+                    actual_value: String::new(),
+                    expected_value: String::new(),
+                    detail: check.detail.clone(),
+                    auto_remediated: remediation.map(|r| r.success).unwrap_or(false),
+                    remediation_detail: remediation
+                        .map(|r| r.detail.clone())
+                        .unwrap_or_default(),
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let summary_check_type = compliance
+            .checks
+            .first()
+            .map(|check| check.check.clone())
+            .unwrap_or_else(|| "policy_summary".to_string());
+
         let envelope = super::ComplianceEnvelope {
             agent_id: self.config.agent_id.clone(),
-            policy_id: "default".to_string(),
-            check_type: "runtime_health".to_string(),
+            policy_id: self.compliance_policy_id.clone(),
+            policy_version: self.compliance_policy_version.clone(),
+            checked_at_unix: now_unix,
+            overall_status: compliance.status.clone(),
+            checks,
+            check_type: summary_check_type,
             status: compliance.status.clone(),
             detail: compliance.detail.clone(),
-            expected_value: "firewall_enabled=true".to_string(),
-            actual_value: "firewall_enabled=true".to_string(),
+            expected_value: String::new(),
+            actual_value: String::new(),
         };
 
         self.enqueue_control_plane_send(PendingControlPlaneSend::Compliance { envelope });
@@ -207,6 +331,7 @@ impl ControlPlaneTaskKind {
         match self {
             Self::Heartbeat { .. } => "heartbeat",
             Self::Compliance { .. } => "compliance",
+            Self::PolicySync => "policy_sync",
             Self::ThreatIntelRefresh => "threat_intel",
             Self::CommandSync => "command_sync",
         }

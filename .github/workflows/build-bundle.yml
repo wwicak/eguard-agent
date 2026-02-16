@@ -1000,13 +1000,14 @@ jobs:
           if weight_count != feature_count:
               print(f"FAIL: feature/weight mismatch: {feature_count} features vs {weight_count} weights")
               sys.exit(1)
-          # Verify the 18 runtime features are present
+          # Verify the 20 runtime features are present
           RUNTIME_FEATURES = [
               "z1_ioc_hit", "z2_temporal_count", "z3_anomaly_high", "z3_anomaly_med",
               "z4_killchain_count", "yara_hit_count", "string_sig_count", "event_class_risk",
               "uid_is_root", "dst_port_risk", "has_command_line", "cmdline_length_norm",
               "prefilter_hit", "multi_layer_count",
               "cmdline_renyi_h2", "cmdline_compression", "cmdline_min_entropy", "cmdline_entropy_gap",
+              "dns_entropy", "event_size_norm",
           ]
           model_features = set(model.get("features", []))
           covered = [f for f in RUNTIME_FEATURES if f in model_features]
@@ -1015,9 +1016,18 @@ jobs:
           print(f"  Features: {feature_count}")
           print(f"  Runtime features covered: {len(covered)}/{len(RUNTIME_FEATURES)}")
           if missing_runtime:
-              print(f"  Missing runtime features: {missing_runtime}")
+              print(f"FAIL: ML model missing runtime features: {missing_runtime}")
+              sys.exit(1)
+          threshold = model.get("threshold")
+          if threshold is None or not isinstance(threshold, (int, float)):
+              print("FAIL: ML model missing numeric threshold")
+              sys.exit(1)
+          if threshold < 0 or threshold > 1:
+              print(f"FAIL: ML model threshold out of range: {threshold}")
+              sys.exit(1)
           print(f"  Training samples: {model.get('training_samples', 'n/a')}")
           print(f"  Bias: {model.get('bias', 'n/a')}")
+          print(f"  Threshold: {threshold}")
           print("ML model runtime compatibility: PASS")
           PYCHECK
 

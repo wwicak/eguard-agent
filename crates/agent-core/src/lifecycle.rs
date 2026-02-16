@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 #[cfg(test)]
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
@@ -12,7 +12,11 @@ use tokio::task::JoinSet;
 use tracing::{info, warn};
 
 use baseline::{BaselineStatus, BaselineStore, BaselineTransition, ProcessKey};
-use compliance::{evaluate, evaluate_linux, parse_policy_json, CompliancePolicy, ComplianceResult};
+use compliance::{
+    collect_linux_snapshot, evaluate, evaluate_snapshot, execute_remediation_actions,
+    parse_policy_json, plan_remediation_actions, CompliancePolicy, ComplianceResult,
+    RemediationOutcome, ShellCommandRunner,
+};
 use detection::{
     Confidence,
     DetectionEngine,
@@ -22,11 +26,9 @@ use detection::{
     TelemetryEvent,
 };
 use detection::memory_scanner::{find_suspicious_pids, MemoryScanResult, ScanMode};
-#[cfg(test)]
-use grpc_client::PolicyEnvelope;
 use grpc_client::{
     Client as GrpcClient, CommandEnvelope, ComplianceEnvelope, EnrollmentEnvelope, EventBuffer,
-    EventEnvelope, ResponseEnvelope, TlsConfig, TransportMode,
+    EventEnvelope, PolicyEnvelope, ResponseEnvelope, TlsConfig, TransportMode,
 };
 use nac::{posture_from_compliance, Posture};
 use platform_linux::{enrich_event_with_cache, EbpfEngine, EbpfStats, EnrichmentCache, RawEvent};
@@ -63,6 +65,7 @@ const DEFAULT_RULES_STAGING_DIR: &str = "/var/lib/eguard-agent/rules-staging";
 const MAX_SIGNED_RULE_BUNDLE_BYTES: u64 = 256 * 1024 * 1024;
 const HEARTBEAT_INTERVAL_SECS: i64 = 30;
 const COMPLIANCE_INTERVAL_SECS: i64 = 60;
+const POLICY_REFRESH_INTERVAL_SECS: i64 = 300;
 const THREAT_INTEL_INTERVAL_SECS: i64 = 150;
 const BASELINE_SAVE_INTERVAL_SECS: i64 = 300;
 #[cfg(test)]
@@ -101,6 +104,7 @@ struct PendingCommand {
 enum ControlPlaneTaskKind {
     Heartbeat { compliance_status: String },
     Compliance { compliance: ComplianceResult },
+    PolicySync,
     ThreatIntelRefresh,
     CommandSync,
 }
@@ -263,6 +267,8 @@ pub struct AgentRuntime {
     protected: ProtectedList,
     limiter: KillRateLimiter,
     compliance_policy: CompliancePolicy,
+    compliance_policy_id: String,
+    compliance_policy_version: String,
     baseline_store: BaselineStore,
     ebpf_engine: EbpfEngine,
     enrichment_cache: EnrichmentCache,
@@ -276,6 +282,10 @@ pub struct AgentRuntime {
     last_self_protect_check_unix: Option<i64>,
     last_heartbeat_attempt_unix: Option<i64>,
     last_compliance_attempt_unix: Option<i64>,
+    last_compliance_checked_unix: Option<i64>,
+    last_compliance_result: Option<ComplianceResult>,
+    last_compliance_remediations: HashMap<String, RemediationOutcome>,
+    last_policy_fetch_unix: Option<i64>,
     last_command_fetch_attempt_unix: Option<i64>,
     last_threat_intel_refresh_unix: Option<i64>,
     last_baseline_save_unix: Option<i64>,
@@ -325,6 +335,11 @@ impl AgentRuntime {
         let baseline_store = load_baseline_store()?;
         seed_anomaly_baselines(&detection_state, &baseline_store)?;
         let compliance_policy = load_compliance_policy();
+        let compliance_policy_id = std::env::var("EGUARD_POLICY_ID")
+            .ok()
+            .filter(|val| !val.trim().is_empty())
+            .unwrap_or_else(|| "default".to_string());
+        let compliance_policy_version = String::new();
         let ebpf_engine = init_ebpf_engine();
         let enrichment_cache = EnrichmentCache::default();
 
@@ -397,6 +412,8 @@ impl AgentRuntime {
             limiter: KillRateLimiter::new(config.response.max_kills_per_minute),
             protected: ProtectedList::default_linux(),
             compliance_policy,
+            compliance_policy_id,
+            compliance_policy_version,
             baseline_store,
             ebpf_engine,
             enrichment_cache,
@@ -413,6 +430,10 @@ impl AgentRuntime {
             last_self_protect_check_unix: None,
             last_heartbeat_attempt_unix: None,
             last_compliance_attempt_unix: None,
+            last_compliance_checked_unix: None,
+            last_compliance_result: None,
+            last_compliance_remediations: HashMap::new(),
+            last_policy_fetch_unix: None,
             last_command_fetch_attempt_unix: None,
             last_threat_intel_refresh_unix: None,
             last_baseline_save_unix: None,
@@ -599,7 +620,13 @@ impl AgentRuntime {
         let posture = posture_from_compliance(&compliance.status);
         self.log_posture(posture);
 
-        let mut event_envelope = self.build_event_envelope(enriched.process_exe.as_deref(), now_unix);
+        let mut event_envelope = self.build_event_envelope(
+            &enriched,
+            &detection_event,
+            &detection_outcome,
+            confidence,
+            now_unix,
+        );
 
         // Enrich envelope with detection results
         event_envelope.event_type = detection_event.event_class.as_str().to_string();
@@ -1094,15 +1121,188 @@ impl AgentRuntime {
         }
     }
 
-    fn build_event_envelope(&self, process_exe: Option<&str>, now_unix: i64) -> EventEnvelope {
+    fn build_event_envelope(
+        &self,
+        enriched: &platform_linux::EnrichedEvent,
+        event: &TelemetryEvent,
+        outcome: &DetectionOutcome,
+        confidence: Confidence,
+        now_unix: i64,
+    ) -> EventEnvelope {
+        let payload_json = self.telemetry_payload_json(enriched, event, outcome, confidence, now_unix);
         EventEnvelope {
             agent_id: self.config.agent_id.clone(),
             event_type: "process_exec".to_string(),
             severity: "info".to_string(),
             rule_name: String::new(),
-            payload_json: format!("{{\"exe\":\"{}\"}}", process_exe.unwrap_or_default()),
+            payload_json,
             created_at_unix: now_unix,
         }
+    }
+
+    fn telemetry_payload_json(
+        &self,
+        enriched: &platform_linux::EnrichedEvent,
+        event: &TelemetryEvent,
+        outcome: &DetectionOutcome,
+        confidence: Confidence,
+        now_unix: i64,
+    ) -> String {
+        let rule_type = Self::detection_rule_type(outcome);
+        let detection_layers = Self::detection_layers(outcome);
+        let yara_hits = outcome
+            .yara_hits
+            .iter()
+            .map(|hit| {
+                json!({
+                    "rule": hit.rule_name,
+                    "source": hit.source,
+                    "literal": hit.matched_literal,
+                })
+            })
+            .collect::<Vec<_>>();
+        let behavioral_alarms = outcome
+            .behavioral_alarms
+            .iter()
+            .map(|alarm| {
+                json!({
+                    "dimension": alarm.dimension,
+                    "magnitude": alarm.magnitude,
+                    "wasserstein_distance": alarm.wasserstein_distance,
+                    "current_entropy": alarm.current_entropy,
+                    "p_value": alarm.p_value,
+                    "gated": alarm.gated,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let ml_score = outcome.ml_score.as_ref().map(|score| {
+            let top_features = score
+                .top_features
+                .iter()
+                .map(|(name, contribution)| {
+                    json!({
+                        "name": name,
+                        "contribution": contribution,
+                    })
+                })
+                .collect::<Vec<_>>();
+            json!({
+                "score": score.score,
+                "positive": score.positive,
+                "top_features": top_features,
+            })
+        });
+
+        let anomaly = outcome.anomaly.as_ref().map(|decision| {
+            json!({
+                "high": decision.high,
+                "medium": decision.medium,
+                "kl_bits": decision.kl_bits,
+                "tau_high": decision.tau_high,
+                "tau_med": decision.tau_med,
+                "entropy_bits": decision.entropy_bits,
+                "entropy_z": decision.entropy_z,
+            })
+        });
+
+        json!({
+            "observed_at_unix": now_unix,
+            "event": {
+                "ts_unix": event.ts_unix,
+                "event_class": event.event_class.as_str(),
+                "pid": event.pid,
+                "ppid": event.ppid,
+                "uid": event.uid,
+                "process": &event.process,
+                "parent_process": &event.parent_process,
+                "session_id": event.session_id,
+                "file_path": event.file_path.as_deref(),
+                "file_write": event.file_write,
+                "file_hash": event.file_hash.as_deref(),
+                "dst_port": event.dst_port,
+                "dst_ip": event.dst_ip.as_deref(),
+                "dst_domain": event.dst_domain.as_deref(),
+                "command_line": event.command_line.as_deref(),
+                "event_size": event.event_size,
+            },
+            "container": {
+                "runtime": enriched.container_runtime.as_deref(),
+                "id": enriched.container_id.as_deref(),
+                "escape": enriched.container_escape,
+            },
+            "detection": {
+                "confidence": format!("{:?}", confidence).to_ascii_lowercase(),
+                "rule_type": rule_type,
+                "detection_layers": detection_layers,
+                "temporal_hits": &outcome.temporal_hits,
+                "kill_chain_hits": &outcome.kill_chain_hits,
+                "ioc_matches": &outcome.layer1.matched_signatures,
+                "yara_hits": yara_hits,
+                "anomaly": anomaly,
+                "ml_score": ml_score,
+                "behavioral_alarms": behavioral_alarms,
+                "signals": {
+                    "z1_exact_ioc": outcome.signals.z1_exact_ioc,
+                    "z2_temporal": outcome.signals.z2_temporal,
+                    "z3_anomaly_high": outcome.signals.z3_anomaly_high,
+                    "z3_anomaly_med": outcome.signals.z3_anomaly_med,
+                    "z4_kill_chain": outcome.signals.z4_kill_chain,
+                    "l1_prefilter_hit": outcome.signals.l1_prefilter_hit,
+                },
+            }
+        })
+        .to_string()
+    }
+
+    fn detection_rule_type(outcome: &DetectionOutcome) -> &'static str {
+        if !outcome.yara_hits.is_empty() {
+            return "yara";
+        }
+        if !outcome.temporal_hits.is_empty() {
+            return "sigma";
+        }
+        if outcome.signals.z1_exact_ioc {
+            return "ioc";
+        }
+        if !outcome.kill_chain_hits.is_empty() {
+            return "kill_chain";
+        }
+        if outcome.signals.z3_anomaly_high || outcome.signals.z3_anomaly_med {
+            return "anomaly";
+        }
+        if outcome.ml_score.as_ref().map(|score| score.positive).unwrap_or(false) {
+            return "ml";
+        }
+        ""
+    }
+
+    fn detection_layers(outcome: &DetectionOutcome) -> Vec<String> {
+        let mut layers = Vec::new();
+        if outcome.signals.z1_exact_ioc {
+            layers.push("L1_ioc".to_string());
+        }
+        if !outcome.temporal_hits.is_empty() {
+            layers.push("L2_sigma".to_string());
+        }
+        if outcome.signals.z3_anomaly_high || outcome.signals.z3_anomaly_med {
+            layers.push("L3_anomaly".to_string());
+        }
+        if !outcome.kill_chain_hits.is_empty() {
+            layers.push("L4_kill_chain".to_string());
+        }
+        if outcome
+            .ml_score
+            .as_ref()
+            .map(|score| score.positive)
+            .unwrap_or(false)
+        {
+            layers.push("L5_ml".to_string());
+        }
+        if !outcome.yara_hits.is_empty() {
+            layers.push("yara".to_string());
+        }
+        layers
     }
 
     fn log_detection_evaluation(&self, evaluation: &TickEvaluation) {
@@ -1125,14 +1325,55 @@ impl AgentRuntime {
         info!(?posture, "computed nac posture");
     }
 
-    fn evaluate_compliance(&self) -> ComplianceResult {
-        match evaluate_linux(&self.compliance_policy) {
-            Ok(result) => result,
-            Err(err) => {
-                warn!(error = %err, "linux compliance probe failed, using minimal fallback checks");
-                evaluate(&self.compliance_policy, true, "unknown")
+    fn evaluate_compliance(&mut self) -> ComplianceResult {
+        let now_unix = now_unix();
+        if let (Some(last_checked), Some(cached)) =
+            (self.last_compliance_checked_unix, self.last_compliance_result.as_ref())
+        {
+            if !interval_due(Some(last_checked), now_unix, self.compliance_interval_secs()) {
+                return cached.clone();
             }
         }
+
+        self.last_compliance_remediations.clear();
+        let snapshot = match collect_linux_snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(err) => {
+                warn!(error = %err, "linux compliance probe failed, using minimal fallback checks");
+                let fallback = evaluate(&self.compliance_policy, true, "unknown");
+                self.last_compliance_checked_unix = Some(now_unix);
+                self.last_compliance_result = Some(fallback.clone());
+                return fallback;
+            }
+        };
+
+        let mut result = evaluate_snapshot(&self.compliance_policy, &snapshot);
+
+        let auto_remediate = self.config.compliance_auto_remediate
+            && self.compliance_policy.auto_remediate.unwrap_or(false);
+        if auto_remediate {
+            let actions = plan_remediation_actions(&self.compliance_policy, &snapshot);
+            if !actions.is_empty() {
+                let runner = ShellCommandRunner;
+                let outcomes = execute_remediation_actions(&runner, &actions);
+                for outcome in &outcomes {
+                    if let Some(check_type) = remediation_check_type(&outcome.action_id) {
+                        self.last_compliance_remediations
+                            .insert(check_type, outcome.clone());
+                    }
+                }
+
+                if outcomes.iter().any(|o| o.success) {
+                    if let Ok(snapshot_after) = collect_linux_snapshot() {
+                        result = evaluate_snapshot(&self.compliance_policy, &snapshot_after);
+                    }
+                }
+            }
+        }
+
+        self.last_compliance_checked_unix = Some(now_unix);
+        self.last_compliance_result = Some(result.clone());
+        result
     }
 
     fn consume_bootstrap_config(&self) {
@@ -1409,6 +1650,13 @@ fn interval_due(last_run_unix: Option<i64>, now_unix: i64, interval_secs: i64) -
     }
 }
 
+fn now_unix() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 struct LocalActionResult {
     success: bool,
     detail: String,
@@ -1417,6 +1665,22 @@ struct LocalActionResult {
 fn should_capture_script(action: PlannedAction, event: &TelemetryEvent) -> bool {
     matches!(action, PlannedAction::CaptureScript)
         || (requires_kill(action) && is_script_interpreter(&event.process))
+}
+
+fn remediation_check_type(action_id: &str) -> Option<String> {
+    if action_id == "enable_firewall" {
+        return Some("firewall_required".to_string());
+    }
+    if action_id == "disable_ssh_root_login" {
+        return Some("ssh_root_login".to_string());
+    }
+    if let Some(rest) = action_id.strip_prefix("install_package:") {
+        return Some(format!("package_present:{}", rest));
+    }
+    if let Some(rest) = action_id.strip_prefix("remove_package:") {
+        return Some(format!("package_absent:{}", rest));
+    }
+    None
 }
 
 fn requires_kill(action: PlannedAction) -> bool {
@@ -1444,7 +1708,6 @@ fn synthetic_quarantine_id(event: &TelemetryEvent) -> String {
     format!("pid{}-ts{}", event.pid, event.ts_unix)
 }
 
-#[cfg(test)]
 fn update_tls_policy_from_server(config: &mut AgentConfig, policy: &PolicyEnvelope) -> bool {
     let Some(cert_policy) = policy.certificate_policy.as_ref() else {
         return false;

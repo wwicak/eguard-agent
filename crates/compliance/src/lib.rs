@@ -483,7 +483,7 @@ fn package_installed(snapshot: &SystemSnapshot, package: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn collect_linux_snapshot() -> Result<SystemSnapshot> {
+pub fn collect_linux_snapshot() -> Result<SystemSnapshot> {
     let kernel_version = fs::read_to_string("/proc/sys/kernel/osrelease")
         .map(|v| v.trim().to_string())
         .map_err(|err| ComplianceError::Probe(format!("kernel version probe failed: {}", err)))?;

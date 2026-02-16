@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Build deterministic signature-ML training corpus from bundle artifacts."""
+"""Build deterministic signature-ML training corpus from bundle artifacts.
+
+Generates a synthetic but deterministic dataset aligned with runtime ML features
+(z1..z4 signals, info-theoretic metrics, and event metadata). This keeps the
+CI model compatible with the agent's Layer-5 feature schema while preserving
+mathematical determinism (no ML frameworks, no random seeds).
+"""
 
 from __future__ import annotations
 
@@ -10,6 +16,29 @@ import math
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+
+EVENT_CLASSES = (
+    "process_exec",
+    "file_open",
+    "network_connect",
+    "dns_query",
+    "module_load",
+    "login",
+    "process_exit",
+    "alert",
+)
+
+EVENT_CLASS_RISK = {
+    "module_load": 0.9,
+    "network_connect": 0.6,
+    "dns_query": 0.5,
+    "process_exec": 0.5,
+    "file_open": 0.4,
+    "login": 0.3,
+    "process_exit": 0.1,
+    "alert": 1.0,
+}
 
 
 def _now_utc() -> datetime:
@@ -67,6 +96,45 @@ def _base_component_score(readiness: dict[str, Any], component: str, fallback: f
     if not isinstance(payload, dict) or not payload.get("available"):
         return fallback
     return _clamp(_as_float(payload.get("score"), fallback), 0.0, 100.0)
+
+
+def _choose_event_class(seed: str, severity: int) -> str:
+    # Bias toward network/dns alerts for higher severity.
+    bias = _clamp((severity - 1) / 4.0, 0.0, 1.0)
+    weights = [
+        ("process_exec", 0.30 - 0.05 * bias),
+        ("file_open", 0.20 - 0.02 * bias),
+        ("network_connect", 0.18 + 0.08 * bias),
+        ("dns_query", 0.12 + 0.06 * bias),
+        ("module_load", 0.06 + 0.02 * bias),
+        ("login", 0.06),
+        ("process_exit", 0.04),
+        ("alert", 0.04 + 0.03 * bias),
+    ]
+    total = sum(weight for _, weight in weights)
+    roll = _rand01(seed + "|event_class") * total
+    running = 0.0
+    for name, weight in weights:
+        running += weight
+        if roll <= running:
+            return name
+    return "process_exec"
+
+
+def _dst_port_risk(seed: str, severity: int, event_class: str) -> float:
+    roll = _rand01(seed + "|dst_port")
+    bias = _clamp(severity / 5.0, 0.0, 1.0)
+    if event_class in {"network_connect", "dns_query"} and roll < 0.18 + 0.25 * bias:
+        return 0.95
+    if roll < 0.15:
+        return 0.1
+    if roll < 0.35:
+        return 0.2
+    if roll < 0.50:
+        return 0.8
+    if roll < 0.70:
+        return 0.6
+    return 0.3
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -188,23 +256,75 @@ def main() -> int:
             100.0,
         )
 
-        feature_signature_norm = _clamp(signature_total / 8000.0, 0.0, 1.0)
-        feature_database_norm = _clamp(database_total / 30000.0, 0.0, 1.0)
-        source_norm = source_div_score / 100.0
         attack_norm = attack_surface / 100.0
         critical_norm = critical_resilience / 100.0
-        noise = (_rand01(seed_prefix + "|noise") - 0.5) * 0.8
+        source_norm = source_div_score / 100.0
+
+        event_class = _choose_event_class(seed_prefix, severity)
+        event_class_risk = EVENT_CLASS_RISK.get(event_class, 0.5)
+        dst_port_risk = _dst_port_risk(seed_prefix, severity, event_class)
+
+        z1_ioc_hit = 1.0 if _rand01(seed_prefix + "|z1") < (0.08 + 0.12 * severity / 5.0 + (1 - readiness_norm) * 0.08) else 0.0
+        temporal_count = int(_rand01(seed_prefix + "|z2") * (1.0 + severity * 0.7 + attack_norm * 2.0))
+        z2_temporal_count = min(temporal_count, 3) / 3.0
+        z3_anomaly_high = 1.0 if _rand01(seed_prefix + "|z3h") < (0.05 + (1 - readiness_norm) * 0.18 + severity * 0.02) else 0.0
+        z3_anomaly_med = 1.0 if _rand01(seed_prefix + "|z3m") < (0.12 + (1 - readiness_norm) * 0.22 + severity * 0.03) else 0.0
+        killchain_count = int(_rand01(seed_prefix + "|z4") * (1.0 + attack_norm * 3.2))
+        z4_killchain_count = min(killchain_count, 3) / 3.0
+
+        yara_count = int(_rand01(seed_prefix + "|yara") * (1.0 + severity + signature_total / 9000.0))
+        yara_hit_count = min(yara_count, 5) / 5.0
+        string_count = int(_rand01(seed_prefix + "|string") * (1.0 + severity * 0.6 + source_norm * 2.0))
+        string_sig_count = min(string_count, 5) / 5.0
+
+        uid_is_root = 1.0 if _rand01(seed_prefix + "|uid") < (0.1 + 0.15 * severity / 5.0 + 0.08 * attack_norm) else 0.0
+        has_command_line = 1.0 if event_class in {"process_exec", "alert"} else (1.0 if _rand01(seed_prefix + "|cmdline") < 0.25 else 0.0)
+        cmdline_length_norm = _clamp(0.15 + 0.65 * severity / 5.0 + (_rand01(seed_prefix + "|cmdlen") - 0.5) * 0.2, 0.0, 1.0)
+        prefilter_hit = 1.0 if z1_ioc_hit > 0.0 or _rand01(seed_prefix + "|prefilter") < 0.05 else 0.0
+
+        layer_count = sum(
+            1
+            for signal in [
+                z1_ioc_hit > 0.0,
+                z2_temporal_count > 0.0,
+                z3_anomaly_high > 0.0 or z3_anomaly_med > 0.0,
+                z4_killchain_count > 0.0,
+            ]
+            if signal
+        )
+        multi_layer_count = min(layer_count, 4) / 4.0
+
+        cmdline_renyi_h2 = _clamp(0.15 + 0.55 * severity / 5.0 + (_rand01(seed_prefix + "|renyi") - 0.5) * 0.2, 0.0, 1.0)
+        cmdline_compression = _clamp(0.25 + 0.50 * (1 - readiness_norm) + (_rand01(seed_prefix + "|compress") - 0.5) * 0.2, 0.0, 1.0)
+        cmdline_min_entropy = _clamp(0.10 + 0.55 * source_norm + (_rand01(seed_prefix + "|minent") - 0.5) * 0.2, 0.0, 1.0)
+        cmdline_entropy_gap = _clamp(0.10 + 0.55 * critical_norm + (_rand01(seed_prefix + "|gap") - 0.5) * 0.2, 0.0, 1.0)
+        dns_entropy = 0.0
+        if event_class == "dns_query":
+            dns_entropy = _clamp(0.4 + 0.6 * _rand01(seed_prefix + "|dns"), 0.0, 1.0)
+        event_size_norm = _clamp(
+            0.15
+            + (0.45 if event_class in {"file_open", "module_load"} else 0.25) * _rand01(seed_prefix + "|size")
+            + 0.15 * (signature_total / 8000.0),
+            0.0,
+            1.0,
+        )
 
         linear = (
-            -3.30
-            + 0.60 * (severity / 5.0)
-            + 0.75 * source_norm
-            + 0.95 * attack_norm
-            + 0.90 * critical_norm
-            + 0.55 * feature_signature_norm
-            + 0.40 * feature_database_norm
-            + 0.35 * readiness_norm
-            + noise
+            -3.10
+            + 2.25 * z1_ioc_hit
+            + 1.25 * z2_temporal_count
+            + 1.55 * z4_killchain_count
+            + 1.80 * yara_hit_count
+            + 1.25 * string_sig_count
+            + 0.85 * event_class_risk
+            + 0.45 * uid_is_root
+            + 0.65 * dst_port_risk
+            + 0.35 * cmdline_length_norm
+            + 0.55 * cmdline_compression
+            + 0.35 * dns_entropy
+            + 0.25 * event_size_norm
+            + 0.15 * multi_layer_count
+            + (_rand01(seed_prefix + "|noise") - 0.5) * 0.6
         )
         model_score = _clamp(_score_to_probability(linear), 0.001, 0.999)
 
@@ -222,7 +342,28 @@ def main() -> int:
                 "attack_surface_score": round(attack_surface, 4),
                 "critical_resilience_score": round(critical_resilience, 4),
                 "cve_count": cve_count,
+                "event_class": event_class,
                 "model_score": round(model_score, 6),
+                "z1_ioc_hit": z1_ioc_hit,
+                "z2_temporal_count": round(z2_temporal_count, 6),
+                "z3_anomaly_high": z3_anomaly_high,
+                "z3_anomaly_med": z3_anomaly_med,
+                "z4_killchain_count": round(z4_killchain_count, 6),
+                "yara_hit_count": round(yara_hit_count, 6),
+                "string_sig_count": round(string_sig_count, 6),
+                "event_class_risk": round(event_class_risk, 6),
+                "uid_is_root": uid_is_root,
+                "dst_port_risk": round(dst_port_risk, 6),
+                "has_command_line": has_command_line,
+                "cmdline_length_norm": round(cmdline_length_norm, 6),
+                "prefilter_hit": prefilter_hit,
+                "multi_layer_count": round(multi_layer_count, 6),
+                "cmdline_renyi_h2": round(cmdline_renyi_h2, 6),
+                "cmdline_compression": round(cmdline_compression, 6),
+                "cmdline_min_entropy": round(cmdline_min_entropy, 6),
+                "cmdline_entropy_gap": round(cmdline_entropy_gap, 6),
+                "dns_entropy": round(dns_entropy, 6),
+                "event_size_norm": round(event_size_norm, 6),
             }
         )
 
@@ -265,16 +406,30 @@ def main() -> int:
                 "adjudicated_at_utc": adjudicated_at_raw,
                 "host_id": row.get("host_id"),
                 "rule_id": row.get("rule_id"),
-                "rule_severity": row.get("rule_severity"),
-                "signature_total": row.get("signature_total"),
-                "database_total": row.get("database_total"),
-                "source_diversity_score": row.get("source_diversity_score"),
-                "attack_surface_score": row.get("attack_surface_score"),
-                "critical_resilience_score": row.get("critical_resilience_score"),
-                "cve_count": row.get("cve_count"),
+                "event_class": row.get("event_class"),
                 "model_score": row.get("model_score"),
                 "label": encoded_label,
                 "label_source": "synthetic_ci",
+                "z1_ioc_hit": row.get("z1_ioc_hit"),
+                "z2_temporal_count": row.get("z2_temporal_count"),
+                "z3_anomaly_high": row.get("z3_anomaly_high"),
+                "z3_anomaly_med": row.get("z3_anomaly_med"),
+                "z4_killchain_count": row.get("z4_killchain_count"),
+                "yara_hit_count": row.get("yara_hit_count"),
+                "string_sig_count": row.get("string_sig_count"),
+                "event_class_risk": row.get("event_class_risk"),
+                "uid_is_root": row.get("uid_is_root"),
+                "dst_port_risk": row.get("dst_port_risk"),
+                "has_command_line": row.get("has_command_line"),
+                "cmdline_length_norm": row.get("cmdline_length_norm"),
+                "prefilter_hit": row.get("prefilter_hit"),
+                "multi_layer_count": row.get("multi_layer_count"),
+                "cmdline_renyi_h2": row.get("cmdline_renyi_h2"),
+                "cmdline_compression": row.get("cmdline_compression"),
+                "cmdline_min_entropy": row.get("cmdline_min_entropy"),
+                "cmdline_entropy_gap": row.get("cmdline_entropy_gap"),
+                "dns_entropy": row.get("dns_entropy"),
+                "event_size_norm": row.get("event_size_norm"),
             }
         )
 

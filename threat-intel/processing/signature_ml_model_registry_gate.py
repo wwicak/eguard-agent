@@ -139,6 +139,19 @@ def main() -> int:
                 f"metadata model_sha256 mismatch: metadata={metadata_model_sha} actual={model_sha}"
             )
 
+        try:
+            model_payload = _load_json_required(model_path, "model artifact")
+        except (FileNotFoundError, ValueError, json.JSONDecodeError) as err:
+            failures.append(str(err))
+            model_payload = {}
+
+        threshold_raw = model_payload.get("threshold")
+        threshold = _as_float(threshold_raw, -1.0)
+        if threshold_raw is None:
+            failures.append("model missing threshold")
+        elif threshold < 0.0 or threshold > 1.0:
+            failures.append(f"model threshold out of range: {threshold:.6f}")
+
     if not str(metadata.get("model_version", "")).strip():
         failures.append("metadata missing model_version")
 

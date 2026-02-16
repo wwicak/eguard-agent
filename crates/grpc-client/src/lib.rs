@@ -15,7 +15,8 @@ pub use buffer::{
 pub use client::Client;
 pub use retry::RetryPolicy;
 pub use types::{
-    CertificatePolicyEnvelope, CommandEnvelope, ComplianceEnvelope, EnrollmentEnvelope,
-    EnrollmentResultEnvelope, EventEnvelope, FleetBaselineEnvelope, PolicyEnvelope,
-    ResponseEnvelope, ServerState, ThreatIntelVersionEnvelope, TlsConfig, TransportMode,
+    CertificatePolicyEnvelope, CommandEnvelope, ComplianceCheckEnvelope, ComplianceEnvelope,
+    EnrollmentEnvelope, EnrollmentResultEnvelope, EventEnvelope, FleetBaselineEnvelope,
+    PolicyEnvelope, ResponseEnvelope, ServerState, ThreatIntelVersionEnvelope, TlsConfig,
+    TransportMode,
 };
