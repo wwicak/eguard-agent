@@ -15,10 +15,12 @@ use lru::LruCache;
 use serde::{Deserialize, Serialize};
 
 pub use container::{
-    container_labels, detect_container, detect_container_escape, get_namespace_info,
-    ContainerContext, ContainerRuntime, NamespaceInfo,
+    container_labels, detect_container, detect_container_escape, detect_privileged_container,
+    get_namespace_info, ContainerContext, ContainerRuntime, NamespaceInfo,
 };
 pub use ebpf::{EbpfEngine, EbpfError, EbpfStats};
+
+const MAX_PARENT_CHAIN_DEPTH: usize = 12;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum EventType {
@@ -65,6 +67,8 @@ pub struct EnrichedEvent {
     pub container_id: Option<String>,
     /// Whether the process may have escaped its container.
     pub container_escape: bool,
+    /// Whether the container has elevated capabilities (SYS_ADMIN/SYS_PTRACE).
+    pub container_privileged: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -145,7 +149,7 @@ impl EnrichmentCache {
                 }
             });
 
-        let parent_chain = collect_parent_chain(raw.pid, 5);
+        let parent_chain = collect_parent_chain(raw.pid, MAX_PARENT_CHAIN_DEPTH);
         let parent_process = parent_chain.first().and_then(|pid| read_process_name(*pid));
 
         let entry = ProcessCacheEntry {
@@ -241,6 +245,7 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
             container_runtime: None,
             container_id: None,
             container_escape: false,
+            container_privileged: false,
         };
     }
 
@@ -263,17 +268,19 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
     });
 
     // Container detection: extract runtime and ID from cgroup
-    let (container_runtime, container_id, container_escape) = {
+    let (container_runtime, container_id, container_escape, container_privileged) = {
         match container::detect_container(raw.pid) {
             Some(ctx) => {
                 let escape = container::detect_container_escape(raw.pid);
+                let privileged = container::detect_privileged_container(raw.pid);
                 (
                     Some(ctx.runtime.as_str().to_string()),
                     Some(ctx.container_id_short),
                     escape,
+                    privileged,
                 )
             }
-            None => (Some("host".to_string()), None, false),
+            None => (Some("host".to_string()), None, false, false),
         }
     };
 
@@ -309,6 +316,7 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
         container_runtime,
         container_id,
         container_escape,
+        container_privileged,
     }
 }
 

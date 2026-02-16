@@ -989,6 +989,260 @@ fn signature_ml_training_pipeline_is_framework_free_and_advanced() {
 }
 
 #[test]
+// AC-VER-055 AC-VER-056 AC-VER-057
+fn qemu_verification_harness_is_enforced() {
+    let script = read("tests/qemu/run_qemu_command.sh");
+    assert!(
+        script.contains("qemu-system-x86_64"),
+        "QEMU harness must invoke qemu-system-x86_64"
+    );
+    assert!(
+        script.contains("rdinit=/init"),
+        "QEMU harness must boot with rdinit=/init"
+    );
+    assert!(
+        script.contains("qemu_script="),
+        "QEMU harness must pass qemu_script kernel arg"
+    );
+    assert!(
+        script.contains("-virtfs"),
+        "QEMU harness must mount host root via 9p"
+    );
+    assert!(
+        script.contains("readonly"),
+        "QEMU harness must mount host root read-only"
+    );
+    assert!(
+        script.contains("-netdev user"),
+        "QEMU harness must use user-mode networking"
+    );
+    assert!(
+        !script.contains("hostfwd="),
+        "QEMU harness must not define host port forwards"
+    );
+    assert!(
+        script.contains("blackhole"),
+        "QEMU harness must add RFC1918/link-local blackhole routes"
+    );
+}
+
+#[test]
+// AC-TST-041
+fn qemu_ebpf_smoke_harness_is_defined() {
+    let script = read("tests/qemu/run_ebpf_smoke.sh");
+    assert!(
+        script.contains("ebpf_smoke"),
+        "QEMU eBPF smoke script must run ebpf_smoke binary"
+    );
+    assert!(
+        script.contains("ebpf-artifacts"),
+        "QEMU eBPF smoke script must build eBPF artifacts"
+    );
+}
+
+#[test]
+// AC-TST-042
+fn qemu_agent_kill_smoke_harness_is_defined() {
+    let script = read("tests/qemu/run_agent_kill_smoke.sh");
+    assert!(
+        script.contains("agent-core"),
+        "QEMU agent kill smoke script must build agent-core"
+    );
+    assert!(
+        script.contains("run_qemu_command.sh"),
+        "QEMU agent kill smoke script must invoke QEMU harness"
+    );
+}
+
+#[test]
+// AC-TST-043
+fn qemu_agent_multi_pid_chain_harness_is_defined() {
+    let script = read("tests/qemu/run_agent_multipid_chain.sh");
+    assert!(
+        script.contains("agent-core"),
+        "QEMU multi-pid chain script must build agent-core"
+    );
+    assert!(
+        script.contains("run_qemu_command.sh"),
+        "QEMU multi-pid chain script must invoke QEMU harness"
+    );
+}
+
+#[test]
+// AC-TST-044 AC-TST-045
+fn qemu_agent_malware_harness_is_defined() {
+    let script = read("tests/qemu/run_agent_malware_harness.sh");
+    assert!(
+        script.contains("agent-core"),
+        "QEMU malware harness script must build agent-core"
+    );
+    assert!(
+        script.contains("run_qemu_command.sh"),
+        "QEMU malware harness script must invoke QEMU harness"
+    );
+
+    let cmd = read("tests/qemu/agent_malware_harness_cmd.sh");
+    assert!(
+        cmd.contains("malware_metrics.json"),
+        "malware harness must emit metrics JSON"
+    );
+    assert!(
+        cmd.contains("TPR"),
+        "malware harness must log TPR metrics"
+    );
+    assert!(
+        cmd.contains("benign"),
+        "malware harness must include benign sample evaluation"
+    );
+}
+
+#[test]
+// AC-TST-046
+fn workflow_wires_malwarebazaar_key() {
+    let workflow = read(".github/workflows/collect-ioc.yml");
+    assert!(
+        workflow.contains("MALWARE_BAZAAR_KEY"),
+        "collect-ioc workflow must reference MALWARE_BAZAAR_KEY"
+    );
+    assert!(
+        workflow.contains("Auth-Key"),
+        "collect-ioc workflow must use Auth-Key header for MalwareBazaar"
+    );
+    assert!(
+        workflow.contains("mb-api.abuse.ch"),
+        "collect-ioc workflow must call MalwareBazaar API"
+    );
+}
+
+#[test]
+// AC-TST-047
+fn qemu_agent_dns_tunneling_harness_is_defined() {
+    let script = read("tests/qemu/run_agent_dns_tunnel.sh");
+    assert!(
+        script.contains("agent-core"),
+        "QEMU DNS tunneling script must build agent-core"
+    );
+    assert!(
+        script.contains("run_qemu_command.sh"),
+        "QEMU DNS tunneling script must invoke QEMU harness"
+    );
+
+    let cmd = read("tests/qemu/agent_dns_tunnel_cmd.sh");
+    assert!(
+        cmd.contains("dns_query"),
+        "DNS tunneling harness must replay DNS queries"
+    );
+    assert!(
+        cmd.contains("confidence"),
+        "DNS tunneling harness must assert confidence output"
+    );
+}
+
+#[test]
+// AC-TST-048
+fn qemu_agent_memory_scan_harness_is_defined() {
+    let script = read("tests/qemu/run_agent_memory_scan.sh");
+    assert!(
+        script.contains("agent-core"),
+        "QEMU memory scan script must build agent-core"
+    );
+    assert!(
+        script.contains("memory_scan_stub"),
+        "QEMU memory scan script must build memory scan stub"
+    );
+    assert!(
+        script.contains("run_qemu_command.sh"),
+        "QEMU memory scan script must invoke QEMU harness"
+    );
+
+    let cmd = read("tests/qemu/agent_memory_scan_cmd.sh");
+    assert!(
+        cmd.contains("EGUARD_MEMORY_SCAN_ENABLED"),
+        "Memory scan harness must enable memory scanning"
+    );
+    assert!(
+        cmd.contains("eguard-shellcode-marker"),
+        "Memory scan harness must reference shellcode marker"
+    );
+}
+
+#[test]
+// AC-TST-049
+fn qemu_agent_container_escape_harness_is_defined() {
+    let script = read("tests/qemu/run_agent_container_escape.sh");
+    assert!(
+        script.contains("agent-core"),
+        "QEMU container escape script must build agent-core"
+    );
+    assert!(
+        script.contains("run_qemu_command.sh"),
+        "QEMU container escape script must invoke QEMU harness"
+    );
+
+    let cmd = read("tests/qemu/agent_container_escape_cmd.sh");
+    assert!(
+        cmd.contains("cgroup.procs"),
+        "Container escape harness must place process in cgroup"
+    );
+    assert!(
+        cmd.contains("killchain_container_escape"),
+        "Container escape harness must assert escape detection"
+    );
+    assert!(
+        cmd.contains("killchain_container_privileged"),
+        "Container escape harness must assert privileged container detection"
+    );
+}
+
+#[test]
+// AC-TST-050
+fn qemu_agent_credential_theft_harness_is_defined() {
+    let script = read("tests/qemu/run_agent_credential_theft.sh");
+    assert!(
+        script.contains("agent-core"),
+        "QEMU credential theft script must build agent-core"
+    );
+    assert!(
+        script.contains("run_qemu_command.sh"),
+        "QEMU credential theft script must invoke QEMU harness"
+    );
+
+    let cmd = read("tests/qemu/agent_credential_theft_cmd.sh");
+    assert!(
+        cmd.contains("/etc/shadow"),
+        "Credential theft harness must reference /etc/shadow"
+    );
+    assert!(
+        cmd.contains("killchain_credential_theft"),
+        "Credential theft harness must assert killchain detection"
+    );
+}
+
+#[test]
+// AC-TST-051
+fn sigma_file_path_predicates_are_supported() {
+    let rule = read("rules/sigma/credential_access.yml");
+    assert!(
+        rule.contains("file_path_any_of"),
+        "Sigma credential access rule must declare file_path_any_of"
+    );
+    assert!(
+        rule.contains("file_path_contains"),
+        "Sigma credential access rule must declare file_path_contains"
+    );
+
+    let sigma_impl = read("crates/detection/src/sigma.rs");
+    assert!(
+        sigma_impl.contains("file_path_any_of"),
+        "Sigma compiler must support file_path_any_of"
+    );
+    assert!(
+        sigma_impl.contains("file_path_contains"),
+        "Sigma compiler must support file_path_contains"
+    );
+}
+
+#[test]
 // AC-DET-182 AC-VER-024 AC-VER-054
 fn signature_ml_runtime_feature_contracts_are_enforced() {
     let feature_gate = read("threat-intel/processing/signature_ml_feature_snapshot_gate.py");

@@ -435,6 +435,10 @@ rule bootstrap_last_known_good_yara {
         dst_domain: None,
         command_line: Some("echo bootstrap-last-known-good-marker".to_string()),
         event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
     };
     let out = runtime
         .detection_state

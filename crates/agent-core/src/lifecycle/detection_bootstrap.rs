@@ -3,19 +3,6 @@ use std::path::Path;
 use detection::{DetectionEngine, KillChainTemplate, RansomwarePolicy, TemplatePredicate};
 use tracing::{info, warn};
 
-pub(super) fn build_detection_engine() -> DetectionEngine {
-    let mut detection = DetectionEngine::default_with_rules();
-    seed_ioc_hashes(&mut detection);
-    seed_ioc_domains(&mut detection);
-    seed_ioc_ips(&mut detection);
-    seed_string_signatures(&mut detection);
-    seed_sigma_rules(&mut detection);
-    seed_yara_rules(&mut detection);
-    seed_kill_chain_templates(&mut detection);
-    load_ioc_files(&mut detection);
-    detection
-}
-
 pub(super) fn build_detection_engine_with_ransomware_policy(
     policy: RansomwarePolicy,
 ) -> DetectionEngine {
@@ -291,6 +278,13 @@ rule eguard_eicar_test {
   condition:
     $eicar
 }
+
+rule eguard_shellcode_marker {
+  strings:
+    $marker = "eguard-shellcode-marker"
+  condition:
+    $marker
+}
 "#;
 
     let mut loaded = 0usize;
@@ -328,6 +322,8 @@ fn seed_kill_chain_templates(detection: &mut DetectionEngine) {
                 require_module_loaded: false,
                 require_sensitive_file_access: true,
                 require_ransomware_write_burst: false,
+                require_container_escape: false,
+                require_privileged_container: false,
             },
             TemplatePredicate {
                 process_any_of: Some(set_of(["curl", "wget", "python", "python3", "nc", "ncat"])),
@@ -337,10 +333,29 @@ fn seed_kill_chain_templates(detection: &mut DetectionEngine) {
                 require_module_loaded: false,
                 require_sensitive_file_access: false,
                 require_ransomware_write_burst: false,
+                require_container_escape: false,
+                require_privileged_container: false,
             },
         ],
         max_depth: 6,
         max_inter_stage_secs: 60,
+    });
+
+    detection.layer4.add_template(KillChainTemplate {
+        name: "killchain_credential_theft".to_string(),
+        stages: vec![TemplatePredicate {
+            process_any_of: None,
+            uid_eq: None,
+            uid_ne: Some(0),
+            require_network_non_web: false,
+            require_module_loaded: false,
+            require_sensitive_file_access: true,
+            require_ransomware_write_burst: false,
+            require_container_escape: false,
+            require_privileged_container: false,
+        }],
+        max_depth: 2,
+        max_inter_stage_secs: 10,
     });
 
     // Lateral movement chain: SSH/SCP connection
@@ -355,6 +370,8 @@ fn seed_kill_chain_templates(detection: &mut DetectionEngine) {
                 require_module_loaded: false,
                 require_sensitive_file_access: false,
                 require_ransomware_write_burst: false,
+                require_container_escape: false,
+                require_privileged_container: false,
             },
             TemplatePredicate {
                 process_any_of: None,
@@ -364,6 +381,8 @@ fn seed_kill_chain_templates(detection: &mut DetectionEngine) {
                 require_module_loaded: false,
                 require_sensitive_file_access: false,
                 require_ransomware_write_burst: false,
+                require_container_escape: false,
+                require_privileged_container: false,
             },
         ],
         max_depth: 4,
@@ -382,6 +401,8 @@ fn seed_kill_chain_templates(detection: &mut DetectionEngine) {
                 require_module_loaded: false,
                 require_sensitive_file_access: false,
                 require_ransomware_write_burst: false,
+                require_container_escape: false,
+                require_privileged_container: false,
             },
             TemplatePredicate {
                 process_any_of: None,
@@ -391,9 +412,45 @@ fn seed_kill_chain_templates(detection: &mut DetectionEngine) {
                 require_module_loaded: false,
                 require_sensitive_file_access: false,
                 require_ransomware_write_burst: false,
+                require_container_escape: false,
+                require_privileged_container: false,
             },
         ],
         max_depth: 4,
+        max_inter_stage_secs: 10,
+    });
+
+    detection.layer4.add_template(KillChainTemplate {
+        name: "killchain_container_escape".to_string(),
+        stages: vec![TemplatePredicate {
+            process_any_of: None,
+            uid_eq: None,
+            uid_ne: None,
+            require_network_non_web: false,
+            require_module_loaded: false,
+            require_sensitive_file_access: false,
+            require_ransomware_write_burst: false,
+            require_container_escape: true,
+            require_privileged_container: false,
+        }],
+        max_depth: 2,
+        max_inter_stage_secs: 10,
+    });
+
+    detection.layer4.add_template(KillChainTemplate {
+        name: "killchain_container_privileged".to_string(),
+        stages: vec![TemplatePredicate {
+            process_any_of: None,
+            uid_eq: None,
+            uid_ne: None,
+            require_network_non_web: false,
+            require_module_loaded: false,
+            require_sensitive_file_access: false,
+            require_ransomware_write_burst: false,
+            require_container_escape: false,
+            require_privileged_container: true,
+        }],
+        max_depth: 2,
         max_inter_stage_secs: 10,
     });
 }

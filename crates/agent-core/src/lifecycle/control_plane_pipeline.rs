@@ -139,7 +139,9 @@ impl AgentRuntime {
                 }
                 ControlPlaneTaskKind::ThreatIntelRefresh => {
                     let threat_refresh_started = Instant::now();
-                    self.refresh_threat_intel_if_due(now_unix).await?;
+                    if let Err(err) = self.refresh_threat_intel_if_due(now_unix).await {
+                        warn!(error = %err, "threat intel refresh failed");
+                    }
                     self.metrics.last_threat_intel_refresh_micros =
                         elapsed_micros(threat_refresh_started);
                 }
@@ -176,18 +178,6 @@ impl AgentRuntime {
             now_unix,
             super::POLICY_REFRESH_INTERVAL_SECS,
         )
-    }
-
-    fn compliance_interval_secs(&self) -> i64 {
-        let policy_interval = self
-            .compliance_policy
-            .check_interval_secs
-            .unwrap_or(self.config.compliance_check_interval_secs);
-        if policy_interval == 0 {
-            super::COMPLIANCE_INTERVAL_SECS
-        } else {
-            policy_interval as i64
-        }
     }
 
     async fn refresh_policy_if_due(&mut self, now_unix: i64) -> Result<()> {

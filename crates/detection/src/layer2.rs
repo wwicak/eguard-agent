@@ -13,6 +13,8 @@ pub struct TemporalPredicate {
     pub uid_eq: Option<u32>,
     pub uid_ne: Option<u32>,
     pub dst_port_not_in: Option<HashSet<u16>>,
+    pub file_path_any_of: Option<HashSet<String>>,
+    pub file_path_contains: Option<HashSet<String>>,
 }
 
 impl TemporalPredicate {
@@ -53,6 +55,27 @@ impl TemporalPredicate {
                     }
                 }
                 None => return false,
+            }
+        }
+
+        if self.file_path_any_of.is_some() || self.file_path_contains.is_some() {
+            let Some(path) = event.file_path.as_deref() else {
+                return false;
+            };
+
+            let exact_ok = self
+                .file_path_any_of
+                .as_ref()
+                .map(|set| set.contains(path))
+                .unwrap_or(false);
+            let contains_ok = self
+                .file_path_contains
+                .as_ref()
+                .map(|set| set.iter().any(|needle| path.contains(needle)))
+                .unwrap_or(false);
+
+            if !exact_ok && !contains_ok {
+                return false;
             }
         }
 
@@ -199,6 +222,8 @@ impl TemporalEngine {
                         uid_eq: None,
                         uid_ne: None,
                         dst_port_not_in: None,
+                        file_path_any_of: None,
+                        file_path_contains: None,
                     },
                     within_secs: 30,
                 },
@@ -210,6 +235,8 @@ impl TemporalEngine {
                         uid_eq: None,
                         uid_ne: None,
                         dst_port_not_in: Some(set_u16([80, 443])),
+                        file_path_any_of: None,
+                        file_path_contains: None,
                     },
                     within_secs: 10,
                 },
@@ -227,6 +254,8 @@ impl TemporalEngine {
                         uid_eq: None,
                         uid_ne: Some(0),
                         dst_port_not_in: None,
+                        file_path_any_of: None,
+                        file_path_contains: None,
                     },
                     within_secs: 60,
                 },
@@ -238,6 +267,8 @@ impl TemporalEngine {
                         uid_eq: Some(0),
                         uid_ne: None,
                         dst_port_not_in: None,
+                        file_path_any_of: None,
+                        file_path_contains: None,
                     },
                     within_secs: 20,
                 },

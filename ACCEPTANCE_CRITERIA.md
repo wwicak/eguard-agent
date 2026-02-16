@@ -1076,6 +1076,18 @@ Derived from `docs/eguard-agent-design.md`. These acceptance criteria define the
 - **AC-TST-038**: Signature-ML training MUST use deterministic second-order optimization (IRLS/Newton) with class weighting + regularization sweep.
 - **AC-TST-039**: Signature-ML training MUST remain framework-free (no numpy/sklearn/torch/tensorflow) and emit calibration via temperature scaling.
 - **AC-TST-040**: Signature-ML training artifacts MUST include advanced metrics: PR/ROC AUC, log-loss, Brier score, and ECE.
+- **AC-TST-041**: QEMU eBPF smoke test MUST load real eBPF objects and observe process_exec, file_open, and tcp_connect events.
+- **AC-TST-042**: QEMU agent kill/quarantine smoke test MUST detect IOC hash via eBPF and quarantine the executable.
+- **AC-TST-043**: QEMU multi-PID chain test MUST correlate temporal webshell stages across sibling PIDs in the same process tree and raise a High-or-higher confidence detection.
+- **AC-TST-044**: QEMU malware harness MUST download or generate real malware samples inside the VM only, execute the detection pipeline on each sample, and emit TPR/FPR metrics (JSON or log).
+- **AC-TST-045**: Malware harness MUST evaluate at least 20 malware samples and 50 benign samples, achieving ≥80% TPR and 0% FPR in isolated QEMU runs.
+- **AC-TST-046**: IOC collection workflow MUST wire `MALWARE_BAZAAR_KEY` and use MalwareBazaar API with `Auth-Key` header to enrich hash feeds when the secret is present.
+- **AC-TST-047**: QEMU DNS tunneling harness MUST replay high-entropy DNS queries and produce a Medium-or-higher confidence detection.
+- **AC-TST-048**: QEMU memory scanner harness MUST detect a YARA shellcode marker in an RWX anonymous mapping and emit a Definite confidence alert.
+- **AC-TST-049**: QEMU container escape harness MUST flag container escape + privileged container kill chain detections.
+- **AC-TST-050**: QEMU credential theft harness MUST flag sensitive credential access kill chain detections.
+- **AC-TST-051**: Sigma compiler MUST accept file path predicates and ship a credential access rule that uses them.
+- **AC-VER-057**: QEMU harness MUST use user-mode networking with no host forwards and explicit RFC1918/link-local blackhole routes inside the guest (outbound HTTPS allowed).
 
 ### Performance Targets (Section 29.1)
 
@@ -1142,6 +1154,8 @@ Derived from `docs/eguard-agent-design.md`. These acceptance criteria define the
 - **AC-VER-052**: Verification suite MUST run a bundle-signature contract harness that builds a minimal processed bundle, signs it with Ed25519, verifies the signature, and emits `artifacts/bundle-signature-contract/metrics.json`.
 - **AC-VER-053**: Bundle-signature contract harness MUST reject a tampered archive when verified against the original detached signature.
 - **AC-VER-054**: Verification artifacts MUST include bundle signature contract metrics (`signature_verified`, `tamper_rejected`) and measured signature/database totals from `bundle_coverage_gate.py`.
+- **AC-VER-055**: Verification MUST execute at least one acceptance/contract test inside an isolated QEMU VM (no host execution).
+- **AC-VER-056**: QEMU harness MUST mount host root read-only via 9p and execute a provided command script via `rdinit=/init`.
 
 ---
 

@@ -90,6 +90,10 @@ struct SigmaStage {
     #[serde(default)]
     dst_port_not_in: Vec<u16>,
     #[serde(default)]
+    file_path_any_of: Vec<String>,
+    #[serde(default)]
+    file_path_contains: Vec<String>,
+    #[serde(default)]
     within_secs: Option<u64>,
 }
 
@@ -125,6 +129,8 @@ pub fn compile_sigma_ast(yaml: &str) -> Result<BoundedTemporalAst> {
                 } else {
                     Some(stage.dst_port_not_in.into_iter().collect())
                 },
+                file_path_any_of: into_set(stage.file_path_any_of),
+                file_path_contains: into_set(stage.file_path_contains),
             },
             within_secs,
         });

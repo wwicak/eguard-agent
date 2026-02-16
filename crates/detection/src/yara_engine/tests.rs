@@ -33,6 +33,10 @@ rule test_rule {
         dst_domain: None,
         command_line: Some("echo evil_payload".to_string()),
         event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
     };
 
     let hits = engine.scan_event(&event);
@@ -87,6 +91,10 @@ rule sample_from_dir {
         dst_domain: None,
         command_line: None,
         event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
     };
 
     let sample = base.join("payload.bin");

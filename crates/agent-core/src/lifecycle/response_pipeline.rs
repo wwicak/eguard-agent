@@ -11,6 +11,17 @@ impl AgentRuntime {
         now_unix: i64,
         evaluation: Option<&TickEvaluation>,
     ) {
+        if std::env::var("EGUARD_DEBUG_EVENT_LOG")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .is_some()
+        {
+            tracing::info!(
+                pending_actions = self.pending_response_actions.len(),
+                "debug response stage"
+            );
+        }
+
         self.maybe_apply_auto_isolation(now_unix, evaluation);
         self.enqueue_response_action_if_present(now_unix, evaluation);
         let executed = self.execute_response_backlog_budget(now_unix).await;

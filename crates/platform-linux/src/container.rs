@@ -423,5 +423,37 @@ pub fn container_labels(pid: u32) -> HashMap<String, String> {
     labels
 }
 
+const CAP_SYS_PTRACE: u32 = 19;
+const CAP_SYS_ADMIN: u32 = 21;
+
+fn read_cap_eff(pid: u32) -> Option<u64> {
+    let status = fs::read_to_string(format!("/proc/{}/status", pid)).ok()?;
+    for line in status.lines() {
+        if let Some(raw) = line.strip_prefix("CapEff:") {
+            let trimmed = raw.trim();
+            return u64::from_str_radix(trimmed, 16).ok();
+        }
+    }
+    None
+}
+
+fn has_capability(effective: u64, cap: u32) -> bool {
+    if cap >= 64 {
+        return false;
+    }
+    effective & (1u64 << cap) != 0
+}
+
+/// Detect if a container process has elevated capabilities such as SYS_ADMIN or SYS_PTRACE.
+pub fn detect_privileged_container(pid: u32) -> bool {
+    if detect_container(pid).is_none() {
+        return false;
+    }
+    let Some(effective) = read_cap_eff(pid) else {
+        return false;
+    };
+    has_capability(effective, CAP_SYS_ADMIN) || has_capability(effective, CAP_SYS_PTRACE)
+}
+
 #[cfg(test)]
 mod tests;

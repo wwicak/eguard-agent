@@ -71,6 +71,10 @@ pub struct TelemetryEvent {
     pub dst_domain: Option<String>,
     pub command_line: Option<String>,
     pub event_size: Option<u64>,
+    pub container_runtime: Option<String>,
+    pub container_id: Option<String>,
+    pub container_escape: bool,
+    pub container_privileged: bool,
 }
 
 impl TelemetryEvent {

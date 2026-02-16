@@ -30,6 +30,10 @@ fn detection_event(ts: i64, pid: u32) -> TelemetryEvent {
         dst_domain: None,
         command_line: None,
         event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
     }
 }
 

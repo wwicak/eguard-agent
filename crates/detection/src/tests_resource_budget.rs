@@ -20,6 +20,10 @@ fn event(ts: i64, class: EventClass, process: &str, parent: &str, uid: u32) -> T
         dst_domain: None,
         command_line: None,
         event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
     }
 }
 
@@ -35,6 +39,8 @@ fn temporal_rule(name: &str) -> TemporalRule {
                     uid_eq: None,
                     uid_ne: None,
                     dst_port_not_in: None,
+                    file_path_any_of: None,
+                    file_path_contains: None,
                 },
                 within_secs: 30,
             },
@@ -46,6 +52,8 @@ fn temporal_rule(name: &str) -> TemporalRule {
                     uid_eq: None,
                     uid_ne: None,
                     dst_port_not_in: Some(HashSet::from([80, 443])),
+                    file_path_any_of: None,
+                    file_path_contains: None,
                 },
                 within_secs: 10,
             },
@@ -208,6 +216,8 @@ fn process_graph_and_templates_fit_budget_with_bounded_batch_evaluation() {
                     require_module_loaded: false,
                     require_sensitive_file_access: false,
                     require_ransomware_write_burst: false,
+                    require_container_escape: false,
+                    require_privileged_container: false,
                 },
                 TemplatePredicate {
                     process_any_of: Some(HashSet::from(["bash".to_string()])),
@@ -217,6 +227,8 @@ fn process_graph_and_templates_fit_budget_with_bounded_batch_evaluation() {
                     require_module_loaded: false,
                     require_sensitive_file_access: false,
                     require_ransomware_write_burst: false,
+                    require_container_escape: false,
+                    require_privileged_container: false,
                 },
             ],
             max_depth: 8,

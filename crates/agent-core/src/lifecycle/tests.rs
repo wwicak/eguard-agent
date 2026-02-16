@@ -449,6 +449,10 @@ rule bundle_runtime_marker {
         dst_domain: None,
         command_line: Some("echo bundle-runtime-marker-8844".to_string()),
         event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
     };
     let stage_one_out = runtime
         .detection_state
@@ -477,6 +481,10 @@ rule bundle_runtime_marker {
         dst_domain: None,
         command_line: None,
         event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
     };
     let stage_two_out = runtime
         .detection_state
@@ -549,6 +557,10 @@ fn reload_detection_state_from_bundle_populates_ioc_layers_on_all_shards() {
         dst_domain: None,
         command_line: None,
         event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
     };
 
     for pid in [9000u32, 9001u32] {
@@ -876,6 +888,10 @@ rule nested_signed_bundle_marker {
         dst_domain: None,
         command_line: Some("echo nested-signed-bundle-marker".to_string()),
         event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
     };
     let out = engine.process_event(&nested_event);
     assert!(out
@@ -1406,6 +1422,10 @@ async fn emergency_command_is_applied_immediately_in_command_path() {
         dst_domain: None,
         command_line: Some("curl|bash -s https://bad".to_string()),
         event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
     };
 
     let out = runtime

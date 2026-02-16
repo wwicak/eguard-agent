@@ -24,6 +24,10 @@ fn event(ts: i64, class: EventClass) -> TelemetryEvent {
         dst_domain: None,
         command_line: None,
         event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
     }
 }
 
@@ -38,6 +42,8 @@ fn one_stage_rule(name: &str, class: EventClass) -> TemporalRule {
                 uid_eq: None,
                 uid_ne: None,
                 dst_port_not_in: None,
+                file_path_any_of: None,
+                file_path_contains: None,
             },
             within_secs: 15,
         }],

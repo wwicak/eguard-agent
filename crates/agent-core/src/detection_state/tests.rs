@@ -19,6 +19,10 @@ fn event_with_hash(hash: &str) -> TelemetryEvent {
         dst_domain: None,
         command_line: None,
         event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
     }
 }
 
@@ -40,6 +44,10 @@ fn event_with_command(cmd: &str) -> TelemetryEvent {
         dst_domain: None,
         command_line: Some(cmd.to_string()),
         event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
     }
 }
 
@@ -68,6 +76,10 @@ fn event_process_exec_for_pid(pid: u32, process: &str, parent: &str, ts: i64) ->
         dst_domain: None,
         command_line: None,
         event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
     }
 }
 
@@ -95,6 +107,10 @@ fn event_network_for_pid(
         dst_domain: Some("c2.shard-test.example".to_string()),
         command_line: None,
         event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
     }
 }
 

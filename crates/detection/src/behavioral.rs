@@ -34,6 +34,8 @@ use crate::information::{
 const MAX_TRACKED_PROCS: usize = 128;
 /// Rolling window size for distribution comparison.
 const WINDOW_SIZE: usize = 64;
+/// Minimum DNS label length to consider for entropy-based detection.
+const DNS_LABEL_MIN_LEN: usize = 12;
 
 /// A single behavioral dimension being monitored.
 #[derive(Debug, Clone)]
@@ -110,6 +112,8 @@ pub struct BehavioralEngine {
     pub cmdline_entropy: BehavioralDimension,
     /// Average command-line compression ratio.
     pub cmdline_compression: BehavioralDimension,
+    /// DNS domain entropy (DGA/tunneling signal).
+    pub dns_entropy: BehavioralDimension,
     /// Inter-arrival time regularity (beaconing).
     pub beacon_regularity: BehavioralDimension,
     /// Process tree branching factor.
@@ -153,6 +157,8 @@ impl BehavioralEngine {
             cmdline_entropy: BehavioralDimension::new("cmdline_entropy", 4.0, 1.0, 6.0),
             // Compression: baseline ~0.4, detect jump to ~0.9 (encrypted payload)
             cmdline_compression: BehavioralDimension::new("cmdline_compression", 0.4, 0.15, 5.0),
+            // DNS entropy: baseline ~0.35, detect sustained high-entropy labels (DGA/tunnel)
+            dns_entropy: BehavioralDimension::new("dns_entropy", 0.35, 0.1, 2.0),
             // Beaconing: baseline ~0.3 (irregular), detect increase to ~0.8 (periodic)
             beacon_regularity: BehavioralDimension::new("beacon_regularity", 0.3, 0.15, 5.0),
             // Tree branching: baseline ~2.0 children/proc, detect fork bombs
@@ -195,6 +201,17 @@ impl BehavioralEngine {
             crate::types::EventClass::NetworkConnect | crate::types::EventClass::DnsQuery => {
                 if self.net_rate.observe(1.0) {
                     self.emit_alarm("net_rate", 1.0);
+                }
+                if let Some(domain) = event.dst_domain.as_deref() {
+                    if let Some(entropy) = Self::dns_entropy_value(domain) {
+                        if self.dns_entropy.observe(entropy) {
+                            self.emit_alarm_with_entropy(
+                                "dns_entropy",
+                                (entropy * 4.0).max(2.0),
+                                Some(entropy),
+                            );
+                        }
+                    }
                 }
             }
             crate::types::EventClass::FileOpen => {
@@ -288,6 +305,14 @@ impl BehavioralEngine {
             }
             None => (None, true),
         }
+    }
+
+    fn dns_entropy_value(domain: &str) -> Option<f64> {
+        let label = domain.split('.').find(|s| !s.is_empty())?;
+        if label.len() < DNS_LABEL_MIN_LEN {
+            return None;
+        }
+        Some(information::dns_entropy(domain))
     }
 
     fn compute_iat_regularity(&self, new_iat: f64) -> f64 {
@@ -511,6 +536,10 @@ mod tests {
             dst_domain: None,
             command_line: cmdline.map(|s| s.to_string()),
             event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
         }
     }
 

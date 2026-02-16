@@ -50,7 +50,7 @@ fn enrich_event_with_cache_populates_process_cache() {
 
 #[test]
 // AC-EBP-034
-fn enrich_event_parent_chain_is_bounded_to_five_ancestors() {
+fn enrich_event_parent_chain_is_bounded_to_max_depth() {
     let mut cache = EnrichmentCache::default();
     let raw = RawEvent {
         event_type: EventType::ProcessExec,
@@ -61,7 +61,7 @@ fn enrich_event_parent_chain_is_bounded_to_five_ancestors() {
     };
 
     let enriched = enrich_event_with_cache(raw, &mut cache);
-    assert!(enriched.parent_chain.len() <= 5);
+    assert!(enriched.parent_chain.len() <= super::MAX_PARENT_CHAIN_DEPTH);
     assert!(enriched.parent_chain.iter().all(|pid| *pid > 0));
 }
 

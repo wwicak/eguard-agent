@@ -388,10 +388,20 @@ impl AgentRuntime {
             payload_json: "{\"scope\":\"quick\"}".to_string(),
         });
 
-        let hardening_config = LinuxHardeningConfig {
+        let mut hardening_config = LinuxHardeningConfig {
             drop_capability_bounding_set: config.self_protection_prevent_uninstall,
             ..LinuxHardeningConfig::default()
         };
+        if config.detection_memory_scan_enabled
+            && !hardening_config
+                .retained_capability_names
+                .iter()
+                .any(|cap| cap == "CAP_SYS_PTRACE")
+        {
+            hardening_config
+                .retained_capability_names
+                .push("CAP_SYS_PTRACE".to_string());
+        }
         let hardening_report = apply_linux_hardening(&hardening_config);
         if hardening_report.has_failures() {
             warn!(
@@ -616,6 +626,31 @@ impl AgentRuntime {
         let response_cfg = self.effective_response_config();
         let action = plan_action(confidence, &response_cfg);
 
+        if std::env::var("EGUARD_DEBUG_EVENT_LOG")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .is_some()
+        {
+            info!(
+                event_class = ?detection_event.event_class,
+                pid = detection_event.pid,
+                session_id = detection_event.session_id,
+                process = %detection_event.process,
+                parent_process = %detection_event.parent_process,
+                file_path = ?detection_event.file_path,
+                file_hash = ?detection_event.file_hash,
+                container_runtime = ?detection_event.container_runtime,
+                container_id = ?detection_event.container_id,
+                container_escape = detection_event.container_escape,
+                container_privileged = detection_event.container_privileged,
+                kill_chain_hits = ?detection_outcome.kill_chain_hits,
+                confidence = ?confidence,
+                action = ?action,
+                mode = ?self.runtime_mode,
+                "debug event evaluation"
+            );
+        }
+
         let compliance = self.evaluate_compliance();
         let posture = posture_from_compliance(&compliance.status);
         self.log_posture(posture);
@@ -831,13 +866,13 @@ impl AgentRuntime {
     ) -> Result<()> {
         let connected_started = Instant::now();
         self.client.set_online(true);
+        self.run_connected_response_stage(now_unix, evaluation)
+            .await;
         self.ensure_enrolled().await;
 
         self.run_connected_telemetry_stage(evaluation).await?;
         self.run_connected_control_plane_stage(now_unix, evaluation)
             .await?;
-        self.run_connected_response_stage(now_unix, evaluation)
-            .await;
         self.run_memory_scan_if_due(now_unix);
         self.drive_async_workers();
 
@@ -876,27 +911,44 @@ impl AgentRuntime {
             pids.truncate(self.config.detection_memory_scan_max_pids);
         }
 
-        let detections = self.scan_memory_pids(&pids, mode);
-        for detection in detections {
-            self.handle_memory_scan_detection(&detection, now_unix);
+        if std::env::var("EGUARD_DEBUG_EVENT_LOG")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .is_some()
+        {
+            info!(pids = ?pids, "debug memory scan pids");
         }
-    }
 
-    fn scan_memory_pids(&self, pids: &[u32], mode: ScanMode) -> Vec<MemoryScanResult> {
-        let mut results = Vec::new();
+        let mut detections = Vec::new();
         for pid in pids {
-            match self.detection_state.scan_process_memory(*pid, mode) {
+            match self.detection_state.scan_process_memory(pid, mode) {
                 Ok(res) => {
+                    if std::env::var("EGUARD_DEBUG_EVENT_LOG")
+                        .ok()
+                        .filter(|v| !v.trim().is_empty())
+                        .is_some()
+                    {
+                        info!(
+                            pid = res.pid,
+                            hits = res.hits.len(),
+                            regions_scanned = res.regions_scanned,
+                            bytes_scanned = res.bytes_scanned,
+                            errors = res.errors.len(),
+                            "debug memory scan result"
+                        );
+                    }
                     if !res.hits.is_empty() {
-                        results.push(res);
+                        detections.push(res);
                     }
                 }
                 Err(err) => {
-                    warn!(pid = *pid, error = %err, "memory scan failed on shard");
+                    warn!(pid = pid, error = %err, "memory scan failed on shard");
                 }
             }
         }
-        results
+        for detection in detections {
+            self.handle_memory_scan_detection(&detection, now_unix);
+        }
     }
 
     fn handle_memory_scan_detection(&mut self, detection: &MemoryScanResult, now_unix: i64) {
@@ -905,6 +957,7 @@ impl AgentRuntime {
         notes.push(format!("bytes_scanned={}", detection.bytes_scanned));
         if let Some(first) = detection.hits.first() {
             notes.push(format!("rule_name={}", first.rule_name));
+            notes.push(format!("matched_literal={}", first.matched_literal));
             notes.push(format!("region_perms={}", first.region_perms));
         }
         if !detection.errors.is_empty() {
@@ -928,6 +981,10 @@ impl AgentRuntime {
             dst_domain: None,
             command_line: Some(notes.join(";")),
             event_size: Some(detection.bytes_scanned as u64),
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
         };
 
         let detection_outcome = match self.detection_state.process_event(&event) {
@@ -939,6 +996,30 @@ impl AgentRuntime {
         };
 
         let confidence = detection_outcome.confidence.max(Confidence::VeryHigh);
+        if std::env::var("EGUARD_DEBUG_EVENT_LOG")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .is_some()
+        {
+            let rule_name = detection
+                .hits
+                .first()
+                .map(|hit| hit.rule_name.clone())
+                .unwrap_or_default();
+            let matched_literal = detection
+                .hits
+                .first()
+                .map(|hit| hit.matched_literal.clone())
+                .unwrap_or_default();
+            info!(
+                event_class = ?event.event_class,
+                pid = event.pid,
+                confidence = ?confidence,
+                rule_name = %rule_name,
+                matched_literal = %matched_literal,
+                "debug memory scan detection"
+            );
+        }
         let response_cfg = self.effective_response_config();
         let action = plan_action(confidence, &response_cfg);
         let _ = self.report_local_action_if_needed(action, confidence, &event, now_unix);
@@ -982,6 +1063,18 @@ impl AgentRuntime {
         }
 
         let local = self.execute_planned_action(action, event, now_unix);
+        if std::env::var("EGUARD_DEBUG_EVENT_LOG")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .is_some()
+        {
+            info!(
+                action = ?action,
+                success = local.success,
+                detail = %local.detail,
+                "debug response execution"
+            );
+        }
         let response = ResponseEnvelope {
             agent_id: self.config.agent_id.clone(),
             action_type: format!("{:?}", action).to_ascii_lowercase(),
@@ -1230,6 +1323,7 @@ impl AgentRuntime {
                 "runtime": enriched.container_runtime.as_deref(),
                 "id": enriched.container_id.as_deref(),
                 "escape": enriched.container_escape,
+                "privileged": enriched.container_privileged,
             },
             "detection": {
                 "confidence": format!("{:?}", confidence).to_ascii_lowercase(),
@@ -1374,6 +1468,18 @@ impl AgentRuntime {
         self.last_compliance_checked_unix = Some(now_unix);
         self.last_compliance_result = Some(result.clone());
         result
+    }
+
+    fn compliance_interval_secs(&self) -> i64 {
+        let policy_interval = self
+            .compliance_policy
+            .check_interval_secs
+            .unwrap_or(self.config.compliance_check_interval_secs);
+        if policy_interval == 0 {
+            COMPLIANCE_INTERVAL_SECS
+        } else {
+            policy_interval as i64
+        }
     }
 
     fn consume_bootstrap_config(&self) {
@@ -2000,6 +2106,10 @@ fn to_detection_event(enriched: &platform_linux::EnrichedEvent, now_unix: i64) -
         dst_domain: enriched.dst_domain.clone(),
         command_line: enriched.process_cmdline.clone(),
         event_size: enriched.event_size,
+        container_runtime: enriched.container_runtime.clone(),
+        container_id: enriched.container_id.clone(),
+        container_escape: enriched.container_escape,
+        container_privileged: enriched.container_privileged,
     }
 }
 

@@ -22,6 +22,14 @@ fn event(ts: i64, class: EventClass, process: &str, parent: &str, uid: u32) -> T
         dst_domain: None,
         command_line: None,
         event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
     }
 }
 
@@ -37,6 +45,8 @@ fn temporal_cap_rule(name: &str) -> TemporalRule {
                     uid_eq: None,
                     uid_ne: None,
                     dst_port_not_in: None,
+                    file_path_any_of: None,
+                    file_path_contains: None,
                 },
                 within_secs: 30,
             },
@@ -48,6 +58,8 @@ fn temporal_cap_rule(name: &str) -> TemporalRule {
                     uid_eq: None,
                     uid_ne: None,
                     dst_port_not_in: Some(std::collections::HashSet::from([80, 443])),
+                    file_path_any_of: None,
+                    file_path_contains: None,
                 },
                 within_secs: 10,
             },
@@ -80,6 +92,10 @@ fn cmdline_information_consistency_between_layers() {
         dst_domain: None,
         command_line: Some(cmd.to_string()),
         event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
     };
 
     let signals = DetectionSignals {
@@ -140,6 +156,10 @@ fn dns_entropy_feature_is_stable_and_high_for_dga_like_domains() {
         dst_domain: Some("x7f3a2b9d2c7f.dynamic-dns.net".to_string()),
         command_line: None,
         event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
     };
     let features = layer5::MlFeatures::extract(&event, &signals, 0, 0, 0, 0);
     let entropy_high = features.values[18];
@@ -149,6 +169,51 @@ fn dns_entropy_feature_is_stable_and_high_for_dga_like_domains() {
     let features2 = layer5::MlFeatures::extract(&event, &signals, 0, 0, 0, 0);
     let entropy_low = features2.values[18];
     assert!(entropy_low < entropy_high, "expected lower entropy for normal domain");
+}
+
+#[test]
+fn behavioral_dns_entropy_alarm_triggers_for_high_entropy_domains() {
+    let mut engine = behavioral::BehavioralEngine::new();
+    let mut event = TelemetryEvent {
+        ts_unix: 1,
+        event_class: EventClass::DnsQuery,
+        pid: 4242,
+        ppid: 1,
+        uid: 0,
+        process: "dns-test".to_string(),
+        parent_process: "init".to_string(),
+        session_id: 4242,
+        file_path: None,
+        file_write: false,
+        file_hash: None,
+        dst_port: Some(53),
+        dst_ip: None,
+        dst_domain: Some("x7f3a2b9d2c7f.dynamic-dns.net".to_string()),
+        command_line: None,
+        event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
+    };
+
+    let mut alarm = None;
+    for idx in 0..10 {
+        event.ts_unix += idx as i64;
+        for entry in engine.observe(&event) {
+            if entry.dimension == "dns_entropy" {
+                alarm = Some(entry);
+                break;
+            }
+        }
+        if alarm.is_some() {
+            break;
+        }
+    }
+
+    let alarm = alarm.expect("expected dns entropy alarm");
+    let entropy = alarm.current_entropy.expect("expected entropy value");
+    assert!(entropy > 0.7, "dns entropy should be high for DGA-like labels");
 }
 
 #[test]
@@ -971,6 +1036,8 @@ fn layer4_template_matching_is_bounded_by_declared_depth() {
                 require_module_loaded: false,
                 require_sensitive_file_access: false,
                 require_ransomware_write_burst: false,
+                require_container_escape: false,
+                require_privileged_container: false,
             },
             TemplatePredicate {
                 process_any_of: Some(crate::util::set_of(["mid"])),
@@ -980,6 +1047,8 @@ fn layer4_template_matching_is_bounded_by_declared_depth() {
                 require_module_loaded: false,
                 require_sensitive_file_access: false,
                 require_ransomware_write_burst: false,
+                require_container_escape: false,
+                require_privileged_container: false,
             },
             TemplatePredicate {
                 process_any_of: Some(crate::util::set_of(["leaf"])),
@@ -989,6 +1058,8 @@ fn layer4_template_matching_is_bounded_by_declared_depth() {
                 require_module_loaded: false,
                 require_sensitive_file_access: false,
                 require_ransomware_write_burst: false,
+                require_container_escape: false,
+                require_privileged_container: false,
             },
         ],
         max_depth: 1,
@@ -1064,6 +1135,8 @@ fn layer4_evaluation_runtime_is_bounded_with_depth_limited_templates() {
                     require_module_loaded: false,
                     require_sensitive_file_access: false,
                     require_ransomware_write_burst: false,
+                    require_container_escape: false,
+                    require_privileged_container: false,
                 },
                 TemplatePredicate {
                     process_any_of: Some(std::iter::once("never-match".to_string()).collect()),
@@ -1073,6 +1146,8 @@ fn layer4_evaluation_runtime_is_bounded_with_depth_limited_templates() {
                     require_module_loaded: false,
                     require_sensitive_file_access: false,
                     require_ransomware_write_burst: false,
+                    require_container_escape: false,
+                    require_privileged_container: false,
                 },
             ],
             max_depth: 6,
@@ -1211,6 +1286,8 @@ fn ransomware_write_burst_triggers_killchain_and_ignores_sparse_writes() {
             require_module_loaded: false,
             require_sensitive_file_access: false,
             require_ransomware_write_burst: true,
+            require_container_escape: false,
+            require_privileged_container: false,
         }],
         max_depth: 2,
         max_inter_stage_secs: 15,
@@ -1266,6 +1343,126 @@ fn ransomware_write_burst_triggers_killchain_and_ignores_sparse_writes() {
 }
 
 #[test]
+// AC-DET-210
+fn container_escape_killchain_triggers() {
+    let mut l4 = Layer4Engine::with_default_templates();
+    let mut ev = event(10, EventClass::ProcessExec, "sleep", "init", 0);
+    ev.pid = 4242;
+    ev.ppid = 1;
+    ev.session_id = ev.pid;
+    ev.container_runtime = Some("docker".to_string());
+    ev.container_id = Some("deadbeefdead".to_string());
+    ev.container_escape = true;
+
+    let hits = l4.observe(&ev);
+    assert!(
+        hits.iter().any(|h| h == "killchain_container_escape"),
+        "container escape should trigger killchain"
+    );
+}
+
+#[test]
+// AC-DET-211
+fn privileged_container_killchain_triggers() {
+    let mut l4 = Layer4Engine::with_default_templates();
+    let mut ev = event(20, EventClass::ProcessExec, "sleep", "init", 0);
+    ev.pid = 5252;
+    ev.ppid = 1;
+    ev.session_id = ev.pid;
+    ev.container_runtime = Some("docker".to_string());
+    ev.container_id = Some("cafebabecafe".to_string());
+    ev.container_privileged = true;
+
+    let hits = l4.observe(&ev);
+    assert!(
+        hits.iter().any(|h| h == "killchain_container_privileged"),
+        "privileged container should trigger killchain"
+    );
+}
+
+#[test]
+// AC-DET-212
+fn credential_theft_killchain_triggers_on_sensitive_paths() {
+    let mut l4 = Layer4Engine::with_default_templates();
+
+    let mut shadow = event(10, EventClass::FileOpen, "cat", "bash", 1000);
+    shadow.pid = 6100;
+    shadow.ppid = 1;
+    shadow.session_id = shadow.pid;
+    shadow.file_path = Some("/etc/shadow".to_string());
+    let hits = l4.observe(&shadow);
+    assert!(
+        hits.iter().any(|h| h == "killchain_credential_theft"),
+        "credential theft should trigger on /etc/shadow"
+    );
+
+    let mut key = event(11, EventClass::FileOpen, "cat", "bash", 1000);
+    key.pid = 6101;
+    key.ppid = 1;
+    key.session_id = key.pid;
+    key.file_path = Some("/root/.ssh/id_rsa".to_string());
+    let hits = l4.observe(&key);
+    assert!(
+        hits.iter().any(|h| h == "killchain_credential_theft"),
+        "credential theft should trigger on SSH private keys"
+    );
+}
+
+#[test]
+// AC-DET-213
+fn credential_theft_killchain_ignores_root_access() {
+    let mut l4 = Layer4Engine::with_default_templates();
+
+    let mut ev = event(12, EventClass::FileOpen, "cat", "bash", 0);
+    ev.pid = 6200;
+    ev.ppid = 1;
+    ev.session_id = ev.pid;
+    ev.file_path = Some("/etc/shadow".to_string());
+
+    let hits = l4.observe(&ev);
+    assert!(
+        !hits.iter().any(|h| h == "killchain_credential_theft"),
+        "root access should not trigger credential theft killchain"
+    );
+}
+
+#[test]
+// AC-DET-214
+fn credential_theft_killchain_triggers_on_windows_paths() {
+    let mut l4 = Layer4Engine::with_default_templates();
+
+    let mut ev = event(13, EventClass::FileOpen, "powershell", "explorer", 1000);
+    ev.pid = 6300;
+    ev.ppid = 1;
+    ev.session_id = ev.pid;
+    ev.file_path = Some("C:\\Windows\\System32\\config\\SAM".to_string());
+
+    let hits = l4.observe(&ev);
+    assert!(
+        hits.iter().any(|h| h == "killchain_credential_theft"),
+        "windows SAM access should trigger credential theft killchain"
+    );
+}
+
+#[test]
+// AC-DET-215
+fn credential_theft_killchain_triggers_on_macos_paths() {
+    let mut l4 = Layer4Engine::with_default_templates();
+
+    let mut ev = event(14, EventClass::FileOpen, "security", "launchd", 1000);
+    ev.pid = 6400;
+    ev.ppid = 1;
+    ev.session_id = ev.pid;
+    ev.file_path = Some("/Library/Keychains/login.keychain-db".to_string());
+
+    let hits = l4.observe(&ev);
+    assert!(
+        hits.iter().any(|h| h == "killchain_credential_theft"),
+        "macOS keychain access should trigger credential theft killchain"
+    );
+}
+
+#[test]
 // AC-DET-080
 fn detection_outcome_includes_rule_names_and_matched_fields_for_traceability() {
     let mut engine = DetectionEngine::default_with_rules();
@@ -1303,6 +1500,8 @@ detection:
       within_secs: 30
     - event_class: network_connect
       dst_port_not_in: [80, 443]
+      file_path_any_of: None,
+      file_path_contains: None,
       within_secs: 10
 "#;
 
@@ -1323,6 +1522,42 @@ detection:
     e2.dst_port = Some(8443);
     let hits = t.observe(&e2);
     assert!(hits.iter().any(|v| v == "sigma_webshell_network"));
+}
+
+#[test]
+// AC-DET-216
+fn sigma_yaml_file_path_predicate_compiles_and_fires() {
+    let sigma_yaml = r#"
+title: sigma_credential_access
+id: sigma_credential_access
+
+detection:
+  sequence:
+    - event_class: file_open
+      file_path_any_of: [/etc/shadow]
+      file_path_contains: ["/.ssh/id_rsa"]
+      within_secs: 10
+"#;
+
+    let mut engine = TemporalEngine::new();
+    let name = engine
+        .add_sigma_rule_yaml(sigma_yaml)
+        .expect("compile sigma rule");
+    assert_eq!(name, "sigma_credential_access");
+
+    let mut e1 = event(10, EventClass::FileOpen, "cat", "bash", 1000);
+    e1.pid = 777;
+    e1.session_id = e1.pid;
+    e1.file_path = Some("/etc/shadow".to_string());
+    let hits = engine.observe(&e1);
+    assert!(hits.iter().any(|v| v == "sigma_credential_access"));
+
+    let mut e2 = event(11, EventClass::FileOpen, "cat", "bash", 1000);
+    e2.pid = 778;
+    e2.session_id = e2.pid;
+    e2.file_path = Some("/home/user/.ssh/id_rsa".to_string());
+    let hits = engine.observe(&e2);
+    assert!(hits.iter().any(|v| v == "sigma_credential_access"));
 }
 
 #[test]
@@ -1355,6 +1590,8 @@ detection:
       within_secs: 30
     - event_class: network_connect
       dst_port_not_in: [80, 443]
+      file_path_any_of: None,
+      file_path_contains: None,
       within_secs: 10
 "#;
 
@@ -1424,6 +1661,8 @@ detection:
       within_secs: 30
     - event_class: network_connect
       dst_port_not_in: [80, 443]
+      file_path_any_of: None,
+      file_path_contains: None,
       within_secs: 10
 "#,
     )

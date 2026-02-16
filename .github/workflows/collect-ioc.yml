@@ -15,6 +15,8 @@ concurrency:
 jobs:
   collect-ioc:
     runs-on: ubuntu-latest
+    env:
+      MALWARE_BAZAAR_KEY: ${{ secrets.MALWARE_BAZAAR_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -67,7 +69,58 @@ jobs:
             "https://bazaar.abuse.ch/export/txt/sha256/recent/" \
             -o /tmp/bazaar_hashes.txt
           grep -v '^#' /tmp/bazaar_hashes.txt | grep -v '^$' | \
-            awk '{print $1}' > sources/ioc/hashes/malwarebazaar.txt
+            awk '{print $1}' > /tmp/bazaar_export_hashes.txt
+
+          if [ -n "${MALWARE_BAZAAR_KEY:-}" ]; then
+            python - <<'PY'
+import json
+import os
+import sys
+import urllib.parse
+import urllib.request
+
+key = os.getenv("MALWARE_BAZAAR_KEY", "").strip()
+if not key:
+    sys.exit(0)
+
+payload = urllib.parse.urlencode({"query": "get_recent", "selector": "100"}).encode()
+req = urllib.request.Request(
+    "https://mb-api.abuse.ch/api/v1/",
+    data=payload,
+    headers={"Auth-Key": key},
+)
+
+try:
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        raw = resp.read().decode("utf-8", "ignore")
+except Exception as exc:
+    print(f"MalwareBazaar API fetch failed: {exc}")
+    sys.exit(0)
+
+try:
+    doc = json.loads(raw)
+except Exception as exc:
+    print(f"MalwareBazaar API JSON parse failed: {exc}")
+    sys.exit(0)
+
+if doc.get("query_status") != "ok":
+    print(f"MalwareBazaar API query_status={doc.get('query_status')}")
+    sys.exit(0)
+
+hashes = [item.get("sha256_hash") for item in doc.get("data", []) if item.get("sha256_hash")]
+with open("/tmp/bazaar_api_hashes.txt", "w", encoding="utf-8") as handle:
+    for value in hashes:
+        handle.write(f"{value}\n")
+print(f"MalwareBazaar API hashes: {len(hashes)}")
+PY
+          fi
+
+          if [ -s /tmp/bazaar_api_hashes.txt ]; then
+            cat /tmp/bazaar_export_hashes.txt /tmp/bazaar_api_hashes.txt | sort -u > sources/ioc/hashes/malwarebazaar.txt
+          else
+            cp /tmp/bazaar_export_hashes.txt sources/ioc/hashes/malwarebazaar.txt
+          fi
+
           echo "MalwareBazaar hashes: $(wc -l < sources/ioc/hashes/malwarebazaar.txt)"
 
       - name: "Fetch ThreatFox IOCs (Tier 2 — abuse.ch)"
