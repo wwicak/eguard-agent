@@ -667,14 +667,8 @@ impl AgentRuntime {
         // Enrich envelope with detection results
         event_envelope.event_type = detection_event.event_class.as_str().to_string();
         event_envelope.severity = confidence_to_severity(confidence).to_string();
-        if !detection_outcome.temporal_hits.is_empty() {
-            event_envelope.rule_name = detection_outcome.temporal_hits[0].clone();
-        } else if !detection_outcome.kill_chain_hits.is_empty() {
-            event_envelope.rule_name = detection_outcome.kill_chain_hits[0].clone();
-        } else if !detection_outcome.yara_hits.is_empty() {
-            event_envelope.rule_name = detection_outcome.yara_hits[0].rule_name.clone();
-        } else if !detection_outcome.layer1.matched_signatures.is_empty() {
-            event_envelope.rule_name = format!("ioc_sig:{}", detection_outcome.layer1.matched_signatures[0]);
+        if let Some(rule_name) = Self::detection_rule_name(&detection_outcome) {
+            event_envelope.rule_name = rule_name;
         }
 
         Ok(Some(TickEvaluation {
@@ -1224,6 +1218,13 @@ impl AgentRuntime {
         now_unix: i64,
     ) -> EventEnvelope {
         let payload_json = self.telemetry_payload_json(enriched, event, outcome, confidence, now_unix);
+        if std::env::var("EGUARD_DEBUG_AUDIT_LOG")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .is_some()
+        {
+            info!(payload = %payload_json, "debug audit payload");
+        }
         EventEnvelope {
             agent_id: self.config.agent_id.clone(),
             event_type: "process_exec".to_string(),
@@ -1244,6 +1245,7 @@ impl AgentRuntime {
     ) -> String {
         let rule_type = Self::detection_rule_type(outcome);
         let detection_layers = Self::detection_layers(outcome);
+        let primary_rule_name = Self::detection_rule_name(outcome);
         let yara_hits = outcome
             .yara_hits
             .iter()
@@ -1347,6 +1349,29 @@ impl AgentRuntime {
                     "l1_prefilter_hit": outcome.signals.l1_prefilter_hit,
                     "exploit_indicator": outcome.signals.exploit_indicator,
                 },
+            },
+            "audit": {
+                "primary_rule_name": primary_rule_name,
+                "rule_type": rule_type,
+                "detection_layers": detection_layers,
+                "signals": {
+                    "z1_exact_ioc": outcome.signals.z1_exact_ioc,
+                    "z2_temporal": outcome.signals.z2_temporal,
+                    "z3_anomaly_high": outcome.signals.z3_anomaly_high,
+                    "z3_anomaly_med": outcome.signals.z3_anomaly_med,
+                    "z4_kill_chain": outcome.signals.z4_kill_chain,
+                    "l1_prefilter_hit": outcome.signals.l1_prefilter_hit,
+                    "exploit_indicator": outcome.signals.exploit_indicator,
+                },
+                "matched_fields": &outcome.layer1.matched_fields,
+                "matched_signatures": &outcome.layer1.matched_signatures,
+                "temporal_hits": &outcome.temporal_hits,
+                "kill_chain_hits": &outcome.kill_chain_hits,
+                "exploit_indicators": &outcome.exploit_indicators,
+                "yara_hits": yara_hits,
+                "anomaly": anomaly,
+                "ml_score": ml_score,
+                "behavioral_alarms": behavioral_alarms,
             }
         })
         .to_string()
@@ -1375,6 +1400,28 @@ impl AgentRuntime {
             return "ml";
         }
         ""
+    }
+
+    fn detection_rule_name(outcome: &DetectionOutcome) -> Option<String> {
+        if !outcome.temporal_hits.is_empty() {
+            return Some(outcome.temporal_hits[0].clone());
+        }
+        if !outcome.kill_chain_hits.is_empty() {
+            return Some(outcome.kill_chain_hits[0].clone());
+        }
+        if !outcome.exploit_indicators.is_empty() {
+            return Some(format!("exploit:{}", outcome.exploit_indicators[0]));
+        }
+        if !outcome.yara_hits.is_empty() {
+            return Some(outcome.yara_hits[0].rule_name.clone());
+        }
+        if !outcome.layer1.matched_signatures.is_empty() {
+            return Some(format!(
+                "ioc_sig:{}",
+                outcome.layer1.matched_signatures[0]
+            ));
+        }
+        None
     }
 
     fn detection_layers(outcome: &DetectionOutcome) -> Vec<String> {

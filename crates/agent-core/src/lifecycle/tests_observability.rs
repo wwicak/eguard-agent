@@ -71,6 +71,98 @@ fn tick_evaluation_for_confidence(confidence: Confidence, ts: i64, pid: u32) -> 
     }
 }
 
+#[test]
+// AC-DET-220 AC-DET-221 AC-DET-222
+fn telemetry_audit_payload_includes_rule_attribution() {
+    let cfg = AgentConfig::default();
+    let runtime = AgentRuntime::new(cfg).expect("runtime");
+
+    let enriched = platform_linux::EnrichedEvent {
+        event: platform_linux::RawEvent {
+            event_type: platform_linux::EventType::ProcessExec,
+            pid: 9001,
+            uid: 0,
+            ts_ns: 0,
+            payload: "".to_string(),
+        },
+        process_exe: Some("memfd:payload (deleted)".to_string()),
+        process_exe_sha256: None,
+        process_cmdline: Some("python -c 'print(1)'".to_string()),
+        parent_process: Some("init".to_string()),
+        parent_chain: vec![1],
+        file_path: Some("memfd:payload (deleted)".to_string()),
+        file_path_secondary: None,
+        file_write: false,
+        file_sha256: None,
+        event_size: None,
+        dst_ip: None,
+        dst_port: None,
+        dst_domain: None,
+        container_runtime: Some("host".to_string()),
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
+    };
+
+    let event = detection::TelemetryEvent {
+        ts_unix: 1,
+        event_class: detection::EventClass::ProcessExec,
+        pid: 9001,
+        ppid: 1,
+        uid: 0,
+        process: "memfd".to_string(),
+        parent_process: "init".to_string(),
+        session_id: 9001,
+        file_path: Some("memfd:payload (deleted)".to_string()),
+        file_write: false,
+        file_hash: None,
+        dst_port: None,
+        dst_ip: None,
+        dst_domain: None,
+        command_line: Some("python -c 'print(1)'".to_string()),
+        event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
+    };
+
+    let mut layer1 = detection::Layer1EventHit::default();
+    layer1.matched_fields = vec!["file_hash".to_string()];
+    layer1.matched_signatures = vec!["sig".to_string()];
+
+    let outcome = detection::DetectionOutcome {
+        confidence: detection::Confidence::High,
+        signals: detection::DetectionSignals {
+            z1_exact_ioc: false,
+            z2_temporal: false,
+            z3_anomaly_high: false,
+            z3_anomaly_med: false,
+            z4_kill_chain: false,
+            l1_prefilter_hit: false,
+            exploit_indicator: true,
+        },
+        temporal_hits: Vec::new(),
+        kill_chain_hits: Vec::new(),
+        exploit_indicators: vec!["fileless_memfd".to_string()],
+        yara_hits: Vec::new(),
+        anomaly: None,
+        layer1,
+        ml_score: None,
+        behavioral_alarms: Vec::new(),
+    };
+
+    let payload = runtime.telemetry_payload_json(&enriched, &event, &outcome, detection::Confidence::High, 10);
+    let value: serde_json::Value = serde_json::from_str(&payload).expect("valid json");
+
+    let audit = &value["audit"];
+    assert_eq!(audit["primary_rule_name"], "exploit:fileless_memfd");
+    assert_eq!(audit["rule_type"], "exploit");
+    assert!(audit["matched_fields"].as_array().unwrap().iter().any(|v| v == "file_hash"));
+    assert!(audit["matched_signatures"].as_array().unwrap().iter().any(|v| v == "sig"));
+    assert!(audit["exploit_indicators"].as_array().unwrap().iter().any(|v| v == "fileless_memfd"));
+}
+
 #[tokio::test]
 // AC-OBS-001 AC-OBS-003 AC-OBS-005
 async fn observability_snapshot_tracks_send_failure_degraded_transition_and_queue_depth() {

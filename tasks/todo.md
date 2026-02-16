@@ -37,6 +37,13 @@
 - [x] Add QEMU harness for exploit fileless exec replay (Linux only) + acceptance criteria/contracts
 - [x] Validate in QEMU only and document results
 
+## 🧭 Plan: Tier 3.3 detection explanation & audit trail (Linux-only) (2026-02-16)
+- [x] Define audit trail fields (rule attribution, signals, exploit indicators, matched fields, rationale)
+- [x] Extend event envelope JSON with structured detection audit payload
+- [x] Add unit/contract tests for audit payload and acceptance criteria (AC-DET/AC-TST/AC-VER)
+- [x] Add QEMU validation harness for audit trail logging (Linux only)
+- [x] Document results
+
 ## 🧭 Plan: Refine ML pipeline, detection, telemetry, MDM wiring
 - [x] Review /home/dimas/fe_eguard/docs/eguard-agent-design.md and summarize ML pipeline, detection, telemetry, MDM requirements
 - [x] Audit GitHub Actions ML pipeline under .github/workflows for gaps vs design; propose concrete improvements
@@ -120,6 +127,7 @@
 - QEMU container escape validation: tests/qemu/run_agent_container_escape.sh succeeded (container escape + privileged container killchain).
 - QEMU credential theft validation: tests/qemu/run_agent_credential_theft.sh succeeded (credential killchain on /etc/shadow and SSH key).
 - QEMU exploit detection validation: tests/qemu/run_agent_exploit_harness.sh succeeded (memfd/procfd/tmp fileless exec indicators at High+ confidence).
+- QEMU audit trail validation: tests/qemu/run_agent_audit_trail.sh succeeded (audit payload logged with primary_rule_name + exploit indicator).
 - Sigma file path predicates: extended compiler with file_path_any_of/contains, added credential_access rule, and expanded cross-platform sensitive path heuristics; re-validated QEMU credential harness.
 - Exploit detection acceptance criteria: added Linux-only fileless-exec indicators (memfd/deleted/procfd/tmp), QEMU exploit harness AC, and contract checks; documented Windows/macOS + NAC deferral.
 

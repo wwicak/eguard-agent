@@ -119,6 +119,9 @@ Derived from `docs/eguard-agent-design.md`. These acceptance criteria define the
 - **AC-DET-078**: Assumption A4 (baseline freshness): anomaly baselines MUST expire and re-learn when stale.
 - **AC-DET-079**: Assumption A5 (deterministic evaluation): all predicates MUST be pure functions over normalized event fields.
 - **AC-DET-080**: Every detection decision MUST be traceable to a specific mathematical property (exact rule name + matched fields).
+- **AC-DET-220**: Telemetry payload MUST include an `audit` object with primary_rule_name, rule_type, detection_layers, and detection signals.
+- **AC-DET-221**: Audit trail MUST include matched_fields, matched_signatures, and all rule hit lists (temporal, kill_chain, exploit, yara).
+- **AC-DET-222**: Audit trail MUST include exploit indicators when present and record High+ confidence for fileless execution signals.
 
 ### Validation Protocol
 
@@ -1094,8 +1097,10 @@ Derived from `docs/eguard-agent-design.md`. These acceptance criteria define the
 - **AC-TST-050**: QEMU credential theft harness MUST flag sensitive credential access kill chain detections.
 - **AC-TST-051**: Sigma compiler MUST accept file path predicates and ship a credential access rule that uses them.
 - **AC-TST-052**: QEMU exploit detection harness MUST replay fileless-exec indicators (`memfd:`/`(deleted)`/`/proc/self/fd`) and produce High-or-higher confidence detections.
+- **AC-TST-053**: QEMU audit trail harness MUST log the audit payload with primary_rule_name and exploit indicators (Linux-only).
 - **AC-VER-057**: QEMU harness MUST use user-mode networking with no host forwards and explicit RFC1918/link-local blackhole routes inside the guest (outbound HTTPS allowed).
 - **AC-VER-058**: Exploit detection validation is Linux-only until Windows/macOS backends (Tier 4.3) and NAC harness are ready.
+- **AC-VER-059**: Audit trail validation is Linux-only until cross-platform telemetry backends are available.
 
 ### Performance Targets (Section 29.1)
 
