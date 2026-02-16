@@ -5,6 +5,11 @@ Initial workspace scaffold for the first-party endpoint agent described in
 
 ## Runtime configuration (current)
 
+Default deployment mode expects the agent to receive `server_addr` during
+install/enrollment (no baked IP). Use the eGuard server installer to write
+`bootstrap.conf`, and rerun the installer (or update `bootstrap.conf`) if the
+server address changes.
+
 `agent-core` loads configuration from file, then environment overrides.
 
 Config file lookup order:
@@ -22,7 +27,7 @@ Environment overrides:
 - `EGUARD_AGENT_ID` for agent identifier
 - `EGUARD_AGENT_MAC` for endpoint MAC address
 - `EGUARD_AGENT_MODE` in `learning|active|degraded`
-- `EGUARD_TRANSPORT_MODE` in `http|grpc`
+- `EGUARD_TRANSPORT_MODE` or `EGUARD_TRANSPORT` in `http|grpc`
 - `EGUARD_AUTONOMOUS_RESPONSE` in `true|false`/`1|0`
 - `EGUARD_BUFFER_BACKEND` in `sqlite|memory`
 - `EGUARD_BUFFER_PATH` for sqlite file path
@@ -32,6 +37,12 @@ Environment overrides:
 Current precedence: defaults < config file < environment variables.
 
 Current transport supports `http` and `grpc` modes.
+
+Recommended install flow (no baked IP):
+
+```bash
+curl -fsSL https://<eguard-server>/install.sh | bash -s -- --server <eguard-server> --token <enrollment-token>
+```
 
 HTTP endpoints used in `http` mode:
 

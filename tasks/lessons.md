@@ -130,3 +130,19 @@ it borrows `self` mutably twice. Fix: Extract `push_baseline()` as a free
 Detection logic must not hardcode Linux-only paths like `/home/`. Use
 cross-platform path heuristics (Linux, macOS, Windows) and explicit
 system/temp exclusions when gating file activity.
+
+## Verify Repo Ownership Before Wiring Changes
+When working across multiple repos, confirm which repo hosts the server
+implementation before assuming locations or making wiring changes. Use the
+path the user specifies (e.g., `/home/dimas/fe_eguard`) as the source of truth
+and align integration notes and fixes to that repo.
+
+## Avoid Baked Server IPs
+Do not embed server IPs in agent binaries or default configs. Always rely on
+bootstrap enrollment (`bootstrap.conf`), environment overrides, or DNS names
+so deployments can change server addresses without rebuilding agents.
+
+## Do Not Run Tests On User VM
+When asked to verify or test, do not execute services or tests directly on the
+user's VM. Use QEMU or another isolated environment for validation unless the
+user explicitly approves running locally.

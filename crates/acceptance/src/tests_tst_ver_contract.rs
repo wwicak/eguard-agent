@@ -292,13 +292,13 @@ fn docker_compose_harness_and_container_images_match_test_contract() {
         count_line(&compose_lines, "dockerfile: tests/Dockerfile.agent-test"),
         1
     );
-    assert!(compose_lines.iter().any(|l| l == "- \"50051:50051\""));
+    assert!(compose_lines.iter().any(|l| l == "- \"50052:50052\""));
     assert!(compose_lines.iter().any(|l| l == "- \"9999:9999\""));
     assert!(compose_lines.iter().any(|l| l == "EGUARD_TEST_MODE: \"1\""));
     assert!(compose_lines.iter().any(|l| l == "privileged: true"));
     assert!(compose_lines
         .iter()
-        .any(|l| l == "EGUARD_SERVER: eguard-server:50051"));
+        .any(|l| l == "EGUARD_SERVER: eguard-server:50052"));
     assert!(compose_lines
         .iter()
         .any(|l| l == "ENROLLMENT_TOKEN: test-token-12345"));
@@ -1189,10 +1189,8 @@ exit 0
 
     let signature_ml_offline_eval_trend_report =
         read("artifacts/bundle-signature-contract/signature-ml-offline-eval-trend-report.json");
-    assert!(
-        signature_ml_offline_eval_trend_report
-            .contains("\"suite\": \"signature_ml_offline_eval_trend_gate\"")
-    );
+    assert!(signature_ml_offline_eval_trend_report
+        .contains("\"suite\": \"signature_ml_offline_eval_trend_gate\""));
 
     let signature_ml_registry =
         read("artifacts/bundle-signature-contract/signature-ml-model-registry.json");

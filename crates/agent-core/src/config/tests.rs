@@ -16,6 +16,7 @@ fn clear_env() {
         "EGUARD_SERVER",
         "EGUARD_AGENT_MODE",
         "EGUARD_TRANSPORT_MODE",
+        "EGUARD_TRANSPORT",
         "EGUARD_ENROLLMENT_TOKEN",
         "EGUARD_TENANT_ID",
         "EGUARD_AUTONOMOUS_RESPONSE",
@@ -59,14 +60,14 @@ fn file_config_is_loaded() {
     let mut f = std::fs::File::create(&path).expect("create file");
     writeln!(
             f,
-            "[agent]\nserver_addr=\"10.0.0.1:50051\"\nmode=\"active\"\n[transport]\nmode=\"grpc\"\n[response]\nautonomous_response=true\ndry_run=true\n[response.high]\nkill=true\nquarantine=false\ncapture_script=true\n[response.rate_limit]\nmax_kills_per_minute=21\n[response.auto_isolation]\nenabled=true\nmin_incidents_in_window=4\nwindow_secs=180\nmax_isolations_per_hour=6\n[storage]\nbackend=\"memory\"\ncap_mb=10"
+            "[agent]\nserver_addr=\"10.0.0.1:50052\"\nmode=\"active\"\n[transport]\nmode=\"grpc\"\n[response]\nautonomous_response=true\ndry_run=true\n[response.high]\nkill=true\nquarantine=false\ncapture_script=true\n[response.rate_limit]\nmax_kills_per_minute=21\n[response.auto_isolation]\nenabled=true\nmin_incidents_in_window=4\nwindow_secs=180\nmax_isolations_per_hour=6\n[storage]\nbackend=\"memory\"\ncap_mb=10"
         )
         .expect("write file");
 
     std::env::set_var("EGUARD_AGENT_CONFIG", &path);
     let cfg = AgentConfig::load().expect("load config");
 
-    assert_eq!(cfg.server_addr, "10.0.0.1:50051");
+    assert_eq!(cfg.server_addr, "10.0.0.1:50052");
     assert!(matches!(cfg.mode, AgentMode::Active));
     assert!(cfg.response.autonomous_response);
     assert!(cfg.response.dry_run);
@@ -101,7 +102,7 @@ fn encrypted_file_config_is_loaded_with_machine_id_key() {
     let machine_id_path =
         std::env::temp_dir().join(format!("eguard-agent-machine-id-encrypted-{suffix}.txt"));
 
-    let plaintext = "[agent]\nserver_addr=\"10.8.8.8:50051\"\n[transport]\nmode=\"grpc\"\n";
+    let plaintext = "[agent]\nserver_addr=\"10.8.8.8:50052\"\n[transport]\nmode=\"grpc\"\n";
     let encrypted = encrypt_agent_config_for_tests(plaintext, "machine-a", None, [7u8; 12])
         .expect("encrypt config for tests");
 
@@ -112,7 +113,7 @@ fn encrypted_file_config_is_loaded_with_machine_id_key() {
     std::env::set_var("EGUARD_MACHINE_ID_PATH", &machine_id_path);
     let cfg = AgentConfig::load().expect("load encrypted config");
 
-    assert_eq!(cfg.server_addr, "10.8.8.8:50051");
+    assert_eq!(cfg.server_addr, "10.8.8.8:50052");
     assert_eq!(cfg.transport_mode, "grpc");
 
     clear_env();
@@ -136,7 +137,7 @@ fn encrypted_file_config_fails_when_authentication_fails() {
         "eguard-agent-machine-id-encrypted-fail-{suffix}.txt"
     ));
 
-    let plaintext = "[agent]\nserver_addr=\"10.7.7.7:50051\"\n";
+    let plaintext = "[agent]\nserver_addr=\"10.7.7.7:50052\"\n";
     let encrypted = encrypt_agent_config_for_tests(plaintext, "machine-a", None, [8u8; 12])
         .expect("encrypt config for tests");
 
@@ -173,17 +174,17 @@ fn env_overrides_file_config() {
     ));
 
     let mut f = std::fs::File::create(&path).expect("create file");
-    writeln!(f, "[agent]\nserver_addr=\"10.0.0.1:50051\"").expect("write file");
+    writeln!(f, "[agent]\nserver_addr=\"10.0.0.1:50052\"").expect("write file");
 
     std::env::set_var("EGUARD_AGENT_CONFIG", &path);
-    std::env::set_var("EGUARD_SERVER_ADDR", "10.9.9.9:50051");
-    std::env::set_var("EGUARD_TRANSPORT_MODE", "http");
+    std::env::set_var("EGUARD_SERVER_ADDR", "10.9.9.9:50052");
+    std::env::set_var("EGUARD_TRANSPORT", "http");
     std::env::set_var("EGUARD_AUTONOMOUS_RESPONSE", "true");
     std::env::set_var("EGUARD_RESPONSE_AUTO_ISOLATION_ENABLED", "true");
     std::env::set_var("EGUARD_RESPONSE_AUTO_ISOLATION_MIN_INCIDENTS", "5");
     let cfg = AgentConfig::load().expect("load config");
 
-    assert_eq!(cfg.server_addr, "10.9.9.9:50051");
+    assert_eq!(cfg.server_addr, "10.9.9.9:50052");
     assert_eq!(cfg.transport_mode, "http");
     assert!(cfg.response.autonomous_response);
     assert!(cfg.response.auto_isolation.enabled);
@@ -210,14 +211,14 @@ fn bootstrap_config_is_used_when_agent_config_missing() {
     let mut f = std::fs::File::create(&path).expect("create bootstrap file");
     writeln!(
             f,
-            "[server]\naddress = 10.11.12.13\ngrpc_port = 50051\nenrollment_token = abc123def456\ntenant_id = default"
+            "[server]\naddress = 10.11.12.13\ngrpc_port = 50052\nenrollment_token = abc123def456\ntenant_id = default"
         )
         .expect("write bootstrap file");
 
     std::env::set_var("EGUARD_BOOTSTRAP_CONFIG", &path);
     let cfg = AgentConfig::load().expect("load config");
 
-    assert_eq!(cfg.server_addr, "10.11.12.13:50051");
+    assert_eq!(cfg.server_addr, "10.11.12.13:50052");
     assert_eq!(cfg.transport_mode, "grpc");
     assert_eq!(cfg.enrollment_token.as_deref(), Some("abc123def456"));
     assert_eq!(cfg.tenant_id.as_deref(), Some("default"));
@@ -228,19 +229,60 @@ fn bootstrap_config_is_used_when_agent_config_missing() {
 }
 
 #[test]
+// AC-CFG-001 AC-CFG-002 AC-GRP-006
+fn bootstrap_config_overrides_existing_agent_config() {
+    let _guard = env_lock().lock().expect("env lock");
+    clear_env();
+
+    let config_path = std::env::temp_dir().join(format!(
+        "eguard-agent-config-{}.toml",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    let bootstrap_path = std::env::temp_dir().join(format!(
+        "eguard-bootstrap-config-{}.conf",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+
+    std::fs::write(&config_path, "[agent]\nserver_addr=\"10.9.9.9:50052\"\n")
+        .expect("write config file");
+    std::fs::write(
+        &bootstrap_path,
+        "[server]\naddress = 10.11.12.13\ngrpc_port = 50052\nenrollment_token = abc123def456\n",
+    )
+    .expect("write bootstrap file");
+
+    std::env::set_var("EGUARD_AGENT_CONFIG", &config_path);
+    std::env::set_var("EGUARD_BOOTSTRAP_CONFIG", &bootstrap_path);
+    let cfg = AgentConfig::load().expect("load config");
+
+    assert_eq!(cfg.server_addr, "10.11.12.13:50052");
+    assert_eq!(cfg.enrollment_token.as_deref(), Some("abc123def456"));
+
+    clear_env();
+    let _ = std::fs::remove_file(config_path);
+    let _ = std::fs::remove_file(bootstrap_path);
+}
+
+#[test]
 // AC-CFG-002
 fn format_server_addr_handles_ipv6_without_port() {
     assert_eq!(
-        format_server_addr("2001:db8::1", Some(50051)),
-        "[2001:db8::1]:50051"
+        format_server_addr("2001:db8::1", Some(50052)),
+        "[2001:db8::1]:50052"
     );
     assert_eq!(
-        format_server_addr("[2001:db8::1]:50051", Some(50052)),
-        "[2001:db8::1]:50051"
+        format_server_addr("[2001:db8::1]:50052", Some(50051)),
+        "[2001:db8::1]:50052"
     );
     assert_eq!(
-        format_server_addr("eguard.example.com", Some(50051)),
-        "eguard.example.com:50051"
+        format_server_addr("eguard.example.com", Some(50052)),
+        "eguard.example.com:50052"
     );
 }
 
@@ -265,8 +307,8 @@ fn parse_cap_mb_handles_invalid_values() {
 #[test]
 // AC-CFG-002
 fn has_explicit_port_detects_ipv4_and_ipv6_forms() {
-    assert!(has_explicit_port("127.0.0.1:50051"));
-    assert!(has_explicit_port("[2001:db8::1]:50051"));
+    assert!(has_explicit_port("127.0.0.1:50052"));
+    assert!(has_explicit_port("[2001:db8::1]:50052"));
     assert!(!has_explicit_port("eguard.example.com"));
     assert!(!has_explicit_port("2001:db8::1"));
 }
@@ -276,20 +318,20 @@ fn has_explicit_port_detects_ipv4_and_ipv6_forms() {
 fn parse_bootstrap_config_ignores_comments_and_other_sections() {
     let cfg = parse_bootstrap_config(
         r#"
-[misc]
-address = ignored.example
+ [misc]
+ address = ignored.example
 
-[server]
-address = 10.1.2.3 ; inline comment
-grpc_port = 50051 # inline comment
-enrollment_token = "tok-123"
-tenant_id = 'tenant-a'
-"#,
+ [server]
+ address = 10.1.2.3 ; inline comment
+ grpc_port = 50052 # inline comment
+ enrollment_token = "tok-123"
+ tenant_id = 'tenant-a'
+ "#,
     )
     .expect("parse bootstrap");
 
     assert_eq!(cfg.address.as_deref(), Some("10.1.2.3"));
-    assert_eq!(cfg.grpc_port, Some(50051));
+    assert_eq!(cfg.grpc_port, Some(50052));
     assert_eq!(cfg.enrollment_token.as_deref(), Some("tok-123"));
     assert_eq!(cfg.tenant_id.as_deref(), Some("tenant-a"));
 }
@@ -385,7 +427,7 @@ fn file_config_loads_extended_sections() {
     writeln!(
         f,
         "[agent]\nid=\"agent-123\"\nmachine_id=\"machine-xyz\"\n\
-         [server]\naddress=\"10.20.30.40\"\ngrpc_port=50051\ncert_file=\"/tmp/agent.crt\"\nkey_file=\"/tmp/agent.key\"\nca_file=\"/tmp/ca.crt\"\n\
+         [server]\naddress=\"10.20.30.40\"\ngrpc_port=50052\ncert_file=\"/tmp/agent.crt\"\nkey_file=\"/tmp/agent.key\"\nca_file=\"/tmp/ca.crt\"\n\
          [tls]\npinned_ca_sha256=\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"\nca_pin_path=\"/tmp/ca.pin.sha256\"\nrotate_before_expiry_days=45\n\
          [heartbeat]\ninterval_secs=45\nreconnect_backoff_max_secs=120\n\
          [telemetry]\nprocess_exec=true\nfile_events=false\nnetwork_connections=true\ndns_queries=false\nmodule_loads=true\nuser_logins=false\nflush_interval_ms=250\nmax_batch_size=64\n\
@@ -401,7 +443,7 @@ fn file_config_loads_extended_sections() {
 
     assert_eq!(cfg.agent_id, "agent-123");
     assert_eq!(cfg.machine_id.as_deref(), Some("machine-xyz"));
-    assert_eq!(cfg.server_addr, "10.20.30.40:50051");
+    assert_eq!(cfg.server_addr, "10.20.30.40:50052");
     assert_eq!(cfg.tls_cert_path.as_deref(), Some("/tmp/agent.crt"));
     assert_eq!(cfg.tls_key_path.as_deref(), Some("/tmp/agent.key"));
     assert_eq!(cfg.tls_ca_path.as_deref(), Some("/tmp/ca.crt"));
@@ -443,11 +485,11 @@ fn file_config_loads_extended_sections() {
 fn eguard_server_fallback_env_is_used_when_primary_is_absent() {
     let _guard = env_lock().lock().expect("env lock");
     clear_env();
-    std::env::set_var("EGUARD_SERVER", "10.2.3.4:50051");
+    std::env::set_var("EGUARD_SERVER", "10.2.3.4:50052");
 
     let mut cfg = AgentConfig::default();
     cfg.apply_env_overrides();
-    assert_eq!(cfg.server_addr, "10.2.3.4:50051");
+    assert_eq!(cfg.server_addr, "10.2.3.4:50052");
 
     clear_env();
 }
@@ -457,12 +499,12 @@ fn eguard_server_fallback_env_is_used_when_primary_is_absent() {
 fn eguard_server_addr_takes_precedence_over_eguard_server() {
     let _guard = env_lock().lock().expect("env lock");
     clear_env();
-    std::env::set_var("EGUARD_SERVER", "10.2.3.4:50051");
-    std::env::set_var("EGUARD_SERVER_ADDR", "10.9.9.9:50051");
+    std::env::set_var("EGUARD_SERVER", "10.2.3.4:50052");
+    std::env::set_var("EGUARD_SERVER_ADDR", "10.9.9.9:50052");
 
     let mut cfg = AgentConfig::default();
     cfg.apply_env_overrides();
-    assert_eq!(cfg.server_addr, "10.9.9.9:50051");
+    assert_eq!(cfg.server_addr, "10.9.9.9:50052");
 
     clear_env();
 }

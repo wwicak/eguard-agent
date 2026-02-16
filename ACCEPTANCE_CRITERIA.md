@@ -730,7 +730,7 @@ Derived from `docs/eguard-agent-design.md`. These acceptance criteria define the
 - **AC-GRP-003**: `AgentCapabilities`: `ebpf_supported`, `lsm_supported`, `yara_supported`, `ebpf_programs`.
 - **AC-GRP-004**: `EnrollResponse`: `agent_id`, `signed_certificate` (X.509), `ca_certificate`, `initial_policy`, `initial_rules`.
 - **AC-GRP-005**: Enrollment uses server-only TLS; after enrollment, reconnect with mTLS.
-- **AC-GRP-006**: Read `bootstrap.conf` for `server.address`, `grpc_port` (50051), `enrollment_token`, optional `tenant_id`.
+- **AC-GRP-006**: Read `bootstrap.conf` for `server.address`, `grpc_port` (50052), `enrollment_token`, optional `tenant_id`.
 - **AC-GRP-007**: Server validates token against `endpoint_enrollment_token` table (exists, not expired, usage count).
 - **AC-GRP-008**: Server forwards CSR to SCEP CA, returns signed certificate.
 - **AC-GRP-009**: Server creates `endpoint_agent` record on enrollment.
@@ -828,7 +828,7 @@ Derived from `docs/eguard-agent-design.md`. These acceptance criteria define the
 - **AC-GRP-093**: Auto certificate rotation 30 days before expiry, no connection drop.
 - **AC-GRP-094**: Server requires client cert for all RPCs except `Enroll`.
 - **AC-GRP-095**: Server `grpc.MaxRecvMsgSize(16 << 20)` (16 MB).
-- **AC-GRP-096**: gRPC server on port 50051, Caddy passthrough to Go server.
+- **AC-GRP-096**: gRPC server on port 50052 for direct agent connections (Caddy passthrough optional).
 - **AC-GRP-097**: Agent config stores cert paths.
 - **AC-GRP-098**: Go server registered via `pb.RegisterAgentServiceServer`.
 - **AC-GRP-099**: Go protobuf package: `gitlab.com/devaistech77/fe_eguard/go/api/agent/v1`.
@@ -842,7 +842,7 @@ Derived from `docs/eguard-agent-design.md`. These acceptance criteria define the
 ### Bootstrap Config
 
 - **AC-CFG-001**: Bootstrap config at `/etc/eguard-agent/bootstrap.conf`, used only for enrollment.
-- **AC-CFG-002**: Contains `[server]`: `address`, `grpc_port` (50051), `enrollment_token`, `tenant_id` (optional).
+- **AC-CFG-002**: Contains `[server]`: `address`, `grpc_port` (50052), `enrollment_token`, `tenant_id` (optional).
 - **AC-CFG-003**: MUST be deleted after successful enrollment.
 
 ### Agent Config
@@ -1025,9 +1025,9 @@ Derived from `docs/eguard-agent-design.md`. These acceptance criteria define the
 ### Test Environment (Docker Compose)
 
 - **AC-TST-001**: Docker Compose at `tests/docker-compose.test.yml` with 3 services: `eguard-server`, `agent-test`, `malware-simulator`.
-- **AC-TST-002**: `eguard-server`: builds from `Dockerfile.runtime`, exposes 50051 (gRPC) + 9999 (REST), `EGUARD_TEST_MODE=1`.
+- **AC-TST-002**: `eguard-server`: builds from `Dockerfile.runtime`, exposes 50052 (gRPC) + 9999 (REST), `EGUARD_TEST_MODE=1`.
 - **AC-TST-003**: `agent-test`: builds from test Dockerfile, `privileged: true`, capabilities `SYS_ADMIN`, `BPF`, `NET_ADMIN`.
-- **AC-TST-004**: `agent-test` env: `EGUARD_SERVER=eguard-server:50051`, `ENROLLMENT_TOKEN=test-token-12345`.
+- **AC-TST-004**: `agent-test` env: `EGUARD_SERVER=eguard-server:50052`, `ENROLLMENT_TOKEN=test-token-12345`.
 - **AC-TST-005**: `agent-test` mounts `/sys/kernel/debug` and `/sys/fs/bpf`.
 - **AC-TST-006**: `malware-simulator`: shares `agent-test` network via `network_mode: "service:agent-test"`.
 

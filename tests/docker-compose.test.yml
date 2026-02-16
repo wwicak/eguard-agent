@@ -8,7 +8,7 @@ services:
     environment:
       EGUARD_TEST_MODE: "1"
     ports:
-      - "50051:50051"
+      - "50052:50052"
       - "9999:9999"
 
   agent-test:
@@ -21,7 +21,7 @@ services:
       - BPF
       - NET_ADMIN
     environment:
-      EGUARD_SERVER: eguard-server:50051
+      EGUARD_SERVER: eguard-server:50052
       ENROLLMENT_TOKEN: test-token-12345
     volumes:
       - /sys/kernel/debug:/sys/kernel/debug

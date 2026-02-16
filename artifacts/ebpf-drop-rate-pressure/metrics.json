@@ -1,6 +1,6 @@
 {
   "suite": "ebpf_drop_rate_pressure",
-  "recorded_at_utc": "2026-02-15T06:12:04Z",
+  "recorded_at_utc": "2026-02-15T22:46:48Z",
   "command": "cargo test -p platform-linux ebpf::tests::drop_rate_stays_below_slo_for_reference_10k_event_batch -- --exact",
   "wall_clock_ms": 12,
   "drop_rate_slo": "< 1e-5"

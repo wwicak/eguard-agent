@@ -316,7 +316,7 @@ fn install_script_executes_with_mocked_package_manager_and_systemd() {
     let run = std::process::Command::new("bash")
         .arg(root.join("scripts/install-eguard-agent.sh"))
         .arg("--server")
-        .arg("example.local:50051")
+        .arg("example.local:50052")
         .arg("--url")
         .arg("https://example.local/pkg.deb")
         .current_dir(&root)
@@ -422,7 +422,7 @@ fn update_script_executes_deb_and_rpm_paths_with_mocked_installers() {
         .any(|line| line
             == "updated eguard-agent to 2.0.1; next heartbeat reports updated agent_version"));
 
-    let mut client = Client::new("127.0.0.1:50051".to_string());
+    let mut client = Client::new("127.0.0.1:50052".to_string());
     client.set_agent_version("2.0.1");
     assert_eq!(client.agent_version(), "2.0.1");
 

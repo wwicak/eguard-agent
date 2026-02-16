@@ -335,7 +335,7 @@ fn response_reporting_and_pipeline_contracts_are_wired() {
     assert_eq!(report.action, pb::ResponseAction::CaptureScript as i32);
     assert_eq!(report.confidence, pb::ResponseConfidence::High as i32);
 
-    let mut client = Client::new("127.0.0.1:50051".to_string());
+    let mut client = Client::new("127.0.0.1:50052".to_string());
     client.set_online(false);
     assert!(!client.is_online());
 }

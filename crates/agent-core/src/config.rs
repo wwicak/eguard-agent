@@ -21,6 +21,7 @@ const BOOTSTRAP_CONFIG_CANDIDATES: [&str; 3] = [
     "./bootstrap.conf",
 ];
 
+const DEFAULT_SERVER_ADDR: &str = "eguard-server:50052";
 const ENCRYPTED_CONFIG_PREFIX: &str = "eguardcfg:v1:";
 const ENCRYPTED_CONFIG_AAD: &[u8] = b"eguard-agent-config-v1";
 const MACHINE_ID_PATH_ENV: &str = "EGUARD_MACHINE_ID_PATH";
@@ -102,7 +103,7 @@ impl Default for AgentConfig {
             mac: "00:00:00:00:00:00".to_string(),
             mode: AgentMode::Learning,
             transport_mode: "http".to_string(),
-            server_addr: "eguard-server:50051".to_string(),
+            server_addr: DEFAULT_SERVER_ADDR.to_string(),
             enrollment_token: None,
             tenant_id: None,
             response: ResponseConfig::default(),
@@ -160,10 +161,8 @@ impl Default for AgentConfig {
 impl AgentConfig {
     pub fn load() -> Result<Self> {
         let mut cfg = Self::default();
-        let has_agent_config = cfg.apply_file_config()?;
-        if !has_agent_config {
-            cfg.apply_bootstrap_config()?;
-        }
+        cfg.apply_file_config()?;
+        cfg.apply_bootstrap_config()?;
         cfg.apply_env_overrides();
         Ok(cfg)
     }
@@ -329,7 +328,9 @@ impl AgentConfig {
     }
 
     fn apply_env_transport_mode(&mut self) {
-        if let Some(v) = env_non_empty("EGUARD_TRANSPORT_MODE") {
+        let mode =
+            env_non_empty("EGUARD_TRANSPORT_MODE").or_else(|| env_non_empty("EGUARD_TRANSPORT"));
+        if let Some(v) = mode {
             self.transport_mode = v;
         }
     }

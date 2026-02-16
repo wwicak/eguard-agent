@@ -5,8 +5,8 @@ id = ""
 # Endpoint MAC address (used for enrollment/NAC mapping)
 mac = "aa:bb:cc:dd:ee:ff"
 
-# eGuard server endpoint (required in real deployments)
-server_addr = "10.20.30.40:50051"
+# eGuard server endpoint (configured during enrollment)
+server_addr = ""
 
 # learning | active | degraded
 mode = "learning"

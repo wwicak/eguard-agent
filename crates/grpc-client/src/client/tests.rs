@@ -11,7 +11,7 @@ use tonic::{Request, Response, Status};
 #[test]
 // AC-GRP-090
 fn url_scheme_defaults_to_http_without_tls() {
-    let c = Client::new("10.0.0.1:50051".to_string());
+    let c = Client::new("10.0.0.1:50052".to_string());
     let u = c.url_for("/api/v1/endpoint/ping");
     assert!(u.starts_with("http://"));
 }
@@ -35,7 +35,7 @@ fn url_scheme_switches_to_https_with_tls() {
     let _ = std::fs::write(&key, b"x");
     let _ = std::fs::write(&ca, b"x");
 
-    let mut c = Client::new("10.0.0.1:50051".to_string());
+    let mut c = Client::new("10.0.0.1:50052".to_string());
     c.configure_tls(TlsConfig {
         cert_path: cert.to_string_lossy().into_owned(),
         key_path: key.to_string_lossy().into_owned(),
@@ -73,7 +73,7 @@ fn configure_tls_persists_ca_pin_on_first_use() {
     let _ = std::fs::write(&key, b"key");
     let _ = std::fs::write(&ca, b"ca-v1");
 
-    let mut c = Client::new("10.0.0.1:50051".to_string());
+    let mut c = Client::new("10.0.0.1:50052".to_string());
     c.configure_tls(TlsConfig {
         cert_path: cert.to_string_lossy().into_owned(),
         key_path: key.to_string_lossy().into_owned(),
@@ -110,7 +110,7 @@ fn configure_tls_rejects_changed_ca_when_pin_exists() {
     let _ = std::fs::write(&key, b"key");
     let _ = std::fs::write(&ca, b"ca-v1");
 
-    let mut first_client = Client::new("10.0.0.1:50051".to_string());
+    let mut first_client = Client::new("10.0.0.1:50052".to_string());
     first_client
         .configure_tls(TlsConfig {
             cert_path: cert.to_string_lossy().into_owned(),
@@ -123,7 +123,7 @@ fn configure_tls_rejects_changed_ca_when_pin_exists() {
 
     let _ = std::fs::write(&ca, b"ca-v2");
 
-    let mut second_client = Client::new("10.0.0.1:50051".to_string());
+    let mut second_client = Client::new("10.0.0.1:50052".to_string());
     let err = second_client
         .configure_tls(TlsConfig {
             cert_path: cert.to_string_lossy().into_owned(),
@@ -157,7 +157,7 @@ fn configure_tls_rejects_mismatched_explicit_pinned_hash() {
     let _ = std::fs::write(&key, b"key");
     let _ = std::fs::write(&ca, b"ca-v1");
 
-    let mut c = Client::new("10.0.0.1:50051".to_string());
+    let mut c = Client::new("10.0.0.1:50052".to_string());
     let err = c
         .configure_tls(TlsConfig {
             cert_path: cert.to_string_lossy().into_owned(),
@@ -196,7 +196,7 @@ fn configure_tls_persists_pin_to_explicit_path() {
     let _ = std::fs::write(&key, b"key");
     let _ = std::fs::write(&ca, b"ca-v1");
 
-    let mut c = Client::new("10.0.0.1:50051".to_string());
+    let mut c = Client::new("10.0.0.1:50052".to_string());
     c.configure_tls(TlsConfig {
         cert_path: cert.to_string_lossy().into_owned(),
         key_path: key.to_string_lossy().into_owned(),
@@ -215,7 +215,7 @@ fn configure_tls_persists_pin_to_explicit_path() {
 #[test]
 // AC-GRP-097
 fn configure_tls_rejects_missing_files() {
-    let mut c = Client::new("10.0.0.1:50051".to_string());
+    let mut c = Client::new("10.0.0.1:50052".to_string());
     let err = c
         .configure_tls(TlsConfig {
             cert_path: "/tmp/definitely-missing-cert.pem".to_string(),
@@ -231,21 +231,21 @@ fn configure_tls_rejects_missing_files() {
 #[test]
 // AC-GRP-090 AC-GRP-096
 fn grpc_base_url_adds_default_scheme() {
-    let c = Client::new("127.0.0.1:50051".to_string());
-    assert_eq!(c.grpc_base_url(), "http://127.0.0.1:50051");
+    let c = Client::new("127.0.0.1:50052".to_string());
+    assert_eq!(c.grpc_base_url(), "http://127.0.0.1:50052");
 }
 
 #[test]
 // AC-GRP-090
 fn grpc_base_url_preserves_existing_scheme() {
-    let c = Client::new("https://agent.example:50051".to_string());
-    assert_eq!(c.grpc_base_url(), "https://agent.example:50051");
+    let c = Client::new("https://agent.example:50052".to_string());
+    assert_eq!(c.grpc_base_url(), "https://agent.example:50052");
 }
 
 #[test]
 // AC-PKG-027
 fn client_agent_version_can_be_updated_for_subsequent_heartbeat_reporting() {
-    let mut c = Client::new("127.0.0.1:50051".to_string());
+    let mut c = Client::new("127.0.0.1:50052".to_string());
     assert_eq!(c.agent_version(), env!("CARGO_PKG_VERSION"));
 
     c.set_agent_version("1.2.3");
@@ -287,7 +287,7 @@ fn heartbeat_payload_size_and_compressed_overhead_stay_within_budget() {
 #[test]
 // AC-GRP-080 AC-GRP-081
 fn ensure_online_returns_error_when_offline() {
-    let mut c = Client::new("10.0.0.1:50051".to_string());
+    let mut c = Client::new("10.0.0.1:50052".to_string());
     c.set_online(false);
     let err = c.ensure_online().expect_err("offline client should fail");
     assert!(err.to_string().contains("server unreachable"));
@@ -480,7 +480,7 @@ async fn fetch_policy_http_returns_certificate_policy_payload() {
     "seamless_rotation":true,
     "require_client_cert_for_all_rpcs_except_enroll":true,
     "grpc_max_recv_msg_size_bytes":16777216,
-    "grpc_port":50051
+    "grpc_port":50052
   }
 }"#;
 
@@ -509,7 +509,7 @@ async fn fetch_policy_http_returns_certificate_policy_payload() {
         .certificate_policy
         .expect("certificate policy should be present");
     assert_eq!(cert_policy.rotate_before_expiry_days, 21);
-    assert_eq!(cert_policy.grpc_port, 50051);
+    assert_eq!(cert_policy.grpc_port, 50052);
 
     server.await.expect("mock server join");
 }
@@ -769,7 +769,7 @@ async fn ack_command_offline_returns_error() {
 #[test]
 // AC-GRP-061
 fn resolve_bundle_download_url_accepts_absolute_url() {
-    let c = Client::new("10.0.0.1:50051".to_string());
+    let c = Client::new("10.0.0.1:50052".to_string());
     let resolved = c
         .resolve_bundle_download_url("https://downloads.example/rules.tar.zst")
         .expect("resolve absolute url");
@@ -779,13 +779,13 @@ fn resolve_bundle_download_url_accepts_absolute_url() {
 #[test]
 // AC-GRP-061
 fn resolve_bundle_download_url_expands_api_relative_path() {
-    let c = Client::new("10.0.0.1:50051".to_string());
+    let c = Client::new("10.0.0.1:50052".to_string());
     let resolved = c
         .resolve_bundle_download_url("/api/v1/endpoint/threat-intel/bundle/rules-v1")
         .expect("resolve relative api path");
     assert_eq!(
         resolved,
-        "http://10.0.0.1:50051/api/v1/endpoint/threat-intel/bundle/rules-v1"
+        "http://10.0.0.1:50052/api/v1/endpoint/threat-intel/bundle/rules-v1"
     );
 }
 
@@ -1201,7 +1201,7 @@ impl tonic::transport::server::Connected for InMemoryIo {
 async fn connect_in_memory_channel(
     incoming_tx: tokio::sync::mpsc::Sender<InMemoryIo>,
 ) -> tonic::transport::Channel {
-    tonic::transport::Endpoint::from_static("http://[::]:50051")
+    tonic::transport::Endpoint::from_static("http://[::]:50052")
         .connect_with_connector(InMemoryConnector::new(incoming_tx))
         .await
         .expect("connect mock in-memory gRPC channel")
@@ -1547,7 +1547,7 @@ async fn enrollment_rejects_expired_or_wrong_ca_certificates() {
         .to_string()
         .contains("operation enroll_grpc failed"));
 
-    let mut tls_client = Client::new("127.0.0.1:50051".to_string());
+    let mut tls_client = Client::new("127.0.0.1:50052".to_string());
     let ca_err = tls_client
         .configure_tls(TlsConfig {
             cert_path: "/tmp/eguard-cert-missing.pem".to_string(),

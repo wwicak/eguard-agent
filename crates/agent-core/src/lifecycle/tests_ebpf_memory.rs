@@ -141,7 +141,7 @@ fn runtime_stack_runs_async_client_paths_with_tls_configuration() {
     std::fs::write(&key, b"key").expect("write key");
     std::fs::write(&ca, b"ca").expect("write ca");
 
-    let mut client = Client::new("127.0.0.1:50051".to_string());
+    let mut client = Client::new("127.0.0.1:50052".to_string());
     client
         .configure_tls(TlsConfig {
             cert_path: cert.to_string_lossy().to_string(),
@@ -173,7 +173,7 @@ fn runtime_stack_runs_async_client_paths_with_tls_configuration() {
                 .await
         })
         .expect_err("offline send should fail quickly");
-    assert_eq!(err.to_string(), "server unreachable: 127.0.0.1:50051");
+    assert_eq!(err.to_string(), "server unreachable: 127.0.0.1:50052");
     assert!(start.elapsed() < Duration::from_millis(50));
 
     let _ = std::fs::remove_dir_all(temp);

@@ -68,7 +68,7 @@ if [[ -n "${TOKEN}" ]]; then
   cat > /etc/eguard-agent/bootstrap.conf <<EOF
 [server]
 address = ${SERVER}
-grpc_port = 50051
+grpc_port = 50052
 enrollment_token = ${TOKEN}
 EOF
 fi

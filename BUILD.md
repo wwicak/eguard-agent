@@ -157,6 +157,7 @@ After installation, configure the agent:
 sudo mkdir -p /etc/eguard-agent
 sudo cp /usr/local/eg/share/doc/agent.conf.example /etc/eguard-agent/agent.conf
 # Edit agent.conf — set server_addr at minimum
+# For deployments, prefer writing bootstrap.conf during install.
 sudo systemctl restart eguard-agent
 ```
 

@@ -18,7 +18,7 @@ fn ac_tst_001_runtime_stub() {
 
 #[test]
 fn ac_tst_002_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-TST-002", "`eguard-server`: builds from `Dockerfile.runtime`, exposes 50051 (gRPC) + 9999 (REST), `EGUARD_TEST_MODE=1`.");
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-002", "`eguard-server`: builds from `Dockerfile.runtime`, exposes 50052 (gRPC) + 9999 (REST), `EGUARD_TEST_MODE=1`.");
 }
 
 #[test]
@@ -28,12 +28,15 @@ fn ac_tst_003_runtime_stub() {
 
 #[test]
 fn ac_tst_004_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-TST-004", "`agent-test` env: `EGUARD_SERVER=eguard-server:50051`, `ENROLLMENT_TOKEN=test-token-12345`.");
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-004", "`agent-test` env: `EGUARD_SERVER=eguard-server:50052`, `ENROLLMENT_TOKEN=test-token-12345`.");
 }
 
 #[test]
 fn ac_tst_005_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-TST-005", "`agent-test` mounts `/sys/kernel/debug` and `/sys/fs/bpf`.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-TST-005",
+        "`agent-test` mounts `/sys/kernel/debug` and `/sys/fs/bpf`.",
+    );
 }
 
 #[test]
@@ -43,27 +46,42 @@ fn ac_tst_006_runtime_stub() {
 
 #[test]
 fn ac_tst_007_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-TST-007", "Builder: `rust:1.78-bookworm` with clang, llvm, libbpf-dev, linux-headers, Zig 0.13.0.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-TST-007",
+        "Builder: `rust:1.78-bookworm` with clang, llvm, libbpf-dev, linux-headers, Zig 0.13.0.",
+    );
 }
 
 #[test]
 fn ac_tst_008_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-TST-008", "Builder runs `cargo build --release` and `cargo test --no-run`.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-TST-008",
+        "Builder runs `cargo build --release` and `cargo test --no-run`.",
+    );
 }
 
 #[test]
 fn ac_tst_009_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-TST-009", "Runtime: `debian:bookworm-slim` with procps, iproute2, curl, python3, ncat, strace.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-TST-009",
+        "Runtime: `debian:bookworm-slim` with procps, iproute2, curl, python3, ncat, strace.",
+    );
 }
 
 #[test]
 fn ac_tst_010_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-TST-010", "Copies agent binary, test binaries, and fixtures to runtime.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-TST-010",
+        "Copies agent binary, test binaries, and fixtures to runtime.",
+    );
 }
 
 #[test]
 fn ac_tst_011_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-TST-011", "Default CMD: `/usr/local/bin/tests/run-all.sh`.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-TST-011",
+        "Default CMD: `/usr/local/bin/tests/run-all.sh`.",
+    );
 }
 
 #[test]
@@ -78,52 +96,82 @@ fn ac_tst_013_runtime_stub() {
 
 #[test]
 fn ac_tst_014_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-TST-014", "**SIGMA webshell**: python3 http.server -> curl|bash -> L2 LTL match -> capture + kill.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-TST-014",
+        "**SIGMA webshell**: python3 http.server -> curl|bash -> L2 LTL match -> capture + kill.",
+    );
 }
 
 #[test]
 fn ac_tst_015_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-TST-015", "**C2 domain**: nslookup known-c2 -> L1 domain IOC match.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-TST-015",
+        "**C2 domain**: nslookup known-c2 -> L1 domain IOC match.",
+    );
 }
 
 #[test]
 fn ac_tst_016_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-TST-016", "**Kernel module load**: insmod -> module_load event -> L1/L2 check.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-TST-016",
+        "**Kernel module load**: insmod -> module_load event -> L1/L2 check.",
+    );
 }
 
 #[test]
 fn ac_tst_017_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-TST-017", "**Reverse shell**: bash -i >& /dev/tcp/... -> L2 + L4 -> kill.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-TST-017",
+        "**Reverse shell**: bash -i >& /dev/tcp/... -> L2 + L4 -> kill.",
+    );
 }
 
 #[test]
 fn ac_tst_018_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-TST-018", "**Entropy anomaly**: high-entropy command -> L3 entropy alert.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-TST-018",
+        "**Entropy anomaly**: high-entropy command -> L3 entropy alert.",
+    );
 }
 
 #[test]
 fn ac_tst_019_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-TST-019", "**Compliance failure**: ufw disable -> compliance fail report.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-TST-019",
+        "**Compliance failure**: ufw disable -> compliance fail report.",
+    );
 }
 
 #[test]
 fn ac_tst_020_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-TST-020", "**Agent tamper**: kill -9 agent -> systemd restart -> tamper alert -> event 1300015.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-TST-020",
+        "**Agent tamper**: kill -9 agent -> systemd restart -> tamper alert -> event 1300015.",
+    );
 }
 
 #[test]
 fn ac_tst_021_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-TST-021", "**Offline mode**: block gRPC -> buffer to SQLite (100 MB cap).");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-TST-021",
+        "**Offline mode**: block gRPC -> buffer to SQLite (100 MB cap).",
+    );
 }
 
 #[test]
 fn ac_tst_022_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-TST-022", "**Reconnect drain**: unblock -> send buffered events in order with original timestamps.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-TST-022",
+        "**Reconnect drain**: unblock -> send buffered events in order with original timestamps.",
+    );
 }
 
 #[test]
 fn ac_tst_023_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-TST-023", "**Rule hot-reload**: push new bundle -> reload without restart -> new count in heartbeat.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-TST-023",
+        "**Rule hot-reload**: push new bundle -> reload without restart -> new count in heartbeat.",
+    );
 }
 
 #[test]
@@ -133,37 +181,58 @@ fn ac_tst_024_runtime_stub() {
 
 #[test]
 fn ac_tst_025_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-TST-025", "**Protected process**: detection on sshd -> NOT killed -> alert logged, no response.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-TST-025",
+        "**Protected process**: detection on sshd -> NOT killed -> alert logged, no response.",
+    );
 }
 
 #[test]
 fn ac_tst_026_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-TST-026", "**Rate limit**: 15 detections in 30s -> first 10 killed -> rate limit -> cooldown alert.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-TST-026",
+        "**Rate limit**: 15 detections in 30s -> first 10 killed -> rate limit -> cooldown alert.",
+    );
 }
 
 #[test]
 fn ac_tst_027_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-TST-027", "**Quarantine + restore**: detect -> quarantine -> admin restore -> file restored.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-TST-027",
+        "**Quarantine + restore**: detect -> quarantine -> admin restore -> file restored.",
+    );
 }
 
 #[test]
 fn ac_tst_028_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-TST-028", "**LSM block** (kernel 5.7+): execute blocked hash -> EPERM -> block event logged.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-TST-028",
+        "**LSM block** (kernel 5.7+): execute blocked hash -> EPERM -> block event logged.",
+    );
 }
 
 #[test]
 fn ac_tst_029_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-TST-029", "**Fleet correlation**: same hash on 3 containers -> incident with 3 agents.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-TST-029",
+        "**Fleet correlation**: same hash on 3 containers -> incident with 3 agents.",
+    );
 }
 
 #[test]
 fn ac_tst_030_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-TST-030", "**Fleet Z-score anomaly**: 100x normal DNS -> fleet_anomaly alert at medium.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-TST-030",
+        "**Fleet Z-score anomaly**: 100x normal DNS -> fleet_anomaly alert at medium.",
+    );
 }
 
 #[test]
 fn ac_tst_031_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-TST-031", "Script at `tests/malware-sim/simulate.sh`.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-TST-031",
+        "Script at `tests/malware-sim/simulate.sh`.",
+    );
 }
 
 #[test]
@@ -183,7 +252,10 @@ fn ac_tst_034_runtime_stub() {
 
 #[test]
 fn ac_tst_035_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-TST-035", "`test_rate_limiter`: max_kills=3, trigger 5 detections, verify 3 killed + 2 survive.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-TST-035",
+        "`test_rate_limiter`: max_kills=3, trigger 5 detections, verify 3 killed + 2 survive.",
+    );
 }
 
 #[test]

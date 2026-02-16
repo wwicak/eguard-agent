@@ -258,7 +258,7 @@ fn hardening_runtime_controls_watchdog_uninstall_and_security_verification_are_w
 fn mtls_and_offline_buffer_contracts_are_present_in_runtime_and_ci() {
     assert_eq!(DEFAULT_BUFFER_CAP_BYTES, 100 * 1024 * 1024);
 
-    let mut client = Client::new("127.0.0.1:50051".to_string());
+    let mut client = Client::new("127.0.0.1:50052".to_string());
     let tls_err = client
         .configure_tls(TlsConfig {
             cert_path: "/tmp/definitely-missing-cert.pem".to_string(),
