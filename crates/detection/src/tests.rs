@@ -106,6 +106,8 @@ fn cmdline_information_consistency_between_layers() {
         z4_kill_chain: false,
         l1_prefilter_hit: false,
         exploit_indicator: false,
+        kernel_integrity: false,
+        tamper_indicator: false,
     };
 
     let features = layer5::MlFeatures::extract(&event, &signals, 0, 0, 0, 0);
@@ -140,6 +142,8 @@ fn dns_entropy_feature_is_stable_and_high_for_dga_like_domains() {
         z4_kill_chain: false,
         l1_prefilter_hit: false,
         exploit_indicator: false,
+        kernel_integrity: false,
+        tamper_indicator: false,
     };
     let mut event = TelemetryEvent {
         ts_unix: 1,
@@ -229,6 +233,8 @@ fn confidence_ordering_matches_policy() {
         z4_kill_chain: false,
         l1_prefilter_hit: false,
         exploit_indicator: false,
+        kernel_integrity: false,
+        tamper_indicator: false,
     };
 
     let mut s = base.clone();
@@ -3048,6 +3054,8 @@ fn confidence_policy_is_first_match_wins() {
         z4_kill_chain: true,
         l1_prefilter_hit: true,
         exploit_indicator: false,
+        kernel_integrity: false,
+        tamper_indicator: false,
     };
     assert_eq!(confidence_policy(&s), Confidence::Definite);
 
@@ -3059,6 +3067,8 @@ fn confidence_policy_is_first_match_wins() {
         z4_kill_chain: false,
         l1_prefilter_hit: true,
         exploit_indicator: false,
+        kernel_integrity: false,
+        tamper_indicator: false,
     };
     assert_eq!(confidence_policy(&s), Confidence::VeryHigh);
 }

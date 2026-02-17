@@ -1,5 +1,6 @@
 use super::*;
 
+use self_protect::SelfProtectViolation;
 use std::sync::{Mutex, OnceLock};
 
 fn env_lock() -> &'static Mutex<()> {
@@ -65,4 +66,37 @@ fn self_protect_violation_forces_sticky_degraded_mode() {
     assert!(runtime.is_forced_degraded());
     assert!(matches!(runtime.runtime_mode, AgentMode::Degraded));
     assert!(runtime.buffer.pending_count() >= 1);
+}
+
+#[test]
+// AC-ATP-100
+fn self_protect_alert_payload_includes_tampered_paths() {
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    cfg.self_protection_integrity_check_interval_secs = 0;
+
+    let runtime = AgentRuntime::new(cfg).expect("runtime");
+    let report = SelfProtectReport {
+        integrity_measurement: None,
+        debugger_observation: Default::default(),
+        violations: vec![SelfProtectViolation::RuntimeIntegrityMismatch {
+            path: "/proc/self/exe".to_string(),
+            expected_sha256: "a".repeat(64),
+            observed_sha256: "b".repeat(64),
+        }],
+    };
+
+    let payload = runtime.self_protect_alert_payload(&report, 123);
+    let value: serde_json::Value = serde_json::from_str(&payload).expect("valid json");
+    let paths = value["tampered_paths"]
+        .as_array()
+        .expect("tampered_paths array");
+    assert!(paths.iter().any(|p| p == "/proc/self/exe"));
+
+    let indicators = value["tamper_indicators"]
+        .as_array()
+        .expect("tamper_indicators array");
+    assert!(indicators
+        .iter()
+        .any(|p| p == "self_protect:/proc/self/exe"));
 }

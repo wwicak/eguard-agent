@@ -7,6 +7,8 @@ use crate::layer3::{AnomalyDecision, AnomalyEngine};
 use crate::layer4::Layer4Engine;
 use crate::behavioral::{BehavioralAlarm, BehavioralEngine};
 use crate::exploit::detect_exploit_indicators;
+use crate::kernel_integrity::detect_kernel_integrity_indicators;
+use crate::tamper::detect_tamper_indicators;
 use crate::layer5::{MlEngine, MlFeatures, MlScore};
 use crate::policy::confidence_policy;
 use crate::types::{Confidence, DetectionSignals, TelemetryEvent};
@@ -44,6 +46,8 @@ pub struct DetectionOutcome {
     pub temporal_hits: Vec<String>,
     pub kill_chain_hits: Vec<String>,
     pub exploit_indicators: Vec<String>,
+    pub kernel_integrity_indicators: Vec<String>,
+    pub tamper_indicators: Vec<String>,
     pub yara_hits: Vec<YaraHit>,
     pub anomaly: Option<AnomalyDecision>,
     pub layer1: Layer1EventHit,
@@ -175,6 +179,8 @@ impl DetectionEngine {
         let behavioral_high = behavioral_alarms.iter().any(|a| a.gated && a.magnitude > 2.0);
         let behavioral_med = behavioral_alarms.iter().any(|a| a.gated && a.magnitude > 1.0);
         let exploit_indicators = detect_exploit_indicators(event);
+        let kernel_integrity_indicators = detect_kernel_integrity_indicators(event);
+        let tamper_indicators = detect_tamper_indicators(event);
         let signals = DetectionSignals {
             z1_exact_ioc: layer1.result == Layer1Result::ExactMatch || !yara_hits.is_empty(),
             z2_temporal: !temporal_hits.is_empty(),
@@ -183,6 +189,8 @@ impl DetectionEngine {
             z4_kill_chain: !kill_chain_hits.is_empty(),
             l1_prefilter_hit: layer1.prefilter_hit,
             exploit_indicator: !exploit_indicators.is_empty(),
+            kernel_integrity: !kernel_integrity_indicators.is_empty(),
+            tamper_indicator: !tamper_indicators.is_empty(),
         };
 
         // ── Layer 5: ML meta-scoring ────────────────────────────
@@ -208,6 +216,8 @@ impl DetectionEngine {
             temporal_hits,
             kill_chain_hits,
             exploit_indicators,
+            kernel_integrity_indicators,
+            tamper_indicators,
             yara_hits,
             anomaly,
             layer1,

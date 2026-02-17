@@ -26,6 +26,7 @@ impl AgentRuntime {
 
     pub(super) async fn send_event_batch(&mut self, envelope: EventEnvelope) -> Result<()> {
         let send_started = Instant::now();
+        let pending_before = self.buffer.pending_count();
         let mut batch = self.buffer.drain_batch(EVENT_BATCH_SIZE)?;
         batch.push(envelope);
 
@@ -46,6 +47,18 @@ impl AgentRuntime {
             );
         } else {
             self.consecutive_send_failures = 0;
+            if std::env::var("EGUARD_DEBUG_OFFLINE_LOG")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+                .is_some()
+            {
+                info!(
+                    pending_before,
+                    pending_after = self.buffer.pending_count(),
+                    sent = batch.len(),
+                    "offline buffer flushed"
+                );
+            }
         }
 
         self.metrics.last_send_event_batch_micros = elapsed_micros(send_started);

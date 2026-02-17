@@ -222,6 +222,11 @@ Derived from `docs/eguard-agent-design.md`. These acceptance criteria define the
 - **AC-DET-191**: Ransomware burst detection MUST ignore write-intent opens confined to system or temporary paths (e.g., /tmp, /proc, /Windows, /Program Files, /Library) unless explicitly overridden by policy.
 - **AC-DET-192**: Ransomware burst detection MUST support an adaptive threshold based on per-process baseline write rates, using concentration bounds (Hoeffding/Bernstein) with configurable delta, minimum samples, and minimum floor.
 - **AC-DET-193**: Ransomware burst detection MUST learn non-default user-data roots by observing repeated write-intent paths, promoting roots after a configurable minimum hit count up to a bounded maximum.
+- **AC-DET-223**: Module load events MUST emit kernel integrity indicators when the module name matches rootkit/persistence heuristics (e.g., `rootkit`, `hide`, `keylogger`, `rk`, `syscall`, `hook`).
+- **AC-DET-224**: Kernel integrity indicators MUST escalate detection confidence to at least `High` without ML involvement.
+- **AC-DET-225**: Kernel integrity indicators MUST surface in telemetry/audit as `kernel_integrity_indicators` and map to detection layer `KRN_kernel_integrity` with rule attribution prefix `kernel:`.
+- **AC-DET-226**: Self-protection tamper indicators MUST be raised when the agent binary or config file hash changes while running, and MUST surface in telemetry/audit as `tamper_indicators` with rule attribution prefix `self_protect:`.
+- **AC-DET-227**: Self-protection tamper indicators MUST escalate detection confidence to at least `High` and remain active in degraded mode.
 
 ---
 
@@ -683,6 +688,9 @@ Derived from `docs/eguard-agent-design.md`. These acceptance criteria define the
 - **AC-ATP-095**: Agent config encrypted at rest with AES-256-GCM.
 - **AC-ATP-096**: Key derived from machine-id (`/etc/machine-id`).
 - **AC-ATP-097**: Optional TPM2 as additional key source.
+- **AC-ATP-098**: Agent MUST detect runtime tamper of its executable (`/proc/self/exe`) and critical config paths (`/etc/eguard-agent/agent.conf`, `bootstrap.conf`) by hashing on a fixed interval and emit a critical `agent_tamper` alert.
+- **AC-ATP-099**: Tamper detection MUST include violations `runtime_integrity_mismatch` and `runtime_config_tamper` in the self-protection report.
+- **AC-ATP-100**: Tamper detection MUST record the tampered path in the alert payload for audit.
 
 ---
 
@@ -1098,9 +1106,15 @@ Derived from `docs/eguard-agent-design.md`. These acceptance criteria define the
 - **AC-TST-051**: Sigma compiler MUST accept file path predicates and ship a credential access rule that uses them.
 - **AC-TST-052**: QEMU exploit detection harness MUST replay fileless-exec indicators (`memfd:`/`(deleted)`/`/proc/self/fd`) and produce High-or-higher confidence detections.
 - **AC-TST-053**: QEMU audit trail harness MUST log the audit payload with primary_rule_name and exploit indicators (Linux-only).
+- **AC-TST-054**: QEMU ML latency harness MUST compute evaluation latency p95 <= 20000us and p99 <= 30000us for replayed events.
+- **AC-TST-055**: QEMU offline buffer harness MUST show buffered events when server is unreachable and a flush log with pending_after=0 when server responds.
+- **AC-TST-056**: QEMU kernel integrity harness MUST replay module load/rootkit indicators and produce High-or-higher confidence detections.
+- **AC-TST-057**: QEMU self-protection tamper harness MUST modify agent/config files and produce High-or-higher confidence detections.
 - **AC-VER-057**: QEMU harness MUST use user-mode networking with no host forwards and explicit RFC1918/link-local blackhole routes inside the guest (outbound HTTPS allowed).
 - **AC-VER-058**: Exploit detection validation is Linux-only until Windows/macOS backends (Tier 4.3) and NAC harness are ready.
 - **AC-VER-059**: Audit trail validation is Linux-only until cross-platform telemetry backends are available.
+- **AC-VER-060**: ML latency and offline buffer validation are QEMU-only until server-side benchmark endpoints are available.
+- **AC-VER-061**: Kernel integrity and self-protection tamper validations are QEMU-only until dedicated lab infra is available.
 
 ### Performance Targets (Section 29.1)
 

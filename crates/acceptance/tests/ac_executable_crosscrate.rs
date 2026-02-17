@@ -20,6 +20,8 @@ fn ac_det_confidence_policy_matrix_executable() {
         z4_kill_chain: false,
         l1_prefilter_hit: false,
         exploit_indicator: false,
+        kernel_integrity: false,
+        tamper_indicator: false,
     };
 
     s.z1_exact_ioc = true;
@@ -33,6 +35,8 @@ fn ac_det_confidence_policy_matrix_executable() {
         z4_kill_chain: false,
         l1_prefilter_hit: true,
         exploit_indicator: false,
+        kernel_integrity: false,
+        tamper_indicator: false,
     };
     assert_eq!(confidence_policy(&s), Confidence::VeryHigh);
 
@@ -44,6 +48,8 @@ fn ac_det_confidence_policy_matrix_executable() {
         z4_kill_chain: false,
         l1_prefilter_hit: false,
         exploit_indicator: false,
+        kernel_integrity: false,
+        tamper_indicator: false,
     };
     assert_eq!(confidence_policy(&s), Confidence::High);
 
@@ -55,6 +61,8 @@ fn ac_det_confidence_policy_matrix_executable() {
         z4_kill_chain: false,
         l1_prefilter_hit: false,
         exploit_indicator: false,
+        kernel_integrity: false,
+        tamper_indicator: false,
     };
     assert_eq!(confidence_policy(&s), Confidence::Medium);
 
@@ -66,6 +74,8 @@ fn ac_det_confidence_policy_matrix_executable() {
         z4_kill_chain: false,
         l1_prefilter_hit: false,
         exploit_indicator: false,
+        kernel_integrity: false,
+        tamper_indicator: false,
     };
     assert_eq!(confidence_policy(&s), Confidence::Low);
 }

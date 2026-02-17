@@ -92,6 +92,16 @@ fn payload_parser_fallbacks_for_dns_and_file_open() {
 }
 
 #[test]
+// AC-EBP-033
+fn payload_parser_extracts_module_load_name() {
+    let module = parse_payload_metadata(&EventType::ModuleLoad, "module=fake_rootkit");
+    assert_eq!(module.file_path.as_deref(), Some("fake_rootkit"));
+
+    let fallback = parse_payload_metadata(&EventType::ModuleLoad, "bare_module");
+    assert_eq!(fallback.file_path.as_deref(), Some("bare_module"));
+}
+
+#[test]
 // AC-EBP-022
 fn platform_name_is_linux() {
     assert_eq!(platform_name(), "linux");

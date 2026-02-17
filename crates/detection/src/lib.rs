@@ -3,6 +3,8 @@ mod bench_detection;
 mod calibration;
 mod engine;
 mod exploit;
+mod kernel_integrity;
+mod tamper;
 pub mod information;
 mod layer1;
 mod layer2;
@@ -20,6 +22,8 @@ mod yara_engine;
 
 pub use calibration::{calibrate_thresholds, sanov_upper_bound, tau_delta, ThresholdCalibration};
 pub use engine::{DetectionEngine, DetectionOutcome, SigmaLoadError};
+pub use kernel_integrity::detect_kernel_integrity_indicators;
+pub use tamper::detect_tamper_indicators;
 pub use layer1::{IocExactStore, IocLayer1, Layer1EventHit, Layer1Result};
 pub use layer2::{
     TemporalEngine, TemporalEvictionCounters, TemporalPredicate, TemporalRule, TemporalStage,

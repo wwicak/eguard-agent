@@ -132,4 +132,6 @@ pub struct DetectionSignals {
     pub z4_kill_chain: bool,
     pub l1_prefilter_hit: bool,
     pub exploit_indicator: bool,
+    pub kernel_integrity: bool,
+    pub tamper_indicator: bool,
 }

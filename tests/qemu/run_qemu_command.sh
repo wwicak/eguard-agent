@@ -38,7 +38,7 @@ mkdir -p "$init_dir/bin" "$init_dir/proc" "$init_dir/sys" "$init_dir/dev" "$init
   "$init_dir/lib/x86_64-linux-gnu" "$init_dir/lib64" "$payload_dir"
 
 cp /usr/bin/busybox "$init_dir/bin/busybox"
-for app in sh mount mkdir echo cat sleep poweroff insmod uname ip ifconfig sha256sum cp chmod awk grep wget udhcpc route tar gzip gunzip unzip base64 wc ping basename rm head; do
+for app in sh mount mkdir echo cat sleep poweroff insmod uname ip ifconfig sha256sum cp chmod awk grep wget udhcpc route tar gzip gunzip unzip base64 wc ping basename rm head sort tail seq nc httpd; do
   ln -s /bin/busybox "$init_dir/bin/$app"
 done
 

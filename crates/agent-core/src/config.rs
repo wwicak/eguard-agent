@@ -177,6 +177,7 @@ impl AgentConfig {
         self.apply_env_storage();
         self.apply_env_tls();
         self.apply_env_detection();
+        self.apply_env_self_protection();
         self.ensure_valid_agent_id();
     }
 
@@ -245,6 +246,14 @@ impl AgentConfig {
         }
         if let Some(v) = env_non_empty("EGUARD_RANSOMWARE_TEMP_PATH_TOKENS") {
             self.detection_ransomware_temp_path_tokens = split_csv(&v);
+        }
+    }
+
+    fn apply_env_self_protection(&mut self) {
+        if let Some(v) = env_non_empty("EGUARD_SELF_PROTECTION_INTEGRITY_CHECK_INTERVAL_SECS") {
+            if let Ok(parsed) = v.parse::<u64>() {
+                self.self_protection_integrity_check_interval_secs = parsed;
+            }
         }
     }
 

@@ -590,6 +590,20 @@ impl AgentRuntime {
         let evaluate_started = Instant::now();
         let evaluation = self.evaluate_tick(now_unix)?;
         self.metrics.last_evaluate_micros = elapsed_micros(evaluate_started);
+        if std::env::var("EGUARD_DEBUG_LATENCY_LOG")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .is_some()
+        {
+            if let Some(evaluation) = evaluation.as_ref() {
+                info!(
+                    evaluate_micros = self.metrics.last_evaluate_micros,
+                    event_class = ?evaluation.detection_event.event_class,
+                    confidence = ?evaluation.confidence,
+                    "debug detection latency"
+                );
+            }
+        }
         if matches!(self.runtime_mode, AgentMode::Degraded) {
             self.handle_degraded_tick(now_unix, evaluation.as_ref())
                 .await?;
@@ -645,6 +659,8 @@ impl AgentRuntime {
                 container_privileged = detection_event.container_privileged,
                 kill_chain_hits = ?detection_outcome.kill_chain_hits,
                 exploit_indicators = ?detection_outcome.exploit_indicators,
+                kernel_integrity_indicators = ?detection_outcome.kernel_integrity_indicators,
+                tamper_indicators = ?detection_outcome.tamper_indicators,
                 confidence = ?confidence,
                 action = ?action,
                 mode = ?self.runtime_mode,
@@ -812,11 +828,18 @@ impl AgentRuntime {
     }
 
     fn self_protect_alert_payload(&self, report: &SelfProtectReport, now_unix: i64) -> String {
+        let tampered_paths = report.tampered_paths();
+        let tamper_indicators: Vec<String> = tampered_paths
+            .iter()
+            .map(|path| format!("self_protect:{}", path))
+            .collect();
         json!({
             "rule_name": "agent_tamper",
             "severity": "critical",
             "timestamp": now_unix,
             "violations": report.violation_codes(),
+            "tampered_paths": tampered_paths,
+            "tamper_indicators": tamper_indicators,
             "detail": report.summary(),
         })
         .to_string()
@@ -1335,6 +1358,8 @@ impl AgentRuntime {
                 "temporal_hits": &outcome.temporal_hits,
                 "kill_chain_hits": &outcome.kill_chain_hits,
                 "exploit_indicators": &outcome.exploit_indicators,
+                "kernel_integrity_indicators": &outcome.kernel_integrity_indicators,
+                "tamper_indicators": &outcome.tamper_indicators,
                 "ioc_matches": &outcome.layer1.matched_signatures,
                 "yara_hits": yara_hits,
                 "anomaly": anomaly,
@@ -1348,6 +1373,8 @@ impl AgentRuntime {
                     "z4_kill_chain": outcome.signals.z4_kill_chain,
                     "l1_prefilter_hit": outcome.signals.l1_prefilter_hit,
                     "exploit_indicator": outcome.signals.exploit_indicator,
+                    "kernel_integrity": outcome.signals.kernel_integrity,
+                    "tamper_indicator": outcome.signals.tamper_indicator,
                 },
             },
             "audit": {
@@ -1362,6 +1389,8 @@ impl AgentRuntime {
                     "z4_kill_chain": outcome.signals.z4_kill_chain,
                     "l1_prefilter_hit": outcome.signals.l1_prefilter_hit,
                     "exploit_indicator": outcome.signals.exploit_indicator,
+                    "kernel_integrity": outcome.signals.kernel_integrity,
+                    "tamper_indicator": outcome.signals.tamper_indicator,
                 },
                 "matched_fields": &outcome.layer1.matched_fields,
                 "matched_signatures": &outcome.layer1.matched_signatures,
@@ -1387,6 +1416,12 @@ impl AgentRuntime {
         if outcome.signals.z1_exact_ioc {
             return "ioc";
         }
+        if !outcome.kernel_integrity_indicators.is_empty() {
+            return "kernel_integrity";
+        }
+        if !outcome.tamper_indicators.is_empty() {
+            return "self_protect";
+        }
         if !outcome.exploit_indicators.is_empty() {
             return "exploit";
         }
@@ -1408,6 +1443,12 @@ impl AgentRuntime {
         }
         if !outcome.kill_chain_hits.is_empty() {
             return Some(outcome.kill_chain_hits[0].clone());
+        }
+        if !outcome.kernel_integrity_indicators.is_empty() {
+            return Some(format!("kernel:{}", outcome.kernel_integrity_indicators[0]));
+        }
+        if !outcome.tamper_indicators.is_empty() {
+            return Some(format!("self_protect:{}", outcome.tamper_indicators[0]));
         }
         if !outcome.exploit_indicators.is_empty() {
             return Some(format!("exploit:{}", outcome.exploit_indicators[0]));
@@ -1437,6 +1478,12 @@ impl AgentRuntime {
         }
         if !outcome.kill_chain_hits.is_empty() {
             layers.push("L4_kill_chain".to_string());
+        }
+        if !outcome.kernel_integrity_indicators.is_empty() {
+            layers.push("KRN_kernel_integrity".to_string());
+        }
+        if !outcome.tamper_indicators.is_empty() {
+            layers.push("ATP_tamper".to_string());
         }
         if !outcome.exploit_indicators.is_empty() {
             layers.push("EXP_exploit".to_string());

@@ -1283,6 +1283,88 @@ fn qemu_exploit_harness_is_defined() {
 }
 
 #[test]
+// AC-TST-056 AC-VER-061
+fn kernel_integrity_acceptance_criteria_are_defined() {
+    let ac = read("ACCEPTANCE_CRITERIA.md");
+    for entry in [
+        "AC-DET-223",
+        "AC-DET-224",
+        "AC-DET-225",
+        "AC-TST-056",
+        "AC-VER-061",
+    ] {
+        assert!(
+            ac.contains(entry),
+            "Kernel integrity acceptance criteria must include {entry}"
+        );
+    }
+}
+
+#[test]
+// AC-TST-056
+fn qemu_kernel_integrity_harness_is_defined() {
+    let script = read("tests/qemu/run_agent_kernel_integrity.sh");
+    assert!(
+        script.contains("agent-core"),
+        "Kernel integrity harness must build agent-core"
+    );
+    assert!(
+        script.contains("run_qemu_command.sh"),
+        "Kernel integrity harness must invoke QEMU runner"
+    );
+
+    let cmd = read("tests/qemu/agent_kernel_integrity_cmd.sh");
+    for marker in ["module_load", "rootkit", "kernel_module_rootkit"] {
+        assert!(
+            cmd.contains(marker),
+            "Kernel integrity harness must include {marker}"
+        );
+    }
+}
+
+#[test]
+// AC-TST-057 AC-VER-061
+fn self_protection_tamper_acceptance_criteria_are_defined() {
+    let ac = read("ACCEPTANCE_CRITERIA.md");
+    for entry in [
+        "AC-DET-226",
+        "AC-DET-227",
+        "AC-ATP-098",
+        "AC-ATP-099",
+        "AC-ATP-100",
+        "AC-TST-057",
+        "AC-VER-061",
+    ] {
+        assert!(
+            ac.contains(entry),
+            "Self-protect tamper acceptance criteria must include {entry}"
+        );
+    }
+}
+
+#[test]
+// AC-TST-057
+fn qemu_self_protect_tamper_harness_is_defined() {
+    let script = read("tests/qemu/run_agent_self_protect_tamper.sh");
+    assert!(
+        script.contains("agent-core"),
+        "Self-protect tamper harness must build agent-core"
+    );
+    assert!(
+        script.contains("run_qemu_command.sh"),
+        "Self-protect tamper harness must invoke QEMU runner"
+    );
+
+    let cmd = read("tests/qemu/agent_self_protect_tamper_cmd.sh");
+    for marker in ["EGUARD_SELF_PROTECTION_INTEGRITY_CHECK_INTERVAL_SECS", "/proc/self/exe", "agent_tamper"] {
+        assert!(
+            cmd.contains(marker),
+            "Self-protect tamper harness must include {marker}"
+        );
+    }
+}
+
+#[test]
 // AC-TST-053
 fn qemu_audit_trail_harness_is_defined() {
     let script = read("tests/qemu/run_agent_audit_trail.sh");
@@ -1300,6 +1382,50 @@ fn qemu_audit_trail_harness_is_defined() {
         assert!(
             cmd.contains(marker),
             "Audit harness must include {marker}"
+        );
+    }
+}
+
+#[test]
+// AC-TST-054
+fn qemu_latency_harness_is_defined() {
+    let script = read("tests/qemu/run_agent_latency_harness.sh");
+    assert!(
+        script.contains("agent-core"),
+        "QEMU latency harness must build agent-core"
+    );
+    assert!(
+        script.contains("run_qemu_command.sh"),
+        "QEMU latency harness must invoke QEMU runner"
+    );
+
+    let cmd = read("tests/qemu/agent_latency_harness_cmd.sh");
+    for marker in ["LATENCY_P95_US", "LATENCY_P99_US", "debug detection latency"] {
+        assert!(
+            cmd.contains(marker),
+            "Latency harness must include {marker}"
+        );
+    }
+}
+
+#[test]
+// AC-TST-055
+fn qemu_offline_buffer_harness_is_defined() {
+    let script = read("tests/qemu/run_agent_offline_buffer.sh");
+    assert!(
+        script.contains("agent-core"),
+        "QEMU offline buffer harness must build agent-core"
+    );
+    assert!(
+        script.contains("run_qemu_command.sh"),
+        "QEMU offline buffer harness must invoke QEMU runner"
+    );
+
+    let cmd = read("tests/qemu/agent_offline_buffer_cmd.sh");
+    for marker in ["offline buffer flushed", "pending_after=0", "server unavailable, buffered event"] {
+        assert!(
+            cmd.contains(marker),
+            "Offline buffer harness must include {marker}"
         );
     }
 }

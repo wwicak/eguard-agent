@@ -27,6 +27,7 @@ fn engine_reports_integrity_mismatch_when_expected_hash_differs() {
             enable_timing_probe: false,
             ..DebuggerCheckConfig::default()
         },
+        ..SelfProtectConfig::default()
     };
     let engine = SelfProtectEngine::new(config);
     let report = engine.evaluate();
@@ -47,6 +48,7 @@ fn engine_accepts_matching_integrity_hash() {
             enable_timing_probe: false,
             ..DebuggerCheckConfig::default()
         },
+        ..SelfProtectConfig::default()
     };
     let engine = SelfProtectEngine::new(config);
     let report = engine.evaluate();

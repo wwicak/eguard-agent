@@ -398,6 +398,13 @@ fn parse_payload_metadata(event_type: &EventType, payload: &str) -> PayloadMetad
             .and_then(|value| value.parse::<u64>().ok()),
     };
 
+    if matches!(event_type, EventType::ModuleLoad) && metadata.file_path.is_none() {
+        metadata.file_path = fields
+            .get("module")
+            .cloned()
+            .or_else(|| fields.get("module_name").cloned());
+    }
+
     if metadata.dst_ip.is_none() || metadata.dst_port.is_none() {
         if let Some(endpoint) = fields.get("dst").or_else(|| fields.get("endpoint")) {
             let (ip, port) = parse_endpoint(endpoint);
@@ -510,7 +517,10 @@ fn parse_payload_fallback(event_type: &EventType, payload: &str) -> PayloadMetad
             ..PayloadMetadata::default()
         },
         EventType::ProcessExit => PayloadMetadata::default(),
-        EventType::ModuleLoad => PayloadMetadata::default(),
+        EventType::ModuleLoad => PayloadMetadata {
+            file_path: Some(payload.to_string()),
+            ..PayloadMetadata::default()
+        },
         EventType::LsmBlock => PayloadMetadata {
             command_line_hint: Some(payload.to_string()),
             ..PayloadMetadata::default()

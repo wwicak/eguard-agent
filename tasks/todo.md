@@ -44,6 +44,29 @@
 - [x] Add QEMU validation harness for audit trail logging (Linux only)
 - [x] Document results
 
+## 🧭 Plan: Tier 3.2 ML latency + offline mode (QEMU-only) (2026-02-16)
+- [x] Define latency envelope acceptance criteria (p95/p99) and offline buffering thresholds
+- [x] Add benchmark harness for ML scoring latency (QEMU replay) with deterministic metrics output
+- [x] Add offline mode harness to assert buffering + later flush behavior
+- [x] Add contract tests enforcing AC entries and harness definitions
+- [x] Validate in QEMU only and document results
+
+## 🧭 Plan: Tier 4.4 kernel persistence/rootkit detection (QEMU-only) (2026-02-17)
+- [x] Define AC-DET/AC-TST/AC-VER entries for kernel module/persistence tamper signals (module load + sysfs/tracefs indicators)
+- [x] Implement kernel integrity/rootkit indicators in detection engine + confidence policy + telemetry/audit mapping
+- [ ] Map module load payloads to detection file_path for indicator matching (platform-linux parsing)
+- [ ] Add unit + contract tests for kernel integrity indicators and AC enforcement
+- [ ] Add QEMU harness to trigger module load/rootkit indicators via eBPF replay and validate detections
+- [ ] Validate in QEMU only and document results
+
+## 🧭 Plan: Tier 4.5 self-protection v2 (anti-tamper) (QEMU-only) (2026-02-17)
+- [x] Define AC-DET/AC-TST/AC-VER entries for agent binary/config tamper + kill attempts
+- [ ] Implement runtime hashing for agent binary/config paths + self-protect report codes + alert payload paths
+- [ ] Update tamper detection signals to align with hash changes + telemetry/audit mapping
+- [ ] Add unit + contract tests for tamper detection and AC enforcement
+- [ ] Add QEMU harness to attempt tamper/kill (replay + file modification) and validate detection/response
+- [ ] Validate in QEMU only and document results
+
 ## 🧭 Plan: Refine ML pipeline, detection, telemetry, MDM wiring
 - [x] Review /home/dimas/fe_eguard/docs/eguard-agent-design.md and summarize ML pipeline, detection, telemetry, MDM requirements
 - [x] Audit GitHub Actions ML pipeline under .github/workflows for gaps vs design; propose concrete improvements
@@ -101,10 +124,10 @@
 - [x] Tier 2.3 Container/namespace awareness: add cgroup/ns fields + escape heuristics + tests + QEMU validation
 - [x] Tier 2.4 Credential theft: add sensitive credential access killchain + tests + QEMU validation
 - [ ] Tier 3.1 NAC bridge: define server/agent test harness (Docker/QEMU), add acceptance tests + validation
-- [ ] Tier 3.2 ML latency benchmark + offline mode tests: add benchmark harness + acceptance metrics (no host run)
-- [ ] Tier 3.3 Detection explanation/audit trail: add rule attribution + tests + QEMU validation
+- [x] Tier 3.2 ML latency benchmark + offline mode tests: add benchmark harness + acceptance metrics (no host run)
+- [x] Tier 3.3 Detection explanation/audit trail: add rule attribution + tests + QEMU validation
 - [ ] Tier 4.1 Cross-host correlation: add server-side fixtures/tests + agent batch replay
-- [ ] Tier 4.2 Exploit detection: add stack pivot/ROP/heap-spray rules + tests + QEMU validation
+- [x] Tier 4.2 Exploit detection: add stack pivot/ROP/heap-spray rules + tests + QEMU validation
 - [ ] Tier 4.3 Platform support scaffolding: add placeholder tests + build gating for windows/macos crates
 - [ ] Document results for every tier in this plan
 
@@ -128,6 +151,8 @@
 - QEMU credential theft validation: tests/qemu/run_agent_credential_theft.sh succeeded (credential killchain on /etc/shadow and SSH key).
 - QEMU exploit detection validation: tests/qemu/run_agent_exploit_harness.sh succeeded (memfd/procfd/tmp fileless exec indicators at High+ confidence).
 - QEMU audit trail validation: tests/qemu/run_agent_audit_trail.sh succeeded (audit payload logged with primary_rule_name + exploit indicator).
+- QEMU ML latency validation: tests/qemu/run_agent_latency_harness.sh succeeded (p95=15536us, p99=16514us).
+- QEMU offline buffer validation: tests/qemu/run_agent_offline_buffer.sh succeeded (buffer flushed, pending_after=0) using http_stub server.
 - Sigma file path predicates: extended compiler with file_path_any_of/contains, added credential_access rule, and expanded cross-platform sensitive path heuristics; re-validated QEMU credential harness.
 - Exploit detection acceptance criteria: added Linux-only fileless-exec indicators (memfd/deleted/procfd/tmp), QEMU exploit harness AC, and contract checks; documented Windows/macOS + NAC deferral.
 

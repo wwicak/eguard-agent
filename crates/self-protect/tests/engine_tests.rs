@@ -57,6 +57,7 @@ fn invalid_expected_hash_generates_integrity_probe_failed_violation() {
             enable_timing_probe: false,
             ..DebuggerCheckConfig::default()
         },
+        ..SelfProtectConfig::default()
     });
 
     let report = engine.evaluate();
@@ -120,5 +121,83 @@ fn from_env_uses_file_when_env_hash_is_invalid() {
 
     std::env::remove_var("EGUARD_SELF_PROTECT_EXPECTED_SHA256");
     std::env::remove_var("EGUARD_SELF_PROTECT_EXPECTED_SHA256_FILE");
+    let _ = std::fs::remove_file(tmp);
+}
+
+#[test]
+// AC-ATP-098 AC-ATP-099 AC-ATP-100
+fn runtime_integrity_mismatch_is_reported_for_modified_binary() {
+    let tmp = std::env::temp_dir().join(format!(
+        "eguard-self-protect-runtime-{}.bin",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    std::fs::write(&tmp, b"baseline").expect("write baseline file");
+
+    let engine = SelfProtectEngine::new(SelfProtectConfig {
+        expected_integrity_sha256_hex: None,
+        debugger: DebuggerCheckConfig {
+            enable_tracer_pid_probe: false,
+            enable_timing_probe: false,
+            ..DebuggerCheckConfig::default()
+        },
+        runtime_integrity_paths: vec![tmp.to_string_lossy().to_string()],
+        runtime_config_paths: Vec::new(),
+    });
+
+    std::fs::write(&tmp, b"tampered").expect("write tampered file");
+    let report = engine.evaluate();
+
+    assert!(report
+        .violations
+        .iter()
+        .any(|v| matches!(v, SelfProtectViolation::RuntimeIntegrityMismatch { .. })));
+    assert!(report
+        .violation_codes()
+        .iter()
+        .any(|code| code == "runtime_integrity_mismatch"));
+    assert!(report.tampered_paths().iter().any(|p| p == tmp.to_str().unwrap()));
+
+    let _ = std::fs::remove_file(tmp);
+}
+
+#[test]
+// AC-ATP-098 AC-ATP-099 AC-ATP-100
+fn runtime_config_tamper_is_reported_for_modified_config() {
+    let tmp = std::env::temp_dir().join(format!(
+        "eguard-self-protect-config-{}.conf",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    std::fs::write(&tmp, b"config=baseline").expect("write baseline config");
+
+    let engine = SelfProtectEngine::new(SelfProtectConfig {
+        expected_integrity_sha256_hex: None,
+        debugger: DebuggerCheckConfig {
+            enable_tracer_pid_probe: false,
+            enable_timing_probe: false,
+            ..DebuggerCheckConfig::default()
+        },
+        runtime_integrity_paths: Vec::new(),
+        runtime_config_paths: vec![tmp.to_string_lossy().to_string()],
+    });
+
+    std::fs::write(&tmp, b"config=tampered").expect("write tampered config");
+    let report = engine.evaluate();
+
+    assert!(report
+        .violations
+        .iter()
+        .any(|v| matches!(v, SelfProtectViolation::RuntimeConfigTamper { .. })));
+    assert!(report
+        .violation_codes()
+        .iter()
+        .any(|code| code == "runtime_config_tamper"));
+    assert!(report.tampered_paths().iter().any(|p| p == tmp.to_str().unwrap()));
+
     let _ = std::fs::remove_file(tmp);
 }
