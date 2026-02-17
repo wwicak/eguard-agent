@@ -25,9 +25,3 @@ services:
       - /sys/kernel/debug:/sys/kernel/debug
       - /sys/fs/bpf:/sys/fs/bpf
 
-  malware-simulator:
-    build:
-      context: ..
-      dockerfile: tests/Dockerfile.runtime
-    network_mode: "service:agent-test"
-    command: ["/usr/local/bin/tests/malware-sim/simulate.sh", "all"]

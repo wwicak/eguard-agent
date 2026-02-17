@@ -212,3 +212,8 @@ shell receives valid scripts.
 Rust 2024 edition crates (e.g., time 0.3.47) require newer toolchains than
 Rust 1.78. When Dockerfiles build in CI, pin to a recent Rust (>=1.88) to
 avoid edition parsing errors.
+
+## Avoid network_mode service for short-lived containers
+`network_mode: service:<container>` fails if the target container exits
+quickly (namespace removed). Prefer a single container or shared network
+unless the target container stays alive.
