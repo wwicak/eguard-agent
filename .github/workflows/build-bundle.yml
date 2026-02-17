@@ -4,6 +4,27 @@ on:
   schedule:
     - cron: "30 4 * * *"  # Daily at 04:30 UTC (after all collectors finish)
   workflow_dispatch:
+    inputs:
+      promote_release:
+        description: "Publish a release bundle if all gates pass"
+        type: boolean
+        default: false
+      external_labels_workflow:
+        description: "Workflow file that produces ML external signals artifact (optional)"
+        type: string
+        default: ""
+      external_labels_artifact:
+        description: "Artifact name containing external ML signals (optional)"
+        type: string
+        default: ""
+      external_labels_file:
+        description: "NDJSON file name inside the external signals artifact"
+        type: string
+        default: "signature-ml-external-signals.ndjson"
+      external_labels_sha256:
+        description: "Expected SHA256 for the external signals file (optional)"
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -16,6 +37,17 @@ concurrency:
 jobs:
   build-bundle:
     runs-on: ubuntu-latest
+    env:
+      EGUARD_ML_TREND_RETENTION_DAYS: "90"
+      EGUARD_PUBLISH_BUNDLE: ${{ github.event_name == 'workflow_dispatch' && inputs.promote_release && '1' || '0' }}
+      EGUARD_ML_PUBLISH_MIN_PR_AUC: "0.70"
+      EGUARD_ML_PUBLISH_MIN_ROC_AUC: "0.80"
+      EGUARD_ML_PUBLISH_MAX_BRIER: "0.18"
+      EGUARD_ML_PUBLISH_MAX_ECE: "0.12"
+      EGUARD_ML_EXTERNAL_SIGNALS_WORKFLOW: ${{ inputs.external_labels_workflow }}
+      EGUARD_ML_EXTERNAL_SIGNALS_ARTIFACT: ${{ inputs.external_labels_artifact }}
+      EGUARD_ML_EXTERNAL_SIGNALS_FILE: ${{ inputs.external_labels_file }}
+      EGUARD_ML_EXTERNAL_SIGNALS_SHA256: ${{ inputs.external_labels_sha256 }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -429,6 +461,61 @@ jobs:
             /tmp/previous-signature-ml-offline-eval-report.json \
             /tmp/signature-ml-offline-eval-trend.ndjson \
             /tmp/previous-signature-ml-offline-eval-trend.ndjson
+          rm -rf /tmp/previous-bundle-signature-coverage /tmp/previous-bundle-signature-coverage.zip
+
+          current_run_id="${GITHUB_RUN_ID:-}"
+          workflow_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/build-bundle.yml" --jq '.id' 2>/dev/null || true)"
+          previous_run_id=""
+          if [ -n "${workflow_id}" ]; then
+            previous_run_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_id}/runs?status=success&per_page=10" \
+              --jq '.workflow_runs[] | select(.id != '"${current_run_id:-0}"') | .id' | head -n1)"
+          fi
+
+          if [ -n "${previous_run_id}" ]; then
+            artifact_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${previous_run_id}/artifacts" \
+              --jq '.artifacts[] | select(.name=="bundle-signature-coverage") | .id' | head -n1)"
+            if [ -n "${artifact_id}" ]; then
+              gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > /tmp/previous-bundle-signature-coverage.zip
+              unzip -q /tmp/previous-bundle-signature-coverage.zip -d /tmp/previous-bundle-signature-coverage
+              echo "Downloaded bundle-signature-coverage artifact from run ${previous_run_id}"
+            else
+              echo "No bundle-signature-coverage artifact found for run ${previous_run_id}"
+            fi
+          else
+            echo "No previous successful build-bundle run found for artifact baseline"
+          fi
+
+          baseline_found=0
+          copy_baseline() {
+            local name="$1"
+            local src=""
+            if [ -f "/tmp/previous-bundle-signature-coverage/${name}" ]; then
+              src="/tmp/previous-bundle-signature-coverage/${name}"
+            elif [ -f "/tmp/previous-bundle-signature-coverage/bundle/${name}" ]; then
+              src="/tmp/previous-bundle-signature-coverage/bundle/${name}"
+            fi
+            if [ -n "${src}" ]; then
+              cp "${src}" "/tmp/previous-${name}"
+              echo "Loaded previous baseline: ${name}"
+              baseline_found=1
+            fi
+          }
+
+          copy_baseline "coverage-metrics.json"
+          copy_baseline "attack-coverage.json"
+          copy_baseline "attack-critical-technique-gate.json"
+          copy_baseline "attack-critical-regression-history.ndjson"
+          copy_baseline "attack-burndown-scoreboard.json"
+          copy_baseline "signature-ml-readiness.json"
+          copy_baseline "signature-ml-readiness-trend.ndjson"
+          copy_baseline "signature-ml-offline-eval-report.json"
+          copy_baseline "signature-ml-offline-eval-trend.ndjson"
+
+          if [ "${baseline_found}" -eq 1 ]; then
+            echo "Using workflow artifact baseline; skipping release baseline download"
+            exit 0
+          fi
+
           LATEST_TAG="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=1" --jq '.[0].tag_name // ""' 2>/dev/null || true)"
           if [ -z "${LATEST_TAG}" ]; then
             echo "No previous release found; skipping regression baseline download"
@@ -713,8 +800,65 @@ jobs:
             --max-consecutive-alerts "${EGUARD_ML_TREND_MAX_CONSECUTIVE_ALERTS}" \
             --fail-on-regression "${EGUARD_ML_TREND_FAIL_ON_REGRESSION}"
 
+      - name: Download external ML signals artifact (optional)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          artifact="${EGUARD_ML_EXTERNAL_SIGNALS_ARTIFACT:-}"
+          if [ -z "${artifact}" ]; then
+            echo "No external ML signals artifact configured; skipping"
+            exit 0
+          fi
+
+          workflow="${EGUARD_ML_EXTERNAL_SIGNALS_WORKFLOW:-}"
+          if [ -z "${workflow}" ]; then
+            workflow="ml-labels.yml"
+          fi
+          file="${EGUARD_ML_EXTERNAL_SIGNALS_FILE:-signature-ml-external-signals.ndjson}"
+
+          workflow_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow}" --jq '.id' 2>/dev/null || true)"
+          if [ -z "${workflow_id}" ]; then
+            echo "External labels workflow not found (${workflow}); skipping"
+            exit 0
+          fi
+
+          run_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_id}/runs?status=success&per_page=1" --jq '.workflow_runs[0].id // ""' 2>/dev/null || true)"
+          if [ -z "${run_id}" ]; then
+            echo "No successful runs found for ${workflow}; skipping"
+            exit 0
+          fi
+
+          artifact_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts" --jq '.artifacts[] | select(.name=="'"${artifact}"'") | .id' | head -n1)"
+          if [ -z "${artifact_id}" ]; then
+            echo "Artifact ${artifact} not found in run ${run_id}; skipping"
+            exit 0
+          fi
+
+          rm -rf /tmp/external-signals /tmp/external-signals.zip
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > /tmp/external-signals.zip
+          unzip -q /tmp/external-signals.zip -d /tmp/external-signals
+
+          if [ ! -f "/tmp/external-signals/${file}" ]; then
+            echo "External signals file not found: ${file}"
+            exit 1
+          fi
+
+          if [ -n "${EGUARD_ML_EXTERNAL_SIGNALS_SHA256:-}" ]; then
+            echo "${EGUARD_ML_EXTERNAL_SIGNALS_SHA256}  /tmp/external-signals/${file}" | sha256sum -c -
+          elif [ -f "/tmp/external-signals/${file}.sha256" ]; then
+            (cd /tmp/external-signals && sha256sum -c "${file}.sha256")
+          else
+            echo "No external signals checksum provided; proceeding without checksum validation"
+          fi
+
+          echo "EGUARD_ML_EXTERNAL_SIGNALS_PATH=/tmp/external-signals/${file}" >> "$GITHUB_ENV"
+
       - name: Build signature ML training corpus
         run: |
+          EXTRA_ARGS=()
+          if [ -n "${EGUARD_ML_EXTERNAL_SIGNALS_PATH:-}" ] && [ -f "${EGUARD_ML_EXTERNAL_SIGNALS_PATH}" ]; then
+            EXTRA_ARGS+=(--external-signals "${EGUARD_ML_EXTERNAL_SIGNALS_PATH}")
+          fi
           python threat-intel/processing/signature_ml_build_training_corpus.py \
             --manifest bundle/manifest.json \
             --coverage bundle/coverage-metrics.json \
@@ -724,7 +868,8 @@ jobs:
             --output-signals bundle/signature-ml-signals.ndjson \
             --output-summary bundle/signature-ml-training-corpus-summary.json \
             --sample-count 960 \
-            --window-days 60
+            --window-days 60 \
+            "${EXTRA_ARGS[@]}"
 
       - name: Validate signature ML label quality (shadow)
         env:
@@ -880,6 +1025,125 @@ jobs:
             --require-offline-eval-trend-pass 1 \
             --fail-on-threshold "${EGUARD_ML_REGISTRY_FAIL_ON_THRESHOLD}"
 
+      - name: Summarize ML regression budgets
+        if: ${{ always() }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          def load_json(path: str) -> dict:
+              p = Path(path)
+              if not p.is_file():
+                  return {}
+              try:
+                  return json.loads(p.read_text(encoding="utf-8"))
+              except Exception:
+                  return {}
+
+          readiness_trend = load_json("bundle/signature-ml-readiness-trend-report.json")
+          offline_trend = load_json("bundle/signature-ml-offline-eval-trend-report.json")
+          offline_eval = load_json("bundle/signature-ml-offline-eval-report.json")
+          registry = load_json("bundle/signature-ml-model-registry.json")
+
+          lines = ["## ML Regression Budgets"]
+          if readiness_trend:
+              lines.append(f"- Readiness trend status: {readiness_trend.get('status', 'n/a')}")
+              lines.append(f"- Readiness score drop: {readiness_trend.get('score_drop', 'n/a')}")
+          if offline_trend:
+              deltas = offline_trend.get("deltas", {}) if isinstance(offline_trend.get("deltas", {}), dict) else {}
+              lines.append(f"- PR-AUC drop: {deltas.get('pr_auc_drop', 'n/a')}")
+              lines.append(f"- ROC-AUC drop: {deltas.get('roc_auc_drop', 'n/a')}")
+              lines.append(f"- Brier increase: {deltas.get('brier_increase', 'n/a')}")
+              lines.append(f"- ECE increase: {deltas.get('ece_increase', 'n/a')}")
+              lines.append(f"- Threshold drift: {deltas.get('threshold_drift', 'n/a')}")
+          if offline_eval:
+              metrics = offline_eval.get("metrics", {}) if isinstance(offline_eval.get("metrics", {}), dict) else {}
+              lines.append(f"- Offline precision: {metrics.get('precision', 'n/a')}")
+              lines.append(f"- Offline recall: {metrics.get('recall', 'n/a')}")
+          if registry:
+              metrics = registry.get("offline_metrics", {}) if isinstance(registry.get("offline_metrics", {}), dict) else {}
+              lines.append(f"- Registry PR-AUC: {metrics.get('pr_auc', 'n/a')}")
+              lines.append(f"- Registry ROC-AUC: {metrics.get('roc_auc', 'n/a')}")
+
+          publish_thresholds = [
+              f"- Publish PR-AUC >= {os.environ.get('EGUARD_ML_PUBLISH_MIN_PR_AUC', 'n/a')}",
+              f"- Publish ROC-AUC >= {os.environ.get('EGUARD_ML_PUBLISH_MIN_ROC_AUC', 'n/a')}",
+              f"- Publish Brier <= {os.environ.get('EGUARD_ML_PUBLISH_MAX_BRIER', 'n/a')}",
+              f"- Publish ECE <= {os.environ.get('EGUARD_ML_PUBLISH_MAX_ECE', 'n/a')}",
+          ]
+          lines.extend(publish_thresholds)
+
+          output = "\n".join(lines) + "\n"
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as handle:
+                  handle.write(output)
+          else:
+              print(output)
+          PY
+
+      - name: Evaluate publish readiness
+        id: publish_gate
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          def load_json(path: str) -> dict:
+              p = Path(path)
+              if not p.is_file():
+                  return {}
+              try:
+                  return json.loads(p.read_text(encoding="utf-8"))
+              except Exception:
+                  return {}
+
+          readiness_trend = load_json("bundle/signature-ml-readiness-trend-report.json")
+          offline_trend = load_json("bundle/signature-ml-offline-eval-trend-report.json")
+          offline_eval = load_json("bundle/signature-ml-offline-eval-report.json")
+          registry = load_json("bundle/signature-ml-model-registry.json")
+
+          def status_ok(report: dict) -> bool:
+              status = str(report.get("status", "")).lower()
+              return status in {"pass", "pass_no_baseline"}
+
+          metrics = offline_eval.get("metrics", {}) if isinstance(offline_eval.get("metrics", {}), dict) else {}
+          min_pr_auc = float(os.environ.get("EGUARD_ML_PUBLISH_MIN_PR_AUC", "0.0"))
+          min_roc_auc = float(os.environ.get("EGUARD_ML_PUBLISH_MIN_ROC_AUC", "0.0"))
+          max_brier = float(os.environ.get("EGUARD_ML_PUBLISH_MAX_BRIER", "1.0"))
+          max_ece = float(os.environ.get("EGUARD_ML_PUBLISH_MAX_ECE", "1.0"))
+
+          pr_auc = float(metrics.get("pr_auc", 0.0))
+          roc_auc = float(metrics.get("roc_auc", 0.0))
+          brier = float(metrics.get("brier_score", 1.0))
+          ece = float(metrics.get("ece", 1.0))
+
+          quality_ok = (
+              pr_auc >= min_pr_auc
+              and roc_auc >= min_roc_auc
+              and brier <= max_brier
+              and ece <= max_ece
+          )
+
+          publish_ready = (
+              status_ok(readiness_trend)
+              and status_ok(offline_trend)
+              and str(registry.get("status", "")).lower() == "pass"
+              and quality_ok
+          )
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+              handle.write(f"ready={'1' if publish_ready else '0'}\n")
+
+          print(
+              "publish_ready="
+              f"{publish_ready} pr_auc={pr_auc} roc_auc={roc_auc} brier={brier} ece={ece}"
+          )
+          PY
+
       - name: Run threat-intel tests
         run: pytest -q threat-intel/tests/test_bundle.py
         env:
@@ -920,7 +1184,7 @@ jobs:
             bundle/signature-ml-offline-eval-trend.ndjson
             bundle/signature-ml-offline-eval-trend-report.json
             bundle/signature-ml-model-registry.json
-          retention-days: 14
+          retention-days: ${{ env.EGUARD_ML_TREND_RETENTION_DAYS }}
 
       - name: Package bundle
         run: |
@@ -1032,8 +1296,9 @@ jobs:
           PYCHECK
 
       - name: Create GitHub Release
+        if: ${{ env.EGUARD_PUBLISH_BUNDLE == '1' && steps.publish_gate.outputs.ready == '1' }}
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
+          VERSION="$(python3 -c 'import json; print(json.load(open("bundle/manifest.json")).get("version", "unknown"))')"
           BUNDLE="eguard-rules-${VERSION}.bundle.tar.zst"
           python3 -c "
           import json
@@ -1522,3 +1787,8 @@ jobs:
             --notes-file /tmp/release_notes.md
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Release publish skipped (shadow mode)
+        if: ${{ env.EGUARD_PUBLISH_BUNDLE != '1' || steps.publish_gate.outputs.ready != '1' }}
+        run: |
+          echo "Release publish skipped (shadow mode or gates not ready)."

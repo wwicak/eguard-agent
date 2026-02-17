@@ -2,9 +2,10 @@
 """Build deterministic signature-ML training corpus from bundle artifacts.
 
 Generates a synthetic but deterministic dataset aligned with runtime ML features
-(z1..z4 signals, info-theoretic metrics, and event metadata). This keeps the
-CI model compatible with the agent's Layer-5 feature schema while preserving
-mathematical determinism (no ML frameworks, no random seeds).
+(z1..z4 signals, info-theoretic metrics, and event metadata). Optionally merges
+external, artifact-sourced signals (NDJSON) for supervised label ingestion.
+This keeps the CI model compatible with the agent's Layer-5 feature schema
+while preserving determinism (no ML frameworks, no random seeds).
 """
 
 from __future__ import annotations
@@ -40,6 +41,29 @@ EVENT_CLASS_RISK = {
     "alert": 1.0,
 }
 
+SIGNAL_FEATURE_FIELDS = (
+    "z1_ioc_hit",
+    "z2_temporal_count",
+    "z3_anomaly_high",
+    "z3_anomaly_med",
+    "z4_killchain_count",
+    "yara_hit_count",
+    "string_sig_count",
+    "event_class_risk",
+    "uid_is_root",
+    "dst_port_risk",
+    "has_command_line",
+    "cmdline_length_norm",
+    "prefilter_hit",
+    "multi_layer_count",
+    "cmdline_renyi_h2",
+    "cmdline_compression",
+    "cmdline_min_entropy",
+    "cmdline_entropy_gap",
+    "dns_entropy",
+    "event_size_norm",
+)
+
 
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc).replace(microsecond=0)
@@ -47,6 +71,38 @@ def _now_utc() -> datetime:
 
 def _iso_utc(raw: datetime) -> str:
     return raw.isoformat().replace("+00:00", "Z")
+
+
+def _parse_ts(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    raw = str(value).strip()
+    if not raw:
+        return None
+    try:
+        if raw.endswith("Z"):
+            raw = raw.replace("Z", "+00:00")
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def _normalize_label(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        ivalue = int(value)
+        if ivalue in (0, 1):
+            return ivalue
+    if isinstance(value, str):
+        trimmed = value.strip().lower()
+        if trimmed in {"0", "false", "no"}:
+            return 0
+        if trimmed in {"1", "true", "yes"}:
+            return 1
+    return None
 
 
 def _as_float(value: Any, default: float = 0.0) -> float:
@@ -76,6 +132,99 @@ def _load_json(path: Path, label: str, *, required: bool) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError(f"{label} must be a JSON object: {path}")
     return payload
+
+
+def _normalize_external_row(
+    row: dict[str, Any],
+    sample_id: str,
+    observed_at: datetime,
+) -> dict[str, Any] | None:
+    event_class = str(row.get("event_class") or "process_exec").strip()
+    if event_class not in EVENT_CLASSES:
+        event_class = "process_exec"
+
+    label = _normalize_label(row.get("label"))
+    label_source = str(row.get("label_source") or "external").strip() or "external"
+
+    adjudicated_at_raw = row.get("adjudicated_at_utc") or row.get("adjudicated_at") or ""
+    adjudicated_at = _parse_ts(adjudicated_at_raw)
+    adjudicated_at_utc = _iso_utc(adjudicated_at) if adjudicated_at else ""
+
+    model_score = _clamp(_as_float(row.get("model_score"), 0.0), 0.0, 1.0)
+
+    normalized: dict[str, Any] = {
+        "sample_id": sample_id,
+        "observed_at_utc": _iso_utc(observed_at),
+        "adjudicated_at_utc": adjudicated_at_utc,
+        "host_id": str(row.get("host_id", "")).strip(),
+        "rule_id": str(row.get("rule_id", "")).strip(),
+        "event_class": event_class,
+        "model_score": round(model_score, 6),
+        "label": label,
+        "label_source": label_source,
+    }
+
+    for feature in SIGNAL_FEATURE_FIELDS:
+        normalized[feature] = _as_float(row.get(feature), 0.0)
+
+    return normalized
+
+
+def _load_external_signals(
+    path: Path,
+    sample_cap: int,
+    now: datetime,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    if not path.is_file():
+        return [], {"external_total": 0, "external_used": 0, "external_invalid": 0}
+
+    raw_entries: list[tuple[datetime, dict[str, Any]]] = []
+    invalid = 0
+
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            invalid += 1
+            continue
+        if not isinstance(payload, dict):
+            invalid += 1
+            continue
+        observed = _parse_ts(payload.get("observed_at_utc") or payload.get("observed_at"))
+        if observed is None:
+            invalid += 1
+            continue
+        raw_entries.append((observed, payload))
+
+    raw_entries.sort(
+        key=lambda item: (
+            item[0].isoformat(),
+            str(item[1].get("host_id", "")),
+            str(item[1].get("rule_id", "")),
+            str(item[1].get("sample_id", "")),
+        )
+    )
+
+    entries: list[dict[str, Any]] = []
+    for idx, (observed, payload) in enumerate(raw_entries):
+        sample_id = str(payload.get("sample_id") or f"external-{idx + 1:06d}")
+        normalized = _normalize_external_row(payload, sample_id, observed or now)
+        if normalized is None:
+            invalid += 1
+            continue
+        entries.append(normalized)
+
+    if sample_cap > 0:
+        entries = entries[:sample_cap]
+
+    return entries, {
+        "external_total": len(raw_entries),
+        "external_used": len(entries),
+        "external_invalid": invalid,
+    }
 
 
 def _rand01(seed: str) -> float:
@@ -148,6 +297,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--critical-gate", default="", help="bundle/attack-critical-technique-gate.json")
     parser.add_argument("--output-signals", required=True, help="Output NDJSON path")
     parser.add_argument("--output-summary", default="", help="Optional output summary JSON path")
+    parser.add_argument("--external-signals", default="", help="Optional external signals NDJSON")
+    parser.add_argument("--external-sample-cap", type=int, default=0)
     parser.add_argument("--sample-count", type=int, default=720)
     parser.add_argument("--window-days", type=int, default=45)
     parser.add_argument("--host-pool", type=int, default=160)
@@ -221,6 +372,16 @@ def main() -> int:
 
     out_path = Path(args.output_signals)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    external_rows: list[dict[str, Any]] = []
+    external_stats = {"external_total": 0, "external_used": 0, "external_invalid": 0}
+    if args.external_signals:
+        sample_cap = args.external_sample_cap if args.external_sample_cap > 0 else sample_count
+        external_rows, external_stats = _load_external_signals(
+            Path(args.external_signals),
+            sample_cap,
+            now,
+        )
 
     rows: list[dict[str, Any]] = []
     raw_rows: list[dict[str, Any]] = []
@@ -433,6 +594,31 @@ def main() -> int:
             }
         )
 
+    dataset_mode = "synthetic_ci"
+    if external_rows:
+        combined = external_rows + rows
+        if len(combined) > sample_count:
+            combined = combined[:sample_count]
+        rows = combined
+        dataset_mode = "external_only" if len(rows) == len(external_rows) else "hybrid_external"
+
+    adjudicated_count = 0
+    positive_count = 0
+    negative_count = 0
+    unresolved_count = 0
+    for row in rows:
+        label = _normalize_label(row.get("label"))
+        if label is None:
+            unresolved_count += 1
+            row["label"] = None
+            continue
+        row["label"] = label
+        adjudicated_count += 1
+        if label == 1:
+            positive_count += 1
+        else:
+            negative_count += 1
+
     with out_path.open("w", encoding="utf-8") as handle:
         for row in rows:
             handle.write(json.dumps(row, sort_keys=True) + "\n")
@@ -440,16 +626,16 @@ def main() -> int:
     summary = {
         "suite": "signature_ml_build_training_corpus",
         "status": "pass",
-        "dataset_mode": "synthetic_ci",
+        "dataset_mode": dataset_mode,
         "recorded_at_utc": _iso_utc(now),
         "version_seed": version_seed,
         "measured": {
-            "sample_count": sample_count,
+            "sample_count": len(rows),
             "adjudicated_count": adjudicated_count,
             "unresolved_count": unresolved_count,
             "positive_count": positive_count,
             "negative_count": negative_count,
-            "adjudicated_ratio": round(adjudicated_count / sample_count, 4),
+            "adjudicated_ratio": round(adjudicated_count / max(len(rows), 1), 4),
             "positive_ratio": round(
                 positive_count / max(adjudicated_count, 1),
                 4,
@@ -459,6 +645,9 @@ def main() -> int:
             "window_days": window_days,
             "host_pool": host_pool,
             "rule_pool": rule_pool,
+            "external_total": external_stats.get("external_total", 0),
+            "external_used": external_stats.get("external_used", 0),
+            "external_invalid": external_stats.get("external_invalid", 0),
         },
         "inputs": {
             "manifest": str(args.manifest),
@@ -466,6 +655,7 @@ def main() -> int:
             "readiness": str(args.readiness) if args.readiness else None,
             "attack_coverage": str(args.attack_coverage) if args.attack_coverage else None,
             "critical_gate": str(args.critical_gate) if args.critical_gate else None,
+            "external_signals": str(args.external_signals) if args.external_signals else None,
         },
     }
 
@@ -476,11 +666,16 @@ def main() -> int:
 
     print("Signature ML training corpus snapshot:")
     print(f"- mode: {summary['dataset_mode']}")
-    print(f"- sample count: {sample_count}")
+    print(f"- sample count: {len(rows)}")
     print(f"- adjudicated count: {adjudicated_count}")
     print(f"- unresolved count: {unresolved_count}")
     print(f"- positive count: {positive_count}")
     print(f"- negative count: {negative_count}")
+    if external_stats.get("external_used", 0) > 0:
+        print(
+            f"- external signals: {external_stats.get('external_used', 0)} used "
+            f"(total {external_stats.get('external_total', 0)}, invalid {external_stats.get('external_invalid', 0)})"
+        )
     print(f"- output: {out_path}")
     return 0
 
