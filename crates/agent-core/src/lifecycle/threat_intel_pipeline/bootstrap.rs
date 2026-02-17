@@ -9,7 +9,7 @@ use super::super::bundle_path::is_remote_bundle_reference;
 use super::super::AgentRuntime;
 
 impl AgentRuntime {
-    pub(super) fn bootstrap_threat_intel_replay_floor(&mut self) {
+    pub(crate) fn bootstrap_threat_intel_replay_floor(&mut self) {
         let Some(state) = load_threat_intel_replay_floor_state() else {
             return;
         };
@@ -30,7 +30,7 @@ impl AgentRuntime {
         );
     }
 
-    pub(super) fn bootstrap_last_known_good_bundle(&mut self) {
+    pub(crate) fn bootstrap_last_known_good_bundle(&mut self) {
         let Some(state) = load_threat_intel_last_known_good_state() else {
             return;
         };

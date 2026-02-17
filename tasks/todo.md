@@ -223,29 +223,62 @@
 - `cargo check -p detection -p platform-linux` passed after refactor.
 
 ## 🧭 Plan: Refactor threat_intel_pipeline (SOLID) (2026-02-17)
-- [ ] Review `crates/agent-core/src/lifecycle/threat_intel_pipeline.rs` responsibilities + public API use
-- [ ] Identify bounded contexts (state persistence, bundle preparation, version gating, reload orchestration, hash/signature verification)
-- [ ] Extract cohesive helpers into submodules with minimal public surface
-- [ ] Update imports/visibility and keep AgentRuntime API stable
-- [ ] Run `cargo check -p agent-core`
-- [ ] Document module map + notes in tasks/todo.md
+- [x] Review `crates/agent-core/src/lifecycle/threat_intel_pipeline.rs` responsibilities + public API use
+- [x] Identify bounded contexts (state persistence, bundle preparation, version gating, reload orchestration, hash/signature verification)
+- [x] Extract cohesive helpers into submodules with minimal public surface
+- [x] Update imports/visibility and keep AgentRuntime API stable
+- [x] Run `cargo check -p agent-core`
+- [x] Document module map + notes in tasks/todo.md
 
 ### ✅ Acceptance Criteria
-- [ ] threat_intel_pipeline split into focused modules with <= ~400 LOC in root orchestrator
-- [ ] No functional regressions: `cargo check -p agent-core` passes
-- [ ] Public API and AgentRuntime behavior preserved (document any changes)
-- [ ] SOLID adherence: each new module has single responsibility, minimal public API
+- [x] threat_intel_pipeline split into focused modules with <= ~400 LOC in root orchestrator
+- [x] No functional regressions: `cargo check -p agent-core` passes
+- [x] Public API and AgentRuntime behavior preserved (document any changes)
+- [x] SOLID adherence: each new module has single responsibility, minimal public API
 
 ## 🧭 Plan: Refactor detection layer4 (SOLID) (2026-02-17)
-- [ ] Review `crates/detection/src/layer4.rs` responsibilities + public API use
-- [ ] Identify bounded contexts (kill-chain templates, policy thresholds, matching logic, evaluation)
-- [ ] Extract cohesive structs/functions into submodules with minimal public surface
-- [ ] Update imports/visibility and keep public API stable
-- [ ] Run `cargo check -p detection`
-- [ ] Document module map + notes in tasks/todo.md
+- [x] Review `crates/detection/src/layer4.rs` responsibilities + public API use
+- [x] Identify bounded contexts (kill-chain templates, policy thresholds, matching logic, evaluation)
+- [x] Extract cohesive structs/functions into submodules with minimal public surface
+- [x] Update imports/visibility and keep public API stable
+- [x] Run `cargo check -p detection`
+- [x] Document module map + notes in tasks/todo.md
 
 ### ✅ Acceptance Criteria
-- [ ] layer4.rs split into focused modules with <= ~400 LOC in root
-- [ ] Public API preserved or documented
-- [ ] SOLID adherence with single-responsibility modules
-- [ ] `cargo check -p detection` passes
+- [x] layer4.rs split into focused modules with <= ~400 LOC in root
+- [x] Public API preserved or documented
+- [x] SOLID adherence with single-responsibility modules
+- [x] `cargo check -p detection` passes
+
+### 🔍 Review Notes
+- `threat_intel_pipeline.rs` now orchestrates submodules: bootstrap, refresh, reload, download, state, version, bundle_guard; tests moved to `threat_intel_pipeline/tests.rs`.
+- `layer4.rs` now delegates to engine, graph, policy, and template modules; root only re-exports core API.
+- `cargo check -p agent-core -p detection` passed after refactor.
+
+## 🧭 Plan: Run all tests under /tests (2026-02-17)
+- [x] Inspect `/tests` directory and determine the appropriate test runner(s)
+- [x] Execute the full test suite for `/tests` (as requested)
+- [x] Capture failures/logs if any and report results
+
+### 🔍 Review Notes
+- Ran `tests/run-all.sh` with `EGUARD_SIMULATE_CMD=tests/malware-sim/simulate.sh` to cover /tests suite.
+- Response crate targeted tests executed via run-all (no failures).
+
+## 🧭 Plan: Refactor detection layer2 + layer5 (SOLID) (2026-02-17)
+- [x] Review `crates/detection/src/layer2.rs` + `crates/detection/src/layer5.rs` responsibilities + public API use
+- [x] Identify bounded contexts (temporal predicates/engine/eviction; ML features/model/scoring/thresholds)
+- [x] Extract cohesive structs/functions into submodules with minimal public surface
+- [x] Update imports/visibility and keep public API stable
+- [x] Run `cargo check -p detection`
+- [x] Document module map + notes in tasks/todo.md
+
+### ✅ Acceptance Criteria
+- [x] layer2.rs and layer5.rs split into focused modules with <= ~400 LOC in roots
+- [x] Public API preserved or documented
+- [x] SOLID adherence with single-responsibility modules
+- [x] `cargo check -p detection` passes
+
+### 🔍 Review Notes
+- `layer2.rs` now coordinates automaton/defaults/engine/predicate/rule modules; default rule construction isolated in defaults.
+- `layer5.rs` now re-exports constants, model, features, engine, math; tests moved to `layer5/tests.rs`.
+- `cargo check -p detection` passed after refactor.

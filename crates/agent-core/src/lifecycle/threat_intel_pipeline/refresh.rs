@@ -4,11 +4,10 @@ use tracing::info;
 
 use super::state::persist_threat_intel_replay_floor_state;
 use super::version::{ensure_publish_timestamp_floor, ensure_version_monotonicity};
-use super::{THREAT_INTEL_INTERVAL_SECS};
-use super::super::{interval_due, AgentRuntime};
+use super::super::{interval_due, AgentRuntime, THREAT_INTEL_INTERVAL_SECS};
 
 impl AgentRuntime {
-    pub(super) async fn refresh_threat_intel_if_due(&mut self, now_unix: i64) -> Result<()> {
+    pub(crate) async fn refresh_threat_intel_if_due(&mut self, now_unix: i64) -> Result<()> {
         if !interval_due(
             self.last_threat_intel_refresh_unix,
             now_unix,
