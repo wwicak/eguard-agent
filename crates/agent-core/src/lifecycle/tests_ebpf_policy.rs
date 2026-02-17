@@ -106,6 +106,26 @@ fn tick_pipeline_produces_detection_compliance_envelope_and_baseline_learning() 
     ));
 }
 
+#[test]
+// AC-DET-223
+fn module_load_payload_maps_to_detection_file_path() {
+    let now = 1_700_000_100i64;
+    let raw = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::ModuleLoad,
+        pid: std::process::id(),
+        uid: 0,
+        ts_ns: (now as u64) * 1_000_000_000,
+        payload: "module=fake_rootkit".to_string(),
+    };
+
+    let mut cache = platform_linux::EnrichmentCache::default();
+    let enriched = platform_linux::enrich_event_with_cache(raw, &mut cache);
+    let detection_event = to_detection_event(&enriched, now);
+
+    assert_eq!(detection_event.event_class, EventClass::ModuleLoad);
+    assert_eq!(detection_event.file_path.as_deref(), Some("fake_rootkit"));
+}
+
 #[tokio::test]
 // AC-EBP-042
 async fn send_event_batch_attempts_delivery_on_each_call_without_flush_gates() {

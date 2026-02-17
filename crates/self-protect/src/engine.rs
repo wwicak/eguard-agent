@@ -1,6 +1,7 @@
 use crate::debugger::{detect_debugger, DebuggerCheckConfig, DebuggerObservation};
 use crate::integrity::{hash_file_sha256, measure_self_integrity, IntegrityMeasurement};
 use std::path::Path;
+use std::sync::OnceLock;
 
 const COMPILETIME_EXPECTED_SHA256: Option<&str> =
     option_env!("EGUARD_SELF_PROTECT_EXPECTED_SHA256");
@@ -49,7 +50,7 @@ struct RuntimeHash {
     sha256_hex: String,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 struct RuntimeBaseline {
     integrity: Vec<RuntimeHash>,
     config: Vec<RuntimeHash>,
@@ -85,24 +86,23 @@ fn capture_runtime_hashes(paths: &[String]) -> Vec<RuntimeHash> {
     out
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct SelfProtectEngine {
     config: SelfProtectConfig,
-    runtime_baseline: RuntimeBaseline,
+    runtime_baseline: OnceLock<RuntimeBaseline>,
 }
 
 impl SelfProtectEngine {
     pub fn from_env() -> Self {
         let config = SelfProtectConfig::default();
-        let runtime_baseline = RuntimeBaseline::capture(&config);
-        Self {
-            config,
-            runtime_baseline,
-        }
+        Self::new(config)
     }
 
     pub fn new(config: SelfProtectConfig) -> Self {
-        let runtime_baseline = RuntimeBaseline::capture(&config);
+        let runtime_baseline = OnceLock::new();
+        if !env_flag_enabled("EGUARD_SELF_PROTECT_LAZY_BASELINE") {
+            let _ = runtime_baseline.set(RuntimeBaseline::capture(&config));
+        }
         Self {
             config,
             runtime_baseline,
@@ -113,8 +113,13 @@ impl SelfProtectEngine {
         &self.config
     }
 
+    fn runtime_baseline(&self) -> &RuntimeBaseline {
+        self.runtime_baseline
+            .get_or_init(|| RuntimeBaseline::capture(&self.config))
+    }
+
     fn append_runtime_integrity(&self, report: &mut SelfProtectReport) {
-        for entry in &self.runtime_baseline.integrity {
+        for entry in &self.runtime_baseline().integrity {
             match hash_file_sha256(Path::new(&entry.path)) {
                 Ok(observed_sha256) => {
                     if observed_sha256 != entry.sha256_hex {
@@ -140,7 +145,7 @@ impl SelfProtectEngine {
     }
 
     fn append_runtime_config(&self, report: &mut SelfProtectReport) {
-        for entry in &self.runtime_baseline.config {
+        for entry in &self.runtime_baseline().config {
             match hash_file_sha256(Path::new(&entry.path)) {
                 Ok(observed_sha256) => {
                     if observed_sha256 != entry.sha256_hex {
@@ -386,4 +391,11 @@ fn resolve_expected_integrity_sha256() -> Option<String> {
     }
 
     COMPILETIME_EXPECTED_SHA256.and_then(normalize_sha256_hex)
+}
+
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|raw| matches!(raw.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
 }

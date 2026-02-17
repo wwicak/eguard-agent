@@ -52,3 +52,4 @@
 *.log
 tests/e2e-pipeline/results/cloud-init.iso
 tests/e2e-pipeline/results/overlay.qcow2
+.ant-colony/

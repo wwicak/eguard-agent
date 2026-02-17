@@ -54,17 +54,17 @@
 ## 🧭 Plan: Tier 4.4 kernel persistence/rootkit detection (QEMU-only) (2026-02-17)
 - [x] Define AC-DET/AC-TST/AC-VER entries for kernel module/persistence tamper signals (module load + sysfs/tracefs indicators)
 - [x] Implement kernel integrity/rootkit indicators in detection engine + confidence policy + telemetry/audit mapping
-- [ ] Map module load payloads to detection file_path for indicator matching (platform-linux parsing)
-- [ ] Add unit + contract tests for kernel integrity indicators and AC enforcement
-- [ ] Add QEMU harness to trigger module load/rootkit indicators via eBPF replay and validate detections
-- [ ] Validate in QEMU only and document results
+- [x] Map module load payloads to detection file_path for indicator matching (platform-linux parsing)
+- [x] Add unit + contract tests for kernel integrity indicators and AC enforcement
+- [x] Add QEMU harness to trigger module load/rootkit indicators via eBPF replay and validate detections
+- [x] Validate in QEMU only and document results (tests/qemu/run_agent_kernel_integrity.sh -> agent kernel integrity harness ok)
 
 ## 🧭 Plan: Tier 4.5 self-protection v2 (anti-tamper) (QEMU-only) (2026-02-17)
 - [x] Define AC-DET/AC-TST/AC-VER entries for agent binary/config tamper + kill attempts
-- [ ] Implement runtime hashing for agent binary/config paths + self-protect report codes + alert payload paths
-- [ ] Update tamper detection signals to align with hash changes + telemetry/audit mapping
-- [ ] Add unit + contract tests for tamper detection and AC enforcement
-- [ ] Add QEMU harness to attempt tamper/kill (replay + file modification) and validate detection/response
+- [x] Implement runtime hashing for agent binary/config paths + self-protect report codes + alert payload paths
+- [x] Update tamper detection signals to align with hash changes + telemetry/audit mapping
+- [x] Add unit + contract tests for tamper detection and AC enforcement
+- [x] Add QEMU harness to attempt tamper/kill (replay + file modification) and validate detection/response
 - [ ] Validate in QEMU only and document results
 
 ## 🧭 Plan: Refine ML pipeline, detection, telemetry, MDM wiring
@@ -167,3 +167,85 @@
 - [x] 15/15 E2E acceptance tests
 - [x] NAC integration (PacketFence) — CrowdStrike doesn't have this
 - [x] 2,142 tests, 0 failures
+
+## 🧭 Plan: Refactor agent-core lifecycle (SOLID) (2026-02-17)
+- [x] Review lifecycle.rs responsibilities + call graph, identify bounded contexts (detection, control plane, command, response, telemetry, observability)
+- [x] Define target module structure + new structs/traits to split lifecycle coordinator vs. pipelines (no god objects)
+- [x] Extract state holders + queues into dedicated types with focused APIs
+- [x] Extract tick scheduling/orchestration into small coordinator with dependency-injected services
+- [x] Migrate helper functions into cohesive modules + update imports
+- [x] Add/adjust tests or compile checks to validate refactor
+- [x] Document new structure + responsibilities in tasks/todo.md review notes
+
+### ✅ Acceptance Criteria
+- [x] lifecycle.rs reduced to coordinator-only orchestration (<= ~400 LOC) with no mixed responsibilities
+- [x] Each new module/class has a single responsibility and minimal public API surface
+- [x] No functional regressions: tests/build pass (at least `cargo check -p agent-core`)
+- [x] Public API changes documented + reflected in module docs/notes
+- [x] No new god objects; dependencies injected via structs/traits where appropriate
+
+### 🔍 Review Notes
+- Split lifecycle responsibilities into focused modules (tick, self_protect, memory_scan, compliance, telemetry, response_actions, async_workers, baseline, policy, timing, ebpf_support, bundle_support, emergency_rule, runtime_mode, types).
+- lifecycle.rs now acts as coordinator + re-export surface (137 LOC).
+- `cargo check -p agent-core` passed after refactor.
+
+## 🧭 Plan: Identify + refactor large module (>1000 LOC) (2026-02-17)
+- [x] Scan repository for files exceeding 1000 LOC and shortlist candidates
+- [x] Pick the most critical/complex candidate (usage + risk) for refactor → `crates/agent-core/src/config.rs` (1301 LOC)
+- [ ] Break responsibilities into focused modules following SOLID (no god objects)
+- [ ] Update imports/visibility and ensure minimal public API surface
+- [ ] Validate via `cargo check` or relevant build/test command
+- [ ] Document refactor notes + module map in tasks/todo.md
+
+### ✅ Acceptance Criteria
+- [ ] config.rs split into focused submodules (e.g., detection, response, telemetry, policy) with a slim root
+- [ ] Public API remains stable for external crates; any changes documented
+- [ ] No functional regressions: `cargo check -p agent-core` passes
+- [ ] New modules each have single responsibility and minimal public surface
+
+## 🧭 Plan: Refactor large modules (information.rs + ebpf.rs) (SOLID) (2026-02-17)
+- [x] Review `crates/detection/src/information.rs` + `crates/platform-linux/src/ebpf.rs` responsibilities and public APIs
+- [x] Identify bounded contexts and propose module splits (e.g., info-theory metrics, entropy/NCD helpers; eBPF loading, probes, telemetry, lifecycle)
+- [x] Extract cohesive structs/functions into submodules with minimal public surface
+- [x] Update imports/visibility and wire new modules into existing APIs
+- [x] Run `cargo check -p detection -p platform-linux` (or broader if needed)
+- [x] Document module map + notes in tasks/todo.md
+
+### ✅ Acceptance Criteria
+- [x] information.rs and ebpf.rs reduced to orchestration-only modules (<= ~400 LOC each)
+- [x] No public API breakage without documentation
+- [x] SOLID: each new module has single responsibility, minimal public API
+- [x] `cargo check -p detection -p platform-linux` passes
+
+### 🔍 Review Notes
+- `information.rs` now delegates to submodules: support, entropy, divergence, transport, compression, cusum, spectral, conformal, mutual, dns, concentration; tests moved to `information/tests.rs`.
+- `ebpf.rs` now coordinates backend, capabilities, codec, replay, replay_codec, libbpf_backend, types, and engine modules; tests still use root re-exports.
+- `cargo check -p detection -p platform-linux` passed after refactor.
+
+## 🧭 Plan: Refactor threat_intel_pipeline (SOLID) (2026-02-17)
+- [ ] Review `crates/agent-core/src/lifecycle/threat_intel_pipeline.rs` responsibilities + public API use
+- [ ] Identify bounded contexts (state persistence, bundle preparation, version gating, reload orchestration, hash/signature verification)
+- [ ] Extract cohesive helpers into submodules with minimal public surface
+- [ ] Update imports/visibility and keep AgentRuntime API stable
+- [ ] Run `cargo check -p agent-core`
+- [ ] Document module map + notes in tasks/todo.md
+
+### ✅ Acceptance Criteria
+- [ ] threat_intel_pipeline split into focused modules with <= ~400 LOC in root orchestrator
+- [ ] No functional regressions: `cargo check -p agent-core` passes
+- [ ] Public API and AgentRuntime behavior preserved (document any changes)
+- [ ] SOLID adherence: each new module has single responsibility, minimal public API
+
+## 🧭 Plan: Refactor detection layer4 (SOLID) (2026-02-17)
+- [ ] Review `crates/detection/src/layer4.rs` responsibilities + public API use
+- [ ] Identify bounded contexts (kill-chain templates, policy thresholds, matching logic, evaluation)
+- [ ] Extract cohesive structs/functions into submodules with minimal public surface
+- [ ] Update imports/visibility and keep public API stable
+- [ ] Run `cargo check -p detection`
+- [ ] Document module map + notes in tasks/todo.md
+
+### ✅ Acceptance Criteria
+- [ ] layer4.rs split into focused modules with <= ~400 LOC in root
+- [ ] Public API preserved or documented
+- [ ] SOLID adherence with single-responsibility modules
+- [ ] `cargo check -p detection` passes
