@@ -1,0 +1,23 @@
+pub(super) const DEFAULT_RULES_STAGING_DIR: &str = "/var/lib/eguard-agent/rules-staging";
+pub(super) const MAX_SIGNED_RULE_BUNDLE_BYTES: u64 = 256 * 1024 * 1024;
+pub(super) const HEARTBEAT_INTERVAL_SECS: i64 = 30;
+pub(super) const COMPLIANCE_INTERVAL_SECS: i64 = 60;
+pub(super) const POLICY_REFRESH_INTERVAL_SECS: i64 = 300;
+pub(super) const THREAT_INTEL_INTERVAL_SECS: i64 = 150;
+pub(super) const BASELINE_SAVE_INTERVAL_SECS: i64 = 300;
+#[cfg(test)]
+pub(super) const SECONDS_PER_DAY: i64 = 86_400;
+pub(super) const EVENT_BATCH_SIZE: usize = 256;
+pub(super) const COMMAND_FETCH_LIMIT: usize = 10;
+pub(super) const COMMAND_FETCH_INTERVAL_SECS: i64 = 5;
+pub(super) const COMMAND_EXECUTION_BUDGET_PER_TICK: usize = 4;
+pub(super) const COMMAND_BACKLOG_CAPACITY: usize = 256;
+pub(super) const CONTROL_PLANE_TASK_EXECUTION_BUDGET_PER_TICK: usize = 6;
+pub(super) const CONTROL_PLANE_TASK_QUEUE_CAPACITY: usize = 64;
+pub(super) const CONTROL_PLANE_SEND_QUEUE_CAPACITY: usize = 128;
+pub(super) const CONTROL_PLANE_SEND_CONCURRENCY: usize = 4;
+pub(super) const RESPONSE_EXECUTION_BUDGET_PER_TICK: usize = 4;
+pub(super) const RESPONSE_QUEUE_CAPACITY: usize = 128;
+pub(super) const RESPONSE_REPORT_QUEUE_CAPACITY: usize = 256;
+pub(super) const RESPONSE_REPORT_CONCURRENCY: usize = 8;
+pub(super) const DEGRADE_AFTER_SEND_FAILURES: u32 = 3;
