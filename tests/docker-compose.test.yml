@@ -1,9 +1,7 @@
-version: '3.9'
-
 services:
   eguard-server:
     build:
-      context: .
+      context: ..
       dockerfile: tests/Dockerfile.runtime
     environment:
       EGUARD_TEST_MODE: "1"
@@ -13,7 +11,7 @@ services:
 
   agent-test:
     build:
-      context: .
+      context: ..
       dockerfile: tests/Dockerfile.agent-test
     privileged: true
     cap_add:
@@ -29,7 +27,7 @@ services:
 
   malware-simulator:
     build:
-      context: .
+      context: ..
       dockerfile: tests/Dockerfile.runtime
     network_mode: "service:agent-test"
     command: ["/usr/local/bin/tests/malware-sim/simulate.sh", "all"]

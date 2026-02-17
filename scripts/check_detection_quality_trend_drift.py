@@ -111,10 +111,45 @@ def main() -> int:
         )
         return 0
 
-    previous = entries[-2]
+    def corpus_signature(entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        corpus = entry.get("corpus", {})
+        if not isinstance(corpus, dict) or not corpus:
+            return None
+        return {
+            "name": corpus.get("name"),
+            "scenario_count": corpus.get("scenario_count"),
+            "total_events": corpus.get("total_events"),
+            "malicious_events": corpus.get("malicious_events"),
+        }
+
     current = entries[-1]
-    report["previous_recorded_at_utc"] = previous.get("recorded_at_utc")
+    current_sig = corpus_signature(current)
+    previous = None
+    previous_sig = None
+    for candidate in reversed(entries[:-1]):
+        candidate_sig = corpus_signature(candidate)
+        if candidate_sig and current_sig and candidate_sig == current_sig:
+            previous = candidate
+            previous_sig = candidate_sig
+            break
+
     report["current_recorded_at_utc"] = current.get("recorded_at_utc")
+    report["current_corpus"] = current_sig
+
+    if previous is None:
+        report["status"] = "baseline_reset"
+        report["baseline_reset"] = True
+        report["reason"] = "corpus_changed_or_missing"
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        print(
+            "detection-quality trend drift check skipped: corpus changed or no matching baseline",
+            file=sys.stderr,
+        )
+        return 0
+
+    report["previous_recorded_at_utc"] = previous.get("recorded_at_utc")
+    report["previous_corpus"] = previous_sig
 
     regressions: list[str] = []
 

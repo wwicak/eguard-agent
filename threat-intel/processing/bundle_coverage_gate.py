@@ -89,12 +89,21 @@ def _parse_named_minimums(raw_values: list[str], label: str) -> tuple[dict[str, 
     return parsed, errors
 
 
+def _parse_bool(raw: str) -> bool:
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Validate bundle signature/intel coverage against minimum thresholds"
     )
     parser.add_argument("--manifest", required=True, help="Path to bundle manifest.json")
     parser.add_argument("--output", default="", help="Optional JSON output report path")
+    parser.add_argument(
+        "--fail-on-threshold",
+        default="1",
+        help="Fail if coverage thresholds are not met (default true)",
+    )
 
     parser.add_argument("--min-sigma", type=int, default=150)
     parser.add_argument("--min-yara", type=int, default=600)
@@ -149,6 +158,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = _build_parser().parse_args()
+    fail_on_threshold = _parse_bool(args.fail_on_threshold)
     manifest_path = Path(args.manifest)
 
     if not manifest_path.is_file():
@@ -283,7 +293,7 @@ def main() -> int:
         "version": manifest.get("version", ""),
         "thresholds": thresholds,
         "measured": measured,
-        "status": "fail" if failures else "pass",
+        "status": "fail" if failures and fail_on_threshold else ("warn" if failures else "pass"),
         "failures": failures,
         "observed_sources": {
             "yara": sorted(yara_sources),
@@ -326,7 +336,10 @@ def main() -> int:
         print("\nBundle signature coverage gate failed:")
         for failure in failures:
             print(f"- {failure}")
-        return 1
+        if fail_on_threshold:
+            return 1
+        print("Continuing despite coverage shortfall (shadow mode)")
+        return 0
 
     print("\nBundle signature coverage gate passed")
     return 0

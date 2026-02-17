@@ -313,10 +313,13 @@
 - Optional external labels artifact (`signature-ml-external-signals.ndjson`) can be downloaded + checksum verified and used for training corpus (hybrid mode).
 
 ## 🧭 Plan: Fix detection-quality trend drift false regression (2026-02-17)
-- [ ] Inspect detection-quality trend entries and identify corpus/version mismatch causing drift spikes
-- [ ] Update drift gate to reset baseline when corpus changes (name/scenario_count/total_events)
-- [ ] Add report field indicating baseline reset reason + do not fail on regression for corpus change
-- [ ] Document change and expected behavior in tasks/todo.md
+- [x] Inspect detection-quality trend entries and identify corpus/version mismatch causing drift spikes
+- [x] Update drift gate to reset baseline when corpus changes (name/scenario_count/total_events)
+- [x] Add report field indicating baseline reset reason + do not fail on regression for corpus change
+- [x] Document change and expected behavior in tasks/todo.md
+
+### ✅ Drift Gate Notes
+- Trend drift now matches baselines by corpus signature; corpus changes trigger a baseline reset (non-failing).
 
 ## 🧭 Plan: Persist ML trend artifacts in CI (self-hosted runner) (2026-02-17)
 - [x] Inspect build-bundle workflow + scripts to locate ML trend outputs
@@ -344,10 +347,19 @@
 - [x] Wire env overrides into build-bundle freshness gate (fail vs warn)
 - [x] Document behavior + rerun guidance in tasks/todo.md
 
+## 🧭 Plan: Allow coverage shortfalls in shadow runs (2026-02-17)
+- [x] Add workflow_dispatch input to allow coverage gate shortfalls
+- [x] Add fail-on-threshold flag to coverage gate script + workflow env wiring
+- [x] Document usage in tasks/todo.md
+
 ### ✅ Artifact Freshness Notes
 - Manual workflow_dispatch runs can set `allow_stale_artifacts=true` to continue in shadow mode.
 - Scheduled runs remain strict by default (fail on stale artifacts).
 - Max age can be overridden via `artifact_max_age_hours` input.
+
+### ✅ Coverage Gate Notes
+- Manual workflow_dispatch runs can set `allow_coverage_shortfall=true` to continue in shadow mode when feeds are small.
+- Scheduled runs remain strict by default (fail on coverage shortfalls).
 
 ## Review / Results (2026-02-16)
 - Updated agent ML pipeline gates, runtime feature alignment, and model threshold handling.

@@ -33,6 +33,10 @@ on:
         description: "Allow stale collector artifacts on workflow_dispatch"
         type: boolean
         default: false
+      allow_coverage_shortfall:
+        description: "Allow coverage gate shortfalls in workflow_dispatch (shadow mode)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -54,6 +58,7 @@ jobs:
       EGUARD_ML_PUBLISH_MAX_ECE: "0.12"
       EGUARD_ARTIFACT_MAX_AGE_HOURS: ${{ github.event_name == 'workflow_dispatch' && inputs.artifact_max_age_hours || '30' }}
       EGUARD_ARTIFACT_FAIL_ON_STALE: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_stale_artifacts && '0' || '1' }}
+      EGUARD_COVERAGE_FAIL_ON_THRESHOLD: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_coverage_shortfall && '0' || '1' }}
       EGUARD_ML_EXTERNAL_SIGNALS_WORKFLOW: ${{ inputs.external_labels_workflow }}
       EGUARD_ML_EXTERNAL_SIGNALS_ARTIFACT: ${{ inputs.external_labels_artifact }}
       EGUARD_ML_EXTERNAL_SIGNALS_FILE: ${{ inputs.external_labels_file }}
@@ -410,6 +415,7 @@ jobs:
           python threat-intel/processing/bundle_coverage_gate.py \
             --manifest bundle/manifest.json \
             --output bundle/coverage-metrics.json \
+            --fail-on-threshold "${EGUARD_COVERAGE_FAIL_ON_THRESHOLD}" \
             --min-sigma "${EGUARD_MIN_SIGMA}" \
             --min-yara "${EGUARD_MIN_YARA}" \
             --min-ioc-hash "${EGUARD_MIN_IOC_HASH}" \
