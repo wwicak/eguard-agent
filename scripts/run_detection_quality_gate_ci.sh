@@ -150,7 +150,7 @@ python3 "${ROOT_DIR}/scripts/check_detection_quality_trend_drift.py" \
   --precision-drop-max "${EGUARD_DQ_TREND_PRECISION_DROP_MAX:-0.01}" \
   --recall-drop-max "${EGUARD_DQ_TREND_RECALL_DROP_MAX:-0.01}" \
   --far-increase-max "${EGUARD_DQ_TREND_FAR_INCREASE_MAX:-0.02}" \
-  --labels "${EGUARD_DQ_TREND_LABELS:-focus,definite,very_high,high}" \
+  --labels "${EGUARD_DQ_TREND_LABELS:-focus,definite,very_high}" \
   --fail-on-regression "${EGUARD_DQ_TREND_FAIL_ON_REGRESSION:-1}"
 
 python3 "${ROOT_DIR}/scripts/check_adversary_emulation_score.py" \

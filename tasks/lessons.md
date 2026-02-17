@@ -217,3 +217,8 @@ avoid edition parsing errors.
 `network_mode: service:<container>` fails if the target container exits
 quickly (namespace removed). Prefer a single container or shared network
 unless the target container stays alive.
+
+## Detection Quality Trend Gates Should Track Enforcement Tiers
+When trend gates monitor regression, focus on enforcement confidences
+(focus/definite/very_high). High/medium tiers are advisory and can
+introduce noisy regressions; keep them opt-in via env overrides.
