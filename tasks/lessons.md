@@ -227,3 +227,8 @@ introduce noisy regressions; keep them opt-in via env overrides.
 When gating adversary emulation scores, compare against a baseline with
 matching corpus signature (name/scenarios/events). Otherwise score drops
 are false regressions. Reset baseline when corpus changes.
+
+## Adversary Emulation Scores Should Weight Enforcement Tiers
+Adversary emulation quality should prioritize focus/definite/very_high
+confidence tiers. Keep the high tier weight at 0 unless explicitly
+needed for advisory scoring.

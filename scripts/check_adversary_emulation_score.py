@@ -198,7 +198,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--focus-weight", type=float, default=0.40)
     parser.add_argument("--definite-weight", type=float, default=0.25)
     parser.add_argument("--very-high-weight", type=float, default=0.20)
-    parser.add_argument("--high-weight", type=float, default=0.15)
+    parser.add_argument("--high-weight", type=float, default=0.0)
 
     parser.add_argument("--min-scenarios", type=int, default=12)
     parser.add_argument("--min-malicious-events", type=int, default=5)
