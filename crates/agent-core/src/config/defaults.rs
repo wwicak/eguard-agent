@@ -1,0 +1,68 @@
+use response::ResponseConfig;
+
+use super::constants::DEFAULT_SERVER_ADDR;
+use super::types::{AgentConfig, AgentMode};
+use super::util::default_agent_id;
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            agent_id: default_agent_id(),
+            machine_id: None,
+            mac: "00:00:00:00:00:00".to_string(),
+            mode: AgentMode::Learning,
+            transport_mode: "http".to_string(),
+            server_addr: DEFAULT_SERVER_ADDR.to_string(),
+            enrollment_token: None,
+            tenant_id: None,
+            response: ResponseConfig::default(),
+            offline_buffer_backend: "sqlite".to_string(),
+            offline_buffer_path: "/var/lib/eguard-agent/offline-events.db".to_string(),
+            offline_buffer_cap_bytes: 100 * 1024 * 1024,
+            tls_cert_path: None,
+            tls_key_path: None,
+            tls_ca_path: None,
+            tls_pinned_ca_sha256: None,
+            tls_ca_pin_path: None,
+            tls_rotate_before_expiry_days: 30,
+            heartbeat_interval_secs: 30,
+            reconnect_backoff_max_secs: 300,
+            telemetry_process_exec: true,
+            telemetry_file_events: true,
+            telemetry_network_connections: true,
+            telemetry_dns_queries: true,
+            telemetry_module_loads: true,
+            telemetry_user_logins: true,
+            telemetry_flush_interval_ms: 100,
+            telemetry_max_batch_size: 100,
+            detection_sigma_rules_dir: "/var/lib/eguard-agent/rules/sigma".to_string(),
+            detection_yara_rules_dir: "/var/lib/eguard-agent/rules/yara".to_string(),
+            detection_ioc_dir: "/var/lib/eguard-agent/rules/ioc".to_string(),
+            detection_bundle_path: String::new(),
+            detection_scan_on_create: true,
+            detection_max_file_scan_size_mb: 100,
+            detection_memory_scan_enabled: false,
+            detection_memory_scan_interval_secs: 900,
+            detection_memory_scan_mode: "executable".to_string(),
+            detection_memory_scan_max_pids: 8,
+            detection_ransomware_write_threshold: 25,
+            detection_ransomware_write_window_secs: 20,
+            detection_ransomware_adaptive_delta: 1e-6,
+            detection_ransomware_adaptive_min_samples: 6,
+            detection_ransomware_adaptive_floor: 5,
+            detection_ransomware_learned_root_min_hits: 3,
+            detection_ransomware_learned_root_max: 64,
+            detection_ransomware_user_path_prefixes: Vec::new(),
+            detection_ransomware_system_path_prefixes: Vec::new(),
+            detection_ransomware_temp_path_tokens: Vec::new(),
+            compliance_check_interval_secs: 300,
+            compliance_auto_remediate: false,
+            baseline_learning_period_days: 7,
+            baseline_refresh_interval_days: 7,
+            baseline_stale_after_days: 30,
+            self_protection_integrity_check_interval_secs: 60,
+            self_protection_prevent_uninstall: true,
+            bootstrap_config_path: None,
+        }
+    }
+}

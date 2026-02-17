@@ -1,0 +1,72 @@
+use std::path::PathBuf;
+
+use response::ResponseConfig;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AgentMode {
+    Learning,
+    Active,
+    Degraded,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentConfig {
+    pub agent_id: String,
+    pub machine_id: Option<String>,
+    pub mac: String,
+    pub mode: AgentMode,
+    pub transport_mode: String,
+    pub server_addr: String,
+    pub enrollment_token: Option<String>,
+    pub tenant_id: Option<String>,
+    pub response: ResponseConfig,
+    pub offline_buffer_backend: String,
+    pub offline_buffer_path: String,
+    pub offline_buffer_cap_bytes: usize,
+    pub tls_cert_path: Option<String>,
+    pub tls_key_path: Option<String>,
+    pub tls_ca_path: Option<String>,
+    pub tls_pinned_ca_sha256: Option<String>,
+    pub tls_ca_pin_path: Option<String>,
+    pub tls_rotate_before_expiry_days: u64,
+    pub heartbeat_interval_secs: u64,
+    pub reconnect_backoff_max_secs: u64,
+    pub telemetry_process_exec: bool,
+    pub telemetry_file_events: bool,
+    pub telemetry_network_connections: bool,
+    pub telemetry_dns_queries: bool,
+    pub telemetry_module_loads: bool,
+    pub telemetry_user_logins: bool,
+    pub telemetry_flush_interval_ms: u64,
+    pub telemetry_max_batch_size: usize,
+    pub detection_sigma_rules_dir: String,
+    pub detection_yara_rules_dir: String,
+    pub detection_ioc_dir: String,
+    pub detection_bundle_path: String,
+    pub detection_scan_on_create: bool,
+    pub detection_max_file_scan_size_mb: usize,
+    pub detection_memory_scan_enabled: bool,
+    pub detection_memory_scan_interval_secs: u64,
+    pub detection_memory_scan_mode: String,
+    pub detection_memory_scan_max_pids: usize,
+    pub detection_ransomware_write_threshold: u32,
+    pub detection_ransomware_write_window_secs: u64,
+    pub detection_ransomware_adaptive_delta: f64,
+    pub detection_ransomware_adaptive_min_samples: usize,
+    pub detection_ransomware_adaptive_floor: u32,
+    pub detection_ransomware_learned_root_min_hits: u32,
+    pub detection_ransomware_learned_root_max: usize,
+    pub detection_ransomware_user_path_prefixes: Vec<String>,
+    pub detection_ransomware_system_path_prefixes: Vec<String>,
+    pub detection_ransomware_temp_path_tokens: Vec<String>,
+    pub compliance_check_interval_secs: u64,
+    pub compliance_auto_remediate: bool,
+    pub baseline_learning_period_days: u64,
+    pub baseline_refresh_interval_days: u64,
+    pub baseline_stale_after_days: u64,
+    pub self_protection_integrity_check_interval_secs: u64,
+    pub self_protection_prevent_uninstall: bool,
+    #[serde(skip)]
+    pub bootstrap_config_path: Option<PathBuf>,
+}
