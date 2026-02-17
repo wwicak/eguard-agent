@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::AgentConfig;
 
 use std::fs;
 use std::path::PathBuf;

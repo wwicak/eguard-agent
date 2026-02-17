@@ -1,5 +1,5 @@
 use super::*;
-use baseline::{BaselineStore, ProcessKey};
+use ::baseline::{BaselineStore, ProcessKey};
 use grpc_client::FleetBaselineEnvelope;
 use std::sync::{Mutex, OnceLock};
 

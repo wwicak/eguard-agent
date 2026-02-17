@@ -1,4 +1,6 @@
 use super::*;
+use crate::config::{AgentConfig, AgentMode};
+use response::plan_action;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 

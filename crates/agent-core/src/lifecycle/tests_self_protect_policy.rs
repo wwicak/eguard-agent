@@ -1,6 +1,6 @@
 use super::*;
-
-use self_protect::SelfProtectViolation;
+use crate::config::{AgentConfig, AgentMode};
+use ::self_protect::{SelfProtectReport, SelfProtectViolation};
 use std::sync::{Mutex, OnceLock};
 
 fn env_lock() -> &'static Mutex<()> {

@@ -26,10 +26,6 @@ fn event(ts: i64, class: EventClass, process: &str, parent: &str, uid: u32) -> T
         container_id: None,
         container_escape: false,
         container_privileged: false,
-        container_runtime: None,
-        container_id: None,
-        container_escape: false,
-        container_privileged: false,
     }
 }
 

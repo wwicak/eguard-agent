@@ -65,7 +65,7 @@ impl AgentRuntime {
         Ok(())
     }
 
-    fn evaluate_tick(&mut self, now_unix: i64) -> Result<Option<TickEvaluation>> {
+    pub(super) fn evaluate_tick(&mut self, now_unix: i64) -> Result<Option<TickEvaluation>> {
         let Some(raw) = self.next_raw_event() else {
             return Ok(None);
         };
@@ -196,7 +196,7 @@ impl AgentRuntime {
             )
     }
 
-    fn is_forced_degraded(&self) -> bool {
+    pub(super) fn is_forced_degraded(&self) -> bool {
         matches!(self.config.mode, AgentMode::Degraded) || self.tamper_forced_degraded
     }
 

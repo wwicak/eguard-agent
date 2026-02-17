@@ -34,7 +34,7 @@ impl AgentRuntime {
         }
     }
 
-    fn telemetry_payload_json(
+    pub(super) fn telemetry_payload_json(
         &self,
         enriched: &platform_linux::EnrichedEvent,
         event: &TelemetryEvent,

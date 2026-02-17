@@ -404,13 +404,13 @@ struct FileServerConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
-struct FileResponsePolicy {
+pub struct FileResponsePolicy {
     #[serde(default)]
-    kill: Option<bool>,
+    pub kill: Option<bool>,
     #[serde(default)]
-    quarantine: Option<bool>,
+    pub quarantine: Option<bool>,
     #[serde(default)]
-    capture_script: Option<bool>,
+    pub capture_script: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

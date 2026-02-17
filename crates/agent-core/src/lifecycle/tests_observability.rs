@@ -1,5 +1,8 @@
 use super::*;
-use self_protect::{SelfProtectReport, SelfProtectViolation};
+use crate::config::{AgentConfig, AgentMode};
+use ::baseline::BaselineStatus;
+use ::compliance::ComplianceResult;
+use ::self_protect::{SelfProtectReport, SelfProtectViolation};
 
 fn event(ts: i64) -> EventEnvelope {
     EventEnvelope {
@@ -56,6 +59,8 @@ fn tick_evaluation_for_confidence(confidence: Confidence, ts: i64, pid: u32) -> 
             temporal_hits: Vec::new(),
             kill_chain_hits: Vec::new(),
             exploit_indicators: Vec::new(),
+            kernel_integrity_indicators: Vec::new(),
+            tamper_indicators: Vec::new(),
             yara_hits: Vec::new(),
             anomaly: None,
             layer1: detection::Layer1EventHit::default(),
@@ -64,7 +69,7 @@ fn tick_evaluation_for_confidence(confidence: Confidence, ts: i64, pid: u32) -> 
         },
         confidence,
         action: PlannedAction::AlertOnly,
-        compliance: compliance::ComplianceResult {
+        compliance: ComplianceResult {
             status: "ok".to_string(),
             detail: "ok".to_string(),
             checks: Vec::new(),
@@ -179,7 +184,7 @@ async fn observability_snapshot_tracks_send_failure_degraded_transition_and_queu
 
     let mut runtime = AgentRuntime::new(cfg).expect("runtime");
     runtime.runtime_mode = AgentMode::Active;
-    runtime.baseline_store.status = baseline::BaselineStatus::Active;
+    runtime.baseline_store.status = BaselineStatus::Active;
     runtime.client.set_online(false);
     runtime.runtime_mode = AgentMode::Active;
 
@@ -219,7 +224,7 @@ async fn observability_snapshot_tracks_self_protect_degraded_transition_once() {
 
     let mut runtime = AgentRuntime::new(cfg).expect("runtime");
     runtime.runtime_mode = AgentMode::Active;
-    runtime.baseline_store.status = baseline::BaselineStatus::Active;
+    runtime.baseline_store.status = BaselineStatus::Active;
     runtime.client.set_online(false);
     runtime.runtime_mode = AgentMode::Active;
 
@@ -397,7 +402,7 @@ async fn auto_isolation_policy_updates_host_state_and_emits_response_report() {
 
     let mut runtime = AgentRuntime::new(cfg).expect("runtime");
     runtime.runtime_mode = AgentMode::Active;
-    runtime.baseline_store.status = baseline::BaselineStatus::Active;
+    runtime.baseline_store.status = BaselineStatus::Active;
 
     let eval1 = tick_evaluation_for_confidence(Confidence::VeryHigh, 1_700_010_000, 41_001);
     runtime.maybe_apply_auto_isolation(1_700_010_000, Some(&eval1));
@@ -433,7 +438,7 @@ async fn auto_isolation_policy_ignores_high_confidence_and_hourly_cap() {
 
     let mut runtime = AgentRuntime::new(cfg).expect("runtime");
     runtime.runtime_mode = AgentMode::Active;
-    runtime.baseline_store.status = baseline::BaselineStatus::Active;
+    runtime.baseline_store.status = BaselineStatus::Active;
 
     let high = tick_evaluation_for_confidence(Confidence::High, 1_700_020_000, 42_001);
     runtime.maybe_apply_auto_isolation(1_700_020_000, Some(&high));

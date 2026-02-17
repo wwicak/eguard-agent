@@ -1,6 +1,10 @@
 use std::collections::VecDeque;
+use std::path::Path;
+use std::time::Duration;
 
 use super::*;
+use super::replay::ReplayBackend;
+use crate::EventType;
 
 #[derive(Default)]
 struct InMemoryRingBufferBackend {

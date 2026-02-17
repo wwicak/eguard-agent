@@ -34,7 +34,7 @@ impl AgentRuntime {
             .await
     }
 
-    async fn handle_self_protection_violation(
+    pub(super) async fn handle_self_protection_violation(
         &mut self,
         now_unix: i64,
         report: &SelfProtectReport,
@@ -76,7 +76,11 @@ impl AgentRuntime {
         Ok(())
     }
 
-    fn self_protect_alert_payload(&self, report: &SelfProtectReport, now_unix: i64) -> String {
+    pub(super) fn self_protect_alert_payload(
+        &self,
+        report: &SelfProtectReport,
+        now_unix: i64,
+    ) -> String {
         let tampered_paths = report.tampered_paths();
         let tamper_indicators: Vec<String> = tampered_paths
             .iter()

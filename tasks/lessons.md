@@ -157,3 +157,27 @@ training pipeline.
 When asked to verify or test, do not execute services or tests directly on the
 user's VM. Use QEMU or another isolated environment for validation unless the
 user explicitly approves running locally.
+
+## Keep Test Imports Updated After Refactors
+When refactoring modules and moving types (e.g., `AgentConfig`), update test
+imports to use the new re-exports (e.g., `use crate::AgentConfig;`). Re-run
+`cargo check` to catch E0433 errors early.
+
+## Always Import Test Helper Types Explicitly
+If LSP or rustc flags missing types in tests (e.g., `SharedDetectionState`,
+`PathBuf`), add explicit `use` statements at the top of the test module.
+
+## Avoid Re-exporting Private Helpers
+When tests need helper types, import them directly from their module instead of
+re-exporting from the root. If re-exporting is required, ensure the item is
+public enough (or make it public) to avoid E0365.
+
+## Run Test Compiles After Refactors
+After refactoring a large module, run `cargo check --tests` and fix test-only
+visibility/import issues (`pub(super)` helpers, missing std imports) early to
+avoid a cascade of E0433/E0624 errors.
+
+## Check Test Fixtures For Duplicate Fields
+When editing structs in tests, avoid copy/paste duplication of fields (e.g.,
+container_* entries in TelemetryEvent). Duplicate fields can mask real failures
+and break compilation.

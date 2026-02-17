@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::AgentConfig;
 use detection::DetectionEngine;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};

@@ -1,5 +1,6 @@
 use super::*;
 use super::math::sigmoid;
+use crate::{DetectionSignals, EventClass, TelemetryEvent};
 
 fn make_event(class: EventClass, uid: u32, dst_port: Option<u16>) -> TelemetryEvent {
     TelemetryEvent {

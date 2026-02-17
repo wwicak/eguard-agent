@@ -1,5 +1,6 @@
 use super::*;
-use self_protect::{
+use crate::config::AgentConfig;
+use ::self_protect::{
     apply_linux_hardening, capability_number, default_retained_capabilities, LinuxHardeningConfig,
     LinuxHardeningStepStatus,
 };

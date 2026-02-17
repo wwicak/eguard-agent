@@ -192,16 +192,21 @@
 ## 🧭 Plan: Identify + refactor large module (>1000 LOC) (2026-02-17)
 - [x] Scan repository for files exceeding 1000 LOC and shortlist candidates
 - [x] Pick the most critical/complex candidate (usage + risk) for refactor → `crates/agent-core/src/config.rs` (1301 LOC)
-- [ ] Break responsibilities into focused modules following SOLID (no god objects)
-- [ ] Update imports/visibility and ensure minimal public API surface
-- [ ] Validate via `cargo check` or relevant build/test command
-- [ ] Document refactor notes + module map in tasks/todo.md
+- [x] Break responsibilities into focused modules following SOLID (no god objects)
+- [x] Update imports/visibility and ensure minimal public API surface
+- [x] Validate via `cargo check` or relevant build/test command
+- [x] Document refactor notes + module map in tasks/todo.md
 
 ### ✅ Acceptance Criteria
-- [ ] config.rs split into focused submodules (e.g., detection, response, telemetry, policy) with a slim root
-- [ ] Public API remains stable for external crates; any changes documented
-- [ ] No functional regressions: `cargo check -p agent-core` passes
-- [ ] New modules each have single responsibility and minimal public surface
+- [x] config.rs split into focused submodules (e.g., detection, response, telemetry, policy) with a slim root
+- [x] Public API remains stable for external crates; any changes documented
+- [x] No functional regressions: `cargo check -p agent-core` passes
+- [x] New modules each have single responsibility and minimal public surface
+
+### 🔍 Review Notes
+- `config.rs` now orchestrates config loading via focused modules: constants, types, defaults, load, env, file, bootstrap, crypto, paths, util.
+- File/ENV/bootstrap parsing and encryption utilities were isolated with test-only re-exports to keep the public API stable.
+- `cargo check -p agent-core` passed after refactor.
 
 ## 🧭 Plan: Refactor large modules (information.rs + ebpf.rs) (SOLID) (2026-02-17)
 - [x] Review `crates/detection/src/information.rs` + `crates/platform-linux/src/ebpf.rs` responsibilities and public APIs
@@ -247,6 +252,44 @@
 ### ✅ Acceptance Criteria
 - [x] layer4.rs split into focused modules with <= ~400 LOC in root
 - [x] Public API preserved or documented
+
+## 🧭 Plan: Fix agent-core test compile errors after refactor (2026-02-17)
+- [x] Re-run `cargo check -p agent-core --tests` to confirm current failures
+- [x] Update lifecycle test imports to use explicit crate paths (AgentConfig/AgentMode, baseline, self_protect, compliance)
+- [x] Adjust tests to include missing std::path imports and response helpers
+- [x] Expose internal runtime helpers to tests via `pub(super)` where needed (tick/self_protect/telemetry)
+- [x] Update DetectionOutcome test initializers with new indicator fields
+- [x] Re-run `cargo check -p agent-core --tests`
+- [x] Document fixes + notes in tasks/todo.md
+
+### ✅ Acceptance Criteria
+- [x] `cargo check -p agent-core --tests` passes with no compile errors
+- [x] Tests compile without relying on new public API (only `pub(super)`/test paths)
+- [x] All refactor-related missing imports and struct fields corrected
+
+### 🔍 Review Notes
+- Lifecycle tests now import `AgentConfig`/`AgentMode` via `crate::config` and use absolute crate paths for baseline/self-protect/compliance helpers.
+- Exposed `evaluate_tick`, `is_forced_degraded`, `telemetry_payload_json`, and self-protect helpers as `pub(super)` for test access only.
+- Updated `DetectionOutcome` test fixtures with kernel integrity/tamper indicator fields; `cargo check -p agent-core --tests` passes.
+
+## 🧭 Plan: Fix detection + platform-linux test compile errors (2026-02-17)
+- [x] Run `cargo check -p detection --tests` to capture current failures
+- [x] Run `cargo check -p platform-linux --tests` to capture current failures
+- [x] Update test imports/visibility and fixture structs for detection crate tests
+- [x] Update test imports/visibility and fixture structs for platform-linux crate tests
+- [x] Re-run `cargo check -p detection --tests` and `cargo check -p platform-linux --tests`
+- [x] Document fixes + notes in tasks/todo.md
+
+### ✅ Acceptance Criteria
+- [x] `cargo check -p detection --tests` passes with no compile errors
+- [x] `cargo check -p platform-linux --tests` passes with no compile errors
+- [x] Test-only helpers remain scoped (`pub(super)` where possible)
+- [x] Refactor-related missing imports/fields corrected without public API expansion
+
+### 🔍 Review Notes
+- Added explicit imports in detection layer5 tests (`EventClass`, `TelemetryEvent`, `DetectionSignals`) and removed duplicated container fields in `detection/src/tests.rs`.
+- Added missing std + crate imports in `platform-linux/src/ebpf/tests.rs` and `tests_ring_contract.rs` (Duration, Path, EventType, RawEvent, ReplayBackend).
+- `cargo check -p detection --tests` and `cargo check -p platform-linux --tests` now pass.
 - [x] SOLID adherence with single-responsibility modules
 - [x] `cargo check -p detection` passes
 

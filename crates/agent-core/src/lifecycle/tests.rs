@@ -1,7 +1,10 @@
 use super::*;
+use crate::config::AgentConfig;
+use crate::detection_state::SharedDetectionState;
 use ed25519_dalek::{Signer, SigningKey};
 use grpc_client::{CertificatePolicyEnvelope, PolicyEnvelope};
 use sha2::{Digest, Sha256};
+use std::path::{Path, PathBuf};
 
 const TEST_CERT_PEM: &str = "-----BEGIN CERTIFICATE-----\n\
 MIIDDTCCAfWgAwIBAgIUG1RpSsAZxqzhHCoL473XsyD9hlcwDQYJKoZIhvcNAQEL\n\

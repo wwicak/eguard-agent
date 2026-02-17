@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::*;
+use crate::{EventType, RawEvent};
 
 #[derive(Default)]
 struct QueueRingBufferBackend {

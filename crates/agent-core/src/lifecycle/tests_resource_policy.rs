@@ -3,6 +3,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use super::*;
+use crate::config::{AgentConfig, AgentMode};
 use platform_linux::EbpfEngine;
 
 fn workspace_root() -> PathBuf {

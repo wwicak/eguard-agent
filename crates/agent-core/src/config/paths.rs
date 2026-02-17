@@ -1,7 +1,10 @@
+#[cfg(test)]
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+#[cfg(test)]
+use anyhow::Context;
+use anyhow::Result;
 
 use super::constants::{AGENT_CONFIG_CANDIDATES, BOOTSTRAP_CONFIG_CANDIDATES};
 
