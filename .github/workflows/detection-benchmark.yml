@@ -169,6 +169,8 @@ jobs:
             --max-wall-clock-ms "${EGUARD_BENCHMARK_MAX_WALL_MS}"
 
       - name: Run adversary emulation quality gate
+        env:
+          EGUARD_ADV_FAIL_ON_SCORE_DROP: ${{ github.event_name == 'workflow_dispatch' && '0' || '1' }}
         run: bash scripts/run_detection_quality_gate_ci.sh
 
       - name: Upload detection benchmark artifact
