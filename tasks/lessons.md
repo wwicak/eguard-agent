@@ -207,3 +207,8 @@ When embedding heredocs inside GitHub Actions `run: |` blocks, ensure every
 line is indented to the block level. Unindented heredoc content breaks YAML
 parsing. Use consistent indentation so YAML strips it correctly and the
 shell receives valid scripts.
+
+## CI Docker Builds Need Updated Rust Toolchains
+Rust 2024 edition crates (e.g., time 0.3.47) require newer toolchains than
+Rust 1.78. When Dockerfiles build in CI, pin to a recent Rust (>=1.85) to
+avoid edition parsing errors.
