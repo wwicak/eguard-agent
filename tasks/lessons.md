@@ -181,3 +181,29 @@ avoid a cascade of E0433/E0624 errors.
 When editing structs in tests, avoid copy/paste duplication of fields (e.g.,
 container_* entries in TelemetryEvent). Duplicate fields can mask real failures
 and break compilation.
+
+## Always Add Acceptance Criteria For New Work
+When starting a new plan or integration audit, define or update acceptance
+criteria (AC-GRP/AC-TST/AC-VER) before adding tests or wiring changes so
+requirements are explicit and enforceable.
+
+## Cover All Requested Platforms In Design Updates
+If a design update spans multiple OSes, do not stop at Linux. Add Windows
+and macOS sections with equivalent depth (checks, evidence, remediation),
+so the design is cross-platform and complete.
+
+## Avoid CI Dependencies On Optional Tools
+CI runners may not have `rg` installed. When scripts only need simple
+pattern checks, use `grep -E` or provide a fallback to avoid hard
+failures in verification scripts.
+
+## Docker Compose Build Context Must Be Repo Root
+When Docker Compose files live under `tests/`, `context: .` resolves to
+`tests/` and breaks COPY paths that expect the repo root. Use `context: ..`
+(or an absolute path) so Dockerfiles can copy the full repository.
+
+## YAML Heredoc Indentation
+When embedding heredocs inside GitHub Actions `run: |` blocks, ensure every
+line is indented to the block level. Unindented heredoc content breaks YAML
+parsing. Use consistent indentation so YAML strips it correctly and the
+shell receives valid scripts.

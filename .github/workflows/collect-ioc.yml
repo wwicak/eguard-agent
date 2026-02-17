@@ -72,47 +72,47 @@ jobs:
             awk '{print $1}' > /tmp/bazaar_export_hashes.txt
 
           if [ -n "${MALWARE_BAZAAR_KEY:-}" ]; then
-            python - <<'PY'
-import json
-import os
-import sys
-import urllib.parse
-import urllib.request
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          import urllib.parse
+          import urllib.request
 
-key = os.getenv("MALWARE_BAZAAR_KEY", "").strip()
-if not key:
-    sys.exit(0)
+          key = os.getenv("MALWARE_BAZAAR_KEY", "").strip()
+          if not key:
+              sys.exit(0)
 
-payload = urllib.parse.urlencode({"query": "get_recent", "selector": "100"}).encode()
-req = urllib.request.Request(
-    "https://mb-api.abuse.ch/api/v1/",
-    data=payload,
-    headers={"Auth-Key": key},
-)
+          payload = urllib.parse.urlencode({"query": "get_recent", "selector": "100"}).encode()
+          req = urllib.request.Request(
+              "https://mb-api.abuse.ch/api/v1/",
+              data=payload,
+              headers={"Auth-Key": key},
+          )
 
-try:
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        raw = resp.read().decode("utf-8", "ignore")
-except Exception as exc:
-    print(f"MalwareBazaar API fetch failed: {exc}")
-    sys.exit(0)
+          try:
+              with urllib.request.urlopen(req, timeout=60) as resp:
+                  raw = resp.read().decode("utf-8", "ignore")
+          except Exception as exc:
+              print(f"MalwareBazaar API fetch failed: {exc}")
+              sys.exit(0)
 
-try:
-    doc = json.loads(raw)
-except Exception as exc:
-    print(f"MalwareBazaar API JSON parse failed: {exc}")
-    sys.exit(0)
+          try:
+              doc = json.loads(raw)
+          except Exception as exc:
+              print(f"MalwareBazaar API JSON parse failed: {exc}")
+              sys.exit(0)
 
-if doc.get("query_status") != "ok":
-    print(f"MalwareBazaar API query_status={doc.get('query_status')}")
-    sys.exit(0)
+          if doc.get("query_status") != "ok":
+              print(f"MalwareBazaar API query_status={doc.get('query_status')}")
+              sys.exit(0)
 
-hashes = [item.get("sha256_hash") for item in doc.get("data", []) if item.get("sha256_hash")]
-with open("/tmp/bazaar_api_hashes.txt", "w", encoding="utf-8") as handle:
-    for value in hashes:
-        handle.write(f"{value}\n")
-print(f"MalwareBazaar API hashes: {len(hashes)}")
-PY
+          hashes = [item.get("sha256_hash") for item in doc.get("data", []) if item.get("sha256_hash")]
+          with open("/tmp/bazaar_api_hashes.txt", "w", encoding="utf-8") as handle:
+              for value in hashes:
+                  handle.write(f"{value}\n")
+          print(f"MalwareBazaar API hashes: {len(hashes)}")
+          PY
           fi
 
           if [ -s /tmp/bazaar_api_hashes.txt ]; then
