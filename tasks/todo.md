@@ -312,6 +312,12 @@
   - Brier ≤ 0.18, ECE ≤ 0.12
 - Optional external labels artifact (`signature-ml-external-signals.ndjson`) can be downloaded + checksum verified and used for training corpus (hybrid mode).
 
+## 🧭 Plan: Fix detection-quality trend drift false regression (2026-02-17)
+- [ ] Inspect detection-quality trend entries and identify corpus/version mismatch causing drift spikes
+- [ ] Update drift gate to reset baseline when corpus changes (name/scenario_count/total_events)
+- [ ] Add report field indicating baseline reset reason + do not fail on regression for corpus change
+- [ ] Document change and expected behavior in tasks/todo.md
+
 ## 🧭 Plan: Persist ML trend artifacts in CI (self-hosted runner) (2026-02-17)
 - [x] Inspect build-bundle workflow + scripts to locate ML trend outputs
 - [x] Add artifact upload step for ML trend files (readiness + offline eval trend + reports)
@@ -332,6 +338,16 @@
 - Updated compliance policy schema to canonical `checks[]` model with signed policy metadata, evidence payload, and remediation allowlists.
 - Added policy tables + compliance evidence columns to schema; updated gRPC compliance + policy messages.
 - Added cross-platform capability matrix and implementation gap appendix.
+
+## 🧭 Plan: Fix artifact freshness gate for stale collectors (2026-02-17)
+- [x] Add workflow_dispatch inputs for max artifact age + allow stale artifacts in shadow runs
+- [x] Wire env overrides into build-bundle freshness gate (fail vs warn)
+- [x] Document behavior + rerun guidance in tasks/todo.md
+
+### ✅ Artifact Freshness Notes
+- Manual workflow_dispatch runs can set `allow_stale_artifacts=true` to continue in shadow mode.
+- Scheduled runs remain strict by default (fail on stale artifacts).
+- Max age can be overridden via `artifact_max_age_hours` input.
 
 ## Review / Results (2026-02-16)
 - Updated agent ML pipeline gates, runtime feature alignment, and model threshold handling.

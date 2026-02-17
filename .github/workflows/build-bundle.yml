@@ -25,6 +25,14 @@ on:
         description: "Expected SHA256 for the external signals file (optional)"
         type: string
         default: ""
+      artifact_max_age_hours:
+        description: "Max age (hours) for collector artifacts"
+        type: string
+        default: "30"
+      allow_stale_artifacts:
+        description: "Allow stale collector artifacts on workflow_dispatch"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -44,6 +52,8 @@ jobs:
       EGUARD_ML_PUBLISH_MIN_ROC_AUC: "0.80"
       EGUARD_ML_PUBLISH_MAX_BRIER: "0.18"
       EGUARD_ML_PUBLISH_MAX_ECE: "0.12"
+      EGUARD_ARTIFACT_MAX_AGE_HOURS: ${{ github.event_name == 'workflow_dispatch' && inputs.artifact_max_age_hours || '30' }}
+      EGUARD_ARTIFACT_FAIL_ON_STALE: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_stale_artifacts && '0' || '1' }}
       EGUARD_ML_EXTERNAL_SIGNALS_WORKFLOW: ${{ inputs.external_labels_workflow }}
       EGUARD_ML_EXTERNAL_SIGNALS_ARTIFACT: ${{ inputs.external_labels_artifact }}
       EGUARD_ML_EXTERNAL_SIGNALS_FILE: ${{ inputs.external_labels_file }}
@@ -73,7 +83,8 @@ jobs:
       - name: Validate collector artifact freshness
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          EGUARD_ARTIFACT_MAX_AGE_HOURS: "30"
+          EGUARD_ARTIFACT_MAX_AGE_HOURS: ${{ env.EGUARD_ARTIFACT_MAX_AGE_HOURS }}
+          EGUARD_ARTIFACT_FAIL_ON_STALE: ${{ env.EGUARD_ARTIFACT_FAIL_ON_STALE }}
           EGUARD_ARTIFACT_TARGET_BRANCH: ${{ github.ref_name }}
           EGUARD_ARTIFACT_FALLBACK_BRANCH: "main"
         run: |
@@ -86,6 +97,7 @@ jobs:
 
           repo = os.environ["GITHUB_REPOSITORY"]
           max_age_hours = int(os.environ.get("EGUARD_ARTIFACT_MAX_AGE_HOURS", "30"))
+          fail_on_stale = os.environ.get("EGUARD_ARTIFACT_FAIL_ON_STALE", "1").strip().lower() not in {"0", "false", "no"}
           target_branch = os.environ.get("EGUARD_ARTIFACT_TARGET_BRANCH", "").strip()
           fallback_branch = os.environ.get("EGUARD_ARTIFACT_FALLBACK_BRANCH", "").strip()
           required = [
@@ -169,7 +181,9 @@ jobs:
               print("artifact freshness gate failed:")
               for failure in failures:
                   print(f"- {failure}")
-              sys.exit(1)
+              if fail_on_stale:
+                  sys.exit(1)
+              print("continuing despite stale artifacts (shadow mode)")
 
           selected = []
           for name in required:
