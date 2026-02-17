@@ -265,30 +265,53 @@ def main() -> int:
         label_weights=label_weights,
     )
 
+    def corpus_signature(entry: dict[str, Any]) -> dict[str, Any] | None:
+        corpus_entry = entry.get("corpus", {})
+        if not isinstance(corpus_entry, dict) or not corpus_entry:
+            return None
+        return {
+            "name": corpus_entry.get("name"),
+            "scenario_count": corpus_entry.get("scenario_count"),
+            "total_events": corpus_entry.get("total_events"),
+            "malicious_events": corpus_entry.get("malicious_events"),
+        }
+
     previous_scores: dict[str, Any] | None = None
     history_status = "no_trend"
+    previous_corpus_sig = None
     if trend_path is not None:
         entries = _parse_ndjson(trend_path)
         if len(entries) >= 2:
             history_status = "history_available"
-            previous = entries[-2]
-            prev_corpus = previous.get("corpus", {})
-            if not isinstance(prev_corpus, dict):
-                prev_corpus = {}
-            previous_scores = _compute_scores(
-                payload=previous,
-                scenario_count=_as_int(prev_corpus.get("scenario_count"), 0),
-                malicious_events=_as_int(prev_corpus.get("malicious_events"), 0),
-                min_scenarios=args.min_scenarios,
-                min_malicious_events=args.min_malicious_events,
-                target_precision=args.target_precision,
-                target_recall=args.target_recall,
-                target_far_max=args.target_far_max,
-                weight_precision=args.weight_precision,
-                weight_recall=args.weight_recall,
-                weight_far=args.weight_far,
-                label_weights=label_weights,
-            )
+            current_sig = corpus_signature({"corpus": corpus})
+            previous = None
+            for candidate in reversed(entries[:-1]):
+                candidate_sig = corpus_signature(candidate)
+                if current_sig and candidate_sig and candidate_sig == current_sig:
+                    previous = candidate
+                    previous_corpus_sig = candidate_sig
+                    break
+
+            if previous is not None:
+                prev_corpus = previous.get("corpus", {})
+                if not isinstance(prev_corpus, dict):
+                    prev_corpus = {}
+                previous_scores = _compute_scores(
+                    payload=previous,
+                    scenario_count=_as_int(prev_corpus.get("scenario_count"), 0),
+                    malicious_events=_as_int(prev_corpus.get("malicious_events"), 0),
+                    min_scenarios=args.min_scenarios,
+                    min_malicious_events=args.min_malicious_events,
+                    target_precision=args.target_precision,
+                    target_recall=args.target_recall,
+                    target_far_max=args.target_far_max,
+                    weight_precision=args.weight_precision,
+                    weight_recall=args.weight_recall,
+                    weight_far=args.weight_far,
+                    label_weights=label_weights,
+                )
+            else:
+                history_status = "baseline_reset"
         else:
             history_status = "insufficient_history"
 
@@ -329,6 +352,7 @@ def main() -> int:
         "suite": "adversary_emulation_score_gate",
         "status": "fail" if failures else "pass",
         "history_status": history_status,
+        "baseline_corpus": previous_corpus_sig,
         "thresholds": {
             "target_precision": args.target_precision,
             "target_recall": args.target_recall,

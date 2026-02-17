@@ -222,3 +222,8 @@ unless the target container stays alive.
 When trend gates monitor regression, focus on enforcement confidences
 (focus/definite/very_high). High/medium tiers are advisory and can
 introduce noisy regressions; keep them opt-in via env overrides.
+
+## Adversary Emulation Baselines Must Match Corpus
+When gating adversary emulation scores, compare against a baseline with
+matching corpus signature (name/scenarios/events). Otherwise score drops
+are false regressions. Reset baseline when corpus changes.
