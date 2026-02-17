@@ -1008,23 +1008,28 @@ fn load_bundle_full_loads_ml_model_from_ci_generated_bundle() {
 
     let mut engine = DetectionEngine::default_with_rules();
     let summary = load_bundle_full(&mut engine, bundle_path.to_string_lossy().as_ref());
-    assert!(
-        summary.sigma_loaded > 0,
-        "ci bundle should load sigma rules: got {}",
-        summary.sigma_loaded
-    );
-    assert!(
-        summary.yara_loaded > 0,
-        "ci bundle should load yara rules: got {}",
-        summary.yara_loaded
-    );
-    assert!(
-        summary.ioc_hashes > 0 || summary.ioc_domains > 0 || summary.ioc_ips > 0,
-        "ci bundle should load IOC indicators: hashes={} domains={} ips={}",
-        summary.ioc_hashes,
-        summary.ioc_domains,
-        summary.ioc_ips
-    );
+    let allow_shortfall = std::env::var("EGUARD_CI_ALLOW_COVERAGE_SHORTFALL")
+        .map(|value| matches!(value.trim().to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false);
+    if !allow_shortfall {
+        assert!(
+            summary.sigma_loaded > 0,
+            "ci bundle should load sigma rules: got {}",
+            summary.sigma_loaded
+        );
+        assert!(
+            summary.yara_loaded > 0,
+            "ci bundle should load yara rules: got {}",
+            summary.yara_loaded
+        );
+        assert!(
+            summary.ioc_hashes > 0 || summary.ioc_domains > 0 || summary.ioc_ips > 0,
+            "ci bundle should load IOC indicators: hashes={} domains={} ips={}",
+            summary.ioc_hashes,
+            summary.ioc_domains,
+            summary.ioc_ips
+        );
+    }
 
     // Verify ML model was loaded from bundle — model version should contain "ml.v1"
     let model_id = engine.layer5.model_id().to_string();

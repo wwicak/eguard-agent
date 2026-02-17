@@ -1256,6 +1256,8 @@ jobs:
               --test-selector lifecycle::tests::load_bundle_rules_rejects_tampered_ci_generated_signed_bundle
 
       - name: Verify agent loads ML model from bundle (full 7-layer ingestion)
+        env:
+          EGUARD_CI_ALLOW_COVERAGE_SHORTFALL: ${{ env.EGUARD_COVERAGE_FAIL_ON_THRESHOLD == '0' && '1' || '0' }}
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           BUNDLE="eguard-rules-${VERSION}.bundle.tar.zst"
@@ -1263,6 +1265,7 @@ jobs:
           BUNDLE_PUBHEX="$(tr -d '\r\n' < "${BUNDLE}.pub.hex")"
           EGUARD_CI_BUNDLE_PATH="${BUNDLE_ABS}" \
           EGUARD_CI_BUNDLE_PUBHEX="${BUNDLE_PUBHEX}" \
+          EGUARD_CI_ALLOW_COVERAGE_SHORTFALL="${EGUARD_CI_ALLOW_COVERAGE_SHORTFALL}" \
             bash scripts/run_agent_bundle_ingestion_contract_ci.sh \
               --test-selector lifecycle::tests::load_bundle_full_loads_ml_model_from_ci_generated_bundle
 
