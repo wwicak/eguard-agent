@@ -998,3 +998,30 @@
 - Screenshots:
   - `/tmp/ui-e2e/endpoint-agent-config-full.png`
   - `/tmp/ui-e2e/endpoint-enrollment-profiled.png`
+
+## 🧭 Plan: Frontend design-system alignment pass (2026-02-19)
+- [x] Apply frontend-design skill direction to align new endpoint screens with SOC design language (dark panels, metric cards, compact chips, consistent script blocks).
+- [x] Restyle Enrollment & Install view to remove mixed light-theme blocks and match existing endpoint SOC shell.
+- [x] Restyle Agent Config view with stronger visual hierarchy and operational readability while preserving workflows.
+- [x] Rebuild/redeploy and verify with browser-use that polished UI remains fully functional.
+
+### 🔍 Review Notes (frontend design alignment)
+- Visual direction applied: **“High-density SOC command surface”** (dark control panels, compact metrics, action-first layout, and script outputs optimized for operator copy/paste).
+- Enrollment UI (`EnrollmentTokens.vue`) refinements:
+  - converted page sections to `soc-panel` / `soc-table` layout,
+  - added top metric cards (total/active/expired/exhausted),
+  - introduced token registry panel header + improved token code visual treatment,
+  - converted command output blocks to `soc-pre` style for consistent dark-theme readability.
+- Agent Config UI (`AgentConfig.vue`) refinements:
+  - added profile summary metrics (profile count + default profile),
+  - added quick state pills (transport/package/intervals) under editor header,
+  - converted generated script blocks to `soc-pre`,
+  - added scoped visual polish classes for profile pills and compact metric rendering.
+- Functional sanity preserved after style pass:
+  - profile CRUD/apply flow still working,
+  - profile-backed enrollment command generation still includes runtime env overrides,
+  - copy-to-clipboard behavior still working in browser automation context.
+- Evidence:
+  - screenshots:
+    - `/tmp/ui-e2e/endpoint-agent-config-styled.png`
+    - `/tmp/ui-e2e/endpoint-enrollment-styled.png`

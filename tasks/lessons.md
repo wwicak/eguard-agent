@@ -293,3 +293,8 @@ showing copy failure to users.
 When user explicitly asks for a fully-fledged UI, do not propose/ship an MVP.
 Deliver complete operator workflows (CRUD, persistence, route/nav wiring,
 edge-case handling, and real browser-E2E validation evidence).
+
+## Apply Requested Design Skill + Existing Design System
+When user asks to use frontend-design skill and align with existing style,
+follow the skill process and map new UI to current design tokens/components
+(`soc-*` system here) instead of introducing mismatched light-theme blocks.
