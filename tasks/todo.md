@@ -759,3 +759,32 @@
   - Enrollment token usage rollback implemented for failed enrollment persistence paths:
     - prior behavior consumed single-use token before `endpoint_agent` insert and burned it on FK failure,
     - now failed enrollment rolls back token usage (`times_used` restored), verified live on VM (`times_used` remained `0` after forced FK failure, then same token succeeded once after node MAC seeding).
+
+## 🧭 Plan: Additional real-VM E2E + edge validation on subnet VM (2026-02-18)
+- [x] Access new VM `agent@103.186.0.189`, identify reachable eGuard endpoint and active agent runtime topology
+- [x] Validate baseline connectivity/auth/API health against eGuard in subnet (`eg-a1=10.6.108.231`, eGuard server private IP `10.6.108.15`)
+- [x] Deploy agent binary from eGuard host and execute end-to-end flow with real telemetry/compliance/inventory/command approvals (no stubs)
+- [x] Run edge-case matrix (token lifecycle, policy assign guards, approval rejection semantics, command-channel compatibility)
+- [x] Capture API/DB/log evidence and summarize pass/fail + remaining gaps in this section
+
+### 🔍 Review Notes (subnet VM run)
+- `agent@103.186.0.189` host profile:
+  - hostname `eg-a1`, interface `ens3=10.6.108.231`, no preinstalled eGuard services.
+- Deployment performed from real eGuard host artifacts:
+  - copied `/tmp/eguard-agent.new` from `eguard@157.10.161.219` and installed as `/usr/local/bin/eguard-agent`.
+  - configured systemd service `eguard-agent.service` with runtime env in `/etc/eguard-agent/agent.env`.
+- Network/proxy constraints discovered and handled:
+  - direct `10.6.108.15:50052` unreachable from subnet VM; used local bridge (`socat` on agent VM) to `10.6.108.15:9999`.
+  - enabled endpoint no-auth paths in Caddy `api-aaa` block on eGuard VM for agent control-plane endpoints.
+- Enrollment edge behavior (real):
+  - initial enroll attempts rejected by DB FK (`fk_endpoint_agent_node_mac`) until node MAC seeded.
+  - after seeding `node.mac=52:54:00:50:ba:28`, enrollment succeeded and audit recorded `status=success`.
+- E2E evidence after stabilization:
+  - `endpoint_agent` row present for `subnet-agent-1031860189` with advancing heartbeat/compliance/inventory timestamps.
+  - `endpoint-compliance` and `endpoint-inventory` APIs return live rows for subnet agent.
+  - approved command reached `completed`; rejected command remained `failed/rejected`.
+- New live edge fix validated:
+  - HTTP command channel payload compatibility bug fixed (`payload_json` missing in `/endpoint/command/{channel,pending}` response) and redeployed; command completion resumed in HTTP mode.
+- Remaining gaps/blockers on this subnet setup:
+  - `/api/v1/agent-install/linux-deb` still returns `404 {"error":"agent_package_not_found"}` (no package artifact published on server).
+  - policy assignment is effective after explicit agent restart/policy refresh cycle; short windows can still report prior policy until refresh.
