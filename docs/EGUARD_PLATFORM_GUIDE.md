@@ -63,6 +63,12 @@
 Before installing an agent, generate an enrollment token for the target org/tenant
 from eGuard UI/API (`/endpoint-enrollment-tokens`).
 
+UI path (recommended):
+
+- **Endpoint → Enrollment & Install**
+- create/revoke tokens
+- use built-in install command generator (server URL + token + package format/version)
+
 Best practices:
 
 - create **separate token sets per organization/tenant/environment**
@@ -290,3 +296,7 @@ When adding new features/tests, append with this format:
   - package resolver/version selector behavior
   - policy refresh interval tuning guidance
   - command approval semantics and troubleshooting patterns
+- **2026-02-18 (update)**:
+  - org-specific token handling guidance hardened (no hardcoded token flow)
+  - enrollment edge updated to auto-node upsert behavior
+  - Endpoint “Enrollment & Install” UI workflow documented

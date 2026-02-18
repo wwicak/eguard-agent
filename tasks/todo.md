@@ -900,3 +900,36 @@
   - added configurable policy refresh interval in `eguard-agent` (`[control_plane].policy_refresh_interval_secs` / `EGUARD_POLICY_REFRESH_INTERVAL_SECS`).
   - deployed updated agent binary on subnet VM with `EGUARD_POLICY_REFRESH_INTERVAL_SECS=60`.
   - live evidence: after assigning policy `v20260218-subnet-r6`, latest compliance version converged from `r5` to `r6` in ~45s (improved from previous ~210s at default cadence).
+
+## 🧭 Plan: UI/UX hardening round for endpoint operations (2026-02-18)
+- [x] Add user-friendly enrollment/install configuration UX in Endpoint UI (token-aware command generator, no hardcoded token flow).
+- [x] Improve Endpoint navigation discoverability for enrollment/config operations.
+- [x] Validate UX flow in real environment (token create/select -> generated install command -> endpoint behavior sanity).
+- [x] Update living platform guide + review notes so UI quality requirements become explicit baseline.
+
+### 🔍 Review Notes (UI/UX hardening round)
+- Endpoint UI improvements implemented in `fe_eguard`:
+  - `html/egappserver/root/src/views/endpoint/EnrollmentTokens.vue`
+    - added **Agent Installation Helper** panel with:
+      - server URL input,
+      - token selector with status labels,
+      - package format/version selector,
+      - generated `install.sh` and package-download commands,
+      - one-click copy actions,
+      - token usability warning (expired/exhausted).
+    - token table improvements:
+      - status badges (`active`/`expired`/`exhausted`),
+      - copy button per token row.
+  - `html/egappserver/root/src/views/endpoint/index.vue`
+    - improved nav discoverability with dedicated entries:
+      - `Enrollment & Install`
+      - `Feedback`.
+- Real-flow validation linkage:
+  - command generator output aligns with live endpoints already validated in this run:
+    - token matrix (`401/403/200`) and version selector (`latest`/explicit/404),
+    - install package endpoints serving real artifacts.
+  - backend command lifecycle sanity remains passing after UI changes (`completed/approved`).
+- Documentation baseline update:
+  - `docs/EGUARD_PLATFORM_GUIDE.md` now references Endpoint UI path (`Endpoint → Enrollment & Install`) for operator workflow.
+- Known tooling caveat:
+  - frontend lint/build checks still unavailable in this environment (`vue-cli-service: not found`); validation was done via route/API behavior and existing live E2E evidence.

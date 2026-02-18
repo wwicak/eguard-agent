@@ -268,3 +268,13 @@ proxy, configs), and continue E2E/edge validation end-to-end.
 If an enrollment flow fails because a related record is missing (e.g. `node.mac`),
 fix the persistence path to handle the edge case automatically. Documentation
 must describe hardened product behavior, not temporary operator workarounds.
+
+## Avoid Hardcoded Token Workflows In Docs/UI
+Enrollment tokens must be org-specific and operator-provided at runtime.
+Never publish hardcoded token examples as default workflow; provide token
+selection/generation UX and variable-based command templates instead.
+
+## UI Is A Product Requirement, Not Optional Polish
+For every working feature/data path, ship a discoverable, responsive, intuitive
+UI path (navigation, filters/actions, and clear operator workflows), not only
+API/backend completion.
