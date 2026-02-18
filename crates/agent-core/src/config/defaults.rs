@@ -59,6 +59,7 @@ impl Default for AgentConfig {
             detection_ransomware_temp_path_tokens: Vec::new(),
             compliance_check_interval_secs: 300,
             compliance_auto_remediate: false,
+            policy_refresh_interval_secs: 300,
             inventory_interval_secs: 3600,
             device_ownership: "unknown".to_string(),
             baseline_learning_period_days: 7,

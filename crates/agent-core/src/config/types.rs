@@ -64,6 +64,7 @@ pub struct AgentConfig {
     pub detection_ransomware_temp_path_tokens: Vec<String>,
     pub compliance_check_interval_secs: u64,
     pub compliance_auto_remediate: bool,
+    pub policy_refresh_interval_secs: u64,
     pub inventory_interval_secs: u64,
     pub device_ownership: String,
     pub baseline_learning_period_days: u64,

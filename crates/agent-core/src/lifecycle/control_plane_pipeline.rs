@@ -191,11 +191,13 @@ impl AgentRuntime {
     }
 
     fn policy_refresh_due(&self, now_unix: i64) -> bool {
-        interval_due(
-            self.last_policy_fetch_unix,
-            now_unix,
-            super::POLICY_REFRESH_INTERVAL_SECS,
-        )
+        let interval_secs = if self.config.policy_refresh_interval_secs == 0 {
+            super::POLICY_REFRESH_INTERVAL_SECS
+        } else {
+            self.config.policy_refresh_interval_secs as i64
+        };
+
+        interval_due(self.last_policy_fetch_unix, now_unix, interval_secs)
     }
 
     async fn refresh_policy_if_due(&mut self, now_unix: i64) -> Result<()> {
@@ -273,7 +275,9 @@ impl AgentRuntime {
             self.last_compliance_result = None;
         }
 
-        if update_tls_policy_from_server(&mut self.config, &policy) && self.client.is_tls_configured() {
+        if update_tls_policy_from_server(&mut self.config, &policy)
+            && self.client.is_tls_configured()
+        {
             if let (Some(cert), Some(key), Some(ca)) = (
                 self.config.tls_cert_path.clone(),
                 self.config.tls_key_path.clone(),
@@ -334,7 +338,9 @@ impl AgentRuntime {
                     actual_value: check.actual_value.clone(),
                     expected_value: check.expected_value.clone(),
                     detail: check.detail.clone(),
-                    auto_remediated: remediation.map(|r| r.success).unwrap_or(check.auto_remediated),
+                    auto_remediated: remediation
+                        .map(|r| r.success)
+                        .unwrap_or(check.auto_remediated),
                     remediation_detail: remediation
                         .map(|r| r.detail.clone())
                         .unwrap_or_else(|| check.remediation_detail.clone()),

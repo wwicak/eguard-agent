@@ -29,6 +29,7 @@ impl AgentConfig {
         self.apply_file_telemetry(file_cfg.telemetry);
         self.apply_file_detection(file_cfg.detection);
         self.apply_file_compliance(file_cfg.compliance);
+        self.apply_file_control_plane(file_cfg.control_plane);
         self.apply_file_inventory(file_cfg.inventory);
         self.apply_file_baseline(file_cfg.baseline);
         self.apply_file_self_protection(file_cfg.self_protection);
@@ -292,6 +293,15 @@ impl AgentConfig {
         }
     }
 
+    fn apply_file_control_plane(&mut self, control_plane: Option<FileControlPlaneConfig>) {
+        let Some(control_plane) = control_plane else {
+            return;
+        };
+        if let Some(v) = control_plane.policy_refresh_interval_secs {
+            self.policy_refresh_interval_secs = v;
+        }
+    }
+
     fn apply_file_inventory(&mut self, inventory: Option<FileInventoryConfig>) {
         let Some(inventory) = inventory else {
             return;
@@ -354,6 +364,8 @@ struct FileConfig {
     detection: Option<FileDetectionConfig>,
     #[serde(default)]
     compliance: Option<FileComplianceConfig>,
+    #[serde(default)]
+    control_plane: Option<FileControlPlaneConfig>,
     #[serde(default)]
     inventory: Option<FileInventoryConfig>,
     #[serde(default)]
@@ -554,6 +566,12 @@ struct FileComplianceConfig {
     check_interval_secs: Option<u64>,
     #[serde(default)]
     auto_remediate: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct FileControlPlaneConfig {
+    #[serde(default)]
+    policy_refresh_interval_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

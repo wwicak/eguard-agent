@@ -76,3 +76,8 @@ ca_path = "/etc/eguard-agent/tls/ca.crt"
 pinned_ca_sha256 = ""
 ca_pin_path = "/etc/eguard-agent/tls/ca.crt.pin.sha256"
 rotate_before_expiry_days = 30
+
+[control_plane]
+# Policy refresh cadence from eGuard server in seconds.
+# Default is 300 (5 minutes). Lower for faster propagation in lab/testing.
+policy_refresh_interval_secs = 300

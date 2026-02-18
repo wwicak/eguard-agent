@@ -1,4 +1,3 @@
-use super::{AgentConfig, AgentMode};
 use super::bootstrap::parse_bootstrap_config;
 use super::crypto::encrypt_agent_config_for_tests;
 use super::file::{apply_response_policy, FileResponsePolicy};
@@ -7,6 +6,7 @@ use super::paths::{
     resolve_config_path,
 };
 use super::util::{format_server_addr, has_explicit_port, parse_bool, parse_cap_mb};
+use super::{AgentConfig, AgentMode};
 use response::ResponsePolicy;
 use std::io::Write;
 use std::sync::{Mutex, OnceLock};
@@ -44,6 +44,7 @@ fn clear_env() {
         "EGUARD_TLS_PINNED_CA_SHA256",
         "EGUARD_TLS_CA_PIN_PATH",
         "EGUARD_TLS_ROTATE_BEFORE_DAYS",
+        "EGUARD_POLICY_REFRESH_INTERVAL_SECS",
         "EGUARD_MACHINE_ID_PATH",
         "EGUARD_CONFIG_TPM2_SEAL",
         "EGUARD_KERNEL_INTEGRITY_ENABLED",
@@ -415,6 +416,7 @@ fn default_config_matches_expected_baseline_values() {
     assert!(cfg.detection_scan_on_create);
     assert_eq!(cfg.compliance_check_interval_secs, 300);
     assert!(!cfg.compliance_auto_remediate);
+    assert_eq!(cfg.policy_refresh_interval_secs, 300);
     assert_eq!(cfg.baseline_learning_period_days, 7);
     assert_eq!(cfg.baseline_refresh_interval_days, 7);
     assert_eq!(cfg.baseline_stale_after_days, 30);
@@ -451,6 +453,7 @@ fn file_config_loads_extended_sections() {
          [telemetry]\nprocess_exec=true\nfile_events=false\nnetwork_connections=true\ndns_queries=false\nmodule_loads=true\nuser_logins=false\nflush_interval_ms=250\nmax_batch_size=64\n\
          [detection]\nsigma_rules_dir=\"/opt/rules/sigma\"\nyara_rules_dir=\"/opt/rules/yara\"\nioc_dir=\"/opt/rules/ioc\"\nscan_on_create=false\nmax_file_scan_size_mb=42\n\
          [compliance]\ncheck_interval_secs=900\nauto_remediate=true\n\
+         [control_plane]\npolicy_refresh_interval_secs=45\n\
          [baseline]\nlearning_period_days=10\nrefresh_interval_days=14\nstale_after_days=40\n\
          [self_protection]\nintegrity_check_interval_secs=90\nprevent_uninstall=false"
     )
@@ -488,6 +491,7 @@ fn file_config_loads_extended_sections() {
     assert_eq!(cfg.detection_max_file_scan_size_mb, 42);
     assert_eq!(cfg.compliance_check_interval_secs, 900);
     assert!(cfg.compliance_auto_remediate);
+    assert_eq!(cfg.policy_refresh_interval_secs, 45);
     assert_eq!(cfg.baseline_learning_period_days, 10);
     assert_eq!(cfg.baseline_refresh_interval_days, 14);
     assert_eq!(cfg.baseline_stale_after_days, 40);
@@ -523,6 +527,21 @@ fn eguard_server_addr_takes_precedence_over_eguard_server() {
     let mut cfg = AgentConfig::default();
     cfg.apply_env_overrides();
     assert_eq!(cfg.server_addr, "10.9.9.9:50052");
+
+    clear_env();
+}
+
+#[test]
+// AC-CFG-004
+fn policy_refresh_interval_env_override_is_applied() {
+    let _guard = env_lock().lock().expect("env lock");
+    clear_env();
+    std::env::set_var("EGUARD_POLICY_REFRESH_INTERVAL_SECS", "75");
+
+    let mut cfg = AgentConfig::default();
+    cfg.apply_env_overrides();
+
+    assert_eq!(cfg.policy_refresh_interval_secs, 75);
 
     clear_env();
 }

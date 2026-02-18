@@ -3,6 +3,12 @@
 Initial workspace scaffold for the first-party endpoint agent described in
 `docs/eguard-agent-design.md` from the main eGuard repository.
 
+## Operator / tester guide
+
+For deployment + E2E operations across `fe_eguard` and `eguard-agent`, see:
+
+- `docs/EGUARD_PLATFORM_GUIDE.md`
+
 ## Runtime configuration (current)
 
 Default deployment mode expects the agent to receive `server_addr` during
@@ -21,6 +27,12 @@ Config file lookup order:
 
 Example file template: `conf/agent.conf.example`
 
+Policy refresh tuning:
+
+- `[control_plane].policy_refresh_interval_secs` in config file
+- `EGUARD_POLICY_REFRESH_INTERVAL_SECS` in environment
+- default is `300` seconds
+
 Environment overrides:
 
 - `EGUARD_SERVER_ADDR` (preferred) or `EGUARD_SERVER` for server endpoint
@@ -33,6 +45,7 @@ Environment overrides:
 - `EGUARD_BUFFER_PATH` for sqlite file path
 - `EGUARD_BUFFER_CAP_MB` for cap size in MB
 - `EGUARD_TLS_CERT`, `EGUARD_TLS_KEY`, `EGUARD_TLS_CA` for mTLS material
+- `EGUARD_POLICY_REFRESH_INTERVAL_SECS` for policy fetch cadence from server
 
 Current precedence: defaults < config file < environment variables.
 

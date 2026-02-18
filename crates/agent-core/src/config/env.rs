@@ -16,6 +16,7 @@ impl AgentConfig {
         self.apply_env_tls();
         self.apply_env_detection();
         self.apply_env_compliance();
+        self.apply_env_control_plane();
         self.apply_env_inventory();
         self.apply_env_self_protection();
         self.ensure_valid_agent_id();
@@ -108,6 +109,14 @@ impl AgentConfig {
         if let Some(v) = env_non_empty("EGUARD_COMPLIANCE_AUTO_REMEDIATE") {
             if let Ok(parsed) = v.parse::<bool>() {
                 self.compliance_auto_remediate = parsed;
+            }
+        }
+    }
+
+    fn apply_env_control_plane(&mut self) {
+        if let Some(v) = env_non_empty("EGUARD_POLICY_REFRESH_INTERVAL_SECS") {
+            if let Ok(parsed) = v.parse::<u64>() {
+                self.policy_refresh_interval_secs = parsed;
             }
         }
     }
