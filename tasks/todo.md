@@ -756,3 +756,6 @@
 - New edge-case hardening fixes from this run:
   - `POST /api/v1/endpoint-policy/assign` now rejects unknown explicit policy with 404 `policy_not_found` (no silent fallback/hash spoof assignment).
   - `POST /api/v1/endpoint-command/approve` now returns semantic status (`command_rejected` for rejected approvals) in Perl and Go handlers.
+  - Enrollment token usage rollback implemented for failed enrollment persistence paths:
+    - prior behavior consumed single-use token before `endpoint_agent` insert and burned it on FK failure,
+    - now failed enrollment rolls back token usage (`times_used` restored), verified live on VM (`times_used` remained `0` after forced FK failure, then same token succeeded once after node MAC seeding).
