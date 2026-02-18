@@ -896,3 +896,7 @@
   - updated `docs/EGUARD_PLATFORM_GUIDE.md` to require org-specific tokens (no hardcoded token pattern, added token lifecycle best practices).
   - replaced outdated MAC pre-seed prerequisite with hardened behavior + legacy fallback note.
   - added “Agent config UI direction” section for growth roadmap.
+- Additional hardening (agent-side policy refresh cadence):
+  - added configurable policy refresh interval in `eguard-agent` (`[control_plane].policy_refresh_interval_secs` / `EGUARD_POLICY_REFRESH_INTERVAL_SECS`).
+  - deployed updated agent binary on subnet VM with `EGUARD_POLICY_REFRESH_INTERVAL_SECS=60`.
+  - live evidence: after assigning policy `v20260218-subnet-r6`, latest compliance version converged from `r5` to `r6` in ~45s (improved from previous ~210s at default cadence).
