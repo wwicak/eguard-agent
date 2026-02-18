@@ -218,6 +218,11 @@ avoid edition parsing errors.
 quickly (namespace removed). Prefer a single container or shared network
 unless the target container stays alive.
 
+## Verify Build Artifact Version Before Install Testing
+Before starting system E2E on VMs, verify package artifact versions match the
+requested release line (e.g., v15.x vs v14.x). Do not proceed with install
+or rollout steps if artifacts are from the wrong major/minor stream.
+
 ## Detection Quality Trend Gates Should Track Enforcement Tiers
 When trend gates monitor regression, focus on enforcement confidences
 (focus/definite/very_high). High/medium tiers are advisory and can
@@ -232,3 +237,19 @@ are false regressions. Reset baseline when corpus changes.
 Adversary emulation quality should prioritize focus/definite/very_high
 confidence tiers. Keep the high tier weight at 0 unless explicitly
 needed for advisory scoring.
+
+## Do Not Bypass Configurator DB Bootstrap
+For fresh eGuard installs, avoid manually creating app DB/user (`eg`) before
+Configurator completes MySQL root setup. Manual bootstrap can desync expected
+root/password flow and trigger "incorrect MySQL root password" errors in UI.
+Use configurator-driven DB provisioning unless explicitly doing recovery work.
+
+## Resolve Perl Runtime Deps From Official eguard-perl Package
+When Perl compile/runtime errors mention missing/empty base modules (e.g.
+`Net::Netmask`), verify and install dependencies from the release repo package
+(`eguard-perl` for the target release) instead of assuming local env parity.
+
+## Always Rebuild + Redeploy After Go Source Changes
+Any edits under `fe_eguard/go/**` do nothing on VM until `go build` is rerun,
+the new binary is copied to target (`/usr/local/eg/sbin/eg-agent-server`), and
+the service is restarted. Treat this as mandatory after each Go patch.

@@ -277,22 +277,56 @@
 - Go tests: `go test ./agent/server/...` (pass after regenerating protobufs with module mapping).
 - Additional verification: `go test ./...` in `fe_eguard/go` fails in unrelated packages without required env (`EG_SYSTEM_INIT_KEY`) and local sockets; endpoint server package remains green.
 - Perl unit tests: `prove -Ilib t/unittest/api/endpoint_command.t t/unittest/api/endpoint_policy.t t/unittest/api/endpoint_response.t` (pass, includes new command approval/alias + policy preview/diff/assign coverage).
+- VM prep checkpoint: on `157.10.160.156`, AppArmor disabled and kernel headers installed (`linux-headers-$(uname -r)`).
+- v15.0.0 install checkpoint: repo configured, package installed, and startup blockers patched live (`threat_intel.pm` escaped `NOW()` refs; `enforcement.pm` missing `$STATUS_REGISTERED` import). Configurator API now responds (e.g., `/api/v1/translation/en` and `/api/v1/configurator/config/system/hostname` return 200).
 
 ## 🧭 Plan: MDM system E2E validation on VM (agent ↔ eguard server) (2026-02-18)
-- [ ] Prepare server VM (`157.10.160.156`): disable apparmor, install kernel headers, configure package deps/repo prerequisites
-- [ ] Install eguard server stack on VM (prefer local test package/deploy path before release tagging)
-- [ ] Complete attended initial config (DB root/user/dbname) with user assistance and verify core services healthy
-- [ ] Deploy latest local MDM-related backend/UI changes (Go agent server + Perl Unified API modules) to VM test instance
-- [ ] Provision agent runtime (QEMU or second VM) and point to test server with enrollment credentials
+- [x] Prepare server VM (`157.10.160.156`): disable apparmor, install kernel headers, configure package deps/repo prerequisites
+- [x] Install eguard server stack on VM (v15.0.0 from repo) and stabilize service startup blockers
+- [x] Complete attended initial config (DB root/user/dbname) with user assistance and verify core services healthy
+- [x] Deploy latest local MDM-related backend/UI changes (Go agent server + Perl Unified API modules) to VM test instance
+- [x] Provision agent runtime (QEMU or second VM) and point to test server with enrollment credentials
 - [ ] Execute MDM E2E scenarios:
-  - [ ] enrollment + lifecycle state transitions
-  - [ ] policy CRUD/preview/diff/assign
-  - [ ] inventory report ingest/filtering
-  - [ ] compliance v2 report ingest (check_id/severity/evidence/grace/remediation)
-  - [ ] destructive command approval flow (pending/approved/rejected + status transitions)
-  - [ ] SOC/NAC surfacing checks for MDM alerts
-- [ ] Capture evidence: API responses, DB rows, service logs, UI screenshots/notes
-- [ ] Record pass/fail against AC #1–#17 and list remaining gaps/blockers
+  - [x] enrollment + lifecycle state transitions
+  - [x] policy CRUD/preview/diff/assign
+  - [x] inventory report ingest/filtering
+  - [x] compliance v2 report ingest (check_id/severity/evidence/grace/remediation)
+  - [x] destructive command approval flow (pending/approved/rejected + status transitions)
+  - [x] SOC/NAC surfacing checks for MDM alerts (after seeding missing `class.security_event_id` rows on fresh VM)
+- [x] Capture evidence: API responses, DB rows, service logs, UI screenshots/notes
+- [x] Record pass/fail against AC #1–#17 and list remaining gaps/blockers
+
+### 🔍 VM Evidence Snapshot (2026-02-18, 157.10.161.219)
+- Core endpoint APIs over `:1443` now all 200: `endpoint-agents`, `endpoint-compliance`, `endpoint-responses`, `endpoint-commands`, `endpoint-inventory`, and legacy `endpoint/inventory`.
+- Policy lifecycle evidence:
+  - preview/diff/upsert/assign all return success (`status=ok` / `policy_assigned`), with non-null hash/version.
+  - `endpoint_agent.policy_id/policy_version` remains `mdm-e2e/v20260218` after live agent run.
+- Command approval evidence:
+  - `POST /api/v1/endpoint-commands` with `requires_approval:true` inserts DB row as `status=pending`, `approval_status=pending`.
+  - `POST /api/v1/endpoint-command/approve` transitions to approved and agent execution reaches `status=completed`.
+- Compliance/inventory evidence:
+  - Compliance rows persisted with policy linkage (`policy_id=mdm-e2e`, `policy_version=v20260218`) and check-level entries.
+  - Inventory rows persisted/queryable through both dash and slash routes.
+- Remaining gap for full AC matrix closure: configurator-off flow still blocks final configurator Start eGuard retest.
+
+### 📊 AC #1–#17 Scoring (VM run, 2026-02-18)
+- **AC1 Enrollment & identity**: **Partial** (enrollment success + duplicate handling observed; full cert lifecycle rotation/revocation not exercised).
+- **AC2 Inventory & posture**: **Pass (core)** (inventory ingest/query works; both dash/slash routes 200 after proxy fix).
+- **AC3 Policy management**: **Pass (core)** (preview/diff/upsert/assign validated with DB linkage).
+- **AC4 Configuration management profiles**: **Not tested** (profile deployment/drift workflows not covered in this VM pass).
+- **AC5 App/software management**: **Not tested**.
+- **AC6 Remote actions / command channel**: **Pass (core)** (pending->approved->completed with approval gate).
+- **AC7 Security/RBAC/audit/data protection**: **Partial** (auth + audit traces present; no dedicated RBAC matrix / crypto-at-rest validation run).
+- **AC8 Admin console UX/reporting**: **Partial** (API-backed views validated; no full screenshot/report export sweep).
+- **AC9 Integrations & APIs**: **Partial** (stable endpoint APIs validated; SSO/SCIM/webhook contracts not exercised here).
+- **AC10 Reliability & scale (NFRs)**: **Not tested**.
+- **AC11 MDM compliance policy + evaluation**: **Pass (core)** (policy-linked compliance checks persisted, deterministic statuses observed).
+- **AC12 Policy metadata + signing**: **Partial** (policy_id/version/hash path validated; signature verification/reject-path not exercised).
+- **AC13 Compliance v2 reporting**: **Pass (core)** (v2 fields persisted with normalized severity/status/evidence handling).
+- **AC14 Remediation allowlist**: **Partial** (pipeline exists; no dedicated allowlist scenario replay in this VM pass).
+- **AC15 SOC/NAC surfacing**: **Pass (core)** after VM baseline fix (seeded missing `class.security_event_id` rows; MDM-style alert maps to NAC `1300014`).
+- **AC16 Server + UI persistence**: **Pass (core)** (DB/API/UI pathways verified for policy/compliance/inventory/commands).
+- **AC17 Tests**: **Pass (targeted)** (`go test ./agent/server -run 'Test.*(Policy|Command|Compliance|Inventory|Heartbeat)'`, Perl endpoint policy/command tests pass).
 
 ### ✅ Acceptance Criteria (Full‑Fledged MDM)
 - [ ] **1) Enrollment & device identity**: devices can enroll using supported methods (QR/token and platform enrollment where applicable), unique device identity cannot be spoofed; server rejects unauthenticated agents; certificate/key lifecycle (issue/rotate/revoke); deterministic re‑enrollment/duplicate handling; enforced lifecycle states (pending/enrolled/retired/wiped/lost).
@@ -620,3 +654,94 @@
 - `layer2.rs` now coordinates automaton/defaults/engine/predicate/rule modules; default rule construction isolated in defaults.
 - `layer5.rs` now re-exports constants, model, features, engine, math; tests moved to `layer5/tests.rs`.
 - `cargo check -p detection` passed after refactor.
+
+## 🧭 Plan: Commit VM startup hotfix to release branches (2026-02-18)
+- [x] Verify targeted diff in `/home/dimas/fe_eguard` only includes enforcement import fix
+- [x] Commit fix on `feat/eguard-agent` with Conventional Commit message
+- [x] Cherry-pick fix onto `maintenance/15.0` and verify both branches contain it
+
+### 🔍 Review Notes
+- Committed on `feat/eguard-agent`: `b261a49870` (`fix(enforcement): import STATUS_REGISTERED from node constants`).
+- Cherry-picked onto `maintenance/15.0`: `9191ff5203` with same patch.
+- No push performed yet (per commit workflow).
+
+## 🧭 Plan: Pre-commit Perl runtime validation + package pipeline prep (2026-02-18)
+- [x] Verify and fix escaped `NOW()` Perl scalar-ref literals in API modules (`alert_feedback`, `endpoint_incident`, `endpoint_enrollment_token`, `threat_intel`)
+- [x] Re-run available targeted Perl API tests on branch (`endpoint_command`, `endpoint_response`)
+- [x] Validate VM Perl compile checks with runtime PERL5LIB for patched modules
+- [x] Commit Perl `NOW()` fixes to `feat/eguard-agent` and cherry-pick to `maintenance/15.0`
+- [x] Push both branches and trigger package pipeline build
+
+### 🔍 Review Notes
+- Escaped literal pattern normalized from `\"NOW()\"` to valid scalar-ref forms across affected modules.
+- Commits:
+  - `feat/eguard-agent`: `46a5a35b6c` (`fix(api): normalize NOW SQL scalar refs`) + prior `b261a49870` enforcement import fix.
+  - `maintenance/15.0`: `b0516415d5` (`fix(api): correct NOW SQL literal escaping in perl modules`) + prior `9191ff5203` enforcement import fix.
+- Local tests:
+  - `feat/eguard-agent`: `prove -Ilib t/unittest/api/endpoint_command.t t/unittest/api/endpoint_policy.t t/unittest/api/endpoint_response.t` => PASS (104 tests).
+  - `maintenance/15.0`: `prove -Ilib t/unittest/api/endpoint_command.t t/unittest/api/endpoint_response.t` => PASS (69 tests).
+- VM syntax checks (with `PERL5LIB=/usr/local/eg/lib:/usr/local/eg/lib_perl/lib/perl5`) show `syntax OK` for:
+  - `/usr/local/eg/lib/eg/api/alert_feedback.pm`
+  - `/usr/local/eg/lib/eg/api/endpoint_incident.pm`
+  - `/usr/local/eg/lib/eg/api/endpoint_enrollment_token.pm`
+  - `/usr/local/eg/lib/eg/api/threat_intel.pm`
+  - `/usr/local/eg/lib/eg/enforcement.pm`
+- Pushed both branches to `origin` (GitLab), which triggers branch pipelines.
+- Fresh VM reset started on `157.10.161.219` (Debian 12): AppArmor disabled/masked, kernel headers installed, v15 repo configured, and `eguard` installed from repo.
+- Current service health on `157.10.161.219`: `eguard-api-frontend`, `eguard-haproxy-portal`, `eguard-httpd.admin_dispatcher`, `eguard-httpd.webservices`, `eguard-perl-api`, and `mariadb` are active; `https://<vm>:1443/` responds 302 and `/api/v1/translation/en` responds 200.
+
+## 🧭 Plan: Clean eguard VM for fresh configurator bootstrap (2026-02-18)
+- [ ] Stop eguard services and purge `eguard` packages on `157.10.160.156`
+- [ ] Remove residual `/usr/local/eg` runtime tree and stale systemd unit state
+- [ ] Reset MariaDB app artifacts created during debugging (`eg` DB/user)
+- [ ] Verify clean baseline (no eguard packages/services; only MariaDB available for next install)
+
+## 🧭 Plan: Recover v15 configurator Step 2 on fresh VM (2026-02-18)
+- [x] Reproduce Step 2 failure and capture failing endpoint (`PATCH /api/v1/configurator/config/base/general` 500)
+- [x] Capture server-side errors/logs and isolate root causes (`admin_api_audit_log` missing, `eg::ConfigStore::Pf->new` runtime error)
+- [x] Verify DB/schema state and confirm the active schema import target on VM (`eg-schema.sql -> eg-schema-agent.sql`, partial schema only)
+- [x] Apply runtime remediation on VM to unblock wizard (seed base schema + align `egconfig.conf` DB)
+- [x] Patch Perl form validation in source to avoid hard dependency on missing `eg::ConfigStore::Pf` during general/fencing validation
+- [x] Validate configurator Step 2 → Step 3 progression on `157.10.161.219`
+- [x] Capture stabilization evidence (service states, API probes, logs) and resume MDM/EDR E2E flow
+
+## 🧭 Plan: Resume VM E2E stabilization (agent ↔ eguard, 2026-02-18)
+- [x] Rebuild and deploy `eg-agent-server` after Go fixes (persistence + enrollment + command polling)
+- [x] Enable DB-backed persistence (`EGUARD_AGENT_SERVER_DSN`) and re-import `eg-schema-agent.sql` tables cleanly
+- [x] Validate enrollment success via audit + persisted `endpoint_agent` rows
+- [x] Fix command issuance API runtime bug (`issued_at` NULL) and verify `/api/v1/endpoint-commands` returns 201
+- [x] Fix command polling path so queued commands can be delivered and completed (`pending` -> `completed`)
+- [x] Deploy updated Perl DAL runtime (`endpoint_command_log.pm`) so `approval_status` persists correctly (`pending` before approval)
+- [x] Build fresh `eguard-agent` binary and remove default bootstrap mock command noise from production runs
+- [x] Verify end-to-end data surfaces in API/DB: agents, compliance, responses, inventory, commands
+- [x] Fix policy upsert + per-agent policy fetch integration (`created_at` null in Perl upsert, Go policy fetch via HTTP/gRPC uses assigned policy for `agent_id`)
+- [x] Finalize inventory route parity for legacy `/api/v1/endpoint/inventory` (Caddy proxy default for `PF_SERVICES_URL_PFAGENT_SERVER`)
+- [x] Re-run full AC #1–#17 matrix and capture evidence bundle
+
+### 🔍 Review Notes
+- `eg-agent-server` now reports `persistence_enabled:true` and state counts increase in DB-backed mode.
+- Enrollment now succeeds (`endpoint_enrollment_audit.status=success`) after CSR fallback + ownership default + node FK seeding.
+- Command flow fixed end-to-end for new command IDs (example `f5cc84b5-...` reached `completed`).
+- Agent runtime noise reduced by gating bootstrap test command behind `EGUARD_ENABLE_BOOTSTRAP_TEST_COMMAND=1`.
+- Endpoint APIs verified with admin token:
+  - `GET /api/v1/endpoint-agents` -> 200 with live agent rows
+  - `GET /api/v1/endpoint-compliance` -> 200 with persisted checks
+  - `GET /api/v1/endpoint-responses` -> 200 with persisted actions
+  - `GET /api/v1/endpoint-commands` -> 200 with pending/sent/completed lifecycle
+  - `GET /api/v1/endpoint-inventory` -> 200 (dash route)
+- MDM policy v2 flow now succeeds on VM with valid payloads:
+  - `POST /api/v1/endpoint-policy/preview` -> 200 (`status:"ok"`, deterministic hash)
+  - `POST /api/v1/endpoint-policy/diff` -> 200 (`changed_keys:["firewall_required"]`)
+  - `POST /api/v1/endpoint-policy` -> 200 after Perl fix (`created_at => "NOW()"` on insert)
+  - `POST /api/v1/endpoint-policy/assign` -> 200 with non-null `policy_version/policy_hash`
+- VM runtime parity fix: copied latest `lib/eg/dal/endpoint_command_log.pm` into `/usr/local/eg/lib/eg/dal/` so command rows now retain `approval_status='pending'` until explicit approval.
+- Go server policy fetch now honors per-agent assignments on both transports (`/api/v1/endpoint/policy?agent_id=...` and gRPC `GetPolicy`), using `endpoint_agent.policy_id/policy_version` lookup.
+- Verified long-run agent E2E (`timeout 45s`, compliance interval 8s) keeps `endpoint_agent.policy_id=mdm-e2e` and compliance rows tagged with `policy_id=mdm-e2e`, `policy_version=v20260218`.
+- Destructive command approval flow validated on Go endpoint (`enqueue requires_approval:true` -> pending hidden from delivery -> `approve` -> appears in pending queue -> processed to completed).
+- Inventory route parity fixed on VM by setting Caddy fallback upstream (`{$PF_SERVICES_URL_PFAGENT_SERVER:http://127.0.0.1:50052}`):
+  - `GET /api/v1/endpoint-inventory` -> 200
+  - `GET /api/v1/endpoint/inventory` -> 200
+- SOC/NAC surfacing validated with MDM-style alert telemetry after seeding missing `class.security_event_id` records (`1300010..1300017`) on fresh VM:
+  - `POST /api/v1/endpoint/telemetry` (`event_type=alert`, `rule_name=compliance_fail`, `detection.rule_type=mdm`) -> accepted
+  - `GET /api/v1/endpoint/nac?agent_id=vm-e2e-agent-04` -> returns open `security_event_id=1300014`
+- Frontend NAC API fallback updated to handle mixed backend routes (`endpoint-nac` -> `endpoint/nac`) so UI NAC page can load on this VM layout.
