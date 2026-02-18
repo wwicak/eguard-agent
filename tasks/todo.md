@@ -814,3 +814,27 @@
 - Fresh blockers/gaps observed:
   - package download endpoint still unavailable: `/api/v1/agent-install/linux-deb` => `404 {"error":"agent_package_not_found"}`.
   - policy assignment race remains: assigning newer version (`v20260218-subnet-r2`) acknowledged by API, but running agent continued fetching/using prior version (`v20260218-subnet`) and compliance rows kept old `policy_version`.
+
+## 🧭 Plan: Continuation fix round (2026-02-18, autonomous provisioning)
+- [x] Fix policy assignment race so compliance writes cannot regress assigned policy version/hash on `endpoint_agent`.
+- [x] Rebuild Go server, redeploy to eGuard VM, and verify live assignment stability with subnet agent.
+- [x] Provision real install artifact in server package directory and verify `/api/v1/agent-install/linux-deb` serves binary package.
+- [x] Re-run targeted E2E edge checks (policy fetch/version propagation + command lifecycle + install endpoint) and record evidence.
+
+### 🔍 Review Notes (continuation fix round)
+- Policy race fix implemented in Go persistence layer:
+  - file: `go/agent/server/persistence.go` (`UpdateAgentCompliance`)
+  - change: compliance updates now always refresh compliance timestamps/status/detail, but only fill `endpoint_agent.policy_{id,version,hash}` when those fields are empty.
+  - effect: stale compliance reports can no longer overwrite explicit policy assignment.
+- Redeploy and validation:
+  - rebuilt `eg-agent-server` and redeployed to `/usr/local/eg/sbin/eg-agent-server`, restarted `eguard-agent-server` (active).
+  - live stale-policy emulation posted old compliance payload after assigning `v20260218-subnet-r3`; `endpoint_agent.policy_version` remained `v20260218-subnet-r3` and policy fetch returned `r3`.
+  - after agent restart, live compliance rows converged to `policy_version=v20260218-subnet-r3` (including new checks `package_present:bash`, `package_present:coreutils`).
+- Install artifact provisioning (autonomous):
+  - built package `eguard-agent_15.0.0-subnet1_amd64.deb` via `dpkg-deb` from real agent binary.
+  - published to `/usr/local/eg/var/agent-packages/deb/`.
+  - endpoint now serves package successfully from subnet agent path:
+    - `GET /api/v1/agent-install/linux-deb` with token => `200 OK`, deb payload downloaded (`!<arch>` magic, ~3.6MB).
+- Targeted E2E checks after fix/provisioning:
+  - approved command lifecycle still passes (`pending/approved -> completed`).
+  - policy assignment remains stable across ongoing compliance cycles (no regression back to old version).
