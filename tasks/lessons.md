@@ -263,3 +263,8 @@ mock-only checks. Record concrete HTTP/DB evidence for each edge case.
 If the user allows autonomous provisioning, do not wait for them to prep the
 VM. Immediately verify topology, provision required runtime pieces (service,
 proxy, configs), and continue E2E/edge validation end-to-end.
+
+## Do Not Document Manual DB Seeding As Required Behavior
+If an enrollment flow fails because a related record is missing (e.g. `node.mac`),
+fix the persistence path to handle the edge case automatically. Documentation
+must describe hardened product behavior, not temporary operator workarounds.

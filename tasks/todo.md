@@ -870,3 +870,29 @@
 - Current gap snapshot:
   - functional blockers for this subnet continuation are closed.
   - expected behavior caveat remains policy refresh latency window (~300s interval) before agent compliance reflects a newly assigned policy version without restart.
+
+## 🧭 Plan: Enrollment edge hardening + guide correction (2026-02-18)
+- [x] Remove fragile enrollment prerequisite by auto-upserting `node` on enrollment persistence path.
+- [x] Rebuild/redeploy Go server and verify live enroll succeeds for previously unknown MAC (without manual DB seed).
+- [x] Correct platform guide token handling to be org-specific (no hardcoded token pattern) and fix enrollment guidance.
+- [x] Add/update guide section for agent-config UI direction and summarize validation evidence.
+
+### 🔍 Review Notes (enrollment edge hardening + guide correction)
+- Backend hardening implemented:
+  - file: `/home/dimas/fe_eguard/go/agent/server/persistence.go`
+  - `SaveEnrollment` now calls `ensureNodeForEnrollment(...)` before `endpoint_agent` insert.
+  - behavior: auto-creates `node` row for new MAC (and updates hostname/last_seen), removing FK dependency on manual node seed.
+- Live verification (real subnet flow, no manual node pre-seed):
+  - generated one-time token `9e4fe270a838c033a0c133280c5f8cfa` (`max_uses=1`).
+  - ensured MAC `52:54:00:de:ad:88` absent from `node`.
+  - enroll request for `agent_id=subnet-auto-node-01` returned `201`.
+  - DB evidence after enroll:
+    - `node` row auto-created (`status=pending`, `computername=eg-a1`),
+    - `endpoint_agent` row present/active,
+    - token consumed exactly once (`times_used=1`).
+- Post-fix sanity:
+  - command approval lifecycle on primary subnet agent still passes (`completed/approved`).
+- Guide corrections completed:
+  - updated `docs/EGUARD_PLATFORM_GUIDE.md` to require org-specific tokens (no hardcoded token pattern, added token lifecycle best practices).
+  - replaced outdated MAC pre-seed prerequisite with hardened behavior + legacy fallback note.
+  - added “Agent config UI direction” section for growth roadmap.
