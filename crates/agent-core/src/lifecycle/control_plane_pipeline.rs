@@ -4,7 +4,7 @@ use anyhow::Result;
 use tracing::warn;
 
 use compliance::parse_policy_json;
-use grpc_client::{ComplianceCheckEnvelope, PolicyEnvelope, TlsConfig};
+use grpc_client::{ComplianceCheckEnvelope, InventoryEnvelope, PolicyEnvelope, TlsConfig};
 
 use super::{
     elapsed_micros, interval_due, update_tls_policy_from_server, AgentRuntime, ComplianceResult,
@@ -77,6 +77,19 @@ impl AgentRuntime {
             );
         }
 
+        let inventory_due = interval_due(
+            self.last_inventory_attempt_unix,
+            now_unix,
+            self.inventory_interval_secs(),
+        );
+        if inventory_due {
+            let inventory = self.collect_inventory(now_unix);
+            self.try_enqueue_control_plane_task(
+                ControlPlaneTaskKind::Inventory { inventory },
+                now_unix,
+            );
+        }
+
         if self.policy_refresh_due(now_unix) {
             self.try_enqueue_control_plane_task(ControlPlaneTaskKind::PolicySync, now_unix);
         }
@@ -133,6 +146,11 @@ impl AgentRuntime {
                     let compliance_started = Instant::now();
                     self.send_compliance_if_due(now_unix, &compliance);
                     self.metrics.last_compliance_micros = elapsed_micros(compliance_started);
+                }
+                ControlPlaneTaskKind::Inventory { inventory } => {
+                    let inventory_started = Instant::now();
+                    self.send_inventory_if_due(now_unix, &inventory);
+                    self.metrics.last_compliance_micros = elapsed_micros(inventory_started);
                 }
                 ControlPlaneTaskKind::PolicySync => {
                     self.refresh_policy_if_due(now_unix).await?;
@@ -203,20 +221,49 @@ impl AgentRuntime {
             self.compliance_policy_id = policy.policy_id.clone();
             policy_changed = true;
         }
-        if !policy.config_version.trim().is_empty()
+        if !policy.policy_version.trim().is_empty()
+            && self.compliance_policy_version != policy.policy_version
+        {
+            self.compliance_policy_version = policy.policy_version.clone();
+            policy_changed = true;
+        } else if !policy.config_version.trim().is_empty()
             && self.compliance_policy_version != policy.config_version
         {
             self.compliance_policy_version = policy.config_version.clone();
             policy_changed = true;
         }
+
+        if !policy.policy_hash.trim().is_empty()
+            && self.compliance_policy_hash != policy.policy_hash
+        {
+            self.compliance_policy_hash = policy.policy_hash.clone();
+            policy_changed = true;
+        }
+        if !policy.policy_signature.trim().is_empty()
+            && self.compliance_policy_signature != policy.policy_signature
+        {
+            self.compliance_policy_signature = policy.policy_signature.clone();
+            policy_changed = true;
+        }
+        if !policy.schema_version.trim().is_empty()
+            && self.compliance_policy_schema_version != policy.schema_version
+        {
+            self.compliance_policy_schema_version = policy.schema_version.clone();
+            policy_changed = true;
+        }
+
         if !policy.policy_json.trim().is_empty() {
-            match parse_policy_json(&policy.policy_json) {
-                Ok(parsed) => {
-                    self.compliance_policy = parsed;
-                    policy_changed = true;
-                }
-                Err(err) => {
-                    warn!(error = %err, "invalid compliance policy JSON from server; keeping current");
+            if !super::policy::verify_policy_envelope(&policy) {
+                warn!("policy verification failed; keeping current policy");
+            } else {
+                match parse_policy_json(&policy.policy_json) {
+                    Ok(parsed) => {
+                        self.compliance_policy = parsed;
+                        policy_changed = true;
+                    }
+                    Err(err) => {
+                        warn!(error = %err, "invalid compliance policy JSON from server; keeping current");
+                    }
                 }
             }
         }
@@ -277,17 +324,27 @@ impl AgentRuntime {
             .checks
             .iter()
             .map(|check| {
-                let remediation = self.last_compliance_remediations.get(&check.check);
+                let remediation = self
+                    .last_compliance_remediations
+                    .get(&check.check_id)
+                    .or_else(|| self.last_compliance_remediations.get(&check.check_type));
                 ComplianceCheckEnvelope {
-                    check_type: check.check.clone(),
+                    check_type: check.check_type.clone(),
                     status: check.status.clone(),
-                    actual_value: String::new(),
-                    expected_value: String::new(),
+                    actual_value: check.actual_value.clone(),
+                    expected_value: check.expected_value.clone(),
                     detail: check.detail.clone(),
-                    auto_remediated: remediation.map(|r| r.success).unwrap_or(false),
+                    auto_remediated: remediation.map(|r| r.success).unwrap_or(check.auto_remediated),
                     remediation_detail: remediation
                         .map(|r| r.detail.clone())
-                        .unwrap_or_default(),
+                        .unwrap_or_else(|| check.remediation_detail.clone()),
+                    check_id: check.check_id.clone(),
+                    severity: check.severity.clone(),
+                    evidence_json: check.evidence_json.clone(),
+                    evidence_source: check.evidence_source.clone(),
+                    collected_at_unix: check.collected_at_unix,
+                    grace_expires_at_unix: check.grace_expires_at_unix,
+                    remediation_action_id: check.remediation_action_id.clone(),
                 }
             })
             .collect::<Vec<_>>();
@@ -295,7 +352,7 @@ impl AgentRuntime {
         let summary_check_type = compliance
             .checks
             .first()
-            .map(|check| check.check.clone())
+            .map(|check| check.check_type.clone())
             .unwrap_or_else(|| "policy_summary".to_string());
 
         let envelope = super::ComplianceEnvelope {
@@ -305,6 +362,8 @@ impl AgentRuntime {
             checked_at_unix: now_unix,
             overall_status: compliance.status.clone(),
             checks,
+            policy_hash: self.compliance_policy_hash.clone(),
+            schema_version: self.compliance_policy_schema_version.clone(),
             check_type: summary_check_type,
             status: compliance.status.clone(),
             detail: compliance.detail.clone(),
@@ -314,6 +373,24 @@ impl AgentRuntime {
 
         self.enqueue_control_plane_send(PendingControlPlaneSend::Compliance { envelope });
     }
+
+    fn send_inventory_if_due(&mut self, now_unix: i64, inventory: &InventoryEnvelope) {
+        if !interval_due(
+            self.last_inventory_attempt_unix,
+            now_unix,
+            self.inventory_interval_secs(),
+        ) {
+            return;
+        }
+        self.last_inventory_attempt_unix = Some(now_unix);
+
+        let mut envelope = inventory.clone();
+        if envelope.collected_at_unix == 0 {
+            envelope.collected_at_unix = now_unix;
+        }
+
+        self.enqueue_control_plane_send(PendingControlPlaneSend::Inventory { envelope });
+    }
 }
 
 impl ControlPlaneTaskKind {
@@ -321,6 +398,7 @@ impl ControlPlaneTaskKind {
         match self {
             Self::Heartbeat { .. } => "heartbeat",
             Self::Compliance { .. } => "compliance",
+            Self::Inventory { .. } => "inventory",
             Self::PolicySync => "policy_sync",
             Self::ThreatIntelRefresh => "threat_intel",
             Self::CommandSync => "command_sync",

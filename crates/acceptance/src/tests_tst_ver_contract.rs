@@ -1365,6 +1365,211 @@ fn qemu_self_protect_tamper_harness_is_defined() {
 }
 
 #[test]
+// AC-TST-060
+fn ux_acceptance_criteria_are_defined() {
+    let ac = read("ACCEPTANCE_CRITERIA.md");
+    for entry in [
+        "AC-UX-001",
+        "AC-UX-002",
+        "AC-UX-003",
+        "AC-UX-010",
+        "AC-UX-011",
+        "AC-UX-012",
+        "AC-UX-020",
+        "AC-UX-021",
+        "AC-UX-030",
+        "AC-UX-031",
+        "AC-UX-040",
+        "AC-UX-041",
+    ] {
+        assert!(
+            ac.contains(entry),
+            "UX acceptance criteria must include {entry}"
+        );
+    }
+}
+
+#[test]
+// AC-TST-061
+fn ux_routes_and_views_are_present() {
+    let router = read("../fe_eguard/html/egappserver/root/src/views/endpoint/_router/index.js");
+    for route in [
+        "/endpoint-incidents",
+        "/endpoint-events",
+        "/endpoint-responses",
+        "/endpoint-agents",
+        "/endpoint-compliance",
+        "/endpoint-nac",
+        "/endpoint-audit",
+    ] {
+        assert!(
+            router.contains(route),
+            "Endpoint router must include route {route}"
+        );
+    }
+
+    let views = [
+        "../fe_eguard/html/egappserver/root/src/views/endpoint/Incidents.vue",
+        "../fe_eguard/html/egappserver/root/src/views/endpoint/EndpointEvents.vue",
+        "../fe_eguard/html/egappserver/root/src/views/endpoint/ResponseActions.vue",
+        "../fe_eguard/html/egappserver/root/src/views/endpoint/EndpointAgents.vue",
+        "../fe_eguard/html/egappserver/root/src/views/endpoint/Compliance.vue",
+        "../fe_eguard/html/egappserver/root/src/views/endpoint/NAC.vue",
+        "../fe_eguard/html/egappserver/root/src/views/endpoint/Audit.vue",
+    ];
+    for view in views {
+        let path = repo_root().join(view);
+        assert!(path.exists(), "Missing required UX view {view}");
+    }
+
+    let nav = read("../fe_eguard/html/egappserver/root/src/components/common/NavbarMain.vue");
+    for marker in [
+        "Endpoint Security",
+        "Agents",
+        "Events",
+        "Incidents",
+        "Responses",
+        "Compliance",
+        "NAC",
+        "Audit",
+    ] {
+        assert!(
+            nav.contains(marker),
+            "Navbar must include {marker}"
+        );
+    }
+}
+
+#[test]
+// AC-TST-062
+fn nac_bridge_nested_payload_contract_is_defined() {
+    let nac_tests = read("../fe_eguard/go/agent/server/nac_bridge_test.go");
+    for marker in ["detection", "primary_rule_name", "process_exec"] {
+        assert!(
+            nac_tests.contains(marker),
+            "NAC bridge tests must cover nested payload marker {marker}"
+        );
+    }
+}
+
+#[test]
+// AC-TST-064
+fn correlation_contract_tests_are_defined() {
+    let correlation_tests = read("../fe_eguard/go/agent/server/telemetry_correlation_test.go");
+    for marker in ["dst_domain", "ioc_multi_host", "time_window"] {
+        assert!(
+            correlation_tests.contains(marker),
+            "Correlation tests must include marker {marker}"
+        );
+    }
+}
+
+#[test]
+// AC-TST-065
+fn correlation_event_fields_are_asserted() {
+    let observability = read("crates/agent-core/src/lifecycle/tests_observability.rs");
+    for marker in ["telemetry_payload_includes_correlation_event_fields", "session_id", "dst_domain"] {
+        assert!(
+            observability.contains(marker),
+            "Correlation event field test missing marker {marker}"
+        );
+    }
+}
+
+#[test]
+// AC-TST-066
+fn kernel_integrity_scan_contract_is_defined() {
+    let scan = read("crates/platform-linux/src/kernel_integrity.rs");
+    for marker in [
+        "hidden_module_sysfs",
+        "hidden_module_proc",
+        "tainted_module",
+        "kprobe_hook",
+        "ftrace_tracer",
+        "lsm_bpf_enabled",
+        "bpffs_pinned_object",
+    ] {
+        assert!(
+            scan.contains(marker),
+            "Kernel integrity scan missing marker {marker}"
+        );
+    }
+}
+
+#[test]
+// AC-TST-067
+fn qemu_kernel_integrity_extreme_harness_is_defined() {
+    let script = read("tests/qemu/run_agent_kernel_integrity_extreme.sh");
+    assert!(
+        script.contains("agent-core"),
+        "Kernel integrity extreme harness must build agent-core"
+    );
+    assert!(
+        script.contains("run_qemu_command.sh"),
+        "Kernel integrity extreme harness must invoke QEMU runner"
+    );
+
+    let cmd = read("tests/qemu/agent_kernel_integrity_extreme_cmd.sh");
+    for marker in [
+        "EGUARD_KERNEL_INTEGRITY_ENABLED",
+        "hidden_module_sysfs:sys_only",
+        "hidden_module_proc:proc_only",
+        "kprobe_hook:__x64_sys_execve",
+        "ftrace_tracer:function",
+        "lsm_bpf_enabled",
+        "bpffs_pinned_object:evil_prog",
+    ] {
+        assert!(
+            cmd.contains(marker),
+            "Kernel integrity extreme harness missing {marker}"
+        );
+    }
+}
+
+#[test]
+// AC-TST-068
+fn exploit_chain_unit_tests_are_defined() {
+    let tests = read("crates/detection/src/tests.rs");
+    for marker in [
+        "killchain_exploit_ptrace_fileless",
+        "killchain_exploit_userfaultfd_execveat",
+        "killchain_exploit_proc_mem_fileless",
+    ] {
+        assert!(
+            tests.contains(marker),
+            "Exploit chain tests must include marker {marker}"
+        );
+    }
+}
+
+#[test]
+// AC-TST-069
+fn qemu_exploit_chain_harness_is_defined() {
+    let script = read("tests/qemu/run_agent_exploit_chain.sh");
+    assert!(
+        script.contains("agent-core"),
+        "Exploit-chain harness must build agent-core"
+    );
+    assert!(
+        script.contains("run_qemu_command.sh"),
+        "Exploit-chain harness must invoke QEMU runner"
+    );
+
+    let cmd = read("tests/qemu/agent_exploit_chain_cmd.sh");
+    for marker in [
+        "EGUARD_EBPF_REPLAY_PATH",
+        "ptrace",
+        "userfaultfd",
+        "execveat",
+    ] {
+        assert!(
+            cmd.contains(marker),
+            "Exploit-chain harness missing {marker}"
+        );
+    }
+}
+
+#[test]
 // AC-TST-053
 fn qemu_audit_trail_harness_is_defined() {
     let script = read("tests/qemu/run_agent_audit_trail.sh");

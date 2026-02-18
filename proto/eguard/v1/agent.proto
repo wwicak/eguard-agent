@@ -180,6 +180,11 @@ message PolicyResponse {
   string config_version = 2;
   string policy_json = 3;
   CertificatePolicy certificate_policy = 4;
+  string policy_version = 5;
+  string policy_hash = 6;
+  string policy_signature = 7;
+  string schema_version = 8;
+  int64 issued_at_unix = 9;
 }
 
 message CertificatePolicy {

@@ -38,7 +38,7 @@ mkdir -p "$init_dir/bin" "$init_dir/proc" "$init_dir/sys" "$init_dir/dev" "$init
   "$init_dir/lib/x86_64-linux-gnu" "$init_dir/lib64" "$payload_dir"
 
 cp /usr/bin/busybox "$init_dir/bin/busybox"
-for app in sh mount mkdir echo cat sleep poweroff insmod uname ip ifconfig sha256sum cp chmod awk grep wget udhcpc route tar gzip gunzip unzip base64 wc ping basename rm head sort tail seq nc httpd; do
+for app in sh mount mkdir echo cat sleep poweroff insmod uname ip ifconfig sha256sum cp chmod awk grep wget udhcpc route tar gzip gunzip unzip base64 wc ping basename rm head sort tail seq nc httpd dd; do
   ln -s /bin/busybox "$init_dir/bin/$app"
 done
 
@@ -115,6 +115,14 @@ copy_binary() {
 
 if [[ -x /usr/bin/curl ]]; then
   copy_binary /usr/bin/curl "$init_dir/bin/curl"
+fi
+
+if [[ -x /usr/bin/stdbuf ]]; then
+  copy_binary /usr/bin/stdbuf "$init_dir/bin/stdbuf"
+fi
+if [[ -f /usr/libexec/coreutils/libstdbuf.so ]]; then
+  mkdir -p "$init_dir/usr/libexec/coreutils"
+  cp /usr/libexec/coreutils/libstdbuf.so "$init_dir/usr/libexec/coreutils/"
 fi
 
 command="$exec_path $*"

@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package eguard.v1;
 
+option go_package = "gitlab.com/devaistech77/fe_eguard/go/api/agent/v1;agentv1";
+
 service ResponseService {
   rpc ReportResponse(ResponseReport) returns (ResponseAck);
 }

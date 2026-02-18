@@ -2,7 +2,9 @@ use serde::Deserialize;
 
 use compliance::ComplianceResult;
 use detection::{Confidence, DetectionOutcome, TelemetryEvent};
-use grpc_client::{CommandEnvelope, ComplianceEnvelope, EventEnvelope, ResponseEnvelope};
+use grpc_client::{
+    CommandEnvelope, ComplianceEnvelope, EventEnvelope, InventoryEnvelope, ResponseEnvelope,
+};
 use response::PlannedAction;
 
 #[derive(Debug)]
@@ -25,6 +27,7 @@ pub(super) struct PendingCommand {
 pub(super) enum ControlPlaneTaskKind {
     Heartbeat { compliance_status: String },
     Compliance { compliance: ComplianceResult },
+    Inventory { inventory: InventoryEnvelope },
     PolicySync,
     ThreatIntelRefresh,
     CommandSync,
@@ -53,6 +56,9 @@ pub(super) enum PendingControlPlaneSend {
     },
     Compliance {
         envelope: ComplianceEnvelope,
+    },
+    Inventory {
+        envelope: InventoryEnvelope,
     },
 }
 

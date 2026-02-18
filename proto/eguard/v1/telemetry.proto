@@ -2,9 +2,12 @@ syntax = "proto3";
 
 package eguard.v1;
 
+option go_package = "gitlab.com/devaistech77/fe_eguard/go/api/agent/v1;agentv1";
+
 service TelemetryService {
   rpc SendEvent(TelemetryEvent) returns (TelemetryAck);
   rpc StreamEvents(stream TelemetryBatch) returns (stream EventAck);
+  rpc ReportInventory(InventoryReport) returns (InventoryAck);
 }
 
 enum EventType {
@@ -66,6 +69,30 @@ message TelemetryBatch {
 message EventAck {
   int64 last_event_offset = 1;
   int64 events_accepted = 2;
+}
+
+message InventoryReport {
+  string agent_id = 1;
+  string os_type = 2;
+  string os_version = 3;
+  string kernel_version = 4;
+  string hostname = 5;
+  string device_model = 6;
+  string device_serial = 7;
+  string user = 8;
+  string ownership = 9;
+  bool disk_encrypted = 10;
+  bool jailbreak_detected = 11;
+  bool root_detected = 12;
+  string mac = 13;
+  string ip_address = 14;
+  int64 collected_at_unix = 15;
+  map<string, string> attributes = 16;
+}
+
+message InventoryAck {
+  string status = 1;
+  int32 next_report_override_secs = 2;
 }
 
 message TelemetryAck {

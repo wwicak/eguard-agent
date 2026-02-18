@@ -3,6 +3,7 @@ use std::fmt;
 use std::fs;
 
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 #[derive(Debug)]
 pub enum ComplianceError {
@@ -57,13 +58,87 @@ pub struct CompliancePolicy {
     pub grace_period_secs: Option<u64>,
     #[serde(default)]
     pub auto_remediate: Option<bool>,
+    #[serde(default)]
+    pub schema_version: Option<String>,
+    #[serde(default)]
+    pub policy_id: Option<String>,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub policy_hash: Option<String>,
+    #[serde(default)]
+    pub policy_signature: Option<String>,
+    #[serde(default)]
+    pub issued_at_unix: Option<i64>,
+    #[serde(default)]
+    pub remediation_mode: Option<String>,
+    #[serde(default)]
+    pub allowlist_id: Option<String>,
+    #[serde(default)]
+    pub checks: Vec<ComplianceCheckSpec>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComplianceCheckSpec {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub check_type: String,
+    #[serde(default)]
+    pub op: String,
+    #[serde(default)]
+    pub value: serde_json::Value,
+    #[serde(default)]
+    pub severity: String,
+    #[serde(default)]
+    pub supported_os: Vec<String>,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub grace_period_secs: Option<u64>,
+    #[serde(default)]
+    pub remediation: Option<ComplianceRemediation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComplianceRemediation {
+    #[serde(default)]
+    pub mode: String,
+    #[serde(default)]
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub allowlist_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComplianceCheck {
-    pub check: String,
+    pub check_id: String,
+    pub check_type: String,
     pub status: String,
     pub detail: String,
+    #[serde(default)]
+    pub severity: String,
+    #[serde(default)]
+    pub expected_value: String,
+    #[serde(default)]
+    pub actual_value: String,
+    #[serde(default)]
+    pub evidence_json: String,
+    #[serde(default)]
+    pub evidence_source: String,
+    #[serde(default)]
+    pub collected_at_unix: i64,
+    #[serde(default)]
+    pub grace_expires_at_unix: i64,
+    #[serde(default)]
+    pub grace_period_secs: u64,
+    #[serde(default)]
+    pub auto_remediated: bool,
+    #[serde(default)]
+    pub remediation_action_id: String,
+    #[serde(default)]
+    pub remediation_detail: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,6 +154,10 @@ pub struct RemediationAction {
     pub command: String,
     pub args: Vec<String>,
     pub reason: String,
+    #[serde(default)]
+    pub allowlist_id: String,
+    #[serde(default)]
+    pub mode: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -123,6 +202,8 @@ pub struct SystemSnapshot {
     pub auto_updates_enabled: Option<bool>,
     pub antivirus_running: Option<bool>,
     pub agent_version: String,
+    pub os_type: String,
+    pub capabilities: HashSet<String>,
 }
 
 impl SystemSnapshot {
@@ -140,6 +221,8 @@ impl SystemSnapshot {
             auto_updates_enabled: None,
             antivirus_running: None,
             agent_version: current_agent_version().to_string(),
+            os_type: "linux".to_string(),
+            capabilities: linux_capabilities(),
         }
     }
 }
@@ -165,6 +248,10 @@ pub fn evaluate_linux(policy: &CompliancePolicy) -> Result<ComplianceResult> {
 }
 
 pub fn evaluate_snapshot(policy: &CompliancePolicy, snapshot: &SystemSnapshot) -> ComplianceResult {
+    let now_unix = now_unix();
+    if !policy.checks.is_empty() {
+        return evaluate_checks_v2(policy, snapshot, now_unix);
+    }
     let mut checks = Vec::new();
 
     if policy.firewall_required {
@@ -176,6 +263,8 @@ pub fn evaluate_snapshot(policy: &CompliancePolicy, snapshot: &SystemSnapshot) -
             } else {
                 "firewall appears inactive"
             },
+            snapshot.firewall_enabled.to_string(),
+            "true",
         ));
     }
 
@@ -193,6 +282,8 @@ pub fn evaluate_snapshot(policy: &CompliancePolicy, snapshot: &SystemSnapshot) -
                 },
                 prefix
             ),
+            snapshot.kernel_version.clone(),
+            prefix.clone(),
         ));
     }
 
@@ -211,7 +302,13 @@ pub fn evaluate_snapshot(policy: &CompliancePolicy, snapshot: &SystemSnapshot) -
             ),
             None => "os version unavailable".to_string(),
         };
-        checks.push(check_result("os_version_prefix", passed, detail));
+        checks.push(check_result(
+            "os_version_prefix",
+            passed,
+            detail,
+            snapshot.os_version.clone().unwrap_or_default(),
+            prefix.clone(),
+        ));
     }
 
     if let Some(min_version) = &policy.min_os_version {
@@ -230,7 +327,13 @@ pub fn evaluate_snapshot(policy: &CompliancePolicy, snapshot: &SystemSnapshot) -
             ),
             None => "os version unavailable".to_string(),
         };
-        checks.push(check_result("os_version_gte", passed, detail));
+        checks.push(check_result(
+            "os_version_gte",
+            passed,
+            detail,
+            snapshot.os_version.clone().unwrap_or_default(),
+            min_version.clone(),
+        ));
     }
 
     if policy.disk_encryption_required {
@@ -240,7 +343,13 @@ pub fn evaluate_snapshot(policy: &CompliancePolicy, snapshot: &SystemSnapshot) -
         } else {
             "root filesystem encryption not detected".to_string()
         };
-        checks.push(check_result("disk_encryption", passed, detail));
+        checks.push(check_result(
+            "disk_encryption",
+            passed,
+            detail,
+            passed.to_string(),
+            "true",
+        ));
     }
 
     if policy.require_ssh_root_login_disabled {
@@ -253,7 +362,16 @@ pub fn evaluate_snapshot(policy: &CompliancePolicy, snapshot: &SystemSnapshot) -
             Some(false) => "PermitRootLogin does not allow root login".to_string(),
             None => "unable to determine PermitRootLogin".to_string(),
         };
-        checks.push(check_result("ssh_root_login", passed, detail));
+        checks.push(check_result(
+            "ssh_root_login",
+            passed,
+            detail,
+            snapshot
+                .ssh_root_login_permitted
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
+            "disabled",
+        ));
     }
 
     if !policy.required_packages.is_empty() {
@@ -271,6 +389,8 @@ pub fn evaluate_snapshot(policy: &CompliancePolicy, snapshot: &SystemSnapshot) -
                 } else {
                     format!("required package {} is missing", package)
                 },
+                if passed { "installed" } else { "missing" },
+                "installed",
             ));
         }
     }
@@ -290,6 +410,8 @@ pub fn evaluate_snapshot(policy: &CompliancePolicy, snapshot: &SystemSnapshot) -
                 } else {
                     format!("forbidden package {} is not installed", package)
                 },
+                if installed { "installed" } else { "absent" },
+                "absent",
             ));
         }
     }
@@ -309,6 +431,8 @@ pub fn evaluate_snapshot(policy: &CompliancePolicy, snapshot: &SystemSnapshot) -
                 } else {
                     format!("required service {} is not running", service)
                 },
+                if running { "running" } else { "stopped" },
+                "running",
             ));
         }
     }
@@ -323,6 +447,8 @@ pub fn evaluate_snapshot(policy: &CompliancePolicy, snapshot: &SystemSnapshot) -
             } else {
                 "password policy not hardened".to_string()
             },
+            if passed { "hardened" } else { "not_hardened" },
+            "hardened",
         ));
     }
 
@@ -336,6 +462,8 @@ pub fn evaluate_snapshot(policy: &CompliancePolicy, snapshot: &SystemSnapshot) -
             } else {
                 "screen lock appears disabled".to_string()
             },
+            if passed { "enabled" } else { "disabled" },
+            "enabled",
         ));
     }
 
@@ -349,6 +477,8 @@ pub fn evaluate_snapshot(policy: &CompliancePolicy, snapshot: &SystemSnapshot) -
             } else {
                 "automatic updates appear disabled".to_string()
             },
+            if passed { "enabled" } else { "disabled" },
+            "enabled",
         ));
     }
 
@@ -362,30 +492,392 @@ pub fn evaluate_snapshot(policy: &CompliancePolicy, snapshot: &SystemSnapshot) -
             } else {
                 "antivirus process not detected".to_string()
             },
+            if passed { "running" } else { "not_running" },
+            "running",
         ));
     }
 
     let failing: Vec<&ComplianceCheck> = checks
         .iter()
-        .filter(|check| check.status == "fail")
+        .filter(|check| check.status == "non_compliant")
         .collect();
     if failing.is_empty() {
         ComplianceResult {
-            status: "pass".to_string(),
+            status: "compliant".to_string(),
             detail: "policy checks passed".to_string(),
             checks,
         }
     } else {
         let failed_checks = failing
             .iter()
-            .map(|check| check.check.as_str())
+            .map(|check| check.check_id.as_str())
             .collect::<Vec<_>>()
             .join(", ");
         ComplianceResult {
-            status: "fail".to_string(),
+            status: "non_compliant".to_string(),
             detail: format!("{} check(s) failed: {}", failing.len(), failed_checks),
             checks,
         }
+    }
+}
+
+fn evaluate_checks_v2(
+    policy: &CompliancePolicy,
+    snapshot: &SystemSnapshot,
+    now_unix: i64,
+) -> ComplianceResult {
+    let mut checks = Vec::with_capacity(policy.checks.len());
+    for spec in &policy.checks {
+        let check_id = if spec.id.trim().is_empty() {
+            spec.check_type.clone()
+        } else {
+            spec.id.clone()
+        };
+        let check_type = if spec.check_type.trim().is_empty() {
+            check_id.clone()
+        } else {
+            spec.check_type.clone()
+        };
+        let severity = if spec.severity.trim().is_empty() {
+            "medium".to_string()
+        } else {
+            spec.severity.trim().to_ascii_lowercase()
+        };
+        let grace_period_secs = spec
+            .grace_period_secs
+            .or(policy.grace_period_secs)
+            .unwrap_or(0);
+
+        let mut check = ComplianceCheck {
+            check_id,
+            check_type: check_type.clone(),
+            status: String::new(),
+            detail: String::new(),
+            severity,
+            expected_value: String::new(),
+            actual_value: String::new(),
+            evidence_json: String::new(),
+            evidence_source: String::new(),
+            collected_at_unix: now_unix,
+            grace_expires_at_unix: 0,
+            grace_period_secs,
+            auto_remediated: false,
+            remediation_action_id: String::new(),
+            remediation_detail: String::new(),
+        };
+
+        if !check_spec_applicable(spec, snapshot) {
+            check.status = "not_applicable".to_string();
+            check.detail = format!("unsupported on {}", snapshot.os_type);
+            check.evidence_source = "capability_gate".to_string();
+        } else {
+            apply_check_spec(spec, snapshot, &mut check);
+        }
+
+        if check.evidence_json.is_empty() {
+            check.evidence_json = json!({
+                "actual": check.actual_value,
+                "expected": check.expected_value,
+            })
+            .to_string();
+        }
+        if check.evidence_source.is_empty() {
+            check.evidence_source = check_type;
+        }
+        checks.push(check);
+    }
+
+    build_overall_compliance_result(checks)
+}
+
+fn check_spec_applicable(spec: &ComplianceCheckSpec, snapshot: &SystemSnapshot) -> bool {
+    if !spec.supported_os.is_empty()
+        && !spec
+            .supported_os
+            .iter()
+            .any(|os| os.eq_ignore_ascii_case(&snapshot.os_type))
+    {
+        return false;
+    }
+
+    if !spec.capabilities.is_empty() {
+        for cap in &spec.capabilities {
+            if !snapshot.capabilities.contains(&cap.to_ascii_lowercase()) {
+                return false;
+            }
+        }
+    }
+
+    true
+}
+
+fn build_overall_compliance_result(checks: Vec<ComplianceCheck>) -> ComplianceResult {
+    let failed = checks
+        .iter()
+        .filter(|c| c.status == "non_compliant")
+        .count();
+    let errored = checks.iter().filter(|c| c.status == "error").count();
+    let in_grace = checks.iter().filter(|c| c.status == "in_grace").count();
+
+    if failed > 0 {
+        let failed_checks = checks
+            .iter()
+            .filter(|c| c.status == "non_compliant")
+            .map(|c| c.check_id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        ComplianceResult {
+            status: "non_compliant".to_string(),
+            detail: format!("{} check(s) failed: {}", failed, failed_checks),
+            checks,
+        }
+    } else if errored > 0 {
+        ComplianceResult {
+            status: "error".to_string(),
+            detail: format!("{} check(s) errored", errored),
+            checks,
+        }
+    } else if in_grace > 0 {
+        ComplianceResult {
+            status: "compliant".to_string(),
+            detail: format!("{} check(s) in grace", in_grace),
+            checks,
+        }
+    } else {
+        ComplianceResult {
+            status: "compliant".to_string(),
+            detail: "policy checks passed".to_string(),
+            checks,
+        }
+    }
+}
+
+fn apply_check_spec(spec: &ComplianceCheckSpec, snapshot: &SystemSnapshot, check: &mut ComplianceCheck) {
+    match spec.check_type.trim() {
+        "firewall_enabled" | "firewall_required" => {
+            apply_bool_spec(spec, snapshot.firewall_enabled, check, "firewall_enabled");
+        }
+        "disk_encryption" => {
+            if let Some(encrypted) = snapshot.root_fs_encrypted {
+                apply_bool_spec(spec, encrypted, check, "disk_encryption");
+            } else {
+                check.status = "error".to_string();
+                check.detail = "disk encryption state unavailable".to_string();
+                check.actual_value = "unknown".to_string();
+                check.expected_value = value_to_string(&spec.value);
+            }
+        }
+        "ssh_root_login_disabled" | "ssh_root_login" => {
+            if let Some(permitted) = snapshot.ssh_root_login_permitted {
+                apply_bool_spec(spec, !permitted, check, "ssh_root_login_disabled");
+            } else {
+                check.status = "error".to_string();
+                check.detail = "ssh root login state unavailable".to_string();
+                check.actual_value = "unknown".to_string();
+                check.expected_value = value_to_string(&spec.value);
+            }
+        }
+        "package_installed" | "package_present" => {
+            apply_package_spec(spec, snapshot, check, true);
+        }
+        "package_not_installed" | "package_absent" => {
+            apply_package_spec(spec, snapshot, check, false);
+        }
+        "service_running" => {
+            apply_service_spec(spec, snapshot, check);
+        }
+        "password_policy" => {
+            apply_optional_bool_spec(spec, snapshot.password_policy_hardened, check, "password_policy");
+        }
+        "screen_lock" | "screen_lock_enabled" => {
+            apply_optional_bool_spec(spec, snapshot.screen_lock_enabled, check, "screen_lock");
+        }
+        "auto_updates" => {
+            apply_optional_bool_spec(spec, snapshot.auto_updates_enabled, check, "auto_updates");
+        }
+        "antivirus_running" | "antivirus" => {
+            apply_optional_bool_spec(spec, snapshot.antivirus_running, check, "antivirus_running");
+        }
+        "kernel_version" => {
+            apply_string_spec(spec, &snapshot.kernel_version, check, "kernel_version");
+        }
+        "os_version" => {
+            if let Some(os_version) = snapshot.os_version.as_ref() {
+                apply_string_spec(spec, os_version, check, "os_version");
+            } else {
+                check.status = "error".to_string();
+                check.detail = "os version unavailable".to_string();
+                check.actual_value = "unknown".to_string();
+                check.expected_value = value_to_string(&spec.value);
+            }
+        }
+        "agent_version" => {
+            apply_string_spec(spec, &snapshot.agent_version, check, "agent_version");
+        }
+        _ => {
+            check.status = "error".to_string();
+            check.detail = format!("unsupported check type {}", spec.check_type);
+            check.expected_value = value_to_string(&spec.value);
+            check.actual_value = "unsupported".to_string();
+        }
+    }
+}
+
+fn apply_bool_spec(spec: &ComplianceCheckSpec, actual: bool, check: &mut ComplianceCheck, label: &str) {
+    let expected = value_to_bool(&spec.value).unwrap_or(true);
+    let op = normalized_op(&spec.op);
+    let passed = match op.as_str() {
+        "eq" => actual == expected,
+        "neq" => actual != expected,
+        _ => {
+            check.status = "error".to_string();
+            check.detail = format!("unsupported op {} for {}", spec.op, label);
+            check.expected_value = expected.to_string();
+            check.actual_value = actual.to_string();
+            return;
+        }
+    };
+    check.status = if passed { "compliant" } else { "non_compliant" }.to_string();
+    check.detail = format!("{} {} expected {}", label, if passed { "matches" } else { "does not match" }, expected);
+    check.expected_value = expected.to_string();
+    check.actual_value = actual.to_string();
+}
+
+fn apply_optional_bool_spec(
+    spec: &ComplianceCheckSpec,
+    actual: Option<bool>,
+    check: &mut ComplianceCheck,
+    label: &str,
+) {
+    if let Some(value) = actual {
+        apply_bool_spec(spec, value, check, label);
+    } else {
+        check.status = "error".to_string();
+        check.detail = format!("{} state unavailable", label);
+        check.actual_value = "unknown".to_string();
+        check.expected_value = value_to_string(&spec.value);
+    }
+}
+
+fn apply_package_spec(spec: &ComplianceCheckSpec, snapshot: &SystemSnapshot, check: &mut ComplianceCheck, should_be_installed: bool) {
+    let Some(package) = value_to_string_opt(&spec.value) else {
+        check.status = "error".to_string();
+        check.detail = "missing package name".to_string();
+        return;
+    };
+    let Some(installed) = snapshot.installed_packages.as_ref() else {
+        check.status = "error".to_string();
+        check.detail = "package inventory unavailable".to_string();
+        check.actual_value = "unknown".to_string();
+        check.expected_value = package;
+        return;
+    };
+    let present = installed.contains(&package.to_ascii_lowercase());
+    let passed = if should_be_installed { present } else { !present };
+    check.status = if passed { "compliant" } else { "non_compliant" }.to_string();
+    check.detail = if passed {
+        format!("package {} policy satisfied", package)
+    } else if should_be_installed {
+        format!("required package {} missing", package)
+    } else {
+        format!("forbidden package {} installed", package)
+    };
+    check.expected_value = if should_be_installed { "installed" } else { "absent" }.to_string();
+    check.actual_value = if present { "installed" } else { "absent" }.to_string();
+}
+
+fn apply_service_spec(spec: &ComplianceCheckSpec, snapshot: &SystemSnapshot, check: &mut ComplianceCheck) {
+    let Some(service) = value_to_string_opt(&spec.value) else {
+        check.status = "error".to_string();
+        check.detail = "missing service name".to_string();
+        return;
+    };
+    let Some(services) = snapshot.running_services.as_ref() else {
+        check.status = "error".to_string();
+        check.detail = "service inventory unavailable".to_string();
+        check.actual_value = "unknown".to_string();
+        check.expected_value = "running".to_string();
+        return;
+    };
+    let running = services.contains(&service.to_ascii_lowercase());
+    check.status = if running { "compliant" } else { "non_compliant" }.to_string();
+    check.detail = if running {
+        format!("service {} is running", service)
+    } else {
+        format!("service {} is not running", service)
+    };
+    check.expected_value = "running".to_string();
+    check.actual_value = if running { "running" } else { "stopped" }.to_string();
+}
+
+fn apply_string_spec(spec: &ComplianceCheckSpec, actual: &str, check: &mut ComplianceCheck, label: &str) {
+    let expected = value_to_string(&spec.value);
+    let op = normalized_op(&spec.op);
+    match evaluate_string_op(actual, &expected, &op) {
+        Ok(passed) => {
+            check.status = if passed { "compliant" } else { "non_compliant" }.to_string();
+            check.detail = format!("{} {} {}", label, op, expected);
+            check.expected_value = expected;
+            check.actual_value = actual.to_string();
+        }
+        Err(err) => {
+            check.status = "error".to_string();
+            check.detail = err;
+            check.expected_value = expected;
+            check.actual_value = actual.to_string();
+        }
+    }
+}
+
+fn evaluate_string_op(actual: &str, expected: &str, op: &str) -> std::result::Result<bool, String> {
+    match op {
+        "eq" => Ok(actual == expected),
+        "neq" => Ok(actual != expected),
+        "contains" => Ok(actual.contains(expected)),
+        "not_contains" => Ok(!actual.contains(expected)),
+        "regex" => {
+            let re = regex::Regex::new(expected).map_err(|err| format!("regex error: {}", err))?;
+            Ok(re.is_match(actual))
+        }
+        "gte" => Ok(version_gte(actual, expected)),
+        "lte" => Ok(version_gte(expected, actual)),
+        "present" => Ok(!actual.trim().is_empty()),
+        _ => Err(format!("unsupported op {}", op)),
+    }
+}
+
+fn value_to_bool(value: &serde_json::Value) -> Option<bool> {
+    match value {
+        serde_json::Value::Bool(v) => Some(*v),
+        serde_json::Value::Number(num) => num.as_i64().map(|v| v != 0),
+        serde_json::Value::String(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" => Some(true),
+            "false" | "0" | "no" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn value_to_string(value: &serde_json::Value) -> String {
+    value_to_string_opt(value).unwrap_or_default()
+}
+
+fn value_to_string_opt(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(raw) => Some(raw.to_string()),
+        serde_json::Value::Number(num) => Some(num.to_string()),
+        serde_json::Value::Bool(v) => Some(v.to_string()),
+        serde_json::Value::Null => None,
+        other => Some(other.to_string()),
+    }
+}
+
+fn normalized_op(raw: &str) -> String {
+    if raw.trim().is_empty() {
+        "eq".to_string()
+    } else {
+        raw.trim().to_ascii_lowercase()
     }
 }
 
@@ -393,6 +885,9 @@ pub fn plan_remediation_actions(
     policy: &CompliancePolicy,
     snapshot: &SystemSnapshot,
 ) -> Vec<RemediationAction> {
+    if !policy.checks.is_empty() {
+        return plan_remediation_actions_v2(policy, snapshot);
+    }
     let mut actions = Vec::new();
 
     if policy.firewall_required && !snapshot.firewall_enabled {
@@ -401,6 +896,8 @@ pub fn plan_remediation_actions(
             command: "ufw".to_string(),
             args: vec!["--force".to_string(), "enable".to_string()],
             reason: "firewall_required policy is enabled".to_string(),
+            allowlist_id: policy.allowlist_id.clone().unwrap_or_default(),
+            mode: "auto".to_string(),
         });
     }
 
@@ -413,6 +910,8 @@ pub fn plan_remediation_actions(
                 "grep -q '^PermitRootLogin' /etc/ssh/sshd_config && sed -i 's/^PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config || echo 'PermitRootLogin no' >> /etc/ssh/sshd_config && systemctl reload ssh || systemctl reload sshd".to_string(),
             ],
             reason: "require_ssh_root_login_disabled policy is enabled".to_string(),
+            allowlist_id: policy.allowlist_id.clone().unwrap_or_default(),
+            mode: "auto".to_string(),
         });
     }
 
@@ -423,6 +922,8 @@ pub fn plan_remediation_actions(
                 command: "apt-get".to_string(),
                 args: vec!["install".to_string(), "-y".to_string(), package.to_string()],
                 reason: format!("required package {} is missing", package),
+                allowlist_id: policy.allowlist_id.clone().unwrap_or_default(),
+                mode: "auto".to_string(),
             });
         }
     }
@@ -434,10 +935,71 @@ pub fn plan_remediation_actions(
                 command: "apt-get".to_string(),
                 args: vec!["remove".to_string(), "-y".to_string(), package.to_string()],
                 reason: format!("forbidden package {} is installed", package),
+                allowlist_id: policy.allowlist_id.clone().unwrap_or_default(),
+                mode: "auto".to_string(),
             });
         }
     }
 
+    actions
+}
+
+fn plan_remediation_actions_v2(
+    policy: &CompliancePolicy,
+    snapshot: &SystemSnapshot,
+) -> Vec<RemediationAction> {
+    let mut actions = Vec::new();
+    for spec in &policy.checks {
+        let Some(remediation) = spec.remediation.as_ref() else {
+            continue;
+        };
+        if remediation.mode.trim().to_ascii_lowercase() != "auto" {
+            continue;
+        }
+        if !check_spec_applicable(spec, snapshot) {
+            continue;
+        }
+
+        let mut check = ComplianceCheck {
+            check_id: spec.id.clone(),
+            check_type: spec.check_type.clone(),
+            status: String::new(),
+            detail: String::new(),
+            severity: String::new(),
+            expected_value: String::new(),
+            actual_value: String::new(),
+            evidence_json: String::new(),
+            evidence_source: String::new(),
+            collected_at_unix: 0,
+            grace_expires_at_unix: 0,
+            grace_period_secs: 0,
+            auto_remediated: false,
+            remediation_action_id: String::new(),
+            remediation_detail: String::new(),
+        };
+
+        apply_check_spec(spec, snapshot, &mut check);
+        if check.status != "non_compliant" {
+            continue;
+        }
+
+        if remediation.command.trim().is_empty() {
+            continue;
+        }
+
+        actions.push(RemediationAction {
+            action_id: if spec.id.trim().is_empty() {
+                spec.check_type.clone()
+            } else {
+                spec.id.clone()
+            },
+            command: remediation.command.clone(),
+            args: remediation.args.clone(),
+            reason: format!("policy remediation for {}", spec.id),
+            allowlist_id: remediation.allowlist_id.clone(),
+            mode: remediation.mode.clone(),
+        });
+    }
     actions
 }
 
@@ -467,11 +1029,33 @@ fn check_result(
     check: impl Into<String>,
     passed: bool,
     detail: impl Into<String>,
+    actual: impl Into<String>,
+    expected: impl Into<String>,
 ) -> ComplianceCheck {
+    let check_id = check.into();
+    let actual_value = actual.into();
+    let expected_value = expected.into();
+    let evidence_json = json!({
+        "actual": actual_value,
+        "expected": expected_value,
+    })
+    .to_string();
     ComplianceCheck {
-        check: check.into(),
-        status: if passed { "pass" } else { "fail" }.to_string(),
+        check_id: check_id.clone(),
+        check_type: check_id,
+        status: if passed { "compliant" } else { "non_compliant" }.to_string(),
         detail: detail.into(),
+        severity: "medium".to_string(),
+        expected_value,
+        actual_value,
+        evidence_json,
+        evidence_source: "legacy".to_string(),
+        collected_at_unix: now_unix(),
+        grace_expires_at_unix: 0,
+        grace_period_secs: 0,
+        auto_remediated: false,
+        remediation_action_id: String::new(),
+        remediation_detail: String::new(),
     }
 }
 
@@ -501,6 +1085,8 @@ pub fn collect_linux_snapshot() -> Result<SystemSnapshot> {
         auto_updates_enabled: detect_auto_updates_enabled(),
         antivirus_running: detect_antivirus_running(),
         agent_version: current_agent_version().to_string(),
+        os_type: "linux".to_string(),
+        capabilities: linux_capabilities(),
     })
 }
 
@@ -714,6 +1300,33 @@ pub fn current_agent_version() -> &'static str {
 
 pub fn default_runtime_settings() -> (u64, bool) {
     (300, false)
+}
+
+fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or_default()
+}
+
+fn linux_capabilities() -> HashSet<String> {
+    [
+        "firewall",
+        "disk_encryption",
+        "packages",
+        "services",
+        "password_policy",
+        "screen_lock",
+        "ssh_config",
+        "auto_updates",
+        "antivirus",
+        "agent_version",
+        "os_version",
+        "kernel_version",
+    ]
+    .into_iter()
+    .map(|cap| cap.to_string())
+    .collect()
 }
 
 fn version_number_prefix(raw: &str) -> Option<String> {

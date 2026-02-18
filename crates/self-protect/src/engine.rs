@@ -38,8 +38,14 @@ impl Default for SelfProtectConfig {
         Self {
             expected_integrity_sha256_hex: resolve_expected_integrity_sha256(),
             debugger: DebuggerCheckConfig::default(),
-            runtime_integrity_paths: default_runtime_integrity_paths(),
-            runtime_config_paths: default_runtime_config_paths(),
+            runtime_integrity_paths: env_path_list(
+                "EGUARD_SELF_PROTECT_RUNTIME_INTEGRITY_PATHS",
+                default_runtime_integrity_paths(),
+            ),
+            runtime_config_paths: env_path_list(
+                "EGUARD_SELF_PROTECT_RUNTIME_CONFIG_PATHS",
+                default_runtime_config_paths(),
+            ),
         }
     }
 }
@@ -391,6 +397,24 @@ fn resolve_expected_integrity_sha256() -> Option<String> {
     }
 
     COMPILETIME_EXPECTED_SHA256.and_then(normalize_sha256_hex)
+}
+
+fn env_path_list(name: &str, fallback: Vec<String>) -> Vec<String> {
+    let Ok(raw) = std::env::var(name) else {
+        return fallback;
+    };
+    let mut out = Vec::new();
+    for part in raw.split(',') {
+        let trimmed = part.trim();
+        if !trimmed.is_empty() {
+            out.push(trimmed.to_string());
+        }
+    }
+    if out.is_empty() {
+        fallback
+    } else {
+        out
+    }
 }
 
 fn env_flag_enabled(name: &str) -> bool {

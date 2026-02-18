@@ -13,6 +13,11 @@ pub struct TemplatePredicate {
     pub require_ransomware_write_burst: bool,
     pub require_container_escape: bool,
     pub require_privileged_container: bool,
+    pub require_ptrace_activity: bool,
+    pub require_userfaultfd_activity: bool,
+    pub require_execveat_activity: bool,
+    pub require_proc_mem_access: bool,
+    pub require_fileless_exec: bool,
 }
 
 impl TemplatePredicate {
@@ -48,6 +53,21 @@ impl TemplatePredicate {
             return false;
         }
         if self.require_privileged_container && !node.container_privileged {
+            return false;
+        }
+        if self.require_ptrace_activity && !node.ptrace_activity {
+            return false;
+        }
+        if self.require_userfaultfd_activity && !node.userfaultfd_activity {
+            return false;
+        }
+        if self.require_execveat_activity && !node.execveat_activity {
+            return false;
+        }
+        if self.require_proc_mem_access && !node.proc_mem_access {
+            return false;
+        }
+        if self.require_fileless_exec && !node.fileless_exec {
             return false;
         }
         true

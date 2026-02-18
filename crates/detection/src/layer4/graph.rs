@@ -17,6 +17,11 @@ pub(super) struct GraphNode {
     pub(super) ransomware_write_burst: bool,
     pub(super) container_escape: bool,
     pub(super) container_privileged: bool,
+    pub(super) ptrace_activity: bool,
+    pub(super) userfaultfd_activity: bool,
+    pub(super) execveat_activity: bool,
+    pub(super) proc_mem_access: bool,
+    pub(super) fileless_exec: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -97,6 +102,11 @@ impl GraphNode {
         self.ransomware_write_burst = false;
         self.container_escape = false;
         self.container_privileged = false;
+        self.ptrace_activity = false;
+        self.userfaultfd_activity = false;
+        self.execveat_activity = false;
+        self.proc_mem_access = false;
+        self.fileless_exec = false;
     }
 }
 
@@ -187,6 +197,17 @@ impl ProcessGraph {
             _ => (false, false),
         };
 
+        let ptrace_activity = is_ptrace_tool(event);
+        let userfaultfd_activity = is_userfaultfd_tool(event);
+        let execveat_activity = is_execveat_tool(event);
+        let fileless_exec = is_fileless_exec(event);
+        let proc_mem_access = matches!(event.event_class, EventClass::FileOpen)
+            && event
+                .file_path
+                .as_deref()
+                .map(is_proc_mem_path)
+                .unwrap_or(false);
+
         let previous_ppid = {
             let node = self.nodes.entry(event.pid).or_insert_with(|| GraphNode {
                 ppid: event.ppid,
@@ -199,6 +220,11 @@ impl ProcessGraph {
                 ransomware_write_burst: false,
                 container_escape: false,
                 container_privileged: false,
+                ptrace_activity: false,
+                userfaultfd_activity: false,
+                execveat_activity: false,
+                proc_mem_access: false,
+                fileless_exec: false,
             });
 
             let previous_ppid = node.ppid;
@@ -232,8 +258,26 @@ impl ProcessGraph {
                     if ransomware_burst {
                         node.ransomware_write_burst = true;
                     }
+                    if proc_mem_access {
+                        node.proc_mem_access = true;
+                    }
+                }
+                EventClass::ProcessExec => {
+                    if fileless_exec {
+                        node.fileless_exec = true;
+                    }
                 }
                 _ => {}
+            }
+
+            if ptrace_activity {
+                node.ptrace_activity = true;
+            }
+            if userfaultfd_activity {
+                node.userfaultfd_activity = true;
+            }
+            if execveat_activity {
+                node.execveat_activity = true;
             }
 
             previous_ppid
@@ -573,4 +617,78 @@ impl ProcessGraph {
             self.ransomware_learned_roots.insert(root);
         }
     }
+}
+
+fn is_ptrace_tool(event: &TelemetryEvent) -> bool {
+    if !matches!(event.event_class, EventClass::ProcessExec) {
+        return false;
+    }
+    let process = event.process.to_ascii_lowercase();
+    let cmdline = event
+        .command_line
+        .as_deref()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    matches!(
+        process.as_str(),
+        "gdb" | "gdbserver" | "strace" | "ltrace" | "perf" | "gcore" | "lldb" | "dbx"
+    ) || cmdline.contains("ptrace")
+}
+
+fn is_userfaultfd_tool(event: &TelemetryEvent) -> bool {
+    if !matches!(event.event_class, EventClass::ProcessExec) {
+        return false;
+    }
+    let cmdline = event
+        .command_line
+        .as_deref()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    cmdline.contains("userfaultfd") || cmdline.contains("uffd")
+}
+
+fn is_execveat_tool(event: &TelemetryEvent) -> bool {
+    if !matches!(event.event_class, EventClass::ProcessExec) {
+        return false;
+    }
+    let cmdline = event
+        .command_line
+        .as_deref()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    cmdline.contains("execveat")
+}
+
+fn is_proc_mem_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    if !lower.contains("/proc/") {
+        return false;
+    }
+    lower.contains("/mem")
+        || lower.contains("/maps")
+        || lower.contains("/map_files")
+        || lower.contains("/syscall")
+        || lower.contains("/stack")
+}
+
+fn is_fileless_exec(event: &TelemetryEvent) -> bool {
+    if !matches!(event.event_class, EventClass::ProcessExec) {
+        return false;
+    }
+    let path = event.file_path.as_deref().unwrap_or("");
+    let lower = path.to_ascii_lowercase();
+    if lower.contains("memfd:")
+        || lower.ends_with(" (deleted)")
+        || lower.contains("/proc/") && lower.contains("/fd/")
+        || lower.contains("/dev/fd")
+    {
+        return true;
+    }
+    let cmdline = event
+        .command_line
+        .as_deref()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    cmdline.contains("memfd:") || cmdline.contains("execveat")
 }

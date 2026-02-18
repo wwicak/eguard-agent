@@ -8,6 +8,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use reqwest::Client as HttpClient;
 use sha2::{Digest, Sha256};
+use serde_json::json;
 use tokio::time::sleep;
 use tonic::transport::{
     Certificate as TonicCertificate, Channel, ClientTlsConfig, Endpoint, Identity as TonicIdentity,
@@ -18,8 +19,8 @@ use crate::pb;
 use crate::retry::RetryPolicy;
 use crate::types::{
     CommandEnvelope, ComplianceEnvelope, EnrollmentEnvelope, EnrollmentResultEnvelope,
-    EventEnvelope, FleetBaselineEnvelope, PolicyEnvelope, ResponseEnvelope, ServerState,
-    ThreatIntelVersionEnvelope, TlsConfig, TransportMode,
+    EventEnvelope, FleetBaselineEnvelope, InventoryEnvelope, PolicyEnvelope, ResponseEnvelope,
+    ServerState, ThreatIntelVersionEnvelope, TlsConfig, TransportMode,
 };
 
 #[path = "client/client_grpc.rs"]
@@ -196,6 +197,20 @@ impl Client {
                     self.grpc_reporting_force_http
                         .store(true, Ordering::Relaxed);
                     self.send_compliance_http(compliance).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn send_inventory(&self, inventory: &InventoryEnvelope) -> Result<()> {
+        self.ensure_online()?;
+        match self.mode {
+            TransportMode::Http => self.send_inventory_http(inventory).await?,
+            TransportMode::Grpc => {
+                if let Err(err) = self.send_inventory_grpc(inventory).await {
+                    warn!(error = %err, "gRPC inventory report failed, falling back to HTTP");
+                    self.send_inventory_http(inventory).await?;
                 }
             }
         }
@@ -688,10 +703,94 @@ fn from_pb_agent_command(command: pb::AgentCommand) -> CommandEnvelope {
 }
 
 fn from_pb_server_command(command: pb::ServerCommand) -> CommandEnvelope {
+    let payload_json = match command.params {
+        Some(pb::server_command::Params::Isolate(params)) => {
+            json!({"allow_server_connection": params.allow_server_connection}).to_string()
+        }
+        Some(pb::server_command::Params::Scan(params)) => json!({
+            "paths": params.paths,
+            "yara_scan": params.yara_scan,
+            "ioc_scan": params.ioc_scan
+        })
+        .to_string(),
+        Some(pb::server_command::Params::Update(params)) => json!({
+            "target_version": params.target_version,
+            "download_url": params.download_url,
+            "checksum": params.checksum
+        })
+        .to_string(),
+        Some(pb::server_command::Params::Forensics(params)) => json!({
+            "memory_dump": params.memory_dump,
+            "process_list": params.process_list,
+            "network_connections": params.network_connections,
+            "open_files": params.open_files,
+            "loaded_modules": params.loaded_modules,
+            "target_pids": params.target_pids
+        })
+        .to_string(),
+        Some(pb::server_command::Params::ConfigChange(params)) => json!({
+            "config_json": params.config_json,
+            "config_version": params.config_version
+        })
+        .to_string(),
+        Some(pb::server_command::Params::RestoreQuarantine(params)) => json!({
+            "sha256": params.sha256,
+            "original_path": params.original_path
+        })
+        .to_string(),
+        Some(pb::server_command::Params::Uninstall(params)) => json!({
+            "auth_token": params.auth_token,
+            "wipe_data": params.wipe_data
+        })
+        .to_string(),
+        Some(pb::server_command::Params::Lock(params)) => {
+            json!({"force": params.force, "reason": params.reason}).to_string()
+        }
+        Some(pb::server_command::Params::Wipe(params)) => {
+            json!({"force": params.force, "reason": params.reason}).to_string()
+        }
+        Some(pb::server_command::Params::Retire(params)) => {
+            json!({"force": params.force, "reason": params.reason}).to_string()
+        }
+        Some(pb::server_command::Params::Restart(params)) => {
+            json!({"force": params.force, "reason": params.reason}).to_string()
+        }
+        Some(pb::server_command::Params::LostMode(params)) => {
+            json!({"force": params.force, "reason": params.reason}).to_string()
+        }
+        Some(pb::server_command::Params::Locate(params)) => {
+            json!({"high_accuracy": params.high_accuracy}).to_string()
+        }
+        Some(pb::server_command::Params::InstallApp(params)) => json!({
+            "package_name": params.package_name,
+            "version": params.version,
+            "managed": params.managed
+        })
+        .to_string(),
+        Some(pb::server_command::Params::RemoveApp(params)) => json!({
+            "package_name": params.package_name,
+            "version": params.version,
+            "managed": params.managed
+        })
+        .to_string(),
+        Some(pb::server_command::Params::UpdateApp(params)) => json!({
+            "package_name": params.package_name,
+            "version": params.version,
+            "managed": params.managed
+        })
+        .to_string(),
+        Some(pb::server_command::Params::ApplyProfile(params)) => json!({
+            "profile_id": params.profile_id,
+            "profile_json": params.profile_json
+        })
+        .to_string(),
+        None => String::new(),
+    };
+
     CommandEnvelope {
         command_id: command.command_id,
         command_type: map_command_type(command.command_type),
-        payload_json: String::new(),
+        payload_json,
     }
 }
 
@@ -729,6 +828,16 @@ fn map_command_type(raw: i32) -> String {
         pb::CommandType::RestoreQuarantine => "restore_quarantine",
         pb::CommandType::Uninstall => "uninstall",
         pb::CommandType::EmergencyRulePush => "emergency_rule_push",
+        pb::CommandType::LockDevice => "lock_device",
+        pb::CommandType::WipeDevice => "wipe_device",
+        pb::CommandType::RetireDevice => "retire_device",
+        pb::CommandType::RestartDevice => "restart_device",
+        pb::CommandType::LostMode => "lost_mode",
+        pb::CommandType::LocateDevice => "locate_device",
+        pb::CommandType::InstallApp => "install_app",
+        pb::CommandType::RemoveApp => "remove_app",
+        pb::CommandType::UpdateApp => "update_app",
+        pb::CommandType::ApplyProfile => "apply_profile",
     }
     .to_string()
 }

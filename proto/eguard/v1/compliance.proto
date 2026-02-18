@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package eguard.v1;
 
+option go_package = "gitlab.com/devaistech77/fe_eguard/go/api/agent/v1;agentv1";
+
 service ComplianceService {
   rpc ReportCompliance(ComplianceReport) returns (ComplianceAck);
 }
@@ -16,6 +18,8 @@ enum CheckStatus {
   PASS = 0;
   FAIL = 1;
   CHECK_ERROR = 2;
+  NOT_APPLICABLE = 3;
+  IN_GRACE = 4;
 }
 
 message ComplianceCheckResult {
@@ -26,6 +30,13 @@ message ComplianceCheckResult {
   string detail = 5;
   bool auto_remediated = 6;
   string remediation_detail = 7;
+  string check_id = 8;
+  string severity = 9;
+  string evidence_json = 10;
+  string evidence_source = 11;
+  int64 collected_at_unix = 12;
+  int64 grace_expires_at_unix = 13;
+  string remediation_action_id = 14;
 }
 
 message ComplianceReport {
@@ -35,6 +46,8 @@ message ComplianceReport {
   int64 checked_at = 4;
   repeated ComplianceCheckResult checks = 5;
   ComplianceStatus overall_status = 6;
+  string policy_hash = 7;
+  string schema_version = 8;
 
   // Legacy fields retained for current client payload compatibility.
   string check_type = 20;

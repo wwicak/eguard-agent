@@ -8,8 +8,8 @@ use tracing::warn;
 use crate::pb;
 use crate::types::{
     CertificatePolicyEnvelope, CommandEnvelope, ComplianceEnvelope, EnrollmentEnvelope,
-    EnrollmentResultEnvelope, EventEnvelope, PolicyEnvelope, ResponseEnvelope, ServerState,
-    ThreatIntelVersionEnvelope,
+    EnrollmentResultEnvelope, EventEnvelope, InventoryEnvelope, PolicyEnvelope, ResponseEnvelope,
+    ServerState, ThreatIntelVersionEnvelope,
 };
 
 use super::{
@@ -132,6 +132,13 @@ impl Client {
                     detail: check.detail.clone(),
                     auto_remediated: check.auto_remediated,
                     remediation_detail: check.remediation_detail.clone(),
+                    check_id: check.check_id.clone(),
+                    severity: check.severity.clone(),
+                    evidence_json: check.evidence_json.clone(),
+                    evidence_source: check.evidence_source.clone(),
+                    collected_at_unix: check.collected_at_unix,
+                    grace_expires_at_unix: check.grace_expires_at_unix,
+                    remediation_action_id: check.remediation_action_id.clone(),
                 })
                 .collect::<Vec<_>>();
             let overall_status = map_overall_status(
@@ -146,6 +153,8 @@ impl Client {
                     checked_at,
                     checks,
                     overall_status,
+                    policy_hash: compliance.policy_hash.clone(),
+                    schema_version: compliance.schema_version.clone(),
                     check_type: compliance.check_type.clone(),
                     status: compliance.status.clone(),
                     detail: compliance.detail.clone(),
@@ -155,6 +164,35 @@ impl Client {
                 })
                 .await
                 .context("report_compliance RPC failed")?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub(super) async fn send_inventory_grpc(&self, inventory: &InventoryEnvelope) -> Result<()> {
+        self.with_retry("inventory_grpc", || async {
+            let mut client = self.telemetry_client().await?;
+            client
+                .report_inventory(pb::InventoryReport {
+                    agent_id: inventory.agent_id.clone(),
+                    os_type: inventory.os_type.clone(),
+                    os_version: inventory.os_version.clone(),
+                    kernel_version: inventory.kernel_version.clone(),
+                    hostname: inventory.hostname.clone(),
+                    device_model: inventory.device_model.clone(),
+                    device_serial: inventory.device_serial.clone(),
+                    user: inventory.user.clone(),
+                    ownership: inventory.ownership.clone(),
+                    disk_encrypted: inventory.disk_encrypted,
+                    jailbreak_detected: inventory.jailbreak_detected,
+                    root_detected: inventory.root_detected,
+                    mac: inventory.mac.clone(),
+                    ip_address: inventory.ip_address.clone(),
+                    collected_at_unix: inventory.collected_at_unix,
+                    attributes: inventory.attributes.clone(),
+                })
+                .await
+                .context("report_inventory RPC failed")?;
             Ok(())
         })
         .await
@@ -339,6 +377,11 @@ impl Client {
                     config_version: response.config_version,
                     policy_json: response.policy_json,
                     certificate_policy: cert_policy,
+                    policy_version: response.policy_version,
+                    policy_hash: response.policy_hash,
+                    policy_signature: response.policy_signature,
+                    schema_version: response.schema_version,
+                    issued_at_unix: response.issued_at_unix,
                 }))
             }
         })
@@ -428,6 +471,8 @@ fn map_check_status(raw: &str) -> pb::CheckStatus {
     match raw.trim().to_ascii_lowercase().as_str() {
         "pass" | "ok" | "compliant" => pb::CheckStatus::Pass,
         "fail" | "non_compliant" | "non-compliant" => pb::CheckStatus::Fail,
+        "not_applicable" | "na" | "n/a" => pb::CheckStatus::NotApplicable,
+        "in_grace" | "grace" => pb::CheckStatus::InGrace,
         _ => pb::CheckStatus::CheckError,
     }
 }
@@ -439,7 +484,7 @@ fn map_overall_status(overall: &str, fallback: &str) -> pb::ComplianceStatus {
         overall
     };
     match candidate.trim().to_ascii_lowercase().as_str() {
-        "pass" | "compliant" => pb::ComplianceStatus::Compliant,
+        "pass" | "compliant" | "in_grace" | "grace" => pb::ComplianceStatus::Compliant,
         "fail" | "non_compliant" | "non-compliant" => pb::ComplianceStatus::NonCompliant,
         _ => pb::ComplianceStatus::Error,
     }

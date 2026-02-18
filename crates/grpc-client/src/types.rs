@@ -92,6 +92,20 @@ pub struct ComplianceCheckEnvelope {
     pub auto_remediated: bool,
     #[serde(default)]
     pub remediation_detail: String,
+    #[serde(default)]
+    pub check_id: String,
+    #[serde(default)]
+    pub severity: String,
+    #[serde(default)]
+    pub evidence_json: String,
+    #[serde(default)]
+    pub evidence_source: String,
+    #[serde(default)]
+    pub collected_at_unix: i64,
+    #[serde(default)]
+    pub grace_expires_at_unix: i64,
+    #[serde(default)]
+    pub remediation_action_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,11 +120,50 @@ pub struct ComplianceEnvelope {
     pub overall_status: String,
     #[serde(default)]
     pub checks: Vec<ComplianceCheckEnvelope>,
+    #[serde(default)]
+    pub policy_hash: String,
+    #[serde(default)]
+    pub schema_version: String,
     pub check_type: String,
     pub status: String,
     pub detail: String,
     pub expected_value: String,
     pub actual_value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InventoryEnvelope {
+    pub agent_id: String,
+    #[serde(default)]
+    pub os_type: String,
+    #[serde(default)]
+    pub os_version: String,
+    #[serde(default)]
+    pub kernel_version: String,
+    #[serde(default)]
+    pub hostname: String,
+    #[serde(default)]
+    pub device_model: String,
+    #[serde(default)]
+    pub device_serial: String,
+    #[serde(default)]
+    pub user: String,
+    #[serde(default)]
+    pub ownership: String,
+    #[serde(default)]
+    pub disk_encrypted: bool,
+    #[serde(default)]
+    pub jailbreak_detected: bool,
+    #[serde(default)]
+    pub root_detected: bool,
+    #[serde(default)]
+    pub mac: String,
+    #[serde(default)]
+    pub ip_address: String,
+    #[serde(default)]
+    pub collected_at_unix: i64,
+    #[serde(default)]
+    pub attributes: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -168,6 +221,16 @@ pub struct PolicyEnvelope {
     pub policy_json: String,
     #[serde(default)]
     pub certificate_policy: Option<CertificatePolicyEnvelope>,
+    #[serde(default)]
+    pub policy_version: String,
+    #[serde(default)]
+    pub policy_hash: String,
+    #[serde(default)]
+    pub policy_signature: String,
+    #[serde(default)]
+    pub schema_version: String,
+    #[serde(default)]
+    pub issued_at_unix: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

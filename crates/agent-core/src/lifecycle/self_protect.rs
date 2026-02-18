@@ -8,12 +8,26 @@ use self_protect::SelfProtectReport;
 use super::{AgentRuntime, DegradedCause};
 
 impl AgentRuntime {
-    pub(super) async fn run_self_protection_if_due(&mut self, now_unix: i64) -> Result<()> {
+    pub(crate) async fn run_self_protection_if_due(&mut self, now_unix: i64) -> Result<()> {
         if self.tamper_forced_degraded {
             return Ok(());
         }
 
         let interval = self.config.self_protection_integrity_check_interval_secs;
+        if std::env::var("EGUARD_DEBUG_SELF_PROTECT_LOG")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .is_some()
+        {
+            tracing::info!(
+                interval_secs = interval,
+                last_check = self.last_self_protect_check_unix,
+                now_unix,
+                integrity_paths = ?self.self_protect_engine.config().runtime_integrity_paths,
+                config_paths = ?self.self_protect_engine.config().runtime_config_paths,
+                "debug self-protect tick"
+            );
+        }
         if interval == 0 {
             return Ok(());
         }
@@ -26,6 +40,18 @@ impl AgentRuntime {
         self.last_self_protect_check_unix = Some(now_unix);
 
         let report = self.self_protect_engine.evaluate();
+        if std::env::var("EGUARD_DEBUG_SELF_PROTECT_LOG")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .is_some()
+        {
+            tracing::info!(
+                clean = report.is_clean(),
+                violations = ?report.violation_codes(),
+                tampered_paths = ?report.tampered_paths(),
+                "debug self-protect report"
+            );
+        }
         if report.is_clean() {
             return Ok(());
         }

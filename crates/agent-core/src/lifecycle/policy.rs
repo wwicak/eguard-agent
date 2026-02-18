@@ -1,9 +1,12 @@
 use tracing::warn;
 
 use compliance::{parse_policy_json, CompliancePolicy};
+use ed25519_dalek::Verifier;
 use grpc_client::PolicyEnvelope;
+use sha2::{Digest, Sha256};
 
 use crate::config::AgentConfig;
+use super::rule_bundle_verify::{decode_hex_bytes, parse_ed25519_key_material};
 
 #[cfg(test)]
 use anyhow::{anyhow, Result};
@@ -45,6 +48,97 @@ pub(super) fn load_compliance_policy() -> CompliancePolicy {
         min_kernel_prefix: None,
         ..CompliancePolicy::default()
     }
+}
+
+pub(super) fn verify_policy_envelope(policy: &PolicyEnvelope) -> bool {
+    if policy.policy_json.trim().is_empty() {
+        return true;
+    }
+
+    let computed_hash = policy_hash_hex(policy.policy_json.as_bytes());
+    if !policy.policy_hash.trim().is_empty()
+        && !normalize_hash(&policy.policy_hash)
+            .map(|hash| hash == computed_hash)
+            .unwrap_or(false)
+    {
+        warn!("policy hash mismatch; rejecting policy update");
+        return false;
+    }
+
+    if policy.policy_signature.trim().is_empty() {
+        return true;
+    }
+
+    let Some(public_key) = resolve_policy_public_key() else {
+        warn!("policy signature provided but no public key configured; rejecting policy update");
+        return false;
+    };
+
+    let Some(signature) = decode_hex_bytes(policy.policy_signature.trim()) else {
+        warn!("invalid policy signature encoding; rejecting policy update");
+        return false;
+    };
+    if signature.len() != 64 {
+        warn!("invalid policy signature length; rejecting policy update");
+        return false;
+    }
+
+    let mut sig_bytes = [0u8; 64];
+    sig_bytes.copy_from_slice(&signature);
+
+    let verifying_key = match ed25519_dalek::VerifyingKey::from_bytes(&public_key) {
+        Ok(key) => key,
+        Err(err) => {
+            warn!(error = %err, "invalid policy public key");
+            return false;
+        }
+    };
+
+    let signature = ed25519_dalek::Signature::from_bytes(&sig_bytes);
+    if let Err(err) = verifying_key.verify(policy.policy_json.as_bytes(), &signature) {
+        warn!(error = %err, "policy signature verification failed");
+        return false;
+    }
+
+    true
+}
+
+fn resolve_policy_public_key() -> Option<[u8; 32]> {
+    if let Ok(path) = std::env::var("EGUARD_POLICY_PUBKEY_PATH") {
+        let path = path.trim();
+        if !path.is_empty() {
+            match std::fs::read(path) {
+                Ok(raw) => {
+                    if let Some(key) = parse_ed25519_key_material(&raw) {
+                        return Some(key);
+                    }
+                    warn!(path = %path, "invalid policy Ed25519 public key contents");
+                }
+                Err(err) => {
+                    warn!(error = %err, path = %path, "failed reading policy public key")
+                }
+            }
+        }
+    }
+
+    if let Ok(raw) = std::env::var("EGUARD_POLICY_PUBKEY") {
+        return parse_ed25519_key_material(raw.as_bytes());
+    }
+
+    None
+}
+
+fn policy_hash_hex(raw: &[u8]) -> String {
+    let digest = Sha256::digest(raw);
+    format!("{:x}", digest)
+}
+
+fn normalize_hash(raw: &str) -> Option<String> {
+    let trimmed = raw.trim().trim_start_matches("sha256:").trim();
+    if trimmed.len() != 64 {
+        return None;
+    }
+    Some(trimmed.to_ascii_lowercase())
 }
 
 pub(super) fn update_tls_policy_from_server(config: &mut AgentConfig, policy: &PolicyEnvelope) -> bool {

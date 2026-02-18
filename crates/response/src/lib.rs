@@ -320,6 +320,16 @@ pub enum ServerCommand {
     Uninstall,
     RestoreQuarantine,
     EmergencyRulePush,
+    LockDevice,
+    WipeDevice,
+    RetireDevice,
+    RestartDevice,
+    LostMode,
+    LocateDevice,
+    InstallApp,
+    RemoveApp,
+    UpdateApp,
+    ApplyProfile,
     Unknown,
 }
 
@@ -335,6 +345,14 @@ pub struct HostControlState {
     pub last_scan_unix: Option<i64>,
     pub last_update_unix: Option<i64>,
     pub uninstall_requested: bool,
+    pub last_lock_unix: Option<i64>,
+    pub last_wipe_unix: Option<i64>,
+    pub last_retire_unix: Option<i64>,
+    pub last_restart_unix: Option<i64>,
+    pub lost_mode_enabled: bool,
+    pub last_locate_unix: Option<i64>,
+    pub last_app_action_unix: Option<i64>,
+    pub last_profile_apply_unix: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -346,15 +364,25 @@ pub struct CommandExecution {
 
 pub fn parse_server_command(raw: &str) -> ServerCommand {
     match raw.trim().to_ascii_lowercase().as_str() {
-        "isolate" => ServerCommand::Isolate,
-        "unisolate" => ServerCommand::Unisolate,
-        "scan" => ServerCommand::Scan,
-        "update" => ServerCommand::Update,
-        "forensics" => ServerCommand::Forensics,
+        "isolate" | "isolate_host" => ServerCommand::Isolate,
+        "unisolate" | "unisolate_host" => ServerCommand::Unisolate,
+        "scan" | "run_scan" => ServerCommand::Scan,
+        "update" | "update_rules" => ServerCommand::Update,
+        "forensics" | "forensics_collect" => ServerCommand::Forensics,
         "config_change" => ServerCommand::ConfigChange,
         "uninstall" => ServerCommand::Uninstall,
         "restore_quarantine" => ServerCommand::RestoreQuarantine,
         "emergency_rule_push" | "push_emergency_rule" => ServerCommand::EmergencyRulePush,
+        "lock_device" | "lock" => ServerCommand::LockDevice,
+        "wipe_device" | "wipe" => ServerCommand::WipeDevice,
+        "retire_device" | "retire" => ServerCommand::RetireDevice,
+        "restart_device" | "restart" => ServerCommand::RestartDevice,
+        "lost_mode" => ServerCommand::LostMode,
+        "locate_device" | "locate" => ServerCommand::LocateDevice,
+        "install_app" => ServerCommand::InstallApp,
+        "remove_app" => ServerCommand::RemoveApp,
+        "update_app" => ServerCommand::UpdateApp,
+        "apply_profile" => ServerCommand::ApplyProfile,
         _ => ServerCommand::Unknown,
     }
 }
@@ -430,6 +458,86 @@ pub fn execute_server_command_with_state(
             status: "completed",
             detail: "emergency rule push received".to_string(),
         },
+        ServerCommand::LockDevice => {
+            state.last_lock_unix = Some(now_unix);
+            CommandExecution {
+                outcome: CommandOutcome::Applied,
+                status: "completed",
+                detail: "device lock requested".to_string(),
+            }
+        }
+        ServerCommand::WipeDevice => {
+            state.last_wipe_unix = Some(now_unix);
+            CommandExecution {
+                outcome: CommandOutcome::Applied,
+                status: "completed",
+                detail: "device wipe requested".to_string(),
+            }
+        }
+        ServerCommand::RetireDevice => {
+            state.last_retire_unix = Some(now_unix);
+            CommandExecution {
+                outcome: CommandOutcome::Applied,
+                status: "completed",
+                detail: "device retire requested".to_string(),
+            }
+        }
+        ServerCommand::RestartDevice => {
+            state.last_restart_unix = Some(now_unix);
+            CommandExecution {
+                outcome: CommandOutcome::Applied,
+                status: "completed",
+                detail: "device restart requested".to_string(),
+            }
+        }
+        ServerCommand::LostMode => {
+            state.lost_mode_enabled = true;
+            CommandExecution {
+                outcome: CommandOutcome::Applied,
+                status: "completed",
+                detail: "lost mode enabled".to_string(),
+            }
+        }
+        ServerCommand::LocateDevice => {
+            state.last_locate_unix = Some(now_unix);
+            CommandExecution {
+                outcome: CommandOutcome::Applied,
+                status: "completed",
+                detail: "device locate requested".to_string(),
+            }
+        }
+        ServerCommand::InstallApp => {
+            state.last_app_action_unix = Some(now_unix);
+            CommandExecution {
+                outcome: CommandOutcome::Applied,
+                status: "completed",
+                detail: "app install requested".to_string(),
+            }
+        }
+        ServerCommand::RemoveApp => {
+            state.last_app_action_unix = Some(now_unix);
+            CommandExecution {
+                outcome: CommandOutcome::Applied,
+                status: "completed",
+                detail: "app removal requested".to_string(),
+            }
+        }
+        ServerCommand::UpdateApp => {
+            state.last_app_action_unix = Some(now_unix);
+            CommandExecution {
+                outcome: CommandOutcome::Applied,
+                status: "completed",
+                detail: "app update requested".to_string(),
+            }
+        }
+        ServerCommand::ApplyProfile => {
+            state.last_profile_apply_unix = Some(now_unix);
+            CommandExecution {
+                outcome: CommandOutcome::Applied,
+                status: "completed",
+                detail: "profile apply requested".to_string(),
+            }
+        }
         ServerCommand::Unknown => CommandExecution {
             outcome: CommandOutcome::Ignored,
             status: "failed",

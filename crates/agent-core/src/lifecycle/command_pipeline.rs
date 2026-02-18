@@ -5,8 +5,10 @@ use anyhow::{anyhow, Result};
 use grpc_client::{CommandEnvelope, ResponseEnvelope};
 use nac::apply_network_profile_config_change;
 use response::{
-    execute_server_command_with_state, parse_server_command, CommandOutcome, ServerCommand,
+    execute_server_command_with_state, parse_server_command, CommandOutcome, CommandExecution,
+    ServerCommand,
 };
+use serde::Deserialize;
 use tokio::time::timeout;
 use tracing::{info, warn};
 
@@ -45,6 +47,28 @@ impl AgentRuntime {
 
         if parsed == ServerCommand::ConfigChange {
             self.apply_config_change(&command.payload_json, &mut exec);
+        }
+
+        match parsed {
+            ServerCommand::LockDevice => self.apply_device_lock(&command.payload_json, &mut exec),
+            ServerCommand::WipeDevice => self.apply_device_wipe(&command.payload_json, &mut exec),
+            ServerCommand::RetireDevice => {
+                self.apply_device_retire(&command.payload_json, &mut exec)
+            }
+            ServerCommand::RestartDevice => {
+                self.apply_device_restart(&command.payload_json, &mut exec)
+            }
+            ServerCommand::LostMode => self.apply_lost_mode(&command.payload_json, &mut exec),
+            ServerCommand::LocateDevice => {
+                self.apply_device_locate(&command.payload_json, &mut exec)
+            }
+            ServerCommand::InstallApp => self.apply_app_install(&command.payload_json, &mut exec),
+            ServerCommand::RemoveApp => self.apply_app_remove(&command.payload_json, &mut exec),
+            ServerCommand::UpdateApp => self.apply_app_update(&command.payload_json, &mut exec),
+            ServerCommand::ApplyProfile => {
+                self.apply_config_profile(&command.payload_json, &mut exec)
+            }
+            _ => {}
         }
 
         info!(
@@ -150,6 +174,150 @@ impl AgentRuntime {
         }
     }
 
+    fn apply_device_lock(&self, payload_json: &str, exec: &mut CommandExecution) {
+        if !mdm_action_allowed("lock") {
+            exec.outcome = CommandOutcome::Ignored;
+            exec.status = "failed";
+            exec.detail = "device lock blocked by policy".to_string();
+            return;
+        }
+        let _payload = parse_device_payload(payload_json);
+        if let Err(err) = run_command_sequence(&[
+            ("loginctl", &["lock-session"]),
+            ("xdg-screensaver", &["lock"]),
+        ]) {
+            exec.outcome = CommandOutcome::Ignored;
+            exec.status = "failed";
+            exec.detail = format!("device lock failed: {}", err);
+        } else {
+            exec.detail = "device lock command issued".to_string();
+        }
+    }
+
+    fn apply_device_wipe(&self, payload_json: &str, exec: &mut CommandExecution) {
+        if !mdm_action_allowed("wipe") {
+            exec.outcome = CommandOutcome::Ignored;
+            exec.status = "failed";
+            exec.detail = "device wipe blocked by policy".to_string();
+            return;
+        }
+        let _payload = parse_device_payload(payload_json);
+        let mut removed = Vec::new();
+        for path in [
+            &self.config.offline_buffer_path,
+            "/var/lib/eguard-agent/quarantine",
+            "/var/lib/eguard-agent/baselines.bin",
+        ] {
+            if let Err(err) = remove_path(path) {
+                exec.outcome = CommandOutcome::Ignored;
+                exec.status = "failed";
+                exec.detail = format!("wipe failed: {}", err);
+                return;
+            }
+            removed.push(path.to_string());
+        }
+        exec.detail = format!("wipe completed for {}", removed.join(", "));
+    }
+
+    fn apply_device_retire(&mut self, payload_json: &str, exec: &mut CommandExecution) {
+        if !mdm_action_allowed("retire") {
+            exec.outcome = CommandOutcome::Ignored;
+            exec.status = "failed";
+            exec.detail = "device retire blocked by policy".to_string();
+            return;
+        }
+        let _payload = parse_device_payload(payload_json);
+        if let Err(err) = write_marker("/var/lib/eguard-agent/retired") {
+            exec.outcome = CommandOutcome::Ignored;
+            exec.status = "failed";
+            exec.detail = format!("retire marker failed: {}", err);
+            return;
+        }
+        self.enrolled = false;
+        exec.detail = "device retired".to_string();
+    }
+
+    fn apply_device_restart(&self, payload_json: &str, exec: &mut CommandExecution) {
+        if !mdm_action_allowed("restart") {
+            exec.outcome = CommandOutcome::Ignored;
+            exec.status = "failed";
+            exec.detail = "device restart blocked by policy".to_string();
+            return;
+        }
+        let _payload = parse_device_payload(payload_json);
+        if let Err(err) = run_command_sequence(&[("systemctl", &["reboot"])]) {
+            exec.outcome = CommandOutcome::Ignored;
+            exec.status = "failed";
+            exec.detail = format!("restart failed: {}", err);
+        } else {
+            exec.detail = "restart requested".to_string();
+        }
+    }
+
+    fn apply_lost_mode(&self, payload_json: &str, exec: &mut CommandExecution) {
+        let _payload = parse_device_payload(payload_json);
+        if let Err(err) = write_marker("/var/lib/eguard-agent/lost_mode") {
+            exec.outcome = CommandOutcome::Ignored;
+            exec.status = "failed";
+            exec.detail = format!("lost mode marker failed: {}", err);
+        } else {
+            exec.detail = "lost mode enabled".to_string();
+        }
+    }
+
+    fn apply_device_locate(&self, _payload_json: &str, exec: &mut CommandExecution) {
+        let ip = super::inventory::resolve_primary_ip().unwrap_or_default();
+        exec.detail = if ip.is_empty() {
+            "device locate requested (no ip)".to_string()
+        } else {
+            format!("device ip: {}", ip)
+        };
+    }
+
+    fn apply_app_install(&self, payload_json: &str, exec: &mut CommandExecution) {
+        apply_app_command("install", payload_json, exec);
+    }
+
+    fn apply_app_remove(&self, payload_json: &str, exec: &mut CommandExecution) {
+        apply_app_command("remove", payload_json, exec);
+    }
+
+    fn apply_app_update(&self, payload_json: &str, exec: &mut CommandExecution) {
+        apply_app_command("update", payload_json, exec);
+    }
+
+    fn apply_config_profile(&self, payload_json: &str, exec: &mut CommandExecution) {
+        let payload: ProfilePayload = match serde_json::from_str(payload_json) {
+            Ok(payload) => payload,
+            Err(err) => {
+                exec.outcome = CommandOutcome::Ignored;
+                exec.status = "failed";
+                exec.detail = format!("invalid profile payload: {}", err);
+                return;
+            }
+        };
+        if payload.profile_id.trim().is_empty() {
+            exec.outcome = CommandOutcome::Ignored;
+            exec.status = "failed";
+            exec.detail = "profile_id required".to_string();
+            return;
+        }
+        let path = format!("/var/lib/eguard-agent/profiles/{}.json", payload.profile_id);
+        if let Err(err) = std::fs::create_dir_all("/var/lib/eguard-agent/profiles") {
+            exec.outcome = CommandOutcome::Ignored;
+            exec.status = "failed";
+            exec.detail = format!("profile dir create failed: {}", err);
+            return;
+        }
+        if let Err(err) = std::fs::write(&path, payload.profile_json.as_bytes()) {
+            exec.outcome = CommandOutcome::Ignored;
+            exec.status = "failed";
+            exec.detail = format!("profile write failed: {}", err);
+            return;
+        }
+        exec.detail = format!("profile stored: {}", path);
+    }
+
     async fn ack_command_result(&self, command_id: &str, status: &str) {
         let ack = self
             .client
@@ -209,5 +377,157 @@ fn resolve_network_profile_dir() -> PathBuf {
         PathBuf::from("/etc/NetworkManager/system-connections")
     } else {
         PathBuf::from(raw.trim())
+    }
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct DeviceActionPayload {
+    #[serde(default)]
+    force: bool,
+    #[serde(default)]
+    reason: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct AppPayload {
+    #[serde(default)]
+    package_name: String,
+    #[serde(default)]
+    version: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ProfilePayload {
+    #[serde(default)]
+    profile_id: String,
+    #[serde(default)]
+    profile_json: String,
+}
+
+fn parse_device_payload(payload_json: &str) -> DeviceActionPayload {
+    serde_json::from_str(payload_json).unwrap_or_default()
+}
+
+fn mdm_action_allowed(action: &str) -> bool {
+    let normalized = action.trim().to_ascii_lowercase();
+    if normalized == "lock" || normalized == "locate" || normalized == "lost_mode" {
+        return true;
+    }
+
+    if std::env::var("EGUARD_MDM_ALLOW_ALL")
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+
+    let allow_env = format!("EGUARD_MDM_ALLOW_{}", normalized.to_ascii_uppercase());
+    if std::env::var(allow_env)
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+
+    if matches!(normalized.as_str(), "wipe" | "retire" | "restart") {
+        return std::env::var("EGUARD_MDM_ALLOW_DESTRUCTIVE")
+            .ok()
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+    }
+
+    if normalized.starts_with("app_") || normalized == "app" {
+        return std::env::var("EGUARD_MDM_ALLOW_APP_MANAGEMENT")
+            .ok()
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+    }
+
+    false
+}
+
+fn run_command_sequence(commands: &[(&str, &[&str])]) -> Result<(), String> {
+    for (cmd, args) in commands {
+        match std::process::Command::new(cmd).args(*args).status() {
+            Ok(status) if status.success() => return Ok(()),
+            Ok(_) => continue,
+            Err(err) => {
+                return Err(format!("{}: {}", cmd, err));
+            }
+        }
+    }
+    Err("all command attempts failed".to_string())
+}
+
+fn remove_path(path: &str) -> Result<(), String> {
+    let path = std::path::Path::new(path);
+    if !path.exists() {
+        return Ok(());
+    }
+    if path.is_dir() {
+        std::fs::remove_dir_all(path).map_err(|err| format!("remove dir {}: {}", path.display(), err))
+    } else {
+        std::fs::remove_file(path).map_err(|err| format!("remove file {}: {}", path.display(), err))
+    }
+}
+
+fn write_marker(path: &str) -> Result<(), String> {
+    let content = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs().to_string())
+        .unwrap_or_else(|_| "0".to_string());
+    std::fs::create_dir_all("/var/lib/eguard-agent")
+        .map_err(|err| format!("create marker dir: {}", err))?;
+    std::fs::write(path, content.as_bytes())
+        .map_err(|err| format!("write marker {}: {}", path, err))
+}
+
+fn apply_app_command(action: &str, payload_json: &str, exec: &mut CommandExecution) {
+    if !mdm_action_allowed("app") {
+        exec.outcome = CommandOutcome::Ignored;
+        exec.status = "failed";
+        exec.detail = "app management blocked by policy".to_string();
+        return;
+    }
+
+    let payload: AppPayload = match serde_json::from_str(payload_json) {
+        Ok(payload) => payload,
+        Err(err) => {
+            exec.outcome = CommandOutcome::Ignored;
+            exec.status = "failed";
+            exec.detail = format!("invalid app payload: {}", err);
+            return;
+        }
+    };
+
+    if payload.package_name.trim().is_empty() {
+        exec.outcome = CommandOutcome::Ignored;
+        exec.status = "failed";
+        exec.detail = "package_name required".to_string();
+        return;
+    }
+
+    let package = if payload.version.trim().is_empty() {
+        payload.package_name.clone()
+    } else {
+        format!("{}={}", payload.package_name, payload.version)
+    };
+
+    let args = match action {
+        "install" => vec!["install", "-y", package.as_str()],
+        "remove" => vec!["remove", "-y", payload.package_name.as_str()],
+        "update" => vec!["install", "-y", package.as_str()],
+        _ => vec!["install", "-y", package.as_str()],
+    };
+
+    let cmd_args = args.iter().map(|s| *s).collect::<Vec<_>>();
+    if let Err(err) = run_command_sequence(&[("apt-get", &cmd_args)]) {
+        exec.outcome = CommandOutcome::Ignored;
+        exec.status = "failed";
+        exec.detail = format!("app {} failed: {}", action, err);
+    } else {
+        exec.detail = format!("app {} executed for {}", action, payload.package_name);
     }
 }

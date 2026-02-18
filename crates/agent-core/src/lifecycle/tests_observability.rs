@@ -174,6 +174,195 @@ fn telemetry_audit_payload_includes_rule_attribution() {
     assert!(audit["exploit_indicators"].as_array().unwrap().iter().any(|v| v == "fileless_memfd"));
 }
 
+#[test]
+// AC-NAC-022 AC-TST-063
+fn telemetry_payload_includes_nac_fields() {
+    let cfg = AgentConfig::default();
+    let runtime = AgentRuntime::new(cfg).expect("runtime");
+
+    let enriched = platform_linux::EnrichedEvent {
+        event: platform_linux::RawEvent {
+            event_type: platform_linux::EventType::ProcessExec,
+            pid: 42,
+            uid: 0,
+            ts_ns: 0,
+            payload: "".to_string(),
+        },
+        process_exe: Some("/usr/bin/bash".to_string()),
+        process_exe_sha256: None,
+        process_cmdline: Some("/usr/bin/bash".to_string()),
+        parent_process: Some("init".to_string()),
+        parent_chain: vec![1],
+        file_path: Some("/usr/bin/bash".to_string()),
+        file_path_secondary: None,
+        file_write: false,
+        file_sha256: None,
+        event_size: None,
+        dst_ip: None,
+        dst_port: None,
+        dst_domain: None,
+        container_runtime: Some("host".to_string()),
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
+    };
+
+    let event = detection::TelemetryEvent {
+        ts_unix: 10,
+        event_class: detection::EventClass::ProcessExec,
+        pid: 42,
+        ppid: 1,
+        uid: 0,
+        process: "bash".to_string(),
+        parent_process: "init".to_string(),
+        session_id: 42,
+        file_path: Some("/usr/bin/bash".to_string()),
+        file_write: false,
+        file_hash: None,
+        dst_port: None,
+        dst_ip: None,
+        dst_domain: None,
+        command_line: Some("/usr/bin/bash".to_string()),
+        event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
+    };
+
+    let outcome = detection::DetectionOutcome {
+        confidence: detection::Confidence::High,
+        signals: detection::DetectionSignals {
+            z1_exact_ioc: false,
+            z2_temporal: true,
+            z3_anomaly_high: false,
+            z3_anomaly_med: false,
+            z4_kill_chain: false,
+            l1_prefilter_hit: false,
+            exploit_indicator: false,
+            kernel_integrity: false,
+            tamper_indicator: false,
+        },
+        temporal_hits: vec!["sigma.exec".to_string()],
+        kill_chain_hits: Vec::new(),
+        exploit_indicators: Vec::new(),
+        kernel_integrity_indicators: Vec::new(),
+        tamper_indicators: Vec::new(),
+        yara_hits: Vec::new(),
+        anomaly: None,
+        layer1: detection::Layer1EventHit::default(),
+        ml_score: None,
+        behavioral_alarms: Vec::new(),
+    };
+
+    let payload = runtime.telemetry_payload_json(&enriched, &event, &outcome, detection::Confidence::High, 10);
+    let value: serde_json::Value = serde_json::from_str(&payload).expect("valid json");
+
+    let detection = &value["detection"];
+    assert_eq!(detection["rule_type"], "sigma");
+    assert!(detection["detection_layers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|layer| layer == "L2_sigma"));
+
+    let audit = &value["audit"];
+    assert_eq!(audit["primary_rule_name"], "sigma.exec");
+}
+
+#[test]
+// AC-DET-228 AC-TST-065
+fn telemetry_payload_includes_correlation_event_fields() {
+    let cfg = AgentConfig::default();
+    let runtime = AgentRuntime::new(cfg).expect("runtime");
+
+    let enriched = platform_linux::EnrichedEvent {
+        event: platform_linux::RawEvent {
+            event_type: platform_linux::EventType::ProcessExec,
+            pid: 99,
+            uid: 0,
+            ts_ns: 0,
+            payload: "".to_string(),
+        },
+        process_exe: Some("/usr/bin/python".to_string()),
+        process_exe_sha256: None,
+        process_cmdline: Some("/usr/bin/python".to_string()),
+        parent_process: Some("init".to_string()),
+        parent_chain: vec![1],
+        file_path: Some("/usr/bin/python".to_string()),
+        file_path_secondary: None,
+        file_write: false,
+        file_sha256: Some("deadbeef".to_string()),
+        event_size: None,
+        dst_ip: Some("10.0.0.5".to_string()),
+        dst_port: Some(443),
+        dst_domain: Some("evil.example".to_string()),
+        container_runtime: Some("host".to_string()),
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
+    };
+
+    let event = detection::TelemetryEvent {
+        ts_unix: 99,
+        event_class: detection::EventClass::ProcessExec,
+        pid: 99,
+        ppid: 1,
+        uid: 0,
+        process: "python".to_string(),
+        parent_process: "init".to_string(),
+        session_id: 9001,
+        file_path: Some("/usr/bin/python".to_string()),
+        file_write: false,
+        file_hash: Some("deadbeef".to_string()),
+        dst_port: Some(443),
+        dst_ip: Some("10.0.0.5".to_string()),
+        dst_domain: Some("evil.example".to_string()),
+        command_line: Some("/usr/bin/python".to_string()),
+        event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
+    };
+
+    let outcome = detection::DetectionOutcome {
+        confidence: detection::Confidence::High,
+        signals: detection::DetectionSignals {
+            z1_exact_ioc: false,
+            z2_temporal: false,
+            z3_anomaly_high: false,
+            z3_anomaly_med: false,
+            z4_kill_chain: false,
+            l1_prefilter_hit: false,
+            exploit_indicator: false,
+            kernel_integrity: false,
+            tamper_indicator: false,
+        },
+        temporal_hits: Vec::new(),
+        kill_chain_hits: Vec::new(),
+        exploit_indicators: Vec::new(),
+        kernel_integrity_indicators: Vec::new(),
+        tamper_indicators: Vec::new(),
+        yara_hits: Vec::new(),
+        anomaly: None,
+        layer1: detection::Layer1EventHit::default(),
+        ml_score: None,
+        behavioral_alarms: Vec::new(),
+    };
+
+    let payload = runtime.telemetry_payload_json(&enriched, &event, &outcome, detection::Confidence::High, 99);
+    let value: serde_json::Value = serde_json::from_str(&payload).expect("valid json");
+
+    let event_value = &value["event"];
+    assert_eq!(event_value["session_id"], 9001);
+    assert_eq!(event_value["process"], "python");
+    assert_eq!(event_value["parent_process"], "init");
+    assert_eq!(event_value["file_hash"], "deadbeef");
+    assert_eq!(event_value["dst_domain"], "evil.example");
+    assert_eq!(event_value["dst_ip"], "10.0.0.5");
+}
+
 #[tokio::test]
 // AC-OBS-001 AC-OBS-003 AC-OBS-005
 async fn observability_snapshot_tracks_send_failure_degraded_transition_and_queue_depth() {

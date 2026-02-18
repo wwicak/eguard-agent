@@ -692,11 +692,13 @@ async fn send_compliance_offline_returns_error() {
             agent_id: "agent-1".to_string(),
             policy_id: "policy-1".to_string(),
             policy_version: String::new(),
+            policy_hash: String::new(),
+            schema_version: String::new(),
             checked_at_unix: 0,
             overall_status: String::new(),
             checks: Vec::new(),
             check_type: "firewall_enabled".to_string(),
-            status: "fail".to_string(),
+            status: "non_compliant".to_string(),
             detail: "firewall off".to_string(),
             expected_value: "true".to_string(),
             actual_value: "false".to_string(),
@@ -1101,6 +1103,16 @@ impl pb::telemetry_service_server::TelemetryService for MockTelemetryService {
         .map_err(|_| Status::internal("failed to send telemetry ack"))?;
         drop(tx);
         Ok(Response::new(ReceiverStream::new(rx)))
+    }
+
+    async fn report_inventory(
+        &self,
+        _request: Request<pb::InventoryReport>,
+    ) -> Result<Response<pb::InventoryAck>, Status> {
+        Ok(Response::new(pb::InventoryAck {
+            status: "ok".to_string(),
+            next_report_override_secs: 0,
+        }))
     }
 }
 
@@ -1679,19 +1691,28 @@ async fn send_compliance_grpc_captures_report_fields() {
             agent_id: "agent-comp-1".to_string(),
             policy_id: "policy-xyz".to_string(),
             policy_version: "v2".to_string(),
+            policy_hash: "hash-1".to_string(),
+            schema_version: "v2".to_string(),
             checked_at_unix: 4242,
             overall_status: "non_compliant".to_string(),
             checks: vec![ComplianceCheckEnvelope {
+                check_id: "firewall_enabled".to_string(),
                 check_type: "firewall_enabled".to_string(),
-                status: "fail".to_string(),
+                status: "non_compliant".to_string(),
+                severity: "high".to_string(),
                 actual_value: "false".to_string(),
                 expected_value: "true".to_string(),
                 detail: "firewall disabled".to_string(),
+                evidence_json: "{\"actual\":\"false\"}".to_string(),
+                evidence_source: "legacy".to_string(),
+                collected_at_unix: 4242,
+                grace_expires_at_unix: 0,
+                remediation_action_id: String::new(),
                 auto_remediated: false,
                 remediation_detail: String::new(),
             }],
             check_type: "firewall_enabled".to_string(),
-            status: "fail".to_string(),
+            status: "non_compliant".to_string(),
             detail: "firewall disabled".to_string(),
             expected_value: "true".to_string(),
             actual_value: "false".to_string(),
@@ -1706,20 +1727,25 @@ async fn send_compliance_grpc_captures_report_fields() {
         assert_eq!(report.agent_id, "agent-comp-1");
         assert_eq!(report.policy_id, "policy-xyz");
         assert_eq!(report.policy_version, "v2");
+        assert_eq!(report.policy_hash, "hash-1");
+        assert_eq!(report.schema_version, "v2");
         assert_eq!(report.checked_at, 4242);
         assert_eq!(report.check_type, "firewall_enabled");
-        assert_eq!(report.status, "fail");
+        assert_eq!(report.status, "non_compliant");
         assert_eq!(report.detail, "firewall disabled");
         assert_eq!(report.expected_value, "true");
         assert_eq!(report.actual_value, "false");
         assert_eq!(report.overall_status, pb::ComplianceStatus::NonCompliant as i32);
         assert_eq!(report.checks.len(), 1);
         let check = &report.checks[0];
+        assert_eq!(check.check_id, "firewall_enabled");
         assert_eq!(check.check_type, "firewall_enabled");
         assert_eq!(check.status, pb::CheckStatus::Fail as i32);
+        assert_eq!(check.severity, "high");
         assert_eq!(check.actual_value, "false");
         assert_eq!(check.expected_value, "true");
         assert_eq!(check.detail, "firewall disabled");
+        assert_eq!(check.evidence_source, "legacy");
     }
 
     server.shutdown().await;

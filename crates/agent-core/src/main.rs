@@ -25,6 +25,19 @@ async fn main() -> Result<()> {
         "eguard-agent core started"
     );
 
+    if env_flag_enabled("EGUARD_SELF_PROTECT_RUN_ONCE") {
+        if let Some(delay_secs) = env_u64("EGUARD_SELF_PROTECT_RUN_ONCE_DELAY_SECS") {
+            time::sleep(Duration::from_secs(delay_secs)).await;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or_default();
+        runtime.run_self_protection_if_due(now).await?;
+        info!("self-protect run-once completed");
+        return Ok(());
+    }
+
     let mut tick = time::interval(Duration::from_millis(100));
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
@@ -46,4 +59,17 @@ async fn main() -> Result<()> {
 
     info!("eguard-agent stopped");
     Ok(())
+}
+
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|raw| matches!(raw.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
+fn env_u64(name: &str) -> Option<u64> {
+    std::env::var(name)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
 }

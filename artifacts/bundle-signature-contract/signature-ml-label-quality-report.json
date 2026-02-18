@@ -1,13 +1,28 @@
 {
   "suite": "signature_ml_label_quality_gate",
+  "recorded_at_utc": "2026-02-17T12:44:21Z",
   "status": "pass",
+  "mode": "enforced",
+  "thresholds": {
+    "min_adjudicated": 400,
+    "min_positive": 120,
+    "min_negative": 220,
+    "min_unique_hosts": 80,
+    "min_unique_rules": 120,
+    "max_unresolved_ratio": 0.2,
+    "max_p95_label_latency_days": 6.0,
+    "fail_on_threshold": true
+  },
   "measured": {
-    "adjudicated_count": 662,
-    "positive_count": 176,
-    "negative_count": 486,
-    "unresolved_ratio": 0.0806,
-    "unique_hosts": 160,
-    "unique_rules": 220,
-    "p95_label_latency_days": 2.4
-  }
+    "total_count": 720,
+    "adjudicated_count": 660,
+    "unresolved_count": 60,
+    "positive_count": 182,
+    "negative_count": 478,
+    "unresolved_ratio": 0.0833,
+    "unique_hosts": 158,
+    "unique_rules": 213,
+    "p95_label_latency_days": 4.7083
+  },
+  "failures": []
 }

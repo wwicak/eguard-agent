@@ -48,15 +48,13 @@ fn evaluate_snapshot_reports_package_and_kernel_failures() {
     snapshot.installed_packages = Some(installed);
 
     let result = evaluate_snapshot(&policy, &snapshot);
-    assert_eq!(result.status, "fail");
-    assert!(result
-        .checks
-        .iter()
-        .any(|check| { check.check == "firewall_required" && check.status == "fail" }));
-    assert!(result
-        .checks
-        .iter()
-        .any(|check| { check.check.starts_with("package_absent:") && check.status == "fail" }));
+    assert_eq!(result.status, "non_compliant");
+    assert!(result.checks.iter().any(|check| {
+        check.check_type == "firewall_required" && check.status == "non_compliant"
+    }));
+    assert!(result.checks.iter().any(|check| {
+        check.check_type.starts_with("package_absent:") && check.status == "non_compliant"
+    }));
 }
 
 #[test]
@@ -131,12 +129,16 @@ fn execute_remediation_actions_reports_failures() {
             command: "ok".to_string(),
             args: Vec::new(),
             reason: "test".to_string(),
+            allowlist_id: String::new(),
+            mode: String::new(),
         },
         RemediationAction {
             action_id: "a2".to_string(),
             command: "fail".to_string(),
             args: Vec::new(),
             reason: "test".to_string(),
+            allowlist_id: String::new(),
+            mode: String::new(),
         },
     ];
 
@@ -177,8 +179,8 @@ fn evaluate_snapshot_passes_when_all_checks_succeed() {
     snapshot.installed_packages = Some(installed);
 
     let result = evaluate_snapshot(&policy, &snapshot);
-    assert_eq!(result.status, "pass");
-    assert!(result.checks.iter().all(|c| c.status == "pass"));
+    assert_eq!(result.status, "compliant");
+    assert!(result.checks.iter().all(|c| c.status == "compliant"));
 }
 
 #[test]
@@ -198,14 +200,12 @@ fn package_checks_are_case_insensitive() {
     snapshot.installed_packages = Some(installed);
 
     let result = evaluate_snapshot(&policy, &snapshot);
-    assert!(result
-        .checks
-        .iter()
-        .any(|c| c.check == "package_present:AuditD" && c.status == "pass"));
-    assert!(result
-        .checks
-        .iter()
-        .any(|c| c.check == "package_absent:TelNetD" && c.status == "fail"));
+    assert!(result.checks.iter().any(|c| {
+        c.check_type == "package_present:AuditD" && c.status == "compliant"
+    }));
+    assert!(result.checks.iter().any(|c| {
+        c.check_type == "package_absent:TelNetD" && c.status == "non_compliant"
+    }));
 }
 
 #[test]
@@ -238,15 +238,15 @@ fn missing_probe_values_fail_strict_checks() {
     let snapshot = SystemSnapshot::minimal(true, "6.8.0");
 
     let result = evaluate_snapshot(&policy, &snapshot);
-    assert_eq!(result.status, "fail");
+    assert_eq!(result.status, "non_compliant");
     assert!(result
         .checks
         .iter()
-        .any(|c| c.check == "disk_encryption" && c.status == "fail"));
+        .any(|c| c.check_type == "disk_encryption" && c.status == "non_compliant"));
     assert!(result
         .checks
         .iter()
-        .any(|c| c.check == "ssh_root_login" && c.status == "fail"));
+        .any(|c| c.check_type == "ssh_root_login" && c.status == "non_compliant"));
 }
 
 #[test]
@@ -297,7 +297,7 @@ fn required_services_check_fails_when_service_not_running() {
     assert!(result
         .checks
         .iter()
-        .any(|c| c.check == "service_running:sshd" && c.status == "fail"));
+        .any(|c| c.check_type == "service_running:sshd" && c.status == "non_compliant"));
 }
 
 #[test]
@@ -314,7 +314,7 @@ fn password_policy_check_uses_hardened_probe_flag() {
     assert!(result
         .checks
         .iter()
-        .any(|c| c.check == "password_policy" && c.status == "pass"));
+        .any(|c| c.check_type == "password_policy" && c.status == "compliant"));
 }
 
 #[test]
@@ -331,7 +331,7 @@ fn screen_lock_check_uses_probe_flag() {
     assert!(result
         .checks
         .iter()
-        .any(|c| c.check == "screen_lock_enabled" && c.status == "fail"));
+        .any(|c| c.check_type == "screen_lock_enabled" && c.status == "non_compliant"));
 }
 
 #[test]
@@ -348,7 +348,7 @@ fn auto_updates_check_uses_probe_flag() {
     assert!(result
         .checks
         .iter()
-        .any(|c| c.check == "auto_updates" && c.status == "pass"));
+        .any(|c| c.check_type == "auto_updates" && c.status == "compliant"));
 }
 
 #[test]
@@ -371,7 +371,7 @@ fn antivirus_check_uses_probe_flag() {
     assert!(result
         .checks
         .iter()
-        .any(|c| c.check == "antivirus_running" && c.status == "fail"));
+        .any(|c| c.check_type == "antivirus_running" && c.status == "non_compliant"));
 }
 
 #[test]
@@ -405,7 +405,7 @@ fn os_version_gte_check_compares_numeric_prefix() {
     assert!(result
         .checks
         .iter()
-        .any(|c| c.check == "os_version_gte" && c.status == "pass"));
+        .any(|c| c.check_type == "os_version_gte" && c.status == "compliant"));
 }
 
 #[test]
@@ -420,7 +420,7 @@ fn firewall_required_check_maps_to_expected_fail_and_remediation() {
     assert!(result
         .checks
         .iter()
-        .any(|c| c.check == "firewall_required" && c.status == "fail"));
+        .any(|c| c.check_type == "firewall_required" && c.status == "non_compliant"));
 
     let actions = plan_remediation_actions(&policy, &snapshot);
     assert!(actions.iter().any(|a| a.action_id == "enable_firewall"));

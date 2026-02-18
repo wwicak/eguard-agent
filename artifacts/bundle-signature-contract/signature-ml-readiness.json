@@ -1,12 +1,97 @@
 {
   "suite": "signature_ml_readiness_gate",
+  "recorded_at_utc": "2026-02-17T12:44:21Z",
   "status": "pass",
-  "mode": "shadow",
-  "readiness_tier": "strong",
+  "mode": "enforced",
+  "readiness_tier": "at_risk",
+  "thresholds": {
+    "min_final_score": 50.0,
+    "max_score_drop": 3.0,
+    "fail_on_threshold": true,
+    "fail_on_score_drop": false
+  },
   "scores": {
-    "final_score": 90.0,
+    "final_score": 57.45,
     "previous_final_score": null,
     "score_delta": null,
     "score_drop": null
-  }
+  },
+  "components": {
+    "signature_scale": {
+      "available": true,
+      "score": 66.67,
+      "details": {
+        "signature_total": 2,
+        "database_total": 6,
+        "min_signature_total": 2,
+        "min_database_total": 6,
+        "signature_ratio": 0.6667,
+        "database_ratio": 0.6667
+      }
+    },
+    "source_diversity": {
+      "available": true,
+      "score": 51.71,
+      "details": {
+        "yara_source_count": 1,
+        "sigma_source_count": 1,
+        "min_yara_sources": 1,
+        "min_sigma_sources": 1,
+        "yara_ratio": 0.5714,
+        "sigma_ratio": 0.5714,
+        "yara_balance": 0.3,
+        "sigma_balance": 0.3,
+        "balance": 0.3
+      }
+    },
+    "exploit_intel": {
+      "available": true,
+      "score": 46.67,
+      "details": {
+        "cve_count": 1,
+        "cve_kev_count": 1,
+        "cve_epss_count": 0,
+        "min_cve": 1,
+        "min_cve_kev": 1,
+        "cve_ratio": 0.6667,
+        "kev_ratio": 0.6667,
+        "epss_coverage_ratio": 0.0,
+        "epss_ratio": 0.0
+      }
+    },
+    "attack_surface": {
+      "available": false,
+      "score": null,
+      "reason": "attack coverage report not provided"
+    },
+    "critical_resilience": {
+      "available": false,
+      "score": null,
+      "reason": "critical ATT&CK gate report not provided"
+    }
+  },
+  "component_weights": {
+    "signature_scale": 0.3,
+    "source_diversity": 0.2,
+    "exploit_intel": 0.15,
+    "attack_surface": 0.2,
+    "critical_resilience": 0.15
+  },
+  "inputs": {
+    "manifest": "/tmp/tmp.2ve3ipR8NR/bundle/manifest.json",
+    "coverage": "/tmp/tmp.2ve3ipR8NR/coverage-metrics.json",
+    "attack_coverage": null,
+    "critical_gate": null,
+    "critical_regression": null,
+    "critical_owner_streak": null,
+    "burndown_scoreboard": null,
+    "previous": null
+  },
+  "warnings": [
+    "source diversity score below 75.0",
+    "attack_surface unavailable: attack coverage report not provided",
+    "critical_resilience unavailable: critical ATT&CK gate report not provided"
+  ],
+  "failures": [],
+  "enforced_failures": []
 }

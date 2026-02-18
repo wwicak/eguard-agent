@@ -1,12 +1,49 @@
 {
   "suite": "signature_ml_readiness_trend_gate",
-  "status": "pass_no_baseline",
-  "history_status": "no_baseline",
+  "recorded_at_utc": "2026-02-17T12:44:21Z",
+  "status": "pass",
+  "history_status": "baseline_available",
+  "thresholds": {
+    "max_score_drop": 10.0,
+    "max_component_drop": 25.0,
+    "max_tier_drop": 1,
+    "max_consecutive_alerts": 3,
+    "fail_on_regression": true
+  },
   "scores": {
-    "current_final_score": 90.0,
-    "previous_final_score": null,
-    "score_delta": null,
-    "score_drop": null
+    "current_final_score": 57.45,
+    "previous_final_score": 56.8,
+    "score_delta": 0.65,
+    "score_drop": -0.65
+  },
+  "tiers": {
+    "current": "at_risk",
+    "previous": "at_risk",
+    "delta": 0,
+    "drop": 0
+  },
+  "components": {
+    "current": {
+      "signature_scale": 66.67,
+      "source_diversity": 51.71,
+      "exploit_intel": 46.67
+    },
+    "previous": {
+      "exploit_intel": 44.0,
+      "signature_scale": 65.0,
+      "source_diversity": 49.0
+    },
+    "deltas": {
+      "exploit_intel": 2.67,
+      "signature_scale": 1.67,
+      "source_diversity": 2.71
+    },
+    "drops": {}
+  },
+  "alerts": {
+    "previous_consecutive_alerts": 0,
+    "projected_consecutive_alerts": 0,
+    "regression_count": 0
   },
   "regressions": []
 }

@@ -29,6 +29,7 @@ impl AgentConfig {
         self.apply_file_telemetry(file_cfg.telemetry);
         self.apply_file_detection(file_cfg.detection);
         self.apply_file_compliance(file_cfg.compliance);
+        self.apply_file_inventory(file_cfg.inventory);
         self.apply_file_baseline(file_cfg.baseline);
         self.apply_file_self_protection(file_cfg.self_protection);
 
@@ -241,6 +242,12 @@ impl AgentConfig {
         if let Some(v) = detection.memory_scan_max_pids {
             self.detection_memory_scan_max_pids = v;
         }
+        if let Some(v) = detection.kernel_integrity_enabled {
+            self.detection_kernel_integrity_enabled = v;
+        }
+        if let Some(v) = detection.kernel_integrity_interval_secs {
+            self.detection_kernel_integrity_interval_secs = v;
+        }
         if let Some(v) = detection.ransomware_write_threshold {
             self.detection_ransomware_write_threshold = v;
         }
@@ -282,6 +289,18 @@ impl AgentConfig {
         }
         if let Some(v) = compliance.auto_remediate {
             self.compliance_auto_remediate = v;
+        }
+    }
+
+    fn apply_file_inventory(&mut self, inventory: Option<FileInventoryConfig>) {
+        let Some(inventory) = inventory else {
+            return;
+        };
+        if let Some(v) = inventory.interval_secs {
+            self.inventory_interval_secs = v;
+        }
+        if let Some(v) = inventory.ownership {
+            self.device_ownership = v;
         }
     }
 
@@ -335,6 +354,8 @@ struct FileConfig {
     detection: Option<FileDetectionConfig>,
     #[serde(default)]
     compliance: Option<FileComplianceConfig>,
+    #[serde(default)]
+    inventory: Option<FileInventoryConfig>,
     #[serde(default)]
     baseline: Option<FileBaselineConfig>,
     #[serde(default)]
@@ -502,6 +523,10 @@ struct FileDetectionConfig {
     #[serde(default)]
     memory_scan_max_pids: Option<usize>,
     #[serde(default)]
+    kernel_integrity_enabled: Option<bool>,
+    #[serde(default)]
+    kernel_integrity_interval_secs: Option<u64>,
+    #[serde(default)]
     ransomware_write_threshold: Option<u32>,
     #[serde(default)]
     ransomware_write_window_secs: Option<u64>,
@@ -529,6 +554,14 @@ struct FileComplianceConfig {
     check_interval_secs: Option<u64>,
     #[serde(default)]
     auto_remediate: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct FileInventoryConfig {
+    #[serde(default)]
+    interval_secs: Option<u64>,
+    #[serde(default)]
+    ownership: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

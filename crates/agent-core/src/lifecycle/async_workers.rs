@@ -114,6 +114,17 @@ impl AgentRuntime {
                             error,
                         }
                     }
+                    PendingControlPlaneSend::Inventory { envelope } => {
+                        let error = client
+                            .send_inventory(&envelope)
+                            .await
+                            .err()
+                            .map(|err| err.to_string());
+                        AsyncWorkerResult::ControlPlaneSend {
+                            kind: "inventory",
+                            error,
+                        }
+                    }
                 }
             });
         }

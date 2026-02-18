@@ -45,6 +45,7 @@ tonic-prost-build = "0.14"
 protoc-bin-vendored = "3"
 aho-corasick = "1.1"
 lru = "0.16.3"
+regex = "1"
 
 [profile.release]
 codegen-units = 1

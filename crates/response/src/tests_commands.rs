@@ -11,6 +11,7 @@ fn state(
         last_scan_unix,
         last_update_unix,
         uninstall_requested,
+        ..HostControlState::default()
     }
 }
 
@@ -39,6 +40,16 @@ fn parse_server_command_accepts_all_supported_literals_and_aliases() {
         parse_server_command("push_emergency_rule"),
         ServerCommand::EmergencyRulePush
     );
+    assert_eq!(parse_server_command("lock_device"), ServerCommand::LockDevice);
+    assert_eq!(parse_server_command("wipe"), ServerCommand::WipeDevice);
+    assert_eq!(parse_server_command("retire"), ServerCommand::RetireDevice);
+    assert_eq!(parse_server_command("restart"), ServerCommand::RestartDevice);
+    assert_eq!(parse_server_command("lost_mode"), ServerCommand::LostMode);
+    assert_eq!(parse_server_command("locate"), ServerCommand::LocateDevice);
+    assert_eq!(parse_server_command("install_app"), ServerCommand::InstallApp);
+    assert_eq!(parse_server_command("remove_app"), ServerCommand::RemoveApp);
+    assert_eq!(parse_server_command("update_app"), ServerCommand::UpdateApp);
+    assert_eq!(parse_server_command("apply_profile"), ServerCommand::ApplyProfile);
 
     assert_eq!(
         parse_server_command("  emergency_rule_push  "),
@@ -248,6 +259,51 @@ fn command_alias_table_maps_parse_and_execution_state_effects() {
             case.raw
         );
     }
+}
+
+#[test]
+fn execute_server_commands_update_mdm_state_fields() {
+    let mut state = HostControlState::default();
+
+    let lock = execute_server_command_with_state(ServerCommand::LockDevice, 201, &mut state);
+    assert_eq!(lock.outcome, CommandOutcome::Applied);
+    assert_eq!(state.last_lock_unix, Some(201));
+
+    let wipe = execute_server_command_with_state(ServerCommand::WipeDevice, 202, &mut state);
+    assert_eq!(wipe.outcome, CommandOutcome::Applied);
+    assert_eq!(state.last_wipe_unix, Some(202));
+
+    let retire = execute_server_command_with_state(ServerCommand::RetireDevice, 203, &mut state);
+    assert_eq!(retire.outcome, CommandOutcome::Applied);
+    assert_eq!(state.last_retire_unix, Some(203));
+
+    let restart = execute_server_command_with_state(ServerCommand::RestartDevice, 204, &mut state);
+    assert_eq!(restart.outcome, CommandOutcome::Applied);
+    assert_eq!(state.last_restart_unix, Some(204));
+
+    let lost = execute_server_command_with_state(ServerCommand::LostMode, 205, &mut state);
+    assert_eq!(lost.outcome, CommandOutcome::Applied);
+    assert!(state.lost_mode_enabled);
+
+    let locate = execute_server_command_with_state(ServerCommand::LocateDevice, 206, &mut state);
+    assert_eq!(locate.outcome, CommandOutcome::Applied);
+    assert_eq!(state.last_locate_unix, Some(206));
+
+    let install = execute_server_command_with_state(ServerCommand::InstallApp, 207, &mut state);
+    assert_eq!(install.outcome, CommandOutcome::Applied);
+    assert_eq!(state.last_app_action_unix, Some(207));
+
+    let remove = execute_server_command_with_state(ServerCommand::RemoveApp, 208, &mut state);
+    assert_eq!(remove.outcome, CommandOutcome::Applied);
+    assert_eq!(state.last_app_action_unix, Some(208));
+
+    let update = execute_server_command_with_state(ServerCommand::UpdateApp, 209, &mut state);
+    assert_eq!(update.outcome, CommandOutcome::Applied);
+    assert_eq!(state.last_app_action_unix, Some(209));
+
+    let profile = execute_server_command_with_state(ServerCommand::ApplyProfile, 210, &mut state);
+    assert_eq!(profile.outcome, CommandOutcome::Applied);
+    assert_eq!(state.last_profile_apply_unix, Some(210));
 }
 
 #[test]

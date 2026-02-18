@@ -15,6 +15,8 @@ impl AgentConfig {
         self.apply_env_storage();
         self.apply_env_tls();
         self.apply_env_detection();
+        self.apply_env_compliance();
+        self.apply_env_inventory();
         self.apply_env_self_protection();
         self.ensure_valid_agent_id();
     }
@@ -39,6 +41,16 @@ impl AgentConfig {
         if let Some(v) = env_non_empty("EGUARD_MEMORY_SCAN_MAX_PIDS") {
             if let Ok(parsed) = v.parse::<usize>() {
                 self.detection_memory_scan_max_pids = parsed;
+            }
+        }
+        if let Some(v) = env_non_empty("EGUARD_KERNEL_INTEGRITY_ENABLED") {
+            if let Ok(parsed) = v.parse::<bool>() {
+                self.detection_kernel_integrity_enabled = parsed;
+            }
+        }
+        if let Some(v) = env_non_empty("EGUARD_KERNEL_INTEGRITY_INTERVAL_SECS") {
+            if let Ok(parsed) = v.parse::<u64>() {
+                self.detection_kernel_integrity_interval_secs = parsed;
             }
         }
         if let Some(v) = env_non_empty("EGUARD_RANSOMWARE_WRITE_THRESHOLD") {
@@ -84,6 +96,30 @@ impl AgentConfig {
         }
         if let Some(v) = env_non_empty("EGUARD_RANSOMWARE_TEMP_PATH_TOKENS") {
             self.detection_ransomware_temp_path_tokens = split_csv(&v);
+        }
+    }
+
+    fn apply_env_compliance(&mut self) {
+        if let Some(v) = env_non_empty("EGUARD_COMPLIANCE_CHECK_INTERVAL_SECS") {
+            if let Ok(parsed) = v.parse::<u64>() {
+                self.compliance_check_interval_secs = parsed;
+            }
+        }
+        if let Some(v) = env_non_empty("EGUARD_COMPLIANCE_AUTO_REMEDIATE") {
+            if let Ok(parsed) = v.parse::<bool>() {
+                self.compliance_auto_remediate = parsed;
+            }
+        }
+    }
+
+    fn apply_env_inventory(&mut self) {
+        if let Some(v) = env_non_empty("EGUARD_INVENTORY_INTERVAL_SECS") {
+            if let Ok(parsed) = v.parse::<u64>() {
+                self.inventory_interval_secs = parsed;
+            }
+        }
+        if let Some(v) = env_non_empty("EGUARD_DEVICE_OWNERSHIP") {
+            self.device_ownership = v;
         }
     }
 

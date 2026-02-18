@@ -2,11 +2,27 @@
   "suite": "signature_ml_build_training_corpus",
   "status": "pass",
   "dataset_mode": "synthetic_ci",
+  "recorded_at_utc": "2026-02-17T12:44:21Z",
+  "version_seed": "ci.signature.contract",
   "measured": {
     "sample_count": 720,
-    "adjudicated_count": 662,
-    "unresolved_count": 58,
-    "positive_count": 176,
-    "negative_count": 486
+    "adjudicated_count": 660,
+    "unresolved_count": 60,
+    "positive_count": 182,
+    "negative_count": 478,
+    "adjudicated_ratio": 0.9167,
+    "positive_ratio": 0.2758,
+    "target_positive_ratio": 0.2706,
+    "score_cutoff": 0.857274,
+    "window_days": 45,
+    "host_pool": 160,
+    "rule_pool": 220
+  },
+  "inputs": {
+    "manifest": "/tmp/tmp.2ve3ipR8NR/bundle/manifest.json",
+    "coverage": "/tmp/tmp.2ve3ipR8NR/coverage-metrics.json",
+    "readiness": "/tmp/tmp.2ve3ipR8NR/signature-ml-readiness.json",
+    "attack_coverage": null,
+    "critical_gate": null
   }
 }

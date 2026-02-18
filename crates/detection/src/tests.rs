@@ -831,6 +831,69 @@ fn layer4_matches_default_template() {
 }
 
 #[test]
+// AC-DET-236
+fn layer4_ptrace_fileless_chain_triggers() {
+    let mut l4 = Layer4Engine::with_default_templates();
+
+    let mut parent = event(1, EventClass::ProcessExec, "gdb", "systemd", 1000);
+    parent.pid = 200;
+    parent.ppid = 1;
+    parent.session_id = parent.pid;
+    parent.command_line = Some("gdb --pid 4242 --eval-command=ptrace".to_string());
+    let _ = l4.observe(&parent);
+
+    let mut child = event(2, EventClass::ProcessExec, "bash", "gdb", 1000);
+    child.pid = 201;
+    child.ppid = 200;
+    child.session_id = child.pid;
+    child.file_path = Some("memfd:payload (deleted)".to_string());
+    let hits = l4.observe(&child);
+    assert!(hits.iter().any(|h| h == "killchain_exploit_ptrace_fileless"));
+}
+
+#[test]
+// AC-DET-237
+fn layer4_userfaultfd_execveat_chain_triggers() {
+    let mut l4 = Layer4Engine::with_default_templates();
+
+    let mut parent = event(1, EventClass::ProcessExec, "python", "systemd", 1000);
+    parent.pid = 300;
+    parent.ppid = 1;
+    parent.session_id = parent.pid;
+    parent.command_line = Some("python userfaultfd_poc.py".to_string());
+    let _ = l4.observe(&parent);
+
+    let mut child = event(2, EventClass::ProcessExec, "payload", "python", 1000);
+    child.pid = 301;
+    child.ppid = 300;
+    child.session_id = child.pid;
+    child.command_line = Some("execveat /proc/self/fd/7".to_string());
+    let hits = l4.observe(&child);
+    assert!(hits.iter().any(|h| h == "killchain_exploit_userfaultfd_execveat"));
+}
+
+#[test]
+// AC-DET-238
+fn layer4_proc_mem_fileless_chain_triggers() {
+    let mut l4 = Layer4Engine::with_default_templates();
+
+    let mut parent = event(1, EventClass::FileOpen, "bash", "systemd", 1000);
+    parent.pid = 400;
+    parent.ppid = 1;
+    parent.session_id = parent.pid;
+    parent.file_path = Some("/proc/4242/mem".to_string());
+    let _ = l4.observe(&parent);
+
+    let mut child = event(2, EventClass::ProcessExec, "bash", "bash", 1000);
+    child.pid = 401;
+    child.ppid = 400;
+    child.session_id = child.pid;
+    child.file_path = Some("memfd:stage (deleted)".to_string());
+    let hits = l4.observe(&child);
+    assert!(hits.iter().any(|h| h == "killchain_exploit_proc_mem_fileless"));
+}
+
+#[test]
 // AC-DET-050 AC-DET-088
 fn layer4_hit_is_scoped_to_current_event_lineage_and_does_not_replay_on_unrelated_events() {
     let mut l4 = Layer4Engine::with_default_templates();
@@ -1043,6 +1106,11 @@ fn layer4_template_matching_is_bounded_by_declared_depth() {
                 require_ransomware_write_burst: false,
                 require_container_escape: false,
                 require_privileged_container: false,
+                require_ptrace_activity: false,
+                require_userfaultfd_activity: false,
+                require_execveat_activity: false,
+                require_proc_mem_access: false,
+                require_fileless_exec: false,
             },
             TemplatePredicate {
                 process_any_of: Some(crate::util::set_of(["mid"])),
@@ -1054,6 +1122,11 @@ fn layer4_template_matching_is_bounded_by_declared_depth() {
                 require_ransomware_write_burst: false,
                 require_container_escape: false,
                 require_privileged_container: false,
+                require_ptrace_activity: false,
+                require_userfaultfd_activity: false,
+                require_execveat_activity: false,
+                require_proc_mem_access: false,
+                require_fileless_exec: false,
             },
             TemplatePredicate {
                 process_any_of: Some(crate::util::set_of(["leaf"])),
@@ -1065,6 +1138,11 @@ fn layer4_template_matching_is_bounded_by_declared_depth() {
                 require_ransomware_write_burst: false,
                 require_container_escape: false,
                 require_privileged_container: false,
+                require_ptrace_activity: false,
+                require_userfaultfd_activity: false,
+                require_execveat_activity: false,
+                require_proc_mem_access: false,
+                require_fileless_exec: false,
             },
         ],
         max_depth: 1,
@@ -1142,6 +1220,11 @@ fn layer4_evaluation_runtime_is_bounded_with_depth_limited_templates() {
                     require_ransomware_write_burst: false,
                     require_container_escape: false,
                     require_privileged_container: false,
+                    require_ptrace_activity: false,
+                    require_userfaultfd_activity: false,
+                    require_execveat_activity: false,
+                    require_proc_mem_access: false,
+                    require_fileless_exec: false,
                 },
                 TemplatePredicate {
                     process_any_of: Some(std::iter::once("never-match".to_string()).collect()),
@@ -1153,6 +1236,11 @@ fn layer4_evaluation_runtime_is_bounded_with_depth_limited_templates() {
                     require_ransomware_write_burst: false,
                     require_container_escape: false,
                     require_privileged_container: false,
+                    require_ptrace_activity: false,
+                    require_userfaultfd_activity: false,
+                    require_execveat_activity: false,
+                    require_proc_mem_access: false,
+                    require_fileless_exec: false,
                 },
             ],
             max_depth: 6,
@@ -1293,6 +1381,11 @@ fn ransomware_write_burst_triggers_killchain_and_ignores_sparse_writes() {
             require_ransomware_write_burst: true,
             require_container_escape: false,
             require_privileged_container: false,
+            require_ptrace_activity: false,
+            require_userfaultfd_activity: false,
+            require_execveat_activity: false,
+            require_proc_mem_access: false,
+            require_fileless_exec: false,
         }],
         max_depth: 2,
         max_inter_stage_secs: 15,

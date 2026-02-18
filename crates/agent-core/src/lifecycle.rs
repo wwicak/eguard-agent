@@ -8,6 +8,8 @@ mod ebpf_support;
 mod emergency_rule;
 mod enrollment;
 mod memory_scan;
+mod kernel_integrity_scan;
+mod inventory;
 mod policy;
 mod response_actions;
 mod runtime;

@@ -31,6 +31,10 @@ pub struct AgentRuntime {
     pub(super) compliance_policy: CompliancePolicy,
     pub(super) compliance_policy_id: String,
     pub(super) compliance_policy_version: String,
+    pub(super) compliance_policy_hash: String,
+    pub(super) compliance_policy_schema_version: String,
+    pub(super) compliance_policy_signature: String,
+    pub(super) compliance_grace_state: HashMap<String, i64>,
     pub(super) baseline_store: BaselineStore,
     pub(super) ebpf_engine: EbpfEngine,
     pub(super) enrichment_cache: EnrichmentCache,
@@ -47,12 +51,17 @@ pub struct AgentRuntime {
     pub(super) last_compliance_checked_unix: Option<i64>,
     pub(super) last_compliance_result: Option<ComplianceResult>,
     pub(super) last_compliance_remediations: HashMap<String, RemediationOutcome>,
+    pub(super) compliance_alert_state: HashMap<String, i64>,
     pub(super) last_policy_fetch_unix: Option<i64>,
+    pub(super) last_inventory_attempt_unix: Option<i64>,
+    pub(super) last_inventory_sent_unix: Option<i64>,
+    pub(super) last_inventory_hash: Option<String>,
     pub(super) last_command_fetch_attempt_unix: Option<i64>,
     pub(super) last_threat_intel_refresh_unix: Option<i64>,
     pub(super) last_baseline_save_unix: Option<i64>,
     pub(super) last_recovery_probe_unix: Option<i64>,
     pub(super) last_memory_scan_unix: Option<i64>,
+    pub(super) last_kernel_integrity_scan_unix: Option<i64>,
     pub(super) tamper_forced_degraded: bool,
     pub(super) enrolled: bool,
     pub(super) latest_threat_version: Option<String>,
@@ -97,11 +106,33 @@ impl AgentRuntime {
         let baseline_store = load_baseline_store()?;
         seed_anomaly_baselines(&detection_state, &baseline_store)?;
         let compliance_policy = load_compliance_policy();
-        let compliance_policy_id = std::env::var("EGUARD_POLICY_ID")
-            .ok()
+        let compliance_policy_id = compliance_policy
+            .policy_id
+            .clone()
             .filter(|val| !val.trim().is_empty())
+            .or_else(|| {
+                std::env::var("EGUARD_POLICY_ID")
+                    .ok()
+                    .filter(|val| !val.trim().is_empty())
+            })
             .unwrap_or_else(|| "default".to_string());
-        let compliance_policy_version = String::new();
+        let compliance_policy_version = compliance_policy
+            .version
+            .clone()
+            .unwrap_or_default();
+        let compliance_policy_hash = compliance_policy
+            .policy_hash
+            .clone()
+            .unwrap_or_default();
+        let compliance_policy_schema_version = compliance_policy
+            .schema_version
+            .clone()
+            .unwrap_or_default();
+        let compliance_policy_signature = compliance_policy
+            .policy_signature
+            .clone()
+            .unwrap_or_default();
+        let compliance_grace_state = HashMap::new();
         let ebpf_engine = init_ebpf_engine();
         let enrichment_cache = EnrichmentCache::default();
 
@@ -186,6 +217,10 @@ impl AgentRuntime {
             compliance_policy,
             compliance_policy_id,
             compliance_policy_version,
+            compliance_policy_hash,
+            compliance_policy_schema_version,
+            compliance_policy_signature,
+            compliance_grace_state,
             baseline_store,
             ebpf_engine,
             enrichment_cache,
@@ -205,12 +240,17 @@ impl AgentRuntime {
             last_compliance_checked_unix: None,
             last_compliance_result: None,
             last_compliance_remediations: HashMap::new(),
+            compliance_alert_state: HashMap::new(),
             last_policy_fetch_unix: None,
+            last_inventory_attempt_unix: None,
+            last_inventory_sent_unix: None,
+            last_inventory_hash: None,
             last_command_fetch_attempt_unix: None,
             last_threat_intel_refresh_unix: None,
             last_baseline_save_unix: None,
             last_recovery_probe_unix: None,
             last_memory_scan_unix: None,
+            last_kernel_integrity_scan_unix: None,
             tamper_forced_degraded: false,
             enrolled: false,
             latest_threat_version: None,

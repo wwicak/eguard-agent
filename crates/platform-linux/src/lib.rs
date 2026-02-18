@@ -1,5 +1,6 @@
 pub mod container;
 mod ebpf;
+mod kernel_integrity;
 
 use std::collections::HashMap;
 use std::ffi::CString;
@@ -19,6 +20,9 @@ pub use container::{
     get_namespace_info, ContainerContext, ContainerRuntime, NamespaceInfo,
 };
 pub use ebpf::{EbpfEngine, EbpfError, EbpfStats};
+pub use kernel_integrity::{
+    scan_kernel_integrity, KernelIntegrityReport, KernelIntegrityScanOptions,
+};
 
 const MAX_PARENT_CHAIN_DEPTH: usize = 12;
 
@@ -267,6 +271,13 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
             .and_then(|path| cache.hash_for_path(path))
     });
 
+    let mut parent_chain = entry.parent_chain.clone();
+    if parent_chain.is_empty() {
+        if let Some(ppid) = payload_meta.ppid {
+            parent_chain = vec![ppid];
+        }
+    }
+
     // Container detection: extract runtime and ID from cgroup
     let (container_runtime, container_id, container_escape, container_privileged) = {
         match container::detect_container(raw.pid) {
@@ -302,7 +313,7 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
         process_exe_sha256,
         process_cmdline: entry.process_cmdline.or(payload_meta.command_line_hint),
         parent_process: entry.parent_process,
-        parent_chain: entry.parent_chain,
+        parent_chain,
         file_path: payload_meta
             .file_path
             .or_else(|| payload_meta.file_path_secondary),
@@ -345,6 +356,7 @@ struct PayloadMetadata {
     file_path: Option<String>,
     file_path_secondary: Option<String>,
     command_line_hint: Option<String>,
+    ppid: Option<u32>,
     dst_ip: Option<String>,
     dst_port: Option<u16>,
     dst_domain: Option<String>,
@@ -378,6 +390,9 @@ fn parse_payload_metadata(event_type: &EventType, payload: &str) -> PayloadMetad
             .cloned()
             .or_else(|| fields.get("command_line").cloned())
             .or_else(|| fields.get("subject").cloned()),
+        ppid: fields
+            .get("ppid")
+            .and_then(|value| value.parse::<u32>().ok()),
         dst_ip: fields
             .get("dst_ip")
             .cloned()

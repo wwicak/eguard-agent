@@ -247,6 +247,72 @@
 - **Telemetry parity**: Agent sends ComplianceReport with checks + overall_status; server maps enums and persists. Missing expected/actual values (agent sends empty strings). Policy version is currently config_version from GetPolicy but not used for check-level semantics.
 - **Gaps**: no server-side compliance policy management UI; no cross-platform MDM checks (Windows/macOS); no severity/grace_period semantics in agent; remediation policy commands are hard-coded, not driven from policy JSON.
 
+## 🧭 Plan: MDM policy v2 implementation + polishing (Agent + Server) (2026-02-17)
+- [x] Confirm scope + map current compliance fields to canonical checks[] schema (ops, severity, evidence, grace, remediation allowlist); declare Linux-first capability gating for unsupported OS checks
+- [x] Extend protobufs (agent + compliance + command) for MDM v2: policy metadata/signature, inventory report, compliance v2 fields, MDM command outcomes; maintain backward compatibility
+- [x] Server DB/schema/DAL updates: policy registry table + versioning, inventory table, compliance v2 columns, device lifecycle state, command audit states; update eg-schema-agent.sql + persistence
+- [x] Server API + gRPC: policy CRUD + assignment + diff/preview, inventory ingest + query filters, device lifecycle actions, command queue audit + approvals
+  - [x] Add policy assignment endpoint (agent/bulk) and persist policy_id/version/hash updates
+  - [x] Add lifecycle action endpoint (active/retired/wiped/lost) and persist lifecycle_state
+  - [x] Add policy preview/diff endpoints (hash/version + diff summary)
+  - [x] Extend inventory list filters (agent_id/os_type/ownership)
+  - [x] Add command approval endpoint + audit fields in command record
+- [x] Agent compliance v2: canonical policy parser + evaluator (ops/capability/IN_GRACE/NOT_APPLICABLE), evidence payloads, remediation allowlist execution, signature/hash verification
+- [x] Agent MDM pipeline: inventory collection + incremental updates, v2 ComplianceReport emission, MDM alert events, command execution for supported actions (lock/retire/wipe/locate where applicable)
+- [x] UI updates (fe_eguard): policy management views, device inventory + lifecycle status, compliance evidence details, command audit timelines
+  - [x] Audit current UI views + API clients (endpoint compliance/inventory/commands) for wiring gaps
+  - [x] Extend UI API client for policy assign/preview/diff, lifecycle updates, inventory filters, command approvals
+  - [x] Implement policy management UI (list/detail editor + preview/diff + assign workflow)
+  - [x] Update endpoint device views for policy version/hash, lifecycle state, inventory filters, compliance evidence
+  - [x] Add command approval controls + audit timeline in response/command views
+  - [x] Update UI tests/notes and document results in this plan
+- [x] Tests + verification: unit/contract tests (policy parsing, signature verify, grace handling, inventory, command audit), plus `cargo check` + targeted Go tests; document proof in this plan
+
+### 🔍 Review Notes (WIP)
+- Server API: policy CRUD + assignment/preview/diff, lifecycle updates, inventory filters, command approvals implemented.
+- UI: added policy management + inventory views, lifecycle controls, compliance evidence detail, command audit/approvals (no UI test run).
+- UI polish follow-up: fixed compliance/inventory filter reload behavior, command audit selection/page handling, profile JSON validation in command payload builder, and API path fallbacks (`endpoint/...` ↔ `endpoint-...`) for mixed backend deployments.
+- Perl Unified API parity: added inventory/policy/lifecycle/command-approval routes + controllers, new DAL modules (`endpoint_inventory`, `endpoint_compliance_policy`), and expanded DAL/API mappings for agent/compliance/command v2 fields.
+- Rust tests: `cargo test -p compliance -p response -p grpc-client` (all pass).
+- Go tests: `go test ./agent/server/...` (pass after regenerating protobufs with module mapping).
+- Additional verification: `go test ./...` in `fe_eguard/go` fails in unrelated packages without required env (`EG_SYSTEM_INIT_KEY`) and local sockets; endpoint server package remains green.
+- Perl unit tests: `prove -Ilib t/unittest/api/endpoint_command.t t/unittest/api/endpoint_policy.t t/unittest/api/endpoint_response.t` (pass, includes new command approval/alias + policy preview/diff/assign coverage).
+
+## 🧭 Plan: MDM system E2E validation on VM (agent ↔ eguard server) (2026-02-18)
+- [ ] Prepare server VM (`157.10.160.156`): disable apparmor, install kernel headers, configure package deps/repo prerequisites
+- [ ] Install eguard server stack on VM (prefer local test package/deploy path before release tagging)
+- [ ] Complete attended initial config (DB root/user/dbname) with user assistance and verify core services healthy
+- [ ] Deploy latest local MDM-related backend/UI changes (Go agent server + Perl Unified API modules) to VM test instance
+- [ ] Provision agent runtime (QEMU or second VM) and point to test server with enrollment credentials
+- [ ] Execute MDM E2E scenarios:
+  - [ ] enrollment + lifecycle state transitions
+  - [ ] policy CRUD/preview/diff/assign
+  - [ ] inventory report ingest/filtering
+  - [ ] compliance v2 report ingest (check_id/severity/evidence/grace/remediation)
+  - [ ] destructive command approval flow (pending/approved/rejected + status transitions)
+  - [ ] SOC/NAC surfacing checks for MDM alerts
+- [ ] Capture evidence: API responses, DB rows, service logs, UI screenshots/notes
+- [ ] Record pass/fail against AC #1–#17 and list remaining gaps/blockers
+
+### ✅ Acceptance Criteria (Full‑Fledged MDM)
+- [ ] **1) Enrollment & device identity**: devices can enroll using supported methods (QR/token and platform enrollment where applicable), unique device identity cannot be spoofed; server rejects unauthenticated agents; certificate/key lifecycle (issue/rotate/revoke); deterministic re‑enrollment/duplicate handling; enforced lifecycle states (pending/enrolled/retired/wiped/lost).
+- [ ] **2) Inventory & device posture**: inventory is collected/queryable (OS/version, model, serial/ID, user, ownership, encryption, jailbreak/root signals, network identifiers); updates are incremental + resilient (offline buffering, retry/backoff, idempotency); search/filter/group at scale (user/OS/tags/compliance state).
+- [ ] **3) Policy management (authoring → targeting → rollout)**: policy CRUD with versioning + preview/diff; targeting by groups/tags/users with precedence + conflict rules; staged rollout/canary + pause + rollback to last‑known‑good; change audit trail (who/what/when/why).
+- [ ] **4) Configuration management (MDM profiles)**: baseline configuration enforcement (passcode, encryption, Wi‑Fi/VPN, certificates, restrictions, email profiles); drift detection with re‑enforcement/flag; profile validation before deploy with observable failures + recovery.
+- [ ] **5) App & software management**: managed install/update/uninstall with status feedback + retries; app inventory and version compliance; OS update controls (defer/window/force) with reporting.
+- [ ] **6) Remote actions / command channel**: lock/wipe/retire/restart/lost mode/locate where supported; commands queued, idempotent, auditable with pending/sent/ack/success/failure/timeout; approvals for destructive actions + RBAC.
+- [ ] **7) Security, RBAC, audit, data protection**: least‑privilege RBAC; full audit logging (policy edits, approvals, remediations, commands); encryption in transit/at rest; secure agent storage; replay protection, policy downgrade prevention, report integrity.
+- [ ] **8) Admin console UX + reporting**: device detail timeline (enrollment, config changes, compliance, remediations, commands); bulk actions with guardrails; export/reporting + dashboards (compliance by group, failures, remediation success).
+- [ ] **9) Integrations & APIs**: stable APIs for device list/status, policy assignment, commands, compliance; webhooks/events for structured lifecycle events; SSO (SAML/OIDC) + optional SCIM.
+- [ ] **10) Reliability & scale (NFRs)**: defined SLOs (policy propagation time, command delivery P95, evaluation cadence); backpressure + rate limits; multi‑tenant isolation (if applicable); DR/backup/restore tested; retention policies defined.
+- [ ] **11) MDM compliance policy + evaluation**: canonical `checks[]` schema (ops, severity, grace, remediation, evidence) parsed/enforced with capability gating; unsupported checks return `NOT_APPLICABLE` without failing overall status; grace handling (`IN_GRACE` → `FAIL`), severity mapping, deterministic overall status.
+- [ ] **12) Policy metadata + signing**: policy_id/version/hash/signature delivered by server, stored in `endpoint_compliance_policy`, verified by agent (reject invalid signature/hash; keep last‑known‑good).
+- [ ] **13) Compliance v2 reporting**: reports include `check_id`, `severity`, `expected_value`, `actual_value`, `evidence_json`, `evidence_source`, `collected_at`, `grace_expires_at`, remediation fields, while remaining backward compatible with legacy fields.
+- [ ] **14) Remediation allowlist**: policy‑driven allow‑listed remediation (auto/approve) enforced with outcomes reported in compliance results.
+- [ ] **15) SOC/NAC surfacing**: agent emits MDM alert events (`rule_type="mdm"`, `detection_layers=["MDM_compliance"]`) only after grace expiry, severity mapped for SOC/NAC.
+- [ ] **16) Server + UI persistence**: DB schema/DAL/REST/gRPC store/return all v2 fields; UI surfaces evidence, severity, grace, remediation outcomes, policy version/hash.
+- [ ] **17) Tests**: unit + contract tests cover policy parsing, grace handling, v2 mapping, signature verification, remediation allowlist enforcement, server persistence, with results documented in this plan.
+
 ## 🧭 Plan: Comprehensive design revision (EDR + MDM) (2026-02-17)
 - [ ] Inventory all design doc sections (EDR, MDM, NAC, telemetry, response, server, UI) and list required invariants
 - [x] Rewrite MDM policy schema into a single canonical format (checks[], ops, severity, remediation, evidence) with explicit examples

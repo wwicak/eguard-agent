@@ -9,7 +9,7 @@ use tracing::warn;
 
 use crate::types::{
     CommandEnvelope, ComplianceEnvelope, EnrollmentEnvelope, EventEnvelope, FleetBaselineEnvelope,
-    PolicyEnvelope, ResponseEnvelope, ServerState, ThreatIntelVersionEnvelope,
+    InventoryEnvelope, PolicyEnvelope, ResponseEnvelope, ServerState, ThreatIntelVersionEnvelope,
 };
 
 use super::Client;
@@ -18,6 +18,7 @@ const PATH_ENROLL: &str = "/api/v1/endpoint/enroll";
 const PATH_TELEMETRY: &str = "/api/v1/endpoint/telemetry";
 const PATH_HEARTBEAT: &str = "/api/v1/endpoint/heartbeat";
 const PATH_COMPLIANCE: &str = "/api/v1/endpoint/compliance";
+const PATH_INVENTORY: &str = "/api/v1/endpoint/inventory";
 const PATH_RESPONSE: &str = "/api/v1/endpoint/response";
 const PATH_COMMAND_CHANNEL: &str = "/api/v1/endpoint/command/channel";
 const PATH_COMMAND_PENDING: &str = "/api/v1/endpoint/command/pending";
@@ -101,6 +102,11 @@ impl Client {
 
     pub(super) async fn send_compliance_http(&self, compliance: &ComplianceEnvelope) -> Result<()> {
         self.post_json_with_retry("compliance_http", PATH_COMPLIANCE, compliance, "compliance")
+            .await
+    }
+
+    pub(super) async fn send_inventory_http(&self, inventory: &InventoryEnvelope) -> Result<()> {
+        self.post_json_with_retry("inventory_http", PATH_INVENTORY, inventory, "inventory")
             .await
     }
 

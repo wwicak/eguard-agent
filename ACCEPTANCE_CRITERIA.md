@@ -2,7 +2,7 @@
 
 Derived from `docs/eguard-agent-design.md`. These acceptance criteria define the testable requirements for every agent subsystem. Use these as the basis for unit tests, integration tests, and verification.
 
-**Total ACs: ~700+** across 14 domains.
+**Total ACs: ~700+** across 16 domains.
 
 ---
 
@@ -22,6 +22,8 @@ Derived from `docs/eguard-agent-design.md`. These acceptance criteria define the
 12. [Enrollment & Certificates (AC-ENR)](#12-enrollment--certificates)
 13. [Packaging & Distribution (AC-PKG)](#13-packaging--distribution)
 14. [Testing & Verification (AC-TST, AC-VER)](#14-testing--verification)
+15. [Runtime Optimization & Refactor Contracts (AC-OPT)](#15-runtime-optimization--refactor-contracts)
+16. [User Experience (AC-UX)](#16-user-experience-ac-ux)
 
 ---
 
@@ -227,6 +229,17 @@ Derived from `docs/eguard-agent-design.md`. These acceptance criteria define the
 - **AC-DET-225**: Kernel integrity indicators MUST surface in telemetry/audit as `kernel_integrity_indicators` and map to detection layer `KRN_kernel_integrity` with rule attribution prefix `kernel:`.
 - **AC-DET-226**: Self-protection tamper indicators MUST be raised when the agent binary or config file hash changes while running, and MUST surface in telemetry/audit as `tamper_indicators` with rule attribution prefix `self_protect:`.
 - **AC-DET-227**: Self-protection tamper indicators MUST escalate detection confidence to at least `High` and remain active in degraded mode.
+- **AC-DET-228**: Telemetry payload MUST include correlation-ready event fields (`event.session_id`, `event.process`, `event.parent_process`, `event.file_hash`, `event.dst_domain`, `event.dst_ip`) for cross-host correlation.
+- **AC-DET-229**: Telemetry payload MUST preserve rule attribution (`rule_name`, `detection.rule_type`, `audit.primary_rule_name`) to group detections across hosts.
+- **AC-DET-230**: Server correlation pipeline MUST support nested telemetry payloads where IOC values and rule metadata are under `event.*`, `detection.*`, or `audit.*`.
+- **AC-DET-231**: Kernel integrity scan MUST reconcile `/proc/modules` and `/sys/module` and emit hidden-module indicators (`hidden_module_sysfs`, `hidden_module_proc`) on mismatches.
+- **AC-DET-232**: Kernel integrity scan MUST flag tainted or unsigned modules via `/sys/module/<name>/taint` and signer metadata and emit indicators (`tainted_module`, `unsigned_module`).
+- **AC-DET-233**: Kernel integrity scan MUST detect active kprobe/ftrace hooks (`kprobe_events`, non-`nop` tracer, non-empty ftrace filters) and emit indicators (`kprobe_hook`, `ftrace_tracer`, `ftrace_filter`).
+- **AC-DET-234**: Kernel integrity scan MUST surface BPF/LSM attach anomalies (LSM list includes `bpf` or pinned bpffs objects) and emit indicators (`lsm_bpf_enabled`, `bpffs_pinned_object`).
+- **AC-DET-235**: Kernel integrity scan MUST emit a telemetry/audit event with `process=kernel_integrity_scan` and populated `kernel_integrity_indicators`.
+- **AC-DET-236**: Exploit-chain correlation MUST flag a kill chain when a ptrace-capable tool (gdb/strace/ltrace/perf) spawns a fileless exec (`memfd:`/`(deleted)`/`/proc/*/fd`).
+- **AC-DET-237**: Exploit-chain correlation MUST flag a kill chain when userfaultfd activity precedes an `execveat`-style execution in the same process tree.
+- **AC-DET-238**: Exploit-chain correlation MUST flag a kill chain when a process opens `/proc/*/mem` or `/proc/*/maps` and subsequently spawns a fileless exec.
 
 ---
 
@@ -849,6 +862,9 @@ Derived from `docs/eguard-agent-design.md`. These acceptance criteria define the
 - **AC-GRP-097**: Agent config stores cert paths.
 - **AC-GRP-098**: Go server registered via `pb.RegisterAgentServiceServer`.
 - **AC-GRP-099**: Go protobuf package: `gitlab.com/devaistech77/fe_eguard/go/api/agent/v1`.
+- **AC-GRP-100**: `fe_eguard` MUST expose `AgentService` RPCs matching agent proto (Enroll, Heartbeat, StreamEvents, ReportCompliance, CommandChannel, ReportResponse, GetPolicy, DownloadRuleBundle).
+- **AC-GRP-101**: `CommandService` and `AgentService` CommandChannel MUST use `CommandPollRequest` → `ServerCommand` (typed enum + params). Legacy `CommandChannelRequest` + `AgentCommand` MAY remain for polling APIs only.
+- **AC-GRP-102**: `ResponseReport` MUST use enum `ResponseAction`/`ResponseConfidence`, include `detection_layers`, and carry oneof detail (Kill/Quarantine/Block/Capture); `ResponseAck` MUST include `accepted` + `incident_id`.
 
 ---
 
@@ -962,6 +978,9 @@ Derived from `docs/eguard-agent-design.md`. These acceptance criteria define the
 - **AC-NAC-018**: Event 1300016: "Lateral movement" on MITRE T1021/T1534. Action: email_admin, log.
 - **AC-NAC-019**: Event 1300017: "Privilege escalation" on MITRE T1548/T1068. Action: reevaluate_access, email_admin.
 - **AC-NAC-020**: `BridgeAlertToSecurityEvent` calls `security_event.Trigger(mac, eventID, alert.Description)`.
+- **AC-NAC-021**: NAC bridge MUST accept telemetry payloads where detection metadata is nested under `detection.*` and `audit.*` (including `detection.rule_type` and `audit.primary_rule_name`).
+- **AC-NAC-022**: Agent telemetry JSON MUST include `detection.rule_type`, `detection.detection_layers`, and `audit.primary_rule_name` fields to support NAC mapping.
+- **AC-NAC-023**: NAC bridge MUST allow detection telemetry event types (process_exec/file_open/network_connect/dns_query/module_load/login) in addition to `alert` and `compliance`.
 
 ---
 
@@ -1110,11 +1129,26 @@ Derived from `docs/eguard-agent-design.md`. These acceptance criteria define the
 - **AC-TST-055**: QEMU offline buffer harness MUST show buffered events when server is unreachable and a flush log with pending_after=0 when server responds.
 - **AC-TST-056**: QEMU kernel integrity harness MUST replay module load/rootkit indicators and produce High-or-higher confidence detections.
 - **AC-TST-057**: QEMU self-protection tamper harness MUST modify agent/config files and produce High-or-higher confidence detections.
+- **AC-TST-058**: `fe_eguard` gRPC CommandChannel MUST return `ServerCommand` entries with enum `command_type` and typed params for scan/update/restore_quarantine commands.
+- **AC-TST-059**: `fe_eguard` gRPC ResponseReport ingestion MUST persist enum action/confidence, detection_layers, and detail fields into response records.
+- **AC-TST-060**: UX acceptance criteria MUST be defined for high-density SOC UI navigation, telemetry, audit, response, compliance, and NAC flows.
+- **AC-TST-061**: UX contract tests MUST enforce presence of endpoint SOC routes/views (Telemetry, Incidents, Response, Compliance, NAC, Audit).
+- **AC-TST-062**: NAC bridge contract tests MUST validate nested `detection.rule_type`/`audit.primary_rule_name` payloads map to security events.
+- **AC-TST-063**: Agent acceptance tests MUST assert telemetry JSON includes `detection.rule_type`, `detection.detection_layers`, and `audit.primary_rule_name` for NAC mapping.
+- **AC-TST-064**: Correlation contract tests MUST validate nested telemetry IOC fields (`event.dst_domain`/`event.dst_ip`/`event.file_hash`) trigger multi-host incidents.
+- **AC-TST-065**: Agent acceptance tests MUST assert telemetry JSON includes correlation-ready event fields for multi-host aggregation.
+- **AC-TST-066**: Kernel integrity scan contract tests MUST validate hidden-module/taint/kprobe/ftrace indicators from fixture inputs.
+- **AC-TST-067**: QEMU kernel integrity extreme harness MUST replay kernel integrity scan inputs and emit High-or-higher confidence detections.
+- **AC-TST-068**: Exploit-chain unit tests MUST validate ptrace/userfaultfd/proc-mem correlations trigger kill chain detections.
+- **AC-TST-069**: QEMU exploit-chain harness MUST replay ptrace/userfaultfd/execveat chains and emit High-or-higher confidence detections.
 - **AC-VER-057**: QEMU harness MUST use user-mode networking with no host forwards and explicit RFC1918/link-local blackhole routes inside the guest (outbound HTTPS allowed).
 - **AC-VER-058**: Exploit detection validation is Linux-only until Windows/macOS backends (Tier 4.3) and NAC harness are ready.
 - **AC-VER-059**: Audit trail validation is Linux-only until cross-platform telemetry backends are available.
-- **AC-VER-060**: ML latency and offline buffer validation are QEMU-only until server-side benchmark endpoints are available.
+- **AC-VER-060**: Cross-host correlation verification MUST use multi-agent telemetry fixtures and assert `ioc_multi_host`/`time_window` incident creation without host execution.
+- **AC-VER-063**: ML latency and offline buffer validation are QEMU-only until server-side benchmark endpoints are available.
 - **AC-VER-061**: Kernel integrity and self-protection tamper validations are QEMU-only until dedicated lab infra is available.
+- **AC-VER-062**: Kernel integrity extreme scan validation MUST use fixture-driven inputs inside isolated QEMU (no host execution).
+- **AC-VER-064**: Exploit-chain correlation validation MUST be executed in isolated QEMU with replayed ptrace/userfaultfd/execveat chains.
 
 ### Performance Targets (Section 29.1)
 
@@ -1201,3 +1235,36 @@ Derived from `docs/eguard-agent-design.md`. These acceptance criteria define the
 ### Idle Tick Behavior
 
 - **AC-OPT-005**: Idle runtime ticks MUST NOT synthesize fake telemetry events when no eBPF events are available; offline buffer growth in degraded mode must reflect real events only.
+
+---
+
+## 16. User Experience (AC-UX)
+
+*Design goal: High-density SOC UI with intuitive navigation and full telemetry/audit visibility.*
+
+### Navigation & Layout
+
+- **AC-UX-001**: UI MUST provide a persistent high-density navigation layout with primary sections: Dashboard, Incidents, Telemetry, Compliance/MDM, NAC, Response, Audit.
+- **AC-UX-002**: Primary views MUST use a data-dense grid layout with adjustable table density (compact/comfortable) and sticky column headers.
+- **AC-UX-003**: UI MUST surface global quick filters (time range, severity, host, rule type) within one click from any primary section.
+
+### Telemetry & Audit Visibility
+
+- **AC-UX-010**: Telemetry view MUST provide multi-panel inspection (event list + detail pane) with raw payload JSON and parsed fields.
+- **AC-UX-011**: Audit trail view MUST show rule attribution (primary_rule_name), detection layers, exploit indicators, and response actions for each alert.
+- **AC-UX-012**: Incident detail MUST include an evidence timeline (event, detection, response) with host/process/file context.
+
+### Response Workflow
+
+- **AC-UX-020**: Response console MUST allow issuing response actions with confirmation and show last response status per host.
+- **AC-UX-021**: Response workflow MUST display command acknowledgements and error states with timestamped history.
+
+### Compliance/NAC
+
+- **AC-UX-030**: Compliance view MUST surface policy status per host, with drill-down into check results and remediation details.
+- **AC-UX-031**: NAC view MUST show network access state and applied profiles per host with last enforcement timestamp.
+
+### Density & Branding
+
+- **AC-UX-040**: UI MUST follow eGuard branding and Tailwind-based tokens with a high-density dark theme optimized for SOC workflows.
+- **AC-UX-041**: UI MUST provide a "focus mode" that hides secondary panels for large data tables.

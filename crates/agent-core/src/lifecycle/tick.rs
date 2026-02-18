@@ -45,6 +45,7 @@ impl AgentRuntime {
                 );
             }
         }
+        self.run_kernel_integrity_scan_if_due(now_unix);
         if matches!(self.runtime_mode, AgentMode::Degraded) {
             self.handle_degraded_tick(now_unix, evaluation.as_ref())
                 .await?;
