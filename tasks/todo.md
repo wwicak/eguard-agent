@@ -838,3 +838,9 @@
 - Targeted E2E checks after fix/provisioning:
   - approved command lifecycle still passes (`pending/approved -> completed`).
   - policy assignment remains stable across ongoing compliance cycles (no regression back to old version).
+  - no-restart policy propagation validated:
+    - assigned `v20260218-subnet-r5` and observed latest compliance version switch from `r4` -> `r5` after ~210s,
+    - confirms asynchronous refresh behavior (not immediate), but converges without manual restart.
+- Current continuation status:
+  - previous blockers from this subnet round are resolved (`policy regression` + `agent package not found`).
+  - remaining caveat is propagation latency window until next policy refresh cycle.
