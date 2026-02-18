@@ -175,11 +175,17 @@ impl AgentRuntime {
             }
         }
 
-        client.enqueue_mock_command(CommandEnvelope {
-            command_id: "bootstrap-isolate-check".to_string(),
-            command_type: "scan".to_string(),
-            payload_json: "{\"scope\":\"quick\"}".to_string(),
-        });
+        if std::env::var("EGUARD_ENABLE_BOOTSTRAP_TEST_COMMAND")
+            .ok()
+            .as_deref()
+            == Some("1")
+        {
+            client.enqueue_mock_command(CommandEnvelope {
+                command_id: "bootstrap-isolate-check".to_string(),
+                command_type: "scan".to_string(),
+                payload_json: "{\"scope\":\"quick\"}".to_string(),
+            });
+        }
 
         let mut hardening_config = LinuxHardeningConfig {
             drop_capability_bounding_set: config.self_protection_prevent_uninstall,

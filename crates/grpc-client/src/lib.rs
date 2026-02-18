@@ -17,6 +17,6 @@ pub use retry::RetryPolicy;
 pub use types::{
     CertificatePolicyEnvelope, CommandEnvelope, ComplianceCheckEnvelope, ComplianceEnvelope,
     EnrollmentEnvelope, EnrollmentResultEnvelope, EventEnvelope, FleetBaselineEnvelope,
-    PolicyEnvelope, ResponseEnvelope, ServerState, ThreatIntelVersionEnvelope, TlsConfig,
-    TransportMode,
+    InventoryEnvelope, PolicyEnvelope, ResponseEnvelope, ServerState, ThreatIntelVersionEnvelope,
+    TlsConfig, TransportMode,
 };
