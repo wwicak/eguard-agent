@@ -288,3 +288,8 @@ not only route/API checks.
 `navigator.clipboard.writeText` can fail in headless/automation contexts even
 when UI is correct. Always add fallback copy path (`execCommand('copy')`) before
 showing copy failure to users.
+
+## If User Asks Full Product UI, Do Not Scope Down To MVP
+When user explicitly asks for a fully-fledged UI, do not propose/ship an MVP.
+Deliver complete operator workflows (CRUD, persistence, route/nav wiring,
+edge-case handling, and real browser-E2E validation evidence).

@@ -955,3 +955,46 @@
 - Deployment/validation evidence:
   - frontend rebuilt via `npx vue-cli-service build --dest /tmp/eguard-dist` and redeployed to `/usr/local/eg/html/egappserver/root/dist`.
   - browser-use screenshot captured: `/tmp/ui-e2e/endpoint-enrollment-install.png`.
+
+## 🧭 Plan: Agent Config UI fully-fledged delivery + unwired endpoint UI fixes (2026-02-19)
+- [x] Build fully-fledged Agent Config profile UI (not MVP): CRUD, clone, default profile, import/export JSON, runtime/install previews.
+- [x] Wire profile apply flow into Enrollment & Install helper (profile selection + route handoff + profile-backed command generation).
+- [x] Persist profile catalog in user preferences and validate profile create/update/delete/import survives reload.
+- [x] Fix existing unwired/noisy UI API behavior discovered in browser-use validation (tenant endpoint noise + fallback path noise).
+- [x] Rebuild/redeploy frontend and validate endpoint routes with browser-use, including screenshots/evidence.
+
+### 🔍 Review Notes (fully-fledged Agent Config UI + unwired fixes)
+- New fully-fledged page added: `html/egappserver/root/src/views/endpoint/AgentConfig.vue`
+  - profile lifecycle: create, edit, save, clone, delete, set default,
+  - import/export JSON workflow for profile portability,
+  - deep configuration sections (server/transport/package defaults, control-plane/compliance/inventory cadence, detection/response toggles, custom env overrides),
+  - generated runtime artifacts:
+    - env export block,
+    - install.sh workflow,
+    - package workflow (deb/rpm + service restart),
+    - systemd drop-in override script,
+  - copy-to-clipboard actions with fallback compatibility.
+- Shared profile model/helpers introduced in:
+  - `html/egappserver/root/src/views/endpoint/agentConfigProfiles.js`
+  - includes normalization, validation, env rendering, systemd override rendering.
+- Routing/navigation/permissions wiring completed:
+  - route: `/endpoint-agent-config` (`endpointAgentConfig`) in `_router/index.js`,
+  - nav item: `Agent Config` in `endpoint/index.vue`,
+  - permission key: `AGENT_CONFIG_MANAGE` in `endpoint/permissions.js`.
+- Enrollment helper integration upgraded in `EnrollmentTokens.vue`:
+  - profile selector + apply action,
+  - query-based handoff via `cfg_profile`,
+  - applied profile badge/message,
+  - profile-driven install/package/systemd command generation,
+  - profile env block merged into generated commands.
+- Unwired/noisy API behavior fixed:
+  - fallback probes now use quiet requests in `endpoint/api.js` (`getListWithFallback`/`postItemWithFallback`) to avoid false notification spam when first fallback path returns 404/503,
+  - tenant list bootstrap now uses quiet fetch and gracefully handles unsupported endpoints (404/405/501) in `store/modules/session.js` (no noisy `Unknown path /api/v1/tenants` across endpoint routes).
+- Browser-use verification evidence:
+  - `Endpoint → Agent Config` renders and functions end-to-end (profile persisted + applied),
+  - `Endpoint → Enrollment & Install` consumes selected config profile and emits profile-backed commands,
+  - token usability guardrail still holds (`expired/exhausted => canGenerate=false`),
+  - noisy route alerts removed across matrix (`endpoint-*` + `threat-intel`).
+- Screenshots:
+  - `/tmp/ui-e2e/endpoint-agent-config-full.png`
+  - `/tmp/ui-e2e/endpoint-enrollment-profiled.png`
