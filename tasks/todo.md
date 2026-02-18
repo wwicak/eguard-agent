@@ -932,4 +932,26 @@
 - Documentation baseline update:
   - `docs/EGUARD_PLATFORM_GUIDE.md` now references Endpoint UI path (`Endpoint → Enrollment & Install`) for operator workflow.
 - Known tooling caveat:
-  - frontend lint/build checks still unavailable in this environment (`vue-cli-service: not found`); validation was done via route/API behavior and existing live E2E evidence.
+  - frontend lint/build checks still unavailable in some environments (`vue-cli-service` missing on target host); this round built frontend locally and deployed dist artifact to server.
+
+### 🔍 Review Notes (browser-use UI E2E follow-up)
+- Browser-use E2E run completed after license activation (`EGUARD-KALA-2025`) on live UI.
+- UI validation performed on `/endpoint-enrollment-tokens` page:
+  - navigation discoverability confirmed (`Enrollment & Install` visible in endpoint nav),
+  - install helper command rendering confirmed,
+  - copy action tested via browser automation.
+- New UI edge-case hardening implemented from browser findings:
+  - Clipboard permission-denied fallback:
+    - issue: `navigator.clipboard.writeText` denied in browser automation context,
+    - fix: fallback to `document.execCommand('copy')` path before surfacing error,
+    - result: copy action now reports success (`Copied to clipboard`) under browser-use.
+  - Unusable token guardrails:
+    - issue: expired/exhausted token selection still allowed command generation,
+    - fix: `canGenerateInstallCommands` now requires `isTokenUsable(selectedToken)`,
+    - result (validated):
+      - expired token => `status=expired`, `canGenerate=false`,
+      - exhausted token => `status=exhausted`, `canGenerate=false`,
+      - active token => `status=active`, `canGenerate=true`.
+- Deployment/validation evidence:
+  - frontend rebuilt via `npx vue-cli-service build --dest /tmp/eguard-dist` and redeployed to `/usr/local/eg/html/egappserver/root/dist`.
+  - browser-use screenshot captured: `/tmp/ui-e2e/endpoint-enrollment-install.png`.

@@ -278,3 +278,13 @@ selection/generation UX and variable-based command templates instead.
 For every working feature/data path, ship a discoverable, responsive, intuitive
 UI path (navigation, filters/actions, and clear operator workflows), not only
 API/backend completion.
+
+## Validate UI With Real Browser Automation
+When user asks for UI E2E/hardening, run browser automation (browser-use) on
+live routes and validate interaction edge cases (copy/selection/disabled states),
+not only route/API checks.
+
+## Clipboard APIs Need Permission-Denied Fallback
+`navigator.clipboard.writeText` can fail in headless/automation contexts even
+when UI is correct. Always add fallback copy path (`execCommand('copy')`) before
+showing copy failure to users.
