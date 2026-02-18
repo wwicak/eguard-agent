@@ -844,3 +844,29 @@
 - Current continuation status:
   - previous blockers from this subnet round are resolved (`policy regression` + `agent package not found`).
   - remaining caveat is propagation latency window until next policy refresh cycle.
+
+## 🧭 Plan: Continuation hardening round (2026-02-18 late)
+- [x] Validate agent install endpoint security matrix on live subnet path (missing token/invalid token/valid token/version selector).
+- [x] Add second package artifact and verify resolver behavior (`latest` vs explicit `version` query) with real downloads.
+- [x] Verify package payload integrity/metadata from subnet VM (`dpkg-deb` inspection) and install-script output path health.
+- [x] Run one more command/telemetry E2E sanity and summarize any new gaps.
+
+### 🔍 Review Notes (continuation hardening round)
+- Install endpoint auth/selector matrix validated via subnet agent proxy (`127.0.0.1:9080`):
+  - missing token => `401 {"error":"enrollment_token_required"}`
+  - invalid token => `403 {"error":"invalid_enrollment_token"}`
+  - valid token => `200` with binary payload.
+  - unknown `version` query => `404 {"error":"agent_package_not_found"}`.
+- Resolver behavior validated with two real package artifacts:
+  - existing `eguard-agent_15.0.0-subnet1_amd64.deb`
+  - newly provisioned `eguard-agent_15.0.0-subnet2_amd64.deb`
+  - no `version` query serves latest by mtime (`subnet2`), explicit `version=15.0.0-subnet1` serves `subnet1`.
+- Payload/integrity checks from subnet VM:
+  - downloaded package inspected with `dpkg-deb -I` (`Package: eguard-agent`, `Version: 15.0.0-subnet2`, `Architecture: amd64`).
+  - `GET /install.sh` returns `200` and template placeholders are replaced (no unresolved `{{...}}`).
+- Extra E2E sanity:
+  - approval-gated command again reached `completed/approved` in DB within ~6s.
+  - telemetry false-positive guard still holds: posting non-alert telemetry (`event_type=process`) did not increase NAC items (`0 -> 0`).
+- Current gap snapshot:
+  - functional blockers for this subnet continuation are closed.
+  - expected behavior caveat remains policy refresh latency window (~300s interval) before agent compliance reflects a newly assigned policy version without restart.
