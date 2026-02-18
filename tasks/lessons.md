@@ -253,3 +253,8 @@ When Perl compile/runtime errors mention missing/empty base modules (e.g.
 Any edits under `fe_eguard/go/**` do nothing on VM until `go build` is rerun,
 the new binary is copied to target (`/usr/local/eg/sbin/eg-agent-server`), and
 the service is restarted. Treat this as mandatory after each Go patch.
+
+## Edge-Case Validation Must Use Live Flows, Not Synthetic Stubs
+When asked to continue E2E/edge-case testing, execute scenarios against the
+real VM stack (actual API auth, DB persistence, live agent runs) and avoid
+mock-only checks. Record concrete HTTP/DB evidence for each edge case.

@@ -745,3 +745,14 @@
   - `POST /api/v1/endpoint/telemetry` (`event_type=alert`, `rule_name=compliance_fail`, `detection.rule_type=mdm`) -> accepted
   - `GET /api/v1/endpoint/nac?agent_id=vm-e2e-agent-04` -> returns open `security_event_id=1300014`
 - Frontend NAC API fallback updated to handle mixed backend routes (`endpoint-nac` -> `endpoint/nac`) so UI NAC page can load on this VM layout.
+- Edge-case E2E sweep (real VM, no stubs) executed:
+  - `POST /api/v1/endpoint-policy` missing `policy_json` -> 400 `policy_json_required`.
+  - `POST /api/v1/endpoint-commands` invalid `command_type` -> 422.
+  - Rejected approval path stays non-deliverable (`status=failed`, `approval_status=rejected`, absent from pending queue).
+  - `GET /api/v1/endpoint/policy?agent_id=<unknown>` safely falls back to default policy.
+  - Inventory no-match filter (`os_type=windows`) returns 200 with empty list.
+  - NAC false-positive guard holds: non-alert telemetry (`event_type=process`) does not create new NAC event.
+  - Duplicate identity attempt (same `agent_id`, different MAC) did not overwrite enrolled MAC in `endpoint_agent`.
+- New edge-case hardening fixes from this run:
+  - `POST /api/v1/endpoint-policy/assign` now rejects unknown explicit policy with 404 `policy_not_found` (no silent fallback/hash spoof assignment).
+  - `POST /api/v1/endpoint-command/approve` now returns semantic status (`command_rejected` for rejected approvals) in Perl and Go handlers.
