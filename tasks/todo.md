@@ -788,3 +788,29 @@
 - Remaining gaps/blockers on this subnet setup:
   - `/api/v1/agent-install/linux-deb` still returns `404 {"error":"agent_package_not_found"}` (no package artifact published on server).
   - policy assignment is effective after explicit agent restart/policy refresh cycle; short windows can still report prior policy until refresh.
+
+## 🧭 Plan: Additional subnet validation round (2026-02-18, user-requested continuation)
+- [x] Re-confirm topology for `agent@103.186.0.189` and validate whether eGuard is now colocated in subnet host (`10.6.108.231`) or still remote.
+- [x] Re-run live control-plane E2E (state/heartbeat/compliance/inventory + command approve/reject lifecycle) against active topology.
+- [x] Execute additional edge cases (policy assignment race/refresh behavior, command channel stability over time, endpoint install artifact availability).
+- [x] Capture fresh DB/API evidence and document pass/fail and remaining blockers for this continuation round.
+
+### 🔍 Review Notes (continuation round)
+- Topology reconfirmed:
+  - `agent@103.186.0.189` = host `eg-a1`, IP `10.6.108.231`.
+  - eGuard services remain on `eguard@157.10.161.219` private IP `10.6.108.15` (`eguard-api-frontend`, `eguard-agent-server`, `eguard-perl-api` all active).
+  - subnet agent continues using local `socat` bridge `127.0.0.1:9080 -> 10.6.108.15:9999`.
+- Live E2E revalidation (no stubs):
+  - `endpoint_agent` heartbeat/compliance/inventory timestamps continue advancing.
+  - approval-gated command hidden pre-approval (`visible_before_approval=0`), then transitions to `completed/approved` within ~6s after approval.
+  - rejected command remains `failed/rejected` and API approve response is semantic `status="command_rejected"`.
+  - command burst test (3 approved commands) completed all rows successfully in same cycle.
+- Additional edge validations:
+  - HTTP command payload compatibility confirmed on live path: pending response includes `payload_json` when command exists.
+  - Enrollment token rollback revalidated on subnet path:
+    - created one-time token `597a23ff365a767b9b33fe8ecd8e2a32` (`max_uses=1`),
+    - forced enroll FK failure (`fk_endpoint_agent_node_mac`) returned 500 but token `times_used` stayed `0`,
+    - after seeding node MAC and retrying same token, enroll succeeded (`201`) and token `times_used=1`.
+- Fresh blockers/gaps observed:
+  - package download endpoint still unavailable: `/api/v1/agent-install/linux-deb` => `404 {"error":"agent_package_not_found"}`.
+  - policy assignment race remains: assigning newer version (`v20260218-subnet-r2`) acknowledged by API, but running agent continued fetching/using prior version (`v20260218-subnet`) and compliance rows kept old `policy_version`.

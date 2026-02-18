@@ -258,3 +258,8 @@ the service is restarted. Treat this as mandatory after each Go patch.
 When asked to continue E2E/edge-case testing, execute scenarios against the
 real VM stack (actual API auth, DB persistence, live agent runs) and avoid
 mock-only checks. Record concrete HTTP/DB evidence for each edge case.
+
+## Be Proactive About VM Provisioning Ownership
+If the user allows autonomous provisioning, do not wait for them to prep the
+VM. Immediately verify topology, provision required runtime pieces (service,
+proxy, configs), and continue E2E/edge validation end-to-end.
