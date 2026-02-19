@@ -50,7 +50,8 @@ impl AgentRuntime {
                     );
                 let shard_summary = load_bundle_full(&mut shard_engine, bundle_path);
 
-                self.corroborate_threat_intel_update(version, expected_intel, &shard_summary)?;
+                // Corroboration against expected intel is done on the primary shard summary.
+                // For additional shards we only enforce deterministic parity with shard 0.
                 enforce_bundle_signature_database_floor(bundle_path, &shard_summary)?;
                 ensure_shard_bundle_summary_matches(shard_idx, &summary, &shard_summary)?;
 

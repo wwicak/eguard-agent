@@ -100,9 +100,13 @@ fn reload_detection_state_records_reload_report_fields() {
 #[test]
 // AC-DET-006 AC-DET-151
 fn reload_detection_state_allows_corroboration_mismatch_when_bundle_integrity_checks_pass() {
+    let _env_guard = env_var_lock().lock().expect("lock env vars");
+    std::env::set_var("EGUARD_DETECTION_SHARDS", "4");
+
     let mut cfg = AgentConfig::default();
     cfg.offline_buffer_backend = "memory".to_string();
     let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+    assert_eq!(runtime.detection_state.shard_count(), 4);
 
     let bundle_root = std::env::temp_dir().join(format!(
         "eguard-corroboration-mismatch-{}",
@@ -161,6 +165,7 @@ rule corroboration_mismatch_marker {
         .expect("reload report should be recorded");
     assert!(report.yara_rules > 0);
 
+    std::env::remove_var("EGUARD_DETECTION_SHARDS");
     let _ = std::fs::remove_dir_all(bundle_root);
 }
 
