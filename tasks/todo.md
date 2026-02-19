@@ -1032,6 +1032,12 @@
 - [x] Add graceful fallback behavior for unsupported endpoint responses (404/405/501) in traffic-shaping store actions.
 - [x] Rebuild/redeploy frontend and verify error no longer appears in authenticated UI flow.
 
+## 🧭 Plan: MDM Dashboard + Reports + Data Tables (2026-02-19)
+- [x] Add dedicated MDM Dashboard route/view with live metrics and data tables sourced from compliance/inventory/policy APIs.
+- [x] Add dedicated MDM Reports route/view with report-oriented filters, tables, and CSV export for MDM operators.
+- [x] Wire routes/navigation/permissions so MDM pages are first-class discoverable endpoint screens.
+- [ ] Rebuild/redeploy frontend and validate live browser rendering + data population evidence. *(build complete to `/tmp/eguard-dist`; live deploy blocked in this shell due missing sudo/remote auth)*
+
 ### 🔍 Review Notes (traffic-shaping endpoint noise fix)
 - Fixed files:
   - `html/egappserver/root/src/views/Configuration/networks/trafficShapingPolicies/_api.js`

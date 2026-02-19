@@ -306,3 +306,8 @@ requests and explicitly handle `404/405/501` in store actions to avoid noisy
 operator-facing "Unknown path" alerts.
 But first verify whether the endpoint is truly unsupported vs accidentally
 broken routing/wiring. Do not suppress errors that indicate a regression.
+
+## MDM UX Is Not Complete Without Dedicated Operator Surfaces
+Do not claim MDM delivery when only backend/API/plumbing exists. Ship explicit
+MDM-first UI surfaces (dashboard, report view, and actionable data tables)
+with route/nav discoverability so operators can immediately see and use MDM data.
