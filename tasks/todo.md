@@ -1036,7 +1036,21 @@
 - [x] Add dedicated MDM Dashboard route/view with live metrics and data tables sourced from compliance/inventory/policy APIs.
 - [x] Add dedicated MDM Reports route/view with report-oriented filters, tables, and CSV export for MDM operators.
 - [x] Wire routes/navigation/permissions so MDM pages are first-class discoverable endpoint screens.
-- [ ] Rebuild/redeploy frontend and validate live browser rendering + data population evidence. *(build complete to `/tmp/eguard-dist`; live deploy blocked in this shell due missing sudo/remote auth)*
+- [x] Rebuild/redeploy frontend and validate live browser rendering + data population evidence.
+
+### 🔍 Review Notes (MDM dashboard/report live validation)
+- Deployment:
+  - rebuilt frontend bundle to `/tmp/eguard-dist`.
+  - deployed live via `eguard@157.10.161.219` (upload to `/tmp/eguard-dist-upload`, then `sudo rsync` to `/usr/local/eg/html/egappserver/root/dist`).
+  - restarted `eguard-api-frontend` and confirmed `active`.
+- UI hardening during validation:
+  - converted `MDMDashboard.vue` and `MDMReports.vue` controls/tables to native HTML controls to ensure reliable interaction behavior in production rendering.
+- Browser-use validation (logged in with provided admin credentials):
+  - route `/admin#/endpoint-mdm-dashboard`: Refresh button works; dashboard tables populated with live compliance/policy data.
+  - route `/admin#/endpoint-mdm-reports`: Refresh + Export CSV clickable; Agent/Status/Check-Type filters applied correctly; Reset restores full dataset; pagination Next/Prev works (Page 1/2 ↔ 2/2).
+- Evidence screenshots:
+  - `/tmp/ui-e2e/mdm-dashboard-controls-validated.png`
+  - `/tmp/ui-e2e/mdm-reports-controls-validated.png`
 
 ### 🔍 Review Notes (traffic-shaping endpoint noise fix)
 - Fixed files:

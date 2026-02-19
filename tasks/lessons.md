@@ -311,3 +311,8 @@ broken routing/wiring. Do not suppress errors that indicate a regression.
 Do not claim MDM delivery when only backend/API/plumbing exists. Ship explicit
 MDM-first UI surfaces (dashboard, report view, and actionable data tables)
 with route/nav discoverability so operators can immediately see and use MDM data.
+
+## When User Provides Live Credentials, Execute Full Live Validation Immediately
+If the user gives deployment access + credentials, do not stop at local build
+claims. Deploy to the live host, log in with provided credentials, and run a
+button/filter/pagination validation matrix in browser-use before declaring UI done.
