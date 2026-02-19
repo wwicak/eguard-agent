@@ -1,5 +1,109 @@
 # eGuard Agent — Battle Plan to Beat CrowdStrike
 
+## 🧭 Plan: Adversary tournament workflow (CrowdStrike-surpass hardening) (2026-02-19)
+- [x] Design adversary tournament workflow contract (inputs, metrics, baselines, gate thresholds)
+- [x] Implement tournament orchestration script to execute adversary/quality/perf harnesses and emit normalized metrics
+- [x] Implement regression gate script with baseline comparison and hard fail criteria
+- [x] Add `.github/workflows/adversary-tournament.yml` with baseline seeding, gate enforcement, and artifact upload
+- [x] Validate scripts/workflow syntax locally and document review notes in this plan
+
+### 🔍 Review Notes
+- Added tournament orchestration script: `scripts/run_adversary_tournament_ci.sh`
+  - Runs quality/adversary score + benchmark + runtime tick + replay determinism + rule-push + eBPF budget harnesses.
+  - Emits normalized summary to `artifacts/adversary-tournament/metrics.json`.
+- Added regression gate script: `scripts/check_adversary_tournament_gate.py`
+  - Enforces absolute thresholds (resilience, adversary score, false alarm, latency, rollout, build wall-clock).
+  - Enforces baseline drift budgets when baseline exists (score drops + latency/rollout/build increase %).
+  - Writes gate report to `artifacts/adversary-tournament/regression-report.json`.
+- Added workflow: `.github/workflows/adversary-tournament.yml`
+  - Triggered on schedule/push/pull_request/manual.
+  - Seeds baseline from latest `adversary-tournament-metrics` artifact (branch-priority aware).
+  - Runs harness, enforces gate, uploads tournament + source metrics artifacts.
+- Updated workflow linter coverage in `scripts/run_workflow_yaml_lint_ci.sh` to include the new workflow.
+- Local verification executed:
+  - `bash -n scripts/run_adversary_tournament_ci.sh`
+  - `python3 -m py_compile scripts/check_adversary_tournament_gate.py`
+  - `yq '.' .github/workflows/adversary-tournament.yml >/dev/null`
+  - `bash scripts/run_workflow_yaml_lint_ci.sh`
+  - smoke execution of `scripts/check_adversary_tournament_gate.py` against synthetic current/baseline metrics (pass).
+  - full harness run: `bash scripts/run_adversary_tournament_ci.sh` (pass; emits `artifacts/adversary-tournament/metrics.json`).
+  - gate run: `python3 scripts/check_adversary_tournament_gate.py --current artifacts/adversary-tournament/metrics.json --previous artifacts/adversary-tournament/baseline-metrics.json --output artifacts/adversary-tournament/regression-report.json` (pass).
+
+## 🧭 Plan: Deploy + validate endpoint-agents route fix on live eguard server (2026-02-19)
+- [x] Run targeted backend/frontend verification locally after persistence refactor
+- [x] Rebuild `eg-agent-server`, copy binary to eguard server, restart service, and verify health
+- [x] Rebuild frontend bundle, deploy dist to eguard server, restart frontend service, and verify health
+- [x] Validate via browser-use that `/api/v1/endpoint-agents` unknown-path regression is resolved across edge cases
+- [x] Document evidence and outcomes in this plan
+
+### 🔍 Review Notes
+- Local verification after persistence refactor:
+  - `cd /home/dimas/fe_eguard/go && go test ./agent/server -run 'TestAgentAliasRoutesSupportCollectionDetailAndDecommission|TestAgentsEventsCommandsEndpoints|TestHTTPEnrollmentHeartbeatTelemetryCommandFlow'` -> **ok**
+  - `cd /home/dimas/fe_eguard/html/egappserver/root && npm run lint -- src/views/endpoint/api.js` -> **No lint errors found**
+- Backend deploy (live VM):
+  - rebuilt binary: `go build -o /tmp/eg-agent-server.new ./cmd/eg-agent-server`
+  - deployed to `eguard@157.10.161.219:/usr/local/eg/sbin/eg-agent-server`
+  - restarted service: `systemctl restart eguard-agent-server` -> `active`
+  - health checks: `http://127.0.0.1:50052/healthz` = `ok`, `/api/v1/endpoint/ping` = `{"service":"eg-agent-server","status":"ready"}`
+- Frontend deploy (live VM):
+  - rebuilt dist: `npm run build -- --dest /tmp/eguard-dist` (warnings only)
+  - deployed dist to `/usr/local/eg/html/egappserver/root/dist/`
+  - restarted service: `systemctl restart eguard-api-frontend` -> `active`
+  - HTTP probes: `https://127.0.0.1:1443/` -> `302 /admin`, `https://127.0.0.1:1443/admin` -> `200`
+- Browser-use edge-case validation (against live deployed `eg-agent-server` via SSH tunnel `127.0.0.1:15052 -> 157.10.161.219:50052`):
+  - Created runtime agent via `POST /api/v1/endpoint/enroll` (201).
+  - Validated routes all resolved (no unknown-path regression):
+    - `GET /api/v1/endpoint/agents?limit=5` -> 200
+    - `GET /api/v1/endpoint-agents?limit=5` -> 200
+    - `GET /api/v1/endpoint/agents/:agent_id` -> 200
+    - `GET /api/v1/endpoint-agents/:agent_id` -> 200
+    - `DELETE /api/v1/endpoint/agents/:agent_id?wipe_data=0` -> 200 (`decommission_initiated`)
+    - `DELETE /api/v1/endpoint-agents/:agent_id?wipe_data=1` -> 200 (`decommission_initiated`)
+    - malformed `GET /api/v1/endpoint-agents/:agent_id/extra` -> 404 with structured JSON `{"error":"agent_path_not_supported"}`
+- Browser-use evidence screenshots:
+  - `/tmp/ui-e2e/endpoint-agents-slash-ok.png`
+  - `/tmp/ui-e2e/endpoint-agents-hyphen-ok.png`
+  - `/tmp/ui-e2e/endpoint-agents-malformed-404.png`
+
+## 🧭 Plan: Frontend fallback fix for Unknown path `/api/v1/endpoint-agents` (2026-02-19)
+- [x] Reproduce current endpoint agent API call path usage in frontend and confirm missing fallback behavior
+- [x] Add slash/hyphen fallback + quiet probing for endpoint agent list/detail/delete API methods
+- [x] Run targeted frontend lint/verification for modified files
+- [x] Document review notes and results in this plan
+
+### 🔍 Review Notes
+- Root cause confirmed in `html/egappserver/root/src/views/endpoint/api.js`: `listAgents`, `getAgent`, and `decommissionAgent` used only `endpoint-agents` path without slash-route fallback.
+- Implemented fallback + quiet probing for agent APIs:
+  - `listAgents`: `endpoint-agents` -> `endpoint/agents`
+  - `getAgent`: `endpoint-agents/:id` -> `endpoint/agents/:id`
+  - `decommissionAgent`: `DELETE endpoint-agents/:id` -> `endpoint/agents/:id`
+- Added `deleteItemQuiet` + `deleteItemWithFallback` helper to keep first-path 404/503 failures silent while probing fallback paths.
+- Verification: `npm run lint -- src/views/endpoint/api.js` (from `html/egappserver/root`) passed with **no lint errors**.
+
+## 🧭 Plan: Backend route parity fix for endpoint agents (real fix, no stub dependency) (2026-02-19)
+- [x] Implement server-side alias parity for agent routes (`/api/v1/endpoint/agents` and `/api/v1/endpoint-agents`), including resource path support (`/:agent_id`)
+- [x] Add server support for agent detail and decommission operations on slash routes so frontend is not blocked by missing hyphen routes
+- [x] Switch frontend agent API to prefer slash routes first and fall back to hyphen routes
+- [x] Add/execute targeted backend + frontend verification tests
+- [x] Document results and evidence in this plan
+
+### 🔍 Review Notes
+- Root issue addressed beyond frontend mitigation:
+  - `go/agent/server/server.go`: added route handlers for both collection/resource alias families:
+    - `/api/v1/endpoint/agents`, `/api/v1/endpoint/agents/`
+    - `/api/v1/endpoint-agents`, `/api/v1/endpoint-agents/`
+- Implemented full agent route handling in Go server (`go/agent/server/list.go`):
+  - collection list,
+  - resource get (`GET /.../:agent_id`),
+  - decommission (`DELETE /.../:agent_id?wipe_data=...`) with uninstall command enqueue.
+- Extended agent persistence loading (`go/agent/server/persistence.go`, `types.go`) with richer agent fields + single-agent lookup + per-agent recent event loading.
+- Frontend now prefers slash routes first for agent APIs and only uses hyphen routes as fallback (`html/egappserver/root/src/views/endpoint/api.js`):
+  - `endpoint/agents` -> `endpoint-agents`.
+- Added backend regression test: `go/agent/server/agents_alias_test.go` covering list/detail/delete for both route variants and uninstall command creation semantics.
+- Verification evidence:
+  - `cd /home/dimas/fe_eguard/go && go test ./agent/server -run 'TestAgentAliasRoutesSupportCollectionDetailAndDecommission|TestAgentsEventsCommandsEndpoints|TestHTTPEnrollmentHeartbeatTelemetryCommandFlow'` -> **ok**
+  - `cd /home/dimas/fe_eguard/html/egappserver/root && npm run lint -- src/views/endpoint/api.js` -> **No lint errors found**
+
 ## 🧭 Plan: Tidy todo duplication + Tier 2.3 container awareness (2026-02-16)
 - [x] Review todo for duplicated Tier execution sections and inconsistent checkbox status
 - [x] Consolidate Tier execution sections into a single source of truth (keep latest results)
@@ -1144,3 +1248,64 @@
   - test proof:
     - `go test ./agent/server -run 'TestPolicy(UpsertAcceptsObjectPolicyJSON|PreviewAndDiffEndpoints|AssignAndLifecycleEndpoints)'` -> `ok`.
   - redeploy proof after `.go` change (mandatory): rebuilt `eg-agent-server`, installed to `/usr/local/eg/sbin/eg-agent-server`, restarted service, status `active`.
+
+## 🧭 Plan: Isolated EDR E2E + edge-case validation loop (2026-02-19)
+- [x] Bridge isolated VM (`edr@27.112.78.178`) to live eGuard API path and verify connectivity/auth.
+- [x] Install/enroll `eguard-agent` on isolated VM using enrollment token flow (no hardcoded/manual DB shortcuts).
+- [x] Execute EDR E2E test matrix: heartbeat/inventory/compliance + telemetry ingestion + response/incident visibility.
+- [x] Execute edge-case suite: command approval/rejection, pending delivery semantics, invalid telemetry payloads, rate/limit behavior, and policy propagation.
+- [x] Validate detections with safe security test artifacts/simulations in isolated VM and collect API/log evidence.
+- [x] Implement fixes + redeploy/restart if regressions found, then re-run validations.
+- [x] Document outcomes, evidence, and follow-up improvements in this section.
+- [ ] Follow-up: harden installer/package flow so `install.sh` succeeds when package ships binary without preinstalled systemd unit.
+- [ ] Follow-up: persist server bootstrap settings into durable `agent.conf` after first enrollment to avoid restart regressions.
+
+### 🔍 Review Notes (isolated EDR E2E + edge loop)
+- Network bridge and topology:
+  - isolated VM cannot directly reach live hosts, so bridged via SSH tunnels.
+  - active bridge for final E2E run:
+    - local `25052 -> 157.10.161.219:50052` (direct `eg-agent-server` API)
+    - local `19999 -> 157.10.161.219:9999` (frontend/API)
+    - remote reverse on VM: `127.0.0.1:50052` and `127.0.0.1:19080`.
+- Agent install/enroll on isolated VM:
+  - installed package from `/api/v1/agent-install/linux-deb` and created systemd unit on VM.
+  - enrolled live agent `agent-dev-1` via direct endpoint API (`/endpoint/enroll`) using generated token.
+  - heartbeat proven advancing (`endpoint-agents.last_heartbeat` moved in ~30s cadence after persistent config fix).
+- Safe detection simulation (no live malware deployment):
+  - generated EICAR test artifact on isolated VM and used its SHA256 IOC in telemetry (`131f95c51cc819465fa1797f6ccacf9d494aaaff46fa3eac73ae63ffbdfd8267`).
+  - correlated IOC incident created (`ioc_multi_host`) across 3 synthetic enrolled agents.
+  - rule-flood correlation validated (`time_window`) with 10-host synthetic burst.
+- EDR API E2E validations:
+  - telemetry ingest -> `202 telemetry_accepted`.
+  - incidents query reflects correlated incidents with expected titles/severity/affected hosts.
+  - response action ingest/list works (`response_saved`, list count increments).
+  - command execution validated on real enrolled agent:
+    - non-approval command transitioned `pending -> completed`.
+    - approval-required command stayed hidden pre-approval, then transitioned to `sent` after channel delivery.
+    - rejection path persisted `status=failed`, `approval_status=rejected`.
+  - policy flow validated on real agent:
+    - upsert + assign succeeded,
+    - compliance policy_version converged from fallback `cfg-*` to assigned `real-edr-v*` in ~30s.
+- Edge-case matrix validated:
+  - install endpoint matrix (direct server path):
+    - no token `401 enrollment_token_required`
+    - invalid token `403 invalid_enrollment_token`
+    - valid token `200` (deb payload)
+    - unknown version `404 agent_package_not_found`
+  - one-time token rollback: invalid OS enroll (`400 invalid_os_type`) did not consume token; subsequent valid enroll with same token succeeded (`201`).
+  - invalid telemetry payload -> `400 invalid_telemetry_payload`.
+  - telemetry rate probe (260 events single agent) -> all `202` (no `429`; default limit not exceeded).
+- Regressions found + fixes implemented:
+  1. `GET /api/v1/endpoint/commands` returned `failed_load_commands` on live server.
+     - root cause: `IFNULL(approved_at, '0000-00-00 00:00:00')` forced string scan incompatibility.
+     - fix: `go/agent/server/persistence_commands.go` -> scan nullable datetime with `sql.NullTime`.
+     - verification: endpoint now returns command rows (`status: ok`) for `agent-dev-1`.
+  2. False-positive self-protection alert after bootstrap consumption (`agent_tamper` on missing `/etc/eguard-agent/bootstrap.conf`).
+     - root cause: self-protect default runtime config paths included ephemeral bootstrap file.
+     - fix: `crates/self-protect/src/engine.rs` remove bootstrap from defaults; add regression test in `crates/self-protect/tests/engine_tests.rs`.
+     - verification: `cargo test -p self-protect` passes; rebuilt binary deployed to isolated VM; no new bootstrap-missing tamper alerts observed post-restart window.
+- Deployment/verification performed after Go/Rust changes:
+  - server: rebuilt `eg-agent-server`, installed to `/usr/local/eg/sbin/eg-agent-server`, restarted `eguard-agent-server` (`active`).
+  - isolated VM: rebuilt agent binary (`agent-core`) installed as `/usr/local/bin/eguard-agent`, service restarted (`active`).
+- OpenAPI impact:
+  - no endpoint shape/contract changes in this loop; no OpenAPI path/schema updates required.

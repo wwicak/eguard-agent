@@ -327,3 +327,20 @@ If API aliases exist (e.g. `/endpoint/...` and `/endpoint-...`), ensure payload
 contracts and behavior are equivalent. Do not let one alias accept object JSON
 while another only accepts string JSON; this breaks fallback clients and creates
 silent policy assignment regressions.
+
+## Don’t Stop At Frontend Mitigation When Backend Alias Is Missing
+If an "Unknown path" error is caused by route-variant mismatch, frontend fallback
+is only a temporary mitigation. Ship backend route parity (collection + resource
+handlers) and then keep frontend fallback as resilience, not as the primary fix.
+
+## Never `IFNULL` DATETIME To String In Go SQL Scan Paths
+For MySQL datetime columns consumed by Go (`time.Time` / `sql.NullTime`), avoid
+`IFNULL(col, '0000-00-00 00:00:00')` in SELECT lists. It changes column typing
+and can trigger scan failures (`failed_load_*` at runtime). Prefer nullable
+datetime scanning (`approved_at` -> `sql.NullTime`) and handle validity in code.
+
+## Self-Protection Runtime Config Baseline Must Exclude Ephemeral Bootstrap Files
+`/etc/eguard-agent/bootstrap.conf` is consumed after successful enrollment, so it
+must not be part of default runtime tamper baseline. Only durable config paths
+(e.g. `agent.conf`) should be monitored by default, otherwise post-enrollment
+runs generate false-positive `agent_tamper` events.
