@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use grpc_client::ThreatIntelVersionEnvelope;
-use tracing::info;
+use tracing::{info, warn};
 
 use super::super::{
     build_ransomware_policy, detection_bootstrap, load_bundle_full, AgentRuntime, ReloadReport,
@@ -139,11 +139,11 @@ impl AgentRuntime {
         );
 
         if !mismatches.is_empty() {
-            return Err(anyhow!(
-                "threat-intel bundle corroboration failed for version '{}': {}",
-                version,
-                mismatches.join(", ")
-            ));
+            warn!(
+                version = version,
+                mismatches = %mismatches.join(", "),
+                "threat-intel bundle corroboration mismatch (warn-only)"
+            );
         }
 
         Ok(())

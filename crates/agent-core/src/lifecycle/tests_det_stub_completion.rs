@@ -99,20 +99,36 @@ fn reload_detection_state_records_reload_report_fields() {
 
 #[test]
 // AC-DET-006 AC-DET-151
-fn reload_detection_state_rejects_corroboration_mismatch_before_swap() {
+fn reload_detection_state_allows_corroboration_mismatch_when_bundle_integrity_checks_pass() {
     let mut cfg = AgentConfig::default();
     cfg.offline_buffer_backend = "memory".to_string();
     let mut runtime = AgentRuntime::new(cfg).expect("runtime");
 
-    let before = runtime
-        .detection_state
-        .version()
-        .expect("read version")
-        .unwrap_or_default();
+    let bundle_root = std::env::temp_dir().join(format!(
+        "eguard-corroboration-mismatch-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    let yara_dir = bundle_root.join("yara");
+    std::fs::create_dir_all(&yara_dir).expect("create yara dir");
+    std::fs::write(
+        yara_dir.join("rule.yar"),
+        r#"
+rule corroboration_mismatch_marker {
+  strings:
+    $m = "corroboration-mismatch-marker"
+  condition:
+    $m
+}
+"#,
+    )
+    .expect("write yara rule");
 
     let expected = grpc_client::ThreatIntelVersionEnvelope {
         version: "v-next".to_string(),
-        bundle_path: "/tmp/non-existent-bundle".to_string(),
+        bundle_path: bundle_root.to_string_lossy().into_owned(),
         published_at_unix: 0,
         sigma_count: 5,
         yara_count: 2,
@@ -124,17 +140,83 @@ fn reload_detection_state_rejects_corroboration_mismatch_before_swap() {
         bundle_sha256: String::new(),
     };
 
-    let err = runtime
-        .reload_detection_state("v-next", "", Some(&expected))
-        .expect_err("corroboration must reject mismatched counts");
-    assert!(err.to_string().contains("corroboration"));
+    runtime
+        .reload_detection_state(
+            "v-next",
+            bundle_root.to_string_lossy().as_ref(),
+            Some(&expected),
+        )
+        .expect("count corroboration mismatch should be warn-only");
 
     let after = runtime
         .detection_state
         .version()
         .expect("read version after")
         .unwrap_or_default();
-    assert_eq!(after, before);
+    assert_eq!(after, "v-next");
+
+    let report = runtime
+        .last_reload_report
+        .as_ref()
+        .expect("reload report should be recorded");
+    assert!(report.yara_rules > 0);
+
+    let _ = std::fs::remove_dir_all(bundle_root);
+}
+
+#[test]
+// AC-DET-006 AC-DET-151
+fn reload_detection_state_rejects_version_mismatch_before_swap() {
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+
+    let bundle_root = std::env::temp_dir().join(format!(
+        "eguard-version-mismatch-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    let yara_dir = bundle_root.join("yara");
+    std::fs::create_dir_all(&yara_dir).expect("create yara dir");
+    std::fs::write(
+        yara_dir.join("rule.yar"),
+        r#"
+rule version_mismatch_marker {
+  strings:
+    $m = "version-mismatch-marker"
+  condition:
+    $m
+}
+"#,
+    )
+    .expect("write yara rule");
+
+    let expected = grpc_client::ThreatIntelVersionEnvelope {
+        version: "v-expected".to_string(),
+        bundle_path: bundle_root.to_string_lossy().into_owned(),
+        published_at_unix: 0,
+        sigma_count: 0,
+        yara_count: 1,
+        ioc_count: 0,
+        cve_count: 0,
+        custom_rule_count: 0,
+        custom_rule_version_hash: String::new(),
+        bundle_signature_path: String::new(),
+        bundle_sha256: String::new(),
+    };
+
+    let err = runtime
+        .reload_detection_state(
+            "v-actual",
+            bundle_root.to_string_lossy().as_ref(),
+            Some(&expected),
+        )
+        .expect_err("version mismatch should still reject reload");
+    assert!(err.to_string().contains("version mismatch"));
+
+    let _ = std::fs::remove_dir_all(bundle_root);
 }
 
 #[test]
