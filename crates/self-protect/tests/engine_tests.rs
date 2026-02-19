@@ -125,6 +125,23 @@ fn from_env_uses_file_when_env_hash_is_invalid() {
 }
 
 #[test]
+// AC-ATP-006
+fn default_runtime_config_paths_exclude_bootstrap_file() {
+    let _guard = env_lock().lock().expect("env lock");
+    std::env::remove_var("EGUARD_SELF_PROTECT_RUNTIME_CONFIG_PATHS");
+
+    let cfg = SelfProtectConfig::default();
+    assert!(cfg
+        .runtime_config_paths
+        .iter()
+        .any(|path| path == "/etc/eguard-agent/agent.conf"));
+    assert!(!cfg
+        .runtime_config_paths
+        .iter()
+        .any(|path| path == "/etc/eguard-agent/bootstrap.conf"));
+}
+
+#[test]
 // AC-ATP-098 AC-ATP-099 AC-ATP-100
 fn runtime_integrity_mismatch_is_reported_for_modified_binary() {
     let tmp = std::env::temp_dir().join(format!(

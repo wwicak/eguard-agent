@@ -6,10 +6,7 @@ use std::sync::OnceLock;
 const COMPILETIME_EXPECTED_SHA256: Option<&str> =
     option_env!("EGUARD_SELF_PROTECT_EXPECTED_SHA256");
 const DEFAULT_RUNTIME_INTEGRITY_PATHS: [&str; 1] = ["/proc/self/exe"];
-const DEFAULT_RUNTIME_CONFIG_PATHS: [&str; 2] = [
-    "/etc/eguard-agent/agent.conf",
-    "/etc/eguard-agent/bootstrap.conf",
-];
+const DEFAULT_RUNTIME_CONFIG_PATHS: [&str; 1] = ["/etc/eguard-agent/agent.conf"];
 
 pub fn default_runtime_integrity_paths() -> Vec<String> {
     DEFAULT_RUNTIME_INTEGRITY_PATHS
