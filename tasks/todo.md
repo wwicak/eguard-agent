@@ -1107,10 +1107,40 @@
   - NAC + telemetry ingestion routes.
 
 ## 🧭 Plan: MDM E2E + edge-case regression round (2026-02-19)
-- [ ] Re-verify live topology and service health (eguard server + subnet agent VM) before tests.
-- [ ] Execute end-to-end MDM policy flow: enroll/heartbeat/compliance/inventory + policy assignment propagation latency.
-- [ ] Execute command workflow edge cases: approval states, queue delivery semantics, and rejection behavior.
-- [ ] Execute enrollment/install edge cases: token required/invalid/valid paths, one-time token behavior, and unknown-MAC enrollment safety.
-- [ ] Capture failures/root causes, implement fixes if any, redeploy required services, and re-validate.
-- [ ] Document evidence + outcomes in this plan section with concrete API/DB/log proof.
-- [ ] Update OpenAPI endpoint docs if any changes are required.
+- [x] Re-verify live topology and service health (eguard server + subnet agent VM) before tests.
+- [x] Execute end-to-end MDM policy flow: enroll/heartbeat/compliance/inventory + policy assignment propagation latency.
+- [x] Execute command workflow edge cases: approval states, queue delivery semantics, and rejection behavior.
+- [x] Execute enrollment/install edge cases: token required/invalid/valid paths, one-time token behavior, and unknown-MAC enrollment safety.
+- [x] Capture failures/root causes, implement fixes if any, redeploy required services, and re-validate.
+- [x] Document evidence + outcomes in this plan section with concrete API/DB/log proof.
+- [ ] Follow-up: resolve remaining slash-route lifecycle `lost` mismatch (`/endpoint/lifecycle` -> `failed_update_lifecycle` while `/endpoint-lifecycle` succeeds).
+
+### 🔍 Review Notes (MDM E2E + edge round)
+- Topology + service health revalidated:
+  - `eguard@157.10.161.219` (`eg-t2`): `eguard-perl-api`, `eguard-api-frontend`, `eguard-agent-server` all `active`.
+  - `agent@103.186.0.189` (`eg-a1`): `eguard-agent` `active`.
+- MDM policy/inventory/compliance live checks:
+  - `endpoint/compliance` for `subnet-agent-1031860189` shows live checks with policy metadata.
+  - `endpoint/inventory` returns fresh snapshots.
+  - policy reassignment propagation verified in ~25s cadence window (`v20260219-edge-r9` and `v20260219-edge-r10`).
+- Command workflow checks:
+  - pre-approval queue suppression confirmed (`pending` queue did not contain unapproved command).
+  - approval path confirmed (`command_approved`, command appeared in pending channel, then moved to `sent`).
+  - rejection path confirmed (`command_rejected`, persisted record `status=failed`, `approval_status=rejected`).
+- Enrollment/install edge checks:
+  - install endpoint matrix revalidated:
+    - no token -> `401 enrollment_token_required`
+    - invalid token -> `403 invalid_enrollment_token`
+    - valid new token -> `200` (real `.deb` payload)
+    - unknown version -> `404 agent_package_not_found`
+  - unknown-MAC enrollment revalidated: new agent enrollment succeeded without manual pre-seeding.
+  - one-time token rollback behavior revalidated via invalid-os first attempt (`400 invalid_os_type`) followed by successful second enroll with same token (`201`).
+- Root cause + fix implemented:
+  - discovered slash-route upsert contract mismatch: `/api/v1/endpoint/policy` rejected object `policy_json` payloads (`policy_json_required`) while hyphen route accepted them.
+  - fixed Go policy upsert to accept both JSON string and object payloads (compat with preview/diff/perl route behavior).
+  - files changed:
+    - `go/agent/server/policy.go`
+    - `go/agent/server/policy_management_test.go`
+  - test proof:
+    - `go test ./agent/server -run 'TestPolicy(UpsertAcceptsObjectPolicyJSON|PreviewAndDiffEndpoints|AssignAndLifecycleEndpoints)'` -> `ok`.
+  - redeploy proof after `.go` change (mandatory): rebuilt `eg-agent-server`, installed to `/usr/local/eg/sbin/eg-agent-server`, restarted service, status `active`.

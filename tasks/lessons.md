@@ -321,3 +321,9 @@ button/filter/pagination validation matrix in browser-use before declaring UI do
 When adding, modifying, aliasing, or fixing API endpoints, update OpenAPI docs
 in the same task (paths + schemas/responses/parameters + generated spec files)
 before declaring work complete.
+
+## Keep Slash/Hyphen Alias Endpoints Contract-Compatible
+If API aliases exist (e.g. `/endpoint/...` and `/endpoint-...`), ensure payload
+contracts and behavior are equivalent. Do not let one alias accept object JSON
+while another only accepts string JSON; this breaks fallback clients and creates
+silent policy assignment regressions.
