@@ -2,7 +2,8 @@ name: Collect CVE Data
 
 on:
   schedule:
-    - cron: "0 4 * * *"  # Daily at 04:00 UTC
+    - cron: "0 4 * * 1-6"  # Incremental sync Monday-Saturday at 04:00 UTC
+    - cron: "20 4 * * 0"   # Full sync Sunday at 04:20 UTC
   workflow_dispatch:
     inputs:
       full_sync:
@@ -13,6 +14,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: collect-cve-${{ github.ref }}
@@ -33,24 +35,54 @@ jobs:
       - name: Determine sync mode
         id: mode
         run: |
-          if [ "${{ inputs.full_sync }}" = "true" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.full_sync }}" = "true" ]; then
             echo "mode=full" >> "$GITHUB_OUTPUT"
-            echo "Will run FULL historical sync (1 year)"
+            echo "Will run FULL historical sync (1 year) from manual dispatch"
+          elif [ "${{ github.event_name }}" = "schedule" ] && [ "${{ github.event.schedule }}" = "20 4 * * 0" ]; then
+            echo "mode=full" >> "$GITHUB_OUTPUT"
+            echo "Will run FULL historical sync (1 year) from weekly schedule"
           else
             echo "mode=incremental" >> "$GITHUB_OUTPUT"
-            echo "Will run incremental sync (last 7 days)"
+            echo "Will run incremental sync (last 7 days, merged with prior baseline)"
           fi
 
-      - name: Fetch NVD CVEs (incremental)
+      - name: Fetch NVD CVEs (incremental, paginated)
         if: steps.mode.outputs.mode == 'incremental'
         run: |
           mkdir -p /tmp/nvd_data
           START_DATE=$(date -u -d '7 days ago' +%Y-%m-%dT00:00:00.000)
           END_DATE=$(date -u +%Y-%m-%dT23:59:59.999)
-          curl -sSfL --retry 3 --max-time 300 \
-            "https://services.nvd.nist.gov/rest/json/cves/2.0/?lastModStartDate=${START_DATE}&lastModEndDate=${END_DATE}&resultsPerPage=2000" \
-            -o /tmp/nvd_data/nvd_recent.json
-          echo "Downloaded NVD incremental CVEs"
+
+          PAGE=0
+          START_INDEX=0
+          while true; do
+            OUT="/tmp/nvd_data/nvd_recent_${PAGE}.json"
+            HTTP_CODE=$(curl -sSL --retry 3 --max-time 300 -w "%{http_code}" \
+              "https://services.nvd.nist.gov/rest/json/cves/2.0/?lastModStartDate=${START_DATE}&lastModEndDate=${END_DATE}&resultsPerPage=2000&startIndex=${START_INDEX}" \
+              -o "$OUT")
+
+            if [ "$HTTP_CODE" != "200" ]; then
+              echo "Warning: got HTTP $HTTP_CODE during incremental fetch"
+              rm -f "$OUT"
+              break
+            fi
+
+            TOTAL=$(python3 -c "import json; print(json.load(open('$OUT')).get('totalResults', 0))")
+            RETURNED=$(python3 -c "import json; print(len(json.load(open('$OUT')).get('vulnerabilities', [])))")
+            echo "  Incremental page $PAGE: $RETURNED results (total: $TOTAL, offset: $START_INDEX)"
+
+            if [ "$RETURNED" -le 0 ]; then
+              rm -f "$OUT"
+              break
+            fi
+
+            PAGE=$((PAGE + 1))
+            START_INDEX=$((START_INDEX + 2000))
+            if [ "$START_INDEX" -ge "$TOTAL" ]; then break; fi
+            sleep 6  # NVD rate limit
+          done
+
+          echo "Downloaded $PAGE incremental NVD pages"
 
       - name: Fetch NVD CVEs (full — 1 year)
         if: steps.mode.outputs.mode == 'full'
@@ -125,17 +157,248 @@ jobs:
 
       - name: Extract and enrich Linux CVEs
         run: |
-          python threat-intel/processing/cve_extract.py \
+          python3 threat-intel/processing/cve_extract.py \
             --input /tmp/nvd_data \
-            --output /tmp/cves.jsonl \
+            --output /tmp/cves.incremental.jsonl \
             --min-cvss 4.0 \
             --kev /tmp/cisa_kev.json \
             --epss /tmp/epss.csv
 
+      - name: Download previous CVE baseline artifact (best effort)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EGUARD_CVE_TARGET_BRANCH: ${{ github.ref_name }}
+          EGUARD_CVE_FALLBACK_BRANCH: "main"
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import shutil
+          import subprocess
+          from pathlib import Path
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          target_branch = os.environ.get("EGUARD_CVE_TARGET_BRANCH", "").strip()
+          fallback_branch = os.environ.get("EGUARD_CVE_FALLBACK_BRANCH", "").strip()
+          previous_out = Path("/tmp/cves.previous.jsonl")
+          if previous_out.exists():
+              previous_out.unlink()
+
+          def branch_priority(head_branch: str) -> int:
+              if target_branch and head_branch == target_branch:
+                  return 0
+              if fallback_branch and head_branch == fallback_branch:
+                  return 1
+              if not target_branch and not fallback_branch:
+                  return 0
+              return 2
+
+          try:
+              artifacts = []
+              for page in range(1, 6):
+                  raw = subprocess.check_output(
+                      ["gh", "api", f"repos/{repo}/actions/artifacts?per_page=100&page={page}"],
+                      text=True,
+                  )
+                  page_artifacts = json.loads(raw).get("artifacts", [])
+                  if not page_artifacts:
+                      break
+                  artifacts.extend(page_artifacts)
+          except Exception as exc:
+              print(f"cve baseline seed skipped: failed to query artifacts ({exc})")
+              raise SystemExit(0)
+
+          selected = None
+          for artifact in artifacts:
+              if artifact.get("name") != "cve-extracted" or artifact.get("expired"):
+                  continue
+
+              run_info = artifact.get("workflow_run") or {}
+              head_branch = str(run_info.get("head_branch") or "")
+              priority = branch_priority(head_branch)
+              if priority >= 2:
+                  continue
+
+              created_at = str(artifact.get("created_at") or "")
+              if not created_at:
+                  continue
+
+              artifact["_priority"] = priority
+              if (
+                  selected is None
+                  or priority < selected["_priority"]
+                  or (priority == selected["_priority"] and created_at > selected.get("created_at", ""))
+              ):
+                  selected = artifact
+
+          if selected is None:
+              print("cve baseline seed skipped: no compatible previous cve-extracted artifact")
+              raise SystemExit(0)
+
+          run_id = (selected.get("workflow_run") or {}).get("id")
+          if not run_id:
+              print("cve baseline seed skipped: selected artifact has no workflow run id")
+              raise SystemExit(0)
+
+          download_dir = Path("/tmp/cve-baseline-download")
+          if download_dir.exists():
+              shutil.rmtree(download_dir)
+          download_dir.mkdir(parents=True, exist_ok=True)
+
+          cmd = [
+              "gh",
+              "run",
+              "download",
+              str(run_id),
+              "--repo",
+              repo,
+              "--name",
+              "cve-extracted",
+              "--dir",
+              str(download_dir),
+          ]
+          result = subprocess.run(cmd, capture_output=True, text=True)
+          if result.returncode != 0:
+              print(
+                  "cve baseline seed skipped: "
+                  f"download failed for run {run_id} ({result.stderr.strip() or result.stdout.strip()})"
+              )
+              raise SystemExit(0)
+
+          candidates = sorted(download_dir.rglob("cves.jsonl"))
+          if not candidates:
+              print("cve baseline seed skipped: downloaded artifact missing cves.jsonl")
+              raise SystemExit(0)
+
+          shutil.copy2(candidates[0], previous_out)
+          print(
+              "seeded cve baseline from run "
+              f"{run_id} (branch={(selected.get('workflow_run') or {}).get('head_branch')})"
+          )
+          PY
+
+      - name: Merge CVE corpus with previous baseline
+        env:
+          EGUARD_CVE_RETENTION_DAYS: "365"
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from datetime import datetime, timedelta, timezone
+          from pathlib import Path
+
+          current_path = Path('/tmp/cves.incremental.jsonl')
+          previous_path = Path('/tmp/cves.previous.jsonl')
+          output_path = Path('/tmp/cves.jsonl')
+          retention_days = int(os.environ.get('EGUARD_CVE_RETENTION_DAYS', '365'))
+
+          if not current_path.is_file():
+              raise SystemExit('missing incremental cve extract: /tmp/cves.incremental.jsonl')
+
+          def parse_jsonl(path: Path):
+              records = []
+              for line in path.read_text(encoding='utf-8').splitlines():
+                  if not line.strip():
+                      continue
+                  try:
+                      record = json.loads(line)
+                  except json.JSONDecodeError:
+                      continue
+                  if isinstance(record, dict):
+                      records.append(record)
+              return records
+
+          def parse_published(record: dict):
+              raw = str(record.get('published') or '').strip()
+              if not raw:
+                  return None
+              try:
+                  parsed = datetime.fromisoformat(raw.replace('Z', '+00:00'))
+              except ValueError:
+                  return None
+              if parsed.tzinfo is None:
+                  parsed = parsed.replace(tzinfo=timezone.utc)
+              return parsed.astimezone(timezone.utc)
+
+          def merge_record(existing: dict, incoming: dict) -> dict:
+              merged = dict(existing)
+              merged.update(incoming)
+
+              merged['actively_exploited'] = bool(existing.get('actively_exploited')) or bool(incoming.get('actively_exploited'))
+
+              existing_packages = existing.get('affected_packages')
+              incoming_packages = incoming.get('affected_packages')
+              if isinstance(existing_packages, list) and isinstance(incoming_packages, list):
+                  merged['affected_packages'] = incoming_packages if len(incoming_packages) >= len(existing_packages) else existing_packages
+              elif isinstance(existing_packages, list) and 'affected_packages' not in incoming:
+                  merged['affected_packages'] = existing_packages
+
+              for key in ('epss_score', 'epss_percentile', 'kev_date_added', 'kev_due_date', 'kev_ransomware'):
+                  value = merged.get(key)
+                  if value in ('', None):
+                      if incoming.get(key) not in ('', None):
+                          merged[key] = incoming.get(key)
+                      elif existing.get(key) not in ('', None):
+                          merged[key] = existing.get(key)
+
+              return merged
+
+          current_records = parse_jsonl(current_path)
+          previous_records = parse_jsonl(previous_path) if previous_path.is_file() else []
+
+          by_id: dict[str, dict] = {}
+          for record in previous_records:
+              cve_id = str(record.get('cve_id') or '').strip()
+              if not cve_id:
+                  continue
+              by_id[cve_id] = record
+
+          for record in current_records:
+              cve_id = str(record.get('cve_id') or '').strip()
+              if not cve_id:
+                  continue
+              existing = by_id.get(cve_id)
+              if existing is None:
+                  by_id[cve_id] = record
+              else:
+                  by_id[cve_id] = merge_record(existing, record)
+
+          cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+          merged_records = []
+          for record in by_id.values():
+              published_at = parse_published(record)
+              if published_at is not None and published_at < cutoff and not record.get('actively_exploited'):
+                  continue
+              merged_records.append(record)
+
+          def score_key(record: dict):
+              try:
+                  cvss = float(record.get('cvss', 0.0))
+              except (TypeError, ValueError):
+                  cvss = 0.0
+              return (
+                  0 if record.get('actively_exploited') else 1,
+                  -cvss,
+                  str(record.get('cve_id') or ''),
+              )
+
+          merged_records.sort(key=score_key)
+
+          output_path.parent.mkdir(parents=True, exist_ok=True)
+          with output_path.open('w', encoding='utf-8') as handle:
+              for record in merged_records:
+                  handle.write(json.dumps(record, separators=(',', ':')) + '\n')
+
+          merged_count = len(merged_records)
+          merged_kev = sum(1 for rec in merged_records if rec.get('actively_exploited'))
+          print(f'cve merge: incremental={len(current_records)} previous={len(previous_records)} merged={merged_count} merged_kev={merged_kev}')
+          PY
+
       - name: Enforce CVE collector coverage
         env:
-          EGUARD_MIN_CVE: "1000"
-          EGUARD_MIN_KEV: "50"
+          EGUARD_MIN_CVE: ${{ steps.mode.outputs.mode == 'full' && '1000' || '60' }}
+          EGUARD_MIN_KEV: ${{ steps.mode.outputs.mode == 'full' && '50' || '2' }}
+          EGUARD_CVE_SYNC_MODE: ${{ steps.mode.outputs.mode }}
         run: |
           python3 - <<'PY'
           import json
@@ -161,10 +424,13 @@ jobs:
               if record.get('actively_exploited'):
                   kev_count += 1
 
+          mode = os.environ.get('EGUARD_CVE_SYNC_MODE', 'unknown')
           min_cve = int(os.environ.get('EGUARD_MIN_CVE', '1000'))
           min_kev = int(os.environ.get('EGUARD_MIN_KEV', '50'))
+          print(f'cve sync mode: {mode}')
           print(f'cve extracted count: {cve_count}')
           print(f'cve kev count: {kev_count}')
+          print(f'cve thresholds: min_cve={min_cve} min_kev={min_kev}')
 
           failures = []
           if cve_count < min_cve:

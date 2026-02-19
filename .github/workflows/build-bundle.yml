@@ -1550,7 +1550,7 @@ jobs:
                   f'- Owner P0 increase preview (max 5): {owner_p0_preview}',
               ])
               if regressions:
-                  lines.append(f'- Regressions: {"; ".join(regressions)}')
+                  lines.append(f'- Regressions: {\"; \".join(regressions)}')
 
           if attack_critical_history:
               owner_totals = attack_critical_history.get('window_owner_p0_regression_totals', {})
@@ -1676,7 +1676,7 @@ jobs:
                   f'- Projected consecutive alerts: {trend_alerts.get("projected_consecutive_alerts", "n/a")}',
               ])
               if trend_regressions:
-                  lines.append(f'- Regressions: {"; ".join(str(item) for item in trend_regressions)}')
+                  lines.append(f'- Regressions: {\"; \".join(str(item) for item in trend_regressions)}')
 
           if signature_ml_corpus:
               corpus_measured = signature_ml_corpus.get('measured', {})

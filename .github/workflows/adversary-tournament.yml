@@ -1,0 +1,192 @@
+name: adversary-tournament
+
+on:
+  workflow_dispatch:
+    inputs:
+      allow_regression:
+        description: "Allow baseline regression drift for this manual run (shadow mode)"
+        type: boolean
+        default: false
+  schedule:
+    - cron: "45 5 * * *"
+  push:
+    branches: ["main", "feat/eguard-agent"]
+  pull_request:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: adversary-tournament-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tournament:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Seed adversary tournament baseline metrics (best effort)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EGUARD_TOURNAMENT_TARGET_BRANCH: ${{ github.ref_name }}
+          EGUARD_TOURNAMENT_FALLBACK_BRANCH: "main"
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import shutil
+          import subprocess
+          from pathlib import Path
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          target_branch = os.environ.get("EGUARD_TOURNAMENT_TARGET_BRANCH", "").strip()
+          fallback_branch = os.environ.get("EGUARD_TOURNAMENT_FALLBACK_BRANCH", "").strip()
+
+          def branch_priority(head_branch: str) -> int:
+              if target_branch and head_branch == target_branch:
+                  return 0
+              if fallback_branch and head_branch == fallback_branch:
+                  return 1
+              if not target_branch and not fallback_branch:
+                  return 0
+              return 2
+
+          try:
+              artifacts = []
+              for page in range(1, 6):
+                  raw = subprocess.check_output(
+                      ["gh", "api", f"repos/{repo}/actions/artifacts?per_page=100&page={page}"],
+                      text=True,
+                  )
+                  page_artifacts = json.loads(raw).get("artifacts", [])
+                  if not page_artifacts:
+                      break
+                  artifacts.extend(page_artifacts)
+          except Exception as exc:
+              print(f"adversary baseline seed skipped: failed to query artifacts ({exc})")
+              raise SystemExit(0)
+
+          selected = None
+          for artifact in artifacts:
+              if artifact.get("name") != "adversary-tournament-metrics" or artifact.get("expired"):
+                  continue
+              run_info = artifact.get("workflow_run") or {}
+              head_branch = str(run_info.get("head_branch") or "")
+              priority = branch_priority(head_branch)
+              if priority >= 2:
+                  continue
+
+              created_at = str(artifact.get("created_at") or "")
+              if not created_at:
+                  continue
+
+              artifact["_priority"] = priority
+              if (
+                  selected is None
+                  or priority < selected["_priority"]
+                  or (priority == selected["_priority"] and created_at > selected.get("created_at", ""))
+              ):
+                  selected = artifact
+
+          if selected is None:
+              print("adversary baseline seed skipped: no compatible previous artifact")
+              raise SystemExit(0)
+
+          run_id = (selected.get("workflow_run") or {}).get("id")
+          if not run_id:
+              print("adversary baseline seed skipped: selected artifact has no workflow run id")
+              raise SystemExit(0)
+
+          download_dir = Path("/tmp/adversary-tournament-baseline")
+          if download_dir.exists():
+              shutil.rmtree(download_dir)
+          download_dir.mkdir(parents=True, exist_ok=True)
+
+          cmd = [
+              "gh",
+              "run",
+              "download",
+              str(run_id),
+              "--repo",
+              repo,
+              "--name",
+              "adversary-tournament-metrics",
+              "--dir",
+              str(download_dir),
+          ]
+          result = subprocess.run(cmd, capture_output=True, text=True)
+          if result.returncode != 0:
+              print(
+                  "adversary baseline seed skipped: "
+                  f"download failed for run {run_id} ({result.stderr.strip() or result.stdout.strip()})"
+              )
+              raise SystemExit(0)
+
+          candidates = []
+          for candidate in download_dir.rglob("metrics.json"):
+              parts = list(candidate.parts)
+              if "adversary-tournament" in parts:
+                  candidates.append(candidate)
+
+          if not candidates:
+              candidates = sorted(download_dir.rglob("metrics.json"))
+
+          if not candidates:
+              print("adversary baseline seed skipped: downloaded artifact missing metrics.json")
+              raise SystemExit(0)
+
+          baseline_path = Path("artifacts/adversary-tournament/baseline-metrics.json")
+          baseline_path.parent.mkdir(parents=True, exist_ok=True)
+          shutil.copy2(sorted(candidates)[0], baseline_path)
+
+          print(
+              "seeded adversary tournament baseline metrics from run "
+              f"{run_id} (branch={(selected.get('workflow_run') or {}).get('head_branch')})"
+          )
+          PY
+
+      - name: Run adversary tournament harness
+        run: bash scripts/run_adversary_tournament_ci.sh
+
+      - name: Enforce adversary tournament gate
+        run: |
+          FAIL_ON_REGRESSION="1"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.allow_regression }}" = "true" ]; then
+            FAIL_ON_REGRESSION="0"
+          fi
+
+          python3 scripts/check_adversary_tournament_gate.py \
+            --current artifacts/adversary-tournament/metrics.json \
+            --previous artifacts/adversary-tournament/baseline-metrics.json \
+            --output artifacts/adversary-tournament/regression-report.json \
+            --fail-on-regression "${FAIL_ON_REGRESSION}"
+
+      - name: Upload adversary tournament artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: adversary-tournament-metrics
+          retention-days: 30
+          path: |
+            artifacts/adversary-tournament/metrics.json
+            artifacts/adversary-tournament/baseline-metrics.json
+            artifacts/adversary-tournament/regression-report.json
+            artifacts/detection-quality-gate/metrics.json
+            artifacts/detection-quality-gate/per-confidence-trend.ndjson
+            artifacts/detection-quality-gate/trend-drift-report.json
+            artifacts/detection-quality-gate/adversary-emulation-score.json
+            artifacts/detection-benchmark/metrics.json
+            artifacts/runtime-tick-slo/metrics.json
+            artifacts/replay-determinism/metrics.json
+            artifacts/rule-push-slo/metrics.json
+            artifacts/ebpf-resource-budget/metrics.json

@@ -12,6 +12,8 @@ WORKFLOWS=(
   ".github/workflows/verification-suite.yml"
   ".github/workflows/package-agent.yml"
   ".github/workflows/release-agent.yml"
+  ".github/workflows/adversary-tournament.yml"
+  ".github/workflows/collect-cve.yml"
 )
 
 if ! command -v yq >/dev/null 2>&1; then
@@ -304,6 +306,85 @@ for workflow in "${WORKFLOWS[@]}"; do
     if [[ "${attack_contract_ok}" != "true" ]]; then
       status="missing_attack_contracts"
       failure=1
+    fi
+  fi
+
+  if [[ "${status}" == "ok" && "${workflow}" == ".github/workflows/collect-cve.yml" ]]; then
+    cve_contract_ok=true
+    required_steps=(
+      "Fetch NVD CVEs (incremental, paginated)"
+      "Download previous CVE baseline artifact (best effort)"
+      "Merge CVE corpus with previous baseline"
+      "Enforce CVE collector coverage"
+    )
+
+    for step_name in "${required_steps[@]}"; do
+      if ! yq -e ".jobs.\"collect-cve\".steps[] | select(.name == \"${step_name}\")" "${path}" >/dev/null 2>&1; then
+        echo "collect-cve contract missing step: ${step_name}" >&2
+        cve_contract_ok=false
+      fi
+    done
+
+    determine_mode_run="$(yq -r '.jobs."collect-cve".steps[] | select(.name == "Determine sync mode") | .run' "${path}" 2>/dev/null || true)"
+    incremental_run="$(yq -r '.jobs."collect-cve".steps[] | select(.name == "Fetch NVD CVEs (incremental, paginated)") | .run' "${path}" 2>/dev/null || true)"
+    baseline_seed_run="$(yq -r '.jobs."collect-cve".steps[] | select(.name == "Download previous CVE baseline artifact (best effort)") | .run' "${path}" 2>/dev/null || true)"
+    merge_run="$(yq -r '.jobs."collect-cve".steps[] | select(.name == "Merge CVE corpus with previous baseline") | .run' "${path}" 2>/dev/null || true)"
+    coverage_run="$(yq -r '.jobs."collect-cve".steps[] | select(.name == "Enforce CVE collector coverage") | .run' "${path}" 2>/dev/null || true)"
+    coverage_min_cve="$(yq -r '.jobs."collect-cve".steps[] | select(.name == "Enforce CVE collector coverage") | .env.EGUARD_MIN_CVE' "${path}" 2>/dev/null || true)"
+    coverage_min_kev="$(yq -r '.jobs."collect-cve".steps[] | select(.name == "Enforce CVE collector coverage") | .env.EGUARD_MIN_KEV' "${path}" 2>/dev/null || true)"
+    schedule_crons="$(yq -r '.on.schedule[].cron' "${path}" 2>/dev/null || true)"
+
+    if [[ "${incremental_run}" != *"startIndex=\${START_INDEX}"* ]]; then
+      echo "collect-cve incremental step missing NVD pagination startIndex wiring" >&2
+      cve_contract_ok=false
+    fi
+    if [[ "${incremental_run}" != *"resultsPerPage=2000"* ]]; then
+      echo "collect-cve incremental step missing NVD resultsPerPage wiring" >&2
+      cve_contract_ok=false
+    fi
+
+    if [[ "${schedule_crons}" != *"0 4 * * 1-6"* ]]; then
+      echo "collect-cve schedule missing weekday incremental cron (0 4 * * 1-6)" >&2
+      cve_contract_ok=false
+    fi
+    if [[ "${schedule_crons}" != *"20 4 * * 0"* ]]; then
+      echo "collect-cve schedule missing weekly full-sync cron (20 4 * * 0)" >&2
+      cve_contract_ok=false
+    fi
+
+    if [[ "${determine_mode_run}" != *"github.event.schedule"* || "${determine_mode_run}" != *"20 4 * * 0"* ]]; then
+      echo "collect-cve determine mode step missing weekly schedule full-sync selector" >&2
+      cve_contract_ok=false
+    fi
+
+    if [[ "${baseline_seed_run}" != *"cve-extracted"* ]]; then
+      echo "collect-cve baseline seed step missing cve-extracted artifact wiring" >&2
+      cve_contract_ok=false
+    fi
+
+    if [[ "${merge_run}" != *"/tmp/cves.previous.jsonl"* || "${merge_run}" != *"/tmp/cves.jsonl"* ]]; then
+      echo "collect-cve merge step missing baseline/output corpus wiring" >&2
+      cve_contract_ok=false
+    fi
+
+    if [[ "${coverage_run}" != *"/tmp/cves.jsonl"* ]]; then
+      echo "collect-cve coverage step missing merged corpus path" >&2
+      cve_contract_ok=false
+    fi
+
+    if [[ "${coverage_min_cve}" != *"steps.mode.outputs.mode"* ]]; then
+      echo "collect-cve coverage env missing mode-aware min CVE threshold wiring" >&2
+      cve_contract_ok=false
+    fi
+    if [[ "${coverage_min_kev}" != *"steps.mode.outputs.mode"* ]]; then
+      echo "collect-cve coverage env missing mode-aware min KEV threshold wiring" >&2
+      cve_contract_ok=false
+    fi
+
+    if [[ "${cve_contract_ok}" != "true" ]]; then
+      status="missing_cve_contracts"
+      failure=1
+      attack_contract_ok=false
     fi
   fi
 
