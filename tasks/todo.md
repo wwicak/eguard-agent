@@ -1043,3 +1043,21 @@
 - Validation:
   - frontend rebuilt + redeployed,
   - browser-use check on authenticated endpoint route confirms absence of `Unknown path /api/v1/config/traffic_shaping_policies` string.
+
+## 🧭 Plan: service/haproxy-portal/status regression fix (2026-02-19)
+- [x] Root-cause the 404 on `/api/v1/service/haproxy-portal/status` in backend service manager lookup.
+- [x] Implement E2E fix in backend service-id normalization/lookup (do not suppress error in UI).
+- [x] Deploy backend fix and restart `eguard-perl-api`.
+- [x] Push fix branch for user validation.
+
+### 🔍 Review Notes (service status regression)
+- Root cause:
+  - `lib/eg/UnifiedApi/Controller/Services.pm::_get_service_class` always converted `-` to `_` before lookup.
+  - service managers are keyed by canonical names such as `haproxy-portal`, causing lookup miss and 404.
+- Fix:
+  - replaced one-way decoder with candidate-based resolver (`raw`, underscore, hyphen variants + `pf`->`eg` compatibility) and first-match lookup.
+- Deployment:
+  - synced patched file to `/usr/local/eg/lib/eg/UnifiedApi/Controller/Services.pm` on server,
+  - restarted `eguard-perl-api` (active).
+- Git:
+  - commit: `3dfd024973` (`fix(api): resolve hyphenated service status routes`), pushed to `feat/eguard-agent`.

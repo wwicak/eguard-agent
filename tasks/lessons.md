@@ -299,8 +299,10 @@ When user asks to use frontend-design skill and align with existing style,
 follow the skill process and map new UI to current design tokens/components
 (`soc-*` system here) instead of introducing mismatched light-theme blocks.
 
-## Optional/Absent Config Endpoints Must Fail Quietly
+## Optional/Absent Config Endpoints Must Fail Quietly (Only After Verifying Ownership)
 If a deployment does not expose certain config endpoints (e.g.
 `config/traffic_shaping_policies`), use quiet API calls for discovery/list
 requests and explicitly handle `404/405/501` in store actions to avoid noisy
 operator-facing "Unknown path" alerts.
+But first verify whether the endpoint is truly unsupported vs accidentally
+broken routing/wiring. Do not suppress errors that indicate a regression.
