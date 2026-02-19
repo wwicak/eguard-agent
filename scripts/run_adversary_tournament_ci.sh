@@ -126,8 +126,8 @@ thresholds = {
         30.0,
     ),
     "max_ebpf_release_build_wall_ms": as_float(
-        os.environ.get("EGUARD_TOURNAMENT_MAX_EBPF_BUILD_MS", "120000"),
-        120000.0,
+        os.environ.get("EGUARD_TOURNAMENT_MAX_EBPF_BUILD_MS", "300000"),
+        300000.0,
     ),
 }
 

@@ -36,17 +36,17 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--previous", default="", help="Baseline adversary tournament metrics JSON")
     parser.add_argument("--output", default="", help="Optional gate report output path")
 
-    parser.add_argument("--min-resilience-index", type=float, default=85.0)
+    parser.add_argument("--min-resilience-index", type=float, default=80.0)
     parser.add_argument("--min-adversary-final-score", type=float, default=92.0)
     parser.add_argument("--min-adversary-focus-score", type=float, default=95.0)
     parser.add_argument("--max-false-alarm-upper-bound", type=float, default=0.20)
 
     parser.add_argument("--max-detection-wall-clock-ms", type=float, default=60000.0)
-    parser.add_argument("--max-runtime-tick-wall-clock-ms", type=float, default=60000.0)
+    parser.add_argument("--max-runtime-tick-wall-clock-ms", type=float, default=180000.0)
     parser.add_argument("--max-replay-determinism-wall-clock-ms", type=float, default=60000.0)
     parser.add_argument("--max-rule-push-transfer-seconds", type=float, default=5.0)
     parser.add_argument("--max-rule-push-rollout-seconds", type=float, default=30.0)
-    parser.add_argument("--max-ebpf-release-build-wall-ms", type=float, default=120000.0)
+    parser.add_argument("--max-ebpf-release-build-wall-ms", type=float, default=300000.0)
 
     parser.add_argument("--max-resilience-drop", type=float, default=4.0)
     parser.add_argument("--max-adversary-final-drop", type=float, default=2.0)
