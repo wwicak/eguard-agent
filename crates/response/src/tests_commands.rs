@@ -40,16 +40,28 @@ fn parse_server_command_accepts_all_supported_literals_and_aliases() {
         parse_server_command("push_emergency_rule"),
         ServerCommand::EmergencyRulePush
     );
-    assert_eq!(parse_server_command("lock_device"), ServerCommand::LockDevice);
+    assert_eq!(
+        parse_server_command("lock_device"),
+        ServerCommand::LockDevice
+    );
     assert_eq!(parse_server_command("wipe"), ServerCommand::WipeDevice);
     assert_eq!(parse_server_command("retire"), ServerCommand::RetireDevice);
-    assert_eq!(parse_server_command("restart"), ServerCommand::RestartDevice);
+    assert_eq!(
+        parse_server_command("restart"),
+        ServerCommand::RestartDevice
+    );
     assert_eq!(parse_server_command("lost_mode"), ServerCommand::LostMode);
     assert_eq!(parse_server_command("locate"), ServerCommand::LocateDevice);
-    assert_eq!(parse_server_command("install_app"), ServerCommand::InstallApp);
+    assert_eq!(
+        parse_server_command("install_app"),
+        ServerCommand::InstallApp
+    );
     assert_eq!(parse_server_command("remove_app"), ServerCommand::RemoveApp);
     assert_eq!(parse_server_command("update_app"), ServerCommand::UpdateApp);
-    assert_eq!(parse_server_command("apply_profile"), ServerCommand::ApplyProfile);
+    assert_eq!(
+        parse_server_command("apply_profile"),
+        ServerCommand::ApplyProfile
+    );
 
     assert_eq!(
         parse_server_command("  emergency_rule_push  "),

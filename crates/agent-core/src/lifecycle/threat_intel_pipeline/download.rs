@@ -4,9 +4,9 @@ use anyhow::{anyhow, Result};
 
 use grpc_client::ThreatIntelVersionEnvelope;
 
-use super::bundle_guard::verify_bundle_sha256_if_present;
 use super::super::bundle_path::{is_remote_bundle_reference, staging_bundle_archive_path};
 use super::super::{is_signed_bundle_archive, AgentRuntime};
+use super::bundle_guard::verify_bundle_sha256_if_present;
 
 impl AgentRuntime {
     pub(super) async fn prepare_bundle_for_reload(

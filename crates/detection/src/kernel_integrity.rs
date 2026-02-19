@@ -1,14 +1,7 @@
 use crate::types::{EventClass, TelemetryEvent};
 
 const MODULE_INDICATORS: &[&str] = &[
-    "rootkit",
-    "rk",
-    "hide",
-    "keylog",
-    "syscall",
-    "hook",
-    "stealth",
-    "backdoor",
+    "rootkit", "rk", "hide", "keylog", "syscall", "hook", "stealth", "backdoor",
 ];
 
 pub fn detect_kernel_integrity_indicators(event: &TelemetryEvent) -> Vec<String> {
@@ -138,6 +131,8 @@ mod tests {
         };
         let indicators = detect_kernel_integrity_indicators(&ev);
         assert!(indicators.iter().any(|v| v == "hidden_module_sysfs:evil"));
-        assert!(indicators.iter().any(|v| v == "kprobe_hook:__x64_sys_execve"));
+        assert!(indicators
+            .iter()
+            .any(|v| v == "kprobe_hook:__x64_sys_execve"));
     }
 }

@@ -14,7 +14,8 @@ enum ShardCommand {
     ScanProcessMemory {
         pid: u32,
         mode: detection::memory_scanner::ScanMode,
-        response: mpsc::Sender<std::result::Result<detection::memory_scanner::MemoryScanResult, String>>,
+        response:
+            mpsc::Sender<std::result::Result<detection::memory_scanner::MemoryScanResult, String>>,
     },
     ApplyEmergencyRule {
         rule_type: EmergencyRuleType,
@@ -143,8 +144,13 @@ fn shard_worker_loop(mut engine: DetectionEngine, rx: mpsc::Receiver<ShardComman
                 let outcome = engine.process_event(&event);
                 let _ = response.send(Ok(outcome));
             }
-            ShardCommand::ScanProcessMemory { pid, mode, response } => {
-                let result = detection::memory_scanner::scan_process_memory(&engine.yara, pid, mode);
+            ShardCommand::ScanProcessMemory {
+                pid,
+                mode,
+                response,
+            } => {
+                let result =
+                    detection::memory_scanner::scan_process_memory(&engine.yara, pid, mode);
                 let _ = response.send(Ok(result));
             }
             ShardCommand::ApplyEmergencyRule {

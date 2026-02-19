@@ -5,13 +5,13 @@ use ed25519_dalek::Verifier;
 use grpc_client::PolicyEnvelope;
 use sha2::{Digest, Sha256};
 
-use crate::config::AgentConfig;
 use super::rule_bundle_verify::{decode_hex_bytes, parse_ed25519_key_material};
+use crate::config::AgentConfig;
 
 #[cfg(test)]
-use anyhow::{anyhow, Result};
-#[cfg(test)]
 use super::SECONDS_PER_DAY;
+#[cfg(test)]
+use anyhow::{anyhow, Result};
 
 pub(super) fn load_compliance_policy() -> CompliancePolicy {
     if let Ok(path) = std::env::var("EGUARD_COMPLIANCE_POLICY_PATH") {
@@ -141,7 +141,10 @@ fn normalize_hash(raw: &str) -> Option<String> {
     Some(trimmed.to_ascii_lowercase())
 }
 
-pub(super) fn update_tls_policy_from_server(config: &mut AgentConfig, policy: &PolicyEnvelope) -> bool {
+pub(super) fn update_tls_policy_from_server(
+    config: &mut AgentConfig,
+    policy: &PolicyEnvelope,
+) -> bool {
     let Some(cert_policy) = policy.certificate_policy.as_ref() else {
         return false;
     };
@@ -167,8 +170,8 @@ pub(super) fn update_tls_policy_from_server(config: &mut AgentConfig, policy: &P
 
 #[cfg(test)]
 pub(super) fn days_until_certificate_expiry(cert_path: &str, now_unix: i64) -> Result<i64> {
-    let cert_bytes =
-        std::fs::read(cert_path).map_err(|err| anyhow!("read certificate '{}': {}", cert_path, err))?;
+    let cert_bytes = std::fs::read(cert_path)
+        .map_err(|err| anyhow!("read certificate '{}': {}", cert_path, err))?;
     let not_after_unix = parse_certificate_not_after_unix(&cert_bytes)?;
     Ok((not_after_unix - now_unix) / SECONDS_PER_DAY)
 }
@@ -176,8 +179,8 @@ pub(super) fn days_until_certificate_expiry(cert_path: &str, now_unix: i64) -> R
 #[cfg(test)]
 pub(super) fn parse_certificate_not_after_unix(cert_bytes: &[u8]) -> Result<i64> {
     let der = if cert_bytes.starts_with(b"-----BEGIN") {
-        let (_, pem) =
-            x509_parser::pem::parse_x509_pem(cert_bytes).map_err(|err| anyhow!("parse certificate PEM: {}", err))?;
+        let (_, pem) = x509_parser::pem::parse_x509_pem(cert_bytes)
+            .map_err(|err| anyhow!("parse certificate PEM: {}", err))?;
         pem.contents
     } else {
         cert_bytes.to_vec()

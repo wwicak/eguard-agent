@@ -238,10 +238,7 @@ impl AgentRuntime {
             return Some(outcome.yara_hits[0].rule_name.clone());
         }
         if !outcome.layer1.matched_signatures.is_empty() {
-            return Some(format!(
-                "ioc_sig:{}",
-                outcome.layer1.matched_signatures[0]
-            ));
+            return Some(format!("ioc_sig:{}", outcome.layer1.matched_signatures[0]));
         }
         None
     }

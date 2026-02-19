@@ -142,28 +142,28 @@ impl Default for MlModel {
             model_id: "eguard-default-v1".to_string(),
             model_version: "1.0.0".to_string(),
             weights: vec![
-                3.5,   // z1_ioc_hit             — IOC exact match is very strong
-                2.0,   // z2_temporal_count       — temporal rule hits
-                1.5,   // z3_anomaly_high         — high anomaly threshold
-                0.5,   // z3_anomaly_med          — medium anomaly (weak signal)
-                2.5,   // z4_killchain_count      — kill chain graph match
-                3.0,   // yara_hit_count          — YARA file match
-                1.8,   // string_sig_count        — Aho-Corasick string signature
-                0.8,   // event_class_risk        — base risk of event type
-                0.3,   // uid_is_root             — root execution
-                0.6,   // dst_port_risk           — suspicious port
-                0.1,   // has_command_line         — has cmdline (slight indicator)
-                0.4,   // cmdline_length_norm      — long/obfuscated cmdlines
-                0.2,   // prefilter_hit           — Cuckoo prefilter positive
-                1.2,   // multi_layer_count       — multiple layers agree
+                3.5, // z1_ioc_hit             — IOC exact match is very strong
+                2.0, // z2_temporal_count       — temporal rule hits
+                1.5, // z3_anomaly_high         — high anomaly threshold
+                0.5, // z3_anomaly_med          — medium anomaly (weak signal)
+                2.5, // z4_killchain_count      — kill chain graph match
+                3.0, // yara_hit_count          — YARA file match
+                1.8, // string_sig_count        — Aho-Corasick string signature
+                0.8, // event_class_risk        — base risk of event type
+                0.3, // uid_is_root             — root execution
+                0.6, // dst_port_risk           — suspicious port
+                0.1, // has_command_line         — has cmdline (slight indicator)
+                0.4, // cmdline_length_norm      — long/obfuscated cmdlines
+                0.2, // prefilter_hit           — Cuckoo prefilter positive
+                1.2, // multi_layer_count       — multiple layers agree
                 // Information-theoretic weights
-                0.7,   // cmdline_renyi_h2        — collision entropy anomaly
-                0.9,   // cmdline_compression     — high compression = encrypted/packed
-                0.5,   // cmdline_min_entropy      — low min-entropy = predictable pattern
-                0.6,   // cmdline_entropy_gap      — flat spectrum = random/encrypted
-                0.7,   // dns_entropy             — high-entropy labels (DGA/tunnel)
+                0.7, // cmdline_renyi_h2        — collision entropy anomaly
+                0.9, // cmdline_compression     — high compression = encrypted/packed
+                0.5, // cmdline_min_entropy      — low min-entropy = predictable pattern
+                0.6, // cmdline_entropy_gap      — flat spectrum = random/encrypted
+                0.7, // dns_entropy             — high-entropy labels (DGA/tunnel)
             ],
-            bias: -3.6,    // slight bias shift for dns_entropy
+            bias: -3.6, // slight bias shift for dns_entropy
             threshold: 0.5,
             feature_names: FEATURE_NAMES.iter().map(|s| s.to_string()).collect(),
         }
@@ -184,7 +184,10 @@ impl std::fmt::Display for MlError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::DimensionMismatch { expected, got } => {
-                write!(f, "weight dimension mismatch: expected {expected}, got {got}")
+                write!(
+                    f,
+                    "weight dimension mismatch: expected {expected}, got {got}"
+                )
             }
             Self::InvalidThreshold(t) => write!(f, "threshold {t} not in [0, 1]"),
             Self::NonFiniteWeight { index, value } => {

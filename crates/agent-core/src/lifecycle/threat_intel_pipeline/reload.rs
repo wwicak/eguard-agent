@@ -2,14 +2,14 @@ use anyhow::{anyhow, Result};
 use grpc_client::ThreatIntelVersionEnvelope;
 use tracing::info;
 
+use super::super::{
+    build_ransomware_policy, detection_bootstrap, load_bundle_full, AgentRuntime, ReloadReport,
+};
 use super::bundle_guard::{
     bundle_ioc_total, enforce_bundle_signature_database_floor, enforce_signature_drop_guard,
     ensure_shard_bundle_summary_matches, push_count_mismatch, signature_database_total,
 };
 use super::state::persist_threat_intel_last_known_good_state;
-use super::super::{
-    build_ransomware_policy, detection_bootstrap, load_bundle_full, AgentRuntime, ReloadReport,
-};
 
 impl AgentRuntime {
     pub(crate) fn reload_detection_state(

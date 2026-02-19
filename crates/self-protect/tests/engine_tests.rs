@@ -158,7 +158,10 @@ fn runtime_integrity_mismatch_is_reported_for_modified_binary() {
         .violation_codes()
         .iter()
         .any(|code| code == "runtime_integrity_mismatch"));
-    assert!(report.tampered_paths().iter().any(|p| p == tmp.to_str().unwrap()));
+    assert!(report
+        .tampered_paths()
+        .iter()
+        .any(|p| p == tmp.to_str().unwrap()));
 
     let _ = std::fs::remove_file(tmp);
 }
@@ -197,7 +200,10 @@ fn runtime_config_tamper_is_reported_for_modified_config() {
         .violation_codes()
         .iter()
         .any(|code| code == "runtime_config_tamper"));
-    assert!(report.tampered_paths().iter().any(|p| p == tmp.to_str().unwrap()));
+    assert!(report
+        .tampered_paths()
+        .iter()
+        .any(|p| p == tmp.to_str().unwrap()));
 
     let _ = std::fs::remove_file(tmp);
 }

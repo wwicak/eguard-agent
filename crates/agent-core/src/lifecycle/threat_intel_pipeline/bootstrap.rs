@@ -1,12 +1,12 @@
 use tracing::{info, warn};
 
+use super::super::bundle_path::is_remote_bundle_reference;
+use super::super::AgentRuntime;
 use super::state::{
     load_threat_intel_last_known_good_state, load_threat_intel_replay_floor_state,
     persist_threat_intel_replay_floor_state,
 };
 use super::version::ensure_version_monotonicity;
-use super::super::bundle_path::is_remote_bundle_reference;
-use super::super::AgentRuntime;
 
 impl AgentRuntime {
     pub(crate) fn bootstrap_threat_intel_replay_floor(&mut self) {

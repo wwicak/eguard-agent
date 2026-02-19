@@ -163,15 +163,33 @@ fn telemetry_audit_payload_includes_rule_attribution() {
         behavioral_alarms: Vec::new(),
     };
 
-    let payload = runtime.telemetry_payload_json(&enriched, &event, &outcome, detection::Confidence::High, 10);
+    let payload = runtime.telemetry_payload_json(
+        &enriched,
+        &event,
+        &outcome,
+        detection::Confidence::High,
+        10,
+    );
     let value: serde_json::Value = serde_json::from_str(&payload).expect("valid json");
 
     let audit = &value["audit"];
     assert_eq!(audit["primary_rule_name"], "exploit:fileless_memfd");
     assert_eq!(audit["rule_type"], "exploit");
-    assert!(audit["matched_fields"].as_array().unwrap().iter().any(|v| v == "file_hash"));
-    assert!(audit["matched_signatures"].as_array().unwrap().iter().any(|v| v == "sig"));
-    assert!(audit["exploit_indicators"].as_array().unwrap().iter().any(|v| v == "fileless_memfd"));
+    assert!(audit["matched_fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v == "file_hash"));
+    assert!(audit["matched_signatures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v == "sig"));
+    assert!(audit["exploit_indicators"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v == "fileless_memfd"));
 }
 
 #[test]
@@ -255,7 +273,13 @@ fn telemetry_payload_includes_nac_fields() {
         behavioral_alarms: Vec::new(),
     };
 
-    let payload = runtime.telemetry_payload_json(&enriched, &event, &outcome, detection::Confidence::High, 10);
+    let payload = runtime.telemetry_payload_json(
+        &enriched,
+        &event,
+        &outcome,
+        detection::Confidence::High,
+        10,
+    );
     let value: serde_json::Value = serde_json::from_str(&payload).expect("valid json");
 
     let detection = &value["detection"];
@@ -351,7 +375,13 @@ fn telemetry_payload_includes_correlation_event_fields() {
         behavioral_alarms: Vec::new(),
     };
 
-    let payload = runtime.telemetry_payload_json(&enriched, &event, &outcome, detection::Confidence::High, 99);
+    let payload = runtime.telemetry_payload_json(
+        &enriched,
+        &event,
+        &outcome,
+        detection::Confidence::High,
+        99,
+    );
     let value: serde_json::Value = serde_json::from_str(&payload).expect("valid json");
 
     let event_value = &value["event"];

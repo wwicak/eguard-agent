@@ -20,11 +20,11 @@ use backend::RingBufferBackend;
 use capabilities::{
     build_capability_report, detect_kernel_capabilities, kernel_supports, parse_kernel_version,
 };
-#[allow(unused_imports)]
-use codec::{parse_event_type, parse_raw_event};
 #[cfg(any(test, feature = "ebpf-libbpf"))]
 #[allow(unused_imports)]
 use codec::parse_fallback_dropped_events;
+#[allow(unused_imports)]
+use codec::{parse_event_type, parse_raw_event};
 #[allow(unused_imports)]
 use replay_codec::encode_replay_event;
 #[allow(unused_imports)]

@@ -297,15 +297,13 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
 
     // For process_exec events, fall back to the payload's executable path
     // when /proc/<pid>/exe is unavailable (e.g., replay or short-lived PIDs).
-    let process_exe = entry
-        .process_exe
-        .or_else(|| {
-            if matches!(raw.event_type, EventType::ProcessExec) {
-                payload_meta.file_path.clone()
-            } else {
-                None
-            }
-        });
+    let process_exe = entry.process_exe.or_else(|| {
+        if matches!(raw.event_type, EventType::ProcessExec) {
+            payload_meta.file_path.clone()
+        } else {
+            None
+        }
+    });
 
     EnrichedEvent {
         event: raw,

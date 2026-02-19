@@ -146,8 +146,14 @@ fn encode_tcp_connect_payload(v: &serde_json::Value, buf: &mut Vec<u8>) {
     let dport: u16 = v.get("dst_port").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
     let protocol: u8 = 6; // TCP
 
-    let dst_ip_str = v.get("dst_ip").and_then(|v| v.as_str()).unwrap_or("0.0.0.0");
-    let src_ip_str = v.get("src_ip").and_then(|v| v.as_str()).unwrap_or("0.0.0.0");
+    let dst_ip_str = v
+        .get("dst_ip")
+        .and_then(|v| v.as_str())
+        .unwrap_or("0.0.0.0");
+    let src_ip_str = v
+        .get("src_ip")
+        .and_then(|v| v.as_str())
+        .unwrap_or("0.0.0.0");
 
     let saddr = parse_ipv4_to_u32(src_ip_str);
     let daddr = parse_ipv4_to_u32(dst_ip_str);
@@ -190,10 +196,7 @@ fn encode_process_exit_payload(v: &serde_json::Value, buf: &mut Vec<u8>) {
 }
 
 fn parse_ipv4_to_u32(ip: &str) -> u32 {
-    let parts: Vec<u8> = ip
-        .split('.')
-        .filter_map(|s| s.parse::<u8>().ok())
-        .collect();
+    let parts: Vec<u8> = ip.split('.').filter_map(|s| s.parse::<u8>().ok()).collect();
     if parts.len() == 4 {
         u32::from_be_bytes([parts[0], parts[1], parts[2], parts[3]])
     } else {

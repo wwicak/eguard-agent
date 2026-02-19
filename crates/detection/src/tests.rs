@@ -165,12 +165,18 @@ fn dns_entropy_feature_is_stable_and_high_for_dga_like_domains() {
     };
     let features = layer5::MlFeatures::extract(&event, &signals, 0, 0, 0, 0);
     let entropy_high = features.values[18];
-    assert!(entropy_high > 0.5, "expected high entropy for DGA-like domain");
+    assert!(
+        entropy_high > 0.5,
+        "expected high entropy for DGA-like domain"
+    );
 
     event.dst_domain = Some("updates.example.org".to_string());
     let features2 = layer5::MlFeatures::extract(&event, &signals, 0, 0, 0, 0);
     let entropy_low = features2.values[18];
-    assert!(entropy_low < entropy_high, "expected lower entropy for normal domain");
+    assert!(
+        entropy_low < entropy_high,
+        "expected lower entropy for normal domain"
+    );
 }
 
 #[test]
@@ -215,7 +221,10 @@ fn behavioral_dns_entropy_alarm_triggers_for_high_entropy_domains() {
 
     let alarm = alarm.expect("expected dns entropy alarm");
     let entropy = alarm.current_entropy.expect("expected entropy value");
-    assert!(entropy > 0.7, "dns entropy should be high for DGA-like labels");
+    assert!(
+        entropy > 0.7,
+        "dns entropy should be high for DGA-like labels"
+    );
 }
 
 #[test]
@@ -848,7 +857,9 @@ fn layer4_ptrace_fileless_chain_triggers() {
     child.session_id = child.pid;
     child.file_path = Some("memfd:payload (deleted)".to_string());
     let hits = l4.observe(&child);
-    assert!(hits.iter().any(|h| h == "killchain_exploit_ptrace_fileless"));
+    assert!(hits
+        .iter()
+        .any(|h| h == "killchain_exploit_ptrace_fileless"));
 }
 
 #[test]
@@ -869,7 +880,9 @@ fn layer4_userfaultfd_execveat_chain_triggers() {
     child.session_id = child.pid;
     child.command_line = Some("execveat /proc/self/fd/7".to_string());
     let hits = l4.observe(&child);
-    assert!(hits.iter().any(|h| h == "killchain_exploit_userfaultfd_execveat"));
+    assert!(hits
+        .iter()
+        .any(|h| h == "killchain_exploit_userfaultfd_execveat"));
 }
 
 #[test]
@@ -890,7 +903,9 @@ fn layer4_proc_mem_fileless_chain_triggers() {
     child.session_id = child.pid;
     child.file_path = Some("memfd:stage (deleted)".to_string());
     let hits = l4.observe(&child);
-    assert!(hits.iter().any(|h| h == "killchain_exploit_proc_mem_fileless"));
+    assert!(hits
+        .iter()
+        .any(|h| h == "killchain_exploit_proc_mem_fileless"));
 }
 
 #[test]
@@ -1325,12 +1340,8 @@ fn ransomware_write_burst_triggers_killchain_and_ignores_sparse_writes() {
     restricted_policy.adaptive_min_samples = 0;
     restricted_policy.adaptive_floor = restricted_policy.write_threshold;
     restricted_policy.user_path_prefixes = vec!["/data/".to_string()];
-    let mut l4_restricted = Layer4Engine::with_capacity_and_policy(
-        300,
-        8_192,
-        32_768,
-        restricted_policy,
-    );
+    let mut l4_restricted =
+        Layer4Engine::with_capacity_and_policy(300, 8_192, 32_768, restricted_policy);
     for i in 0..30 {
         let ts = 800 + (i / 2);
         let mut ev = event(ts, EventClass::FileOpen, "python", "systemd", 1000);
@@ -1363,12 +1374,8 @@ fn ransomware_write_burst_triggers_killchain_and_ignores_sparse_writes() {
     adaptive_policy.adaptive_min_samples = 1;
     adaptive_policy.adaptive_floor = 8;
     adaptive_policy.adaptive_delta = 0.5;
-    let mut l4_adaptive = Layer4Engine::with_capacity_and_policy(
-        300,
-        8_192,
-        32_768,
-        adaptive_policy,
-    );
+    let mut l4_adaptive =
+        Layer4Engine::with_capacity_and_policy(300, 8_192, 32_768, adaptive_policy);
     l4_adaptive.add_template(KillChainTemplate {
         name: "killchain_ransomware_write_burst".to_string(),
         stages: vec![TemplatePredicate {
@@ -1573,10 +1580,7 @@ fn exploit_indicator_memfd_triggers_high_confidence() {
 
     let out = engine.process_event(&ev);
     assert!(out.signals.exploit_indicator);
-    assert!(out
-        .exploit_indicators
-        .iter()
-        .any(|v| v == "fileless_memfd"));
+    assert!(out.exploit_indicators.iter().any(|v| v == "fileless_memfd"));
     assert_eq!(out.confidence, Confidence::High);
 }
 

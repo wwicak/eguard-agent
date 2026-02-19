@@ -22,8 +22,10 @@ impl AgentRuntime {
         self.send_event_batch(evaluation.event_envelope.clone())
             .await?;
 
-        let compliance_alerts =
-            self.collect_compliance_alerts(&evaluation.compliance, evaluation.event_envelope.created_at_unix);
+        let compliance_alerts = self.collect_compliance_alerts(
+            &evaluation.compliance,
+            evaluation.event_envelope.created_at_unix,
+        );
         for alert in compliance_alerts {
             self.send_event_batch(alert).await?;
         }
@@ -81,9 +83,7 @@ impl AgentRuntime {
         let mut alerts = Vec::new();
         let policy_key = format!(
             "{}:{}:{}",
-            self.compliance_policy_id,
-            self.compliance_policy_version,
-            self.compliance_policy_hash
+            self.compliance_policy_id, self.compliance_policy_version, self.compliance_policy_hash
         );
 
         for check in &compliance.checks {

@@ -7,12 +7,8 @@ pub(super) fn build_detection_engine_with_ransomware_policy(
     policy: RansomwarePolicy,
 ) -> DetectionEngine {
     let mut detection = DetectionEngine::default_with_rules();
-    detection.layer4 = detection::Layer4Engine::with_capacity_and_policy(
-        300,
-        8_192,
-        32_768,
-        policy,
-    );
+    detection.layer4 =
+        detection::Layer4Engine::with_capacity_and_policy(300, 8_192, 32_768, policy);
     seed_ioc_hashes(&mut detection);
     seed_ioc_domains(&mut detection);
     seed_ioc_ips(&mut detection);

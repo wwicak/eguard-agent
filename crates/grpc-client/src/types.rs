@@ -37,7 +37,12 @@ pub struct EventEnvelope {
 
 impl EventEnvelope {
     /// Convenience constructor with info severity (used for non-detection events).
-    pub fn info(agent_id: String, event_type: String, payload_json: String, created_at_unix: i64) -> Self {
+    pub fn info(
+        agent_id: String,
+        event_type: String,
+        payload_json: String,
+        created_at_unix: i64,
+    ) -> Self {
         Self {
             agent_id,
             event_type,

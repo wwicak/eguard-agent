@@ -652,7 +652,11 @@ fn build_overall_compliance_result(checks: Vec<ComplianceCheck>) -> ComplianceRe
     }
 }
 
-fn apply_check_spec(spec: &ComplianceCheckSpec, snapshot: &SystemSnapshot, check: &mut ComplianceCheck) {
+fn apply_check_spec(
+    spec: &ComplianceCheckSpec,
+    snapshot: &SystemSnapshot,
+    check: &mut ComplianceCheck,
+) {
     match spec.check_type.trim() {
         "firewall_enabled" | "firewall_required" => {
             apply_bool_spec(spec, snapshot.firewall_enabled, check, "firewall_enabled");
@@ -687,7 +691,12 @@ fn apply_check_spec(spec: &ComplianceCheckSpec, snapshot: &SystemSnapshot, check
             apply_service_spec(spec, snapshot, check);
         }
         "password_policy" => {
-            apply_optional_bool_spec(spec, snapshot.password_policy_hardened, check, "password_policy");
+            apply_optional_bool_spec(
+                spec,
+                snapshot.password_policy_hardened,
+                check,
+                "password_policy",
+            );
         }
         "screen_lock" | "screen_lock_enabled" => {
             apply_optional_bool_spec(spec, snapshot.screen_lock_enabled, check, "screen_lock");
@@ -723,7 +732,12 @@ fn apply_check_spec(spec: &ComplianceCheckSpec, snapshot: &SystemSnapshot, check
     }
 }
 
-fn apply_bool_spec(spec: &ComplianceCheckSpec, actual: bool, check: &mut ComplianceCheck, label: &str) {
+fn apply_bool_spec(
+    spec: &ComplianceCheckSpec,
+    actual: bool,
+    check: &mut ComplianceCheck,
+    label: &str,
+) {
     let expected = value_to_bool(&spec.value).unwrap_or(true);
     let op = normalized_op(&spec.op);
     let passed = match op.as_str() {
@@ -738,7 +752,12 @@ fn apply_bool_spec(spec: &ComplianceCheckSpec, actual: bool, check: &mut Complia
         }
     };
     check.status = if passed { "compliant" } else { "non_compliant" }.to_string();
-    check.detail = format!("{} {} expected {}", label, if passed { "matches" } else { "does not match" }, expected);
+    check.detail = format!(
+        "{} {} expected {}",
+        label,
+        if passed { "matches" } else { "does not match" },
+        expected
+    );
     check.expected_value = expected.to_string();
     check.actual_value = actual.to_string();
 }
@@ -759,7 +778,12 @@ fn apply_optional_bool_spec(
     }
 }
 
-fn apply_package_spec(spec: &ComplianceCheckSpec, snapshot: &SystemSnapshot, check: &mut ComplianceCheck, should_be_installed: bool) {
+fn apply_package_spec(
+    spec: &ComplianceCheckSpec,
+    snapshot: &SystemSnapshot,
+    check: &mut ComplianceCheck,
+    should_be_installed: bool,
+) {
     let Some(package) = value_to_string_opt(&spec.value) else {
         check.status = "error".to_string();
         check.detail = "missing package name".to_string();
@@ -773,7 +797,11 @@ fn apply_package_spec(spec: &ComplianceCheckSpec, snapshot: &SystemSnapshot, che
         return;
     };
     let present = installed.contains(&package.to_ascii_lowercase());
-    let passed = if should_be_installed { present } else { !present };
+    let passed = if should_be_installed {
+        present
+    } else {
+        !present
+    };
     check.status = if passed { "compliant" } else { "non_compliant" }.to_string();
     check.detail = if passed {
         format!("package {} policy satisfied", package)
@@ -782,11 +810,20 @@ fn apply_package_spec(spec: &ComplianceCheckSpec, snapshot: &SystemSnapshot, che
     } else {
         format!("forbidden package {} installed", package)
     };
-    check.expected_value = if should_be_installed { "installed" } else { "absent" }.to_string();
+    check.expected_value = if should_be_installed {
+        "installed"
+    } else {
+        "absent"
+    }
+    .to_string();
     check.actual_value = if present { "installed" } else { "absent" }.to_string();
 }
 
-fn apply_service_spec(spec: &ComplianceCheckSpec, snapshot: &SystemSnapshot, check: &mut ComplianceCheck) {
+fn apply_service_spec(
+    spec: &ComplianceCheckSpec,
+    snapshot: &SystemSnapshot,
+    check: &mut ComplianceCheck,
+) {
     let Some(service) = value_to_string_opt(&spec.value) else {
         check.status = "error".to_string();
         check.detail = "missing service name".to_string();
@@ -800,7 +837,12 @@ fn apply_service_spec(spec: &ComplianceCheckSpec, snapshot: &SystemSnapshot, che
         return;
     };
     let running = services.contains(&service.to_ascii_lowercase());
-    check.status = if running { "compliant" } else { "non_compliant" }.to_string();
+    check.status = if running {
+        "compliant"
+    } else {
+        "non_compliant"
+    }
+    .to_string();
     check.detail = if running {
         format!("service {} is running", service)
     } else {
@@ -810,7 +852,12 @@ fn apply_service_spec(spec: &ComplianceCheckSpec, snapshot: &SystemSnapshot, che
     check.actual_value = if running { "running" } else { "stopped" }.to_string();
 }
 
-fn apply_string_spec(spec: &ComplianceCheckSpec, actual: &str, check: &mut ComplianceCheck, label: &str) {
+fn apply_string_spec(
+    spec: &ComplianceCheckSpec,
+    actual: &str,
+    check: &mut ComplianceCheck,
+    label: &str,
+) {
     let expected = value_to_string(&spec.value);
     let op = normalized_op(&spec.op);
     match evaluate_string_op(actual, &expected, &op) {

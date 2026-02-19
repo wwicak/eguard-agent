@@ -11,7 +11,9 @@ use compliance::{
 use nac::Posture;
 use serde::Deserialize;
 
-use super::{interval_due, now_unix, remediation_check_type, AgentRuntime, COMPLIANCE_INTERVAL_SECS};
+use super::{
+    interval_due, now_unix, remediation_check_type, AgentRuntime, COMPLIANCE_INTERVAL_SECS,
+};
 
 impl AgentRuntime {
     pub(super) fn log_posture(&self, posture: Posture) {
@@ -20,10 +22,15 @@ impl AgentRuntime {
 
     pub(super) fn evaluate_compliance(&mut self) -> ComplianceResult {
         let now_unix = now_unix();
-        if let (Some(last_checked), Some(cached)) =
-            (self.last_compliance_checked_unix, self.last_compliance_result.as_ref())
-        {
-            if !interval_due(Some(last_checked), now_unix, self.compliance_interval_secs()) {
+        if let (Some(last_checked), Some(cached)) = (
+            self.last_compliance_checked_unix,
+            self.last_compliance_result.as_ref(),
+        ) {
+            if !interval_due(
+                Some(last_checked),
+                now_unix,
+                self.compliance_interval_secs(),
+            ) {
                 return cached.clone();
             }
         }
@@ -150,11 +157,7 @@ fn update_overall_status(result: &mut ComplianceResult) {
         .iter()
         .filter(|c| c.status == "non_compliant")
         .count();
-    let errored = result
-        .checks
-        .iter()
-        .filter(|c| c.status == "error")
-        .count();
+    let errored = result.checks.iter().filter(|c| c.status == "error").count();
     let in_grace = result
         .checks
         .iter()
@@ -194,9 +197,9 @@ fn filter_remediation_allowlist(actions: Vec<RemediationAction>) -> Vec<Remediat
             allowlist
                 .get(action.allowlist_id.as_str())
                 .map(|allowed| {
-                    allowed.iter().any(|entry| {
-                        entry.command == action.command && entry.args == action.args
-                    })
+                    allowed
+                        .iter()
+                        .any(|entry| entry.command == action.command && entry.args == action.args)
                 })
                 .unwrap_or(false)
         })

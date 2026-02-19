@@ -11,7 +11,9 @@ use super::state::{
     persist_threat_intel_last_known_good_state, persist_threat_intel_replay_floor_state,
     resolve_threat_intel_last_known_good_path, resolve_threat_intel_replay_floor_path,
 };
-use super::version::{compare_version_natural, ensure_publish_timestamp_floor, ensure_version_monotonicity};
+use super::version::{
+    compare_version_natural, ensure_publish_timestamp_floor, ensure_version_monotonicity,
+};
 use super::{
     RULE_BUNDLE_MAX_SIGNATURE_DROP_PCT_ENV, RULE_BUNDLE_MIN_SIGNATURE_TOTAL_ENV,
     THREAT_INTEL_LAST_KNOWN_GOOD_PATH_ENV, THREAT_INTEL_REPLAY_FLOOR_PATH_ENV,
@@ -31,10 +33,8 @@ fn resolve_signature_reference_prefers_explicit_value() {
 
 #[test]
 fn resolve_signature_reference_falls_back_to_bundle_sidecar() {
-    let signature = resolve_signature_reference(
-        "/api/v1/endpoint/threat-intel/bundle/rules-2026.02.14",
-        "",
-    );
+    let signature =
+        resolve_signature_reference("/api/v1/endpoint/threat-intel/bundle/rules-2026.02.14", "");
     assert_eq!(
         signature,
         "/api/v1/endpoint/threat-intel/bundle/rules-2026.02.14.sig"

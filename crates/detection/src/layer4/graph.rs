@@ -532,17 +532,16 @@ impl ProcessGraph {
 
     fn prune_ransomware_counts(&mut self, now: i64) {
         let cutoff = now - self.ransomware_policy.write_window_secs;
-        self.ransomware_write_state
-            .retain(|_, state| {
-                while let Some(front) = state.timestamps.front() {
-                    if *front < cutoff {
-                        state.timestamps.pop_front();
-                    } else {
-                        break;
-                    }
+        self.ransomware_write_state.retain(|_, state| {
+            while let Some(front) = state.timestamps.front() {
+                if *front < cutoff {
+                    state.timestamps.pop_front();
+                } else {
+                    break;
                 }
-                state.last_seen >= cutoff || !state.timestamps.is_empty()
-            });
+            }
+            state.last_seen >= cutoff || !state.timestamps.is_empty()
+        });
     }
 
     fn ransomware_threshold(&self, baseline: &WriteBaseline) -> u32 {

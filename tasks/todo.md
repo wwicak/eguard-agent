@@ -1105,3 +1105,12 @@
   - enrollment token CRUD,
   - install package endpoints (`/api/v1/agent-install/linux-{deb,rpm}`),
   - NAC + telemetry ingestion routes.
+
+## 🧭 Plan: MDM E2E + edge-case regression round (2026-02-19)
+- [ ] Re-verify live topology and service health (eguard server + subnet agent VM) before tests.
+- [ ] Execute end-to-end MDM policy flow: enroll/heartbeat/compliance/inventory + policy assignment propagation latency.
+- [ ] Execute command workflow edge cases: approval states, queue delivery semantics, and rejection behavior.
+- [ ] Execute enrollment/install edge cases: token required/invalid/valid paths, one-time token behavior, and unknown-MAC enrollment safety.
+- [ ] Capture failures/root causes, implement fixes if any, redeploy required services, and re-validate.
+- [ ] Document evidence + outcomes in this plan section with concrete API/DB/log proof.
+- [ ] Update OpenAPI endpoint docs if any changes are required.

@@ -235,15 +235,24 @@ pub(super) fn remediation_check_type(action_id: &str) -> Option<String> {
 }
 
 fn requires_kill(action: PlannedAction) -> bool {
-    matches!(action, PlannedAction::KillOnly | PlannedAction::KillAndQuarantine)
+    matches!(
+        action,
+        PlannedAction::KillOnly | PlannedAction::KillAndQuarantine
+    )
 }
 
 fn requires_quarantine(action: PlannedAction) -> bool {
-    matches!(action, PlannedAction::QuarantineOnly | PlannedAction::KillAndQuarantine)
+    matches!(
+        action,
+        PlannedAction::QuarantineOnly | PlannedAction::KillAndQuarantine
+    )
 }
 
 fn is_script_interpreter(process: &str) -> bool {
-    matches!(process, "bash" | "sh" | "python" | "python3" | "perl" | "ruby")
+    matches!(
+        process,
+        "bash" | "sh" | "python" | "python3" | "perl" | "ruby"
+    )
 }
 
 fn synthetic_quarantine_id(event: &TelemetryEvent) -> String {

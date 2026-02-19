@@ -1,7 +1,7 @@
 use tracing::{info, warn};
 
-use detection::{Confidence, EventClass, TelemetryEvent};
 use detection::memory_scanner::{find_suspicious_pids, MemoryScanResult, ScanMode};
+use detection::{Confidence, EventClass, TelemetryEvent};
 use response::plan_action;
 
 use super::{interval_due, AgentRuntime};

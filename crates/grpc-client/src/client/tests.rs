@@ -1735,7 +1735,10 @@ async fn send_compliance_grpc_captures_report_fields() {
         assert_eq!(report.detail, "firewall disabled");
         assert_eq!(report.expected_value, "true");
         assert_eq!(report.actual_value, "false");
-        assert_eq!(report.overall_status, pb::ComplianceStatus::NonCompliant as i32);
+        assert_eq!(
+            report.overall_status,
+            pb::ComplianceStatus::NonCompliant as i32
+        );
         assert_eq!(report.checks.len(), 1);
         let check = &report.checks[0];
         assert_eq!(check.check_id, "firewall_enabled");

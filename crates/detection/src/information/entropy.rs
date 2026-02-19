@@ -178,7 +178,11 @@ pub fn renyi_spectrum(data: &[u8]) -> Vec<(f64, f64)> {
         .map(|&alpha| {
             let h = if alpha == f64::INFINITY {
                 let (_, max_p, _) = prob_stats(&probs);
-                if max_p > 0.0 { -max_p.log2() } else { 0.0 }
+                if max_p > 0.0 {
+                    -max_p.log2()
+                } else {
+                    0.0
+                }
             } else {
                 renyi_entropy(&probs, alpha)
             };

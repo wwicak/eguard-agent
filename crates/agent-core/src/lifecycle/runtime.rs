@@ -88,9 +88,10 @@ impl AgentRuntime {
         let bundle_path = config.detection_bundle_path.clone();
         let ransomware_policy = build_ransomware_policy(&config);
         let shard_builder = move || {
-            let mut engine = super::detection_bootstrap::build_detection_engine_with_ransomware_policy(
-                ransomware_policy.clone(),
-            );
+            let mut engine =
+                super::detection_bootstrap::build_detection_engine_with_ransomware_policy(
+                    ransomware_policy.clone(),
+                );
             if !bundle_path.is_empty() {
                 load_bundle_full(&mut engine, &bundle_path);
             }
@@ -116,18 +117,10 @@ impl AgentRuntime {
                     .filter(|val| !val.trim().is_empty())
             })
             .unwrap_or_else(|| "default".to_string());
-        let compliance_policy_version = compliance_policy
-            .version
-            .clone()
-            .unwrap_or_default();
-        let compliance_policy_hash = compliance_policy
-            .policy_hash
-            .clone()
-            .unwrap_or_default();
-        let compliance_policy_schema_version = compliance_policy
-            .schema_version
-            .clone()
-            .unwrap_or_default();
+        let compliance_policy_version = compliance_policy.version.clone().unwrap_or_default();
+        let compliance_policy_hash = compliance_policy.policy_hash.clone().unwrap_or_default();
+        let compliance_policy_schema_version =
+            compliance_policy.schema_version.clone().unwrap_or_default();
         let compliance_policy_signature = compliance_policy
             .policy_signature
             .clone()

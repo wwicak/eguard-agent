@@ -89,7 +89,10 @@ impl KernelIntegrityReport {
         } else {
             self.indicators.join(",")
         };
-        let tracer = self.current_tracer.clone().unwrap_or_else(|| "nop".to_string());
+        let tracer = self
+            .current_tracer
+            .clone()
+            .unwrap_or_else(|| "nop".to_string());
         let lsm = if self.lsm_list.is_empty() {
             "none".to_string()
         } else {
@@ -109,7 +112,9 @@ impl KernelIntegrityReport {
     }
 }
 
-pub fn scan_kernel_integrity(opts: &KernelIntegrityScanOptions) -> io::Result<KernelIntegrityReport> {
+pub fn scan_kernel_integrity(
+    opts: &KernelIntegrityScanOptions,
+) -> io::Result<KernelIntegrityReport> {
     let proc_modules = read_proc_modules(&opts.proc_modules_path)?;
     let sys_modules = read_sys_modules(&opts.sys_module_path)?;
 
@@ -163,9 +168,7 @@ pub fn scan_kernel_integrity(opts: &KernelIntegrityScanOptions) -> io::Result<Ke
             count += 1;
             if let Some(symbol) = extract_probe_symbol(trimmed) {
                 if is_sensitive_symbol(&symbol) {
-                    report
-                        .indicators
-                        .push(format!("kprobe_hook:{}", symbol));
+                    report.indicators.push(format!("kprobe_hook:{}", symbol));
                 }
             }
         }
@@ -180,9 +183,7 @@ pub fn scan_kernel_integrity(opts: &KernelIntegrityScanOptions) -> io::Result<Ke
     if let Some(tracer) = read_trimmed(&opts.current_tracer_path) {
         if !tracer.is_empty() && tracer != "nop" {
             report.current_tracer = Some(tracer.clone());
-            report
-                .indicators
-                .push(format!("ftrace_tracer:{}", tracer));
+            report.indicators.push(format!("ftrace_tracer:{}", tracer));
         }
     }
 
@@ -329,20 +330,19 @@ mod tests {
             .expect("write proc modules");
         std::fs::create_dir_all(sys_modules.join("good")).expect("create good module");
         std::fs::create_dir_all(sys_modules.join("sys_only")).expect("create sys module");
-        std::fs::write(sys_modules.join("sys_only").join("taint"), "1")
-            .expect("write taint");
-        std::fs::write(sys_modules.join("sys_only").join("signer"), "")
-            .expect("write signer");
+        std::fs::write(sys_modules.join("sys_only").join("taint"), "1").expect("write taint");
+        std::fs::write(sys_modules.join("sys_only").join("signer"), "").expect("write signer");
 
-        std::fs::write(tracefs.join("kprobe_events"), "p:kprobes/evil __x64_sys_execve\n")
-            .expect("write kprobe events");
-        std::fs::write(tracefs.join("current_tracer"), "function")
-            .expect("write tracer");
+        std::fs::write(
+            tracefs.join("kprobe_events"),
+            "p:kprobes/evil __x64_sys_execve\n",
+        )
+        .expect("write kprobe events");
+        std::fs::write(tracefs.join("current_tracer"), "function").expect("write tracer");
         std::fs::write(tracefs.join("set_ftrace_filter"), "sys_execve\n")
             .expect("write ftrace filter");
 
-        std::fs::write(&lsm_path, "selinux,bpf")
-            .expect("write lsm list");
+        std::fs::write(&lsm_path, "selinux,bpf").expect("write lsm list");
 
         std::fs::create_dir_all(bpffs.join("evil_prog")).expect("create bpffs entry");
 

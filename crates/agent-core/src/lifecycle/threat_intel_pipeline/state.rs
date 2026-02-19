@@ -162,7 +162,10 @@ pub(super) fn load_threat_intel_replay_floor_state() -> Option<ThreatIntelReplay
     Some(state)
 }
 
-pub(super) fn persist_threat_intel_last_known_good_state(version: &str, bundle_path: &str) -> Result<()> {
+pub(super) fn persist_threat_intel_last_known_good_state(
+    version: &str,
+    bundle_path: &str,
+) -> Result<()> {
     if cfg!(test) && threat_intel_last_known_good_path_override_from_env().is_none() {
         return Ok(());
     }

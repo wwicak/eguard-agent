@@ -1,16 +1,16 @@
 use std::fmt;
 use std::path::Path;
 
+use crate::behavioral::{BehavioralAlarm, BehavioralEngine};
+use crate::exploit::detect_exploit_indicators;
+use crate::kernel_integrity::detect_kernel_integrity_indicators;
 use crate::layer1::{IocLayer1, Layer1EventHit, Layer1Result};
 use crate::layer2::TemporalEngine;
 use crate::layer3::{AnomalyDecision, AnomalyEngine};
 use crate::layer4::Layer4Engine;
-use crate::behavioral::{BehavioralAlarm, BehavioralEngine};
-use crate::exploit::detect_exploit_indicators;
-use crate::kernel_integrity::detect_kernel_integrity_indicators;
-use crate::tamper::detect_tamper_indicators;
 use crate::layer5::{MlEngine, MlFeatures, MlScore};
 use crate::policy::confidence_policy;
+use crate::tamper::detect_tamper_indicators;
 use crate::types::{Confidence, DetectionSignals, TelemetryEvent};
 use crate::yara_engine::{Result as YaraResult, YaraEngine, YaraHit};
 use crate::SigmaCompileError;
@@ -176,8 +176,12 @@ impl DetectionEngine {
         // ── Behavioral engine: CUSUM + entropy + spectral ───────
         let behavioral_alarms = self.behavioral.observe(event);
 
-        let behavioral_high = behavioral_alarms.iter().any(|a| a.gated && a.magnitude > 2.0);
-        let behavioral_med = behavioral_alarms.iter().any(|a| a.gated && a.magnitude > 1.0);
+        let behavioral_high = behavioral_alarms
+            .iter()
+            .any(|a| a.gated && a.magnitude > 2.0);
+        let behavioral_med = behavioral_alarms
+            .iter()
+            .any(|a| a.gated && a.magnitude > 1.0);
         let exploit_indicators = detect_exploit_indicators(event);
         let kernel_integrity_indicators = detect_kernel_integrity_indicators(event);
         let tamper_indicators = detect_tamper_indicators(event);

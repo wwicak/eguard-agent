@@ -27,7 +27,7 @@
 use std::collections::VecDeque;
 
 use crate::information::{
-    self, cmdline_information, wasserstein_1, CusumDetector, ConformalCalibrator,
+    self, cmdline_information, wasserstein_1, ConformalCalibrator, CusumDetector,
 };
 
 /// Maximum number of tracked processes for spectral analysis.
@@ -270,7 +270,9 @@ impl BehavioralEngine {
 
     /// Get the guaranteed false-positive rate (if calibrated).
     pub fn guaranteed_fp_rate(&self) -> Option<f64> {
-        self.calibrator.as_ref().map(|c| 1.0 - c.coverage_guarantee())
+        self.calibrator
+            .as_ref()
+            .map(|c| 1.0 - c.coverage_guarantee())
     }
 
     fn emit_alarm(&mut self, dimension: &str, magnitude: f64) {
@@ -326,9 +328,12 @@ impl BehavioralEngine {
         if mean < 1e-10 {
             return 0.0;
         }
-        let variance = window.iter().chain(std::iter::once(&new_iat))
+        let variance = window
+            .iter()
+            .chain(std::iter::once(&new_iat))
             .map(|&x| (x - mean).powi(2))
-            .sum::<f64>() / (n + 1.0);
+            .sum::<f64>()
+            / (n + 1.0);
         let cv = variance.sqrt() / mean;
         // Regularity = 1/(1+cv): 1.0 = perfectly periodic, 0.0 = completely random
         1.0 / (1.0 + cv)
@@ -384,7 +389,10 @@ impl BehavioralEngine {
         }
     }
 
-    fn cmdline_metrics(&mut self, event: &crate::types::TelemetryEvent) -> (Option<f64>, Option<f64>) {
+    fn cmdline_metrics(
+        &mut self,
+        event: &crate::types::TelemetryEvent,
+    ) -> (Option<f64>, Option<f64>) {
         let Some(cmd) = &event.command_line else {
             return (None, None);
         };
@@ -392,9 +400,18 @@ impl BehavioralEngine {
             return (None, None);
         };
         self.info_baseline_observations = self.info_baseline_observations.saturating_add(1);
-        push_baseline(&mut self.info_entropy_baseline, metrics.shannon_entropy_bits);
-        push_baseline(&mut self.info_compression_baseline, metrics.compression_ratio);
-        (Some(metrics.shannon_entropy_bits), Some(metrics.compression_ratio))
+        push_baseline(
+            &mut self.info_entropy_baseline,
+            metrics.shannon_entropy_bits,
+        );
+        push_baseline(
+            &mut self.info_compression_baseline,
+            metrics.compression_ratio,
+        );
+        (
+            Some(metrics.shannon_entropy_bits),
+            Some(metrics.compression_ratio),
+        )
     }
     fn cmdline_baseline_ready(&self) -> bool {
         self.info_baseline_observations >= 2 * WINDOW_SIZE
@@ -406,18 +423,39 @@ impl BehavioralEngine {
         if !self.cmdline_baseline_ready() {
             return;
         }
-        let Some(entropy) = entropy else { return; };
-        let Some(compression) = compression else { return; };
+        let Some(entropy) = entropy else {
+            return;
+        };
+        let Some(compression) = compression else {
+            return;
+        };
 
-        let entropy_baseline = self.info_entropy_baseline.iter().copied().collect::<Vec<f64>>();
-        let comp_baseline = self.info_compression_baseline.iter().copied().collect::<Vec<f64>>();
+        let entropy_baseline = self
+            .info_entropy_baseline
+            .iter()
+            .copied()
+            .collect::<Vec<f64>>();
+        let comp_baseline = self
+            .info_compression_baseline
+            .iter()
+            .copied()
+            .collect::<Vec<f64>>();
         let entropy_hist = histogram(&entropy_baseline, 16);
         let comp_hist = histogram(&comp_baseline, 16);
 
-        let entropy_min = entropy_baseline.iter().cloned().fold(f64::INFINITY, f64::min);
-        let entropy_max = entropy_baseline.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let entropy_min = entropy_baseline
+            .iter()
+            .cloned()
+            .fold(f64::INFINITY, f64::min);
+        let entropy_max = entropy_baseline
+            .iter()
+            .cloned()
+            .fold(f64::NEG_INFINITY, f64::max);
         let comp_min = comp_baseline.iter().cloned().fold(f64::INFINITY, f64::min);
-        let comp_max = comp_baseline.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let comp_max = comp_baseline
+            .iter()
+            .cloned()
+            .fold(f64::NEG_INFINITY, f64::max);
 
         let entropy_one = histogram_value(entropy, 16, entropy_min, entropy_max);
         let comp_one = histogram_value(compression, 16, comp_min, comp_max);
@@ -536,10 +574,10 @@ mod tests {
             dst_domain: None,
             command_line: cmdline.map(|s| s.to_string()),
             event_size: None,
-        container_runtime: None,
-        container_id: None,
-        container_escape: false,
-        container_privileged: false,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
         }
     }
 
@@ -585,8 +623,10 @@ mod tests {
         // Normal phase: simple commands
         for i in 0..30 {
             engine.observe(&make_event(
-                EventClass::ProcessExec, 1000, i,
-                Some("ls -la /home")
+                EventClass::ProcessExec,
+                1000,
+                i,
+                Some("ls -la /home"),
             ));
         }
         // Attack phase: high-entropy (encrypted/obfuscated) commands
@@ -594,8 +634,10 @@ mod tests {
         let mut any_alarm = false;
         for i in 30..60 {
             let alarms = engine.observe(&make_event(
-                EventClass::ProcessExec, 1000, i,
-                Some(encrypted_cmd)
+                EventClass::ProcessExec,
+                1000,
+                i,
+                Some(encrypted_cmd),
             ));
             if alarms.iter().any(|a| {
                 a.gated && (a.dimension.contains("entropy") || a.dimension.contains("compression"))
@@ -604,7 +646,10 @@ mod tests {
             }
         }
         // The CUSUM should detect entropy shift from ~3.5 to ~5.5
-        assert!(any_alarm, "should detect entropy shift to encrypted commands");
+        assert!(
+            any_alarm,
+            "should detect entropy shift to encrypted commands"
+        );
     }
 
     #[test]
@@ -628,7 +673,10 @@ mod tests {
         let values = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         let hist = histogram(&values, 5);
         let sum: f64 = hist.iter().sum();
-        assert!((sum - 1.0).abs() < 1e-10, "histogram should sum to 1: {sum}");
+        assert!(
+            (sum - 1.0).abs() < 1e-10,
+            "histogram should sum to 1: {sum}"
+        );
     }
 
     #[test]
@@ -637,12 +685,28 @@ mod tests {
         let baseline: Vec<f64> = (0..100).map(|i| i as f64 / 100.0).collect();
         engine.calibrate(baseline, 0.05);
         for i in 0..10 {
-            engine.observe(&make_event(EventClass::ProcessExec, 1000, i, Some("ls -la")));
+            engine.observe(&make_event(
+                EventClass::ProcessExec,
+                1000,
+                i,
+                Some("ls -la"),
+            ));
         }
-        let alarms = engine.observe(&make_event(EventClass::ProcessExec, 1000, 11, Some("ls -la")));
+        let alarms = engine.observe(&make_event(
+            EventClass::ProcessExec,
+            1000,
+            11,
+            Some("ls -la"),
+        ));
         if let Some(alarm) = alarms.first() {
-            assert!(alarm.gated, "alarm should be gated when calibration is enabled");
-            assert!(alarm.p_value.is_some(), "gated alarm should include p_value");
+            assert!(
+                alarm.gated,
+                "alarm should be gated when calibration is enabled"
+            );
+            assert!(
+                alarm.p_value.is_some(),
+                "gated alarm should include p_value"
+            );
         }
     }
 
@@ -651,9 +715,19 @@ mod tests {
         let mut engine = BehavioralEngine::new();
         let cmd = "ls -la /home";
         for i in 0..(WINDOW_SIZE - 1) {
-            engine.observe(&make_event(EventClass::ProcessExec, 1000, i as i64, Some(cmd)));
+            engine.observe(&make_event(
+                EventClass::ProcessExec,
+                1000,
+                i as i64,
+                Some(cmd),
+            ));
         }
-        let alarms = engine.observe(&make_event(EventClass::ProcessExec, 1000, WINDOW_SIZE as i64, Some(cmd)));
+        let alarms = engine.observe(&make_event(
+            EventClass::ProcessExec,
+            1000,
+            WINDOW_SIZE as i64,
+            Some(cmd),
+        ));
         assert!(
             alarms.iter().all(|a| !a.dimension.contains("cmdline_")),
             "cmdline shifts should be suppressed before baseline is ready"
@@ -667,6 +741,9 @@ mod tests {
         let baseline: Vec<f64> = (0..100).map(|i| i as f64 / 100.0).collect();
         engine.calibrate(baseline, 0.01);
         let fp = engine.guaranteed_fp_rate().unwrap();
-        assert!((fp - 0.01).abs() < 1e-10, "FP rate should be 0.01, got {fp}");
+        assert!(
+            (fp - 0.01).abs() < 1e-10,
+            "FP rate should be 0.01, got {fp}"
+        );
     }
 }

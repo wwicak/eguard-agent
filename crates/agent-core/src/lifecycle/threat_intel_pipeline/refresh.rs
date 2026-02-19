@@ -2,9 +2,9 @@ use anyhow::Result;
 use grpc_client::ThreatIntelVersionEnvelope;
 use tracing::info;
 
+use super::super::{interval_due, AgentRuntime, THREAT_INTEL_INTERVAL_SECS};
 use super::state::persist_threat_intel_replay_floor_state;
 use super::version::{ensure_publish_timestamp_floor, ensure_version_monotonicity};
-use super::super::{interval_due, AgentRuntime, THREAT_INTEL_INTERVAL_SECS};
 
 impl AgentRuntime {
     pub(crate) async fn refresh_threat_intel_if_due(&mut self, now_unix: i64) -> Result<()> {
@@ -98,6 +98,5 @@ impl AgentRuntime {
         ) {
             tracing::warn!(error = %err, "failed persisting threat-intel replay floor state");
         }
-
     }
 }

@@ -36,7 +36,9 @@ impl AgentRuntime {
             return;
         };
         match std::fs::remove_file(path) {
-            Ok(()) => tracing::info!(path = %path.display(), "consumed bootstrap config after enrollment"),
+            Ok(()) => {
+                tracing::info!(path = %path.display(), "consumed bootstrap config after enrollment")
+            }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
             Err(err) => {
                 warn!(error = %err, path = %path.display(), "failed consuming bootstrap config")

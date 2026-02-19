@@ -34,7 +34,11 @@ impl MlFeatures {
         values[7] = event_class_risk_score(event.event_class);
         values[8] = if event.uid == 0 { 1.0 } else { 0.0 };
         values[9] = dst_port_risk_score(event.dst_port);
-        values[10] = if event.command_line.is_some() { 1.0 } else { 0.0 };
+        values[10] = if event.command_line.is_some() {
+            1.0
+        } else {
+            0.0
+        };
         values[11] = cmdline_length_normalized(event.command_line.as_deref());
         values[12] = if signals.l1_prefilter_hit { 1.0 } else { 0.0 };
 

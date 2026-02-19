@@ -2,8 +2,8 @@ use std::collections::VecDeque;
 use std::path::Path;
 use std::time::Duration;
 
-use super::*;
 use super::replay::ReplayBackend;
+use super::*;
 use crate::EventType;
 
 #[derive(Default)]
@@ -400,7 +400,8 @@ fn replay_encode_process_exec_round_trips() {
 
 #[test]
 fn replay_encode_file_open_round_trips() {
-    let json = r#"{"event_type":"file_open","pid":42,"uid":1000,"ts_ns":0,"file_path":"/etc/shadow"}"#;
+    let json =
+        r#"{"event_type":"file_open","pid":42,"uid":1000,"ts_ns":0,"file_path":"/etc/shadow"}"#;
     let raw = encode_replay_event(json).unwrap();
     let event = parse_raw_event(&raw).unwrap();
     assert!(matches!(event.event_type, EventType::FileOpen));
@@ -430,7 +431,8 @@ fn replay_encode_file_rename_round_trips() {
 
 #[test]
 fn replay_encode_file_unlink_round_trips() {
-    let json = r#"{"event_type":"file_unlink","pid":42,"uid":1000,"ts_ns":0,"file_path":"/tmp/old"}"#;
+    let json =
+        r#"{"event_type":"file_unlink","pid":42,"uid":1000,"ts_ns":0,"file_path":"/tmp/old"}"#;
     let raw = encode_replay_event(json).unwrap();
     let event = parse_raw_event(&raw).unwrap();
     assert!(matches!(event.event_type, EventType::FileUnlink));
@@ -449,7 +451,8 @@ fn replay_encode_tcp_connect_round_trips() {
 
 #[test]
 fn replay_encode_dns_query_round_trips() {
-    let json = r#"{"event_type":"dns_query","pid":77,"uid":0,"ts_ns":0,"domain":"evil.example.com"}"#;
+    let json =
+        r#"{"event_type":"dns_query","pid":77,"uid":0,"ts_ns":0,"domain":"evil.example.com"}"#;
     let raw = encode_replay_event(json).unwrap();
     let event = parse_raw_event(&raw).unwrap();
     assert!(matches!(event.event_type, EventType::DnsQuery));
@@ -458,7 +461,8 @@ fn replay_encode_dns_query_round_trips() {
 
 #[test]
 fn replay_encode_module_load_round_trips() {
-    let json = r#"{"event_type":"module_load","pid":88,"uid":0,"ts_ns":0,"module_name":"fake_rootkit"}"#;
+    let json =
+        r#"{"event_type":"module_load","pid":88,"uid":0,"ts_ns":0,"module_name":"fake_rootkit"}"#;
     let raw = encode_replay_event(json).unwrap();
     let event = parse_raw_event(&raw).unwrap();
     assert!(matches!(event.event_type, EventType::ModuleLoad));
@@ -475,7 +479,11 @@ fn replay_backend_reads_ndjson_file() {
         let mut f = std::fs::File::create(&path).unwrap();
         writeln!(f, r#"{{"event_type":"process_exec","pid":1,"uid":0,"ts_ns":100,"comm":"bash","path":"/bin/bash","cmdline":"bash"}}"#).unwrap();
         writeln!(f, "# comment line — should be skipped").unwrap();
-        writeln!(f, r#"{{"event_type":"file_open","pid":2,"uid":0,"ts_ns":200,"file_path":"/etc/passwd"}}"#).unwrap();
+        writeln!(
+            f,
+            r#"{{"event_type":"file_open","pid":2,"uid":0,"ts_ns":200,"file_path":"/etc/passwd"}}"#
+        )
+        .unwrap();
         writeln!(f, "").unwrap(); // blank line
         writeln!(f, r#"{{"event_type":"tcp_connect","pid":3,"uid":0,"ts_ns":300,"dst_ip":"10.0.0.1","dst_port":443}}"#).unwrap();
     }

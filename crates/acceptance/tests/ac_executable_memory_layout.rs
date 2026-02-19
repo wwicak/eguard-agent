@@ -167,8 +167,8 @@ fn ac_ebp_baseline_store_snapshot_fits_half_megabyte_budget() {
 // AC-EBP-102 AC-EBP-109 AC-EBP-110
 fn ac_ebp_memory_layout_ledger_sums_to_target_rss_envelope() {
     let root = repo_root();
-    let helpers =
-        std::fs::read_to_string(root.join("zig/ebpf/bpf_helpers.h")).expect("read ring buffer source");
+    let helpers = std::fs::read_to_string(root.join("zig/ebpf/bpf_helpers.h"))
+        .expect("read ring buffer source");
     let ring_bytes = parse_ringbuf_capacity_bytes(&helpers).expect("ring capacity") as f64;
 
     let runtime_tokio_bytes = 3.0 * 1024.0 * 1024.0;

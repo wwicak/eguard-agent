@@ -5,7 +5,7 @@ use anyhow::{anyhow, Result};
 use grpc_client::{CommandEnvelope, ResponseEnvelope};
 use nac::apply_network_profile_config_change;
 use response::{
-    execute_server_command_with_state, parse_server_command, CommandOutcome, CommandExecution,
+    execute_server_command_with_state, parse_server_command, CommandExecution, CommandOutcome,
     ServerCommand,
 };
 use serde::Deserialize;
@@ -467,7 +467,8 @@ fn remove_path(path: &str) -> Result<(), String> {
         return Ok(());
     }
     if path.is_dir() {
-        std::fs::remove_dir_all(path).map_err(|err| format!("remove dir {}: {}", path.display(), err))
+        std::fs::remove_dir_all(path)
+            .map_err(|err| format!("remove dir {}: {}", path.display(), err))
     } else {
         std::fs::remove_file(path).map_err(|err| format!("remove file {}: {}", path.display(), err))
     }

@@ -12,13 +12,19 @@ pub(super) fn ensure_version_monotonicity(
     };
     let current_version = current_version.trim();
 
-    if current_version.is_empty() || incoming_version.is_empty() || current_version == incoming_version {
+    if current_version.is_empty()
+        || incoming_version.is_empty()
+        || current_version == incoming_version
+    {
         return Ok(());
     }
 
     let current_family = version_family_prefix(current_version);
     let incoming_family = version_family_prefix(incoming_version);
-    if !current_family.is_empty() && !incoming_family.is_empty() && current_family != incoming_family {
+    if !current_family.is_empty()
+        && !incoming_family.is_empty()
+        && current_family != incoming_family
+    {
         return Ok(());
     }
 

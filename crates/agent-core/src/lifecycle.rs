@@ -7,9 +7,9 @@ mod detection_event;
 mod ebpf_support;
 mod emergency_rule;
 mod enrollment;
-mod memory_scan;
-mod kernel_integrity_scan;
 mod inventory;
+mod kernel_integrity_scan;
+mod memory_scan;
 mod policy;
 mod response_actions;
 mod runtime;
@@ -39,9 +39,9 @@ pub use types::RuntimeObservabilitySnapshot;
 use constants::*;
 #[allow(unused_imports)]
 use types::{
-    AsyncWorkerResult, ControlPlaneTaskKind, DegradedCause, EmergencyRulePayload, LocalActionResult,
-    PendingCommand, PendingControlPlaneSend, PendingControlPlaneTask, PendingResponseAction,
-    PendingResponseReport, ReloadReport, RuntimeMetrics, TickEvaluation,
+    AsyncWorkerResult, ControlPlaneTaskKind, DegradedCause, EmergencyRulePayload,
+    LocalActionResult, PendingCommand, PendingControlPlaneSend, PendingControlPlaneTask,
+    PendingResponseAction, PendingResponseReport, ReloadReport, RuntimeMetrics, TickEvaluation,
 };
 
 #[allow(unused_imports)]
@@ -55,7 +55,9 @@ use ::grpc_client::{ComplianceEnvelope, EventEnvelope, ResponseEnvelope};
 #[allow(unused_imports)]
 use ::platform_linux::RawEvent;
 #[allow(unused_imports)]
-use ::response::{evaluate_auto_isolation, execute_server_command_with_state, PlannedAction, ServerCommand};
+use ::response::{
+    evaluate_auto_isolation, execute_server_command_with_state, PlannedAction, ServerCommand,
+};
 
 #[allow(unused_imports)]
 use timing::{
@@ -68,17 +70,17 @@ use detection_event::{
     confidence_label, confidence_to_severity, map_event_class, to_detection_event,
 };
 
-#[allow(unused_imports)]
-use baseline::{load_baseline_store, seed_anomaly_baselines};
 #[cfg(test)]
 #[allow(unused_imports)]
 use baseline::apply_fleet_baseline_seeds;
-
 #[allow(unused_imports)]
-use policy::{load_compliance_policy, update_tls_policy_from_server};
+use baseline::{load_baseline_store, seed_anomaly_baselines};
+
 #[cfg(test)]
 #[allow(unused_imports)]
 use policy::{days_until_certificate_expiry, parse_certificate_not_after_unix};
+#[allow(unused_imports)]
+use policy::{load_compliance_policy, update_tls_policy_from_server};
 
 #[allow(unused_imports)]
 use runtime_mode::{derive_runtime_mode, runtime_mode_label};

@@ -292,7 +292,10 @@ impl SelfProtectViolation {
                 path, expected_sha256, observed_sha256
             ),
             Self::RuntimeIntegrityProbeFailed { path, detail } => {
-                format!("runtime integrity probe failed: path={} detail={}", path, detail)
+                format!(
+                    "runtime integrity probe failed: path={} detail={}",
+                    path, detail
+                )
             }
             Self::RuntimeConfigTamper {
                 path,
@@ -303,7 +306,10 @@ impl SelfProtectViolation {
                 path, expected_sha256, observed_sha256
             ),
             Self::RuntimeConfigProbeFailed { path, detail } => {
-                format!("runtime config probe failed: path={} detail={}", path, detail)
+                format!(
+                    "runtime config probe failed: path={} detail={}",
+                    path, detail
+                )
             }
             Self::DebuggerSignal { code, detail } => {
                 format!("debugger signal {}: {}", code, detail)
@@ -420,6 +426,11 @@ fn env_path_list(name: &str, fallback: Vec<String>) -> Vec<String> {
 fn env_flag_enabled(name: &str) -> bool {
     std::env::var(name)
         .ok()
-        .map(|raw| matches!(raw.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .map(|raw| {
+            matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
         .unwrap_or(false)
 }

@@ -112,8 +112,8 @@ fn workspace_root() -> PathBuf {
 // AC-EBP-010 AC-EBP-011 AC-EBP-101
 fn zig_ebpf_programs_share_single_default_8mb_ring_buffer_definition() {
     let root = workspace_root();
-    let helpers = std::fs::read_to_string(root.join("zig/ebpf/bpf_helpers.h"))
-        .expect("read bpf_helpers.h");
+    let helpers =
+        std::fs::read_to_string(root.join("zig/ebpf/bpf_helpers.h")).expect("read bpf_helpers.h");
     assert!(helpers.contains("#define BPF_MAP_TYPE_RINGBUF 27"));
     assert!(helpers.contains("FALLBACK_LAST_EVENT_DATA_SIZE 512"));
     assert!(helpers.contains("struct event_hdr"));
@@ -255,8 +255,8 @@ fn poll_once_reclaims_raw_record_buffers_for_backend_pooling() {
 fn zig_programs_apply_kernel_side_filters_for_new_connections_and_file_open_scope() {
     let root = workspace_root();
 
-    let tcp = std::fs::read_to_string(root.join("zig/ebpf/tcp_connect.c"))
-        .expect("read tcp_connect.c");
+    let tcp =
+        std::fs::read_to_string(root.join("zig/ebpf/tcp_connect.c")).expect("read tcp_connect.c");
     assert!(tcp.contains("tracepoint/sock/inet_sock_set_state"));
     assert!(tcp.contains("TCP_SYN_SENT"));
     assert!(tcp.contains("TCP_ESTABLISHED"));

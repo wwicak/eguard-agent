@@ -377,20 +377,18 @@ fn load_ml_model(detection: &mut DetectionEngine, bundle_dir: &Path) {
     };
 
     match detection::MlModel::from_json_auto(&content) {
-        Ok(model) => {
-            match detection.layer5.reload_model(model) {
-                Ok(()) => {
-                    info!(
-                        model_id = %detection.layer5.model_id(),
-                        model_version = %detection.layer5.model_version(),
-                        "loaded ML model from threat-intel bundle"
-                    );
-                }
-                Err(err) => {
-                    warn!(error = %err, "ML model from bundle failed validation; keeping default");
-                }
+        Ok(model) => match detection.layer5.reload_model(model) {
+            Ok(()) => {
+                info!(
+                    model_id = %detection.layer5.model_id(),
+                    model_version = %detection.layer5.model_version(),
+                    "loaded ML model from threat-intel bundle"
+                );
             }
-        }
+            Err(err) => {
+                warn!(error = %err, "ML model from bundle failed validation; keeping default");
+            }
+        },
         Err(err) => {
             warn!(error = %err, path = %model_path.display(), "failed parsing ML model from bundle");
         }

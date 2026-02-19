@@ -26,17 +26,17 @@
 //!    between process event streams; detects C2 beaconing via periodic
 //!    mutual dependence.
 
-mod support;
-mod entropy;
-mod divergence;
-mod transport;
 mod compression;
-mod cusum;
-mod spectral;
-mod conformal;
-mod mutual;
-mod dns;
 mod concentration;
+mod conformal;
+mod cusum;
+mod divergence;
+mod dns;
+mod entropy;
+mod mutual;
+mod spectral;
+mod support;
+mod transport;
 
 pub use entropy::{
     char_entropy, cmdline_information, renyi_entropy, renyi_spectrum, shannon_entropy,

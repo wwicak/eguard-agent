@@ -1086,10 +1086,7 @@ fn qemu_agent_malware_harness_is_defined() {
         cmd.contains("malware_metrics.json"),
         "malware harness must emit metrics JSON"
     );
-    assert!(
-        cmd.contains("TPR"),
-        "malware harness must log TPR metrics"
-    );
+    assert!(cmd.contains("TPR"), "malware harness must log TPR metrics");
     assert!(
         cmd.contains("benign"),
         "malware harness must include benign sample evaluation"
@@ -1274,7 +1271,11 @@ fn qemu_exploit_harness_is_defined() {
     );
 
     let cmd = read("tests/qemu/agent_exploit_harness_cmd.sh");
-    for marker in ["memfd:payload", "/proc/self/fd/", "fileless_tmp_interpreter"] {
+    for marker in [
+        "memfd:payload",
+        "/proc/self/fd/",
+        "fileless_tmp_interpreter",
+    ] {
         assert!(
             cmd.contains(marker),
             "Exploit harness must include {marker}"
@@ -1356,7 +1357,11 @@ fn qemu_self_protect_tamper_harness_is_defined() {
     );
 
     let cmd = read("tests/qemu/agent_self_protect_tamper_cmd.sh");
-    for marker in ["EGUARD_SELF_PROTECTION_INTEGRITY_CHECK_INTERVAL_SECS", "/proc/self/exe", "agent_tamper"] {
+    for marker in [
+        "EGUARD_SELF_PROTECTION_INTEGRITY_CHECK_INTERVAL_SECS",
+        "/proc/self/exe",
+        "agent_tamper",
+    ] {
         assert!(
             cmd.contains(marker),
             "Self-protect tamper harness must include {marker}"
@@ -1433,10 +1438,7 @@ fn ux_routes_and_views_are_present() {
         "NAC",
         "Audit",
     ] {
-        assert!(
-            nav.contains(marker),
-            "Navbar must include {marker}"
-        );
+        assert!(nav.contains(marker), "Navbar must include {marker}");
     }
 }
 
@@ -1468,7 +1470,11 @@ fn correlation_contract_tests_are_defined() {
 // AC-TST-065
 fn correlation_event_fields_are_asserted() {
     let observability = read("crates/agent-core/src/lifecycle/tests_observability.rs");
-    for marker in ["telemetry_payload_includes_correlation_event_fields", "session_id", "dst_domain"] {
+    for marker in [
+        "telemetry_payload_includes_correlation_event_fields",
+        "session_id",
+        "dst_domain",
+    ] {
         assert!(
             observability.contains(marker),
             "Correlation event field test missing marker {marker}"
@@ -1584,10 +1590,7 @@ fn qemu_audit_trail_harness_is_defined() {
 
     let cmd = read("tests/qemu/agent_audit_trail_cmd.sh");
     for marker in ["debug audit payload", "primary_rule_name", "fileless_memfd"] {
-        assert!(
-            cmd.contains(marker),
-            "Audit harness must include {marker}"
-        );
+        assert!(cmd.contains(marker), "Audit harness must include {marker}");
     }
 }
 
@@ -1605,7 +1608,11 @@ fn qemu_latency_harness_is_defined() {
     );
 
     let cmd = read("tests/qemu/agent_latency_harness_cmd.sh");
-    for marker in ["LATENCY_P95_US", "LATENCY_P99_US", "debug detection latency"] {
+    for marker in [
+        "LATENCY_P95_US",
+        "LATENCY_P99_US",
+        "debug detection latency",
+    ] {
         assert!(
             cmd.contains(marker),
             "Latency harness must include {marker}"
@@ -1627,7 +1634,11 @@ fn qemu_offline_buffer_harness_is_defined() {
     );
 
     let cmd = read("tests/qemu/agent_offline_buffer_cmd.sh");
-    for marker in ["offline buffer flushed", "pending_after=0", "server unavailable, buffered event"] {
+    for marker in [
+        "offline buffer flushed",
+        "pending_after=0",
+        "server unavailable, buffered event",
+    ] {
         assert!(
             cmd.contains(marker),
             "Offline buffer harness must include {marker}"

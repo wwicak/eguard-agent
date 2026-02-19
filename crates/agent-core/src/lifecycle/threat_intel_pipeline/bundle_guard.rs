@@ -10,7 +10,10 @@ use super::{
     RULE_BUNDLE_MIN_SIGNATURE_TOTAL_ENV,
 };
 
-pub(super) fn verify_bundle_sha256_if_present(bundle_path: &Path, expected_sha256: &str) -> Result<()> {
+pub(super) fn verify_bundle_sha256_if_present(
+    bundle_path: &Path,
+    expected_sha256: &str,
+) -> Result<()> {
     let expected = normalize_optional_sha256_hex(expected_sha256)?;
     let Some(expected) = expected else {
         return Ok(());
@@ -82,7 +85,12 @@ pub(super) fn compute_file_sha256_hex(path: &Path) -> Result<String> {
     Ok(out)
 }
 
-pub(super) fn push_count_mismatch(out: &mut Vec<String>, field: &str, expected: i64, actual: usize) {
+pub(super) fn push_count_mismatch(
+    out: &mut Vec<String>,
+    field: &str,
+    expected: i64,
+    actual: usize,
+) {
     if expected <= 0 {
         return;
     }
@@ -110,7 +118,9 @@ pub(super) fn ensure_shard_bundle_summary_matches(
     ))
 }
 
-pub(super) fn bundle_ioc_total(summary: &super::super::rule_bundle_loader::BundleLoadSummary) -> usize {
+pub(super) fn bundle_ioc_total(
+    summary: &super::super::rule_bundle_loader::BundleLoadSummary,
+) -> usize {
     summary.ioc_hashes + summary.ioc_domains + summary.ioc_ips
 }
 

@@ -1,5 +1,5 @@
-use super::*;
 use super::math::sigmoid;
+use super::*;
 use crate::{DetectionSignals, EventClass, TelemetryEvent};
 
 fn make_event(class: EventClass, uid: u32, dst_port: Option<u16>) -> TelemetryEvent {
@@ -61,7 +61,11 @@ fn clean_event_scores_low() {
     };
     let features = MlFeatures::extract(&event, &signals, 0, 0, 0, 0);
     let result = engine.score(&features);
-    assert!(result.score < 0.3, "clean event should score low: {}", result.score);
+    assert!(
+        result.score < 0.3,
+        "clean event should score low: {}",
+        result.score
+    );
     assert!(!result.positive);
 }
 
@@ -82,7 +86,11 @@ fn ioc_hit_scores_high() {
     };
     let features = MlFeatures::extract(&event, &signals, 0, 0, 0, 2);
     let result = engine.score(&features);
-    assert!(result.score > 0.8, "IOC hit should score high: {}", result.score);
+    assert!(
+        result.score > 0.8,
+        "IOC hit should score high: {}",
+        result.score
+    );
     assert!(result.positive);
 }
 
@@ -103,7 +111,11 @@ fn multi_layer_agreement_scores_highest() {
     };
     let features = MlFeatures::extract(&event, &signals, 2, 1, 1, 3);
     let result = engine.score(&features);
-    assert!(result.score > 0.99, "multi-layer should score near 1.0: {}", result.score);
+    assert!(
+        result.score > 0.99,
+        "multi-layer should score near 1.0: {}",
+        result.score
+    );
     assert!(result.positive);
 }
 
@@ -125,8 +137,16 @@ fn anomaly_only_scores_moderate() {
     let features = MlFeatures::extract(&event, &signals, 0, 0, 0, 0);
     let result = engine.score(&features);
     // Anomaly alone should be moderate — not near 1.0, not near 0.0
-    assert!(result.score > 0.15, "anomaly should contribute: {}", result.score);
-    assert!(result.score < 0.85, "anomaly alone shouldn't be near-certain: {}", result.score);
+    assert!(
+        result.score > 0.15,
+        "anomaly should contribute: {}",
+        result.score
+    );
+    assert!(
+        result.score < 0.85,
+        "anomaly alone shouldn't be near-certain: {}",
+        result.score
+    );
 }
 
 #[test]
@@ -173,7 +193,10 @@ fn top_features_are_interpretable() {
     let result = engine.score(&features);
     // Top features should include z1_ioc_hit
     assert!(
-        result.top_features.iter().any(|(name, _)| name == "z1_ioc_hit"),
+        result
+            .top_features
+            .iter()
+            .any(|(name, _)| name == "z1_ioc_hit"),
         "top features should include IOC hit: {:?}",
         result.top_features
     );
@@ -246,7 +269,10 @@ fn ci_trained_model_converts_to_runtime() {
     );
     // Features NOT in CI model should be 0.0
     assert_eq!(model.weights[9], 0.0, "missing feature should be 0.0"); // dst_port_risk
-    assert_eq!(model.weights[14], 0.0, "info-theoretic features should be 0.0"); // cmdline_renyi_h2
+    assert_eq!(
+        model.weights[14], 0.0,
+        "info-theoretic features should be 0.0"
+    ); // cmdline_renyi_h2
 
     // Model should be valid and usable
     model.validate().unwrap();

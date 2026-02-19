@@ -18,9 +18,9 @@ pub const FEATURE_NAMES: [&str; FEATURE_COUNT] = [
     "prefilter_hit",
     "multi_layer_count",
     // Information-theoretic features (Layer 5 exclusive)
-    "cmdline_renyi_h2",        // Collision entropy — detects repeated patterns
-    "cmdline_compression",     // Kolmogorov complexity proxy — detects encryption/packing
-    "cmdline_min_entropy",     // Min-entropy — detects deterministic components
-    "cmdline_entropy_gap",     // H₁ - H_∞ gap — flat = random/encrypted, steep = structured
-    "dns_entropy",             // Shannon entropy of domain label (DGA/tunneling signal)
+    "cmdline_renyi_h2",    // Collision entropy — detects repeated patterns
+    "cmdline_compression", // Kolmogorov complexity proxy — detects encryption/packing
+    "cmdline_min_entropy", // Min-entropy — detects deterministic components
+    "cmdline_entropy_gap", // H₁ - H_∞ gap — flat = random/encrypted, steep = structured
+    "dns_entropy",         // Shannon entropy of domain label (DGA/tunneling signal)
 ];

@@ -20,7 +20,10 @@ fn shannon_entropy_scales_invariant() {
     let probs = vec![2.0, 1.0, 1.0];
     let h = shannon_entropy(&probs);
     let h_norm = shannon_entropy(&[0.5, 0.25, 0.25]);
-    assert!((h - h_norm).abs() < 1e-10, "scaled entropy mismatch: {h} vs {h_norm}");
+    assert!(
+        (h - h_norm).abs() < 1e-10,
+        "scaled entropy mismatch: {h} vs {h_norm}"
+    );
 }
 
 #[test]
@@ -58,7 +61,10 @@ fn wasserstein_scales_invariant() {
     let q = vec![1.0, 2.0, 1.0];
     let w = wasserstein_1(&p, &q);
     let wn = wasserstein_1(&[0.5, 0.25, 0.25], &[0.25, 0.5, 0.25]);
-    assert!((w - wn).abs() < 1e-10, "scaled wasserstein mismatch: {w} vs {wn}");
+    assert!(
+        (w - wn).abs() < 1e-10,
+        "scaled wasserstein mismatch: {w} vs {wn}"
+    );
 }
 
 #[test]

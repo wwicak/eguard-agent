@@ -200,12 +200,14 @@ fn package_checks_are_case_insensitive() {
     snapshot.installed_packages = Some(installed);
 
     let result = evaluate_snapshot(&policy, &snapshot);
-    assert!(result.checks.iter().any(|c| {
-        c.check_type == "package_present:AuditD" && c.status == "compliant"
-    }));
-    assert!(result.checks.iter().any(|c| {
-        c.check_type == "package_absent:TelNetD" && c.status == "non_compliant"
-    }));
+    assert!(result
+        .checks
+        .iter()
+        .any(|c| { c.check_type == "package_present:AuditD" && c.status == "compliant" }));
+    assert!(result
+        .checks
+        .iter()
+        .any(|c| { c.check_type == "package_absent:TelNetD" && c.status == "non_compliant" }));
 }
 
 #[test]

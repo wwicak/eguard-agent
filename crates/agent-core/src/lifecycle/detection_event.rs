@@ -32,8 +32,10 @@ pub(super) fn to_detection_event(
         .copied()
         .unwrap_or(enriched.event.pid);
 
-    let module_payload = if matches!(enriched.event.event_type, platform_linux::EventType::ModuleLoad)
-    {
+    let module_payload = if matches!(
+        enriched.event.event_type,
+        platform_linux::EventType::ModuleLoad
+    ) {
         let trimmed = enriched.event.payload.trim();
         if trimmed.is_empty() {
             None

@@ -15,7 +15,11 @@ pub struct Layer4Engine {
 
 impl Layer4Engine {
     pub fn new(window_secs: i64) -> Self {
-        Self::with_capacity(window_secs, DEFAULT_LAYER4_MAX_NODES, DEFAULT_LAYER4_MAX_EDGES)
+        Self::with_capacity(
+            window_secs,
+            DEFAULT_LAYER4_MAX_NODES,
+            DEFAULT_LAYER4_MAX_EDGES,
+        )
     }
 
     pub fn with_capacity(window_secs: i64, max_nodes: usize, max_edges: usize) -> Self {

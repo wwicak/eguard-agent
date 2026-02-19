@@ -9,7 +9,10 @@ const TAMPER_PATH_MARKERS: &[&str] = &[
 ];
 
 pub fn detect_tamper_indicators(event: &TelemetryEvent) -> Vec<String> {
-    let is_file_event = matches!(event.event_class, EventClass::FileOpen | EventClass::ProcessExec);
+    let is_file_event = matches!(
+        event.event_class,
+        EventClass::FileOpen | EventClass::ProcessExec
+    );
     if !is_file_event {
         return Vec::new();
     }
@@ -69,6 +72,8 @@ mod tests {
     fn tamper_indicator_matches_agent_binary() {
         let ev = event("/usr/bin/eguard-agent");
         let indicators = detect_tamper_indicators(&ev);
-        assert!(indicators.iter().any(|v| v.contains("/usr/bin/eguard-agent")));
+        assert!(indicators
+            .iter()
+            .any(|v| v.contains("/usr/bin/eguard-agent")));
     }
 }

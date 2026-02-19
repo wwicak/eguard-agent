@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use reqwest::Client as HttpClient;
-use sha2::{Digest, Sha256};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use tokio::time::sleep;
 use tonic::transport::{
     Certificate as TonicCertificate, Channel, ClientTlsConfig, Endpoint, Identity as TonicIdentity,

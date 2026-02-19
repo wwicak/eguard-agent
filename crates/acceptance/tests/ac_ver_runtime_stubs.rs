@@ -13,17 +13,26 @@ fn assert_runtime_validation_backed_by_executable_suite(ac_id: &str, description
 
 #[test]
 fn ac_ver_001_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-001", "Stripped release binary size MUST be recorded and validated as a non-empty metric.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-001",
+        "Stripped release binary size MUST be recorded and validated as a non-empty metric.",
+    );
 }
 
 #[test]
 fn ac_ver_002_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-002", "RSS (idle) < 25 MB after 1 hour.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-002",
+        "RSS (idle) < 25 MB after 1 hour.",
+    );
 }
 
 #[test]
 fn ac_ver_003_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-003", "RSS (active, 5K events/sec) < 25 MB.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-003",
+        "RSS (active, 5K events/sec) < 25 MB.",
+    );
 }
 
 #[test]
@@ -33,17 +42,26 @@ fn ac_ver_004_runtime_stub() {
 
 #[test]
 fn ac_ver_005_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-005", "CPU (1K events/sec) < 0.5%.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-005",
+        "CPU (1K events/sec) < 0.5%.",
+    );
 }
 
 #[test]
 fn ac_ver_006_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-006", "CPU (10K events/sec) < 3%.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-006",
+        "CPU (10K events/sec) < 3%.",
+    );
 }
 
 #[test]
 fn ac_ver_007_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-007", "Detection latency < 500 ns/event.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-007",
+        "Detection latency < 500 ns/event.",
+    );
 }
 
 #[test]
@@ -53,12 +71,18 @@ fn ac_ver_008_runtime_stub() {
 
 #[test]
 fn ac_ver_009_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-009", "Response (LSM block) < 1 ms.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-009",
+        "Response (LSM block) < 1 ms.",
+    );
 }
 
 #[test]
 fn ac_ver_010_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-010", "Heartbeat overhead < 200 bytes/30s.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-010",
+        "Heartbeat overhead < 200 bytes/30s.",
+    );
 }
 
 #[test]
@@ -73,92 +97,146 @@ fn ac_ver_012_runtime_stub() {
 
 #[test]
 fn ac_ver_013_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-013", "Offline buffer: 100 MB / ~500K events with FIFO eviction.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-013",
+        "Offline buffer: 100 MB / ~500K events with FIFO eviction.",
+    );
 }
 
 #[test]
 fn ac_ver_014_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-014", "~200 unit tests via `cargo test`.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-014",
+        "~200 unit tests via `cargo test`.",
+    );
 }
 
 #[test]
 fn ac_ver_015_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-015", "~20 eBPF tests via custom harness.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-015",
+        "~20 eBPF tests via custom harness.",
+    );
 }
 
 #[test]
 fn ac_ver_016_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-016", "~100 detection layer tests via `cargo test`.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-016",
+        "~100 detection layer tests via `cargo test`.",
+    );
 }
 
 #[test]
 fn ac_ver_017_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-017", "~30 response engine tests via `cargo test` + integration.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-017",
+        "~30 response engine tests via `cargo test` + integration.",
+    );
 }
 
 #[test]
 fn ac_ver_018_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-018", "~50 integration tests via Docker Compose.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-018",
+        "~50 integration tests via Docker Compose.",
+    );
 }
 
 #[test]
 fn ac_ver_019_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-019", "~40 Perl API tests via `Test::More`.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-019",
+        "~40 Perl API tests via `Test::More`.",
+    );
 }
 
 #[test]
 fn ac_ver_020_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-020", "~20 Vue component tests via Jest.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-020",
+        "~20 Vue component tests via Jest.",
+    );
 }
 
 #[test]
 fn ac_ver_021_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-021", "~15 performance benchmarks via `criterion`.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-021",
+        "~15 performance benchmarks via `criterion`.",
+    );
 }
 
 #[test]
 fn ac_ver_022_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-022", "~5 stress tests (10K events/sec, 1000 agents, offline/reconnect).");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-022",
+        "~5 stress tests (10K events/sec, 1000 agents, offline/reconnect).",
+    );
 }
 
 #[test]
 fn ac_ver_023_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-023", "`cargo audit` on every build.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-023",
+        "`cargo audit` on every build.",
+    );
 }
 
 #[test]
 fn ac_ver_024_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-024", "`cargo clippy` (all warnings) on every build.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-024",
+        "`cargo clippy` (all warnings) on every build.",
+    );
 }
 
 #[test]
 fn ac_ver_025_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-025", "`cargo-fuzz` on protobuf parsing + detection inputs weekly.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-025",
+        "`cargo-fuzz` on protobuf parsing + detection inputs weekly.",
+    );
 }
 
 #[test]
 fn ac_ver_026_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-026", "`cargo +nightly miri test` (subset) weekly.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-026",
+        "`cargo +nightly miri test` (subset) weekly.",
+    );
 }
 
 #[test]
 fn ac_ver_027_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-027", "`checksec` (RELRO, PIE, NX, stack canary) every release.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-027",
+        "`checksec` (RELRO, PIE, NX, stack canary) every release.",
+    );
 }
 
 #[test]
 fn ac_ver_028_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-028", "`strace` seccomp verification every release.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-028",
+        "`strace` seccomp verification every release.",
+    );
 }
 
 #[test]
 fn ac_ver_029_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-029", "Certificate validation with expired/revoked/wrong-CA certs every release.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-029",
+        "Certificate validation with expired/revoked/wrong-CA certs every release.",
+    );
 }
 
 #[test]
 fn ac_ver_030_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-030", "All eBPF programs pass kernel verifier on 5.10+ every build.");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-030",
+        "All eBPF programs pass kernel verifier on 5.10+ every build.",
+    );
 }
 
 #[test]
@@ -168,82 +246,130 @@ fn ac_ver_031_runtime_stub() {
 
 #[test]
 fn ac_ver_032_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-032", "Memory RSS < 25 MB (Sections 11.1, 11.3, 25.2, 29.1).");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-032",
+        "Memory RSS < 25 MB (Sections 11.1, 11.3, 25.2, 29.1).",
+    );
 }
 
 #[test]
 fn ac_ver_033_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-033", "Distribution total < 200 MB (Section 25.2).");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-033",
+        "Distribution total < 200 MB (Section 25.2).",
+    );
 }
 
 #[test]
 fn ac_ver_034_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-034", "Detection latency ~400 ns/event (Sections 2.2, 6.6, 29.1).");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-034",
+        "Detection latency ~400 ns/event (Sections 2.2, 6.6, 29.1).",
+    );
 }
 
 #[test]
 fn ac_ver_035_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-035", "Detection engine memory ~4 MB (Sections 2.2, 6.6, 11.3).");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-035",
+        "Detection engine memory ~4 MB (Sections 2.2, 6.6, 11.3).",
+    );
 }
 
 #[test]
 fn ac_ver_036_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-036", "Heartbeat interval 30 seconds (Sections 1.4, 12.2, 14.1).");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-036",
+        "Heartbeat interval 30 seconds (Sections 1.4, 12.2, 14.1).",
+    );
 }
 
 #[test]
 fn ac_ver_037_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-037", "Learning period 7 days (Sections 1.4, 8.2, 24.1).");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-037",
+        "Learning period 7 days (Sections 1.4, 8.2, 24.1).",
+    );
 }
 
 #[test]
 fn ac_ver_038_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-038", "Baseline stale threshold 30 days (Sections 3.7, 8.2, 8.3).");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-038",
+        "Baseline stale threshold 30 days (Sections 3.7, 8.2, 8.3).",
+    );
 }
 
 #[test]
 fn ac_ver_039_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-039", "IOC stale threshold 30-90 days (Section 16.4).");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-039",
+        "IOC stale threshold 30-90 days (Section 16.4).",
+    );
 }
 
 #[test]
 fn ac_ver_040_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-040", "Rate limit (kills) 10/minute (Sections 7.1, 7.8).");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-040",
+        "Rate limit (kills) 10/minute (Sections 7.1, 7.8).",
+    );
 }
 
 #[test]
 fn ac_ver_041_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-041", "Offline buffer 100 MB (Sections 1.4, 10.3, 12.2).");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-041",
+        "Offline buffer 100 MB (Sections 1.4, 10.3, 12.2).",
+    );
 }
 
 #[test]
 fn ac_ver_042_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-042", "Threat intel poll interval 4 hours (Sections 3.6, 18.4, 22.1).");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-042",
+        "Threat intel poll interval 4 hours (Sections 3.6, 18.4, 22.1).",
+    );
 }
 
 #[test]
 fn ac_ver_043_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-043", "eBPF ring buffer 8 MB (Sections 5.1, 11.2).");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-043",
+        "eBPF ring buffer 8 MB (Sections 5.1, 11.2).",
+    );
 }
 
 #[test]
 fn ac_ver_044_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-044", "Multi-host incident threshold 3+ agents (Section 20.2).");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-044",
+        "Multi-host incident threshold 3+ agents (Section 20.2).",
+    );
 }
 
 #[test]
 fn ac_ver_045_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-045", "Z-score anomaly threshold 3.0 (Section 20.3).");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-045",
+        "Z-score anomaly threshold 3.0 (Section 20.3).",
+    );
 }
 
 #[test]
 fn ac_ver_046_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-046", "MinHash bands x rows 16 x 8 = 128 hashes (Section 20.4).");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-046",
+        "MinHash bands x rows 16 x 8 = 128 hashes (Section 20.4).",
+    );
 }
 
 #[test]
 fn ac_ver_047_runtime_stub() {
-    assert_runtime_validation_backed_by_executable_suite("AC-VER-047", "Triage score weights sum to 1.0 (Section 20.5).");
+    assert_runtime_validation_backed_by_executable_suite(
+        "AC-VER-047",
+        "Triage score weights sum to 1.0 (Section 20.5).",
+    );
 }
 
 #[test]

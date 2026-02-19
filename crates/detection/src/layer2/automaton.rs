@@ -23,7 +23,11 @@ impl DeterministicMonitorAutomaton {
             max_window_secs = max_window_secs.saturating_add(stage.within_secs as i64);
             transitions.push(MonitorTransition {
                 predicate: stage.predicate,
-                max_delay_secs: if idx == 0 { None } else { Some(stage.within_secs) },
+                max_delay_secs: if idx == 0 {
+                    None
+                } else {
+                    Some(stage.within_secs)
+                },
             });
         }
 

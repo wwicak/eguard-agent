@@ -1,10 +1,12 @@
 use tracing::{info, warn};
 
 use detection::{Confidence, EventClass, TelemetryEvent};
-use platform_linux::{scan_kernel_integrity, EnrichedEvent, EventType, KernelIntegrityScanOptions, RawEvent};
+use platform_linux::{
+    scan_kernel_integrity, EnrichedEvent, EventType, KernelIntegrityScanOptions, RawEvent,
+};
 
-use super::{interval_due, AgentRuntime};
 use super::detection_event::confidence_to_severity;
+use super::{interval_due, AgentRuntime};
 
 impl AgentRuntime {
     pub(super) fn run_kernel_integrity_scan_if_due(&mut self, now_unix: i64) {
@@ -105,13 +107,8 @@ impl AgentRuntime {
             container_privileged: false,
         };
 
-        let mut event_envelope = self.build_event_envelope(
-            &enriched,
-            &event,
-            &outcome,
-            confidence,
-            now_unix,
-        );
+        let mut event_envelope =
+            self.build_event_envelope(&enriched, &event, &outcome, confidence, now_unix);
         event_envelope.event_type = event.event_class.as_str().to_string();
         event_envelope.severity = confidence_to_severity(confidence).to_string();
         if let Some(rule_name) = Self::detection_rule_name(&outcome) {

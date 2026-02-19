@@ -142,10 +142,8 @@ impl Client {
                     remediation_action_id: check.remediation_action_id.clone(),
                 })
                 .collect::<Vec<_>>();
-            let overall_status = map_overall_status(
-                &compliance.overall_status,
-                &compliance.status,
-            ) as i32;
+            let overall_status =
+                map_overall_status(&compliance.overall_status, &compliance.status) as i32;
             client
                 .report_compliance(pb::ComplianceReport {
                     agent_id: compliance.agent_id.clone(),
