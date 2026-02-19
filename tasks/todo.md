@@ -1081,3 +1081,27 @@
   - restarted `eguard-perl-api` (active).
 - Git:
   - commit: `3dfd024973` (`fix(api): resolve hyphenated service status routes`), pushed to `feat/eguard-agent`.
+
+## 🧭 Plan: OpenAPI documentation for completed endpoint work (2026-02-19)
+- [x] Inventory endpoint APIs delivered in todo (policy/assign/preview/diff, lifecycle, command approval/enqueue/list/get, compliance/inventory/agents, enrollment/install aliases).
+- [x] Add static OpenAPI path docs for endpoint APIs under `docs/api/spec/static/paths`.
+- [x] Add/extend OpenAPI components (schemas/responses/parameters) for endpoint payloads.
+- [x] Validate merged OpenAPI spec from base+static sources and verify new endpoint refs/paths resolve.
+- [x] Capture review notes and reinforce lesson: always update OpenAPI when adding/modifying APIs.
+
+### 🔍 Review Notes (OpenAPI endpoint docs)
+- Added new static OpenAPI path coverage file:
+  - `docs/api/spec/static/paths/endpoint.yaml`
+- Added new reusable component files:
+  - `docs/api/spec/static/components/schemas/endpoint.yaml`
+  - `docs/api/spec/static/components/responses/endpoint.yaml`
+  - `docs/api/spec/static/components/parameters/endpoint.yaml`
+- Added `Endpoint` tag to `docs/api/spec/openapi-base.yaml`.
+- Verified endpoint OpenAPI references resolve when merging base + static components/paths.
+- Covered completed endpoint work in spec (including legacy aliases):
+  - endpoint agents/compliance/inventory,
+  - policy get/upsert/assign/preview/diff + lifecycle,
+  - command list/get/issue/enqueue/approve,
+  - enrollment token CRUD,
+  - install package endpoints (`/api/v1/agent-install/linux-{deb,rpm}`),
+  - NAC + telemetry ingestion routes.

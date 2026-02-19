@@ -316,3 +316,8 @@ with route/nav discoverability so operators can immediately see and use MDM data
 If the user gives deployment access + credentials, do not stop at local build
 claims. Deploy to the live host, log in with provided credentials, and run a
 button/filter/pagination validation matrix in browser-use before declaring UI done.
+
+## Always Update OpenAPI For Every API Endpoint Change
+When adding, modifying, aliasing, or fixing API endpoints, update OpenAPI docs
+in the same task (paths + schemas/responses/parameters + generated spec files)
+before declaring work complete.
