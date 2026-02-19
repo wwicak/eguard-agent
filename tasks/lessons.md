@@ -298,3 +298,9 @@ edge-case handling, and real browser-E2E validation evidence).
 When user asks to use frontend-design skill and align with existing style,
 follow the skill process and map new UI to current design tokens/components
 (`soc-*` system here) instead of introducing mismatched light-theme blocks.
+
+## Optional/Absent Config Endpoints Must Fail Quietly
+If a deployment does not expose certain config endpoints (e.g.
+`config/traffic_shaping_policies`), use quiet API calls for discovery/list
+requests and explicitly handle `404/405/501` in store actions to avoid noisy
+operator-facing "Unknown path" alerts.

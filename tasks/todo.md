@@ -1025,3 +1025,21 @@
   - screenshots:
     - `/tmp/ui-e2e/endpoint-agent-config-styled.png`
     - `/tmp/ui-e2e/endpoint-enrollment-styled.png`
+
+## 🧭 Plan: Config traffic-shaping missing-endpoint noise fix (2026-02-19)
+- [x] Reproduce and trace `Unknown path /api/v1/config/traffic_shaping_policies` source in frontend modules.
+- [x] Convert traffic-shaping read/list calls to quiet API methods to avoid noisy global notifications.
+- [x] Add graceful fallback behavior for unsupported endpoint responses (404/405/501) in traffic-shaping store actions.
+- [x] Rebuild/redeploy frontend and verify error no longer appears in authenticated UI flow.
+
+### 🔍 Review Notes (traffic-shaping endpoint noise fix)
+- Fixed files:
+  - `html/egappserver/root/src/views/Configuration/networks/trafficShapingPolicies/_api.js`
+    - `list`, `listOptions`, `item`, `itemOptions` now use quiet methods (`getQuiet` / `optionsQuiet`).
+  - `html/egappserver/root/src/views/Configuration/networks/trafficShapingPolicies/_store.js`
+    - added unsupported endpoint guard (`404/405/501`) and fallback returns for `all`, `options`, `getTrafficShapingPolicy`.
+- Result:
+  - UI no longer surfaces noisy notification for missing `config/traffic_shaping_policies` path.
+- Validation:
+  - frontend rebuilt + redeployed,
+  - browser-use check on authenticated endpoint route confirms absence of `Unknown path /api/v1/config/traffic_shaping_policies` string.
