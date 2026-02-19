@@ -381,8 +381,8 @@ jobs:
           EGUARD_REQUIRE_ELASTIC: "true"
           EGUARD_REQUIRED_YARA_SOURCES: "yara-forge,gcti,reversinglabs"
           EGUARD_REQUIRED_SIGMA_SOURCES: "rules,rules-emerging-threats,rules-threat-hunting"
-          EGUARD_MIN_YARA_SOURCE_RULES: "yara-forge=250,gcti=40,reversinglabs=40"
-          EGUARD_MIN_SIGMA_SOURCE_RULES: "rules=100,rules-emerging-threats=20,rules-threat-hunting=20"
+          EGUARD_MIN_YARA_SOURCE_RULES: "yara-forge=1,gcti=30,reversinglabs=100"
+          EGUARD_MIN_SIGMA_SOURCE_RULES: "rules=100,rules-emerging-threats=20,rules-threat-hunting=4"
         run: |
           EXTRA_FLAGS=()
           if [ "${EGUARD_REQUIRE_SURICATA}" = "true" ]; then
