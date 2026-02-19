@@ -1228,6 +1228,116 @@ fn load_bundle_rules_rejects_signed_bundle_with_manifest_hash_mismatch() {
 }
 
 #[test]
+// AC-DET-006 AC-DET-171
+fn load_bundle_rules_allows_manifest_count_mismatch_when_signature_and_hashes_valid() {
+    let _env_guard = env_var_lock().lock().expect("lock env vars");
+    let base = std::env::temp_dir().join(format!(
+        "eguard-bundle-manifest-count-mismatch-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    let src = base.join("src");
+    let staging = base.join("staging");
+    let yara_dir = src.join("yara");
+    std::fs::create_dir_all(&yara_dir).expect("create yara dir");
+    std::fs::create_dir_all(&staging).expect("create staging dir");
+
+    let yara_rules = r#"
+rule mismatch_marker_one {
+  strings:
+    $a = "manifest-mismatch-one"
+  condition:
+    $a
+}
+
+rule mismatch_marker_two {
+  strings:
+    $b = "manifest-mismatch-two"
+  condition:
+    $b
+}
+"#;
+    let mut sanity_engine = DetectionEngine::default_with_rules();
+    let sanity_loaded = sanity_engine
+        .load_yara_rules_str(yara_rules)
+        .expect("sanity parse yara rules");
+    assert_eq!(sanity_loaded, 2, "sanity yara parse should load both rules");
+
+    let yara_path = yara_dir.join("rules.yar");
+    std::fs::write(&yara_path, yara_rules).expect("write yara rules");
+
+    let yara_hash = sha256_bytes_hex(yara_rules.as_bytes());
+    let manifest = serde_json::json!({
+        "version": "2026.02.19.0545",
+        "sigma_count": 0,
+        "yara_count": 1,
+        "ioc_hash_count": 0,
+        "ioc_domain_count": 0,
+        "ioc_ip_count": 0,
+        "cve_count": 0,
+        "files": {
+            "yara/rules.yar": format!("sha256:{}", yara_hash)
+        }
+    });
+    std::fs::write(
+        src.join("manifest.json"),
+        serde_json::to_vec(&manifest).expect("serialize manifest"),
+    )
+    .expect("write manifest");
+
+    let tar_path = base.join("bundle.tar");
+    let tar_file = std::fs::File::create(&tar_path).expect("create tar file");
+    let mut tar_builder = tar::Builder::new(tar_file);
+    tar_builder
+        .append_path_with_name(src.join("manifest.json"), "manifest.json")
+        .expect("append manifest");
+    tar_builder
+        .append_path_with_name(&yara_path, "yara/rules.yar")
+        .expect("append yara rules");
+    tar_builder.finish().expect("finish tar");
+
+    let bundle_path = base.join("bundle.tar.zst");
+    let mut tar_input = std::fs::File::open(&tar_path).expect("open tar");
+    let zstd_output = std::fs::File::create(&bundle_path).expect("create zstd");
+    let mut encoder = zstd::stream::write::Encoder::new(zstd_output, 1).expect("init zstd");
+    std::io::copy(&mut tar_input, &mut encoder).expect("compress tar");
+    encoder.finish().expect("finish zstd");
+
+    let signing = SigningKey::from_bytes(&[12u8; 32]);
+    let bundle_bytes = std::fs::read(&bundle_path).expect("read bundle bytes");
+    let sig = signing.sign(&bundle_bytes);
+    let signature_path = PathBuf::from(format!("{}.sig", bundle_path.to_string_lossy()));
+    std::fs::write(&signature_path, sig.to_bytes()).expect("write signature sidecar");
+
+    std::env::set_var(
+        "EGUARD_RULE_BUNDLE_PUBKEY",
+        to_hex(&signing.verifying_key().to_bytes()),
+    );
+    std::env::set_var("EGUARD_RULES_STAGING_DIR", &staging);
+    assert!(
+        super::rule_bundle_verify::verify_bundle_signature(&bundle_path),
+        "signature verification should succeed for test bundle"
+    );
+
+    let mut engine = DetectionEngine::default_with_rules();
+    let loaded = load_bundle_rules(&mut engine, bundle_path.to_string_lossy().as_ref());
+    assert_eq!(
+        loaded,
+        (0, 2),
+        "count mismatch should not discard otherwise valid signed bundle content"
+    );
+
+    std::env::remove_var("EGUARD_RULE_BUNDLE_PUBKEY");
+    std::env::remove_var("EGUARD_RULES_STAGING_DIR");
+    let _ = std::fs::remove_file(signature_path);
+    let _ = std::fs::remove_file(bundle_path);
+    let _ = std::fs::remove_file(tar_path);
+    let _ = std::fs::remove_dir_all(base);
+}
+
+#[test]
 fn sanitize_archive_relative_path_rejects_traversal() {
     assert_eq!(
         sanitize_archive_relative_path(Path::new("../etc/passwd")),

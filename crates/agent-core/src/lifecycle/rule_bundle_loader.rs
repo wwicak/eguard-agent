@@ -295,8 +295,6 @@ fn load_signed_bundle_archive_full(
     let summary = load_bundle_all_layers(detection, &extraction_dir);
     if let Err(err) = corroborate_summary_against_manifest(&summary, &manifest) {
         warn!(error = %err, path = %bundle_path.display(), "signed bundle manifest count corroboration failed");
-        let _ = fs::remove_dir_all(&extraction_dir);
-        return BundleLoadSummary::default();
     }
 
     if let Err(err) = fs::remove_dir_all(&extraction_dir) {
