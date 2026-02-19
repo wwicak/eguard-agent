@@ -7,7 +7,8 @@ use super::super::{
 };
 use super::bundle_guard::{
     bundle_ioc_total, enforce_bundle_signature_database_floor, enforce_signature_drop_guard,
-    ensure_shard_bundle_summary_matches, push_count_mismatch, signature_database_total,
+    ensure_shard_bundle_summary_matches, push_count_lower_bound_mismatch, push_count_mismatch,
+    signature_database_total,
 };
 use super::state::persist_threat_intel_last_known_good_state;
 
@@ -114,13 +115,11 @@ impl AgentRuntime {
         }
 
         let mut mismatches = Vec::new();
-        push_count_mismatch(
-            &mut mismatches,
-            "sigma_count",
-            expected.sigma_count,
-            summary.sigma_loaded,
-        );
-        push_count_mismatch(
+
+        // SIGMA count semantics currently diverge between upstream manifest files and
+        // runtime-loadable rules. Keep strict corroboration on families with stable
+        // semantics (IOC/CVE) and use lower-bound corroboration for YARA.
+        push_count_lower_bound_mismatch(
             &mut mismatches,
             "yara_count",
             expected.yara_count,

@@ -101,6 +101,25 @@ pub(super) fn push_count_mismatch(
     }
 }
 
+pub(super) fn push_count_lower_bound_mismatch(
+    out: &mut Vec<String>,
+    field: &str,
+    expected_min: i64,
+    actual: usize,
+) {
+    if expected_min <= 0 {
+        return;
+    }
+
+    let expected_min = expected_min as usize;
+    if actual < expected_min {
+        out.push(format!(
+            "{} expected at least {} got {}",
+            field, expected_min, actual
+        ));
+    }
+}
+
 pub(super) fn ensure_shard_bundle_summary_matches(
     shard_idx: usize,
     primary: &super::super::rule_bundle_loader::BundleLoadSummary,
