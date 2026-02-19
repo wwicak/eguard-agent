@@ -5,8 +5,7 @@ use tracing::{info, warn};
 
 use compliance::{
     collect_linux_snapshot, evaluate, evaluate_snapshot, execute_remediation_actions,
-    plan_remediation_actions, ComplianceCheck, ComplianceResult, RemediationAction,
-    ShellCommandRunner,
+    plan_remediation_actions, ComplianceResult, RemediationAction, ShellCommandRunner,
 };
 use nac::Posture;
 use serde::Deserialize;

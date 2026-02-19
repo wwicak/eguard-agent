@@ -175,33 +175,37 @@ impl AgentRuntime {
     }
 
     fn apply_device_lock(&self, payload_json: &str, exec: &mut CommandExecution) {
+        let payload = parse_device_action_payload(payload_json);
+        let context = format_device_action_context(&payload);
+
         if !mdm_action_allowed("lock") {
             exec.outcome = CommandOutcome::Ignored;
             exec.status = "failed";
-            exec.detail = "device lock blocked by policy".to_string();
+            exec.detail = format!("device lock blocked by policy ({})", context);
             return;
         }
-        let _payload = parse_device_payload(payload_json);
         if let Err(err) = run_command_sequence(&[
             ("loginctl", &["lock-session"]),
             ("xdg-screensaver", &["lock"]),
         ]) {
             exec.outcome = CommandOutcome::Ignored;
             exec.status = "failed";
-            exec.detail = format!("device lock failed: {}", err);
+            exec.detail = format!("device lock failed ({}): {}", context, err);
         } else {
-            exec.detail = "device lock command issued".to_string();
+            exec.detail = format!("device lock command issued ({})", context);
         }
     }
 
     fn apply_device_wipe(&self, payload_json: &str, exec: &mut CommandExecution) {
+        let payload = parse_device_action_payload(payload_json);
+        let context = format_device_action_context(&payload);
+
         if !mdm_action_allowed("wipe") {
             exec.outcome = CommandOutcome::Ignored;
             exec.status = "failed";
-            exec.detail = "device wipe blocked by policy".to_string();
+            exec.detail = format!("device wipe blocked by policy ({})", context);
             return;
         }
-        let _payload = parse_device_payload(payload_json);
         let mut removed = Vec::new();
         for path in [
             &self.config.offline_buffer_path,
@@ -211,66 +215,79 @@ impl AgentRuntime {
             if let Err(err) = remove_path(path) {
                 exec.outcome = CommandOutcome::Ignored;
                 exec.status = "failed";
-                exec.detail = format!("wipe failed: {}", err);
+                exec.detail = format!("wipe failed ({}): {}", context, err);
                 return;
             }
             removed.push(path.to_string());
         }
-        exec.detail = format!("wipe completed for {}", removed.join(", "));
+        exec.detail = format!("wipe completed for {} ({})", removed.join(", "), context);
     }
 
     fn apply_device_retire(&mut self, payload_json: &str, exec: &mut CommandExecution) {
+        let payload = parse_device_action_payload(payload_json);
+        let context = format_device_action_context(&payload);
+
         if !mdm_action_allowed("retire") {
             exec.outcome = CommandOutcome::Ignored;
             exec.status = "failed";
-            exec.detail = "device retire blocked by policy".to_string();
+            exec.detail = format!("device retire blocked by policy ({})", context);
             return;
         }
-        let _payload = parse_device_payload(payload_json);
         if let Err(err) = write_marker("/var/lib/eguard-agent/retired") {
             exec.outcome = CommandOutcome::Ignored;
             exec.status = "failed";
-            exec.detail = format!("retire marker failed: {}", err);
+            exec.detail = format!("retire marker failed ({}): {}", context, err);
             return;
         }
         self.enrolled = false;
-        exec.detail = "device retired".to_string();
+        exec.detail = format!("device retired ({})", context);
     }
 
     fn apply_device_restart(&self, payload_json: &str, exec: &mut CommandExecution) {
+        let payload = parse_device_action_payload(payload_json);
+        let context = format_device_action_context(&payload);
+
         if !mdm_action_allowed("restart") {
             exec.outcome = CommandOutcome::Ignored;
             exec.status = "failed";
-            exec.detail = "device restart blocked by policy".to_string();
+            exec.detail = format!("device restart blocked by policy ({})", context);
             return;
         }
-        let _payload = parse_device_payload(payload_json);
         if let Err(err) = run_command_sequence(&[("systemctl", &["reboot"])]) {
             exec.outcome = CommandOutcome::Ignored;
             exec.status = "failed";
-            exec.detail = format!("restart failed: {}", err);
+            exec.detail = format!("restart failed ({}): {}", context, err);
         } else {
-            exec.detail = "restart requested".to_string();
+            exec.detail = format!("restart requested ({})", context);
         }
     }
 
     fn apply_lost_mode(&self, payload_json: &str, exec: &mut CommandExecution) {
-        let _payload = parse_device_payload(payload_json);
+        let payload = parse_device_action_payload(payload_json);
+        let context = format_device_action_context(&payload);
+
         if let Err(err) = write_marker("/var/lib/eguard-agent/lost_mode") {
             exec.outcome = CommandOutcome::Ignored;
             exec.status = "failed";
-            exec.detail = format!("lost mode marker failed: {}", err);
+            exec.detail = format!("lost mode marker failed ({}): {}", context, err);
         } else {
-            exec.detail = "lost mode enabled".to_string();
+            exec.detail = format!("lost mode enabled ({})", context);
         }
     }
 
-    fn apply_device_locate(&self, _payload_json: &str, exec: &mut CommandExecution) {
+    fn apply_device_locate(&self, payload_json: &str, exec: &mut CommandExecution) {
+        let payload = parse_locate_payload(payload_json);
         let ip = super::inventory::resolve_primary_ip().unwrap_or_default();
         exec.detail = if ip.is_empty() {
-            "device locate requested (no ip)".to_string()
+            format!(
+                "device locate requested (no ip, high_accuracy={})",
+                payload.high_accuracy
+            )
         } else {
-            format!("device ip: {}", ip)
+            format!(
+                "device ip: {} (high_accuracy={})",
+                ip, payload.high_accuracy
+            )
         };
     }
 
@@ -389,6 +406,12 @@ struct DeviceActionPayload {
 }
 
 #[derive(Debug, Deserialize, Default)]
+struct LocatePayload {
+    #[serde(default)]
+    high_accuracy: bool,
+}
+
+#[derive(Debug, Deserialize, Default)]
 struct AppPayload {
     #[serde(default)]
     package_name: String,
@@ -404,8 +427,21 @@ struct ProfilePayload {
     profile_json: String,
 }
 
-fn parse_device_payload(payload_json: &str) -> DeviceActionPayload {
+fn parse_device_action_payload(payload_json: &str) -> DeviceActionPayload {
     serde_json::from_str(payload_json).unwrap_or_default()
+}
+
+fn parse_locate_payload(payload_json: &str) -> LocatePayload {
+    serde_json::from_str(payload_json).unwrap_or_default()
+}
+
+fn format_device_action_context(payload: &DeviceActionPayload) -> String {
+    let reason = payload.reason.trim();
+    if reason.is_empty() {
+        format!("force={}", payload.force)
+    } else {
+        format!("force={}, reason={}", payload.force, reason)
+    }
 }
 
 fn mdm_action_allowed(action: &str) -> bool {
@@ -530,5 +566,42 @@ fn apply_app_command(action: &str, payload_json: &str, exec: &mut CommandExecuti
         exec.detail = format!("app {} failed: {}", action, err);
     } else {
         exec.detail = format!("app {} executed for {}", action, payload.package_name);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        format_device_action_context, parse_device_action_payload, parse_locate_payload,
+        DeviceActionPayload,
+    };
+
+    #[test]
+    fn device_action_payload_parser_extracts_force_and_reason() {
+        let payload = parse_device_action_payload(r#"{"force":true,"reason":"incident-42"}"#);
+        assert!(payload.force);
+        assert_eq!(payload.reason, "incident-42");
+    }
+
+    #[test]
+    fn device_action_payload_parser_defaults_on_invalid_json() {
+        let payload = parse_device_action_payload("{not-json");
+        assert!(!payload.force);
+        assert!(payload.reason.is_empty());
+    }
+
+    #[test]
+    fn format_device_action_context_omits_empty_reason() {
+        let payload = DeviceActionPayload {
+            force: false,
+            reason: "  ".to_string(),
+        };
+        assert_eq!(format_device_action_context(&payload), "force=false");
+    }
+
+    #[test]
+    fn locate_payload_parser_reads_high_accuracy_flag() {
+        let payload = parse_locate_payload(r#"{"high_accuracy":true}"#);
+        assert!(payload.high_accuracy);
     }
 }
