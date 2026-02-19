@@ -1647,12 +1647,12 @@ jobs:
               lines.extend([
                   '',
                   '## Signature ML Readiness (Shadow)',
-                  f'- Status: {signature_ml_readiness.get("status", "unknown")}',
-                  f'- Mode: {signature_ml_readiness.get("mode", "unknown")}',
-                  f'- Readiness tier: {signature_ml_readiness.get("readiness_tier", "unknown")}',
-                  f'- Final score: {readiness_scores.get("final_score", "n/a")}',
-                  f'- Previous final score: {readiness_scores.get("previous_final_score", "n/a")}',
-                  f'- Score delta: {readiness_scores.get("score_delta", "n/a")}',
+                  f'- Status: {signature_ml_readiness.get(\"status\", \"unknown\")}',
+                  f'- Mode: {signature_ml_readiness.get(\"mode\", \"unknown\")}',
+                  f'- Readiness tier: {signature_ml_readiness.get(\"readiness_tier\", \"unknown\")}',
+                  f'- Final score: {readiness_scores.get(\"final_score\", \"n/a\")}',
+                  f'- Previous final score: {readiness_scores.get(\"previous_final_score\", \"n/a\")}',
+                  f'- Score delta: {readiness_scores.get(\"score_delta\", \"n/a\")}',
               ])
 
           if signature_ml_readiness_trend:
@@ -1668,12 +1668,12 @@ jobs:
               lines.extend([
                   '',
                   '## Signature ML Readiness Trend (Shadow)',
-                  f'- Status: {signature_ml_readiness_trend.get("status", "unknown")}',
-                  f'- History status: {signature_ml_readiness_trend.get("history_status", "unknown")}',
-                  f'- Current final score: {trend_scores.get("current_final_score", "n/a")}',
-                  f'- Previous final score: {trend_scores.get("previous_final_score", "n/a")}',
-                  f'- Score drop: {trend_scores.get("score_drop", "n/a")}',
-                  f'- Projected consecutive alerts: {trend_alerts.get("projected_consecutive_alerts", "n/a")}',
+                  f'- Status: {signature_ml_readiness_trend.get(\"status\", \"unknown\")}',
+                  f'- History status: {signature_ml_readiness_trend.get(\"history_status\", \"unknown\")}',
+                  f'- Current final score: {trend_scores.get(\"current_final_score\", \"n/a\")}',
+                  f'- Previous final score: {trend_scores.get(\"previous_final_score\", \"n/a\")}',
+                  f'- Score drop: {trend_scores.get(\"score_drop\", \"n/a\")}',
+                  f'- Projected consecutive alerts: {trend_alerts.get(\"projected_consecutive_alerts\", \"n/a\")}',
               ])
               if trend_regressions:
                   lines.append(f'- Regressions: {\"; \".join(str(item) for item in trend_regressions)}')
@@ -1685,12 +1685,12 @@ jobs:
               lines.extend([
                   '',
                   '## Signature ML Training Corpus',
-                  f'- Status: {signature_ml_corpus.get("status", "unknown")}',
-                  f'- Dataset mode: {signature_ml_corpus.get("dataset_mode", "unknown")}',
-                  f'- Sample count: {corpus_measured.get("sample_count", "n/a")}',
-                  f'- Adjudicated count: {corpus_measured.get("adjudicated_count", "n/a")}',
-                  f'- Positive count: {corpus_measured.get("positive_count", "n/a")}',
-                  f'- Negative count: {corpus_measured.get("negative_count", "n/a")}',
+                  f'- Status: {signature_ml_corpus.get(\"status\", \"unknown\")}',
+                  f'- Dataset mode: {signature_ml_corpus.get(\"dataset_mode\", \"unknown\")}',
+                  f'- Sample count: {corpus_measured.get(\"sample_count\", \"n/a\")}',
+                  f'- Adjudicated count: {corpus_measured.get(\"adjudicated_count\", \"n/a\")}',
+                  f'- Positive count: {corpus_measured.get(\"positive_count\", \"n/a\")}',
+                  f'- Negative count: {corpus_measured.get(\"negative_count\", \"n/a\")}',
               ])
 
           if signature_ml_label_quality:
@@ -1700,12 +1700,12 @@ jobs:
               lines.extend([
                   '',
                   '## Signature ML Label Quality (Shadow)',
-                  f'- Status: {signature_ml_label_quality.get("status", "unknown")}',
-                  f'- Adjudicated count: {label_measured.get("adjudicated_count", "n/a")}',
-                  f'- Unresolved ratio: {label_measured.get("unresolved_ratio", "n/a")}',
-                  f'- P95 label latency days: {label_measured.get("p95_label_latency_days", "n/a")}',
-                  f'- Unique hosts: {label_measured.get("unique_hosts", "n/a")}',
-                  f'- Unique rules: {label_measured.get("unique_rules", "n/a")}',
+                  f'- Status: {signature_ml_label_quality.get(\"status\", \"unknown\")}',
+                  f'- Adjudicated count: {label_measured.get(\"adjudicated_count\", \"n/a\")}',
+                  f'- Unresolved ratio: {label_measured.get(\"unresolved_ratio\", \"n/a\")}',
+                  f'- P95 label latency days: {label_measured.get(\"p95_label_latency_days\", \"n/a\")}',
+                  f'- Unique hosts: {label_measured.get(\"unique_hosts\", \"n/a\")}',
+                  f'- Unique rules: {label_measured.get(\"unique_rules\", \"n/a\")}',
               ])
 
           if signature_ml_feature_snapshot:
@@ -1715,10 +1715,10 @@ jobs:
               lines.extend([
                   '',
                   '## Signature ML Feature Snapshot (Shadow)',
-                  f'- Status: {signature_ml_feature_snapshot.get("status", "unknown")}',
-                  f'- Row count: {feature_measured.get("row_count", "n/a")}',
-                  f'- Missing feature ratio: {feature_measured.get("missing_feature_ratio", "n/a")}',
-                  f'- Temporal span days: {feature_measured.get("temporal_span_days", "n/a")}',
+                  f'- Status: {signature_ml_feature_snapshot.get(\"status\", \"unknown\")}',
+                  f'- Row count: {feature_measured.get(\"row_count\", \"n/a\")}',
+                  f'- Missing feature ratio: {feature_measured.get(\"missing_feature_ratio\", \"n/a\")}',
+                  f'- Temporal span days: {feature_measured.get(\"temporal_span_days\", \"n/a\")}',
               ])
 
           if signature_ml_offline_eval:
@@ -1728,14 +1728,14 @@ jobs:
               lines.extend([
                   '',
                   '## Signature ML Offline Eval (Shadow)',
-                  f'- Status: {signature_ml_offline_eval.get("status", "unknown")}',
-                  f'- Operating threshold: {eval_metrics.get("operating_threshold", "n/a")}',
-                  f'- Precision: {eval_metrics.get("precision", "n/a")}',
-                  f'- Recall: {eval_metrics.get("recall", "n/a")}',
-                  f'- PR-AUC: {eval_metrics.get("pr_auc", "n/a")}',
-                  f'- ROC-AUC: {eval_metrics.get("roc_auc", "n/a")}',
-                  f'- Brier score: {eval_metrics.get("brier_score", "n/a")}',
-                  f'- ECE: {eval_metrics.get("ece", "n/a")}',
+                  f'- Status: {signature_ml_offline_eval.get(\"status\", \"unknown\")}',
+                  f'- Operating threshold: {eval_metrics.get(\"operating_threshold\", \"n/a\")}',
+                  f'- Precision: {eval_metrics.get(\"precision\", \"n/a\")}',
+                  f'- Recall: {eval_metrics.get(\"recall\", \"n/a\")}',
+                  f'- PR-AUC: {eval_metrics.get(\"pr_auc\", \"n/a\")}',
+                  f'- ROC-AUC: {eval_metrics.get(\"roc_auc\", \"n/a\")}',
+                  f'- Brier score: {eval_metrics.get(\"brier_score\", \"n/a\")}',
+                  f'- ECE: {eval_metrics.get(\"ece\", \"n/a\")}',
               ])
 
           if signature_ml_offline_eval_trend:
@@ -1748,14 +1748,14 @@ jobs:
               lines.extend([
                   '',
                   '## Signature ML Offline Eval Trend (Shadow)',
-                  f'- Status: {signature_ml_offline_eval_trend.get("status", "unknown")}',
-                  f'- History status: {signature_ml_offline_eval_trend.get("history_status", "unknown")}',
-                  f'- Consecutive alerts: {trend_alerts.get("consecutive_alerts", "n/a")}',
-                  f'- Window pass rate: {trend_alerts.get("window_pass_rate", "n/a")}',
-                  f'- PR-AUC drop: {trend_deltas.get("pr_auc_drop", "n/a")}',
-                  f'- ROC-AUC drop: {trend_deltas.get("roc_auc_drop", "n/a")}',
-                  f'- Brier increase: {trend_deltas.get("brier_increase", "n/a")}',
-                  f'- ECE increase: {trend_deltas.get("ece_increase", "n/a")}',
+                  f'- Status: {signature_ml_offline_eval_trend.get(\"status\", \"unknown\")}',
+                  f'- History status: {signature_ml_offline_eval_trend.get(\"history_status\", \"unknown\")}',
+                  f'- Consecutive alerts: {trend_alerts.get(\"consecutive_alerts\", \"n/a\")}',
+                  f'- Window pass rate: {trend_alerts.get(\"window_pass_rate\", \"n/a\")}',
+                  f'- PR-AUC drop: {trend_deltas.get(\"pr_auc_drop\", \"n/a\")}',
+                  f'- ROC-AUC drop: {trend_deltas.get(\"roc_auc_drop\", \"n/a\")}',
+                  f'- Brier increase: {trend_deltas.get(\"brier_increase\", \"n/a\")}',
+                  f'- ECE increase: {trend_deltas.get(\"ece_increase\", \"n/a\")}',
               ])
 
           if signature_ml_model_registry:
@@ -1765,10 +1765,10 @@ jobs:
               lines.extend([
                   '',
                   '## Signature ML Model Registry (Shadow)',
-                  f'- Status: {signature_ml_model_registry.get("status", "unknown")}',
-                  f'- Model version: {signature_ml_model_registry.get("model_version", "unknown")}',
-                  f'- Registry PR-AUC: {registry_metrics.get("pr_auc", "n/a")}',
-                  f'- Registry ROC-AUC: {registry_metrics.get("roc_auc", "n/a")}',
+                  f'- Status: {signature_ml_model_registry.get(\"status\", \"unknown\")}',
+                  f'- Model version: {signature_ml_model_registry.get(\"model_version\", \"unknown\")}',
+                  f'- Registry PR-AUC: {registry_metrics.get(\"pr_auc\", \"n/a\")}',
+                  f'- Registry ROC-AUC: {registry_metrics.get(\"roc_auc\", \"n/a\")}',
               ])
 
           for category, names in src.items():
