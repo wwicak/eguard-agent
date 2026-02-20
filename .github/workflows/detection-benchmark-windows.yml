@@ -1,0 +1,149 @@
+name: detection-benchmark-windows
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: detection-benchmark-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  ZIG_VERSION: "0.14.1"
+
+jobs:
+  benchmark:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build Zig ASM artifacts
+        shell: bash
+        run: zig build asm-artifacts
+
+      - name: Build Windows agent binary
+        shell: bash
+        run: |
+          cargo build --release --target x86_64-pc-windows-msvc -p agent-core
+
+      - name: Run Windows detection benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT_DIR="$(pwd)"
+          OUT_DIR="${ROOT_DIR}/artifacts/detection-benchmark-windows"
+          OUT_JSON="${OUT_DIR}/metrics.json"
+          mkdir -p "${OUT_DIR}"
+
+          START_NS="$(date +%s%N)"
+          cargo test -p detection tests::detection_latency_p99_stays_within_budget_for_reference_workload -- --exact
+          END_NS="$(date +%s%N)"
+
+          ELAPSED_MS="$(( (END_NS - START_NS) / 1000000 ))"
+          NOW_UTC="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+          cat > "${OUT_JSON}" <<EOF
+          {
+            "suite": "detection_latency_windows",
+            "platform": "windows",
+            "recorded_at_utc": "${NOW_UTC}",
+            "command": "cargo test -p detection tests::detection_latency_p99_stays_within_budget_for_reference_workload -- --exact",
+            "wall_clock_ms": ${ELAPSED_MS}
+          }
+          EOF
+
+          echo "wrote Windows benchmark metrics to ${OUT_JSON}"
+
+      - name: Measure MITRE ATT&CK Windows technique coverage
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT_DIR="artifacts/detection-benchmark-windows"
+          mkdir -p "${OUT_DIR}"
+
+          python3 - <<'PY'
+          import json
+          import pathlib
+          import subprocess
+          import re
+
+          out_dir = pathlib.Path("artifacts/detection-benchmark-windows")
+
+          # Collect Windows-relevant MITRE techniques from detection rules
+          windows_techniques = set()
+          sigma_dir = pathlib.Path("rules/sigma")
+          if sigma_dir.exists():
+              for rule_file in sigma_dir.rglob("*.yml"):
+                  content = rule_file.read_text(errors="replace")
+                  if "windows" in content.lower() or "product: windows" in content.lower():
+                      # Extract MITRE technique IDs (T1xxx, T1xxx.yyy)
+                      techniques = re.findall(r"T\d{4}(?:\.\d{3})?", content)
+                      windows_techniques.update(techniques)
+
+          # Reference set of key Windows ATT&CK techniques
+          reference_windows_techniques = [
+              "T1055",   # Process Injection
+              "T1059",   # Command and Scripting Interpreter
+              "T1053",   # Scheduled Task/Job
+              "T1543",   # Create or Modify System Process
+              "T1547",   # Boot or Logon Autostart Execution
+              "T1548",   # Abuse Elevation Control Mechanism
+              "T1134",   # Access Token Manipulation
+              "T1003",   # OS Credential Dumping
+              "T1027",   # Obfuscated Files or Information
+              "T1562",   # Impair Defenses
+              "T1021",   # Remote Services
+              "T1070",   # Indicator Removal
+              "T1112",   # Modify Registry
+              "T1569",   # System Services
+              "T1218",   # System Binary Proxy Execution
+          ]
+
+          covered = [t for t in reference_windows_techniques if t in windows_techniques]
+          coverage_pct = (len(covered) / len(reference_windows_techniques) * 100) if reference_windows_techniques else 0
+
+          metrics = {
+              "platform": "windows",
+              "total_windows_techniques_detected": len(windows_techniques),
+              "reference_technique_count": len(reference_windows_techniques),
+              "reference_techniques_covered": len(covered),
+              "coverage_pct": round(coverage_pct, 1),
+              "covered_techniques": sorted(covered),
+              "uncovered_techniques": sorted(set(reference_windows_techniques) - set(covered)),
+          }
+
+          out_path = out_dir / "mitre-coverage.json"
+          out_path.write_text(json.dumps(metrics, indent=2) + "\n")
+          print(f"Windows MITRE ATT&CK coverage: {coverage_pct:.1f}% ({len(covered)}/{len(reference_windows_techniques)} reference techniques)")
+          PY
+
+      - name: Upload Windows detection benchmark artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: detection-benchmark-windows-metrics
+          path: |
+            artifacts/detection-benchmark-windows/metrics.json
+            artifacts/detection-benchmark-windows/mitre-coverage.json

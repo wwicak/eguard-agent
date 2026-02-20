@@ -1,0 +1,35 @@
+{
+  "suite": "competitive_benchmark_eval",
+  "recorded_at_utc": "2026-02-20T02:07:17Z",
+  "inputs": {
+    "suite_metrics_path": "/home/dimas/eguard-agent/artifacts/benign-edr-benchmark-suite/metrics-20260220T020717Z.json",
+    "target_profile_path": "benchmarks/competitive_profiles/crowdstrike-parity.example.json"
+  },
+  "target_profile": {
+    "profile_name": "crowdstrike-parity-v1-example",
+    "description": "Example competitive target profile for benign benchmark evaluation. Replace thresholds with measured third-party baseline before making product claims.",
+    "thresholds": {
+      "minimum_runs": 10,
+      "latency_e2e_ms_p95_max": 35000,
+      "ingest_delay_s_p95_max": 20,
+      "idle_cpu_mean_pct_max": 1.0,
+      "load_cpu_mean_pct_max": 55.0,
+      "false_positive_all_max": 0,
+      "require_cleanup_clean": true
+    }
+  },
+  "measured": {
+    "runs_completed": 0,
+    "latency_e2e_ms_p95": 0,
+    "ingest_delay_s_p95": 0,
+    "idle_cpu_mean_pct": 0.0,
+    "load_cpu_mean_pct": 0.0,
+    "false_positive_all_max": 0,
+    "cleanup_all_runs_clean": false
+  },
+  "status": "fail",
+  "failures": [
+    "runs_completed 0 < 10",
+    "cleanup_all_runs_clean is false"
+  ]
+}

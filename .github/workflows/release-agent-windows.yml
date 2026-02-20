@@ -1,0 +1,87 @@
+name: Release Agent Windows Package
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g. v0.1.0)'
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  ZIG_VERSION: "0.14.1"
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Determine version
+        id: version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Strip version prefix
+        id: semver
+        shell: bash
+        run: |
+          RAW="${{ steps.version.outputs.tag }}"
+          echo "version=${RAW#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build Zig ASM artifacts
+        shell: bash
+        run: zig build asm-artifacts
+
+      - name: Build Windows agent binary
+        shell: bash
+        env:
+          EGUARD_AGENT_VERSION: ${{ steps.semver.outputs.version }}
+        run: |
+          cargo build --release --target x86_64-pc-windows-msvc -p agent-core
+
+      - name: Prepare release artifacts
+        shell: bash
+        run: |
+          mkdir -p artifacts/windows
+          cp target/x86_64-pc-windows-msvc/release/eguard-agent.exe artifacts/windows/
+          echo "${{ steps.semver.outputs.version }}" > artifacts/windows/VERSION
+
+      # Future: WiX MSI packaging step
+      # - name: Install WiX Toolset
+      #   run: dotnet tool install --global wix
+      # - name: Build MSI package
+      #   run: wix build installer/windows/eguard-agent.wxs -o artifacts/windows/eguard-agent_${{ steps.semver.outputs.version }}_x64.msi
+
+      - name: Upload Windows artifacts to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "eGuard Agent ${{ steps.version.outputs.tag }}"
+          files: |
+            artifacts/windows/eguard-agent.exe

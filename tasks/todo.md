@@ -2,6 +2,39 @@
 User https://157.10.161.219:1443/
 admin:Admin@12345 (dev temporary)
 
+## 🧭 Plan: Add competitor-profile scoring gate for benchmark suite (2026-02-20)
+- [x] Add script to compare suite artifact vs configurable competitor target profile and emit machine-readable verdict
+- [x] Add example CrowdStrike-parity target profile scaffold (tunable; no hardcoded claims)
+- [x] Execute evaluator against latest 10-run suite artifact and capture pass/fail evidence
+- [x] Document usage + findings in this task log
+
+### 🔍 Review Notes
+- Added script: `scripts/run_benchmark_competitive_eval_ci.sh`
+  - Compares suite metrics JSON against a configurable target profile JSON.
+  - Emits machine-readable artifact:
+    - `artifacts/competitive-benchmark-eval/metrics-<timestamp>.json`
+    - `artifacts/competitive-benchmark-eval/metrics.json` (latest)
+  - Supports gate control via `--no-gates` (artifact-only mode).
+  - Integrated into suite wrapper (`scripts/run_benign_edr_benchmark_suite_ci.sh`) via:
+    - `--competitive-profile <path>`
+    - `--competitive-no-gate`
+- Added profile scaffold:
+  - `benchmarks/competitive_profiles/crowdstrike-parity.example.json`
+  - Explicitly marked as example thresholds that must be replaced by measured third-party baseline prior to product claims.
+- Live evaluator proof against latest 10-run suite baseline:
+  - Command:
+    - `./scripts/run_benchmark_competitive_eval_ci.sh --suite-metrics artifacts/benign-edr-benchmark-suite/metrics.json --target-profile benchmarks/competitive_profiles/crowdstrike-parity.example.json`
+  - Artifact: `artifacts/competitive-benchmark-eval/metrics-20260220T020748Z.json`
+  - Result: `status=pass`
+  - Measured vs target snapshot:
+    - runs `10/10`
+    - latency p95 `34690 ms` (<= `35000`)
+    - ingest p95 `20 s` (<= `20`)
+    - idle CPU mean `0.57%` (<= `1.0%`)
+    - load CPU mean `45.25%` (<= `55.0%`)
+    - false positives max `0` (<= `0`)
+    - cleanup all runs clean `true`
+
 ## 🧭 Plan: Build frontend artifact and SCP to eguard server (2026-02-20)
 - [x] Build frontend dist from `html/egappserver/root`
 - [x] Copy built dist to `eguard@157.10.161.219` staging path via SCP/rsync
@@ -68,6 +101,18 @@ admin:Admin@12345 (dev temporary)
       - `./scripts/run_benign_edr_benchmark_suite_ci.sh --runs 1 --no-gates -- --samples 1 --latency-timeout-secs 40 --latency-query-per-page 10 --idle-window-secs 10 --load-window-secs 10 --warmup-secs 10 --false-positive-window-secs 10 --load-event-count 40 --load-event-spacing-ns 100000000 --load-measure-delay-secs 3`
     - Artifact: `artifacts/benign-edr-benchmark-suite/metrics-20260220T003608Z.json`
     - Key outputs: `e2e_ms_p95=15729`, `ingest_s_p95=6`, false positives max `0`, cleanup all clean `true`.
+- Standardized gated 10-run baseline (live) completed:
+  - Command:
+    - `./scripts/run_benign_edr_benchmark_suite_ci.sh --runs 10 --latency-p95-max-ms 70000 --ingest-p95-max-s 30 --idle-cpu-max-pct 5 --load-cpu-max-pct 95 --false-positive-max 0 -- --samples 1 --latency-timeout-secs 60 --latency-query-per-page 10 --idle-window-secs 60 --load-window-secs 30 --warmup-secs 60 --false-positive-window-secs 30 --load-event-count 100 --load-event-spacing-ns 100000000 --load-measure-delay-secs 3`
+  - Artifact: `artifacts/benign-edr-benchmark-suite/metrics-20260220T011726Z.json`
+  - Gate status: `pass`
+  - Aggregates:
+    - latency: mean `17,565.7 ms`, median `14,005 ms`, p95 `34,690 ms`
+    - ingest delay: mean `7.8 s`, p95 `20 s`
+    - idle CPU: mean `0.57%`, p95 `0.69%`
+    - load CPU: mean `45.25%`, p95 `52.35%`
+    - false positives: max `0`
+    - cleanup: all runs clean `true`
 - Residual note:
   - Very short idle windows (10s) on replay-heavy cycles can inflate measured idle CPU due restart/settle overlap; use longer standardized windows for fair release gating.
 

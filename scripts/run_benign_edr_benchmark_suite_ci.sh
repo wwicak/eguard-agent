@@ -24,6 +24,8 @@ FALSE_POSITIVE_MAX="${FALSE_POSITIVE_MAX_DEFAULT}"
 
 GATES_ENABLED=true
 REQUIRE_CLEANUP=true
+COMPETITIVE_PROFILE=""
+COMPETITIVE_GATES_ENABLED=true
 
 BENCH_ARGS=()
 
@@ -44,6 +46,8 @@ Gate options:
   --false-positive-max <n>        Max 'all severities' false-positive count (default: ${FALSE_POSITIVE_MAX_DEFAULT})
   --allow-dirty-cleanup           Do not require replay env cleanup gate
   --no-gates                      Produce artifact only; skip gate failure exit
+  --competitive-profile <path>    Run competitor-profile evaluation after suite aggregation
+  --competitive-no-gate           Do not fail suite command on competitor-profile miss
 
   -h, --help                      Show this help
 
@@ -75,6 +79,10 @@ while [[ $# -gt 0 ]]; do
       REQUIRE_CLEANUP=false; shift ;;
     --no-gates)
       GATES_ENABLED=false; shift ;;
+    --competitive-profile)
+      COMPETITIVE_PROFILE="$2"; shift 2 ;;
+    --competitive-no-gate)
+      COMPETITIVE_GATES_ENABLED=false; shift ;;
     -h|--help)
       usage
       exit 0 ;;
@@ -99,6 +107,17 @@ done
 if [[ ! -x "${BENCH_SCRIPT}" ]]; then
   echo "benchmark script is not executable: ${BENCH_SCRIPT}" >&2
   exit 1
+fi
+
+if [[ -n "${COMPETITIVE_PROFILE}" ]]; then
+  if [[ ! -f "${COMPETITIVE_PROFILE}" ]]; then
+    echo "competitive profile not found: ${COMPETITIVE_PROFILE}" >&2
+    exit 1
+  fi
+  if [[ ! -x "${ROOT_DIR}/scripts/run_benchmark_competitive_eval_ci.sh" ]]; then
+    echo "competitive evaluator is not executable: ${ROOT_DIR}/scripts/run_benchmark_competitive_eval_ci.sh" >&2
+    exit 1
+  fi
 fi
 
 mkdir -p "${OUT_DIR}"
@@ -305,6 +324,15 @@ fi
 echo "wrote benign EDR benchmark suite artifact: ${SUITE_JSON_PATH}"
 echo "updated latest suite artifact: ${OUT_LATEST_JSON}"
 echo "gate status: ${GATE_STATUS}"
+
+if [[ -n "${COMPETITIVE_PROFILE}" ]]; then
+  comp_cmd=("${ROOT_DIR}/scripts/run_benchmark_competitive_eval_ci.sh" --suite-metrics "${SUITE_JSON_PATH}" --target-profile "${COMPETITIVE_PROFILE}")
+  if [[ "${COMPETITIVE_GATES_ENABLED}" != "true" ]]; then
+    comp_cmd+=(--no-gates)
+  fi
+  echo "running competitive profile eval: ${COMPETITIVE_PROFILE}"
+  "${comp_cmd[@]}"
+fi
 
 if [[ "${GATE_STATUS}" == "fail" ]]; then
   exit 1

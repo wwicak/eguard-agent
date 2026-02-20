@@ -1,0 +1,50 @@
+{
+  "suite": "benign_edr_benchmark_suite",
+  "recorded_at_utc": "2026-02-20T02:07:17Z",
+  "inputs": {
+    "runs_requested": 0,
+    "benchmark_script": "/home/dimas/eguard-agent/scripts/run_benign_edr_benchmark.sh",
+    "benchmark_args": []
+  },
+  "gates": {
+    "enabled": false,
+    "require_cleanup": true,
+    "thresholds": {
+      "latency_p95_max_ms": 60000,
+      "ingest_p95_max_s": 30,
+      "idle_cpu_mean_max_pct": 5.0,
+      "load_cpu_mean_max_pct": 95.0,
+      "false_positive_all_max": 0
+    },
+    "status": "pass",
+    "failures": [
+      "no successful latency samples captured",
+      "cleanup check failed for at least one run"
+    ]
+  },
+  "runs": [],
+  "summary": {
+    "runs_completed": 0,
+    "latency": {
+      "sample_count": 0,
+      "e2e_ms_mean": 0,
+      "e2e_ms_median": 0,
+      "e2e_ms_p95": 0,
+      "ingest_s_mean": 0,
+      "ingest_s_p95": 0
+    },
+    "resource": {
+      "idle_cpu_mean_percent": 0,
+      "idle_cpu_p95_percent": 0,
+      "load_cpu_mean_percent": 0,
+      "load_cpu_p95_percent": 0
+    },
+    "false_positive": {
+      "all_mean": 0,
+      "all_max": 0
+    },
+    "cleanup": {
+      "all_runs_clean": false
+    }
+  }
+}

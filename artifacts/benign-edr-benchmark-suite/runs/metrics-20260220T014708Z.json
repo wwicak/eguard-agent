@@ -1,6 +1,6 @@
 {
   "suite": "benign_edr_benchmark",
-  "recorded_at_utc": "2026-02-20T01:58:00Z",
+  "recorded_at_utc": "2026-02-20T01:51:29Z",
   "inputs": {
     "vm_host": "edr@27.112.78.178",
     "api_host": "eguard@157.10.161.219",
@@ -22,49 +22,49 @@
     "samples": [
       {
         "sample": 1,
-        "marker": "lat-marker-1-1771552300566",
-        "t0_ms": 1771552300566,
-        "t_found_ms": 1771552330619,
-        "id": 2173,
-        "created_at_utc": "2026-02-20 01:51:59",
-        "observed_unix": 1771552307,
-        "e2e_ms": 30053,
-        "ingest_delay_s": 12,
+        "marker": "lat-marker-1-1771552035821",
+        "t0_ms": 1771552035821,
+        "t_found_ms": 1771552070511,
+        "id": 2163,
+        "created_at_utc": "2026-02-20 01:47:42",
+        "observed_unix": 1771552042,
+        "e2e_ms": 34690,
+        "ingest_delay_s": 20,
         "status": "ok"
       }
     ],
     "summary": {
       "ok_samples": 1,
       "not_found_samples": 0,
-      "e2e_ms_mean": 30053,
-      "e2e_ms_median": 30053,
-      "e2e_ms_p95": 30053,
-      "ingest_delay_s_mean": 12,
-      "ingest_delay_s_p95": 12
+      "e2e_ms_mean": 34690,
+      "e2e_ms_median": 34690,
+      "e2e_ms_p95": 34690,
+      "ingest_delay_s_mean": 20,
+      "ingest_delay_s_p95": 20
     }
   },
   "resource": {
     "idle": {
       "window_secs": 60,
-      "cpu_usage_ns_start": 15345891000,
-      "cpu_usage_ns_end": 15530580000,
+      "cpu_usage_ns_start": 16223213000,
+      "cpu_usage_ns_end": 16411946000,
       "cpu_avg_percent": 0.31,
-      "memory_bytes_start": 265404416,
-      "memory_bytes_end": 250843136,
-      "memory_peak_bytes_end": 410689536
+      "memory_bytes_start": 250789888,
+      "memory_bytes_end": 250818560,
+      "memory_peak_bytes_end": 410734592
     },
     "load": {
       "window_secs": 30,
-      "cpu_usage_ns_start": 3395339000,
-      "cpu_usage_ns_end": 10040521000,
-      "cpu_avg_percent": 22.15,
-      "memory_bytes_start": 234942464,
-      "memory_bytes_end": 144637952,
-      "memory_peak_bytes_end": 283684864
+      "cpu_usage_ns_start": 3408307000,
+      "cpu_usage_ns_end": 10709358000,
+      "cpu_avg_percent": 24.34,
+      "memory_bytes_start": 234946560,
+      "memory_bytes_end": 144642048,
+      "memory_peak_bytes_end": 283557888
     }
   },
   "false_positive_window": {
-    "from_utc": "2026-02-20 01:54:54",
+    "from_utc": "2026-02-20 01:50:34",
     "counts": {
       "all": 0,
       "high": 0,

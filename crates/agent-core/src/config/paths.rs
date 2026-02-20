@@ -26,6 +26,7 @@ pub fn remove_bootstrap_config(path: &Path) -> Result<()> {
 }
 
 #[cfg(test)]
+#[cfg(not(target_os = "windows"))]
 pub fn expected_config_files() -> &'static [&'static str] {
     &[
         "/etc/eguard-agent/bootstrap.conf",
@@ -37,6 +38,19 @@ pub fn expected_config_files() -> &'static [&'static str] {
 }
 
 #[cfg(test)]
+#[cfg(target_os = "windows")]
+pub fn expected_config_files() -> &'static [&'static str] {
+    &[
+        r"C:\ProgramData\eGuard\bootstrap.conf",
+        r"C:\ProgramData\eGuard\agent.conf",
+        r"C:\ProgramData\eGuard\certs\agent.crt",
+        r"C:\ProgramData\eGuard\certs\agent.key",
+        r"C:\ProgramData\eGuard\certs\ca.crt",
+    ]
+}
+
+#[cfg(test)]
+#[cfg(not(target_os = "windows"))]
 pub fn expected_data_paths() -> &'static [&'static str] {
     &[
         "/var/lib/eguard-agent/buffer.db",
@@ -46,6 +60,20 @@ pub fn expected_data_paths() -> &'static [&'static str] {
         "/var/lib/eguard-agent/rules/ioc/",
         "/var/lib/eguard-agent/quarantine/",
         "/var/lib/eguard-agent/rules-staging/",
+    ]
+}
+
+#[cfg(test)]
+#[cfg(target_os = "windows")]
+pub fn expected_data_paths() -> &'static [&'static str] {
+    &[
+        r"C:\ProgramData\eGuard\buffer.db",
+        r"C:\ProgramData\eGuard\baselines.bin",
+        r"C:\ProgramData\eGuard\rules\sigma\",
+        r"C:\ProgramData\eGuard\rules\yara\",
+        r"C:\ProgramData\eGuard\rules\ioc\",
+        r"C:\ProgramData\eGuard\quarantine\",
+        r"C:\ProgramData\eGuard\rules-staging\",
     ]
 }
 
