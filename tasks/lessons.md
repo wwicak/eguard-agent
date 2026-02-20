@@ -3,6 +3,9 @@
 ## Breakout-Loop Discipline
 When the user sets an explicit breakout condition (e.g., “continue until all blockers pass and surpass competitor”), do not pause with a completion-style response. Keep shipping incremental blocker reductions with fresh verification evidence every turn, and only call success signaling when objective proof exists.
 
+## Re-read Updated Audit Docs Fully Before Continuing Implementation
+When the user says a report/doc was updated, re-open the file and read it to the end (including offset continuation for truncated reads) before coding. Reconcile new sections (e.g., strategic roadmap updates) with the current task plan so fixes align with the latest source-of-truth, not stale context.
+
 ## Threat-Intel Counts Must Not Depend On External Manifest Asset
 Release assets may omit a standalone `manifest.json` even when the bundle contains
 `./manifest.json` with full counts. Ingest logic must fallback to parsing the bundle

@@ -42,10 +42,12 @@ async fn main() -> Result<()> {
     let mut tick = time::interval(Duration::from_millis(100));
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
+    let shutdown = wait_for_shutdown_signal();
+    tokio::pin!(shutdown);
+
     loop {
         tokio::select! {
-            _ = signal::ctrl_c() => {
-                info!("shutdown signal received");
+            _ = &mut shutdown => {
                 break;
             }
             _ = tick.tick() => {
@@ -80,4 +82,26 @@ fn env_u64(name: &str) -> Option<u64> {
     std::env::var(name)
         .ok()
         .and_then(|raw| raw.trim().parse::<u64>().ok())
+}
+
+async fn wait_for_shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("register SIGTERM handler");
+        tokio::select! {
+            _ = signal::ctrl_c() => {
+                info!("shutdown signal received (SIGINT)");
+            }
+            _ = sigterm.recv() => {
+                info!("shutdown signal received (SIGTERM)");
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = signal::ctrl_c().await;
+        info!("shutdown signal received");
+    }
 }

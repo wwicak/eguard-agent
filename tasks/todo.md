@@ -2,6 +2,56 @@
 User https://157.10.161.219:1443/
 admin:Admin@12345 (dev temporary)
 
+## 🧭 Plan: Close Windows binary-integrity gap (sha256 endpoint + installer verification) (2026-02-20)
+- [x] Add server endpoint for Windows EXE SHA256 metadata with token/version handling
+- [x] Enforce SHA256 verification in `go/agent/server/install.ps1` before binary install
+- [x] Update frontend Windows package workflow previews to include hash validation steps
+- [x] Add/extend Go install tests for SHA256 endpoint + token-required path
+- [x] Re-run targeted verification and refresh audit/task notes
+
+### 🔍 Review Notes
+- Server/API hardening:
+  - added `GET /api/v1/agent-install/windows-exe/sha256` route (`server.go`) backed by `agentInstallExeSHA256Handler` (`agent_install_win.go`).
+  - endpoint enforces existing install-token policy, supports `?version=...`, and returns JSON hash metadata.
+  - centralized version parsing via `resolveAgentInstallVersionQuery()` and added safe gRPC-port template normalization helper (`sanitizeGrpcPortTemplateValue()`).
+- Installer hardening:
+  - `go/agent/server/install.ps1` now fetches expected hash from `/windows-exe/sha256` (or accepts `-ExpectedSha256`), validates format, computes local SHA256, and aborts on mismatch.
+- Frontend command-generator hardening:
+  - `EnrollmentTokens.vue` and `AgentConfig.vue` Windows package workflows now fetch expected hash + verify `Get-FileHash` before `Copy-Item`/restart.
+- Verification:
+  - `cd /home/dimas/fe_eguard/go/agent && go test -v ./server -run TestAgentInstall` ✅ (11/11 passing)
+  - `cd /home/dimas/fe_eguard && ./scripts/check_agent_package_sync_perl.sh` ✅
+  - `cd /home/dimas/fe_eguard && bash -n packaging/fetch-agent-packages.sh` ✅
+  - `cd /home/dimas/fe_eguard/html/egappserver/root && npm run lint -- src/views/endpoint/EnrollmentTokens.vue src/views/endpoint/AgentConfig.vue` ✅
+- Audit report updated:
+  - item #19 moved to resolved follow-up state with concrete implementation references.
+
+## 🧭 Plan: Polish Windows install handlers/tests hardening pass (2026-02-20)
+- [x] Harden installer template substitution fallback behavior for malformed forwarded hosts
+- [x] Strengthen `install.ps1` gRPC port validation to numeric range (1-65535)
+- [x] Add/expand Go tests for invalid version rejection + script sanitization/content-type
+- [x] Re-run targeted verification and refresh audit notes with new evidence
+
+### 🔍 Review Notes
+- Go server hardening:
+  - `go/agent/server/agent_install.go`: added `resolveSafeTemplateServer(r)` and switched script template substitution to use safe fallback semantics (`sanitized forwarded host` -> `sanitized request host` -> `localhost`).
+  - `go/agent/server/agent_install.go`: added `sanitizeGrpcPortTemplateValue()` (1..65535, fallback `50052`) for script template port substitution.
+  - `go/agent/server/agent_install_win.go`: same safe server + safe gRPC-port substitution path for PowerShell template rendering.
+- PowerShell installer hardening:
+  - `go/agent/server/install.ps1`: upgraded gRPC port validation from regex-only to integer range validation (`1..65535`, fallback `50052`).
+- Test coverage expansion (`go/agent/server/agent_install_test.go`):
+  - `TestAgentInstallScriptHandlerFallsBackToRequestHostWhenForwardedHostMalformed`
+  - `TestAgentInstallScriptHandlerFallsBackToDefaultGrpcPortForInvalidValue`
+  - `TestAgentInstallWindowsScriptHandlerContentTypeAndSanitization`
+  - `TestAgentInstallRejectsInvalidVersionParameter`
+  - token-gated install test now seeds explicit token before asserting success.
+- Verification:
+  - `cd /home/dimas/fe_eguard/go/agent && go test -v ./server -run TestAgentInstall` ✅ (9/9 passing)
+  - `cd /home/dimas/fe_eguard && ./scripts/check_agent_package_sync_perl.sh` ✅
+  - `cd /home/dimas/fe_eguard && bash -n packaging/fetch-agent-packages.sh` ✅
+- Documentation:
+  - Updated `docs/audit-report-windows-distribution.md` findings/test evidence to reflect new hardening and expanded validation set.
+
 ## 🧭 Plan: Polish Perl validation path for `agent_package_sync.pm` (2026-02-20)
 - [x] Remove unnecessary compile-time `eg::config` coupling in `lib/eg/egcron/task/agent_package_sync.pm`
 - [x] Re-run syntax validation with eGuard Perl lib path wiring (`PERL5LIB`)
@@ -26,13 +76,74 @@ admin:Admin@12345 (dev temporary)
 - This closes the remaining observability gap previously documented as partial in finding #8.
 
 ## 🧭 Plan: Verify + fix high-risk findings from `docs/full-audit-report.md` across agent + server (2026-02-20)
-- [ ] Validate report findings against current Rust (`eguard-agent`) and Go (`/home/dimas/fe_eguard`) code paths to avoid false-positive fixes
-- [ ] Implement P0 transport/input hardening fixes in server (`http body limit`, `enrollment token bypass`, baseline auth guard rails)
-- [ ] Implement P0 agent hardening fixes (`profile_id` traversal guard, `tick` error resilience, eBPF IPv4 byte-order correctness)
-- [ ] Implement P0/TLS chain fixes in grpc-client (`HTTP client TLS rebuild`, safer fallback semantics)
-- [ ] Add/adjust targeted unit tests for all modified security-sensitive paths
-- [ ] Run verification suite subset (Rust + Go targeted tests/checks) and capture objective pass/fail evidence
-- [ ] Update this task entry with review notes + residual risks/open items
+- [x] Validate report findings against current Rust (`eguard-agent`) and Go (`/home/dimas/fe_eguard`) code paths to avoid false-positive fixes
+- [x] Implement P0 transport/input hardening fixes in server (`http body limit`, `enrollment token bypass`)
+- [x] Validate P0 agent hardening fixes (`profile_id` traversal guard, `tick` error resilience, eBPF IPv4 byte-order correctness)
+- [x] Implement P1 lifecycle reliability fix (`SIGTERM` graceful shutdown path in `agent-core/main.rs`)
+- [x] Validate P0/TLS chain fixes in grpc-client (`HTTP client TLS rebuild`, safer fallback semantics)
+- [x] Add/adjust targeted unit tests for modified security-sensitive paths
+- [x] Run verification suite subset (Rust + Go targeted tests/checks) and capture objective pass/fail evidence
+- [x] Update this task entry with review notes + residual risks/open items
+- [x] Follow-up: implement baseline server-wide auth guard rails + gRPC auth interceptors (EDR-3/MDM-1)
+- [ ] Follow-up: complete full RBAC model (role-scoped permissions, session/JWT integration, approver/proposer separation)
+
+### 🔍 Review Notes
+- Re-navigated `docs/full-audit-report.md` including new strategic roadmap section and re-prioritized immediate implementation around P0/P1 security findings.
+- Implemented **Go server** hardening:
+  - `go/agent/server/http.go`: `decodeJSON()` now enforces `http.MaxBytesReader` limit (`16 MiB`) and rejects trailing payloads.
+  - `go/agent/server/http_test.go`: added oversized-body regression test (`*http.MaxBytesError`) and normal decode contract test.
+  - `go/agent/server/enrollment_token.go`: in-memory `validateEnrollmentToken()` and `consumeEnrollmentToken()` no longer auto-accept when token store is empty.
+  - Added regression test `TestEnrollmentRejectsUnknownTokenWhenStoreIsEmpty`.
+  - Updated enrollment tests that previously relied on insecure implicit-token behavior to seed explicit tokens:
+    - `enrollment_http_audit_test.go`
+    - `grpc_server_test.go`
+- Implemented **in-memory safety hardening** in Go server (`EDR-6`):
+  - Added bounded retention for volatile stores:
+    - telemetry: `EGUARD_INMEMORY_EVENT_CAP` (default `50000`)
+    - response reports: `EGUARD_INMEMORY_RESPONSE_CAP` (default `20000`)
+  - New helpers in `go/agent/server/inmemory_caps.go` trim oldest records when caps are exceeded.
+  - Added regression tests in `go/agent/server/inmemory_caps_test.go` to verify bounded retention behavior.
+- Implemented **baseline authentication guard rails** in Go server:
+  - Added `go/agent/server/auth.go` with HTTP auth middleware + gRPC unary/stream interceptors.
+  - Added auth mode controls via env:
+    - `EGUARD_SERVER_AUTH_MODE` (`enforced` default, `permissive`, `disabled`),
+    - `EGUARD_ADMIN_API_TOKEN`, `EGUARD_AGENT_API_TOKEN`,
+    - `EGUARD_ENROLL_REQUIRE_TOKEN` (defaults to required when auth enabled).
+  - Added route/method auth scope classification (public/admin/agent/agent-or-admin) and fail-closed behavior for enforced mode misconfiguration.
+  - Enforced enrollment token presence in gRPC/HTTP enrollment flow when token-required mode is active.
+  - Bound destructive command identity fields to authenticated principal instead of request body spoofing:
+    - `command/approve`: `approved_by` now derived from authenticated context,
+    - enqueue/update/decommission `issued_by` now resolves from authenticated identity.
+  - Added auth-focused tests:
+    - `auth_test.go`: HTTP admin/agent auth, enrollment token requirement, command-approve principal binding, gRPC heartbeat auth
+    - `auth_test_bootstrap_test.go`: keeps legacy server tests stable by defaulting package tests to `EGUARD_SERVER_AUTH_MODE=disabled` unless a test opts into enforced mode.
+- Re-validated **agent-core / platform-linux** hardening already present in `eguard-agent` for:
+  - `profile_id` traversal guard in `command_pipeline.rs`,
+  - non-fatal tick loop behavior in `main.rs`,
+  - IPv4 byte-order correctness in `platform-linux` codec/replay path.
+- Implemented **agent-core SIGTERM graceful shutdown** fix (`AC-12`):
+  - `crates/agent-core/src/main.rs` now waits on both SIGINT and SIGTERM (Unix) via a dedicated shutdown future, enabling clean service-stop behavior under systemd.
+- Re-validated **grpc-client TLS/fallback** hardening already present in `eguard-agent` for:
+  - HTTP client TLS rebuild path,
+  - non-permanent gRPC→HTTP fallback behavior,
+  - associated regression test coverage (`configure_tls_*`, fallback recovery test).
+- Verification evidence:
+  - Rust:
+    - `cargo fmt` ✅
+    - `cargo check -p agent-core -p grpc-client -p platform-linux` ✅
+    - `cargo test -p platform-linux parses_structured_tcp_connect_payload -- --nocapture` ✅
+    - `cargo test -p agent-core sanitize_profile_id -- --nocapture` ✅
+    - `cargo test -p grpc-client configure_tls_ -- --nocapture` ✅
+    - `cargo test -p grpc-client send_events_grpc_falls_back_to_http_when_grpc_stream_is_unavailable -- --nocapture` ✅
+    - `cargo test -p grpc-client send_events_grpc_clears_forced_http_fallback_after_successful_grpc_retry -- --nocapture` ✅
+  - Go:
+    - `gofmt` on touched files ✅
+    - `go test ./agent/server -run 'TestDecodeJSON|TestEnrollmentToken|TestEnrollmentRejectsUnknownTokenWhenStoreIsEmpty|TestHTTPEnrollWithModernFieldsReturnsCertificateMaterial|TestGRPCEnrollAcceptsModernRequestFieldsAndReturnsMaterial'` ✅
+    - `go test ./agent/server -run 'TestHTTPAdminEndpointRequiresAdminTokenWhenAuthEnforced|TestHTTPAgentEndpointRequiresAgentTokenWhenAuthEnforced|TestHTTPCommandApproveUsesAuthenticatedPrincipalWhenAuthEnforced|TestHTTPEnrollRequiresEnrollmentTokenWhenAuthEnforced|TestGRPCHeartbeatRequiresAgentTokenWhenAuthEnforced'` ✅
+    - `go test ./agent/server -run 'TestSaveTelemetryAppliesInMemoryCap|TestSaveResponseAppliesInMemoryCap'` ✅
+    - `go test ./agent/server -run 'TestHTTPEnrollmentHeartbeatTelemetryCommandFlow|TestGRPCEnrollmentHeartbeatTelemetryCommandFlow|TestResponseHandlerPreservesTargetDetailAndDetectionLayers'` ✅
+- Residual/open:
+  - Full enterprise RBAC/session model is still pending (`EDR-4`/`MDM-1` deeper scope): currently token-based auth scopes are implemented, but not yet JWT/session-backed role matrix with explicit proposer/approver separation.
 
 ## 🧭 Plan: Unblock Perl validation by installing missing dependency package (2026-02-20)
 - [x] Download `eguard-perl_1.2.5_all.deb` from the provided repository URL
