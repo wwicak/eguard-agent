@@ -6,7 +6,7 @@ mod platform;
 use anyhow::Result;
 use tokio::signal;
 use tokio::time::{self, Duration, MissedTickBehavior};
-use tracing::info;
+use tracing::{info, warn};
 
 use config::AgentConfig;
 use lifecycle::AgentRuntime;
@@ -53,7 +53,9 @@ async fn main() -> Result<()> {
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_secs() as i64)
                     .unwrap_or_default();
-                runtime.tick(now).await?;
+                if let Err(err) = runtime.tick(now).await {
+                    warn!(error = %err, "runtime tick failed; continuing");
+                }
             }
         }
     }

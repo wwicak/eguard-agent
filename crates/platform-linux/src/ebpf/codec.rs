@@ -164,8 +164,8 @@ fn parse_tcp_connect_payload(raw: &[u8]) -> String {
     let sport = read_u16_le(raw, 2).unwrap_or_default();
     let dport = read_u16_le(raw, 4).unwrap_or_default();
     let protocol = raw.get(6).copied().unwrap_or_default();
-    let saddr_v4 = read_u32_le(raw, 8).unwrap_or_default();
-    let daddr_v4 = read_u32_le(raw, 12).unwrap_or_default();
+    let saddr_v4 = read_ipv4(raw, 8).unwrap_or([0u8; 4]);
+    let daddr_v4 = read_ipv4(raw, 12).unwrap_or([0u8; 4]);
 
     let (src_ip, dst_ip) = if family == 10 && raw.len() >= 48 {
         let src_v6 = read_ipv6(raw, 16);
@@ -222,13 +222,20 @@ fn parse_lsm_block_payload(raw: &[u8]) -> String {
     format!("reason={};subject={}", reason, subject)
 }
 
-fn format_ipv4(ip: u32) -> String {
-    let b = ip.to_be_bytes();
-    format!("{}.{}.{}.{}", b[0], b[1], b[2], b[3])
+fn format_ipv4(ip: [u8; 4]) -> String {
+    format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3])
 }
 
 fn format_ipv6(ip: [u8; 16]) -> String {
     std::net::Ipv6Addr::from(ip).to_string()
+}
+
+fn read_ipv4(raw: &[u8], offset: usize) -> Option<[u8; 4]> {
+    let end = offset.checked_add(4)?;
+    let bytes = raw.get(offset..end)?;
+    let mut out = [0u8; 4];
+    out.copy_from_slice(bytes);
+    Some(out)
 }
 
 fn read_ipv6(raw: &[u8], offset: usize) -> Option<[u8; 16]> {

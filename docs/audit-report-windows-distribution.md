@@ -11,10 +11,14 @@
 - Verification commands executed:
   - `cd /home/dimas/fe_eguard/go/agent && go test -v ./server -run TestAgentInstall` ✅
   - `cd /home/dimas/fe_eguard && bash -n packaging/fetch-agent-packages.sh` ✅
-  - `cd /home/dimas/fe_eguard && perl -Ilib -c lib/eg/egcron/task/agent_package_sync.pm` ⛔ blocked locally (`Moose.pm` missing in this runner)
+  - `cd /home/dimas/fe_eguard && ./scripts/check_agent_package_sync_perl.sh` ✅
+- Dependency-unblock history:
+  - Downloaded `eguard-perl_1.2.5_all.deb` from `repo.eguard.id`.
+  - Initial system install attempt (`sudo dpkg -i ...`) was blocked in this runner (password-required sudo).
+  - After eGuard Perl runtime wiring (`PERL5LIB`) and module decoupling polish in `agent_package_sync.pm`, syntax validation now passes via the dedicated helper script.
 - Notes:
   - This report now uses explicit file paths for Windows installer findings to avoid ambiguity with `eguard-agent/installer/windows/install.ps1`.
-  - Finding #8 has been corrected to reflect the exact current `sc.exe` error-handling behavior (partial, not universal).
+  - Installer service-stop handling has been further hardened: pre-stop `sc.exe` failure-recovery disable now checks `$LASTEXITCODE`, and update aborts if service does not stop within timeout.
 
 ---
 
@@ -89,12 +93,11 @@
 
 ### IMPORTANT Findings (Should Fix)
 
-#### 8. install.ps1: `sc.exe` Error Handling Hardened (Partial)
+#### 8. install.ps1: `sc.exe` Error Handling Hardened
 - **File**: `go/agent/server/install.ps1`
 - **Severity**: IMPORTANT
 - **Issue**: Service registration/recovery `sc.exe` operations previously lacked explicit exit-code handling, so failures could be missed.
-- **Fix Applied**: Added `$LASTEXITCODE` checks for `sc.exe create`, `sc.exe description`, and final `sc.exe failure` (restore recovery policy). Service creation now fails fast; description/recovery configuration failures emit warnings.
-- **Validation Note**: One pre-stop call (`sc.exe failure ... actions=""`) is still intentionally silenced with `| Out-Null` and does not currently have explicit exit-code handling.
+- **Fix Applied**: Added `$LASTEXITCODE` checks for `sc.exe create`, `sc.exe description`, pre-stop `sc.exe failure ... actions=""`, and final `sc.exe failure` (restore recovery policy). Service creation now fails fast; non-fatal configuration steps emit warnings.
 
 #### 9. install.ps1: Service Recovery Race During Binary Replacement
 - **File**: `go/agent/server/install.ps1`
@@ -106,7 +109,7 @@
 - **File**: `go/agent/server/install.ps1`
 - **Severity**: IMPORTANT
 - **Issue**: Fixed 2-second `Start-Sleep` after `Stop-Service`. If the agent takes longer to stop (e.g., flushing buffered telemetry), the binary copy would fail with "file in use" error.
-- **Fix Applied**: Replaced with polling loop (up to 30 seconds) that checks service status each second.
+- **Fix Applied**: Replaced with polling loop (up to 30 seconds) that checks service status each second, then aborts update if service is still not stopped.
 
 #### 11. Go Server: Version Parameter Unvalidated
 - **File**: `agent_install.go`
@@ -450,6 +453,7 @@ CrowdStrike Falcon's key competitive advantages are: kernel-level visibility (vi
 Validated on 2026-02-20 with:
 - `cd /home/dimas/fe_eguard/go/agent && go test -v ./server -run TestAgentInstall`
 - `cd /home/dimas/fe_eguard && bash -n packaging/fetch-agent-packages.sh`
+- `cd /home/dimas/fe_eguard && ./scripts/check_agent_package_sync_perl.sh`
 
 Go server test output:
 ```
@@ -464,8 +468,9 @@ Go server test output:
 === RUN   TestAgentInstallScriptHandler
 --- PASS: TestAgentInstallScriptHandler (0.00s)
 PASS
-ok   gitlab.com/devaistech77/fe_eguard/go/agent/server	0.056s
+ok   gitlab.com/devaistech77/fe_eguard/go/agent/server	0.065s
 ```
 
 Constraint observed:
-- `perl -Ilib -c lib/eg/egcron/task/agent_package_sync.pm` is not runnable in this local environment due missing `Moose.pm`.
+- Raw system-Perl compile (`perl -Ilib -c ...`) is environment-sensitive and may fail without eGuard runtime library wiring.
+- Use the helper (`./scripts/check_agent_package_sync_perl.sh`) to apply the required `PERL5LIB` path consistently in CI/local validation.

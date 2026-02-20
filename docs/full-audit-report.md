@@ -410,3 +410,377 @@ The Windows platform has significant gaps that would prevent effective EDR opera
 | `go/agent/server/list.go` | EDR-9 |
 
 </details>
+
+---
+
+## Part 5: Strategic Improvements to Surpass CrowdStrike
+
+### Context: What CrowdStrike Is (Feb 2026)
+
+CrowdStrike Falcon is the market leader in endpoint security (~$4B ARR). Its architecture:
+
+- **Windows**: Ring-0 kernel driver (ELAM + minifilter + callbacks), WHQL-signed, ETW supplementary
+- **Linux**: eBPF mode (preferred) + legacy kernel module
+- **macOS**: Endpoint Security Framework (user-space, Apple mandate)
+- **Cloud**: Threat Graph processes 1+ trillion events/day across 15+ PB, correlated fleet-wide
+- **Detection**: IOA-first (behavioral) + on-sensor ML + cloud ML, 1000+ kill-chain patterns
+- **Response**: Real Time Response (RTR) remote shell, one-click network isolation, Falcon Fusion SOAR (included)
+- **Intelligence**: 265+ tracked adversaries, millions of IOCs, STIX/TAXII feeds
+- **Compliance**: Zero Trust Assessment, Spotlight (vuln management), CIS benchmarks
+- **Integrations**: 500+ marketplace ISV connectors, LogScale (petabyte SIEM)
+- **AI (2025)**: Charlotte AI agentic SOC, 7 mission-ready AI agents, natural-language playbooks, MCP federation
+- **Coverage**: Windows/Linux/macOS/ChromeOS/iOS/Android, containers, cloud workloads (CNAPP)
+- **Pricing**: $60-185/device/year base; full platform significantly higher; modules sold separately
+
+**Key vulnerability**: The July 2024 global outage (8.5M devices BSOD'd, ~$10B damages) exposed that kernel-mode architecture + rapid content updates = systemic risk. Microsoft is pushing vendors toward user-mode APIs. CrowdStrike's cloud dependency is also a weakness for air-gapped/sovereignty-conscious environments.
+
+---
+
+### 5.1 Where eGuard Already Leads (Amplify These)
+
+These are genuine technical advantages eGuard has over CrowdStrike today. The strategy is to amplify them into market-differentiating features.
+
+#### A. Mathematical Detection Rigor (Unique Moat)
+
+**What eGuard has**: A 5-layer detection engine with provable statistical foundations that CrowdStrike cannot match:
+
+| Layer | Technique | CrowdStrike Equivalent |
+|-------|-----------|----------------------|
+| Layer 1 | Aho-Corasick prefiltered IOC matching | Threat Graph indicator lookup |
+| Layer 2 | Sigma YAML temporal rules (open standard) | Proprietary JSON rules (closed) |
+| Layer 3 | KL divergence anomaly detection (information-theoretic) | Black-box statistical models |
+| Layer 4 | Kill-chain graph templates | ML-ranked kill-chain patterns |
+| Layer 5 | Pre-trained ML scoring | Cloud-retrained ML models |
+| Behavioral | CUSUM change-point detection (minimax optimal per Lorden's theorem) | Proprietary behavioral analysis |
+
+**CUSUM advantage**: eGuard's behavioral engine uses CUSUM detectors calibrated for ARL₀ ≈ 10,000 (1 false alarm per ~2.7 hours), with Wasserstein distance, Rényi entropy, conformal prediction, and Bonferroni/Benjamini-Hochberg multi-test correction. This is **provably the fastest possible detector** for mean-shift changes in a process's behavior — a mathematical guarantee CrowdStrike's ML cannot provide.
+
+**Action — Amplify**:
+1. **Publish the math**: Write a technical whitepaper on CUSUM-based endpoint detection. Academic-grade detection theory applied to EDR is unprecedented. This positions eGuard as "the detection engine that can prove its detection latency bounds."
+2. **Add detection SLA guarantees**: Because CUSUM has provable detection delay bounds, eGuard can contractually guarantee "behavioral anomaly detected within N events of onset" — something no other EDR vendor can claim.
+3. **Real-time detection metrics dashboard**: Surface CUSUM state, KL divergence, entropy values, and p-values in the admin UI. Security teams can see *why* an alert fired, not just *that* it fired.
+4. **Open-source the detection math**: Release `crates/detection/src/behavioral.rs` and `layer3.rs` as standalone crates. Academic and community adoption creates a network effect.
+
+**Impact**: Positions eGuard as "the EDR you can prove works" — a powerful differentiator for regulated industries (finance, government, healthcare) that require explainable security controls.
+
+#### B. eBPF-Native Linux Sensor (Technical Advantage)
+
+**What eGuard has**: The Linux sensor is eBPF-first, written in Zig+Rust with native ring buffer integration. CrowdStrike adopted eBPF in ~2023 but still ships a legacy kernel module as fallback.
+
+**Advantages over CrowdStrike**:
+- **No kernel module risk**: After CrowdStrike's July 2024 kernel-mode BSOD, eBPF-only is a selling point. eBPF programs are verified by the kernel before execution — they cannot crash the system.
+- **CO-RE potential**: Compile Once, Run Everywhere eliminates CrowdStrike's kernel version matrix problem.
+- **Smaller binary**: No need to ship pre-compiled modules for every kernel version.
+
+**Action — Amplify**:
+1. **Adopt BTF/CO-RE**: Currently the eBPF programs are built for specific kernel versions. Switch to CO-RE (`bpf_core_read()`) so a single eBPF binary runs on all kernels ≥ 5.8 without recompilation.
+2. **Add eBPF-based network policy enforcement**: Replace iptables/nftables for host isolation with `TC` and `XDP` eBPF programs. This is faster, more precise, and cannot be bypassed by containers.
+3. **Container escape detection hardening**: The existing `detect_container_escape()` works via namespace comparison. Add eBPF-based detection of `setns(2)`, `unshare(2)`, and `mount(2)` abuse for real-time escape detection.
+4. **Market the BSOD-proof angle**: Every sales conversation should reference the July 2024 outage. "eGuard uses eBPF — mathematically verified by your kernel. It cannot BSOD your fleet."
+
+**Impact**: Captures the post-CrowdStrike-outage market sentiment. Linux-first organizations (cloud, DevOps, containers) are actively seeking alternatives that don't require kernel modules.
+
+#### C. Open Detection Rules (Community Moat)
+
+**What eGuard has**: Detection rules are Sigma YAML — an open standard used by Splunk, Elastic, Microsoft Sentinel, and 50+ SIEM products. CrowdStrike's rules are proprietary.
+
+**Action — Amplify**:
+1. **Publish eGuard's rule library**: Release all Sigma rules as open-source. Security researchers contribute rules, eGuard benefits from community detection coverage.
+2. **Sigma rule marketplace**: Allow customers to import/export rules in standard Sigma format. Rules tested on one platform work everywhere.
+3. **MITRE ATT&CK mapping**: Every rule tagged with ATT&CK technique IDs. Dashboard shows coverage matrix (which techniques are detected, which have gaps).
+4. **Rule testing framework**: `eguard-agent test-rules --replay events.ndjson` — validate rules against captured event streams. CrowdStrike has no equivalent.
+
+**Impact**: Creates a flywheel: more rules → better detection → more users → more rules. This is how Linux won against proprietary Unix.
+
+#### D. Compliance-Integrated EDR (Combined Value)
+
+**What eGuard has**: Built-in compliance assessment (`crates/compliance/`) with auto-remediation, grace periods, and per-check specifications. CrowdStrike sells compliance (Spotlight) as a separate add-on module.
+
+**Action — Amplify**:
+1. **Expand CIS Benchmark coverage**: Add CIS Level 1 and Level 2 benchmarks for Ubuntu 22.04/24.04, RHEL 9, and Windows Server 2022. Each benchmark has 200+ checks — this is table-stakes for enterprise compliance.
+2. **Continuous compliance mode**: Instead of periodic scans, detect compliance drift in real-time via eBPF file monitoring on `/etc/ssh/sshd_config`, `/etc/pam.d/`, etc. Alert within seconds of a drift event.
+3. **Compliance-as-Code**: Allow customers to define compliance policies in YAML, version-controlled alongside their infrastructure. This appeals to DevOps/IaC teams.
+4. **Unified dashboard**: Single pane showing "endpoint X has 3 critical detections AND 2 compliance violations" — correlated risk score combining security + compliance posture.
+
+**Impact**: Reduces tool sprawl. Customers buy one agent instead of EDR + compliance scanner + vulnerability manager. CrowdStrike charges separately for each.
+
+---
+
+### 5.2 Critical Gaps to Close (Must-Have for Enterprise)
+
+These are features CrowdStrike has that eGuard must implement to be competitive. Without them, enterprise procurement will not consider eGuard.
+
+#### E. Windows Platform: From Scaffold to Production
+
+**Current state**: `platform-windows` has 41 files, compiles on Linux, but ETW/AMSI/WFP/compliance checks are stubs returning hardcoded values. Response actions are non-functional. This is the single largest gap.
+
+**Why it matters**: Windows is 70-80% of enterprise endpoints. An EDR that doesn't work on Windows is not an EDR.
+
+**Phased plan**:
+
+| Phase | Scope | Effort | Deliverable |
+|-------|-------|--------|------------|
+| Phase 1 | ETW event collection (real events, not stubs) | 2-3 weeks | Process, file, network events flowing through detection layers |
+| Phase 2 | AMSI integration (wire scanner to detection engine) | 1-2 weeks | PowerShell/JScript/VBScript fileless attack detection |
+| Phase 3 | Response actions (WinAPI process kill, file quarantine) | 1-2 weeks | Kill process tree via `TerminateProcess`, quarantine via ACL + MoveFile |
+| Phase 4 | WFP network isolation (production-ready) | 2-3 weeks | One-click host isolation, allow-only management server traffic |
+| Phase 5 | Self-protection (real anti-debug, ACL hardening) | 1-2 weeks | `IsDebuggerPresent`, `NtQueryInformationProcess`, restricted file ACLs |
+| Phase 6 | Compliance probes (real WMI/registry queries) | 2-3 weeks | BitLocker, Defender, Firewall, UAC, Updates, Credential Guard checks |
+| Phase 7 | Code signing + MSI packaging | 1 week | EV code-signed binary, MSI for GPO/Intune deployment |
+
+**Total**: ~3-4 months of focused development to reach Windows parity with Linux.
+
+**Critical implementation notes**:
+- Phase 1 is the foundation — everything else depends on real ETW events flowing. The ETW codec (`etw/codec.rs`) must correctly decode provider-specific event schemas (each provider has unique field layouts).
+- Phase 2 requires COM initialization (`CoInitializeEx`) and AMSI provider registration. The AMSI content must be fed into YARA + Sigma rules for detection.
+- Phase 4 must fix the block-before-allow race (finding PL-5) and handle partial deactivation (PL-10).
+- Phase 7 requires an EV Code Signing Certificate (~$400/year) and WiX v5 project. Without code signing, SmartScreen blocks the binary and enterprise GPO rejects it.
+
+#### F. macOS: Endpoint Security Framework
+
+**Current state**: `platform-macos` is a stub (`platform_name() -> "macos"`). Zero detection capability.
+
+**Why it matters**: 15-30% of enterprise endpoints are Macs (especially in tech, design, and executive teams — high-value targets).
+
+**Implementation plan**:
+1. Apple Endpoint Security Framework (`es_new_client()`) for process/file/network events — this is Apple's mandated API, no kernel extensions allowed
+2. System Extension packaging (`.systemextension` bundle)
+3. MDM profile for System Extension approval (enterprises deploy via Jamf/Mosyle)
+4. Map ESF event types to existing `EventType` enum for cross-platform rule compatibility
+5. Compliance checks: SIP (System Integrity Protection), FileVault, XProtect, Gatekeeper
+
+**Effort**: 1-2 months for basic coverage (process + file + network events with detection).
+
+#### G. Authentication & Authorization (Server)
+
+**Current state**: Zero authentication on all 40+ HTTP endpoints and gRPC services (finding EDR-3, MDM-1). Any network-reachable client can wipe devices, approve commands, read telemetry.
+
+**Why it matters**: This is a hard blocker for any deployment. An unauthenticated management plane is an RCE vector.
+
+**Implementation plan**:
+
+| Layer | Mechanism | Protects |
+|-------|-----------|----------|
+| Agent → Server | mTLS (client certificates from enrollment) | Telemetry, heartbeats, command ack |
+| Admin → Server | JWT/OAuth2 with RBAC (Admin/Analyst/ReadOnly roles) | All management HTTP endpoints |
+| Enrollment | Token-based (already exists, needs enforcement) | Initial agent registration |
+| Command approval | Multi-party (proposer ≠ approver, both authenticated) | Destructive commands (wipe, isolate) |
+
+**Effort**: 2-3 weeks. This is the #1 priority across the entire roadmap.
+
+#### H. Network Isolation (One-Click Contain)
+
+**Current state**: Linux has no isolation capability. Windows WFP is a stub. CrowdStrike's one-click isolation is one of its most-used features during incident response.
+
+**Implementation plan**:
+- **Linux**: eBPF XDP program for packet filtering (fastest possible — runs before the kernel network stack). Allow only management server IP. Alternative: nftables rules via `nft` command.
+- **Windows**: WFP filters (already scaffolded, needs real implementation)
+- **Both**: Persist isolation across reboots, provide de-isolation via server command AND local admin escape hatch, log all blocked connections for forensics.
+
+**Effort**: 2-3 weeks (parallel Linux + Windows development).
+
+#### I. SIEM/SOAR Integration (Enterprise Table-Stakes)
+
+**Current state**: No log forwarding, no webhook notifications, no third-party integrations.
+
+**Why it matters**: Every enterprise buyer's first question is "does it integrate with our SIEM?" If the answer is no, the conversation ends.
+
+**Implementation plan**:
+1. **Syslog/CEF output**: Forward detection events in CEF (Common Event Format) over syslog. Compatible with Splunk, QRadar, Sentinel, ArcSight.
+2. **Webhook notifications**: POST JSON to configurable URLs on detection events. Enables SOAR integration (Cortex XSOAR, Swimlane, Tines).
+3. **REST API documentation**: OpenAPI/Swagger spec for the existing HTTP endpoints. Enables programmatic access.
+4. **Pre-built connectors**: Start with Splunk HEC (HTTP Event Collector) and Microsoft Sentinel — these cover ~60% of enterprise SIEMs.
+
+**Effort**: 2-3 weeks for syslog + webhooks + API docs.
+
+---
+
+### 5.3 Leapfrog Opportunities (Where to Lead, Not Follow)
+
+These are areas where eGuard can establish capabilities that CrowdStrike either doesn't have or can't easily build — creating genuine competitive moats.
+
+#### J. BSOD-Proof Architecture (Post-Outage Market)
+
+**Opportunity**: The July 2024 CrowdStrike outage is the most significant cybersecurity industry event in a decade. 8.5M Windows devices crashed. Airlines, hospitals, banks halted. The market is actively seeking alternatives with architecturally safer designs.
+
+**eGuard's position**: eBPF on Linux is already BSOD-proof (kernel verifier prevents crashes). On Windows, eGuard uses ETW (user-mode) — it cannot crash the kernel.
+
+**Action**:
+1. **Commit to user-mode-only architecture**: Publicly commit that eGuard will never install a kernel driver on Windows. This is a bold but defensible position — Microsoft's new Windows Resilience Platform APIs (private preview mid-2025) are designed to enable user-mode security.
+2. **Adopt Microsoft VBS (Virtualization-Based Security)**: When available, use VBS enclaves for tamper-proof detection. This provides kernel-equivalent visibility without kernel-mode risk.
+3. **Content update safety**: Implement staged rollout for rule updates (canary → 1% → 10% → 100%) with automatic rollback on crash/error. CrowdStrike's content update was the root cause — eGuard must have better content update hygiene.
+4. **System impact SLA**: Guarantee < 1% CPU, < 50MB RAM, zero kernel panics. Publish real benchmarks.
+
+**Impact**: Directly addresses the #1 concern of every CrowdStrike customer: "will this crash my fleet?"
+
+#### K. On-Premises / Air-Gapped Deployment (Sovereignty)
+
+**Opportunity**: CrowdStrike requires cloud connectivity. Governments, military, critical infrastructure, and data-sovereignty-conscious organizations (EU GDPR, China's CSL) cannot or will not send security telemetry to a US-based cloud.
+
+**eGuard's position**: The server component (`fe_eguard`) runs on-premises. No cloud dependency required.
+
+**Action**:
+1. **Position as "sovereign EDR"**: Deploy entirely within customer's network boundary. No data leaves the perimeter.
+2. **Air-gapped mode**: Agent + server operate without internet. Rule updates via USB/sneakernet. Threat intel bundles synced manually.
+3. **Data residency guarantees**: All telemetry stored in customer-controlled infrastructure. Compliance with EU GDPR, Schrems II, and national data sovereignty laws.
+4. **Government/defense certifications**: Target Common Criteria EAL4+ and FedRAMP (self-hosted variant). CrowdStrike has FedRAMP for its cloud — eGuard can offer FedRAMP for customer-controlled deployment.
+
+**Impact**: Opens an entire market segment (government, defense, critical infrastructure, EU enterprise) that CrowdStrike cannot serve well. This is estimated at 15-20% of the enterprise endpoint security market.
+
+#### L. Transparent/Auditable Detection (Trust Architecture)
+
+**Opportunity**: CrowdStrike's detection logic is a black box. Customers cannot inspect why an alert fired at a technical level. Post-outage, trust in opaque security vendors is at an all-time low.
+
+**eGuard's position**: Open Sigma rules, auditable CUSUM math, explainable kill-chain templates.
+
+**Action**:
+1. **Per-alert evidence chain**: Every detection includes the full reasoning path — which layer triggered, which rule matched, what the CUSUM state was, what the KL divergence was. Exportable as structured JSON.
+2. **Rule audit mode**: Run detection against historical events to validate rule effectiveness before deployment. "Would this rule have caught last month's incident?"
+3. **Third-party audit program**: Offer source code access to qualified security auditors. Publish audit reports. CrowdStrike cannot do this — their detection IP is proprietary.
+4. **Customer-extensible detection**: Allow customers to write their own Sigma/YARA rules and deploy them to their fleet. CrowdStrike offers limited custom IOC capability but not custom behavioral rules.
+
+**Impact**: Appeals to CISOs who demand explainability and auditability. The question "can you explain why this alert fired?" is unanswerable with CrowdStrike — eGuard can answer it mathematically.
+
+#### M. Agent-Side Threat Intelligence at the Edge
+
+**Opportunity**: CrowdStrike requires cloud connectivity for full detection. Edge detection (on the agent itself) reduces latency and works in intermittent connectivity scenarios.
+
+**eGuard's position**: Layer 1 IOC matching runs entirely on-agent with Aho-Corasick multi-pattern matching. Behavioral detection (CUSUM) runs on-agent. Kill-chain detection runs on-agent.
+
+**Action**:
+1. **Bloom filter IOC matching**: Push large IOC sets (millions of hashes) to agents via compact bloom filters. O(1) lookup with configurable false positive rate. Agent checks every file hash, network connection, DNS query locally — no cloud roundtrip.
+2. **Edge-first detection**: All 5 detection layers run on the agent. Server correlation is additive, not required. Agent can detect and respond in complete isolation.
+3. **Bandwidth-efficient sync**: Delta-compressed rule bundles (already implemented via semantic versioning). On a 56kbps satellite link, eGuard still updates.
+4. **Offline forensics**: If connectivity is lost, agent buffers events locally (SQLite buffer exists) and replays through detection on reconnect.
+
+**Impact**: Works in challenging environments (ships, aircraft, remote sites, battlefield networks) where CrowdStrike's cloud-dependent model fails.
+
+#### N. Lightweight Pricing (Market Disruption)
+
+**Opportunity**: CrowdStrike pricing is $60-185/device/year base, with add-on modules pushing total cost to $300-500/device/year for full platform. This prices out SMBs and mid-market.
+
+**eGuard's position**: Self-hosted, no per-device licensing for the server component.
+
+**Action**:
+1. **Flat-rate or open-core pricing**: Base EDR + compliance included. Advanced features (threat intel, SOAR, managed response) as add-ons.
+2. **Community edition**: Free for < 50 endpoints. This builds adoption and creates upsell pipeline.
+3. **MSP/MSSP program**: Multi-tenant server for managed service providers. Per-tenant pricing, not per-endpoint.
+4. **Total cost comparison**: Publish TCO calculator showing eGuard vs CrowdStrike for 100/1000/10000 endpoints including infrastructure costs.
+
+**Impact**: Captures the 60% of the market that cannot afford CrowdStrike. SentinelOne and Cortex XDR compete on features — eGuard can compete on value.
+
+#### O. Automated Response Playbooks (SOAR-Integrated)
+
+**Opportunity**: CrowdStrike's Falcon Fusion SOAR is powerful but complex. Many organizations have SOAR tools (Cortex XSOAR, Swimlane) but struggle to integrate EDR.
+
+**eGuard's position**: The response crate already has `PlannedAction` with confidence-based escalation. Auto-isolation has configurable thresholds.
+
+**Action**:
+1. **YAML playbook engine**: Define response workflows in version-controlled YAML:
+   ```yaml
+   playbook: ransomware_response
+   trigger:
+     layer4_template: killchain_ransomware
+     confidence: ">= high"
+   actions:
+     - kill_process_tree: true
+     - quarantine_file: true
+     - isolate_host:
+         if: confidence >= definite
+     - notify:
+         webhook: https://slack.example.com/hook
+         message: "Ransomware detected on {{ hostname }}"
+   ```
+2. **Dry-run mode**: Test playbooks against historical events before enabling autonomous response.
+3. **Human-in-the-loop gates**: Configurable approval requirements for destructive actions. "Isolate requires SOC analyst approval within 5 minutes, auto-isolate after timeout."
+4. **Playbook versioning and audit trail**: Full history of every playbook execution with outcome.
+
+**Impact**: Bridges EDR and SOAR. Reduces MTTR from minutes to seconds for known attack patterns without requiring a separate SOAR platform.
+
+#### P. Cross-Endpoint Correlation (EDR → XDR)
+
+**Opportunity**: CrowdStrike's Threat Graph correlates events across millions of endpoints. eGuard's server-side correlator already exists but is limited to per-agent analysis.
+
+**Action**:
+1. **Multi-agent campaign detection**: The replay module (`detection/src/replay.rs`) already has `correlate_campaign_iocs()` and `CampaignIncident` with severity levels (Advisory/Elevated/Outbreak). Wire this into the server's live telemetry pipeline.
+2. **Lateral movement correlation**: "If agent A sees outbound SMB to agent B's IP, AND agent B sees new service creation within 5 minutes, escalate to Outbreak."
+3. **Fleet-wide behavioral baselines**: Compute normal behavior distributions across all agents. Detect individual agents that deviate from the fleet norm (compromised or misconfigured).
+4. **Attack timeline visualization**: Render multi-host attack chains as a directed graph in the admin UI. Show the kill chain across endpoints, not just within one.
+
+**Impact**: This is the transition from EDR to XDR. It's the most-requested enterprise feature and the highest-value differentiation.
+
+---
+
+### 5.4 Priority Roadmap: Path to CrowdStrike Parity and Beyond
+
+#### Phase 1: Foundation (Months 1-2) — "Can We Be Deployed?"
+
+| # | Item | Effort | Rationale |
+|---|------|--------|-----------|
+| 1 | Authentication on all server endpoints (G) | 2-3 weeks | Hard blocker for any deployment |
+| 2 | Fix P0 audit findings (Part 4) | 1-2 weeks | Security bugs that would fail any pentest |
+| 3 | SIEM integration: syslog/CEF + webhooks (I) | 2-3 weeks | Enterprise procurement requirement |
+| 4 | Fix event processing bottleneck (AC-11: 10 events/sec) | 4 hours | Agent misses majority of events under load |
+| 5 | Fix IPv4 byte order in eBPF codec (PL-1) | 2 hours | All network detection rules produce wrong IPs |
+
+**Milestone**: eGuard can be deployed in a Linux-only environment with basic SIEM integration and authenticated management.
+
+#### Phase 2: Windows Production (Months 2-4) — "Can We Protect Windows?"
+
+| # | Item | Effort | Rationale |
+|---|------|--------|-----------|
+| 6 | Windows ETW real event collection (E, Phase 1) | 2-3 weeks | Foundation for all Windows detection |
+| 7 | Windows AMSI → detection engine (E, Phase 2) | 1-2 weeks | Fileless malware detection |
+| 8 | Windows response actions (E, Phase 3) | 1-2 weeks | Kill, quarantine, forensic capture |
+| 9 | Windows WFP network isolation (E, Phase 4 + H) | 2-3 weeks | One-click host containment |
+| 10 | Windows code signing + MSI (E, Phase 7) | 1 week | Enterprise deployment via GPO/Intune |
+| 11 | Network isolation on Linux (eBPF XDP) (H) | 1-2 weeks | Feature parity across platforms |
+
+**Milestone**: eGuard protects both Linux and Windows endpoints with detection, response, and isolation capabilities.
+
+#### Phase 3: Differentiation (Months 4-6) — "Why Choose Us Over CrowdStrike?"
+
+| # | Item | Effort | Rationale |
+|---|------|--------|-----------|
+| 12 | BSOD-proof marketing + content update safety (J) | 1-2 weeks | Post-outage market positioning |
+| 13 | Transparent detection evidence chains (L) | 2-3 weeks | Explainability differentiator |
+| 14 | YAML response playbooks (O) | 2-3 weeks | Automated SOAR without separate platform |
+| 15 | Cross-endpoint correlation — MVP (P) | 3-4 weeks | EDR → XDR transition |
+| 16 | eBPF CO-RE + container hardening (B) | 2-3 weeks | Modern Linux infrastructure leadership |
+| 17 | Sovereign/air-gapped deployment mode (K) | 2-3 weeks | Government/defense market access |
+
+**Milestone**: eGuard has clear differentiators vs CrowdStrike in transparency, reliability, and sovereignty.
+
+#### Phase 4: Platform Expansion (Months 6-12) — "Full Enterprise Coverage"
+
+| # | Item | Effort | Rationale |
+|---|------|--------|-----------|
+| 18 | macOS Endpoint Security Framework (F) | 1-2 months | Third platform coverage |
+| 19 | Windows compliance probes (real WMI/registry) | 2-3 weeks | CIS benchmark compliance on Windows |
+| 20 | Behavioral ML retraining pipeline | 1-2 months | Keep Layer 5 model current against novel threats |
+| 21 | Detection rule marketplace (C) | 1 month | Community-driven detection content |
+| 22 | Multi-tenant server (K) | 2-3 months | MSSP/SaaS delivery model |
+| 23 | Advanced forensics (memory dump, registry capture) | 1 month | Incident response depth |
+
+**Milestone**: Full enterprise EDR platform competitive with CrowdStrike on features, differentiated on architecture.
+
+---
+
+### 5.5 Competitive Positioning Summary
+
+| Dimension | CrowdStrike | eGuard (Current) | eGuard (After Roadmap) | eGuard Advantage |
+|-----------|------------|-------------------|----------------------|------------------|
+| **Detection math** | Black-box ML | 5-layer with provable bounds | Same + published proofs | Explainability, auditability |
+| **Kernel safety** | Ring-0 driver (BSOD risk) | eBPF (Linux), ETW (Windows) | Same, committed user-mode | Cannot crash the OS |
+| **Detection rules** | Proprietary | Sigma (open standard) | + marketplace + community | Portability, community |
+| **Compliance** | Separate add-on ($) | Built-in with auto-remediation | + CIS benchmarks + real-time drift | Included, not upsold |
+| **Deployment** | Cloud-only SaaS | Self-hosted | + air-gapped + sovereign | Data sovereignty |
+| **Pricing** | $60-500/device/year | Self-hosted (infra cost) | + community edition | 3-10x cheaper |
+| **Transparency** | Closed source | Open rules, auditable math | + evidence chains + audit program | Full explainability |
+| **Windows** | Production (Ring-0) | Scaffold (stubs) | Production (ETW + AMSI + WFP) | User-mode only (safer) |
+| **macOS** | Production (ESF) | Stub | Production (ESF) | Parity |
+| **Cloud/XDR** | Threat Graph (1T events/day) | Basic correlator | Cross-endpoint + campaign | Smaller scale but sufficient |
+| **AI/Automation** | Charlotte AI (7 agents) | CUSUM + kill-chain | + YAML playbooks + SOAR | Deterministic, auditable |
+| **Post-outage trust** | Damaged, recovering | No kernel risk | Marketed explicitly | Architecture advantage |
+
+**Strategic narrative**: *"eGuard is the endpoint security platform that can prove its detection works, cannot crash your operating system, keeps your data in your infrastructure, and costs a fraction of the alternatives. Built on open standards, mathematically rigorous detection, and an architecture designed for the post-CrowdStrike-outage world."*

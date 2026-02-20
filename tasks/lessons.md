@@ -421,3 +421,15 @@ If a user reports "no bundle in UI", rerun browser E2E using the same operator r
 (e.g., `admin`, not internal `system`) and confirm both config-save + sync actions.
 Also verify live Perl route/controller parity (`/api/v1/threat-intel/sync`) and
 frontend asset freshness before concluding ingestion is broken.
+
+## When User Provides A Dependency Artifact, Attempt It Immediately And Report Privilege Limits Explicitly
+If a user gives a concrete package URL to unblock validation, run it right away
+(download + install attempt), then document exact blockers (e.g. sudo/password,
+remaining runtime deps/config assumptions). Do not stop at the original missing
+module error if follow-up evidence shows the blocker has changed.
+
+## Token-Gated Install Tests Must Seed A Valid Token Explicitly
+Do not assume token validation passes in-memory by default. For install endpoint
+unit tests with `EGUARD_AGENT_INSTALL_REQUIRE_TOKEN=enabled`, create a known token
+in test setup before asserting tokened requests return 200. This avoids environment-
+dependent false failures.

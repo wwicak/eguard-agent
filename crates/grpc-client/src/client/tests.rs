@@ -3,11 +3,69 @@ use crate::types::ComplianceCheckEnvelope;
 use hyper_util::rt::TokioIo;
 use std::collections::HashMap;
 use std::pin::Pin;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use tonic::{Request, Response, Status};
+
+const TEST_TLS_CERT_PEM: &str = r#"-----BEGIN CERTIFICATE-----
+MIIDCTCCAfGgAwIBAgIUNW78K5A0KsY4c5O6JVr75ReDAnIwDQYJKoZIhvcNAQEL
+BQAwFDESMBAGA1UEAwwJbG9jYWxob3N0MB4XDTI2MDIyMDA2NTMwNloXDTI2MDIy
+MTA2NTMwNlowFDESMBAGA1UEAwwJbG9jYWxob3N0MIIBIjANBgkqhkiG9w0BAQEF
+AAOCAQ8AMIIBCgKCAQEAuN/5w2cRH6AkHgXAlzrIfRNVtPe9eK6xZKAOhDc1ebgL
+8asqY2iEs8x70r+hqpAhpJ/iTrUqec4zs6Dzdl3kLaDKq3kt045qLn4n4qGZgSl6
+dlat1xyah5fJNzFJDrGep/MOHZSqMJS36DCFlNDs9itj3vv+P8G656Yh0puFyEhF
+8+fnJMtJ32mj5CtHxZm1KiB3CdCN9bIfhUlHfL8MhlU28d/2hzeo0pJ2OLEDKoxs
+OLSPMl7YfIRl0hj8AbNxaexilm9CH8AkiCFQHP2HKm9Bkgv9UEHvzHJOEsLVjwKr
+BrLvF5eVeSBfvXXUEAwD9/ZLizkknxDmDnQwwhz1jwIDAQABo1MwUTAdBgNVHQ4E
+FgQUgH6ot7HcWgm4lLWdRZ3192D9lXEwHwYDVR0jBBgwFoAUgH6ot7HcWgm4lLWd
+RZ3192D9lXEwDwYDVR0TAQH/BAUwAwEB/zANBgkqhkiG9w0BAQsFAAOCAQEAmwQW
+g889YDQJDAcW/bT5X7YKU2EDiPbpfb2ftqYZwr2IeEihHc+Su5IuVd39c5p05VqC
+wwuowQqHXWTAiG/Kx1jI2oyc9jxdKnTDvcYuY1puQ3OoVliANjKdK29Y/YFyQZpT
+5stU1NAHbXepjlsJjytg/v3ne2ZwtSVRpXZWFjMZsUE20EQVwIcoORvypo6Zpd7O
+LdVIRgJR/8LRIPei1UbjHRwGllt198wUsO6Eu4LVm2bbFqF7d2dA11xqXRS+y2Hn
+UghqcxBJf/cGPUkoGu63ZSG9hk7sY8st2r++EmuI+14qLzS3OFc06pbTHObJLieQ
+hbIMPyekKYTMzyJipg==
+-----END CERTIFICATE-----
+"#;
+
+const TEST_TLS_KEY_PEM: &str = r#"-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC43/nDZxEfoCQe
+BcCXOsh9E1W09714rrFkoA6ENzV5uAvxqypjaISzzHvSv6GqkCGkn+JOtSp5zjOz
+oPN2XeQtoMqreS3TjmoufifioZmBKXp2Vq3XHJqHl8k3MUkOsZ6n8w4dlKowlLfo
+MIWU0Oz2K2Pe+/4/wbrnpiHSm4XISEXz5+cky0nfaaPkK0fFmbUqIHcJ0I31sh+F
+SUd8vwyGVTbx3/aHN6jSknY4sQMqjGw4tI8yXth8hGXSGPwBs3Fp7GKWb0IfwCSI
+IVAc/Ycqb0GSC/1QQe/Mck4SwtWPAqsGsu8Xl5V5IF+9ddQQDAP39kuLOSSfEOYO
+dDDCHPWPAgMBAAECggEACEi7r7kt7UAxyMlH3f7w/kR1h2G/3b6GOGoWUcUKN7q6
+3ki7N4Uhcnpr5KpYRi+l3PNFIshqGiyBPeqtE4AVj23bEbVLtmUf9kFfltTYRLoP
+wL8VlG61sJ8T5yM65iuos6ySf1oqs3lBMb2q3rDrTVntubo0+bURTlFaxqMtatIE
+BzpJ9eKlj0MyiReFMplro7+TCge9zCluiNNgZDLSTD87+TWlJ9jQuxrpHG7RCjep
+qz8Ro4GSWVR0+AaaEvvuLk2G2Min48VV+pAvbt85K876OvmMrId4r1c/2DWapOf0
+5xaKUNpgcOaxSda2YZdAU+fSq8T/Ab0PPlxHMLpV4QKBgQDrTHuBr7ugjzwkBka+
+szPfhCKk0ul0WtjaFgQIZ1jKt9hZQzxWrSZdVtdCvGBnBR2iGHrO1pWTgxBwODBF
+ubrvKHJ5J9uM5twrGYoC20puTa9h9dEoy67fimd/0HHSn9rrATvQqwq0eeVF35xU
+YTmacHjDgBI648vG300M+k1rGQKBgQDJI9JYE1DMp872dLLDWgArU02ahBIQBjKX
+tEL9cyaTtv3dHtX6nWWvzE+cJrd2dIZz3GX1Xjzf1R5UK+7r9UWG4nt/OjMtT3Ln
+ImMOV2CvaJAoM3db+phN5/fuU/k9h07g8KZ6ICA0sETZFE3TzuAxWMCL+QyE1iv9
+ASq5V0gi5wKBgQDlX+56MuR2FYtsFs46MplbyAS5pn08Fx+UIagWxSBSpbt68MdO
+O4bNsM0xWk+jveHwVWrKXXb8kOSicLPmFLN9VnGZV9h318lDHqdiN4GsW4CfvzEB
+UuWLNvHEMF/1Ei4nr1EvDr3lx3pQjjZoL0snGYMwGZYr4EqS+LW09AAqaQKBgHSg
+QKaxDHieFHLy13ROCysT8jtVuONxtIQiEXXD/upHgItmBcx61ytH3CE+kcItbohf
+kv7i1YkzmZJUpwRKAzZivBjZNjNfjdBXL/hw0a7jgjLNJLhAZW9GwYt/RVVXz3S+
+FMlbN1FVo5X7H+VgXr4+J+cBUTD0vizFMHCnGzyhAoGAXFxacR0KfHtfu2IS61Km
+4LVn/nh8kFNBT7e6yyTywU2vZ6kGLOTBqZLPyFf1ptaijJvZ4tF3CNAXIhB0Jiro
+4+EqX8kvtz4qyfqJAKWt7kgjHDvifQvSJDha8l/ZQxD4zVmOY1IHAct+WBHoykWa
+Mx21PUEshgiUdUGJej+L4+w=
+-----END PRIVATE KEY-----
+"#;
+
+fn write_test_tls_materials(cert: &std::path::Path, key: &std::path::Path, ca: &std::path::Path) {
+    std::fs::write(cert, TEST_TLS_CERT_PEM).expect("write test cert");
+    std::fs::write(key, TEST_TLS_KEY_PEM).expect("write test key");
+    std::fs::write(ca, TEST_TLS_CERT_PEM).expect("write test ca");
+}
 
 #[test]
 // AC-GRP-090
@@ -32,9 +90,7 @@ fn url_scheme_switches_to_https_with_tls() {
     let cert = base.join("agent.crt");
     let key = base.join("agent.key");
     let ca = base.join("ca.crt");
-    let _ = std::fs::write(&cert, b"x");
-    let _ = std::fs::write(&key, b"x");
-    let _ = std::fs::write(&ca, b"x");
+    write_test_tls_materials(&cert, &key, &ca);
 
     let mut c = Client::new("10.0.0.1:50052".to_string());
     c.configure_tls(TlsConfig {
@@ -70,9 +126,7 @@ fn configure_tls_persists_ca_pin_on_first_use() {
     let cert = base.join("agent.crt");
     let key = base.join("agent.key");
     let ca = base.join("ca.crt");
-    let _ = std::fs::write(&cert, b"cert");
-    let _ = std::fs::write(&key, b"key");
-    let _ = std::fs::write(&ca, b"ca-v1");
+    write_test_tls_materials(&cert, &key, &ca);
 
     let mut c = Client::new("10.0.0.1:50052".to_string());
     c.configure_tls(TlsConfig {
@@ -107,9 +161,7 @@ fn configure_tls_rejects_changed_ca_when_pin_exists() {
     let cert = base.join("agent.crt");
     let key = base.join("agent.key");
     let ca = base.join("ca.crt");
-    let _ = std::fs::write(&cert, b"cert");
-    let _ = std::fs::write(&key, b"key");
-    let _ = std::fs::write(&ca, b"ca-v1");
+    write_test_tls_materials(&cert, &key, &ca);
 
     let mut first_client = Client::new("10.0.0.1:50052".to_string());
     first_client
@@ -154,9 +206,7 @@ fn configure_tls_rejects_mismatched_explicit_pinned_hash() {
     let cert = base.join("agent.crt");
     let key = base.join("agent.key");
     let ca = base.join("ca.crt");
-    let _ = std::fs::write(&cert, b"cert");
-    let _ = std::fs::write(&key, b"key");
-    let _ = std::fs::write(&ca, b"ca-v1");
+    write_test_tls_materials(&cert, &key, &ca);
 
     let mut c = Client::new("10.0.0.1:50052".to_string());
     let err = c
@@ -193,9 +243,7 @@ fn configure_tls_persists_pin_to_explicit_path() {
     let key = base.join("agent.key");
     let ca = base.join("ca.crt");
     let pin_path = base.join("custom-ca.pin.sha256");
-    let _ = std::fs::write(&cert, b"cert");
-    let _ = std::fs::write(&key, b"key");
-    let _ = std::fs::write(&ca, b"ca-v1");
+    write_test_tls_materials(&cert, &key, &ca);
 
     let mut c = Client::new("10.0.0.1:50052".to_string());
     c.configure_tls(TlsConfig {
@@ -227,6 +275,43 @@ fn configure_tls_rejects_missing_files() {
         })
         .expect_err("missing tls files must fail");
     assert!(err.to_string().contains("TLS file does not exist"));
+}
+
+#[test]
+fn configure_tls_rejects_invalid_http_tls_material() {
+    let base = std::env::temp_dir().join(format!(
+        "eguard-agent-tls-invalid-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    let _ = std::fs::create_dir_all(&base);
+
+    let cert = base.join("agent.crt");
+    let key = base.join("agent.key");
+    let ca = base.join("ca.crt");
+    let _ = std::fs::write(&cert, b"invalid-cert");
+    let _ = std::fs::write(&key, b"invalid-key");
+    let _ = std::fs::write(&ca, b"invalid-ca");
+
+    let mut c = Client::new("10.0.0.1:50052".to_string());
+    let err = c
+        .configure_tls(TlsConfig {
+            cert_path: cert.to_string_lossy().into_owned(),
+            key_path: key.to_string_lossy().into_owned(),
+            ca_path: ca.to_string_lossy().into_owned(),
+            pinned_ca_sha256: None,
+            ca_pin_path: Some(base.join("ca.pin.sha256").to_string_lossy().into_owned()),
+        })
+        .expect_err("invalid tls material should fail http client construction");
+    assert!(
+        err.to_string().contains("invalid HTTP TLS"),
+        "unexpected error: {}",
+        err
+    );
+
+    let _ = std::fs::remove_dir_all(base);
 }
 
 #[test]
@@ -680,6 +765,39 @@ async fn send_events_grpc_falls_back_to_http_when_grpc_stream_is_unavailable() {
         .expect("telemetry send should fall back to HTTP");
 
     server.await.expect("mock server join");
+}
+
+#[tokio::test]
+async fn send_events_grpc_clears_forced_http_fallback_after_successful_grpc_retry() {
+    let state = Arc::new(Mutex::new(TelemetryMockState::default()));
+    let server = spawn_mock_telemetry_service(state.clone()).await;
+
+    let mut client = Client::with_mode("inproc-telemetry".to_string(), TransportMode::Grpc);
+    client.set_test_channel_override(server.channel());
+    client
+        .grpc_reporting_force_http
+        .store(true, Ordering::Relaxed);
+
+    client
+        .send_events(&[EventEnvelope {
+            agent_id: "agent-grpc-recovery".to_string(),
+            event_type: "process_exec".to_string(),
+            severity: String::new(),
+            rule_name: String::new(),
+            payload_json: "{\"pid\":42}".to_string(),
+            created_at_unix: 1_700_000_777,
+        }])
+        .await
+        .expect("forced fallback mode should recover when gRPC succeeds");
+
+    assert!(
+        !client.grpc_reporting_force_http.load(Ordering::Relaxed),
+        "expected forced HTTP fallback flag to clear after successful gRPC send"
+    );
+    let guard = state.lock().expect("telemetry state lock");
+    assert_eq!(guard.batches.len(), 1);
+
+    server.shutdown().await;
 }
 
 #[tokio::test]

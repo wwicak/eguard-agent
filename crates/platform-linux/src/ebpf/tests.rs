@@ -246,8 +246,8 @@ fn parses_structured_tcp_connect_payload() {
     payload.extend_from_slice(&4444u16.to_le_bytes());
     payload.push(6u8);
     payload.push(0u8);
-    payload.extend_from_slice(&0x0A000001u32.to_le_bytes());
-    payload.extend_from_slice(&0xC0A8012Au32.to_le_bytes());
+    payload.extend_from_slice(&[10, 0, 0, 1]);
+    payload.extend_from_slice(&[192, 168, 1, 42]);
     payload.extend_from_slice(&[0u8; 16]);
     payload.extend_from_slice(&[0u8; 16]);
 

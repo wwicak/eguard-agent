@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use reqwest::Client as HttpClient;
+use reqwest::{Certificate as HttpCertificate, Client as HttpClient, Identity as HttpIdentity};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use tokio::time::sleep;
@@ -61,7 +61,8 @@ impl Client {
             agent_version: default_agent_version(),
             pending_commands: VecDeque::new(),
             tls: None,
-            http: HttpClient::new(),
+            http: Self::build_http_client(None)
+                .expect("default HTTP client construction should not fail"),
             grpc_reporting_force_http: Arc::new(AtomicBool::new(false)),
             #[cfg(test)]
             grpc_channel_override: None,
@@ -96,7 +97,10 @@ impl Client {
         }
 
         self.enforce_ca_pin(&cfg)?;
+        self.http = Self::build_http_client(Some(&cfg))?;
         self.tls = Some(cfg);
+        self.grpc_reporting_force_http
+            .store(false, Ordering::Relaxed);
         Ok(())
     }
 
@@ -122,11 +126,23 @@ impl Client {
             TransportMode::Http => self.send_events_http(batch).await?,
             TransportMode::Grpc => {
                 if self.grpc_reporting_force_http.load(Ordering::Relaxed) {
-                    self.send_events_http(batch).await?;
+                    match self.send_events_grpc(batch).await {
+                        Ok(()) => {
+                            self.grpc_reporting_force_http
+                                .store(false, Ordering::Relaxed);
+                        }
+                        Err(err) => {
+                            warn!(
+                                error = %err,
+                                "gRPC telemetry send still unavailable; using HTTP telemetry fallback"
+                            );
+                            self.send_events_http(batch).await?;
+                        }
+                    }
                 } else if let Err(err) = self.send_events_grpc(batch).await {
                     warn!(
                         error = %err,
-                        "gRPC telemetry send failed, forcing HTTP telemetry fallback"
+                        "gRPC telemetry send failed, temporarily forcing HTTP telemetry fallback"
                     );
                     self.grpc_reporting_force_http
                         .store(true, Ordering::Relaxed);
@@ -188,11 +204,23 @@ impl Client {
             TransportMode::Http => self.send_compliance_http(compliance).await?,
             TransportMode::Grpc => {
                 if self.grpc_reporting_force_http.load(Ordering::Relaxed) {
-                    self.send_compliance_http(compliance).await?;
+                    match self.send_compliance_grpc(compliance).await {
+                        Ok(()) => {
+                            self.grpc_reporting_force_http
+                                .store(false, Ordering::Relaxed);
+                        }
+                        Err(err) => {
+                            warn!(
+                                error = %err,
+                                "gRPC compliance report still unavailable; using HTTP compliance fallback"
+                            );
+                            self.send_compliance_http(compliance).await?;
+                        }
+                    }
                 } else if let Err(err) = self.send_compliance_grpc(compliance).await {
                     warn!(
                         error = %err,
-                        "gRPC compliance report failed, forcing HTTP compliance fallback"
+                        "gRPC compliance report failed, temporarily forcing HTTP compliance fallback"
                     );
                     self.grpc_reporting_force_http
                         .store(true, Ordering::Relaxed);
@@ -223,11 +251,23 @@ impl Client {
             TransportMode::Http => self.send_response_http(response).await?,
             TransportMode::Grpc => {
                 if self.grpc_reporting_force_http.load(Ordering::Relaxed) {
-                    self.send_response_http(response).await?;
+                    match self.send_response_grpc(response).await {
+                        Ok(()) => {
+                            self.grpc_reporting_force_http
+                                .store(false, Ordering::Relaxed);
+                        }
+                        Err(err) => {
+                            warn!(
+                                error = %err,
+                                "gRPC response report still unavailable; using HTTP response fallback"
+                            );
+                            self.send_response_http(response).await?;
+                        }
+                    }
                 } else if let Err(err) = self.send_response_grpc(response).await {
                     warn!(
                         error = %err,
-                        "gRPC response report failed, forcing HTTP response fallback"
+                        "gRPC response report failed, temporarily forcing HTTP response fallback"
                     );
                     self.grpc_reporting_force_http
                         .store(true, Ordering::Relaxed);
@@ -470,6 +510,36 @@ impl Client {
         Ok(ClientTlsConfig::new()
             .identity(TonicIdentity::from_pem(cert, key))
             .ca_certificate(TonicCertificate::from_pem(ca)))
+    }
+
+    fn build_http_client(tls: Option<&TlsConfig>) -> Result<HttpClient> {
+        let mut builder = HttpClient::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(15));
+
+        if let Some(tls) = tls {
+            let cert = std::fs::read(&tls.cert_path)
+                .with_context(|| format!("failed reading TLS cert {}", tls.cert_path))?;
+            let key = std::fs::read(&tls.key_path)
+                .with_context(|| format!("failed reading TLS key {}", tls.key_path))?;
+            let ca = std::fs::read(&tls.ca_path)
+                .with_context(|| format!("failed reading TLS CA {}", tls.ca_path))?;
+
+            let mut identity_pem = Vec::with_capacity(cert.len() + key.len() + 1);
+            identity_pem.extend_from_slice(&cert);
+            if !cert.ends_with(b"\n") {
+                identity_pem.push(b'\n');
+            }
+            identity_pem.extend_from_slice(&key);
+
+            let identity =
+                HttpIdentity::from_pem(&identity_pem).context("invalid HTTP TLS identity PEM")?;
+            let ca_cert = HttpCertificate::from_pem(&ca).context("invalid HTTP TLS CA PEM")?;
+
+            builder = builder.identity(identity).add_root_certificate(ca_cert);
+        }
+
+        builder.build().context("failed building HTTP client")
     }
 
     fn enforce_ca_pin(&self, tls: &TlsConfig) -> Result<()> {

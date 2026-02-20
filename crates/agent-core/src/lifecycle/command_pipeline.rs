@@ -313,26 +313,32 @@ impl AgentRuntime {
                 return;
             }
         };
-        if payload.profile_id.trim().is_empty() {
-            exec.outcome = CommandOutcome::Ignored;
-            exec.status = "failed";
-            exec.detail = "profile_id required".to_string();
-            return;
-        }
-        let path = format!("/var/lib/eguard-agent/profiles/{}.json", payload.profile_id);
-        if let Err(err) = std::fs::create_dir_all("/var/lib/eguard-agent/profiles") {
+        let profile_id = match sanitize_profile_id(&payload.profile_id) {
+            Ok(profile_id) => profile_id,
+            Err(err) => {
+                exec.outcome = CommandOutcome::Ignored;
+                exec.status = "failed";
+                exec.detail = format!("invalid profile_id: {}", err);
+                return;
+            }
+        };
+
+        let profile_dir = PathBuf::from("/var/lib/eguard-agent/profiles");
+        let profile_path = profile_dir.join(format!("{}.json", profile_id));
+
+        if let Err(err) = std::fs::create_dir_all(&profile_dir) {
             exec.outcome = CommandOutcome::Ignored;
             exec.status = "failed";
             exec.detail = format!("profile dir create failed: {}", err);
             return;
         }
-        if let Err(err) = std::fs::write(&path, payload.profile_json.as_bytes()) {
+        if let Err(err) = std::fs::write(&profile_path, payload.profile_json.as_bytes()) {
             exec.outcome = CommandOutcome::Ignored;
             exec.status = "failed";
             exec.detail = format!("profile write failed: {}", err);
             return;
         }
-        exec.detail = format!("profile stored: {}", path);
+        exec.detail = format!("profile stored: {}", profile_path.display());
     }
 
     async fn ack_command_result(&self, command_id: &str, status: &str) {
@@ -425,6 +431,30 @@ struct ProfilePayload {
     profile_id: String,
     #[serde(default)]
     profile_json: String,
+}
+
+fn sanitize_profile_id(raw: &str) -> Result<String, &'static str> {
+    let profile_id = raw.trim();
+    if profile_id.is_empty() {
+        return Err("profile_id required");
+    }
+    if profile_id.len() > 128 {
+        return Err("profile_id too long");
+    }
+    if profile_id.contains("..") {
+        return Err("path traversal segments are not allowed");
+    }
+    if profile_id.contains('/') || profile_id.contains('\\') {
+        return Err("path separators are not allowed");
+    }
+    if !profile_id
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err("profile_id contains unsupported characters");
+    }
+
+    Ok(profile_id.to_string())
 }
 
 fn parse_device_action_payload(payload_json: &str) -> DeviceActionPayload {
@@ -573,7 +603,7 @@ fn apply_app_command(action: &str, payload_json: &str, exec: &mut CommandExecuti
 mod tests {
     use super::{
         format_device_action_context, parse_device_action_payload, parse_locate_payload,
-        DeviceActionPayload,
+        sanitize_profile_id, DeviceActionPayload,
     };
 
     #[test]
@@ -603,5 +633,18 @@ mod tests {
     fn locate_payload_parser_reads_high_accuracy_flag() {
         let payload = parse_locate_payload(r#"{"high_accuracy":true}"#);
         assert!(payload.high_accuracy);
+    }
+
+    #[test]
+    fn sanitize_profile_id_rejects_path_traversal_sequences() {
+        assert!(sanitize_profile_id("../../etc/cron.d/backdoor").is_err());
+        assert!(sanitize_profile_id("corp/../default").is_err());
+        assert!(sanitize_profile_id("corp\\..\\default").is_err());
+    }
+
+    #[test]
+    fn sanitize_profile_id_accepts_safe_identifier() {
+        let profile_id = sanitize_profile_id("corp-prod_01.v2").expect("safe profile id");
+        assert_eq!(profile_id, "corp-prod_01.v2");
     }
 }
