@@ -1,0 +1,17 @@
+#!/bin/bash
+set -euo pipefail
+
+# Create directories
+mkdir -p "/Library/Application Support/eGuard/logs"
+mkdir -p "/Library/Application Support/eGuard/quarantine"
+
+# Set permissions
+chmod 755 /usr/local/bin/eguard-agent
+chown root:wheel /Library/LaunchDaemons/com.eguard.agent.plist
+chmod 644 /Library/LaunchDaemons/com.eguard.agent.plist
+
+# Load and start LaunchDaemon
+launchctl bootstrap system /Library/LaunchDaemons/com.eguard.agent.plist
+launchctl kickstart -k system/com.eguard.agent
+
+exit 0

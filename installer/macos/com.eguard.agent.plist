@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.eguard.agent</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/eguard-agent</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/Library/Application Support/eGuard/logs/agent.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Library/Application Support/eGuard/logs/agent-error.log</string>
+    <key>UserName</key>
+    <string>root</string>
+</dict>
+</plist>

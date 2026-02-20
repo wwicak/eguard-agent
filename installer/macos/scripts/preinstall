@@ -1,0 +1,6 @@
+#!/bin/bash
+# Stop existing agent if running
+if launchctl list com.eguard.agent &>/dev/null; then
+    launchctl bootout system/com.eguard.agent 2>/dev/null || true
+fi
+exit 0
