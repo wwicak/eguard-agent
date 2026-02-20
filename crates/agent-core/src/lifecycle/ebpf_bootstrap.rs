@@ -1,4 +1,4 @@
-#[cfg(any(test, not(target_os = "windows")))]
+#[cfg(any(test, target_os = "linux"))]
 use std::path::{Path, PathBuf};
 
 use crate::platform::EbpfEngine;
@@ -19,7 +19,21 @@ pub(super) fn init_ebpf_engine() -> EbpfEngine {
         }
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        match EbpfEngine::from_esf() {
+            Ok(engine) => {
+                info!("ESF collector initialized for macOS runtime");
+                return engine;
+            }
+            Err(err) => {
+                warn!(error = %err, "failed to initialize ESF collector; using disabled backend");
+                return EbpfEngine::disabled();
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
     {
         // Priority 1: Replay backend (for testing without kernel hooks)
         if let Some(replay_path) = std::env::var("EGUARD_EBPF_REPLAY_PATH")
@@ -81,7 +95,7 @@ pub(super) fn init_ebpf_engine() -> EbpfEngine {
     }
 }
 
-#[cfg(any(test, not(target_os = "windows")))]
+#[cfg(any(test, target_os = "linux"))]
 pub(super) fn try_init_ebpf_from_object_dir(
     objects_dir: &Path,
     map_name: &str,
@@ -113,7 +127,7 @@ pub(super) fn try_init_ebpf_from_object_dir(
     }
 }
 
-#[cfg(any(test, not(target_os = "windows")))]
+#[cfg(any(test, target_os = "linux"))]
 pub(super) fn default_ebpf_objects_dirs() -> Vec<PathBuf> {
     vec![
         PathBuf::from("./zig-out/ebpf"),
@@ -122,7 +136,7 @@ pub(super) fn default_ebpf_objects_dirs() -> Vec<PathBuf> {
     ]
 }
 
-#[cfg(any(test, not(target_os = "windows")))]
+#[cfg(any(test, target_os = "linux"))]
 pub(super) fn candidate_ebpf_object_paths(objects_dir: &Path) -> Vec<PathBuf> {
     const OBJECT_NAMES: [&str; 9] = [
         "process_exec_bpf.o",

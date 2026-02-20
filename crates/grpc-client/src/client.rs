@@ -13,6 +13,7 @@ use tokio::time::sleep;
 use tonic::transport::{
     Certificate as TonicCertificate, Channel, ClientTlsConfig, Endpoint, Identity as TonicIdentity,
 };
+use tonic::Code;
 use tracing::{info, warn};
 
 use crate::pb;
@@ -31,6 +32,7 @@ mod client_http;
 pub(crate) const MAX_GRPC_RECV_MSG_SIZE_BYTES: usize = 16 << 20;
 const TLS_PINNED_CA_SHA256_ENV: &str = "EGUARD_TLS_PINNED_CA_SHA256";
 const TLS_CA_PIN_PATH_ENV: &str = "EGUARD_TLS_CA_PIN_PATH";
+const TLS_BOOTSTRAP_PIN_ON_FIRST_USE_ENV: &str = "EGUARD_TLS_BOOTSTRAP_PIN_ON_FIRST_USE";
 
 #[derive(Debug, Clone)]
 pub struct Client {
@@ -585,6 +587,16 @@ impl Client {
             return Ok(());
         }
 
+        if !allow_tofu_pin_bootstrap() {
+            anyhow::bail!(
+                "TLS CA pin is missing (expected at {} or via {} / {} / config pin). Refusing TOFU by default; set {}=1 only for controlled bootstrap",
+                pin_path.display(),
+                TLS_PINNED_CA_SHA256_ENV,
+                TLS_CA_PIN_PATH_ENV,
+                TLS_BOOTSTRAP_PIN_ON_FIRST_USE_ENV,
+            );
+        }
+
         if let Some(parent) = pin_path.parent() {
             std::fs::create_dir_all(parent).with_context(|| {
                 format!("failed creating TLS pin directory {}", parent.display())
@@ -592,10 +604,10 @@ impl Client {
         }
         std::fs::write(&pin_path, format!("{}\n", actual_hash))
             .with_context(|| format!("failed writing TLS CA pin {}", pin_path.display()))?;
-        info!(
+        warn!(
             pin_path = %pin_path.display(),
             ca_path = %tls.ca_path,
-            "persisted TLS CA pin"
+            "bootstrapped TLS CA pin via first-use override"
         );
 
         Ok(())
@@ -629,6 +641,15 @@ impl Client {
             match op().await {
                 Ok(result) => return Ok(result),
                 Err(err) => {
+                    if !is_retryable_transport_error(&err) {
+                        return Err(err).with_context(|| {
+                            format!(
+                                "operation {} failed with non-retryable error on attempt {}",
+                                operation_name, attempt
+                            )
+                        });
+                    }
+
                     if attempt >= self.retry.max_attempts {
                         return Err(err).with_context(|| {
                             format!(
@@ -654,8 +675,58 @@ impl Client {
     }
 }
 
+fn is_retryable_transport_error(err: &anyhow::Error) -> bool {
+    for cause in err.chain() {
+        if let Some(status) = cause.downcast_ref::<tonic::Status>() {
+            return !matches!(
+                status.code(),
+                Code::InvalidArgument
+                    | Code::Unauthenticated
+                    | Code::AlreadyExists
+                    | Code::PermissionDenied
+                    | Code::FailedPrecondition
+            );
+        }
+
+        if let Some(http_err) = cause.downcast_ref::<reqwest::Error>() {
+            if let Some(status) = http_err.status() {
+                if matches!(status.as_u16(), 400 | 401 | 403 | 404 | 409 | 422) {
+                    return false;
+                }
+            }
+        }
+    }
+
+    let lower = err.to_string().to_ascii_lowercase();
+    let non_retryable_markers = [
+        "invalid argument",
+        "unauthenticated",
+        "already exists",
+        "permission denied",
+        "failed precondition",
+        "auth_misconfigured",
+        "invalid_authentication",
+        "authentication_required",
+    ];
+    !non_retryable_markers
+        .iter()
+        .any(|marker| lower.contains(marker))
+}
+
 fn default_agent_version() -> String {
     std::env::var("EGUARD_AGENT_VERSION").unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string())
+}
+
+fn allow_tofu_pin_bootstrap() -> bool {
+    std::env::var(TLS_BOOTSTRAP_PIN_ON_FIRST_USE_ENV)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
 }
 
 fn resolve_pin_path(ca_path: &str, configured_pin_path: Option<&str>) -> PathBuf {

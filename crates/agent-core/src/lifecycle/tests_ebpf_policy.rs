@@ -351,6 +351,47 @@ fn evaluate_tick_returns_none_when_no_ebpf_events_are_available() {
     assert!(evaluation.is_none());
 }
 
+#[test]
+// AC-11
+fn evaluate_tick_drains_polled_replay_events_across_multiple_ticks() {
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    cfg.server_addr = "127.0.0.1:1".to_string();
+
+    let replay_path = std::env::temp_dir().join(format!(
+        "eguard-agent-replay-batch-{}.ndjson",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+
+    let replay = [
+        r#"{"event_type":"process_exec","pid":4101,"uid":0,"ts_ns":1700000000000000000,"comm":"bash","path":"/usr/bin/bash","cmdline":"bash -lc echo 1"}"#,
+        r#"{"event_type":"process_exec","pid":4102,"uid":0,"ts_ns":1700000001000000000,"comm":"bash","path":"/usr/bin/bash","cmdline":"bash -lc echo 2"}"#,
+        r#"{"event_type":"process_exec","pid":4103,"uid":0,"ts_ns":1700000002000000000,"comm":"bash","path":"/usr/bin/bash","cmdline":"bash -lc echo 3"}"#,
+    ]
+    .join("\n");
+    std::fs::write(&replay_path, replay).expect("write replay file");
+
+    let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+    runtime.ebpf_engine =
+        platform_linux::EbpfEngine::from_replay(&replay_path).expect("replay backend");
+
+    let now = 1_700_000_000i64;
+    let first = runtime.evaluate_tick(now).expect("evaluate tick 1");
+    let second = runtime.evaluate_tick(now + 1).expect("evaluate tick 2");
+    let third = runtime.evaluate_tick(now + 2).expect("evaluate tick 3");
+    let fourth = runtime.evaluate_tick(now + 3).expect("evaluate tick 4");
+
+    assert!(first.is_some());
+    assert!(second.is_some());
+    assert!(third.is_some());
+    assert!(fourth.is_none());
+
+    let _ = std::fs::remove_file(replay_path);
+}
+
 #[tokio::test]
 // AC-EBP-042
 async fn send_event_batch_failures_rebuffer_events_and_trigger_degraded_mode() {

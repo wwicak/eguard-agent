@@ -11,3 +11,6 @@ regex = "1"
 
 [target.'cfg(unix)'.dependencies]
 nix.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc.workspace = true

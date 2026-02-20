@@ -3,8 +3,8 @@ use crate::types::ComplianceCheckEnvelope;
 use hyper_util::rt::TokioIo;
 use std::collections::HashMap;
 use std::pin::Pin;
-use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
@@ -67,6 +67,13 @@ fn write_test_tls_materials(cert: &std::path::Path, key: &std::path::Path, ca: &
     std::fs::write(ca, TEST_TLS_CERT_PEM).expect("write test ca");
 }
 
+fn tls_env_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("tls env lock")
+}
+
 #[test]
 // AC-GRP-090
 fn url_scheme_defaults_to_http_without_tls() {
@@ -92,12 +99,14 @@ fn url_scheme_switches_to_https_with_tls() {
     let ca = base.join("ca.crt");
     write_test_tls_materials(&cert, &key, &ca);
 
+    let ca_hash = sha256_hex(&std::fs::read(&ca).expect("read test ca"));
+
     let mut c = Client::new("10.0.0.1:50052".to_string());
     c.configure_tls(TlsConfig {
         cert_path: cert.to_string_lossy().into_owned(),
         key_path: key.to_string_lossy().into_owned(),
         ca_path: ca.to_string_lossy().into_owned(),
-        pinned_ca_sha256: None,
+        pinned_ca_sha256: Some(ca_hash),
         ca_pin_path: None,
     })
     .expect("configure tls");
@@ -113,7 +122,10 @@ fn url_scheme_switches_to_https_with_tls() {
 
 #[test]
 // AC-ATP-082
-fn configure_tls_persists_ca_pin_on_first_use() {
+fn configure_tls_rejects_missing_pin_by_default() {
+    let _guard = tls_env_lock();
+    std::env::remove_var(TLS_BOOTSTRAP_PIN_ON_FIRST_USE_ENV);
+
     let base = std::env::temp_dir().join(format!(
         "eguard-agent-tls-pin-{}",
         std::time::SystemTime::now()
@@ -129,6 +141,42 @@ fn configure_tls_persists_ca_pin_on_first_use() {
     write_test_tls_materials(&cert, &key, &ca);
 
     let mut c = Client::new("10.0.0.1:50052".to_string());
+    let err = c
+        .configure_tls(TlsConfig {
+            cert_path: cert.to_string_lossy().into_owned(),
+            key_path: key.to_string_lossy().into_owned(),
+            ca_path: ca.to_string_lossy().into_owned(),
+            pinned_ca_sha256: None,
+            ca_pin_path: None,
+        })
+        .expect_err("configure tls should reject missing CA pin by default");
+    assert!(err.to_string().contains("TLS CA pin is missing"));
+
+    std::env::remove_var(TLS_BOOTSTRAP_PIN_ON_FIRST_USE_ENV);
+    let _ = std::fs::remove_dir_all(base);
+}
+
+#[test]
+fn configure_tls_bootstraps_pin_when_explicitly_enabled() {
+    let _guard = tls_env_lock();
+
+    let base = std::env::temp_dir().join(format!(
+        "eguard-agent-tls-pin-bootstrap-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    let _ = std::fs::create_dir_all(&base);
+
+    let cert = base.join("agent.crt");
+    let key = base.join("agent.key");
+    let ca = base.join("ca.crt");
+    write_test_tls_materials(&cert, &key, &ca);
+
+    std::env::set_var(TLS_BOOTSTRAP_PIN_ON_FIRST_USE_ENV, "1");
+
+    let mut c = Client::new("10.0.0.1:50052".to_string());
     c.configure_tls(TlsConfig {
         cert_path: cert.to_string_lossy().into_owned(),
         key_path: key.to_string_lossy().into_owned(),
@@ -136,13 +184,13 @@ fn configure_tls_persists_ca_pin_on_first_use() {
         pinned_ca_sha256: None,
         ca_pin_path: None,
     })
-    .expect("configure tls should persist CA pin");
+    .expect("configure tls should bootstrap CA pin when explicitly enabled");
 
     let pin_path = resolve_pin_path(&ca.to_string_lossy(), None);
     let pin_raw = std::fs::read_to_string(&pin_path).expect("read persisted pin");
     assert_eq!(pin_raw.trim().len(), 64);
-    assert!(pin_raw.trim().chars().all(|c| c.is_ascii_hexdigit()));
 
+    std::env::remove_var(TLS_BOOTSTRAP_PIN_ON_FIRST_USE_ENV);
     let _ = std::fs::remove_dir_all(base);
 }
 
@@ -163,6 +211,10 @@ fn configure_tls_rejects_changed_ca_when_pin_exists() {
     let ca = base.join("ca.crt");
     write_test_tls_materials(&cert, &key, &ca);
 
+    let pin_path = resolve_pin_path(&ca.to_string_lossy(), None);
+    let ca_raw = std::fs::read(&ca).expect("read ca");
+    std::fs::write(&pin_path, format!("{}\n", sha256_hex(&ca_raw))).expect("write pin file");
+
     let mut first_client = Client::new("10.0.0.1:50052".to_string());
     first_client
         .configure_tls(TlsConfig {
@@ -172,7 +224,7 @@ fn configure_tls_rejects_changed_ca_when_pin_exists() {
             pinned_ca_sha256: None,
             ca_pin_path: None,
         })
-        .expect("initial configure should persist pin");
+        .expect("initial configure should honor existing pin");
 
     let _ = std::fs::write(&ca, b"ca-v2");
 
@@ -229,7 +281,9 @@ fn configure_tls_rejects_mismatched_explicit_pinned_hash() {
 
 #[test]
 // AC-ATP-082
-fn configure_tls_persists_pin_to_explicit_path() {
+fn configure_tls_bootstraps_pin_to_explicit_path_when_enabled() {
+    let _guard = tls_env_lock();
+
     let base = std::env::temp_dir().join(format!(
         "eguard-agent-tls-explicit-pin-path-{}",
         std::time::SystemTime::now()
@@ -245,6 +299,8 @@ fn configure_tls_persists_pin_to_explicit_path() {
     let pin_path = base.join("custom-ca.pin.sha256");
     write_test_tls_materials(&cert, &key, &ca);
 
+    std::env::set_var(TLS_BOOTSTRAP_PIN_ON_FIRST_USE_ENV, "1");
+
     let mut c = Client::new("10.0.0.1:50052".to_string());
     c.configure_tls(TlsConfig {
         cert_path: cert.to_string_lossy().into_owned(),
@@ -253,11 +309,12 @@ fn configure_tls_persists_pin_to_explicit_path() {
         pinned_ca_sha256: None,
         ca_pin_path: Some(pin_path.to_string_lossy().into_owned()),
     })
-    .expect("configure tls should persist explicit pin path");
+    .expect("configure tls should persist explicit pin path when bootstrap is enabled");
 
     let persisted_pin = std::fs::read_to_string(&pin_path).expect("read explicit pin file");
     assert_eq!(persisted_pin.trim().len(), 64);
 
+    std::env::remove_var(TLS_BOOTSTRAP_PIN_ON_FIRST_USE_ENV);
     let _ = std::fs::remove_dir_all(base);
 }
 
@@ -279,6 +336,8 @@ fn configure_tls_rejects_missing_files() {
 
 #[test]
 fn configure_tls_rejects_invalid_http_tls_material() {
+    let _guard = tls_env_lock();
+
     let base = std::env::temp_dir().join(format!(
         "eguard-agent-tls-invalid-{}",
         std::time::SystemTime::now()
@@ -294,6 +353,8 @@ fn configure_tls_rejects_invalid_http_tls_material() {
     let _ = std::fs::write(&cert, b"invalid-cert");
     let _ = std::fs::write(&key, b"invalid-key");
     let _ = std::fs::write(&ca, b"invalid-ca");
+
+    std::env::set_var(TLS_BOOTSTRAP_PIN_ON_FIRST_USE_ENV, "1");
 
     let mut c = Client::new("10.0.0.1:50052".to_string());
     let err = c
@@ -311,6 +372,7 @@ fn configure_tls_rejects_invalid_http_tls_material() {
         err
     );
 
+    std::env::remove_var(TLS_BOOTSTRAP_PIN_ON_FIRST_USE_ENV);
     let _ = std::fs::remove_dir_all(base);
 }
 

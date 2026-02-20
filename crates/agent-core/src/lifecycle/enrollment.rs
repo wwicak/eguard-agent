@@ -1,5 +1,5 @@
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use tracing::warn;
 
@@ -135,17 +135,9 @@ fn persist_runtime_config_snapshot(config: &AgentConfig) -> Result<PathBuf, Stri
         "server_addr".to_string(),
         toml::Value::String(config.server_addr.clone()),
     );
-    if let Some(token) = config
-        .enrollment_token
-        .as_ref()
-        .map(|v| v.trim())
-        .filter(|v| !v.is_empty())
-    {
-        agent_table.insert(
-            "enrollment_token".to_string(),
-            toml::Value::String(token.to_string()),
-        );
-    }
+    // Enrollment token is bootstrap-only credential material. Do not persist it
+    // into restart config snapshots written to disk.
+    agent_table.remove("enrollment_token");
     if let Some(tenant_id) = config
         .tenant_id
         .as_ref()
@@ -178,7 +170,7 @@ fn persist_runtime_config_snapshot(config: &AgentConfig) -> Result<PathBuf, Stri
     }
 
     let tmp_path = path.with_extension("tmp");
-    std::fs::write(&tmp_path, serialized.as_bytes())
+    write_private_config_file(&tmp_path, serialized.as_bytes())
         .map_err(|err| format!("write temp config {}: {}", tmp_path.display(), err))?;
     std::fs::rename(&tmp_path, &path).map_err(|err| {
         format!(
@@ -190,6 +182,29 @@ fn persist_runtime_config_snapshot(config: &AgentConfig) -> Result<PathBuf, Stri
     })?;
 
     Ok(path)
+}
+
+fn write_private_config_file(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .mode(0o600)
+            .open(path)?;
+        file.write_all(data)?;
+        file.sync_all()?;
+        return Ok(());
+    }
+
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, data)
+    }
 }
 
 #[cfg(test)]
@@ -206,6 +221,8 @@ mod tests {
     fn clear_env() {
         std::env::remove_var("EGUARD_AGENT_CONFIG");
         std::env::remove_var("EGUARD_BOOTSTRAP_CONFIG");
+        std::env::remove_var("EGUARD_SERVER_ADDR");
+        std::env::remove_var("EGUARD_SERVER");
     }
 
     #[test]
@@ -240,10 +257,22 @@ mod tests {
         let loaded = AgentConfig::load().expect("load persisted config");
         assert_eq!(loaded.server_addr, "157.10.161.219:50052");
         assert_eq!(loaded.transport_mode, "grpc");
-        assert_eq!(loaded.enrollment_token.as_deref(), Some("tok-xyz"));
+        assert!(loaded.enrollment_token.is_none());
         assert_eq!(loaded.tenant_id.as_deref(), Some("default"));
         assert_eq!(loaded.agent_id, "agent-a");
         assert_eq!(loaded.offline_buffer_backend, "memory");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let perms = std::fs::metadata(&path)
+                .expect("config metadata")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(perms, 0o600);
+        }
 
         clear_env();
         let _ = std::fs::remove_file(path);

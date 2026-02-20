@@ -207,18 +207,22 @@ impl AgentRuntime {
             return;
         }
         let mut removed = Vec::new();
-        for path in [
-            &self.config.offline_buffer_path,
-            "/var/lib/eguard-agent/quarantine",
-            "/var/lib/eguard-agent/baselines.bin",
-        ] {
-            if let Err(err) = remove_path(path) {
+        let data_dir = resolve_agent_data_dir();
+        let wipe_targets = [
+            PathBuf::from(&self.config.offline_buffer_path),
+            data_dir.join("quarantine"),
+            data_dir.join("baselines.bin"),
+        ];
+
+        for path in wipe_targets {
+            let display = path.to_string_lossy().to_string();
+            if let Err(err) = remove_path(&display) {
                 exec.outcome = CommandOutcome::Ignored;
                 exec.status = "failed";
                 exec.detail = format!("wipe failed ({}): {}", context, err);
                 return;
             }
-            removed.push(path.to_string());
+            removed.push(display);
         }
         exec.detail = format!("wipe completed for {} ({})", removed.join(", "), context);
     }
@@ -233,7 +237,8 @@ impl AgentRuntime {
             exec.detail = format!("device retire blocked by policy ({})", context);
             return;
         }
-        if let Err(err) = write_marker("/var/lib/eguard-agent/retired") {
+        let retire_marker = resolve_agent_data_dir().join("retired");
+        if let Err(err) = write_marker(retire_marker.to_string_lossy().as_ref()) {
             exec.outcome = CommandOutcome::Ignored;
             exec.status = "failed";
             exec.detail = format!("retire marker failed ({}): {}", context, err);
@@ -323,7 +328,7 @@ impl AgentRuntime {
             }
         };
 
-        let profile_dir = PathBuf::from("/var/lib/eguard-agent/profiles");
+        let profile_dir = resolve_agent_data_dir().join("profiles");
         let profile_path = profile_dir.join(format!("{}.json", profile_id));
 
         if let Err(err) = std::fs::create_dir_all(&profile_dir) {
@@ -403,6 +408,29 @@ fn resolve_network_profile_dir() -> PathBuf {
     }
 }
 
+fn resolve_agent_data_dir() -> PathBuf {
+    if let Ok(raw) = std::env::var("EGUARD_AGENT_DATA_DIR") {
+        if !raw.trim().is_empty() {
+            return PathBuf::from(raw.trim());
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return PathBuf::from(r"C:\ProgramData\eGuard");
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        return PathBuf::from("/Library/Application Support/eGuard");
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        PathBuf::from("/var/lib/eguard-agent")
+    }
+}
+
 #[derive(Debug, Deserialize, Default)]
 struct DeviceActionPayload {
     #[serde(default)]
@@ -455,6 +483,45 @@ fn sanitize_profile_id(raw: &str) -> Result<String, &'static str> {
     }
 
     Ok(profile_id.to_string())
+}
+
+fn sanitize_apt_package_name(raw: &str) -> Result<String, &'static str> {
+    let package_name = raw.trim();
+    if package_name.is_empty() {
+        return Err("package_name required");
+    }
+    if package_name.len() > 128 {
+        return Err("package_name too long");
+    }
+    if package_name.starts_with('-') {
+        return Err("package_name must not start with '-'");
+    }
+    if !package_name
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'+' | b'-'))
+    {
+        return Err("package_name contains unsupported characters");
+    }
+    Ok(package_name.to_string())
+}
+
+fn sanitize_apt_package_version(raw: &str) -> Result<String, &'static str> {
+    let version = raw.trim();
+    if version.is_empty() {
+        return Ok(String::new());
+    }
+    if version.len() > 128 {
+        return Err("version too long");
+    }
+    if version.starts_with('-') {
+        return Err("version must not start with '-'");
+    }
+    if !version.bytes().all(|byte| {
+        byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'+' | b'-' | b':' | b'~' | b'_')
+    }) {
+        return Err("version contains unsupported characters");
+    }
+    Ok(version.to_string())
 }
 
 fn parse_device_action_payload(payload_json: &str) -> DeviceActionPayload {
@@ -569,22 +636,35 @@ fn apply_app_command(action: &str, payload_json: &str, exec: &mut CommandExecuti
         }
     };
 
-    if payload.package_name.trim().is_empty() {
-        exec.outcome = CommandOutcome::Ignored;
-        exec.status = "failed";
-        exec.detail = "package_name required".to_string();
-        return;
-    }
+    let package_name = match sanitize_apt_package_name(&payload.package_name) {
+        Ok(value) => value,
+        Err(err) => {
+            exec.outcome = CommandOutcome::Ignored;
+            exec.status = "failed";
+            exec.detail = format!("invalid package_name: {}", err);
+            return;
+        }
+    };
 
-    let package = if payload.version.trim().is_empty() {
-        payload.package_name.clone()
+    let version = match sanitize_apt_package_version(&payload.version) {
+        Ok(value) => value,
+        Err(err) => {
+            exec.outcome = CommandOutcome::Ignored;
+            exec.status = "failed";
+            exec.detail = format!("invalid version: {}", err);
+            return;
+        }
+    };
+
+    let package = if version.is_empty() {
+        package_name.clone()
     } else {
-        format!("{}={}", payload.package_name, payload.version)
+        format!("{}={}", package_name, version)
     };
 
     let args = match action {
         "install" => vec!["install", "-y", package.as_str()],
-        "remove" => vec!["remove", "-y", payload.package_name.as_str()],
+        "remove" => vec!["remove", "-y", package_name.as_str()],
         "update" => vec!["install", "-y", package.as_str()],
         _ => vec!["install", "-y", package.as_str()],
     };
@@ -595,7 +675,7 @@ fn apply_app_command(action: &str, payload_json: &str, exec: &mut CommandExecuti
         exec.status = "failed";
         exec.detail = format!("app {} failed: {}", action, err);
     } else {
-        exec.detail = format!("app {} executed for {}", action, payload.package_name);
+        exec.detail = format!("app {} executed for {}", action, package_name);
     }
 }
 
@@ -603,7 +683,8 @@ fn apply_app_command(action: &str, payload_json: &str, exec: &mut CommandExecuti
 mod tests {
     use super::{
         format_device_action_context, parse_device_action_payload, parse_locate_payload,
-        sanitize_profile_id, DeviceActionPayload,
+        sanitize_apt_package_name, sanitize_apt_package_version, sanitize_profile_id,
+        DeviceActionPayload,
     };
 
     #[test]
@@ -646,5 +727,29 @@ mod tests {
     fn sanitize_profile_id_accepts_safe_identifier() {
         let profile_id = sanitize_profile_id("corp-prod_01.v2").expect("safe profile id");
         assert_eq!(profile_id, "corp-prod_01.v2");
+    }
+
+    #[test]
+    fn sanitize_apt_package_name_rejects_option_injection_tokens() {
+        assert!(sanitize_apt_package_name("pkg -o APT::Update").is_err());
+        assert!(sanitize_apt_package_name("pkg;touch /tmp/x").is_err());
+    }
+
+    #[test]
+    fn sanitize_apt_package_version_rejects_option_injection_tokens() {
+        assert!(sanitize_apt_package_version("1.0 -o Acquire::http::Proxy").is_err());
+        assert!(sanitize_apt_package_version("1.0;rm -rf /").is_err());
+    }
+
+    #[test]
+    fn sanitize_apt_package_fields_accept_valid_values() {
+        assert_eq!(
+            sanitize_apt_package_name("libssl3").expect("valid package"),
+            "libssl3"
+        );
+        assert_eq!(
+            sanitize_apt_package_version("1:3.0.2-0ubuntu1~22.04.1").expect("valid version"),
+            "1:3.0.2-0ubuntu1~22.04.1"
+        );
     }
 }

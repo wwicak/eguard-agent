@@ -12,8 +12,9 @@ pub use engine::{
     SelfProtectViolation,
 };
 pub use hardening::{
-    apply_linux_hardening, capability_number, default_retained_capabilities, LinuxHardeningConfig,
-    LinuxHardeningReport, LinuxHardeningStep, LinuxHardeningStepStatus,
+    apply_linux_hardening, apply_macos_hardening, capability_number, default_retained_capabilities,
+    LinuxHardeningConfig, LinuxHardeningReport, LinuxHardeningStep, LinuxHardeningStepStatus,
+    MacosHardeningConfig, MacosHardeningReport,
 };
 pub use integrity::{
     measure_executable_sections, measure_self_integrity, IntegrityMeasurement, SectionDigest,

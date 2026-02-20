@@ -128,6 +128,35 @@ impl ProtectedList {
         }
     }
 
+    pub fn default_macos() -> Self {
+        let process_patterns = [
+            "^launchd",
+            "kernel_task",
+            "sshd",
+            "coreaudiod",
+            "WindowServer",
+            "eguard-agent",
+            "mds",
+            "fseventsd",
+        ]
+        .into_iter()
+        .map(compile_process_pattern)
+        .collect();
+
+        let protected_paths = vec![
+            PathBuf::from("/usr/bin"),
+            PathBuf::from("/usr/sbin"),
+            PathBuf::from("/usr/lib"),
+            PathBuf::from("/System"),
+            PathBuf::from("/Library/Application Support/eGuard"),
+        ];
+
+        Self {
+            process_patterns,
+            protected_paths,
+        }
+    }
+
     pub fn is_protected_process(&self, process_name: &str) -> bool {
         self.process_patterns
             .iter()

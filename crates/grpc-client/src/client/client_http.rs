@@ -27,6 +27,7 @@ const PATH_THREAT_INTEL_VERSION: &str = "/api/v1/endpoint/threat-intel/version";
 const PATH_BASELINE_FLEET: &str = "/api/v1/endpoint/baseline/fleet";
 const PATH_POLICY: &str = "/api/v1/endpoint/policy";
 const PATH_SERVER_STATE: &str = "/api/v1/endpoint/state";
+const DEFAULT_MAX_BUNDLE_DOWNLOAD_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
 struct CommandPollResponse {
@@ -364,20 +365,48 @@ impl Client {
     }
 
     async fn get_bytes_request(&self, url: &str, request_name: &str) -> Result<Vec<u8>> {
-        let payload = self
+        let mut response = self
             .http
             .get(url)
             .send()
             .await
             .with_context(|| format!("failed downloading {} from {}", request_name, url))?
             .error_for_status()
-            .with_context(|| format!("{} download rejected by {}", request_name, url))?
-            .bytes()
-            .await
-            .with_context(|| {
-                format!("failed reading {} response body from {}", request_name, url)
-            })?;
-        Ok(payload.to_vec())
+            .with_context(|| format!("{} download rejected by {}", request_name, url))?;
+
+        let max_bytes = max_bundle_download_bytes();
+        if let Some(content_length) = response.content_length() {
+            if content_length > max_bytes as u64 {
+                anyhow::bail!(
+                    "{} response from {} exceeds max size: {} > {} bytes",
+                    request_name,
+                    url,
+                    content_length,
+                    max_bytes
+                );
+            }
+        }
+
+        let mut payload = Vec::new();
+        while let Some(chunk) = response.chunk().await.with_context(|| {
+            format!(
+                "failed reading {} response chunk from {}",
+                request_name, url
+            )
+        })? {
+            if payload.len().saturating_add(chunk.len()) > max_bytes {
+                anyhow::bail!(
+                    "{} response from {} exceeds max size while streaming: {} > {} bytes",
+                    request_name,
+                    url,
+                    payload.len().saturating_add(chunk.len()),
+                    max_bytes
+                );
+            }
+            payload.extend_from_slice(&chunk);
+        }
+
+        Ok(payload)
     }
 
     fn ensure_destination_parent(destination: &Path) -> Result<()> {
@@ -415,4 +444,50 @@ fn parse_server_state_response(response: StateResponse) -> Option<ServerState> {
     Some(ServerState {
         persistence_enabled,
     })
+}
+
+fn max_bundle_download_bytes() -> usize {
+    std::env::var("EGUARD_MAX_BUNDLE_DOWNLOAD_BYTES")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_MAX_BUNDLE_DOWNLOAD_BYTES)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Mutex, OnceLock};
+
+    use super::{max_bundle_download_bytes, DEFAULT_MAX_BUNDLE_DOWNLOAD_BYTES};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn max_bundle_download_bytes_uses_default_when_env_invalid() {
+        let _guard = env_lock().lock().expect("env lock");
+        std::env::set_var("EGUARD_MAX_BUNDLE_DOWNLOAD_BYTES", "0");
+        assert_eq!(
+            max_bundle_download_bytes(),
+            DEFAULT_MAX_BUNDLE_DOWNLOAD_BYTES
+        );
+
+        std::env::set_var("EGUARD_MAX_BUNDLE_DOWNLOAD_BYTES", "invalid");
+        assert_eq!(
+            max_bundle_download_bytes(),
+            DEFAULT_MAX_BUNDLE_DOWNLOAD_BYTES
+        );
+
+        std::env::remove_var("EGUARD_MAX_BUNDLE_DOWNLOAD_BYTES");
+    }
+
+    #[test]
+    fn max_bundle_download_bytes_reads_env_override() {
+        let _guard = env_lock().lock().expect("env lock");
+        std::env::set_var("EGUARD_MAX_BUNDLE_DOWNLOAD_BYTES", "1048576");
+        assert_eq!(max_bundle_download_bytes(), 1_048_576);
+        std::env::remove_var("EGUARD_MAX_BUNDLE_DOWNLOAD_BYTES");
+    }
 }

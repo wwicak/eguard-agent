@@ -8,6 +8,16 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use crate::errors::{ResponseError, ResponseResult};
 use crate::ProtectedList;
 
+#[cfg(target_os = "linux")]
+const DEFAULT_QUARANTINE_DIR: &str = "/var/lib/eguard-agent/quarantine";
+
+#[cfg(target_os = "macos")]
+const DEFAULT_QUARANTINE_DIR: &str = "/Library/Application Support/eGuard/quarantine";
+
+#[cfg(target_os = "windows")]
+const DEFAULT_QUARANTINE_DIR: &str = r"C:\ProgramData\eGuard\quarantine";
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 const DEFAULT_QUARANTINE_DIR: &str = "/var/lib/eguard-agent/quarantine";
 
 #[derive(Debug, Clone)]

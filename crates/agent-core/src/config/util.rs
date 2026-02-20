@@ -23,10 +23,47 @@ pub(super) fn split_csv(raw: &str) -> Vec<String> {
 }
 
 pub(super) fn default_agent_id() -> String {
-    std::env::var("HOSTNAME")
+    if let Some(hostname) = std::env::var("HOSTNAME")
         .ok()
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| "agent-dev-1".to_string())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        return hostname;
+    }
+
+    if let Some(machine_id) = read_machine_id_for_agent_id() {
+        let suffix = machine_id
+            .chars()
+            .filter(|ch| ch.is_ascii_hexdigit())
+            .take(12)
+            .collect::<String>();
+        if !suffix.is_empty() {
+            return format!("agent-{}", suffix.to_ascii_lowercase());
+        }
+    }
+
+    if let Some(hostname) = std::fs::read_to_string("/etc/hostname")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        return hostname;
+    }
+
+    format!("agent-{}", std::process::id())
+}
+
+fn read_machine_id_for_agent_id() -> Option<String> {
+    let path = std::env::var("EGUARD_MACHINE_ID_PATH")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "/etc/machine-id".to_string());
+
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 pub(super) fn parse_mode(raw: &str) -> AgentMode {
@@ -78,4 +115,46 @@ pub(super) fn has_explicit_port(address: &str) -> bool {
     }
 
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::default_agent_id;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn default_agent_id_prefers_hostname_env() {
+        let _guard = env_lock().lock().expect("env lock");
+        std::env::set_var("HOSTNAME", "agent-host-a");
+        let id = default_agent_id();
+        assert_eq!(id, "agent-host-a");
+        std::env::remove_var("HOSTNAME");
+    }
+
+    #[test]
+    fn default_agent_id_uses_machine_id_when_hostname_missing() {
+        let _guard = env_lock().lock().expect("env lock");
+        std::env::remove_var("HOSTNAME");
+
+        let path = std::env::temp_dir().join(format!(
+            "eguard-default-agent-id-machine-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        std::fs::write(&path, "AABBCCDDEEFF00112233\n").expect("write machine id");
+        std::env::set_var("EGUARD_MACHINE_ID_PATH", &path);
+
+        let id = default_agent_id();
+        assert_eq!(id, "agent-aabbccddeeff");
+
+        std::env::remove_var("EGUARD_MACHINE_ID_PATH");
+        let _ = std::fs::remove_file(path);
+    }
 }

@@ -13,6 +13,7 @@ use super::types::{EbpfError, PollBatch, Result};
 pub(super) struct LibbpfRingBufferBackend {
     _loaded: Vec<LoadedObject>,
     drop_counter_sources: Vec<DropCounterSource>,
+    failed_probes: Vec<String>,
     ring_buffer: libbpf_rs::RingBuffer<'static>,
     records: RecordSink,
     record_pool: RecordPool,
@@ -44,9 +45,14 @@ impl LibbpfRingBufferBackend {
             return Err(EbpfError::Backend("no eBPF ELF files provided".to_string()));
         }
 
+        let mut failed_probes = Vec::new();
         let mut loaded = Vec::with_capacity(elf_paths.len());
         for path in elf_paths {
-            loaded.push(load_object(path, ring_buffer_map)?);
+            loaded.push(load_object_with_degradation(
+                path,
+                ring_buffer_map,
+                &mut failed_probes,
+            )?);
         }
 
         let drop_counter_sources = collect_drop_counter_sources(&loaded)?;
@@ -56,15 +62,12 @@ impl LibbpfRingBufferBackend {
         Ok(Self {
             _loaded: loaded,
             drop_counter_sources,
+            failed_probes,
             ring_buffer,
             records,
             record_pool,
         })
     }
-}
-
-fn load_object(path: &Path, ring_buffer_map: &str) -> Result<LoadedObject> {
-    load_object_with_degradation(path, ring_buffer_map, &mut Vec::new())
 }
 
 /// Load eBPF object with graceful degradation.
@@ -180,6 +183,10 @@ impl RingBufferBackend for LibbpfRingBufferBackend {
             record.clear();
             pool.push(record);
         }
+    }
+
+    fn failed_probes(&self) -> Vec<String> {
+        self.failed_probes.clone()
     }
 }
 

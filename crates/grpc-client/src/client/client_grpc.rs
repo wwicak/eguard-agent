@@ -61,8 +61,9 @@ impl Client {
                     kernel_version: String::new(),
                     agent_version: self.agent_version.clone(),
                     machine_id: String::new(),
-                    // Send empty CSR unless client cert bootstrap is wired; server falls back to static cert material.
-                    csr: Vec::new(),
+                    // Placeholder PKCS#10 marker keeps enrollment compatible with servers that
+                    // reject empty CSR while still allowing static fallback issuance.
+                    csr: b"pkcs10-csr-placeholder".to_vec(),
                     capabilities: Some(pb::AgentCapabilities {
                         ebpf_supported: true,
                         lsm_supported: true,

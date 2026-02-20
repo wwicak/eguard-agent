@@ -14,12 +14,18 @@ pub struct LinuxHardeningConfig {
 impl Default for LinuxHardeningConfig {
     fn default() -> Self {
         Self {
-            set_dumpable_zero: env_bool("EGUARD_SELF_PROTECT_SET_DUMPABLE", true),
-            restrict_ptrace: env_bool("EGUARD_SELF_PROTECT_RESTRICT_PTRACE", true),
-            set_no_new_privs: env_bool("EGUARD_SELF_PROTECT_SET_NO_NEW_PRIVS", true),
-            drop_capability_bounding_set: env_bool("EGUARD_SELF_PROTECT_DROP_CAPS", true),
+            set_dumpable_zero: env_bool_debug_only("EGUARD_SELF_PROTECT_SET_DUMPABLE", true),
+            restrict_ptrace: env_bool_debug_only("EGUARD_SELF_PROTECT_RESTRICT_PTRACE", true),
+            set_no_new_privs: env_bool_debug_only("EGUARD_SELF_PROTECT_SET_NO_NEW_PRIVS", true),
+            drop_capability_bounding_set: env_bool_debug_only(
+                "EGUARD_SELF_PROTECT_DROP_CAPS",
+                true,
+            ),
             retained_capability_names: default_retained_capabilities(),
-            enable_seccomp_strict: env_bool("EGUARD_SELF_PROTECT_ENABLE_SECCOMP_STRICT", false),
+            enable_seccomp_strict: env_bool_debug_only(
+                "EGUARD_SELF_PROTECT_ENABLE_SECCOMP_STRICT",
+                false,
+            ),
         }
     }
 }
@@ -39,7 +45,7 @@ pub struct LinuxHardeningStep {
 }
 
 impl LinuxHardeningStep {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn applied(name: &'static str, detail: impl Into<String>) -> Self {
         Self {
             name,
@@ -56,7 +62,7 @@ impl LinuxHardeningStep {
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn failed(name: &'static str, detail: impl Into<String>) -> Self {
         Self {
             name,
@@ -345,12 +351,120 @@ fn run_prctl(name: &'static str, option: libc::c_int, arg2: libc::c_ulong) -> Re
     ))
 }
 
-fn env_bool(name: &str, default: bool) -> bool {
-    match std::env::var(name) {
-        Ok(raw) => matches!(
-            raw.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "enabled" | "on"
-        ),
-        Err(_) => default,
+// ── macOS hardening ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct MacosHardeningConfig {
+    pub deny_attach: bool,
+    pub verify_code_signature: bool,
+    pub set_dumpable_zero: bool,
+}
+
+impl Default for MacosHardeningConfig {
+    fn default() -> Self {
+        Self {
+            deny_attach: env_bool_debug_only("EGUARD_SELF_PROTECT_DENY_ATTACH", true),
+            verify_code_signature: env_bool_debug_only("EGUARD_SELF_PROTECT_VERIFY_CODESIGN", true),
+            set_dumpable_zero: env_bool_debug_only("EGUARD_SELF_PROTECT_SET_DUMPABLE", true),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct MacosHardeningReport {
+    pub steps: Vec<LinuxHardeningStep>,
+}
+
+impl MacosHardeningReport {
+    pub fn has_failures(&self) -> bool {
+        self.steps
+            .iter()
+            .any(|step| matches!(step.status, LinuxHardeningStepStatus::Failed))
+    }
+
+    pub fn failed_step_names(&self) -> Vec<&'static str> {
+        self.steps
+            .iter()
+            .filter(|step| matches!(step.status, LinuxHardeningStepStatus::Failed))
+            .map(|step| step.name)
+            .collect()
+    }
+}
+
+pub fn apply_macos_hardening(config: &MacosHardeningConfig) -> MacosHardeningReport {
+    let mut report = MacosHardeningReport { steps: Vec::new() };
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = config;
+        report.steps.push(LinuxHardeningStep::skipped(
+            "platform",
+            "macOS hardening is only supported on macOS",
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if config.deny_attach {
+            match deny_attach() {
+                Ok(()) => report.steps.push(LinuxHardeningStep::applied(
+                    "pt_deny_attach",
+                    "ptrace denied",
+                )),
+                Err(err) => report
+                    .steps
+                    .push(LinuxHardeningStep::failed("pt_deny_attach", err)),
+            }
+        } else {
+            report.steps.push(LinuxHardeningStep::skipped(
+                "pt_deny_attach",
+                "disabled by configuration",
+            ));
+        }
+
+        if config.set_dumpable_zero {
+            // macOS doesn't have PR_SET_DUMPABLE; PT_DENY_ATTACH covers the same ground
+            report.steps.push(LinuxHardeningStep::skipped(
+                "set_dumpable",
+                "covered by pt_deny_attach on macOS",
+            ));
+        }
+
+        if config.verify_code_signature {
+            report.steps.push(LinuxHardeningStep::skipped(
+                "verify_code_signature",
+                "stub: requires Security.framework",
+            ));
+        }
+    }
+
+    report
+}
+
+#[cfg(target_os = "macos")]
+fn deny_attach() -> Result<(), String> {
+    const PT_DENY_ATTACH: libc::c_int = 31;
+    let ret = unsafe { libc::ptrace(PT_DENY_ATTACH, 0, std::ptr::null_mut::<libc::c_char>(), 0) };
+    if ret == 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "PT_DENY_ATTACH failed: {}",
+            std::io::Error::last_os_error()
+        ))
+    }
+}
+
+fn env_bool_debug_only(name: &str, default: bool) -> bool {
+    if cfg!(debug_assertions) {
+        match std::env::var(name) {
+            Ok(raw) => matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "enabled" | "on"
+            ),
+            Err(_) => default,
+        }
+    } else {
+        default
     }
 }

@@ -1,5 +1,5 @@
 use super::bootstrap::parse_bootstrap_config;
-use super::crypto::encrypt_agent_config_for_tests;
+use super::crypto::{encrypt_agent_config_for_tests, encrypt_agent_config_for_tests_legacy};
 use super::file::{apply_response_policy, FileResponsePolicy};
 use super::paths::{
     expected_config_files, expected_data_paths, remove_bootstrap_config, resolve_bootstrap_path,
@@ -47,6 +47,7 @@ fn clear_env() {
         "EGUARD_POLICY_REFRESH_INTERVAL_SECS",
         "EGUARD_MACHINE_ID_PATH",
         "EGUARD_CONFIG_TPM2_SEAL",
+        "EGUARD_CONFIG_KEY_SEED_PATH",
         "EGUARD_KERNEL_INTEGRITY_ENABLED",
         "EGUARD_KERNEL_INTEGRITY_INTERVAL_SECS",
         "EGUARD_KERNEL_INTEGRITY_PROC_MODULES_PATH",
@@ -120,6 +121,8 @@ fn encrypted_file_config_is_loaded_with_machine_id_key() {
         std::env::temp_dir().join(format!("eguard-agent-config-encrypted-{suffix}.toml"));
     let machine_id_path =
         std::env::temp_dir().join(format!("eguard-agent-machine-id-encrypted-{suffix}.txt"));
+    let key_seed_path =
+        std::env::temp_dir().join(format!("eguard-agent-config-key-seed-{suffix}.bin"));
 
     let plaintext = "[agent]\nserver_addr=\"10.8.8.8:50052\"\n[transport]\nmode=\"grpc\"\n";
     let encrypted = encrypt_agent_config_for_tests(plaintext, "machine-a", None, [7u8; 12])
@@ -127,9 +130,11 @@ fn encrypted_file_config_is_loaded_with_machine_id_key() {
 
     std::fs::write(&config_path, encrypted).expect("write encrypted config");
     std::fs::write(&machine_id_path, "machine-a\n").expect("write machine id");
+    std::fs::write(&key_seed_path, b"test-config-key-seed").expect("write key seed");
 
     std::env::set_var("EGUARD_AGENT_CONFIG", &config_path);
     std::env::set_var("EGUARD_MACHINE_ID_PATH", &machine_id_path);
+    std::env::set_var("EGUARD_CONFIG_KEY_SEED_PATH", &key_seed_path);
     let cfg = AgentConfig::load().expect("load encrypted config");
 
     assert_eq!(cfg.server_addr, "10.8.8.8:50052");
@@ -138,6 +143,7 @@ fn encrypted_file_config_is_loaded_with_machine_id_key() {
     clear_env();
     let _ = std::fs::remove_file(config_path);
     let _ = std::fs::remove_file(machine_id_path);
+    let _ = std::fs::remove_file(key_seed_path);
 }
 
 #[test]
@@ -155,6 +161,8 @@ fn encrypted_file_config_fails_when_authentication_fails() {
     let machine_id_path = std::env::temp_dir().join(format!(
         "eguard-agent-machine-id-encrypted-fail-{suffix}.txt"
     ));
+    let key_seed_path =
+        std::env::temp_dir().join(format!("eguard-agent-config-key-seed-fail-{suffix}.bin"));
 
     let plaintext = "[agent]\nserver_addr=\"10.7.7.7:50052\"\n";
     let encrypted = encrypt_agent_config_for_tests(plaintext, "machine-a", None, [8u8; 12])
@@ -162,9 +170,11 @@ fn encrypted_file_config_fails_when_authentication_fails() {
 
     std::fs::write(&config_path, encrypted).expect("write encrypted config");
     std::fs::write(&machine_id_path, "machine-b\n").expect("write machine id");
+    std::fs::write(&key_seed_path, b"test-config-key-seed").expect("write key seed");
 
     std::env::set_var("EGUARD_AGENT_CONFIG", &config_path);
     std::env::set_var("EGUARD_MACHINE_ID_PATH", &machine_id_path);
+    std::env::set_var("EGUARD_CONFIG_KEY_SEED_PATH", &key_seed_path);
     let err = AgentConfig::load().expect_err("decryption auth failure must fail startup");
     let err_text = err.to_string();
     assert!(
@@ -176,6 +186,47 @@ fn encrypted_file_config_fails_when_authentication_fails() {
     clear_env();
     let _ = std::fs::remove_file(config_path);
     let _ = std::fs::remove_file(machine_id_path);
+    let _ = std::fs::remove_file(key_seed_path);
+}
+
+#[test]
+// AC-ATP-095 legacy compatibility
+fn encrypted_file_config_legacy_key_is_still_accepted() {
+    let _guard = env_lock().lock().expect("env lock");
+    clear_env();
+
+    let suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let config_path = std::env::temp_dir().join(format!(
+        "eguard-agent-config-encrypted-legacy-{suffix}.toml"
+    ));
+    let machine_id_path = std::env::temp_dir().join(format!(
+        "eguard-agent-machine-id-encrypted-legacy-{suffix}.txt"
+    ));
+    let key_seed_path =
+        std::env::temp_dir().join(format!("eguard-agent-config-key-seed-legacy-{suffix}.bin"));
+
+    let plaintext = "[agent]\nserver_addr=\"10.6.6.6:50052\"\n";
+    let encrypted = encrypt_agent_config_for_tests_legacy(plaintext, "machine-a", None, [9u8; 12])
+        .expect("encrypt config with legacy key");
+
+    std::fs::write(&config_path, encrypted).expect("write encrypted config");
+    std::fs::write(&machine_id_path, "machine-a\n").expect("write machine id");
+    std::fs::write(&key_seed_path, b"different-seed-material").expect("write key seed");
+
+    std::env::set_var("EGUARD_AGENT_CONFIG", &config_path);
+    std::env::set_var("EGUARD_MACHINE_ID_PATH", &machine_id_path);
+    std::env::set_var("EGUARD_CONFIG_KEY_SEED_PATH", &key_seed_path);
+
+    let cfg = AgentConfig::load().expect("load legacy encrypted config");
+    assert_eq!(cfg.server_addr, "10.6.6.6:50052");
+
+    clear_env();
+    let _ = std::fs::remove_file(config_path);
+    let _ = std::fs::remove_file(machine_id_path);
+    let _ = std::fs::remove_file(key_seed_path);
 }
 
 #[test]

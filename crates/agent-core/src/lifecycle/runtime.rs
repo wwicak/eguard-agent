@@ -8,7 +8,9 @@ use baseline::BaselineStore;
 use compliance::{CompliancePolicy, ComplianceResult, RemediationOutcome};
 use grpc_client::{Client as GrpcClient, CommandEnvelope, EventBuffer, TlsConfig, TransportMode};
 use response::{AutoIsolationState, HostControlState, KillRateLimiter, ProtectedList};
-use self_protect::{apply_linux_hardening, LinuxHardeningConfig, SelfProtectEngine};
+use self_protect::SelfProtectEngine;
+#[cfg(target_os = "linux")]
+use self_protect::{apply_linux_hardening, LinuxHardeningConfig};
 use tokio::task::JoinSet;
 
 use crate::config::{AgentConfig, AgentMode};
@@ -166,10 +168,11 @@ impl AgentRuntime {
             }
         }
 
-        if std::env::var("EGUARD_ENABLE_BOOTSTRAP_TEST_COMMAND")
-            .ok()
-            .as_deref()
-            == Some("1")
+        if cfg!(debug_assertions)
+            && std::env::var("EGUARD_ENABLE_BOOTSTRAP_TEST_COMMAND")
+                .ok()
+                .as_deref()
+                == Some("1")
         {
             client.enqueue_mock_command(CommandEnvelope {
                 command_id: "bootstrap-isolate-check".to_string(),
@@ -178,39 +181,60 @@ impl AgentRuntime {
             });
         }
 
-        let mut hardening_config = LinuxHardeningConfig {
-            drop_capability_bounding_set: config.self_protection_prevent_uninstall,
-            ..LinuxHardeningConfig::default()
-        };
-        if config.detection_memory_scan_enabled
-            && !hardening_config
-                .retained_capability_names
-                .iter()
-                .any(|cap| cap == "CAP_SYS_PTRACE")
+        #[cfg(target_os = "linux")]
         {
-            hardening_config
-                .retained_capability_names
-                .push("CAP_SYS_PTRACE".to_string());
+            let mut hardening_config = LinuxHardeningConfig {
+                drop_capability_bounding_set: config.self_protection_prevent_uninstall,
+                ..LinuxHardeningConfig::default()
+            };
+            if config.detection_memory_scan_enabled
+                && !hardening_config
+                    .retained_capability_names
+                    .iter()
+                    .any(|cap| cap == "CAP_SYS_PTRACE")
+            {
+                hardening_config
+                    .retained_capability_names
+                    .push("CAP_SYS_PTRACE".to_string());
+            }
+            let hardening_report = apply_linux_hardening(&hardening_config);
+            if hardening_report.has_failures() {
+                warn!(
+                    failed_steps = ?hardening_report.failed_step_names(),
+                    dropped_capabilities = hardening_report.dropped_capability_count,
+                    "linux hardening applied with failures"
+                );
+            } else {
+                info!(
+                    dropped_capabilities = hardening_report.dropped_capability_count,
+                    "linux hardening applied"
+                );
+            }
         }
-        let hardening_report = apply_linux_hardening(&hardening_config);
-        if hardening_report.has_failures() {
-            warn!(
-                failed_steps = ?hardening_report.failed_step_names(),
-                dropped_capabilities = hardening_report.dropped_capability_count,
-                "linux hardening applied with failures"
-            );
-        } else {
-            info!(
-                dropped_capabilities = hardening_report.dropped_capability_count,
-                "linux hardening applied"
-            );
+
+        #[cfg(target_os = "macos")]
+        {
+            info!("macOS hardening: stub (Phase 4 will implement)");
         }
 
         let initial_mode = derive_runtime_mode(&config.mode, baseline_store.status);
 
         let mut runtime = Self {
             limiter: KillRateLimiter::new(config.response.max_kills_per_minute),
-            protected: ProtectedList::default_linux(),
+            protected: {
+                #[cfg(target_os = "linux")]
+                {
+                    ProtectedList::default_linux()
+                }
+                #[cfg(target_os = "macos")]
+                {
+                    ProtectedList::default_macos()
+                }
+                #[cfg(target_os = "windows")]
+                {
+                    ProtectedList::default_linux()
+                }
+            },
             compliance_policy,
             compliance_policy_id,
             compliance_policy_version,

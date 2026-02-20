@@ -154,3 +154,152 @@ mod windows_engine {
 pub use windows_engine::{
     scan_kernel_integrity, EbpfEngine, EbpfStats, KernelIntegrityScanOptions,
 };
+
+#[cfg(target_os = "macos")]
+pub use platform_macos::{
+    enrich_event_with_cache, EnrichedEvent, EnrichmentCache, EventType, RawEvent,
+};
+
+#[cfg(target_os = "macos")]
+mod macos_engine {
+    use std::collections::HashMap;
+    use std::fmt;
+    use std::io;
+    use std::time::Duration;
+
+    use platform_macos::EsfEngine;
+
+    use super::RawEvent;
+
+    #[derive(Debug, Clone, Default, PartialEq, Eq)]
+    pub struct EbpfStats {
+        pub events_received: u64,
+        pub events_dropped: u64,
+        pub parse_errors: u64,
+        pub per_probe_events: HashMap<String, u64>,
+        pub per_probe_errors: HashMap<String, u64>,
+        pub failed_probes: Vec<String>,
+        pub kernel_version: String,
+        pub btf_available: bool,
+        pub lsm_available: bool,
+    }
+
+    #[derive(Debug)]
+    pub enum EbpfError {
+        Backend(String),
+    }
+
+    impl fmt::Display for EbpfError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            match self {
+                Self::Backend(msg) => write!(f, "ESF backend error: {msg}"),
+            }
+        }
+    }
+
+    impl std::error::Error for EbpfError {}
+
+    pub type Result<T> = std::result::Result<T, EbpfError>;
+
+    pub struct EbpfEngine {
+        esf: EsfEngine,
+        stats: EbpfStats,
+        enabled: bool,
+        started: bool,
+    }
+
+    impl EbpfEngine {
+        pub fn disabled() -> Self {
+            Self {
+                esf: EsfEngine::new(),
+                stats: EbpfStats {
+                    kernel_version: "macos".to_string(),
+                    ..EbpfStats::default()
+                },
+                enabled: false,
+                started: false,
+            }
+        }
+
+        pub fn from_esf() -> Result<Self> {
+            Ok(Self {
+                esf: EsfEngine::new(),
+                stats: EbpfStats {
+                    kernel_version: "macos".to_string(),
+                    ..EbpfStats::default()
+                },
+                enabled: true,
+                started: false,
+            })
+        }
+
+        pub fn poll_once(&mut self, _timeout: Duration) -> Result<Vec<RawEvent>> {
+            if !self.enabled {
+                return Ok(Vec::new());
+            }
+
+            if !self.started {
+                self.esf
+                    .start()
+                    .map_err(|err| EbpfError::Backend(err.to_string()))?;
+                self.started = true;
+            }
+
+            let events = self
+                .esf
+                .poll_events(256)
+                .map_err(|err| EbpfError::Backend(err.to_string()))?;
+
+            let esf_stats = self.esf.stats();
+            self.stats.events_received = self
+                .stats
+                .events_received
+                .saturating_add(events.len() as u64);
+            self.stats.events_dropped = esf_stats.events_dropped;
+            self.stats.per_probe_events.insert(
+                "esf".to_string(),
+                self.stats
+                    .per_probe_events
+                    .get("esf")
+                    .copied()
+                    .unwrap_or_default()
+                    .saturating_add(events.len() as u64),
+            );
+
+            Ok(events)
+        }
+
+        pub fn stats(&self) -> EbpfStats {
+            self.stats.clone()
+        }
+    }
+
+    #[derive(Debug, Clone, Default)]
+    pub struct KernelIntegrityScanOptions;
+
+    impl KernelIntegrityScanOptions {
+        pub fn from_env() -> Self {
+            Self
+        }
+    }
+
+    #[derive(Debug, Clone, Default)]
+    pub struct KernelIntegrityReport {
+        pub indicators: Vec<String>,
+    }
+
+    impl KernelIntegrityReport {
+        pub fn command_line(&self) -> String {
+            "indicators=none; collector=esf; kernel_integrity=not_applicable".to_string()
+        }
+    }
+
+    pub fn scan_kernel_integrity(
+        _opts: &KernelIntegrityScanOptions,
+    ) -> io::Result<KernelIntegrityReport> {
+        Ok(KernelIntegrityReport::default())
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub use macos_engine::{scan_kernel_integrity, EbpfEngine, EbpfStats, KernelIntegrityScanOptions};

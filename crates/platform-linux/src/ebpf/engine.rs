@@ -32,6 +32,7 @@ impl EbpfEngine {
         let backend = LibbpfRingBufferBackend::new(elf_path.to_path_buf(), ring_buffer_map)?;
         let mut stats = EbpfStats::default();
         detect_kernel_capabilities(&mut stats);
+        stats.failed_probes = backend.failed_probes();
         Ok(Self {
             backend: Box::new(backend),
             stats,
@@ -43,6 +44,7 @@ impl EbpfEngine {
         let backend = LibbpfRingBufferBackend::new_many(elf_paths, ring_buffer_map)?;
         let mut stats = EbpfStats::default();
         detect_kernel_capabilities(&mut stats);
+        stats.failed_probes = backend.failed_probes();
         Ok(Self {
             backend: Box::new(backend),
             stats,

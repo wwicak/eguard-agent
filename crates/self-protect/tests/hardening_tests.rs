@@ -1,3 +1,5 @@
+use std::sync::{Mutex, OnceLock};
+
 use self_protect::{
     apply_linux_hardening, capability_number, default_retained_capabilities, LinuxHardeningConfig,
     LinuxHardeningStepStatus,
@@ -38,4 +40,25 @@ fn hardening_can_be_disabled_per_step_for_non_privileged_execution_paths() {
             LinuxHardeningStepStatus::Skipped | LinuxHardeningStepStatus::Applied
         )
     }));
+}
+
+fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("env lock")
+}
+
+#[test]
+fn linux_hardening_default_honors_env_toggles_in_debug_builds() {
+    let _guard = env_lock();
+    std::env::set_var("EGUARD_SELF_PROTECT_SET_DUMPABLE", "0");
+    std::env::set_var("EGUARD_SELF_PROTECT_RESTRICT_PTRACE", "0");
+
+    let config = LinuxHardeningConfig::default();
+    assert!(!config.set_dumpable_zero);
+    assert!(!config.restrict_ptrace);
+
+    std::env::remove_var("EGUARD_SELF_PROTECT_SET_DUMPABLE");
+    std::env::remove_var("EGUARD_SELF_PROTECT_RESTRICT_PTRACE");
 }

@@ -94,15 +94,22 @@ impl TemporalPredicate {
                 return false;
             };
 
+            let normalized_path = path.to_ascii_lowercase();
             let exact_ok = self
                 .file_path_any_of
                 .as_ref()
-                .map(|set| set.contains(path))
+                .map(|set| {
+                    set.contains(&normalized_path)
+                        || set.iter().any(|needle| needle.eq_ignore_ascii_case(path))
+                })
                 .unwrap_or(false);
             let contains_ok = self
                 .file_path_contains
                 .as_ref()
-                .map(|set| set.iter().any(|needle| path.contains(needle)))
+                .map(|set| {
+                    set.iter()
+                        .any(|needle| normalized_path.contains(&needle.to_ascii_lowercase()))
+                })
                 .unwrap_or(false);
 
             if !exact_ok && !contains_ok {

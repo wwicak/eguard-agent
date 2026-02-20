@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 use std::fs;
 
 #[cfg(unix)]
@@ -35,7 +35,7 @@ pub trait SignalSender {
 
 pub struct ProcfsIntrospector;
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 impl ProcessIntrospector for ProcfsIntrospector {
     fn children_of(&self, pid: u32) -> Vec<u32> {
         let path = format!("/proc/{}/task/{}/children", pid, pid);
@@ -56,6 +56,176 @@ impl ProcessIntrospector for ProcfsIntrospector {
         } else {
             Some(name.to_string())
         }
+    }
+}
+
+/// macOS process introspector that caches the process table snapshot.
+///
+/// Fetches the full process table once via `sysctl(KERN_PROC_ALL)` on first
+/// use, then serves `children_of()` and `process_name()` from the snapshot.
+/// This avoids O(n*d) sysctl calls when walking a process tree.
+#[cfg(target_os = "macos")]
+pub struct MacosProcessIntrospector {
+    /// ppid -> Vec<child_pid>
+    children_map: std::collections::HashMap<u32, Vec<u32>>,
+    /// pid -> process name
+    name_map: std::collections::HashMap<u32, String>,
+}
+
+#[cfg(target_os = "macos")]
+impl MacosProcessIntrospector {
+    pub fn snapshot() -> Self {
+        let (children_map, name_map) = build_process_maps();
+        Self {
+            children_map,
+            name_map,
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl ProcessIntrospector for MacosProcessIntrospector {
+    fn children_of(&self, pid: u32) -> Vec<u32> {
+        self.children_map.get(&pid).cloned().unwrap_or_default()
+    }
+
+    fn process_name(&self, pid: u32) -> Option<String> {
+        self.name_map.get(&pid).cloned()
+    }
+}
+
+/// Fetch the full process table once and build parent->children + pid->name maps.
+#[cfg(target_os = "macos")]
+fn build_process_maps() -> (
+    std::collections::HashMap<u32, Vec<u32>>,
+    std::collections::HashMap<u32, String>,
+) {
+    use std::mem;
+    use std::ptr;
+
+    let mut children_map: std::collections::HashMap<u32, Vec<u32>> =
+        std::collections::HashMap::new();
+    let mut name_map: std::collections::HashMap<u32, String> = std::collections::HashMap::new();
+
+    let mut mib: [libc::c_int; 4] = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_ALL, 0];
+    let mut size: libc::size_t = 0;
+
+    let ret = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            ptr::null_mut(),
+            &mut size,
+            ptr::null_mut(),
+            0,
+        )
+    };
+    if ret != 0 || size == 0 {
+        return (children_map, name_map);
+    }
+
+    // Add extra space for processes that may appear between calls.
+    size += size / 10;
+    let mut buf: Vec<u8> = vec![0u8; size];
+
+    let ret = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            buf.as_mut_ptr() as *mut libc::c_void,
+            &mut size,
+            ptr::null_mut(),
+            0,
+        )
+    };
+    if ret != 0 {
+        return (children_map, name_map);
+    }
+
+    let kinfo_size = mem::size_of::<libc::kinfo_proc>();
+    let count = size / kinfo_size;
+
+    for i in 0..count {
+        let offset = i * kinfo_size;
+        if offset + kinfo_size > buf.len() {
+            break;
+        }
+        let kinfo = unsafe { &*(buf.as_ptr().add(offset) as *const libc::kinfo_proc) };
+        let ppid = kinfo.kp_eproc.e_ppid as u32;
+        let pid = kinfo.kp_proc.p_pid as u32;
+
+        if pid != ppid {
+            children_map.entry(ppid).or_default().push(pid);
+        }
+
+        let comm = &kinfo.kp_proc.p_comm;
+        let name: String = comm
+            .iter()
+            .take_while(|&&c| c != 0)
+            .map(|&c| c as u8 as char)
+            .collect();
+        if !name.is_empty() {
+            name_map.insert(pid, name);
+        }
+    }
+
+    (children_map, name_map)
+}
+
+#[cfg(target_os = "macos")]
+impl ProcessIntrospector for ProcfsIntrospector {
+    fn children_of(&self, pid: u32) -> Vec<u32> {
+        // Fallback for the trait-object interface. For tree walks,
+        // prefer MacosProcessIntrospector::snapshot() instead.
+        let snapshot = MacosProcessIntrospector::snapshot();
+        snapshot.children_of(pid)
+    }
+
+    fn process_name(&self, pid: u32) -> Option<String> {
+        process_name_macos(pid)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn process_name_macos(pid: u32) -> Option<String> {
+    use std::mem;
+    use std::ptr;
+
+    let mut mib: [libc::c_int; 4] = [
+        libc::CTL_KERN,
+        libc::KERN_PROC,
+        libc::KERN_PROC_PID,
+        pid as libc::c_int,
+    ];
+    let mut info: libc::kinfo_proc = unsafe { mem::zeroed() };
+    let mut size = mem::size_of::<libc::kinfo_proc>();
+
+    let ret = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            4,
+            &mut info as *mut _ as *mut libc::c_void,
+            &mut size,
+            ptr::null_mut(),
+            0,
+        )
+    };
+
+    if ret != 0 || size == 0 {
+        return None;
+    }
+
+    let comm = &info.kp_proc.p_comm;
+    let name: String = comm
+        .iter()
+        .take_while(|&&c| c != 0)
+        .map(|&c| c as u8 as char)
+        .collect();
+
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
     }
 }
 
@@ -120,7 +290,16 @@ impl SignalSender for NixSignalSender {
 }
 
 pub fn kill_process_tree(pid: u32, protected: &ProtectedList) -> ResponseResult<KillReport> {
-    kill_process_tree_with(pid, protected, &ProcfsIntrospector, &NixSignalSender)
+    #[cfg(target_os = "macos")]
+    {
+        // Use snapshot-based introspector to avoid O(n*d) sysctl calls.
+        let introspector = MacosProcessIntrospector::snapshot();
+        kill_process_tree_with(pid, protected, &introspector, &NixSignalSender)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        kill_process_tree_with(pid, protected, &ProcfsIntrospector, &NixSignalSender)
+    }
 }
 
 pub fn kill_process_tree_with(

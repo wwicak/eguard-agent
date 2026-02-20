@@ -26,7 +26,7 @@ pub fn remove_bootstrap_config(path: &Path) -> Result<()> {
 }
 
 #[cfg(test)]
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
 pub fn expected_config_files() -> &'static [&'static str] {
     &[
         "/etc/eguard-agent/bootstrap.conf",
@@ -34,6 +34,18 @@ pub fn expected_config_files() -> &'static [&'static str] {
         "/etc/eguard-agent/certs/agent.crt",
         "/etc/eguard-agent/certs/agent.key",
         "/etc/eguard-agent/certs/ca.crt",
+    ]
+}
+
+#[cfg(test)]
+#[cfg(target_os = "macos")]
+pub fn expected_config_files() -> &'static [&'static str] {
+    &[
+        "/Library/Application Support/eGuard/bootstrap.conf",
+        "/Library/Application Support/eGuard/agent.conf",
+        "/Library/Application Support/eGuard/certs/agent.crt",
+        "/Library/Application Support/eGuard/certs/agent.key",
+        "/Library/Application Support/eGuard/certs/ca.crt",
     ]
 }
 
@@ -50,7 +62,7 @@ pub fn expected_config_files() -> &'static [&'static str] {
 }
 
 #[cfg(test)]
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
 pub fn expected_data_paths() -> &'static [&'static str] {
     &[
         "/var/lib/eguard-agent/buffer.db",
@@ -60,6 +72,20 @@ pub fn expected_data_paths() -> &'static [&'static str] {
         "/var/lib/eguard-agent/rules/ioc/",
         "/var/lib/eguard-agent/quarantine/",
         "/var/lib/eguard-agent/rules-staging/",
+    ]
+}
+
+#[cfg(test)]
+#[cfg(target_os = "macos")]
+pub fn expected_data_paths() -> &'static [&'static str] {
+    &[
+        "/Library/Application Support/eGuard/buffer.db",
+        "/Library/Application Support/eGuard/baselines.bin",
+        "/Library/Application Support/eGuard/rules/sigma/",
+        "/Library/Application Support/eGuard/rules/yara/",
+        "/Library/Application Support/eGuard/rules/ioc/",
+        "/Library/Application Support/eGuard/quarantine/",
+        "/Library/Application Support/eGuard/rules-staging/",
     ]
 }
 

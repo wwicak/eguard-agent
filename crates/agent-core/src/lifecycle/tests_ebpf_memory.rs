@@ -6,6 +6,58 @@ use baseline::{BaselineStore, ProcessKey};
 use detection::YaraEngine;
 use grpc_client::{Client, EventBuffer, EventEnvelope, TlsConfig};
 use platform_linux::{enrich_event_with_cache, EnrichmentCache, EventType, RawEvent};
+use sha2::{Digest, Sha256};
+
+const TEST_TLS_CERT_PEM: &str = r#"-----BEGIN CERTIFICATE-----
+MIIDCTCCAfGgAwIBAgIUI4b0+0cALrkjJ4/SAQsAo6QwvIMwDQYJKoZIhvcNAQEL
+BQAwFDESMBAGA1UEAwwJbG9jYWxob3N0MB4XDTI2MDIyMDA4MDQxNVoXDTI2MDIy
+MTA4MDQxNVowFDESMBAGA1UEAwwJbG9jYWxob3N0MIIBIjANBgkqhkiG9w0BAQEF
+AAOCAQ8AMIIBCgKCAQEAkaEeDXidBSzEO7y9NT2JkZvITx48tRqBKMxJkSS04FBf
+Pi5kiq32HC4IXbj0HIjRZJu6jef4esOXQiVh3gNMGBwaV41aMtVPtBWa9SYJsOUT
+gQrzc87pEiuxLqAc1fb/+Is35DoU9jtlORcVURjiWjsZUWD+jcNDhtLhcm2i4MTh
+YS7lP5oA08z05K/JgJDGvXbbxpYrV+yIbvI/OAAl+mp8SJ+WMZKOtZlhTf0hsusb
+QKpgs+jRfZaS4LxSBgZngJxXwVqm9VsjsfVauPBlYlIgU3Mles2rpcmR7LpjE309
+i3NXuY2L5HTxz4sMvLNSkcYGPjF7P+jTiBZvHznnRQIDAQABo1MwUTAdBgNVHQ4E
+FgQU6gSW97DWAROVa/DKFJY12aH3vjYwHwYDVR0jBBgwFoAU6gSW97DWAROVa/DK
+FJY12aH3vjYwDwYDVR0TAQH/BAUwAwEB/zANBgkqhkiG9w0BAQsFAAOCAQEASBJi
++gvydUtbAAW5Iyl8b7mR374czBmEk5HaCx7IVOJf6V80XaWrfH1OkvPqoxrazRz2
+RoFbgPYpo0zfAs+jKEYoNCCoAWKOl4qgkoIGaISDvI2Khp6o3vuCYF0AlOfcTZxQ
+/8o//t+RI53eUV7vSA6K524onvzN38mkPAbrx1q2OxGcoOOHqrmc3dF0oarY9VMx
+GoH9i2G98+AQZTCpnfL5224qwUo7rSEHW+jldo36g2z5s+C0Sl2T3N7k3g4Y5JA+
+E663EZFt4zXsEHEG+SIOSnbL1UNigk/wQB+Yw8x9yrGodxxOwJWjwFpZqTIYbseN
+p+G214VskQBMXsDneg==
+-----END CERTIFICATE-----
+"#;
+
+const TEST_TLS_KEY_PEM: &str = r#"-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCRoR4NeJ0FLMQ7
+vL01PYmRm8hPHjy1GoEozEmRJLTgUF8+LmSKrfYcLghduPQciNFkm7qN5/h6w5dC
+JWHeA0wYHBpXjVoy1U+0FZr1Jgmw5ROBCvNzzukSK7EuoBzV9v/4izfkOhT2O2U5
+FxVRGOJaOxlRYP6Nw0OG0uFybaLgxOFhLuU/mgDTzPTkr8mAkMa9dtvGlitX7Ihu
+8j84ACX6anxIn5Yxko61mWFN/SGy6xtAqmCz6NF9lpLgvFIGBmeAnFfBWqb1WyOx
+9Vq48GViUiBTcyV6zaulyZHsumMTfT2Lc1e5jYvkdPHPiwy8s1KRxgY+MXs/6NOI
+Fm8fOedFAgMBAAECggEALaZLNN7Tnb0oMC+cQfWty3KBSmfIkN6jkSXkg7Z1aoFX
+Mbc6NgyNAs1dOv/QqacruDVmt7f4+IaaQhZUxNLUxhP9H+fD1/5s0x8YqXMIg6Zz
+RDaqFOnNvq/qhRqUn2+jUoZVeVnJm1wIAWreeELsJWu0JoHYmZiVcMxm9kcu0PT9
+BL1oCT64kfo7HZ7DA27yhAXUC2pMNuLd5yJsQdOFtFtssc6SRysSoVGeRiuHqWsf
+Hv0bPaCVZBmUx7eQhBDaZryEtSVEcXCawBC8JqIZwoCpf9x8/Fradc0YY1+vHLqL
+vmBji/A2yZirrGRtZk11xfc+7DOKHt2c8k6GwXne2wKBgQDNoagwlJVX0ImtgUc6
+M+/Id28hoiJEkOB2HNZPNwCCFv5SFqoYM2B0EDihdpFXuOiWH3xgfYwISFrL8i7b
+E1Hf00+0/ySuqrQdzPHsfjIlgAzVhg6vum/s2GdRALpQ/5OLBGCBJpI4qQqELur3
+sqWqkfAZcUiCqJig++uuDs44LwKBgQC1TPauGvFlsal8XQk1wXrExvavdChXI6vk
+I4/XjTXaW8XS3PAgYVV9mmCvmDHNV4EAm52wbPIF5Hpdosbom0WMrD9T5q3nNfKB
+X0Jx62+YQjFnYdUTQKbVYV42uP65lzqPO1aHfYHvqXTRUUuHOEloVDYXOc3be4WC
+bp1/YvHGywKBgHbYKHGzXkD7iKbbocP0wm/U/0isASwpo2EAN6hevI9zJJdi+/my
+r9tEiMZg1Y2ik+I33lWSGf2re7aFiSkamGZJJbcRAy1kAWd7zJKHOQpNYJ2DtjdA
+BHIZfFTnm8c2fxqIdBIQrc/LewV8bFauTGsxn1fFDkhdkqDwGH1nly4HAoGAQ4tI
+29Rt2tU1r395zu0mL+lwPi2oWc6QW45kKIoTZiaKrORjEa0xjHnXS5QH+dh/1xoi
+xXfRMyDL9daPBFnUr3P8o+VtJJaUol47AvYTvUXr4fgwydtsTFLaJskFHV+aEYKp
+2hCIOCGJw/HlkZsGvjehb0W5y+tY8h8DzlGugcECgYEAw+GaKdV4SXd3ecEbRMJk
+KDUP1TtO8uIB3d5cnhnU3IDOm6cCrJXdR6v7nGlNKo4iYp1QxcsFnFaIvHKCCuYq
+jB/mQyzOS6pFOa9+n7Er/YqvKrFdd5zu9Dsd8wITt8Pro+hxYwCTCUpLmS4iwLBT
+KGAhDDhPs7EWhQ5WMxhkZH8=
+-----END PRIVATE KEY-----
+"#;
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -137,9 +189,14 @@ fn runtime_stack_runs_async_client_paths_with_tls_configuration() {
     let cert = temp.join("agent.crt");
     let key = temp.join("agent.key");
     let ca = temp.join("ca.crt");
-    std::fs::write(&cert, b"cert").expect("write cert");
-    std::fs::write(&key, b"key").expect("write key");
-    std::fs::write(&ca, b"ca").expect("write ca");
+    std::fs::write(&cert, TEST_TLS_CERT_PEM).expect("write cert");
+    std::fs::write(&key, TEST_TLS_KEY_PEM).expect("write key");
+    std::fs::write(&ca, TEST_TLS_CERT_PEM).expect("write ca");
+
+    let ca_hash = {
+        let digest = Sha256::digest(TEST_TLS_CERT_PEM.as_bytes());
+        format!("{:x}", digest)
+    };
 
     let mut client = Client::new("127.0.0.1:50052".to_string());
     client
@@ -147,7 +204,7 @@ fn runtime_stack_runs_async_client_paths_with_tls_configuration() {
             cert_path: cert.to_string_lossy().to_string(),
             key_path: key.to_string_lossy().to_string(),
             ca_path: ca.to_string_lossy().to_string(),
-            pinned_ca_sha256: None,
+            pinned_ca_sha256: Some(ca_hash),
             ca_pin_path: None,
         })
         .expect("configure tls");

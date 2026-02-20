@@ -71,3 +71,16 @@ fn environ_bytes_are_normalized_to_newline_pairs() {
 fn empty_environ_bytes_normalize_to_none() {
     assert!(normalize_environ_bytes(b"\0\0").is_none());
 }
+
+#[cfg(unix)]
+#[test]
+fn nonblocking_pipe_capture_returns_without_blocking_when_writer_is_open() {
+    use std::os::fd::AsRawFd;
+
+    let (read_fd, _write_fd) = nix::unistd::pipe().expect("create pipe");
+    let path = std::path::PathBuf::from(format!("/proc/self/fd/{}", read_fd.as_raw_fd()));
+
+    let captured =
+        read_pipe_nonblocking_capped(&path, MAX_CAPTURE_BYTES).expect("nonblocking read works");
+    assert!(captured.is_empty());
+}

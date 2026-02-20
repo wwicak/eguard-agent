@@ -1719,6 +1719,13 @@ detection:
     let hits = engine.observe(&e1);
     assert!(hits.iter().any(|v| v == "sigma_credential_access"));
 
+    let mut e1_case = event(10, EventClass::FileOpen, "cat", "bash", 1000);
+    e1_case.pid = 779;
+    e1_case.session_id = e1_case.pid;
+    e1_case.file_path = Some("/Etc/Shadow".to_string());
+    let hits = engine.observe(&e1_case);
+    assert!(hits.iter().any(|v| v == "sigma_credential_access"));
+
     let mut e2 = event(11, EventClass::FileOpen, "cat", "bash", 1000);
     e2.pid = 778;
     e2.session_id = e2.pid;
