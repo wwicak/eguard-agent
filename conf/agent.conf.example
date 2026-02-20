@@ -8,6 +8,11 @@ mac = "aa:bb:cc:dd:ee:ff"
 # eGuard server endpoint (configured during enrollment)
 server_addr = ""
 
+# Optional persisted bootstrap values for restart-safe enrollment state.
+# These are written automatically after first successful enrollment.
+enrollment_token = ""
+tenant_id = ""
+
 # learning | active | degraded
 mode = "learning"
 

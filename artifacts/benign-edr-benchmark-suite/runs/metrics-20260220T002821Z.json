@@ -1,0 +1,74 @@
+{
+  "suite": "benign_edr_benchmark",
+  "recorded_at_utc": "2026-02-20T00:32:40Z",
+  "inputs": {
+    "vm_host": "edr@27.112.78.178",
+    "api_host": "eguard@157.10.161.219",
+    "api_base_url": "http://127.0.0.1:22224",
+    "agent_id": "agent-dev-1",
+    "samples_requested": 1,
+    "latency_timeout_secs": 60,
+    "latency_poll_interval_secs": 1,
+    "latency_query_per_page": 10,
+    "idle_window_secs": 10,
+    "load_window_secs": 10,
+    "warmup_secs": 10,
+    "false_positive_window_secs": 20,
+    "load_event_count": 80,
+    "load_event_spacing_ns": 100000000,
+    "load_measure_delay_secs": 3
+  },
+  "latency": {
+    "samples": [
+      {
+        "sample": 1,
+        "marker": "lat-marker-1-1771547303973",
+        "t0_ms": 1771547303973,
+        "status": "not_found"
+      }
+    ],
+    "summary": {
+      "ok_samples": 0,
+      "not_found_samples": 1,
+      "e2e_ms_mean": 0,
+      "e2e_ms_median": 0,
+      "e2e_ms_p95": 0,
+      "ingest_delay_s_mean": 0,
+      "ingest_delay_s_p95": 0
+    }
+  },
+  "resource": {
+    "idle": {
+      "window_secs": 10,
+      "cpu_usage_ns_start": 9952786000,
+      "cpu_usage_ns_end": 15405430000,
+      "cpu_avg_percent": 54.53,
+      "memory_bytes_start": 180572160,
+      "memory_bytes_end": 265244672,
+      "memory_peak_bytes_end": 410595328
+    },
+    "load": {
+      "window_secs": 10,
+      "cpu_usage_ns_start": 3398361000,
+      "cpu_usage_ns_end": 13546677000,
+      "cpu_avg_percent": 101.48,
+      "memory_bytes_start": 236556288,
+      "memory_bytes_end": 366522368,
+      "memory_peak_bytes_end": 366780416
+    }
+  },
+  "false_positive_window": {
+    "from_utc": "2026-02-20 00:32:15",
+    "counts": {
+      "all": 0,
+      "high": 0,
+      "critical": 0,
+      "medium": 0,
+      "info": 0
+    }
+  },
+  "cleanup": {
+    "replay_env_cleared": true,
+    "final_environment": "EGUARD_RULE_BUNDLE_PUBKEY_PATH=/etc/eguard-agent/rule_bundle_pubkey.hex RUST_LOG=info"
+  }
+}

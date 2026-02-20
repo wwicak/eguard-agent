@@ -1,0 +1,82 @@
+{
+  "suite": "benign_edr_benchmark_suite",
+  "recorded_at_utc": "2026-02-20T00:37:23Z",
+  "inputs": {
+    "runs_requested": 1,
+    "benchmark_script": "/home/dimas/eguard-agent/scripts/run_benign_edr_benchmark.sh",
+    "benchmark_args": [
+      "--samples",
+      "1",
+      "--latency-timeout-secs",
+      "40",
+      "--latency-query-per-page",
+      "10",
+      "--idle-window-secs",
+      "10",
+      "--load-window-secs",
+      "10",
+      "--warmup-secs",
+      "10",
+      "--false-positive-window-secs",
+      "10",
+      "--load-event-count",
+      "40",
+      "--load-event-spacing-ns",
+      "100000000",
+      "--load-measure-delay-secs",
+      "3"
+    ]
+  },
+  "gates": {
+    "enabled": false,
+    "require_cleanup": true,
+    "thresholds": {
+      "latency_p95_max_ms": 60000,
+      "ingest_p95_max_s": 30,
+      "idle_cpu_mean_max_pct": 5.0,
+      "load_cpu_mean_max_pct": 95.0,
+      "false_positive_all_max": 0
+    },
+    "status": "pass",
+    "failures": [
+      "idle cpu mean 62.32% > 5.0%"
+    ]
+  },
+  "runs": [
+    {
+      "run": 1,
+      "artifact_path": "/home/dimas/eguard-agent/artifacts/benign-edr-benchmark-suite/runs/metrics-20260220T003608Z.json",
+      "latency_ok_samples": 1,
+      "latency_e2e_ms_p95": 15729,
+      "latency_ingest_s_p95": 6,
+      "idle_cpu_avg_percent": 62.32,
+      "load_cpu_avg_percent": 93.67,
+      "false_positive_all": 0,
+      "cleanup_ok": true
+    }
+  ],
+  "summary": {
+    "runs_completed": 1,
+    "latency": {
+      "sample_count": 1,
+      "e2e_ms_mean": 15729,
+      "e2e_ms_median": 15729,
+      "e2e_ms_p95": 15729,
+      "ingest_s_mean": 6,
+      "ingest_s_p95": 6
+    },
+    "resource": {
+      "idle_cpu_mean_percent": 62.32,
+      "idle_cpu_p95_percent": 62.32,
+      "load_cpu_mean_percent": 93.67,
+      "load_cpu_p95_percent": 93.67
+    },
+    "false_positive": {
+      "all_mean": 0,
+      "all_max": 0
+    },
+    "cleanup": {
+      "all_runs_clean": true
+    }
+  }
+}

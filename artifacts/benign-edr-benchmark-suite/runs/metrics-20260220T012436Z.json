@@ -1,0 +1,80 @@
+{
+  "suite": "benign_edr_benchmark",
+  "recorded_at_utc": "2026-02-20T01:28:08Z",
+  "inputs": {
+    "vm_host": "edr@27.112.78.178",
+    "api_host": "eguard@157.10.161.219",
+    "api_base_url": "http://127.0.0.1:22224",
+    "agent_id": "agent-dev-1",
+    "samples_requested": 1,
+    "latency_timeout_secs": 60,
+    "latency_poll_interval_secs": 1,
+    "latency_query_per_page": 10,
+    "idle_window_secs": 60,
+    "load_window_secs": 30,
+    "warmup_secs": 60,
+    "false_positive_window_secs": 30,
+    "load_event_count": 100,
+    "load_event_spacing_ns": 100000000,
+    "load_measure_delay_secs": 3
+  },
+  "latency": {
+    "samples": [
+      {
+        "sample": 1,
+        "marker": "lat-marker-1-1771550677921",
+        "t0_ms": 1771550677921,
+        "t_found_ms": 1771550690690,
+        "id": 1541,
+        "created_at_utc": "2026-02-20 01:24:50",
+        "observed_unix": 1771550684,
+        "e2e_ms": 12769,
+        "ingest_delay_s": 6,
+        "status": "ok"
+      }
+    ],
+    "summary": {
+      "ok_samples": 1,
+      "not_found_samples": 0,
+      "e2e_ms_mean": 12769,
+      "e2e_ms_median": 12769,
+      "e2e_ms_p95": 12769,
+      "ingest_delay_s_mean": 6,
+      "ingest_delay_s_p95": 6
+    }
+  },
+  "resource": {
+    "idle": {
+      "window_secs": 60,
+      "cpu_usage_ns_start": 15963102000,
+      "cpu_usage_ns_end": 16350857000,
+      "cpu_avg_percent": 0.65,
+      "memory_bytes_start": 266166272,
+      "memory_bytes_end": 251596800,
+      "memory_peak_bytes_end": 411484160
+    },
+    "load": {
+      "window_secs": 30,
+      "cpu_usage_ns_start": 3408731000,
+      "cpu_usage_ns_end": 19045817000,
+      "cpu_avg_percent": 52.12,
+      "memory_bytes_start": 234950656,
+      "memory_bytes_end": 268181504,
+      "memory_peak_bytes_end": 412667904
+    }
+  },
+  "false_positive_window": {
+    "from_utc": "2026-02-20 01:27:34",
+    "counts": {
+      "all": 0,
+      "high": 0,
+      "critical": 0,
+      "medium": 0,
+      "info": 0
+    }
+  },
+  "cleanup": {
+    "replay_env_cleared": true,
+    "final_environment": "EGUARD_RULE_BUNDLE_PUBKEY_PATH=/etc/eguard-agent/rule_bundle_pubkey.hex RUST_LOG=info"
+  }
+}

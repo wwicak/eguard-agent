@@ -1,0 +1,77 @@
+{
+  "suite": "benign_edr_benchmark",
+  "recorded_at_utc": "2026-02-19T20:40:12Z",
+  "inputs": {
+    "vm_host": "edr@27.112.78.178",
+    "api_host": "eguard@157.10.161.219",
+    "api_base_url": "http://127.0.0.1:22224",
+    "agent_id": "agent-dev-1",
+    "samples_requested": 1,
+    "latency_timeout_secs": 75,
+    "latency_poll_interval_secs": 1,
+    "idle_window_secs": 10,
+    "load_window_secs": 10,
+    "warmup_secs": 5,
+    "false_positive_window_secs": 30,
+    "load_event_count": 100
+  },
+  "latency": {
+    "samples": [
+      {
+        "sample": 1,
+        "marker": "lat-marker-1-1771533508676",
+        "t0_ms": 1771533508676,
+        "t_found_ms": 1771533563909,
+        "id": 1080,
+        "created_at_utc": "2026-02-19 20:38:50",
+        "observed_unix": 1771533515,
+        "e2e_ms": 55233,
+        "ingest_delay_s": 15,
+        "status": "ok"
+      }
+    ],
+    "summary": {
+      "ok_samples": 1,
+      "not_found_samples": 0,
+      "e2e_ms_mean": 55233,
+      "e2e_ms_median": 55233,
+      "e2e_ms_p95": 55233,
+      "ingest_delay_s_mean": 15,
+      "ingest_delay_s_p95": 15
+    }
+  },
+  "resource": {
+    "idle": {
+      "window_secs": 10,
+      "cpu_usage_ns_start": 6413503000,
+      "cpu_usage_ns_end": 15495262000,
+      "cpu_avg_percent": 90.82,
+      "memory_bytes_start": 138002432,
+      "memory_bytes_end": 265424896,
+      "memory_peak_bytes_end": 410832896
+    },
+    "load": {
+      "window_secs": 10,
+      "cpu_usage_ns_start": 404403000,
+      "cpu_usage_ns_end": 10227835000,
+      "cpu_avg_percent": 98.23,
+      "memory_bytes_start": 150704128,
+      "memory_bytes_end": 241614848,
+      "memory_peak_bytes_end": 314159104
+    }
+  },
+  "false_positive_window": {
+    "from_utc": "2026-02-19 20:39:38",
+    "counts": {
+      "all": 4,
+      "high": 0,
+      "critical": 1,
+      "medium": 1,
+      "info": 2
+    }
+  },
+  "cleanup": {
+    "replay_env_cleared": true,
+    "final_environment": "EGUARD_RULE_BUNDLE_PUBKEY_PATH=/etc/eguard-agent/rule_bundle_pubkey.hex RUST_LOG=info"
+  }
+}

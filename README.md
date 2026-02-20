@@ -12,9 +12,10 @@ For deployment + E2E operations across `fe_eguard` and `eguard-agent`, see:
 ## Runtime configuration (current)
 
 Default deployment mode expects the agent to receive `server_addr` during
-install/enrollment (no baked IP). Use the eGuard server installer to write
-`bootstrap.conf`, and rerun the installer (or update `bootstrap.conf`) if the
-server address changes.
+install/enrollment (no baked IP). The installer writes `bootstrap.conf`; after
+the first successful enrollment, agent-core now persists bootstrap-derived
+`server_addr`/`enrollment_token`/`tenant_id` into `agent.conf` and then consumes
+`bootstrap.conf` so restarts remain stable.
 
 `agent-core` loads configuration from file, then environment overrides.
 

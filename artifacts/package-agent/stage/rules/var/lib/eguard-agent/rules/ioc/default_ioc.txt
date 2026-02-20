@@ -1,5 +1,0 @@
-# Seed IOC entries
-sha256:44d88612fea8a8f36de82e1278abb02f
-sha256:275a021bbfb6489e54d471899f7db9d2
-domain:known-c2.example
-ip:203.0.113.10

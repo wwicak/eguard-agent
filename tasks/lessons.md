@@ -1,5 +1,47 @@
 # Lessons Learned
 
+## Threat-Intel Counts Must Not Depend On External Manifest Asset
+Release assets may omit a standalone `manifest.json` even when the bundle contains
+`./manifest.json` with full counts. Ingest logic must fallback to parsing the bundle
+manifest itself; otherwise Sigma/YARA/IOC/CVE counters silently become 0/null.
+
+## "No Stub" Means Closing Runtime + CI Loop, Not Just Source Patches
+When users ask for polish/no-stub, do not stop at source commits. Push through to:
+1) strict CI/workflow validation on latest main, 2) live runtime deployment where required,
+3) post-deploy behavior proof (HTTP status, endpoint auth semantics, and end-to-end ingest logs).
+A fix that exists only in code but not in running services is still incomplete.
+
+## Corroboration Checks Should Run Once Per Reload, Then Enforce Shard Parity
+If detection reload is sharded, expected-count corroboration against server metadata should happen
+on the primary summary only. Additional shards should only be checked for deterministic parity
+against shard 0. Otherwise the same mismatch warning/error is multiplied by shard count and
+creates noisy, low-signal logs.
+
+## Corroboration Must Respect Count Semantics Per Family
+Do not use one-size-fits-all equality for all intel families. Current semantics differ:
+- YARA manifest count behaves like file-level/source count while runtime tracks loaded rule count
+  (runtime can legitimately be higher),
+- IOC/CVE counts are stable and should remain exact-match checked,
+- SIGMA exact count checks are unreliable until runtime dialect parity is implemented.
+Use lower-bound checks where semantics require it and keep strict checks where data models align.
+
+## Posture "n/a" Requires Data-Path Verification + E2E Coverage
+When users report `n/a` in Endpoint posture fields, don't stop at UI inspection.
+Trace the full path (enrollment/compliance/policy -> stored agent state -> detail API -> view)
+and add an integration test that asserts key posture fields (`compliance_detail`, `policy_id`)
+are populated under realistic agent-report flows. Keep in-memory behavior aligned with
+persistence so local tests catch regressions before deploy.
+
+## Live Runtime Can Drift From Repo DAL Models
+A `n/a` in table columns can come from stale deployed DAL metadata, not missing DB values.
+Always verify the live file under `/usr/local/eg/lib/eg/dal/*.pm` matches repo definitions
+before assuming ingestion gaps.
+
+## Normalize API Boolean-Like Values Before UI Rendering
+For fields like `disk_encrypted`, APIs may send `0/1`, `"0"/"1"`, or real booleans.
+Do not use strict `=== true/false` checks on raw payloads; normalize first, then render
+`yes/no/n/a` consistently.
+
 ## Struct Field Changes Cascade
 When adding fields to a widely-used struct (like `EventEnvelope`), search the
 entire workspace for every constructor site. Use `rg 'StructName {' --glob '*.rs'`
@@ -344,3 +386,35 @@ datetime scanning (`approved_at` -> `sql.NullTime`) and handle validity in code.
 must not be part of default runtime tamper baseline. Only durable config paths
 (e.g. `agent.conf`) should be monitored by default, otherwise post-enrollment
 runs generate false-positive `agent_tamper` events.
+
+## Verify Live Runtime Module Drift Before Debugging API Logic
+When a live endpoint returns generic 500 (`Unknown error`) but local code looks
+correct, compare deployed module checksums/content on the server against repo
+files first. Route/controller/API module drift can leave routes registered in
+`custom.pm` while handler methods are missing in older controller/API modules,
+causing runtime 500 until those exact files are redeployed and service restarted.
+
+## When User Points To A Branch Fix, Merge It First Before Redesigning
+If the user says the fix already exists in a specific branch, do not iterate a
+new design path first. Compare branch deltas immediately, merge/cherry-pick the
+proven frontend/backend fixes into the target branch, then rebuild + redeploy.
+This avoids repeated regressions and unnecessary workaround churn.
+
+## Host/Agent Dropdowns Must Be Backed By Fresh Agent Presence, Not Event IDs
+For operator-facing Host/Agent selectors, do not merge in agent IDs from event
+history alone. Event streams preserve historical/test IDs and will inflate
+dropdowns beyond actually installed endpoints. Build host choices from recent
+agent presence windows (heartbeat/enroll grace), and keep stale cleanup policy
+(online window + inactive grace + hard purge) explicit.
+
+## Warnings Are Real Work, Not Cosmetic Noise
+When CI surfaces Rust warnings (`unused_imports`, `dead_code`), treat each as a
+root-cause decision: either wire the code path so fields/imports are meaningful,
+or delete the dead stub. Do not silence warnings by leaving semantic placeholders
+that parse payloads but never use them.
+
+## Revalidate Threat-Intel UI With The Same Role As The Reporter
+If a user reports "no bundle in UI", rerun browser E2E using the same operator role
+(e.g., `admin`, not internal `system`) and confirm both config-save + sync actions.
+Also verify live Perl route/controller parity (`/api/v1/threat-intel/sync`) and
+frontend asset freshness before concluding ingestion is broken.

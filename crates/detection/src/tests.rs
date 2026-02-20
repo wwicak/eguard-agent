@@ -41,8 +41,10 @@ fn temporal_cap_rule(name: &str) -> TemporalRule {
                     uid_eq: None,
                     uid_ne: None,
                     dst_port_not_in: None,
+                    dst_port_any_of: None,
                     file_path_any_of: None,
                     file_path_contains: None,
+                    command_line_contains: None,
                 },
                 within_secs: 30,
             },
@@ -54,8 +56,10 @@ fn temporal_cap_rule(name: &str) -> TemporalRule {
                     uid_eq: None,
                     uid_ne: None,
                     dst_port_not_in: Some(std::collections::HashSet::from([80, 443])),
+                    dst_port_any_of: None,
                     file_path_any_of: None,
                     file_path_contains: None,
+                    command_line_contains: None,
                 },
                 within_secs: 10,
             },
@@ -1721,6 +1725,69 @@ detection:
     e2.file_path = Some("/home/user/.ssh/id_rsa".to_string());
     let hits = engine.observe(&e2);
     assert!(hits.iter().any(|v| v == "sigma_credential_access"));
+}
+
+#[test]
+// AC-DET-023 AC-DET-171
+fn sigma_legacy_selection_compiles_and_fires_on_command_line() {
+    let sigma_yaml = r#"
+title: sigma_legacy_cmdline
+logsource:
+  product: linux
+  service: auditd
+
+detection:
+  selection:
+    Image|endswith:
+      - '/bash'
+    CommandLine|contains:
+      - '--cpu-priority'
+  condition: selection
+"#;
+
+    let mut engine = TemporalEngine::new();
+    let name = engine
+        .add_sigma_rule_yaml(sigma_yaml)
+        .expect("compile legacy sigma rule");
+    assert_eq!(name, "sigma_legacy_cmdline");
+
+    let mut e = event(10, EventClass::ProcessExec, "bash", "sshd", 1000);
+    e.pid = 901;
+    e.session_id = e.pid;
+    e.command_line = Some("bash --cpu-priority 5 --foo".to_string());
+    let hits = engine.observe(&e);
+    assert!(hits.iter().any(|v| v == "sigma_legacy_cmdline"));
+}
+
+#[test]
+// AC-DET-023 AC-DET-171
+fn sigma_legacy_condition_one_of_prefix_compiles_and_fires() {
+    let sigma_yaml = r#"
+title: sigma_legacy_one_of
+logsource:
+  product: linux
+  service: auditd
+
+detection:
+  cmd1:
+    a1|startswith: '--cpu-priority'
+  cmd2:
+    a2|startswith: '--cpu-priority'
+  condition: 1 of cmd*
+"#;
+
+    let mut engine = TemporalEngine::new();
+    let name = engine
+        .add_sigma_rule_yaml(sigma_yaml)
+        .expect("compile legacy one-of sigma rule");
+    assert_eq!(name, "sigma_legacy_one_of");
+
+    let mut e = event(11, EventClass::ProcessExec, "bash", "sshd", 1000);
+    e.pid = 902;
+    e.session_id = e.pid;
+    e.command_line = Some("/usr/bin/miner --cpu-priority 4".to_string());
+    let hits = engine.observe(&e);
+    assert!(hits.iter().any(|v| v == "sigma_legacy_one_of"));
 }
 
 #[test]

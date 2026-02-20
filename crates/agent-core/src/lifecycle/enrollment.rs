@@ -1,8 +1,16 @@
+use std::io;
+use std::path::PathBuf;
+
 use tracing::warn;
 
 use grpc_client::EnrollmentEnvelope;
 
+use crate::config::AgentConfig;
+
 use super::AgentRuntime;
+
+const DEFAULT_AGENT_CONFIG_PATH: &str = "/etc/eguard-agent/agent.conf";
+const ENCRYPTED_CONFIG_PREFIX: &str = "eguardcfg:v1:";
 
 impl AgentRuntime {
     pub(super) async fn ensure_enrolled(&mut self) {
@@ -35,6 +43,24 @@ impl AgentRuntime {
         let Some(path) = self.config.bootstrap_config_path.as_ref() else {
             return;
         };
+
+        match persist_runtime_config_snapshot(&self.config) {
+            Ok(config_path) => {
+                tracing::info!(
+                    path = %config_path.display(),
+                    "persisted bootstrap-derived runtime config to agent.conf"
+                );
+            }
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    bootstrap_path = %path.display(),
+                    "failed persisting bootstrap-derived runtime config; keeping bootstrap file"
+                );
+                return;
+            }
+        }
+
         match std::fs::remove_file(path) {
             Ok(()) => {
                 tracing::info!(path = %path.display(), "consumed bootstrap config after enrollment")
@@ -44,5 +70,206 @@ impl AgentRuntime {
                 warn!(error = %err, path = %path.display(), "failed consuming bootstrap config")
             }
         }
+    }
+}
+
+fn resolve_agent_config_persist_path() -> PathBuf {
+    if let Ok(raw) = std::env::var("EGUARD_AGENT_CONFIG") {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
+
+    PathBuf::from(DEFAULT_AGENT_CONFIG_PATH)
+}
+
+fn persist_runtime_config_snapshot(config: &AgentConfig) -> Result<PathBuf, String> {
+    let path = resolve_agent_config_persist_path();
+
+    let existing = match std::fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(err) => {
+            return Err(format!(
+                "read existing agent config {}: {}",
+                path.display(),
+                err
+            ));
+        }
+    };
+
+    if existing.trim_start().starts_with(ENCRYPTED_CONFIG_PREFIX) {
+        return Err(format!(
+            "agent config {} is encrypted; refusing plaintext migration",
+            path.display()
+        ));
+    }
+
+    let mut root = if existing.trim().is_empty() {
+        toml::Value::Table(toml::map::Map::new())
+    } else {
+        existing.parse::<toml::Value>().map_err(|err| {
+            format!(
+                "parse existing agent config TOML {}: {}",
+                path.display(),
+                err
+            )
+        })?
+    };
+
+    let root_table = root.as_table_mut().ok_or_else(|| {
+        format!(
+            "agent config {} root TOML value must be table",
+            path.display()
+        )
+    })?;
+
+    let agent_table = root_table
+        .entry("agent")
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .ok_or_else(|| format!("agent config {} [agent] must be table", path.display()))?;
+
+    agent_table.insert(
+        "server_addr".to_string(),
+        toml::Value::String(config.server_addr.clone()),
+    );
+    if let Some(token) = config
+        .enrollment_token
+        .as_ref()
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+    {
+        agent_table.insert(
+            "enrollment_token".to_string(),
+            toml::Value::String(token.to_string()),
+        );
+    }
+    if let Some(tenant_id) = config
+        .tenant_id
+        .as_ref()
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+    {
+        agent_table.insert(
+            "tenant_id".to_string(),
+            toml::Value::String(tenant_id.to_string()),
+        );
+    }
+
+    let transport_table = root_table
+        .entry("transport")
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .ok_or_else(|| format!("agent config {} [transport] must be table", path.display()))?;
+
+    transport_table.insert(
+        "mode".to_string(),
+        toml::Value::String(config.transport_mode.clone()),
+    );
+
+    let serialized = toml::to_string_pretty(&root)
+        .map_err(|err| format!("serialize updated agent config {}: {}", path.display(), err))?;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|err| format!("create config dir {}: {}", parent.display(), err))?;
+    }
+
+    let tmp_path = path.with_extension("tmp");
+    std::fs::write(&tmp_path, serialized.as_bytes())
+        .map_err(|err| format!("write temp config {}: {}", tmp_path.display(), err))?;
+    std::fs::rename(&tmp_path, &path).map_err(|err| {
+        format!(
+            "persist config {} via {}: {}",
+            path.display(),
+            tmp_path.display(),
+            err
+        )
+    })?;
+
+    Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::persist_runtime_config_snapshot;
+    use crate::config::AgentConfig;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn clear_env() {
+        std::env::remove_var("EGUARD_AGENT_CONFIG");
+        std::env::remove_var("EGUARD_BOOTSTRAP_CONFIG");
+    }
+
+    #[test]
+    fn persist_runtime_config_snapshot_writes_restart_safe_values() {
+        let _guard = env_lock().lock().expect("env lock");
+        clear_env();
+
+        let path = std::env::temp_dir().join(format!(
+            "eguard-agent-persist-runtime-{}.toml",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        std::env::set_var("EGUARD_AGENT_CONFIG", &path);
+
+        std::fs::write(
+            &path,
+            "[agent]\nid=\"agent-a\"\n[storage]\nbackend=\"memory\"\n",
+        )
+        .expect("write existing config");
+
+        let mut cfg = AgentConfig::default();
+        cfg.server_addr = "157.10.161.219:50052".to_string();
+        cfg.transport_mode = "grpc".to_string();
+        cfg.enrollment_token = Some("tok-xyz".to_string());
+        cfg.tenant_id = Some("default".to_string());
+
+        let persisted = persist_runtime_config_snapshot(&cfg).expect("persist runtime config");
+        assert_eq!(persisted, path);
+
+        let loaded = AgentConfig::load().expect("load persisted config");
+        assert_eq!(loaded.server_addr, "157.10.161.219:50052");
+        assert_eq!(loaded.transport_mode, "grpc");
+        assert_eq!(loaded.enrollment_token.as_deref(), Some("tok-xyz"));
+        assert_eq!(loaded.tenant_id.as_deref(), Some("default"));
+        assert_eq!(loaded.agent_id, "agent-a");
+        assert_eq!(loaded.offline_buffer_backend, "memory");
+
+        clear_env();
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn persist_runtime_config_snapshot_rejects_encrypted_config() {
+        let _guard = env_lock().lock().expect("env lock");
+        clear_env();
+
+        let path = std::env::temp_dir().join(format!(
+            "eguard-agent-persist-encrypted-{}.toml",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        std::env::set_var("EGUARD_AGENT_CONFIG", &path);
+
+        std::fs::write(&path, "eguardcfg:v1:Zm9vYmFy").expect("write encrypted marker");
+
+        let cfg = AgentConfig::default();
+        let err = persist_runtime_config_snapshot(&cfg).expect_err("encrypted config should fail");
+        assert!(err.contains("encrypted"));
+
+        clear_env();
+        let _ = std::fs::remove_file(path);
     }
 }

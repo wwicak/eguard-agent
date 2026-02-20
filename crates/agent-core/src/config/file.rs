@@ -54,6 +54,12 @@ impl AgentConfig {
         if let Some(v) = non_empty(agent.server_addr).or_else(|| non_empty(agent.server)) {
             self.server_addr = v;
         }
+        if let Some(v) = non_empty(agent.enrollment_token) {
+            self.enrollment_token = Some(v);
+        }
+        if let Some(v) = non_empty(agent.tenant_id) {
+            self.tenant_id = Some(v);
+        }
         if let Some(v) = non_empty(agent.mode) {
             self.mode = parse_mode(&v);
         }
@@ -388,6 +394,10 @@ struct FileAgentConfig {
     server_addr: Option<String>,
     #[serde(default)]
     server: Option<String>,
+    #[serde(default)]
+    enrollment_token: Option<String>,
+    #[serde(default)]
+    tenant_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

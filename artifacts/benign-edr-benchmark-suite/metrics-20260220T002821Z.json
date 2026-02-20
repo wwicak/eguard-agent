@@ -1,0 +1,74 @@
+{
+  "suite": "benign_edr_benchmark_suite",
+  "recorded_at_utc": "2026-02-20T00:34:03Z",
+  "inputs": {
+    "runs_requested": 2,
+    "benchmark_script": "/home/dimas/eguard-agent/scripts/run_benign_edr_benchmark.sh",
+    "benchmark_args": [
+      "--samples1--latency-timeout-secs60--latency-query-per-page10--idle-window-secs10--load-window-secs10--warmup-secs10--false-positive-window-secs20--load-event-count80--load-event-spacing-ns100000000--load-measure-delay-secs3"
+    ]
+  },
+  "gates": {
+    "enabled": true,
+    "require_cleanup": true,
+    "thresholds": {
+      "latency_p95_max_ms": 120000,
+      "ingest_p95_max_s": 120,
+      "idle_cpu_mean_max_pct": 5.0,
+      "load_cpu_mean_max_pct": 110.0,
+      "false_positive_all_max": 2
+    },
+    "status": "fail",
+    "failures": [
+      "idle cpu mean 54.22% > 5.0%"
+    ]
+  },
+  "runs": [
+    {
+      "run": 1,
+      "artifact_path": "/home/dimas/eguard-agent/artifacts/benign-edr-benchmark-suite/runs/metrics-20260220T002821Z.json",
+      "latency_ok_samples": 0,
+      "latency_e2e_ms_p95": 0,
+      "latency_ingest_s_p95": 0,
+      "idle_cpu_avg_percent": 54.53,
+      "load_cpu_avg_percent": 101.48,
+      "false_positive_all": 0,
+      "cleanup_ok": true
+    },
+    {
+      "run": 2,
+      "artifact_path": "/home/dimas/eguard-agent/artifacts/benign-edr-benchmark-suite/runs/metrics-20260220T003241Z.json",
+      "latency_ok_samples": 1,
+      "latency_e2e_ms_p95": 13965,
+      "latency_ingest_s_p95": 6,
+      "idle_cpu_avg_percent": 53.9,
+      "load_cpu_avg_percent": 67.47,
+      "false_positive_all": 0,
+      "cleanup_ok": true
+    }
+  ],
+  "summary": {
+    "runs_completed": 2,
+    "latency": {
+      "sample_count": 1,
+      "e2e_ms_mean": 13965,
+      "e2e_ms_median": 13965,
+      "e2e_ms_p95": 13965,
+      "ingest_s_mean": 6,
+      "ingest_s_p95": 6
+    },
+    "resource": {
+      "idle_cpu_mean_percent": 54.22,
+      "idle_cpu_p95_percent": 54.53,
+      "load_cpu_mean_percent": 84.47,
+      "load_cpu_p95_percent": 101.48
+    },
+    "false_positive": {
+      "all_mean": 0,
+      "all_max": 0
+    },
+    "cleanup": {
+      "all_runs_clean": true
+    }
+  }
+}

@@ -1,7 +1,0 @@
-# Built-in seed baseline profiles (broad thresholds for cold-start deployment)
-# process_key entropy_threshold notes
-bash:sshd 6.0 broad
-nginx:systemd 6.0 broad
-python3:bash 6.5 broad
-curl:bash 7.0 broad
-systemd:init 5.0 broad
