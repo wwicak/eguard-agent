@@ -1,11 +1,21 @@
 use std::collections::HashSet;
+
+#[cfg(unix)]
 use std::fs;
 
-use nix::sys::signal::{kill, Signal};
+#[cfg(unix)]
+use nix::sys::signal::{kill, Signal as NixSignal};
+#[cfg(unix)]
 use nix::unistd::Pid;
 
 use crate::errors::{ResponseError, ResponseResult};
 use crate::ProtectedList;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Signal {
+    SIGSTOP,
+    SIGKILL,
+}
 
 #[derive(Debug, Clone)]
 pub struct KillReport {
@@ -25,6 +35,7 @@ pub trait SignalSender {
 
 pub struct ProcfsIntrospector;
 
+#[cfg(unix)]
 impl ProcessIntrospector for ProcfsIntrospector {
     fn children_of(&self, pid: u32) -> Vec<u32> {
         let path = format!("/proc/{}/task/{}/children", pid, pid);
@@ -48,12 +59,63 @@ impl ProcessIntrospector for ProcfsIntrospector {
     }
 }
 
+#[cfg(not(unix))]
+impl ProcessIntrospector for ProcfsIntrospector {
+    fn children_of(&self, _pid: u32) -> Vec<u32> {
+        Vec::new()
+    }
+
+    fn process_name(&self, _pid: u32) -> Option<String> {
+        None
+    }
+}
+
 pub struct NixSignalSender;
 
+#[cfg(unix)]
 impl SignalSender for NixSignalSender {
     fn send(&self, pid: u32, signal: Signal) -> ResponseResult<()> {
-        kill(Pid::from_raw(pid as i32), signal)
+        let nix_signal = match signal {
+            Signal::SIGSTOP => NixSignal::SIGSTOP,
+            Signal::SIGKILL => NixSignal::SIGKILL,
+        };
+
+        kill(Pid::from_raw(pid as i32), nix_signal)
             .map_err(|err| ResponseError::Signal(format!("send {:?} to {}: {}", signal, pid, err)))
+    }
+}
+
+#[cfg(not(unix))]
+impl SignalSender for NixSignalSender {
+    fn send(&self, pid: u32, signal: Signal) -> ResponseResult<()> {
+        if matches!(signal, Signal::SIGSTOP) {
+            // No portable suspend primitive in this fallback path on Windows.
+            return Ok(());
+        }
+
+        let output = std::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/F"])
+            .output()
+            .map_err(ResponseError::Io)?;
+
+        if output.status.success() {
+            return Ok(());
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let detail = if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            format!("taskkill failed with status {}", output.status)
+        };
+
+        Err(ResponseError::Signal(format!(
+            "send {:?} to {}: {}",
+            signal, pid, detail
+        )))
     }
 }
 

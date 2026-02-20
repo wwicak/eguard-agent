@@ -14,7 +14,6 @@ serde_json.workspace = true
 grpc-client = { path = "../grpc-client" }
 detection = { path = "../detection" }
 response = { path = "../response" }
-platform-linux = { path = "../platform-linux" }
 compliance = { path = "../compliance" }
 baseline = { path = "../baseline" }
 nac = { path = "../nac" }
@@ -28,3 +27,9 @@ zstd = "0.13"
 ed25519-dalek = "2"
 arc-swap = "1"
 x509-parser = "0.16"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+platform-linux = { path = "../platform-linux" }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+platform-windows = { path = "../platform-windows" }

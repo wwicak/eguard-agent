@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+      Name="eGuard Endpoint Security Agent"
+      Manufacturer="eGuard"
+      Version="0.1.0"
+      UpgradeCode="6D7F74EE-4F2E-4B90-BB77-9D1B8E4E8A11"
+      InstallerVersion="500"
+      Compressed="yes"
+      Scope="perMachine">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of eGuard Agent is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Property Id="ENROLLMENT_TOKEN" Secure="yes" />
+    <Property Id="SERVER_URL" Secure="yes" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="eGuard" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="EGUARDDATA" Name="eGuard">
+        <Directory Id="EGUARDCERTS" Name="certs" />
+        <Directory Id="EGUARDRULES" Name="rules-staging" />
+        <Directory Id="EGUARDQUAR" Name="quarantine" />
+        <Directory Id="EGUARDLOGS" Name="logs" />
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="MainFeature" Title="eGuard Agent" Level="1">
+      <ComponentGroupRef Id="AgentComponents" />
+      <ComponentGroupRef Id="DataFolders" />
+    </Feature>
+  </Package>
+
+  <Fragment>
+    <ComponentGroup Id="AgentComponents" Directory="INSTALLFOLDER">
+      <Component Id="CmpAgentExe" Guid="*">
+        <File Id="FilAgentExe" Source="$(var.AgentExePath)" KeyPath="yes" />
+
+        <ServiceInstall
+            Id="SvcInstall"
+            Name="eGuardAgent"
+            DisplayName="eGuard Endpoint Security Agent"
+            Description="eGuard EDR/MDM endpoint security agent"
+            Type="ownProcess"
+            Start="auto"
+            ErrorControl="normal"
+            Account="LocalSystem" />
+
+        <ServiceControl Id="SvcStart" Name="eGuardAgent" Start="install" Stop="both" Remove="uninstall" Wait="yes" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+
+  <Fragment>
+    <ComponentGroup Id="DataFolders" Directory="EGUARDDATA">
+      <Component Id="CmpDataRoot" Guid="*">
+        <CreateFolder />
+      </Component>
+      <Component Id="CmpDataCerts" Guid="*" Directory="EGUARDCERTS">
+        <CreateFolder />
+      </Component>
+      <Component Id="CmpDataRules" Guid="*" Directory="EGUARDRULES">
+        <CreateFolder />
+      </Component>
+      <Component Id="CmpDataQuarantine" Guid="*" Directory="EGUARDQUAR">
+        <CreateFolder />
+      </Component>
+      <Component Id="CmpDataLogs" Guid="*" Directory="EGUARDLOGS">
+        <CreateFolder />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>

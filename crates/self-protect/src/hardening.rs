@@ -1,3 +1,4 @@
+#[cfg(target_os = "linux")]
 use std::collections::BTreeSet;
 
 #[derive(Debug, Clone)]
@@ -38,6 +39,7 @@ pub struct LinuxHardeningStep {
 }
 
 impl LinuxHardeningStep {
+    #[cfg(target_os = "linux")]
     fn applied(name: &'static str, detail: impl Into<String>) -> Self {
         Self {
             name,
@@ -54,6 +56,7 @@ impl LinuxHardeningStep {
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn failed(name: &'static str, detail: impl Into<String>) -> Self {
         Self {
             name,
@@ -158,7 +161,6 @@ pub fn apply_linux_hardening(config: &LinuxHardeningConfig) -> LinuxHardeningRep
             "platform",
             "linux hardening is only supported on linux",
         ));
-        return report;
     }
 
     #[cfg(target_os = "linux")]

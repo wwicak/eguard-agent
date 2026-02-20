@@ -1,7 +1,9 @@
 use std::fs::{self, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
 use crate::errors::{ResponseError, ResponseResult};
 use crate::ProtectedList;
@@ -74,18 +76,20 @@ pub fn quarantine_file_with_dir(
     fs::copy(path, &quarantine_path)?;
 
     let mut original = OpenOptions::new().write(true).open(path)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o000))?;
+    apply_restrictive_permissions(path)?;
     overwrite_file_prefix_with_zeros_file(&mut original, metadata.len())?;
     fs::remove_file(path)?;
+
+    let (original_mode, owner_uid, owner_gid) = metadata_identity(&metadata);
 
     Ok(QuarantineReport {
         original_path: path.to_path_buf(),
         quarantine_path,
         sha256: sha256.to_string(),
         file_size: metadata.len(),
-        original_mode: metadata.mode(),
-        owner_uid: metadata.uid(),
-        owner_gid: metadata.gid(),
+        original_mode,
+        owner_uid,
+        owner_gid,
     })
 }
 
@@ -104,7 +108,7 @@ pub fn restore_quarantined(
         fs::create_dir_all(parent)?;
     }
     fs::copy(quarantine_path, restore_to)?;
-    fs::set_permissions(restore_to, fs::Permissions::from_mode(original_mode))?;
+    restore_permissions(restore_to, original_mode)?;
 
     Ok(RestoreReport {
         restored_path: restore_to.to_path_buf(),
@@ -131,6 +135,44 @@ fn overwrite_file_prefix_with_zeros_file(
     file.seek(SeekFrom::Start(0))?;
     file.write_all(&zeros)?;
     file.flush()?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn apply_restrictive_permissions(path: &Path) -> ResponseResult<()> {
+    fs::set_permissions(path, fs::Permissions::from_mode(0o000))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn apply_restrictive_permissions(path: &Path) -> ResponseResult<()> {
+    let mut perms = fs::metadata(path)?.permissions();
+    perms.set_readonly(true);
+    fs::set_permissions(path, perms)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn metadata_identity(metadata: &fs::Metadata) -> (u32, u32, u32) {
+    (metadata.mode(), metadata.uid(), metadata.gid())
+}
+
+#[cfg(not(unix))]
+fn metadata_identity(_metadata: &fs::Metadata) -> (u32, u32, u32) {
+    (0, 0, 0)
+}
+
+#[cfg(unix)]
+fn restore_permissions(path: &Path, original_mode: u32) -> ResponseResult<()> {
+    fs::set_permissions(path, fs::Permissions::from_mode(original_mode))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn restore_permissions(path: &Path, _original_mode: u32) -> ResponseResult<()> {
+    let mut perms = fs::metadata(path)?.permissions();
+    perms.set_readonly(false);
+    fs::set_permissions(path, perms)?;
     Ok(())
 }
 

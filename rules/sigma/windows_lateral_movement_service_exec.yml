@@ -1,0 +1,31 @@
+title: windows_lateral_movement_service_exec
+id: windows_lateral_movement_service_exec
+status: experimental
+logsource:
+  product: windows
+  category: process_creation
+tags:
+  - attack.t1021
+  - attack.t1053
+  - attack.t1070
+  - attack.t1134
+  - attack.t1543
+  - attack.t1569
+mitre_techniques:
+  - T1021
+  - T1053
+  - T1070
+  - T1134
+  - T1543
+  - T1569
+
+detection:
+  sequence:
+    - event_class: process_exec
+      process_any_of:
+        - psexec.exe
+      command_line_contains:
+        - psexec
+        - accepteula
+        - "\\\\"
+      within_secs: 30

@@ -16,13 +16,13 @@ pub(super) fn confidence_to_severity(c: Confidence) -> &'static str {
 }
 
 pub(super) fn to_detection_event(
-    enriched: &platform_linux::EnrichedEvent,
+    enriched: &crate::platform::EnrichedEvent,
     now_unix: i64,
 ) -> TelemetryEvent {
     let process = enriched
         .process_exe
         .as_deref()
-        .and_then(|p| p.rsplit('/').next())
+        .map(process_basename)
         .unwrap_or("unknown")
         .to_string();
 
@@ -34,7 +34,7 @@ pub(super) fn to_detection_event(
 
     let module_payload = if matches!(
         enriched.event.event_type,
-        platform_linux::EventType::ModuleLoad
+        crate::platform::EventType::ModuleLoad
     ) {
         let trimmed = enriched.event.payload.trim();
         if trimmed.is_empty() {
@@ -82,17 +82,36 @@ pub(super) fn to_detection_event(
     }
 }
 
-pub(super) fn map_event_class(event_type: &platform_linux::EventType) -> EventClass {
+fn process_basename(path: &str) -> &str {
+    path.rsplit(['/', '\\']).next().unwrap_or(path)
+}
+
+pub(super) fn map_event_class(event_type: &crate::platform::EventType) -> EventClass {
     match event_type {
-        platform_linux::EventType::ProcessExec => EventClass::ProcessExec,
-        platform_linux::EventType::ProcessExit => EventClass::ProcessExit,
-        platform_linux::EventType::FileOpen => EventClass::FileOpen,
-        platform_linux::EventType::FileWrite => EventClass::FileOpen,
-        platform_linux::EventType::FileRename => EventClass::FileOpen,
-        platform_linux::EventType::FileUnlink => EventClass::FileOpen,
-        platform_linux::EventType::TcpConnect => EventClass::NetworkConnect,
-        platform_linux::EventType::DnsQuery => EventClass::DnsQuery,
-        platform_linux::EventType::ModuleLoad => EventClass::ModuleLoad,
-        platform_linux::EventType::LsmBlock => EventClass::Alert,
+        crate::platform::EventType::ProcessExec => EventClass::ProcessExec,
+        crate::platform::EventType::ProcessExit => EventClass::ProcessExit,
+        crate::platform::EventType::FileOpen => EventClass::FileOpen,
+        crate::platform::EventType::FileWrite => EventClass::FileOpen,
+        crate::platform::EventType::FileRename => EventClass::FileOpen,
+        crate::platform::EventType::FileUnlink => EventClass::FileOpen,
+        crate::platform::EventType::TcpConnect => EventClass::NetworkConnect,
+        crate::platform::EventType::DnsQuery => EventClass::DnsQuery,
+        crate::platform::EventType::ModuleLoad => EventClass::ModuleLoad,
+        crate::platform::EventType::LsmBlock => EventClass::Alert,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::process_basename;
+
+    #[test]
+    fn process_basename_supports_windows_and_unix_paths() {
+        assert_eq!(process_basename("/usr/bin/bash"), "bash");
+        assert_eq!(
+            process_basename(r"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"),
+            "powershell.exe"
+        );
+        assert_eq!(process_basename("name-only"), "name-only");
     }
 }

@@ -1,5 +1,8 @@
 # Lessons Learned
 
+## Breakout-Loop Discipline
+When the user sets an explicit breakout condition (e.g., “continue until all blockers pass and surpass competitor”), do not pause with a completion-style response. Keep shipping incremental blocker reductions with fresh verification evidence every turn, and only call success signaling when objective proof exists.
+
 ## Threat-Intel Counts Must Not Depend On External Manifest Asset
 Release assets may omit a standalone `manifest.json` even when the bundle contains
 `./manifest.json` with full counts. Ingest logic must fallback to parsing the bundle

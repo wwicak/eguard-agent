@@ -4,8 +4,9 @@ use anyhow::Result;
 use tracing::{info, warn};
 
 use nac::posture_from_compliance;
-use platform_linux::enrich_event_with_cache;
 use response::plan_action;
+
+use crate::platform::enrich_event_with_cache;
 
 use crate::config::AgentMode;
 

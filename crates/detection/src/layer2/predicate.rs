@@ -24,7 +24,10 @@ impl TemporalPredicate {
 
         if let Some(set) = &self.process_any_of {
             let process = event.process.to_ascii_lowercase();
-            if !set.iter().any(|expected| expected.eq_ignore_ascii_case(&process)) {
+            if !set
+                .iter()
+                .any(|expected| expected.eq_ignore_ascii_case(&process))
+            {
                 return false;
             }
         }

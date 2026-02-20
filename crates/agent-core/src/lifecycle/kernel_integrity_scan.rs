@@ -1,7 +1,8 @@
 use tracing::{info, warn};
 
 use detection::{Confidence, EventClass, TelemetryEvent};
-use platform_linux::{
+
+use crate::platform::{
     scan_kernel_integrity, EnrichedEvent, EventType, KernelIntegrityScanOptions, RawEvent,
 };
 

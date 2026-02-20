@@ -1,68 +1,87 @@
+#[cfg(any(test, not(target_os = "windows")))]
 use std::path::{Path, PathBuf};
 
-use platform_linux::EbpfEngine;
+use crate::platform::EbpfEngine;
 use tracing::{info, warn};
 
 pub(super) fn init_ebpf_engine() -> EbpfEngine {
-    // Priority 1: Replay backend (for testing without kernel hooks)
-    if let Some(replay_path) = std::env::var("EGUARD_EBPF_REPLAY_PATH")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .map(PathBuf::from)
+    #[cfg(target_os = "windows")]
     {
-        match EbpfEngine::from_replay(&replay_path) {
+        match EbpfEngine::from_etw() {
             Ok(engine) => {
-                info!(path = %replay_path.display(), "eBPF replay backend initialized");
+                info!("ETW collector initialized for Windows runtime");
                 return engine;
             }
             Err(err) => {
-                warn!(error = %err, path = %replay_path.display(), "failed to open replay backend; falling through to eBPF/disabled");
+                warn!(error = %err, "failed to initialize ETW collector; using disabled backend");
+                return EbpfEngine::disabled();
             }
         }
     }
 
-    // Priority 2: Real eBPF from object directory
-    let objects_dir = std::env::var("EGUARD_EBPF_OBJECTS_DIR")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .map(PathBuf::from);
-    let elf_path = std::env::var("EGUARD_EBPF_ELF")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .map(PathBuf::from);
-    let map_name = std::env::var("EGUARD_EBPF_RING_MAP")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| "events".to_string());
-
-    if let Some(dir) = objects_dir {
-        if let Some(engine) = try_init_ebpf_from_object_dir(&dir, &map_name) {
-            return engine;
+    #[cfg(not(target_os = "windows"))]
+    {
+        // Priority 1: Replay backend (for testing without kernel hooks)
+        if let Some(replay_path) = std::env::var("EGUARD_EBPF_REPLAY_PATH")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .map(PathBuf::from)
+        {
+            match EbpfEngine::from_replay(&replay_path) {
+                Ok(engine) => {
+                    info!(path = %replay_path.display(), "eBPF replay backend initialized");
+                    return engine;
+                }
+                Err(err) => {
+                    warn!(error = %err, path = %replay_path.display(), "failed to open replay backend; falling through to eBPF/disabled");
+                }
+            }
         }
-    }
 
-    for dir in default_ebpf_objects_dirs() {
-        if let Some(engine) = try_init_ebpf_from_object_dir(&dir, &map_name) {
-            return engine;
+        // Priority 2: Real eBPF from object directory
+        let objects_dir = std::env::var("EGUARD_EBPF_OBJECTS_DIR")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .map(PathBuf::from);
+        let elf_path = std::env::var("EGUARD_EBPF_ELF")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .map(PathBuf::from);
+        let map_name = std::env::var("EGUARD_EBPF_RING_MAP")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| "events".to_string());
+
+        if let Some(dir) = objects_dir {
+            if let Some(engine) = try_init_ebpf_from_object_dir(&dir, &map_name) {
+                return engine;
+            }
         }
-    }
 
-    let Some(elf_path) = elf_path else {
-        return EbpfEngine::disabled();
-    };
-
-    match EbpfEngine::from_elf(&elf_path, &map_name) {
-        Ok(engine) => {
-            info!(path = %elf_path.display(), map = %map_name, "eBPF engine initialized");
-            engine
+        for dir in default_ebpf_objects_dirs() {
+            if let Some(engine) = try_init_ebpf_from_object_dir(&dir, &map_name) {
+                return engine;
+            }
         }
-        Err(err) => {
-            warn!(error = %err, path = %elf_path.display(), map = %map_name, "failed to initialize eBPF engine; using disabled backend");
-            EbpfEngine::disabled()
+
+        let Some(elf_path) = elf_path else {
+            return EbpfEngine::disabled();
+        };
+
+        match EbpfEngine::from_elf(&elf_path, &map_name) {
+            Ok(engine) => {
+                info!(path = %elf_path.display(), map = %map_name, "eBPF engine initialized");
+                engine
+            }
+            Err(err) => {
+                warn!(error = %err, path = %elf_path.display(), map = %map_name, "failed to initialize eBPF engine; using disabled backend");
+                EbpfEngine::disabled()
+            }
         }
     }
 }
 
+#[cfg(any(test, not(target_os = "windows")))]
 pub(super) fn try_init_ebpf_from_object_dir(
     objects_dir: &Path,
     map_name: &str,
@@ -94,6 +113,7 @@ pub(super) fn try_init_ebpf_from_object_dir(
     }
 }
 
+#[cfg(any(test, not(target_os = "windows")))]
 pub(super) fn default_ebpf_objects_dirs() -> Vec<PathBuf> {
     vec![
         PathBuf::from("./zig-out/ebpf"),
@@ -102,6 +122,7 @@ pub(super) fn default_ebpf_objects_dirs() -> Vec<PathBuf> {
     ]
 }
 
+#[cfg(any(test, not(target_os = "windows")))]
 pub(super) fn candidate_ebpf_object_paths(objects_dir: &Path) -> Vec<PathBuf> {
     const OBJECT_NAMES: [&str; 9] = [
         "process_exec_bpf.o",

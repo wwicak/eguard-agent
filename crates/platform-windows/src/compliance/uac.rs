@@ -2,6 +2,12 @@
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(target_os = "windows")]
+use super::registry::read_reg_dword;
+
+#[cfg(target_os = "windows")]
+const UAC_POLICIES_KEY: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System";
+
 /// UAC configuration status.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UacStatus {
@@ -14,11 +20,17 @@ pub struct UacStatus {
 pub fn check_uac() -> UacStatus {
     #[cfg(target_os = "windows")]
     {
-        // TODO: read HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System
+        let enable_lua = read_reg_dword("HKLM", UAC_POLICIES_KEY, "EnableLUA").unwrap_or(0);
+        let consent_prompt_behavior =
+            read_reg_dword("HKLM", UAC_POLICIES_KEY, "ConsentPromptBehaviorAdmin")
+                .unwrap_or_default();
+        let secure_desktop =
+            read_reg_dword("HKLM", UAC_POLICIES_KEY, "PromptOnSecureDesktop").unwrap_or(0) == 1;
+
         UacStatus {
-            enabled: false,
-            consent_prompt_behavior: 0,
-            secure_desktop: false,
+            enabled: enable_lua == 1,
+            consent_prompt_behavior,
+            secure_desktop,
         }
     }
     #[cfg(not(target_os = "windows"))]

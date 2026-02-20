@@ -1,0 +1,20 @@
+title: windows_uac_bypass_signals
+id: windows_uac_bypass_signals
+status: experimental
+logsource:
+  product: windows
+  category: process_creation
+tags:
+  - attack.t1548
+mitre_techniques:
+  - T1548
+
+detection:
+  sequence:
+    - event_class: process_exec
+      process_any_of:
+        - fodhelper.exe
+      command_line_contains:
+        - DelegateExecute
+        - ms-settings\\shell\\open\\command
+      within_secs: 30

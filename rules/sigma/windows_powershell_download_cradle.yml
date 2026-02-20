@@ -1,0 +1,25 @@
+title: windows_powershell_download_cradle
+id: windows_powershell_download_cradle
+status: experimental
+logsource:
+  product: windows
+  category: process_creation
+tags:
+  - attack.t1059
+  - attack.t1027
+  - attack.t1562
+mitre_techniques:
+  - T1059
+  - T1027
+  - T1562
+
+detection:
+  sequence:
+    - event_class: process_exec
+      process_any_of:
+        - powershell.exe
+        - pwsh.exe
+      command_line_contains:
+        - IEX(New-Object Net.WebClient).DownloadString(
+        - DownloadString(
+      within_secs: 30

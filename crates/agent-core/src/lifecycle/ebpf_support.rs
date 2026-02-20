@@ -1,7 +1,7 @@
 #[cfg(test)]
 use std::path::{Path, PathBuf};
 
-use platform_linux::EbpfEngine;
+use crate::platform::EbpfEngine;
 
 use super::ebpf_bootstrap;
 

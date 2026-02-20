@@ -16,7 +16,7 @@ pub use capture::{capture_script_content, ScriptCapture};
 pub use errors::{ResponseError, ResponseResult};
 pub use kill::{
     kill_process_tree, kill_process_tree_with, KillReport, NixSignalSender, ProcessIntrospector,
-    ProcfsIntrospector, SignalSender,
+    ProcfsIntrospector, Signal, SignalSender,
 };
 pub use quarantine::{
     quarantine_file, quarantine_file_with_dir, restore_quarantined, QuarantineReport, RestoreReport,

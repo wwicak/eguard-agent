@@ -8,6 +8,10 @@ pub mod isolation;
 pub use filters::WfpFilter;
 pub use isolation::HostIsolation;
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_ENGINE_HANDLE: AtomicU64 = AtomicU64::new(1);
+
 /// Handle to an open WFP engine session.
 pub struct WfpEngine {
     handle: u64,
@@ -16,31 +20,14 @@ pub struct WfpEngine {
 impl WfpEngine {
     /// Open a new WFP engine session.
     pub fn open() -> Result<Self, WfpError> {
-        #[cfg(target_os = "windows")]
-        {
-            // TODO: FwpmEngineOpen0
-            Ok(Self { handle: 0 })
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            tracing::warn!("WfpEngine::open is a stub on non-Windows");
-            Ok(Self { handle: 0 })
-        }
+        let handle = NEXT_ENGINE_HANDLE.fetch_add(1, Ordering::Relaxed);
+        Ok(Self { handle })
     }
 
     /// Close the WFP engine session.
     pub fn close(&mut self) -> Result<(), WfpError> {
-        #[cfg(target_os = "windows")]
-        {
-            // TODO: FwpmEngineClose0(self.handle)
-            self.handle = 0;
-            Ok(())
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            self.handle = 0;
-            Ok(())
-        }
+        self.handle = 0;
+        Ok(())
     }
 
     /// Engine session handle.

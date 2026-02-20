@@ -9,7 +9,7 @@ use super::{AgentRuntime, TickEvaluation};
 impl AgentRuntime {
     pub(super) fn build_event_envelope(
         &self,
-        enriched: &platform_linux::EnrichedEvent,
+        enriched: &crate::platform::EnrichedEvent,
         event: &TelemetryEvent,
         outcome: &DetectionOutcome,
         confidence: Confidence,
@@ -36,7 +36,7 @@ impl AgentRuntime {
 
     pub(super) fn telemetry_payload_json(
         &self,
-        enriched: &platform_linux::EnrichedEvent,
+        enriched: &crate::platform::EnrichedEvent,
         event: &TelemetryEvent,
         outcome: &DetectionOutcome,
         confidence: Confidence,

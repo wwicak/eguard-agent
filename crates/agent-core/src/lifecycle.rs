@@ -45,6 +45,8 @@ use types::{
 };
 
 #[allow(unused_imports)]
+use crate::platform::RawEvent;
+#[allow(unused_imports)]
 use ::compliance::ComplianceResult;
 #[allow(unused_imports)]
 use ::detection::{
@@ -52,8 +54,6 @@ use ::detection::{
 };
 #[allow(unused_imports)]
 use ::grpc_client::{ComplianceEnvelope, EventEnvelope, ResponseEnvelope};
-#[allow(unused_imports)]
-use ::platform_linux::RawEvent;
 #[allow(unused_imports)]
 use ::response::{
     evaluate_auto_isolation, execute_server_command_with_state, PlannedAction, ServerCommand,

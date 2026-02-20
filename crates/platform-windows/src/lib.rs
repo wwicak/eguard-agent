@@ -14,6 +14,7 @@ pub mod self_protect;
 pub mod service;
 pub mod wfp;
 
+use std::collections::HashMap;
 use std::num::NonZeroUsize;
 
 use lru::LruCache;
@@ -171,23 +172,27 @@ pub fn enrich_event(raw: RawEvent) -> EnrichedEvent {
 }
 
 pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> EnrichedEvent {
+    let payload_meta = parse_payload_metadata(&raw.event_type, &raw.payload);
+
     if matches!(raw.event_type, EventType::ProcessExit) {
         let _ = cache.evict_process(raw.pid);
         return EnrichedEvent {
             event: raw,
             process_exe: None,
             process_exe_sha256: None,
-            process_cmdline: None,
+            process_cmdline: payload_meta.command_line_hint,
             parent_process: None,
             parent_chain: Vec::new(),
-            file_path: None,
+            file_path: payload_meta
+                .file_path
+                .or_else(|| payload_meta.file_path_secondary),
             file_path_secondary: None,
-            file_write: false,
+            file_write: payload_meta.file_write,
             file_sha256: None,
-            event_size: None,
-            dst_ip: None,
-            dst_port: None,
-            dst_domain: None,
+            event_size: payload_meta.event_size,
+            dst_ip: payload_meta.dst_ip,
+            dst_port: payload_meta.dst_port,
+            dst_domain: payload_meta.dst_domain,
             container_runtime: None,
             container_id: None,
             container_escape: false,
@@ -202,22 +207,26 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
         .as_deref()
         .and_then(|p| cache.hash_for_path(p));
 
+    let file_path = payload_meta
+        .file_path
+        .or_else(|| matches!(raw.event_type, EventType::ModuleLoad).then(|| raw.payload.clone()));
+
     // Windows does not use containers in the same way as Linux.
     EnrichedEvent {
         event: raw,
         process_exe: entry.process_exe,
         process_exe_sha256,
-        process_cmdline: entry.process_cmdline,
+        process_cmdline: entry.process_cmdline.or(payload_meta.command_line_hint),
         parent_process: entry.parent_process,
         parent_chain: entry.parent_chain,
-        file_path: None,
-        file_path_secondary: None,
-        file_write: false,
+        file_path,
+        file_path_secondary: payload_meta.file_path_secondary,
+        file_write: payload_meta.file_write,
         file_sha256: None,
-        event_size: None,
-        dst_ip: None,
-        dst_port: None,
-        dst_domain: None,
+        event_size: payload_meta.event_size,
+        dst_ip: payload_meta.dst_ip,
+        dst_port: payload_meta.dst_port,
+        dst_domain: payload_meta.dst_domain,
         container_runtime: None,
         container_id: None,
         container_escape: false,
@@ -225,9 +234,237 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
     }
 }
 
+#[derive(Debug, Default)]
+struct PayloadMetadata {
+    file_path: Option<String>,
+    file_path_secondary: Option<String>,
+    command_line_hint: Option<String>,
+    dst_ip: Option<String>,
+    dst_port: Option<u16>,
+    dst_domain: Option<String>,
+    file_write: bool,
+    event_size: Option<u64>,
+}
+
+fn parse_payload_metadata(event_type: &EventType, payload: &str) -> PayloadMetadata {
+    let trimmed = payload.trim();
+    if trimmed.is_empty() {
+        return PayloadMetadata::default();
+    }
+
+    let fields = parse_kv_fields(trimmed);
+    if fields.is_empty() {
+        return parse_payload_fallback(event_type, trimmed);
+    }
+
+    let mut metadata = PayloadMetadata {
+        file_path: fields
+            .get("path")
+            .cloned()
+            .or_else(|| fields.get("file").cloned())
+            .or_else(|| fields.get("src").cloned()),
+        file_path_secondary: fields
+            .get("dst")
+            .cloned()
+            .or_else(|| fields.get("target").cloned())
+            .or_else(|| fields.get("new").cloned()),
+        command_line_hint: fields
+            .get("cmdline")
+            .cloned()
+            .or_else(|| fields.get("command_line").cloned()),
+        dst_ip: fields
+            .get("dst_ip")
+            .cloned()
+            .or_else(|| fields.get("ip").cloned()),
+        dst_port: fields
+            .get("dst_port")
+            .or_else(|| fields.get("port"))
+            .and_then(|value| value.parse::<u16>().ok()),
+        dst_domain: fields
+            .get("dst_domain")
+            .cloned()
+            .or_else(|| fields.get("domain").cloned())
+            .or_else(|| fields.get("qname").cloned()),
+        file_write: parse_file_write_flags(fields.get("flags"), fields.get("mode")),
+        event_size: fields
+            .get("size")
+            .or_else(|| fields.get("bytes"))
+            .and_then(|value| value.parse::<u64>().ok()),
+    };
+
+    if metadata.dst_ip.is_none() || metadata.dst_port.is_none() {
+        if let Some(endpoint) = fields.get("dst").or_else(|| fields.get("endpoint")) {
+            let (ip, port) = parse_endpoint(endpoint);
+            if metadata.dst_ip.is_none() {
+                metadata.dst_ip = ip;
+            }
+            if metadata.dst_port.is_none() {
+                metadata.dst_port = port;
+            }
+        }
+    }
+
+    metadata
+}
+
+fn parse_kv_fields(payload: &str) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for segment in payload.split([';', ',']) {
+        let segment = segment.trim();
+        if segment.is_empty() {
+            continue;
+        }
+
+        let Some((key, value)) = segment.split_once('=') else {
+            continue;
+        };
+        let key = key.trim().to_ascii_lowercase();
+        let value = value.trim().trim_matches('"').to_string();
+        if !key.is_empty() && !value.is_empty() {
+            out.insert(key, value);
+        }
+    }
+    out
+}
+
+fn parse_payload_fallback(event_type: &EventType, payload: &str) -> PayloadMetadata {
+    match event_type {
+        EventType::FileOpen | EventType::FileWrite => PayloadMetadata {
+            file_path: Some(payload.to_string()),
+            file_write: matches!(event_type, EventType::FileWrite),
+            ..PayloadMetadata::default()
+        },
+        EventType::FileRename => PayloadMetadata {
+            file_path: Some(payload.to_string()),
+            ..PayloadMetadata::default()
+        },
+        EventType::FileUnlink => PayloadMetadata {
+            file_path: Some(payload.to_string()),
+            ..PayloadMetadata::default()
+        },
+        EventType::DnsQuery => PayloadMetadata {
+            dst_domain: Some(payload.to_string()),
+            ..PayloadMetadata::default()
+        },
+        EventType::TcpConnect => {
+            let (dst_ip, dst_port) = parse_endpoint(payload);
+            PayloadMetadata {
+                dst_ip,
+                dst_port,
+                ..PayloadMetadata::default()
+            }
+        }
+        EventType::ProcessExec => PayloadMetadata {
+            command_line_hint: Some(payload.to_string()),
+            ..PayloadMetadata::default()
+        },
+        EventType::ProcessExit => PayloadMetadata::default(),
+        EventType::ModuleLoad => PayloadMetadata {
+            file_path: Some(payload.to_string()),
+            ..PayloadMetadata::default()
+        },
+        EventType::LsmBlock => PayloadMetadata {
+            command_line_hint: Some(payload.to_string()),
+            ..PayloadMetadata::default()
+        },
+    }
+}
+
+fn parse_file_write_flags(flags: Option<&String>, mode: Option<&String>) -> bool {
+    let flags_val = flags
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(0);
+    let mode_val = mode
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(0);
+
+    const O_WRONLY: u32 = 1;
+    const O_RDWR: u32 = 2;
+    const O_CREAT: u32 = 0x40;
+    const O_TRUNC: u32 = 0x200;
+
+    let write_intent = (flags_val & O_WRONLY) != 0 || (flags_val & O_RDWR) != 0;
+    let destructive = (flags_val & O_TRUNC) != 0 || (flags_val & O_CREAT) != 0;
+    let executable_bit = (mode_val & 0o111) != 0;
+
+    write_intent || destructive || executable_bit
+}
+
+fn parse_endpoint(raw: &str) -> (Option<String>, Option<u16>) {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return (None, None);
+    }
+
+    if let Some(stripped) = trimmed.strip_prefix('[') {
+        if let Some((ip, rest)) = stripped.split_once(']') {
+            let port = rest
+                .strip_prefix(':')
+                .and_then(|value| value.parse::<u16>().ok());
+            return (Some(ip.to_string()), port);
+        }
+    }
+
+    if let Some((ip, port)) = trimmed.rsplit_once(':') {
+        if !ip.contains(':') {
+            if let Ok(port) = port.parse::<u16>() {
+                return (Some(ip.to_string()), Some(port));
+            }
+        }
+    }
+
+    (Some(trimmed.to_string()), None)
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────
 
 fn capacity_from(raw: usize) -> NonZeroUsize {
     let bounded = raw.max(128);
     NonZeroUsize::new(bounded).expect("cache capacity is always non-zero")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{enrich_event_with_cache, EnrichmentCache, EventType, RawEvent};
+
+    #[test]
+    fn enrich_windows_process_event_uses_cmdline_payload_hint() {
+        let raw = RawEvent {
+            event_type: EventType::ProcessExec,
+            pid: 4242,
+            uid: 0,
+            ts_ns: 1,
+            payload: r#"path=C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe;cmdline=powershell -enc AAA"#
+                .to_string(),
+        };
+
+        let mut cache = EnrichmentCache::default();
+        let enriched = enrich_event_with_cache(raw, &mut cache);
+
+        assert_eq!(
+            enriched.process_cmdline.as_deref(),
+            Some("powershell -enc AAA")
+        );
+        assert_eq!(
+            enriched.file_path.as_deref(),
+            Some(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
+        );
+    }
+
+    #[test]
+    fn enrich_windows_tcp_event_parses_endpoint_from_payload() {
+        let raw = RawEvent {
+            event_type: EventType::TcpConnect,
+            pid: 1337,
+            uid: 0,
+            ts_ns: 2,
+            payload: "dst=203.0.113.10:443".to_string(),
+        };
+
+        let mut cache = EnrichmentCache::default();
+        let enriched = enrich_event_with_cache(raw, &mut cache);
+
+        assert_eq!(enriched.dst_ip.as_deref(), Some("203.0.113.10"));
+        assert_eq!(enriched.dst_port, Some(443));
+    }
 }

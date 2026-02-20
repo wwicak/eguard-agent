@@ -1,104 +1,75 @@
-# eGuard Agent - Windows Installer
+# eGuard Agent - Windows Installer (Preview)
 
-## Overview
+## Current status
 
-The Windows installer packages the eGuard agent as an MSI using the WiX Toolset v4+. The MSI installs the agent binary, registers it as a Windows service, and configures initial enrollment parameters.
+Windows packaging is currently in **preview scaffolding**.
 
-## Requirements
+What exists now:
+- `platform-windows` crate scaffolding and CI target checks.
+- `agent-core` target-gated platform abstraction (`src/platform.rs`) to decouple Linux-only imports from Windows builds.
+- WiX MSI source scaffold: `installer/windows/eguard-agent.wxs`.
+- PowerShell bootstrap installer scaffold: `installer/windows/install.ps1`.
+- Workflow validation for:
+  - `cargo check --target x86_64-pc-windows-msvc -p platform-windows`
+  - `cargo check --target x86_64-pc-windows-msvc -p agent-core`
+  - `cargo build --release --target x86_64-pc-windows-msvc -p agent-core`
+  - `wix build installer/windows/eguard-agent.wxs -dAgentExePath=<agent-core.exe>` (preview MSI build artifact)
 
-- WiX Toolset v4+ (`dotnet tool install --global wix`)
-- .NET SDK 6.0+
-- Built `eguard-agent.exe` binary (from `cargo build --release --target x86_64-pc-windows-msvc -p agent-core`)
+What is still open:
+- Final `agent-core` Windows runtime wiring.
+- Production MSI build/sign validation against the WiX source scaffold (`installer/windows/eguard-agent.wxs`).
+- Production code-signing for MSI and release artifact hardening.
+- Validation of `installer/windows/install.ps1` against live server endpoint + real Windows host install/upgrade/uninstall flows.
 
-## Build Process
+## Planned installer behavior (target state)
+
+The final Windows installer will package the eGuard agent as an MSI using WiX Toolset v4+.
+It is expected to:
+- install `eguard-agent.exe`
+- register service `eGuardAgent`
+- support silent install properties (`ENROLLMENT_TOKEN`, `SERVER_URL`)
+- support upgrade/uninstall while preserving enrollment state
+
+## Intended silent install command
 
 ```powershell
-# 1. Build the agent binary
-cargo build --release --target x86_64-pc-windows-msvc -p agent-core
-
-# 2. Build the MSI package
-wix build installer/windows/eguard-agent.wxs -o artifacts/windows/eguard-agent_0.1.0_x64.msi
+msiexec /i eguard-agent_<version>_x64.msi /qn ENROLLMENT_TOKEN=<token> SERVER_URL=<url>
 ```
 
-## Silent Install Parameters
+## Bootstrap install script scaffold
 
-The MSI supports the following properties for unattended deployment:
-
-| Property           | Description                          | Example                              |
-|--------------------|--------------------------------------|--------------------------------------|
-| `ENROLLMENT_TOKEN` | Agent enrollment token               | `abc123def456`                       |
-| `SERVER_URL`       | eGuard server address                | `https://eguard.example.com:50052`   |
-| `INSTALL_DIR`      | Custom install directory (optional)  | `C:\Program Files\eGuard`            |
+A preview bootstrap script is provided at `installer/windows/install.ps1`.
 
 ```powershell
-# Silent install with enrollment parameters
-msiexec /i eguard-agent_0.1.0_x64.msi /qn ENROLLMENT_TOKEN=abc123 SERVER_URL=https://eguard.example.com:50052
+powershell -ExecutionPolicy Bypass -File .\installer\windows\install.ps1 \
+  -ServerUrl https://server.example.com \
+  -EnrollmentToken <token>
 ```
 
-## Enterprise Deployment
+Script behavior (scaffold):
+- downloads MSI from `GET /api/v1/agent-install/windows` using `X-Enrollment-Token`
+- writes `C:\ProgramData\eGuard\bootstrap.conf`
+- installs MSI silently and starts `eGuardAgent`
+- removes `bootstrap.conf` after successful start (unless `-KeepBootstrap`)
 
-### Group Policy (GPO)
+## Intended Windows layout
 
-1. Copy the MSI to a network share accessible by target machines.
-2. Create a GPO under **Computer Configuration > Software Installation**.
-3. Add the MSI package as an **Assigned** application.
-4. Use an MST transform or `ENROLLMENT_TOKEN`/`SERVER_URL` properties for site-specific configuration.
-
-### SCCM / Microsoft Endpoint Manager
-
-Create an application deployment with:
-- Install command: `msiexec /i eguard-agent_0.1.0_x64.msi /qn ENROLLMENT_TOKEN=<token> SERVER_URL=<url>`
-- Uninstall command: `msiexec /x eguard-agent_0.1.0_x64.msi /qn`
-- Detection rule: file exists `C:\Program Files\eGuard\eguard-agent.exe`
-
-### Microsoft Intune
-
-1. Package the MSI as a Win32 app (`.intunewin`) using the Content Prep Tool.
-2. Set install/uninstall commands as above.
-3. Configure detection rules based on file presence or registry key.
-
-## File Layout on Windows
-
-```
+```text
 C:\Program Files\eGuard\
-  eguard-agent.exe          # Agent binary
-  config\
-    bootstrap.conf          # Bootstrap configuration (enrollment token, server)
+  eguard-agent.exe
 
 C:\ProgramData\eGuard\
-  bootstrap.conf            # Runtime configuration (post-enrollment)
-  buffer.db                 # Telemetry buffer database
-  baselines.bin             # Baseline snapshots
-  rules\
-    sigma\                  # Sigma detection rules
-    yara\                   # YARA detection rules
-    ioc\                    # Indicator of compromise feeds
-  logs\
-    eguard-agent.log        # Agent log output
+  bootstrap.conf
+  agent.conf
+  certs\
+  rules-staging\
+  quarantine\
+  buffer.db
+  baselines.bin
+  logs\eguard-agent.log
 ```
 
-## Windows Service Registration
+## Notes
 
-The agent runs as a Windows service named `eGuardAgent`:
-
-- **Service name**: `eGuardAgent`
-- **Display name**: eGuard Security Agent
-- **Startup type**: Automatic (Delayed Start)
-- **Account**: Local System
-- **Recovery**: Restart on failure (1 min / 5 min / 10 min delays)
-
-Manual service management:
-
-```powershell
-# Register the service
-sc.exe create eGuardAgent binPath= "C:\Program Files\eGuard\eguard-agent.exe" start= delayed-auto
-sc.exe description eGuardAgent "eGuard endpoint detection and response agent"
-sc.exe failure eGuardAgent reset= 86400 actions= restart/60000/restart/300000/restart/600000
-
-# Start / stop
-sc.exe start eGuardAgent
-sc.exe stop eGuardAgent
-
-# Remove
-sc.exe delete eGuardAgent
-```
+This README is intentionally explicit to avoid claiming MSI/service parity before implementation lands.
+Use `.github/workflows/release-agent-windows.yml` preview artifacts as the current CI signal.

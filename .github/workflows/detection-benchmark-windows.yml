@@ -44,10 +44,20 @@ jobs:
         shell: bash
         run: zig build asm-artifacts
 
-      - name: Build Windows agent binary
+      - name: Validate Windows platform crate compiles for MSVC target
         shell: bash
         run: |
-          cargo build --release --target x86_64-pc-windows-msvc -p agent-core
+          cargo check --target x86_64-pc-windows-msvc -p platform-windows
+
+      - name: Run platform-windows unit tests
+        shell: bash
+        run: |
+          cargo test -p platform-windows
+
+      - name: Validate agent-core compiles for Windows MSVC target
+        shell: bash
+        run: |
+          cargo check --target x86_64-pc-windows-msvc -p agent-core
 
       - name: Run Windows detection benchmark
         shell: bash
@@ -140,6 +150,17 @@ jobs:
           print(f"Windows MITRE ATT&CK coverage: {coverage_pct:.1f}% ({len(covered)}/{len(reference_windows_techniques)} reference techniques)")
           PY
 
+      - name: Evaluate Windows competitive parity profile (artifact-only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/run_windows_competitive_eval.py \
+            --metrics artifacts/detection-benchmark-windows/metrics.json \
+            --mitre artifacts/detection-benchmark-windows/mitre-coverage.json \
+            --profile benchmarks/competitive_profiles/windows-crowdstrike-parity.example.json \
+            --out artifacts/detection-benchmark-windows/competitive-eval.json \
+            --no-gate
+
       - name: Upload Windows detection benchmark artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -147,3 +168,4 @@ jobs:
           path: |
             artifacts/detection-benchmark-windows/metrics.json
             artifacts/detection-benchmark-windows/mitre-coverage.json
+            artifacts/detection-benchmark-windows/competitive-eval.json

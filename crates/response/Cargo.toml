@@ -7,5 +7,7 @@ license.workspace = true
 [dependencies]
 serde.workspace = true
 detection = { path = "../detection" }
-nix.workspace = true
 regex = "1"
+
+[target.'cfg(unix)'.dependencies]
+nix.workspace = true

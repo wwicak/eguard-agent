@@ -3,10 +3,10 @@ use std::collections::{HashMap, VecDeque};
 use anyhow::Result;
 use tracing::{info, warn};
 
+use crate::platform::{EbpfEngine, EbpfStats, EnrichmentCache};
 use baseline::BaselineStore;
 use compliance::{CompliancePolicy, ComplianceResult, RemediationOutcome};
 use grpc_client::{Client as GrpcClient, CommandEnvelope, EventBuffer, TlsConfig, TransportMode};
-use platform_linux::{EbpfEngine, EbpfStats, EnrichmentCache};
 use response::{AutoIsolationState, HostControlState, KillRateLimiter, ProtectedList};
 use self_protect::{apply_linux_hardening, LinuxHardeningConfig, SelfProtectEngine};
 use tokio::task::JoinSet;

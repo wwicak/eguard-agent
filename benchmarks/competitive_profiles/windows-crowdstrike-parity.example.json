@@ -1,0 +1,8 @@
+{
+  "profile_name": "windows-crowdstrike-parity-example",
+  "description": "Example gates for Windows CI competitive posture. Replace with measured third-party baseline before product claims.",
+  "targets": {
+    "detection_wall_clock_ms_max": 60000,
+    "mitre_reference_coverage_pct_min": 85.0
+  }
+}

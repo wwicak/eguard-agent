@@ -324,7 +324,9 @@ fn select_legacy_selector_names(detection: &Mapping, condition: &str) -> Vec<Str
             continue;
         }
 
-        if let Some(rest) = strip_prefix_ci(positive, "1 of ").or_else(|| strip_prefix_ci(positive, "all of ")) {
+        if let Some(rest) =
+            strip_prefix_ci(positive, "1 of ").or_else(|| strip_prefix_ci(positive, "all of "))
+        {
             positive = rest.trim();
             if let Some(prefix) = positive.strip_suffix('*') {
                 let prefix = prefix.trim().to_ascii_lowercase();
@@ -504,12 +506,7 @@ fn is_parent_process_field(base: &str) -> bool {
 fn is_file_field(base: &str) -> bool {
     matches!(
         base,
-        "targetfilename"
-            | "filename"
-            | "filepath"
-            | "path"
-            | "name"
-            | "currentdirectory"
+        "targetfilename" | "filename" | "filepath" | "path" | "name" | "currentdirectory"
     )
 }
 
@@ -707,7 +704,9 @@ fn mapping_get<'a>(map: &'a Mapping, key: &str) -> Option<&'a Value> {
     map.get(Value::String(key.to_string()))
 }
 
-fn deserialize_string_vec_lenient<'de, D>(deserializer: D) -> std::result::Result<Vec<String>, D::Error>
+fn deserialize_string_vec_lenient<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Vec<String>, D::Error>
 where
     D: Deserializer<'de>,
 {

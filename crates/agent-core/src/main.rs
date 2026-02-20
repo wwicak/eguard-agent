@@ -1,6 +1,7 @@
 mod config;
 mod detection_state;
 mod lifecycle;
+mod platform;
 
 use anyhow::Result;
 use tokio::signal;
