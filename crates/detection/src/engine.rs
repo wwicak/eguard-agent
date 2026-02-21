@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fmt;
 use std::path::Path;
 
@@ -39,6 +40,49 @@ impl std::error::Error for SigmaLoadError {
     }
 }
 
+/// Allowlist for suppressing detection on known-good processes and paths.
+pub struct DetectionAllowlist {
+    processes: HashSet<String>,
+    path_prefixes: Vec<String>,
+}
+
+impl DetectionAllowlist {
+    pub fn new() -> Self {
+        Self {
+            processes: HashSet::new(),
+            path_prefixes: Vec::new(),
+        }
+    }
+
+    pub fn add_allowed_process(&mut self, name: String) {
+        self.processes.insert(name);
+    }
+
+    pub fn add_allowed_path(&mut self, prefix: String) {
+        self.path_prefixes.push(prefix);
+    }
+
+    pub fn is_allowed(&self, event: &TelemetryEvent) -> bool {
+        if self.processes.contains(&event.process) {
+            return true;
+        }
+        if let Some(ref path) = event.file_path {
+            for prefix in &self.path_prefixes {
+                if path.starts_with(prefix) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
+impl Default for DetectionAllowlist {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DetectionOutcome {
     pub confidence: Confidence,
@@ -63,6 +107,7 @@ pub struct DetectionEngine {
     pub layer5: MlEngine,
     pub behavioral: BehavioralEngine,
     pub yara: YaraEngine,
+    pub allowlist: DetectionAllowlist,
 }
 
 impl DetectionEngine {
@@ -80,6 +125,7 @@ impl DetectionEngine {
             layer5: MlEngine::new(),
             behavioral: BehavioralEngine::new(),
             yara: YaraEngine::new(),
+            allowlist: DetectionAllowlist::new(),
         }
     }
 
@@ -98,6 +144,7 @@ impl DetectionEngine {
             layer5: MlEngine::new(),
             behavioral: BehavioralEngine::new(),
             yara,
+            allowlist: DetectionAllowlist::new(),
         }
     }
 
@@ -110,6 +157,7 @@ impl DetectionEngine {
             layer5: MlEngine::new(),
             behavioral: BehavioralEngine::new(),
             yara: YaraEngine::new(),
+            allowlist: DetectionAllowlist::new(),
         }
     }
 
@@ -160,8 +208,48 @@ impl DetectionEngine {
     }
 
     pub fn process_event(&mut self, event: &TelemetryEvent) -> DetectionOutcome {
+        // ── Allowlist: skip detection for known-good entities ───
+        if self.allowlist.is_allowed(event) {
+            return DetectionOutcome {
+                confidence: Confidence::None,
+                signals: DetectionSignals::default(),
+                temporal_hits: Vec::new(),
+                kill_chain_hits: Vec::new(),
+                exploit_indicators: Vec::new(),
+                kernel_integrity_indicators: Vec::new(),
+                tamper_indicators: Vec::new(),
+                yara_hits: Vec::new(),
+                anomaly: None,
+                layer1: Layer1EventHit::default(),
+                ml_score: None,
+                behavioral_alarms: Vec::new(),
+            };
+        }
+
         // ── Layer 1: IOC/signature matching ─────────────────────
         let layer1 = self.layer1.check_event(event);
+
+        // ── Early termination on Definite IOC match ─────────────
+        if layer1.result == Layer1Result::ExactMatch {
+            return DetectionOutcome {
+                confidence: Confidence::Definite,
+                signals: DetectionSignals {
+                    z1_exact_ioc: true,
+                    ..Default::default()
+                },
+                temporal_hits: Vec::new(),
+                kill_chain_hits: Vec::new(),
+                exploit_indicators: Vec::new(),
+                kernel_integrity_indicators: Vec::new(),
+                tamper_indicators: Vec::new(),
+                yara_hits: Vec::new(),
+                anomaly: None,
+                layer1,
+                ml_score: None,
+                behavioral_alarms: Vec::new(),
+            };
+        }
+
         let yara_hits = self.yara.scan_event(event);
 
         // ── Layer 2: Temporal pattern correlation ───────────────

@@ -32,12 +32,6 @@ pub fn detect_kernel_integrity_indicators(event: &TelemetryEvent) -> Vec<String>
         }
     }
 
-    if indicators.is_empty() {
-        if !lower.is_empty() {
-            indicators.push("kernel_module_loaded".to_string());
-        }
-    }
-
     indicators
 }
 
@@ -97,10 +91,11 @@ mod tests {
     }
 
     #[test]
-    fn kernel_integrity_indicator_records_any_module() {
+    // AC-DET-240
+    fn kernel_integrity_indicator_ignores_benign_module() {
         let ev = event("simple_module");
         let indicators = detect_kernel_integrity_indicators(&ev);
-        assert!(indicators.iter().any(|v| v == "kernel_module_loaded"));
+        assert!(indicators.is_empty(), "benign modules must not produce indicators");
     }
 
     #[test]

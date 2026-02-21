@@ -3240,3 +3240,36 @@ admin:Admin@12345 (dev temporary)
     - `go test ./server -run 'TestTelemetryAsyncPipelineWaitDoesNotStallAfterWorkerPanic|TestSaveTelemetryAppliesInMemoryCap|TestSaveResponseAppliesInMemoryCap' -count=1`
     - `go test ./server -run 'TestSanitizeHeartbeatTimestamp|TestValidateEnrollmentTokenValue' -count=1`
     - `go test ./server -run 'TestSaveComplianceBatchDoesNotMutateStoreWhenPersistenceFails|TestSaveComplianceBatchStoresPerCheckRecordsInMemoryMode|TestUpdateAgentPostureFromComplianceLockedOverridesPolicyAssignment' -count=1`
+
+---
+
+## Detection Engine Hardening — Tier 1
+
+Confirmed findings from deep codebase audits across detection engine subsystems.
+
+### Findings
+
+- [x] **DET-T1-01: Kernel module false positive flood** (`kernel_integrity.rs:35-38`)
+  - Every `ModuleLoad` event with non-empty module name sets `kernel_integrity=true` → `High` confidence via fallback `kernel_module_loaded` indicator. Legitimate modules (nvidia, zfs, ext4) flood false alerts.
+  - Fix: Remove fallback `kernel_module_loaded` indicator; only emit indicators when MODULE_INDICATORS match.
+  - ACs: AC-DET-240
+
+- [x] **DET-T1-02: Detection allowlist** (`engine.rs`)
+  - No mechanism to suppress signals for known-good processes/paths, causing unnecessary CPU burn on benign events.
+  - Fix: Add `DetectionAllowlist` with per-process and per-path-prefix suppression, early return with `Confidence::None`.
+  - ACs: AC-DET-241
+
+- [x] **DET-T1-03: L1 Definite short-circuit** (`engine.rs:162-231`)
+  - When L1 returns `ExactMatch` (Definite), engine still runs YARA, L2-L4, behavioral, exploit, kernel integrity — wasting ~70% CPU on confirmed threats.
+  - Fix: After L1 ExactMatch, return immediately with `Confidence::Definite` and skip remaining layers.
+  - ACs: AC-DET-242
+
+- [x] **DET-T1-04: Subscription Vec clone per event** (`layer2/engine.rs:119`)
+  - `.cloned()` creates a `Vec<usize>` clone per event. At 10K+ events/sec this is significant allocation pressure.
+  - Fix: Iterate subscription Vec by reference instead of cloning.
+  - ACs: AC-DET-243
+
+- [x] **DET-T1-05: Bare kernel_integrity escalates to High** (`policy.rs:10-16`)
+  - `kernel_integrity` alone → `High` confidence. Combined with DET-T1-01, every module load generates a High alert.
+  - Fix: Demote bare `kernel_integrity` from `High` to `Medium`. Still contributes to `High` with temporal/kill-chain corroboration.
+  - ACs: AC-DET-244

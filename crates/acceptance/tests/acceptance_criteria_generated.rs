@@ -342,6 +342,11 @@ const EXPECTED_IDS: &[&str] = &[
     "AC-DET-236",
     "AC-DET-237",
     "AC-DET-238",
+    "AC-DET-240",
+    "AC-DET-241",
+    "AC-DET-242",
+    "AC-DET-243",
+    "AC-DET-244",
     "AC-EBP-001",
     "AC-EBP-002",
     "AC-EBP-003",
@@ -2601,6 +2606,31 @@ fn ac_det_237_exists_in_acceptance_document() {
 #[test]
 fn ac_det_238_exists_in_acceptance_document() {
     assert_criterion_present("AC-DET-238");
+}
+
+#[test]
+fn ac_det_240_exists_in_acceptance_document() {
+    assert_criterion_present("AC-DET-240");
+}
+
+#[test]
+fn ac_det_241_exists_in_acceptance_document() {
+    assert_criterion_present("AC-DET-241");
+}
+
+#[test]
+fn ac_det_242_exists_in_acceptance_document() {
+    assert_criterion_present("AC-DET-242");
+}
+
+#[test]
+fn ac_det_243_exists_in_acceptance_document() {
+    assert_criterion_present("AC-DET-243");
+}
+
+#[test]
+fn ac_det_244_exists_in_acceptance_document() {
+    assert_criterion_present("AC-DET-244");
 }
 
 #[test]

@@ -116,12 +116,12 @@ impl TemporalEngine {
 
         let current_exec_epoch = self.bump_exec_epoch(entity, event.event_class);
         let event_identity_fingerprint = Self::identity_fingerprint(event);
-        let Some(rule_ids) = self.subscriptions.get(&event.event_class).cloned() else {
+        let Some(rule_ids) = self.subscriptions.get(&event.event_class) else {
             self.enforce_capacity_limits();
             return hits;
         };
 
-        for rule_id in rule_ids {
+        for &rule_id in rule_ids {
             let Some(automaton) = self.automata.get(rule_id) else {
                 continue;
             };

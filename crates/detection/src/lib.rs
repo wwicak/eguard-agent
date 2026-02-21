@@ -22,7 +22,7 @@ mod yara_engine;
 
 pub use behavioral::{BehavioralAlarm, BehavioralEngine};
 pub use calibration::{calibrate_thresholds, sanov_upper_bound, tau_delta, ThresholdCalibration};
-pub use engine::{DetectionEngine, DetectionOutcome, SigmaLoadError};
+pub use engine::{DetectionAllowlist, DetectionEngine, DetectionOutcome, SigmaLoadError};
 pub use kernel_integrity::detect_kernel_integrity_indicators;
 pub use layer1::{IocExactStore, IocLayer1, Layer1EventHit, Layer1Result};
 pub use layer2::{

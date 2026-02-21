@@ -7,13 +7,11 @@ pub fn confidence_policy(s: &DetectionSignals) -> Confidence {
     if s.z2_temporal && (s.z4_kill_chain || s.l1_prefilter_hit) {
         return Confidence::VeryHigh;
     }
-    if s.z2_temporal
-        || s.z4_kill_chain
-        || s.exploit_indicator
-        || s.kernel_integrity
-        || s.tamper_indicator
-    {
+    if s.z2_temporal || s.z4_kill_chain || s.exploit_indicator || s.tamper_indicator {
         return Confidence::High;
+    }
+    if s.kernel_integrity {
+        return Confidence::Medium;
     }
     if s.z3_anomaly_high && !(s.z1_exact_ioc || s.z2_temporal || s.z4_kill_chain) {
         return Confidence::Medium;

@@ -123,7 +123,7 @@ impl Confidence {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DetectionSignals {
     pub z1_exact_ioc: bool,
     pub z2_temporal: bool,

@@ -241,6 +241,14 @@ Derived from `docs/eguard-agent-design.md`. These acceptance criteria define the
 - **AC-DET-237**: Exploit-chain correlation MUST flag a kill chain when userfaultfd activity precedes an `execveat`-style execution in the same process tree.
 - **AC-DET-238**: Exploit-chain correlation MUST flag a kill chain when a process opens `/proc/*/mem` or `/proc/*/maps` and subsequently spawns a fileless exec.
 
+### Detection Engine Hardening
+
+- **AC-DET-240**: Kernel module load events MUST NOT set `kernel_integrity` signal to true unless the module name matches at least one rootkit/persistence heuristic pattern from MODULE_INDICATORS. Benign modules (e.g., nvidia, zfs, ext4) MUST produce an empty indicator list.
+- **AC-DET-241**: Detection engine MUST support a per-process, per-path allowlist (`DetectionAllowlist`) that suppresses detection signals for known-good entities. When an event matches an allowlisted process name or path prefix, `process_event()` MUST return `Confidence::None` without executing any detection layers.
+- **AC-DET-242**: Detection pipeline MUST short-circuit after Layer 1 returns `ExactMatch` (Definite confidence), skipping YARA, L2, L3, L4, behavioral, exploit, and kernel integrity layers for confirmed IOC matches.
+- **AC-DET-243**: `TemporalEngine::observe()` MUST NOT clone the subscription `Vec<usize>` on every event. Subscriptions MUST be iterated by reference to avoid per-event allocation pressure.
+- **AC-DET-244**: `confidence_policy()` MUST NOT escalate to `High` confidence on a bare `kernel_integrity` signal without corroboration from temporal, kill-chain, exploit, or tamper layers. Bare `kernel_integrity` MUST map to `Medium` confidence. (Supersedes AC-DET-224 for the standalone kernel_integrity case.)
+
 ---
 
 ## 2. Active Response Engine

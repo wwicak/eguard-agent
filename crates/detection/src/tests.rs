@@ -1635,18 +1635,25 @@ fn detection_outcome_includes_rule_names_and_matched_fields_for_traceability() {
     let mut engine = DetectionEngine::default_with_rules();
     engine.layer1.load_hashes(["deadbeef".to_string()]);
 
-    let mut first = event(1, EventClass::ProcessExec, "bash", "nginx", 1000);
-    first.pid = 700;
-    first.file_hash = Some("deadbeef".to_string());
-    first.session_id = first.pid;
-    let first_out = engine.process_event(&first);
-    assert!(first_out
+    // L1 traceability: IOC match records matched fields (short-circuits per AC-DET-242)
+    let mut ioc_ev = event(1, EventClass::ProcessExec, "malware", "bash", 1001);
+    ioc_ev.pid = 800;
+    ioc_ev.session_id = ioc_ev.pid;
+    ioc_ev.file_hash = Some("deadbeef".to_string());
+    let ioc_out = engine.process_event(&ioc_ev);
+    assert!(ioc_out
         .layer1
         .matched_fields
         .iter()
         .any(|f| f == "file_hash"));
 
-    let mut second = event(2, EventClass::NetworkConnect, "bash", "nginx", 1000);
+    // Temporal traceability: webshell pattern (no IOC match, goes through full pipeline)
+    let mut first = event(10, EventClass::ProcessExec, "bash", "nginx", 1000);
+    first.pid = 700;
+    first.session_id = first.pid;
+    let _first_out = engine.process_event(&first);
+
+    let mut second = event(12, EventClass::NetworkConnect, "bash", "nginx", 1000);
     second.pid = 700;
     second.session_id = second.pid;
     second.dst_port = Some(9001);
