@@ -6,7 +6,7 @@ VERSION=""
 CHECKSUM=""
 PACKAGE_URL=""
 FORMAT="deb"
-UPDATE_DIR="/var/lib/eguard-agent/update"
+UPDATE_DIR="${EGUARD_UPDATE_DIR:-/var/lib/eguard-agent/update}"
 
 usage() {
   cat <<'EOF'
@@ -59,12 +59,23 @@ if [[ "${FORMAT}" != "deb" && "${FORMAT}" != "rpm" ]]; then
   exit 1
 fi
 
+if [[ ! "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "error: --version must be valid semver (X.Y.Z)" >&2
+  exit 1
+fi
+
+if [[ ! "${CHECKSUM}" =~ ^[0-9a-fA-F]{64}$ ]]; then
+  echo "error: --checksum must be a 64-character hex SHA-256 hash" >&2
+  exit 1
+fi
+
 if [[ -z "${PACKAGE_URL}" ]]; then
   PACKAGE_URL="https://${SERVER}/api/v1/agent-install/linux-${FORMAT}?version=${VERSION}"
 fi
 
 install -d -m 0755 "${UPDATE_DIR}"
 pkg_path="${UPDATE_DIR}/eguard-agent-${VERSION}.${FORMAT}"
+trap 'rm -f "${pkg_path}"' EXIT
 
 curl -fsSL "${PACKAGE_URL}" -o "${pkg_path}"
 echo "${CHECKSUM}  ${pkg_path}" | sha256sum --check --status

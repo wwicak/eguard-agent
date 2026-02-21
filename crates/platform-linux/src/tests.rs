@@ -255,11 +255,13 @@ fn event_driven_runtime_primitives_include_inotify_watch_support() {
         .join("..");
     let main_src =
         std::fs::read_to_string(root.join("crates/agent-core/src/main.rs")).expect("main.rs");
-    let ebpf_src =
-        std::fs::read_to_string(root.join("crates/platform-linux/src/ebpf.rs")).expect("ebpf.rs");
+    let ebpf_backend_src = std::fs::read_to_string(
+        root.join("crates/platform-linux/src/ebpf/libbpf_backend.rs"),
+    )
+    .expect("libbpf_backend.rs");
     assert!(main_src.contains("time::interval("));
     assert!(main_src.contains("tokio::select!"));
-    assert!(ebpf_src.contains(".poll(timeout)"));
+    assert!(ebpf_backend_src.contains(".poll(timeout)"));
 
     let dir = std::env::temp_dir();
     let fd = open_inotify_nonblocking().expect("open inotify");

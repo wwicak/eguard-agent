@@ -569,6 +569,11 @@ const EXPECTED_IDS: &[&str] = &[
     "AC-PKG-031",
     "AC-PKG-032",
     "AC-PKG-033",
+    "AC-PKG-034",
+    "AC-PKG-035",
+    "AC-PKG-036",
+    "AC-PKG-037",
+    "AC-PKG-038",
     "AC-RES-001",
     "AC-RES-002",
     "AC-RES-003",
@@ -3731,6 +3736,31 @@ fn ac_pkg_032_exists_in_acceptance_document() {
 #[test]
 fn ac_pkg_033_exists_in_acceptance_document() {
     assert_criterion_present("AC-PKG-033");
+}
+
+#[test]
+fn ac_pkg_034_exists_in_acceptance_document() {
+    assert_criterion_present("AC-PKG-034");
+}
+
+#[test]
+fn ac_pkg_035_exists_in_acceptance_document() {
+    assert_criterion_present("AC-PKG-035");
+}
+
+#[test]
+fn ac_pkg_036_exists_in_acceptance_document() {
+    assert_criterion_present("AC-PKG-036");
+}
+
+#[test]
+fn ac_pkg_037_exists_in_acceptance_document() {
+    assert_criterion_present("AC-PKG-037");
+}
+
+#[test]
+fn ac_pkg_038_exists_in_acceptance_document() {
+    assert_criterion_present("AC-PKG-038");
 }
 
 #[test]

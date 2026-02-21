@@ -1219,7 +1219,7 @@ fn parse_ssh_root_login_from_config(raw: &str) -> Option<bool> {
             return Some(matches!(value.as_str(), "yes" | "without-password"));
         }
     }
-    Some(false)
+    None
 }
 
 fn detect_installed_packages() -> Option<HashSet<String>> {
@@ -1279,16 +1279,26 @@ fn parse_password_policy(
                 continue;
             }
             if let Some(v) = line.strip_prefix("PASS_MAX_DAYS") {
-                let days = v.split_whitespace().next()?.parse::<u64>().ok()?;
-                max_days_ok = days <= 90;
+                if let Some(days) = v.split_whitespace().next().and_then(|s| s.parse::<u64>().ok()) {
+                    max_days_ok = days <= 90;
+                }
             }
         }
     }
 
     let mut pam_quality_ok = false;
     if let Some(raw) = pam_common_password {
-        let lower = raw.to_ascii_lowercase();
-        pam_quality_ok = lower.contains("pam_pwquality.so") || lower.contains("pam_cracklib.so");
+        for line in raw.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with('#') {
+                continue;
+            }
+            let lower_line = trimmed.to_ascii_lowercase();
+            if lower_line.contains("pam_pwquality.so") || lower_line.contains("pam_cracklib.so") {
+                pam_quality_ok = true;
+                break;
+            }
+        }
     }
 
     Some(max_days_ok && pam_quality_ok)

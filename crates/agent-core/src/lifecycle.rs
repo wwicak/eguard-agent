@@ -110,6 +110,11 @@ use emergency_rule::parse_emergency_rule_type;
 use response_actions::remediation_check_type;
 
 #[cfg(test)]
+pub(crate) fn shared_env_var_lock() -> &'static std::sync::Mutex<()> {
+    crate::test_support::env_lock()
+}
+
+#[cfg(test)]
 #[allow(clippy::field_reassign_with_default)]
 mod tests;
 

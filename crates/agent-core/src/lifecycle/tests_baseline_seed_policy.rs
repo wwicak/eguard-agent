@@ -1,11 +1,9 @@
 use super::*;
 use ::baseline::{BaselineStore, ProcessKey};
 use grpc_client::FleetBaselineEnvelope;
-use std::sync::{Mutex, OnceLock};
 
-fn env_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+fn env_lock() -> &'static std::sync::Mutex<()> {
+    crate::test_support::env_lock()
 }
 
 fn unique_baseline_path(prefix: &str) -> std::path::PathBuf {

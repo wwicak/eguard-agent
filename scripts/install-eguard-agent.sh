@@ -5,6 +5,11 @@ SERVER="${EGUARD_SERVER:-}"
 TOKEN=""
 PACKAGE_URL=""
 
+contains_unsafe_chars() {
+    local value="$1"
+    [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]
+}
+
 usage() {
   cat <<'EOF'
 Usage: install-eguard-agent.sh --server <host[:port]> [--token <token>] [--url <package-url>]
@@ -42,12 +47,22 @@ if [[ -z "${SERVER}" ]]; then
   exit 1
 fi
 
+if contains_unsafe_chars "${SERVER}"; then
+  echo "error: --server contains unsupported control characters" >&2
+  exit 1
+fi
+
+if [[ -n "${TOKEN}" ]] && contains_unsafe_chars "${TOKEN}"; then
+  echo "error: --token contains unsupported control characters" >&2
+  exit 1
+fi
+
 if [[ -f /etc/debian_version ]]; then
   PKG_FORMAT="deb"
   INSTALL_CMD=(dpkg -i)
 elif [[ -f /etc/redhat-release ]]; then
   PKG_FORMAT="rpm"
-  INSTALL_CMD=(rpm -i)
+  INSTALL_CMD=(rpm -Uvh)
 else
   echo "unsupported os: expected debian- or redhat-based linux" >&2
   exit 1
@@ -64,13 +79,14 @@ curl -fsSL "${PACKAGE_URL}" -o "${tmpfile}"
 "${INSTALL_CMD[@]}" "${tmpfile}"
 
 if [[ -n "${TOKEN}" ]]; then
-  install -d -m 0755 /etc/eguard-agent
-  cat > /etc/eguard-agent/bootstrap.conf <<EOF
-[server]
-address = ${SERVER}
-grpc_port = 50052
-enrollment_token = ${TOKEN}
-EOF
+  install -d -m 0700 /etc/eguard-agent
+  (umask 077; {
+    printf '[server]\n'
+    printf 'address = %s\n' "${SERVER}"
+    printf 'grpc_port = 50052\n'
+    printf 'enrollment_token = %s\n' "${TOKEN}"
+  } > /etc/eguard-agent/bootstrap.conf)
+  chmod 0600 /etc/eguard-agent/bootstrap.conf
 fi
 
 systemctl enable eguard-agent

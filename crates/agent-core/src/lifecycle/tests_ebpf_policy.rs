@@ -2,7 +2,7 @@ use super::*;
 use crate::config::{AgentConfig, AgentMode};
 use response::plan_action;
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -11,8 +11,7 @@ fn workspace_root() -> PathBuf {
 }
 
 fn script_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+    super::shared_env_var_lock()
 }
 
 fn write_executable(path: &std::path::Path, body: &str) {

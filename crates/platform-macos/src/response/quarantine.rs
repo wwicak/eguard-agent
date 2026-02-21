@@ -4,9 +4,11 @@
 use std::path::Path;
 
 #[cfg(target_os = "macos")]
+use std::ffi::CString;
+#[cfg(target_os = "macos")]
 use std::fs;
 #[cfg(target_os = "macos")]
-use std::process::Command;
+use std::os::unix::ffi::OsStrExt;
 #[cfg(target_os = "macos")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -50,15 +52,7 @@ pub fn quarantine_file(path: &str, quarantine_dir: &str) -> Result<String, super
             ))
         })?;
 
-        // Set com.apple.quarantine xattr to prevent execution.
-        let _ = Command::new("xattr")
-            .args([
-                "-w",
-                "com.apple.quarantine",
-                "0083;eGuard;eGuard Agent;quarantined",
-                &target.to_string_lossy(),
-            ])
-            .output();
+        set_quarantine_xattr(&target)?;
 
         Ok(target.to_string_lossy().to_string())
     }
@@ -72,6 +66,63 @@ pub fn quarantine_file(path: &str, quarantine_dir: &str) -> Result<String, super
             .to_string_lossy();
         Ok(format!("{quarantine_dir}/{file_name}"))
     }
+}
+
+#[cfg(target_os = "macos")]
+fn set_quarantine_xattr(path: &Path) -> Result<(), super::ResponseError> {
+    const XATTR_NAME: &str = "com.apple.quarantine";
+    const XATTR_VALUE: &str = "0083;eGuard;eGuard Agent;quarantined";
+
+    let c_path = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+        super::ResponseError::OperationFailed(format!("invalid quarantine path {}", path.display()))
+    })?;
+    let c_name = CString::new(XATTR_NAME).expect("xattr name is valid");
+
+    let ret = unsafe {
+        libc::setxattr(
+            c_path.as_ptr(),
+            c_name.as_ptr(),
+            XATTR_VALUE.as_ptr() as *const libc::c_void,
+            XATTR_VALUE.len(),
+            0,
+            0,
+        )
+    };
+    if ret == 0 {
+        return Ok(());
+    }
+
+    Err(super::ResponseError::OperationFailed(format!(
+        "failed setting quarantine xattr on {}: {}",
+        path.display(),
+        std::io::Error::last_os_error()
+    )))
+}
+
+#[cfg(target_os = "macos")]
+fn clear_quarantine_xattr(path: &Path) -> Result<(), super::ResponseError> {
+    const XATTR_NAME: &str = "com.apple.quarantine";
+
+    let c_path = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+        super::ResponseError::OperationFailed(format!("invalid restore path {}", path.display()))
+    })?;
+    let c_name = CString::new(XATTR_NAME).expect("xattr name is valid");
+
+    let ret = unsafe { libc::removexattr(c_path.as_ptr(), c_name.as_ptr(), 0) };
+    if ret == 0 {
+        return Ok(());
+    }
+
+    let io_err = std::io::Error::last_os_error();
+    if io_err.raw_os_error() == Some(libc::ENOATTR) {
+        return Ok(());
+    }
+
+    Err(super::ResponseError::OperationFailed(format!(
+        "failed clearing quarantine xattr on {}: {}",
+        path.display(),
+        io_err
+    )))
 }
 
 /// Restore a file from quarantine to its original location.
@@ -100,10 +151,7 @@ pub fn restore_file(
             ))
         })?;
 
-        // Remove quarantine xattr after restore.
-        let _ = Command::new("xattr")
-            .args(["-d", "com.apple.quarantine", &target.to_string_lossy()])
-            .output();
+        clear_quarantine_xattr(target)?;
 
         Ok(())
     }

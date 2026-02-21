@@ -120,11 +120,9 @@ pub(super) fn has_explicit_port(address: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::default_agent_id;
-    use std::sync::{Mutex, OnceLock};
 
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
+    fn env_lock() -> &'static std::sync::Mutex<()> {
+        crate::test_support::env_lock()
     }
 
     #[test]

@@ -48,7 +48,7 @@ fn kill_process_tree_orders_children_before_parent() {
     let report =
         kill_process_tree_with(100, &protected, &introspector, &sender).expect("kill tree");
     assert_eq!(report.target_pid, 100);
-    assert_eq!(report.killed_pids, vec![102, 103, 101, 100]);
+    assert_eq!(report.killed_pids, vec![103, 102, 101, 100]);
 
     let sent = sender.sent.borrow();
     assert_eq!(sent.first(), Some(&(100, Signal::SIGSTOP)));
@@ -106,7 +106,7 @@ fn kill_path_latency_stays_within_fallback_budget() {
     let started = std::time::Instant::now();
     let report =
         kill_process_tree_with(500, &protected, &introspector, &sender).expect("kill tree");
-    assert_eq!(report.killed_pids, vec![502, 503, 501, 500]);
+    assert_eq!(report.killed_pids, vec![503, 502, 501, 500]);
     assert!(started.elapsed() < std::time::Duration::from_millis(50));
 }
 

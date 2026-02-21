@@ -279,7 +279,7 @@ PermitRootLogin yes
     let default_when_missing = "# no directive\n";
     assert_eq!(
         parse_ssh_root_login_from_config(default_when_missing),
-        Some(false)
+        None
     );
 }
 

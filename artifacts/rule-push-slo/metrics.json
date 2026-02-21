@@ -1,6 +1,6 @@
 {
   "suite": "rule_push_slo",
-  "recorded_at_utc": "2026-02-20T20:44:51Z",
+  "recorded_at_utc": "2026-02-21T06:43:16Z",
   "limits": {
     "transfer_slo_seconds": 5,
     "rollout_slo_seconds": 30,
@@ -15,10 +15,10 @@
   "measured": {
     "transfer_seconds_at_link_rate": 5.000000,
     "fleet_rollout_seconds": 60.000000,
-    "transfer_probe_seconds_local_io": 0.002420,
-    "transfer_probe_effective_mbps_local_io": 2065.82,
-    "dispatch_probe_seconds": 0.064347,
-    "dispatch_probe_commands_per_sec": 77703.58,
+    "transfer_probe_seconds_local_io": 0.002800,
+    "transfer_probe_effective_mbps_local_io": 1785.97,
+    "dispatch_probe_seconds": 0.051259,
+    "dispatch_probe_commands_per_sec": 97543.61,
     "effective_commands_per_sec_used_for_rollout": 500.000000
   }
 }

@@ -44,8 +44,7 @@ fn verify_code_signature_macos() -> Result<(), super::SelfProtectError> {
         ))
     })?;
 
-    // Only enforce code signature if explicitly required.
-    if std::env::var("EGUARD_REQUIRE_CODESIGN")
+    if std::env::var("DISABLE_CODESIGN_CHECK")
         .ok()
         .map(|raw| {
             matches!(
@@ -55,26 +54,28 @@ fn verify_code_signature_macos() -> Result<(), super::SelfProtectError> {
         })
         .unwrap_or(false)
     {
-        let output = Command::new("codesign")
-            .args([
-                "--verify",
-                "--deep",
-                "--strict",
-                &exe_path.to_string_lossy(),
-            ])
-            .output()
-            .map_err(|err| {
-                super::SelfProtectError::CodeSignFailed(format!("failed spawning codesign: {err}"))
-            })?;
+        return Ok(());
+    }
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            return Err(super::SelfProtectError::CodeSignFailed(format!(
-                "code signature verification failed for {}: {}",
-                exe_path.display(),
-                stderr.trim()
-            )));
-        }
+    let output = Command::new("codesign")
+        .args([
+            "--verify",
+            "--deep",
+            "--strict",
+            &exe_path.to_string_lossy(),
+        ])
+        .output()
+        .map_err(|err| {
+            super::SelfProtectError::CodeSignFailed(format!("failed spawning codesign: {err}"))
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        return Err(super::SelfProtectError::CodeSignFailed(format!(
+            "code signature verification failed for {}: {}",
+            exe_path.display(),
+            stderr.trim()
+        )));
     }
 
     Ok(())

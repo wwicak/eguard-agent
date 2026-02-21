@@ -11,8 +11,14 @@ pub mod response;
 pub mod self_protect;
 pub mod service;
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::fs;
 use std::num::NonZeroUsize;
+use std::time::UNIX_EPOCH;
+
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 
 use lru::LruCache;
 use serde::{Deserialize, Serialize};
@@ -80,10 +86,9 @@ struct ProcessCacheEntry {
 
 #[derive(Debug, Clone)]
 struct FileHashCacheEntry {
-    #[allow(dead_code)]
-    mtime_secs: i64,
-    #[allow(dead_code)]
+    modified_ns: i128,
     size_bytes: u64,
+    inode: u64,
     sha256: String,
 }
 
@@ -91,6 +96,11 @@ struct FileHashCacheEntry {
 pub struct EnrichmentCache {
     process_cache: LruCache<u32, ProcessCacheEntry>,
     file_hash_cache: LruCache<String, FileHashCacheEntry>,
+}
+
+thread_local! {
+    static DEFAULT_ENRICHMENT_CACHE: RefCell<EnrichmentCache> =
+        RefCell::new(EnrichmentCache::default());
 }
 
 impl Default for EnrichmentCache {
@@ -140,16 +150,36 @@ impl EnrichmentCache {
     }
 
     fn hash_for_path(&mut self, path: &str) -> Option<String> {
+        let metadata = fs::metadata(path).ok()?;
+        let modified_ns = metadata
+            .modified()
+            .ok()
+            .and_then(|mtime| mtime.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| {
+                (duration.as_secs() as i128)
+                    .saturating_mul(1_000_000_000)
+                    .saturating_add(duration.subsec_nanos() as i128)
+            })
+            .unwrap_or(0);
+        let size_bytes = metadata.len();
+        let inode = file_inode(&metadata);
+
         if let Some(cached) = self.file_hash_cache.get(path) {
-            return Some(cached.sha256.clone());
+            if cached.modified_ns == modified_ns
+                && cached.size_bytes == size_bytes
+                && cached.inode == inode
+            {
+                return Some(cached.sha256.clone());
+            }
         }
 
         let hash = enrichment::file::compute_sha256(path).ok()?;
         self.file_hash_cache.put(
             path.to_string(),
             FileHashCacheEntry {
-                mtime_secs: 0,
-                size_bytes: 0,
+                modified_ns,
+                size_bytes,
+                inode,
                 sha256: hash.clone(),
             },
         );
@@ -164,8 +194,10 @@ pub fn platform_name() -> &'static str {
 }
 
 pub fn enrich_event(raw: RawEvent) -> EnrichedEvent {
-    let mut cache = EnrichmentCache::default();
-    enrich_event_with_cache(raw, &mut cache)
+    DEFAULT_ENRICHMENT_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        enrich_event_with_cache(raw, &mut cache)
+    })
 }
 
 pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> EnrichedEvent {
@@ -418,6 +450,16 @@ fn parse_endpoint(raw: &str) -> (Option<String>, Option<u16>) {
 
 // -- Helpers ----------------------------------------------------------------
 
+#[cfg(unix)]
+fn file_inode(metadata: &fs::Metadata) -> u64 {
+    metadata.ino()
+}
+
+#[cfg(not(unix))]
+fn file_inode(_metadata: &fs::Metadata) -> u64 {
+    0
+}
+
 fn capacity_from(raw: usize) -> NonZeroUsize {
     let bounded = raw.max(128);
     NonZeroUsize::new(bounded).expect("cache capacity is always non-zero")
@@ -426,6 +468,8 @@ fn capacity_from(raw: usize) -> NonZeroUsize {
 #[cfg(test)]
 mod tests {
     use super::{enrich_event_with_cache, EnrichmentCache, EventType, RawEvent};
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn enrich_macos_process_event_uses_cmdline_payload_hint() {
@@ -462,5 +506,68 @@ mod tests {
 
         assert_eq!(enriched.dst_ip.as_deref(), Some("203.0.113.10"));
         assert_eq!(enriched.dst_port, Some(443));
+    }
+
+    #[test]
+    fn file_hash_cache_rehashes_when_file_size_changes() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "eguard-macos-hash-cache-test-{}-{}",
+            std::process::id(),
+            nonce
+        ));
+
+        fs::write(&path, b"v1").expect("write v1 payload");
+
+        let mut cache = EnrichmentCache::default();
+        let first = cache
+            .hash_for_path(&path.to_string_lossy())
+            .expect("hash for v1");
+
+        fs::write(&path, b"version-two").expect("write v2 payload");
+        let second = cache
+            .hash_for_path(&path.to_string_lossy())
+            .expect("hash for v2");
+
+        assert_ne!(
+            first, second,
+            "hash must refresh after file content changes"
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn file_hash_cache_rehashes_when_file_changes_but_size_matches() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "eguard-macos-hash-cache-size-stable-test-{}-{}",
+            std::process::id(),
+            nonce
+        ));
+
+        fs::write(&path, b"AAAA").expect("write v1 payload");
+
+        let mut cache = EnrichmentCache::default();
+        let first = cache
+            .hash_for_path(&path.to_string_lossy())
+            .expect("hash for v1");
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        fs::write(&path, b"BBBB").expect("write v2 payload");
+        let second = cache
+            .hash_for_path(&path.to_string_lossy())
+            .expect("hash for v2");
+
+        assert_ne!(
+            first, second,
+            "hash must refresh even when size is unchanged"
+        );
+        let _ = fs::remove_file(path);
     }
 }

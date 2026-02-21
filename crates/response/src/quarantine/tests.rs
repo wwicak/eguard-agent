@@ -76,7 +76,7 @@ fn quarantine_runtime_entrypoint_moves_file_and_reports_fields() {
         "test source must be outside protected paths"
     );
 
-    let hash = "sha256-runtime-test";
+    let hash = "abcdef0123456789abcdef0123456789";
     std::env::set_var("EGUARD_TEST_QUARANTINE_DIR", &quarantine_dir);
     let _env_reset = EnvVarReset;
     let report = quarantine_file(&original, hash, &protected).expect("quarantine file");

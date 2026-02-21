@@ -1,16 +1,27 @@
 #!/bin/bash
 set -euo pipefail
 
-# Create directories
-mkdir -p "/Library/Application Support/eGuard/logs"
-mkdir -p "/Library/Application Support/eGuard/quarantine"
+BASE_DIR="/Library/Application Support/eGuard"
+LOG_DIR="${BASE_DIR}/logs"
+QUARANTINE_DIR="${BASE_DIR}/quarantine"
 
-# Set permissions
+# Create directories
+mkdir -p "$LOG_DIR"
+mkdir -p "$QUARANTINE_DIR"
+
+# Restrict permissions on eGuard runtime directories
+chown -R root:wheel "$BASE_DIR"
+chmod 700 "$BASE_DIR"
+chmod 700 "$LOG_DIR"
+chmod 700 "$QUARANTINE_DIR"
+
+# Set binary/plist permissions
 chmod 755 /usr/local/bin/eguard-agent
 chown root:wheel /Library/LaunchDaemons/com.eguard.agent.plist
 chmod 644 /Library/LaunchDaemons/com.eguard.agent.plist
 
 # Load and start LaunchDaemon
+launchctl bootout system/com.eguard.agent 2>/dev/null || true
 launchctl bootstrap system /Library/LaunchDaemons/com.eguard.agent.plist
 launchctl kickstart -k system/com.eguard.agent
 

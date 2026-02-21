@@ -514,7 +514,7 @@ fn performance_and_budget_contracts_are_captured_in_ci_harnesses() {
     let log_path = sandbox.join("mock.log");
     write_exec(
         &bin_dir.join("cargo"),
-        r#"#!/usr/bin/env bash
+        r#"#!/bin/bash
 set -euo pipefail
 echo "cargo $*" >> "${MOCK_LOG}"
 exit 0
@@ -522,7 +522,7 @@ exit 0
     );
     write_exec(
         &bin_dir.join("zig"),
-        r#"#!/usr/bin/env bash
+        r#"#!/bin/bash
 set -euo pipefail
 echo "zig $*" >> "${MOCK_LOG}"
 exit 0
@@ -530,14 +530,26 @@ exit 0
     );
     write_exec(
         &bin_dir.join("strip"),
-        r#"#!/usr/bin/env bash
+        r#"#!/bin/bash
 set -euo pipefail
 echo "strip $*" >> "${MOCK_LOG}"
 exit 0
 "#,
     );
+    write_exec(
+        &bin_dir.join("ar"),
+        r#"#!/bin/bash
+set -euo pipefail
+echo "ar $*" >> "${MOCK_LOG}"
+if [[ "${1:-}" == "rcs" && -n "${2:-}" ]]; then
+  mkdir -p "$(dirname "${2}")"
+  : > "${2}"
+fi
+exit 0
+"#,
+    );
     let path_env = format!(
-        "{}:{}",
+        "{}:/usr/bin:/bin:{}",
         bin_dir.display(),
         std::env::var("PATH").unwrap_or_default()
     );
@@ -549,7 +561,7 @@ exit 0
         .env("MOCK_LOG", &log_path)
         .status()
         .expect("run package budget script");
-    assert!(package.success());
+    assert!(package.success(), "package harness failed: status={package:?}");
     let package_metrics = std::fs::read_to_string(package_out_dir.join("metrics.json"))
         .expect("read package metrics");
     assert!(
@@ -1746,10 +1758,17 @@ fn verification_coverage_and_security_pipeline_contracts_are_present() {
     let sandbox = temp_dir("eguard-verification-suite-test");
     let bin_dir = sandbox.join("bin");
     std::fs::create_dir_all(&bin_dir).expect("create mock bin");
+    let release_binary = root.join("target/release/agent-core");
+    let release_binary_preexisting = release_binary.exists();
+    if !release_binary_preexisting {
+        std::fs::create_dir_all(release_binary.parent().expect("release binary parent"))
+            .expect("create release binary parent");
+        std::fs::write(&release_binary, b"mock-agent-core").expect("write mock release binary");
+    }
     let log_path = sandbox.join("mock.log");
     write_exec(
         &bin_dir.join("cargo"),
-        r#"#!/usr/bin/env bash
+        r#"#!/bin/bash
 set -euo pipefail
 echo "cargo $*" >> "${MOCK_LOG}"
 exit 0
@@ -1757,7 +1776,7 @@ exit 0
     );
     write_exec(
         &bin_dir.join("checksec"),
-        r#"#!/usr/bin/env bash
+        r#"#!/bin/bash
 set -euo pipefail
 echo "checksec $*" >> "${MOCK_LOG}"
 exit 0
@@ -1765,7 +1784,7 @@ exit 0
     );
     write_exec(
         &bin_dir.join("strace"),
-        r#"#!/usr/bin/env bash
+        r#"#!/bin/bash
 set -euo pipefail
 echo "strace $*" >> "${MOCK_LOG}"
 exit 0
@@ -1773,7 +1792,7 @@ exit 0
     );
 
     let path_env = format!(
-        "{}:{}",
+        "{}:/usr/bin:/bin:{}",
         bin_dir.display(),
         std::env::var("PATH").unwrap_or_default()
     );
@@ -1784,7 +1803,7 @@ exit 0
         .env("MOCK_LOG", &log_path)
         .status()
         .expect("run verification suite script");
-    assert!(verify.success());
+    assert!(verify.success(), "verification suite script failed: status={verify:?}");
 
     let log = std::fs::read_to_string(&log_path).expect("read verification log");
     let log_lines = non_comment_lines(&log);
@@ -1936,6 +1955,9 @@ exit 0
         read("artifacts/bundle-signature-contract/signature-ml-model-registry.json");
     assert!(signature_ml_registry.contains("\"suite\": \"signature_ml_model_registry_gate\""));
 
+    if !release_binary_preexisting {
+        let _ = std::fs::remove_file(&release_binary);
+    }
     let _ = std::fs::remove_dir_all(sandbox);
 
     let matrix = read("tests/verification-matrix.md");

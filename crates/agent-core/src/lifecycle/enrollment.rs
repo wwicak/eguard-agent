@@ -211,11 +211,9 @@ fn write_private_config_file(path: &Path, data: &[u8]) -> std::io::Result<()> {
 mod tests {
     use super::persist_runtime_config_snapshot;
     use crate::config::AgentConfig;
-    use std::sync::{Mutex, OnceLock};
 
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
+    fn env_lock() -> &'static std::sync::Mutex<()> {
+        crate::test_support::env_lock()
     }
 
     fn clear_env() {

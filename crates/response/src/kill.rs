@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 
 #[cfg(target_os = "linux")]
 use std::fs;
@@ -358,12 +358,15 @@ fn collect_descendants(
     out: &mut Vec<u32>,
     seen: &mut HashSet<u32>,
 ) {
-    for child in introspector.children_of(pid) {
-        if !seen.insert(child) {
-            continue;
+    let mut queue = VecDeque::new();
+    queue.push_back(pid);
+    while let Some(current) = queue.pop_front() {
+        for child in introspector.children_of(current) {
+            if seen.insert(child) {
+                out.push(child);
+                queue.push_back(child);
+            }
         }
-        out.push(child);
-        collect_descendants(child, introspector, out, seen);
     }
 }
 

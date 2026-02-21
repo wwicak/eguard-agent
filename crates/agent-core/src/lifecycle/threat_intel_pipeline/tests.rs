@@ -338,6 +338,5 @@ fn write_temp_last_known_good_path(name: &str) -> PathBuf {
 }
 
 fn env_lock() -> &'static std::sync::Mutex<()> {
-    static ENV_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-    ENV_LOCK.get_or_init(|| std::sync::Mutex::new(()))
+    crate::lifecycle::shared_env_var_lock()
 }

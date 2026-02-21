@@ -66,13 +66,30 @@ pub fn quarantine_file_with_dir(
     if protected.is_protected_path(path) {
         return Err(ResponseError::ProtectedPath(path.to_path_buf()));
     }
-    if sha256.trim().is_empty() {
+    if !is_valid_quarantine_id(sha256) {
         return Err(ResponseError::InvalidInput(
-            "sha256 cannot be empty".to_string(),
+            "sha256 must be non-empty, at most 128 chars, and contain only hex digits or colons"
+                .to_string(),
         ));
     }
 
-    let metadata = fs::metadata(path)?;
+    // Use symlink_metadata to detect symlinks without following them.
+    let sym_meta = fs::symlink_metadata(path)?;
+    let effective_path;
+    let metadata;
+    if sym_meta.file_type().is_symlink() {
+        // Resolve the real path and re-check protection on the canonical target.
+        let canonical = fs::canonicalize(path)?;
+        if protected.is_protected_path(&canonical) {
+            return Err(ResponseError::ProtectedPath(canonical));
+        }
+        metadata = fs::metadata(&canonical)?;
+        effective_path = canonical;
+    } else {
+        metadata = fs::metadata(path)?;
+        effective_path = path.to_path_buf();
+    }
+
     if !metadata.is_file() {
         return Err(ResponseError::InvalidInput(format!(
             "{} is not a regular file",
@@ -83,12 +100,12 @@ pub fn quarantine_file_with_dir(
     fs::create_dir_all(quarantine_dir)?;
     let quarantine_path = quarantine_dir.join(sha256);
 
-    fs::copy(path, &quarantine_path)?;
+    fs::copy(&effective_path, &quarantine_path)?;
 
-    let mut original = OpenOptions::new().write(true).open(path)?;
-    apply_restrictive_permissions(path)?;
+    let mut original = OpenOptions::new().write(true).open(&effective_path)?;
+    apply_restrictive_permissions(&effective_path)?;
     overwrite_file_prefix_with_zeros_file(&mut original, metadata.len())?;
-    fs::remove_file(path)?;
+    fs::remove_file(&effective_path)?;
 
     let (original_mode, owner_uid, owner_gid) = metadata_identity(&metadata);
 
@@ -184,6 +201,12 @@ fn restore_permissions(path: &Path, _original_mode: u32) -> ResponseResult<()> {
     perms.set_readonly(false);
     fs::set_permissions(path, perms)?;
     Ok(())
+}
+
+fn is_valid_quarantine_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id.chars().all(|c| c.is_ascii_hexdigit() || c == ':')
 }
 
 #[cfg(test)]

@@ -9,11 +9,9 @@ use super::util::{format_server_addr, has_explicit_port, parse_bool, parse_cap_m
 use super::{AgentConfig, AgentMode};
 use response::ResponsePolicy;
 use std::io::Write;
-use std::sync::{Mutex, OnceLock};
 
-fn env_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+fn env_lock() -> &'static std::sync::Mutex<()> {
+    crate::test_support::env_lock()
 }
 
 fn clear_env() {
@@ -340,6 +338,46 @@ fn bootstrap_config_overrides_existing_agent_config() {
 }
 
 #[test]
+fn legacy_json_bootstrap_is_rewritten_to_canonical_server_schema() {
+    let _guard = env_lock().lock().expect("env lock");
+    clear_env();
+
+    let bootstrap_path = std::env::temp_dir().join(format!(
+        "eguard-bootstrap-legacy-json-{}.conf",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+
+    std::fs::write(
+        &bootstrap_path,
+        r#"{
+  "server_url": "https://rewrite.example:50052/install",
+  "enrollment_token": "tok-rewrite-123",
+  "tenant_id": "tenant-rw"
+}"#,
+    )
+    .expect("write legacy bootstrap file");
+
+    std::env::set_var("EGUARD_BOOTSTRAP_CONFIG", &bootstrap_path);
+    let cfg = AgentConfig::load().expect("load config from legacy bootstrap");
+
+    assert_eq!(cfg.server_addr, "rewrite.example:50052");
+    assert_eq!(cfg.enrollment_token.as_deref(), Some("tok-rewrite-123"));
+
+    let rewritten = std::fs::read_to_string(&bootstrap_path).expect("read rewritten bootstrap");
+    assert!(rewritten.contains("[server]"));
+    assert!(rewritten.contains("schema_version = 1"));
+    assert!(rewritten.contains("migrated_from = legacy_json"));
+    assert!(rewritten.contains("address = rewrite.example"));
+    assert!(rewritten.contains("grpc_port = 50052"));
+
+    clear_env();
+    let _ = std::fs::remove_file(bootstrap_path);
+}
+
+#[test]
 // AC-CFG-002
 fn format_server_addr_handles_ipv6_without_port() {
     assert_eq!(
@@ -404,6 +442,84 @@ fn parse_bootstrap_config_ignores_comments_and_other_sections() {
     assert_eq!(cfg.grpc_port, Some(50052));
     assert_eq!(cfg.enrollment_token.as_deref(), Some("tok-123"));
     assert_eq!(cfg.tenant_id.as_deref(), Some("tenant-a"));
+}
+
+#[test]
+fn parse_bootstrap_config_supports_legacy_json_format() {
+    let cfg = parse_bootstrap_config(
+        r#"{
+  "server_url": "https://bootstrap.example:50052/api/v1/agent-install/macos",
+  "enrollment_token": "tok-json-123",
+  "tenant_id": "tenant-json"
+}"#,
+    )
+    .expect("parse legacy json bootstrap");
+
+    assert_eq!(cfg.address.as_deref(), Some("bootstrap.example"));
+    assert_eq!(cfg.grpc_port, Some(50052));
+    assert_eq!(cfg.enrollment_token.as_deref(), Some("tok-json-123"));
+    assert_eq!(cfg.tenant_id.as_deref(), Some("tenant-json"));
+}
+
+#[test]
+fn parse_bootstrap_config_json_prefers_explicit_address() {
+    let cfg = parse_bootstrap_config(
+        r#"{
+  "address": "10.55.66.77",
+  "server_url": "https://ignored.example:8443/path",
+  "grpc_port": 5443,
+  "enrollment_token": "tok-json-addr"
+}"#,
+    )
+    .expect("parse json bootstrap with explicit address");
+
+    assert_eq!(cfg.address.as_deref(), Some("10.55.66.77"));
+    assert_eq!(cfg.grpc_port, Some(5443));
+    assert_eq!(cfg.enrollment_token.as_deref(), Some("tok-json-addr"));
+}
+
+#[test]
+fn parse_bootstrap_config_rejects_unsupported_schema_version() {
+    let err = parse_bootstrap_config(
+        r#"[server]
+schema_version = 99
+address = 10.1.2.3
+enrollment_token = tok-123
+"#,
+    )
+    .expect_err("unsupported schema version must fail");
+
+    assert!(err
+        .to_string()
+        .contains("unsupported bootstrap schema_version"));
+}
+
+#[test]
+fn parse_bootstrap_config_rejects_missing_enrollment_token() {
+    let err = parse_bootstrap_config(
+        r#"[server]
+schema_version = 1
+address = 10.1.2.3
+grpc_port = 50052
+"#,
+    )
+    .expect_err("missing enrollment token must fail");
+
+    assert!(err
+        .to_string()
+        .contains("bootstrap config missing enrollment_token"));
+}
+
+#[test]
+fn parse_bootstrap_config_rejects_enrollment_token_control_chars() {
+    let err = parse_bootstrap_config(
+        "[server]\nschema_version = 1\naddress = 10.1.2.3\nenrollment_token = tok-123\rbad\n",
+    )
+    .expect_err("control chars in token must fail");
+
+    assert!(err
+        .to_string()
+        .contains("bootstrap enrollment_token contains unsupported control characters"));
 }
 
 #[test]

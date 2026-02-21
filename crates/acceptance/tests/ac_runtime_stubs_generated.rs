@@ -2828,6 +2828,31 @@ fn ac_pkg_033_runtime_validation_stub() {
 }
 
 #[test]
+fn ac_pkg_034_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-PKG-034", "Windows agent download endpoint (`/api/v1/agent-install/windows-exe`) MUST return the selected `.exe` package with `application/vnd.microsoft.portable-executable` content type and attachment filename.");
+}
+
+#[test]
+fn ac_pkg_035_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-PKG-035", "Windows hash endpoint (`/api/v1/agent-install/windows-exe/sha256`) MUST return JSON containing `sha256` (64-hex) and `filename`, and MUST honor install-token policy when token validation is enabled.");
+}
+
+#[test]
+fn ac_pkg_036_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-PKG-036", "Windows install script (`install.ps1`) MUST verify SHA-256 of downloaded binary before install and fail closed on hash fetch/format/mismatch errors.");
+}
+
+#[test]
+fn ac_pkg_037_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-PKG-037", "Windows install script MUST harden install/config directory ACLs to SYSTEM + Built-in Administrators and abort on ACL hardening failure.");
+}
+
+#[test]
+fn ac_pkg_038_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-PKG-038", "Install script template substitution for server/grpc defaults MUST sanitize unsafe host input and enforce valid gRPC port range with safe fallback.");
+}
+
+#[test]
 fn ac_res_001_runtime_validation_stub() {
     assert_runtime_validation_backed_by_executable_suite("AC-RES-001", "Binary size MUST be measured and reported for stripped/LTO static-musl builds; release blocking thresholds are deployment-policy configurable.");
 }

@@ -9,6 +9,8 @@
   - `eguard-agent`: `.github/workflows/release-agent-windows.yml`
   - `fe_eguard`: `go/agent/server/{agent_install.go,agent_install_win.go,server.go,install.ps1}`, `packaging/fetch-agent-packages.sh`, `lib/eg/egcron/task/agent_package_sync.pm`, `scripts/check_agent_package_sync_perl.sh`, `html/egappserver/root/src/views/endpoint/{EnrollmentTokens.vue,AgentConfig.vue,agentConfigProfiles.js}`
 - Verification commands executed:
+  - `cd /home/dimas/eguard-agent && cargo test -p grpc-client default_agent_version_prefers_environment_override -- --nocapture` ✅
+  - `cd /home/dimas/eguard-agent && cargo check -p grpc-client` ✅
   - `cd /home/dimas/fe_eguard/go/agent && go test -v ./server -run TestAgentInstall` ✅
   - `cd /home/dimas/fe_eguard && bash -n packaging/fetch-agent-packages.sh` ✅
   - `cd /home/dimas/fe_eguard && ./scripts/check_agent_package_sync_perl.sh` ✅
@@ -153,42 +155,34 @@
 - **Issue**: Version marker was written directly to the final path. A crash during write would leave a corrupt marker, causing the sync to skip the release permanently (partial version string would never match).
 - **Fix Applied**: Write to `.tmp` file first, then `rename()` atomically.
 
-### Deferred / Follow-up Tracking
+### Follow-up Completion Status
 
-#### 17. CI: `EGUARD_AGENT_VERSION` Environment Variable Not Compiled In
-- **File**: `release-agent-windows.yml`
-- **Issue**: The env var is set at build time but the agent reads it at runtime via `std::env::var("EGUARD_AGENT_VERSION")`. In production, this env var won't be set, so the version will be unknown.
-- **Recommendation**: Either compile the version via `env!("EGUARD_AGENT_VERSION")` in Rust, or use `--cfg` flag, or embed it via `build.rs`. This is a broader issue affecting the Linux build too and should be addressed separately.
+All Part 1 findings (1–21) are now implemented and validated in code/tests, with strategic roadmap items retained separately in Part 2.
 
-#### 18. CI: Zig ASM Artifacts Step Inert for Windows
-- **File**: `release-agent-windows.yml`
-- **Issue**: `zig build asm-artifacts` produces nothing for Windows targets (build.rs skips when `target_os != "linux"`). The step is a harmless no-op.
-- **Recommendation**: Remove or gate with a conditional when the Windows build stabilizes. Not urgent.
+#### 17. CI: `EGUARD_AGENT_VERSION` Environment Variable Not Compiled In (Resolved)
+- **Files**: `crates/grpc-client/src/client.rs`, `.github/workflows/release-agent-windows.yml`
+- **Fix Applied**:
+  - Added compile-time version fallback via `option_env!("EGUARD_AGENT_VERSION")` (`compiled_agent_version()`), with runtime env override preserved.
+  - Effective precedence is now: runtime env (`std::env::var`) -> compile-time `EGUARD_AGENT_VERSION` -> `CARGO_PKG_VERSION`.
 
-#### 19. install.ps1: Binary Integrity Verification (Resolved in Follow-up)
+#### 18. CI: Zig ASM Artifacts Step Inert for Windows (Resolved)
+- **File**: `.github/workflows/release-agent-windows.yml`
+- **Fix Applied**: Removed Windows workflow Zig install + `zig build asm-artifacts` no-op step.
+
+#### 19. install.ps1: Binary Integrity Verification (Resolved)
 - **Files**: `go/agent/server/{agent_install_win.go,server.go,install.ps1}`
-- **Issue (original)**: The downloaded `.exe` was installed as a SYSTEM service with no hash/signature verification.
-- **Fix Applied (follow-up)**:
+- **Fix Applied**:
   - Added API endpoint: `GET /api/v1/agent-install/windows-exe/sha256` (token validation + version support) returning SHA256 metadata.
   - Updated `install.ps1` to fetch expected hash (or accept `-ExpectedSha256` override), validate hash format, compute local SHA256 via `Get-FileHash`, and fail closed on mismatch.
   - Added Windows package-workflow command previews in frontend (`EnrollmentTokens.vue`, `AgentConfig.vue`) to verify SHA256 before binary copy/restart.
 
-#### 20. install.ps1: No ACL Restriction on Install/Config Directories
+#### 20. install.ps1: No ACL Restriction on Install/Config Directories (Resolved)
 - **File**: `go/agent/server/install.ps1`
-- **Issue**: `C:\Program Files\eGuard` and `C:\ProgramData\eguard-agent` are created with default permissions. Non-admin users could potentially read the enrollment token from `bootstrap.conf`.
-- **Recommendation**: Set restrictive ACLs:
-  ```powershell
-  $acl = Get-Acl $ConfigDir
-  $acl.SetAccessRuleProtection($true, $false)
-  $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule("SYSTEM","FullControl","ContainerInherit,ObjectInherit","None","Allow")))
-  $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule("Administrators","FullControl","ContainerInherit,ObjectInherit","None","Allow")))
-  Set-Acl $ConfigDir $acl
-  ```
+- **Fix Applied**: Added `Set-RestrictedDirectoryAcl()` and applied it to both `C:\Program Files\eGuard` and `C:\ProgramData\eguard-agent` so ACLs are explicitly restricted to SYSTEM + Built-in Administrators.
 
-#### 21. Package Sync: Perl HTTP::Tiny Buffers Entire Binary in RAM
-- **File**: `agent_package_sync.pm`
-- **Issue**: `HTTP::Tiny->get()` reads the entire response body into memory. A large binary (50+ MB) could cause memory issues on constrained servers.
-- **Recommendation**: Use `HTTP::Tiny->mirror()` or `data_callback` for streaming to disk. Not urgent for current binary sizes (~10-15 MB).
+#### 21. Package Sync: Perl HTTP::Tiny Buffers Entire Binary in RAM (Resolved)
+- **File**: `lib/eg/egcron/task/agent_package_sync.pm`
+- **Fix Applied**: Reworked `_download_asset()` to stream binary downloads directly to a temp file using `HTTP::Tiny->request(..., data_callback => ...)`, then atomically `rename()`.
 
 ---
 
@@ -457,38 +451,12 @@ CrowdStrike Falcon's key competitive advantages are: kernel-level visibility (vi
 ## Test Results
 
 Validated on 2026-02-20 with:
-- `cd /home/dimas/fe_eguard/go/agent && go test -v ./server -run TestAgentInstall`
-- `cd /home/dimas/fe_eguard && bash -n packaging/fetch-agent-packages.sh`
-- `cd /home/dimas/fe_eguard && ./scripts/check_agent_package_sync_perl.sh`
-- `cd /home/dimas/fe_eguard/html/egappserver/root && npm run lint -- src/views/endpoint/EnrollmentTokens.vue src/views/endpoint/AgentConfig.vue`
-
-Go server test output:
-```
-=== RUN   TestAgentInstallDebDownloadByVersion
---- PASS: TestAgentInstallDebDownloadByVersion (0.00s)
-=== RUN   TestAgentInstallRequiresEnrollmentTokenWhenEnabled
---- PASS: TestAgentInstallRequiresEnrollmentTokenWhenEnabled (0.00s)
-=== RUN   TestAgentInstallSelectsNewestPackageWhenVersionMissing
---- PASS: TestAgentInstallSelectsNewestPackageWhenVersionMissing (0.00s)
-=== RUN   TestAgentInstallExeDownload
---- PASS: TestAgentInstallExeDownload (0.00s)
-=== RUN   TestAgentInstallExeSHA256
---- PASS: TestAgentInstallExeSHA256 (0.00s)
-=== RUN   TestAgentInstallExeSHA256RequiresTokenWhenEnabled
---- PASS: TestAgentInstallExeSHA256RequiresTokenWhenEnabled (0.00s)
-=== RUN   TestAgentInstallScriptHandler
---- PASS: TestAgentInstallScriptHandler (0.00s)
-=== RUN   TestAgentInstallScriptHandlerFallsBackToRequestHostWhenForwardedHostMalformed
---- PASS: TestAgentInstallScriptHandlerFallsBackToRequestHostWhenForwardedHostMalformed (0.00s)
-=== RUN   TestAgentInstallScriptHandlerFallsBackToDefaultGrpcPortForInvalidValue
---- PASS: TestAgentInstallScriptHandlerFallsBackToDefaultGrpcPortForInvalidValue (0.00s)
-=== RUN   TestAgentInstallWindowsScriptHandlerContentTypeAndSanitization
---- PASS: TestAgentInstallWindowsScriptHandlerContentTypeAndSanitization (0.00s)
-=== RUN   TestAgentInstallRejectsInvalidVersionParameter
---- PASS: TestAgentInstallRejectsInvalidVersionParameter (0.00s)
-PASS
-ok   gitlab.com/devaistech77/fe_eguard/go/agent/server	0.061s
-```
+- `cd /home/dimas/eguard-agent && cargo test -p grpc-client default_agent_version_prefers_environment_override -- --nocapture` ✅
+- `cd /home/dimas/eguard-agent && cargo check -p grpc-client` ✅
+- `cd /home/dimas/fe_eguard/go/agent && go test -v ./server -run TestAgentInstall` ✅ (all install-contract tests passing, including Windows SHA endpoint contracts)
+- `cd /home/dimas/fe_eguard && bash -n packaging/fetch-agent-packages.sh` ✅
+- `cd /home/dimas/fe_eguard && ./scripts/check_agent_package_sync_perl.sh` ✅
+- `cd /home/dimas/fe_eguard/html/egappserver/root && npm run lint -- src/views/endpoint/EnrollmentTokens.vue src/views/endpoint/AgentConfig.vue` ✅
 
 Constraint observed:
 - Raw system-Perl compile (`perl -Ilib -c ...`) is environment-sensitive and may fail without eGuard runtime library wiring.

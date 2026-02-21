@@ -150,9 +150,10 @@ fn zig_ebpf_programs_share_single_default_8mb_ring_buffer_definition() {
 #[test]
 // AC-EBP-012 AC-RES-020
 fn rust_ebpf_backend_uses_libbpf_ringbuffer_poll_path_without_read_syscall_api() {
-    let source =
-        std::fs::read_to_string(workspace_root().join("crates/platform-linux/src/ebpf.rs"))
-            .expect("read ebpf backend source");
+    let source = std::fs::read_to_string(
+        workspace_root().join("crates/platform-linux/src/ebpf/libbpf_backend.rs"),
+    )
+    .expect("read libbpf backend source");
 
     assert!(source.contains("libbpf_rs::RingBuffer"));
     assert!(source.contains(".poll(timeout)"));

@@ -1,11 +1,9 @@
 use super::*;
 use crate::config::{AgentConfig, AgentMode};
 use ::self_protect::{SelfProtectReport, SelfProtectViolation};
-use std::sync::{Mutex, OnceLock};
 
-fn env_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+fn env_lock() -> &'static std::sync::Mutex<()> {
+    crate::test_support::env_lock()
 }
 
 struct EnvGuard {

@@ -1052,6 +1052,14 @@ Derived from `docs/eguard-agent-design.md`. These acceptance criteria define the
 - **AC-PKG-032**: Packages GPG-signed.
 - **AC-PKG-033**: Artifacts uploaded to GitHub Releases + package repository.
 
+### Windows Distribution & Integrity
+
+- **AC-PKG-034**: Windows agent download endpoint (`/api/v1/agent-install/windows-exe`) MUST return the selected `.exe` package with `application/vnd.microsoft.portable-executable` content type and attachment filename.
+- **AC-PKG-035**: Windows hash endpoint (`/api/v1/agent-install/windows-exe/sha256`) MUST return JSON containing `sha256` (64-hex) and `filename`, and MUST honor install-token policy when token validation is enabled.
+- **AC-PKG-036**: Windows install script (`install.ps1`) MUST verify SHA-256 of downloaded binary before install and fail closed on hash fetch/format/mismatch errors.
+- **AC-PKG-037**: Windows install script MUST harden install/config directory ACLs to SYSTEM + Built-in Administrators and abort on ACL hardening failure.
+- **AC-PKG-038**: Install script template substitution for server/grpc defaults MUST sanitize unsafe host input and enforce valid gRPC port range with safe fallback.
+
 ---
 
 ## 14. Testing & Verification

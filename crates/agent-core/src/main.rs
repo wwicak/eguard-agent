@@ -2,6 +2,8 @@ mod config;
 mod detection_state;
 mod lifecycle;
 mod platform;
+#[cfg(test)]
+mod test_support;
 
 use anyhow::Result;
 use tokio::signal;

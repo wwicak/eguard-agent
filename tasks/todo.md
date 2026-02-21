@@ -2,13 +2,235 @@
 User https://157.10.161.219:1443/
 admin:Admin@12345 (dev temporary)
 
+## 🧭 Plan: Run full test suites until green (2026-02-21)
+- [ ] Run Rust workspace test suite in `/home/dimas/eguard-agent` (`cargo test --workspace`)
+- [ ] Run Go agent server test suite in `/home/dimas/fe_eguard/go/agent` (`go test ./...`)
+- [ ] If failures occur, fix root causes and re-run until both suites pass
+- [ ] Record verification evidence and completion notes
+
+## 🧭 Plan: Acceptance-criteria closure pass for audit fixes (2026-02-20)
+- [x] Update `ACCEPTANCE_CRITERIA.md` with explicit Windows distribution/integrity ACs for newly-implemented behavior
+- [x] Map install-endpoint tests to AC IDs and strengthen SHA256 JSON-contract assertions
+- [x] Add invalid-version contract test coverage for Windows SHA endpoint
+- [x] Re-run Rust/Go/Perl/frontend verification and refresh audit evidence timestamps/results
+
+### 🔍 Review Notes
+- Acceptance criteria additions (`ACCEPTANCE_CRITERIA.md`):
+  - Added `AC-PKG-034`..`AC-PKG-038` under Packaging/Distribution for Windows EXE delivery, SHA endpoint contract, install-script hash verification, ACL hardening, and safe template substitution.
+- Test mapping/coverage (`go/agent/server/agent_install_test.go`):
+  - Added AC tags on relevant install tests (`AC-PKG-034/035/038`).
+  - Upgraded `TestAgentInstallExeSHA256` to strict JSON decode/assert (`sha256`, `filename`) instead of substring-only checks.
+  - Added `TestAgentInstallExeSHA256RejectsInvalidVersionParameter` to cover 400 contract on invalid `?version=` for SHA endpoint.
+- Verification rerun:
+  - `go test -v ./server -run TestAgentInstall` ✅
+  - `./scripts/check_agent_package_sync_perl.sh` ✅
+  - `bash -n packaging/fetch-agent-packages.sh` ✅
+  - frontend lint for touched Vue files ✅
+  - `cargo test -p grpc-client default_agent_version_prefers_environment_override -- --nocapture` ✅
+  - `cargo check -p grpc-client` ✅
+
+## 🧭 Plan: bootstrap canonical-migration pass (auto-rewrite + migration markers) (2026-02-21)
+- [ ] Auto-rewrite legacy JSON bootstrap files to canonical `[server]` format after successful parse (best-effort, fail-open with warning)
+- [ ] Add explicit migration marker metadata in rewritten bootstrap output (`schema_version`, `migrated_from`) to support future schema v2 rollout readiness
+- [ ] Add focused tests validating rewrite behavior and marker presence
+- [ ] Re-run targeted verification (`agent-core` bootstrap tests + cargo check + installer/Go smoke) and update audit/task notes
+
+## 🧭 Plan: bootstrap migration autopilot pass (legacy rewrite + marker emission) (2026-02-21)
+- [x] Auto-rewrite legacy JSON bootstrap files to canonical `[server]` format on successful load (best-effort with warning on failure)
+- [x] Emit explicit migration marker in rewritten bootstrap (`migrated_from = legacy_json`) + enforced `schema_version = 1`
+- [x] Add strict control-character validation for bootstrap token/address values
+- [x] Add regression test proving rewrite-to-canonical behavior on `AgentConfig::load()`
+- [x] Re-run targeted verification and refresh audit/task evidence
+
+### 🔍 Review Notes
+- `crates/agent-core/src/config/bootstrap.rs`:
+  - added best-effort rewrite path for legacy JSON bootstrap files to canonical `[server]` format,
+  - rewritten content now includes `schema_version = 1` and `migrated_from = legacy_json` marker,
+  - strict validation now rejects control characters in `enrollment_token` and `address`.
+- `crates/agent-core/src/config/tests.rs` additions:
+  - `legacy_json_bootstrap_is_rewritten_to_canonical_server_schema`
+  - `parse_bootstrap_config_rejects_enrollment_token_control_chars`
+- Verification:
+  - `cargo test -p agent-core parse_bootstrap_config_ -- --nocapture` ✅ (6/6)
+  - `cargo test -p agent-core legacy_json_bootstrap_is_rewritten_to_canonical_server_schema -- --nocapture` ✅
+  - `cargo check -p agent-core -p platform-macos -p response` ✅
+  - `bash -n installer/macos/install.sh /home/dimas/fe_eguard/install-eguard-agent-macos.sh` ✅
+  - `cd /home/dimas/fe_eguard/go/agent && go test ./server -run TestAgentInstall -count=1` ✅
+
+## 🧭 Plan: bootstrap strict-validation + versioning pass (schema controls + migration telemetry) (2026-02-21)
+- [x] Add bootstrap schema-version support and explicit unsupported-version rejection in `agent-core`
+- [x] Tighten bootstrap validation (required enrollment token + strict malformed numeric handling)
+- [x] Emit migration telemetry when legacy JSON bootstrap format is consumed
+- [x] Add targeted regression tests for strict validation outcomes
+- [x] Re-run focused verification and refresh audit/task evidence
+
+### 🔍 Review Notes
+- `crates/agent-core/src/config/bootstrap.rs`:
+  - added `schema_version` handling (`supported=1`) with fail-closed rejection for unsupported versions,
+  - added strict validation for missing `enrollment_token`, malformed `grpc_port`/`schema_version`,
+  - added runtime telemetry (`warn`) when legacy JSON bootstrap is used and schema/version info logs when bootstrap is applied.
+- `crates/agent-core/src/config/tests.rs` additions:
+  - `parse_bootstrap_config_rejects_unsupported_schema_version`
+  - `parse_bootstrap_config_rejects_missing_enrollment_token`
+- Verification:
+  - `cargo test -p agent-core parse_bootstrap_config_ -- --nocapture` ✅ (5/5)
+  - `cargo check -p agent-core -p platform-macos -p response` ✅
+  - `bash -n installer/macos/install.sh /home/dimas/fe_eguard/install-eguard-agent-macos.sh` ✅
+  - `cd /home/dimas/fe_eguard/go/agent && go test ./server -run TestAgentInstall -count=1` ✅
+
+## 🧭 Plan: bootstrap config convergence pass (canonical schema + legacy migration compatibility) (2026-02-21)
+- [x] Align local macOS installer bootstrap output to canonical `[server]` schema (`address`, `grpc_port`, `enrollment_token`) instead of JSON payload
+- [x] Add legacy JSON bootstrap parsing fallback in agent-core for backward compatibility
+- [x] Add targeted agent-core tests for legacy JSON parse path and explicit-address precedence
+- [x] Re-run focused verification (`cargo test` targeted + `cargo check` + installer shell lint + Go install tests)
+
+### 🔍 Review Notes
+- `installer/macos/install.sh`:
+  - now emits canonical INI bootstrap config (`[server]` with `address`, `grpc_port`, `enrollment_token`) to match agent parser expectations,
+  - added optional `--grpc-port` support with strict port-range validation,
+  - added host derivation from `--server` URL before bootstrap write.
+- `crates/agent-core/src/config/bootstrap.rs`:
+  - added legacy JSON bootstrap fallback parser for migration compatibility,
+  - supports extracting host/port from `server_url` when present,
+  - preserves explicit `address`/`grpc_port` precedence when provided in JSON.
+- `crates/agent-core/src/config/tests.rs` additions:
+  - `parse_bootstrap_config_supports_legacy_json_format`
+  - `parse_bootstrap_config_json_prefers_explicit_address`
+- Verification:
+  - `cargo test -p agent-core parse_bootstrap_config_ -- --nocapture` ✅
+  - `cargo check -p agent-core -p platform-macos -p response` ✅
+  - `bash -n installer/macos/install.sh /home/dimas/fe_eguard/install-eguard-agent-macos.sh` ✅
+  - `cd /home/dimas/fe_eguard/go/agent && go test ./server -run TestAgentInstall -count=1` ✅
+
+## 🧭 Plan: macOS installer secure-ops polish pass (token-file support + optional signature gate) (2026-02-21)
+- [x] Add `--token-file` / `EGUARD_ENROLLMENT_TOKEN_FILE` support to both installer scripts to reduce shell history/CLI exposure for operators
+- [x] Add optional package signature gate (`EGUARD_REQUIRE_PKG_SIGNATURE=1`) before install in both scripts
+- [x] Preserve existing hash/size/transport hardening and re-run focused verification
+
+### 🔍 Review Notes
+- `installer/macos/install.sh`:
+  - added token file support with explicit `--token`/`--token-file` mutual exclusion and safe file read path,
+  - added optional signature verification gate via `pkgutil --check-signature` controlled by `EGUARD_REQUIRE_PKG_SIGNATURE=1`.
+- `/home/dimas/fe_eguard/install-eguard-agent-macos.sh`:
+  - added token file support (`--token-file` / env) with mutual exclusion and safe file read path,
+  - added optional signature verification gate via `pkgutil --check-signature` controlled by `EGUARD_REQUIRE_PKG_SIGNATURE=1`.
+- Verification:
+  - `bash -n installer/macos/install.sh /home/dimas/fe_eguard/install-eguard-agent-macos.sh` ✅
+  - `cd /home/dimas/fe_eguard/go/agent && go test ./server -run TestAgentInstall -count=1` ✅
+  - `cargo check -p platform-macos -p response` ✅
+
+## 🧭 Plan: macOS installer robustness pass (same-origin URL policy + hash parser resilience) (2026-02-21)
+- [x] Add resilient SHA-256 JSON parsing helper in both installer scripts (`jq` when available, fallback parser otherwise)
+- [x] Enforce same-origin package URL by default in server-served macOS installer script, with explicit external URL override env
+- [x] Re-run focused verification (`bash -n`, targeted Go install tests, Rust check) and refresh audit/task evidence
+
+### 🔍 Review Notes
+- `installer/macos/install.sh`:
+  - added `extract_sha256_from_json()` helper; prefers `jq` (`.sha256`) when present with fallback parser when absent.
+- `/home/dimas/fe_eguard/install-eguard-agent-macos.sh`:
+  - added same SHA-256 extraction helper,
+  - added same-origin package URL enforcement by default (`url_authority` compare between `--url` and `--server`),
+  - external package source now requires explicit `EGUARD_ALLOW_EXTERNAL_PACKAGE_URLS=1`.
+- Verification:
+  - `bash -n installer/macos/install.sh /home/dimas/fe_eguard/install-eguard-agent-macos.sh` ✅
+  - `cd /home/dimas/fe_eguard/go/agent && go test ./server -run TestAgentInstall -count=1` ✅
+  - `cargo check -p platform-macos -p response` ✅
+
+## 🧭 Plan: macOS installer defense-in-depth pass (token secrecy + download caps + protocol locking) (2026-02-21)
+- [x] Reduce enrollment-token exposure in installer process args by switching to header-file based curl auth
+- [x] Add installer download-size guardrail (`EGUARD_MAX_INSTALL_PKG_BYTES`) with empty-download rejection
+- [x] Harden curl transport options (`--proto`, TLS floor for HTTPS) while preserving explicit insecure override path
+- [x] Extend Go macOS install endpoint tests for malformed-forwarded-host fallback and invalid macOS sha256 version handling
+- [x] Re-run focused verification and record evidence
+
+### 🔍 Review Notes
+- `installer/macos/install.sh`:
+  - curl auth now uses `-H @<temp-header-file>` (no direct token value in process args),
+  - added download cap enforcement via `EGUARD_MAX_INSTALL_PKG_BYTES` (default 256 MiB),
+  - rejects empty package payloads,
+  - uses transport restrictions (`--proto`, `--tlsv1.2` on HTTPS), retry/timeouts, and command preflight checks.
+- `/home/dimas/fe_eguard/install-eguard-agent-macos.sh`:
+  - mirrored token-header auth, package size cap, and transport locking behavior,
+  - retains HTTPS-by-default with explicit insecure opt-in (`EGUARD_ALLOW_INSECURE_HTTP_INSTALL=1`).
+- `/home/dimas/fe_eguard/go/agent/server/agent_install_test.go`:
+  - added `TestAgentInstallMacOSScriptHandlerFallsBackToRequestHostWhenForwardedHostMalformed`,
+  - added `TestAgentInstallPkgSHA256RejectsInvalidVersion`.
+- Verification:
+  - `bash -n installer/macos/install.sh /home/dimas/fe_eguard/install-eguard-agent-macos.sh` ✅
+  - `cd /home/dimas/fe_eguard/go/agent && go test ./server -run TestAgentInstall -count=1` ✅
+  - `cargo check -p platform-macos -p response` ✅
+
+## 🧭 Plan: Additional macOS installer + API polish pass (network resilience + stricter transport guards) (2026-02-21)
+- [x] Harden installer network path (curl retry/timeouts, command preflight checks, hash-tool fallback)
+- [x] Enforce secure URL scheme by default in installer scripts (`https` unless explicit opt-in for `http`)
+- [x] Expand Go install endpoint tests for macOS script fallback and invalid version handling
+- [x] Re-run focused verification and refresh audit/task evidence
+
+### 🔍 Review Notes
+- `installer/macos/install.sh`:
+  - added command preflight checks and reusable curl fetch wrappers with retry/timeout policy,
+  - added SHA-256 calculator fallback (`shasum` -> `openssl`),
+  - enforced HTTPS-by-default URL policy with explicit `EGUARD_ALLOW_INSECURE_HTTP_INSTALL=1` override.
+- `/home/dimas/fe_eguard/install-eguard-agent-macos.sh`:
+  - mirrored the same network/transports hardening and dependency preflight checks,
+  - validates server/package/hash endpoint URL schemes consistently under the same secure-by-default policy.
+- `/home/dimas/fe_eguard/go/agent/server/agent_install_test.go` additions:
+  - `TestAgentInstallMacOSScriptHandlerFallsBackToRequestHostWhenForwardedHostMalformed`
+  - `TestAgentInstallPkgSHA256RejectsInvalidVersion`
+- Verification:
+  - `bash -n installer/macos/install.sh /home/dimas/fe_eguard/install-eguard-agent-macos.sh` ✅
+  - `cd /home/dimas/fe_eguard/go/agent && go test ./server -run TestAgentInstall -count=1` ✅
+  - `cargo check -p platform-macos` ✅
+
+## 🧭 Plan: Polish macOS hardening follow-up (post-audit optimization pass) (2026-02-20)
+- [x] Harden installer scripts further (secure temp pkg path, bootstrap config permission hardening, newline/control-char guards, grpc-port validation)
+- [x] Improve macOS file-hash cache freshness keys (high-resolution mtime/inode-aware validation) to reduce stale-hit edge cases
+- [x] Add targeted validation tests (Go server macOS install/sha256 endpoint tests + Rust cache freshness regression where needed)
+- [x] Re-run focused verification suite and update audit/task notes with evidence
+
+### 🔍 Review Notes
+- Installer hardening updates:
+  - `installer/macos/install.sh`: switched fixed `/tmp` paths to `mktemp`, added control-character rejection for server/token, normalized scheme handling, staged bootstrap write via temp file + `install -m 600`, and root-safe directory permission setup.
+  - `/home/dimas/fe_eguard/install-eguard-agent-macos.sh`: `mktemp` for package/bootstrap temp files, control-character rejection (`server/token/url/derived host`), strict grpc-port validation (`1..65535`), and staged bootstrap write with `install -m 600`.
+- Cache optimization:
+  - `crates/platform-macos/src/lib.rs`: upgraded hash cache freshness key from `(mtime_secs,size)` to `(mtime_ns,size,inode)`.
+  - Added regression test for same-size rewrites to ensure hash refresh on rapid content replacement.
+- Test depth improvements:
+  - `/home/dimas/fe_eguard/go/agent/server/agent_install_test.go` now covers:
+    - `TestAgentInstallPkgSHA256`
+    - `TestAgentInstallPkgSHA256RequiresTokenWhenEnabled`
+    - `TestAgentInstallMacOSScriptHandlerContentTypeAndSanitization`
+- Verification evidence:
+  - `cargo check -p platform-macos -p agent-core -p self-protect -p response` ✅
+  - `cargo test -p platform-macos -- --nocapture` ✅ (24/24)
+  - `bash -n installer/macos/install.sh installer/macos/scripts/postinstall /home/dimas/fe_eguard/install-eguard-agent-macos.sh` ✅
+  - `cd /home/dimas/fe_eguard/go/agent && go test ./server -run TestAgentInstall -count=1` ✅
+
 ## 🧭 Plan: Verify + validate + remediate findings from `docs/eguard-agent-macos-audit.md` (2026-02-20)
-- [ ] Re-validate each **Remaining Issues** finding (H-1..H-7, M-1..M-7) against current Rust + Go + installer/frontend code to separate true positives vs stale findings
-- [ ] Implement high-severity remediations that are still valid (prioritize H-4/H-2/H-7/H-1, then other highs as feasible)
-- [ ] Add/adjust focused tests for touched logic (Rust unit/integration + Go server tests where applicable)
-- [ ] Run verification commands (`cargo check/test` for touched crates, targeted `go test`, script lint) and capture objective evidence
-- [ ] Update `/home/dimas/fe_eguard/docs/eguard-agent-macos-audit.md` with corrected finding status (fixed vs remaining), with concrete file/line references
-- [ ] Append review notes in this task entry with what was validated, fixed, and what remains
+- [x] Re-validate each **Remaining Issues** finding (H-1..H-7, M-1..M-7) against current Rust + Go + installer/frontend code to separate true positives vs stale findings
+- [x] Implement high-severity remediations that are still valid (prioritize H-4/H-2/H-7/H-1, then other highs as feasible)
+- [x] Add/adjust focused tests for touched logic (Rust unit/integration + Go server tests where applicable)
+- [x] Run verification commands (`cargo check/test` for touched crates, targeted `go test`, script lint) and capture objective evidence
+- [x] Update `/home/dimas/fe_eguard/docs/eguard-agent-macos-audit.md` with corrected finding status (fixed vs remaining), with concrete file/line references
+- [x] Append review notes in this task entry with what was validated, fixed, and what remains
+
+### 🔍 Review Notes
+- Re-validated 14 backlog findings in `docs/eguard-agent-macos-audit.md` and classified them into **stale/already-fixed (7)** vs **still valid (7)**.
+- Closed valid findings in code:
+  - `crates/platform-macos/src/lib.rs`: thread-local default cache for `enrich_event()` + mtime/size-aware file hash cache invalidation.
+  - `crates/platform-macos/src/self_protect/codesign.rs`: codesign verify now fail-closed by default (`DISABLE_CODESIGN_CHECK=1` opt-out).
+  - `crates/platform-macos/src/self_protect/integrity.rs` + new `crates/platform-macos/build.rs`: integrity now requires expected SHA-256 (runtime env or build-embedded hash).
+  - `crates/platform-macos/src/response/quarantine.rs`: replaced `xattr` subprocess calls with `libc::setxattr/removexattr`.
+  - `installer/macos/install.sh` + `/home/dimas/fe_eguard/install-eguard-agent-macos.sh`: added package SHA-256 verification before `installer`.
+  - `installer/macos/scripts/postinstall`: enforced `chmod 700` permissions on eGuard runtime dirs.
+- Updated audit report to add Round 3 re-validation matrix, close remaining issues, and record new verification evidence.
+- Verification evidence:
+  - `cargo check -p platform-macos -p agent-core -p self-protect -p response` ✅
+  - `cargo test -p platform-macos -- --nocapture` ✅ (23/23)
+  - `bash -n installer/macos/install.sh installer/macos/scripts/postinstall` ✅
+  - `bash -n /home/dimas/fe_eguard/install-eguard-agent-macos.sh` ✅
+  - `cd /home/dimas/fe_eguard/go/agent && go test ./server -run TestAgentInstall -count=1` ✅
+- Residual: no open HIGH/MEDIUM items remain from that report backlog; broader macOS roadmap work (ESF entitlement + production signing/notarization ops) remains.
 
 ## 🧭 Plan: Continue full-audit closure pass (P1/P2 hardening + verification) (2026-02-20)
 - [x] Fix detection `file_path_*` matching normalization gaps (case-insensitive exact/contains)
@@ -72,7 +294,7 @@ admin:Admin@12345 (dev temporary)
 - Frontend command-generator hardening:
   - `EnrollmentTokens.vue` and `AgentConfig.vue` Windows package workflows now fetch expected hash + verify `Get-FileHash` before `Copy-Item`/restart.
 - Verification:
-  - `cd /home/dimas/fe_eguard/go/agent && go test -v ./server -run TestAgentInstall` ✅ (11/11 passing)
+  - `cd /home/dimas/fe_eguard/go/agent && go test -v ./server -run TestAgentInstall` ✅ (PASS)
   - `cd /home/dimas/fe_eguard && ./scripts/check_agent_package_sync_perl.sh` ✅
   - `cd /home/dimas/fe_eguard && bash -n packaging/fetch-agent-packages.sh` ✅
   - `cd /home/dimas/fe_eguard/html/egappserver/root && npm run lint -- src/views/endpoint/EnrollmentTokens.vue src/views/endpoint/AgentConfig.vue` ✅
@@ -99,7 +321,7 @@ admin:Admin@12345 (dev temporary)
   - `TestAgentInstallRejectsInvalidVersionParameter`
   - token-gated install test now seeds explicit token before asserting success.
 - Verification:
-  - `cd /home/dimas/fe_eguard/go/agent && go test -v ./server -run TestAgentInstall` ✅ (9/9 passing)
+  - `cd /home/dimas/fe_eguard/go/agent && go test -v ./server -run TestAgentInstall` ✅ (PASS)
   - `cd /home/dimas/fe_eguard && ./scripts/check_agent_package_sync_perl.sh` ✅
   - `cd /home/dimas/fe_eguard && bash -n packaging/fetch-agent-packages.sh` ✅
 - Documentation:

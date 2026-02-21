@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use baseline::{BaselineStore, ProcessKey};
@@ -66,8 +66,7 @@ fn workspace_root() -> PathBuf {
 }
 
 fn script_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+    crate::lifecycle::shared_env_var_lock()
 }
 
 fn write_executable(path: &std::path::Path, body: &str) {

@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use super::*;
@@ -12,9 +11,8 @@ fn workspace_root() -> PathBuf {
         .join("..")
 }
 
-fn test_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+fn test_lock() -> &'static std::sync::Mutex<()> {
+    super::shared_env_var_lock()
 }
 
 fn write_executable(path: &std::path::Path, body: &str) {

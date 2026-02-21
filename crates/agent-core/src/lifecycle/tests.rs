@@ -1579,6 +1579,5 @@ fn to_hex(raw: &[u8]) -> String {
 }
 
 fn env_var_lock() -> &'static std::sync::Mutex<()> {
-    static ENV_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-    ENV_LOCK.get_or_init(|| std::sync::Mutex::new(()))
+    super::shared_env_var_lock()
 }

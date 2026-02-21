@@ -10,6 +10,7 @@ pub mod quarantine;
 pub use forensics::ForensicsCollector;
 pub use isolation::{isolate_host, remove_isolation};
 pub use quarantine::quarantine_file;
+pub use quarantine::restore_file;
 
 /// Errors from response actions.
 #[derive(Debug)]

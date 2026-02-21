@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
 
 use grpc_client::{pb, Client};
 
@@ -35,9 +34,8 @@ fn has_line(lines: &[String], expected: &str) -> bool {
     lines.iter().any(|line| line == expected)
 }
 
-fn script_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+fn script_lock() -> &'static std::sync::Mutex<()> {
+    super::shared_env_var_lock()
 }
 
 fn temp_dir(prefix: &str) -> PathBuf {
@@ -74,9 +72,10 @@ fn install_mock_tools(bin_dir: &Path) {
         "cargo",
         "zig",
         "strip",
+        "ar",
     ] {
         let script = format!(
-            "#!/usr/bin/env bash
+            "#!/bin/bash
 set -euo pipefail
 echo \"{} $*\" >> \"${{MOCK_LOG}}\"
 case \"{}\" in
@@ -96,10 +95,28 @@ case \"{}\" in
     fi
     ;;
   sha256sum)
+    cat >/dev/null || true
     exit 0
     ;;
   install)
-    # no-op for test sandbox; scripts only need success
+    target=\"${{@: -1}}\"
+    if [[ -n \"$target\" ]]; then
+      mkdir -p \"$target\" 2>/dev/null || true
+    fi
+    exit 0
+    ;;
+  ar)
+    if [[ \"${{1:-}}\" == \"t\" || \"${{1:-}}\" == \"x\" ]]; then
+      exit 0
+    fi
+    if [[ \"${{1:-}}\" == \"rcs\" ]]; then
+      archive=\"${{2:-}}\"
+      if [[ -n \"$archive\" ]]; then
+        mkdir -p \"$(dirname \"$archive\")\" 2>/dev/null || true
+        : > \"$archive\"
+      fi
+      exit 0
+    fi
     exit 0
     ;;
 esac
@@ -180,7 +197,7 @@ fn package_build_harness_executes_and_emits_metrics_with_mocked_toolchain() {
 
     let log_path = sandbox.join("mock.log");
     let path = format!(
-        "{}:{}",
+        "{}:/usr/bin:/bin:{}",
         bin_dir.display(),
         std::env::var("PATH").unwrap_or_default()
     );
@@ -287,7 +304,7 @@ fn install_script_executes_with_mocked_package_manager_and_systemd() {
     install_mock_tools(&bin_dir);
     let log_path = sandbox.join("mock.log");
     let path = format!(
-        "{}:{}",
+        "{}:/usr/bin:/bin:{}",
         bin_dir.display(),
         std::env::var("PATH").unwrap_or_default()
     );
@@ -356,8 +373,9 @@ fn update_script_executes_deb_and_rpm_paths_with_mocked_installers() {
     std::fs::create_dir_all(&bin_dir).expect("create mock bin");
     install_mock_tools(&bin_dir);
     let log_path = sandbox.join("mock.log");
+    let update_dir = sandbox.join("update");
     let path = format!(
-        "{}:{}",
+        "{}:/usr/bin:/bin:{}",
         bin_dir.display(),
         std::env::var("PATH").unwrap_or_default()
     );
@@ -393,9 +411,17 @@ fn update_script_executes_deb_and_rpm_paths_with_mocked_installers() {
         .current_dir(&root)
         .env("PATH", &path)
         .env("MOCK_LOG", &log_path)
+        .env("MOCK_CURL_WRITE", "1")
+        .env("EGUARD_UPDATE_DIR", &update_dir)
         .output()
         .expect("run deb update");
-    assert!(run_deb.status.success());
+    assert!(
+        run_deb.status.success(),
+        "deb update failed: status={:?}\nstdout:\n{}\nstderr:\n{}",
+        run_deb.status,
+        String::from_utf8_lossy(&run_deb.stdout),
+        String::from_utf8_lossy(&run_deb.stderr)
+    );
     assert!(String::from_utf8_lossy(&run_deb.stdout)
         .lines()
         .any(|line| line
@@ -414,9 +440,17 @@ fn update_script_executes_deb_and_rpm_paths_with_mocked_installers() {
         .current_dir(&root)
         .env("PATH", &path)
         .env("MOCK_LOG", &log_path)
+        .env("MOCK_CURL_WRITE", "1")
+        .env("EGUARD_UPDATE_DIR", &update_dir)
         .output()
         .expect("run rpm update");
-    assert!(run_rpm.status.success());
+    assert!(
+        run_rpm.status.success(),
+        "rpm update failed: status={:?}\nstdout:\n{}\nstderr:\n{}",
+        run_rpm.status,
+        String::from_utf8_lossy(&run_rpm.stdout),
+        String::from_utf8_lossy(&run_rpm.stderr)
+    );
     assert!(String::from_utf8_lossy(&run_rpm.stdout)
         .lines()
         .any(|line| line
@@ -450,22 +484,30 @@ fn update_script_executes_deb_and_rpm_paths_with_mocked_installers() {
 
     let log = std::fs::read_to_string(&log_path).expect("read mock log");
     let log_lines = non_comment_lines(&log);
+    let deb_pkg = update_dir.join("eguard-agent-1.2.3.deb");
+    let rpm_pkg = update_dir.join("eguard-agent-2.0.1.rpm");
     assert!(has_line(
         &log_lines,
-        "curl -fsSL https://example.local/api/v1/agent-install/linux-deb?version=1.2.3 -o /var/lib/eguard-agent/update/eguard-agent-1.2.3.deb"
+        &format!(
+            "curl -fsSL https://example.local/api/v1/agent-install/linux-deb?version=1.2.3 -o {}",
+            deb_pkg.display()
+        )
     ));
     assert!(has_line(
         &log_lines,
-        "curl -fsSL https://example.local/api/v1/agent-install/linux-rpm?version=2.0.1 -o /var/lib/eguard-agent/update/eguard-agent-2.0.1.rpm"
+        &format!(
+            "curl -fsSL https://example.local/api/v1/agent-install/linux-rpm?version=2.0.1 -o {}",
+            rpm_pkg.display()
+        )
     ));
     assert!(has_line(&log_lines, "sha256sum --check --status"));
     assert!(has_line(
         &log_lines,
-        "dpkg -i /var/lib/eguard-agent/update/eguard-agent-1.2.3.deb"
+        &format!("dpkg -i {}", deb_pkg.display())
     ));
     assert!(has_line(
         &log_lines,
-        "rpm -Uvh /var/lib/eguard-agent/update/eguard-agent-2.0.1.rpm"
+        &format!("rpm -Uvh {}", rpm_pkg.display())
     ));
 
     let workflow = read(".github/workflows/package-agent.yml");
