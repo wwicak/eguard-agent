@@ -128,7 +128,7 @@ impl AgentRuntime {
                 "privileged": enriched.container_privileged,
             },
             "detection": {
-                "confidence": format!("{:?}", confidence).to_ascii_lowercase(),
+                "confidence": super::confidence_label(confidence),
                 "rule_type": rule_type,
                 "detection_layers": detection_layers,
                 "temporal_hits": &outcome.temporal_hits,

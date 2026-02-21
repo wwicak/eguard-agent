@@ -62,6 +62,13 @@ SIGNAL_FEATURE_FIELDS = (
     "cmdline_entropy_gap",
     "dns_entropy",
     "event_size_norm",
+    "container_risk",
+    "file_path_entropy",
+    "file_path_depth",
+    "behavioral_alarm_count",
+    "z1_z2_interaction",
+    "z1_z4_interaction",
+    "anomaly_behavioral",
 )
 
 
@@ -470,6 +477,36 @@ def main() -> int:
             1.0,
         )
 
+        # Container risk
+        container_risk = 0.0
+        if _rand01(seed_prefix + "|container") < 0.15:
+            container_risk = 0.5  # containerized
+            if _rand01(seed_prefix + "|escape") < 0.1 + 0.15 * severity / 5.0:
+                container_risk = 1.0  # escape/privileged
+
+        # File path entropy (synthetic — higher for suspicious names)
+        file_path_entropy = _clamp(
+            0.3 + 0.4 * _rand01(seed_prefix + "|fpe") + 0.1 * severity / 5.0,
+            0.0, 1.0,
+        )
+
+        # File path depth (synthetic)
+        file_path_depth = _clamp(
+            0.2 + 0.3 * _rand01(seed_prefix + "|fpd") + 0.1 * severity / 5.0,
+            0.0, 1.0,
+        )
+
+        # Behavioral alarm count
+        behavioral_alarm_count = _clamp(
+            int(_rand01(seed_prefix + "|bac") * (1.0 + severity * 0.8)) / 5.0,
+            0.0, 1.0,
+        )
+
+        # Interaction terms
+        z1_z2_interaction = z1_ioc_hit * z2_temporal_count
+        z1_z4_interaction = z1_ioc_hit * z4_killchain_count
+        anomaly_behavioral = z3_anomaly_high * multi_layer_count
+
         linear = (
             -3.10
             + 2.25 * z1_ioc_hit
@@ -485,6 +522,13 @@ def main() -> int:
             + 0.35 * dns_entropy
             + 0.25 * event_size_norm
             + 0.15 * multi_layer_count
+            + 0.3 * container_risk
+            + 0.2 * file_path_entropy
+            + 0.15 * file_path_depth
+            + 0.25 * behavioral_alarm_count
+            + 0.5 * z1_z2_interaction
+            + 0.4 * z1_z4_interaction
+            + 0.3 * anomaly_behavioral
             + (_rand01(seed_prefix + "|noise") - 0.5) * 0.6
         )
         model_score = _clamp(_score_to_probability(linear), 0.001, 0.999)
@@ -525,6 +569,13 @@ def main() -> int:
                 "cmdline_entropy_gap": round(cmdline_entropy_gap, 6),
                 "dns_entropy": round(dns_entropy, 6),
                 "event_size_norm": round(event_size_norm, 6),
+                "container_risk": round(container_risk, 6),
+                "file_path_entropy": round(file_path_entropy, 6),
+                "file_path_depth": round(file_path_depth, 6),
+                "behavioral_alarm_count": round(behavioral_alarm_count, 6),
+                "z1_z2_interaction": round(z1_z2_interaction, 6),
+                "z1_z4_interaction": round(z1_z4_interaction, 6),
+                "anomaly_behavioral": round(anomaly_behavioral, 6),
             }
         )
 
@@ -591,6 +642,13 @@ def main() -> int:
                 "cmdline_entropy_gap": row.get("cmdline_entropy_gap"),
                 "dns_entropy": row.get("dns_entropy"),
                 "event_size_norm": row.get("event_size_norm"),
+                "container_risk": row.get("container_risk"),
+                "file_path_entropy": row.get("file_path_entropy"),
+                "file_path_depth": row.get("file_path_depth"),
+                "behavioral_alarm_count": row.get("behavioral_alarm_count"),
+                "z1_z2_interaction": row.get("z1_z2_interaction"),
+                "z1_z4_interaction": row.get("z1_z4_interaction"),
+                "anomaly_behavioral": row.get("anomaly_behavioral"),
             }
         )
 

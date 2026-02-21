@@ -13,11 +13,17 @@ pub struct MlModel {
     pub weights: Vec<f64>,
     /// Bias (intercept) term.
     pub bias: f64,
-    /// Decision threshold: score ≥ threshold → "ml positive".
+    /// Decision threshold: score >= threshold -> "ml positive".
     pub threshold: f64,
     /// Feature names (for validation; must match FEATURE_NAMES order).
     #[serde(default)]
     pub feature_names: Vec<String>,
+    /// Number of CI model features not mapped to runtime feature vector.
+    #[serde(default)]
+    pub ci_features_dropped: usize,
+    /// Number of runtime features with no corresponding CI model weight.
+    #[serde(default)]
+    pub runtime_features_unmapped: usize,
 }
 
 /// CI-trained model format (from `signature_ml_train_model.py`).
@@ -40,6 +46,9 @@ pub struct CiTrainedModel {
     pub positive_samples: usize,
     #[serde(default)]
     pub negative_samples: usize,
+    /// Optional decision threshold from CI training pipeline.
+    #[serde(default)]
+    pub threshold: Option<f64>,
 }
 
 impl CiTrainedModel {
@@ -48,12 +57,40 @@ impl CiTrainedModel {
         serde_json::from_str(json).map_err(MlError::ParseJson)
     }
 
+    /// Validate the CI-trained model before conversion to runtime format.
+    pub fn validate(&self) -> Result<(), MlError> {
+        if self.features.is_empty() {
+            return Err(MlError::EmptyFeatures);
+        }
+        for (name, &weight) in &self.weights {
+            if !weight.is_finite() {
+                return Err(MlError::NonFiniteCiWeight {
+                    name: name.clone(),
+                    value: weight,
+                });
+            }
+        }
+        if !self.bias.is_finite() {
+            return Err(MlError::NonFiniteBias(self.bias));
+        }
+        for (name, &scale) in &self.feature_scales {
+            if scale < 1e-10 || scale > 1e6 {
+                return Err(MlError::UnreasonableScale {
+                    name: name.clone(),
+                    value: scale,
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// Convert CI-trained model to runtime `MlModel`.
     ///
     /// Maps named weights to positional feature vector using `FEATURE_NAMES`.
     /// Features in the CI model that don't exist in `FEATURE_NAMES` are
-    /// silently ignored. Features in `FEATURE_NAMES` not present in the CI
-    /// model get weight 0.0 (safe default).
+    /// tracked via `ci_features_dropped`. Features in `FEATURE_NAMES` not
+    /// present in the CI model get weight 0.0 (safe default) and are tracked
+    /// via `runtime_features_unmapped`.
     pub fn to_runtime_model(&self) -> MlModel {
         let mut weights = vec![0.0f64; FEATURE_COUNT];
         for (i, name) in FEATURE_NAMES.iter().enumerate() {
@@ -71,13 +108,39 @@ impl CiTrainedModel {
             }
         }
 
+        // Fix 10d: Use CI-trained threshold if available and within sane bounds
+        let threshold = self
+            .threshold
+            .filter(|&t| t >= 0.05 && t <= 0.95)
+            .unwrap_or(0.5);
+
+        // Fix 10f: Track feature mapping mismatches
+        let mut ci_features_dropped = 0usize;
+        let mut runtime_features_unmapped = 0usize;
+
+        // Count features in CI model not mapped to runtime
+        for ci_feature in &self.features {
+            if !FEATURE_NAMES.contains(&ci_feature.as_str()) {
+                ci_features_dropped += 1;
+            }
+        }
+
+        // Count runtime features missing from CI model
+        for name in FEATURE_NAMES.iter() {
+            if !self.weights.contains_key(*name) {
+                runtime_features_unmapped += 1;
+            }
+        }
+
         MlModel {
             model_id: format!("ci-{}", self.model_version),
             model_version: self.model_version.clone(),
             weights,
             bias: self.bias,
-            threshold: 0.5,
+            threshold,
             feature_names: FEATURE_NAMES.iter().map(|s| s.to_string()).collect(),
+            ci_features_dropped,
+            runtime_features_unmapped,
         }
     }
 }
@@ -88,6 +151,8 @@ impl MlModel {
         // Try CI format first (has "suite" field)
         if json.contains("\"suite\"") && json.contains("\"feature_scales\"") {
             if let Ok(ci) = CiTrainedModel::from_json(json) {
+                // Fix 10e: Validate CI model before conversion
+                ci.validate()?;
                 let model = ci.to_runtime_model();
                 return Ok(model);
             }
@@ -162,10 +227,21 @@ impl Default for MlModel {
                 0.5, // cmdline_min_entropy      — low min-entropy = predictable pattern
                 0.6, // cmdline_entropy_gap      — flat spectrum = random/encrypted
                 0.7, // dns_entropy             — high-entropy labels (DGA/tunnel)
+                // Extended feature weights (Fix 6)
+                0.2, // event_size_norm         — normalized event size
+                0.4, // container_risk          — container escape/privileged risk
+                0.3, // file_path_entropy       — Shannon entropy of file path
+                0.2, // file_path_depth         — normalized path depth
+                0.5, // behavioral_alarm_count  — behavioral alarm count
+                0.8, // z1_z2_interaction       — IOC + temporal = strong
+                0.7, // z1_z4_interaction       — IOC + kill chain = strong
+                0.6, // anomaly_behavioral      — anomaly + multi-signal = moderate
             ],
             bias: -3.6, // slight bias shift for dns_entropy
             threshold: 0.5,
             feature_names: FEATURE_NAMES.iter().map(|s| s.to_string()).collect(),
+            ci_features_dropped: 0,
+            runtime_features_unmapped: 0,
         }
     }
 }
@@ -178,6 +254,12 @@ pub enum MlError {
     NonFiniteBias(f64),
     ParseJson(serde_json::Error),
     Io(std::io::Error),
+    /// CI model has an empty feature list.
+    EmptyFeatures,
+    /// CI model weight is NaN or infinite.
+    NonFiniteCiWeight { name: String, value: f64 },
+    /// CI model feature scale is outside reasonable bounds.
+    UnreasonableScale { name: String, value: f64 },
 }
 
 impl std::fmt::Display for MlError {
@@ -196,6 +278,16 @@ impl std::fmt::Display for MlError {
             Self::NonFiniteBias(b) => write!(f, "non-finite bias: {b}"),
             Self::ParseJson(e) => write!(f, "model JSON parse error: {e}"),
             Self::Io(e) => write!(f, "model file IO error: {e}"),
+            Self::EmptyFeatures => write!(f, "CI model has empty feature list"),
+            Self::NonFiniteCiWeight { name, value } => {
+                write!(f, "CI model weight for '{name}' is non-finite: {value}")
+            }
+            Self::UnreasonableScale { name, value } => {
+                write!(
+                    f,
+                    "CI model feature scale for '{name}' is unreasonable: {value}"
+                )
+            }
         }
     }
 }

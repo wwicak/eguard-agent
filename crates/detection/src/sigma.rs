@@ -168,6 +168,7 @@ fn compile_sequence_sigma_ast(doc: SigmaRuleDoc) -> Result<BoundedTemporalAst> {
             predicate: TemporalPredicate {
                 event_class,
                 process_any_of: into_set(stage.process_any_of),
+                process_starts_with: None,
                 parent_any_of: into_set(stage.parent_any_of),
                 uid_eq: stage.uid_eq,
                 uid_ne: stage.uid_ne,
@@ -176,6 +177,7 @@ fn compile_sequence_sigma_ast(doc: SigmaRuleDoc) -> Result<BoundedTemporalAst> {
                 file_path_any_of: into_set(stage.file_path_any_of),
                 file_path_contains: into_set(stage.file_path_contains),
                 command_line_contains: into_set(stage.command_line_contains),
+                require_file_write: false,
             },
             within_secs,
         });
@@ -227,6 +229,7 @@ fn compile_legacy_sigma_ast(yaml: &str, doc: &SigmaRuleDoc) -> Result<BoundedTem
         predicate: TemporalPredicate {
             event_class,
             process_any_of: some_set(acc.process_any_of),
+            process_starts_with: None,
             parent_any_of: some_set(acc.parent_any_of),
             uid_eq: None,
             uid_ne: None,
@@ -235,6 +238,7 @@ fn compile_legacy_sigma_ast(yaml: &str, doc: &SigmaRuleDoc) -> Result<BoundedTem
             file_path_any_of: some_set(acc.file_path_any_of),
             file_path_contains: some_set(acc.file_path_contains),
             command_line_contains: some_set(acc.command_line_contains),
+            require_file_write: false,
         },
         within_secs: 30,
     };

@@ -59,7 +59,7 @@ fn clean_event_scores_low() {
         kernel_integrity: false,
         tamper_indicator: false,
     };
-    let features = MlFeatures::extract(&event, &signals, 0, 0, 0, 0);
+    let features = MlFeatures::extract(&event, &signals, 0, 0, 0, 0, 0);
     let result = engine.score(&features);
     assert!(
         result.score < 0.3,
@@ -84,7 +84,7 @@ fn ioc_hit_scores_high() {
         kernel_integrity: false,
         tamper_indicator: false,
     };
-    let features = MlFeatures::extract(&event, &signals, 0, 0, 0, 2);
+    let features = MlFeatures::extract(&event, &signals, 0, 0, 0, 2, 0);
     let result = engine.score(&features);
     assert!(
         result.score > 0.8,
@@ -109,7 +109,7 @@ fn multi_layer_agreement_scores_highest() {
         kernel_integrity: false,
         tamper_indicator: false,
     };
-    let features = MlFeatures::extract(&event, &signals, 2, 1, 1, 3);
+    let features = MlFeatures::extract(&event, &signals, 2, 1, 1, 3, 0);
     let result = engine.score(&features);
     assert!(
         result.score > 0.99,
@@ -134,7 +134,7 @@ fn anomaly_only_scores_moderate() {
         kernel_integrity: false,
         tamper_indicator: false,
     };
-    let features = MlFeatures::extract(&event, &signals, 0, 0, 0, 0);
+    let features = MlFeatures::extract(&event, &signals, 0, 0, 0, 0, 0);
     let result = engine.score(&features);
     // Anomaly alone should be moderate — not near 1.0, not near 0.0
     assert!(
@@ -189,7 +189,7 @@ fn top_features_are_interpretable() {
         kernel_integrity: false,
         tamper_indicator: false,
     };
-    let features = MlFeatures::extract(&event, &signals, 1, 0, 0, 1);
+    let features = MlFeatures::extract(&event, &signals, 1, 0, 0, 1, 0);
     let result = engine.score(&features);
     // Top features should include z1_ioc_hit
     assert!(
@@ -210,6 +210,24 @@ fn hot_reload_model() {
     new_model.weights[0] = 5.0; // boost IOC weight
     engine.reload_model(new_model).unwrap();
     assert_eq!(engine.model_id(), "updated-v2");
+}
+
+#[test]
+// AC-DET-263 AC-DET-266
+fn ml_feature_contract_includes_extended_runtime_and_interaction_terms() {
+    assert_eq!(FEATURE_COUNT, 27);
+    for name in [
+        "event_size_norm",
+        "container_risk",
+        "file_path_entropy",
+        "file_path_depth",
+        "behavioral_alarm_count",
+        "z1_z2_interaction",
+        "z1_z4_interaction",
+        "anomaly_behavioral",
+    ] {
+        assert!(FEATURE_NAMES.contains(&name), "feature list missing {name}");
+    }
 }
 
 #[test]
@@ -279,6 +297,135 @@ fn ci_trained_model_converts_to_runtime() {
     let mut engine = MlEngine::new();
     engine.reload_model(model).unwrap();
     assert_eq!(engine.model_version(), "rules-2026.02.15.ml.v1");
+}
+
+#[test]
+// AC-DET-267
+fn ci_threshold_passthrough_uses_ci_value_and_bounds_fallback() {
+    let valid_threshold_json = r#"{
+            "suite": "signature_ml_linear_logit_model",
+            "model_type": "linear_logit_v1",
+            "model_version": "rules-2026.02.21.ml.v1",
+            "trained_at_utc": "2026-02-21T04:30:00Z",
+            "features": ["z1_ioc_hit"],
+            "weights": { "z1_ioc_hit": 0.5 },
+            "feature_scales": { "z1_ioc_hit": 1.0 },
+            "bias": -0.2,
+            "threshold": 0.7,
+            "training_samples": 100,
+            "positive_samples": 30,
+            "negative_samples": 70
+        }"#;
+    let model = MlModel::from_json_auto(valid_threshold_json).unwrap();
+    assert_eq!(model.threshold, 0.7);
+
+    let invalid_threshold_json = r#"{
+            "suite": "signature_ml_linear_logit_model",
+            "model_type": "linear_logit_v1",
+            "model_version": "rules-2026.02.21.ml.v1",
+            "trained_at_utc": "2026-02-21T04:30:00Z",
+            "features": ["z1_ioc_hit"],
+            "weights": { "z1_ioc_hit": 0.5 },
+            "feature_scales": { "z1_ioc_hit": 1.0 },
+            "bias": -0.2,
+            "threshold": 0.99,
+            "training_samples": 100,
+            "positive_samples": 30,
+            "negative_samples": 70
+        }"#;
+    let model = MlModel::from_json_auto(invalid_threshold_json).unwrap();
+    assert_eq!(model.threshold, 0.5);
+}
+
+#[test]
+// AC-DET-268
+fn ci_model_validation_rejects_empty_features_non_finite_and_bad_scales() {
+    let empty_features = CiTrainedModel {
+        suite: "signature_ml_linear_logit_model".to_string(),
+        model_type: "linear_logit_v1".to_string(),
+        model_version: "v1".to_string(),
+        features: vec![],
+        weights: std::collections::HashMap::new(),
+        feature_scales: std::collections::HashMap::new(),
+        bias: 0.0,
+        training_samples: 10,
+        positive_samples: 5,
+        negative_samples: 5,
+        threshold: None,
+    };
+    assert!(empty_features.validate().is_err());
+
+    let non_finite_weight = CiTrainedModel {
+        suite: "signature_ml_linear_logit_model".to_string(),
+        model_type: "linear_logit_v1".to_string(),
+        model_version: "v1".to_string(),
+        features: vec!["z1_ioc_hit".to_string()],
+        weights: std::collections::HashMap::from([("z1_ioc_hit".to_string(), f64::NAN)]),
+        feature_scales: std::collections::HashMap::from([("z1_ioc_hit".to_string(), 1.0)]),
+        bias: 0.0,
+        training_samples: 10,
+        positive_samples: 5,
+        negative_samples: 5,
+        threshold: None,
+    };
+    assert!(non_finite_weight.validate().is_err());
+
+    let bad_scale = CiTrainedModel {
+        suite: "signature_ml_linear_logit_model".to_string(),
+        model_type: "linear_logit_v1".to_string(),
+        model_version: "v1".to_string(),
+        features: vec!["z1_ioc_hit".to_string()],
+        weights: std::collections::HashMap::from([("z1_ioc_hit".to_string(), 0.2)]),
+        feature_scales: std::collections::HashMap::from([("z1_ioc_hit".to_string(), 1e-12)]),
+        bias: 0.0,
+        training_samples: 10,
+        positive_samples: 5,
+        negative_samples: 5,
+        threshold: None,
+    };
+    assert!(bad_scale.validate().is_err());
+
+    let non_finite_bias = CiTrainedModel {
+        suite: "signature_ml_linear_logit_model".to_string(),
+        model_type: "linear_logit_v1".to_string(),
+        model_version: "v1".to_string(),
+        features: vec!["z1_ioc_hit".to_string()],
+        weights: std::collections::HashMap::from([("z1_ioc_hit".to_string(), 0.2)]),
+        feature_scales: std::collections::HashMap::from([("z1_ioc_hit".to_string(), 1.0)]),
+        bias: f64::INFINITY,
+        training_samples: 10,
+        positive_samples: 5,
+        negative_samples: 5,
+        threshold: None,
+    };
+    assert!(non_finite_bias.validate().is_err());
+}
+
+#[test]
+// AC-DET-269
+fn ci_model_conversion_tracks_feature_mapping_mismatches() {
+    let ci = CiTrainedModel {
+        suite: "signature_ml_linear_logit_model".to_string(),
+        model_type: "linear_logit_v1".to_string(),
+        model_version: "v1".to_string(),
+        features: vec!["z1_ioc_hit".to_string(), "ci_only_feature".to_string()],
+        weights: std::collections::HashMap::from([
+            ("z1_ioc_hit".to_string(), 0.5),
+            ("ci_only_feature".to_string(), 0.3),
+        ]),
+        feature_scales: std::collections::HashMap::from([
+            ("z1_ioc_hit".to_string(), 1.0),
+            ("ci_only_feature".to_string(), 1.0),
+        ]),
+        bias: 0.0,
+        training_samples: 10,
+        positive_samples: 5,
+        negative_samples: 5,
+        threshold: Some(0.4),
+    };
+    let runtime = ci.to_runtime_model();
+    assert_eq!(runtime.ci_features_dropped, 1);
+    assert!(runtime.runtime_features_unmapped > 0);
 }
 
 #[test]

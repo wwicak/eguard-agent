@@ -1052,6 +1052,8 @@ fn map_response_confidence(raw: &str) -> pb::ResponseConfidence {
         "very_high" | "very-high" => pb::ResponseConfidence::VeryHigh,
         "high" => pb::ResponseConfidence::High,
         "medium" => pb::ResponseConfidence::Medium,
+        "low" => pb::ResponseConfidence::Low,
+        "none" => pb::ResponseConfidence::None,
         _ => pb::ResponseConfidence::Medium,
     }
 }

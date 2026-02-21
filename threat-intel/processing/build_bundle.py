@@ -166,6 +166,7 @@ def main():
     parser.add_argument("--cve", default="", help="Path to CVE JSONL file")
     parser.add_argument("--suricata", default="", help="Directory of Suricata rules")
     parser.add_argument("--elastic", default="", help="Directory of Elastic detection rules")
+    parser.add_argument("--ml-model", default="", help="Path to signature-ml-model.json")
     parser.add_argument("--output", required=True, help="Output bundle directory")
     parser.add_argument("--version", default="", help="Bundle version (default: date-based)")
     args = parser.parse_args()
@@ -251,6 +252,14 @@ def main():
             if os.path.isfile(jsonl_path):
                 elastic_count = count_lines(jsonl_path)
     print(f"Bundle: {elastic_count} Elastic behavioral rules")
+
+    # Copy ML model
+    ml_model_copied = False
+    if args.ml_model:
+        ml_src = os.path.abspath(args.ml_model)
+        ml_dst = os.path.join(output_dir, "signature-ml-model.json")
+        ml_model_copied = copy_file(ml_src, ml_dst)
+    print(f"Bundle: ML model {'included' if ml_model_copied else 'not included'}")
 
     # Detect sources
     sources = detect_sources(output_dir)

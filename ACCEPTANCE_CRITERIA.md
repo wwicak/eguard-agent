@@ -249,6 +249,31 @@ Derived from `docs/eguard-agent-design.md`. These acceptance criteria define the
 - **AC-DET-243**: `TemporalEngine::observe()` MUST NOT clone the subscription `Vec<usize>` on every event. Subscriptions MUST be iterated by reference to avoid per-event allocation pressure.
 - **AC-DET-244**: `confidence_policy()` MUST NOT escalate to `High` confidence on a bare `kernel_integrity` signal without corroboration from temporal, kill-chain, exploit, or tamper layers. Bare `kernel_integrity` MUST map to `Medium` confidence. (Supersedes AC-DET-224 for the standalone kernel_integrity case.)
 
+### Detection Accuracy Optimization (Tier 2)
+
+- **AC-DET-250**: Temporal engine MUST include `phi_reverse_shell` rule detecting shell exec with reverse-shell markers (e.g. `>& /dev/tcp/`, `bash -i`, `nc -e /bin`) followed by non-web-port network connect within 10 s.
+- **AC-DET-251**: Temporal engine MUST include `phi_download_exec` rule detecting download tool exec (`curl`, `wget`, `fetch`, or versioned interpreters) followed by shell exec within 30 s.
+- **AC-DET-252**: Temporal engine MUST include `phi_credential_exfil` rule detecting file access to credential paths (`/etc/shadow`, `.ssh/id_`, `.aws/credentials`, etc.) followed by non-web-port network connect within 60 s.
+- **AC-DET-253**: Temporal engine MUST include `phi_persistence_install` rule detecting file write to persistence paths (`/etc/cron`, `/etc/systemd/system/`, `.bashrc`, etc.) followed by process exec within 30 s; stage 1 MUST require `file_write == true`.
+- **AC-DET-254**: Temporal engine MUST include `phi_ssh_lateral` rule detecting SSH key file access followed by network connect to port 22 within 60 s.
+- **AC-DET-255**: Temporal engine MUST include `phi_data_staging` rule detecting archival command execution (`tar`, `zip`, `gzip`, `7z`) followed by non-web-port network connect within 120 s.
+- **AC-DET-256**: Exploit detector MUST detect `LD_PRELOAD` injection from temp paths (`/tmp/`, `/dev/shm/`, `/var/tmp/`) as `fileless_ld_preload` indicator.
+- **AC-DET-257**: Exploit detector MUST detect pipe-to-interpreter patterns (`curl|sh`, `wget|bash`, etc.) as `fileless_pipe_exec` indicator.
+- **AC-DET-258**: Layer 1 IOC matching MUST support domain suffix matching so that IOC `evil.com` also catches `beacon.evil.com`.
+- **AC-DET-259**: Confidence policy MUST escalate to `VeryHigh` when two or more independent high-grade signals (`z2_temporal`, `z4_kill_chain`, `exploit_indicator`, `tamper_indicator`) are active.
+- **AC-DET-260**: Layer 1 IOC matching MUST normalize IPv6 addresses via `std::net::IpAddr` parsing so that variant representations of the same IP match.
+- **AC-DET-261**: `TemporalPredicate` MUST support `require_file_write` flag that constrains stage matching to events with `file_write == true`.
+- **AC-DET-262**: Exploit detector MUST detect base64-encoded payloads (`base64 -d` / `base64 --decode`) with suspiciously long base64 strings as `encoded_payload_suspicious` indicator.
+- **AC-DET-263**: ML Layer 5 MUST align Rust FEATURE_COUNT (27) with Python training features, including `event_size_norm` fix, 4 new base features (`container_risk`, `file_path_entropy`, `file_path_depth`, `behavioral_alarm_count`), and 3 interaction terms.
+- **AC-DET-264**: ML training script MUST apply asymmetric cost-sensitive class weighting with FN cost multiplier >= 2.0 to favor recall over precision.
+- **AC-DET-265**: ML training script MUST use stratified k-fold cross-validation (k >= 5) for regularization parameter sweep.
+- **AC-DET-266**: ML feature set MUST include interaction terms `z1_z2_interaction`, `z1_z4_interaction`, and `anomaly_behavioral` both in Rust runtime and Python training.
+- **AC-DET-267**: Runtime ML model MUST use the CI-trained threshold (from model JSON) when available, falling back to 0.5 if absent or outside [0.05, 0.95].
+- **AC-DET-268**: CI model loader MUST validate models before conversion: reject non-finite weights, empty features, non-finite bias, and unreasonable feature scales (< 1e-10 or > 1e6).
+- **AC-DET-269**: CI model conversion MUST track and expose feature mapping mismatches (dropped CI features, unmapped runtime features) for audit.
+- **AC-DET-270**: Bundle build MUST include `signature-ml-model.json` in manifest file hashes for integrity verification.
+- **AC-DET-271**: Offline ML evaluation MUST use expanding-window temporal validation with at least 3 splits for robust metric estimation.
+
 ---
 
 ## 2. Active Response Engine

@@ -6,6 +6,7 @@ use crate::types::{EventClass, TelemetryEvent};
 pub struct TemporalPredicate {
     pub event_class: EventClass,
     pub process_any_of: Option<HashSet<String>>,
+    pub process_starts_with: Option<Vec<String>>,
     pub parent_any_of: Option<HashSet<String>>,
     pub uid_eq: Option<u32>,
     pub uid_ne: Option<u32>,
@@ -14,6 +15,7 @@ pub struct TemporalPredicate {
     pub file_path_any_of: Option<HashSet<String>>,
     pub file_path_contains: Option<HashSet<String>>,
     pub command_line_contains: Option<HashSet<String>>,
+    pub require_file_write: bool,
 }
 
 impl TemporalPredicate {
@@ -22,12 +24,42 @@ impl TemporalPredicate {
             return false;
         }
 
-        if let Some(set) = &self.process_any_of {
-            let process = event.process.to_ascii_lowercase();
-            if !set
-                .iter()
-                .any(|expected| expected.eq_ignore_ascii_case(&process))
-            {
+        // When both process_any_of and process_starts_with are set, the
+        // process must match at least one from either field (OR logic).
+        // When only one is set, it acts as a standalone filter.
+        let has_any_of = self.process_any_of.is_some();
+        let has_starts_with = self.process_starts_with.is_some();
+
+        if has_any_of || has_starts_with {
+            let process_lower = event.process.to_ascii_lowercase();
+
+            let any_of_match = self
+                .process_any_of
+                .as_ref()
+                .map(|set| {
+                    set.iter()
+                        .any(|expected| expected.eq_ignore_ascii_case(&process_lower))
+                })
+                .unwrap_or(false);
+
+            let starts_with_match = self
+                .process_starts_with
+                .as_ref()
+                .map(|prefixes| {
+                    prefixes
+                        .iter()
+                        .any(|prefix| process_lower.starts_with(&prefix.to_ascii_lowercase()))
+                })
+                .unwrap_or(false);
+
+            if has_any_of && has_starts_with {
+                // OR: must match at least one from either field.
+                if !any_of_match && !starts_with_match {
+                    return false;
+                }
+            } else if has_any_of && !any_of_match {
+                return false;
+            } else if has_starts_with && !starts_with_match {
                 return false;
             }
         }
@@ -115,6 +147,10 @@ impl TemporalPredicate {
             if !exact_ok && !contains_ok {
                 return false;
             }
+        }
+
+        if self.require_file_write && !event.file_write {
+            return false;
         }
 
         true

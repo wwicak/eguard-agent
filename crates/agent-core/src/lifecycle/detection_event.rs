@@ -1,7 +1,14 @@
 use detection::{Confidence, EventClass, TelemetryEvent};
 
-pub(super) fn confidence_label(c: Confidence) -> String {
-    format!("{:?}", c).to_ascii_lowercase()
+pub(super) fn confidence_label(c: Confidence) -> &'static str {
+    match c {
+        Confidence::None => "none",
+        Confidence::Low => "low",
+        Confidence::Medium => "medium",
+        Confidence::High => "high",
+        Confidence::VeryHigh => "very_high",
+        Confidence::Definite => "definite",
+    }
 }
 
 pub(super) fn confidence_to_severity(c: Confidence) -> &'static str {
@@ -104,6 +111,36 @@ pub(super) fn map_event_class(event_type: &crate::platform::EventType) -> EventC
 #[cfg(test)]
 mod tests {
     use super::process_basename;
+    use detection::Confidence;
+
+    #[test]
+    // AC-WIRE-001 AC-WIRE-002 AC-WIRE-003 AC-WIRE-004
+    fn confidence_label_returns_snake_case_for_all_variants() {
+        assert_eq!(super::confidence_label(Confidence::VeryHigh), "very_high");
+        assert_eq!(super::confidence_label(Confidence::None), "none");
+        assert_eq!(super::confidence_label(Confidence::Low), "low");
+        assert_eq!(super::confidence_label(Confidence::Medium), "medium");
+        assert_eq!(super::confidence_label(Confidence::High), "high");
+        assert_eq!(super::confidence_label(Confidence::Definite), "definite");
+
+        let all = [
+            Confidence::None,
+            Confidence::Low,
+            Confidence::Medium,
+            Confidence::High,
+            Confidence::VeryHigh,
+            Confidence::Definite,
+        ];
+        for c in all {
+            let label = super::confidence_label(c);
+            assert!(
+                label.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_'),
+                "confidence_label({:?}) = {:?} is not snake_case",
+                c,
+                label
+            );
+        }
+    }
 
     #[test]
     fn process_basename_supports_windows_and_unix_paths() {

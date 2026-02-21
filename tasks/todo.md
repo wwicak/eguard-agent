@@ -2,6 +2,26 @@
 User https://157.10.161.219:1443/
 admin:Admin@12345 (dev temporary)
 
+## Detection Accuracy Optimization — Tier 2 (2026-02-21)
+- [x] Fix 1: Add 6 new temporal rules (reverse shell, download-exec, credential exfil, persistence, SSH lateral, data staging)
+- [x] Fix 2: Add 4 new exploit indicators (LD_PRELOAD, pipe-exec, hex shellcode, process substitution)
+- [x] Fix 3: Domain suffix matching in Layer 1 for C2 subdomain detection
+- [x] Fix 4: IPv6 address normalization in Layer 1 IOC matching
+- [x] Fix 5: Multi-signal confidence boosting to VeryHigh
+- [x] Fix 6: ML features expansion (FEATURE_COUNT 19→27) + Python/Rust sync fix
+- [x] Fix 7: Add require_file_write to TemporalPredicate
+- [x] Fix 8: Add process_starts_with prefix matching to TemporalPredicate
+- [x] Fix 9: Base64-encoded payload detection in exploit detector
+- [x] Fix 10a: Cost-sensitive class weighting in ML training (FN×3)
+- [x] Fix 10b: Stratified 5-fold cross-validation for regularization sweep
+- [x] Fix 10c: Feature interaction terms in Python training pipeline
+- [x] Fix 10d: CI-trained threshold passthrough at runtime
+- [x] Fix 10e: CI model validation before conversion
+- [x] Fix 10f: Feature mapping mismatch tracking in model conversion
+- [x] Fix 10g: ML model included in bundle manifest hashes
+- [x] Fix 10h: Expanding-window temporal validation (3 splits)
+- [x] Step 10: Acceptance criteria AC-DET-250 through AC-DET-271
+
 ## 🧭 Plan: Close residual W1/W4/W6 from Windows platform audit (2026-02-21)
 - [x] Implement protected-path enforcement in Windows quarantine flow (W1)
 - [x] Harden Windows installer integrity checks to fail closed by default (W4)

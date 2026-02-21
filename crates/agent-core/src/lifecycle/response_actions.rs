@@ -92,7 +92,7 @@ impl AgentRuntime {
         let response = ResponseEnvelope {
             agent_id: self.config.agent_id.clone(),
             action_type: format!("{:?}", action).to_ascii_lowercase(),
-            confidence: confidence_label(confidence),
+            confidence: confidence_label(confidence).to_string(),
             success: local.success,
             error_message: local.detail,
         };

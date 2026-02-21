@@ -347,6 +347,28 @@ const EXPECTED_IDS: &[&str] = &[
     "AC-DET-242",
     "AC-DET-243",
     "AC-DET-244",
+    "AC-DET-250",
+    "AC-DET-251",
+    "AC-DET-252",
+    "AC-DET-253",
+    "AC-DET-254",
+    "AC-DET-255",
+    "AC-DET-256",
+    "AC-DET-257",
+    "AC-DET-258",
+    "AC-DET-259",
+    "AC-DET-260",
+    "AC-DET-261",
+    "AC-DET-262",
+    "AC-DET-263",
+    "AC-DET-264",
+    "AC-DET-265",
+    "AC-DET-266",
+    "AC-DET-267",
+    "AC-DET-268",
+    "AC-DET-269",
+    "AC-DET-270",
+    "AC-DET-271",
     "AC-EBP-001",
     "AC-EBP-002",
     "AC-EBP-003",
@@ -2631,6 +2653,116 @@ fn ac_det_243_exists_in_acceptance_document() {
 #[test]
 fn ac_det_244_exists_in_acceptance_document() {
     assert_criterion_present("AC-DET-244");
+}
+
+#[test]
+fn ac_det_250_exists_in_acceptance_document() {
+    assert_criterion_present("AC-DET-250");
+}
+
+#[test]
+fn ac_det_251_exists_in_acceptance_document() {
+    assert_criterion_present("AC-DET-251");
+}
+
+#[test]
+fn ac_det_252_exists_in_acceptance_document() {
+    assert_criterion_present("AC-DET-252");
+}
+
+#[test]
+fn ac_det_253_exists_in_acceptance_document() {
+    assert_criterion_present("AC-DET-253");
+}
+
+#[test]
+fn ac_det_254_exists_in_acceptance_document() {
+    assert_criterion_present("AC-DET-254");
+}
+
+#[test]
+fn ac_det_255_exists_in_acceptance_document() {
+    assert_criterion_present("AC-DET-255");
+}
+
+#[test]
+fn ac_det_256_exists_in_acceptance_document() {
+    assert_criterion_present("AC-DET-256");
+}
+
+#[test]
+fn ac_det_257_exists_in_acceptance_document() {
+    assert_criterion_present("AC-DET-257");
+}
+
+#[test]
+fn ac_det_258_exists_in_acceptance_document() {
+    assert_criterion_present("AC-DET-258");
+}
+
+#[test]
+fn ac_det_259_exists_in_acceptance_document() {
+    assert_criterion_present("AC-DET-259");
+}
+
+#[test]
+fn ac_det_260_exists_in_acceptance_document() {
+    assert_criterion_present("AC-DET-260");
+}
+
+#[test]
+fn ac_det_261_exists_in_acceptance_document() {
+    assert_criterion_present("AC-DET-261");
+}
+
+#[test]
+fn ac_det_262_exists_in_acceptance_document() {
+    assert_criterion_present("AC-DET-262");
+}
+
+#[test]
+fn ac_det_263_exists_in_acceptance_document() {
+    assert_criterion_present("AC-DET-263");
+}
+
+#[test]
+fn ac_det_264_exists_in_acceptance_document() {
+    assert_criterion_present("AC-DET-264");
+}
+
+#[test]
+fn ac_det_265_exists_in_acceptance_document() {
+    assert_criterion_present("AC-DET-265");
+}
+
+#[test]
+fn ac_det_266_exists_in_acceptance_document() {
+    assert_criterion_present("AC-DET-266");
+}
+
+#[test]
+fn ac_det_267_exists_in_acceptance_document() {
+    assert_criterion_present("AC-DET-267");
+}
+
+#[test]
+fn ac_det_268_exists_in_acceptance_document() {
+    assert_criterion_present("AC-DET-268");
+}
+
+#[test]
+fn ac_det_269_exists_in_acceptance_document() {
+    assert_criterion_present("AC-DET-269");
+}
+
+#[test]
+fn ac_det_270_exists_in_acceptance_document() {
+    assert_criterion_present("AC-DET-270");
+}
+
+#[test]
+fn ac_det_271_exists_in_acceptance_document() {
+    assert_criterion_present("AC-DET-271");
 }
 
 #[test]

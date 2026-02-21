@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::net::IpAddr;
 
 use aho_corasick::AhoCorasick;
 use rusqlite::{params, Connection};
@@ -25,6 +26,22 @@ pub(crate) fn normalize_for_matching(raw: &str) -> String {
         out.push(c.to_ascii_lowercase());
     }
     out
+}
+
+fn normalize_ip_for_matching(raw: &str) -> String {
+    raw.parse::<IpAddr>()
+        .map(|ip| ip.to_string())
+        .unwrap_or_else(|_| raw.to_ascii_lowercase())
+}
+
+fn domain_suffix_candidates(domain: &str) -> Vec<&str> {
+    let mut candidates = vec![domain];
+    for (index, ch) in domain.char_indices() {
+        if ch == '.' && index + 1 < domain.len() {
+            candidates.push(&domain[index + 1..]);
+        }
+    }
+    candidates
 }
 
 #[cfg(all(test, not(miri)))]
@@ -162,7 +179,7 @@ impl IocExactStore {
             .conn
             .prepare("INSERT OR IGNORE INTO ioc_domains(domain) VALUES(?1)")?;
         for v in values {
-            stmt.execute(params![v.to_ascii_lowercase()])?;
+            stmt.execute(params![v.trim_end_matches('.').to_ascii_lowercase()])?;
         }
         Ok(())
     }
@@ -175,7 +192,7 @@ impl IocExactStore {
             .conn
             .prepare("INSERT OR IGNORE INTO ioc_ips(ip) VALUES(?1)")?;
         for v in values {
-            stmt.execute(params![v])?;
+            stmt.execute(params![normalize_ip_for_matching(&v)])?;
         }
         Ok(())
     }
@@ -192,7 +209,7 @@ impl IocExactStore {
         let mut stmt = self
             .conn
             .prepare("SELECT 1 FROM ioc_domains WHERE domain = ?1 LIMIT 1")?;
-        let mut rows = stmt.query(params![domain.to_ascii_lowercase()])?;
+        let mut rows = stmt.query(params![domain.trim_end_matches('.').to_ascii_lowercase()])?;
         Ok(rows.next()?.is_some())
     }
 
@@ -200,7 +217,7 @@ impl IocExactStore {
         let mut stmt = self
             .conn
             .prepare("SELECT 1 FROM ioc_ips WHERE ip = ?1 LIMIT 1")?;
-        let mut rows = stmt.query(params![ip])?;
+        let mut rows = stmt.query(params![normalize_ip_for_matching(ip)])?;
         Ok(rows.next()?.is_some())
     }
 }
@@ -268,7 +285,7 @@ impl IocLayer1 {
     {
         let mut copy = Vec::new();
         for v in values {
-            let normalized = v.to_ascii_lowercase();
+            let normalized = v.trim_end_matches('.').to_ascii_lowercase();
             self.prefilter_domains.insert(normalized.clone());
             self.exact_domains.insert(normalized.clone());
             copy.push(normalized);
@@ -285,9 +302,10 @@ impl IocLayer1 {
     {
         let mut copy = Vec::new();
         for v in values {
-            self.prefilter_ips.insert(v.clone());
-            self.exact_ips.insert(v.clone());
-            copy.push(v);
+            let normalized = normalize_ip_for_matching(&v);
+            self.prefilter_ips.insert(normalized.clone());
+            self.exact_ips.insert(normalized.clone());
+            copy.push(normalized);
         }
         rebuild_prefilter_if_needed(&mut self.prefilter_ips, &mut self.prefilter_rebuilds);
         if let Some(store) = &self.exact_store {
@@ -348,15 +366,28 @@ impl IocLayer1 {
     }
 
     pub fn check_domain(&self, domain: &str) -> Layer1Result {
-        let normalized = domain.to_ascii_lowercase();
-        if !self.prefilter_domains.contains(&normalized) {
+        let normalized = domain.trim_end_matches('.').to_ascii_lowercase();
+        if normalized.is_empty() {
             return Layer1Result::Clean;
         }
-        if self.exact_domains.contains(&normalized) {
+        let candidates = domain_suffix_candidates(&normalized);
+        if !candidates
+            .iter()
+            .any(|candidate| self.prefilter_domains.contains(*candidate))
+        {
+            return Layer1Result::Clean;
+        }
+        if candidates
+            .iter()
+            .any(|candidate| self.exact_domains.contains(*candidate))
+        {
             return Layer1Result::ExactMatch;
         }
         if let Some(store) = &self.exact_store {
-            if store.contains_domain(&normalized).unwrap_or(false) {
+            if candidates
+                .iter()
+                .any(|candidate| store.contains_domain(candidate).unwrap_or(false))
+            {
                 return Layer1Result::ExactMatch;
             }
         }
@@ -364,14 +395,15 @@ impl IocLayer1 {
     }
 
     pub fn check_ip(&self, ip: &str) -> Layer1Result {
-        if !self.prefilter_ips.contains(ip) {
+        let normalized = normalize_ip_for_matching(ip);
+        if !self.prefilter_ips.contains(&normalized) {
             return Layer1Result::Clean;
         }
-        if self.exact_ips.contains(ip) {
+        if self.exact_ips.contains(&normalized) {
             return Layer1Result::ExactMatch;
         }
         if let Some(store) = &self.exact_store {
-            if store.contains_ip(ip).unwrap_or(false) {
+            if store.contains_ip(&normalized).unwrap_or(false) {
                 return Layer1Result::ExactMatch;
             }
         }
@@ -414,11 +446,7 @@ impl IocLayer1 {
         I: IntoIterator<Item = String>,
     {
         for domain in sample {
-            let normalized = domain.to_ascii_lowercase();
-            if !self.prefilter_domains.contains(&normalized) {
-                return false;
-            }
-            if !matches!(self.check_domain(&normalized), Layer1Result::ExactMatch) {
+            if !matches!(self.check_domain(&domain), Layer1Result::ExactMatch) {
                 return false;
             }
         }
@@ -430,9 +458,6 @@ impl IocLayer1 {
         I: IntoIterator<Item = String>,
     {
         for ip in sample {
-            if !self.prefilter_ips.contains(&ip) {
-                return false;
-            }
             if !matches!(self.check_ip(&ip), Layer1Result::ExactMatch) {
                 return false;
             }

@@ -395,6 +395,63 @@ def main() -> int:
     metrics["brier_score"] = _brier_score(labels, scores)
     metrics["ece"] = _ece(labels, scores)
 
+    # Expanding-window temporal validation with 3 splits
+    eval_ratios = [0.20, 0.30, 0.40]
+    split_results: list[dict[str, Any]] = []
+
+    for split_ratio in eval_ratios:
+        split_eval_count = int(round(total_count * split_ratio))
+        split_eval_count = max(split_eval_count, min(args.min_eval_samples, total_count // 2))
+        if split_eval_count >= total_count and total_count > 1:
+            split_eval_count = max(total_count // 2, 1)
+
+        split_eval_rows = valid_rows[-split_eval_count:] if split_eval_count > 0 else []
+        split_labels = [int(row["_label"]) for row in split_eval_rows]
+        split_scores = [_score_row(row, model_weights, model_bias, feature_scales) for row in split_eval_rows]
+
+        if auto_threshold:
+            split_threshold, split_metrics, split_strategy = _select_operating_threshold(
+                split_labels, split_scores, args.min_precision,
+            )
+        else:
+            split_threshold = fixed_threshold
+            split_metrics = _binary_metrics(split_labels, split_scores, split_threshold)
+            split_strategy = "fixed"
+
+        split_metrics["pr_auc"] = _pr_auc(split_labels, split_scores)
+        split_metrics["roc_auc"] = _roc_auc(split_labels, split_scores)
+        split_metrics["brier_score"] = _brier_score(split_labels, split_scores)
+        split_metrics["ece"] = _ece(split_labels, split_scores)
+
+        split_results.append({
+            "eval_ratio": split_ratio,
+            "eval_count": len(split_eval_rows),
+            "threshold": round(split_threshold, 6),
+            "strategy": split_strategy,
+            "metrics": {k: round(v, 6) if isinstance(v, float) else v for k, v in split_metrics.items()},
+        })
+
+    # Use median metrics across splits for summary reporting
+    def _median_of(values: list[float]) -> float:
+        s = sorted(values)
+        n = len(s)
+        if n == 0:
+            return 0.0
+        if n % 2 == 1:
+            return s[n // 2]
+        return (s[n // 2 - 1] + s[n // 2]) / 2.0
+
+    temporal_summary: dict[str, Any] = {}
+    if split_results:
+        temporal_summary = {
+            "median_pr_auc": round(_median_of([s["metrics"].get("pr_auc", 0.0) for s in split_results]), 6),
+            "median_roc_auc": round(_median_of([s["metrics"].get("roc_auc", 0.0) for s in split_results]), 6),
+            "median_precision": round(_median_of([s["metrics"].get("precision", 0.0) for s in split_results]), 6),
+            "median_recall": round(_median_of([s["metrics"].get("recall", 0.0) for s in split_results]), 6),
+            "median_brier_score": round(_median_of([s["metrics"].get("brier_score", 0.0) for s in split_results]), 6),
+            "median_ece": round(_median_of([s["metrics"].get("ece", 0.0) for s in split_results]), 6),
+        }
+
     previous_report = _load_json_optional(Path(args.previous_report)) if args.previous_report else None
     previous_metrics = (
         previous_report.get("metrics", {})
@@ -517,6 +574,8 @@ def main() -> int:
         "threshold_failures": threshold_failures,
         "regression_failures": regression_failures,
         "failures": failures,
+        "temporal_splits": split_results,
+        "temporal_summary": temporal_summary,
     }
 
     report_path = Path(args.output_report)

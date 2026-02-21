@@ -294,6 +294,7 @@ impl DetectionEngine {
             kill_chain_hits.len(),
             yara_hits.len(),
             layer1.matched_signatures.len(),
+            behavioral_alarms.len(),
         );
         let ml_result = self.layer5.score(&features);
 

@@ -73,7 +73,7 @@ impl AgentRuntime {
         self.enqueue_response_report(super::ResponseEnvelope {
             agent_id: self.config.agent_id.clone(),
             action_type: "auto_isolate".to_string(),
-            confidence: super::confidence_label(evaluation.confidence),
+            confidence: super::confidence_label(evaluation.confidence).to_string(),
             success: outcome.status == "completed",
             error_message: outcome.detail,
         });

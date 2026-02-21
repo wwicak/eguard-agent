@@ -561,7 +561,10 @@ exit 0
         .env("MOCK_LOG", &log_path)
         .status()
         .expect("run package budget script");
-    assert!(package.success(), "package harness failed: status={package:?}");
+    assert!(
+        package.success(),
+        "package harness failed: status={package:?}"
+    );
     let package_metrics = std::fs::read_to_string(package_out_dir.join("metrics.json"))
         .expect("read package metrics");
     assert!(
@@ -1711,6 +1714,64 @@ fn signature_ml_runtime_feature_contracts_are_enforced() {
 }
 
 #[test]
+// AC-DET-264 AC-DET-265
+fn signature_ml_training_uses_cost_sensitive_weights_and_stratified_cv() {
+    let script = read("threat-intel/processing/signature_ml_train_model.py");
+    assert!(
+        script.contains("fn_cost_multiplier = 3.0"),
+        "training script must upweight FN cost with multiplier >= 2.0"
+    );
+    assert!(
+        script.contains("_stratified_kfold(rows, labels, 5)"),
+        "training script must run stratified 5-fold cross-validation"
+    );
+    assert!(
+        script.contains("\"cv_sweep\""),
+        "training diagnostics must export CV sweep results"
+    );
+}
+
+#[test]
+// AC-DET-270
+fn bundle_builder_includes_ml_model_in_manifest_hashes() {
+    let script = read("threat-intel/processing/build_bundle.py");
+    assert!(
+        script.contains("--ml-model"),
+        "bundle builder must accept an explicit ML model input"
+    );
+    assert!(
+        script.contains("signature-ml-model.json"),
+        "bundle builder must copy signature-ml-model.json into the bundle"
+    );
+    assert!(
+        script.contains("for root, _dirs, files in os.walk(output_dir):"),
+        "bundle builder must hash all files in output_dir"
+    );
+    assert!(
+        script.contains("\"files\": file_hashes"),
+        "manifest must include file hash index for integrity checks"
+    );
+}
+
+#[test]
+// AC-DET-271
+fn offline_eval_gate_uses_expanding_window_temporal_validation() {
+    let script = read("threat-intel/processing/signature_ml_offline_eval_gate.py");
+    assert!(
+        script.contains("eval_ratios = [0.20, 0.30, 0.40]"),
+        "offline eval must define at least three expanding-window splits"
+    );
+    assert!(
+        script.contains("\"temporal_splits\": split_results"),
+        "offline eval report must expose temporal split metrics"
+    );
+    assert!(
+        script.contains("\"temporal_summary\": temporal_summary"),
+        "offline eval report must expose temporal summary metrics"
+    );
+}
+
+#[test]
 // AC-VER-014 AC-VER-015 AC-VER-016 AC-VER-017 AC-VER-018 AC-VER-019 AC-VER-020 AC-VER-021 AC-VER-022 AC-VER-023 AC-VER-024 AC-VER-025 AC-VER-026 AC-VER-027 AC-VER-028 AC-VER-029 AC-VER-030 AC-VER-044 AC-VER-045 AC-VER-046 AC-VER-047 AC-VER-052 AC-VER-053 AC-VER-054
 fn verification_coverage_and_security_pipeline_contracts_are_present() {
     let root = repo_root();
@@ -1803,7 +1864,10 @@ exit 0
         .env("MOCK_LOG", &log_path)
         .status()
         .expect("run verification suite script");
-    assert!(verify.success(), "verification suite script failed: status={verify:?}");
+    assert!(
+        verify.success(),
+        "verification suite script failed: status={verify:?}"
+    );
 
     let log = std::fs::read_to_string(&log_path).expect("read verification log");
     let log_lines = non_comment_lines(&log);

@@ -38,6 +38,7 @@ fn one_stage_rule(name: &str, class: EventClass) -> TemporalRule {
             predicate: TemporalPredicate {
                 event_class: class,
                 process_any_of: None,
+                process_starts_with: None,
                 parent_any_of: None,
                 uid_eq: None,
                 uid_ne: None,
@@ -46,6 +47,7 @@ fn one_stage_rule(name: &str, class: EventClass) -> TemporalRule {
                 file_path_any_of: None,
                 file_path_contains: None,
                 command_line_contains: None,
+                require_file_write: false,
             },
             within_secs: 15,
         }],
@@ -153,7 +155,7 @@ fn normalization_policy_is_fixed_for_casefolding_and_path_canonicalization() {
     miri,
     ignore = "runtime scaling assertions are not meaningful under miri"
 )]
-// AC-DET-025
+// AC-DET-025 AC-DET-243
 fn temporal_runtime_cost_scales_with_subscribed_rule_count() {
     let mut low = TemporalEngine::new();
     for i in 0..32 {

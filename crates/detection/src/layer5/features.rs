@@ -18,6 +18,7 @@ impl MlFeatures {
         killchain_hit_count: usize,
         yara_hit_count: usize,
         string_sig_count: usize,
+        behavioral_alarm_count: usize,
     ) -> Self {
         let mut values = [0.0f64; FEATURE_COUNT];
 
@@ -73,8 +74,73 @@ impl MlFeatures {
             values[18] = information::dns_entropy(domain);
         }
 
+        // ── Extended features (Fix 6) ───────────────────────────────
+
+        // Index 19: event_size_norm — normalized event size
+        values[19] = event
+            .event_size
+            .map(|s| (s as f64 / 8192.0).min(1.0))
+            .unwrap_or(0.0);
+
+        // Index 20: container_risk
+        values[20] = if event.container_escape || event.container_privileged {
+            1.0
+        } else if event.container_id.is_some() {
+            0.5
+        } else {
+            0.0
+        };
+
+        // Index 21: file_path_entropy — Shannon entropy of file path
+        values[21] = event
+            .file_path
+            .as_deref()
+            .map(|p| shannon_entropy(p.as_bytes()))
+            .unwrap_or(0.0);
+
+        // Index 22: file_path_depth — normalized path depth
+        values[22] = event
+            .file_path
+            .as_deref()
+            .map(|p| (p.matches('/').count() as f64 / 10.0).min(1.0))
+            .unwrap_or(0.0);
+
+        // Index 23: behavioral_alarm_count — normalized
+        values[23] = (behavioral_alarm_count as f64).min(5.0) / 5.0;
+
+        // Index 24: z1_z2_interaction — IOC confirmed by temporal pattern
+        values[24] = values[0] * values[1];
+
+        // Index 25: z1_z4_interaction — IOC in kill chain context
+        values[25] = values[0] * values[4];
+
+        // Index 26: anomaly_behavioral — anomaly with multi-signal
+        values[26] = values[2] * values[13];
+
         Self { values }
     }
+}
+
+/// Shannon entropy of a byte slice, normalized to [0, 1].
+/// Maximum byte entropy is 8.0 bits (uniform distribution over 256 values).
+fn shannon_entropy(data: &[u8]) -> f64 {
+    if data.is_empty() {
+        return 0.0;
+    }
+    let mut counts = [0u32; 256];
+    for &b in data {
+        counts[b as usize] += 1;
+    }
+    let len = data.len() as f64;
+    let mut entropy = 0.0;
+    for &count in &counts {
+        if count > 0 {
+            let p = count as f64 / len;
+            entropy -= p * p.log2();
+        }
+    }
+    // Normalize to [0, 1] where 8.0 is max for byte data
+    (entropy / 8.0).min(1.0)
 }
 
 fn event_class_risk_score(class: EventClass) -> f64 {

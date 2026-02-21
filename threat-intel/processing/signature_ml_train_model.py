@@ -573,6 +573,44 @@ def _deterministic_split(
     return train_idx, holdout_idx
 
 
+def _stratified_kfold(
+    rows: list[dict[str, Any]],
+    labels: list[int],
+    n_folds: int,
+) -> list[tuple[list[int], list[int]]]:
+    """Generate stratified k-fold splits deterministically."""
+    pos_indices = [i for i, l in enumerate(labels) if l == 1]
+    neg_indices = [i for i, l in enumerate(labels) if l == 0]
+
+    # Deterministic shuffle by hashing sample_id
+    def sort_key(idx: int) -> str:
+        seed = str(rows[idx].get("sample_id", idx))
+        return hashlib.sha256(seed.encode("utf-8")).hexdigest()
+
+    pos_indices.sort(key=sort_key)
+    neg_indices.sort(key=sort_key)
+
+    folds: list[tuple[list[int], list[int]]] = []
+    for fold in range(n_folds):
+        val_idx: list[int] = []
+        train_idx: list[int] = []
+
+        for indices in [pos_indices, neg_indices]:
+            fold_size = len(indices) // n_folds
+            start = fold * fold_size
+            end = start + fold_size if fold < n_folds - 1 else len(indices)
+            for i, idx in enumerate(indices):
+                if start <= i < end:
+                    val_idx.append(idx)
+                else:
+                    train_idx.append(idx)
+
+        if val_idx and train_idx:
+            folds.append((train_idx, val_idx))
+
+    return folds
+
+
 def _parse_l2_grid(raw: str, base: float) -> list[float]:
     if raw:
         values = [
@@ -671,8 +709,9 @@ def main() -> int:
 
     pos_rate = len(pos_rows) / len(rows)
     neg_rate = len(neg_rows) / len(rows)
+    fn_cost_multiplier = 3.0
     class_weights = {
-        1: 0.5 / max(pos_rate, 1e-6),
+        1: fn_cost_multiplier * 0.5 / max(pos_rate, 1e-6),
         0: 0.5 / max(neg_rate, 1e-6),
     }
     sample_weights = [class_weights[label] for label in labels]
@@ -732,6 +771,45 @@ def main() -> int:
             best_weights = weights
             best_bias = bias
             best_diag = diag
+
+    # 5-fold stratified cross-validation for regularization sweep
+    cv_folds = _stratified_kfold(rows, labels, 5)
+    cv_sweep_results: list[dict[str, Any]] = []
+
+    if cv_folds:
+        for l2 in l2_grid:
+            fold_metrics: list[dict[str, float]] = []
+            for fold_train_idx, fold_val_idx in cv_folds:
+                fold_train_X = [scaled[idx] for idx in fold_train_idx]
+                fold_train_labels = [labels[idx] for idx in fold_train_idx]
+                fold_train_weights = [sample_weights[idx] for idx in fold_train_idx]
+                fold_weights, fold_bias, _ = _irls_train(
+                    fold_train_X, fold_train_labels, fold_train_weights,
+                    l2, max(args.max_iter, 1), args.tol, args.learning_rate, args.min_step,
+                )
+                fold_val_X = [scaled[idx] for idx in fold_val_idx]
+                fold_val_labels = [labels[idx] for idx in fold_val_idx]
+                fold_scores = [
+                    _sigmoid(fold_bias + sum(w * x for w, x in zip(fold_weights, row)))
+                    for row in fold_val_X
+                ]
+                fold_metrics.append({
+                    "pr_auc": _pr_auc(fold_val_labels, fold_scores),
+                    "roc_auc": _roc_auc(fold_val_labels, fold_scores),
+                    "log_loss": _log_loss(fold_val_labels, fold_scores),
+                })
+
+            mean_pr_auc = sum(m["pr_auc"] for m in fold_metrics) / len(fold_metrics)
+            mean_roc_auc = sum(m["roc_auc"] for m in fold_metrics) / len(fold_metrics)
+            std_pr_auc = (sum((m["pr_auc"] - mean_pr_auc) ** 2 for m in fold_metrics) / len(fold_metrics)) ** 0.5
+
+            cv_sweep_results.append({
+                "l2": l2,
+                "cv_mean_pr_auc": round(mean_pr_auc, 6),
+                "cv_mean_roc_auc": round(mean_roc_auc, 6),
+                "cv_std_pr_auc": round(std_pr_auc, 6),
+                "fold_metrics": fold_metrics,
+            })
 
     # Refit on full dataset using best L2.
     weights, bias, diag = _irls_train(
@@ -823,6 +901,7 @@ def main() -> int:
             "last_step": round(_as_float(diag.get("last_step"), 0.0), 6),
             "selected_l2": round(best_l2, 6),
             "l2_sweep": sweep_results,
+            "cv_sweep": cv_sweep_results,
             "temperature": round(temperature, 6),
             "temperature_diagnostics": temp_diag,
         },

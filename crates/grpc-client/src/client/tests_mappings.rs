@@ -141,6 +141,35 @@ fn response_confidence_mapping_accepts_expected_variants() {
 }
 
 #[test]
+// AC-WIRE-006 AC-WIRE-007 AC-WIRE-008 AC-WIRE-009 AC-WIRE-010
+fn response_confidence_mapping_handles_low_none_case_whitespace() {
+    assert_eq!(
+        map_response_confidence("low"),
+        pb::ResponseConfidence::Low
+    );
+    assert_eq!(
+        map_response_confidence("none"),
+        pb::ResponseConfidence::None
+    );
+    assert_eq!(
+        map_response_confidence("very_high"),
+        pb::ResponseConfidence::VeryHigh
+    );
+    assert_eq!(
+        map_response_confidence("VERY_HIGH"),
+        pb::ResponseConfidence::VeryHigh
+    );
+    assert_eq!(
+        map_response_confidence("  high  "),
+        pb::ResponseConfidence::High
+    );
+    assert_eq!(
+        map_response_confidence("unknown-value"),
+        pb::ResponseConfidence::Medium
+    );
+}
+
+#[test]
 // AC-GRP-042 AC-GRP-043
 fn server_command_conversion_uses_command_type_mapping() {
     let pb_command = pb::ServerCommand {

@@ -35,6 +35,7 @@ fn temporal_rule(name: &str) -> TemporalRule {
                 predicate: TemporalPredicate {
                     event_class: EventClass::ProcessExec,
                     process_any_of: None,
+                    process_starts_with: None,
                     parent_any_of: None,
                     uid_eq: None,
                     uid_ne: None,
@@ -43,6 +44,7 @@ fn temporal_rule(name: &str) -> TemporalRule {
                     file_path_any_of: None,
                     file_path_contains: None,
                     command_line_contains: None,
+                    require_file_write: false,
                 },
                 within_secs: 30,
             },
@@ -50,6 +52,7 @@ fn temporal_rule(name: &str) -> TemporalRule {
                 predicate: TemporalPredicate {
                     event_class: EventClass::NetworkConnect,
                     process_any_of: None,
+                    process_starts_with: None,
                     parent_any_of: None,
                     uid_eq: None,
                     uid_ne: None,
@@ -58,6 +61,7 @@ fn temporal_rule(name: &str) -> TemporalRule {
                     file_path_any_of: None,
                     file_path_contains: None,
                     command_line_contains: None,
+                    require_file_write: false,
                 },
                 within_secs: 10,
             },

@@ -1,5 +1,5 @@
 /// Number of features in the model's input vector.
-pub const FEATURE_COUNT: usize = 19;
+pub const FEATURE_COUNT: usize = 27;
 
 /// Feature names for interpretability / logging.
 pub const FEATURE_NAMES: [&str; FEATURE_COUNT] = [
@@ -23,4 +23,13 @@ pub const FEATURE_NAMES: [&str; FEATURE_COUNT] = [
     "cmdline_min_entropy", // Min-entropy — detects deterministic components
     "cmdline_entropy_gap", // H₁ - H_∞ gap — flat = random/encrypted, steep = structured
     "dns_entropy",         // Shannon entropy of domain label (DGA/tunneling signal)
+    // Extended features (Fix 6)
+    "event_size_norm",        // Normalized event size (fixes Python/Rust mismatch)
+    "container_risk",         // 1.0 if escape/privileged, 0.5 if containerized, 0.0 bare metal
+    "file_path_entropy",      // Shannon entropy of file_path
+    "file_path_depth",        // Normalized depth of file path
+    "behavioral_alarm_count", // Number of behavioral alarms, normalized 0-1
+    "z1_z2_interaction",      // z1_ioc_hit * z2_temporal_count
+    "z1_z4_interaction",      // z1_ioc_hit * z4_killchain_count
+    "anomaly_behavioral",     // z3_anomaly_high * multi_layer_count
 ];

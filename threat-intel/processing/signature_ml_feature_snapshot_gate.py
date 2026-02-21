@@ -35,6 +35,13 @@ FEATURES = (
     "cmdline_entropy_gap",
     "dns_entropy",
     "event_size_norm",
+    "container_risk",
+    "file_path_entropy",
+    "file_path_depth",
+    "behavioral_alarm_count",
+    "z1_z2_interaction",
+    "z1_z4_interaction",
+    "anomaly_behavioral",
 )
 
 
@@ -139,6 +146,13 @@ def _synthetic_score(features: dict[str, float]) -> float:
         + 0.25 * features.get("dns_entropy", 0.0)
         + 0.2 * features.get("event_size_norm", 0.0)
         + 0.15 * features.get("multi_layer_count", 0.0)
+        + 0.3 * features.get("container_risk", 0.0)
+        + 0.2 * features.get("file_path_entropy", 0.0)
+        + 0.15 * features.get("file_path_depth", 0.0)
+        + 0.25 * features.get("behavioral_alarm_count", 0.0)
+        + 0.5 * features.get("z1_z2_interaction", 0.0)
+        + 0.4 * features.get("z1_z4_interaction", 0.0)
+        + 0.3 * features.get("anomaly_behavioral", 0.0)
     )
     return _clamp(1.0 / (1.0 + pow(2.718281828, -linear)), 0.001, 0.999)
 
