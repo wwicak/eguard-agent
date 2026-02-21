@@ -130,15 +130,15 @@ impl ProtectedList {
 
     pub fn default_windows() -> Self {
         let process_patterns = [
-            "^System",
-            "csrss",
-            "wininit",
-            "winlogon",
-            "services",
-            "lsass",
-            "svchost",
-            "smss",
-            "eguard-agent",
+            "^System$",
+            "^csrss(\\.exe)?$",
+            "^wininit(\\.exe)?$",
+            "^winlogon(\\.exe)?$",
+            "^services(\\.exe)?$",
+            "^lsass(\\.exe)?$",
+            "^svchost(\\.exe)?$",
+            "^smss(\\.exe)?$",
+            "^eguard-agent(\\.exe)?$",
         ]
         .into_iter()
         .map(compile_process_pattern)

@@ -1,6 +1,6 @@
 {
   "suite": "release_profile_opt",
-  "recorded_at_utc": "2026-02-21T06:42:14Z",
+  "recorded_at_utc": "2026-02-21T14:10:23Z",
   "baseline_release_build_ms": 6,
   "lto_mode": "thin",
   "pgo": {

@@ -46,9 +46,27 @@ powershell -ExecutionPolicy Bypass -File .\installer\windows\install.ps1 \
   -EnrollmentToken <token>
 ```
 
+Optional integrity/transport overrides:
+```powershell
+# Explicit hash pin (skip hash-metadata fetch path)
+powershell -ExecutionPolicy Bypass -File .\installer\windows\install.ps1 \
+  -ServerUrl https://server.example.com \
+  -EnrollmentToken <token> \
+  -ExpectedHash <64-hex-sha256>
+
+# Only for controlled test environments
+# -AllowInsecureHttp: permit http:// server URL
+# -AllowUnsignedMsi: do not fail closed on invalid Authenticode status
+```
+
 Script behavior (scaffold):
+- enforces secure-by-default server URL policy (`https://`; `http://` requires `-AllowInsecureHttp`)
 - downloads MSI from `GET /api/v1/agent-install/windows` using `X-Enrollment-Token`
-- writes `C:\ProgramData\eGuard\bootstrap.conf`
+- enforces fail-closed integrity:
+  - resolves expected SHA-256 from `-ExpectedHash` or `GET /api/v1/agent-install/windows/sha256`
+  - verifies local MSI hash before install
+  - requires valid Authenticode signature unless `-AllowUnsignedMsi` is explicitly set
+- writes `C:\ProgramData\eGuard\bootstrap.conf` and hardens ACLs to SYSTEM/Administrators
 - installs MSI silently and starts `eGuardAgent`
 - removes `bootstrap.conf` after successful start (unless `-KeepBootstrap`)
 

@@ -351,10 +351,18 @@ fn default_windows_protected_paths_match_baseline() {
 #[test]
 fn default_windows_protected_processes_match_baseline() {
     let protected = ProtectedList::default_windows();
+    // Bare names
     assert!(protected.is_protected_process("csrss"));
     assert!(protected.is_protected_process("lsass"));
     assert!(protected.is_protected_process("svchost"));
     assert!(protected.is_protected_process("eguard-agent"));
     assert!(protected.is_protected_process("System"));
+    // .exe variants
+    assert!(protected.is_protected_process("csrss.exe"));
+    assert!(protected.is_protected_process("lsass.exe"));
+    assert!(protected.is_protected_process("svchost.exe"));
+    assert!(protected.is_protected_process("eguard-agent.exe"));
+    // Negatives
     assert!(!protected.is_protected_process("notepad"));
+    assert!(!protected.is_protected_process("notepad.exe"));
 }

@@ -39,16 +39,31 @@ impl ServiceLifecycle {
     }
 
     /// Register the agent as a Windows service.
+    ///
+    /// Idempotent: if the service already exists, updates its configuration
+    /// via `sc.exe config` instead of failing on `sc.exe create`.
     pub fn install(&self) -> Result<(), ServiceError> {
         #[cfg(target_os = "windows")]
         {
-            let create_args = vec![
-                "create".to_string(),
-                self.service_name.clone(),
-                format!("binPath= \"{}\"", self.binary_path),
-                "start= auto".to_string(),
-            ];
-            run_sc(&create_args).map_err(|err| map_sc_error("install", &err))?;
+            let already_exists = query_service_state(&self.service_name).is_ok();
+
+            if already_exists {
+                let config_args = vec![
+                    "config".to_string(),
+                    self.service_name.clone(),
+                    format!("binPath= \"{}\"", self.binary_path),
+                    "start= auto".to_string(),
+                ];
+                run_sc(&config_args).map_err(|err| map_sc_error("install", &err))?;
+            } else {
+                let create_args = vec![
+                    "create".to_string(),
+                    self.service_name.clone(),
+                    format!("binPath= \"{}\"", self.binary_path),
+                    "start= auto".to_string(),
+                ];
+                run_sc(&create_args).map_err(|err| map_sc_error("install", &err))?;
+            }
 
             let description_args = vec![
                 "description".to_string(),
@@ -201,7 +216,6 @@ fn wait_for_state(service_name: &str, target: &str) -> Result<(), String> {
 }
 
 #[cfg(any(test, target_os = "windows"))]
-#[cfg(any(test, target_os = "windows"))]
 fn parse_sc_state(raw: &str) -> Option<String> {
     for line in raw.lines() {
         let trimmed = line.trim();
@@ -225,7 +239,6 @@ fn parse_sc_state(raw: &str) -> Option<String> {
     None
 }
 
-#[cfg(any(test, target_os = "windows"))]
 #[cfg(any(test, target_os = "windows"))]
 fn map_sc_error(operation: &str, message: &str) -> ServiceError {
     let lower = message.to_ascii_lowercase();

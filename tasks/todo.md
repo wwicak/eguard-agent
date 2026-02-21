@@ -2,11 +2,128 @@
 User https://157.10.161.219:1443/
 admin:Admin@12345 (dev temporary)
 
+## 🧭 Plan: Close residual W1/W4/W6 from Windows platform audit (2026-02-21)
+- [x] Implement protected-path enforcement in Windows quarantine flow (W1)
+- [x] Harden Windows installer integrity checks to fail closed by default (W4)
+- [x] Enforce HTTPS-by-default transport policy in Windows installer with explicit insecure override (W6)
+- [x] Add/refresh supporting tests/docs and re-run focused verification
+- [x] Refresh `docs/audit-windows-platform-report.md` to reflect latest fixed status and evidence
+
+### 🔍 Review Notes
+- Code changes:
+  - `crates/platform-windows/src/response/quarantine.rs`
+    - added canonical protected-path guard before quarantine move,
+    - retained symlink-safe path resolution,
+    - retained collision-safe suffix naming,
+    - added boundary-safe protected-path unit test (`protected_windows_prefix_matching_is_boundary_safe`).
+  - `installer/windows/install.ps1`
+    - added secure-by-default `https://` enforcement with explicit `-AllowInsecureHttp` override,
+    - added fail-closed hash policy: require `-ExpectedHash` or fetch from `/api/v1/agent-install/windows/sha256`,
+    - enforced mandatory hash validation before install,
+    - changed Authenticode policy to fail closed by default with explicit `-AllowUnsignedMsi` override.
+  - `installer/windows/README.md`
+    - updated script usage/behavior docs for integrity and transport controls.
+- Verification:
+  - `cargo test -p platform-windows` ✅ (40/40)
+  - `cargo check -p response` ✅
+  - `cargo test -p response default_windows_protected_processes_match_baseline -- --nocapture` ✅
+  - `cargo check --target x86_64-pc-windows-msvc -p platform-windows` ✅
+- Report update:
+  - `docs/audit-windows-platform-report.md` now reflects `9/9 findings fixed` with refreshed evidence pointers and no residual W1/W4/W6 gap notes.
+
+## 🧭 Plan: Recheck `docs/audit-windows-platform-report.md` (pass 2) (2026-02-21)
+- [x] Re-run focused verification for Windows report claims (platform-windows/response/windows target check)
+- [x] Re-validate each finding against latest source and confirm no drift after recent changes
+- [x] Clarify report scope boundaries vs `docs/audit-report-windows-distribution.md`
+- [x] Update report with pass-2 recheck notes and refreshed evidence where needed
+- [x] Record recheck outcome in this task entry
+
+### 🔍 Review Notes
+- Re-ran focused verification:
+  - `cargo check -p platform-windows` ✅
+  - `cargo test -p platform-windows` ✅ (39/39)
+  - `cargo check -p response` ✅
+  - `cargo test -p response default_windows_protected_processes_match_baseline -- --nocapture` ✅
+  - `cargo check --target x86_64-pc-windows-msvc -p platform-windows` ✅
+- Rechecked report accuracy against current source and found status drift in the document itself: it claimed all findings fixed, but three were only partially closed at that time.
+- Updated `docs/audit-windows-platform-report.md` with:
+  - corrected fix-status summary (`6 fixed / 3 partial`),
+  - pass-2 recheck notes,
+  - explicit scope boundary to `docs/audit-report-windows-distribution.md`,
+  - residual-gap callouts for W1/W4/W6,
+  - refreshed evidence pointers with file/line anchors.
+- Follow-up remediation pass later in the same day closed W1/W4/W6 and refreshed the report back to `9/9 fixed`.
+
+## 🧭 Plan: Validate + verify + improve `docs/audit-windows-platform-report.md` (2026-02-21)
+- [x] Re-validate each reported Windows finding (W1..W9) against current source and tests
+- [x] Run focused verification commands for Windows-related crates/scripts and capture objective evidence
+- [x] Correct inaccurate or stale report claims and add evidence-backed status per finding
+- [x] Add concise remediation notes/priority updates for still-open findings
+- [x] Record review notes and outcomes in this task entry
+
+### 🔍 Review Notes
+- Re-validated report findings against current source:
+  - `crates/platform-windows/src/response/quarantine.rs`
+  - shared `crates/response/src/lib.rs` + `crates/response/src/kill.rs`
+  - `crates/platform-windows/src/self_protect/integrity.rs`
+  - `installer/windows/install.ps1`
+  - `crates/platform-windows/src/service/lifecycle.rs`
+  - `crates/platform-windows/src/self_protect/acl.rs`
+- Verification commands executed:
+  - `cargo check -p platform-windows` ✅
+  - `cargo test -p platform-windows` ✅ (39/39)
+  - `cargo check -p response` ✅
+  - `cargo test -p response default_windows_protected_processes_match_baseline -- --nocapture` ✅
+  - `cargo check --target x86_64-pc-windows-msvc -p platform-windows` ✅
+- Report quality fixes in `docs/audit-windows-platform-report.md`:
+  - added re-validation verdict + verification command matrix,
+  - corrected W2 wording (not a harmless short-circuit; protection can still be bypassed in current fallback path),
+  - tightened W1 collision claim to evidence-backed collision-handling gap,
+  - clarified W5 ACL-helper mention without assuming runtime call ordering,
+  - added evidence pointers (file/line anchors), updated priority table, and scope/confidence notes.
+- Environment constraint recorded: no `pwsh` available in this Linux runner, so installer behavior was validated via static code review, not live Windows execution.
+
+## 🧭 Plan: Validate + verify + correct `docs/audit-bugfix-report.md` (2026-02-21)
+- [x] Re-validate every reported fix against current source files and tests
+- [x] Re-run the report’s verification commands and capture objective outputs
+- [x] Correct inaccurate/ambiguous claims and tighten wording with evidence-backed details
+- [x] Add review notes in this task entry with what was confirmed, corrected, and any residual risk
+
+### 🔍 Review Notes
+- Re-validated all 16 reported fixes against current source files; each fix is present at the stated path.
+- Re-ran verification commands with passing results:
+  - `bash -n scripts/install-eguard-agent.sh` ✅
+  - `bash -n scripts/apply-agent-update.sh` ✅
+  - `cargo check -p response -p compliance -p platform-macos` ✅
+  - `cargo test -p response` ✅ (45/45)
+  - `cargo test -p compliance` ✅ (24/24)
+- Updated `docs/audit-bugfix-report.md` with:
+  - re-validation verdict section,
+  - wording correction for Fix #1 (config injection wording tightened),
+  - source evidence pointers with file/line references,
+  - explicit note that file line deltas are from the original patch set.
+- Residual risk: no contradictions found between report claims and current code for these 16 fixes.
+
 ## 🧭 Plan: Run full test suites until green (2026-02-21)
-- [ ] Run Rust workspace test suite in `/home/dimas/eguard-agent` (`cargo test --workspace`)
-- [ ] Run Go agent server test suite in `/home/dimas/fe_eguard/go/agent` (`go test ./...`)
-- [ ] If failures occur, fix root causes and re-run until both suites pass
-- [ ] Record verification evidence and completion notes
+- [x] Run Rust workspace test suite in `/home/dimas/eguard-agent` (`cargo test --workspace`)
+- [x] Run Go agent server test suite in `/home/dimas/fe_eguard/go/agent` (`go test ./...`)
+- [x] If failures occur, fix root causes and re-run until both suites pass
+- [x] Record verification evidence and completion notes
+
+### 🔍 Review Notes
+- First `cargo test --workspace` run failed on:
+  - `crates/agent-core/src/lifecycle/tests_pkg_contract.rs::update_script_executes_deb_and_rpm_paths_with_mocked_installers`
+  - root cause: test used short checksums (`0123456789abcdef`, `feedface`) but `scripts/apply-agent-update.sh` now enforces 64-char SHA-256 hex.
+- Fix applied:
+  - updated both test checksum fixtures to valid 64-char hex strings in `crates/agent-core/src/lifecycle/tests_pkg_contract.rs`.
+- Verification after fix:
+  - targeted: `cargo test -p agent-core --bin agent-core update_script_executes_deb_and_rpm_paths_with_mocked_installers -- --nocapture` ✅
+  - full: `cargo test --workspace` ✅
+- Go suite:
+  - initial `cd /home/dimas/fe_eguard/go/agent && go test ./...` failed at `TestCaddyConfigIncludesEndpointRoutes` due route string mismatch in `/home/dimas/fe_eguard/conf/caddy-services/api.conf.example`.
+  - fixed endpoint/agent-install/install.sh reverse_proxy targets to `{$PF_SERVICES_URL_PFAGENT_SERVER}` (contract expected by test).
+  - rerun `go test ./...` ✅.
+- Final state: Rust workspace tests and Go agent server tests are both passing.
 
 ## 🧭 Plan: Acceptance-criteria closure pass for audit fixes (2026-02-20)
 - [x] Update `ACCEPTANCE_CRITERIA.md` with explicit Windows distribution/integrity ACs for newly-implemented behavior

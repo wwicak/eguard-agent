@@ -22,10 +22,32 @@ pub fn quarantine_file(
     #[cfg(target_os = "windows")]
     {
         let source = Path::new(path);
-        if !source.exists() {
-            return Err(super::process::ResponseError::OperationFailed(format!(
-                "source path does not exist: {}",
+
+        // Use symlink_metadata to detect reparse points/symlinks without following them
+        let sym_meta = fs::symlink_metadata(source).map_err(|err| {
+            super::process::ResponseError::OperationFailed(format!(
+                "source path does not exist or is inaccessible: {}: {err}",
                 source.display()
+            ))
+        })?;
+
+        // If source is a symlink/reparse point, resolve and operate on the real target
+        let effective_source = if sym_meta.file_type().is_symlink() {
+            fs::canonicalize(source).map_err(|err| {
+                super::process::ResponseError::OperationFailed(format!(
+                    "failed resolving symlink {}: {err}",
+                    source.display()
+                ))
+            })?
+        } else {
+            source.to_path_buf()
+        };
+
+        let canonical_effective = fs::canonicalize(&effective_source).unwrap_or(effective_source.clone());
+        if is_protected_windows_path(&canonical_effective) {
+            return Err(super::process::ResponseError::OperationFailed(format!(
+                "refusing to quarantine protected path {}",
+                canonical_effective.display()
             )));
         }
 
@@ -41,27 +63,39 @@ pub fn quarantine_file(
             ))
         })?;
 
-        let file_name = source
+        let file_name = effective_source
             .file_name()
             .map(|name| name.to_string_lossy().to_string())
             .ok_or_else(|| {
                 super::process::ResponseError::OperationFailed(format!(
                     "invalid source path {}",
-                    source.display()
+                    effective_source.display()
                 ))
             })?;
 
-        let target = bucket.join(file_name);
-        fs::rename(source, &target).map_err(|err| {
+        // Collision-safe target: append counter suffix if name already exists
+        let mut target = bucket.join(&file_name);
+        if target.exists() {
+            for i in 1u32..=999 {
+                let suffixed = format!("{file_name}.{i}");
+                let candidate = bucket.join(&suffixed);
+                if !candidate.exists() {
+                    target = candidate;
+                    break;
+                }
+            }
+        }
+
+        fs::rename(&effective_source, &target).map_err(|err| {
             super::process::ResponseError::OperationFailed(format!(
                 "failed moving {} to {}: {err}",
-                source.display(),
+                effective_source.display(),
                 target.display()
             ))
         })?;
 
         let metadata = QuarantineMetadata {
-            original_path: source.to_string_lossy().to_string(),
+            original_path: effective_source.to_string_lossy().to_string(),
             quarantined_at_unix: stamp,
         };
         write_quarantine_metadata(&target, &metadata)?;
@@ -118,6 +152,32 @@ pub fn restore_file(
     }
 }
 
+#[cfg(any(test, target_os = "windows"))]
+fn normalize_windows_path_text(raw: &str) -> String {
+    raw.replace('/', "\\")
+        .trim_end_matches('\\')
+        .to_ascii_lowercase()
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn is_protected_windows_path_text(raw: &str) -> bool {
+    let normalized = normalize_windows_path_text(raw);
+    const PROTECTED_PREFIXES: [&str; 3] = [
+        r"c:\windows\system32",
+        r"c:\windows\syswow64",
+        r"c:\programdata\eguard",
+    ];
+
+    PROTECTED_PREFIXES.iter().any(|prefix| {
+        normalized == *prefix || normalized.starts_with(&format!("{prefix}\\"))
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn is_protected_windows_path(path: &Path) -> bool {
+    is_protected_windows_path_text(path.to_string_lossy().as_ref())
+}
+
 #[cfg(target_os = "windows")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct QuarantineMetadata {
@@ -154,4 +214,25 @@ fn write_quarantine_metadata(
             metadata_path.display()
         ))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_protected_windows_path_text;
+
+    #[test]
+    fn protected_windows_prefix_matching_is_boundary_safe() {
+        assert!(is_protected_windows_path_text(
+            r"C:\Windows\System32\kernel32.dll"
+        ));
+        assert!(is_protected_windows_path_text(
+            r"C:\ProgramData\eGuard\bootstrap.conf"
+        ));
+        assert!(!is_protected_windows_path_text(
+            r"C:\Windows\System32evil\payload.exe"
+        ));
+        assert!(!is_protected_windows_path_text(
+            r"C:\Users\Public\sample.exe"
+        ));
+    }
 }
