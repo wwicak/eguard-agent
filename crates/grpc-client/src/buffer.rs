@@ -85,11 +85,23 @@ impl SqliteBuffer {
                 fs::create_dir_all(parent).with_context(|| {
                     format!("failed creating sqlite parent dir {}", parent.display())
                 })?;
+
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+                }
             }
         }
 
         let conn = Connection::open(path)
             .with_context(|| format!("failed opening sqlite buffer {}", path))?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+        }
         conn.execute_batch(
             "
             PRAGMA journal_mode=WAL;

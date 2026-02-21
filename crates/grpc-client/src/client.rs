@@ -2,11 +2,13 @@ use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use reqwest::{Certificate as HttpCertificate, Client as HttpClient, Identity as HttpIdentity};
+use reqwest::{
+    Certificate as HttpCertificate, Client as HttpClient, Identity as HttpIdentity, Url as HttpUrl,
+};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use tokio::time::sleep;
@@ -33,6 +35,7 @@ pub(crate) const MAX_GRPC_RECV_MSG_SIZE_BYTES: usize = 16 << 20;
 const TLS_PINNED_CA_SHA256_ENV: &str = "EGUARD_TLS_PINNED_CA_SHA256";
 const TLS_CA_PIN_PATH_ENV: &str = "EGUARD_TLS_CA_PIN_PATH";
 const TLS_BOOTSTRAP_PIN_ON_FIRST_USE_ENV: &str = "EGUARD_TLS_BOOTSTRAP_PIN_ON_FIRST_USE";
+const ALLOW_EXTERNAL_BUNDLE_URLS_ENV: &str = "EGUARD_ALLOW_EXTERNAL_BUNDLE_URLS";
 
 #[derive(Debug, Clone)]
 pub struct Client {
@@ -45,6 +48,7 @@ pub struct Client {
     tls: Option<TlsConfig>,
     http: HttpClient,
     grpc_reporting_force_http: Arc<AtomicBool>,
+    grpc_channel_cache: Arc<Mutex<Option<Channel>>>,
     #[cfg(test)]
     grpc_channel_override: Option<Channel>,
 }
@@ -66,6 +70,7 @@ impl Client {
             http: Self::build_http_client(None)
                 .expect("default HTTP client construction should not fail"),
             grpc_reporting_force_http: Arc::new(AtomicBool::new(false)),
+            grpc_channel_cache: Arc::new(Mutex::new(None)),
             #[cfg(test)]
             grpc_channel_override: None,
         }
@@ -103,6 +108,9 @@ impl Client {
         self.tls = Some(cfg);
         self.grpc_reporting_force_http
             .store(false, Ordering::Relaxed);
+        if let Ok(mut cached) = self.grpc_channel_cache.lock() {
+            *cached = None;
+        }
         Ok(())
     }
 
@@ -471,6 +479,24 @@ impl Client {
         }
 
         if bundle_ref.starts_with("http://") || bundle_ref.starts_with("https://") {
+            if !allow_external_bundle_urls() {
+                let bundle_url = HttpUrl::parse(bundle_ref)
+                    .with_context(|| format!("invalid absolute bundle URL '{}'", bundle_ref))?;
+                let server_url = HttpUrl::parse(&self.url_for_base()).with_context(|| {
+                    format!("invalid server base URL '{}'", self.url_for_base())
+                })?;
+
+                let same_host = bundle_url.host_str() == server_url.host_str()
+                    && bundle_url.port_or_known_default() == server_url.port_or_known_default();
+                if !same_host {
+                    anyhow::bail!(
+                        "external bundle URL '{}' is not allowed by default; set {}=1 to allow",
+                        bundle_ref,
+                        ALLOW_EXTERNAL_BUNDLE_URLS_ENV
+                    );
+                }
+            }
+
             return Ok(bundle_ref.to_string());
         }
 
@@ -624,11 +650,23 @@ impl Client {
             return Ok(channel.clone());
         }
 
+        if let Ok(cached) = self.grpc_channel_cache.lock() {
+            if let Some(channel) = cached.as_ref() {
+                return Ok(channel.clone());
+            }
+        }
+
         let endpoint = self.grpc_endpoint()?;
-        endpoint
+        let channel = endpoint
             .connect()
             .await
-            .context("failed connecting gRPC channel")
+            .context("failed connecting gRPC channel")?;
+
+        if let Ok(mut cached) = self.grpc_channel_cache.lock() {
+            *cached = Some(channel.clone());
+        }
+
+        Ok(channel)
     }
 
     async fn with_retry<T, F, Fut>(&self, operation_name: &'static str, mut op: F) -> Result<T>
@@ -719,6 +757,18 @@ fn default_agent_version() -> String {
 
 fn allow_tofu_pin_bootstrap() -> bool {
     std::env::var(TLS_BOOTSTRAP_PIN_ON_FIRST_USE_ENV)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn allow_external_bundle_urls() -> bool {
+    std::env::var(ALLOW_EXTERNAL_BUNDLE_URLS_ENV)
         .ok()
         .map(|value| {
             matches!(

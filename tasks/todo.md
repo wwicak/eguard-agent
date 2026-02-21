@@ -2,6 +2,14 @@
 User https://157.10.161.219:1443/
 admin:Admin@12345 (dev temporary)
 
+## 🧭 Plan: Verify + validate + remediate findings from `docs/eguard-agent-macos-audit.md` (2026-02-20)
+- [ ] Re-validate each **Remaining Issues** finding (H-1..H-7, M-1..M-7) against current Rust + Go + installer/frontend code to separate true positives vs stale findings
+- [ ] Implement high-severity remediations that are still valid (prioritize H-4/H-2/H-7/H-1, then other highs as feasible)
+- [ ] Add/adjust focused tests for touched logic (Rust unit/integration + Go server tests where applicable)
+- [ ] Run verification commands (`cargo check/test` for touched crates, targeted `go test`, script lint) and capture objective evidence
+- [ ] Update `/home/dimas/fe_eguard/docs/eguard-agent-macos-audit.md` with corrected finding status (fixed vs remaining), with concrete file/line references
+- [ ] Append review notes in this task entry with what was validated, fixed, and what remains
+
 ## 🧭 Plan: Continue full-audit closure pass (P1/P2 hardening + verification) (2026-02-20)
 - [x] Fix detection `file_path_*` matching normalization gaps (case-insensitive exact/contains)
 - [x] Prevent response capture deadlock on `/proc/<pid>/fd/0` pipes via non-blocking reads
@@ -13,6 +21,10 @@ admin:Admin@12345 (dev temporary)
 - [x] Reduce compliance consistency drift (persist-first batch apply, policy assignment overwrite semantics)
 - [x] Add heartbeat timestamp sanity bounds (reject stale/future agent-supplied heartbeat times)
 - [x] Enforce minimum token strength for custom enrollment tokens (length + character-class checks)
+- [x] Restrict absolute bundle download URLs to same-origin by default (opt-in external URLs only)
+- [x] Reuse gRPC channels across RPCs (avoid fresh handshake per call)
+- [x] Improve Linux process-cache PID-reuse safety using `/proc/<pid>/stat` start-time tracking
+- [x] Add server-side threat-intel bundle signature verification support (Ed25519 public-key env)
 - [ ] Continue unresolved architecture findings (full RBAC/session auth model, remaining report items)
 
 ### 🔍 Review Notes
@@ -21,6 +33,9 @@ admin:Admin@12345 (dev temporary)
   - `crates/response/src/capture.rs` + tests: non-blocking stdin pipe reads prevent response stall.
   - `crates/grpc-client/src/client.rs` + tests: TLS CA pin bootstrap now explicit opt-in only; default is fail-closed.
   - `crates/grpc-client/src/client/client_http.rs`: bundle download now streamed with size cap guard.
+  - `crates/grpc-client/src/client.rs` + tests: absolute bundle URLs are same-origin only by default; external hosts require `EGUARD_ALLOW_EXTERNAL_BUNDLE_URLS=1`.
+  - `crates/grpc-client/src/client.rs`: gRPC channel connections are cached/reused across RPC calls; cache is reset on TLS reconfiguration.
+  - `crates/platform-linux/src/lib.rs` + tests: process-cache entries now include `/proc/<pid>/stat` start-time to avoid stale PID-reuse attribution.
   - `crates/agent-core/src/lifecycle/command_pipeline.rs`: apt payload sanitization blocks option-injection vectors.
   - `crates/agent-core/src/lifecycle/tick.rs`/`telemetry_pipeline.rs`/`runtime.rs`: batched raw-event processing with per-tick budget.
   - `crates/self-protect/src/hardening.rs`: release-safe hardening env behavior retained and covered by tests.
@@ -29,13 +44,16 @@ admin:Admin@12345 (dev temporary)
   - `compliance.go` + `persistence_compliance.go` + new `compliance_test.go`: persist-first batch behavior and policy reassignment consistency.
   - `grpc_agent_control.go` + new timestamp tests: stale/future heartbeat timestamps no longer poison liveness.
   - `enrollment_token.go` + new value tests: weak custom enrollment tokens rejected.
+  - `grpc_rule_bundle.go` + `grpc_server_test.go`: optional Ed25519 signature verification now enforced when `EGUARD_THREAT_INTEL_ED25519_PUBLIC_KEY_HEX` is configured; invalid signatures are rejected.
 - Verification highlights:
   - `cargo check -p agent-core -p detection -p response -p grpc-client -p self-protect -p platform-linux` ✅
-  - `cargo test -p grpc-client -- --nocapture` ✅ (87/87)
+  - `cargo test -p grpc-client -- --nocapture` ✅ (92/92)
   - `cargo test -p response -- --nocapture` ✅
   - `cargo test -p self-protect -- --nocapture` ✅
   - `cargo test -p agent-core -- --nocapture` ⚠️ mostly green; one pre-existing flaky env-coupled test may require isolated single-thread run
-  - `go test ./server -run 'TestSaveComplianceBatchDoesNotMutateStoreWhenPersistenceFails|TestUpdateAgentPostureFromComplianceLockedOverridesPolicyAssignment|TestSanitizeHeartbeatTimestamp|TestValidateEnrollmentTokenValue|TestTelemetryAsyncPipelineRecoversFromPanicAndDrainsPending|TestGRPCEnrollAcceptsModernRequestFieldsAndReturnsMaterial|TestAgentInstall|TestEnrollmentRejectsUnknownTokenWhenStoreIsEmpty'` ✅
+  - `cargo test -p grpc-client resolve_bundle_download_url_ -- --nocapture` ✅
+  - `cargo test -p platform-linux parse_process_start_time_ticks -- --nocapture` ✅
+  - `go test ./server -run 'TestSaveComplianceBatchDoesNotMutateStoreWhenPersistenceFails|TestUpdateAgentPostureFromComplianceLockedOverridesPolicyAssignment|TestSaveComplianceBatchStoresPerCheckRecordsInMemoryMode|TestSanitizeHeartbeatTimestamp|TestValidateEnrollmentTokenValue|TestTelemetryAsyncPipelineRecoversFromPanicAndDrainsPending|TestGRPCDownloadRuleBundle|TestGRPCEnrollAcceptsModernRequestFieldsAndReturnsMaterial|TestAgentInstall|TestEnrollmentRejectsUnknownTokenWhenStoreIsEmpty'` ✅
 
 ## 🧭 Plan: Close Windows binary-integrity gap (sha256 endpoint + installer verification) (2026-02-20)
 - [x] Add server endpoint for Windows EXE SHA256 metadata with token/version handling
@@ -126,6 +144,7 @@ admin:Admin@12345 (dev temporary)
   - CA pinning now fails closed when no explicit pin source exists.
   - Controlled bootstrap is only allowed via `EGUARD_TLS_BOOTSTRAP_PIN_ON_FIRST_USE=1`.
   - Bootstrap action is logged as warning-level.
+  - Retry policy now short-circuits non-retryable transport failures (`INVALID_ARGUMENT`, `UNAUTHENTICATED`, `ALREADY_EXISTS`, selected HTTP 4xx/auth errors) while preserving retries for transient errors.
 - grpc-client tests (`crates/grpc-client/src/client/tests.rs`):
   - Added mutex serialization for TLS bootstrap env-var tests.
   - Updated tests to assert default rejection without pin, explicit bootstrap behavior, explicit pin-path bootstrap, and stable invalid-material path.
@@ -148,6 +167,7 @@ admin:Admin@12345 (dev temporary)
   - Rust: `cargo check -p agent-core -p grpc-client -p self-protect` ✅
   - Rust: `cargo test -p grpc-client configure_tls_ -- --nocapture` ✅
   - Rust: `cargo test -p grpc-client enroll_grpc_ -- --nocapture` ✅
+  - Rust: `cargo test -p grpc-client with_retry_ -- --nocapture` ✅
   - Rust: `cargo test -p grpc-client -- --nocapture` ✅
   - Rust: `cargo test -p agent-core sanitize_apt_package_ -- --nocapture` ✅
   - Rust: `cargo test -p self-protect -- --nocapture` ✅
@@ -221,12 +241,14 @@ admin:Admin@12345 (dev temporary)
     - `go test ./agent/server -run 'TestSaveTelemetryAppliesInMemoryCap|TestSaveResponseAppliesInMemoryCap'` ✅
     - `go test ./agent/server -run 'TestHTTPEnrollmentHeartbeatTelemetryCommandFlow|TestGRPCEnrollmentHeartbeatTelemetryCommandFlow|TestResponseHandlerPreservesTargetDetailAndDetectionLayers'` ✅
 - Additional hardening completed in follow-up pass (same audit scope):
-  - `agent-core/src/lifecycle/command_pipeline.rs`: added strict `apt` package/version sanitization to block option-injection vectors (`AC-2`).
+  - `agent-core/src/lifecycle/command_pipeline.rs`: added strict `apt` package/version sanitization to block option-injection vectors (`AC-2`) and switched wipe/profile/retire paths to platform-aware agent data-dir resolution (`AC-7`).
   - `detection/src/layer2/predicate.rs`: fixed `file_path_any_of` case-insensitive exact matching (`DRC-1`) and added regression coverage.
   - `response/src/capture.rs`: switched stdin pipe capture to non-blocking reads to prevent deadlock (`DRC-8`) + added pipe-open regression test.
   - `grpc-client/src/client.rs` + tests: TOFU is now disabled by default; explicit one-time bootstrap env gate required (`SG-1`).
   - `grpc-client/src/client/client_http.rs`: bundle downloads now enforce max-size streaming cap (`EGUARD_MAX_BUNDLE_DOWNLOAD_BYTES`, default 64 MiB) (`SG-3`).
+  - `grpc-client/src/buffer.rs`: sqlite offline buffer now forces private file perms on unix (`0600`) with regression coverage (`SG-15`).
   - `agent-core/src/lifecycle/telemetry_pipeline.rs`: queued sampled polled events so one tick no longer drops the remaining batch (`AC-11`) + replay regression test.
+  - `agent-core/src/lifecycle/timing.rs`: backward wall-clock steps no longer trigger immediate interval execution storms (`AC-8`).
   - `agent-core/src/lifecycle/enrollment.rs`: runtime snapshot no longer persists `enrollment_token` and writes temp config with private perms (`0600` on unix) (`AC-3`, `AC-13`).
   - `agent-core/src/config/crypto.rs`: upgraded encrypted-config key derivation to include machine-id + optional TPM material + local private seed file (`EGUARD_CONFIG_KEY_SEED_PATH`, auto-created) with legacy decrypt fallback (`AC-6`).
   - `agent-core/src/config/util.rs`: removed static `agent-dev-1` fallback; now derives stable host identity from hostname/machine-id/pid fallback chain (`AC-14`).
@@ -2844,3 +2866,38 @@ admin:Admin@12345 (dev temporary)
 - [ ] Execute malware-detection validation tied to bundle ingestion path (bundle-backed detection test selectors) and record results.
 - [ ] If regressions appear, implement fixes + retest; otherwise document evidence and pass/fail matrix.
 - [ ] Update docs/notes and OpenAPI only if API contracts changed.
+
+## 🧭 Plan: Verify + validate `docs/full-audit-report.md` (2026-02-20)
+- [x] Read the entire report and extract all current claims/findings requiring evidence.
+- [x] Cross-validate high-impact claims against repository code/tests/artifacts (and mark any stale/overstated items).
+- [x] Run targeted verification commands for representative critical paths referenced in the report.
+- [x] Update `docs/full-audit-report.md` with evidence-backed corrections, status adjustments, and explicit residual risks.
+- [x] Add review notes + command evidence to `tasks/todo.md`.
+
+### 🔍 Review Notes
+- Re-read `docs/full-audit-report.md` fully (all sections) and validated representative high-risk findings against live source in:
+  - `eguard-agent` (Rust)
+  - `/home/dimas/fe_eguard/go/agent/server` (Go)
+- Updated report with a **Validation Addendum** to prevent stale interpretation of initial 81-finding baseline as current runtime truth.
+- Added explicit status partitioning in the report:
+  - verified resolved,
+  - partially mitigated,
+  - still open.
+- Confirmed key unresolved findings still exist and should remain tracked: `AC-5`, `AC-10`, `AC-11`, `AC-15`, `DRC-2`, `DRC-3`, `PL-2`, `PL-6`, `PL-8`.
+- Command evidence captured during validation:
+  - Rust:
+    - `cargo test -p agent-core sanitize_profile_id_rejects_path_traversal_sequences -- --nocapture`
+    - `cargo test -p agent-core sanitize_apt_package_ -- --nocapture`
+    - `cargo test -p detection sigma_yaml_file_path_predicate_compiles_and_fires -- --nocapture`
+    - `cargo test -p response nonblocking_pipe_capture_returns_without_blocking_when_writer_is_open -- --nocapture`
+    - `cargo test -p grpc-client configure_tls_rejects_missing_pin_by_default -- --nocapture`
+    - `cargo test -p grpc-client send_events_grpc_clears_forced_http_fallback_after_successful_grpc_retry -- --nocapture`
+    - `cargo test -p platform-linux parses_structured_tcp_connect_payload -- --nocapture`
+    - `cargo test -p platform-linux parse_process_start_time_ticks_extracts_field_22_from_proc_stat -- --nocapture`
+    - `cargo test -p agent-core evaluate_tick_drains_polled_replay_events_across_multiple_ticks -- --nocapture`
+  - Go:
+    - `go test ./server -run 'TestDecodeJSON|TestEnrollmentRejectsUnknownTokenWhenStoreIsEmpty' -count=1`
+    - `go test ./server -run 'TestHTTPAdminEndpointRequiresAdminTokenWhenAuthEnforced|TestHTTPAgentEndpointRequiresAgentTokenWhenAuthEnforced|TestHTTPCommandApproveUsesAuthenticatedPrincipalWhenAuthEnforced|TestGRPCHeartbeatRequiresAgentTokenWhenAuthEnforced' -count=1`
+    - `go test ./server -run 'TestTelemetryAsyncPipelineWaitDoesNotStallAfterWorkerPanic|TestSaveTelemetryAppliesInMemoryCap|TestSaveResponseAppliesInMemoryCap' -count=1`
+    - `go test ./server -run 'TestSanitizeHeartbeatTimestamp|TestValidateEnrollmentTokenValue' -count=1`
+    - `go test ./server -run 'TestSaveComplianceBatchDoesNotMutateStoreWhenPersistenceFails|TestSaveComplianceBatchStoresPerCheckRecordsInMemoryMode|TestUpdateAgentPostureFromComplianceLockedOverridesPolicyAssignment' -count=1`

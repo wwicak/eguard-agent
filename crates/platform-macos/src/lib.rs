@@ -208,6 +208,8 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
         .file_path
         .or_else(|| matches!(raw.event_type, EventType::ModuleLoad).then(|| raw.payload.clone()));
 
+    let file_sha256 = file_path.as_deref().and_then(|p| cache.hash_for_path(p));
+
     // macOS does not use containers in the same way as Linux.
     EnrichedEvent {
         event: raw,
@@ -219,7 +221,7 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
         file_path,
         file_path_secondary: payload_meta.file_path_secondary,
         file_write: payload_meta.file_write,
-        file_sha256: None,
+        file_sha256,
         event_size: payload_meta.event_size,
         dst_ip: payload_meta.dst_ip,
         dst_port: payload_meta.dst_port,
@@ -375,10 +377,11 @@ fn parse_file_write_flags(flags: Option<&String>, mode: Option<&String>) -> bool
         .and_then(|value| value.parse::<u32>().ok())
         .unwrap_or(0);
 
-    const O_WRONLY: u32 = 1;
-    const O_RDWR: u32 = 2;
-    const O_CREAT: u32 = 0x40;
-    const O_TRUNC: u32 = 0x200;
+    const O_WRONLY: u32 = 0x0001;
+    const O_RDWR: u32 = 0x0002;
+    // macOS (BSD) values from <sys/fcntl.h>; differ from Linux.
+    const O_CREAT: u32 = 0x0200;
+    const O_TRUNC: u32 = 0x0400;
 
     let write_intent = (flags_val & O_WRONLY) != 0 || (flags_val & O_RDWR) != 0;
     let destructive = (flags_val & O_TRUNC) != 0 || (flags_val & O_CREAT) != 0;

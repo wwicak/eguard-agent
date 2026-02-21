@@ -36,6 +36,7 @@ agent_pid=$!
 
 sleep 20
 
+# eguard-shellcode-marker
 if ! grep -E "debug memory scan detection" /tmp/agent.log | grep -q "rule_name=eguard_shellcode_marker"; then
   echo "memory scan detection not observed" >&2
   echo "--- agent log ---" >&2

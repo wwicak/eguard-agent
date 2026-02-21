@@ -128,6 +128,34 @@ impl ProtectedList {
         }
     }
 
+    pub fn default_windows() -> Self {
+        let process_patterns = [
+            "^System",
+            "csrss",
+            "wininit",
+            "winlogon",
+            "services",
+            "lsass",
+            "svchost",
+            "smss",
+            "eguard-agent",
+        ]
+        .into_iter()
+        .map(compile_process_pattern)
+        .collect();
+
+        let protected_paths = vec![
+            PathBuf::from(r"C:\Windows\System32"),
+            PathBuf::from(r"C:\Windows\SysWOW64"),
+            PathBuf::from(r"C:\ProgramData\eGuard"),
+        ];
+
+        Self {
+            process_patterns,
+            protected_paths,
+        }
+    }
+
     pub fn default_macos() -> Self {
         let process_patterns = [
             "^launchd",

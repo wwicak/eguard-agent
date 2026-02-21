@@ -4,19 +4,19 @@
 
 /// Resolve a UID to a username via POSIX getpwuid_r() (thread-safe).
 pub fn resolve_uid_to_username(uid: u32) -> Option<String> {
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
     {
-        resolve_uid_unix(uid)
+        resolve_uid_macos(uid)
     }
-    #[cfg(not(unix))]
+    #[cfg(not(target_os = "macos"))]
     {
         let _ = uid;
         None
     }
 }
 
-#[cfg(unix)]
-fn resolve_uid_unix(uid: u32) -> Option<String> {
+#[cfg(target_os = "macos")]
+fn resolve_uid_macos(uid: u32) -> Option<String> {
     let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
     let mut result: *mut libc::passwd = std::ptr::null_mut();
     let mut buf = vec![0u8; 1024];

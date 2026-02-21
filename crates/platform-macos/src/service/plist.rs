@@ -1,9 +1,5 @@
 //! LaunchDaemon plist generation.
 
-const DEFAULT_LABEL: &str = "com.eguard.agent";
-const DEFAULT_BINARY_PATH: &str = "/usr/local/bin/eguard-agent";
-const DEFAULT_PLIST_PATH: &str = "/Library/LaunchDaemons/com.eguard.agent.plist";
-
 /// Escape a string for safe interpolation into XML `<string>` elements.
 fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;")
@@ -49,19 +45,11 @@ pub fn generate_plist(label: &str, binary_path: &str) -> String {
     )
 }
 
-/// Generate a plist with default settings.
-pub fn generate_default_plist() -> String {
-    generate_plist(DEFAULT_LABEL, DEFAULT_BINARY_PATH)
-}
-
-/// Default plist installation path.
-pub fn default_plist_path() -> &'static str {
-    DEFAULT_PLIST_PATH
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{generate_plist, DEFAULT_LABEL};
+    use super::generate_plist;
+
+    const DEFAULT_LABEL: &str = "com.eguard.agent";
 
     #[test]
     fn generated_plist_contains_label() {

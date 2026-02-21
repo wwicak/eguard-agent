@@ -49,7 +49,12 @@ pub(super) fn resolve_detection_shard_count() -> usize {
 pub(super) fn interval_due(last_run_unix: Option<i64>, now_unix: i64, interval_secs: i64) -> bool {
     match last_run_unix {
         None => true,
-        Some(last) => now_unix < last || now_unix.saturating_sub(last) >= interval_secs,
+        Some(last) => {
+            if now_unix < last {
+                return false;
+            }
+            now_unix.saturating_sub(last) >= interval_secs
+        }
     }
 }
 

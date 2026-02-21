@@ -163,3 +163,23 @@ fn descendant_cycle_does_not_rekill_target_pid() {
         1
     );
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn procfs_introspector_prefers_proc_exe_basename_when_available() {
+    let introspector = ProcfsIntrospector;
+    let expected = std::env::current_exe()
+        .ok()
+        .and_then(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(|s| s.to_string())
+        })
+        .expect("current executable basename");
+
+    let observed = introspector
+        .process_name(std::process::id())
+        .expect("process name from procfs");
+
+    assert_eq!(observed, expected);
+}

@@ -325,7 +325,7 @@ fn docker_compose_harness_and_container_images_match_test_contract() {
     let runtime_lines = non_comment_lines(&docker_runtime);
     assert_eq!(
         runtime_lines.first().map(String::as_str),
-        Some("FROM rust:1.78-bookworm AS builder")
+        Some("FROM rust:1.88-bookworm AS builder")
     );
     assert!(
         runtime_lines.iter().any(|line| {
@@ -362,7 +362,7 @@ fn docker_compose_harness_and_container_images_match_test_contract() {
     let agent_lines = non_comment_lines(&docker_agent);
     assert_eq!(
         agent_lines.first().map(String::as_str),
-        Some("FROM rust:1.78-bookworm AS builder")
+        Some("FROM rust:1.88-bookworm AS builder")
     );
     assert!(agent_lines
         .iter()

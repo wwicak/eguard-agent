@@ -446,13 +446,14 @@ fn deny_attach() -> Result<(), String> {
     const PT_DENY_ATTACH: libc::c_int = 31;
     let ret = unsafe { libc::ptrace(PT_DENY_ATTACH, 0, std::ptr::null_mut::<libc::c_char>(), 0) };
     if ret == 0 {
-        Ok(())
-    } else {
-        Err(format!(
-            "PT_DENY_ATTACH failed: {}",
-            std::io::Error::last_os_error()
-        ))
+        return Ok(());
     }
+    // ENOTSUP (errno 45) means PT_DENY_ATTACH was already set (e.g. agent restart).
+    let err = std::io::Error::last_os_error();
+    if err.raw_os_error() == Some(45) {
+        return Ok(());
+    }
+    Err(format!("PT_DENY_ATTACH failed: {}", err))
 }
 
 fn env_bool_debug_only(name: &str, default: bool) -> bool {

@@ -87,19 +87,31 @@ pub fn detect_debugger(config: &DebuggerCheckConfig) -> DebuggerObservation {
     let mut signals = Vec::new();
 
     if config.enable_tracer_pid_probe {
-        match std::fs::read_to_string("/proc/self/status") {
-            Ok(status) => {
-                if let Some(tracer_pid) = parse_tracer_pid(&status) {
-                    if tracer_pid > 0 {
-                        signals.push(DebuggerSignal::TracerPidDetected { tracer_pid });
+        #[cfg(target_os = "linux")]
+        {
+            match std::fs::read_to_string("/proc/self/status") {
+                Ok(status) => {
+                    if let Some(tracer_pid) = parse_tracer_pid(&status) {
+                        if tracer_pid > 0 {
+                            signals.push(DebuggerSignal::TracerPidDetected { tracer_pid });
+                        }
                     }
                 }
+                Err(err) => {
+                    signals.push(DebuggerSignal::ProbeError {
+                        probe: "tracer_pid",
+                        detail: err.to_string(),
+                    });
+                }
             }
-            Err(err) => {
-                signals.push(DebuggerSignal::ProbeError {
-                    probe: "tracer_pid",
-                    detail: err.to_string(),
-                });
+        }
+        #[cfg(target_os = "macos")]
+        {
+            // On macOS, check the P_TRACED flag via sysctl instead of /proc.
+            if let Some(traced) = detect_tracer_macos() {
+                if traced {
+                    signals.push(DebuggerSignal::TracerPidDetected { tracer_pid: 1 });
+                }
             }
         }
     }
@@ -165,6 +177,37 @@ fn read_tsc() -> u64 {
 fn read_tsc() -> u64 {
     // SAFETY: reading the processor cycle counter has no memory safety implications.
     unsafe { core::arch::x86::_rdtsc() }
+}
+
+/// Detect debugger on macOS via sysctl P_TRACED flag.
+#[cfg(target_os = "macos")]
+fn detect_tracer_macos() -> Option<bool> {
+    use std::mem;
+    use std::ptr;
+
+    const P_TRACED: i32 = 0x00000800;
+
+    let pid = unsafe { libc::getpid() };
+    let mut mib: [libc::c_int; 4] = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_PID, pid];
+    let mut info: libc::kinfo_proc = unsafe { mem::zeroed() };
+    let mut size = mem::size_of::<libc::kinfo_proc>();
+
+    let ret = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            4,
+            &mut info as *mut _ as *mut libc::c_void,
+            &mut size,
+            ptr::null_mut(),
+            0,
+        )
+    };
+
+    if ret != 0 || size == 0 {
+        return None;
+    }
+
+    Some((info.kp_proc.p_flag & P_TRACED) != 0)
 }
 
 fn env_u64(name: &str, default: u64) -> u64 {

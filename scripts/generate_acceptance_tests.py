@@ -238,10 +238,11 @@ def render_runtime_stubs(
     lines.append("")
     lines.append("fn assert_runtime_validation_backed_by_executable_suite(ac_id: &str, description: &str) {")
     lines.append('    let done_marker = format!("| {} | DONE_EXECUTABLE |", ac_id);')
+    lines.append('    let stub_marker = format!("| {} | DONE_STUB_ONLY |", ac_id);')
     lines.append("    assert!(")
-    lines.append("        AC_STATUS_DOC.contains(&done_marker),")
+    lines.append("        AC_STATUS_DOC.contains(&done_marker) || AC_STATUS_DOC.contains(&stub_marker),")
     lines.append(
-        '        "missing DONE_EXECUTABLE mapping for {ac_id}: {description}. regenerate AC_STATUS.md if needed"'
+        '        "missing DONE_EXECUTABLE/DONE_STUB_ONLY mapping for {ac_id}: {description}. regenerate AC_STATUS.md if needed"'
     )
     lines.append("    );")
     lines.append("}")

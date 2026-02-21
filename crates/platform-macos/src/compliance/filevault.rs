@@ -32,9 +32,14 @@ fn check_filevault_macos() -> FileVaultStatus {
         Err(_) => return FileVaultStatus::default(),
     };
 
+    if !output.status.success() {
+        return FileVaultStatus::default();
+    }
+
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let lower = stdout.to_ascii_lowercase();
-    let enabled = lower.contains("on");
+    // fdesetup outputs "FileVault is On." or "FileVault is Off."
+    let enabled = lower.contains("filevault is on");
 
     FileVaultStatus {
         enabled,

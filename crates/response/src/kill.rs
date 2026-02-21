@@ -49,6 +49,15 @@ impl ProcessIntrospector for ProcfsIntrospector {
     }
 
     fn process_name(&self, pid: u32) -> Option<String> {
+        if let Ok(path) = fs::read_link(format!("/proc/{}/exe", pid)) {
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                let trimmed = name.trim().trim_end_matches(" (deleted)");
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+
         let comm = fs::read_to_string(format!("/proc/{}/comm", pid)).ok()?;
         let name = comm.trim();
         if name.is_empty() {
@@ -126,7 +135,9 @@ fn build_process_maps() -> (
 
     // Add extra space for processes that may appear between calls.
     size += size / 10;
-    let mut buf: Vec<u8> = vec![0u8; size];
+    let kinfo_size = mem::size_of::<libc::kinfo_proc>();
+    let count = size / kinfo_size;
+    let mut buf: Vec<libc::kinfo_proc> = vec![unsafe { mem::zeroed() }; count];
 
     let ret = unsafe {
         libc::sysctl(
@@ -142,15 +153,9 @@ fn build_process_maps() -> (
         return (children_map, name_map);
     }
 
-    let kinfo_size = mem::size_of::<libc::kinfo_proc>();
-    let count = size / kinfo_size;
+    let actual_count = size / kinfo_size;
 
-    for i in 0..count {
-        let offset = i * kinfo_size;
-        if offset + kinfo_size > buf.len() {
-            break;
-        }
-        let kinfo = unsafe { &*(buf.as_ptr().add(offset) as *const libc::kinfo_proc) };
+    for kinfo in &buf[..actual_count] {
         let ppid = kinfo.kp_eproc.e_ppid as u32;
         let pid = kinfo.kp_proc.p_pid as u32;
 

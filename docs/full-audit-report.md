@@ -8,6 +8,8 @@
 
 ## Executive Summary
 
+> **Important**: the counts below are the **initial baseline snapshot** from the first full audit pass. They are not the current post-remediation live status.
+
 | Severity | Count | Description |
 |----------|-------|-------------|
 | CRITICAL | 15 | Production blockers, RCE vectors, authentication bypass |
@@ -16,12 +18,49 @@
 | MODERATE | 9 | Edge cases, false positives, minor correctness issues |
 | **Total** | **81** | |
 
-**Top 5 systemic themes:**
+**Top 5 systemic themes (baseline):**
 1. **No authentication on the server** — all HTTP/gRPC endpoints are fully open (3 findings across EDR+MDM audits)
 2. **TLS/mTLS not enforced** — HTTP client ignores configured TLS, gRPC fallback strips mTLS, TOFU CA pinning
 3. **Input validation gaps** — path traversal, command injection, template injection, TOML injection across agent+server
 4. **In-memory mode fragility** — unbounded growth, TOCTOU races, dropped data, token bypass when DB is absent
 5. **Platform stubs masking security gaps** — Windows anti-debug is env-var-only, quarantine doesn't restrict reads, file hash cache never invalidated
+
+### Validation Addendum (2026-02-20, post-remediation verification)
+
+Validated against current code + targeted tests in both repos (`eguard-agent`, `fe_eguard`).
+
+**Verified resolved (sampled high-impact findings):**
+- Rust agent: `AC-1`, `AC-2`, `AC-3`, `AC-4`, `AC-6`, `AC-7`, `AC-8`, `AC-9`, `AC-12`, `AC-13`, `AC-14`
+- Detection/response: `DRC-1`, `DRC-8`
+- Platform Linux: `PL-1`, `PL-3`, `PL-4`
+- gRPC/TLS/client: `SG-1`, `SG-2`, `SG-9`, `SG-12`, `SG-15`
+- Go server: `EDR-1`, `EDR-2`, `EDR-6`, `EDR-7`, `EDR-11`, `MDM-2`, `MDM-3`, `MDM-5`, `MDM-8`
+
+**Partially mitigated (not full closure yet):**
+- `EDR-3` / `MDM-1`: token-based HTTP/gRPC auth middleware/interceptors now exist, but full JWT/session RBAC model remains pending.
+- `EDR-4`: `approved_by` now binds to authenticated principal when auth enforced; weaker fallback behavior remains when auth is disabled/permissive.
+- `EDR-8` / `MDM-4` / `EDR-10`: command/response routes are auth-gated, but still rely on shared agent-token model (no per-agent cryptographic identity binding yet).
+- `EDR-13`: server-side Ed25519 bundle verification is enforced when verification key env is configured.
+- `SG-3`: bundle download size cap + same-origin default are in place; end-to-end client-side digest/signature validation is still incomplete.
+
+**Still open (confirmed):**
+- `AC-5`, `AC-10`, `AC-11`, `AC-15`, `DRC-2`, `DRC-3`, `PL-2`, `PL-6`, `PL-8`.
+
+**Verification commands run (representative):**
+- Rust:
+  - `cargo test -p agent-core sanitize_profile_id_rejects_path_traversal_sequences -- --nocapture`
+  - `cargo test -p agent-core sanitize_apt_package_ -- --nocapture`
+  - `cargo test -p detection sigma_yaml_file_path_predicate_compiles_and_fires -- --nocapture`
+  - `cargo test -p response nonblocking_pipe_capture_returns_without_blocking_when_writer_is_open -- --nocapture`
+  - `cargo test -p grpc-client configure_tls_rejects_missing_pin_by_default -- --nocapture`
+  - `cargo test -p grpc-client send_events_grpc_clears_forced_http_fallback_after_successful_grpc_retry -- --nocapture`
+  - `cargo test -p platform-linux parses_structured_tcp_connect_payload -- --nocapture`
+- Go:
+  - `go test ./server -run 'TestDecodeJSON|TestEnrollmentRejectsUnknownTokenWhenStoreIsEmpty' -count=1`
+  - `go test ./server -run 'TestHTTPAdminEndpointRequiresAdminTokenWhenAuthEnforced|TestHTTPAgentEndpointRequiresAgentTokenWhenAuthEnforced|TestHTTPCommandApproveUsesAuthenticatedPrincipalWhenAuthEnforced|TestGRPCHeartbeatRequiresAgentTokenWhenAuthEnforced' -count=1`
+  - `go test ./server -run 'TestTelemetryAsyncPipelineWaitDoesNotStallAfterWorkerPanic|TestSaveTelemetryAppliesInMemoryCap|TestSaveResponseAppliesInMemoryCap' -count=1`
+  - `go test ./server -run 'TestSanitizeHeartbeatTimestamp|TestValidateEnrollmentTokenValue' -count=1`
+  - `go test ./server -run 'TestSaveComplianceBatchDoesNotMutateStoreWhenPersistenceFails|TestSaveComplianceBatchStoresPerCheckRecordsInMemoryMode|TestUpdateAgentPostureFromComplianceLockedOverridesPolicyAssignment' -count=1`
 
 ---
 

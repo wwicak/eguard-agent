@@ -5,8 +5,20 @@ use std::sync::OnceLock;
 
 const COMPILETIME_EXPECTED_SHA256: Option<&str> =
     option_env!("EGUARD_SELF_PROTECT_EXPECTED_SHA256");
+#[cfg(target_os = "linux")]
 const DEFAULT_RUNTIME_INTEGRITY_PATHS: [&str; 1] = ["/proc/self/exe"];
+#[cfg(target_os = "macos")]
+const DEFAULT_RUNTIME_INTEGRITY_PATHS: [&str; 1] = ["/usr/local/bin/eguard-agent"];
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+const DEFAULT_RUNTIME_INTEGRITY_PATHS: [&str; 0] = [];
+
+#[cfg(target_os = "linux")]
 const DEFAULT_RUNTIME_CONFIG_PATHS: [&str; 1] = ["/etc/eguard-agent/agent.conf"];
+#[cfg(target_os = "macos")]
+const DEFAULT_RUNTIME_CONFIG_PATHS: [&str; 1] =
+    ["/Library/Application Support/eGuard/agent.conf"];
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+const DEFAULT_RUNTIME_CONFIG_PATHS: [&str; 0] = [];
 
 pub fn default_runtime_integrity_paths() -> Vec<String> {
     DEFAULT_RUNTIME_INTEGRITY_PATHS

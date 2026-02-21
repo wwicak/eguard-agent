@@ -313,3 +313,48 @@ fn auto_isolation_ignores_high_and_lower_confidence_events() {
         &mut state,
     ));
 }
+
+#[test]
+fn default_macos_protected_paths_match_baseline() {
+    let protected = ProtectedList::default_macos();
+
+    assert!(protected.is_protected_path(Path::new("/System/Library/Frameworks")));
+    assert!(protected.is_protected_path(Path::new("/Library/Application Support/eGuard")));
+    assert!(protected.is_protected_path(Path::new("/usr/bin/ssh")));
+    assert!(protected.is_protected_path(Path::new("/usr/sbin/sysctl")));
+    assert!(protected.is_protected_path(Path::new("/usr/lib/dyld")));
+    assert!(!protected.is_protected_path(Path::new("/tmp/sample.bin")));
+}
+
+#[test]
+fn default_macos_protected_processes_match_baseline() {
+    let protected = ProtectedList::default_macos();
+    assert!(protected.is_protected_process("launchd"));
+    assert!(protected.is_protected_process("kernel_task"));
+    assert!(protected.is_protected_process("eguard-agent"));
+    assert!(protected.is_protected_process("sshd"));
+    assert!(protected.is_protected_process("WindowServer"));
+    assert!(!protected.is_protected_process("python3"));
+}
+
+#[test]
+#[cfg(target_os = "windows")]
+fn default_windows_protected_paths_match_baseline() {
+    let protected = ProtectedList::default_windows();
+
+    assert!(protected.is_protected_path(Path::new(r"C:\Windows\System32\kernel32.dll")));
+    assert!(protected.is_protected_path(Path::new(r"C:\Windows\SysWOW64\ntdll.dll")));
+    assert!(protected.is_protected_path(Path::new(r"C:\ProgramData\eGuard\agent.conf")));
+    assert!(!protected.is_protected_path(Path::new(r"C:\Users\Public\malware.exe")));
+}
+
+#[test]
+fn default_windows_protected_processes_match_baseline() {
+    let protected = ProtectedList::default_windows();
+    assert!(protected.is_protected_process("csrss"));
+    assert!(protected.is_protected_process("lsass"));
+    assert!(protected.is_protected_process("svchost"));
+    assert!(protected.is_protected_process("eguard-agent"));
+    assert!(protected.is_protected_process("System"));
+    assert!(!protected.is_protected_process("notepad"));
+}

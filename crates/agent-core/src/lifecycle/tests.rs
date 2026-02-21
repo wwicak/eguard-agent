@@ -218,8 +218,8 @@ fn interval_due_runs_immediately_then_waits_for_threshold() {
 }
 
 #[test]
-fn interval_due_tolerates_non_monotonic_wall_clock() {
-    assert!(interval_due(Some(1_000), 900, 30));
+fn interval_due_ignores_backward_wall_clock_steps() {
+    assert!(!interval_due(Some(1_000), 900, 30));
     assert!(interval_due(Some(1_000), 1_030, 30));
 }
 

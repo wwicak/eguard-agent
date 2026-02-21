@@ -1,6 +1,6 @@
 {
   "suite": "perf_profile_gate",
-  "recorded_at_utc": "2026-02-15T22:46:48Z",
+  "recorded_at_utc": "2026-02-20T10:10:46Z",
   "status": "skipped",
   "reason": "perf_not_available",
   "require_tools": 0

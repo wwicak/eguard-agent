@@ -81,6 +81,7 @@ struct ProcessCacheEntry {
     process_cmdline: Option<String>,
     parent_process: Option<String>,
     parent_chain: Vec<u32>,
+    start_time_ticks: Option<u64>,
     last_seen_ns: u64,
 }
 
@@ -129,9 +130,16 @@ impl EnrichmentCache {
     }
 
     fn process_entry(&mut self, raw: &RawEvent) -> ProcessCacheEntry {
+        let current_start_time_ticks = read_process_start_time_ticks(raw.pid);
         if let Some(entry) = self.process_cache.get_mut(&raw.pid) {
-            entry.last_seen_ns = raw.ts_ns;
-            return entry.clone();
+            let same_process_instance = match (entry.start_time_ticks, current_start_time_ticks) {
+                (Some(cached), Some(current)) => cached == current,
+                _ => false,
+            };
+            if same_process_instance {
+                entry.last_seen_ns = raw.ts_ns;
+                return entry.clone();
+            }
         }
 
         let process_exe = fs::read_link(format!("/proc/{}/exe", raw.pid))
@@ -161,6 +169,7 @@ impl EnrichmentCache {
             process_cmdline,
             parent_process,
             parent_chain,
+            start_time_ticks: current_start_time_ticks,
             last_seen_ns: raw.ts_ns,
         };
 
@@ -347,6 +356,20 @@ fn read_process_name(pid: u32) -> Option<String> {
     } else {
         Some(name.to_string())
     }
+}
+
+fn read_process_start_time_ticks(pid: u32) -> Option<u64> {
+    let raw = fs::read_to_string(format!("/proc/{}/stat", pid)).ok()?;
+    parse_process_start_time_ticks(&raw)
+}
+
+fn parse_process_start_time_ticks(raw: &str) -> Option<u64> {
+    // /proc/<pid>/stat format: pid (comm) state ppid ... starttime ...
+    // starttime is field #22; after stripping the leading "pid (comm)",
+    // it maps to index 19 in the remaining whitespace-separated fields.
+    let rest = raw.rsplit_once(") ")?.1;
+    let fields: Vec<&str> = rest.split_whitespace().collect();
+    fields.get(19)?.parse::<u64>().ok()
 }
 
 #[derive(Debug, Default)]

@@ -10,10 +10,6 @@ use std::process::Command;
 #[cfg(target_os = "macos")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Default quarantine directory on macOS.
-#[cfg(target_os = "macos")]
-const DEFAULT_QUARANTINE_DIR: &str = "/Library/Application Support/eGuard/quarantine";
-
 /// Quarantine a file by moving it to the quarantine directory and setting
 /// the com.apple.quarantine xattr.
 ///
@@ -22,12 +18,6 @@ pub fn quarantine_file(path: &str, quarantine_dir: &str) -> Result<String, super
     #[cfg(target_os = "macos")]
     {
         let source = Path::new(path);
-        if !source.exists() {
-            return Err(super::ResponseError::OperationFailed(format!(
-                "source path does not exist: {}",
-                source.display()
-            )));
-        }
 
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)

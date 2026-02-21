@@ -36,6 +36,10 @@ fn check_firewall_macos() -> FirewallStatus {
         Err(_) => return FirewallStatus::default(),
     };
 
+    if !output.status.success() {
+        return FirewallStatus::default();
+    }
+
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let lower = stdout.to_ascii_lowercase();
     let enabled = lower.contains("enabled");

@@ -72,6 +72,12 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
 
+      - name: Verify pkg signature
+        if: env.DEVELOPER_ID_INSTALLER != ''
+        env:
+          DEVELOPER_ID_INSTALLER: ${{ secrets.MACOS_DEVELOPER_ID_INSTALLER }}
+        run: pkgutil --check-signature artifacts/macos/eguard-agent-*.pkg
+
       - name: Upload macOS artifacts to release
         uses: softprops/action-gh-release@v2
         with:

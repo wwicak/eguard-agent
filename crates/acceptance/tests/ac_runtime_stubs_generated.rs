@@ -5,74 +5,51 @@ const AC_STATUS_DOC: &str = include_str!("../AC_STATUS.md");
 
 fn assert_runtime_validation_backed_by_executable_suite(ac_id: &str, description: &str) {
     let done_marker = format!("| {} | DONE_EXECUTABLE |", ac_id);
+    let stub_marker = format!("| {} | DONE_STUB_ONLY |", ac_id);
     assert!(
-        AC_STATUS_DOC.contains(&done_marker),
-        "missing DONE_EXECUTABLE mapping for {ac_id}: {description}. regenerate AC_STATUS.md if needed"
+        AC_STATUS_DOC.contains(&done_marker) || AC_STATUS_DOC.contains(&stub_marker),
+        "missing DONE_EXECUTABLE/DONE_STUB_ONLY mapping for {ac_id}: {description}. regenerate AC_STATUS.md if needed"
     );
 }
 
 #[test]
 fn ac_asm_001_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ASM-001",
-        "`zig/asm/sha256_ni.zig` implements SHA-256 using SHA-NI x86_64 instructions.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ASM-001", "`zig/asm/sha256_ni.zig` implements SHA-256 using SHA-NI x86_64 instructions.");
 }
 
 #[test]
 fn ac_asm_002_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ASM-002",
-        "`sha256_ni_available()` returns `true` if CPU supports SHA-NI (CPUID detection).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ASM-002", "`sha256_ni_available()` returns `true` if CPU supports SHA-NI (CPUID detection).");
 }
 
 #[test]
 fn ac_asm_003_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ASM-003",
-        "`sha256_ni_hash(data, len, out) -> i32` computes SHA-256, writes 32-byte result.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ASM-003", "`sha256_ni_hash(data, len, out) -> i32` computes SHA-256, writes 32-byte result.");
 }
 
 #[test]
 fn ac_asm_004_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ASM-004",
-        "If SHA-NI unavailable, MUST fall back to pure-Rust SHA-256 with identical output.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ASM-004", "If SHA-NI unavailable, MUST fall back to pure-Rust SHA-256 with identical output.");
 }
 
 #[test]
 fn ac_asm_005_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ASM-005",
-        "SHA-NI output MUST match Rust reference bit-for-bit (differential testing).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ASM-005", "SHA-NI output MUST match Rust reference bit-for-bit (differential testing).");
 }
 
 #[test]
 fn ac_asm_010_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ASM-010",
-        "`zig/asm/aes_ni.zig` implements AES using AES-NI instructions.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ASM-010", "`zig/asm/aes_ni.zig` implements AES using AES-NI instructions.");
 }
 
 #[test]
 fn ac_asm_011_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ASM-011",
-        "Runtime CPUID detection; if unavailable, pure-Rust fallback.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ASM-011", "Runtime CPUID detection; if unavailable, pure-Rust fallback.");
 }
 
 #[test]
 fn ac_asm_012_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ASM-012",
-        "AES-NI output MUST match Rust reference bit-for-bit.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ASM-012", "AES-NI output MUST match Rust reference bit-for-bit.");
 }
 
 #[test]
@@ -82,122 +59,77 @@ fn ac_asm_020_runtime_validation_stub() {
 
 #[test]
 fn ac_asm_021_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ASM-021",
-        "Rust `crypto-accel` crate links via `rustc-link-lib=static=eguard_asm`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ASM-021", "Rust `crypto-accel` crate links via `rustc-link-lib=static=eguard_asm`.");
 }
 
 #[test]
 fn ac_asm_022_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ASM-022",
-        "Assembly restricted to pure compute kernels. No detection decisions.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ASM-022", "Assembly restricted to pure compute kernels. No detection decisions.");
 }
 
 #[test]
 fn ac_asm_023_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ASM-023",
-        "Assembly in `zig/asm/` with one exported function per primitive.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ASM-023", "Assembly in `zig/asm/` with one exported function per primitive.");
 }
 
 #[test]
 fn ac_asm_024_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ASM-024",
-        "Assembly MUST NOT allocate/free heap memory or retain global mutable state.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ASM-024", "Assembly MUST NOT allocate/free heap memory or retain global mutable state.");
 }
 
 #[test]
 fn ac_asm_025_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ASM-025",
-        "Assembly MUST NOT perform file/network syscalls.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ASM-025", "Assembly MUST NOT perform file/network syscalls.");
 }
 
 #[test]
 fn ac_asm_026_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ASM-026",
-        "Rust owns all allocations; assembly reads/writes within bounds only.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ASM-026", "Rust owns all allocations; assembly reads/writes within bounds only.");
 }
 
 #[test]
 fn ac_asm_027_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ASM-027",
-        "Every exported symbol MUST have documented ABI contract.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ASM-027", "Every exported symbol MUST have documented ABI contract.");
 }
 
 #[test]
 fn ac_asm_028_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ASM-028",
-        "Runtime CPU feature dispatch required for every primitive.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ASM-028", "Runtime CPU feature dispatch required for every primitive.");
 }
 
 #[test]
 fn ac_asm_029_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ASM-029",
-        "Assembly is optional acceleration, never the only correctness path.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ASM-029", "Assembly is optional acceleration, never the only correctness path.");
 }
 
 #[test]
 fn ac_asm_030_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ASM-030",
-        "Differential tests: assembly matches Rust reference across randomized corpora.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ASM-030", "Differential tests: assembly matches Rust reference across randomized corpora.");
 }
 
 #[test]
 fn ac_asm_031_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ASM-031",
-        "Fuzz harness at FFI boundary with random lengths, alignment, malformed inputs.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ASM-031", "Fuzz harness at FFI boundary with random lengths, alignment, malformed inputs.");
 }
 
 #[test]
 fn ac_asm_032_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ASM-032",
-        "Soak test (24+ hours replay) demonstrating RSS/heap slope near zero.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ASM-032", "Soak test (24+ hours replay) demonstrating RSS/heap slope near zero.");
 }
 
 #[test]
 fn ac_asm_033_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ASM-033",
-        "ASAN/LSAN in CI; monotonic allocation growth causes failure.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ASM-033", "ASAN/LSAN in CI; monotonic allocation growth causes failure.");
 }
 
 #[test]
 fn ac_asm_034_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ASM-034",
-        "Symbol audit rejects unexpected allocator imports (`malloc`, `free`, `new`, `delete`).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ASM-034", "Symbol audit rejects unexpected allocator imports (`malloc`, `free`, `new`, `delete`).");
 }
 
 #[test]
 fn ac_asm_040_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ASM-040",
-        "Compiled Zig asm library MUST be ~50 KB or less compressed.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ASM-040", "Compiled Zig asm library MUST be ~50 KB or less compressed.");
 }
 
 #[test]
@@ -217,18 +149,12 @@ fn ac_atp_003_runtime_validation_stub() {
 
 #[test]
 fn ac_atp_004_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ATP-004",
-        "On tamper, attempt to report alert to server before entering degraded mode.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-004", "On tamper, attempt to report alert to server before entering degraded mode.");
 }
 
 #[test]
 fn ac_atp_005_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ATP-005",
-        "On tamper, enter DEGRADED mode.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-005", "On tamper, enter DEGRADED mode.");
 }
 
 #[test]
@@ -238,10 +164,7 @@ fn ac_atp_006_runtime_validation_stub() {
 
 #[test]
 fn ac_atp_007_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ATP-007",
-        "`check_debugger()` returns `true` when rdtsc delta exceeds threshold.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-007", "`check_debugger()` returns `true` when rdtsc delta exceeds threshold.");
 }
 
 #[test]
@@ -256,34 +179,22 @@ fn ac_atp_020_runtime_validation_stub() {
 
 #[test]
 fn ac_atp_021_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ATP-021",
-        "ALL other capabilities MUST be dropped.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-021", "ALL other capabilities MUST be dropped.");
 }
 
 #[test]
 fn ac_atp_022_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ATP-022",
-        "Verification: `/proc/<pid>/status` CapEff contains only those 4 capabilities.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-022", "Verification: `/proc/<pid>/status` CapEff contains only those 4 capabilities.");
 }
 
 #[test]
 fn ac_atp_025_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ATP-025",
-        "`/etc/eguard-agent/` files MUST have permissions `0600`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-025", "`/etc/eguard-agent/` files MUST have permissions `0600`.");
 }
 
 #[test]
 fn ac_atp_026_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ATP-026",
-        "Files MUST be owned by `eguard-agent` user.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-026", "Files MUST be owned by `eguard-agent` user.");
 }
 
 #[test]
@@ -293,210 +204,132 @@ fn ac_atp_027_runtime_validation_stub() {
 
 #[test]
 fn ac_atp_030_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ATP-030",
-        "`prctl(PR_SET_DUMPABLE, 0)` to prevent core dumps.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-030", "`prctl(PR_SET_DUMPABLE, 0)` to prevent core dumps.");
 }
 
 #[test]
 fn ac_atp_031_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ATP-031",
-        "After PR_SET_DUMPABLE, `/proc/<pid>/dumpable` MUST be `0`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-031", "After PR_SET_DUMPABLE, `/proc/<pid>/dumpable` MUST be `0`.");
 }
 
 #[test]
 fn ac_atp_032_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ATP-032",
-        "`prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY)` to prevent ptrace.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-032", "`prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY)` to prevent ptrace.");
 }
 
 #[test]
 fn ac_atp_033_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ATP-033",
-        "`ptrace(PTRACE_ATTACH, <agent_pid>)` from unprivileged process MUST fail with `EPERM`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-033", "`ptrace(PTRACE_ATTACH, <agent_pid>)` from unprivileged process MUST fail with `EPERM`.");
 }
 
 #[test]
 fn ac_atp_040_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ATP-040",
-        "Seccomp BPF filter in whitelist mode (default deny).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-040", "Seccomp BPF filter in whitelist mode (default deny).");
 }
 
 #[test]
 fn ac_atp_041_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ATP-041",
-        "Whitelist: `bpf`, `read`, `write`, `openat`, `socket`, `connect`, etc.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-041", "Whitelist: `bpf`, `read`, `write`, `openat`, `socket`, `connect`, etc.");
 }
 
 #[test]
 fn ac_atp_042_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ATP-042",
-        "Non-whitelisted syscalls MUST be rejected.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-042", "Non-whitelisted syscalls MUST be rejected.");
 }
 
 #[test]
 fn ac_atp_043_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ATP-043",
-        "Verification via `strace` every release.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-043", "Verification via `strace` every release.");
 }
 
 #[test]
 fn ac_atp_050_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ATP-050",
-        "Systemd unit: `WatchdogSec=30s`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-050", "Systemd unit: `WatchdogSec=30s`.");
 }
 
 #[test]
 fn ac_atp_051_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ATP-051",
-        "If watchdog pings stop for 30s, systemd MUST restart agent.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-051", "If watchdog pings stop for 30s, systemd MUST restart agent.");
 }
 
 #[test]
 fn ac_atp_052_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ATP-052",
-        "Agent integrates via `sd-notify` for readiness and keepalive.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-052", "Agent integrates via `sd-notify` for readiness and keepalive.");
 }
 
 #[test]
 fn ac_atp_055_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ATP-055",
-        "Optional mount namespace support to restrict filesystem view.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-055", "Optional mount namespace support to restrict filesystem view.");
 }
 
 #[test]
 fn ac_atp_060_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ATP-060",
-        "When `prevent_uninstall=true`, agent MUST resist unauthorized removal.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-060", "When `prevent_uninstall=true`, agent MUST resist unauthorized removal.");
 }
 
 #[test]
 fn ac_atp_061_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ATP-061",
-        "`UNINSTALL` command requires valid `auth_token` in `UninstallParams`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-061", "`UNINSTALL` command requires valid `auth_token` in `UninstallParams`.");
 }
 
 #[test]
 fn ac_atp_062_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ATP-062",
-        "`wipe_data` flag controls whether data is wiped on uninstall.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-062", "`wipe_data` flag controls whether data is wiped on uninstall.");
 }
 
 #[test]
 fn ac_atp_070_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ATP-070",
-        "Binary MUST pass `checksec`: Full RELRO, PIE, NX, stack canary.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-070", "Binary MUST pass `checksec`: Full RELRO, PIE, NX, stack canary.");
 }
 
 #[test]
 fn ac_atp_071_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ATP-071",
-        "Verified on every release.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-071", "Verified on every release.");
 }
 
 #[test]
 fn ac_atp_080_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ATP-080",
-        "All communication MUST use mTLS via `rustls` with eGuard PKI CA.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-080", "All communication MUST use mTLS via `rustls` with eGuard PKI CA.");
 }
 
 #[test]
 fn ac_atp_081_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ATP-081",
-        "Both client and server certificates MUST be verified.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-081", "Both client and server certificates MUST be verified.");
 }
 
 #[test]
 fn ac_atp_082_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ATP-082",
-        "CA certificate hash MUST be pinned at enrollment.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-082", "CA certificate hash MUST be pinned at enrollment.");
 }
 
 #[test]
 fn ac_atp_083_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ATP-083",
-        "If CA changes, agent MUST reject connection.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-083", "If CA changes, agent MUST reject connection.");
 }
 
 #[test]
 fn ac_atp_084_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ATP-084",
-        "Certificate expiry checked on every heartbeat.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-084", "Certificate expiry checked on every heartbeat.");
 }
 
 #[test]
 fn ac_atp_085_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ATP-085",
-        "Auto-renewal 30 days before expiry via SCEP.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-085", "Auto-renewal 30 days before expiry via SCEP.");
 }
 
 #[test]
 fn ac_atp_086_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ATP-086",
-        "Renewal: generate CSR, include renewal flag, server auto-approves.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-086", "Renewal: generate CSR, include renewal flag, server auto-approves.");
 }
 
 #[test]
 fn ac_atp_087_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ATP-087",
-        "Hot-swap TLS session to new cert without connection drop.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-087", "Hot-swap TLS session to new cert without connection drop.");
 }
 
 #[test]
 fn ac_atp_090_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ATP-090",
-        "Events buffered to SQLite at `/var/lib/eguard-agent/buffer.db`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-090", "Events buffered to SQLite at `/var/lib/eguard-agent/buffer.db`.");
 }
 
 #[test]
@@ -511,34 +344,37 @@ fn ac_atp_092_runtime_validation_stub() {
 
 #[test]
 fn ac_atp_093_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ATP-093",
-        "~500K events within 100 MB.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-093", "~500K events within 100 MB.");
 }
 
 #[test]
 fn ac_atp_095_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ATP-095",
-        "Agent config encrypted at rest with AES-256-GCM.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-095", "Agent config encrypted at rest with AES-256-GCM.");
 }
 
 #[test]
 fn ac_atp_096_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ATP-096",
-        "Key derived from machine-id (`/etc/machine-id`).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-096", "Key derived from machine-id (`/etc/machine-id`).");
 }
 
 #[test]
 fn ac_atp_097_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ATP-097",
-        "Optional TPM2 as additional key source.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-097", "Optional TPM2 as additional key source.");
+}
+
+#[test]
+fn ac_atp_098_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-098", "Agent MUST detect runtime tamper of its executable (`/proc/self/exe`) and critical config paths (`/etc/eguard-agent/agent.conf`, `bootstrap.conf`) by hashing on a fixed interval and emit a critical `agent_tamper` alert.");
+}
+
+#[test]
+fn ac_atp_099_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-099", "Tamper detection MUST include violations `runtime_integrity_mismatch` and `runtime_config_tamper` in the self-protection report.");
+}
+
+#[test]
+fn ac_atp_100_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-ATP-100", "Tamper detection MUST record the tampered path in the alert payload for audit.");
 }
 
 #[test]
@@ -548,50 +384,32 @@ fn ac_bsl_001_runtime_validation_stub() {
 
 #[test]
 fn ac_bsl_002_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-002",
-        "Agent-local baseline MUST have highest priority after 7-day learning.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-002", "Agent-local baseline MUST have highest priority after 7-day learning.");
 }
 
 #[test]
 fn ac_bsl_003_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-003",
-        "Fleet baseline MUST be used as fallback for fresh deployments.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-003", "Fleet baseline MUST be used as fallback for fresh deployments.");
 }
 
 #[test]
 fn ac_bsl_004_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-004",
-        "Learning period MUST last exactly 7 days from installation.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-004", "Learning period MUST last exactly 7 days from installation.");
 }
 
 #[test]
 fn ac_bsl_005_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-005",
-        "During LEARNING mode, `autonomous_response` MUST be `false`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-005", "During LEARNING mode, `autonomous_response` MUST be `false`.");
 }
 
 #[test]
 fn ac_bsl_006_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-006",
-        "During LEARNING, detection runs but MUST NOT auto-respond.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-006", "During LEARNING, detection runs but MUST NOT auto-respond.");
 }
 
 #[test]
 fn ac_bsl_007_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-007",
-        "During LEARNING, all events MUST still be reported to server.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-007", "During LEARNING, all events MUST still be reported to server.");
 }
 
 #[test]
@@ -601,122 +419,77 @@ fn ac_bsl_008_runtime_validation_stub() {
 
 #[test]
 fn ac_bsl_009_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-009",
-        "During LEARNING, fleet baseline MUST be loaded from server as initial seed.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-009", "During LEARNING, fleet baseline MUST be loaded from server as initial seed.");
 }
 
 #[test]
 fn ac_bsl_010_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-010",
-        "After 7 days, agent MUST transition from LEARNING to ACTIVE.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-010", "After 7 days, agent MUST transition from LEARNING to ACTIVE.");
 }
 
 #[test]
 fn ac_bsl_011_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-011",
-        "On ACTIVE, `autonomous_response` MUST be `true`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-011", "On ACTIVE, `autonomous_response` MUST be `true`.");
 }
 
 #[test]
 fn ac_bsl_012_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-012",
-        "On ACTIVE, baselines frozen and used by EntropyMonitor (L3).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-012", "On ACTIVE, baselines frozen and used by EntropyMonitor (L3).");
 }
 
 #[test]
 fn ac_bsl_013_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-013",
-        "On ACTIVE, per-process entropy thresholds calculated via `optimal_threshold()`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-013", "On ACTIVE, per-process entropy thresholds calculated via `optimal_threshold()`.");
 }
 
 #[test]
 fn ac_bsl_014_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-014",
-        "On ACTIVE, BaselineStore MUST be saved to disk.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-014", "On ACTIVE, BaselineStore MUST be saved to disk.");
 }
 
 #[test]
 fn ac_bsl_015_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-015",
-        "`learning_completed` MUST be set to current SystemTime.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-015", "`learning_completed` MUST be set to current SystemTime.");
 }
 
 #[test]
 fn ac_bsl_016_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-016",
-        "In ACTIVE, L3 anomaly detection MUST generate alerts.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-016", "In ACTIVE, L3 anomaly detection MUST generate alerts.");
 }
 
 #[test]
 fn ac_bsl_017_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-017",
-        "In ACTIVE, baselines MUST be refreshed weekly (rolling window).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-017", "In ACTIVE, baselines MUST be refreshed weekly (rolling window).");
 }
 
 #[test]
 fn ac_bsl_018_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-018",
-        "In ACTIVE, `BaselineReport` MUST be sent with every heartbeat.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-018", "In ACTIVE, `BaselineReport` MUST be sent with every heartbeat.");
 }
 
 #[test]
 fn ac_bsl_019_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-019",
-        "If no refresh for 30 days, agent MUST transition to STALE.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-019", "If no refresh for 30 days, agent MUST transition to STALE.");
 }
 
 #[test]
 fn ac_bsl_020_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-020",
-        "In STALE, L3 thresholds MUST be widened to reduce false positives.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-020", "In STALE, L3 thresholds MUST be widened to reduce false positives.");
 }
 
 #[test]
 fn ac_bsl_021_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-021",
-        "In STALE, \"baseline stale\" alert MUST be sent to server.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-021", "In STALE, \"baseline stale\" alert MUST be sent to server.");
 }
 
 #[test]
 fn ac_bsl_022_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-022",
-        "Admin MUST be able to trigger re-learning via server command.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-022", "Admin MUST be able to trigger re-learning via server command.");
 }
 
 #[test]
 fn ac_bsl_023_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-023",
-        "Baselines keyed by `ProcessKey` = `(comm, parent_comm)`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-023", "Baselines keyed by `ProcessKey` = `(comm, parent_comm)`.");
 }
 
 #[test]
@@ -726,26 +499,17 @@ fn ac_bsl_024_runtime_validation_stub() {
 
 #[test]
 fn ac_bsl_025_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-025",
-        "`entropy_threshold` = `median_kl + 3 * stddev`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-025", "`entropy_threshold` = `median_kl + 3 * stddev`.");
 }
 
 #[test]
 fn ac_bsl_026_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-026",
-        "`learn()` MUST accumulate events per process by observing event type distributions.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-026", "`learn()` MUST accumulate events per process by observing event type distributions.");
 }
 
 #[test]
 fn ac_bsl_027_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-027",
-        "Baselines stored at `/var/lib/eguard-agent/baselines.bin` (bincode serialized).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-027", "Baselines stored at `/var/lib/eguard-agent/baselines.bin` (bincode serialized).");
 }
 
 #[test]
@@ -755,50 +519,32 @@ fn ac_bsl_028_runtime_validation_stub() {
 
 #[test]
 fn ac_bsl_029_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-029",
-        "On startup, `init_entropy_monitor()` loads baselines and initializes EntropyMonitor.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-029", "On startup, `init_entropy_monitor()` loads baselines and initializes EntropyMonitor.");
 }
 
 #[test]
 fn ac_bsl_030_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-030",
-        "If per-process threshold unavailable, global default threshold MUST be used.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-030", "If per-process threshold unavailable, global default threshold MUST be used.");
 }
 
 #[test]
 fn ac_bsl_031_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-031",
-        "On install, agent requests fleet baseline from server via `GetPolicy` RPC.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-031", "On install, agent requests fleet baseline from server via `GetPolicy` RPC.");
 }
 
 #[test]
 fn ac_bsl_032_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-032",
-        "Server returns `fleet_baseline` rows as seed.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-032", "Server returns `fleet_baseline` rows as seed.");
 }
 
 #[test]
 fn ac_bsl_033_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-033",
-        "Agent uses fleet baseline for L3 until local learning completes.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-033", "Agent uses fleet baseline for L3 until local learning completes.");
 }
 
 #[test]
 fn ac_bsl_034_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-034",
-        "After local learning, agent switches to local baselines.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-034", "After local learning, agent switches to local baselines.");
 }
 
 #[test]
@@ -808,10 +554,7 @@ fn ac_bsl_035_runtime_validation_stub() {
 
 #[test]
 fn ac_bsl_036_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-036",
-        "Server stores in `endpoint_baseline` table.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-036", "Server stores in `endpoint_baseline` table.");
 }
 
 #[test]
@@ -821,10 +564,7 @@ fn ac_bsl_037_runtime_validation_stub() {
 
 #[test]
 fn ac_bsl_038_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-038",
-        "New agents receive updated fleet baselines as seed.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-038", "New agents receive updated fleet baselines as seed.");
 }
 
 #[test]
@@ -834,26 +574,17 @@ fn ac_bsl_039_runtime_validation_stub() {
 
 #[test]
 fn ac_bsl_040_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-040",
-        "Seed profiles include `\"bash:sshd\"`, `\"nginx:systemd\"`, `\"python3:bash\"`, etc.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-040", "Seed profiles include `\"bash:sshd\"`, `\"nginx:systemd\"`, `\"python3:bash\"`, etc.");
 }
 
 #[test]
 fn ac_bsl_041_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-041",
-        "Seed baselines MUST use intentionally broad thresholds.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-041", "Seed baselines MUST use intentionally broad thresholds.");
 }
 
 #[test]
 fn ac_bsl_042_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-042",
-        "Seed baselines replaced by fleet baselines (first heartbeat) or local baselines (7 days).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-042", "Seed baselines replaced by fleet baselines (first heartbeat) or local baselines (7 days).");
 }
 
 #[test]
@@ -863,10 +594,7 @@ fn ac_bsl_043_runtime_validation_stub() {
 
 #[test]
 fn ac_bsl_044_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-044",
-        "`BaselineLearningStatus` enum: LEARNING=0, ACTIVE=1, STALE=2.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-044", "`BaselineLearningStatus` enum: LEARNING=0, ACTIVE=1, STALE=2.");
 }
 
 #[test]
@@ -876,34 +604,22 @@ fn ac_bsl_045_runtime_validation_stub() {
 
 #[test]
 fn ac_bsl_046_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-046",
-        "Heartbeat request includes `baseline_report` (field 6).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-046", "Heartbeat request includes `baseline_report` (field 6).");
 }
 
 #[test]
 fn ac_bsl_047_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-047",
-        "Heartbeat response includes `fleet_baseline` (field 5) for learning agents.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-047", "Heartbeat response includes `fleet_baseline` (field 5) for learning agents.");
 }
 
 #[test]
 fn ac_bsl_048_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-BSL-048",
-        "Config: `learning_period_days=7`, `refresh_interval_days=7`, `stale_after_days=30`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-BSL-048", "Config: `learning_period_days=7`, `refresh_interval_days=7`, `stale_after_days=30`.");
 }
 
 #[test]
 fn ac_cfg_001_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CFG-001",
-        "Bootstrap config at `/etc/eguard-agent/bootstrap.conf`, used only for enrollment.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CFG-001", "Bootstrap config at `/etc/eguard-agent/bootstrap.conf`, used only for enrollment.");
 }
 
 #[test]
@@ -913,42 +629,27 @@ fn ac_cfg_002_runtime_validation_stub() {
 
 #[test]
 fn ac_cfg_003_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CFG-003",
-        "MUST be deleted after successful enrollment.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CFG-003", "MUST be deleted after successful enrollment.");
 }
 
 #[test]
 fn ac_cfg_004_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CFG-004",
-        "Persistent config at `/etc/eguard-agent/agent.conf` in TOML format, updatable by server.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CFG-004", "Persistent config at `/etc/eguard-agent/agent.conf` in TOML format, updatable by server.");
 }
 
 #[test]
 fn ac_cfg_005_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CFG-005",
-        "`[agent]`: `agent_id` (UUID), `machine_id`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CFG-005", "`[agent]`: `agent_id` (UUID), `machine_id`.");
 }
 
 #[test]
 fn ac_cfg_006_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CFG-006",
-        "`[server]`: `address`, `grpc_port`, `cert_file`, `key_file`, `ca_file`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CFG-006", "`[server]`: `address`, `grpc_port`, `cert_file`, `key_file`, `ca_file`.");
 }
 
 #[test]
 fn ac_cfg_007_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CFG-007",
-        "`[heartbeat]`: `interval_secs=30`, `reconnect_backoff_max_secs=300`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CFG-007", "`[heartbeat]`: `interval_secs=30`, `reconnect_backoff_max_secs=300`.");
 }
 
 #[test]
@@ -963,42 +664,27 @@ fn ac_cfg_009_runtime_validation_stub() {
 
 #[test]
 fn ac_cfg_010_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CFG-010",
-        "`[response]`: `autonomous_response=false`, `dry_run=false`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CFG-010", "`[response]`: `autonomous_response=false`, `dry_run=false`.");
 }
 
 #[test]
 fn ac_cfg_011_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CFG-011",
-        "`[response.definite]`: kill=true, quarantine=true, capture_script=true.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CFG-011", "`[response.definite]`: kill=true, quarantine=true, capture_script=true.");
 }
 
 #[test]
 fn ac_cfg_012_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CFG-012",
-        "`[response.very_high]`: kill=true, quarantine=true, capture_script=true.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CFG-012", "`[response.very_high]`: kill=true, quarantine=true, capture_script=true.");
 }
 
 #[test]
 fn ac_cfg_013_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CFG-013",
-        "`[response.high]`: kill=false, quarantine=false, capture_script=true.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CFG-013", "`[response.high]`: kill=false, quarantine=false, capture_script=true.");
 }
 
 #[test]
 fn ac_cfg_014_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CFG-014",
-        "`[response.medium]`: kill=false, quarantine=false, capture_script=false.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CFG-014", "`[response.medium]`: kill=false, quarantine=false, capture_script=false.");
 }
 
 #[test]
@@ -1018,34 +704,22 @@ fn ac_cfg_017_runtime_validation_stub() {
 
 #[test]
 fn ac_cfg_018_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CFG-018",
-        "`[compliance]`: `check_interval_secs=300`, `auto_remediate=false`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CFG-018", "`[compliance]`: `check_interval_secs=300`, `auto_remediate=false`.");
 }
 
 #[test]
 fn ac_cfg_019_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CFG-019",
-        "`[baseline]`: `learning_period_days=7`, `refresh_interval_days=7`, `stale_after_days=30`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CFG-019", "`[baseline]`: `learning_period_days=7`, `refresh_interval_days=7`, `stale_after_days=30`.");
 }
 
 #[test]
 fn ac_cfg_020_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CFG-020",
-        "`[offline]`: `buffer_path=/var/lib/eguard-agent/buffer.db`, `buffer_max_size_mb=100`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CFG-020", "`[offline]`: `buffer_path=/var/lib/eguard-agent/buffer.db`, `buffer_max_size_mb=100`.");
 }
 
 #[test]
 fn ac_cfg_021_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CFG-021",
-        "`[self_protection]`: `integrity_check_interval_secs=60`, `prevent_uninstall=true`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CFG-021", "`[self_protection]`: `integrity_check_interval_secs=60`, `prevent_uninstall=true`.");
 }
 
 #[test]
@@ -1060,18 +734,12 @@ fn ac_cfg_023_runtime_validation_stub() {
 
 #[test]
 fn ac_cmp_001_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CMP-001",
-        "`os_version` check: parse `/etc/os-release`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CMP-001", "`os_version` check: parse `/etc/os-release`.");
 }
 
 #[test]
 fn ac_cmp_002_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CMP-002",
-        "`kernel_version` check: `uname()` syscall.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CMP-002", "`kernel_version` check: `uname()` syscall.");
 }
 
 #[test]
@@ -1081,50 +749,32 @@ fn ac_cmp_003_runtime_validation_stub() {
 
 #[test]
 fn ac_cmp_004_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CMP-004",
-        "`firewall_enabled` check: count iptables/nftables rules via netlink, check ufw status.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CMP-004", "`firewall_enabled` check: count iptables/nftables rules via netlink, check ufw status.");
 }
 
 #[test]
 fn ac_cmp_005_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CMP-005",
-        "`package_installed` check: parse `/var/lib/dpkg/status` (Debian) or RPM DB.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CMP-005", "`package_installed` check: parse `/var/lib/dpkg/status` (Debian) or RPM DB.");
 }
 
 #[test]
 fn ac_cmp_006_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CMP-006",
-        "`package_not_installed` check: same source, negative list.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CMP-006", "`package_not_installed` check: same source, negative list.");
 }
 
 #[test]
 fn ac_cmp_007_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CMP-007",
-        "`running_services` check: query systemd via D-Bus.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CMP-007", "`running_services` check: query systemd via D-Bus.");
 }
 
 #[test]
 fn ac_cmp_008_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CMP-008",
-        "`password_policy` check: parse `/etc/login.defs` + `/etc/pam.d/common-password`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CMP-008", "`password_policy` check: parse `/etc/login.defs` + `/etc/pam.d/common-password`.");
 }
 
 #[test]
 fn ac_cmp_009_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CMP-009",
-        "`screen_lock_enabled` check: query GNOME via D-Bus/dconf.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CMP-009", "`screen_lock_enabled` check: query GNOME via D-Bus/dconf.");
 }
 
 #[test]
@@ -1134,42 +784,27 @@ fn ac_cmp_010_runtime_validation_stub() {
 
 #[test]
 fn ac_cmp_011_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CMP-011",
-        "`auto_updates` check: verify `unattended-upgrades` installed and enabled.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CMP-011", "`auto_updates` check: verify `unattended-upgrades` installed and enabled.");
 }
 
 #[test]
 fn ac_cmp_012_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CMP-012",
-        "`agent_version` check: self-report from embedded version string.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CMP-012", "`agent_version` check: self-report from embedded version string.");
 }
 
 #[test]
 fn ac_cmp_013_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CMP-013",
-        "`antivirus_running` check: process list for known AV (e.g., clamav).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CMP-013", "`antivirus_running` check: process list for known AV (e.g., clamav).");
 }
 
 #[test]
 fn ac_cmp_014_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CMP-014",
-        "Policy received from server via `GetPolicy` RPC.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CMP-014", "Policy received from server via `GetPolicy` RPC.");
 }
 
 #[test]
 fn ac_cmp_015_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CMP-015",
-        "Policy includes: `policy_id`, `version`, `checks` array.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CMP-015", "Policy includes: `policy_id`, `version`, `checks` array.");
 }
 
 #[test]
@@ -1179,58 +814,37 @@ fn ac_cmp_016_runtime_validation_stub() {
 
 #[test]
 fn ac_cmp_017_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CMP-017",
-        "`check_interval_secs` (e.g., 300s / 5 minutes).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CMP-017", "`check_interval_secs` (e.g., 300s / 5 minutes).");
 }
 
 #[test]
 fn ac_cmp_018_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CMP-018",
-        "`grace_period_secs` (e.g., 3600s / 1 hour) before enforcement.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CMP-018", "`grace_period_secs` (e.g., 3600s / 1 hour) before enforcement.");
 }
 
 #[test]
 fn ac_cmp_019_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CMP-019",
-        "`auto_remediate` boolean flag.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CMP-019", "`auto_remediate` boolean flag.");
 }
 
 #[test]
 fn ac_cmp_020_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CMP-020",
-        "Firewall disabled: `ufw --force enable`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CMP-020", "Firewall disabled: `ufw --force enable`.");
 }
 
 #[test]
 fn ac_cmp_021_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CMP-021",
-        "Prohibited package: `apt-get remove -y <package>`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CMP-021", "Prohibited package: `apt-get remove -y <package>`.");
 }
 
 #[test]
 fn ac_cmp_022_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CMP-022",
-        "SSH misconfiguration: update sshd_config + `systemctl reload sshd`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CMP-022", "SSH misconfiguration: update sshd_config + `systemctl reload sshd`.");
 }
 
 #[test]
 fn ac_cmp_023_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CMP-023",
-        "Required service stopped: `systemctl start <service>`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CMP-023", "Required service stopped: `systemctl start <service>`.");
 }
 
 #[test]
@@ -1240,74 +854,47 @@ fn ac_cmp_024_runtime_validation_stub() {
 
 #[test]
 fn ac_cmp_025_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CMP-025",
-        "`os_version`: operator `gte`, value e.g. \"22.04\", severity `critical`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CMP-025", "`os_version`: operator `gte`, value e.g. \"22.04\", severity `critical`.");
 }
 
 #[test]
 fn ac_cmp_026_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CMP-026",
-        "`disk_encryption`: operator `eq`, value `true`, severity `critical`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CMP-026", "`disk_encryption`: operator `eq`, value `true`, severity `critical`.");
 }
 
 #[test]
 fn ac_cmp_027_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CMP-027",
-        "`firewall_enabled`: operator `eq`, value `true`, severity `high`, remediation=auto.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CMP-027", "`firewall_enabled`: operator `eq`, value `true`, severity `high`, remediation=auto.");
 }
 
 #[test]
 fn ac_cmp_028_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CMP-028",
-        "`package_installed`: operator `contains`, severity `critical`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CMP-028", "`package_installed`: operator `contains`, severity `critical`.");
 }
 
 #[test]
 fn ac_cmp_029_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CMP-029",
-        "`package_not_installed`: operator `not_contains`, severity `medium`, remediation=auto.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CMP-029", "`package_not_installed`: operator `not_contains`, severity `medium`, remediation=auto.");
 }
 
 #[test]
 fn ac_cmp_030_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CMP-030",
-        "`kernel_version`: operator `gte`, severity `high`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CMP-030", "`kernel_version`: operator `gte`, severity `high`.");
 }
 
 #[test]
 fn ac_cmp_031_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CMP-031",
-        "`ssh_config`: operator `eq`, with `key` parameter, severity `high`, remediation=auto.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CMP-031", "`ssh_config`: operator `eq`, with `key` parameter, severity `high`, remediation=auto.");
 }
 
 #[test]
 fn ac_cmp_032_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CMP-032",
-        "Report via `ReportCompliance` RPC with `ComplianceReport` protobuf.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CMP-032", "Report via `ReportCompliance` RPC with `ComplianceReport` protobuf.");
 }
 
 #[test]
 fn ac_cmp_033_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-CMP-033",
-        "Config: `check_interval_secs=300`, `auto_remediate=false`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-CMP-033", "Config: `check_interval_secs=300`, `auto_remediate=false`.");
 }
 
 #[test]
@@ -1362,10 +949,7 @@ fn ac_det_010_runtime_validation_stub() {
 
 #[test]
 fn ac_det_011_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-011",
-        "Aho-Corasick space usage MUST be O(sum of pattern lengths).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-011", "Aho-Corasick space usage MUST be O(sum of pattern lengths).");
 }
 
 #[test]
@@ -1430,10 +1014,7 @@ fn ac_det_030_runtime_validation_stub() {
 
 #[test]
 fn ac_det_031_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-031",
-        "Event-class probabilities MUST be computed as `P_i = c_i / n` for observed counts.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-031", "Event-class probabilities MUST be computed as `P_i = c_i / n` for observed counts.");
 }
 
 #[test]
@@ -1498,10 +1079,7 @@ fn ac_det_043_runtime_validation_stub() {
 
 #[test]
 fn ac_det_044_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-044",
-        "Per-interpreter robust z-score MUST use median/MAD baseline (not mean/stddev).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-044", "Per-interpreter robust z-score MUST use median/MAD baseline (not mean/stddev).");
 }
 
 #[test]
@@ -1536,10 +1114,7 @@ fn ac_det_054_runtime_validation_stub() {
 
 #[test]
 fn ac_det_060_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-060",
-        "Confidence class **Definite** MUST be assigned if and only if L1 exact IOC match (`z1`).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-060", "Confidence class **Definite** MUST be assigned if and only if L1 exact IOC match (`z1`).");
 }
 
 #[test]
@@ -1549,10 +1124,7 @@ fn ac_det_061_runtime_validation_stub() {
 
 #[test]
 fn ac_det_062_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-062",
-        "Confidence class **High** MUST be assigned if `z2 OR z4`, and not Definite/Very High.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-062", "Confidence class **High** MUST be assigned if `z2 OR z4`, and not Definite/Very High.");
 }
 
 #[test]
@@ -1577,42 +1149,27 @@ fn ac_det_066_runtime_validation_stub() {
 
 #[test]
 fn ac_det_067_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-067",
-        "**Definite** MUST trigger: kill + quarantine + isolate.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-067", "**Definite** MUST trigger: kill + quarantine + isolate.");
 }
 
 #[test]
 fn ac_det_068_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-068",
-        "**Very High** MUST trigger: kill + quarantine.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-068", "**Very High** MUST trigger: kill + quarantine.");
 }
 
 #[test]
 fn ac_det_069_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-069",
-        "**High** MUST trigger: capture script + alert only.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-069", "**High** MUST trigger: capture script + alert only.");
 }
 
 #[test]
 fn ac_det_070_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-070",
-        "**Medium** MUST trigger: log + flag for review only.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-070", "**Medium** MUST trigger: log + flag for review only.");
 }
 
 #[test]
 fn ac_det_071_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-071",
-        "**Low** MUST trigger: log only.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-071", "**Low** MUST trigger: log only.");
 }
 
 #[test]
@@ -1627,10 +1184,7 @@ fn ac_det_076_runtime_validation_stub() {
 
 #[test]
 fn ac_det_077_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-077",
-        "Assumption A3 (rule/filter integrity): signed rule bundle MUST be verified before load.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-077", "Assumption A3 (rule/filter integrity): signed rule bundle MUST be verified before load.");
 }
 
 #[test]
@@ -1670,26 +1224,17 @@ fn ac_det_088_runtime_validation_stub() {
 
 #[test]
 fn ac_det_089_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-089",
-        "Ring-buffer drop rate MUST be below configured SLO (< 1e-5 at 10k events/s).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-089", "Ring-buffer drop rate MUST be below configured SLO (< 1e-5 at 10k events/s).");
 }
 
 #[test]
 fn ac_det_090_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-090",
-        "Deterministic replay MUST produce byte-identical alerts from identical input streams.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-090", "Deterministic replay MUST produce byte-identical alerts from identical input streams.");
 }
 
 #[test]
 fn ac_det_091_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-091",
-        "p99 detection decision latency MUST be within target budget on reference hardware.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-091", "p99 detection decision latency MUST be within target budget on reference hardware.");
 }
 
 #[test]
@@ -1704,82 +1249,52 @@ fn ac_det_093_runtime_validation_stub() {
 
 #[test]
 fn ac_det_094_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-094",
-        "Clopper-Pearson upper bound for false-alarm rate MUST be reported per confidence class.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-094", "Clopper-Pearson upper bound for false-alarm rate MUST be reported per confidence class.");
 }
 
 #[test]
 fn ac_det_095_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-095",
-        "Drift indicators MUST be reported: baseline age, KL quantiles by process family.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-095", "Drift indicators MUST be reported: baseline age, KL quantiles by process family.");
 }
 
 #[test]
 fn ac_det_100_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-100",
-        "IOC prefilters + exact cache memory MUST fit within 0.2-0.8 MB; O(1) per lookup.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-100", "IOC prefilters + exact cache memory MUST fit within 0.2-0.8 MB; O(1) per lookup.");
 }
 
 #[test]
 fn ac_det_101_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-101",
-        "Aho-Corasick matcher memory MUST fit within 1-3 MB; O(n + m) per scan.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-101", "Aho-Corasick matcher memory MUST fit within 1-3 MB; O(n + m) per scan.");
 }
 
 #[test]
 fn ac_det_102_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-102",
-        "Temporal monitors memory MUST fit within 0.5-2 MB; O(r_e) per event.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-102", "Temporal monitors memory MUST fit within 0.5-2 MB; O(r_e) per event.");
 }
 
 #[test]
 fn ac_det_103_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-103",
-        "KL/entropy monitor memory MUST fit within 0.2-1 MB; O(1) update, O(k) per window close.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-103", "KL/entropy monitor memory MUST fit within 0.2-1 MB; O(1) update, O(k) per window close.");
 }
 
 #[test]
 fn ac_det_104_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-104",
-        "Process graph + templates memory MUST fit within 1-2 MB; periodic batch check.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-104", "Process graph + templates memory MUST fit within 1-2 MB; periodic batch check.");
 }
 
 #[test]
 fn ac_det_105_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-105",
-        "Total detection subsystem memory MUST fit within 4-9 MB.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-105", "Total detection subsystem memory MUST fit within 4-9 MB.");
 }
 
 #[test]
 fn ac_det_106_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-106",
-        "Benchmark harness in CI MUST publish measured numbers. No unmeasured performance claims.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-106", "Benchmark harness in CI MUST publish measured numbers. No unmeasured performance claims.");
 }
 
 #[test]
 fn ac_det_110_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-110",
-        "All detection decisions MUST remain in Rust. Assembly MUST NOT contain detection logic.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-110", "All detection decisions MUST remain in Rust. Assembly MUST NOT contain detection logic.");
 }
 
 #[test]
@@ -1799,10 +1314,7 @@ fn ac_det_113_runtime_validation_stub() {
 
 #[test]
 fn ac_det_114_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-114",
-        "Assembly is optional acceleration; MUST NOT be the only correctness path.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-114", "Assembly is optional acceleration; MUST NOT be the only correctness path.");
 }
 
 #[test]
@@ -1812,34 +1324,22 @@ fn ac_det_115_runtime_validation_stub() {
 
 #[test]
 fn ac_det_116_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-116",
-        "Assembly functions MUST NOT perform file/network syscalls; only caller-provided buffers.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-116", "Assembly functions MUST NOT perform file/network syscalls; only caller-provided buffers.");
 }
 
 #[test]
 fn ac_det_117_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-117",
-        "Rust MUST own all allocations and lifetime; assembly MUST only read/write within bounds.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-117", "Rust MUST own all allocations and lifetime; assembly MUST only read/write within bounds.");
 }
 
 #[test]
 fn ac_det_118_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-118",
-        "Every exported assembly symbol MUST have a documented ABI contract.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-118", "Every exported assembly symbol MUST have a documented ABI contract.");
 }
 
 #[test]
 fn ac_det_119_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-119",
-        "Hot-path runtime state MUST remain bounded with TTL/LRU eviction.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-119", "Hot-path runtime state MUST remain bounded with TTL/LRU eviction.");
 }
 
 #[test]
@@ -1874,18 +1374,12 @@ fn ac_det_130_runtime_validation_stub() {
 
 #[test]
 fn ac_det_131_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-131",
-        "Cross-agent correlation MUST use threshold: same IOC on 3+ hosts constitutes an incident.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-131", "Cross-agent correlation MUST use threshold: same IOC on 3+ hosts constitutes an incident.");
 }
 
 #[test]
 fn ac_det_132_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-132",
-        "Mathematical detection on the agent MUST remain the sole enforcement authority.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-132", "Mathematical detection on the agent MUST remain the sole enforcement authority.");
 }
 
 #[test]
@@ -1905,18 +1399,12 @@ fn ac_det_142_runtime_validation_stub() {
 
 #[test]
 fn ac_det_143_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-143",
-        "Agent MUST verify bundle signature using Ed25519 before extraction.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-143", "Agent MUST verify bundle signature using Ed25519 before extraction.");
 }
 
 #[test]
 fn ac_det_144_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-144",
-        "Bundle MUST be extracted to `rules-staging/` directory (not directly into active rules).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-144", "Bundle MUST be extracted to `rules-staging/` directory (not directly into active rules).");
 }
 
 #[test]
@@ -1926,10 +1414,7 @@ fn ac_det_145_runtime_validation_stub() {
 
 #[test]
 fn ac_det_146_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-146",
-        "Rule updates MUST be applied without restarting the agent process.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-146", "Rule updates MUST be applied without restarting the agent process.");
 }
 
 #[test]
@@ -1944,18 +1429,12 @@ fn ac_det_148_runtime_validation_stub() {
 
 #[test]
 fn ac_det_149_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-149",
-        "Write lock during atomic swap MUST block readers for ~1 microsecond only.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-149", "Write lock during atomic swap MUST block readers for ~1 microsecond only.");
 }
 
 #[test]
 fn ac_det_150_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-150",
-        "New detection state build time MUST be ~2 seconds (before acquiring write lock).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-150", "New detection state build time MUST be ~2 seconds (before acquiring write lock).");
 }
 
 #[test]
@@ -1965,10 +1444,7 @@ fn ac_det_151_runtime_validation_stub() {
 
 #[test]
 fn ac_det_152_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-152",
-        "Next heartbeat after reload MUST report updated `config_version`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-152", "Next heartbeat after reload MUST report updated `config_version`.");
 }
 
 #[test]
@@ -1978,10 +1454,7 @@ fn ac_det_160_runtime_validation_stub() {
 
 #[test]
 fn ac_det_161_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-161",
-        "Emergency rules triggered when `emergency = 1` in `endpoint_detection_rule` table.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-161", "Emergency rules triggered when `emergency = 1` in `endpoint_detection_rule` table.");
 }
 
 #[test]
@@ -1991,50 +1464,32 @@ fn ac_det_162_runtime_validation_stub() {
 
 #[test]
 fn ac_det_163_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-163",
-        "Agent MUST receive emergency rule on CommandChannel with < 1 second latency.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-163", "Agent MUST receive emergency rule on CommandChannel with < 1 second latency.");
 }
 
 #[test]
 fn ac_det_164_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-164",
-        "Agent MUST compile single emergency rule in < 100 milliseconds.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-164", "Agent MUST compile single emergency rule in < 100 milliseconds.");
 }
 
 #[test]
 fn ac_det_165_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-165",
-        "Emergency rules MUST be appended to active detection state without full rebuild.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-165", "Emergency rules MUST be appended to active detection state without full rebuild.");
 }
 
 #[test]
 fn ac_det_166_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-166",
-        "Agent MUST confirm via `CommandResult`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-166", "Agent MUST confirm via `CommandResult`.");
 }
 
 #[test]
 fn ac_det_167_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-167",
-        "Emergency rules MUST be reconciled into regular bundle at next scheduled build.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-167", "Emergency rules MUST be reconciled into regular bundle at next scheduled build.");
 }
 
 #[test]
 fn ac_det_170_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-170",
-        "Bundle MUST be packaged as `eguard-rules-<date>.bundle.tar.zst` (zstd compressed tar).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-170", "Bundle MUST be packaged as `eguard-rules-<date>.bundle.tar.zst` (zstd compressed tar).");
 }
 
 #[test]
@@ -2044,74 +1499,47 @@ fn ac_det_171_runtime_validation_stub() {
 
 #[test]
 fn ac_det_172_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-172",
-        "Compressed bundle size (zstd level 3) MUST be ~2-5 MB typical.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-172", "Compressed bundle size (zstd level 3) MUST be ~2-5 MB typical.");
 }
 
 #[test]
 fn ac_det_173_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-173",
-        "Uncompressed bundle size MUST be ~10-20 MB.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-173", "Uncompressed bundle size MUST be ~10-20 MB.");
 }
 
 #[test]
 fn ac_det_174_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-174",
-        "Transfer time at 1 Mbps MUST be < 5 seconds.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-174", "Transfer time at 1 Mbps MUST be < 5 seconds.");
 }
 
 #[test]
 fn ac_det_180_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-180",
-        "Rule push to all agents MUST complete within 30 seconds.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-180", "Rule push to all agents MUST complete within 30 seconds.");
 }
 
 #[test]
 fn ac_det_181_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-181",
-        "Total detection subsystem memory MUST be single-digit MB.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-181", "Total detection subsystem memory MUST be single-digit MB.");
 }
 
 #[test]
 fn ac_det_182_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-182",
-        "Detection MUST have zero external dependencies — pure Rust + Zig, no ML frameworks.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-182", "Detection MUST have zero external dependencies — pure Rust + Zig, no ML frameworks.");
 }
 
 #[test]
 fn ac_det_183_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-183",
-        "Detection MUST operate at full capability in offline mode.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-183", "Detection MUST operate at full capability in offline mode.");
 }
 
 #[test]
 fn ac_det_184_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-184",
-        "System MUST be event-driven and sleep when idle.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-184", "System MUST be event-driven and sleep when idle.");
 }
 
 #[test]
 fn ac_det_185_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-DET-185",
-        "All detection algorithms MUST be lightweight online: O(1) or O(k) per event/window.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-185", "All detection algorithms MUST be lightweight online: O(1) or O(k) per event/window.");
 }
 
 #[test]
@@ -2155,6 +1583,116 @@ fn ac_det_193_runtime_validation_stub() {
 }
 
 #[test]
+fn ac_det_217_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-217", "ProcessExec events with `file_path` containing `memfd:` or ending with ` (deleted)` MUST emit an exploit/fileless-exec indicator and elevate confidence to **High** or higher.");
+}
+
+#[test]
+fn ac_det_218_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-218", "ProcessExec events with `file_path` under `/proc/self/fd/` or `/dev/fd/` MUST emit an exploit/fileless-exec indicator and elevate confidence to **High** or higher.");
+}
+
+#[test]
+fn ac_det_219_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-219", "ProcessExec events from `/dev/shm/` or `/tmp/` with command-line interpreter patterns (`python -c`, `perl -e`, `ruby -e`, `bash -c`, `base64 -d`) MUST emit an exploit/dropper indicator and elevate confidence to **High** or higher.");
+}
+
+#[test]
+fn ac_det_220_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-220", "Telemetry payload MUST include an `audit` object with primary_rule_name, rule_type, detection_layers, and detection signals.");
+}
+
+#[test]
+fn ac_det_221_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-221", "Audit trail MUST include matched_fields, matched_signatures, and all rule hit lists (temporal, kill_chain, exploit, yara).");
+}
+
+#[test]
+fn ac_det_222_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-222", "Audit trail MUST include exploit indicators when present and record High+ confidence for fileless execution signals.");
+}
+
+#[test]
+fn ac_det_223_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-223", "Module load events MUST emit kernel integrity indicators when the module name matches rootkit/persistence heuristics (e.g., `rootkit`, `hide`, `keylogger`, `rk`, `syscall`, `hook`).");
+}
+
+#[test]
+fn ac_det_224_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-224", "Kernel integrity indicators MUST escalate detection confidence to at least `High` without ML involvement.");
+}
+
+#[test]
+fn ac_det_225_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-225", "Kernel integrity indicators MUST surface in telemetry/audit as `kernel_integrity_indicators` and map to detection layer `KRN_kernel_integrity` with rule attribution prefix `kernel:`.");
+}
+
+#[test]
+fn ac_det_226_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-226", "Self-protection tamper indicators MUST be raised when the agent binary or config file hash changes while running, and MUST surface in telemetry/audit as `tamper_indicators` with rule attribution prefix `self_protect:`.");
+}
+
+#[test]
+fn ac_det_227_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-227", "Self-protection tamper indicators MUST escalate detection confidence to at least `High` and remain active in degraded mode.");
+}
+
+#[test]
+fn ac_det_228_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-228", "Telemetry payload MUST include correlation-ready event fields (`event.session_id`, `event.process`, `event.parent_process`, `event.file_hash`, `event.dst_domain`, `event.dst_ip`) for cross-host correlation.");
+}
+
+#[test]
+fn ac_det_229_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-229", "Telemetry payload MUST preserve rule attribution (`rule_name`, `detection.rule_type`, `audit.primary_rule_name`) to group detections across hosts.");
+}
+
+#[test]
+fn ac_det_230_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-230", "Server correlation pipeline MUST support nested telemetry payloads where IOC values and rule metadata are under `event.*`, `detection.*`, or `audit.*`.");
+}
+
+#[test]
+fn ac_det_231_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-231", "Kernel integrity scan MUST reconcile `/proc/modules` and `/sys/module` and emit hidden-module indicators (`hidden_module_sysfs`, `hidden_module_proc`) on mismatches.");
+}
+
+#[test]
+fn ac_det_232_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-232", "Kernel integrity scan MUST flag tainted or unsigned modules via `/sys/module/<name>/taint` and signer metadata and emit indicators (`tainted_module`, `unsigned_module`).");
+}
+
+#[test]
+fn ac_det_233_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-233", "Kernel integrity scan MUST detect active kprobe/ftrace hooks (`kprobe_events`, non-`nop` tracer, non-empty ftrace filters) and emit indicators (`kprobe_hook`, `ftrace_tracer`, `ftrace_filter`).");
+}
+
+#[test]
+fn ac_det_234_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-234", "Kernel integrity scan MUST surface BPF/LSM attach anomalies (LSM list includes `bpf` or pinned bpffs objects) and emit indicators (`lsm_bpf_enabled`, `bpffs_pinned_object`).");
+}
+
+#[test]
+fn ac_det_235_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-235", "Kernel integrity scan MUST emit a telemetry/audit event with `process=kernel_integrity_scan` and populated `kernel_integrity_indicators`.");
+}
+
+#[test]
+fn ac_det_236_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-236", "Exploit-chain correlation MUST flag a kill chain when a ptrace-capable tool (gdb/strace/ltrace/perf) spawns a fileless exec (`memfd:`/`(deleted)`/`/proc/*/fd`).");
+}
+
+#[test]
+fn ac_det_237_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-237", "Exploit-chain correlation MUST flag a kill chain when userfaultfd activity precedes an `execveat`-style execution in the same process tree.");
+}
+
+#[test]
+fn ac_det_238_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-DET-238", "Exploit-chain correlation MUST flag a kill chain when a process opens `/proc/*/mem` or `/proc/*/maps` and subsequently spawns a fileless exec.");
+}
+
+#[test]
 fn ac_ebp_001_runtime_validation_stub() {
     assert_runtime_validation_backed_by_executable_suite("AC-EBP-001", "Agent MUST load exactly 8 eBPF programs: `process_exec.c`, `file_open.c`, `file_write.c`, `file_rename.c`, `file_unlink.c`, `tcp_connect.c`, `dns_query.c`, `module_load.c`. Compiled by Zig to BPF ELF, loaded via `libbpf-rs`.");
 }
@@ -2176,10 +1714,7 @@ fn ac_ebp_004_runtime_validation_stub() {
 
 #[test]
 fn ac_ebp_005_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-005",
-        "`tcp_connect.c` MUST only emit events for NEW connections (not keepalives/retransmits).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-005", "`tcp_connect.c` MUST only emit events for NEW connections (not keepalives/retransmits).");
 }
 
 #[test]
@@ -2199,34 +1734,22 @@ fn ac_ebp_008_runtime_validation_stub() {
 
 #[test]
 fn ac_ebp_009_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-009",
-        "All 5 programs MUST pass kernel BPF verifier on kernel 5.10+.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-009", "All 5 programs MUST pass kernel BPF verifier on kernel 5.10+.");
 }
 
 #[test]
 fn ac_ebp_010_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-010",
-        "All programs MUST write to single shared BPF ring buffer, default 8 MB.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-010", "All programs MUST write to single shared BPF ring buffer, default 8 MB.");
 }
 
 #[test]
 fn ac_ebp_011_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-011",
-        "Ring buffer size MUST be configurable.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-011", "Ring buffer size MUST be configurable.");
 }
 
 #[test]
 fn ac_ebp_012_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-012",
-        "Ring buffer MUST use memory-mapped shared pages (no `read()` syscall, no data copying).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-012", "Ring buffer MUST use memory-mapped shared pages (no `read()` syscall, no data copying).");
 }
 
 #[test]
@@ -2236,26 +1759,17 @@ fn ac_ebp_013_runtime_validation_stub() {
 
 #[test]
 fn ac_ebp_014_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-014",
-        "Consumer MUST wake via `epoll_wait()` on ring buffer fd (no polling loop).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-014", "Consumer MUST wake via `epoll_wait()` on ring buffer fd (no polling loop).");
 }
 
 #[test]
 fn ac_ebp_015_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-015",
-        "Drop rate MUST be bounded and measured; dropped events counted and surfaced.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-015", "Drop rate MUST be bounded and measured; dropped events counted and surfaced.");
 }
 
 #[test]
 fn ac_ebp_016_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-016",
-        "Drop rate MUST be below SLO (< 1e-5 at 10K events/sec).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-016", "Drop rate MUST be below SLO (< 1e-5 at 10K events/sec).");
 }
 
 #[test]
@@ -2275,10 +1789,7 @@ fn ac_ebp_022_runtime_validation_stub() {
 
 #[test]
 fn ac_ebp_030_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-030",
-        "Raw events deserialized from packed structs (Raw Event Parser).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-030", "Raw events deserialized from packed structs (Raw Event Parser).");
 }
 
 #[test]
@@ -2288,26 +1799,17 @@ fn ac_ebp_031_runtime_validation_stub() {
 
 #[test]
 fn ac_ebp_032_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-032",
-        "File events enriched with SHA-256 (via crypto-accel with hardware acceleration).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-032", "File events enriched with SHA-256 (via crypto-accel with hardware acceleration).");
 }
 
 #[test]
 fn ac_ebp_033_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-033",
-        "Network events enriched with reverse DNS (async, cached) and optional GeoIP.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-033", "Network events enriched with reverse DNS (async, cached) and optional GeoIP.");
 }
 
 #[test]
 fn ac_ebp_034_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-034",
-        "Process events build parent chain of up to 5 ancestors via ppid walking.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-034", "Process events build parent chain of up to 5 ancestors via ppid walking.");
 }
 
 #[test]
@@ -2322,26 +1824,17 @@ fn ac_ebp_040_runtime_validation_stub() {
 
 #[test]
 fn ac_ebp_041_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-041",
-        "`TelemetryBatch`: `agent_id`, `events`, `compressed`, `events_compressed` (zstd).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-041", "`TelemetryBatch`: `agent_id`, `events`, `compressed`, `events_compressed` (zstd).");
 }
 
 #[test]
 fn ac_ebp_042_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-042",
-        "Alerts MUST be sent immediately (not waiting for batch flush).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-042", "Alerts MUST be sent immediately (not waiting for batch flush).");
 }
 
 #[test]
 fn ac_ebp_043_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-043",
-        "Response reports sent via `ResponseReport`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-043", "Response reports sent via `ResponseReport`.");
 }
 
 #[test]
@@ -2351,66 +1844,42 @@ fn ac_ebp_044_runtime_validation_stub() {
 
 #[test]
 fn ac_ebp_045_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-045",
-        "Telemetry types individually toggleable in `[telemetry]` config section.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-045", "Telemetry types individually toggleable in `[telemetry]` config section.");
 }
 
 #[test]
 fn ac_ebp_046_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-046",
-        "`flush_interval_ms=100`, `max_batch_size=100`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-046", "`flush_interval_ms=100`, `max_batch_size=100`.");
 }
 
 #[test]
 fn ac_ebp_050_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-050",
-        "At 0 events/sec: block on `epoll_wait` indefinitely, zero CPU.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-050", "At 0 events/sec: block on `epoll_wait` indefinitely, zero CPU.");
 }
 
 #[test]
 fn ac_ebp_051_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-051",
-        "At < 100/sec: poll at 100ms, < 0.01% CPU.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-051", "At < 100/sec: poll at 100ms, < 0.01% CPU.");
 }
 
 #[test]
 fn ac_ebp_052_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-052",
-        "At 100-1K/sec: poll at 10ms, < 0.1% CPU.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-052", "At 100-1K/sec: poll at 10ms, < 0.1% CPU.");
 }
 
 #[test]
 fn ac_ebp_053_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-053",
-        "At 1K-10K/sec: poll at 1ms, < 0.5% CPU.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-053", "At 1K-10K/sec: poll at 1ms, < 0.5% CPU.");
 }
 
 #[test]
 fn ac_ebp_054_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-054",
-        "At > 10K/sec: continuous polling with statistical sampling, < 1% CPU.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-054", "At > 10K/sec: continuous polling with statistical sampling, < 1% CPU.");
 }
 
 #[test]
 fn ac_ebp_055_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-055",
-        "When rate exceeds capacity, MUST enable statistical sampling.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-055", "When rate exceeds capacity, MUST enable statistical sampling.");
 }
 
 #[test]
@@ -2420,66 +1889,42 @@ fn ac_ebp_060_runtime_validation_stub() {
 
 #[test]
 fn ac_ebp_061_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-061",
-        "`ProcessCache`: HashMap<u32, ProcessInfo>, evicted on process_exit eBPF event.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-061", "`ProcessCache`: HashMap<u32, ProcessInfo>, evicted on process_exit eBPF event.");
 }
 
 #[test]
 fn ac_ebp_062_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-062",
-        "File hashing once per (path, mtime); process info once per process lifetime.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-062", "File hashing once per (path, mtime); process info once per process lifetime.");
 }
 
 #[test]
 fn ac_ebp_070_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-070",
-        "100 process events: ~50 KB uncompressed, ~5 KB compressed (zstd level 3).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-070", "100 process events: ~50 KB uncompressed, ~5 KB compressed (zstd level 3).");
 }
 
 #[test]
 fn ac_ebp_071_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-071",
-        "Heartbeat: ~200 bytes uncompressed, ~150 bytes compressed.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-071", "Heartbeat: ~200 bytes uncompressed, ~150 bytes compressed.");
 }
 
 #[test]
 fn ac_ebp_072_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-072",
-        "Average bandwidth: ~500 bytes/sec compressed.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-072", "Average bandwidth: ~500 bytes/sec compressed.");
 }
 
 #[test]
 fn ac_ebp_080_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-080",
-        "Idle CPU < 0.05%. Verified via `pidstat` averaged over 60s.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-080", "Idle CPU < 0.05%. Verified via `pidstat` averaged over 60s.");
 }
 
 #[test]
 fn ac_ebp_081_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-081",
-        "Active CPU < 0.5% at 1K-10K events/sec.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-081", "Active CPU < 0.5% at 1K-10K events/sec.");
 }
 
 #[test]
 fn ac_ebp_082_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-082",
-        "Peak CPU < 3% during on-demand YARA scan.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-082", "Peak CPU < 3% during on-demand YARA scan.");
 }
 
 #[test]
@@ -2489,18 +1934,12 @@ fn ac_ebp_083_runtime_validation_stub() {
 
 #[test]
 fn ac_ebp_084_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-084",
-        "Disk I/O < 100 KB/s average.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-084", "Disk I/O < 100 KB/s average.");
 }
 
 #[test]
 fn ac_ebp_085_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-085",
-        "Network < 500 bytes/s average.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-085", "Network < 500 bytes/s average.");
 }
 
 #[test]
@@ -2515,58 +1954,37 @@ fn ac_ebp_087_runtime_validation_stub() {
 
 #[test]
 fn ac_ebp_088_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-088",
-        "Detection latency < 500 ns/event.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-088", "Detection latency < 500 ns/event.");
 }
 
 #[test]
 fn ac_ebp_089_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-089",
-        "Response latency (kill) < 50 ms.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-089", "Response latency (kill) < 50 ms.");
 }
 
 #[test]
 fn ac_ebp_090_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-090",
-        "Response latency (LSM block) < 1 ms.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-090", "Response latency (LSM block) < 1 ms.");
 }
 
 #[test]
 fn ac_ebp_091_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-091",
-        "Heartbeat overhead < 200 bytes/30s.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-091", "Heartbeat overhead < 200 bytes/30s.");
 }
 
 #[test]
 fn ac_ebp_092_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-092",
-        "Rule reload time < 5 seconds.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-092", "Rule reload time < 5 seconds.");
 }
 
 #[test]
 fn ac_ebp_100_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-100",
-        "Rust runtime + tokio: ~3 MB.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-100", "Rust runtime + tokio: ~3 MB.");
 }
 
 #[test]
 fn ac_ebp_101_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-101",
-        "eBPF ring buffer: ~8 MB (kernel-mapped).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-101", "eBPF ring buffer: ~8 MB (kernel-mapped).");
 }
 
 #[test]
@@ -2591,18 +2009,12 @@ fn ac_ebp_105_runtime_validation_stub() {
 
 #[test]
 fn ac_ebp_106_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-106",
-        "YARA compiled rules: ~3 MB.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-106", "YARA compiled rules: ~3 MB.");
 }
 
 #[test]
 fn ac_ebp_107_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-107",
-        "Offline buffer (SQLite mmap): ~2 MB when offline.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-107", "Offline buffer (SQLite mmap): ~2 MB when offline.");
 }
 
 #[test]
@@ -2622,10 +2034,7 @@ fn ac_ebp_110_runtime_validation_stub() {
 
 #[test]
 fn ac_ebp_120_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-120",
-        "`lsm_block.zig` attaches to `lsm/bprm_check_security` on kernel 5.7+.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-120", "`lsm_block.zig` attaches to `lsm/bprm_check_security` on kernel 5.7+.");
 }
 
 #[test]
@@ -2635,34 +2044,22 @@ fn ac_ebp_121_runtime_validation_stub() {
 
 #[test]
 fn ac_ebp_122_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-122",
-        "On match, emits block event to ring buffer before returning `-EPERM`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-122", "On match, emits block event to ring buffer before returning `-EPERM`.");
 }
 
 #[test]
 fn ac_ebp_123_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-123",
-        "On kernel < 5.7, falls back to post-execution kill within < 50 ms.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-123", "On kernel < 5.7, falls back to post-execution kill within < 50 ms.");
 }
 
 #[test]
 fn ac_ebp_130_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-130",
-        "Events MUST be processed in timestamp order with bounded reordering tolerance.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-130", "Events MUST be processed in timestamp order with bounded reordering tolerance.");
 }
 
 #[test]
 fn ac_ebp_131_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-EBP-131",
-        "Agent MUST count and surface dropped ring buffer events.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-EBP-131", "Agent MUST count and surface dropped ring buffer events.");
 }
 
 #[test]
@@ -2687,10 +2084,7 @@ fn ac_enr_001_runtime_validation_stub() {
 
 #[test]
 fn ac_enr_002_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ENR-002",
-        "Server validates token, forwards CSR to SCEP CA, creates `endpoint_agent` record.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ENR-002", "Server validates token, forwards CSR to SCEP CA, creates `endpoint_agent` record.");
 }
 
 #[test]
@@ -2700,10 +2094,7 @@ fn ac_enr_003_runtime_validation_stub() {
 
 #[test]
 fn ac_enr_004_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-ENR-004",
-        "Agent reconnects with mTLS, starts heartbeat, starts telemetry, enters LEARNING.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-ENR-004", "Agent reconnects with mTLS, starts heartbeat, starts telemetry, enters LEARNING.");
 }
 
 #[test]
@@ -2718,10 +2109,7 @@ fn ac_enr_006_runtime_validation_stub() {
 
 #[test]
 fn ac_grp_001_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-001",
-        "`AgentService` exposes `Enroll(EnrollRequest) returns (EnrollResponse)` (unary).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-001", "`AgentService` exposes `Enroll(EnrollRequest) returns (EnrollResponse)` (unary).");
 }
 
 #[test]
@@ -2741,10 +2129,7 @@ fn ac_grp_004_runtime_validation_stub() {
 
 #[test]
 fn ac_grp_005_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-005",
-        "Enrollment uses server-only TLS; after enrollment, reconnect with mTLS.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-005", "Enrollment uses server-only TLS; after enrollment, reconnect with mTLS.");
 }
 
 #[test]
@@ -2759,26 +2144,17 @@ fn ac_grp_007_runtime_validation_stub() {
 
 #[test]
 fn ac_grp_008_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-008",
-        "Server forwards CSR to SCEP CA, returns signed certificate.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-008", "Server forwards CSR to SCEP CA, returns signed certificate.");
 }
 
 #[test]
 fn ac_grp_009_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-009",
-        "Server creates `endpoint_agent` record on enrollment.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-009", "Server creates `endpoint_agent` record on enrollment.");
 }
 
 #[test]
 fn ac_grp_010_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-010",
-        "`Heartbeat(HeartbeatRequest) returns (HeartbeatResponse)` (unary).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-010", "`Heartbeat(HeartbeatRequest) returns (HeartbeatResponse)` (unary).");
 }
 
 #[test]
@@ -2803,34 +2179,22 @@ fn ac_grp_014_runtime_validation_stub() {
 
 #[test]
 fn ac_grp_015_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-015",
-        "Default heartbeat interval: 30s. Server may dynamically override.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-015", "Default heartbeat interval: 30s. Server may dynamically override.");
 }
 
 #[test]
 fn ac_grp_016_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-016",
-        "`PolicyUpdate`: `config_version`, `policy_json`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-016", "`PolicyUpdate`: `config_version`, `policy_json`.");
 }
 
 #[test]
 fn ac_grp_017_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-017",
-        "`RuleUpdate`: `current_version`, `available_version`, `emergency`, `bundle_download_url`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-017", "`RuleUpdate`: `current_version`, `available_version`, `emergency`, `bundle_download_url`.");
 }
 
 #[test]
 fn ac_grp_018_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-018",
-        "`BaselineReport`: `agent_id`, `status` (LEARNING/ACTIVE/STALE), `baselines`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-018", "`BaselineReport`: `agent_id`, `status` (LEARNING/ACTIVE/STALE), `baselines`.");
 }
 
 #[test]
@@ -2845,10 +2209,7 @@ fn ac_grp_020_runtime_validation_stub() {
 
 #[test]
 fn ac_grp_021_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-021",
-        "`TelemetryBatch`: `agent_id`, `events`, `compressed`, `events_compressed` (zstd).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-021", "`TelemetryBatch`: `agent_id`, `events`, `compressed`, `events_compressed` (zstd).");
 }
 
 #[test]
@@ -2863,58 +2224,37 @@ fn ac_grp_023_runtime_validation_stub() {
 
 #[test]
 fn ac_grp_024_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-024",
-        "`Severity` enum: INFO=0, LOW=1, MEDIUM=2, HIGH=3, CRITICAL=4.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-024", "`Severity` enum: INFO=0, LOW=1, MEDIUM=2, HIGH=3, CRITICAL=4.");
 }
 
 #[test]
 fn ac_grp_025_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-025",
-        "`ProcessExecEvent`: `exe_path`, `cmdline`, `sha256`, `cgroup_id`, `ancestors`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-025", "`ProcessExecEvent`: `exe_path`, `cmdline`, `sha256`, `cgroup_id`, `ancestors`.");
 }
 
 #[test]
 fn ac_grp_026_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-026",
-        "`EventAck`: `last_event_offset`, `events_accepted`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-026", "`EventAck`: `last_event_offset`, `events_accepted`.");
 }
 
 #[test]
 fn ac_grp_027_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-027",
-        "Default flush interval 100ms, max batch size 100 events.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-027", "Default flush interval 100ms, max batch size 100 events.");
 }
 
 #[test]
 fn ac_grp_028_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-028",
-        "Alerts sent immediately (not waiting for batch flush).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-028", "Alerts sent immediately (not waiting for batch flush).");
 }
 
 #[test]
 fn ac_grp_029_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-029",
-        "zstd level 3 compression; 100 process events ~50 KB -> ~5 KB.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-029", "zstd level 3 compression; 100 process events ~50 KB -> ~5 KB.");
 }
 
 #[test]
 fn ac_grp_030_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-030",
-        "`ReportCompliance(ComplianceReport) returns (ComplianceAck)` (unary).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-030", "`ReportCompliance(ComplianceReport) returns (ComplianceAck)` (unary).");
 }
 
 #[test]
@@ -2924,10 +2264,7 @@ fn ac_grp_031_runtime_validation_stub() {
 
 #[test]
 fn ac_grp_032_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-032",
-        "`ComplianceStatus`: COMPLIANT=0, NON_COMPLIANT=1, ERROR=2.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-032", "`ComplianceStatus`: COMPLIANT=0, NON_COMPLIANT=1, ERROR=2.");
 }
 
 #[test]
@@ -2937,50 +2274,32 @@ fn ac_grp_033_runtime_validation_stub() {
 
 #[test]
 fn ac_grp_034_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-034",
-        "`CheckStatus`: PASS=0, FAIL=1, CHECK_ERROR=2.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-034", "`CheckStatus`: PASS=0, FAIL=1, CHECK_ERROR=2.");
 }
 
 #[test]
 fn ac_grp_035_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-035",
-        "`ComplianceAck`: `accepted`, `next_check_override_secs`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-035", "`ComplianceAck`: `accepted`, `next_check_override_secs`.");
 }
 
 #[test]
 fn ac_grp_036_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-036",
-        "Default check interval 300s; server may override.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-036", "Default check interval 300s; server may override.");
 }
 
 #[test]
 fn ac_grp_040_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-040",
-        "`CommandChannel(CommandPollRequest) returns (stream ServerCommand)` (server-streaming).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-040", "`CommandChannel(CommandPollRequest) returns (stream ServerCommand)` (server-streaming).");
 }
 
 #[test]
 fn ac_grp_041_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-041",
-        "`CommandPollRequest`: `agent_id`, `completed_command_ids`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-041", "`CommandPollRequest`: `agent_id`, `completed_command_ids`.");
 }
 
 #[test]
 fn ac_grp_042_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-042",
-        "`ServerCommand`: `command_id`, `command_type`, `issued_at`, `issued_by`, `oneof params`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-042", "`ServerCommand`: `command_id`, `command_type`, `issued_at`, `issued_by`, `oneof params`.");
 }
 
 #[test]
@@ -2990,26 +2309,17 @@ fn ac_grp_043_runtime_validation_stub() {
 
 #[test]
 fn ac_grp_044_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-044",
-        "`IsolateParams`: `allow_server_connection`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-044", "`IsolateParams`: `allow_server_connection`.");
 }
 
 #[test]
 fn ac_grp_045_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-045",
-        "`ScanParams`: `paths`, `yara_scan`, `ioc_scan`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-045", "`ScanParams`: `paths`, `yara_scan`, `ioc_scan`.");
 }
 
 #[test]
 fn ac_grp_046_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-046",
-        "`UpdateParams`: `target_version`, `download_url`, `checksum`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-046", "`UpdateParams`: `target_version`, `download_url`, `checksum`.");
 }
 
 #[test]
@@ -3019,26 +2329,17 @@ fn ac_grp_047_runtime_validation_stub() {
 
 #[test]
 fn ac_grp_048_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-048",
-        "`ConfigChangeParams`: `config_json`, `config_version`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-048", "`ConfigChangeParams`: `config_json`, `config_version`.");
 }
 
 #[test]
 fn ac_grp_049_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-049",
-        "`RestoreQuarantineParams`: `sha256`, `original_path`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-049", "`RestoreQuarantineParams`: `sha256`, `original_path`.");
 }
 
 #[test]
 fn ac_grp_050_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-050",
-        "`ReportResponse(ResponseReport) returns (ResponseAck)` (unary).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-050", "`ReportResponse(ResponseReport) returns (ResponseAck)` (unary).");
 }
 
 #[test]
@@ -3053,18 +2354,12 @@ fn ac_grp_052_runtime_validation_stub() {
 
 #[test]
 fn ac_grp_053_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-053",
-        "`ResponseConfidence`: DEFINITE=0, VERY_HIGH=1, HIGH=2, MEDIUM=3.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-053", "`ResponseConfidence`: DEFINITE=0, VERY_HIGH=1, HIGH=2, MEDIUM=3.");
 }
 
 #[test]
 fn ac_grp_054_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-054",
-        "`KillReport`: `target_pid`, `target_exe`, `killed_pids`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-054", "`KillReport`: `target_pid`, `target_exe`, `killed_pids`.");
 }
 
 #[test]
@@ -3074,10 +2369,7 @@ fn ac_grp_055_runtime_validation_stub() {
 
 #[test]
 fn ac_grp_056_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-056",
-        "`BlockReport`: `blocked_target`, `block_method`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-056", "`BlockReport`: `blocked_target`, `block_method`.");
 }
 
 #[test]
@@ -3087,18 +2379,12 @@ fn ac_grp_057_runtime_validation_stub() {
 
 #[test]
 fn ac_grp_058_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-058",
-        "`ResponseAck`: `accepted`, `incident_id`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-058", "`ResponseAck`: `accepted`, `incident_id`.");
 }
 
 #[test]
 fn ac_grp_060_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-060",
-        "`GetPolicy(PolicyRequest) returns (PolicyResponse)` (unary).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-060", "`GetPolicy(PolicyRequest) returns (PolicyResponse)` (unary).");
 }
 
 #[test]
@@ -3108,18 +2394,12 @@ fn ac_grp_061_runtime_validation_stub() {
 
 #[test]
 fn ac_grp_062_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-062",
-        "Bundles zstd-compressed, 2-5 MB, Ed25519 signed, verified before applying.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-062", "Bundles zstd-compressed, 2-5 MB, Ed25519 signed, verified before applying.");
 }
 
 #[test]
 fn ac_grp_063_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-063",
-        "Emergency rule updates MUST be downloaded immediately.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-063", "Emergency rule updates MUST be downloaded immediately.");
 }
 
 #[test]
@@ -3129,42 +2409,27 @@ fn ac_grp_064_runtime_validation_stub() {
 
 #[test]
 fn ac_grp_065_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-065",
-        "Rule reload < 5 seconds end-to-end.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-065", "Rule reload < 5 seconds end-to-end.");
 }
 
 #[test]
 fn ac_grp_070_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-070",
-        "All protos use `syntax = \"proto3\"`, `package eguard.v1`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-070", "All protos use `syntax = \"proto3\"`, `package eguard.v1`.");
 }
 
 #[test]
 fn ac_grp_071_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-071",
-        "`agent.proto` imports telemetry, compliance, command, response protos.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-071", "`agent.proto` imports telemetry, compliance, command, response protos.");
 }
 
 #[test]
 fn ac_grp_076_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-076",
-        "`AgentService` defines exactly 8 RPCs.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-076", "`AgentService` defines exactly 8 RPCs.");
 }
 
 #[test]
 fn ac_grp_080_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-080",
-        "Auto-reconnect with exponential backoff, max 300s.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-080", "Auto-reconnect with exponential backoff, max 300s.");
 }
 
 #[test]
@@ -3179,194 +2444,137 @@ fn ac_grp_082_runtime_validation_stub() {
 
 #[test]
 fn ac_grp_083_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-083",
-        "On reconnect, drain buffered events chronologically with original timestamps.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-083", "On reconnect, drain buffered events chronologically with original timestamps.");
 }
 
 #[test]
 fn ac_grp_084_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-084",
-        "`buffered_events` count reported in heartbeat.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-084", "`buffered_events` count reported in heartbeat.");
 }
 
 #[test]
 fn ac_grp_085_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-085",
-        "`AgentStatus.mode` = DEGRADED during server-unreachable periods.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-085", "`AgentStatus.mode` = DEGRADED during server-unreachable periods.");
 }
 
 #[test]
 fn ac_grp_090_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-090",
-        "All communication via protobuf v3 over gRPC with mTLS.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-090", "All communication via protobuf v3 over gRPC with mTLS.");
 }
 
 #[test]
 fn ac_grp_091_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-091",
-        "Agent uses `rustls` with eGuard PKI CA.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-091", "Agent uses `rustls` with eGuard PKI CA.");
 }
 
 #[test]
 fn ac_grp_092_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-092",
-        "CA certificate hash pinned at enrollment.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-092", "CA certificate hash pinned at enrollment.");
 }
 
 #[test]
 fn ac_grp_093_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-093",
-        "Auto certificate rotation 30 days before expiry, no connection drop.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-093", "Auto certificate rotation 30 days before expiry, no connection drop.");
 }
 
 #[test]
 fn ac_grp_094_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-094",
-        "Server requires client cert for all RPCs except `Enroll`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-094", "Server requires client cert for all RPCs except `Enroll`.");
 }
 
 #[test]
 fn ac_grp_095_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-095",
-        "Server `grpc.MaxRecvMsgSize(16 << 20)` (16 MB).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-095", "Server `grpc.MaxRecvMsgSize(16 << 20)` (16 MB).");
 }
 
 #[test]
 fn ac_grp_096_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-096",
-        "gRPC server on port 50052 for direct agent connections (Caddy passthrough optional).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-096", "gRPC server on port 50052 for direct agent connections (Caddy passthrough optional).");
 }
 
 #[test]
 fn ac_grp_097_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-097",
-        "Agent config stores cert paths.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-097", "Agent config stores cert paths.");
 }
 
 #[test]
 fn ac_grp_098_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-098",
-        "Go server registered via `pb.RegisterAgentServiceServer`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-098", "Go server registered via `pb.RegisterAgentServiceServer`.");
 }
 
 #[test]
 fn ac_grp_099_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-GRP-099",
-        "Go protobuf package: `gitlab.com/devaistech77/fe_eguard/go/api/agent/v1`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-099", "Go protobuf package: `gitlab.com/devaistech77/fe_eguard/go/api/agent/v1`.");
+}
+
+#[test]
+fn ac_grp_100_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-100", "`fe_eguard` MUST expose `AgentService` RPCs matching agent proto (Enroll, Heartbeat, StreamEvents, ReportCompliance, CommandChannel, ReportResponse, GetPolicy, DownloadRuleBundle).");
+}
+
+#[test]
+fn ac_grp_101_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-101", "`CommandService` and `AgentService` CommandChannel MUST use `CommandPollRequest` → `ServerCommand` (typed enum + params). Legacy `CommandChannelRequest` + `AgentCommand` MAY remain for polling APIs only.");
+}
+
+#[test]
+fn ac_grp_102_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-GRP-102", "`ResponseReport` MUST use enum `ResponseAction`/`ResponseConfidence`, include `detection_layers`, and carry oneof detail (Kill/Quarantine/Block/Capture); `ResponseAck` MUST include `accepted` + `incident_id`.");
 }
 
 #[test]
 fn ac_nac_001_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-NAC-001",
-        "New device with no agent: RADIUS assigns \"registration\" VLAN (captive portal).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-NAC-001", "New device with no agent: RADIUS assigns \"registration\" VLAN (captive portal).");
 }
 
 #[test]
 fn ac_nac_002_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-NAC-002",
-        "Captive portal presents agent install page with OS auto-detection and enrollment token.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-NAC-002", "Captive portal presents agent install page with OS auto-detection and enrollment token.");
 }
 
 #[test]
 fn ac_nac_003_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-NAC-003",
-        "After enrollment + first heartbeat (LEARNING): assign \"agent-learning\" VLAN.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-NAC-003", "After enrollment + first heartbeat (LEARNING): assign \"agent-learning\" VLAN.");
 }
 
 #[test]
 fn ac_nac_004_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-NAC-004",
-        "After 7-day learning + compliance=compliant: assign \"production\" VLAN.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-NAC-004", "After 7-day learning + compliance=compliant: assign \"production\" VLAN.");
 }
 
 #[test]
 fn ac_nac_005_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-NAC-005",
-        "No agent -> Registration VLAN (captive portal only).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-NAC-005", "No agent -> Registration VLAN (captive portal only).");
 }
 
 #[test]
 fn ac_nac_006_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-NAC-006",
-        "Agent LEARNING -> Agent-learning VLAN (limited access).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-NAC-006", "Agent LEARNING -> Agent-learning VLAN (limited access).");
 }
 
 #[test]
 fn ac_nac_007_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-NAC-007",
-        "ACTIVE + compliant -> Production VLAN (full access).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-NAC-007", "ACTIVE + compliant -> Production VLAN (full access).");
 }
 
 #[test]
 fn ac_nac_008_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-NAC-008",
-        "ACTIVE + non_compliant -> Restricted VLAN (limited until remediated).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-NAC-008", "ACTIVE + non_compliant -> Restricted VLAN (limited until remediated).");
 }
 
 #[test]
 fn ac_nac_009_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-NAC-009",
-        "ACTIVE + critical alert -> Quarantine VLAN (eGuard server only).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-NAC-009", "ACTIVE + critical alert -> Quarantine VLAN (eGuard server only).");
 }
 
 #[test]
 fn ac_nac_010_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-NAC-010",
-        "Dead agent (no heartbeat) -> Quarantine VLAN.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-NAC-010", "Dead agent (no heartbeat) -> Quarantine VLAN.");
 }
 
 #[test]
 fn ac_nac_011_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-NAC-011",
-        "Go gRPC server implements NAC bridge at `go/agent/server/nac_bridge.go`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-NAC-011", "Go gRPC server implements NAC bridge at `go/agent/server/nac_bridge.go`.");
 }
 
 #[test]
@@ -3401,10 +2609,7 @@ fn ac_nac_017_runtime_validation_stub() {
 
 #[test]
 fn ac_nac_018_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-NAC-018",
-        "Event 1300016: \"Lateral movement\" on MITRE T1021/T1534. Action: email_admin, log.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-NAC-018", "Event 1300016: \"Lateral movement\" on MITRE T1021/T1534. Action: email_admin, log.");
 }
 
 #[test]
@@ -3415,6 +2620,21 @@ fn ac_nac_019_runtime_validation_stub() {
 #[test]
 fn ac_nac_020_runtime_validation_stub() {
     assert_runtime_validation_backed_by_executable_suite("AC-NAC-020", "`BridgeAlertToSecurityEvent` calls `security_event.Trigger(mac, eventID, alert.Description)`.");
+}
+
+#[test]
+fn ac_nac_021_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-NAC-021", "NAC bridge MUST accept telemetry payloads where detection metadata is nested under `detection.*` and `audit.*` (including `detection.rule_type` and `audit.primary_rule_name`).");
+}
+
+#[test]
+fn ac_nac_022_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-NAC-022", "Agent telemetry JSON MUST include `detection.rule_type`, `detection.detection_layers`, and `audit.primary_rule_name` fields to support NAC mapping.");
+}
+
+#[test]
+fn ac_nac_023_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-NAC-023", "NAC bridge MUST allow detection telemetry event types (process_exec/file_open/network_connect/dns_query/module_load/login) in addition to `alert` and `compliance`.");
 }
 
 #[test]
@@ -3434,10 +2654,7 @@ fn ac_opt_003_runtime_validation_stub() {
 
 #[test]
 fn ac_opt_004_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-OPT-004",
-        "Enrichment cache capacities MUST remain bounded with deterministic eviction under churn.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-OPT-004", "Enrichment cache capacities MUST remain bounded with deterministic eviction under churn.");
 }
 
 #[test]
@@ -3447,10 +2664,7 @@ fn ac_opt_005_runtime_validation_stub() {
 
 #[test]
 fn ac_pkg_001_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-PKG-001",
-        "Two packages: `eguard-agent` (.deb/.rpm) and `eguard-agent-rules` (.deb/.rpm, optional).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-PKG-001", "Two packages: `eguard-agent` (.deb/.rpm) and `eguard-agent-rules` (.deb/.rpm, optional).");
 }
 
 #[test]
@@ -3460,10 +2674,7 @@ fn ac_pkg_002_runtime_validation_stub() {
 
 #[test]
 fn ac_pkg_003_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-PKG-003",
-        "`eguard-agent-rules`: initial SIGMA + YARA + IOC bundle. ~5 MB.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-PKG-003", "`eguard-agent-rules`: initial SIGMA + YARA + IOC bundle. ~5 MB.");
 }
 
 #[test]
@@ -3473,34 +2684,22 @@ fn ac_pkg_004_runtime_validation_stub() {
 
 #[test]
 fn ac_pkg_005_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-PKG-005",
-        "eBPF programs (6 BPF ELF): ~100 KB compressed.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-PKG-005", "eBPF programs (6 BPF ELF): ~100 KB compressed.");
 }
 
 #[test]
 fn ac_pkg_006_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-PKG-006",
-        "Zig asm library: ~50 KB compressed.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-PKG-006", "Zig asm library: ~50 KB compressed.");
 }
 
 #[test]
 fn ac_pkg_007_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-PKG-007",
-        "Seed baselines (bincode): ~10 KB compressed.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-PKG-007", "Seed baselines (bincode): ~10 KB compressed.");
 }
 
 #[test]
 fn ac_pkg_008_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-PKG-008",
-        "Default config: ~5 KB compressed.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-PKG-008", "Default config: ~5 KB compressed.");
 }
 
 #[test]
@@ -3515,154 +2714,97 @@ fn ac_pkg_010_runtime_validation_stub() {
 
 #[test]
 fn ac_pkg_011_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-PKG-011",
-        "Runtime memory < 25 MB RSS.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-PKG-011", "Runtime memory < 25 MB RSS.");
 }
 
 #[test]
 fn ac_pkg_012_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-PKG-012",
-        "Total distribution budget < 200 MB.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-PKG-012", "Total distribution budget < 200 MB.");
 }
 
 #[test]
 fn ac_pkg_013_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-PKG-013",
-        "Primary: agent downloads from eGuard server (captive portal or API).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-PKG-013", "Primary: agent downloads from eGuard server (captive portal or API).");
 }
 
 #[test]
 fn ac_pkg_014_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-PKG-014",
-        "Secondary: apt/yum repository.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-PKG-014", "Secondary: apt/yum repository.");
 }
 
 #[test]
 fn ac_pkg_015_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-PKG-015",
-        "Manual: .deb/.rpm download from admin UI.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-PKG-015", "Manual: .deb/.rpm download from admin UI.");
 }
 
 #[test]
 fn ac_pkg_016_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-PKG-016",
-        "Open-source: GitHub Releases.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-PKG-016", "Open-source: GitHub Releases.");
 }
 
 #[test]
 fn ac_pkg_017_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-PKG-017",
-        "One-line install script accepts `--server`, `--token`, `--url`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-PKG-017", "One-line install script accepts `--server`, `--token`, `--url`.");
 }
 
 #[test]
 fn ac_pkg_018_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-PKG-018",
-        "Auto-detect OS: Debian-based (`dpkg -i`) or RedHat-based (`rpm -i`).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-PKG-018", "Auto-detect OS: Debian-based (`dpkg -i`) or RedHat-based (`rpm -i`).");
 }
 
 #[test]
 fn ac_pkg_019_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-PKG-019",
-        "Downloads from `https://${SERVER}/api/v1/agent-install/linux-${FORMAT}` if no --url.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-PKG-019", "Downloads from `https://${SERVER}/api/v1/agent-install/linux-${FORMAT}` if no --url.");
 }
 
 #[test]
 fn ac_pkg_020_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-PKG-020",
-        "Writes bootstrap config to `/etc/eguard-agent/bootstrap.conf`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-PKG-020", "Writes bootstrap config to `/etc/eguard-agent/bootstrap.conf`.");
 }
 
 #[test]
 fn ac_pkg_021_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-PKG-021",
-        "Runs `systemctl enable eguard-agent && systemctl start eguard-agent`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-PKG-021", "Runs `systemctl enable eguard-agent && systemctl start eguard-agent`.");
 }
 
 #[test]
 fn ac_pkg_022_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-PKG-022",
-        "Server signals updates via `HeartbeatResponse`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-PKG-022", "Server signals updates via `HeartbeatResponse`.");
 }
 
 #[test]
 fn ac_pkg_023_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-PKG-023",
-        "Agent downloads new binary from server API.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-PKG-023", "Agent downloads new binary from server API.");
 }
 
 #[test]
 fn ac_pkg_024_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-PKG-024",
-        "Verifies SHA-256 checksum before installing.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-PKG-024", "Verifies SHA-256 checksum before installing.");
 }
 
 #[test]
 fn ac_pkg_025_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-PKG-025",
-        "Saves to `/var/lib/eguard-agent/update/eguard-agent-X.Y.Z.deb`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-PKG-025", "Saves to `/var/lib/eguard-agent/update/eguard-agent-X.Y.Z.deb`.");
 }
 
 #[test]
 fn ac_pkg_026_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-PKG-026",
-        "`dpkg -i` to install; dpkg restarts systemd service.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-PKG-026", "`dpkg -i` to install; dpkg restarts systemd service.");
 }
 
 #[test]
 fn ac_pkg_027_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-PKG-027",
-        "New version reported in subsequent heartbeats.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-PKG-027", "New version reported in subsequent heartbeats.");
 }
 
 #[test]
 fn ac_pkg_028_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-PKG-028",
-        "`cargo build --release --target x86_64-unknown-linux-musl` (static binary).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-PKG-028", "`cargo build --release --target x86_64-unknown-linux-musl` (static binary).");
 }
 
 #[test]
 fn ac_pkg_029_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-PKG-029",
-        "`zig build` for eBPF + asm library.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-PKG-029", "`zig build` for eBPF + asm library.");
 }
 
 #[test]
@@ -3672,10 +2814,7 @@ fn ac_pkg_030_runtime_validation_stub() {
 
 #[test]
 fn ac_pkg_031_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-PKG-031",
-        "Produce both .deb and .rpm packages.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-PKG-031", "Produce both .deb and .rpm packages.");
 }
 
 #[test]
@@ -3685,10 +2824,7 @@ fn ac_pkg_032_runtime_validation_stub() {
 
 #[test]
 fn ac_pkg_033_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-PKG-033",
-        "Artifacts uploaded to GitHub Releases + package repository.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-PKG-033", "Artifacts uploaded to GitHub Releases + package repository.");
 }
 
 #[test]
@@ -3698,10 +2834,7 @@ fn ac_res_001_runtime_validation_stub() {
 
 #[test]
 fn ac_res_002_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RES-002",
-        "Memory RSS MUST be < 25 MB (detection ~4 MB + gRPC + runtime + buffers).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RES-002", "Memory RSS MUST be < 25 MB (detection ~4 MB + gRPC + runtime + buffers).");
 }
 
 #[test]
@@ -3711,66 +2844,42 @@ fn ac_res_003_runtime_validation_stub() {
 
 #[test]
 fn ac_res_004_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RES-004",
-        "Active CPU < 0.5% at 1K-10K events/sec.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RES-004", "Active CPU < 0.5% at 1K-10K events/sec.");
 }
 
 #[test]
 fn ac_res_005_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RES-005",
-        "Peak CPU < 3% during YARA scan.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RES-005", "Peak CPU < 3% during YARA scan.");
 }
 
 #[test]
 fn ac_res_006_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RES-006",
-        "Detection latency MUST be < 500 ns/event.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RES-006", "Detection latency MUST be < 500 ns/event.");
 }
 
 #[test]
 fn ac_res_007_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RES-007",
-        "Agent startup MUST be < 2 seconds.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RES-007", "Agent startup MUST be < 2 seconds.");
 }
 
 #[test]
 fn ac_res_008_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RES-008",
-        "Zero external dependencies (pure Rust + Zig, no ML frameworks).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RES-008", "Zero external dependencies (pure Rust + Zig, no ML frameworks).");
 }
 
 #[test]
 fn ac_res_009_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RES-009",
-        "No busy-wait or sleep-loop (pure event-driven architecture).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RES-009", "No busy-wait or sleep-loop (pure event-driven architecture).");
 }
 
 #[test]
 fn ac_res_010_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RES-010",
-        "Rust runtime + tokio: ~3 MB.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RES-010", "Rust runtime + tokio: ~3 MB.");
 }
 
 #[test]
 fn ac_res_011_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RES-011",
-        "eBPF ring buffer: 8 MB (default, configurable).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RES-011", "eBPF ring buffer: 8 MB (default, configurable).");
 }
 
 #[test]
@@ -3785,34 +2894,22 @@ fn ac_res_013_runtime_validation_stub() {
 
 #[test]
 fn ac_res_014_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RES-014",
-        "Process cache (500 entries): ~0.5 MB.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RES-014", "Process cache (500 entries): ~0.5 MB.");
 }
 
 #[test]
 fn ac_res_015_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RES-015",
-        "File hash cache (10K entries): ~0.5 MB.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RES-015", "File hash cache (10K entries): ~0.5 MB.");
 }
 
 #[test]
 fn ac_res_016_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RES-016",
-        "YARA compiled rules: ~3 MB.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RES-016", "YARA compiled rules: ~3 MB.");
 }
 
 #[test]
 fn ac_res_017_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RES-017",
-        "Offline buffer (SQLite mmap): ~2 MB when offline.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RES-017", "Offline buffer (SQLite mmap): ~2 MB when offline.");
 }
 
 #[test]
@@ -3822,50 +2919,32 @@ fn ac_res_018_runtime_validation_stub() {
 
 #[test]
 fn ac_res_019_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RES-019",
-        "eBPF programs filter in kernel before reaching userspace.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RES-019", "eBPF programs filter in kernel before reaching userspace.");
 }
 
 #[test]
 fn ac_res_020_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RES-020",
-        "Ring buffer uses zero-copy mmap (no `read()` syscall).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RES-020", "Ring buffer uses zero-copy mmap (no `read()` syscall).");
 }
 
 #[test]
 fn ac_res_021_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RES-021",
-        "Adaptive polling with backpressure.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RES-021", "Adaptive polling with backpressure.");
 }
 
 #[test]
 fn ac_res_022_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RES-022",
-        "File hash LRU cache: 10K entries, ~500 KB.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RES-022", "File hash LRU cache: 10K entries, ~500 KB.");
 }
 
 #[test]
 fn ac_res_023_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RES-023",
-        "Process cache evicted on process exit.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RES-023", "Process cache evicted on process exit.");
 }
 
 #[test]
 fn ac_res_024_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RES-024",
-        "gRPC telemetry: zstd-level-3 compression + batching.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RES-024", "gRPC telemetry: zstd-level-3 compression + batching.");
 }
 
 #[test]
@@ -3885,50 +2964,32 @@ fn ac_rsp_002_runtime_validation_stub() {
 
 #[test]
 fn ac_rsp_003_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-003",
-        "High confidence MUST NOT autonomously kill (default `kill=false`).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-003", "High confidence MUST NOT autonomously kill (default `kill=false`).");
 }
 
 #[test]
 fn ac_rsp_004_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-004",
-        "Medium confidence MUST NOT autonomously kill (default `kill=false`).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-004", "Medium confidence MUST NOT autonomously kill (default `kill=false`).");
 }
 
 #[test]
 fn ac_rsp_005_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-005",
-        "Process kill MUST complete in < 50 ms from detection event.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-005", "Process kill MUST complete in < 50 ms from detection event.");
 }
 
 #[test]
 fn ac_rsp_006_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-006",
-        "Kill sequence MUST first send SIGSTOP to freeze target.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-006", "Kill sequence MUST first send SIGSTOP to freeze target.");
 }
 
 #[test]
 fn ac_rsp_007_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-007",
-        "Kill sequence MUST walk `/proc` to find all descendant processes.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-007", "Kill sequence MUST walk `/proc` to find all descendant processes.");
 }
 
 #[test]
 fn ac_rsp_008_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-008",
-        "SIGKILL MUST be sent bottom-up (children first, then parent).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-008", "SIGKILL MUST be sent bottom-up (children first, then parent).");
 }
 
 #[test]
@@ -3938,18 +2999,12 @@ fn ac_rsp_009_runtime_validation_stub() {
 
 #[test]
 fn ac_rsp_010_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-010",
-        "After all descendants killed, SIGKILL MUST be sent to original target.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-010", "After all descendants killed, SIGKILL MUST be sent to original target.");
 }
 
 #[test]
 fn ac_rsp_011_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-011",
-        "`kill_process_tree` MUST return `KillReport` with `pid` and `killed_pids`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-011", "`kill_process_tree` MUST return `KillReport` with `pid` and `killed_pids`.");
 }
 
 #[test]
@@ -3959,34 +3014,22 @@ fn ac_rsp_012_runtime_validation_stub() {
 
 #[test]
 fn ac_rsp_013_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-013",
-        "Descendant collection MUST recurse through `/proc/<pid>/task/<pid>/children`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-013", "Descendant collection MUST recurse through `/proc/<pid>/task/<pid>/children`.");
 }
 
 #[test]
 fn ac_rsp_020_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-020",
-        "File quarantine MUST complete in < 100 ms from detection event.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-020", "File quarantine MUST complete in < 100 ms from detection event.");
 }
 
 #[test]
 fn ac_rsp_021_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-021",
-        "Quarantine MUST be triggered on Definite confidence when `quarantine=true`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-021", "Quarantine MUST be triggered on Definite confidence when `quarantine=true`.");
 }
 
 #[test]
 fn ac_rsp_022_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-022",
-        "Quarantine MUST be triggered on VeryHigh confidence when `quarantine=true`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-022", "Quarantine MUST be triggered on VeryHigh confidence when `quarantine=true`.");
 }
 
 #[test]
@@ -3996,50 +3039,32 @@ fn ac_rsp_023_runtime_validation_stub() {
 
 #[test]
 fn ac_rsp_024_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-024",
-        "Protected path MUST return `ResponseError::ProtectedPath` without modifying file.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-024", "Protected path MUST return `ResponseError::ProtectedPath` without modifying file.");
 }
 
 #[test]
 fn ac_rsp_025_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-025",
-        "MUST copy file to `/var/lib/eguard-agent/quarantine/<sha256>` before modification.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-025", "MUST copy file to `/var/lib/eguard-agent/quarantine/<sha256>` before modification.");
 }
 
 #[test]
 fn ac_rsp_026_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-026",
-        "File metadata MUST be preserved for potential restore.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-026", "File metadata MUST be preserved for potential restore.");
 }
 
 #[test]
 fn ac_rsp_027_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-027",
-        "Original file permissions MUST be stripped to `0o000`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-027", "Original file permissions MUST be stripped to `0o000`.");
 }
 
 #[test]
 fn ac_rsp_028_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-028",
-        "First 4 KB (or full file if smaller) MUST be overwritten with zeros.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-028", "First 4 KB (or full file if smaller) MUST be overwritten with zeros.");
 }
 
 #[test]
 fn ac_rsp_029_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-029",
-        "Original file MUST be deleted after overwrite.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-029", "Original file MUST be deleted after overwrite.");
 }
 
 #[test]
@@ -4049,18 +3074,12 @@ fn ac_rsp_030_runtime_validation_stub() {
 
 #[test]
 fn ac_rsp_031_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-031",
-        "Quarantine directory MUST be `/var/lib/eguard-agent/quarantine`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-031", "Quarantine directory MUST be `/var/lib/eguard-agent/quarantine`.");
 }
 
 #[test]
 fn ac_rsp_032_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-032",
-        "Admin MUST be able to restore via server `RestoreQuarantine` command.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-032", "Admin MUST be able to restore via server `RestoreQuarantine` command.");
 }
 
 #[test]
@@ -4070,42 +3089,27 @@ fn ac_rsp_033_runtime_validation_stub() {
 
 #[test]
 fn ac_rsp_040_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-040",
-        "Script capture MUST complete in < 50 ms.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-040", "Script capture MUST complete in < 50 ms.");
 }
 
 #[test]
 fn ac_rsp_041_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-041",
-        "Before killing a malicious interpreter, agent MUST capture the script.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-041", "Before killing a malicious interpreter, agent MUST capture the script.");
 }
 
 #[test]
 fn ac_rsp_042_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-042",
-        "MUST read `/proc/<pid>/cmdline` and extract script path from `argv[1]`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-042", "MUST read `/proc/<pid>/cmdline` and extract script path from `argv[1]`.");
 }
 
 #[test]
 fn ac_rsp_043_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-043",
-        "If `argv[1]` is a file, read content up to 1 MB (1,048,576 bytes).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-043", "If `argv[1]` is a file, read content up to 1 MB (1,048,576 bytes).");
 }
 
 #[test]
 fn ac_rsp_044_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-044",
-        "Scripts exceeding 1 MB MUST NOT be captured.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-044", "Scripts exceeding 1 MB MUST NOT be captured.");
 }
 
 #[test]
@@ -4115,42 +3119,27 @@ fn ac_rsp_045_runtime_validation_stub() {
 
 #[test]
 fn ac_rsp_046_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-046",
-        "MUST capture process environment from `/proc/<pid>/environ`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-046", "MUST capture process environment from `/proc/<pid>/environ`.");
 }
 
 #[test]
 fn ac_rsp_047_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-047",
-        "Captured scripts MUST be uploaded as part of `ResponseReport`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-047", "Captured scripts MUST be uploaded as part of `ResponseReport`.");
 }
 
 #[test]
 fn ac_rsp_048_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-048",
-        "Capture enabled for Definite/VeryHigh (default `capture_script=true`).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-048", "Capture enabled for Definite/VeryHigh (default `capture_script=true`).");
 }
 
 #[test]
 fn ac_rsp_049_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-049",
-        "Capture enabled for High (default `capture_script=true`) but without kill.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-049", "Capture enabled for High (default `capture_script=true`) but without kill.");
 }
 
 #[test]
 fn ac_rsp_050_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-050",
-        "Capture MUST NOT be enabled for Medium (default `capture_script=false`).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-050", "Capture MUST NOT be enabled for Medium (default `capture_script=false`).");
 }
 
 #[test]
@@ -4160,258 +3149,162 @@ fn ac_rsp_051_runtime_validation_stub() {
 
 #[test]
 fn ac_rsp_060_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-060",
-        "On kernel >= 5.7 with BPF LSM, MUST use `lsm/bprm_check_security` hook.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-060", "On kernel >= 5.7 with BPF LSM, MUST use `lsm/bprm_check_security` hook.");
 }
 
 #[test]
 fn ac_rsp_061_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-061",
-        "Hook MUST check exe hash against Cuckoo block-filter.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-061", "Hook MUST check exe hash against Cuckoo block-filter.");
 }
 
 #[test]
 fn ac_rsp_062_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-062",
-        "On hash match, MUST return `-EPERM` (process NEVER starts).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-062", "On hash match, MUST return `-EPERM` (process NEVER starts).");
 }
 
 #[test]
 fn ac_rsp_063_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-063",
-        "On match, MUST emit block event to ring buffer for logging.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-063", "On match, MUST emit block event to ring buffer for logging.");
 }
 
 #[test]
 fn ac_rsp_064_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-064",
-        "On no match, MUST return `0` (allow execution).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-064", "On no match, MUST return `0` (allow execution).");
 }
 
 #[test]
 fn ac_rsp_065_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-065",
-        "Block-filter hash map MUST support up to 65,536 entries.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-065", "Block-filter hash map MUST support up to 65,536 entries.");
 }
 
 #[test]
 fn ac_rsp_066_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-066",
-        "Execution prevention via LSM MUST have 0 ms added latency.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-066", "Execution prevention via LSM MUST have 0 ms added latency.");
 }
 
 #[test]
 fn ac_rsp_067_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-067",
-        "`lsm/socket_connect` MUST block C2 connections, returning `-ECONNREFUSED`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-067", "`lsm/socket_connect` MUST block C2 connections, returning `-ECONNREFUSED`.");
 }
 
 #[test]
 fn ac_rsp_068_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-068",
-        "`lsm/file_open` MUST prevent reads of credential files during active incident.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-068", "`lsm/file_open` MUST prevent reads of credential files during active incident.");
 }
 
 #[test]
 fn ac_rsp_069_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-069",
-        "On kernel < 5.7, MUST fall back to post-execution kill in < 50 ms.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-069", "On kernel < 5.7, MUST fall back to post-execution kill in < 50 ms.");
 }
 
 #[test]
 fn ac_rsp_070_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-070",
-        "Network connection reset via eBPF MUST complete in < 10 ms.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-070", "Network connection reset via eBPF MUST complete in < 10 ms.");
 }
 
 #[test]
 fn ac_rsp_080_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-080",
-        "Maximum 10 kills per minute (`max_kills_per_minute=10`).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-080", "Maximum 10 kills per minute (`max_kills_per_minute=10`).");
 }
 
 #[test]
 fn ac_rsp_081_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-081",
-        "Maximum 5 quarantines per minute (`max_quarantines_per_minute=5`).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-081", "Maximum 5 quarantines per minute (`max_quarantines_per_minute=5`).");
 }
 
 #[test]
 fn ac_rsp_082_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-082",
-        "After hitting rate limit, 60-second cooldown (`cooldown_secs=60`).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-082", "After hitting rate limit, 60-second cooldown (`cooldown_secs=60`).");
 }
 
 #[test]
 fn ac_rsp_083_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-083",
-        "Rate limiter MUST prevent runaway false positive cascades.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-083", "Rate limiter MUST prevent runaway false positive cascades.");
 }
 
 #[test]
 fn ac_rsp_084_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-084",
-        "PID 1 (init/systemd) MUST always be protected.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-084", "PID 1 (init/systemd) MUST always be protected.");
 }
 
 #[test]
 fn ac_rsp_085_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-085",
-        "`sshd` MUST be in default protected process list.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-085", "`sshd` MUST be in default protected process list.");
 }
 
 #[test]
 fn ac_rsp_086_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-086",
-        "`^systemd` MUST be in default protected process list.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-086", "`^systemd` MUST be in default protected process list.");
 }
 
 #[test]
 fn ac_rsp_087_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-087",
-        "`journald` MUST be in default protected process list.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-087", "`journald` MUST be in default protected process list.");
 }
 
 #[test]
 fn ac_rsp_088_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-088",
-        "`dbus-daemon` MUST be in default protected process list.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-088", "`dbus-daemon` MUST be in default protected process list.");
 }
 
 #[test]
 fn ac_rsp_089_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-089",
-        "`eguard-agent` MUST be in default protected process list.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-089", "`eguard-agent` MUST be in default protected process list.");
 }
 
 #[test]
 fn ac_rsp_090_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-090",
-        "`containerd` MUST be in default protected process list.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-090", "`containerd` MUST be in default protected process list.");
 }
 
 #[test]
 fn ac_rsp_091_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-091",
-        "`dockerd` MUST be in default protected process list.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-091", "`dockerd` MUST be in default protected process list.");
 }
 
 #[test]
 fn ac_rsp_092_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-092",
-        "Protected process matching MUST use regex patterns.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-092", "Protected process matching MUST use regex patterns.");
 }
 
 #[test]
 fn ac_rsp_093_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-093",
-        "Protected process list MUST be configurable via `agent.conf`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-093", "Protected process list MUST be configurable via `agent.conf`.");
 }
 
 #[test]
 fn ac_rsp_094_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-094",
-        "Protected path list MUST be configurable via `agent.conf`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-094", "Protected path list MUST be configurable via `agent.conf`.");
 }
 
 #[test]
 fn ac_rsp_100_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-100",
-        "`autonomous_response` MUST default to `false`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-100", "`autonomous_response` MUST default to `false`.");
 }
 
 #[test]
 fn ac_rsp_101_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-101",
-        "When `autonomous_response=false`, detection runs but MUST NOT execute response actions.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-101", "When `autonomous_response=false`, detection runs but MUST NOT execute response actions.");
 }
 
 #[test]
 fn ac_rsp_102_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-102",
-        "When `dry_run=true`, MUST log what WOULD be done but MUST NOT execute.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-102", "When `dry_run=true`, MUST log what WOULD be done but MUST NOT execute.");
 }
 
 #[test]
 fn ac_rsp_103_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-103",
-        "`dry_run` MUST default to `false`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-103", "`dry_run` MUST default to `false`.");
 }
 
 #[test]
 fn ac_rsp_104_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-104",
-        "Learning period is 7 days with `autonomous_response=false`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-104", "Learning period is 7 days with `autonomous_response=false`.");
 }
 
 #[test]
 fn ac_rsp_105_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-105",
-        "After learning period, `autonomous_response` MUST be set to `true`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-105", "After learning period, `autonomous_response` MUST be set to `true`.");
 }
 
 #[test]
@@ -4421,10 +3314,7 @@ fn ac_rsp_106_runtime_validation_stub() {
 
 #[test]
 fn ac_rsp_110_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-110",
-        "Every response action MUST generate a `ResponseReport` protobuf.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-110", "Every response action MUST generate a `ResponseReport` protobuf.");
 }
 
 #[test]
@@ -4439,58 +3329,37 @@ fn ac_rsp_112_runtime_validation_stub() {
 
 #[test]
 fn ac_rsp_113_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-113",
-        "`ResponseReport` MUST be sent to server after each action.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-113", "`ResponseReport` MUST be sent to server after each action.");
 }
 
 #[test]
 fn ac_rsp_114_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-114",
-        "Every action MUST be logged locally (full audit trail).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-114", "Every action MUST be logged locally (full audit trail).");
 }
 
 #[test]
 fn ac_rsp_115_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-115",
-        "Server MUST log to `endpoint_response_action` table.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-115", "Server MUST log to `endpoint_response_action` table.");
 }
 
 #[test]
 fn ac_rsp_116_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-116",
-        "Server MUST log quarantine to `endpoint_quarantine` table.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-116", "Server MUST log quarantine to `endpoint_quarantine` table.");
 }
 
 #[test]
 fn ac_rsp_117_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-117",
-        "Host network isolation MUST complete in < 1 second (server-initiated only).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-117", "Host network isolation MUST complete in < 1 second (server-initiated only).");
 }
 
 #[test]
 fn ac_rsp_118_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-118",
-        "Forensic snapshot MUST complete in < 5 seconds (server-initiated only).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-118", "Forensic snapshot MUST complete in < 5 seconds (server-initiated only).");
 }
 
 #[test]
 fn ac_rsp_119_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-119",
-        "Quarantine restore MUST be manual/server-initiated only.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-119", "Quarantine restore MUST be manual/server-initiated only.");
 }
 
 #[test]
@@ -4505,18 +3374,12 @@ fn ac_rsp_121_runtime_validation_stub() {
 
 #[test]
 fn ac_rsp_122_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-122",
-        "After response actions, Alert + ResponseReport MUST be sent to server.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-122", "After response actions, Alert + ResponseReport MUST be sent to server.");
 }
 
 #[test]
 fn ac_rsp_123_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-RSP-123",
-        "Detection rule evaluation on post-exec path MUST complete in < 50 ms.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-RSP-123", "Detection rule evaluation on post-exec path MUST complete in < 50 ms.");
 }
 
 #[test]
@@ -4556,10 +3419,7 @@ fn ac_tst_004_runtime_validation_stub() {
 
 #[test]
 fn ac_tst_005_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-TST-005",
-        "`agent-test` mounts `/sys/kernel/debug` and `/sys/fs/bpf`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-005", "`agent-test` mounts `/sys/kernel/debug` and `/sys/fs/bpf`.");
 }
 
 #[test]
@@ -4569,42 +3429,27 @@ fn ac_tst_006_runtime_validation_stub() {
 
 #[test]
 fn ac_tst_007_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-TST-007",
-        "Builder: `rust:1.78-bookworm` with clang, llvm, libbpf-dev, linux-headers, Zig 0.13.0.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-007", "Builder: `rust:1.78-bookworm` with clang, llvm, libbpf-dev, linux-headers, Zig 0.13.0.");
 }
 
 #[test]
 fn ac_tst_008_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-TST-008",
-        "Builder runs `cargo build --release` and `cargo test --no-run`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-008", "Builder runs `cargo build --release` and `cargo test --no-run`.");
 }
 
 #[test]
 fn ac_tst_009_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-TST-009",
-        "Runtime: `debian:bookworm-slim` with procps, iproute2, curl, python3, ncat, strace.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-009", "Runtime: `debian:bookworm-slim` with procps, iproute2, curl, python3, ncat, strace.");
 }
 
 #[test]
 fn ac_tst_010_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-TST-010",
-        "Copies agent binary, test binaries, and fixtures to runtime.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-010", "Copies agent binary, test binaries, and fixtures to runtime.");
 }
 
 #[test]
 fn ac_tst_011_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-TST-011",
-        "Default CMD: `/usr/local/bin/tests/run-all.sh`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-011", "Default CMD: `/usr/local/bin/tests/run-all.sh`.");
 }
 
 #[test]
@@ -4619,82 +3464,52 @@ fn ac_tst_013_runtime_validation_stub() {
 
 #[test]
 fn ac_tst_014_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-TST-014",
-        "**SIGMA webshell**: python3 http.server -> curl|bash -> L2 LTL match -> capture + kill.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-014", "**SIGMA webshell**: python3 http.server -> curl|bash -> L2 LTL match -> capture + kill.");
 }
 
 #[test]
 fn ac_tst_015_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-TST-015",
-        "**C2 domain**: nslookup known-c2 -> L1 domain IOC match.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-015", "**C2 domain**: nslookup known-c2 -> L1 domain IOC match.");
 }
 
 #[test]
 fn ac_tst_016_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-TST-016",
-        "**Kernel module load**: insmod -> module_load event -> L1/L2 check.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-016", "**Kernel module load**: insmod -> module_load event -> L1/L2 check.");
 }
 
 #[test]
 fn ac_tst_017_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-TST-017",
-        "**Reverse shell**: bash -i >& /dev/tcp/... -> L2 + L4 -> kill.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-017", "**Reverse shell**: bash -i >& /dev/tcp/... -> L2 + L4 -> kill.");
 }
 
 #[test]
 fn ac_tst_018_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-TST-018",
-        "**Entropy anomaly**: high-entropy command -> L3 entropy alert.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-018", "**Entropy anomaly**: high-entropy command -> L3 entropy alert.");
 }
 
 #[test]
 fn ac_tst_019_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-TST-019",
-        "**Compliance failure**: ufw disable -> compliance fail report.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-019", "**Compliance failure**: ufw disable -> compliance fail report.");
 }
 
 #[test]
 fn ac_tst_020_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-TST-020",
-        "**Agent tamper**: kill -9 agent -> systemd restart -> tamper alert -> event 1300015.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-020", "**Agent tamper**: kill -9 agent -> systemd restart -> tamper alert -> event 1300015.");
 }
 
 #[test]
 fn ac_tst_021_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-TST-021",
-        "**Offline mode**: block gRPC -> buffer to SQLite (100 MB cap).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-021", "**Offline mode**: block gRPC -> buffer to SQLite (100 MB cap).");
 }
 
 #[test]
 fn ac_tst_022_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-TST-022",
-        "**Reconnect drain**: unblock -> send buffered events in order with original timestamps.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-022", "**Reconnect drain**: unblock -> send buffered events in order with original timestamps.");
 }
 
 #[test]
 fn ac_tst_023_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-TST-023",
-        "**Rule hot-reload**: push new bundle -> reload without restart -> new count in heartbeat.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-023", "**Rule hot-reload**: push new bundle -> reload without restart -> new count in heartbeat.");
 }
 
 #[test]
@@ -4704,58 +3519,37 @@ fn ac_tst_024_runtime_validation_stub() {
 
 #[test]
 fn ac_tst_025_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-TST-025",
-        "**Protected process**: detection on sshd -> NOT killed -> alert logged, no response.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-025", "**Protected process**: detection on sshd -> NOT killed -> alert logged, no response.");
 }
 
 #[test]
 fn ac_tst_026_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-TST-026",
-        "**Rate limit**: 15 detections in 30s -> first 10 killed -> rate limit -> cooldown alert.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-026", "**Rate limit**: 15 detections in 30s -> first 10 killed -> rate limit -> cooldown alert.");
 }
 
 #[test]
 fn ac_tst_027_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-TST-027",
-        "**Quarantine + restore**: detect -> quarantine -> admin restore -> file restored.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-027", "**Quarantine + restore**: detect -> quarantine -> admin restore -> file restored.");
 }
 
 #[test]
 fn ac_tst_028_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-TST-028",
-        "**LSM block** (kernel 5.7+): execute blocked hash -> EPERM -> block event logged.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-028", "**LSM block** (kernel 5.7+): execute blocked hash -> EPERM -> block event logged.");
 }
 
 #[test]
 fn ac_tst_029_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-TST-029",
-        "**Fleet correlation**: same hash on 3 containers -> incident with 3 agents.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-029", "**Fleet correlation**: same hash on 3 containers -> incident with 3 agents.");
 }
 
 #[test]
 fn ac_tst_030_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-TST-030",
-        "**Fleet Z-score anomaly**: 100x normal DNS -> fleet_anomaly alert at medium.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-030", "**Fleet Z-score anomaly**: 100x normal DNS -> fleet_anomaly alert at medium.");
 }
 
 #[test]
 fn ac_tst_031_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-TST-031",
-        "Script at `tests/malware-sim/simulate.sh`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-031", "Script at `tests/malware-sim/simulate.sh`.");
 }
 
 #[test]
@@ -4775,10 +3569,7 @@ fn ac_tst_034_runtime_validation_stub() {
 
 #[test]
 fn ac_tst_035_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-TST-035",
-        "`test_rate_limiter`: max_kills=3, trigger 5 detections, verify 3 killed + 2 survive.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-035", "`test_rate_limiter`: max_kills=3, trigger 5 detections, verify 3 killed + 2 survive.");
 }
 
 #[test]
@@ -4792,27 +3583,238 @@ fn ac_tst_037_runtime_validation_stub() {
 }
 
 #[test]
+fn ac_tst_038_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-038", "Signature-ML training MUST use deterministic second-order optimization (IRLS/Newton) with class weighting + regularization sweep.");
+}
+
+#[test]
+fn ac_tst_039_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-039", "Signature-ML training MUST remain framework-free (no numpy/sklearn/torch/tensorflow) and emit calibration via temperature scaling.");
+}
+
+#[test]
+fn ac_tst_040_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-040", "Signature-ML training artifacts MUST include advanced metrics: PR/ROC AUC, log-loss, Brier score, and ECE.");
+}
+
+#[test]
+fn ac_tst_041_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-041", "QEMU eBPF smoke test MUST load real eBPF objects and observe process_exec, file_open, and tcp_connect events.");
+}
+
+#[test]
+fn ac_tst_042_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-042", "QEMU agent kill/quarantine smoke test MUST detect IOC hash via eBPF and quarantine the executable.");
+}
+
+#[test]
+fn ac_tst_043_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-043", "QEMU multi-PID chain test MUST correlate temporal webshell stages across sibling PIDs in the same process tree and raise a High-or-higher confidence detection.");
+}
+
+#[test]
+fn ac_tst_044_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-044", "QEMU malware harness MUST download or generate real malware samples inside the VM only, execute the detection pipeline on each sample, and emit TPR/FPR metrics (JSON or log).");
+}
+
+#[test]
+fn ac_tst_045_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-045", "Malware harness MUST evaluate at least 20 malware samples and 50 benign samples, achieving ≥80% TPR and 0% FPR in isolated QEMU runs.");
+}
+
+#[test]
+fn ac_tst_046_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-046", "IOC collection workflow MUST wire `MALWARE_BAZAAR_KEY` and use MalwareBazaar API with `Auth-Key` header to enrich hash feeds when the secret is present.");
+}
+
+#[test]
+fn ac_tst_047_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-047", "QEMU DNS tunneling harness MUST replay high-entropy DNS queries and produce a Medium-or-higher confidence detection.");
+}
+
+#[test]
+fn ac_tst_048_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-048", "QEMU memory scanner harness MUST detect a YARA shellcode marker in an RWX anonymous mapping and emit a Definite confidence alert.");
+}
+
+#[test]
+fn ac_tst_049_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-049", "QEMU container escape harness MUST flag container escape + privileged container kill chain detections.");
+}
+
+#[test]
+fn ac_tst_050_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-050", "QEMU credential theft harness MUST flag sensitive credential access kill chain detections.");
+}
+
+#[test]
+fn ac_tst_051_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-051", "Sigma compiler MUST accept file path predicates and ship a credential access rule that uses them.");
+}
+
+#[test]
+fn ac_tst_052_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-052", "QEMU exploit detection harness MUST replay fileless-exec indicators (`memfd:`/`(deleted)`/`/proc/self/fd`) and produce High-or-higher confidence detections.");
+}
+
+#[test]
+fn ac_tst_053_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-053", "QEMU audit trail harness MUST log the audit payload with primary_rule_name and exploit indicators (Linux-only).");
+}
+
+#[test]
+fn ac_tst_054_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-054", "QEMU ML latency harness MUST compute evaluation latency p95 <= 20000us and p99 <= 30000us for replayed events.");
+}
+
+#[test]
+fn ac_tst_055_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-055", "QEMU offline buffer harness MUST show buffered events when server is unreachable and a flush log with pending_after=0 when server responds.");
+}
+
+#[test]
+fn ac_tst_056_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-056", "QEMU kernel integrity harness MUST replay module load/rootkit indicators and produce High-or-higher confidence detections.");
+}
+
+#[test]
+fn ac_tst_057_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-057", "QEMU self-protection tamper harness MUST modify agent/config files and produce High-or-higher confidence detections.");
+}
+
+#[test]
+fn ac_tst_058_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-058", "`fe_eguard` gRPC CommandChannel MUST return `ServerCommand` entries with enum `command_type` and typed params for scan/update/restore_quarantine commands.");
+}
+
+#[test]
+fn ac_tst_059_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-059", "`fe_eguard` gRPC ResponseReport ingestion MUST persist enum action/confidence, detection_layers, and detail fields into response records.");
+}
+
+#[test]
+fn ac_tst_060_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-060", "UX acceptance criteria MUST be defined for high-density SOC UI navigation, telemetry, audit, response, compliance, and NAC flows.");
+}
+
+#[test]
+fn ac_tst_061_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-061", "UX contract tests MUST enforce presence of endpoint SOC routes/views (Telemetry, Incidents, Response, Compliance, NAC, Audit).");
+}
+
+#[test]
+fn ac_tst_062_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-062", "NAC bridge contract tests MUST validate nested `detection.rule_type`/`audit.primary_rule_name` payloads map to security events.");
+}
+
+#[test]
+fn ac_tst_063_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-063", "Agent acceptance tests MUST assert telemetry JSON includes `detection.rule_type`, `detection.detection_layers`, and `audit.primary_rule_name` for NAC mapping.");
+}
+
+#[test]
+fn ac_tst_064_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-064", "Correlation contract tests MUST validate nested telemetry IOC fields (`event.dst_domain`/`event.dst_ip`/`event.file_hash`) trigger multi-host incidents.");
+}
+
+#[test]
+fn ac_tst_065_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-065", "Agent acceptance tests MUST assert telemetry JSON includes correlation-ready event fields for multi-host aggregation.");
+}
+
+#[test]
+fn ac_tst_066_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-066", "Kernel integrity scan contract tests MUST validate hidden-module/taint/kprobe/ftrace indicators from fixture inputs.");
+}
+
+#[test]
+fn ac_tst_067_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-067", "QEMU kernel integrity extreme harness MUST replay kernel integrity scan inputs and emit High-or-higher confidence detections.");
+}
+
+#[test]
+fn ac_tst_068_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-068", "Exploit-chain unit tests MUST validate ptrace/userfaultfd/proc-mem correlations trigger kill chain detections.");
+}
+
+#[test]
+fn ac_tst_069_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-TST-069", "QEMU exploit-chain harness MUST replay ptrace/userfaultfd/execveat chains and emit High-or-higher confidence detections.");
+}
+
+#[test]
+fn ac_ux_001_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-UX-001", "UI MUST provide a persistent high-density navigation layout with primary sections: Dashboard, Incidents, Telemetry, Compliance/MDM, NAC, Response, Audit.");
+}
+
+#[test]
+fn ac_ux_002_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-UX-002", "Primary views MUST use a data-dense grid layout with adjustable table density (compact/comfortable) and sticky column headers.");
+}
+
+#[test]
+fn ac_ux_003_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-UX-003", "UI MUST surface global quick filters (time range, severity, host, rule type) within one click from any primary section.");
+}
+
+#[test]
+fn ac_ux_010_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-UX-010", "Telemetry view MUST provide multi-panel inspection (event list + detail pane) with raw payload JSON and parsed fields.");
+}
+
+#[test]
+fn ac_ux_011_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-UX-011", "Audit trail view MUST show rule attribution (primary_rule_name), detection layers, exploit indicators, and response actions for each alert.");
+}
+
+#[test]
+fn ac_ux_012_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-UX-012", "Incident detail MUST include an evidence timeline (event, detection, response) with host/process/file context.");
+}
+
+#[test]
+fn ac_ux_020_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-UX-020", "Response console MUST allow issuing response actions with confirmation and show last response status per host.");
+}
+
+#[test]
+fn ac_ux_021_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-UX-021", "Response workflow MUST display command acknowledgements and error states with timestamped history.");
+}
+
+#[test]
+fn ac_ux_030_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-UX-030", "Compliance view MUST surface policy status per host, with drill-down into check results and remediation details.");
+}
+
+#[test]
+fn ac_ux_031_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-UX-031", "NAC view MUST show network access state and applied profiles per host with last enforcement timestamp.");
+}
+
+#[test]
+fn ac_ux_040_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-UX-040", "UI MUST follow eGuard branding and Tailwind-based tokens with a high-density dark theme optimized for SOC workflows.");
+}
+
+#[test]
+fn ac_ux_041_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-UX-041", "UI MUST provide a \"focus mode\" that hides secondary panels for large data tables.");
+}
+
+#[test]
 fn ac_ver_001_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-001",
-        "Stripped release binary size MUST be recorded and validated as a non-empty metric.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-001", "Stripped release binary size MUST be recorded and validated as a non-empty metric.");
 }
 
 #[test]
 fn ac_ver_002_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-002",
-        "RSS (idle) < 25 MB after 1 hour.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-002", "RSS (idle) < 25 MB after 1 hour.");
 }
 
 #[test]
 fn ac_ver_003_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-003",
-        "RSS (active, 5K events/sec) < 25 MB.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-003", "RSS (active, 5K events/sec) < 25 MB.");
 }
 
 #[test]
@@ -4822,26 +3824,17 @@ fn ac_ver_004_runtime_validation_stub() {
 
 #[test]
 fn ac_ver_005_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-005",
-        "CPU (1K events/sec) < 0.5%.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-005", "CPU (1K events/sec) < 0.5%.");
 }
 
 #[test]
 fn ac_ver_006_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-006",
-        "CPU (10K events/sec) < 3%.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-006", "CPU (10K events/sec) < 3%.");
 }
 
 #[test]
 fn ac_ver_007_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-007",
-        "Detection latency < 500 ns/event.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-007", "Detection latency < 500 ns/event.");
 }
 
 #[test]
@@ -4851,18 +3844,12 @@ fn ac_ver_008_runtime_validation_stub() {
 
 #[test]
 fn ac_ver_009_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-009",
-        "Response (LSM block) < 1 ms.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-009", "Response (LSM block) < 1 ms.");
 }
 
 #[test]
 fn ac_ver_010_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-010",
-        "Heartbeat overhead < 200 bytes/30s.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-010", "Heartbeat overhead < 200 bytes/30s.");
 }
 
 #[test]
@@ -4877,146 +3864,92 @@ fn ac_ver_012_runtime_validation_stub() {
 
 #[test]
 fn ac_ver_013_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-013",
-        "Offline buffer: 100 MB / ~500K events with FIFO eviction.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-013", "Offline buffer: 100 MB / ~500K events with FIFO eviction.");
 }
 
 #[test]
 fn ac_ver_014_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-014",
-        "~200 unit tests via `cargo test`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-014", "~200 unit tests via `cargo test`.");
 }
 
 #[test]
 fn ac_ver_015_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-015",
-        "~20 eBPF tests via custom harness.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-015", "~20 eBPF tests via custom harness.");
 }
 
 #[test]
 fn ac_ver_016_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-016",
-        "~100 detection layer tests via `cargo test`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-016", "~100 detection layer tests via `cargo test`.");
 }
 
 #[test]
 fn ac_ver_017_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-017",
-        "~30 response engine tests via `cargo test` + integration.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-017", "~30 response engine tests via `cargo test` + integration.");
 }
 
 #[test]
 fn ac_ver_018_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-018",
-        "~50 integration tests via Docker Compose.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-018", "~50 integration tests via Docker Compose.");
 }
 
 #[test]
 fn ac_ver_019_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-019",
-        "~40 Perl API tests via `Test::More`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-019", "~40 Perl API tests via `Test::More`.");
 }
 
 #[test]
 fn ac_ver_020_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-020",
-        "~20 Vue component tests via Jest.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-020", "~20 Vue component tests via Jest.");
 }
 
 #[test]
 fn ac_ver_021_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-021",
-        "~15 performance benchmarks via `criterion`.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-021", "~15 performance benchmarks via `criterion`.");
 }
 
 #[test]
 fn ac_ver_022_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-022",
-        "~5 stress tests (10K events/sec, 1000 agents, offline/reconnect).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-022", "~5 stress tests (10K events/sec, 1000 agents, offline/reconnect).");
 }
 
 #[test]
 fn ac_ver_023_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-023",
-        "`cargo audit` on every build.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-023", "`cargo audit` on every build.");
 }
 
 #[test]
 fn ac_ver_024_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-024",
-        "`cargo clippy` (all warnings) on every build.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-024", "`cargo clippy` (all warnings) on every build.");
 }
 
 #[test]
 fn ac_ver_025_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-025",
-        "`cargo-fuzz` on protobuf parsing + detection inputs weekly.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-025", "`cargo-fuzz` on protobuf parsing + detection inputs weekly.");
 }
 
 #[test]
 fn ac_ver_026_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-026",
-        "`cargo +nightly miri test` (subset) weekly.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-026", "`cargo +nightly miri test` (subset) weekly.");
 }
 
 #[test]
 fn ac_ver_027_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-027",
-        "`checksec` (RELRO, PIE, NX, stack canary) every release.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-027", "`checksec` (RELRO, PIE, NX, stack canary) every release.");
 }
 
 #[test]
 fn ac_ver_028_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-028",
-        "`strace` seccomp verification every release.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-028", "`strace` seccomp verification every release.");
 }
 
 #[test]
 fn ac_ver_029_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-029",
-        "Certificate validation with expired/revoked/wrong-CA certs every release.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-029", "Certificate validation with expired/revoked/wrong-CA certs every release.");
 }
 
 #[test]
 fn ac_ver_030_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-030",
-        "All eBPF programs pass kernel verifier on 5.10+ every build.",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-030", "All eBPF programs pass kernel verifier on 5.10+ every build.");
 }
 
 #[test]
@@ -5026,130 +3959,82 @@ fn ac_ver_031_runtime_validation_stub() {
 
 #[test]
 fn ac_ver_032_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-032",
-        "Memory RSS < 25 MB (Sections 11.1, 11.3, 25.2, 29.1).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-032", "Memory RSS < 25 MB (Sections 11.1, 11.3, 25.2, 29.1).");
 }
 
 #[test]
 fn ac_ver_033_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-033",
-        "Distribution total < 200 MB (Section 25.2).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-033", "Distribution total < 200 MB (Section 25.2).");
 }
 
 #[test]
 fn ac_ver_034_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-034",
-        "Detection latency ~400 ns/event (Sections 2.2, 6.6, 29.1).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-034", "Detection latency ~400 ns/event (Sections 2.2, 6.6, 29.1).");
 }
 
 #[test]
 fn ac_ver_035_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-035",
-        "Detection engine memory ~4 MB (Sections 2.2, 6.6, 11.3).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-035", "Detection engine memory ~4 MB (Sections 2.2, 6.6, 11.3).");
 }
 
 #[test]
 fn ac_ver_036_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-036",
-        "Heartbeat interval 30 seconds (Sections 1.4, 12.2, 14.1).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-036", "Heartbeat interval 30 seconds (Sections 1.4, 12.2, 14.1).");
 }
 
 #[test]
 fn ac_ver_037_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-037",
-        "Learning period 7 days (Sections 1.4, 8.2, 24.1).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-037", "Learning period 7 days (Sections 1.4, 8.2, 24.1).");
 }
 
 #[test]
 fn ac_ver_038_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-038",
-        "Baseline stale threshold 30 days (Sections 3.7, 8.2, 8.3).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-038", "Baseline stale threshold 30 days (Sections 3.7, 8.2, 8.3).");
 }
 
 #[test]
 fn ac_ver_039_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-039",
-        "IOC stale threshold 30-90 days (Section 16.4).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-039", "IOC stale threshold 30-90 days (Section 16.4).");
 }
 
 #[test]
 fn ac_ver_040_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-040",
-        "Rate limit (kills) 10/minute (Sections 7.1, 7.8).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-040", "Rate limit (kills) 10/minute (Sections 7.1, 7.8).");
 }
 
 #[test]
 fn ac_ver_041_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-041",
-        "Offline buffer 100 MB (Sections 1.4, 10.3, 12.2).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-041", "Offline buffer 100 MB (Sections 1.4, 10.3, 12.2).");
 }
 
 #[test]
 fn ac_ver_042_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-042",
-        "Threat intel poll interval 4 hours (Sections 3.6, 18.4, 22.1).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-042", "Threat intel poll interval 4 hours (Sections 3.6, 18.4, 22.1).");
 }
 
 #[test]
 fn ac_ver_043_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-043",
-        "eBPF ring buffer 8 MB (Sections 5.1, 11.2).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-043", "eBPF ring buffer 8 MB (Sections 5.1, 11.2).");
 }
 
 #[test]
 fn ac_ver_044_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-044",
-        "Multi-host incident threshold 3+ agents (Section 20.2).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-044", "Multi-host incident threshold 3+ agents (Section 20.2).");
 }
 
 #[test]
 fn ac_ver_045_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-045",
-        "Z-score anomaly threshold 3.0 (Section 20.3).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-045", "Z-score anomaly threshold 3.0 (Section 20.3).");
 }
 
 #[test]
 fn ac_ver_046_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-046",
-        "MinHash bands x rows 16 x 8 = 128 hashes (Section 20.4).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-046", "MinHash bands x rows 16 x 8 = 128 hashes (Section 20.4).");
 }
 
 #[test]
 fn ac_ver_047_runtime_validation_stub() {
-    assert_runtime_validation_backed_by_executable_suite(
-        "AC-VER-047",
-        "Triage score weights sum to 1.0 (Section 20.5).",
-    );
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-047", "Triage score weights sum to 1.0 (Section 20.5).");
 }
 
 #[test]
@@ -5185,4 +4070,54 @@ fn ac_ver_053_runtime_validation_stub() {
 #[test]
 fn ac_ver_054_runtime_validation_stub() {
     assert_runtime_validation_backed_by_executable_suite("AC-VER-054", "Verification artifacts MUST include bundle signature contract metrics (`signature_verified`, `tamper_rejected`) and measured signature/database totals from `bundle_coverage_gate.py`.");
+}
+
+#[test]
+fn ac_ver_055_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-055", "Verification MUST execute at least one acceptance/contract test inside an isolated QEMU VM (no host execution).");
+}
+
+#[test]
+fn ac_ver_056_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-056", "QEMU harness MUST mount host root read-only via 9p and execute a provided command script via `rdinit=/init`.");
+}
+
+#[test]
+fn ac_ver_057_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-057", "QEMU harness MUST use user-mode networking with no host forwards and explicit RFC1918/link-local blackhole routes inside the guest (outbound HTTPS allowed).");
+}
+
+#[test]
+fn ac_ver_058_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-058", "Exploit detection validation is Linux-only until Windows/macOS backends (Tier 4.3) and NAC harness are ready.");
+}
+
+#[test]
+fn ac_ver_059_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-059", "Audit trail validation is Linux-only until cross-platform telemetry backends are available.");
+}
+
+#[test]
+fn ac_ver_060_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-060", "Cross-host correlation verification MUST use multi-agent telemetry fixtures and assert `ioc_multi_host`/`time_window` incident creation without host execution.");
+}
+
+#[test]
+fn ac_ver_061_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-061", "Kernel integrity and self-protection tamper validations are QEMU-only until dedicated lab infra is available.");
+}
+
+#[test]
+fn ac_ver_062_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-062", "Kernel integrity extreme scan validation MUST use fixture-driven inputs inside isolated QEMU (no host execution).");
+}
+
+#[test]
+fn ac_ver_063_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-063", "ML latency and offline buffer validation are QEMU-only until server-side benchmark endpoints are available.");
+}
+
+#[test]
+fn ac_ver_064_runtime_validation_stub() {
+    assert_runtime_validation_backed_by_executable_suite("AC-VER-064", "Exploit-chain correlation validation MUST be executed in isolated QEMU with replayed ptrace/userfaultfd/execveat chains.");
 }

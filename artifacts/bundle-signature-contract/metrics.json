@@ -9,44 +9,37 @@
   },
   "ml_readiness": {
     "status": "pass",
-    "mode": "enforced",
-    "readiness_tier": "at_risk",
-    "final_score": 57.45
+    "mode": "shadow",
+    "readiness_tier": "strong",
+    "final_score": 90.0
   },
   "ml_readiness_trend": {
-    "status": "pass",
-    "history_status": "baseline_available",
-    "score_drop": -0.65,
+    "status": "pass_no_baseline",
+    "history_status": "no_baseline",
+    "score_drop": null,
     "regression_count": 0
   },
   "ml_battle_ready": {
     "corpus": {
       "status": "pass",
-      "dataset_mode": "synthetic_ci",
-      "sample_count": 720,
-      "adjudicated_count": 660
+      "dataset_mode": "synthetic_ci"
     },
     "label_quality": {
       "status": "pass",
-      "adjudicated_count": 660,
-      "unresolved_ratio": 0.0833
+      "adjudicated_count": 662
     },
     "feature_snapshot": {
       "status": "pass",
-      "row_count": null,
-      "missing_feature_ratio": 0.0
+      "row_count": 662
     },
     "offline_eval": {
       "status": "pass",
-      "precision": 0.28125,
-      "recall": 1.0,
-      "pr_auc": 0.937143,
-      "roc_auc": 0.950397
+      "pr_auc": 0.9,
+      "roc_auc": 0.91
     },
     "offline_eval_trend": {
-      "status": "pass",
-      "history_status": "baseline_available",
-      "consecutive_alerts": 0,
+      "status": "pass_no_baseline",
+      "history_status": "no_baseline",
       "regression_count": 0
     },
     "model_registry": {

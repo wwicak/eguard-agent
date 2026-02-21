@@ -1,13 +1,11 @@
 {
   "suite": "signature_ml_feature_snapshot_gate",
-  "recorded_at_utc": "2026-02-17T12:44:21Z",
   "status": "pass",
   "measured": {
-    "rows": 660,
-    "unique_hosts": 158,
-    "unique_rules": 213,
+    "row_count": 662,
+    "unique_hosts": 160,
+    "unique_rules": 220,
     "missing_feature_ratio": 0.0,
-    "temporal_span_days": 44.996
-  },
-  "alerts": []
+    "temporal_span_days": 44.9
+  }
 }

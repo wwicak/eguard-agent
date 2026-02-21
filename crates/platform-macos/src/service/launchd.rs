@@ -9,9 +9,6 @@ use std::time::Duration;
 
 const DEFAULT_BINARY_PATH: &str = "/usr/local/bin/eguard-agent";
 
-#[allow(dead_code)]
-const DEFAULT_LABEL: &str = "com.eguard.agent";
-
 #[cfg(target_os = "macos")]
 const DOMAIN_TARGET: &str = "system";
 #[cfg(target_os = "macos")]
@@ -27,15 +24,25 @@ pub struct ServiceLifecycle {
 
 impl ServiceLifecycle {
     pub fn new(label: impl Into<String>) -> Self {
+        let label = label.into();
+        assert!(
+            is_valid_label(&label),
+            "invalid service label: must be alphanumeric, dots, or hyphens"
+        );
         Self {
-            label: label.into(),
+            label,
             binary_path: DEFAULT_BINARY_PATH.to_string(),
         }
     }
 
     pub fn with_binary_path(label: impl Into<String>, binary_path: impl Into<String>) -> Self {
+        let label = label.into();
+        assert!(
+            is_valid_label(&label),
+            "invalid service label: must be alphanumeric, dots, or hyphens"
+        );
         Self {
-            label: label.into(),
+            label,
             binary_path: binary_path.into(),
         }
     }
@@ -123,6 +130,15 @@ impl ServiceLifecycle {
     pub fn binary_path(&self) -> &str {
         &self.binary_path
     }
+}
+
+/// Validate that a label contains only characters safe for a bundle identifier
+/// (alphanumeric, dots, hyphens). Prevents path traversal via `../` in label.
+fn is_valid_label(label: &str) -> bool {
+    !label.is_empty()
+        && label
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
 }
 
 #[cfg(target_os = "macos")]

@@ -32,10 +32,15 @@ fn check_gatekeeper_macos() -> GatekeeperStatus {
         Err(_) => return GatekeeperStatus::default(),
     };
 
+    if !output.status.success() {
+        return GatekeeperStatus::default();
+    }
+
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let combined = format!("{stdout} {stderr}");
     let lower = combined.to_ascii_lowercase();
+    // spctl outputs "assessments enabled" or "assessments disabled"
     let enabled = lower.contains("enabled");
 
     GatekeeperStatus {

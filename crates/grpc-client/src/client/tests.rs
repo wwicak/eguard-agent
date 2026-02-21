@@ -441,6 +441,59 @@ fn ensure_online_returns_error_when_offline() {
     assert!(err.to_string().contains("server unreachable"));
 }
 
+#[tokio::test]
+async fn with_retry_stops_immediately_for_non_retryable_grpc_errors() {
+    let client = Client::new("127.0.0.1:50052".to_string());
+    let attempts = Arc::new(AtomicUsize::new(0));
+
+    let err = client
+        .with_retry("non_retryable_invalid_argument", {
+            let attempts = Arc::clone(&attempts);
+            move || {
+                let attempts = Arc::clone(&attempts);
+                async move {
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    Err::<(), _>(anyhow::anyhow!(tonic::Status::invalid_argument(
+                        "missing csr",
+                    )))
+                }
+            }
+        })
+        .await
+        .expect_err("invalid argument should not retry");
+
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    assert!(err.to_string().contains("non-retryable"));
+}
+
+#[tokio::test]
+async fn with_retry_retries_retryable_grpc_errors_until_budget_exhausted() {
+    let client = Client::new("127.0.0.1:50052".to_string());
+    let attempts = Arc::new(AtomicUsize::new(0));
+
+    let err = client
+        .with_retry("retryable_unavailable", {
+            let attempts = Arc::clone(&attempts);
+            move || {
+                let attempts = Arc::clone(&attempts);
+                async move {
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    Err::<(), _>(anyhow::anyhow!(tonic::Status::unavailable(
+                        "temporary outage",
+                    )))
+                }
+            }
+        })
+        .await
+        .expect_err("unavailable should retry then fail");
+
+    assert_eq!(
+        attempts.load(Ordering::SeqCst),
+        client.retry_policy().max_attempts as usize
+    );
+    assert!(err.to_string().contains("failed after"));
+}
+
 #[test]
 // AC-GRP-042
 fn protobuf_command_conversion_preserves_fields() {
@@ -955,12 +1008,38 @@ async fn ack_command_offline_returns_error() {
 
 #[test]
 // AC-GRP-061
-fn resolve_bundle_download_url_accepts_absolute_url() {
+fn resolve_bundle_download_url_accepts_same_origin_absolute_url() {
+    let c = Client::new("10.0.0.1:50052".to_string());
+    let resolved = c
+        .resolve_bundle_download_url("http://10.0.0.1:50052/rules.tar.zst")
+        .expect("resolve same-origin absolute url");
+    assert_eq!(resolved, "http://10.0.0.1:50052/rules.tar.zst");
+}
+
+#[test]
+fn resolve_bundle_download_url_rejects_external_absolute_url_by_default() {
+    let _guard = tls_env_lock();
+    std::env::remove_var(ALLOW_EXTERNAL_BUNDLE_URLS_ENV);
+
+    let c = Client::new("10.0.0.1:50052".to_string());
+    let err = c
+        .resolve_bundle_download_url("https://downloads.example/rules.tar.zst")
+        .expect_err("external URL should be rejected by default");
+    assert!(err.to_string().contains("external bundle URL"));
+}
+
+#[test]
+fn resolve_bundle_download_url_allows_external_absolute_url_when_enabled() {
+    let _guard = tls_env_lock();
+    std::env::set_var(ALLOW_EXTERNAL_BUNDLE_URLS_ENV, "1");
+
     let c = Client::new("10.0.0.1:50052".to_string());
     let resolved = c
         .resolve_bundle_download_url("https://downloads.example/rules.tar.zst")
-        .expect("resolve absolute url");
+        .expect("external URL should be allowed when explicitly enabled");
     assert_eq!(resolved, "https://downloads.example/rules.tar.zst");
+
+    std::env::remove_var(ALLOW_EXTERNAL_BUNDLE_URLS_ENV);
 }
 
 #[test]

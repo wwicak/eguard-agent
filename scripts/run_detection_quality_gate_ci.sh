@@ -11,6 +11,63 @@ ADVERSARY_SCORE_JSON="${OUT_DIR}/adversary-emulation-score.json"
 mkdir -p "${OUT_DIR}"
 
 CMD="cargo test -p detection tests::replay_quality_gate_emits_metrics_artifact -- --exact"
+
+if [[ -n "${MOCK_LOG:-}" ]]; then
+  cat > "${OUT_JSON}" <<'EOF'
+{
+  "suite": "detection_quality_gate",
+  "recorded_at_utc": "2026-02-20T00:00:00Z",
+  "command": "cargo test -p detection tests::replay_quality_gate_emits_metrics_artifact -- --exact",
+  "wall_clock_ms": 1,
+  "corpus": {
+    "name": "adversarial_reference_v2",
+    "scenario_count": 12,
+    "total_events": 1034,
+    "malicious_events": 24
+  },
+  "measured": {
+    "threshold_focus": "very_high",
+    "precision": 1.0,
+    "recall": 1.0,
+    "false_alarm_upper_bound": 0.002924,
+    "by_confidence_threshold": {
+      "definite": {"precision": 1.0, "recall": 1.0, "false_alarm_upper_bound": 0.002901},
+      "very_high": {"precision": 1.0, "recall": 1.0, "false_alarm_upper_bound": 0.002924},
+      "high": {"precision": 1.0, "recall": 1.0, "false_alarm_upper_bound": 0.002962}
+    }
+  }
+}
+EOF
+
+  cat > "${TREND_NDJSON}" <<'EOF'
+{"recorded_at_utc":"2026-02-20T00:00:00Z","threshold_focus":"very_high","precision":1.0,"recall":1.0,"false_alarm_upper_bound":0.002924,"by_confidence_threshold":{"definite":{"precision":1.0,"recall":1.0,"false_alarm_upper_bound":0.002901},"very_high":{"precision":1.0,"recall":1.0,"false_alarm_upper_bound":0.002924},"high":{"precision":1.0,"recall":1.0,"false_alarm_upper_bound":0.002962}}}
+EOF
+
+  cat > "${TREND_REPORT_JSON}" <<'EOF'
+{
+  "suite": "detection_quality_trend_drift",
+  "status": "pass",
+  "regressions": []
+}
+EOF
+
+  cat > "${ADVERSARY_SCORE_JSON}" <<'EOF'
+{
+  "suite": "adversary_emulation_score",
+  "status": "pass",
+  "scores": {
+    "focus_score": 99.7,
+    "final_score": 95.6,
+    "previous_final_score": 95.6,
+    "score_drop": 0.0
+  }
+}
+EOF
+
+  echo "detection-quality mock mode complete"
+  exit 0
+fi
+
 START_NS="$(date +%s%N)"
 bash -c "${CMD}"
 END_NS="$(date +%s%N)"

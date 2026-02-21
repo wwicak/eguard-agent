@@ -108,6 +108,18 @@ fn platform_name_is_linux() {
 }
 
 #[test]
+fn parse_process_start_time_ticks_extracts_field_22_from_proc_stat() {
+    let raw = "1234 (cmd with space) R 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 424242 20";
+    assert_eq!(parse_process_start_time_ticks(raw), Some(424_242));
+}
+
+#[test]
+fn parse_process_start_time_ticks_rejects_short_or_malformed_records() {
+    assert!(parse_process_start_time_ticks("1234 (bash) R 1 2 3").is_none());
+    assert!(parse_process_start_time_ticks("totally malformed").is_none());
+}
+
+#[test]
 // AC-EBP-033
 fn payload_parser_uses_endpoint_fallback_when_needed() {
     let metadata = parse_payload_metadata(&EventType::TcpConnect, "dst=198.51.100.2:4444");

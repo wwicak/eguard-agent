@@ -1,49 +1,9 @@
 {
   "suite": "signature_ml_offline_eval_trend_gate",
-  "recorded_at_utc": "2026-02-17T12:44:26Z",
-  "status": "pass",
-  "history_status": "baseline_available",
-  "thresholds": {
-    "max_pr_auc_drop": 0.15,
-    "max_roc_auc_drop": 0.15,
-    "max_brier_increase": 0.08,
-    "max_ece_increase": 0.1,
-    "max_threshold_drift": 0.25,
-    "max_consecutive_alerts": 3,
-    "window_size": 8,
-    "min_window_pass_rate": 0.6,
-    "fail_on_regression": true
-  },
-  "current": {
-    "status": "pass",
-    "precision": 0.28125,
-    "recall": 1.0,
-    "pr_auc": 0.937143,
-    "roc_auc": 0.950397,
-    "brier_score": 0.060353,
-    "ece": 0.105606,
-    "operating_threshold": 0.007006,
-    "operating_threshold_strategy": "max_recall_with_precision_floor"
-  },
-  "previous": {
-    "status": "pass",
-    "precision": 0.29,
-    "recall": 0.88,
-    "pr_auc": 0.62,
-    "roc_auc": 0.8,
-    "brier_score": 0.2,
-    "ece": 0.14,
-    "operating_threshold": null
-  },
-  "deltas": {
-    "pr_auc_drop": -0.317143,
-    "roc_auc_drop": -0.150397,
-    "brier_increase": -0.139647,
-    "ece_increase": -0.034394,
-    "threshold_drift": null
-  },
+  "status": "pass_no_baseline",
+  "history_status": "no_baseline",
   "alerts": {
-    "entry_count": 2,
+    "entry_count": 1,
     "consecutive_alerts": 0,
     "window_pass_rate": 1.0,
     "regression_count": 0

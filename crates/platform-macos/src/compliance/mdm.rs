@@ -35,6 +35,10 @@ fn check_mdm_macos() -> MdmStatus {
         Err(_) => return MdmStatus::default(),
     };
 
+    if !output.status.success() {
+        return MdmStatus::default();
+    }
+
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let lower = stdout.to_ascii_lowercase();
     let enrolled = lower.contains("yes");

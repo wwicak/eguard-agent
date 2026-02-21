@@ -1,28 +1,14 @@
 {
   "suite": "signature_ml_feature_schema",
-  "recorded_at_utc": "2026-02-17T12:44:21Z",
+  "version": 1,
   "features": [
-    "z1_ioc_hit",
-    "z2_temporal_count",
-    "z3_anomaly_high",
-    "z3_anomaly_med",
-    "z4_killchain_count",
-    "yara_hit_count",
-    "string_sig_count",
-    "event_class_risk",
-    "uid_is_root",
-    "dst_port_risk",
-    "has_command_line",
-    "cmdline_length_norm",
-    "prefilter_hit",
-    "multi_layer_count",
-    "cmdline_renyi_h2",
-    "cmdline_compression",
-    "cmdline_min_entropy",
-    "cmdline_entropy_gap",
-    "dns_entropy",
-    "event_size_norm"
+    "rule_severity",
+    "signature_total",
+    "database_total",
+    "source_diversity_score",
+    "attack_surface_score",
+    "critical_resilience_score"
   ],
-  "dataset": "/tmp/tmp.2ve3ipR8NR/signature-ml-features.ndjson",
-  "dataset_sha256": "7db9b4684b077c41b43454e57cfd5459438fd5c2bf3835e03a32d9ea6bcccd3c"
+  "label_field": "label",
+  "score_field": "model_score"
 }

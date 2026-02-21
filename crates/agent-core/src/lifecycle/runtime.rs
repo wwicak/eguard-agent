@@ -214,7 +214,21 @@ impl AgentRuntime {
 
         #[cfg(target_os = "macos")]
         {
-            info!("macOS hardening: stub (Phase 4 will implement)");
+            use self_protect::{apply_macos_hardening, MacosHardeningConfig};
+            let mac_config = MacosHardeningConfig {
+                deny_attach: true,
+                verify_code_signature: false, // requires signing identity
+                set_dumpable_zero: true,
+            };
+            let report = apply_macos_hardening(&mac_config);
+            if report.has_failures() {
+                warn!(
+                    failed_steps = ?report.failed_step_names(),
+                    "macOS hardening applied with failures"
+                );
+            } else {
+                info!("macOS hardening applied");
+            }
         }
 
         let initial_mode = derive_runtime_mode(&config.mode, baseline_store.status);
@@ -232,7 +246,7 @@ impl AgentRuntime {
                 }
                 #[cfg(target_os = "windows")]
                 {
-                    ProtectedList::default_linux()
+                    ProtectedList::default_windows()
                 }
             },
             compliance_policy,

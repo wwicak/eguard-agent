@@ -128,7 +128,7 @@ fn query_process_info_macos(pid: u32) -> ProcessInfo {
 
 #[cfg(target_os = "macos")]
 fn query_exe_path(pid: u32) -> Option<String> {
-    let mut buf = vec![0u8; PROC_PIDPATHINFO_MAXSIZE];
+    let mut buf = [0u8; PROC_PIDPATHINFO_MAXSIZE];
     let ret = unsafe {
         proc_pidpath(
             pid as libc::c_int,

@@ -1,19 +1,4 @@
 {
   "suite": "signature_ml_model_metadata",
-  "recorded_at_utc": "2026-02-17T12:44:25Z",
-  "model_version": "ci.signature.ml.v1",
-  "model_artifact": "/tmp/tmp.2ve3ipR8NR/signature-ml-model.json",
-  "model_sha256": "8eb30cfbe2e2ef2c70c03a838b8f2c01fa6618d3121e5decbe1f968835e4427a",
-  "dataset": "/tmp/tmp.2ve3ipR8NR/signature-ml-features.ndjson",
-  "dataset_sha256": "7db9b4684b077c41b43454e57cfd5459438fd5c2bf3835e03a32d9ea6bcccd3c",
-  "feature_schema": "/tmp/tmp.2ve3ipR8NR/signature-ml-feature-schema.json",
-  "feature_schema_sha256": "6c66aa87a397a688f502323692846247aa85ecc76b296714318f3dbbbcadcbac",
-  "labels_report": "/tmp/tmp.2ve3ipR8NR/signature-ml-label-quality-report.json",
-  "labels_report_sha256": "2050c244a0efd0ec45b22d8a507c6b8726f5e1b62ca4dc54c5f3c3700c00a282",
-  "training_samples": 660,
-  "positive_samples": 182,
-  "negative_samples": 478,
-  "threshold": 0.003673,
-  "optimizer": "irls_newton",
-  "temperature": 1.038696
+  "model_version": "ci.signature.ml.v1"
 }

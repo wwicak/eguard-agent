@@ -211,6 +211,8 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
         .file_path
         .or_else(|| matches!(raw.event_type, EventType::ModuleLoad).then(|| raw.payload.clone()));
 
+    let file_sha256 = file_path.as_deref().and_then(|p| cache.hash_for_path(p));
+
     // Windows does not use containers in the same way as Linux.
     EnrichedEvent {
         event: raw,
@@ -222,7 +224,7 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
         file_path,
         file_path_secondary: payload_meta.file_path_secondary,
         file_write: payload_meta.file_write,
-        file_sha256: None,
+        file_sha256,
         event_size: payload_meta.event_size,
         dst_ip: payload_meta.dst_ip,
         dst_port: payload_meta.dst_port,

@@ -213,6 +213,34 @@ fn sqlite_buffer_new_creates_parent_directories() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+#[cfg(unix)]
+#[test]
+// SG-15
+fn sqlite_buffer_new_sets_private_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let unique = format!(
+        "eguard-agent-buffer-perm-{}.db",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    );
+    let path = std::env::temp_dir().join(unique);
+    let path_str = path.to_string_lossy().into_owned();
+
+    let _ = SqliteBuffer::new(&path_str, 1024).expect("sqlite open");
+
+    let mode = std::fs::metadata(&path)
+        .expect("metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600);
+
+    let _ = std::fs::remove_file(path);
+}
+
 #[test]
 // AC-GRP-083 AC-GRP-084
 fn event_buffer_sqlite_variant_reports_sizes() {

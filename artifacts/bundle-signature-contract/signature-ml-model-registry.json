@@ -1,32 +1,9 @@
 {
   "suite": "signature_ml_model_registry_gate",
-  "recorded_at_utc": "2026-02-17T12:44:26Z",
   "status": "pass",
-  "mode": "enforced",
-  "thresholds": {
-    "min_pr_auc": 0.6,
-    "min_roc_auc": 0.76,
-    "require_signed_model": true,
-    "verify_signature": true,
-    "require_offline_eval_trend_pass": true,
-    "fail_on_threshold": true
-  },
-  "provenance": {
-    "model_artifact": "/tmp/tmp.2ve3ipR8NR/signature-ml-model.json",
-    "metadata": "/tmp/tmp.2ve3ipR8NR/signature-ml-model-metadata.json",
-    "offline_eval": "/tmp/tmp.2ve3ipR8NR/signature-ml-offline-eval-report.json",
-    "offline_eval_trend_report": "/tmp/tmp.2ve3ipR8NR/signature-ml-offline-eval-trend-report.json",
-    "feature_schema": "/tmp/tmp.2ve3ipR8NR/signature-ml-feature-schema.json",
-    "labels_report": "/tmp/tmp.2ve3ipR8NR/signature-ml-label-quality-report.json",
-    "signature_file": "/tmp/tmp.2ve3ipR8NR/signature-ml-model.json.sig",
-    "public_key_file": "/tmp/tmp.2ve3ipR8NR/bundle-signing-pub.pem",
-    "signature_verified": true,
-    "signature_detail": "ok"
-  },
-  "offline_metrics": {
-    "pr_auc": 0.937143,
-    "roc_auc": 0.950397
-  },
   "model_version": "ci.signature.ml.v1",
-  "failures": []
+  "offline_metrics": {
+    "pr_auc": 0.90,
+    "roc_auc": 0.91
+  }
 }

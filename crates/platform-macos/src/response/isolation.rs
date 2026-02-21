@@ -19,9 +19,13 @@ pub fn isolate_host(allowed_server_ips: &[&str]) -> Result<(), super::ResponseEr
 
         // Build pf rules: allow specified IPs, block everything else.
         let mut rules = String::new();
-        for ip in allowed_server_ips {
-            rules.push_str(&format!("pass out quick proto tcp to {ip}\n"));
-            rules.push_str(&format!("pass in quick proto tcp from {ip}\n"));
+        for ip_str in allowed_server_ips {
+            // Validate IP to prevent pf rule injection.
+            let addr: std::net::IpAddr = ip_str.parse().map_err(|_| {
+                super::ResponseError::OperationFailed(format!("invalid IP address: {ip_str}"))
+            })?;
+            rules.push_str(&format!("pass out quick proto tcp to {addr}\n"));
+            rules.push_str(&format!("pass in quick proto tcp from {addr}\n"));
         }
         // Allow loopback.
         rules.push_str("pass quick on lo0 all\n");

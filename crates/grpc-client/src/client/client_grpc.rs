@@ -56,7 +56,15 @@ impl Client {
                     enrollment_token: enrollment.enrollment_token.clone().unwrap_or_default(),
                     hostname: enrollment.hostname.clone(),
                     mac_address: enrollment.mac.clone(),
-                    os_type: "linux".to_string(),
+                    os_type: {
+                        #[cfg(target_os = "linux")]
+                        { "linux" }
+                        #[cfg(target_os = "macos")]
+                        { "macos" }
+                        #[cfg(target_os = "windows")]
+                        { "windows" }
+                    }
+                    .to_string(),
                     os_version: String::new(),
                     kernel_version: String::new(),
                     agent_version: self.agent_version.clone(),

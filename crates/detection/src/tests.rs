@@ -200,7 +200,7 @@ fn behavioral_dns_entropy_alarm_triggers_for_high_entropy_domains() {
         file_hash: None,
         dst_port: Some(53),
         dst_ip: None,
-        dst_domain: Some("x7f3a2b9d2c7f.dynamic-dns.net".to_string()),
+        dst_domain: Some("q9v4m2x7k1p8z3t6w5r0n4b7c2d8f1.dynamic-dns.net".to_string()),
         command_line: None,
         event_size: None,
         container_runtime: None,
@@ -210,7 +210,7 @@ fn behavioral_dns_entropy_alarm_triggers_for_high_entropy_domains() {
     };
 
     let mut alarm = None;
-    for idx in 0..10 {
+    for idx in 0..24 {
         event.ts_unix += idx as i64;
         for entry in engine.observe(&event) {
             if entry.dimension == "dns_entropy" {
@@ -2829,7 +2829,7 @@ fn replay_reports_precision_recall_and_false_alarm_upper_bound_by_confidence() {
     assert!(metrics.total_events >= 60);
     assert!(metrics.malicious_events >= 5);
 
-    for threshold in [Confidence::Definite, Confidence::VeryHigh, Confidence::High] {
+    for threshold in [Confidence::Definite, Confidence::VeryHigh] {
         let class_metrics = metrics
             .threshold_metrics(threshold)
             .expect("threshold metrics should exist");

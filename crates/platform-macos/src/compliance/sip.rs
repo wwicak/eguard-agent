@@ -32,8 +32,13 @@ fn check_sip_macos() -> SipStatus {
         Err(_) => return SipStatus::default(),
     };
 
+    if !output.status.success() {
+        return SipStatus::default();
+    }
+
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let lower = stdout.to_ascii_lowercase();
+    // csrutil outputs "System Integrity Protection status: enabled."
     let enabled = lower.contains("enabled");
 
     SipStatus {
