@@ -14,6 +14,7 @@ use response::{plan_action, PlannedAction, ProtectedList, ResponseConfig};
 fn ac_det_confidence_policy_matrix_executable() {
     let mut s = DetectionSignals {
         z1_exact_ioc: false,
+        yara_hit: false,
         z2_temporal: false,
         z3_anomaly_high: false,
         z3_anomaly_med: false,
@@ -29,6 +30,7 @@ fn ac_det_confidence_policy_matrix_executable() {
 
     s = DetectionSignals {
         z1_exact_ioc: false,
+        yara_hit: false,
         z2_temporal: true,
         z3_anomaly_high: false,
         z3_anomaly_med: false,
@@ -42,6 +44,7 @@ fn ac_det_confidence_policy_matrix_executable() {
 
     s = DetectionSignals {
         z1_exact_ioc: false,
+        yara_hit: false,
         z2_temporal: true,
         z3_anomaly_high: false,
         z3_anomaly_med: false,
@@ -55,6 +58,7 @@ fn ac_det_confidence_policy_matrix_executable() {
 
     s = DetectionSignals {
         z1_exact_ioc: false,
+        yara_hit: false,
         z2_temporal: false,
         z3_anomaly_high: true,
         z3_anomaly_med: false,
@@ -68,6 +72,7 @@ fn ac_det_confidence_policy_matrix_executable() {
 
     s = DetectionSignals {
         z1_exact_ioc: false,
+        yara_hit: false,
         z2_temporal: false,
         z3_anomaly_high: false,
         z3_anomaly_med: true,

@@ -2,6 +2,108 @@
 User https://157.10.161.219:1443/
 admin:Admin@12345 (dev temporary)
 
+## 🧭 Plan: review + polish `docs/ui-enrichment-report.md` (2026-02-21)
+- [x] Re-validate report claims against actual backend/frontend code paths and route wiring
+- [x] Run focused verification commands (Go server tests/build + endpoint frontend lint) and capture evidence
+- [x] Fix any functional mismatches found during review (code and/or report)
+- [x] Polish report structure for clarity (status, corrections, verification scope, known caveats)
+- [x] Record outcome and evidence in this task entry
+
+### 🔍 Review Notes
+- Functional hardening applied:
+  - `go/agent/server/detection_stats.go`: added canonical `normalizeConfidence()` to handle `VeryHigh`/camel-case/spacing variants and stabilize confidence buckets (`very_high`, etc.).
+  - `go/agent/server/detection_stats_test.go`: added regression coverage for normalization + aggregate confidence counts.
+  - `html/egappserver/root/src/views/endpoint/Audit.vue`: aligned client-side confidence filtering with the same canonical normalization.
+- Report quality improvements in `docs/ui-enrichment-report.md`:
+  - refreshed date/status and clarified scope,
+  - corrected filter wording (local Audit filters vs global quick filters),
+  - documented review-pass fixes and added confidence-normalization correction,
+  - tightened verification section with exact commands/outcomes and warning caveats.
+- Verification evidence:
+  - `cd /home/dimas/fe_eguard/go && go build ./agent/server/...` ✅
+  - `cd /home/dimas/fe_eguard/go && go test ./agent/server/... -count=1` ✅
+  - `cd /home/dimas/fe_eguard/html/egappserver/root && npx eslint src/views/endpoint/{Audit,Incidents,DetectionDashboard}.vue src/views/endpoint/{api,permissions}.js src/views/endpoint/_router/index.js src/views/endpoint/index.vue` ✅ (warnings only, no lint errors)
+
+## 🧭 Plan: second-pass UX polish for endpoint enrichment views (2026-02-21)
+- [x] Align global quick-filter range behavior across Audit/Incidents/Detection Dashboard
+- [x] Improve deterministic chart ordering for operational readability
+- [x] Harden frontend filtering normalization for case/format drift
+- [x] Re-run targeted verification and update report notes
+
+### 🔍 Review Notes
+- UX consistency improvements:
+  - `html/egappserver/root/src/views/endpoint/Audit.vue`
+    - synced global `q_range` -> local `period` and auto-refetch on route change,
+    - deterministic layer chart ordering by descending count,
+    - case-safe severity matching.
+  - `html/egappserver/root/src/views/endpoint/Incidents.vue`
+    - expanded date-range options (`1h`, `6h`) to match global quick filter,
+    - synced global `q_range` -> local date range,
+    - case-insensitive status/severity/correlation/host filtering,
+    - severity donut now suppresses zero-value categories.
+  - `html/egappserver/root/src/views/endpoint/DetectionDashboard.vue`
+    - synced global `q_range` and `q_host` into dashboard controls,
+    - deterministic confidence/layer/rule ordering,
+    - canonical confidence ordering (`definite` -> `none`).
+- Documentation refresh:
+  - updated `/home/dimas/fe_eguard/docs/ui-enrichment-report.md` to include second-pass polish outcomes and corrected filter behavior notes.
+- Verification evidence:
+  - `cd /home/dimas/fe_eguard/go && go test ./agent/server/... -count=1` ✅
+  - `cd /home/dimas/fe_eguard/go && go build ./agent/server/...` ✅
+  - `cd /home/dimas/fe_eguard/html/egappserver/root && npx eslint src/views/endpoint/{Audit,Incidents,DetectionDashboard}.vue src/views/endpoint/{api,permissions}.js src/views/endpoint/_router/index.js src/views/endpoint/index.vue` ✅ (warnings only, no lint errors)
+
+## 🧭 Plan: third-pass UI micro-polish for endpoint detection UX (2026-02-21)
+- [x] Improve chart label readability (title casing + long-label handling)
+- [x] Align chart/empty-state behavior with active filters for operator clarity
+- [x] Polish key value rendering (progress/tooltip readability)
+- [x] Re-run targeted frontend lint and capture evidence
+- [x] Refresh `docs/ui-enrichment-report.md` with micro-polish outcomes
+
+### 🔍 Review Notes
+- UI micro-polish applied:
+  - `html/egappserver/root/src/views/endpoint/Audit.vue`
+    - added rule/layer axis-label truncation for compact charts,
+    - refined ML score progress display to explicit formatted percentage.
+  - `html/egappserver/root/src/views/endpoint/Incidents.vue`
+    - incident charts now follow `filteredIncidents` to match table scope,
+    - severity donut labels title-cased and zero-count categories hidden,
+    - added filter-aware table empty message.
+  - `html/egappserver/root/src/views/endpoint/DetectionDashboard.vue`
+    - confidence labels title-cased,
+    - rule/layer axis labels truncated for dense chart readability,
+    - filter-aware empty-state copy includes agent context when applicable.
+- Documentation refresh:
+  - updated `/home/dimas/fe_eguard/docs/ui-enrichment-report.md` with third-pass micro-polish section and additional fix matrix entries.
+- Verification evidence:
+  - `cd /home/dimas/fe_eguard/html/egappserver/root && npx eslint src/views/endpoint/{Audit,Incidents,DetectionDashboard}.vue src/views/endpoint/{api,permissions}.js src/views/endpoint/_router/index.js src/views/endpoint/index.vue` ✅ (warnings only, no lint errors)
+  - `cd /home/dimas/fe_eguard/go && go test ./agent/server/... -count=1` ✅
+  - `cd /home/dimas/fe_eguard/go && go build ./agent/server/...` ✅
+
+## 🧭 Plan: fourth-pass UI copy consistency polish (2026-02-21)
+- [x] Align endpoint labels/phrasing for operator clarity (metrics/actions)
+- [x] Add filter-aware empty-state copy where still static
+- [x] Re-run targeted lint/build/tests and capture evidence
+- [x] Refresh `docs/ui-enrichment-report.md` with copy-polish outcomes
+
+### 🔍 Review Notes
+- Copy/UX consistency updates:
+  - `html/egappserver/root/src/views/endpoint/Audit.vue`
+    - standardized metric labels (`Critical + High`, `Avg ML Score`),
+    - added filter-aware audit empty-state text,
+    - retained micro-polish improvements (axis label truncation + explicit ML percentage).
+  - `html/egappserver/root/src/views/endpoint/Incidents.vue`
+    - action copy clarified from `Mark FP` -> `Mark False Positive`,
+    - incident table empty-state is now filter-aware.
+  - `html/egappserver/root/src/views/endpoint/DetectionDashboard.vue`
+    - metric label clarified to `Active Rules (Top 10)` to match data semantics,
+    - retained filter-aware empty-state with agent context.
+- Documentation refresh:
+  - updated `/home/dimas/fe_eguard/docs/ui-enrichment-report.md` to include copy-consistency outcomes in refinement/fix sections.
+- Verification evidence:
+  - `cd /home/dimas/fe_eguard/html/egappserver/root && npx eslint src/views/endpoint/{Audit,Incidents,DetectionDashboard}.vue src/views/endpoint/{api,permissions}.js src/views/endpoint/_router/index.js src/views/endpoint/index.vue` ✅ (warnings only, no lint errors)
+  - `cd /home/dimas/fe_eguard/go && go test ./agent/server/... -count=1` ✅
+  - `cd /home/dimas/fe_eguard/go && go build ./agent/server/...` ✅
+
 ## Detection Accuracy Optimization — Tier 2 (2026-02-21)
 - [x] Fix 1: Add 6 new temporal rules (reverse shell, download-exec, credential exfil, persistence, SSH lateral, data staging)
 - [x] Fix 2: Add 4 new exploit indicators (LD_PRELOAD, pipe-exec, hex shellcode, process substitution)
@@ -3293,3 +3395,104 @@ Confirmed findings from deep codebase audits across detection engine subsystems.
   - `kernel_integrity` alone → `High` confidence. Combined with DET-T1-01, every module load generates a High alert.
   - Fix: Demote bare `kernel_integrity` from `High` to `Medium`. Still contributes to `High` with temporal/kill-chain corroboration.
   - ACs: AC-DET-244
+
+## E2E Testing Phase 5: Detection Testing (2026-02-23) — COMPLETED
+- [x] Fix SubstringYaraBackend CPU timeout (was unbounded, now 5s budget matching YaraRustBackend)
+- [x] Fix PrivateTmp issue preventing replay backend from finding NDJSON file
+- [x] Fix server firewall rules lost on reboot (ports 50052/50053/1443)
+- [x] Set up iptables persistence via /etc/network/if-pre-up.d/iptables
+- [x] Process all 59 replay events across 16 attack scenarios
+- [x] Verify detection results: 1 Definite, 17 VeryHigh, 40 High, 6 kill-chain hits
+- [x] Verify events visible in server GUI Event Inspector with audit trail data
+- [x] Fix kernel integrity false positives (initstate check for built-in modules)
+- [x] Fix detection allowlist for agent self-monitoring (z3h false positive)
+
+### Detection Results Summary
+| # | Scenario | Confidence | Key Signals |
+|---|----------|------------|-------------|
+| 1 | EICAR file_open | High | z2 temporal |
+| 2 | Reverse shell | VeryHigh | z2, yara |
+| 3 | Privilege escalation | VeryHigh | z2, yara |
+| 4 | Credential theft | VeryHigh | z2, z4 kill-chain |
+| 5 | Download-exec | VeryHigh | z2, yara |
+| 6 | Persistence (systemd) | VeryHigh | z2 |
+| 7 | SSH lateral | VeryHigh | z2, z4 |
+| 8 | Ransomware burst | High | z2 temporal |
+| 9 | C2 beaconing | High | z2 |
+| 11 | Kernel module load | VeryHigh | z2, yara |
+| 12 | Data staging + exfil | Definite | z1 IOC, z4 |
+| 13 | Webshell | VeryHigh | z2 |
+| 14 | Persistence (cron) | VeryHigh | z2 |
+| 15 | Cloud cred theft | VeryHigh | z2, z4 |
+
+## E2E Testing — MDM Policy Push/Apply Results (2026-02-23)
+
+### Test 1: Push Custom Compliance Policy — PASSED
+- Created `e2e-test-policy` with selective checks (firewall=true, disk_enc=false, ssh_root=true, auto_updates=false, antivirus=false)
+- Assigned to `agent-31bbb93f38b4` via `/api/v1/endpoint/policy/assign`
+- Agent log confirmed: `compliance policy updated from server firewall=true kernel_prefix=Some("5.0") disk_enc=false ssh_root=true password_policy=false screen_lock=false auto_updates=false antivirus=false`
+- After 5-min compliance cycle: 3 failures (firewall, kernel_prefix, ssh_root) — down from 6
+- Disabled checks correctly skipped (disk_enc, password_policy, screen_lock, auto_updates, antivirus)
+- NOTE: `kernel_prefix` failed because "5.0" prefix doesn't match "5.15.0-170-generic" (starts with "5." not "5.0")
+
+### Test 2: Policy Preview & Diff — PASSED
+- `/api/v1/endpoint/policy/preview`: Returns `policy_hash`, `policy_version`, `schema_version`
+- `/api/v1/endpoint/policy/diff` with different policies: Returns `same: false`, `changed_keys: ["disk_encryption_required", "firewall_required"]`
+- `/api/v1/endpoint/policy/diff` with identical policies: Returns `same: true`, `changed_keys: []`
+
+### Test 3: Malformed Policy JSON — PASSED
+- Invalid JSON string: Server returns `{"error": "policy_json_required"}` (400)
+- Non-JSON type (number): Server returns `{"error": "policy_json_required"}` (400)
+- Null policy_json: Server returns `{"error": "policy_json_required"}` (400)
+- Missing policy_json: Server returns `{"error": "policy_json_required"}` (400)
+- All malformed inputs rejected at server level — never reaches agent
+
+### Test 4: Empty Policy Push — PASSED
+- Empty string `""`: Server returns `{"error": "policy_json_required"}` — rejected
+- Empty object `{}`: Server ACCEPTS it, creates policy with `policy_json: "{}"` and computes hash
+- Empty object is valid JSON — server allows it. Agent would parse it as all-defaults-false (no checks enabled)
+
+### Test 5: Policy Reassignment — PASSED
+- Created `e2e-strict` policy (ALL 8 checks enabled, kernel prefix "5.")
+- Assigned to agent → agent picked up: `firewall=true disk_enc=true ssh_root=true password_policy=true screen_lock=true auto_updates=true antivirus=true`
+- Reassigned back to `default` → agent reverted to default policy checks
+- Clean transitions with no crashes, no degraded mode, no data loss
+
+### Test 6: Compliance Results in Dashboard — PASSED
+- MDM Dashboard shows: MANAGED ENDPOINTS=1, COMPLIANT=0, NON-COMPLIANT=1, POLICY COVERAGE=100%
+- Top Failing Checks table shows all 8 check types with affected endpoints
+- MDM Reports shows 322 rows, 193 non-compliant, 0 in grace
+- MDM Compliance Report Table shows per-check detail with color-coded status (green=compliant, red=non_compliant)
+- Screenshots saved: `artifacts/e2e-mdm-dashboard.png`, `artifacts/e2e-mdm-reports.png`, `artifacts/e2e-mdm-reports-detail.png`
+
+### Test 7: Policy Hash Verification — PASSED
+- Server ALWAYS recomputes hash from policy_json (ignores client-provided hash)
+- Policy with wrong hash `0000...` → server stores recomputed hash `dd0be4e57...`
+- This is secure behavior: server is source of truth for policy integrity
+
+### Test 8: Inventory + MAC Verification — PARTIAL PASS
+- Inventory endpoint shows correct MAC: `52:54:00:60:d9:ab`
+- OS: `linux` / `Ubuntu 22.04.5 LTS` — populated
+- Kernel: `5.15.0-170-generic` — populated
+- Hostname: `eg-agent` — populated
+- **ISSUE**: Agents table still shows enrollment-time MAC `00:00:00:00:00:00`. Server doesn't propagate inventory MAC back to agents record.
+- Screenshot: `artifacts/e2e-inventory.png`
+
+### Findings & Issues
+1. **Compliance report interval is 300s** (config default) — first compliance at startup uses pre-policy defaults, corrected on next cycle
+2. **Agent record MAC stale** — enrollment-time MAC `00:00:00:00:00:00` not updated from inventory
+3. **Kernel prefix matching is exact** — `"5.0"` doesn't match `"5.15..."`, use `"5."` for broad matching
+4. **Policy_id shows "default"** in first compliance report (before policy fetch), corrected in subsequent reports
+5. **Compliance log noise** — 100ms "computed nac posture" messages flood journalctl (~10/sec)
+
+## E2E Testing — Pending Tasks
+- [ ] Phase 6: Response action testing (kill, quarantine, capture, auto-isolation)
+- [x] Phase 7: MDM/Compliance testing (completed 2026-02-23)
+- [ ] Phase 8: UI/UX verification and polish
+- [ ] Phase 9: Stability and performance testing
+- [x] Test MDM policy management (CRUD, apply, push, edge cases) (completed 2026-02-23)
+- [ ] Fix detection-dashboard timeline empty chart
+- [ ] Fix agent filter dropdown missing
+- [ ] Fix compliance check ID and check value being the same
+- [ ] Fix agent record MAC not updated from inventory reports
+- [ ] Reduce compliance log noise (100ms nac posture messages)

@@ -274,7 +274,12 @@ impl DetectionEngine {
         let kernel_integrity_indicators = detect_kernel_integrity_indicators(event);
         let tamper_indicators = detect_tamper_indicators(event);
         let signals = DetectionSignals {
-            z1_exact_ioc: layer1.result == Layer1Result::ExactMatch || !yara_hits.is_empty(),
+            z1_exact_ioc: layer1.result == Layer1Result::ExactMatch,
+            // A genuine malware file triggers a handful of YARA rules.
+            // When the substring backend matches thousands of rules on a
+            // system binary, that is a false positive and should not
+            // elevate the confidence score.
+            yara_hit: !yara_hits.is_empty() && yara_hits.len() <= 50,
             z2_temporal: !temporal_hits.is_empty(),
             z3_anomaly_high: anomaly.as_ref().map(|a| a.high).unwrap_or(false) || behavioral_high,
             z3_anomaly_med: anomaly.as_ref().map(|a| a.medium).unwrap_or(false) || behavioral_med,

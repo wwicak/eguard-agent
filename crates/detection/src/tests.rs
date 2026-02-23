@@ -104,6 +104,7 @@ fn cmdline_information_consistency_between_layers() {
 
     let signals = DetectionSignals {
         z1_exact_ioc: false,
+        yara_hit: false,
         z2_temporal: false,
         z3_anomaly_high: false,
         z3_anomaly_med: false,
@@ -140,6 +141,7 @@ fn cmdline_information_consistency_between_layers() {
 fn dns_entropy_feature_is_stable_and_high_for_dga_like_domains() {
     let signals = DetectionSignals {
         z1_exact_ioc: false,
+        yara_hit: false,
         z2_temporal: false,
         z3_anomaly_high: false,
         z3_anomaly_med: false,
@@ -240,6 +242,7 @@ fn behavioral_dns_entropy_alarm_triggers_for_high_entropy_domains() {
 fn confidence_ordering_matches_policy() {
     let base = DetectionSignals {
         z1_exact_ioc: false,
+        yara_hit: false,
         z2_temporal: false,
         z3_anomaly_high: false,
         z3_anomaly_med: false,
@@ -2131,15 +2134,30 @@ rule suspicious_payload {
         )
         .expect("load yara rules");
 
-    let mut ev = event(1, EventClass::ProcessExec, "bash", "sshd", 1000);
-    ev.command_line = Some("echo malware-test-marker".to_string());
+    let mut ev = event(1, EventClass::FileOpen, "bash", "sshd", 1000);
+    // YARA now only scans file content, not command lines.
+    // Create a temp file with the marker for the engine to scan.
+    let tmp_dir = std::env::temp_dir().join(format!(
+        "eguard-yara-marker-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    std::fs::create_dir_all(&tmp_dir).unwrap();
+    let marker_file = tmp_dir.join("payload.bin");
+    std::fs::write(&marker_file, b"malware-test-marker").unwrap();
+    ev.file_path = Some(marker_file.display().to_string());
+
     let out = engine.process_event(&ev);
 
-    assert_eq!(out.confidence, Confidence::Definite);
+    // Standalone YARA hit → High (not Definite, which is reserved for IOC exact matches)
+    assert_eq!(out.confidence, Confidence::High);
     assert!(out
         .yara_hits
         .iter()
         .any(|hit| hit.rule_name == "suspicious_payload"));
+    let _ = std::fs::remove_dir_all(tmp_dir);
 }
 
 #[test]
@@ -3483,6 +3501,7 @@ fn anomaly_engine_emits_medium_when_above_medium_threshold_only() {
 fn confidence_policy_is_first_match_wins() {
     let s = DetectionSignals {
         z1_exact_ioc: true,
+        yara_hit: false,
         z2_temporal: true,
         z3_anomaly_high: true,
         z3_anomaly_med: true,
@@ -3496,6 +3515,7 @@ fn confidence_policy_is_first_match_wins() {
 
     let s = DetectionSignals {
         z1_exact_ioc: false,
+        yara_hit: false,
         z2_temporal: true,
         z3_anomaly_high: true,
         z3_anomaly_med: true,

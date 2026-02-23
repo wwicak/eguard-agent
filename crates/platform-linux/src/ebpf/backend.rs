@@ -11,6 +11,16 @@ pub(super) trait RingBufferBackend {
     fn failed_probes(&self) -> Vec<String> {
         Vec::new()
     }
+
+    #[allow(dead_code)]
+    fn attached_program_count(&self) -> usize {
+        0
+    }
+
+    #[allow(dead_code)]
+    fn attached_program_names(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 #[derive(Default)]

@@ -435,6 +435,11 @@ rule bundle_runtime_marker {
     assert!(report.sigma_rules >= 1);
     assert!(report.yara_rules >= 1);
 
+    // Write a temp file containing the YARA marker so the file-based
+    // scan path (not command-line) picks it up.
+    let marker_file = base.join("yara_marker.bin");
+    std::fs::write(&marker_file, b"bundle-runtime-marker-8844").expect("write marker file");
+
     let stage_one = detection::TelemetryEvent {
         ts_unix: 10_000,
         event_class: detection::EventClass::ProcessExec,
@@ -444,13 +449,13 @@ rule bundle_runtime_marker {
         process: "bundleproc".to_string(),
         parent_process: "bundleparent".to_string(),
         session_id: 1,
-        file_path: None,
+        file_path: Some(marker_file.display().to_string()),
         file_write: false,
         file_hash: None,
         dst_port: None,
         dst_ip: None,
         dst_domain: None,
-        command_line: Some("echo bundle-runtime-marker-8844".to_string()),
+        command_line: None,
         event_size: None,
         container_runtime: None,
         container_id: None,
@@ -465,7 +470,6 @@ rule bundle_runtime_marker {
         .yara_hits
         .iter()
         .any(|hit| hit.rule_name == "bundle_runtime_marker"));
-    assert_eq!(stage_one_out.confidence, detection::Confidence::Definite);
 
     let stage_two = detection::TelemetryEvent {
         ts_unix: 10_005,
@@ -874,6 +878,12 @@ rule nested_signed_bundle_marker {
     assert!(sigma >= 1);
     assert_eq!(yara, 1);
 
+    // Write marker file for file-based YARA scanning (command-line
+    // scanning was removed to prevent false positives).
+    let nested_marker = base.join("yara_marker.bin");
+    std::fs::write(&nested_marker, b"nested-signed-bundle-marker")
+        .expect("write marker file");
+
     let nested_event = detection::TelemetryEvent {
         ts_unix: 42_000,
         event_class: detection::EventClass::ProcessExec,
@@ -883,13 +893,13 @@ rule nested_signed_bundle_marker {
         process: "bash".to_string(),
         parent_process: "nginx".to_string(),
         session_id: 1,
-        file_path: None,
+        file_path: Some(nested_marker.display().to_string()),
         file_write: false,
         file_hash: None,
         dst_port: None,
         dst_ip: None,
         dst_domain: None,
-        command_line: Some("echo nested-signed-bundle-marker".to_string()),
+        command_line: None,
         event_size: None,
         container_runtime: None,
         container_id: None,

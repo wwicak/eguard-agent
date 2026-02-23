@@ -478,10 +478,14 @@ impl IocLayer1 {
             Self::apply_result(self.check_ip(ip), "dst_ip", &mut hit);
         }
 
+        // Text signature (Aho-Corasick substring) matches are corroborating
+        // signals, not exact IOC matches.  Treat them as prefilter hits so
+        // they can escalate confidence when combined with temporal/killchain
+        // signals, but don't promote to ExactMatch (→ Definite) on their own.
         if let Some(cmd) = &event.command_line {
             let matches = self.check_text(cmd);
             if !matches.is_empty() {
-                hit.result = Layer1Result::ExactMatch;
+                hit.prefilter_hit = true;
                 hit.matched_fields.push("command_line".to_string());
                 hit.matched_signatures.extend(matches);
             }
@@ -489,7 +493,7 @@ impl IocLayer1 {
         if let Some(path) = &event.file_path {
             let matches = self.check_text(path);
             if !matches.is_empty() {
-                hit.result = Layer1Result::ExactMatch;
+                hit.prefilter_hit = true;
                 hit.matched_fields.push("file_path".to_string());
                 hit.matched_signatures.extend(matches);
             }
@@ -612,6 +616,9 @@ mod tests {
         };
         let hit = l1.check_event(&event);
         eprintln!("hit = {:?}", hit);
-        assert_eq!(hit.result, Layer1Result::ExactMatch);
+        // Text signature matches are corroborating (PrefilterOnly), not ExactMatch
+        assert_eq!(hit.result, Layer1Result::PrefilterOnly);
+        assert!(hit.prefilter_hit);
+        assert!(!hit.matched_signatures.is_empty());
     }
 }

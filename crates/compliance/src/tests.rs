@@ -50,10 +50,10 @@ fn evaluate_snapshot_reports_package_and_kernel_failures() {
     let result = evaluate_snapshot(&policy, &snapshot);
     assert_eq!(result.status, "non_compliant");
     assert!(result.checks.iter().any(|check| {
-        check.check_type == "firewall_required" && check.status == "non_compliant"
+        check.check_type == "firewall" && check.status == "non_compliant"
     }));
     assert!(result.checks.iter().any(|check| {
-        check.check_type.starts_with("package_absent:") && check.status == "non_compliant"
+        check.check_type == "package_not_installed" && check.status == "non_compliant"
     }));
 }
 
@@ -203,11 +203,11 @@ fn package_checks_are_case_insensitive() {
     assert!(result
         .checks
         .iter()
-        .any(|c| { c.check_type == "package_present:AuditD" && c.status == "compliant" }));
+        .any(|c| { c.check_type == "package_installed" && c.status == "compliant" }));
     assert!(result
         .checks
         .iter()
-        .any(|c| { c.check_type == "package_absent:TelNetD" && c.status == "non_compliant" }));
+        .any(|c| { c.check_type == "package_not_installed" && c.status == "non_compliant" }));
 }
 
 #[test]
@@ -248,7 +248,7 @@ fn missing_probe_values_fail_strict_checks() {
     assert!(result
         .checks
         .iter()
-        .any(|c| c.check_type == "ssh_root_login" && c.status == "non_compliant"));
+        .any(|c| c.check_type == "ssh_config" && c.status == "non_compliant"));
 }
 
 #[test]
@@ -299,7 +299,7 @@ fn required_services_check_fails_when_service_not_running() {
     assert!(result
         .checks
         .iter()
-        .any(|c| c.check_type == "service_running:sshd" && c.status == "non_compliant"));
+        .any(|c| c.check_type == "service" && c.status == "non_compliant"));
 }
 
 #[test]
@@ -333,7 +333,7 @@ fn screen_lock_check_uses_probe_flag() {
     assert!(result
         .checks
         .iter()
-        .any(|c| c.check_type == "screen_lock_enabled" && c.status == "non_compliant"));
+        .any(|c| c.check_type == "screen_lock" && c.status == "non_compliant"));
 }
 
 #[test]
@@ -373,7 +373,7 @@ fn antivirus_check_uses_probe_flag() {
     assert!(result
         .checks
         .iter()
-        .any(|c| c.check_type == "antivirus_running" && c.status == "non_compliant"));
+        .any(|c| c.check_type == "antivirus" && c.status == "non_compliant"));
 }
 
 #[test]
@@ -407,7 +407,7 @@ fn os_version_gte_check_compares_numeric_prefix() {
     assert!(result
         .checks
         .iter()
-        .any(|c| c.check_type == "os_version_gte" && c.status == "compliant"));
+        .any(|c| c.check_type == "os_version" && c.status == "compliant"));
 }
 
 #[test]
@@ -422,7 +422,7 @@ fn firewall_required_check_maps_to_expected_fail_and_remediation() {
     assert!(result
         .checks
         .iter()
-        .any(|c| c.check_type == "firewall_required" && c.status == "non_compliant"));
+        .any(|c| c.check_type == "firewall" && c.status == "non_compliant"));
 
     let actions = plan_remediation_actions(&policy, &snapshot);
     assert!(actions.iter().any(|a| a.action_id == "enable_firewall"));

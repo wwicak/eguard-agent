@@ -20,6 +20,10 @@ pub struct EbpfStats {
     pub per_probe_errors: std::collections::HashMap<String, u64>,
     /// List of probes that failed to attach (graceful degradation).
     pub failed_probes: Vec<String>,
+    /// Number of BPF programs successfully attached in the kernel.
+    pub attached_program_count: usize,
+    /// Names of BPF programs successfully attached.
+    pub attached_program_names: Vec<String>,
     /// Kernel version string (for capability reporting).
     pub kernel_version: String,
     /// Whether BTF (BPF Type Format) is available.

@@ -504,6 +504,13 @@ rule bootstrap_last_known_good_yara {
     );
     assert_eq!(runtime.heartbeat_config_version(), version);
 
+    // Write a temp file containing the YARA marker so the file-based
+    // scan path picks it up (command-line scanning was removed to
+    // prevent false positives with community rule sets).
+    let marker_file = root.join("yara_marker.bin");
+    std::fs::write(&marker_file, b"bootstrap-last-known-good-marker")
+        .expect("write marker file");
+
     let event = detection::TelemetryEvent {
         ts_unix: 123,
         event_class: detection::EventClass::ProcessExec,
@@ -513,13 +520,13 @@ rule bootstrap_last_known_good_yara {
         process: "bash".to_string(),
         parent_process: "sshd".to_string(),
         session_id: 1,
-        file_path: None,
+        file_path: Some(marker_file.display().to_string()),
         file_write: false,
         file_hash: None,
         dst_port: None,
         dst_ip: None,
         dst_domain: None,
-        command_line: Some("echo bootstrap-last-known-good-marker".to_string()),
+        command_line: None,
         event_size: None,
         container_runtime: None,
         container_id: None,

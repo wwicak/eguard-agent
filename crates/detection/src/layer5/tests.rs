@@ -50,6 +50,7 @@ fn clean_event_scores_low() {
     let event = make_event(EventClass::FileOpen, 1000, None);
     let signals = DetectionSignals {
         z1_exact_ioc: false,
+        yara_hit: false,
         z2_temporal: false,
         z3_anomaly_high: false,
         z3_anomaly_med: false,
@@ -75,6 +76,7 @@ fn ioc_hit_scores_high() {
     let event = make_event(EventClass::ProcessExec, 0, Some(4444));
     let signals = DetectionSignals {
         z1_exact_ioc: true,
+        yara_hit: false,
         z2_temporal: false,
         z3_anomaly_high: false,
         z3_anomaly_med: false,
@@ -100,6 +102,7 @@ fn multi_layer_agreement_scores_highest() {
     let event = make_event(EventClass::ProcessExec, 0, Some(4444));
     let signals = DetectionSignals {
         z1_exact_ioc: true,
+        yara_hit: false,
         z2_temporal: true,
         z3_anomaly_high: true,
         z3_anomaly_med: false,
@@ -125,6 +128,7 @@ fn anomaly_only_scores_moderate() {
     let event = make_event(EventClass::ProcessExec, 1000, None);
     let signals = DetectionSignals {
         z1_exact_ioc: false,
+        yara_hit: false,
         z2_temporal: false,
         z3_anomaly_high: true,
         z3_anomaly_med: false,
@@ -180,6 +184,7 @@ fn top_features_are_interpretable() {
     let event = make_event(EventClass::ProcessExec, 0, Some(4444));
     let signals = DetectionSignals {
         z1_exact_ioc: true,
+        yara_hit: false,
         z2_temporal: true,
         z3_anomaly_high: false,
         z3_anomaly_med: false,

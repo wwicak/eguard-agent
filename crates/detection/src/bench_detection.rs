@@ -341,6 +341,7 @@ mod tests {
             let event = benign_event(i, 1000 + i as u32);
             let signals = DetectionSignals {
                 z1_exact_ioc: false,
+                yara_hit: false,
                 z2_temporal: false,
                 z3_anomaly_high: false,
                 z3_anomaly_med: false,
@@ -368,6 +369,7 @@ mod tests {
             // - z3_anomaly_med from behavioral shift
             let signals = DetectionSignals {
                 z1_exact_ioc: false, // NOT planted
+                yara_hit: false,
                 z2_temporal: false,  // requires temporal warmup
                 z3_anomaly_high: false,
                 z3_anomaly_med: i % 3 == 0, // occasional behavioral anomaly

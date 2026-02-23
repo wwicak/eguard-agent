@@ -84,7 +84,14 @@ pub(super) fn init_ebpf_engine() -> EbpfEngine {
 
         match EbpfEngine::from_elf(&elf_path, &map_name) {
             Ok(engine) => {
-                info!(path = %elf_path.display(), map = %map_name, "eBPF engine initialized");
+                let stats = engine.stats();
+                info!(
+                    path = %elf_path.display(),
+                    map = %map_name,
+                    attached_programs = stats.attached_program_count,
+                    programs = ?stats.attached_program_names,
+                    "eBPF engine initialized"
+                );
                 engine
             }
             Err(err) => {
@@ -107,12 +114,19 @@ pub(super) fn try_init_ebpf_from_object_dir(
 
     match EbpfEngine::from_elfs(&object_paths, map_name) {
         Ok(engine) => {
+            let stats = engine.stats();
             info!(
                 objects_dir = %objects_dir.display(),
                 object_count = object_paths.len(),
+                attached_programs = stats.attached_program_count,
+                programs = ?stats.attached_program_names,
+                failed_probes = ?stats.failed_probes,
                 map = %map_name,
                 "eBPF engine initialized from object directory"
             );
+            if stats.attached_program_count == 0 {
+                warn!("eBPF engine loaded objects but NO programs attached to kernel hooks");
+            }
             Some(engine)
         }
         Err(err) => {

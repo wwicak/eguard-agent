@@ -16,22 +16,35 @@ rule test_rule {
     let loaded = engine.load_rules_str(src).expect("load rules");
     assert_eq!(loaded, 1);
 
+    // scan_event only scans file content (not command lines).
+    // Create a temp file with the marker string.
+    let tmp_dir = std::env::temp_dir().join(format!(
+        "eguard-yara-scan-test-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    std::fs::create_dir_all(&tmp_dir).unwrap();
+    let marker_file = tmp_dir.join("evil.bin");
+    std::fs::write(&marker_file, b"evil_payload").unwrap();
+
     let event = TelemetryEvent {
         ts_unix: 1,
-        event_class: crate::EventClass::ProcessExec,
+        event_class: crate::EventClass::FileOpen,
         pid: 1,
         ppid: 0,
         uid: 0,
         process: "bash".to_string(),
         parent_process: "sshd".to_string(),
         session_id: 0,
-        file_path: None,
+        file_path: Some(marker_file.display().to_string()),
         file_write: false,
         file_hash: None,
         dst_port: None,
         dst_ip: None,
         dst_domain: None,
-        command_line: Some("echo evil_payload".to_string()),
+        command_line: None,
         event_size: None,
         container_runtime: None,
         container_id: None,
@@ -42,6 +55,7 @@ rule test_rule {
     let hits = engine.scan_event(&event);
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].rule_name, "test_rule");
+    let _ = std::fs::remove_dir_all(tmp_dir);
 }
 
 #[test]

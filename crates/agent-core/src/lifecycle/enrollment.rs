@@ -19,13 +19,30 @@ impl AgentRuntime {
         }
 
         let enroll = self.build_enrollment_envelope();
-        if let Err(err) = self.client.enroll(&enroll).await {
-            warn!(error = %err, "enrollment failed");
-            return;
+        match self.client.enroll_with_material(&enroll).await {
+            Ok(Some(result)) => {
+                if !result.agent_id.is_empty() {
+                    tracing::info!(agent_id = %result.agent_id, "enrollment succeeded, updating agent_id");
+                    self.config.agent_id = result.agent_id;
+                }
+                self.enrolled = true;
+                self.consume_bootstrap_config();
+            }
+            Ok(None) => {
+                self.enrolled = true;
+                self.consume_bootstrap_config();
+            }
+            Err(err) => {
+                let err_str = err.to_string().to_ascii_lowercase();
+                if err_str.contains("already exists") || err_str.contains("already_enrolled") {
+                    tracing::info!("agent already enrolled on server, marking as enrolled");
+                    self.enrolled = true;
+                    self.consume_bootstrap_config();
+                } else {
+                    warn!(error = %err, "enrollment failed");
+                }
+            }
         }
-
-        self.enrolled = true;
-        self.consume_bootstrap_config();
     }
 
     fn build_enrollment_envelope(&self) -> EnrollmentEnvelope {
@@ -135,6 +152,12 @@ fn persist_runtime_config_snapshot(config: &AgentConfig) -> Result<PathBuf, Stri
         "server_addr".to_string(),
         toml::Value::String(config.server_addr.clone()),
     );
+    if !config.agent_id.is_empty() {
+        agent_table.insert(
+            "id".to_string(),
+            toml::Value::String(config.agent_id.clone()),
+        );
+    }
     // Enrollment token is bootstrap-only credential material. Do not persist it
     // into restart config snapshots written to disk.
     agent_table.remove("enrollment_token");
@@ -244,6 +267,7 @@ mod tests {
         .expect("write existing config");
 
         let mut cfg = AgentConfig::default();
+        cfg.agent_id = "agent-a".to_string();
         cfg.server_addr = "157.10.161.219:50052".to_string();
         cfg.transport_mode = "grpc".to_string();
         cfg.enrollment_token = Some("tok-xyz".to_string());

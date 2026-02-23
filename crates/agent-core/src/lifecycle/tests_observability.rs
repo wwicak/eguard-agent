@@ -47,6 +47,7 @@ fn tick_evaluation_for_confidence(confidence: Confidence, ts: i64, pid: u32) -> 
             confidence,
             signals: detection::DetectionSignals {
                 z1_exact_ioc: false,
+                yara_hit: false,
                 z2_temporal: false,
                 z3_anomaly_high: false,
                 z3_anomaly_med: false,
@@ -142,6 +143,7 @@ fn telemetry_audit_payload_includes_rule_attribution() {
         confidence: detection::Confidence::High,
         signals: detection::DetectionSignals {
             z1_exact_ioc: false,
+            yara_hit: false,
             z2_temporal: false,
             z3_anomaly_high: false,
             z3_anomaly_med: false,
@@ -252,6 +254,7 @@ fn telemetry_payload_includes_nac_fields() {
         confidence: detection::Confidence::High,
         signals: detection::DetectionSignals {
             z1_exact_ioc: false,
+            yara_hit: false,
             z2_temporal: true,
             z3_anomaly_high: false,
             z3_anomaly_med: false,
@@ -354,6 +357,7 @@ fn telemetry_payload_includes_correlation_event_fields() {
         confidence: detection::Confidence::High,
         signals: detection::DetectionSignals {
             z1_exact_ioc: false,
+            yara_hit: false,
             z2_temporal: false,
             z3_anomaly_high: false,
             z3_anomaly_med: false,

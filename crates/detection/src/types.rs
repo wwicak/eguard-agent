@@ -126,6 +126,7 @@ impl Confidence {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DetectionSignals {
     pub z1_exact_ioc: bool,
+    pub yara_hit: bool,
     pub z2_temporal: bool,
     pub z3_anomaly_high: bool,
     pub z3_anomaly_med: bool,

@@ -4,9 +4,11 @@ use std::sync::OnceLock;
 use tracing::{info, warn};
 
 use compliance::{
-    collect_linux_snapshot, evaluate, evaluate_snapshot, execute_remediation_actions,
-    plan_remediation_actions, ComplianceResult, RemediationAction, ShellCommandRunner,
+    evaluate, evaluate_snapshot, execute_remediation_actions, plan_remediation_actions,
+    ComplianceResult, RemediationAction, ShellCommandRunner,
 };
+
+use super::compliance_platform::collect_platform_snapshot;
 use nac::Posture;
 use serde::Deserialize;
 
@@ -15,8 +17,11 @@ use super::{
 };
 
 impl AgentRuntime {
-    pub(super) fn log_posture(&self, posture: Posture) {
-        info!(?posture, "computed nac posture");
+    pub(super) fn log_posture(&mut self, posture: Posture) {
+        if self.last_logged_posture.as_ref() != Some(&posture) {
+            info!(?posture, "computed nac posture");
+            self.last_logged_posture = Some(posture);
+        }
     }
 
     pub(super) fn evaluate_compliance(&mut self) -> ComplianceResult {
@@ -35,10 +40,10 @@ impl AgentRuntime {
         }
 
         self.last_compliance_remediations.clear();
-        let snapshot = match collect_linux_snapshot() {
+        let snapshot = match collect_platform_snapshot() {
             Ok(snapshot) => snapshot,
             Err(err) => {
-                warn!(error = %err, "linux compliance probe failed, using minimal fallback checks");
+                warn!(error = %err, "compliance probe failed, using minimal fallback checks");
                 let fallback = evaluate(&self.compliance_policy, true, "unknown");
                 self.last_compliance_checked_unix = Some(now_unix);
                 self.last_compliance_result = Some(fallback.clone());
@@ -72,7 +77,7 @@ impl AgentRuntime {
                 self.apply_remediation_outcomes(&mut result, &outcomes);
 
                 if outcomes.iter().any(|o| o.success) {
-                    if let Ok(snapshot_after) = collect_linux_snapshot() {
+                    if let Ok(snapshot_after) = collect_platform_snapshot() {
                         result = evaluate_snapshot(&self.compliance_policy, &snapshot_after);
                         self.apply_compliance_grace(now_unix, &mut result);
                         self.apply_remediation_outcomes(&mut result, &outcomes);

@@ -47,15 +47,18 @@ impl AgentRuntime {
             }
         }
         self.run_kernel_integrity_scan_if_due(now_unix);
+        // Log detection evaluation BEFORE the connected/degraded tick
+        // handlers so that transport errors (which propagate via `?`)
+        // cannot suppress the log.
+        if let Some(evaluation) = evaluation.as_ref() {
+            self.log_detection_evaluation(evaluation);
+        }
         if matches!(self.runtime_mode, AgentMode::Degraded) {
             self.handle_degraded_tick(now_unix, evaluation.as_ref())
                 .await?;
         } else {
             self.handle_connected_tick(now_unix, evaluation.as_ref())
                 .await?;
-            if let Some(evaluation) = evaluation.as_ref() {
-                self.log_detection_evaluation(evaluation);
-            }
         }
 
         self.metrics.last_tick_total_micros = elapsed_micros(tick_started);

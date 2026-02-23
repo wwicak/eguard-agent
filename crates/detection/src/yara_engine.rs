@@ -2,10 +2,16 @@ use std::fmt;
 use std::fs;
 use std::io::Read;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use crate::types::TelemetryEvent;
 
 const DEFAULT_MAX_SCAN_BYTES: usize = 1024 * 1024;
+
+/// Maximum wall-clock time the SubstringYaraBackend is allowed to spend
+/// scanning a single buffer.  Matches the 5-second timeout used by
+/// `YaraRustBackend::scan_mem`.
+const SUBSTRING_SCAN_BUDGET: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct YaraHit {
@@ -43,13 +49,29 @@ trait YaraBackend: Send {
 pub struct YaraEngine {
     backend: Box<dyn YaraBackend + Send>,
     max_scan_bytes: usize,
+    excluded_path_prefixes: Vec<String>,
 }
+
+/// Default path prefixes excluded from YARA file scanning.
+///
+/// System library directories produce extreme false-positive rates with
+/// community YARA rule sets (e.g., CobaltStrike, Autumn_Backdoor matching
+/// benign shared objects like `libkrb5support.so`).
+const DEFAULT_EXCLUDED_PATH_PREFIXES: &[&str] = &[
+    "/usr/lib/",
+    "/usr/lib64/",
+    "/usr/lib/x86_64-linux-gnu/",
+    "/lib/",
+    "/lib64/",
+    "/lib/x86_64-linux-gnu/",
+];
 
 impl YaraEngine {
     pub fn new() -> Self {
         Self {
             backend: default_backend(),
             max_scan_bytes: DEFAULT_MAX_SCAN_BYTES,
+            excluded_path_prefixes: load_excluded_path_prefixes(),
         }
     }
 
@@ -57,7 +79,20 @@ impl YaraEngine {
         Self {
             backend: default_backend(),
             max_scan_bytes: max_scan_bytes.max(4096),
+            excluded_path_prefixes: load_excluded_path_prefixes(),
         }
+    }
+
+    pub fn add_excluded_path_prefix(&mut self, prefix: String) {
+        if !self.excluded_path_prefixes.contains(&prefix) {
+            self.excluded_path_prefixes.push(prefix);
+        }
+    }
+
+    fn is_excluded_path(&self, path: &str) -> bool {
+        self.excluded_path_prefixes
+            .iter()
+            .any(|prefix| path.starts_with(prefix.as_str()))
     }
 
     pub fn load_rules_str(&mut self, source: &str) -> Result<usize> {
@@ -99,11 +134,16 @@ impl YaraEngine {
     pub fn scan_event(&self, event: &TelemetryEvent) -> Vec<YaraHit> {
         let mut hits = Vec::new();
 
-        if let Some(cmd) = &event.command_line {
-            hits.extend(self.backend.scan_bytes("command_line", cmd.as_bytes()));
-        }
-
+        // Only scan file content, not command lines.  Command-line string
+        // scanning produces extreme false-positive rates with community rule
+        // sets (common strings like "bash", "/bin/", "GET" match thousands
+        // of rules on every process exec).
         if let Some(path) = event.file_path.as_deref() {
+            // Skip system library directories to avoid false positives from
+            // broad community rules matching benign shared objects.
+            if self.is_excluded_path(path) {
+                return hits;
+            }
             if let Ok(content) = read_limited_file(Path::new(path), self.max_scan_bytes) {
                 hits.extend(self.backend.scan_bytes(path, &content));
             }
@@ -226,7 +266,13 @@ impl YaraBackend for SubstringYaraBackend {
 
     fn scan_bytes(&self, source: &str, bytes: &[u8]) -> Vec<YaraHit> {
         let mut hits = Vec::new();
-        for rule in &self.rules {
+        let deadline = Instant::now() + SUBSTRING_SCAN_BUDGET;
+        for (idx, rule) in self.rules.iter().enumerate() {
+            // Check the deadline every 64 rules to avoid calling Instant::now
+            // on every iteration while still bailing out promptly.
+            if idx & 63 == 63 && Instant::now() >= deadline {
+                break;
+            }
             for literal in &rule.literals {
                 if contains_subslice(bytes, literal) {
                     hits.push(YaraHit {
@@ -378,6 +424,19 @@ fn read_limited_file(path: &Path, cap: usize) -> std::io::Result<Vec<u8>> {
     let n = file.read(&mut out)?;
     out.truncate(n);
     Ok(out)
+}
+
+fn load_excluded_path_prefixes() -> Vec<String> {
+    if let Ok(val) = std::env::var("EGUARD_YARA_EXCLUDED_PATHS") {
+        let val = val.trim();
+        if !val.is_empty() {
+            return val.split(',').map(|s| s.trim().to_string()).collect();
+        }
+    }
+    DEFAULT_EXCLUDED_PATH_PREFIXES
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect()
 }
 
 fn dedup_hits(hits: Vec<YaraHit>) -> Vec<YaraHit> {

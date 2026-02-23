@@ -128,6 +128,15 @@ pub fn scan_kernel_integrity(
     };
 
     for name in sys_set.difference(&proc_set) {
+        // Built-in kernel modules appear in /sys/module/ but never in
+        // /proc/modules.  They lack an `initstate` file, unlike loaded
+        // modules which have `initstate = "live"`.  Flagging built-ins
+        // as "hidden" produces hundreds of false positives on VPS and
+        // cloud hosts where many subsystems are compiled-in.
+        let initstate_path = opts.sys_module_path.join(name).join("initstate");
+        if !initstate_path.exists() {
+            continue;
+        }
         report
             .indicators
             .push(format!("hidden_module_sysfs:{}", name));
@@ -330,6 +339,10 @@ mod tests {
             .expect("write proc modules");
         std::fs::create_dir_all(sys_modules.join("good")).expect("create good module");
         std::fs::create_dir_all(sys_modules.join("sys_only")).expect("create sys module");
+        // Simulate a loaded (not built-in) module by creating an
+        // initstate file.  Built-in modules lack this file.
+        std::fs::write(sys_modules.join("sys_only").join("initstate"), "live")
+            .expect("write initstate");
         std::fs::write(sys_modules.join("sys_only").join("taint"), "1").expect("write taint");
         std::fs::write(sys_modules.join("sys_only").join("signer"), "").expect("write signer");
 

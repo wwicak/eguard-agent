@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use anyhow::Result;
-use tracing::warn;
+use tracing::{info, warn};
 
 use compliance::parse_policy_json;
 use grpc_client::{ComplianceCheckEnvelope, InventoryEnvelope, PolicyEnvelope, TlsConfig};
@@ -62,6 +62,12 @@ impl AgentRuntime {
             );
         }
 
+        // PolicySync must run before Compliance so the first tick fetches
+        // the server policy before evaluating/sending compliance results.
+        if self.policy_refresh_due(now_unix) {
+            self.try_enqueue_control_plane_task(ControlPlaneTaskKind::PolicySync, now_unix);
+        }
+
         let compliance_due = interval_due(
             self.last_compliance_attempt_unix,
             now_unix,
@@ -88,10 +94,6 @@ impl AgentRuntime {
                 ControlPlaneTaskKind::Inventory { inventory },
                 now_unix,
             );
-        }
-
-        if self.policy_refresh_due(now_unix) {
-            self.try_enqueue_control_plane_task(ControlPlaneTaskKind::PolicySync, now_unix);
         }
 
         if self.threat_intel_refresh_due(now_unix) {
@@ -260,6 +262,17 @@ impl AgentRuntime {
             } else {
                 match parse_policy_json(&policy.policy_json) {
                     Ok(parsed) => {
+                        info!(
+                            firewall = parsed.firewall_required,
+                            kernel_prefix = ?parsed.min_kernel_prefix,
+                            disk_enc = parsed.disk_encryption_required,
+                            ssh_root = parsed.require_ssh_root_login_disabled,
+                            password_policy = parsed.password_policy_required,
+                            screen_lock = parsed.screen_lock_required,
+                            auto_updates = parsed.auto_updates_required,
+                            antivirus = parsed.antivirus_required,
+                            "compliance policy updated from server"
+                        );
                         self.compliance_policy = parsed;
                         policy_changed = true;
                     }

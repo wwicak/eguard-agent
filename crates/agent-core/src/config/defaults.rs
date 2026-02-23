@@ -4,12 +4,63 @@ use super::constants::DEFAULT_SERVER_ADDR;
 use super::types::{AgentConfig, AgentMode};
 use super::util::default_agent_id;
 
+/// Detect the MAC address of the primary physical network interface.
+///
+/// Reads `/sys/class/net/*/address`, skipping loopback and common virtual
+/// interfaces (veth, docker, bridge, virbr).  Prefers interfaces backed by a
+/// physical device (`/sys/class/net/<iface>/device` exists).
+#[cfg(target_os = "linux")]
+fn detect_primary_mac() -> Option<String> {
+    use std::path::Path;
+
+    let net_dir = Path::new("/sys/class/net");
+    let entries = std::fs::read_dir(net_dir).ok()?;
+
+    let skip_prefixes = ["lo", "veth", "br-", "docker", "virbr"];
+
+    let mut physical: Option<String> = None;
+    let mut fallback: Option<String> = None;
+
+    for entry in entries.flatten() {
+        let iface = entry.file_name().to_string_lossy().into_owned();
+
+        if skip_prefixes.iter().any(|p| iface.starts_with(p)) {
+            continue;
+        }
+
+        let addr_path = net_dir.join(&iface).join("address");
+        let mac = match std::fs::read_to_string(&addr_path) {
+            Ok(m) => m.trim().to_string(),
+            Err(_) => continue,
+        };
+
+        // Skip zero MAC or broadcast
+        if mac.is_empty() || mac == "00:00:00:00:00:00" || mac == "ff:ff:ff:ff:ff:ff" {
+            continue;
+        }
+
+        let has_device = net_dir.join(&iface).join("device").exists();
+        if has_device && physical.is_none() {
+            physical = Some(mac);
+        } else if fallback.is_none() {
+            fallback = Some(mac);
+        }
+    }
+
+    physical.or(fallback)
+}
+
 impl Default for AgentConfig {
     fn default() -> Self {
+        #[cfg(target_os = "linux")]
+        let mac = detect_primary_mac().unwrap_or_else(|| "00:00:00:00:00:00".to_string());
+        #[cfg(not(target_os = "linux"))]
+        let mac = "00:00:00:00:00:00".to_string();
+
         Self {
             agent_id: default_agent_id(),
             machine_id: None,
-            mac: "00:00:00:00:00:00".to_string(),
+            mac,
             mode: AgentMode::Learning,
             transport_mode: "http".to_string(),
             server_addr: DEFAULT_SERVER_ADDR.to_string(),

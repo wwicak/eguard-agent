@@ -28,6 +28,18 @@ contents:
     dst: /usr/lib/eguard-agent/ebpf/file_open_bpf.o
     file_info:
       mode: 0644
+  - src: zig-out/ebpf/file_write_bpf.o
+    dst: /usr/lib/eguard-agent/ebpf/file_write_bpf.o
+    file_info:
+      mode: 0644
+  - src: zig-out/ebpf/file_rename_bpf.o
+    dst: /usr/lib/eguard-agent/ebpf/file_rename_bpf.o
+    file_info:
+      mode: 0644
+  - src: zig-out/ebpf/file_unlink_bpf.o
+    dst: /usr/lib/eguard-agent/ebpf/file_unlink_bpf.o
+    file_info:
+      mode: 0644
   - src: zig-out/ebpf/tcp_connect_bpf.o
     dst: /usr/lib/eguard-agent/ebpf/tcp_connect_bpf.o
     file_info:

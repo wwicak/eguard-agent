@@ -17,7 +17,17 @@ pub(super) fn build_detection_engine_with_ransomware_policy(
     seed_yara_rules(&mut detection);
     seed_kill_chain_templates(&mut detection);
     load_ioc_files(&mut detection);
+    seed_detection_allowlist(&mut detection);
     detection
+}
+
+fn seed_detection_allowlist(detection: &mut DetectionEngine) {
+    // The agent's own self-monitoring (reading /proc/self/stat every tick)
+    // triggers Layer 3 anomaly and behavioral CUSUM false positives.
+    // Allowlisting the agent process prevents wasted detection cycles on
+    // known-good self-monitoring while keeping all other processes fully
+    // monitored.
+    detection.allowlist.add_allowed_process("eguard-agent".to_string());
 }
 
 // ── Layer 1: IOC Hashes ─────────────────────────────────────────

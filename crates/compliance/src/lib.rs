@@ -28,7 +28,7 @@ pub type Result<T> = std::result::Result<T, ComplianceError>;
 pub struct CompliancePolicy {
     #[serde(default)]
     pub firewall_required: bool,
-    #[serde(default)]
+    #[serde(default, alias = "min_kernel_version")]
     pub min_kernel_prefix: Option<String>,
     #[serde(default)]
     pub os_version_prefix: Option<String>,
@@ -36,7 +36,7 @@ pub struct CompliancePolicy {
     pub min_os_version: Option<String>,
     #[serde(default)]
     pub disk_encryption_required: bool,
-    #[serde(default)]
+    #[serde(default, alias = "ssh_root_login_disabled")]
     pub require_ssh_root_login_disabled: bool,
     #[serde(default)]
     pub required_packages: Vec<String>,
@@ -1072,6 +1072,29 @@ pub fn execute_remediation_actions<R: CommandRunner>(
     outcomes
 }
 
+/// Map a legacy check_id to a human-readable check_type category so the
+/// compliance table shows distinct values in the "Check ID" and "Check" columns.
+fn derive_legacy_check_type(check_id: &str) -> String {
+    // For parameterized checks like "package_present:htop", use the base before ":"
+    let base = check_id.split(':').next().unwrap_or(check_id);
+    match base {
+        "firewall_required" => "firewall",
+        "kernel_prefix" => "kernel_version",
+        "os_version_prefix" | "os_version_gte" => "os_version",
+        "disk_encryption" => "disk_encryption",
+        "ssh_root_login" => "ssh_config",
+        "package_present" => "package_installed",
+        "package_absent" => "package_not_installed",
+        "service_running" => "service",
+        "password_policy" => "password_policy",
+        "screen_lock_enabled" => "screen_lock",
+        "auto_updates" => "auto_updates",
+        "antivirus_running" => "antivirus",
+        _ => base,
+    }
+    .to_string()
+}
+
 fn check_result(
     check: impl Into<String>,
     passed: bool,
@@ -1080,6 +1103,7 @@ fn check_result(
     expected: impl Into<String>,
 ) -> ComplianceCheck {
     let check_id = check.into();
+    let check_type = derive_legacy_check_type(&check_id);
     let actual_value = actual.into();
     let expected_value = expected.into();
     let evidence_json = json!({
@@ -1088,8 +1112,8 @@ fn check_result(
     })
     .to_string();
     ComplianceCheck {
-        check_id: check_id.clone(),
-        check_type: check_id,
+        check_id,
+        check_type,
         status: if passed { "compliant" } else { "non_compliant" }.to_string(),
         detail: detail.into(),
         severity: "medium".to_string(),

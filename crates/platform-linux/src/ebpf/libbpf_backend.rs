@@ -5,18 +5,22 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use libbpf_rs::{MapCore, MapFlags};
+use tracing::{debug, info, warn};
 
 use super::backend::RingBufferBackend;
 use super::codec::parse_fallback_dropped_events;
 use super::types::{EbpfError, PollBatch, Result};
 
 pub(super) struct LibbpfRingBufferBackend {
-    _loaded: Vec<LoadedObject>,
-    drop_counter_sources: Vec<DropCounterSource>,
-    failed_probes: Vec<String>,
+    // Drop order matters: ring_buffer must drop FIRST (releases map fd
+    // references) before _loaded drops (detaches BPF programs from kernel
+    // hooks and frees BPF objects).  Rust drops fields in declaration order.
     ring_buffer: libbpf_rs::RingBuffer<'static>,
     records: RecordSink,
     record_pool: RecordPool,
+    drop_counter_sources: Vec<DropCounterSource>,
+    failed_probes: Vec<String>,
+    _loaded: Vec<LoadedObject>,
 }
 
 type RecordSink = Arc<Mutex<Vec<Vec<u8>>>>;
@@ -55,18 +59,47 @@ impl LibbpfRingBufferBackend {
             )?);
         }
 
+        let total_attached: usize = loaded.iter().map(|o| o.attached_programs.len()).sum();
+        let attached_names: Vec<String> = loaded
+            .iter()
+            .flat_map(|o| o.attached_programs.iter().cloned())
+            .collect();
+
+        info!(
+            objects = loaded.len(),
+            attached = total_attached,
+            failed = failed_probes.len(),
+            programs = ?attached_names,
+            "eBPF objects loaded"
+        );
+
+        if !failed_probes.is_empty() {
+            warn!(probes = ?failed_probes, "some eBPF probes failed to attach (degraded mode)");
+        }
+
         let drop_counter_sources = collect_drop_counter_sources(&loaded)?;
 
         let (ring_buffer, records, record_pool) = build_ring_buffer(&mut loaded, ring_buffer_map)?;
 
         Ok(Self {
-            _loaded: loaded,
-            drop_counter_sources,
-            failed_probes,
             ring_buffer,
             records,
             record_pool,
+            drop_counter_sources,
+            failed_probes,
+            _loaded: loaded,
         })
+    }
+
+    pub(super) fn attached_program_count(&self) -> usize {
+        self._loaded.iter().map(|o| o.attached_programs.len()).sum()
+    }
+
+    pub(super) fn attached_program_names(&self) -> Vec<String> {
+        self._loaded
+            .iter()
+            .flat_map(|o| o.attached_programs.iter().cloned())
+            .collect()
     }
 }
 
@@ -106,6 +139,11 @@ fn load_object_with_degradation(
 
         match program.attach() {
             Ok(link) => {
+                debug!(
+                    program = %name,
+                    elf = %path.display(),
+                    "eBPF program attached"
+                );
                 links.push(link);
                 attached_programs.push(name);
             }
@@ -187,6 +225,14 @@ impl RingBufferBackend for LibbpfRingBufferBackend {
 
     fn failed_probes(&self) -> Vec<String> {
         self.failed_probes.clone()
+    }
+
+    fn attached_program_count(&self) -> usize {
+        self.attached_program_count()
+    }
+
+    fn attached_program_names(&self) -> Vec<String> {
+        self.attached_program_names()
     }
 }
 

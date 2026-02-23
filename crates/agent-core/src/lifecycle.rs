@@ -2,6 +2,7 @@ mod async_workers;
 mod baseline;
 mod bundle_support;
 mod compliance;
+mod compliance_platform;
 mod constants;
 mod detection_event;
 mod ebpf_support;

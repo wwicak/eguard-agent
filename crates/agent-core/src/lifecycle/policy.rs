@@ -45,7 +45,13 @@ pub(super) fn load_compliance_policy() -> CompliancePolicy {
 
     CompliancePolicy {
         firewall_required: true,
-        min_kernel_prefix: None,
+        min_kernel_prefix: Some("5.".to_string()),
+        disk_encryption_required: true,
+        require_ssh_root_login_disabled: true,
+        password_policy_required: true,
+        screen_lock_required: true,
+        auto_updates_required: true,
+        antivirus_required: true,
         ..CompliancePolicy::default()
     }
 }

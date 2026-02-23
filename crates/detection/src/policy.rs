@@ -16,7 +16,15 @@ pub fn confidence_policy(s: &DetectionSignals) -> Confidence {
     if high_grade_signal_count >= 2 || (s.z2_temporal && s.l1_prefilter_hit) {
         return Confidence::VeryHigh;
     }
+    // YARA hit corroborated by another high-grade signal → VeryHigh
+    if s.yara_hit && (s.z2_temporal || s.z4_kill_chain || s.exploit_indicator) {
+        return Confidence::VeryHigh;
+    }
     if s.z2_temporal || s.z4_kill_chain || s.exploit_indicator || s.tamper_indicator {
+        return Confidence::High;
+    }
+    // Standalone YARA hit (file content matched a rule) → High
+    if s.yara_hit {
         return Confidence::High;
     }
     if s.kernel_integrity {

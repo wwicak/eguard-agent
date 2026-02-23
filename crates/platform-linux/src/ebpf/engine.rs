@@ -33,6 +33,8 @@ impl EbpfEngine {
         let mut stats = EbpfStats::default();
         detect_kernel_capabilities(&mut stats);
         stats.failed_probes = backend.failed_probes();
+        stats.attached_program_count = backend.attached_program_count();
+        stats.attached_program_names = backend.attached_program_names();
         Ok(Self {
             backend: Box::new(backend),
             stats,
@@ -45,6 +47,8 @@ impl EbpfEngine {
         let mut stats = EbpfStats::default();
         detect_kernel_capabilities(&mut stats);
         stats.failed_probes = backend.failed_probes();
+        stats.attached_program_count = backend.attached_program_count();
+        stats.attached_program_names = backend.attached_program_names();
         Ok(Self {
             backend: Box::new(backend),
             stats,
