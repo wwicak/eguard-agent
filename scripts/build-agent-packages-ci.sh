@@ -158,12 +158,15 @@ prepare_stage_payload() {
 
   mkdir -p "${core_root}/usr/lib/eguard-agent/ebpf" "${core_root}/usr/lib/eguard-agent/lib"
 
-  ensure_file "${ROOT_DIR}/zig-out/ebpf/process_exec_bpf.o" "${core_root}/usr/lib/eguard-agent/ebpf/process_exec.bpf.o"
-  ensure_file "${ROOT_DIR}/zig-out/ebpf/file_open_bpf.o" "${core_root}/usr/lib/eguard-agent/ebpf/file_open.bpf.o"
-  ensure_file "${ROOT_DIR}/zig-out/ebpf/tcp_connect_bpf.o" "${core_root}/usr/lib/eguard-agent/ebpf/tcp_connect.bpf.o"
-  ensure_file "${ROOT_DIR}/zig-out/ebpf/dns_query_bpf.o" "${core_root}/usr/lib/eguard-agent/ebpf/dns_query.bpf.o"
-  ensure_file "${ROOT_DIR}/zig-out/ebpf/module_load_bpf.o" "${core_root}/usr/lib/eguard-agent/ebpf/module_load.bpf.o"
-  ensure_file "${ROOT_DIR}/zig-out/ebpf/lsm_block_bpf.o" "${core_root}/usr/lib/eguard-agent/ebpf/lsm_block.bpf.o"
+  ensure_file "${ROOT_DIR}/zig-out/ebpf/process_exec_bpf.o" "${core_root}/usr/lib/eguard-agent/ebpf/process_exec_bpf.o"
+  ensure_file "${ROOT_DIR}/zig-out/ebpf/file_open_bpf.o" "${core_root}/usr/lib/eguard-agent/ebpf/file_open_bpf.o"
+  ensure_file "${ROOT_DIR}/zig-out/ebpf/file_write_bpf.o" "${core_root}/usr/lib/eguard-agent/ebpf/file_write_bpf.o"
+  ensure_file "${ROOT_DIR}/zig-out/ebpf/file_rename_bpf.o" "${core_root}/usr/lib/eguard-agent/ebpf/file_rename_bpf.o"
+  ensure_file "${ROOT_DIR}/zig-out/ebpf/file_unlink_bpf.o" "${core_root}/usr/lib/eguard-agent/ebpf/file_unlink_bpf.o"
+  ensure_file "${ROOT_DIR}/zig-out/ebpf/tcp_connect_bpf.o" "${core_root}/usr/lib/eguard-agent/ebpf/tcp_connect_bpf.o"
+  ensure_file "${ROOT_DIR}/zig-out/ebpf/dns_query_bpf.o" "${core_root}/usr/lib/eguard-agent/ebpf/dns_query_bpf.o"
+  ensure_file "${ROOT_DIR}/zig-out/ebpf/module_load_bpf.o" "${core_root}/usr/lib/eguard-agent/ebpf/module_load_bpf.o"
+  ensure_file "${ROOT_DIR}/zig-out/ebpf/lsm_block_bpf.o" "${core_root}/usr/lib/eguard-agent/ebpf/lsm_block_bpf.o"
 
   local asm_bundle="${core_root}/usr/lib/eguard-agent/lib/libeguard_asm.a"
   local asm_temp_dir="${STAGE_DIR}/asm-temp"
@@ -228,18 +231,24 @@ contents:
     type: config|noreplace
     file_info:
       mode: 0644
-  - src: ${core_root}/usr/lib/eguard-agent/ebpf/process_exec.bpf.o
-    dst: /usr/lib/eguard-agent/ebpf/process_exec.bpf.o
-  - src: ${core_root}/usr/lib/eguard-agent/ebpf/file_open.bpf.o
-    dst: /usr/lib/eguard-agent/ebpf/file_open.bpf.o
-  - src: ${core_root}/usr/lib/eguard-agent/ebpf/tcp_connect.bpf.o
-    dst: /usr/lib/eguard-agent/ebpf/tcp_connect.bpf.o
-  - src: ${core_root}/usr/lib/eguard-agent/ebpf/dns_query.bpf.o
-    dst: /usr/lib/eguard-agent/ebpf/dns_query.bpf.o
-  - src: ${core_root}/usr/lib/eguard-agent/ebpf/module_load.bpf.o
-    dst: /usr/lib/eguard-agent/ebpf/module_load.bpf.o
-  - src: ${core_root}/usr/lib/eguard-agent/ebpf/lsm_block.bpf.o
-    dst: /usr/lib/eguard-agent/ebpf/lsm_block.bpf.o
+  - src: ${core_root}/usr/lib/eguard-agent/ebpf/process_exec_bpf.o
+    dst: /usr/lib/eguard-agent/ebpf/process_exec_bpf.o
+  - src: ${core_root}/usr/lib/eguard-agent/ebpf/file_open_bpf.o
+    dst: /usr/lib/eguard-agent/ebpf/file_open_bpf.o
+  - src: ${core_root}/usr/lib/eguard-agent/ebpf/file_write_bpf.o
+    dst: /usr/lib/eguard-agent/ebpf/file_write_bpf.o
+  - src: ${core_root}/usr/lib/eguard-agent/ebpf/file_rename_bpf.o
+    dst: /usr/lib/eguard-agent/ebpf/file_rename_bpf.o
+  - src: ${core_root}/usr/lib/eguard-agent/ebpf/file_unlink_bpf.o
+    dst: /usr/lib/eguard-agent/ebpf/file_unlink_bpf.o
+  - src: ${core_root}/usr/lib/eguard-agent/ebpf/tcp_connect_bpf.o
+    dst: /usr/lib/eguard-agent/ebpf/tcp_connect_bpf.o
+  - src: ${core_root}/usr/lib/eguard-agent/ebpf/dns_query_bpf.o
+    dst: /usr/lib/eguard-agent/ebpf/dns_query_bpf.o
+  - src: ${core_root}/usr/lib/eguard-agent/ebpf/module_load_bpf.o
+    dst: /usr/lib/eguard-agent/ebpf/module_load_bpf.o
+  - src: ${core_root}/usr/lib/eguard-agent/ebpf/lsm_block_bpf.o
+    dst: /usr/lib/eguard-agent/ebpf/lsm_block_bpf.o
   - src: ${core_root}/usr/lib/eguard-agent/lib/libeguard_asm.a
     dst: /usr/lib/eguard-agent/lib/libeguard_asm.a
   - src: ${core_root}/var/lib/eguard-agent/baselines/seed.bin
@@ -344,7 +353,7 @@ fi
 
 configure_musl_toolchain
 
-cargo build --release --target x86_64-unknown-linux-musl -p agent-core
+cargo build --release --target x86_64-unknown-linux-musl -p agent-core --features platform-linux/ebpf-libbpf
 zig build
 
 BIN="${ROOT_DIR}/target/x86_64-unknown-linux-musl/release/agent-core"
@@ -384,7 +393,7 @@ cat > "${OUT_JSON}" <<EOF
     "systemd_unit_kb": ${SYSTEMD_UNIT_KB}
   },
   "build_commands": [
-    "cargo build --release --target x86_64-unknown-linux-musl -p agent-core",
+    "cargo build --release --target x86_64-unknown-linux-musl -p agent-core --features platform-linux/ebpf-libbpf",
     "zig build",
     "strip target/x86_64-unknown-linux-musl/release/agent-core"
   ],

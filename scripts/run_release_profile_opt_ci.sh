@@ -11,7 +11,7 @@ mkdir -p "${OUT_DIR}"
 NOW_UTC="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
 START_NS="$(date +%s%N)"
-cargo build --release -p agent-core
+cargo build --release -p agent-core --features platform-linux/ebpf-libbpf
 END_NS="$(date +%s%N)"
 BASELINE_BUILD_MS="$(( (END_NS - START_NS) / 1000000 ))"
 
@@ -36,10 +36,10 @@ if [[ "${PGO_ENABLED}" == "1" ]]; then
   rm -rf "${PGO_DIR}"
   mkdir -p "${PGO_DIR}/raw"
 
-  RUSTFLAGS="-Cprofile-generate=${PGO_DIR}/raw -Clto=thin" cargo build --release -p agent-core
+  RUSTFLAGS="-Cprofile-generate=${PGO_DIR}/raw -Clto=thin" cargo build --release -p agent-core --features platform-linux/ebpf-libbpf
   ./target/release/agent-core --help >/dev/null 2>&1 || true
   llvm-profdata merge -o "${PGO_DIR}/default.profdata" "${PGO_DIR}"/raw/*.profraw
-  RUSTFLAGS="-Cprofile-use=${PGO_DIR}/default.profdata -Clto=thin" cargo build --release -p agent-core
+  RUSTFLAGS="-Cprofile-use=${PGO_DIR}/default.profdata -Clto=thin" cargo build --release -p agent-core --features platform-linux/ebpf-libbpf
   PGO_STATUS="applied"
 fi
 
