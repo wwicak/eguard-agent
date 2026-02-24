@@ -283,6 +283,34 @@ impl AgentRuntime {
             }
         }
 
+        // Parse detection allowlist from policy JSON and push to shards.
+        if !policy.policy_json.trim().is_empty() {
+            if let Ok(raw) = serde_json::from_str::<serde_json::Value>(&policy.policy_json) {
+                if let Some(allowlist_obj) = raw.get("detection_allowlist") {
+                    let processes: Vec<String> = allowlist_obj
+                        .get("processes")
+                        .and_then(|v| serde_json::from_value(v.clone()).ok())
+                        .unwrap_or_default();
+                    let path_prefixes: Vec<String> = allowlist_obj
+                        .get("path_prefixes")
+                        .and_then(|v| serde_json::from_value(v.clone()).ok())
+                        .unwrap_or_default();
+
+                    info!(
+                        processes_count = processes.len(),
+                        path_prefixes_count = path_prefixes.len(),
+                        "applying detection allowlist from policy"
+                    );
+                    if let Err(err) =
+                        self.detection_state
+                            .update_allowlist(processes, path_prefixes)
+                    {
+                        warn!(error = %err, "failed to update detection allowlist");
+                    }
+                }
+            }
+        }
+
         if policy_changed {
             self.last_compliance_checked_unix = None;
             self.last_compliance_result = None;

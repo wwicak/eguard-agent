@@ -31,6 +31,11 @@ enum ShardCommand {
         engine: Box<DetectionEngine>,
         response: mpsc::Sender<std::result::Result<(), String>>,
     },
+    UpdateAllowlist {
+        processes: Vec<String>,
+        path_prefixes: Vec<String>,
+        response: mpsc::Sender<std::result::Result<(), String>>,
+    },
 }
 
 #[derive(Clone)]
@@ -117,6 +122,25 @@ impl DetectionShard {
             .map_err(|err| anyhow!(err))
     }
 
+    fn update_allowlist(
+        &self,
+        processes: Vec<String>,
+        path_prefixes: Vec<String>,
+    ) -> Result<()> {
+        let (response_tx, response_rx) = mpsc::channel();
+        self.tx
+            .send(ShardCommand::UpdateAllowlist {
+                processes,
+                path_prefixes,
+                response: response_tx,
+            })
+            .map_err(|_| anyhow!("detection shard channel closed"))?;
+        response_rx
+            .recv()
+            .map_err(|_| anyhow!("detection shard response channel closed"))?
+            .map_err(|err| anyhow!(err))
+    }
+
     fn scan_process_memory(
         &self,
         pid: u32,
@@ -174,6 +198,14 @@ fn shard_worker_loop(mut engine: DetectionEngine, rx: mpsc::Receiver<ShardComman
                 response,
             } => {
                 engine = *replacement;
+                let _ = response.send(Ok(()));
+            }
+            ShardCommand::UpdateAllowlist {
+                processes,
+                path_prefixes,
+                response,
+            } => {
+                engine.allowlist.load_from_lists(processes, path_prefixes);
                 let _ = response.send(Ok(()));
             }
         }
@@ -341,6 +373,19 @@ impl SharedDetectionState {
             shard
                 .apply_emergency_rule(rule.rule_type, rule.rule_content.clone())
                 .map_err(|err| anyhow!("apply emergency rule on shard {idx} failed: {err}"))?;
+        }
+        Ok(())
+    }
+
+    pub fn update_allowlist(
+        &self,
+        processes: Vec<String>,
+        path_prefixes: Vec<String>,
+    ) -> Result<()> {
+        for (idx, shard) in self.inner.shards.iter().enumerate() {
+            shard
+                .update_allowlist(processes.clone(), path_prefixes.clone())
+                .map_err(|err| anyhow!("update allowlist on shard {idx} failed: {err}"))?;
         }
         Ok(())
     }

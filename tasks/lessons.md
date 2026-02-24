@@ -442,3 +442,27 @@ Do not assume token validation passes in-memory by default. For install endpoint
 unit tests with `EGUARD_AGENT_INSTALL_REQUIRE_TOKEN=enabled`, create a known token
 in test setup before asserting tokened requests return 200. This avoids environment-
 dependent false failures.
+
+## Caddy api-aaa Auth Depends On Perl API By Default
+The `api-aaa` Caddy plugin validates admin credentials by POST to
+`{EgperlApi}/api/v1/authentication/admin_authentication`. This URL defaults to
+Perl port 22224 via `eg.conf.defaults`. To route auth to Go, either update the
+default to `:22230` or use iptables redirect `--dport 22224 -j REDIRECT --to-port 22230`.
+The Go handler must return `{"result": 1, "roles": ["ALL"]}` (integer, not string).
+
+## Caddy `api` Directive Passes Through Unmatched Requests
+The `api` handler in eghttpd only matches ~7 specific POST routes (radius_attributes,
+fingerbank, ntlm, fleetdm, DAL search endpoints). All other requests fall through to
+the next handler via `next.ServeHTTP()`. It does NOT block Go proxy routing.
+
+## egconfig Daemon Uses Deeply Cached Config
+The Perl egconfig daemon at TCP:44444 caches config aggressively. Editing `eg.conf`
+and restarting eguard-config may not immediately propagate `[services_url]` changes
+to Go services reading via `egconfigdriver`. Use iptables port redirect or env var
+overrides as a faster workaround for testing.
+
+## Caddy Route Order: `import api.conf.d/*.conf` Before Perl Fallback
+In `api.conf`, the `import api.conf.d/*.conf` directive is evaluated before the
+Perl fallback `reverse_proxy /api/v1/* {$PF_SERVICES_URL_PFPERL_API}`. Put Go
+catch-all `reverse_proxy /api/v1/* 127.0.0.1:22230` in the imported conf to
+intercept all API traffic before it reaches Perl.

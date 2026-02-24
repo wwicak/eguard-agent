@@ -62,6 +62,19 @@ impl DetectionAllowlist {
         self.path_prefixes.push(prefix);
     }
 
+    /// Replace the allowlist contents from server-provided lists.
+    /// Always re-seeds `eguard-agent` as an allowed process.
+    pub fn load_from_lists(&mut self, processes: Vec<String>, path_prefixes: Vec<String>) {
+        self.processes.clear();
+        self.path_prefixes.clear();
+        for p in processes {
+            self.processes.insert(p);
+        }
+        self.path_prefixes = path_prefixes;
+        // Always keep the agent itself allowlisted to prevent self-monitoring FPs.
+        self.processes.insert("eguard-agent".to_string());
+    }
+
     pub fn is_allowed(&self, event: &TelemetryEvent) -> bool {
         if self.processes.contains(&event.process) {
             return true;

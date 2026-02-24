@@ -1,4 +1,4 @@
-name: Release Agent Packages
+name: Release Agent (All Platforms)
 
 on:
   push:
@@ -18,8 +18,11 @@ env:
   ZIG_VERSION: "0.14.1"
 
 jobs:
-  build-and-release:
+  linux:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      semver: ${{ steps.semver.outputs.version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -102,12 +105,168 @@ jobs:
           EGUARD_CONTAINER_REQUIRE_EBPF_LIBBPF: "0"
         run: bash scripts/run_package_container_install_smoke_ci.sh
 
+      - name: Upload Linux packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: |
+            artifacts/package-agent/debian/*.deb
+            artifacts/package-agent/rpm/*.rpm
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Determine version
+        id: version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Strip version prefix
+        id: semver
+        shell: bash
+        run: |
+          RAW="${{ steps.version.outputs.tag }}"
+          echo "version=${RAW#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build Zig ASM artifacts
+        shell: bash
+        run: zig build asm-artifacts
+
+      - name: Validate platform-windows target build
+        shell: bash
+        run: |
+          cargo check --target x86_64-pc-windows-msvc -p platform-windows
+
+      - name: Run platform-windows tests
+        shell: bash
+        run: |
+          cargo test -p platform-windows
+
+      - name: Build Windows agent binary
+        shell: bash
+        env:
+          EGUARD_AGENT_VERSION: ${{ steps.semver.outputs.version }}
+        run: cargo build --release --target x86_64-pc-windows-msvc -p agent-core
+
+      - name: Prepare release artifacts
+        shell: bash
+        run: |
+          mkdir -p artifacts/windows
+          cp target/x86_64-pc-windows-msvc/release/agent-core.exe artifacts/windows/eguard-agent.exe
+
+      - name: Upload Windows packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-packages
+          path: artifacts/windows/eguard-agent.exe
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Strip version prefix
+        id: semver
+        run: |
+          RAW="${{ steps.version.outputs.tag }}"
+          echo "version=${RAW#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build ARM64
+        env:
+          EGUARD_AGENT_VERSION: ${{ steps.semver.outputs.version }}
+        run: cargo build --release --target aarch64-apple-darwin -p agent-core
+
+      - name: Build x86_64
+        env:
+          EGUARD_AGENT_VERSION: ${{ steps.semver.outputs.version }}
+        run: cargo build --release --target x86_64-apple-darwin -p agent-core
+
+      - name: Create universal binary
+        run: |
+          lipo -create \
+            target/aarch64-apple-darwin/release/agent-core \
+            target/x86_64-apple-darwin/release/agent-core \
+            -output eguard-agent
+
+      - name: Build .pkg
+        run: ./installer/macos/build-pkg.sh
+        env:
+          VERSION: ${{ steps.semver.outputs.version }}
+          DEVELOPER_ID_INSTALLER: ${{ secrets.MACOS_DEVELOPER_ID_INSTALLER }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+
+      - name: Verify pkg signature
+        if: env.DEVELOPER_ID_INSTALLER != ''
+        env:
+          DEVELOPER_ID_INSTALLER: ${{ secrets.MACOS_DEVELOPER_ID_INSTALLER }}
+        run: pkgutil --check-signature artifacts/macos/eguard-agent-*.pkg
+
+      - name: Upload macOS packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-packages
+          path: artifacts/macos/eguard-agent-*.pkg
+
+  release:
+    needs: [linux, windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          name: "eGuard Agent ${{ steps.version.outputs.tag }}"
+          tag_name: ${{ needs.linux.outputs.tag }}
+          name: "eGuard Agent ${{ needs.linux.outputs.tag }}"
           generate_release_notes: true
+          fail_on_unmatched_files: false
           files: |
-            artifacts/package-agent/debian/*.deb
-            artifacts/package-agent/rpm/*.rpm
+            release-artifacts/linux-packages/**/*.deb
+            release-artifacts/linux-packages/**/*.rpm
+            release-artifacts/windows-packages/**/*.exe
+            release-artifacts/macos-packages/**/*.pkg
+
