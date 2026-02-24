@@ -48,33 +48,45 @@ fn deny_attach_macos() -> Result<(), super::SelfProtectError> {
 #[cfg(target_os = "macos")]
 fn detect_debugger_macos() -> bool {
     // Check P_TRACED flag via sysctl.
+    //
+    // We read the raw kinfo_proc bytes and inspect the p_flag field at a
+    // known offset instead of relying on libc::kinfo_proc which was removed
+    // in recent libc crate versions.
+    const KINFO_PROC_SIZE: usize = 648; // sizeof(struct kinfo_proc) on macOS arm64/x86_64
+    const P_FLAG_OFFSET: usize = 16; // offsetof(kinfo_proc, kp_proc.p_flag)
+    const P_TRACED: i32 = 0x00000800;
+
     let mut mib: [libc::c_int; 4] = [
         libc::CTL_KERN,
         libc::KERN_PROC,
         libc::KERN_PROC_PID,
         unsafe { libc::getpid() },
     ];
-    let mut info = std::mem::MaybeUninit::<libc::kinfo_proc>::zeroed();
-    let mut size = std::mem::size_of::<libc::kinfo_proc>();
+    let mut buf = [0u8; KINFO_PROC_SIZE];
+    let mut size = KINFO_PROC_SIZE;
 
     let ret = unsafe {
         libc::sysctl(
             mib.as_mut_ptr(),
             4,
-            info.as_mut_ptr() as *mut libc::c_void,
+            buf.as_mut_ptr() as *mut libc::c_void,
             &mut size,
             std::ptr::null_mut(),
             0,
         )
     };
 
-    if ret != 0 {
+    if ret != 0 || size < P_FLAG_OFFSET + 4 {
         return false;
     }
 
-    let info = unsafe { info.assume_init() };
-    const P_TRACED: i32 = 0x00000800;
-    (info.kp_proc.p_flag & P_TRACED) != 0
+    let p_flag = i32::from_ne_bytes([
+        buf[P_FLAG_OFFSET],
+        buf[P_FLAG_OFFSET + 1],
+        buf[P_FLAG_OFFSET + 2],
+        buf[P_FLAG_OFFSET + 3],
+    ]);
+    (p_flag & P_TRACED) != 0
 }
 
 #[cfg(test)]

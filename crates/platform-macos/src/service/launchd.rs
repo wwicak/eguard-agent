@@ -1,11 +1,7 @@
 //! LaunchDaemon lifecycle management via launchctl.
 
 #[cfg(target_os = "macos")]
-use std::process::Command;
-#[cfg(target_os = "macos")]
-use std::thread::sleep;
-#[cfg(target_os = "macos")]
-use std::time::Duration;
+use std::{process::Command, thread::sleep, time::Duration};
 
 const DEFAULT_BINARY_PATH: &str = "/usr/local/bin/eguard-agent";
 
