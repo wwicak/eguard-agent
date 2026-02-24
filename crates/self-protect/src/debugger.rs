@@ -180,34 +180,44 @@ fn read_tsc() -> u64 {
 }
 
 /// Detect debugger on macOS via sysctl P_TRACED flag.
+///
+/// Uses raw byte buffer to read kinfo_proc because the `libc` crate removed
+/// the type in recent versions.
 #[cfg(target_os = "macos")]
 fn detect_tracer_macos() -> Option<bool> {
-    use std::mem;
     use std::ptr;
 
+    const KINFO_PROC_SIZE: usize = 648;
+    const P_FLAG_OFFSET: usize = 16; // offsetof(kinfo_proc, kp_proc.p_flag)
     const P_TRACED: i32 = 0x00000800;
 
     let pid = unsafe { libc::getpid() };
     let mut mib: [libc::c_int; 4] = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_PID, pid];
-    let mut info: libc::kinfo_proc = unsafe { mem::zeroed() };
-    let mut size = mem::size_of::<libc::kinfo_proc>();
+    let mut buf = [0u8; KINFO_PROC_SIZE];
+    let mut size = KINFO_PROC_SIZE;
 
     let ret = unsafe {
         libc::sysctl(
             mib.as_mut_ptr(),
             4,
-            &mut info as *mut _ as *mut libc::c_void,
+            buf.as_mut_ptr() as *mut libc::c_void,
             &mut size,
             ptr::null_mut(),
             0,
         )
     };
 
-    if ret != 0 || size == 0 {
+    if ret != 0 || size < P_FLAG_OFFSET + 4 {
         return None;
     }
 
-    Some((info.kp_proc.p_flag & P_TRACED) != 0)
+    let p_flag = i32::from_ne_bytes([
+        buf[P_FLAG_OFFSET],
+        buf[P_FLAG_OFFSET + 1],
+        buf[P_FLAG_OFFSET + 2],
+        buf[P_FLAG_OFFSET + 3],
+    ]);
+    Some((p_flag & P_TRACED) != 0)
 }
 
 fn env_u64(name: &str, default: u64) -> u64 {

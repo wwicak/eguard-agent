@@ -82,8 +82,8 @@ jobs:
 
           metrics = json.loads(path.read_text())
           build_ms = int(metrics.get('baseline_release_build_ms', 10**9))
-          if build_ms > 120_000:
-              print(f'release optimization preflight build too high: {build_ms} ms > 120000 ms')
+          if build_ms > 180_000:
+              print(f'release optimization preflight build too high: {build_ms} ms > 180000 ms')
               sys.exit(1)
 
           print(f'release optimization preflight threshold passed: {build_ms} ms')

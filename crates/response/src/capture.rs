@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::errors::ResponseResult;
 
+#[cfg(target_os = "linux")]
 const MAX_CAPTURE_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Default)]
@@ -76,6 +77,7 @@ fn read_cmdline_args(pid: u32) -> ResponseResult<Vec<String>> {
         .collect())
 }
 
+#[cfg(target_os = "linux")]
 fn read_file_capped(path: &Path, cap: usize) -> std::io::Result<Vec<u8>> {
     let data = fs::read(path)?;
     if data.len() > cap {
@@ -87,6 +89,7 @@ fn read_file_capped(path: &Path, cap: usize) -> std::io::Result<Vec<u8>> {
     Ok(data)
 }
 
+#[cfg(target_os = "linux")]
 fn read_pipe_nonblocking_capped(path: &Path, cap: usize) -> std::io::Result<Vec<u8>> {
     #[cfg(unix)]
     {
@@ -125,6 +128,7 @@ fn read_pipe_nonblocking_capped(path: &Path, cap: usize) -> std::io::Result<Vec<
     }
 }
 
+#[cfg(target_os = "linux")]
 fn normalize_environ_bytes(raw: &[u8]) -> Option<String> {
     let normalized = raw
         .split(|b| *b == 0)
