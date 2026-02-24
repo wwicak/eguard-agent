@@ -353,10 +353,18 @@ fi
 
 configure_musl_toolchain
 
-# libbpf-sys needs Linux kernel headers (linux/stddef.h, asm/unistd.h) which
-# are not in zig's musl sysroot. LIBBPF_SYS_EXTRA_CFLAGS adds include paths
-# only for libbpf's C compilation, avoiding pollution of other builds (e.g. sqlite3).
-export LIBBPF_SYS_EXTRA_CFLAGS="-I/usr/include -I/usr/include/x86_64-linux-gnu"
+# libbpf-sys needs Linux kernel UAPI headers (linux/stddef.h, asm/unistd.h)
+# which are not in zig's musl sysroot. We copy ONLY the kernel headers
+# (linux/, asm/, asm-generic/) into an isolated directory to avoid pulling
+# glibc's userspace headers (stdio.h etc.) which conflict with musl.
+KERN_SYSROOT="${TOOLS_DIR}/kern-headers"
+if [[ ! -d "${KERN_SYSROOT}/linux" ]]; then
+  mkdir -p "${KERN_SYSROOT}"
+  cp -r /usr/include/linux "${KERN_SYSROOT}/linux"
+  cp -r /usr/include/x86_64-linux-gnu/asm "${KERN_SYSROOT}/asm"
+  cp -r /usr/include/asm-generic "${KERN_SYSROOT}/asm-generic"
+fi
+export LIBBPF_SYS_EXTRA_CFLAGS="-I${KERN_SYSROOT}"
 
 cargo build --release --target x86_64-unknown-linux-musl -p agent-core --features platform-linux/ebpf-libbpf
 zig build
