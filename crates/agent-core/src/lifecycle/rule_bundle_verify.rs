@@ -7,6 +7,11 @@ use tracing::warn;
 
 use super::MAX_SIGNED_RULE_BUNDLE_BYTES;
 
+/// Default Ed25519 public key for bundle signature verification.
+/// Override via `EGUARD_RULE_BUNDLE_PUBKEY` env var or server policy `bundle_public_key`.
+const DEFAULT_BUNDLE_PUBLIC_KEY_HEX: &str =
+    "31adf7b98a916f4d679323d0c85ba43fc4ae04b9a10a79b00095c14988d5437f";
+
 pub(super) fn verify_bundle_signature(bundle_path: &Path) -> bool {
     let Some(public_key) = resolve_rule_bundle_public_key() else {
         warn!("rule bundle public key is not configured; set EGUARD_RULE_BUNDLE_PUBKEY_PATH or EGUARD_RULE_BUNDLE_PUBKEY");
@@ -54,7 +59,8 @@ pub(super) fn resolve_rule_bundle_public_key() -> Option<[u8; 32]> {
         return parse_ed25519_key_material(raw.as_bytes());
     }
 
-    None
+    // Fall back to compiled-in default public key.
+    parse_ed25519_key_material(DEFAULT_BUNDLE_PUBLIC_KEY_HEX.as_bytes())
 }
 
 pub(super) fn resolve_bundle_signature_path(bundle_path: &Path) -> Option<PathBuf> {

@@ -3,8 +3,11 @@ use std::time::Instant;
 use anyhow::Result;
 use tracing::{info, warn};
 
+use baseline::BaselineStatus;
 use compliance::parse_policy_json;
 use grpc_client::{ComplianceCheckEnvelope, InventoryEnvelope, PolicyEnvelope, TlsConfig};
+
+use crate::config::AgentMode;
 
 use super::{
     elapsed_micros, interval_due, update_tls_policy_from_server, AgentRuntime, ComplianceResult,
@@ -283,9 +286,10 @@ impl AgentRuntime {
             }
         }
 
-        // Parse detection allowlist from policy JSON and push to shards.
+        // Parse structured fields from policy JSON.
         if !policy.policy_json.trim().is_empty() {
             if let Ok(raw) = serde_json::from_str::<serde_json::Value>(&policy.policy_json) {
+                // Detection allowlist — push to shards.
                 if let Some(allowlist_obj) = raw.get("detection_allowlist") {
                     let processes: Vec<String> = allowlist_obj
                         .get("processes")
@@ -306,6 +310,44 @@ impl AgentRuntime {
                             .update_allowlist(processes, path_prefixes)
                     {
                         warn!(error = %err, "failed to update detection allowlist");
+                    }
+                }
+
+                // Baseline mode — server can force-skip the learning window.
+                if let Some(mode) = raw.get("baseline_mode").and_then(|v| v.as_str()) {
+                    match mode {
+                        "force_active" | "skip_learning" => {
+                            if matches!(self.baseline_store.status, BaselineStatus::Learning) {
+                                let now = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs();
+                                self.baseline_store.force_active(now);
+                                if !matches!(self.runtime_mode, AgentMode::Degraded) {
+                                    self.runtime_mode = AgentMode::Active;
+                                }
+                                info!(baseline_mode = mode, "baseline forced to Active via server policy");
+                                if let Err(err) = self.baseline_store.save() {
+                                    warn!(error = %err, "failed to persist baseline after force_active");
+                                }
+                            }
+                        }
+                        "default" | "" => {} // natural progression
+                        other => warn!(baseline_mode = other, "unknown baseline_mode in policy"),
+                    }
+                }
+
+                // Bundle public key — server distributes Ed25519 key via policy.
+                if let Some(key_hex) = raw.get("bundle_public_key").and_then(|v| v.as_str()) {
+                    let key_hex = key_hex.trim();
+                    if !key_hex.is_empty() && key_hex.len() == 64 {
+                        // SAFETY: set_var is acceptable here because this runs on the single
+                        // runtime tick thread and the key is validated by the bundle verifier.
+                        #[allow(unused_unsafe)]
+                        unsafe {
+                            std::env::set_var("EGUARD_RULE_BUNDLE_PUBKEY", key_hex);
+                        }
+                        info!("bundle public key updated from server policy");
                     }
                 }
             }

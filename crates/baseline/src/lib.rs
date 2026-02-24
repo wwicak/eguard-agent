@@ -202,6 +202,17 @@ impl BaselineStore {
         Ok(self.check_transition_with_now(now_unix()?))
     }
 
+    /// Force the baseline into Active status, bypassing the natural learning window.
+    /// Used when server pushes `baseline_mode: "force_active"` or `"skip_learning"` via policy.
+    pub fn force_active(&mut self, now_unix: u64) {
+        self.status = BaselineStatus::Active;
+        self.learning_completed_unix = Some(now_unix);
+        self.last_refresh_unix = now_unix;
+        for profile in self.baselines.values_mut() {
+            profile.entropy_threshold = derive_entropy_threshold(profile.sample_count);
+        }
+    }
+
     pub fn seed_with_defaults_if_empty(&mut self) -> usize {
         if !self.baselines.is_empty() {
             return 0;
