@@ -7,8 +7,6 @@ use std::sync::{Mutex, OnceLock};
 #[cfg(target_os = "windows")]
 use std::process::Command;
 
-#[cfg(target_os = "windows")]
-const WFP_RULE_GROUP: &str = "eGuard WFP Emulation";
 
 static NEXT_FILTER_ID: AtomicU64 = AtomicU64::new(1);
 static FILTER_REGISTRY: OnceLock<Mutex<HashMap<u64, String>>> = OnceLock::new();
@@ -146,7 +144,6 @@ fn apply_netsh_rule(rule_name: &str, filter: &WfpFilter) -> Result<(), String> {
         "add",
         "rule",
         &format!("name={rule_name}"),
-        &format!("group={WFP_RULE_GROUP}"),
         &format!("description={}", filter.description),
         &format!("dir={}", netsh_direction(filter.layer)),
         &format!("action={}", netsh_action(filter.action)),
@@ -182,7 +179,6 @@ fn remove_netsh_rule(rule_name: &str) -> Result<(), String> {
         "delete",
         "rule",
         &format!("name={rule_name}"),
-        &format!("group={WFP_RULE_GROUP}"),
     ];
 
     let output = Command::new("netsh")
