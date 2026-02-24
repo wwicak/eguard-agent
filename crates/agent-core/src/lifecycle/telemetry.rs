@@ -182,7 +182,7 @@ impl AgentRuntime {
         .to_string()
     }
 
-    fn detection_rule_type(outcome: &DetectionOutcome) -> &'static str {
+    pub(super) fn detection_rule_type(outcome: &DetectionOutcome) -> &'static str {
         if !outcome.yara_hits.is_empty() {
             return "yara";
         }
@@ -243,7 +243,7 @@ impl AgentRuntime {
         None
     }
 
-    fn detection_layers(outcome: &DetectionOutcome) -> Vec<String> {
+    pub(super) fn detection_layers(outcome: &DetectionOutcome) -> Vec<String> {
         let mut layers = Vec::new();
         if outcome.signals.z1_exact_ioc {
             layers.push("L1_ioc".to_string());

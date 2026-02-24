@@ -594,6 +594,9 @@ async fn observability_snapshot_reports_bounded_response_queue_progress() {
                 confidence: Confidence::High,
                 event: detection_event(1_700_000_300 + i as i64, 10_000 + i as u32),
                 enqueued_at_unix: 1_700_000_300,
+                detection_layers: Vec::new(),
+                rule_name: String::new(),
+                threat_category: String::new(),
             });
     }
 
@@ -730,6 +733,12 @@ async fn async_worker_queue_dispatches_response_reports() {
         confidence: "high".to_string(),
         success: false,
         error_message: "capture_failed:test".to_string(),
+        detection_layers: Vec::new(),
+        target_process: String::new(),
+        target_pid: 0,
+        rule_name: String::new(),
+        threat_category: String::new(),
+        file_path: None,
     });
 
     assert_eq!(runtime.pending_response_reports.len(), 1);

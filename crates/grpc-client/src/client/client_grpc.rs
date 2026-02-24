@@ -100,6 +100,7 @@ impl Client {
         agent_id: &str,
         compliance_status: &str,
         config_version: &str,
+        baseline_status: &str,
     ) -> Result<()> {
         self.with_retry("heartbeat_grpc", || async {
             let mut client = self.agent_control_client().await?;
@@ -110,7 +111,14 @@ impl Client {
                     agent_version: self.agent_version.clone(),
                     status: None,
                     resource_usage: None,
-                    baseline_report: None,
+                    baseline_report: Some(pb::BaselineReport {
+                        status: match baseline_status {
+                            "active" => pb::BaselineStatus::BaselineActive as i32,
+                            "stale" => pb::BaselineStatus::BaselineStale as i32,
+                            _ => pb::BaselineStatus::BaselineLearning as i32,
+                        },
+                        ..Default::default()
+                    }),
                     config_version: config_version.to_string(),
                     buffered_events: 0,
                     compliance_status: compliance_status.to_string(),

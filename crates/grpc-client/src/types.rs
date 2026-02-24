@@ -178,6 +178,18 @@ pub struct ResponseEnvelope {
     pub confidence: String,
     pub success: bool,
     pub error_message: String,
+    #[serde(default)]
+    pub detection_layers: Vec<String>,
+    #[serde(default)]
+    pub target_process: String,
+    #[serde(default)]
+    pub target_pid: u32,
+    #[serde(default)]
+    pub rule_name: String,
+    #[serde(default)]
+    pub threat_category: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

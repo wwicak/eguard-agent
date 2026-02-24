@@ -94,12 +94,14 @@ impl Client {
         agent_id: &str,
         compliance_status: &str,
         config_version: &str,
+        baseline_status: &str,
     ) -> Result<()> {
         let body = json!({
             "agent_id": agent_id,
             "agent_version": self.agent_version.clone(),
             "compliance_status": compliance_status,
             "config_version": config_version,
+            "baseline_status": baseline_status,
         });
         self.post_json_with_retry("heartbeat_http", PATH_HEARTBEAT, &body, "heartbeat")
             .await

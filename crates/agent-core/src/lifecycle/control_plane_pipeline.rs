@@ -57,9 +57,15 @@ impl AgentRuntime {
             let status = evaluation
                 .map(|eval| eval.compliance.status.clone())
                 .unwrap_or_else(|| self.evaluate_compliance().status);
+            let baseline_label = match self.baseline_store.status {
+                BaselineStatus::Learning => "learning",
+                BaselineStatus::Active => "active",
+                BaselineStatus::Stale => "stale",
+            };
             self.try_enqueue_control_plane_task(
                 ControlPlaneTaskKind::Heartbeat {
                     compliance_status: status,
+                    baseline_status: baseline_label.to_string(),
                 },
                 now_unix,
             );
@@ -142,9 +148,12 @@ impl AgentRuntime {
             };
 
             match task.kind {
-                ControlPlaneTaskKind::Heartbeat { compliance_status } => {
+                ControlPlaneTaskKind::Heartbeat {
+                    compliance_status,
+                    baseline_status,
+                } => {
                     let heartbeat_started = Instant::now();
-                    self.send_heartbeat_if_due(now_unix, &compliance_status);
+                    self.send_heartbeat_if_due(now_unix, &compliance_status, &baseline_status);
                     self.metrics.last_heartbeat_micros = elapsed_micros(heartbeat_started);
                 }
                 ControlPlaneTaskKind::Compliance { compliance } => {
@@ -379,7 +388,12 @@ impl AgentRuntime {
         }
     }
 
-    fn send_heartbeat_if_due(&mut self, now_unix: i64, compliance_status: &str) {
+    fn send_heartbeat_if_due(
+        &mut self,
+        now_unix: i64,
+        compliance_status: &str,
+        baseline_status: &str,
+    ) {
         if !interval_due(
             self.last_heartbeat_attempt_unix,
             now_unix,
@@ -394,6 +408,7 @@ impl AgentRuntime {
             agent_id: self.config.agent_id.clone(),
             compliance_status: compliance_status.to_string(),
             config_version,
+            baseline_status: baseline_status.to_string(),
         });
     }
 

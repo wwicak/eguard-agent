@@ -76,6 +76,12 @@ impl AgentRuntime {
             confidence: super::confidence_label(evaluation.confidence).to_string(),
             success: outcome.status == "completed",
             error_message: outcome.detail,
+            detection_layers: Vec::new(),
+            target_process: String::new(),
+            target_pid: 0,
+            rule_name: String::new(),
+            threat_category: String::new(),
+            file_path: None,
         });
     }
 
@@ -104,12 +110,22 @@ impl AgentRuntime {
             self.pending_response_actions.pop_front();
         }
 
+        let detection_layers =
+            super::AgentRuntime::detection_layers(&evaluation.detection_outcome);
+        let rule_name = super::AgentRuntime::detection_rule_name(&evaluation.detection_outcome)
+            .unwrap_or_default();
+        let threat_category =
+            super::AgentRuntime::detection_rule_type(&evaluation.detection_outcome).to_string();
+
         self.pending_response_actions
             .push_back(PendingResponseAction {
                 action: evaluation.action,
                 confidence: evaluation.confidence,
                 event: evaluation.detection_event.clone(),
                 enqueued_at_unix: now_unix,
+                detection_layers,
+                rule_name,
+                threat_category,
             });
     }
 
@@ -126,6 +142,9 @@ impl AgentRuntime {
                 pending.confidence,
                 &pending.event,
                 now_unix,
+                &pending.detection_layers,
+                &pending.rule_name,
+                &pending.threat_category,
             )
             .await;
 

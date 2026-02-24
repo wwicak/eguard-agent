@@ -376,6 +376,12 @@ impl AgentRuntime {
             } else {
                 detail.to_string()
             },
+            detection_layers: Vec::new(),
+            target_process: String::new(),
+            target_pid: 0,
+            rule_name: String::new(),
+            threat_category: String::new(),
+            file_path: None,
         };
 
         let send = self.client.send_response(&report);

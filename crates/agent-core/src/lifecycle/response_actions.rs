@@ -71,6 +71,9 @@ impl AgentRuntime {
         confidence: Confidence,
         event: &TelemetryEvent,
         now_unix: i64,
+        detection_layers: &[String],
+        rule_name: &str,
+        threat_category: &str,
     ) {
         if matches!(action, PlannedAction::AlertOnly | PlannedAction::None) {
             return;
@@ -95,6 +98,12 @@ impl AgentRuntime {
             confidence: confidence_label(confidence).to_string(),
             success: local.success,
             error_message: local.detail,
+            detection_layers: detection_layers.to_vec(),
+            target_process: event.process.clone(),
+            target_pid: event.pid,
+            rule_name: rule_name.to_string(),
+            threat_category: threat_category.to_string(),
+            file_path: event.file_path.clone(),
         };
         self.enqueue_response_report(response);
     }

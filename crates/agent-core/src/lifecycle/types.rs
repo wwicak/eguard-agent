@@ -25,7 +25,10 @@ pub(super) struct PendingCommand {
 
 #[derive(Debug, Clone)]
 pub(super) enum ControlPlaneTaskKind {
-    Heartbeat { compliance_status: String },
+    Heartbeat {
+        compliance_status: String,
+        baseline_status: String,
+    },
     Compliance { compliance: ComplianceResult },
     Inventory { inventory: InventoryEnvelope },
     PolicySync,
@@ -45,6 +48,9 @@ pub(super) struct PendingResponseAction {
     pub(super) confidence: Confidence,
     pub(super) event: TelemetryEvent,
     pub(super) enqueued_at_unix: i64,
+    pub(super) detection_layers: Vec<String>,
+    pub(super) rule_name: String,
+    pub(super) threat_category: String,
 }
 
 #[derive(Debug, Clone)]
@@ -53,6 +59,7 @@ pub(super) enum PendingControlPlaneSend {
         agent_id: String,
         compliance_status: String,
         config_version: String,
+        baseline_status: String,
     },
     Compliance {
         envelope: ComplianceEnvelope,

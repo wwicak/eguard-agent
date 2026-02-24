@@ -149,6 +149,19 @@ impl AgentRuntime {
         }
         let response_cfg = self.effective_response_config();
         let action = plan_action(confidence, &response_cfg);
-        let _ = self.report_local_action_if_needed(action, confidence, &event, now_unix);
+        let rule_name = detection
+            .hits
+            .first()
+            .map(|hit| hit.rule_name.clone())
+            .unwrap_or_default();
+        let _ = self.report_local_action_if_needed(
+            action,
+            confidence,
+            &event,
+            now_unix,
+            &["BEH_behavioral".to_string()],
+            &rule_name,
+            "behavioral",
+        );
     }
 }
