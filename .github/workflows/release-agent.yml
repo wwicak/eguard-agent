@@ -50,7 +50,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y dpkg-dev rpm gnupg musl-tools \
-            autoconf gettext flex bison gawk pkg-config
+            libelf-dev zlib1g-dev \
+            autoconf autopoint flex bison gawk pkg-config
 
       - name: Install nfpm
         run: |

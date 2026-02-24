@@ -357,7 +357,7 @@ configure_musl_toolchain
 # which are not in zig's musl sysroot. We copy ONLY the kernel headers
 # (linux/, asm/, asm-generic/) into an isolated directory to avoid pulling
 # glibc's userspace headers (stdio.h etc.) which conflict with musl.
-cargo build --release --target x86_64-unknown-linux-musl -p agent-core --features platform-linux/ebpf-libbpf
+cargo build --release --target x86_64-unknown-linux-musl -p agent-core --features platform-linux/ebpf-libbpf-vendored
 zig build
 
 BIN="${ROOT_DIR}/target/x86_64-unknown-linux-musl/release/agent-core"
@@ -397,7 +397,7 @@ cat > "${OUT_JSON}" <<EOF
     "systemd_unit_kb": ${SYSTEMD_UNIT_KB}
   },
   "build_commands": [
-    "cargo build --release --target x86_64-unknown-linux-musl -p agent-core --features platform-linux/ebpf-libbpf",
+    "cargo build --release --target x86_64-unknown-linux-musl -p agent-core --features platform-linux/ebpf-libbpf-vendored",
     "zig build",
     "strip target/x86_64-unknown-linux-musl/release/agent-core"
   ],
