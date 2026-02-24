@@ -353,23 +353,11 @@ fi
 
 configure_musl_toolchain
 
-# libbpf-sys with musl cross-compilation needs headers that aren't in zig's
-# musl sysroot. Build an isolated sysroot with only kernel UAPI + libelf headers.
-# Using LIBBPF_SYS_EXTRA_CFLAGS ensures only libbpf's C compilation is affected.
-LIBBPF_SYSROOT="${TOOLS_DIR}/libbpf-sysroot"
-if [[ ! -d "${LIBBPF_SYSROOT}/linux" ]]; then
-  mkdir -p "${LIBBPF_SYSROOT}"
-  cp -r /usr/include/linux "${LIBBPF_SYSROOT}/linux"
-  cp -r /usr/include/x86_64-linux-gnu/asm "${LIBBPF_SYSROOT}/asm"
-  cp -r /usr/include/asm-generic "${LIBBPF_SYSROOT}/asm-generic"
-  for hdr in libelf.h gelf.h nlist.h elf.h zlib.h zconf.h; do
-    cp "/usr/include/${hdr}" "${LIBBPF_SYSROOT}/" 2>/dev/null || true
-  done
-fi
-export LIBBPF_SYS_EXTRA_CFLAGS="-I${LIBBPF_SYSROOT}"
-export LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:${LIBRARY_PATH:-}"
-
-cargo build --release --target x86_64-unknown-linux-musl -p agent-core --features platform-linux/ebpf-libbpf
+# Note: ebpf-libbpf feature is omitted for musl builds because system libelf.a
+# is compiled against glibc. The agent loads eBPF probes at runtime via file-based
+# loading which doesn't require libbpf linked into the binary. The preflight step
+# validates ebpf-libbpf compiles correctly using the native glibc toolchain.
+cargo build --release --target x86_64-unknown-linux-musl -p agent-core
 zig build
 
 BIN="${ROOT_DIR}/target/x86_64-unknown-linux-musl/release/agent-core"
@@ -409,7 +397,7 @@ cat > "${OUT_JSON}" <<EOF
     "systemd_unit_kb": ${SYSTEMD_UNIT_KB}
   },
   "build_commands": [
-    "cargo build --release --target x86_64-unknown-linux-musl -p agent-core --features platform-linux/ebpf-libbpf",
+    "cargo build --release --target x86_64-unknown-linux-musl -p agent-core",
     "zig build",
     "strip target/x86_64-unknown-linux-musl/release/agent-core"
   ],
