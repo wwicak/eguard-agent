@@ -68,6 +68,35 @@ impl ProcessIntrospector for ProcfsIntrospector {
     }
 }
 
+// ---- macOS kinfo_proc byte offsets (arm64/x86_64) ----
+// The libc crate removed kinfo_proc, so we read raw sysctl bytes at known offsets.
+#[cfg(target_os = "macos")]
+const KINFO_PROC_SIZE: usize = 648;
+#[cfg(target_os = "macos")]
+const KP_PROC_P_PID_OFFSET: usize = 68; // offsetof(kinfo_proc, kp_proc.p_pid)
+#[cfg(target_os = "macos")]
+const KP_PROC_P_COMM_OFFSET: usize = 163; // offsetof(kinfo_proc, kp_proc.p_comm), MAXCOMLEN+1=17
+#[cfg(target_os = "macos")]
+const KP_EPROC_E_PPID_OFFSET: usize = 560; // offsetof(kinfo_proc, kp_eproc.e_ppid)
+
+#[cfg(target_os = "macos")]
+fn read_i32(buf: &[u8], offset: usize) -> i32 {
+    if offset + 4 > buf.len() {
+        return 0;
+    }
+    i32::from_ne_bytes([buf[offset], buf[offset + 1], buf[offset + 2], buf[offset + 3]])
+}
+
+#[cfg(target_os = "macos")]
+fn read_comm(buf: &[u8], offset: usize) -> String {
+    buf[offset..]
+        .iter()
+        .take(16) // MAXCOMLEN
+        .take_while(|&&c| c != 0)
+        .map(|&c| c as char)
+        .collect()
+}
+
 /// macOS process introspector that caches the process table snapshot.
 ///
 /// Fetches the full process table once via `sysctl(KERN_PROC_ALL)` on first
@@ -104,12 +133,14 @@ impl ProcessIntrospector for MacosProcessIntrospector {
 }
 
 /// Fetch the full process table once and build parent->children + pid->name maps.
+///
+/// Uses raw byte buffers to read `kinfo_proc` from sysctl because the `libc`
+/// crate removed `kinfo_proc` in recent versions.
 #[cfg(target_os = "macos")]
 fn build_process_maps() -> (
     std::collections::HashMap<u32, Vec<u32>>,
     std::collections::HashMap<u32, String>,
 ) {
-    use std::mem;
     use std::ptr;
 
     let mut children_map: std::collections::HashMap<u32, Vec<u32>> =
@@ -135,9 +166,9 @@ fn build_process_maps() -> (
 
     // Add extra space for processes that may appear between calls.
     size += size / 10;
-    let kinfo_size = mem::size_of::<libc::kinfo_proc>();
+    let kinfo_size = KINFO_PROC_SIZE;
     let count = size / kinfo_size;
-    let mut buf: Vec<libc::kinfo_proc> = vec![unsafe { mem::zeroed() }; count];
+    let mut buf = vec![0u8; count * kinfo_size];
 
     let ret = unsafe {
         libc::sysctl(
@@ -155,20 +186,18 @@ fn build_process_maps() -> (
 
     let actual_count = size / kinfo_size;
 
-    for kinfo in &buf[..actual_count] {
-        let ppid = kinfo.kp_eproc.e_ppid as u32;
-        let pid = kinfo.kp_proc.p_pid as u32;
+    for i in 0..actual_count {
+        let base = i * kinfo_size;
+        if base + kinfo_size > buf.len() {
+            break;
+        }
+        let pid = read_i32(&buf, base + KP_PROC_P_PID_OFFSET) as u32;
+        let ppid = read_i32(&buf, base + KP_EPROC_E_PPID_OFFSET) as u32;
+        let name = read_comm(&buf, base + KP_PROC_P_COMM_OFFSET);
 
         if pid != ppid {
             children_map.entry(ppid).or_default().push(pid);
         }
-
-        let comm = &kinfo.kp_proc.p_comm;
-        let name: String = comm
-            .iter()
-            .take_while(|&&c| c != 0)
-            .map(|&c| c as u8 as char)
-            .collect();
         if !name.is_empty() {
             name_map.insert(pid, name);
         }
@@ -193,7 +222,6 @@ impl ProcessIntrospector for ProcfsIntrospector {
 
 #[cfg(target_os = "macos")]
 fn process_name_macos(pid: u32) -> Option<String> {
-    use std::mem;
     use std::ptr;
 
     let mut mib: [libc::c_int; 4] = [
@@ -202,14 +230,14 @@ fn process_name_macos(pid: u32) -> Option<String> {
         libc::KERN_PROC_PID,
         pid as libc::c_int,
     ];
-    let mut info: libc::kinfo_proc = unsafe { mem::zeroed() };
-    let mut size = mem::size_of::<libc::kinfo_proc>();
+    let mut buf = [0u8; KINFO_PROC_SIZE];
+    let mut size = KINFO_PROC_SIZE;
 
     let ret = unsafe {
         libc::sysctl(
             mib.as_mut_ptr(),
             4,
-            &mut info as *mut _ as *mut libc::c_void,
+            buf.as_mut_ptr() as *mut libc::c_void,
             &mut size,
             ptr::null_mut(),
             0,
@@ -220,13 +248,7 @@ fn process_name_macos(pid: u32) -> Option<String> {
         return None;
     }
 
-    let comm = &info.kp_proc.p_comm;
-    let name: String = comm
-        .iter()
-        .take_while(|&&c| c != 0)
-        .map(|&c| c as u8 as char)
-        .collect();
-
+    let name = read_comm(&buf, KP_PROC_P_COMM_OFFSET);
     if name.is_empty() {
         None
     } else {

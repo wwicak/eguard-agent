@@ -1,16 +1,16 @@
 //! LaunchDaemon lifecycle management via launchctl.
 
 #[cfg(target_os = "macos")]
-use std::{process::Command, thread::sleep, time::Duration};
+use std::{process::Command, time::Duration};
 
 const DEFAULT_BINARY_PATH: &str = "/usr/local/bin/eguard-agent";
 
 #[cfg(target_os = "macos")]
 const DOMAIN_TARGET: &str = "system";
 #[cfg(target_os = "macos")]
-const SERVICE_STATE_POLL_ATTEMPTS: u32 = 10;
+const _SERVICE_STATE_POLL_ATTEMPTS: u32 = 10;
 #[cfg(target_os = "macos")]
-const SERVICE_STATE_POLL_INTERVAL: Duration = Duration::from_millis(500);
+const _SERVICE_STATE_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Manages the agent's macOS LaunchDaemon lifecycle.
 pub struct ServiceLifecycle {
