@@ -353,11 +353,23 @@ fi
 
 configure_musl_toolchain
 
-# libbpf-sys needs Linux kernel UAPI headers (linux/stddef.h, asm/unistd.h)
-# which are not in zig's musl sysroot. We copy ONLY the kernel headers
-# (linux/, asm/, asm-generic/) into an isolated directory to avoid pulling
-# glibc's userspace headers (stdio.h etc.) which conflict with musl.
-cargo build --release --target x86_64-unknown-linux-musl -p agent-core --features platform-linux/ebpf-libbpf-vendored
+# libbpf-sys with musl cross-compilation needs headers that aren't in zig's
+# musl sysroot. Build an isolated sysroot with only kernel UAPI + libelf headers.
+# Using LIBBPF_SYS_EXTRA_CFLAGS ensures only libbpf's C compilation is affected.
+LIBBPF_SYSROOT="${TOOLS_DIR}/libbpf-sysroot"
+if [[ ! -d "${LIBBPF_SYSROOT}/linux" ]]; then
+  mkdir -p "${LIBBPF_SYSROOT}"
+  cp -r /usr/include/linux "${LIBBPF_SYSROOT}/linux"
+  cp -r /usr/include/x86_64-linux-gnu/asm "${LIBBPF_SYSROOT}/asm"
+  cp -r /usr/include/asm-generic "${LIBBPF_SYSROOT}/asm-generic"
+  for hdr in libelf.h gelf.h nlist.h elf.h zlib.h zconf.h; do
+    cp "/usr/include/${hdr}" "${LIBBPF_SYSROOT}/" 2>/dev/null || true
+  done
+fi
+export LIBBPF_SYS_EXTRA_CFLAGS="-I${LIBBPF_SYSROOT}"
+export LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:${LIBRARY_PATH:-}"
+
+cargo build --release --target x86_64-unknown-linux-musl -p agent-core --features platform-linux/ebpf-libbpf
 zig build
 
 BIN="${ROOT_DIR}/target/x86_64-unknown-linux-musl/release/agent-core"
@@ -397,7 +409,7 @@ cat > "${OUT_JSON}" <<EOF
     "systemd_unit_kb": ${SYSTEMD_UNIT_KB}
   },
   "build_commands": [
-    "cargo build --release --target x86_64-unknown-linux-musl -p agent-core --features platform-linux/ebpf-libbpf-vendored",
+    "cargo build --release --target x86_64-unknown-linux-musl -p agent-core --features platform-linux/ebpf-libbpf",
     "zig build",
     "strip target/x86_64-unknown-linux-musl/release/agent-core"
   ],

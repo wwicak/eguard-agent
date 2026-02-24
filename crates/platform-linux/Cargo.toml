@@ -7,7 +7,6 @@ license.workspace = true
 [features]
 default = []
 ebpf-libbpf = ["dep:libbpf-rs"]
-ebpf-libbpf-vendored = ["ebpf-libbpf", "libbpf-rs/vendored"]
 
 [dependencies]
 serde.workspace = true
