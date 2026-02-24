@@ -515,7 +515,10 @@ impl Client {
         let endpoint = Endpoint::from_shared(self.grpc_base_url())
             .context("invalid gRPC endpoint URL")?
             .connect_timeout(Duration::from_secs(5))
-            .timeout(Duration::from_secs(15));
+            .timeout(Duration::from_secs(15))
+            .http2_keep_alive_interval(Duration::from_secs(30))
+            .keep_alive_timeout(Duration::from_secs(10))
+            .keep_alive_while_idle(true);
 
         if let Some(tls) = &self.tls {
             let tls_cfg = self.load_tls_config(tls)?;
@@ -524,6 +527,13 @@ impl Client {
                 .context("invalid gRPC TLS config")?)
         } else {
             Ok(endpoint)
+        }
+    }
+
+    /// Invalidate the cached gRPC channel so the next call creates a fresh connection.
+    fn invalidate_channel_cache(&self) {
+        if let Ok(mut cached) = self.grpc_channel_cache.lock() {
+            *cached = None;
         }
     }
 
@@ -688,6 +698,12 @@ impl Client {
                         });
                     }
 
+                    // Invalidate cached channel on connection errors so retries
+                    // create a fresh connection instead of reusing a dead one.
+                    if is_connection_error(&err) {
+                        self.invalidate_channel_cache();
+                    }
+
                     if attempt >= self.retry.max_attempts {
                         return Err(err).with_context(|| {
                             format!(
@@ -747,6 +763,26 @@ fn is_retryable_transport_error(err: &anyhow::Error) -> bool {
         "authentication_required",
     ];
     !non_retryable_markers
+        .iter()
+        .any(|marker| lower.contains(marker))
+}
+
+/// Detect connection-level errors that indicate the gRPC channel is dead
+/// and should be invalidated so retries create a fresh connection.
+fn is_connection_error(err: &anyhow::Error) -> bool {
+    let lower = err.to_string().to_ascii_lowercase();
+    let connection_markers = [
+        "failed connecting",
+        "connection refused",
+        "connection reset",
+        "broken pipe",
+        "transport error",
+        "channel closed",
+        "hyper",
+        "h2 protocol error",
+        "stream_events rpc failed",
+    ];
+    connection_markers
         .iter()
         .any(|marker| lower.contains(marker))
 }

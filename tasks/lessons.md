@@ -466,3 +466,13 @@ In `api.conf`, the `import api.conf.d/*.conf` directive is evaluated before the
 Perl fallback `reverse_proxy /api/v1/* {$PF_SERVICES_URL_PFPERL_API}`. Put Go
 catch-all `reverse_proxy /api/v1/* 127.0.0.1:22230` in the imported conf to
 intercept all API traffic before it reaches Perl.
+
+## Schema Changes Must Be Added To eg-schema SQL File
+When adding new DB tables (e.g., `endpoint_whitelist`), always add the DDL to
+`fe_eguard/db/eg-schema-15.0.sql` alongside running it on the live server.
+Otherwise fresh installs will miss the table and persistence silently fails.
+
+## Server Daily Polling > CI Webhook for Agent Updates
+Not all users publish to public GitHub. Design agent release distribution as
+server-side daily polling of GitHub Releases (configurable via env var), with
+webhook as optional "trigger now". Default poll: 86400s (24h).
