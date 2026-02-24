@@ -353,6 +353,10 @@ fi
 
 configure_musl_toolchain
 
+# libbpf-sys needs Linux kernel headers (linux/stddef.h, asm/unistd.h) which
+# are not in zig's musl sysroot. Point the C compiler to the host headers.
+export CFLAGS_x86_64_unknown_linux_musl="${CFLAGS_x86_64_unknown_linux_musl:-} -I/usr/include -I/usr/include/x86_64-linux-gnu"
+
 cargo build --release --target x86_64-unknown-linux-musl -p agent-core --features platform-linux/ebpf-libbpf
 zig build
 
