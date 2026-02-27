@@ -18,16 +18,28 @@ use lifecycle::AgentRuntime;
 
 type ShutdownFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 
-#[tokio::main]
-async fn main() -> Result<()> {
+// NOTE: We intentionally do NOT use #[tokio::main] here.
+//
+// On Windows, service_dispatcher::start() is a blocking Win32 call
+// (StartServiceCtrlDispatcherW) that must run on the main thread outside
+// any async runtime context. It spawns the service entry point on a
+// background thread, where we create the tokio runtime. Using
+// #[tokio::main] would create a competing tokio runtime on the main
+// thread, causing the second runtime's I/O driver (IOCP) to conflict
+// and preventing SetServiceStatus(SERVICE_RUNNING) from being called
+// within the 30-second SCM timeout.
+fn main() -> Result<()> {
     #[cfg(target_os = "windows")]
     {
-        return windows_service_entry::run().await;
+        return windows_service_entry::run();
     }
 
     #[cfg(not(target_os = "windows"))]
     {
-        run_console().await
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+        runtime.block_on(run_console())
     }
 }
 
@@ -161,20 +173,27 @@ mod windows_service_entry {
 
     define_windows_service!(ffi_service_main, service_main);
 
-    pub async fn run() -> Result<()> {
+    pub fn run() -> Result<()> {
+        // Console mode: run directly with a tokio runtime (no SCM).
         if super::env_flag_enabled("EGUARD_WINDOWS_CONSOLE") {
-            info!("running eGuard in console mode (EGUARD_WINDOWS_CONSOLE enabled)");
-            return super::run_console().await;
+            let runtime = Builder::new_multi_thread().enable_all().build()?;
+            return runtime.block_on(super::run_console());
         }
 
+        // Service mode: service_dispatcher::start() is a blocking Win32 call
+        // (StartServiceCtrlDispatcherW) that must run on the main thread
+        // outside any async runtime. It spawns service_main on a background
+        // thread, which creates its own tokio runtime.
         match service_dispatcher::start(SERVICE_NAME, ffi_service_main) {
             Ok(()) => Ok(()),
             Err(err) => {
+                super::init_tracing();
                 warn!(
                     error = %err,
                     "failed to attach to Windows service dispatcher; falling back to console mode"
                 );
-                super::run_console().await
+                let runtime = Builder::new_multi_thread().enable_all().build()?;
+                runtime.block_on(super::run_console())
             }
         }
     }
