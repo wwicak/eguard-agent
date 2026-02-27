@@ -19,7 +19,7 @@ env:
 
 jobs:
   linux:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     outputs:
       tag: ${{ steps.version.outputs.tag }}
       semver: ${{ steps.semver.outputs.version }}
@@ -183,8 +183,8 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path artifacts/windows | Out-Null
           wix build installer/windows/eguard-agent.wxs `
-            -dAgentExePath=target/x86_64-pc-windows-msvc/release/agent-core.exe `
-            -dAgentVersion=${{ steps.semver.outputs.version }} `
+            -define AgentExePath=target/x86_64-pc-windows-msvc/release/agent-core.exe `
+            -define AgentVersion=${{ steps.semver.outputs.version }} `
             -o artifacts/windows/eguard-agent-${{ steps.semver.outputs.version }}-x64.msi
 
       - name: Prepare release artifacts
