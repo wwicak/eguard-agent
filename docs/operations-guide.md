@@ -1302,3 +1302,92 @@ sudo systemctl restart eguard-agent
 | `/var/lib/eguard-agent/rules/ioc/` | IOC lists |
 | `/var/lib/eguard-agent/rules-staging/` | Bundle staging directory |
 | `/etc/systemd/system/eguard-agent.service.d/override.conf` | Systemd overrides |
+
+---
+
+## 15. E2E Testing Notes (Feb 2026)
+
+### 15.1 Server Setup Requirements
+
+The agent server (`eg-agent-server`) requires these environment variables for
+full functionality:
+
+```bash
+EGUARD_SERVER_AUTH_MODE=permissive          # or enforced with tokens
+EGUARD_AGENT_SERVER_DSN=root:PASSWORD@unix(/var/run/mysqld/mysqld.sock)/eguard?parseTime=true
+EGUARD_AGENT_PACKAGE_DIR=/usr/local/eg/var/packages
+EGUARD_THREAT_INTEL_ED25519_PUBLIC_KEY_HEX=<bundle-signing-pubkey>
+```
+
+**Critical**: The DSN **must** include `?parseTime=true` for datetime column
+scanning. Without it, `LoadAgents()` and other DB queries fail silently.
+
+Service names on the eGuard server follow the `eguard-*` pattern:
+`eguard-agent-server`, `eguard-mariadb`, `eguard-redis-cache`, etc.
+
+### 15.2 Agent Deployment Findings
+
+- The systemd service uses `Type=notify` but the agent does not send
+  `sd_notify(READY=1)`. Override to `Type=simple` and `WatchdogSec=0`:
+  ```ini
+  # /etc/systemd/system/eguard-agent.service.d/override.conf
+  [Service]
+  Type=simple
+  WatchdogSec=0
+  ```
+- The release build with `--features platform-linux/ebpf-libbpf` requires glibc.
+  CI must build in a Debian 12 container to match target glibc 2.36.
+- Enrollment tokens created via the admin GUI are stored in MariaDB. The agent
+  server must have `EGUARD_AGENT_SERVER_DSN` configured to see them.
+- After enrollment, `bootstrap.conf` is deleted and `agent.conf` is written.
+  The agent does NOT re-enroll on restart if `agent.conf` exists.
+
+### 15.3 Agent Update via Server
+
+Push agent updates from the admin GUI (Response > Update Agent) or API:
+
+```bash
+curl -X POST http://SERVER:50053/api/v1/endpoint/command/enqueue \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent_id": "agent-XXXX",
+    "command_type": "update",
+    "issued_by": "admin",
+    "command_data": {
+      "target_version": "0.2.3",
+      "package_url": "http://SERVER:50053/api/v1/agent-install/linux-deb",
+      "checksum_sha256": "<sha256-of-deb>"
+    }
+  }'
+```
+
+**Note**: The agent acknowledges the update command but self-update
+(download + install + restart) is not yet fully implemented. The command
+is recorded and the version is tracked server-side.
+
+### 15.4 eBPF Probe Status
+
+With the `ebpf-libbpf` feature enabled, all 9 eBPF probes load and attach:
+
+| Probe | Kernel Hook | Event |
+|-------|-------------|-------|
+| `eguard_sched_process_exec` | `tracepoint/sched/sched_process_exec` | Process execution |
+| `eguard_sys_enter_openat` | `tracepoint/syscalls/sys_enter_openat` | File open |
+| `eguard_sys_enter_write` | `tracepoint/syscalls/sys_enter_write` | File write |
+| `eguard_sys_enter_renameat2` | `tracepoint/syscalls/sys_enter_renameat2` | File rename |
+| `eguard_sys_enter_unlinkat` | `tracepoint/syscalls/sys_enter_unlinkat` | File delete |
+| `eguard_inet_sock_set_state` | `tracepoint/sock/inet_sock_set_state` | TCP connections |
+| `eguard_udp_sendmsg` | `kprobe/udp_sendmsg` | DNS queries |
+| `eguard_module_load` | `kprobe/__do_sys_finit_module` | Module loading |
+| `eguard_bprm_check` | `LSM/bprm_check_security` | Binary check |
+
+### 15.5 Windows Agent Status
+
+The Windows .exe binary (v0.2.2+, commit 2c1be92) includes full platform
+support: SCM service lifecycle, ETW telemetry, WFP network filtering, and
+AMSI integration. MSI installer built via WiX v5.
+
+Known CI issues resolved:
+- WiX v5 uses `-d Key=Value` (space after -d), not `-dKey=Value`
+- Components with `Directory` as KeyPath need explicit GUIDs (not `Guid="*"`)
+- Remove inline `<?define>` for variables passed via CLI `-d`
