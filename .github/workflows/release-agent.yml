@@ -19,11 +19,20 @@ env:
 
 jobs:
   linux:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
+    container:
+      image: debian:12
     outputs:
       tag: ${{ steps.version.outputs.tag }}
       semver: ${{ steps.semver.outputs.version }}
     steps:
+      - name: Install base tools
+        run: |
+          apt-get update
+          apt-get install -y curl git ca-certificates build-essential \
+            dpkg-dev rpm gnupg pkg-config python3 xz-utils \
+            libelf-dev zlib1g-dev
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -37,30 +46,21 @@ jobs:
           fi
 
       - name: Install Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: ${{ env.ZIG_VERSION }}
+        run: |
+          ZIG_TARBALL="zig-linux-x86_64-${ZIG_VERSION}.tar.xz"
+          curl -sSfL "https://ziglang.org/download/${ZIG_VERSION}/${ZIG_TARBALL}" | tar -xJ -C /usr/local
+          ln -sf /usr/local/zig-linux-x86_64-${ZIG_VERSION}/zig /usr/local/bin/zig
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-unknown-linux-musl
-
-      - name: Install Linux packaging tools
         run: |
-          sudo apt-get update
-          sudo apt-get install -y dpkg-dev rpm gnupg musl-tools \
-            libelf-dev zlib1g-dev \
-            autoconf autopoint flex bison gawk pkg-config
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Install nfpm
         run: |
           NFPM_VERSION=2.45.0
           curl -sfL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz" | \
-            sudo tar -xz -C /usr/local/bin nfpm
-
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+            tar -xz -C /usr/local/bin nfpm
 
       - name: Strip version prefix
         id: semver
