@@ -370,7 +370,7 @@ mod tests {
             let signals = DetectionSignals {
                 z1_exact_ioc: false, // NOT planted
                 yara_hit: false,
-                z2_temporal: false,  // requires temporal warmup
+                z2_temporal: false, // requires temporal warmup
                 z3_anomaly_high: false,
                 z3_anomaly_med: i % 3 == 0, // occasional behavioral anomaly
                 z4_kill_chain: false,

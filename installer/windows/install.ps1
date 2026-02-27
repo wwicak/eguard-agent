@@ -42,7 +42,7 @@ if ($EnrollmentToken.Length -lt 8) {
 }
 
 $normalizedServerUrl = $ServerUrl.TrimEnd('/')
-$installEndpoint = "$normalizedServerUrl/api/v1/agent-install/windows"
+$installEndpoint = "$normalizedServerUrl/api/v1/agent-install/windows-exe"
 $programDataRoot = 'C:\ProgramData\eGuard'
 $bootstrapPath = Join-Path $programDataRoot 'bootstrap.conf'
 
@@ -58,7 +58,7 @@ $headers = @{
 
 # W4: fail-closed MSI integrity policy
 if ([string]::IsNullOrWhiteSpace($ExpectedHash)) {
-    $hashEndpoint = "$normalizedServerUrl/api/v1/agent-install/windows/sha256"
+    $hashEndpoint = "$normalizedServerUrl/api/v1/agent-install/windows-exe/sha256"
     Write-Step "ExpectedHash not provided; fetching SHA-256 from $hashEndpoint"
     try {
         $hashResponse = Invoke-WebRequest -Uri $hashEndpoint -Headers $headers -UseBasicParsing

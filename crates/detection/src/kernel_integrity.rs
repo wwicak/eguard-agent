@@ -95,7 +95,10 @@ mod tests {
     fn kernel_integrity_indicator_ignores_benign_module() {
         let ev = event("simple_module");
         let indicators = detect_kernel_integrity_indicators(&ev);
-        assert!(indicators.is_empty(), "benign modules must not produce indicators");
+        assert!(
+            indicators.is_empty(),
+            "benign modules must not produce indicators"
+        );
     }
 
     #[test]

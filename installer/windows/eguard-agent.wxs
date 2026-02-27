@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<?define AgentVersion = "0.1.0" ?>
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package
       Name="eGuard Endpoint Security Agent"
       Manufacturer="eGuard"
-      Version="0.1.0"
+      Version="$(var.AgentVersion)"
       UpgradeCode="6D7F74EE-4F2E-4B90-BB77-9D1B8E4E8A11"
       InstallerVersion="500"
       Compressed="yes"

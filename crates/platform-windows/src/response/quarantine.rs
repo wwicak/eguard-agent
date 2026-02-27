@@ -43,7 +43,8 @@ pub fn quarantine_file(
             source.to_path_buf()
         };
 
-        let canonical_effective = fs::canonicalize(&effective_source).unwrap_or(effective_source.clone());
+        let canonical_effective =
+            fs::canonicalize(&effective_source).unwrap_or(effective_source.clone());
         if is_protected_windows_path(&canonical_effective) {
             return Err(super::process::ResponseError::OperationFailed(format!(
                 "refusing to quarantine protected path {}",
@@ -168,9 +169,9 @@ fn is_protected_windows_path_text(raw: &str) -> bool {
         r"c:\programdata\eguard",
     ];
 
-    PROTECTED_PREFIXES.iter().any(|prefix| {
-        normalized == *prefix || normalized.starts_with(&format!("{prefix}\\"))
-    })
+    PROTECTED_PREFIXES
+        .iter()
+        .any(|prefix| normalized == *prefix || normalized.starts_with(&format!("{prefix}\\")))
 }
 
 #[cfg(target_os = "windows")]

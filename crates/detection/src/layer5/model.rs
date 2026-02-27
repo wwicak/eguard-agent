@@ -248,18 +248,30 @@ impl Default for MlModel {
 
 #[derive(Debug)]
 pub enum MlError {
-    DimensionMismatch { expected: usize, got: usize },
+    DimensionMismatch {
+        expected: usize,
+        got: usize,
+    },
     InvalidThreshold(f64),
-    NonFiniteWeight { index: usize, value: f64 },
+    NonFiniteWeight {
+        index: usize,
+        value: f64,
+    },
     NonFiniteBias(f64),
     ParseJson(serde_json::Error),
     Io(std::io::Error),
     /// CI model has an empty feature list.
     EmptyFeatures,
     /// CI model weight is NaN or infinite.
-    NonFiniteCiWeight { name: String, value: f64 },
+    NonFiniteCiWeight {
+        name: String,
+        value: f64,
+    },
     /// CI model feature scale is outside reasonable bounds.
-    UnreasonableScale { name: String, value: f64 },
+    UnreasonableScale {
+        name: String,
+        value: f64,
+    },
 }
 
 impl std::fmt::Display for MlError {

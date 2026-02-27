@@ -49,9 +49,10 @@ fn evaluate_snapshot_reports_package_and_kernel_failures() {
 
     let result = evaluate_snapshot(&policy, &snapshot);
     assert_eq!(result.status, "non_compliant");
-    assert!(result.checks.iter().any(|check| {
-        check.check_type == "firewall" && check.status == "non_compliant"
-    }));
+    assert!(result
+        .checks
+        .iter()
+        .any(|check| { check.check_type == "firewall" && check.status == "non_compliant" }));
     assert!(result.checks.iter().any(|check| {
         check.check_type == "package_not_installed" && check.status == "non_compliant"
     }));
@@ -277,10 +278,7 @@ PermitRootLogin yes
     assert_eq!(parse_ssh_root_login_from_config(disallowed), Some(false));
 
     let default_when_missing = "# no directive\n";
-    assert_eq!(
-        parse_ssh_root_login_from_config(default_when_missing),
-        None
-    );
+    assert_eq!(parse_ssh_root_login_from_config(default_when_missing), None);
 }
 
 #[test]

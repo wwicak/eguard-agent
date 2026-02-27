@@ -44,15 +44,13 @@ fn collect_windows_snapshot() -> Result<SystemSnapshot> {
 
     let root_fs_encrypted = Some(report.bitlocker.enabled);
 
-    let antivirus_running =
-        Some(report.defender.enabled && report.defender.real_time_protection);
+    let antivirus_running = Some(report.defender.enabled && report.defender.real_time_protection);
 
     // Windows Update: no direct auto-update bool in UpdateStatus.
     // Use "no reboot required + no pending" as a best-effort proxy.
     let auto_updates_enabled = Some(report.updates.pending_count == 0);
 
-    let kernel_version = std::env::var("OS")
-        .unwrap_or_else(|_| "Windows".to_string());
+    let kernel_version = std::env::var("OS").unwrap_or_else(|_| "Windows".to_string());
 
     let os_version = std::env::var("PROCESSOR_ARCHITECTURE")
         .ok()
@@ -103,8 +101,7 @@ fn collect_macos_snapshot() -> Result<SystemSnapshot> {
     let root_fs_encrypted = Some(report.filevault.enabled);
     let screen_lock_enabled = Some(report.screen_lock.enabled);
     let auto_updates_enabled = Some(
-        report.auto_updates.automatic_check_enabled
-            && report.auto_updates.auto_install_os_updates,
+        report.auto_updates.automatic_check_enabled && report.auto_updates.auto_install_os_updates,
     );
 
     // Derive kernel version from platform_macos if available, else stub.

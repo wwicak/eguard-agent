@@ -1,6 +1,7 @@
 Primary API channel:
 - https://<server>/api/v1/agent-install/linux-deb
 - https://<server>/api/v1/agent-install/linux-rpm
+- https://<server>/api/v1/agent-install/windows-exe
 
 Repository mirrors:
 - apt repository (Debian/Ubuntu)

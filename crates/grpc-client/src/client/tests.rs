@@ -953,6 +953,12 @@ async fn send_response_offline_returns_error() {
             confidence: "definite".to_string(),
             success: true,
             error_message: String::new(),
+            detection_layers: Vec::new(),
+            target_process: String::new(),
+            target_pid: 0,
+            rule_name: String::new(),
+            threat_category: String::new(),
+            file_path: None,
         })
         .await
         .expect_err("offline response report should fail");
@@ -1853,6 +1859,12 @@ async fn send_response_grpc_reports_payload_to_server() {
             confidence: "very_high".to_string(),
             success: false,
             error_message: "access denied".to_string(),
+            detection_layers: vec!["sigma".to_string()],
+            target_process: "powershell.exe".to_string(),
+            target_pid: 4242,
+            rule_name: "unit-test-rule".to_string(),
+            threat_category: "malware".to_string(),
+            file_path: Some(r"C:\\Windows\\Temp\\payload.ps1".to_string()),
         })
         .await
         .expect("send_response should succeed");
@@ -1921,7 +1933,7 @@ async fn send_heartbeat_grpc_captures_agent_and_compliance_and_config_version() 
     client.set_test_channel_override(server.channel());
 
     client
-        .send_heartbeat_with_config("agent-heartbeat-1", "compliant", "cfg-v7")
+        .send_heartbeat_with_config("agent-heartbeat-1", "compliant", "cfg-v7", "active")
         .await
         .expect("send_heartbeat should succeed");
 

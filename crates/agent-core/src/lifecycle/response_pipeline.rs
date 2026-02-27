@@ -110,8 +110,7 @@ impl AgentRuntime {
             self.pending_response_actions.pop_front();
         }
 
-        let detection_layers =
-            super::AgentRuntime::detection_layers(&evaluation.detection_outcome);
+        let detection_layers = super::AgentRuntime::detection_layers(&evaluation.detection_outcome);
         let rule_name = super::AgentRuntime::detection_rule_name(&evaluation.detection_outcome)
             .unwrap_or_default();
         let threat_category =

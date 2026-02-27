@@ -1,8 +1,11 @@
-use std::path::PathBuf;
+use std::net::IpAddr;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use grpc_client::{CommandEnvelope, ResponseEnvelope};
+#[cfg(not(target_os = "windows"))]
 use nac::apply_network_profile_config_change;
 use response::{
     execute_server_command_with_state, parse_server_command, CommandExecution, CommandOutcome,
@@ -50,6 +53,14 @@ impl AgentRuntime {
         }
 
         match parsed {
+            ServerCommand::Isolate => self.apply_host_isolate(&command.payload_json, &mut exec),
+            ServerCommand::Unisolate => self.apply_host_unisolate(&mut exec),
+            ServerCommand::RestoreQuarantine => {
+                self.apply_quarantine_restore(&command.payload_json, &mut exec)
+            }
+            ServerCommand::Forensics => {
+                self.apply_forensics_collection(&command.payload_json, &mut exec)
+            }
             ServerCommand::LockDevice => self.apply_device_lock(&command.payload_json, &mut exec),
             ServerCommand::WipeDevice => self.apply_device_wipe(&command.payload_json, &mut exec),
             ServerCommand::RetireDevice => {
@@ -155,22 +166,226 @@ impl AgentRuntime {
         exec: &mut response::CommandExecution,
     ) {
         let profile_dir = resolve_network_profile_dir();
-        match apply_network_profile_config_change(payload_json, &profile_dir) {
-            Ok(Some(report)) => {
-                exec.detail = format!(
-                    "network profile applied: {} ({})",
-                    report.profile_id,
-                    report.connection_path.display()
-                );
+
+        #[cfg(target_os = "windows")]
+        {
+            match apply_windows_network_profile_config_change(payload_json, &profile_dir) {
+                Ok(Some(path)) => {
+                    exec.detail = format!("network profile applied ({})", path.display());
+                }
+                Ok(None) => {
+                    // Non-network config payloads remain backward-compatible no-ops.
+                }
+                Err(err) => {
+                    exec.outcome = CommandOutcome::Ignored;
+                    exec.status = "failed";
+                    exec.detail = format!("config_change rejected: {}", err);
+                }
             }
-            Ok(None) => {
-                // Non-network config payloads remain backward-compatible no-ops.
+            return;
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            match apply_network_profile_config_change(payload_json, &profile_dir) {
+                Ok(Some(report)) => {
+                    exec.detail = format!(
+                        "network profile applied: {} ({})",
+                        report.profile_id,
+                        report.connection_path.display()
+                    );
+                }
+                Ok(None) => {
+                    // Non-network config payloads remain backward-compatible no-ops.
+                }
+                Err(err) => {
+                    exec.outcome = CommandOutcome::Ignored;
+                    exec.status = "failed";
+                    exec.detail = format!("config_change rejected: {}", err);
+                }
             }
+        }
+    }
+
+    fn apply_host_isolate(&self, payload_json: &str, exec: &mut CommandExecution) {
+        #[derive(Debug, Deserialize, Default)]
+        struct IsolatePayload {
+            #[serde(default)]
+            allow_server_ips: Vec<String>,
+        }
+
+        let payload: IsolatePayload = serde_json::from_str(payload_json).unwrap_or_default();
+        let allowed =
+            resolve_allowed_server_ips(&self.config.server_addr, &payload.allow_server_ips);
+
+        #[cfg(target_os = "windows")]
+        {
+            if allowed.is_empty() {
+                exec.outcome = CommandOutcome::Ignored;
+                exec.status = "failed";
+                exec.detail = "isolation rejected: no routable server IPs provided".to_string();
+                return;
+            }
+
+            let refs: Vec<&str> = allowed.iter().map(|value| value.as_str()).collect();
+            match platform_windows::response::isolate_host(&refs) {
+                Ok(()) => {
+                    exec.detail = format!(
+                        "host isolation enforced via Windows Firewall (allowing: {})",
+                        allowed.join(",")
+                    );
+                }
+                Err(err) => {
+                    exec.outcome = CommandOutcome::Ignored;
+                    exec.status = "failed";
+                    exec.detail = format!("host isolation failed: {}", err);
+                }
+            }
+            return;
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (allowed, exec);
+        }
+    }
+
+    fn apply_host_unisolate(&self, exec: &mut CommandExecution) {
+        #[cfg(target_os = "windows")]
+        {
+            match platform_windows::response::remove_isolation() {
+                Ok(()) => {
+                    exec.detail = "host isolation removed via Windows Firewall".to_string();
+                }
+                Err(err) => {
+                    exec.outcome = CommandOutcome::Ignored;
+                    exec.status = "failed";
+                    exec.detail = format!("failed removing host isolation: {}", err);
+                }
+            }
+            return;
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = exec;
+        }
+    }
+
+    fn apply_quarantine_restore(&self, payload_json: &str, exec: &mut CommandExecution) {
+        let payload: RestoreQuarantinePayload = match serde_json::from_str(payload_json) {
+            Ok(payload) => payload,
             Err(err) => {
                 exec.outcome = CommandOutcome::Ignored;
                 exec.status = "failed";
-                exec.detail = format!("config_change rejected: {}", err);
+                exec.detail = format!("invalid restore_quarantine payload: {}", err);
+                return;
             }
+        };
+
+        if payload.quarantine_path.trim().is_empty() || payload.original_path.trim().is_empty() {
+            exec.outcome = CommandOutcome::Ignored;
+            exec.status = "failed";
+            exec.detail =
+                "invalid restore_quarantine payload: quarantine_path and original_path are required"
+                    .to_string();
+            return;
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            match platform_windows::response::quarantine::restore_file(
+                payload.quarantine_path.trim(),
+                payload.original_path.trim(),
+            ) {
+                Ok(()) => {
+                    exec.detail = format!(
+                        "quarantine restored: {} -> {}",
+                        payload.quarantine_path.trim(),
+                        payload.original_path.trim()
+                    );
+                }
+                Err(err) => {
+                    exec.outcome = CommandOutcome::Ignored;
+                    exec.status = "failed";
+                    exec.detail = format!("restore_quarantine failed: {}", err);
+                }
+            }
+            return;
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            match response::restore_quarantined(
+                Path::new(payload.quarantine_path.trim()),
+                Path::new(payload.original_path.trim()),
+                0o600,
+            ) {
+                Ok(report) => {
+                    exec.detail =
+                        format!("quarantine restored: {}", report.restored_path.display());
+                }
+                Err(err) => {
+                    exec.outcome = CommandOutcome::Ignored;
+                    exec.status = "failed";
+                    exec.detail = format!("restore_quarantine failed: {}", err);
+                }
+            }
+        }
+    }
+
+    fn apply_forensics_collection(&self, payload_json: &str, exec: &mut CommandExecution) {
+        let payload: ForensicsPayload = serde_json::from_str(payload_json).unwrap_or_default();
+
+        #[cfg(target_os = "windows")]
+        {
+            if payload.pid == 0 {
+                exec.outcome = CommandOutcome::Ignored;
+                exec.status = "failed";
+                exec.detail = "forensics payload requires pid".to_string();
+                return;
+            }
+
+            let output_path = if payload.output_path.trim().is_empty() {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or_default();
+                resolve_agent_data_dir()
+                    .join("forensics")
+                    .join(format!("pid-{}-{}.dmp", payload.pid, now))
+                    .to_string_lossy()
+                    .to_string()
+            } else {
+                payload.output_path.trim().to_string()
+            };
+
+            if let Some(parent) = Path::new(&output_path).parent() {
+                if let Err(err) = std::fs::create_dir_all(parent) {
+                    exec.outcome = CommandOutcome::Ignored;
+                    exec.status = "failed";
+                    exec.detail = format!("forensics output directory failed: {}", err);
+                    return;
+                }
+            }
+
+            let collector = platform_windows::response::ForensicsCollector::new();
+            match collector.create_minidump(payload.pid, &output_path) {
+                Ok(()) => {
+                    exec.detail = format!("forensics minidump captured: {}", output_path);
+                }
+                Err(err) => {
+                    exec.outcome = CommandOutcome::Ignored;
+                    exec.status = "failed";
+                    exec.detail = format!("forensics capture failed: {}", err);
+                }
+            }
+            return;
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (payload, exec);
         }
     }
 
@@ -184,10 +399,28 @@ impl AgentRuntime {
             exec.detail = format!("device lock blocked by policy ({})", context);
             return;
         }
-        if let Err(err) = run_command_sequence(&[
-            ("loginctl", &["lock-session"]),
-            ("xdg-screensaver", &["lock"]),
-        ]) {
+
+        let lock_result = {
+            #[cfg(target_os = "windows")]
+            {
+                run_command_sequence(&[("rundll32.exe", &["user32.dll,LockWorkStation"])])
+            }
+
+            #[cfg(target_os = "macos")]
+            {
+                run_command_sequence(&[("pmset", &["displaysleepnow"])])
+            }
+
+            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+            {
+                run_command_sequence(&[
+                    ("loginctl", &["lock-session"]),
+                    ("xdg-screensaver", &["lock"]),
+                ])
+            }
+        };
+
+        if let Err(err) = lock_result {
             exec.outcome = CommandOutcome::Ignored;
             exec.status = "failed";
             exec.detail = format!("device lock failed ({}): {}", context, err);
@@ -258,7 +491,25 @@ impl AgentRuntime {
             exec.detail = format!("device restart blocked by policy ({})", context);
             return;
         }
-        if let Err(err) = run_command_sequence(&[("systemctl", &["reboot"])]) {
+
+        let restart_result = {
+            #[cfg(target_os = "windows")]
+            {
+                run_command_sequence(&[("shutdown", &["/r", "/t", "0", "/f"])])
+            }
+
+            #[cfg(target_os = "macos")]
+            {
+                run_command_sequence(&[("shutdown", &["-r", "now"])])
+            }
+
+            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+            {
+                run_command_sequence(&[("systemctl", &["reboot"]), ("shutdown", &["-r", "now"])])
+            }
+        };
+
+        if let Err(err) = restart_result {
             exec.outcome = CommandOutcome::Ignored;
             exec.status = "failed";
             exec.detail = format!("restart failed ({}): {}", context, err);
@@ -270,8 +521,9 @@ impl AgentRuntime {
     fn apply_lost_mode(&self, payload_json: &str, exec: &mut CommandExecution) {
         let payload = parse_device_action_payload(payload_json);
         let context = format_device_action_context(&payload);
+        let marker_path = resolve_agent_data_dir().join("lost_mode");
 
-        if let Err(err) = write_marker("/var/lib/eguard-agent/lost_mode") {
+        if let Err(err) = write_marker(marker_path.to_string_lossy().as_ref()) {
             exec.outcome = CommandOutcome::Ignored;
             exec.status = "failed";
             exec.detail = format!("lost mode marker failed ({}): {}", context, err);
@@ -407,10 +659,23 @@ impl AgentRuntime {
 
 fn resolve_network_profile_dir() -> PathBuf {
     let raw = std::env::var("EGUARD_NETWORK_PROFILE_DIR").unwrap_or_default();
-    if raw.trim().is_empty() {
+    if !raw.trim().is_empty() {
+        return PathBuf::from(raw.trim());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return PathBuf::from(r"C:\ProgramData\eGuard\network-profiles");
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        return PathBuf::from("/Library/Application Support/eGuard/network-profiles");
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
         PathBuf::from("/etc/NetworkManager/system-connections")
-    } else {
-        PathBuf::from(raw.trim())
     }
 }
 
@@ -460,6 +725,23 @@ struct AppPayload {
 }
 
 #[derive(Debug, Deserialize, Default)]
+struct RestoreQuarantinePayload {
+    #[serde(default)]
+    quarantine_path: String,
+    #[serde(default)]
+    original_path: String,
+}
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[derive(Debug, Deserialize, Default)]
+struct ForensicsPayload {
+    #[serde(default)]
+    pid: u32,
+    #[serde(default)]
+    output_path: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
 struct ProfilePayload {
     #[serde(default)]
     profile_id: String,
@@ -491,6 +773,7 @@ fn sanitize_profile_id(raw: &str) -> Result<String, &'static str> {
     Ok(profile_id.to_string())
 }
 
+#[cfg(any(test, not(target_os = "windows")))]
 fn sanitize_apt_package_name(raw: &str) -> Result<String, &'static str> {
     let package_name = raw.trim();
     if package_name.is_empty() {
@@ -511,6 +794,7 @@ fn sanitize_apt_package_name(raw: &str) -> Result<String, &'static str> {
     Ok(package_name.to_string())
 }
 
+#[cfg(any(test, not(target_os = "windows")))]
 fn sanitize_apt_package_version(raw: &str) -> Result<String, &'static str> {
     let version = raw.trim();
     if version.is_empty() {
@@ -528,6 +812,312 @@ fn sanitize_apt_package_version(raw: &str) -> Result<String, &'static str> {
         return Err("version contains unsupported characters");
     }
     Ok(version.to_string())
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn sanitize_windows_package_name(raw: &str) -> Result<String, &'static str> {
+    let package_name = raw.trim();
+    if package_name.is_empty() {
+        return Err("package_name required");
+    }
+    if package_name.len() > 128 {
+        return Err("package_name too long");
+    }
+    if package_name.starts_with('-') {
+        return Err("package_name must not start with '-'");
+    }
+    if !package_name
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err("package_name contains unsupported characters");
+    }
+
+    Ok(package_name.to_string())
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn sanitize_windows_package_version(raw: &str) -> Result<String, &'static str> {
+    let version = raw.trim();
+    if version.is_empty() {
+        return Ok(String::new());
+    }
+    if version.len() > 128 {
+        return Err("version too long");
+    }
+    if version.starts_with('-') {
+        return Err("version must not start with '-'");
+    }
+    if !version
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err("version contains unsupported characters");
+    }
+
+    Ok(version.to_string())
+}
+
+fn resolve_allowed_server_ips(server_addr: &str, payload_ips: &[String]) -> Vec<String> {
+    let mut ips = Vec::new();
+
+    for raw in payload_ips {
+        let ip = raw.trim();
+        if ip.is_empty() {
+            continue;
+        }
+        if parse_ip_literal(ip).is_some() && !ips.iter().any(|entry| entry == ip) {
+            ips.push(ip.to_string());
+        }
+    }
+
+    let host = extract_server_host(server_addr);
+    if let Some(ip) = parse_ip_literal(&host) {
+        let value = ip.to_string();
+        if !ips.iter().any(|entry| entry == &value) {
+            ips.push(value);
+        }
+    }
+
+    ips
+}
+
+fn extract_server_host(server_addr: &str) -> String {
+    let raw = server_addr.trim();
+    if raw.is_empty() {
+        return String::new();
+    }
+
+    if let Some(stripped) = raw.strip_prefix('[') {
+        if let Some((host, _rest)) = stripped.split_once(']') {
+            return host.to_string();
+        }
+    }
+
+    if let Some((host, port)) = raw.rsplit_once(':') {
+        if !host.contains(':') && port.parse::<u16>().is_ok() {
+            return host.to_string();
+        }
+    }
+
+    raw.to_string()
+}
+
+fn parse_ip_literal(raw: &str) -> Option<IpAddr> {
+    raw.trim().parse::<IpAddr>().ok()
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Debug, Deserialize, Default)]
+struct WindowsNetworkProfile {
+    #[serde(default)]
+    profile_id: String,
+    #[serde(default)]
+    ssid: String,
+    #[serde(default)]
+    security: String,
+    #[serde(default = "default_true")]
+    auto_connect: bool,
+    #[serde(default)]
+    psk: String,
+}
+
+#[cfg(target_os = "windows")]
+fn apply_windows_network_profile_config_change(
+    payload_json: &str,
+    profile_dir: &Path,
+) -> Result<Option<PathBuf>, String> {
+    let payload: serde_json::Value = serde_json::from_str(payload_json)
+        .map_err(|err| format!("invalid config_change payload JSON: {err}"))?;
+
+    let config_raw = payload
+        .get("config_json")
+        .ok_or_else(|| "config_json is required in config_change payload".to_string())?;
+
+    let config_json = match config_raw {
+        serde_json::Value::String(raw) => serde_json::from_str::<serde_json::Value>(raw)
+            .map_err(|err| format!("config_json must be valid JSON: {err}"))?,
+        serde_json::Value::Object(_) | serde_json::Value::Array(_) => config_raw.clone(),
+        _ => {
+            return Err("config_json must be JSON object/array/string".to_string());
+        }
+    };
+
+    let config_obj = config_json
+        .as_object()
+        .ok_or_else(|| "config_json must be a JSON object".to_string())?;
+
+    let config_type = config_obj
+        .get("config_type")
+        .or_else(|| config_obj.get("type"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+
+    if config_type != "network_profile" {
+        return Ok(None);
+    }
+
+    let profile_value = config_obj
+        .get("profile")
+        .cloned()
+        .unwrap_or_else(|| config_json.clone());
+    let mut profile: WindowsNetworkProfile = serde_json::from_value(profile_value)
+        .map_err(|err| format!("invalid network_profile payload: {err}"))?;
+
+    profile.ssid = profile.ssid.trim().to_string();
+    if profile.ssid.is_empty() {
+        return Err("network profile ssid is required".to_string());
+    }
+
+    profile.profile_id = if profile.profile_id.trim().is_empty() {
+        sanitize_profile_id(&profile.ssid).map_err(ToString::to_string)?
+    } else {
+        sanitize_profile_id(&profile.profile_id).map_err(ToString::to_string)?
+    };
+
+    let security = profile.security.trim().to_ascii_lowercase();
+    let auto_connect = profile.auto_connect;
+
+    let xml = match security.as_str() {
+        "open" => render_windows_wlan_open_profile_xml(&profile.ssid, auto_connect),
+        "wpa2_psk" => {
+            let psk = profile.psk.trim();
+            if psk.len() < 8 || psk.len() > 63 {
+                return Err("network profile psk must be 8-63 characters".to_string());
+            }
+            render_windows_wlan_wpa2_psk_profile_xml(&profile.ssid, psk, auto_connect)
+        }
+        other => {
+            return Err(format!(
+                "unsupported Windows network profile security mode: {}",
+                other
+            ));
+        }
+    };
+
+    std::fs::create_dir_all(profile_dir).map_err(|err| {
+        format!(
+            "failed creating profile directory {}: {err}",
+            profile_dir.display()
+        )
+    })?;
+
+    let profile_path = profile_dir.join(format!("{}.xml", profile.profile_id));
+    std::fs::write(&profile_path, xml).map_err(|err| {
+        format!(
+            "failed writing profile XML {}: {err}",
+            profile_path.display()
+        )
+    })?;
+
+    let filename_arg = format!("filename={}", profile_path.display());
+    run_command(
+        "netsh",
+        &[
+            "wlan".to_string(),
+            "add".to_string(),
+            "profile".to_string(),
+            filename_arg,
+            "user=all".to_string(),
+        ],
+    )
+    .map_err(|err| format!("failed adding WLAN profile via netsh: {err}"))?;
+
+    if auto_connect {
+        let name_arg = format!("name={}", profile.ssid);
+        let _ = run_command(
+            "netsh",
+            &[
+                "wlan".to_string(),
+                "set".to_string(),
+                "profileparameter".to_string(),
+                name_arg,
+                "connectionmode=auto".to_string(),
+            ],
+        );
+    }
+
+    Ok(Some(profile_path))
+}
+
+#[cfg(target_os = "windows")]
+fn render_windows_wlan_open_profile_xml(ssid: &str, auto_connect: bool) -> String {
+    let ssid = escape_xml(ssid);
+    let mode = if auto_connect { "auto" } else { "manual" };
+    format!(
+        r#"<?xml version="1.0"?>
+<WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1">
+    <name>{ssid}</name>
+    <SSIDConfig>
+        <SSID>
+            <name>{ssid}</name>
+        </SSID>
+    </SSIDConfig>
+    <connectionType>ESS</connectionType>
+    <connectionMode>{mode}</connectionMode>
+    <MSM>
+        <security>
+            <authEncryption>
+                <authentication>open</authentication>
+                <encryption>none</encryption>
+                <useOneX>false</useOneX>
+            </authEncryption>
+        </security>
+    </MSM>
+</WLANProfile>
+"#
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn render_windows_wlan_wpa2_psk_profile_xml(ssid: &str, psk: &str, auto_connect: bool) -> String {
+    let ssid = escape_xml(ssid);
+    let psk = escape_xml(psk);
+    let mode = if auto_connect { "auto" } else { "manual" };
+    format!(
+        r#"<?xml version="1.0"?>
+<WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1">
+    <name>{ssid}</name>
+    <SSIDConfig>
+        <SSID>
+            <name>{ssid}</name>
+        </SSID>
+    </SSIDConfig>
+    <connectionType>ESS</connectionType>
+    <connectionMode>{mode}</connectionMode>
+    <MSM>
+        <security>
+            <authEncryption>
+                <authentication>WPA2PSK</authentication>
+                <encryption>AES</encryption>
+                <useOneX>false</useOneX>
+            </authEncryption>
+            <sharedKey>
+                <keyType>passPhrase</keyType>
+                <protected>false</protected>
+                <keyMaterial>{psk}</keyMaterial>
+            </sharedKey>
+        </security>
+    </MSM>
+</WLANProfile>
+"#
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn escape_xml(raw: &str) -> String {
+    raw.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+#[cfg(target_os = "windows")]
+const fn default_true() -> bool {
+    true
 }
 
 fn parse_device_action_payload(payload_json: &str) -> DeviceActionPayload {
@@ -588,20 +1178,51 @@ fn mdm_action_allowed(action: &str) -> bool {
 }
 
 fn run_command_sequence(commands: &[(&str, &[&str])]) -> Result<(), String> {
+    let mut last_error = String::new();
+
     for (cmd, args) in commands {
-        match std::process::Command::new(cmd).args(*args).status() {
-            Ok(status) if status.success() => return Ok(()),
-            Ok(_) => continue,
+        let owned = args
+            .iter()
+            .map(|arg| (*arg).to_string())
+            .collect::<Vec<_>>();
+        match run_command(cmd, &owned) {
+            Ok(()) => return Ok(()),
             Err(err) => {
-                return Err(format!("{}: {}", cmd, err));
+                last_error = format!("{}: {}", cmd, err);
             }
         }
     }
-    Err("all command attempts failed".to_string())
+
+    if last_error.is_empty() {
+        Err("all command attempts failed".to_string())
+    } else {
+        Err(last_error)
+    }
+}
+
+fn run_command(cmd: &str, args: &[String]) -> Result<(), String> {
+    let output = Command::new(cmd)
+        .args(args)
+        .output()
+        .map_err(|err| format!("spawn failed: {err}"))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let detail = if stderr.is_empty() { stdout } else { stderr };
+
+    if detail.is_empty() {
+        Err(format!("command exited with status {}", output.status))
+    } else {
+        Err(detail)
+    }
 }
 
 fn remove_path(path: &str) -> Result<(), String> {
-    let path = std::path::Path::new(path);
+    let path = Path::new(path);
     if !path.exists() {
         return Ok(());
     }
@@ -614,14 +1235,19 @@ fn remove_path(path: &str) -> Result<(), String> {
 }
 
 fn write_marker(path: &str) -> Result<(), String> {
+    let marker_path = Path::new(path);
     let content = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs().to_string())
         .unwrap_or_else(|_| "0".to_string());
-    std::fs::create_dir_all("/var/lib/eguard-agent")
-        .map_err(|err| format!("create marker dir: {}", err))?;
-    std::fs::write(path, content.as_bytes())
-        .map_err(|err| format!("write marker {}: {}", path, err))
+
+    if let Some(parent) = marker_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|err| format!("create marker dir {}: {}", parent.display(), err))?;
+    }
+
+    std::fs::write(marker_path, content.as_bytes())
+        .map_err(|err| format!("write marker {}: {}", marker_path.display(), err))
 }
 
 fn apply_app_command(action: &str, payload_json: &str, exec: &mut CommandExecution) {
@@ -642,56 +1268,131 @@ fn apply_app_command(action: &str, payload_json: &str, exec: &mut CommandExecuti
         }
     };
 
-    let package_name = match sanitize_apt_package_name(&payload.package_name) {
-        Ok(value) => value,
-        Err(err) => {
+    #[cfg(target_os = "windows")]
+    {
+        let package_name = match sanitize_windows_package_name(&payload.package_name) {
+            Ok(value) => value,
+            Err(err) => {
+                exec.outcome = CommandOutcome::Ignored;
+                exec.status = "failed";
+                exec.detail = format!("invalid package_name: {}", err);
+                return;
+            }
+        };
+
+        let version = match sanitize_windows_package_version(&payload.version) {
+            Ok(value) => value,
+            Err(err) => {
+                exec.outcome = CommandOutcome::Ignored;
+                exec.status = "failed";
+                exec.detail = format!("invalid version: {}", err);
+                return;
+            }
+        };
+
+        let mut args = match action {
+            "install" => vec![
+                "install".to_string(),
+                "--id".to_string(),
+                package_name.clone(),
+                "--exact".to_string(),
+                "--accept-package-agreements".to_string(),
+                "--accept-source-agreements".to_string(),
+            ],
+            "remove" => vec![
+                "uninstall".to_string(),
+                "--id".to_string(),
+                package_name.clone(),
+                "--exact".to_string(),
+            ],
+            "update" => vec![
+                "upgrade".to_string(),
+                "--id".to_string(),
+                package_name.clone(),
+                "--exact".to_string(),
+            ],
+            _ => vec![
+                "install".to_string(),
+                "--id".to_string(),
+                package_name.clone(),
+                "--exact".to_string(),
+                "--accept-package-agreements".to_string(),
+                "--accept-source-agreements".to_string(),
+            ],
+        };
+
+        if action == "install" && !version.is_empty() {
+            args.push("--version".to_string());
+            args.push(version);
+        }
+
+        if let Err(err) = run_command("winget", &args) {
             exec.outcome = CommandOutcome::Ignored;
             exec.status = "failed";
-            exec.detail = format!("invalid package_name: {}", err);
-            return;
+            exec.detail = format!("app {} failed: {}", action, err);
+        } else {
+            exec.detail = format!("app {} executed for {}", action, package_name);
         }
-    };
 
-    let version = match sanitize_apt_package_version(&payload.version) {
-        Ok(value) => value,
-        Err(err) => {
+        return;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let package_name = match sanitize_apt_package_name(&payload.package_name) {
+            Ok(value) => value,
+            Err(err) => {
+                exec.outcome = CommandOutcome::Ignored;
+                exec.status = "failed";
+                exec.detail = format!("invalid package_name: {}", err);
+                return;
+            }
+        };
+
+        let version = match sanitize_apt_package_version(&payload.version) {
+            Ok(value) => value,
+            Err(err) => {
+                exec.outcome = CommandOutcome::Ignored;
+                exec.status = "failed";
+                exec.detail = format!("invalid version: {}", err);
+                return;
+            }
+        };
+
+        let package = if version.is_empty() {
+            package_name.clone()
+        } else {
+            format!("{}={}", package_name, version)
+        };
+
+        let args = match action {
+            "install" => vec!["install", "-y", package.as_str()],
+            "remove" => vec!["remove", "-y", package_name.as_str()],
+            "update" => vec!["install", "-y", package.as_str()],
+            _ => vec!["install", "-y", package.as_str()],
+        };
+
+        let cmd_args = args.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+        if let Err(err) = run_command("apt-get", &cmd_args) {
             exec.outcome = CommandOutcome::Ignored;
             exec.status = "failed";
-            exec.detail = format!("invalid version: {}", err);
-            return;
+            exec.detail = format!("app {} failed: {}", action, err);
+        } else {
+            exec.detail = format!("app {} executed for {}", action, package_name);
         }
-    };
-
-    let package = if version.is_empty() {
-        package_name.clone()
-    } else {
-        format!("{}={}", package_name, version)
-    };
-
-    let args = match action {
-        "install" => vec!["install", "-y", package.as_str()],
-        "remove" => vec!["remove", "-y", package_name.as_str()],
-        "update" => vec!["install", "-y", package.as_str()],
-        _ => vec!["install", "-y", package.as_str()],
-    };
-
-    let cmd_args = args.iter().map(|s| *s).collect::<Vec<_>>();
-    if let Err(err) = run_command_sequence(&[("apt-get", &cmd_args)]) {
-        exec.outcome = CommandOutcome::Ignored;
-        exec.status = "failed";
-        exec.detail = format!("app {} failed: {}", action, err);
-    } else {
-        exec.detail = format!("app {} executed for {}", action, package_name);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        format_device_action_context, parse_device_action_payload, parse_locate_payload,
-        sanitize_apt_package_name, sanitize_apt_package_version, sanitize_profile_id,
-        DeviceActionPayload,
+        extract_server_host, format_device_action_context, parse_device_action_payload,
+        parse_locate_payload, resolve_allowed_server_ips, sanitize_apt_package_name,
+        sanitize_apt_package_version, sanitize_profile_id, DeviceActionPayload,
     };
+
+    #[cfg(any(test, target_os = "windows"))]
+    use super::{sanitize_windows_package_name, sanitize_windows_package_version};
 
     #[test]
     fn device_action_payload_parser_extracts_force_and_reason() {
@@ -756,6 +1457,41 @@ mod tests {
         assert_eq!(
             sanitize_apt_package_version("1:3.0.2-0ubuntu1~22.04.1").expect("valid version"),
             "1:3.0.2-0ubuntu1~22.04.1"
+        );
+    }
+
+    #[test]
+    fn extract_server_host_parses_host_port_and_ipv6_forms() {
+        assert_eq!(extract_server_host("127.0.0.1:50052"), "127.0.0.1");
+        assert_eq!(extract_server_host("[2001:db8::1]:50052"), "2001:db8::1");
+        assert_eq!(extract_server_host("eguard-server"), "eguard-server");
+    }
+
+    #[test]
+    fn resolve_allowed_server_ips_merges_payload_and_server_literal_ip() {
+        let allowed = resolve_allowed_server_ips(
+            "[2001:db8::10]:50052",
+            &["203.0.113.4".to_string(), "not-an-ip".to_string()],
+        );
+
+        assert_eq!(
+            allowed,
+            vec!["203.0.113.4".to_string(), "2001:db8::10".to_string()]
+        );
+    }
+
+    #[test]
+    fn sanitize_windows_package_fields_reject_injection_and_accept_safe_values() {
+        assert!(sanitize_windows_package_name("winget;calc").is_err());
+        assert!(sanitize_windows_package_version("1.0 && whoami").is_err());
+
+        assert_eq!(
+            sanitize_windows_package_name("Microsoft.Edge").expect("valid package id"),
+            "Microsoft.Edge"
+        );
+        assert_eq!(
+            sanitize_windows_package_version("124.0.2478.67").expect("valid package version"),
+            "124.0.2478.67"
         );
     }
 }

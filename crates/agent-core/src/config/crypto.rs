@@ -1,4 +1,5 @@
 use std::fs;
+#[cfg(unix)]
 use std::io::Read;
 use std::path::{Path, PathBuf};
 

@@ -15,8 +15,7 @@ const DEFAULT_RUNTIME_INTEGRITY_PATHS: [&str; 0] = [];
 #[cfg(target_os = "linux")]
 const DEFAULT_RUNTIME_CONFIG_PATHS: [&str; 1] = ["/etc/eguard-agent/agent.conf"];
 #[cfg(target_os = "macos")]
-const DEFAULT_RUNTIME_CONFIG_PATHS: [&str; 1] =
-    ["/Library/Application Support/eGuard/agent.conf"];
+const DEFAULT_RUNTIME_CONFIG_PATHS: [&str; 1] = ["/Library/Application Support/eGuard/agent.conf"];
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 const DEFAULT_RUNTIME_CONFIG_PATHS: [&str; 0] = [];
 

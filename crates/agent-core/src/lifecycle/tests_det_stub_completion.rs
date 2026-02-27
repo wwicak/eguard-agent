@@ -508,8 +508,7 @@ rule bootstrap_last_known_good_yara {
     // scan path picks it up (command-line scanning was removed to
     // prevent false positives with community rule sets).
     let marker_file = root.join("yara_marker.bin");
-    std::fs::write(&marker_file, b"bootstrap-last-known-good-marker")
-        .expect("write marker file");
+    std::fs::write(&marker_file, b"bootstrap-last-known-good-marker").expect("write marker file");
 
     let event = detection::TelemetryEvent {
         ts_unix: 123,

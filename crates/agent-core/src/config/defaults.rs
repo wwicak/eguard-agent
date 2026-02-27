@@ -50,6 +50,66 @@ fn detect_primary_mac() -> Option<String> {
     physical.or(fallback)
 }
 
+#[cfg(target_os = "linux")]
+fn default_data_root() -> &'static str {
+    "/var/lib/eguard-agent"
+}
+
+#[cfg(target_os = "windows")]
+fn default_data_root() -> &'static str {
+    r"C:\ProgramData\eGuard"
+}
+
+#[cfg(target_os = "macos")]
+fn default_data_root() -> &'static str {
+    "/Library/Application Support/eGuard"
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+fn default_data_root() -> &'static str {
+    "/var/lib/eguard-agent"
+}
+
+#[cfg(target_os = "windows")]
+fn default_offline_buffer_path() -> String {
+    format!(r"{}\offline-events.db", default_data_root())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn default_offline_buffer_path() -> String {
+    format!("{}/offline-events.db", default_data_root())
+}
+
+#[cfg(target_os = "windows")]
+fn default_detection_sigma_dir() -> String {
+    format!(r"{}\rules\sigma", default_data_root())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn default_detection_sigma_dir() -> String {
+    format!("{}/rules/sigma", default_data_root())
+}
+
+#[cfg(target_os = "windows")]
+fn default_detection_yara_dir() -> String {
+    format!(r"{}\rules\yara", default_data_root())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn default_detection_yara_dir() -> String {
+    format!("{}/rules/yara", default_data_root())
+}
+
+#[cfg(target_os = "windows")]
+fn default_detection_ioc_dir() -> String {
+    format!(r"{}\rules\ioc", default_data_root())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn default_detection_ioc_dir() -> String {
+    format!("{}/rules/ioc", default_data_root())
+}
+
 impl Default for AgentConfig {
     fn default() -> Self {
         #[cfg(target_os = "linux")]
@@ -68,7 +128,7 @@ impl Default for AgentConfig {
             tenant_id: None,
             response: ResponseConfig::default(),
             offline_buffer_backend: "sqlite".to_string(),
-            offline_buffer_path: "/var/lib/eguard-agent/offline-events.db".to_string(),
+            offline_buffer_path: default_offline_buffer_path(),
             offline_buffer_cap_bytes: 100 * 1024 * 1024,
             tls_cert_path: None,
             tls_key_path: None,
@@ -86,9 +146,9 @@ impl Default for AgentConfig {
             telemetry_user_logins: true,
             telemetry_flush_interval_ms: 100,
             telemetry_max_batch_size: 100,
-            detection_sigma_rules_dir: "/var/lib/eguard-agent/rules/sigma".to_string(),
-            detection_yara_rules_dir: "/var/lib/eguard-agent/rules/yara".to_string(),
-            detection_ioc_dir: "/var/lib/eguard-agent/rules/ioc".to_string(),
+            detection_sigma_rules_dir: default_detection_sigma_dir(),
+            detection_yara_rules_dir: default_detection_yara_dir(),
+            detection_ioc_dir: default_detection_ioc_dir(),
             detection_bundle_path: String::new(),
             detection_scan_on_create: true,
             detection_max_file_scan_size_mb: 100,

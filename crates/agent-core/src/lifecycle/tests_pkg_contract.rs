@@ -273,6 +273,9 @@ fn distribution_channels_cover_server_repo_manual_and_github_release() {
         .any(|entry| entry == "https://<server>/api/v1/agent-install/linux-rpm"));
     assert!(entries
         .iter()
+        .any(|entry| entry == "https://<server>/api/v1/agent-install/windows-exe"));
+    assert!(entries
+        .iter()
         .any(|entry| entry == "apt repository (Debian/Ubuntu)"));
     assert!(entries
         .iter()

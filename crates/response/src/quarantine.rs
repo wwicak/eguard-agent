@@ -204,9 +204,7 @@ fn restore_permissions(path: &Path, _original_mode: u32) -> ResponseResult<()> {
 }
 
 fn is_valid_quarantine_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 128
-        && id.chars().all(|c| c.is_ascii_hexdigit() || c == ':')
+    !id.is_empty() && id.len() <= 128 && id.chars().all(|c| c.is_ascii_hexdigit() || c == ':')
 }
 
 #[cfg(test)]

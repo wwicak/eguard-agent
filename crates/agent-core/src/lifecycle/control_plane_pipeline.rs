@@ -314,9 +314,9 @@ impl AgentRuntime {
                         path_prefixes_count = path_prefixes.len(),
                         "applying detection allowlist from policy"
                     );
-                    if let Err(err) =
-                        self.detection_state
-                            .update_allowlist(processes, path_prefixes)
+                    if let Err(err) = self
+                        .detection_state
+                        .update_allowlist(processes, path_prefixes)
                     {
                         warn!(error = %err, "failed to update detection allowlist");
                     }
@@ -335,7 +335,10 @@ impl AgentRuntime {
                                 if !matches!(self.runtime_mode, AgentMode::Degraded) {
                                     self.runtime_mode = AgentMode::Active;
                                 }
-                                info!(baseline_mode = mode, "baseline forced to Active via server policy");
+                                info!(
+                                    baseline_mode = mode,
+                                    "baseline forced to Active via server policy"
+                                );
                                 if let Err(err) = self.baseline_store.save() {
                                     warn!(error = %err, "failed to persist baseline after force_active");
                                 }

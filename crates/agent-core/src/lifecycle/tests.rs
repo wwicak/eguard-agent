@@ -881,8 +881,7 @@ rule nested_signed_bundle_marker {
     // Write marker file for file-based YARA scanning (command-line
     // scanning was removed to prevent false positives).
     let nested_marker = base.join("yara_marker.bin");
-    std::fs::write(&nested_marker, b"nested-signed-bundle-marker")
-        .expect("write marker file");
+    std::fs::write(&nested_marker, b"nested-signed-bundle-marker").expect("write marker file");
 
     let nested_event = detection::TelemetryEvent {
         ts_unix: 42_000,

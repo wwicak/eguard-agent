@@ -1,34 +1,32 @@
-# eGuard Agent - Windows Installer (Preview)
+# eGuard Agent - Windows Installer
 
 ## Current status
 
-Windows packaging is currently in **preview scaffolding**.
+Windows packaging and runtime are now integrated into the main release path.
 
 What exists now:
-- `platform-windows` crate scaffolding and CI target checks.
-- `agent-core` target-gated platform abstraction (`src/platform.rs`) to decouple Linux-only imports from Windows builds.
-- WiX MSI source scaffold: `installer/windows/eguard-agent.wxs`.
-- PowerShell bootstrap installer scaffold: `installer/windows/install.ps1`.
-- Workflow validation for:
-  - `cargo check --target x86_64-pc-windows-msvc -p platform-windows`
-  - `cargo check --target x86_64-pc-windows-msvc -p agent-core`
-  - `cargo build --release --target x86_64-pc-windows-msvc -p agent-core`
-  - `wix build installer/windows/eguard-agent.wxs -dAgentExePath=<agent-core.exe>` (preview MSI build artifact)
+- `agent-core` runs as a real Windows Service (`eGuardAgent`) via SCM dispatch, with optional console-mode fallback (`EGUARD_WINDOWS_CONSOLE=1`).
+- `platform-windows` telemetry/compliance/response modules are wired into the Windows runtime path.
+- WiX MSI definition: `installer/windows/eguard-agent.wxs` (version passed from CI via `AgentVersion`).
+- PowerShell bootstrap installer: `installer/windows/install.ps1`.
+- Release workflow builds and publishes Windows artifacts:
+  - `eguard-agent.exe`
+  - `eguard-agent-<version>-x64.msi`
+  - `install.ps1`
 
 What is still open:
-- Final `agent-core` Windows runtime wiring.
-- Production MSI build/sign validation against the WiX source scaffold (`installer/windows/eguard-agent.wxs`).
-- Production code-signing for MSI and release artifact hardening.
-- Validation of `installer/windows/install.ps1` against live server endpoint + real Windows host install/upgrade/uninstall flows.
+- Production code-signing policy enforcement for `.exe` and `.msi` artifacts.
+- End-to-end install/upgrade/uninstall validation on fleet-like Windows environments.
+- Optional hardening of MSI custom actions for enrollment bootstrap orchestration.
 
-## Planned installer behavior (target state)
+## Installer behavior
 
-The final Windows installer will package the eGuard agent as an MSI using WiX Toolset v4+.
-It is expected to:
-- install `eguard-agent.exe`
-- register service `eGuardAgent`
-- support silent install properties (`ENROLLMENT_TOKEN`, `SERVER_URL`)
-- support upgrade/uninstall while preserving enrollment state
+The Windows installer packages the eGuard agent as an MSI using WiX Toolset.
+It supports:
+- installing `eguard-agent.exe`
+- registering service `eGuardAgent`
+- silent install properties (`ENROLLMENT_TOKEN`, `SERVER_URL`)
+- upgrade/uninstall while preserving enrollment state
 
 ## Intended silent install command
 
@@ -36,9 +34,9 @@ It is expected to:
 msiexec /i eguard-agent_<version>_x64.msi /qn ENROLLMENT_TOKEN=<token> SERVER_URL=<url>
 ```
 
-## Bootstrap install script scaffold
+## Bootstrap install script
 
-A preview bootstrap script is provided at `installer/windows/install.ps1`.
+Bootstrap helper script: `installer/windows/install.ps1`.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\installer\windows\install.ps1 \
@@ -59,11 +57,11 @@ powershell -ExecutionPolicy Bypass -File .\installer\windows\install.ps1 \
 # -AllowUnsignedMsi: do not fail closed on invalid Authenticode status
 ```
 
-Script behavior (scaffold):
+Script behavior:
 - enforces secure-by-default server URL policy (`https://`; `http://` requires `-AllowInsecureHttp`)
-- downloads MSI from `GET /api/v1/agent-install/windows` using `X-Enrollment-Token`
+- downloads MSI from `GET /api/v1/agent-install/windows-exe` using `X-Enrollment-Token`
 - enforces fail-closed integrity:
-  - resolves expected SHA-256 from `-ExpectedHash` or `GET /api/v1/agent-install/windows/sha256`
+  - resolves expected SHA-256 from `-ExpectedHash` or `GET /api/v1/agent-install/windows-exe/sha256`
   - verifies local MSI hash before install
   - requires valid Authenticode signature unless `-AllowUnsignedMsi` is explicitly set
 - writes `C:\ProgramData\eGuard\bootstrap.conf` and hardens ACLs to SYSTEM/Administrators
@@ -89,5 +87,5 @@ C:\ProgramData\eGuard\
 
 ## Notes
 
-This README is intentionally explicit to avoid claiming MSI/service parity before implementation lands.
-Use `.github/workflows/release-agent-windows.yml` preview artifacts as the current CI signal.
+Primary CI signal for Windows artifacts is `.github/workflows/release-agent.yml` (windows job).
+For production rollout, keep enforcing code-signing + staged rollout gates.

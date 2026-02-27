@@ -58,11 +58,17 @@ impl Client {
                     mac_address: enrollment.mac.clone(),
                     os_type: {
                         #[cfg(target_os = "linux")]
-                        { "linux" }
+                        {
+                            "linux"
+                        }
                         #[cfg(target_os = "macos")]
-                        { "macos" }
+                        {
+                            "macos"
+                        }
                         #[cfg(target_os = "windows")]
-                        { "windows" }
+                        {
+                            "windows"
+                        }
                     }
                     .to_string(),
                     os_version: String::new(),

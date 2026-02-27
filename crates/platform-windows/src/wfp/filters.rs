@@ -7,7 +7,6 @@ use std::sync::{Mutex, OnceLock};
 #[cfg(target_os = "windows")]
 use std::process::Command;
 
-
 static NEXT_FILTER_ID: AtomicU64 = AtomicU64::new(1);
 static FILTER_REGISTRY: OnceLock<Mutex<HashMap<u64, String>>> = OnceLock::new();
 

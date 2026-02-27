@@ -122,11 +122,7 @@ impl DetectionShard {
             .map_err(|err| anyhow!(err))
     }
 
-    fn update_allowlist(
-        &self,
-        processes: Vec<String>,
-        path_prefixes: Vec<String>,
-    ) -> Result<()> {
+    fn update_allowlist(&self, processes: Vec<String>, path_prefixes: Vec<String>) -> Result<()> {
         let (response_tx, response_rx) = mpsc::channel();
         self.tx
             .send(ShardCommand::UpdateAllowlist {

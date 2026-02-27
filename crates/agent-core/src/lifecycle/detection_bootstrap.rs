@@ -27,7 +27,9 @@ fn seed_detection_allowlist(detection: &mut DetectionEngine) {
     // Allowlisting the agent process prevents wasted detection cycles on
     // known-good self-monitoring while keeping all other processes fully
     // monitored.
-    detection.allowlist.add_allowed_process("eguard-agent".to_string());
+    detection
+        .allowlist
+        .add_allowed_process("eguard-agent".to_string());
 }
 
 // ── Layer 1: IOC Hashes ─────────────────────────────────────────

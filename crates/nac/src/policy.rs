@@ -23,6 +23,7 @@ pub enum VlanAssignment {
 pub enum InstallTarget {
     LinuxDeb,
     LinuxRpm,
+    WindowsExe,
     Unknown,
 }
 
@@ -72,7 +73,9 @@ pub fn posture_from_compliance(status: &str) -> Posture {
 
 pub fn detect_install_target(user_agent: &str) -> InstallTarget {
     let ua = user_agent.to_ascii_lowercase();
-    if ua.contains("ubuntu") || ua.contains("debian") {
+    if ua.contains("windows") || ua.contains("win64") || ua.contains("wow64") {
+        InstallTarget::WindowsExe
+    } else if ua.contains("ubuntu") || ua.contains("debian") {
         InstallTarget::LinuxDeb
     } else if ua.contains("fedora")
         || ua.contains("centos")
@@ -95,6 +98,7 @@ pub fn build_captive_portal_install(
     let install_endpoint = match target {
         InstallTarget::LinuxDeb => "/api/v1/agent-install/linux-deb",
         InstallTarget::LinuxRpm => "/api/v1/agent-install/linux-rpm",
+        InstallTarget::WindowsExe => "/api/v1/agent-install/windows-exe",
         InstallTarget::Unknown => "/api/v1/agent-install",
     };
 

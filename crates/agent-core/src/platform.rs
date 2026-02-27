@@ -152,8 +152,7 @@ mod windows_engine {
 
 #[cfg(target_os = "windows")]
 pub use windows_engine::{
-    scan_kernel_integrity, EbpfEngine, EbpfStats, KernelIntegrityReport,
-    KernelIntegrityScanOptions,
+    scan_kernel_integrity, EbpfEngine, EbpfStats, KernelIntegrityScanOptions,
 };
 
 #[cfg(target_os = "macos")]
@@ -303,7 +302,4 @@ mod macos_engine {
 }
 
 #[cfg(target_os = "macos")]
-pub use macos_engine::{
-    scan_kernel_integrity, EbpfEngine, EbpfStats, KernelIntegrityReport,
-    KernelIntegrityScanOptions,
-};
+pub use macos_engine::{scan_kernel_integrity, EbpfEngine, EbpfStats, KernelIntegrityScanOptions};

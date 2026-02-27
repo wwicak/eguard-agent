@@ -1303,7 +1303,11 @@ fn parse_password_policy(
                 continue;
             }
             if let Some(v) = line.strip_prefix("PASS_MAX_DAYS") {
-                if let Some(days) = v.split_whitespace().next().and_then(|s| s.parse::<u64>().ok()) {
+                if let Some(days) = v
+                    .split_whitespace()
+                    .next()
+                    .and_then(|s| s.parse::<u64>().ok())
+                {
                     max_days_ok = days <= 90;
                 }
             }

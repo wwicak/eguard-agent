@@ -84,7 +84,12 @@ fn read_i32(buf: &[u8], offset: usize) -> i32 {
     if offset + 4 > buf.len() {
         return 0;
     }
-    i32::from_ne_bytes([buf[offset], buf[offset + 1], buf[offset + 2], buf[offset + 3]])
+    i32::from_ne_bytes([
+        buf[offset],
+        buf[offset + 1],
+        buf[offset + 2],
+        buf[offset + 3],
+    ])
 }
 
 #[cfg(target_os = "macos")]

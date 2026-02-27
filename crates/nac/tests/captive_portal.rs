@@ -11,6 +11,10 @@ fn captive_portal_auto_detects_os_and_preserves_enrollment_token() {
         detect_install_target("Mozilla/5.0 (X11; Linux x86_64; Fedora 41)"),
         InstallTarget::LinuxRpm
     );
+    assert_eq!(
+        detect_install_target("Mozilla/5.0 (Windows NT 10.0; Win64; x64)"),
+        InstallTarget::WindowsExe
+    );
 
     let install = build_captive_portal_install(
         "Mozilla/5.0 (X11; Linux x86_64; Ubuntu 24.04)",
@@ -19,4 +23,13 @@ fn captive_portal_auto_detects_os_and_preserves_enrollment_token() {
     assert_eq!(install.target, InstallTarget::LinuxDeb);
     assert_eq!(install.install_endpoint, "/api/v1/agent-install/linux-deb");
     assert_eq!(install.enrollment_token, "token-abc-123");
+
+    let windows_install =
+        build_captive_portal_install("Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "token-win-999");
+    assert_eq!(windows_install.target, InstallTarget::WindowsExe);
+    assert_eq!(
+        windows_install.install_endpoint,
+        "/api/v1/agent-install/windows-exe"
+    );
+    assert_eq!(windows_install.enrollment_token, "token-win-999");
 }

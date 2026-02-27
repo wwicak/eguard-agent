@@ -29,8 +29,12 @@ pub(super) enum ControlPlaneTaskKind {
         compliance_status: String,
         baseline_status: String,
     },
-    Compliance { compliance: ComplianceResult },
-    Inventory { inventory: InventoryEnvelope },
+    Compliance {
+        compliance: ComplianceResult,
+    },
+    Inventory {
+        inventory: InventoryEnvelope,
+    },
     PolicySync,
     ThreatIntelRefresh,
     CommandSync,
