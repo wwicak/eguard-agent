@@ -147,7 +147,7 @@ ensure_nfpm() {
 prepare_stage_payload() {
   local core_root="${STAGE_DIR}/core"
   local rules_root="${STAGE_DIR}/rules"
-  local bin_src="${ROOT_DIR}/target/x86_64-unknown-linux-musl/release/agent-core"
+  local bin_src="${OUT_DIR}/eguard-agent"
 
   rm -rf "${core_root}" "${rules_root}"
 
