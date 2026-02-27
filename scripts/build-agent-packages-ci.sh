@@ -351,16 +351,20 @@ if [[ "${EGUARD_ENABLE_LTO:-1}" == "1" ]]; then
   export CARGO_PROFILE_RELEASE_CODEGEN_UNITS="1"
 fi
 
-configure_musl_toolchain
-
-# Note: ebpf-libbpf feature is omitted for musl builds because system libelf.a
-# is compiled against glibc. The agent loads eBPF probes at runtime via file-based
-# loading which doesn't require libbpf linked into the binary. The preflight step
-# validates ebpf-libbpf compiles correctly using the native glibc toolchain.
-cargo build --release --target x86_64-unknown-linux-musl -p agent-core
+# Build with glibc target and eBPF support for full EDR capability.
+# The musl target is incompatible with system libelf.a (glibc-compiled).
+# Using native glibc toolchain enables libbpf linking for runtime eBPF loading.
+if [[ "${EGUARD_BUILD_EBPF:-1}" == "1" ]]; then
+  cargo build --release -p agent-core --features platform-linux/ebpf-libbpf
+  BIN_DIR="${ROOT_DIR}/target/release"
+else
+  configure_musl_toolchain
+  cargo build --release --target x86_64-unknown-linux-musl -p agent-core
+  BIN_DIR="${ROOT_DIR}/target/x86_64-unknown-linux-musl/release"
+fi
 zig build
 
-BIN="${ROOT_DIR}/target/x86_64-unknown-linux-musl/release/agent-core"
+BIN="${BIN_DIR}/agent-core"
 if [[ -f "${BIN}" ]]; then
   strip "${BIN}" || true
   cp -f "${BIN}" "${OUT_DIR}/eguard-agent"
