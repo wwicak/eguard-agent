@@ -1,3 +1,10 @@
+#[cfg(target_os = "linux")]
+pub(super) const DEFAULT_RULES_STAGING_DIR: &str = "/var/lib/eguard-agent/rules-staging";
+
+#[cfg(target_os = "windows")]
+pub(super) const DEFAULT_RULES_STAGING_DIR: &str = r"C:\ProgramData\eGuard\rules-staging";
+
+#[cfg(target_os = "macos")]
 pub(super) const DEFAULT_RULES_STAGING_DIR: &str = "/var/lib/eguard-agent/rules-staging";
 pub(super) const MAX_SIGNED_RULE_BUNDLE_BYTES: u64 = 256 * 1024 * 1024;
 pub(super) const HEARTBEAT_INTERVAL_SECS: i64 = 30;

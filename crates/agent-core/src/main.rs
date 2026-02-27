@@ -105,9 +105,43 @@ async fn run_tick_loop(runtime: &mut AgentRuntime, shutdown: ShutdownFuture) {
     }
 }
 
+/// Shared initialization guard: ensures tracing is only set up once, regardless
+/// of whether the first call is `init_tracing()` (stderr) or
+/// `init_tracing_to_file()` (log file for Windows service mode).
+static TRACING_INIT: Once = Once::new();
+
 fn init_tracing() {
-    static INIT: Once = Once::new();
-    INIT.call_once(tracing_subscriber::fmt::init);
+    TRACING_INIT.call_once(tracing_subscriber::fmt::init);
+}
+
+/// Initialize tracing with output directed to a log file. Used by the Windows
+/// service path where stderr is not captured by SCM. Must be called before
+/// `init_tracing()` so the file subscriber wins the `Once` guard.
+#[cfg(target_os = "windows")]
+fn init_tracing_to_file(log_path: &std::path::Path) {
+    TRACING_INIT.call_once(|| {
+        if let Some(parent) = log_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)
+        {
+            Ok(file) => {
+                let writer = std::sync::Mutex::new(file);
+                tracing_subscriber::fmt()
+                    .with_writer(writer)
+                    .with_ansi(false)
+                    .init();
+            }
+            Err(_) => {
+                // Fall back to stderr if the log file can't be opened.
+                tracing_subscriber::fmt::init();
+            }
+        }
+    });
 }
 
 fn env_flag_enabled(name: &str) -> bool {
@@ -153,7 +187,7 @@ async fn wait_for_shutdown_signal() {
 #[cfg(target_os = "windows")]
 mod windows_service_entry {
     use std::ffi::OsString;
-    use std::sync::mpsc;
+    use std::sync::{mpsc, Arc, Mutex};
     use std::time::Duration;
 
     use anyhow::Result;
@@ -206,15 +240,49 @@ mod windows_service_entry {
 
     fn run_service_main() -> Result<()> {
         let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
+
+        // Share the status handle with the event handler closure so it can
+        // immediately transition to StopPending when SCM sends Stop/Shutdown.
+        // Without this, SCM times out waiting for the status change and
+        // Restart-Service / Stop-Service fails.
+        let shared_status_handle: Arc<Mutex<Option<ServiceStatusHandle>>> =
+            Arc::new(Mutex::new(None));
+        let handler_status_handle = Arc::clone(&shared_status_handle);
+
         let status_handle =
             service_control_handler::register(SERVICE_NAME, move |control| match control {
                 ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
                 ServiceControl::Stop | ServiceControl::Shutdown => {
+                    // Immediately tell SCM we are stopping. This must happen
+                    // inside the handler callback for SCM to accept the stop.
+                    if let Ok(guard) = handler_status_handle.lock() {
+                        if let Some(handle) = guard.as_ref() {
+                            let _ = handle.set_service_status(ServiceStatus {
+                                service_type: ServiceType::OWN_PROCESS,
+                                current_state: ServiceState::StopPending,
+                                controls_accepted: ServiceControlAccept::empty(),
+                                exit_code: ServiceExitCode::Win32(0),
+                                checkpoint: 1,
+                                wait_hint: Duration::from_secs(15),
+                                process_id: None,
+                            });
+                        }
+                    }
                     let _ = shutdown_tx.send(());
                     ServiceControlHandlerResult::NoError
                 }
                 _ => ServiceControlHandlerResult::NotImplemented,
             })?;
+
+        // Store handle so the event handler closure can use it.
+        if let Ok(mut guard) = shared_status_handle.lock() {
+            *guard = Some(status_handle.clone());
+        }
+
+        // Initialize file-based tracing before anything else logs. Windows SCM
+        // does not capture stderr, so service mode must write to a log file.
+        let log_path = std::path::PathBuf::from(r"C:\ProgramData\eGuard\logs\agent.log");
+        super::init_tracing_to_file(&log_path);
 
         set_service_status(
             &status_handle,
@@ -241,11 +309,12 @@ mod windows_service_entry {
         });
 
         let exit_code = if run_result.is_ok() { 0 } else { 1 };
+        // Checkpoint 2: the handler already set StopPending(checkpoint=1).
         set_service_status(
             &status_handle,
             ServiceState::StopPending,
             ServiceControlAccept::empty(),
-            1,
+            2,
             10_000,
             exit_code,
         )?;

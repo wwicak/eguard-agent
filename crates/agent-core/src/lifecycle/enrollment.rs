@@ -9,7 +9,14 @@ use crate::config::AgentConfig;
 
 use super::AgentRuntime;
 
+#[cfg(target_os = "linux")]
 const DEFAULT_AGENT_CONFIG_PATH: &str = "/etc/eguard-agent/agent.conf";
+
+#[cfg(target_os = "windows")]
+const DEFAULT_AGENT_CONFIG_PATH: &str = r"C:\ProgramData\eGuard\agent.conf";
+
+#[cfg(target_os = "macos")]
+const DEFAULT_AGENT_CONFIG_PATH: &str = "/Library/Application Support/eGuard/agent.conf";
 const ENCRYPTED_CONFIG_PREFIX: &str = "eguardcfg:v1:";
 
 impl AgentRuntime {

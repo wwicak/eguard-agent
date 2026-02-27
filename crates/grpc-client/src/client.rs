@@ -564,7 +564,10 @@ impl Client {
     fn build_http_client(tls: Option<&TlsConfig>) -> Result<HttpClient> {
         let mut builder = HttpClient::builder()
             .connect_timeout(Duration::from_secs(5))
-            .timeout(Duration::from_secs(15));
+            .timeout(Duration::from_secs(15))
+            .tcp_keepalive(Duration::from_secs(30))
+            .pool_idle_timeout(Duration::from_secs(60))
+            .pool_max_idle_per_host(2);
 
         if let Some(tls) = tls {
             let cert = std::fs::read(&tls.cert_path)
