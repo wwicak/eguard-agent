@@ -4,7 +4,7 @@
 
 mod codec;
 mod consumer;
-mod providers;
+pub(crate) mod providers;
 mod session;
 
 pub use codec::decode_etw_event;
@@ -43,13 +43,24 @@ impl EtwEngine {
         session.start()?;
 
         let mut providers_enabled = 0u32;
-        for provider in providers::DEFAULT_PROVIDER_GUIDS {
-            session.enable_provider(provider)?;
-            providers_enabled = providers_enabled.saturating_add(1);
+        for config in providers::DEFAULT_PROVIDERS {
+            match session.enable_provider(config) {
+                Ok(()) => {
+                    providers_enabled = providers_enabled.saturating_add(1);
+                }
+                Err(err) => {
+                    // Log and continue — partial provider set is acceptable.
+                    tracing::warn!(
+                        provider = config.guid_str,
+                        error = %err,
+                        "failed to enable ETW provider, continuing"
+                    );
+                }
+            }
         }
 
-        let mut consumer = EtwConsumer::new(session.handle());
-        consumer.run()?;
+        let mut consumer = EtwConsumer::new(session.name());
+        consumer.run(session.name())?;
 
         self.consumer = Some(consumer);
         self.stats.providers_active = providers_enabled;
@@ -59,11 +70,21 @@ impl EtwEngine {
     }
 
     /// Stop the ETW session and clean up resources.
+    ///
+    /// Order matters: stop the session first (unblocks `ProcessTrace` in the
+    /// consumer thread), then drop the consumer (joins the thread).
     pub fn stop(&mut self) -> Result<(), EtwError> {
-        self.consumer = None;
-
+        // 1. Stop session — causes ProcessTrace to return on the consumer thread.
         if let Some(mut session) = self.session.take() {
             session.stop()?;
+        }
+
+        // 2. Drop consumer — joins the thread now that ProcessTrace has returned.
+        if let Some(consumer) = self.consumer.take() {
+            self.stats.events_lost = self
+                .stats
+                .events_lost
+                .saturating_add(consumer.drops_count());
         }
 
         self.stats.providers_active = 0;
@@ -94,7 +115,14 @@ impl EtwEngine {
 
     /// Collect current statistics.
     pub fn stats(&self) -> EtwStats {
-        self.stats.clone()
+        let mut stats = self.stats.clone();
+
+        // Include live drop count from the consumer thread.
+        if let Some(consumer) = &self.consumer {
+            stats.events_lost = stats.events_lost.saturating_add(consumer.drops_count());
+        }
+
+        stats
     }
 }
 
@@ -148,5 +176,20 @@ mod tests {
 
         engine.stop().expect("engine stops cleanly");
         assert_eq!(engine.stats().providers_active, 0);
+    }
+
+    #[test]
+    fn stats_tracks_events_lost() {
+        let engine = EtwEngine::new();
+        assert_eq!(engine.stats().events_lost, 0);
+    }
+
+    #[test]
+    fn double_start_is_idempotent() {
+        let mut engine = EtwEngine::new();
+        engine.start().expect("first start");
+        engine.start().expect("second start should be ok");
+        assert!(engine.is_active());
+        engine.stop().expect("stop");
     }
 }
