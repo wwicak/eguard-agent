@@ -47,9 +47,12 @@ jobs:
 
       - name: Install Zig
         run: |
-          ZIG_TARBALL="zig-linux-x86_64-${ZIG_VERSION}.tar.xz"
-          curl -sSfL "https://ziglang.org/download/${ZIG_VERSION}/${ZIG_TARBALL}" | tar -xJ -C /usr/local
-          ln -sf /usr/local/zig-linux-x86_64-${ZIG_VERSION}/zig /usr/local/bin/zig
+          # Use 0.14.0 (latest stable release with download available)
+          ZIG_VER="0.14.0"
+          ZIG_TARBALL="zig-linux-x86_64-${ZIG_VER}.tar.xz"
+          curl -sSfL "https://ziglang.org/download/${ZIG_VER}/${ZIG_TARBALL}" | tar -xJ -C /usr/local
+          ln -sf /usr/local/zig-linux-x86_64-${ZIG_VER}/zig /usr/local/bin/zig
+          zig version
 
       - name: Install Rust toolchain
         run: |
