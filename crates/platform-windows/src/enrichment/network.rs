@@ -4,6 +4,8 @@
 //! connections back to owning PIDs.
 
 #[cfg(target_os = "windows")]
+use crate::windows_cmd::POWERSHELL_EXE;
+#[cfg(target_os = "windows")]
 use std::process::Command;
 
 #[cfg(any(test, target_os = "windows"))]
@@ -37,7 +39,7 @@ fn resolve_network_context_windows(pid: u32) -> Option<NetworkContext> {
         "Get-NetTCPConnection -OwningProcess {} | Select-Object -First 1 LocalAddress,LocalPort,RemoteAddress,RemotePort | ConvertTo-Json -Compress",
         pid
     );
-    let output = Command::new("powershell")
+    let output = Command::new(POWERSHELL_EXE)
         .args(["-NoProfile", "-NonInteractive", "-Command", &cmd])
         .output()
         .ok()?;

@@ -4,6 +4,8 @@
 //! Windows DACLs.
 
 #[cfg(target_os = "windows")]
+use crate::windows_cmd::{ICACLS_EXE, SC_EXE};
+#[cfg(target_os = "windows")]
 use std::process::Command;
 
 /// Harden ACLs on the agent's service, process, and file paths.
@@ -26,7 +28,7 @@ fn harden_service_acl() -> Result<(), super::SelfProtectError> {
     // Restrict service control to SYSTEM + Administrators.
     // SDDL grants broad service rights to SY and BA only.
     let sddl = "D:(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)";
-    run_command("sc.exe", &["sdset", "eGuardAgent", sddl])
+    run_command(SC_EXE, &["sdset", "eGuardAgent", sddl])
 }
 
 #[cfg(target_os = "windows")]
@@ -40,7 +42,7 @@ fn harden_process_acl() -> Result<(), super::SelfProtectError> {
 #[cfg(target_os = "windows")]
 fn harden_file_acls() -> Result<(), super::SelfProtectError> {
     run_command(
-        "icacls",
+        ICACLS_EXE,
         &[
             r"C:\ProgramData\eGuard",
             "/inheritance:r",

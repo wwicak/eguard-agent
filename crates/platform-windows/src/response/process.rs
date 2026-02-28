@@ -1,6 +1,8 @@
 //! Process termination helpers for Windows response actions.
 
 #[cfg(target_os = "windows")]
+use crate::windows_cmd::TASKKILL_EXE;
+#[cfg(target_os = "windows")]
 use std::process::Command;
 
 /// Terminate a process by PID.
@@ -54,7 +56,7 @@ fn taskkill_args(pid: u32, include_tree: bool) -> Vec<String> {
 
 #[cfg(target_os = "windows")]
 fn run_taskkill(pid: u32, include_tree: bool) -> Result<(), ResponseError> {
-    let output = Command::new("taskkill")
+    let output = Command::new(TASKKILL_EXE)
         .args(taskkill_args(pid, include_tree))
         .output()
         .map_err(|err| ResponseError::OperationFailed(format!("taskkill spawn failed: {err}")))?;

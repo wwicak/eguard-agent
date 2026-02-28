@@ -1,6 +1,8 @@
 //! Service start/stop/recovery lifecycle management.
 
 #[cfg(target_os = "windows")]
+use crate::windows_cmd::SC_EXE;
+#[cfg(target_os = "windows")]
 use std::process::Command;
 #[cfg(target_os = "windows")]
 use std::thread::sleep;
@@ -45,7 +47,10 @@ impl ServiceLifecycle {
     pub fn install(&self) -> Result<(), ServiceError> {
         #[cfg(target_os = "windows")]
         {
-            let already_exists = query_service_state(&self.service_name).is_ok();
+            validate_service_name(&self.service_name)?;
+            validate_binary_path(&self.binary_path)?;
+
+            let already_exists = service_exists(&self.service_name)?;
 
             if already_exists {
                 let config_args = vec![
@@ -86,6 +91,8 @@ impl ServiceLifecycle {
     pub fn uninstall(&self) -> Result<(), ServiceError> {
         #[cfg(target_os = "windows")]
         {
+            validate_service_name(&self.service_name)?;
+
             let _ = self.stop();
             run_sc(&["delete".to_string(), self.service_name.clone()])
                 .map_err(|err| map_sc_error("uninstall", &err))?;
@@ -102,6 +109,8 @@ impl ServiceLifecycle {
     pub fn start(&self) -> Result<(), ServiceError> {
         #[cfg(target_os = "windows")]
         {
+            validate_service_name(&self.service_name)?;
+
             run_sc(&["start".to_string(), self.service_name.clone()])
                 .map_err(|err| map_sc_error("start", &err))?;
             wait_for_state(&self.service_name, "RUNNING")
@@ -119,6 +128,8 @@ impl ServiceLifecycle {
     pub fn stop(&self) -> Result<(), ServiceError> {
         #[cfg(target_os = "windows")]
         {
+            validate_service_name(&self.service_name)?;
+
             run_sc(&["stop".to_string(), self.service_name.clone()])
                 .map_err(|err| map_sc_error("stop", &err))?;
             wait_for_state(&self.service_name, "STOPPED")
@@ -136,6 +147,8 @@ impl ServiceLifecycle {
     pub fn configure_recovery(&self) -> Result<(), ServiceError> {
         #[cfg(target_os = "windows")]
         {
+            validate_service_name(&self.service_name)?;
+
             let failure_args = vec![
                 "failure".to_string(),
                 self.service_name.clone(),
@@ -173,7 +186,7 @@ impl ServiceLifecycle {
 
 #[cfg(target_os = "windows")]
 fn run_sc(args: &[String]) -> Result<String, String> {
-    let output = Command::new("sc.exe")
+    let output = Command::new(SC_EXE)
         .args(args)
         .output()
         .map_err(|err| format!("failed spawning sc.exe: {err}"))?;
@@ -200,6 +213,15 @@ fn query_service_state(service_name: &str) -> Result<Option<String>, String> {
 }
 
 #[cfg(target_os = "windows")]
+fn service_exists(service_name: &str) -> Result<bool, ServiceError> {
+    match query_service_state(service_name) {
+        Ok(_) => Ok(true),
+        Err(err) if is_service_not_found_error(&err) => Ok(false),
+        Err(err) => Err(map_sc_error("install", &err)),
+    }
+}
+
+#[cfg(target_os = "windows")]
 fn wait_for_state(service_name: &str, target: &str) -> Result<(), String> {
     for _ in 0..SERVICE_STATE_POLL_ATTEMPTS {
         if let Some(state) = query_service_state(service_name)? {
@@ -213,6 +235,56 @@ fn wait_for_state(service_name: &str, target: &str) -> Result<(), String> {
     Err(format!(
         "service '{service_name}' did not reach state '{target}' in time"
     ))
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn validate_service_name(service_name: &str) -> Result<(), ServiceError> {
+    let trimmed = service_name.trim();
+    if trimmed.is_empty() {
+        return Err(ServiceError::InstallFailed(
+            "service name cannot be empty".to_string(),
+        ));
+    }
+
+    if trimmed
+        .chars()
+        .any(|ch| matches!(ch, '\r' | '\n' | '\0' | '"'))
+    {
+        return Err(ServiceError::InstallFailed(
+            "service name contains invalid characters".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn validate_binary_path(binary_path: &str) -> Result<(), ServiceError> {
+    let trimmed = binary_path.trim();
+    if trimmed.is_empty() {
+        return Err(ServiceError::InstallFailed(
+            "service binary path cannot be empty".to_string(),
+        ));
+    }
+
+    if trimmed
+        .chars()
+        .any(|ch| matches!(ch, '\r' | '\n' | '\0' | '"'))
+    {
+        return Err(ServiceError::InstallFailed(
+            "service binary path contains invalid characters".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn is_service_not_found_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("does not exist as an installed service")
+        || lower.contains("specified service does not exist")
+        || lower.contains("failed 1060")
 }
 
 #[cfg(any(test, target_os = "windows"))]
@@ -277,7 +349,10 @@ impl std::error::Error for ServiceError {}
 
 #[cfg(test)]
 mod tests {
-    use super::{map_sc_error, parse_sc_state, ServiceError, ServiceLifecycle};
+    use super::{
+        is_service_not_found_error, map_sc_error, parse_sc_state, validate_binary_path,
+        validate_service_name, ServiceError, ServiceLifecycle,
+    };
 
     #[test]
     fn parse_sc_state_extracts_running() {
@@ -302,5 +377,27 @@ mod tests {
         let lifecycle = ServiceLifecycle::with_binary_path("eGuardAgent", r"C:\eGuard\agent.exe");
         assert_eq!(lifecycle.name(), "eGuardAgent");
         assert_eq!(lifecycle.binary_path(), r"C:\eGuard\agent.exe");
+    }
+
+    #[test]
+    fn validate_service_name_rejects_empty_or_quoted_values() {
+        assert!(validate_service_name("").is_err());
+        assert!(validate_service_name("\"quoted\"").is_err());
+        assert!(validate_service_name("eGuardAgent").is_ok());
+    }
+
+    #[test]
+    fn validate_binary_path_rejects_quotes() {
+        assert!(validate_binary_path("").is_err());
+        assert!(validate_binary_path("C:\\Path\\evil\\\".exe").is_err());
+        assert!(validate_binary_path(r"C:\Program Files\eGuard\eguard-agent.exe").is_ok());
+    }
+
+    #[test]
+    fn service_not_found_detection_matches_sc_output_patterns() {
+        assert!(is_service_not_found_error(
+            "[SC] OpenService FAILED 1060: The specified service does not exist as an installed service."
+        ));
+        assert!(!is_service_not_found_error("Access is denied"));
     }
 }

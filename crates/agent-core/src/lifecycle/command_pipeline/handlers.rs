@@ -17,7 +17,9 @@ use super::payloads::{
 };
 use super::sanitize::sanitize_profile_id;
 #[cfg(target_os = "windows")]
-use super::windows_network_profile::apply_windows_network_profile_config_change;
+use super::windows_network_profile::{
+    apply_wifi_profile_from_mdm, apply_windows_network_profile_config_change,
+};
 use super::AgentRuntime;
 
 impl AgentRuntime {
@@ -434,6 +436,7 @@ impl AgentRuntime {
             return;
         }
         let mut removed = Vec::new();
+        let mut errors = Vec::new();
         let data_dir = resolve_agent_data_dir();
         let wipe_targets = [
             PathBuf::from(&self.config.offline_buffer_path),
@@ -441,17 +444,27 @@ impl AgentRuntime {
             data_dir.join("baselines.bin"),
         ];
 
-        for path in wipe_targets {
+        for path in &wipe_targets {
             let display = path.to_string_lossy().to_string();
-            if let Err(err) = remove_path(&display) {
-                exec.outcome = CommandOutcome::Ignored;
-                exec.status = "failed";
-                exec.detail = format!("wipe failed ({}): {}", context, err);
-                return;
+            match remove_path(&display) {
+                Ok(()) => removed.push(display),
+                Err(err) => errors.push(format!("{}: {}", display, err)),
             }
-            removed.push(display);
         }
-        exec.detail = format!("wipe completed for {} ({})", removed.join(", "), context);
+        if errors.is_empty() {
+            exec.detail = format!("wipe completed for {} ({})", removed.join(", "), context);
+        } else if removed.is_empty() {
+            exec.outcome = CommandOutcome::Ignored;
+            exec.status = "failed";
+            exec.detail = format!("wipe failed ({}): {}", context, errors.join("; "));
+        } else {
+            exec.detail = format!(
+                "wipe partially completed ({}) removed=[{}] errors=[{}]",
+                context,
+                removed.join(", "),
+                errors.join("; ")
+            );
+        }
     }
 
     pub(super) fn apply_device_retire(&mut self, payload_json: &str, exec: &mut CommandExecution) {
@@ -605,6 +618,32 @@ impl AgentRuntime {
             exec.status = "failed";
             exec.detail = format!("profile write failed: {}", err);
             return;
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            match apply_wifi_profile_from_mdm(&payload.profile_json, &profile_dir) {
+                Ok(Some(wifi_path)) => {
+                    exec.detail = format!(
+                        "WiFi profile applied: {} (json: {})",
+                        wifi_path.display(),
+                        profile_path.display()
+                    );
+                    return;
+                }
+                Ok(None) => {
+                    // Not a WiFi profile, fall through to generic storage.
+                }
+                Err(err) => {
+                    // WiFi application failed, but JSON was already stored.
+                    exec.detail = format!(
+                        "profile stored: {} (WiFi apply failed: {})",
+                        profile_path.display(),
+                        err
+                    );
+                    return;
+                }
+            }
         }
 
         #[cfg(target_os = "macos")]

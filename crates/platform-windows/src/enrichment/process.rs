@@ -3,6 +3,8 @@
 //! Uses command-backed process metadata queries to populate path/cmdline/parent chain.
 
 #[cfg(target_os = "windows")]
+use crate::windows_cmd::POWERSHELL_EXE;
+#[cfg(target_os = "windows")]
 use std::process::Command;
 
 #[cfg(any(test, target_os = "windows"))]
@@ -129,7 +131,7 @@ fn query_process_json(pid: u32) -> Option<Value> {
         pid
     );
 
-    let output = Command::new("powershell")
+    let output = Command::new(POWERSHELL_EXE)
         .args(["-NoProfile", "-NonInteractive", "-Command", &command])
         .output()
         .ok()?;

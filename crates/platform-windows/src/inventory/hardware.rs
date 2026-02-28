@@ -1,6 +1,8 @@
 //! Hardware inventory via WMI.
 
 #[cfg(target_os = "windows")]
+use crate::windows_cmd::POWERSHELL_EXE;
+#[cfg(target_os = "windows")]
 use std::process::Command;
 
 use serde::{Deserialize, Serialize};
@@ -8,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Hardware information.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct HardwareInfo {
     pub computer_name: Option<String>,
     pub os_version: Option<String>,
@@ -38,7 +40,7 @@ pub fn collect_hardware_info() -> HardwareInfo {
 
 #[cfg(target_os = "windows")]
 fn run_powershell(command: &str) -> Option<String> {
-    let output = Command::new("powershell")
+    let output = Command::new(POWERSHELL_EXE)
         .args(["-NoProfile", "-NonInteractive", "-Command", command])
         .output()
         .ok()?;
@@ -83,20 +85,6 @@ fn parse_hardware_info_json(raw: &str) -> Option<HardwareInfo> {
             .and_then(Value::as_str)
             .map(ToString::to_string),
     })
-}
-
-impl Default for HardwareInfo {
-    fn default() -> Self {
-        Self {
-            computer_name: None,
-            os_version: None,
-            os_build: None,
-            cpu_name: None,
-            cpu_cores: None,
-            total_memory_mb: None,
-            bios_serial: None,
-        }
-    }
 }
 
 #[cfg(test)]

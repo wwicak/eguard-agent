@@ -8,7 +8,7 @@ use serde_json::Value;
 use super::registry::run_powershell;
 
 /// Windows Firewall profile status.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct FirewallStatus {
     pub domain_profile_enabled: bool,
     pub private_profile_enabled: bool,
@@ -55,16 +55,6 @@ fn parse_firewall_profiles_json(raw: &str) -> Option<FirewallStatus> {
     }
 
     Some(status)
-}
-
-impl Default for FirewallStatus {
-    fn default() -> Self {
-        Self {
-            domain_profile_enabled: false,
-            private_profile_enabled: false,
-            public_profile_enabled: false,
-        }
-    }
 }
 
 #[cfg(test)]

@@ -3,6 +3,8 @@
 //! On Windows, uses PowerShell SID translation for deterministic user-context resolution.
 
 #[cfg(target_os = "windows")]
+use crate::windows_cmd::POWERSHELL_EXE;
+#[cfg(target_os = "windows")]
 use std::process::Command;
 
 /// Resolve a Windows SID string to a username.
@@ -43,7 +45,7 @@ fn resolve_sid_windows(sid: &str) -> Option<String> {
         sid.replace('"', "")
     );
 
-    let output = Command::new("powershell")
+    let output = Command::new(POWERSHELL_EXE)
         .args(["-NoProfile", "-NonInteractive", "-Command", &command])
         .output()
         .ok()?;
@@ -63,7 +65,7 @@ fn resolve_sid_windows(sid: &str) -> Option<String> {
 mod tests {
     #[test]
     fn username_env_fallback_requires_non_empty_value() {
-        assert!("alice".trim().is_empty() == false);
+        assert!(!"alice".trim().is_empty());
         assert!("   ".trim().is_empty());
     }
 }

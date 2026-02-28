@@ -14,6 +14,7 @@ pub enum AmsiResult {
 }
 
 /// AMSI content scanner.
+#[derive(Default)]
 pub struct AmsiScanner {
     context_handle: u64,
 }
@@ -59,12 +60,6 @@ impl AmsiScanner {
         content_name: &str,
     ) -> Result<AmsiResult, super::AmsiError> {
         self.scan_buffer(content.as_bytes(), content_name)
-    }
-}
-
-impl Default for AmsiScanner {
-    fn default() -> Self {
-        Self { context_handle: 0 }
     }
 }
 

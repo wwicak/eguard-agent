@@ -1,6 +1,8 @@
 //! Windows Event Log integration.
 
 #[cfg(target_os = "windows")]
+use crate::windows_cmd::EVENTCREATE_EXE;
+#[cfg(target_os = "windows")]
 use std::process::Command;
 
 #[cfg(target_os = "windows")]
@@ -109,7 +111,7 @@ impl EventLogger {
         event_id: u32,
         message: &str,
     ) -> Result<(), String> {
-        let output = Command::new("eventcreate")
+        let output = Command::new(EVENTCREATE_EXE)
             .args([
                 "/L",
                 "APPLICATION",

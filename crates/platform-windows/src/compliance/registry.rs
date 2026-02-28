@@ -3,6 +3,8 @@
 //! Generic helpers for reading registry values used by other compliance modules.
 
 #[cfg(target_os = "windows")]
+use crate::windows_cmd::{POWERSHELL_EXE, REG_EXE};
+#[cfg(target_os = "windows")]
 use std::process::Command;
 
 /// Read a DWORD value from the registry.
@@ -19,7 +21,7 @@ pub fn read_reg_string(hive: &str, subkey: &str, value_name: &str) -> Option<Str
 
 #[cfg(target_os = "windows")]
 pub(crate) fn run_powershell(command: &str) -> Option<String> {
-    let output = Command::new("powershell")
+    let output = Command::new(POWERSHELL_EXE)
         .args(["-NoProfile", "-NonInteractive", "-Command", command])
         .output()
         .ok()?;
@@ -38,7 +40,7 @@ fn run_reg_query(hive: &str, subkey: &str, value_name: &str) -> Option<String> {
     #[cfg(target_os = "windows")]
     {
         let full_key = format!(r"{}\{}", hive, subkey);
-        let output = Command::new("reg")
+        let output = Command::new(REG_EXE)
             .args(["query", &full_key, "/v", value_name])
             .output()
             .ok()?;
@@ -82,18 +84,19 @@ fn parse_reg_line(output: &str, value_name: &str) -> Option<(String, String, Str
         if line.is_empty() {
             continue;
         }
-        if !line.starts_with(value_name) {
+
+        let mut parts = line.split_whitespace();
+        let name = parts.next()?;
+        if !name.eq_ignore_ascii_case(value_name) {
             continue;
         }
 
-        let mut parts = line.split_whitespace();
-        let name = parts.next()?.to_string();
         let reg_type = parts.next()?.to_string();
         let value = parts.collect::<Vec<_>>().join(" ");
         if value.is_empty() {
             continue;
         }
-        return Some((name, reg_type, value));
+        return Some((name.to_string(), reg_type, value));
     }
     None
 }
@@ -121,5 +124,14 @@ HKEY_LOCAL_MACHINE\SOFTWARE\Test
             parse_reg_string(output, "ProductName").as_deref(),
             Some("Windows Defender")
         );
+    }
+
+    #[test]
+    fn does_not_match_prefix_only_value_names() {
+        let output = r#"
+HKEY_LOCAL_MACHINE\SOFTWARE\Test
+    ProductNameEx    REG_SZ    Not Defender
+"#;
+        assert_eq!(parse_reg_string(output, "ProductName"), None);
     }
 }

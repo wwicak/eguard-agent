@@ -8,7 +8,7 @@ use serde_json::Value;
 use super::registry::run_powershell;
 
 /// Windows Defender status summary.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DefenderStatus {
     pub enabled: bool,
     pub real_time_protection: bool,
@@ -54,17 +54,6 @@ fn parse_defender_status_json(raw: &str) -> Option<DefenderStatus> {
             .and_then(Value::as_str)
             .map(ToString::to_string),
     })
-}
-
-impl Default for DefenderStatus {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            real_time_protection: false,
-            signature_version: None,
-            last_scan_time: None,
-        }
-    }
 }
 
 #[cfg(test)]

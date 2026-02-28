@@ -132,16 +132,79 @@
 # Windows platform hardening + E2E-audit round (MDM/NAC/EDR)
 
 ## Plan
-- [ ] 1) Baseline `crates/platform-windows/` quality gates: run targeted tests/checks and collect current warnings/hotspots.
-- [ ] 2) Perform static audit across ETW/inventory/response/service/self-protect modules for reliability + security hardening opportunities.
-- [ ] 3) Implement focused code hardening/polish fixes with minimal blast radius, prioritizing input validation, error handling, and safe defaults.
-- [ ] 4) Add/expand unit tests for newly hardened paths and regression-prone behavior.
-- [ ] 5) Run verification (`fmt`, targeted tests/checks) and document concrete review findings + residual E2E gaps.
+- [x] 1) Baseline `crates/platform-windows/` quality gates: run targeted tests/checks and collect current warnings/hotspots.
+- [x] 2) Perform static audit across ETW/inventory/response/service/self-protect modules for reliability + security hardening opportunities.
+- [x] 3) Implement focused code hardening/polish fixes with minimal blast radius, prioritizing input validation, error handling, and safe defaults.
+- [x] 4) Add/expand unit tests for newly hardened paths and regression-prone behavior.
+- [x] 5) Run verification (`fmt`, targeted tests/checks) and document concrete review findings + residual E2E gaps.
 
 ## Acceptance Criteria
-- [ ] AC-WIN-HARDEN-001 No new clippy/test regressions in touched crates.
-- [ ] AC-WIN-HARDEN-002 Hardened code paths have explicit tests or rationale for why not testable locally.
-- [ ] AC-WIN-HARDEN-003 Audit summary includes risk findings, applied remediations, and remaining E2E-on-Windows actions.
+- [x] AC-WIN-HARDEN-001 No new clippy/test regressions in touched crates.
+- [x] AC-WIN-HARDEN-002 Hardened code paths have explicit tests or rationale for why not testable locally.
+- [x] AC-WIN-HARDEN-003 Audit summary includes risk findings, applied remediations, and remaining E2E-on-Windows actions.
 
 ## Review
-- Pending
+- Audit findings (high impact):
+  - **PATH hijack risk**: privileged subprocesses used bare command names (`powershell`, `netsh`, `taskkill`, `sc.exe`, `reg`, etc.), enabling executable search-order abuse.
+  - **Isolation allowlist fragility**: `isolate_host()` accepted raw strings (including invalid/empty entries) and could leave partial firewall state on mid-sequence errors.
+  - **WFP rule input trust**: remote IP/CIDR and description fields were not normalized/sanitized before `netsh` usage.
+  - **Service install idempotency edge**: `install()` treated all `sc query` failures as “service missing”, masking permission/runtime errors.
+  - **Registry value parsing ambiguity**: prefix matching (`starts_with`) could read wrong keys (e.g., `ProductNameEx` vs `ProductName`).
+- Applied hardening/polish:
+  - Added canonical Windows system binary paths in `crates/platform-windows/src/windows_cmd.rs` and switched command execution to absolute paths across compliance, enrichment, inventory, response, service, self-protect, and WFP modules.
+  - Hardened host isolation in `crates/platform-windows/src/response/isolation.rs`:
+    - strict IP/CIDR validation + normalization,
+    - dedupe + bounded allowlist size,
+    - explicit rejection of empty allowlists,
+    - rollback cleanup on rule application failures.
+  - Hardened WFP filter handling in `crates/platform-windows/src/wfp/filters.rs`:
+    - remote IP/CIDR normalization (supports `any`),
+    - description sanitization + length bounds,
+    - duplicate cfg cleanup.
+  - Hardened service lifecycle in `crates/platform-windows/src/service/lifecycle.rs`:
+    - validate service name and binary path inputs,
+    - distinguish “service not found” from other `sc query` errors,
+    - preserve access-denied/error propagation.
+  - Hardened registry parser in `crates/platform-windows/src/compliance/registry.rs` to require exact value-name match.
+  - Polished clippy findings:
+    - derived `Default` where appropriate,
+    - simplified lazy option fallback and boolean comparison.
+- Added/expanded tests:
+  - isolation allowlist normalization/validation tests,
+  - WFP remote IP normalization + description sanitization tests,
+  - service lifecycle input validation + not-found detection tests,
+  - registry prefix-mismatch regression test.
+- Validation run:
+  - `cargo fmt --all` ✅
+  - `cargo test -p platform-windows` ✅ (66 passed)
+  - `cargo clippy -p platform-windows --all-targets --all-features -- -D warnings` ✅
+  - `cargo check -p platform-windows --target x86_64-pc-windows-msvc` ✅
+  - `cargo check -p agent-core` ✅
+- Remaining E2E-on-Windows actions (cannot fully prove from Linux CI host):
+  - validate service install/start/stop/recovery against real SCM + admin/UAC contexts,
+  - execute real host isolation/unisolation and confirm management-server reachability during isolation,
+  - run live ETW + response command cycle (forensics/quarantine/isolation) on Windows host,
+  - run signed-binary integrity/authenticode checks on release-signed artifacts.
+
+---
+
+# Windows E2E validation checklist doc
+
+## Plan
+- [x] 1) Create a single executable checklist document for Windows MDM/NAC/EDR E2E validation.
+- [x] 2) Include environment preconditions, command-level verification checkpoints, and evidence capture fields.
+- [x] 3) Add pass/fail sign-off + failure template so QA can run and report consistently.
+
+## Review
+- Added `tasks/windows-e2e-validation-checklist.md` with a full, checkable runbook covering:
+  - preflight and bootstrap correctness guardrails,
+  - build/package gates,
+  - install/service lifecycle,
+  - enrollment/control-plane,
+  - EDR telemetry+detection,
+  - response/quarantine/forensics,
+  - NAC + host isolation,
+  - MDM actions,
+  - self-protect hardening checks,
+  - resilience + soak validation,
+  - final sign-off + failure report template.

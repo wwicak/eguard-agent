@@ -43,8 +43,22 @@ pub(super) struct ForensicsPayload {
 pub(super) struct ProfilePayload {
     #[serde(default)]
     pub(super) profile_id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "string_or_object")]
     pub(super) profile_json: String,
+}
+
+/// Accept `profile_json` as either a JSON string or a raw JSON object.
+/// When the GUI sends `"profile_json": {"ssid": ...}` (object) instead of
+/// `"profile_json": "{\"ssid\": ...}"` (string), this converts it to a string.
+fn string_or_object<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::String(s) => Ok(s),
+        other => Ok(other.to_string()),
+    }
 }
 
 pub(super) fn parse_device_action_payload(payload_json: &str) -> DeviceActionPayload {

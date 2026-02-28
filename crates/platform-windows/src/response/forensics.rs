@@ -1,6 +1,8 @@
 //! Forensic collection: MiniDump creation and handle enumeration.
 
 #[cfg(target_os = "windows")]
+use crate::windows_cmd::{POWERSHELL_EXE, RUNDLL32_EXE};
+#[cfg(target_os = "windows")]
 use std::process::Command;
 
 #[cfg(any(test, target_os = "windows"))]
@@ -33,7 +35,7 @@ impl ForensicsCollector {
                 ));
             }
 
-            let output = Command::new("rundll32.exe")
+            let output = Command::new(RUNDLL32_EXE)
                 .args([
                     "C:\\Windows\\System32\\comsvcs.dll,MiniDump",
                     &pid.to_string(),
@@ -75,7 +77,7 @@ impl ForensicsCollector {
                 "Get-Process -Id {} | Select-Object -First 1 Handles,ProcessName,Path | ConvertTo-Json -Compress",
                 pid
             );
-            let output = match Command::new("powershell")
+            let output = match Command::new(POWERSHELL_EXE)
                 .args(["-NoProfile", "-NonInteractive", "-Command", &cmd])
                 .output()
             {

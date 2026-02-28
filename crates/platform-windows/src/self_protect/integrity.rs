@@ -3,6 +3,8 @@
 //! Verifies the agent binary's Authenticode signature and hash on startup.
 
 #[cfg(target_os = "windows")]
+use crate::windows_cmd::POWERSHELL_EXE;
+#[cfg(target_os = "windows")]
 use std::path::Path;
 #[cfg(target_os = "windows")]
 use std::process::Command;
@@ -89,7 +91,7 @@ pub fn verify_authenticode(path: &str) -> Result<bool, super::SelfProtectError> 
 #[cfg(target_os = "windows")]
 fn verify_authenticode_path(path: &Path) -> Result<bool, super::SelfProtectError> {
     let path_text = path.to_string_lossy().to_string();
-    let output = Command::new("powershell")
+    let output = Command::new(POWERSHELL_EXE)
         .args([
             "-NoProfile",
             "-NonInteractive",

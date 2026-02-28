@@ -4,10 +4,12 @@
 //! the Windows system via WMI queries.
 
 pub mod hardware;
+pub mod hardware_detail;
 pub mod network;
 pub mod software;
 
 pub use hardware::collect_hardware_info;
+pub use hardware_detail::collect_hardware_inventory;
 pub use network::collect_network_adapters;
 pub use software::collect_installed_software;
 

@@ -1,6 +1,8 @@
 //! Network adapter inventory.
 
 #[cfg(target_os = "windows")]
+use crate::windows_cmd::POWERSHELL_EXE;
+#[cfg(target_os = "windows")]
 use std::process::Command;
 
 use serde::{Deserialize, Serialize};
@@ -35,7 +37,7 @@ pub fn collect_network_adapters() -> Vec<NetworkAdapter> {
 
 #[cfg(target_os = "windows")]
 fn run_powershell(command: &str) -> Option<String> {
-    let output = Command::new("powershell")
+    let output = Command::new(POWERSHELL_EXE)
         .args(["-NoProfile", "-NonInteractive", "-Command", command])
         .output()
         .ok()?;

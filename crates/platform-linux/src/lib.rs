@@ -1,5 +1,6 @@
 pub mod container;
 mod ebpf;
+pub mod inventory;
 mod kernel_integrity;
 
 use std::collections::HashMap;

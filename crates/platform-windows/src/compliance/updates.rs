@@ -8,7 +8,7 @@ use serde_json::Value;
 use super::registry::run_powershell;
 
 /// Windows Update compliance status.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UpdateStatus {
     pub pending_count: u32,
     pub last_install_date: Option<String>,
@@ -51,16 +51,6 @@ fn parse_update_status_json(raw: &str) -> Option<UpdateStatus> {
             .and_then(Value::as_bool)
             .unwrap_or(false),
     })
-}
-
-impl Default for UpdateStatus {
-    fn default() -> Self {
-        Self {
-            pending_count: 0,
-            last_install_date: None,
-            reboot_required: false,
-        }
-    }
 }
 
 #[cfg(test)]

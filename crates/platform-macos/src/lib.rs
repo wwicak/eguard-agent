@@ -7,6 +7,7 @@
 pub mod compliance;
 pub mod enrichment;
 pub mod esf;
+pub mod inventory;
 pub mod response;
 pub mod self_protect;
 pub mod service;

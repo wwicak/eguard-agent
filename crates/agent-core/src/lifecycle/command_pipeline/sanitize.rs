@@ -79,7 +79,7 @@ pub(super) fn sanitize_windows_package_name(raw: &str) -> Result<String, &'stati
     }
     if !package_name
         .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'+'))
     {
         return Err("package_name contains unsupported characters");
     }

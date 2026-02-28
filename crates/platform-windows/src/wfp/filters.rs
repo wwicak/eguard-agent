@@ -1,14 +1,21 @@
 //! WFP network filtering rules.
 
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 #[cfg(target_os = "windows")]
 use std::process::Command;
 
+#[cfg(target_os = "windows")]
+use crate::windows_cmd::NETSH_EXE;
+
 static NEXT_FILTER_ID: AtomicU64 = AtomicU64::new(1);
 static FILTER_REGISTRY: OnceLock<Mutex<HashMap<u64, String>>> = OnceLock::new();
+
+#[cfg(any(test, target_os = "windows"))]
+const MAX_RULE_DESCRIPTION_LEN: usize = 240;
 
 fn filter_registry() -> &'static Mutex<HashMap<u64, String>> {
     FILTER_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
@@ -49,6 +56,15 @@ pub fn add_filter(engine: &super::WfpEngine, filter: &WfpFilter) -> Result<u64, 
         ));
     }
 
+    let normalized_remote_ip = normalize_remote_ip(filter.remote_ip.as_deref()).map_err(|err| {
+        super::WfpError::FilterAdd(format!(
+            "invalid filter remote_ip for '{}': {err}",
+            filter.name
+        ))
+    })?;
+    #[cfg(not(target_os = "windows"))]
+    let _ = &normalized_remote_ip;
+
     let filter_id = NEXT_FILTER_ID.fetch_add(1, Ordering::Relaxed);
     let rule_name = format!(
         "eGuard-Wfp-{filter_id}-{}",
@@ -57,7 +73,8 @@ pub fn add_filter(engine: &super::WfpEngine, filter: &WfpFilter) -> Result<u64, 
 
     #[cfg(target_os = "windows")]
     {
-        apply_netsh_rule(&rule_name, filter).map_err(super::WfpError::FilterAdd)?;
+        apply_netsh_rule(&rule_name, filter, normalized_remote_ip.as_deref())
+            .map_err(super::WfpError::FilterAdd)?;
     }
 
     let mut registry = filter_registry().lock().map_err(|err| {
@@ -117,6 +134,67 @@ fn sanitize_rule_name(name: &str) -> String {
 }
 
 #[cfg(any(test, target_os = "windows"))]
+fn sanitize_rule_description(raw: &str) -> String {
+    let mut normalized = raw
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect::<String>();
+    normalized = normalized.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    let bounded = normalized
+        .chars()
+        .take(MAX_RULE_DESCRIPTION_LEN)
+        .collect::<String>();
+
+    if bounded.trim().is_empty() {
+        "eGuard WFP policy".to_string()
+    } else {
+        bounded
+    }
+}
+
+fn normalize_remote_ip(remote_ip: Option<&str>) -> Result<Option<String>, String> {
+    let Some(raw) = remote_ip else {
+        return Ok(None);
+    };
+
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("remote_ip cannot be empty".to_string());
+    }
+
+    if trimmed.eq_ignore_ascii_case("any") {
+        return Ok(None);
+    }
+
+    if let Ok(ip) = trimmed.parse::<IpAddr>() {
+        return Ok(Some(ip.to_string()));
+    }
+
+    let (ip_raw, prefix_raw) = trimmed
+        .split_once('/')
+        .ok_or_else(|| format!("'{trimmed}' is not a valid IP or CIDR"))?;
+
+    let ip = ip_raw
+        .trim()
+        .parse::<IpAddr>()
+        .map_err(|_| format!("'{trimmed}' has invalid CIDR base IP"))?;
+    let prefix = prefix_raw
+        .trim()
+        .parse::<u8>()
+        .map_err(|_| format!("'{trimmed}' has invalid CIDR prefix"))?;
+
+    let max_prefix = match ip {
+        IpAddr::V4(_) => 32,
+        IpAddr::V6(_) => 128,
+    };
+    if prefix > max_prefix {
+        return Err(format!("'{trimmed}' CIDR prefix exceeds {max_prefix}"));
+    }
+
+    Ok(Some(format!("{ip}/{prefix}")))
+}
+
 #[cfg(any(test, target_os = "windows"))]
 fn netsh_direction(layer: WfpLayer) -> &'static str {
     match layer {
@@ -126,7 +204,6 @@ fn netsh_direction(layer: WfpLayer) -> &'static str {
 }
 
 #[cfg(target_os = "windows")]
-#[cfg(any(test, target_os = "windows"))]
 fn netsh_action(action: WfpAction) -> &'static str {
     match action {
         WfpAction::Permit => "allow",
@@ -135,22 +212,27 @@ fn netsh_action(action: WfpAction) -> &'static str {
 }
 
 #[cfg(target_os = "windows")]
-fn apply_netsh_rule(rule_name: &str, filter: &WfpFilter) -> Result<(), String> {
-    let remote_ip = filter.remote_ip.as_deref().unwrap_or("any");
+fn apply_netsh_rule(
+    rule_name: &str,
+    filter: &WfpFilter,
+    normalized_remote_ip: Option<&str>,
+) -> Result<(), String> {
+    let remote_ip = normalized_remote_ip.unwrap_or("any");
+    let description = sanitize_rule_description(&filter.description);
     let args = [
         "advfirewall",
         "firewall",
         "add",
         "rule",
         &format!("name={rule_name}"),
-        &format!("description={}", filter.description),
+        &format!("description={description}"),
         &format!("dir={}", netsh_direction(filter.layer)),
         &format!("action={}", netsh_action(filter.action)),
         &format!("remoteip={remote_ip}"),
         "profile=any",
     ];
 
-    let output = Command::new("netsh")
+    let output = Command::new(NETSH_EXE)
         .args(args)
         .output()
         .map_err(|err| format!("failed spawning netsh for add rule: {err}"))?;
@@ -180,7 +262,7 @@ fn remove_netsh_rule(rule_name: &str) -> Result<(), String> {
         &format!("name={rule_name}"),
     ];
 
-    let output = Command::new("netsh")
+    let output = Command::new(NETSH_EXE)
         .args(args)
         .output()
         .map_err(|err| format!("failed spawning netsh for delete rule: {err}"))?;
@@ -204,12 +286,45 @@ fn remove_netsh_rule(rule_name: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{add_filter, netsh_direction, remove_filter, WfpAction, WfpFilter, WfpLayer};
+    use super::{
+        add_filter, netsh_direction, normalize_remote_ip, remove_filter, sanitize_rule_description,
+        WfpAction, WfpFilter, WfpLayer,
+    };
 
     #[test]
     fn direction_mapping_matches_layer() {
         assert_eq!(netsh_direction(WfpLayer::InboundTransportV4), "in");
         assert_eq!(netsh_direction(WfpLayer::OutboundTransportV6), "out");
+    }
+
+    #[test]
+    fn normalize_remote_ip_supports_ip_and_cidr() {
+        assert_eq!(
+            normalize_remote_ip(Some("203.0.113.10")).expect("valid ipv4"),
+            Some("203.0.113.10".to_string())
+        );
+        assert_eq!(
+            normalize_remote_ip(Some("2001:db8::1/128")).expect("valid ipv6 cidr"),
+            Some("2001:db8::1/128".to_string())
+        );
+        assert_eq!(normalize_remote_ip(Some("any")).expect("valid any"), None);
+    }
+
+    #[test]
+    fn normalize_remote_ip_rejects_invalid_values() {
+        assert!(normalize_remote_ip(Some("")).is_err());
+        assert!(normalize_remote_ip(Some("not-an-ip")).is_err());
+        assert!(normalize_remote_ip(Some("203.0.113.10/48")).is_err());
+    }
+
+    #[test]
+    fn sanitize_rule_description_strips_control_chars_and_bounds_length() {
+        let description = sanitize_rule_description("line1\nline2\tline3");
+        assert_eq!(description, "line1 line2 line3");
+
+        let very_long = "x".repeat(1_000);
+        let bounded = sanitize_rule_description(&very_long);
+        assert!(bounded.len() <= 240);
     }
 
     #[test]

@@ -38,6 +38,12 @@ impl AgentRuntime {
             );
         }
 
+        // Collect detailed hardware inventory (CPU, RAM, disk, GPU, network)
+        // and merge hw.* prefixed keys into the attributes map.
+        for (key, value) in collect_platform_hardware_inventory() {
+            attributes.insert(key, value);
+        }
+
         InventoryEnvelope {
             agent_id: self.config.agent_id.clone(),
             os_type: snapshot
@@ -209,4 +215,28 @@ pub(super) fn resolve_primary_ip() -> Option<String> {
     let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
     let _ = socket.connect("8.8.8.8:80");
     socket.local_addr().ok().map(|addr| addr.ip().to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Platform-dispatched hardware inventory collection
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "linux")]
+fn collect_platform_hardware_inventory() -> HashMap<String, String> {
+    platform_linux::inventory::collect_hardware_inventory()
+}
+
+#[cfg(target_os = "windows")]
+fn collect_platform_hardware_inventory() -> HashMap<String, String> {
+    platform_windows::inventory::collect_hardware_inventory()
+}
+
+#[cfg(target_os = "macos")]
+fn collect_platform_hardware_inventory() -> HashMap<String, String> {
+    platform_macos::inventory::collect_hardware_inventory()
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+fn collect_platform_hardware_inventory() -> HashMap<String, String> {
+    HashMap::new()
 }

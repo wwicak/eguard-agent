@@ -1585,3 +1585,298 @@ sc.exe create eGuardAgent binPath= "C:\Program Files\eGuard\eguard-agent.exe" st
 - Remove inline `<?define>` for variables passed via CLI `-d`
 - Cross-compile with `x86_64-pc-windows-gnu` produces binaries that work on
   Windows Server 2019 without MinGW DLLs (Rust statically links the CRT)
+
+---
+
+## 16. MDM (Mobile Device Management) Commands
+
+### 16.1 Command Reference
+
+The agent supports 10 MDM commands, delivered via the server command pipeline.
+All commands are enqueued via:
+
+```bash
+POST http://SERVER:50053/api/v1/endpoint/command/enqueue
+Content-Type: application/json
+
+{
+  "agent_id": "agent-XXXX",
+  "command_type": "<command>",
+  "command_data": { ... },
+  "issued_by": "admin"
+}
+```
+
+The agent polls for commands every 5 seconds (`COMMAND_FETCH_INTERVAL_SECS`).
+
+| Command | Description | Policy Gate | Windows Implementation |
+|---------|-------------|-------------|----------------------|
+| `lock_device` | Lock the workstation | Always allowed | `rundll32.exe user32.dll,LockWorkStation` |
+| `locate_device` | Report device IP | Always allowed | Returns primary NIC IP |
+| `lost_mode` | Enable lost mode marker | Always allowed | Creates `{data_dir}/lost_mode` file |
+| `apply_profile` | Store/apply config profile | Always allowed | JSON storage + WiFi 802.1x XML |
+| `install_app` | Install application | `EGUARD_MDM_ALLOW_APP_MANAGEMENT` | `winget install --id <pkg> --exact` |
+| `remove_app` | Remove application | `EGUARD_MDM_ALLOW_APP_MANAGEMENT` | `winget uninstall --id <pkg> --exact` |
+| `update_app` | Update application | `EGUARD_MDM_ALLOW_APP_MANAGEMENT` | `winget upgrade --id <pkg> --exact` |
+| `wipe_device` | Remove agent data | `EGUARD_MDM_ALLOW_DESTRUCTIVE` | Removes quarantine, baselines, offline DB |
+| `restart_device` | Reboot endpoint | `EGUARD_MDM_ALLOW_DESTRUCTIVE` | `shutdown /r /t 0 /f` |
+| `retire_device` | Decommission agent | `EGUARD_MDM_ALLOW_DESTRUCTIVE` | Creates `retired` marker, stops enrollment |
+
+### 16.2 MDM Policy Environment Variables
+
+Destructive and app management commands are blocked by default. Set these
+environment variables on the agent to enable them:
+
+| Variable | Controls | Default |
+|----------|----------|---------|
+| `EGUARD_MDM_ALLOW_ALL` | All MDM actions | Not set (disabled) |
+| `EGUARD_MDM_ALLOW_DESTRUCTIVE` | wipe, retire, restart | Not set (disabled) |
+| `EGUARD_MDM_ALLOW_APP_MANAGEMENT` | install/remove/update app | Not set (disabled) |
+| `EGUARD_MDM_ALLOW_LOCK` | lock_device (already always allowed) | N/A |
+| `EGUARD_MDM_ALLOW_WIPE` | wipe_device only | Not set |
+| `EGUARD_MDM_ALLOW_RESTART` | restart_device only | Not set |
+| `EGUARD_MDM_ALLOW_RETIRE` | retire_device only | Not set |
+
+**Windows Service Environment Variables**: On Windows, set env vars via the
+service registry (Machine-level env vars are not inherited by services):
+
+```powershell
+# Set env vars on the Windows service
+$envVars = @("EGUARD_MDM_ALLOW_DESTRUCTIVE=1", "EGUARD_MDM_ALLOW_APP_MANAGEMENT=1")
+Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\eGuardAgent" `
+  -Name "Environment" -Value $envVars -Type MultiString
+
+# Restart service to pick up changes
+Restart-Service eGuardAgent
+```
+
+**Important**: Do NOT use `[System.Environment]::SetEnvironmentVariable(..., "Machine")`
+for Windows service env vars. SCM does not inherit machine-level changes without a
+full reboot. Always use the service registry `Environment` key.
+
+### 16.3 Command Approval Workflow
+
+Commands support an approval workflow with `requires_approval` flag:
+
+```bash
+# Enqueue with approval required
+curl -X POST http://SERVER:50053/api/v1/endpoint/command/enqueue \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent_id": "agent-XXXX",
+    "command_type": "wipe_device",
+    "command_data": {"reason": "Security incident"},
+    "requires_approval": true,
+    "issued_by": "soc-analyst"
+  }'
+
+# Approve the command
+curl -X POST http://SERVER:50053/api/v1/endpoint/command/approve \
+  -H "Content-Type: application/json" \
+  -d '{
+    "command_id": "<command_id>",
+    "approval_status": "approved",
+    "approved_by": "soc-manager"
+  }'
+```
+
+Server-side env vars for automatic approval requirements:
+
+| Variable | Effect |
+|----------|--------|
+| `EGUARD_COMMAND_APPROVAL_REQUIRED` | All commands require approval |
+| `EGUARD_COMMAND_APPROVAL_DESTRUCTIVE` | wipe_device and retire_device require approval |
+
+### 16.4 WiFi Profile Push (802.1x / WPA2-Enterprise)
+
+The `apply_profile` command supports WiFi profiles with 802.1x enterprise
+authentication. When the profile JSON contains an `ssid` field, the agent
+generates a Windows WLAN profile XML and imports it via `netsh wlan add profile`.
+
+**Supported security modes**: `open`, `wpa2_psk`, `wpa2_enterprise` (802.1x)
+
+**Example: Push WPA2-Enterprise PEAP profile with CA certificate**:
+
+```bash
+curl -X POST http://SERVER:50053/api/v1/endpoint/command/enqueue \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent_id": "agent-XXXX",
+    "command_type": "apply_profile",
+    "command_data": {
+      "profile_id": "corp-wifi",
+      "profile_json": "{\"ssid\": \"CorpSecure\", \"security\": \"wpa2_enterprise\", \"eap_type\": \"peap\", \"server_names\": \"radius.corp.local\", \"ca_cert_pem\": \"-----BEGIN CERTIFICATE-----\\n...\\n-----END CERTIFICATE-----\", \"auto_connect\": true}"
+    },
+    "issued_by": "admin"
+  }'
+```
+
+WiFi profile fields:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `ssid` | Yes | WiFi network name |
+| `security` | Yes | `open`, `wpa2_psk`, `wpa2_enterprise` |
+| `eap_type` | No | `peap` (default), `tls`, `ttls` |
+| `psk` | WPA2-PSK only | Pre-shared key (8-63 chars) |
+| `ca_cert_pem` | No | PEM-encoded CA certificate for 802.1x |
+| `client_cert_pem` | No | PEM-encoded client certificate for EAP-TLS |
+| `client_key_pem` | No | PEM-encoded client private key for EAP-TLS |
+| `server_names` | No | RADIUS server name(s) for validation |
+| `auto_connect` | No | Auto-connect to network (default: true) |
+
+On Windows, the CA certificate is imported to the Root store via `certutil -addstore Root`.
+Client certificates are imported via `certutil -user -importPFX`.
+
+### 16.5 App Management Dependencies
+
+| Platform | Package Manager | Required |
+|----------|----------------|----------|
+| Windows | `winget` (Windows Package Manager) | Not pre-installed on Windows Server 2019 |
+| macOS | `brew` (Homebrew) | Must be installed separately |
+| Linux | `apt-get` | Available on Debian/Ubuntu |
+
+**Windows Server 2019**: `winget` is not available by default. Install the
+[App Installer](https://github.com/microsoft/winget-cli/releases) MSIX bundle
+or accept that `install_app`/`remove_app`/`update_app` will return
+`"spawn failed: program not found"`.
+
+### 16.6 MDM Command API Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/v1/endpoint/command/enqueue` | Enqueue a command |
+| `POST` | `/api/v1/endpoint/command/approve` | Approve/reject a pending command |
+| `GET` | `/api/v1/endpoint/commands?agent_id=...` | List commands for an agent |
+
+---
+
+## 17. MDM E2E Test Results (Feb 2026)
+
+### 17.1 Test Environment
+
+| VM | IP | OS | Agent ID |
+|----|----|----|----------|
+| Server | 103.49.238.102 | Debian 12 | N/A |
+| Linux Agent | 103.183.74.3 | Debian 12 (6.1.0-43) | agent-31bbb93f38b4 |
+| Windows Agent | 103.31.39.30 | Windows Server 2019 | agent-4412 |
+
+### 17.2 MDM Command Test Results
+
+| # | Command | Policy Gate | Result | Detail |
+|---|---------|-------------|--------|--------|
+| 1 | `locate_device` | Always allowed | **PASS** | Returned IP 10.6.108.110 |
+| 2 | `lost_mode` | Always allowed | **PASS** | Marker file created with unix timestamp |
+| 3 | `apply_profile` (JSON) | Always allowed | **PASS** | Stored at `profiles/e2e-test-wifi-profile.json` |
+| 4 | `lock_device` | Always allowed | **PASS** | `rundll32.exe LockWorkStation` executed |
+| 5 | `wipe_device` (blocked) | No env var | **PASS** | "device wipe blocked by policy" |
+| 6 | `install_app` (blocked) | No env var | **PASS** | "app management blocked by policy" |
+| 7 | `restart_device` (blocked) | No env var | **PASS** | "device restart blocked by policy" |
+| 8 | `install_app` (injection) | Enabled | **PASS** | Sanitizer rejected `pkg;calc.exe` |
+| 9 | `apply_profile` (traversal) | Always allowed | **PASS** | "path traversal segments are not allowed" |
+| 10 | `install_app` (valid pkg) | Enabled | **PASS** | "spawn failed: program not found" (expected, no winget) |
+| 11 | `wipe_device` (enabled) | ALLOW_DESTRUCTIVE | **PARTIAL** | offline-events.db locked by agent (os error 32) |
+| 12 | `restart_device` (enabled) | ALLOW_DESTRUCTIVE | **PASS** | VM rebooted, service auto-started in ~30s |
+
+### 17.3 Bugs Found
+
+#### BUG-1: `wipe_device` fails on Windows — offline-events.db locked
+
+**Severity**: Medium
+**Impact**: Wipe command fails because the agent's own SQLite database
+(`offline-events.db`) is held open by the event buffer.
+
+**Root cause**: `apply_device_wipe()` tries to delete the offline buffer file
+while the agent process has it open.
+
+**Fix applied**: Changed `apply_device_wipe()` to continue removing other
+targets (quarantine, baselines) even when one target fails, reporting partial
+success instead of failing entirely.
+
+#### BUG-2: Windows package name sanitizer rejects `+` character
+
+**Severity**: Low
+**Impact**: Winget package IDs containing `+` (e.g., `Notepad++.Notepad++`)
+are rejected by the input sanitizer.
+
+**Root cause**: `sanitize_windows_package_name()` only allowed
+`alphanumeric + . _ -` but winget IDs commonly use `+`.
+
+**Fix applied**: Added `b'+'` to the allowed character set.
+
+#### BUG-3: Windows agent service stop hangs (StopPending indefinitely)
+
+**Severity**: High
+**Impact**: Service cannot be gracefully stopped via `Stop-Service` or
+`net stop`. Requires `taskkill /F` to force-terminate.
+
+**Root cause**: The Tokio runtime shutdown does not complete cleanly. The
+service control handler sets the stop-pending state but the agent's main
+loop or ETW consumer thread does not exit.
+
+**Workaround**: Use `taskkill /F /IM eguard-agent.exe` followed by
+`sc.exe start eGuardAgent`. The service auto-recovery (configured by
+`install.ps1`) will restart the service after a forced kill.
+
+#### BUG-4: Windows Machine-level env vars not inherited by services
+
+**Severity**: Medium (Documentation gap)
+**Impact**: Setting `EGUARD_MDM_ALLOW_*` via
+`[System.Environment]::SetEnvironmentVariable(..., "Machine")` does not
+take effect after `Restart-Service`. SCM caches the environment.
+
+**Workaround**: Set env vars directly in the service registry:
+```powershell
+$envVars = @("EGUARD_MDM_ALLOW_DESTRUCTIVE=1")
+Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\eGuardAgent" `
+  -Name "Environment" -Value $envVars -Type MultiString
+Restart-Service eGuardAgent
+```
+
+### 17.4 Approval Workflow Test Results
+
+| # | Test | Result | Detail |
+|---|------|--------|--------|
+| 1 | Enqueue with `requires_approval=true` | **PASS** | `approval_status=pending` |
+| 2 | Agent doesn't receive pending command | **PASS** | No log entry during 15s wait |
+| 3 | Approve command | **PASS** | Agent received and executed `locate_device` |
+| 4 | Reject command | **PASS** | `status=failed, approval=rejected`, agent never received |
+
+### 17.5 802.1x WiFi Profile Test Results
+
+| # | Test | Result | Detail |
+|---|------|--------|--------|
+| 1 | PEAP profile JSON stored | **PASS** | `corp-wifi-peap.json` written |
+| 2 | WLAN XML generated | **PASS** | `CorpSecure.xml` with EAP Type 25 (PEAP) |
+| 3 | Server name validation | **PASS** | `<ServerNames>radius.corp.local</ServerNames>` |
+| 4 | netsh import | **EXPECTED FAIL** | WLAN service not available on Server 2019 |
+
+### 17.6 Compliance Reports (Windows)
+
+The Windows agent reports compliance checks via the platform-windows compliance
+module. Checks verified on Windows Server 2019:
+
+| Check | Status | Detail |
+|-------|--------|--------|
+| `firewall_required` | FAIL | Firewall inactive on test VM |
+| `antivirus_running` | PASS | Windows Defender detected |
+| `disk_encryption` | Depends | BitLocker status varies |
+| `screen_lock_enabled` | Depends | May fail on headless servers |
+
+### 17.7 Server Infrastructure
+
+**Critical**: The eGuard server VM (4GB RAM) runs many services (Apache/Perl,
+MariaDB, Go servers, HAProxy, etc.) that consume ~3.5GB+ at steady state.
+Without swap space, the system OOM-hangs under load.
+
+**Fix applied**: Added 4GB swap file:
+```bash
+sudo fallocate -l 4G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+echo "/swapfile none swap sw 0 0" | sudo tee -a /etc/fstab
+```
+
+**Recommendation**: Production eGuard servers should have at least 8GB RAM or
+4GB swap configured. Monitor memory via `eguard-netdata` service.
