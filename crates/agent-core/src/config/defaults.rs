@@ -55,6 +55,36 @@ fn default_data_root() -> &'static str {
     "/var/lib/eguard-agent"
 }
 
+/// Detect the MAC address of the primary network adapter on Windows.
+///
+/// Queries WMI via PowerShell for IP-enabled adapters and returns the first
+/// non-null MAC address.  Falls back to `None` if PowerShell fails.
+#[cfg(target_os = "windows")]
+fn detect_primary_mac() -> Option<String> {
+    let output = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "(Get-CimInstance Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=TRUE' | Select-Object -First 1 -ExpandProperty MACAddress)",
+        ])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let mac = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+    if mac.is_empty() || mac == "00:00:00:00:00:00" {
+        return None;
+    }
+
+    // WMI returns "AA-BB-CC-DD-EE-FF" — normalise to "aa:bb:cc:dd:ee:ff"
+    Some(mac.replace('-', ":").to_ascii_lowercase())
+}
+
 #[cfg(target_os = "windows")]
 fn default_data_root() -> &'static str {
     r"C:\ProgramData\eGuard"
@@ -112,9 +142,9 @@ fn default_detection_ioc_dir() -> String {
 
 impl Default for AgentConfig {
     fn default() -> Self {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
         let mac = detect_primary_mac().unwrap_or_else(|| "00:00:00:00:00:00".to_string());
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         let mac = "00:00:00:00:00:00".to_string();
 
         Self {
