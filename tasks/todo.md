@@ -97,3 +97,51 @@
   - `cargo test -p agent-core lifecycle::tests_pkg_contract::distribution_channels_cover_server_repo_manual_and_github_release -- --exact` ✅
   - `cargo check -p agent-core` ✅
   - `cargo check -p platform-macos --target aarch64-apple-darwin` ⚠️ target stdlib not installed (`rustup target add aarch64-apple-darwin` required)
+
+---
+
+# command_pipeline SOLID refactor + LOC cap (agent-core)
+
+## Plan
+- [x] 1) Baseline current `command_pipeline.rs` responsibilities and split points (dispatch, payload parsing, sanitization, platform command execution, helpers, tests).
+- [x] 2) Extract cohesive helper modules under `crates/agent-core/src/lifecycle/command_pipeline/` and keep `command_pipeline.rs` as orchestration-focused façade.
+- [x] 3) Preserve behavior for all command handlers (emergency/config/isolate/quarantine/forensics/MDM/app/profile) while reducing `command_pipeline.rs` to <=500 LOC.
+- [x] 4) Update/relocate command-pipeline unit tests so sanitizer/parser behavior remains covered after refactor.
+- [x] 5) Run formatting + tests (at minimum command-pipeline tests and crate tests) and record verification results here.
+
+## Review
+- Refactored `crates/agent-core/src/lifecycle/command_pipeline.rs` into a thin orchestration façade (224 LOC) with command dispatch + ACK/reporting, while moving detailed responsibilities into focused submodules:
+  - `crates/agent-core/src/lifecycle/command_pipeline/handlers.rs`
+  - `crates/agent-core/src/lifecycle/command_pipeline/app_management.rs`
+  - `crates/agent-core/src/lifecycle/command_pipeline/command_utils.rs`
+  - `crates/agent-core/src/lifecycle/command_pipeline/paths.rs`
+  - `crates/agent-core/src/lifecycle/command_pipeline/payloads.rs`
+  - `crates/agent-core/src/lifecycle/command_pipeline/sanitize.rs`
+  - `crates/agent-core/src/lifecycle/command_pipeline/windows_network_profile.rs` (Windows-specific)
+  - `crates/agent-core/src/lifecycle/command_pipeline/tests.rs`
+- Preserved behavior for emergency-rule push, config-change network profile handling, isolate/unisolate, restore quarantine, forensics, MDM actions, app actions, and profile application with existing platform-specific branches.
+- Validation run:
+  - `wc -l crates/agent-core/src/lifecycle/command_pipeline.rs` → `224` ✅ (<=500 LOC)
+  - `cargo fmt --all` ✅
+  - `cargo test -p agent-core command_pipeline::tests -- --nocapture` ✅
+  - `cargo test -p agent-core` ✅
+  - `cargo test --workspace` ✅
+
+---
+
+# Windows platform hardening + E2E-audit round (MDM/NAC/EDR)
+
+## Plan
+- [ ] 1) Baseline `crates/platform-windows/` quality gates: run targeted tests/checks and collect current warnings/hotspots.
+- [ ] 2) Perform static audit across ETW/inventory/response/service/self-protect modules for reliability + security hardening opportunities.
+- [ ] 3) Implement focused code hardening/polish fixes with minimal blast radius, prioritizing input validation, error handling, and safe defaults.
+- [ ] 4) Add/expand unit tests for newly hardened paths and regression-prone behavior.
+- [ ] 5) Run verification (`fmt`, targeted tests/checks) and document concrete review findings + residual E2E gaps.
+
+## Acceptance Criteria
+- [ ] AC-WIN-HARDEN-001 No new clippy/test regressions in touched crates.
+- [ ] AC-WIN-HARDEN-002 Hardened code paths have explicit tests or rationale for why not testable locally.
+- [ ] AC-WIN-HARDEN-003 Audit summary includes risk findings, applied remediations, and remaining E2E-on-Windows actions.
+
+## Review
+- Pending

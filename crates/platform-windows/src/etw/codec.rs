@@ -74,12 +74,7 @@ pub fn decode_etw_record(
 ///   SessionID(u32), Flags(u32), ImageName(UTF-16, variable)
 /// Event ID 2 (ProcessStop): ProcessID(u32), CreateTime(u64), ExitTime(u64),
 ///   ExitCode(u32), ImageName(UTF-16, variable)
-fn decode_kernel_process(
-    opcode: u8,
-    pid: u32,
-    ts_ns: u64,
-    data: &[u8],
-) -> Option<RawEvent> {
+fn decode_kernel_process(opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Option<RawEvent> {
     match opcode {
         // ProcessStart
         1 => {
@@ -139,12 +134,7 @@ fn decode_kernel_process(
 /// Event ID 14 (Rename): IrpPtr(8) + FileObject(8) + FileKey(8) + ExtraInfo(8) +
 ///   InfoClass(4) + FileName(UTF-16)
 /// Event ID 26 (Delete): same layout as Rename
-fn decode_kernel_file(
-    opcode: u8,
-    pid: u32,
-    ts_ns: u64,
-    data: &[u8],
-) -> Option<RawEvent> {
+fn decode_kernel_file(opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Option<RawEvent> {
     match opcode {
         // FileCreate
         12 | 0 | 32 => {
@@ -218,12 +208,7 @@ fn decode_kernel_file(
 ///
 /// Classic layout: PID(4) + size(4) + daddr(4) + saddr(4) + dport(2) + sport(2) = 20 bytes (IPv4).
 /// IPv6: PID(4) + size(4) + daddr(16) + saddr(16) + dport(2) + sport(2) = 44 bytes.
-fn decode_kernel_network(
-    _opcode: u8,
-    pid: u32,
-    ts_ns: u64,
-    data: &[u8],
-) -> Option<RawEvent> {
+fn decode_kernel_network(_opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Option<RawEvent> {
     // Try IPv4 first (20 bytes minimum).
     if data.len() >= 20 {
         let dst_ip = format_ipv4(data, 8);
@@ -231,9 +216,8 @@ fn decode_kernel_network(
         let dst_port = read_u16_be(data, 16); // Network byte order
         let src_port = read_u16_be(data, 18);
 
-        let payload = format!(
-            "src_ip={src_ip};src_port={src_port};dst_ip={dst_ip};dst_port={dst_port}"
-        );
+        let payload =
+            format!("src_ip={src_ip};src_port={src_port};dst_ip={dst_ip};dst_port={dst_port}");
         return Some(RawEvent {
             event_type: EventType::TcpConnect,
             pid,
@@ -250,12 +234,7 @@ fn decode_kernel_network(
 /// Microsoft-Windows-DNS-Client.
 ///
 /// Event ID 3011/3008: QueryName is typically a UTF-16 string at the start of UserData.
-fn decode_dns_client(
-    _opcode: u8,
-    pid: u32,
-    ts_ns: u64,
-    data: &[u8],
-) -> Option<RawEvent> {
+fn decode_dns_client(_opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Option<RawEvent> {
     let qname = read_utf16_str(data, 0);
     let payload = match qname {
         Some(name) if !name.is_empty() => format!("qname={name}"),
@@ -275,12 +254,7 @@ fn decode_dns_client(
 /// Image load events typically have: ImageBase(8) + ImageSize(8) + ProcessId(4) +
 ///   ImageCheckSum(4) + ... + FileName(UTF-16).
 /// We extract just the module path from the trailing UTF-16 string.
-fn decode_image_load(
-    _opcode: u8,
-    pid: u32,
-    ts_ns: u64,
-    data: &[u8],
-) -> Option<RawEvent> {
+fn decode_image_load(_opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Option<RawEvent> {
     // ImageBase(8) + ImageSize(8) + ProcessId(4) + ImageCheckSum(4) +
     // TimeDateStamp(4) + DefaultBase(8) = 36 bytes before the filename.
     let module_path = read_utf16_str(data, 36)
@@ -336,12 +310,7 @@ fn map_provider_opcode(provider_guid: &str, opcode: u8) -> Option<EventType> {
 }
 
 /// Build a fallback RawEvent when binary parsing can't extract structured fields.
-fn fallback_event(
-    event_type: EventType,
-    pid: u32,
-    ts_ns: u64,
-    data: &[u8],
-) -> Option<RawEvent> {
+fn fallback_event(event_type: EventType, pid: u32, ts_ns: u64, data: &[u8]) -> Option<RawEvent> {
     let payload = if data.is_empty() {
         String::new()
     } else {
@@ -494,15 +463,14 @@ mod tests {
         data.extend_from_slice(&50u32.to_le_bytes()); // ParentID
         data.extend_from_slice(&1u32.to_le_bytes()); // SessionID
         data.extend_from_slice(&0u32.to_le_bytes()); // Flags
-        // Append "cmd.exe" as UTF-16LE null-terminated
+                                                     // Append "cmd.exe" as UTF-16LE null-terminated
         for ch in "cmd.exe".encode_utf16() {
             data.extend_from_slice(&ch.to_le_bytes());
         }
         data.extend_from_slice(&0u16.to_le_bytes()); // null terminator
 
-        let event =
-            decode_etw_record(super::super::providers::KERNEL_PROCESS, 1, 100, 999, &data)
-                .expect("should decode");
+        let event = decode_etw_record(super::super::providers::KERNEL_PROCESS, 1, 100, 999, &data)
+            .expect("should decode");
 
         assert!(matches!(event.event_type, EventType::ProcessExec));
         assert_eq!(event.pid, 100);
@@ -523,9 +491,8 @@ mod tests {
         }
         data.extend_from_slice(&0u16.to_le_bytes());
 
-        let event =
-            decode_etw_record(super::super::providers::KERNEL_PROCESS, 2, 200, 1000, &data)
-                .expect("should decode");
+        let event = decode_etw_record(super::super::providers::KERNEL_PROCESS, 2, 200, 1000, &data)
+            .expect("should decode");
 
         assert!(matches!(event.event_type, EventType::ProcessExit));
         assert!(event.payload.contains("exit_code=1"));
@@ -540,15 +507,14 @@ mod tests {
         data.extend_from_slice(&0u32.to_le_bytes()); // CreateOptions
         data.extend_from_slice(&0u32.to_le_bytes()); // FileAttributes
         data.extend_from_slice(&0u32.to_le_bytes()); // ShareAccess
-        // Filename: "C:\test.txt"
+                                                     // Filename: "C:\test.txt"
         for ch in r"C:\test.txt".encode_utf16() {
             data.extend_from_slice(&ch.to_le_bytes());
         }
         data.extend_from_slice(&0u16.to_le_bytes());
 
-        let event =
-            decode_etw_record(super::super::providers::KERNEL_FILE, 12, 42, 500, &data)
-                .expect("should decode");
+        let event = decode_etw_record(super::super::providers::KERNEL_FILE, 12, 42, 500, &data)
+            .expect("should decode");
 
         assert!(matches!(event.event_type, EventType::FileOpen));
         assert!(event.payload.contains(r"path=C:\test.txt"));
@@ -564,9 +530,14 @@ mod tests {
         data.extend_from_slice(&443u16.to_be_bytes()); // dport (network order)
         data.extend_from_slice(&50000u16.to_be_bytes()); // sport
 
-        let event =
-            decode_etw_record(super::super::providers::KERNEL_NETWORK, 10, 1000, 700, &data)
-                .expect("should decode");
+        let event = decode_etw_record(
+            super::super::providers::KERNEL_NETWORK,
+            10,
+            1000,
+            700,
+            &data,
+        )
+        .expect("should decode");
 
         assert!(matches!(event.event_type, EventType::TcpConnect));
         assert!(event.payload.contains("dst_ip=203.0.113.1"));
@@ -583,9 +554,8 @@ mod tests {
         }
         data.extend_from_slice(&0u16.to_le_bytes());
 
-        let event =
-            decode_etw_record(super::super::providers::DNS_CLIENT, 0, 500, 800, &data)
-                .expect("should decode");
+        let event = decode_etw_record(super::super::providers::DNS_CLIENT, 0, 500, 800, &data)
+            .expect("should decode");
 
         assert!(matches!(event.event_type, EventType::DnsQuery));
         assert!(event.payload.contains("qname=evil-c2.example.com"));

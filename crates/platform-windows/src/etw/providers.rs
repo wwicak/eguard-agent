@@ -119,8 +119,8 @@ pub fn parse_guid(s: &str) -> Result<windows::core::GUID, String> {
     }
     let mut d4 = [0u8; 8];
     for (i, byte) in d4.iter_mut().enumerate() {
-        *byte =
-            u8::from_str_radix(&d4_hex[i * 2..i * 2 + 2], 16).map_err(|e| format!("GUID d4[{i}]: {e}"))?;
+        *byte = u8::from_str_radix(&d4_hex[i * 2..i * 2 + 2], 16)
+            .map_err(|e| format!("GUID d4[{i}]: {e}"))?;
     }
 
     Ok(windows::core::GUID {
@@ -150,8 +150,16 @@ mod tests {
     #[test]
     fn keyword_masks_are_nonzero() {
         for provider in DEFAULT_PROVIDERS {
-            assert_ne!(provider.match_any_keyword, 0, "provider {} has zero keyword mask", provider.guid_str);
-            assert!(provider.level > 0, "provider {} has zero level", provider.guid_str);
+            assert_ne!(
+                provider.match_any_keyword, 0,
+                "provider {} has zero keyword mask",
+                provider.guid_str
+            );
+            assert!(
+                provider.level > 0,
+                "provider {} has zero level",
+                provider.guid_str
+            );
         }
     }
 }

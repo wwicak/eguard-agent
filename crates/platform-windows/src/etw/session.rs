@@ -31,7 +31,10 @@ mod win32 {
 
     /// Allocate and initialize an `EVENT_TRACE_PROPERTIES` buffer for a real-time session.
     pub(super) fn alloc_properties(session_name: &str) -> Vec<u8> {
-        let name_wide: Vec<u16> = session_name.encode_utf16().chain(std::iter::once(0)).collect();
+        let name_wide: Vec<u16> = session_name
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
         let name_bytes = name_wide.len() * 2;
         let struct_size = std::mem::size_of::<EVENT_TRACE_PROPERTIES>();
         let total = struct_size + name_bytes;
@@ -63,13 +66,14 @@ mod win32 {
         let mut buf = alloc_properties(session_name);
         let props = unsafe { &mut *(buf.as_mut_ptr() as *mut EVENT_TRACE_PROPERTIES) };
 
-        let name_wide: Vec<u16> = session_name.encode_utf16().chain(std::iter::once(0)).collect();
+        let name_wide: Vec<u16> = session_name
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
         let pcwstr = windows::core::PCWSTR(name_wide.as_ptr());
 
         // Best-effort: ignore errors (the session may not exist).
-        let _ = unsafe {
-            ControlTraceW(handle(0), pcwstr, props, EVENT_TRACE_CONTROL_STOP)
-        };
+        let _ = unsafe { ControlTraceW(handle(0), pcwstr, props, EVENT_TRACE_CONTROL_STOP) };
     }
 
     /// Start a real-time ETW trace session. Returns the trace handle on success.
@@ -80,7 +84,10 @@ mod win32 {
         let mut props_buf = alloc_properties(session_name);
         let props = unsafe { &mut *(props_buf.as_mut_ptr() as *mut EVENT_TRACE_PROPERTIES) };
 
-        let name_wide: Vec<u16> = session_name.encode_utf16().chain(std::iter::once(0)).collect();
+        let name_wide: Vec<u16> = session_name
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
         let pcwstr = windows::core::PCWSTR(name_wide.as_ptr());
 
         let mut trace_handle = handle(0);
@@ -155,7 +162,10 @@ mod win32 {
         props.EventsLost = 0;
         props.BuffersWritten = 0;
 
-        let name_wide: Vec<u16> = session_name.encode_utf16().chain(std::iter::once(0)).collect();
+        let name_wide: Vec<u16> = session_name
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
         let pcwstr = windows::core::PCWSTR(name_wide.as_ptr());
 
         let _ = unsafe {
@@ -223,8 +233,7 @@ impl EtwSession {
 
         #[cfg(not(target_os = "windows"))]
         {
-            self.stub_handle =
-                NEXT_STUB_HANDLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.stub_handle = NEXT_STUB_HANDLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             self.active = true;
         }
 
@@ -306,8 +315,8 @@ impl Drop for EtwSession {
 
 #[cfg(test)]
 mod tests {
+    use super::super::providers::{ProviderConfig, DEFAULT_PROVIDERS, KERNEL_PROCESS};
     use super::EtwSession;
-    use super::super::providers::{DEFAULT_PROVIDERS, ProviderConfig, KERNEL_PROCESS};
 
     #[test]
     fn enable_provider_deduplicates_entries() {

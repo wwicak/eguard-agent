@@ -156,7 +156,10 @@ mod win32 {
         const TRACE_MODE: u32 = 0x0000_0100 | 0x1000_0000;
 
         let Ok(name_wide) = U16CString::from_str(session_name) else {
-            tracing::error!(session = session_name, "invalid session name for OpenTraceW");
+            tracing::error!(
+                session = session_name,
+                "invalid session name for OpenTraceW"
+            );
             return;
         };
 
@@ -171,18 +174,14 @@ mod win32 {
 
         // INVALID_PROCESSTRACE_HANDLE = u64::MAX
         if trace_handle.Value == u64::MAX {
-            tracing::error!(
-                session = session_name,
-                "OpenTraceW failed (invalid handle)"
-            );
+            tracing::error!(session = session_name, "OpenTraceW failed (invalid handle)");
             return;
         }
 
         tracing::info!(session = session_name, "ETW consumer thread started");
 
         // ProcessTrace blocks until the session is stopped.
-        let result =
-            unsafe { ProcessTrace(&[trace_handle], None, None) };
+        let result = unsafe { ProcessTrace(&[trace_handle], None, None) };
 
         if result != ERROR_SUCCESS {
             tracing::warn!(
@@ -299,8 +298,7 @@ impl EtwConsumer {
     pub fn drops_count(&self) -> u64 {
         #[cfg(target_os = "windows")]
         {
-            self.drops_count
-                .load(std::sync::atomic::Ordering::Relaxed)
+            self.drops_count.load(std::sync::atomic::Ordering::Relaxed)
         }
         #[cfg(not(target_os = "windows"))]
         {
