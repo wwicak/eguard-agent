@@ -23,6 +23,12 @@ responsible for managing eGuard across a fleet of endpoints.
 13. [Troubleshooting](#13-troubleshooting)
 14. [NAC Integration](#14-nac-integration)
 15. [MDM Profile Push](#15-mdm-profile-push)
+16. [Command Reference](#16-command-reference)
+
+**Appendixes:**
+- [Appendix A: E2E Testing Notes](#appendix-a-e2e-testing-notes-feb-2026)
+- [Appendix B: MDM Command E2E Testing Log](#appendix-b-mdm-command-e2e-testing-log)
+- [Appendix C: MDM E2E Test Results](#appendix-c-mdm-e2e-test-results-feb-2026)
 
 ---
 
@@ -1321,9 +1327,9 @@ sudo systemctl restart eguard-agent
 
 ---
 
-## 15. E2E Testing Notes (Feb 2026)
+## Appendix A: E2E Testing Notes (Feb 2026)
 
-### 15.1 Server Setup Requirements
+### A.1 Server Setup Requirements
 
 The agent server (`eg-agent-server`) requires these environment variables for
 full functionality:
@@ -1341,7 +1347,7 @@ scanning. Without it, `LoadAgents()` and other DB queries fail silently.
 Service names on the eGuard server follow the `eguard-*` pattern:
 `eguard-agent-server`, `eguard-mariadb`, `eguard-redis-cache`, etc.
 
-### 15.2 Agent Deployment Findings
+### A.2 Agent Deployment Findings
 
 - The systemd service uses `Type=notify` but the agent does not send
   `sd_notify(READY=1)`. Override to `Type=simple` and `WatchdogSec=0`:
@@ -1358,7 +1364,7 @@ Service names on the eGuard server follow the `eguard-*` pattern:
 - After enrollment, `bootstrap.conf` is deleted and `agent.conf` is written.
   The agent does NOT re-enroll on restart if `agent.conf` exists.
 
-### 15.3 Agent Update via Server
+### A.3 Agent Update via Server
 
 Push agent updates from the admin GUI (Response > Update Agent) or API:
 
@@ -1381,7 +1387,7 @@ curl -X POST http://SERVER:50053/api/v1/endpoint/command/enqueue \
 (download + install + restart) is not yet fully implemented. The command
 is recorded and the version is tracked server-side.
 
-### 15.4 eBPF Probe Status
+### A.4 eBPF Probe Status
 
 With the `ebpf-libbpf` feature enabled, all 9 eBPF probes load and attach:
 
@@ -1397,7 +1403,7 @@ With the `ebpf-libbpf` feature enabled, all 9 eBPF probes load and attach:
 | `eguard_module_load` | `kprobe/__do_sys_finit_module` | Module loading |
 | `eguard_bprm_check` | `LSM/bprm_check_security` | Binary check |
 
-### 15.5 Windows Agent — Installation & Operations
+### A.5 Windows Agent — Installation & Operations
 
 #### Installation
 
@@ -1504,7 +1510,7 @@ enriched, and fed into the same detection pipeline as Linux eBPF events.
 - 130 MB memory footprint after threat-intel bundle load (354 Sigma + 16,904 YARA rules)
 - Detection engine: 2 shards, full 7-layer pipeline active
 
-### 15.6 Windows Troubleshooting
+### A.6 Windows Troubleshooting
 
 #### bootstrap.conf UTF-8 BOM
 
@@ -1580,7 +1586,7 @@ dispatcher to fail. Always use:
 sc.exe create eGuardAgent binPath= "C:\Program Files\eGuard\eguard-agent.exe" start= auto
 ```
 
-### 15.7 Known CI Issues (Windows)
+### A.7 Known CI Issues (Windows)
 
 - WiX v5 uses `-d Key=Value` (space after -d), not `-dKey=Value`
 - Components with `Directory` as KeyPath need explicit GUIDs (not `Guid="*"`)
@@ -1590,9 +1596,9 @@ sc.exe create eGuardAgent binPath= "C:\Program Files\eGuard\eguard-agent.exe" st
 
 ---
 
-## 16. MDM (Mobile Device Management) Commands
+## Appendix B: MDM Command E2E Testing Log
 
-### 16.1 Command Reference
+### B.1 Command Reference (Superseded by Section 16)
 
 The agent supports 10 MDM commands, delivered via the server command pipeline.
 All commands are enqueued via:
@@ -1624,7 +1630,7 @@ The agent polls for commands every 5 seconds (`COMMAND_FETCH_INTERVAL_SECS`).
 | `restart_device` | Reboot endpoint | `EGUARD_MDM_ALLOW_DESTRUCTIVE` | `shutdown /r /t 0 /f` |
 | `retire_device` | Decommission agent | `EGUARD_MDM_ALLOW_DESTRUCTIVE` | Creates `retired` marker, stops enrollment |
 
-### 16.2 MDM Policy Environment Variables
+### B.2 MDM Policy Environment Variables
 
 Destructive and app management commands are blocked by default. Set these
 environment variables on the agent to enable them:
@@ -1656,7 +1662,7 @@ Restart-Service eGuardAgent
 for Windows service env vars. SCM does not inherit machine-level changes without a
 full reboot. Always use the service registry `Environment` key.
 
-### 16.3 Command Approval Workflow
+### B.3 Command Approval Workflow
 
 Commands support an approval workflow with `requires_approval` flag:
 
@@ -1689,7 +1695,7 @@ Server-side env vars for automatic approval requirements:
 | `EGUARD_COMMAND_APPROVAL_REQUIRED` | All commands require approval |
 | `EGUARD_COMMAND_APPROVAL_DESTRUCTIVE` | wipe_device and retire_device require approval |
 
-### 16.4 WiFi Profile Push (802.1x / WPA2-Enterprise)
+### B.4 WiFi Profile Push (802.1x / WPA2-Enterprise)
 
 The `apply_profile` command supports WiFi profiles with 802.1x enterprise
 authentication. When the profile JSON contains an `ssid` field, the agent
@@ -1730,7 +1736,7 @@ WiFi profile fields:
 On Windows, the CA certificate is imported to the Root store via `certutil -addstore Root`.
 Client certificates are imported via `certutil -user -importPFX`.
 
-### 16.5 App Management Dependencies
+### B.5 App Management Dependencies
 
 | Platform | Package Manager | Required |
 |----------|----------------|----------|
@@ -1743,7 +1749,7 @@ Client certificates are imported via `certutil -user -importPFX`.
 or accept that `install_app`/`remove_app`/`update_app` will return
 `"spawn failed: program not found"`.
 
-### 16.6 MDM Command API Endpoints
+### B.6 MDM Command API Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -1753,9 +1759,9 @@ or accept that `install_app`/`remove_app`/`update_app` will return
 
 ---
 
-## 17. MDM E2E Test Results (Feb 2026)
+## Appendix C: MDM E2E Test Results (Feb 2026)
 
-### 17.1 Test Environment
+### C.1 Test Environment
 
 | VM | IP | OS | Agent ID |
 |----|----|----|----------|
@@ -1763,7 +1769,7 @@ or accept that `install_app`/`remove_app`/`update_app` will return
 | Linux Agent | 103.183.74.3 | Debian 12 (6.1.0-43) | agent-31bbb93f38b4 |
 | Windows Agent | 103.31.39.30 | Windows Server 2019 | agent-4412 |
 
-### 17.2 MDM Command Test Results
+### C.2 MDM Command Test Results
 
 | # | Command | Policy Gate | Result | Detail |
 |---|---------|-------------|--------|--------|
@@ -1780,7 +1786,7 @@ or accept that `install_app`/`remove_app`/`update_app` will return
 | 11 | `wipe_device` (enabled) | ALLOW_DESTRUCTIVE | **PARTIAL** | offline-events.db locked by agent (os error 32) |
 | 12 | `restart_device` (enabled) | ALLOW_DESTRUCTIVE | **PASS** | VM rebooted, service auto-started in ~30s |
 
-### 17.3 Bugs Found
+### C.3 Bugs Found
 
 #### BUG-1: `wipe_device` fails on Windows — offline-events.db locked
 
@@ -1835,7 +1841,7 @@ Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\eGuardAgent" `
 Restart-Service eGuardAgent
 ```
 
-### 17.4 Approval Workflow Test Results
+### C.4 Approval Workflow Test Results
 
 | # | Test | Result | Detail |
 |---|------|--------|--------|
@@ -1844,7 +1850,7 @@ Restart-Service eGuardAgent
 | 3 | Approve command | **PASS** | Agent received and executed `locate_device` |
 | 4 | Reject command | **PASS** | `status=failed, approval=rejected`, agent never received |
 
-### 17.5 802.1x WiFi Profile Test Results
+### C.5 802.1x WiFi Profile Test Results
 
 | # | Test | Result | Detail |
 |---|------|--------|--------|
@@ -1853,7 +1859,7 @@ Restart-Service eGuardAgent
 | 3 | Server name validation | **PASS** | `<ServerNames>radius.corp.local</ServerNames>` |
 | 4 | netsh import | **EXPECTED FAIL** | WLAN service not available on Server 2019 |
 
-### 17.6 Compliance Reports (Windows)
+### C.6 Compliance Reports (Windows)
 
 The Windows agent reports compliance checks via the platform-windows compliance
 module. Checks verified on Windows Server 2019:
@@ -1865,7 +1871,7 @@ module. Checks verified on Windows Server 2019:
 | `disk_encryption` | Depends | BitLocker status varies |
 | `screen_lock_enabled` | Depends | May fail on headless servers |
 
-### 17.7 Server Infrastructure
+### C.7 Server Infrastructure
 
 **Critical**: The eGuard server VM (4GB RAM) runs many services (Apache/Perl,
 MariaDB, Go servers, HAProxy, etc.) that consume ~3.5GB+ at steady state.
@@ -1983,10 +1989,1232 @@ Attached files are base64-encoded and embedded in the command payload as
 
 ### Command Observability
 
-The Commands tab in the Response Console shows:
+The **Commands** tab in the Response Console provides full visibility into the
+command lifecycle. Click any row to expand an inline detail panel (same style
+as the Compliance tab) with three columns:
 
-- **Issued At**: When the command was queued
-- **Completed At**: When the agent reported completion
-- **Result Data**: JSON payload from the agent with execution details (visible in
-  the detail panel when clicking a command row)
+| Column | Contents |
+|---|---|
+| **Command Info** | Command ID, requested by, issued at, completed at |
+| **Approval** | Approval status, approved by/at, approve/reject buttons (if pending) |
+| **Payload** | Full `command_data` JSON showing exactly what was sent to the agent; `result_data` JSON from the agent (if present) |
+
+Table columns:
+
+- **Command ID**: Unique identifier
+- **Agent**: Target agent ID
+- **Type**: Command type (scan, isolate, apply_profile, etc.)
 - **Status**: `pending` → `sent` → `acked` → `completed` (or `failed`/`timeout`)
+- **Issued**: When the command was queued on the server
+- **Completed**: When the agent reported completion
+- **Approval**: Badge showing approval status
+
+### Result Data Flow
+
+When an agent completes a command, it sends back `result_json` via the
+`AckCommand` gRPC call (or `result_data` via HTTP POST to
+`/api/v1/endpoint/command/ack`). The server persists this in the
+`endpoint_command_log.result_data` JSON column.
+
+For successful commands the result is typically empty. For failed commands the
+agent includes a `detail` field explaining what went wrong, e.g.:
+
+```json
+{"detail": "device lock failed (linux): lockscreen not supported"}
+```
+
+### Server API Changes
+
+The `GET /api/v1/endpoint/commands` response now includes three additional
+fields per command record:
+
+```json
+{
+  "command_id": "...",
+  "issued_at": "2026-02-28T05:31:55Z",
+  "completed_at": "2026-02-28T05:32:00Z",
+  "result_data": {"detail": "..."},
+  "command_data": {"paths": ["/tmp"], "yara_scan": true}
+}
+```
+
+---
+
+## 16. Command Reference
+
+This section documents every command type available in the eGuard Response
+Console. Each subsection includes the API call, accepted parameters,
+platform-specific behavior, policy gate requirements, and E2E-verified results.
+
+### 16.1 API Overview
+
+All commands are dispatched through a single enqueue endpoint:
+
+```
+POST /api/v1/endpoint/command/enqueue
+Content-Type: application/json
+```
+
+**Request body:**
+
+```json
+{
+  "agent_id": "<agent-id>",
+  "command_type": "<command_type>",
+  "issued_by": "admin",
+  "command_data": { ... }
+}
+```
+
+**Response (success):**
+
+```json
+{
+  "command": {
+    "command_id": "uuid",
+    "agent_id": "...",
+    "command_type": "...",
+    "status": "pending",
+    ...
+  },
+  "command_count": 1,
+  "status": "command_enqueued"
+}
+```
+
+**Response (validation error):**
+
+```json
+{
+  "error": "invalid_command_data:<reason>"
+}
+```
+
+**Checking results:**
+
+```
+GET /api/v1/endpoint/commands?agent_id=<id>&limit=N
+```
+
+Returns a list of commands with `status` (pending / sent / completed / failed),
+`issued_at`, and `completed_at` timestamps.
+
+**Approval workflow:** Add `"requires_approval": true` inside `command_data`.
+The command stays in `pending` status until approved via:
+
+```
+POST /api/v1/endpoint/command/approve
+{"command_id": "...", "approved_by": "admin", "approval_detail": "..."}
+```
+
+Or rejected:
+
+```
+POST /api/v1/endpoint/command/approve
+{"command_id": "...", "approved_by": "admin", "approval_status": "rejected",
+ "approval_detail": "Not authorized"}
+```
+
+### 16.2 Policy Gate System
+
+Certain commands require environment variables to be set on the agent's service
+before the agent will execute them. Without the variable, the agent reports
+`status: "failed"` with detail `"blocked by policy"`.
+
+**Always allowed (no gate):** `lock_device`, `locate_device`, `lost_mode`,
+`scan`, `update`, `apply_profile`, `emergency_rule_push`, `config_change`,
+`isolate`, `unisolate`, `forensics`, `restore_quarantine`.
+
+**Gated commands and their env vars:**
+
+| Command | Specific Env Var | Group Env Var | Universal |
+|---------|-----------------|---------------|-----------|
+| `wipe_device` | `EGUARD_MDM_ALLOW_WIPE=1` | `EGUARD_MDM_ALLOW_DESTRUCTIVE=1` | `EGUARD_MDM_ALLOW_ALL=1` |
+| `retire_device` | `EGUARD_MDM_ALLOW_RETIRE=1` | `EGUARD_MDM_ALLOW_DESTRUCTIVE=1` | `EGUARD_MDM_ALLOW_ALL=1` |
+| `restart_device` | `EGUARD_MDM_ALLOW_RESTART=1` | `EGUARD_MDM_ALLOW_DESTRUCTIVE=1` | `EGUARD_MDM_ALLOW_ALL=1` |
+| `install_app` | `EGUARD_MDM_ALLOW_APP=1` | `EGUARD_MDM_ALLOW_APP_MANAGEMENT=1` | `EGUARD_MDM_ALLOW_ALL=1` |
+| `remove_app` | `EGUARD_MDM_ALLOW_APP=1` | `EGUARD_MDM_ALLOW_APP_MANAGEMENT=1` | `EGUARD_MDM_ALLOW_ALL=1` |
+| `update_app` | `EGUARD_MDM_ALLOW_APP=1` | `EGUARD_MDM_ALLOW_APP_MANAGEMENT=1` | `EGUARD_MDM_ALLOW_ALL=1` |
+| `uninstall` | N/A (server requires `auth_token`) | — | — |
+
+**Setting env vars:**
+
+Linux — systemd override:
+
+```bash
+sudo mkdir -p /etc/systemd/system/eguard-agent.service.d
+cat <<'EOF' | sudo tee /etc/systemd/system/eguard-agent.service.d/mdm-gates.conf
+[Service]
+Environment="EGUARD_MDM_ALLOW_DESTRUCTIVE=1"
+Environment="EGUARD_MDM_ALLOW_APP_MANAGEMENT=1"
+EOF
+sudo systemctl daemon-reload
+sudo systemctl restart eguard-agent
+```
+
+Windows — service registry:
+
+```powershell
+$path = 'HKLM:\SYSTEM\CurrentControlSet\Services\eGuardAgent'
+$envs = @(
+  'EGUARD_MDM_ALLOW_DESTRUCTIVE=1',
+  'EGUARD_MDM_ALLOW_APP_MANAGEMENT=1'
+)
+Set-ItemProperty $path -Name Environment -Value $envs -Type MultiString
+Restart-Service eGuardAgent
+```
+
+---
+
+### 16.3 locate_device
+
+Retrieves the agent's primary IP address. No side effects.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `high_accuracy` | bool | No | Reserved for future GPS/Wi-Fi geolocation. Currently returns IP only. |
+
+**Policy gate:** None (always allowed).
+
+**API example:**
+
+```bash
+curl -X POST http://SERVER:50053/api/v1/endpoint/command/enqueue \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "agent_id": "agent-31bbb93f38b4",
+    "command_type": "locate_device",
+    "issued_by": "admin",
+    "command_data": {"high_accuracy": true}
+  }'
+```
+
+**Platform behavior:**
+
+| Platform | Behavior |
+|----------|----------|
+| Linux | Returns primary interface IP via `gethostname` + DNS resolution |
+| Windows | Returns primary interface IP via `gethostname` + DNS resolution |
+
+**E2E results (2026-02-28):**
+
+| Platform | Status | Detail |
+|----------|--------|--------|
+| Linux (agent-31bbb93f38b4) | completed | `device ip: 10.207.139.201 (high_accuracy=true)` |
+| Windows (agent-4412) | completed | `device ip: 10.6.108.110 (high_accuracy=true)` |
+
+---
+
+### 16.4 scan
+
+Schedules a quick scan of the endpoint. Sets an internal state flag; the actual
+scan executes on the next tick cycle.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `scan_type` | string | No | `"quick"` (default) or `"full"` |
+| `paths` | array | No | Target directories (e.g. `["/tmp"]`) |
+| `yara_scan` | bool | No | Include YARA binary pattern matching |
+| `ioc_scan` | bool | No | Include IOC (hash/domain/IP) matching |
+
+**Policy gate:** None.
+
+**API example:**
+
+```bash
+curl -X POST http://SERVER:50053/api/v1/endpoint/command/enqueue \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "agent_id": "agent-31bbb93f38b4",
+    "command_type": "scan",
+    "issued_by": "admin",
+    "command_data": {
+      "scan_type": "quick",
+      "paths": ["/tmp"],
+      "yara_scan": true,
+      "ioc_scan": true
+    }
+  }'
+```
+
+**Platform behavior:**
+
+| Platform | Behavior |
+|----------|----------|
+| Linux | Sets scan flag; detection engine runs IOC + YARA on next cycle |
+| Windows | Sets scan flag; detection engine runs IOC + YARA on next cycle |
+
+**E2E results (2026-02-28):**
+
+| Platform | Status | Detail |
+|----------|--------|--------|
+| Linux | completed | `quick scan scheduled` |
+| Windows | completed | `quick scan scheduled` |
+
+---
+
+### 16.5 lost_mode
+
+Writes a marker file to the agent data directory indicating the device is in
+lost mode. Persists across agent restarts.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `force` | bool | No | Default `false` |
+| `reason` | string | No | Reason recorded in the marker and result |
+
+**Policy gate:** None (always allowed).
+
+**API example:**
+
+```bash
+curl -X POST http://SERVER:50053/api/v1/endpoint/command/enqueue \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "agent_id": "agent-31bbb93f38b4",
+    "command_type": "lost_mode",
+    "issued_by": "admin",
+    "command_data": {"reason": "device reported stolen"}
+  }'
+```
+
+**Platform behavior:**
+
+| Platform | Marker Path |
+|----------|-------------|
+| Linux | `/var/lib/eguard-agent/lost_mode` |
+| Windows | `C:\ProgramData\eGuard\lost_mode` |
+
+**E2E results (2026-02-28):**
+
+| Platform | Status | Detail |
+|----------|--------|--------|
+| Linux | completed | `lost mode enabled (force=false, reason=e2e-doc-test-lost-mode)` |
+| Windows | completed | `lost mode enabled (force=false, reason=e2e-test-lost-mode)` |
+
+---
+
+### 16.6 emergency_rule_push
+
+Pushes an emergency detection rule directly into the running detection engine.
+The rule takes effect immediately without requiring a full bundle update.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `rule_type` | string | Yes | Rule language: `"sigma"`, `"yara"`, `"ioc"` |
+| `rule_content` | string | Yes | Rule definition (YAML for Sigma, raw for YARA) |
+| `rule_name` | string | No | Defaults to `"emergency-{rule_type}-rule"` |
+| `severity` | string | No | `"info"`, `"low"`, `"medium"`, `"high"`, `"critical"` |
+
+**Policy gate:** None.
+
+**API example:**
+
+```bash
+curl -X POST http://SERVER:50053/api/v1/endpoint/command/enqueue \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "agent_id": "agent-31bbb93f38b4",
+    "command_type": "emergency_rule_push",
+    "issued_by": "admin",
+    "command_data": {
+      "rule_type": "sigma",
+      "rule_name": "detect-cobalt-strike",
+      "severity": "critical",
+      "rule_content": "title: Cobalt Strike Beacon\nstatus: experimental\nlogsource:\n  product: linux\ndetection:\n  selection:\n    CommandLine|contains: beacon\n  condition: selection\nlevel: critical"
+    }
+  }'
+```
+
+**Platform behavior:**
+
+| Platform | Behavior |
+|----------|----------|
+| Linux | Rule injected into all detection shards via `ShardCommand` broadcast |
+| Windows | Rule injected into all detection shards via `ShardCommand` broadcast |
+
+**E2E results (2026-02-28):**
+
+| Platform | Status | Detail |
+|----------|--------|--------|
+| Linux | completed | `emergency rule applied: e2e-emergency-test` |
+| Windows | completed | `emergency rule applied: e2e-win-emergency-test` |
+
+---
+
+### 16.7 apply_profile
+
+Stores a JSON configuration profile on the agent. If the JSON contains an
+`ssid` key, the agent also generates a platform-specific Wi-Fi profile and
+attempts to apply it.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `profile_id` | string | Yes | Unique identifier (alphanumeric + `.-_`, max 128 chars, no path traversal) |
+| `profile_json` | string or object | Yes | Configuration payload (JSON string or object) |
+
+**Policy gate:** None.
+
+**Validation:** `profile_id` must not contain `..`, `/`, or `\`. Server rejects
+path traversal attempts. Tested: `"../../etc/evil"` → `"invalid profile_id:
+path traversal segments are not allowed"`.
+
+**API example (generic profile):**
+
+```bash
+curl -X POST http://SERVER:50053/api/v1/endpoint/command/enqueue \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "agent_id": "agent-31bbb93f38b4",
+    "command_type": "apply_profile",
+    "issued_by": "admin",
+    "command_data": {
+      "profile_id": "corporate-security-policy",
+      "profile_json": "{\"scan_interval\":300,\"log_level\":\"info\"}"
+    }
+  }'
+```
+
+**API example (Wi-Fi / 802.1x profile):**
+
+```bash
+curl -X POST http://SERVER:50053/api/v1/endpoint/command/enqueue \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "agent_id": "agent-4412",
+    "command_type": "apply_profile",
+    "issued_by": "admin",
+    "command_data": {
+      "profile_id": "corp-wifi-peap",
+      "profile_json": "{\"ssid\":\"CorpSecure\",\"security\":\"wpa2_enterprise\",\"eap_type\":\"peap\",\"server_names\":\"radius.corp.local\",\"auto_connect\":true}"
+    }
+  }'
+```
+
+**Wi-Fi profile parameters (inside `profile_json` when `ssid` is present):**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `ssid` | string | Yes | Network SSID (max 32 chars) |
+| `security` | string | Yes | `"open"`, `"wpa2_psk"`, `"wpa2_enterprise"` / `"802.1x"` / `"eap"` |
+| `psk` | string | WPA2-PSK only | Pre-shared key (8-63 chars) |
+| `auto_connect` | bool | No | Default `true` |
+| `eap_type` | string | Enterprise only | `"tls"` (Type 13), `"ttls"` (Type 21), `"peap"` (Type 25, default) |
+| `ca_cert_pem` | string | No | PEM-encoded CA certificate |
+| `client_cert_pem` | string | No | PEM-encoded client certificate |
+| `client_key_pem` | string | No | PEM-encoded client private key |
+| `server_names` | string | No | EAP server names for validation |
+
+**Platform behavior:**
+
+| Platform | Storage Path | Wi-Fi Action |
+|----------|-------------|--------------|
+| Linux | `/var/lib/eguard-agent/profiles/{id}.json` | N/A (future NetworkManager integration) |
+| Windows | `C:\ProgramData\eGuard\profiles\{id}.json` | Generates `.xml`, imports CA cert via `certutil`, applies via `netsh wlan add profile` |
+| macOS | `{data_dir}/profiles/{id}.mobileconfig` | `profiles install -type configuration` (for XML/plist payloads) |
+
+**E2E results (2026-02-28):**
+
+| Platform | Status | Detail |
+|----------|--------|--------|
+| Linux (generic) | completed | `profile stored: /var/lib/eguard-agent/profiles/e2e-doc-test-profile.json` |
+| Windows (802.1x) | completed | `profile stored: C:\ProgramData\eGuard\profiles\corp-802x-validated.json (WiFi apply failed: There is no wireless interface on the system.)` |
+| Windows (traversal) | failed | `invalid profile_id: path traversal segments are not allowed` |
+
+> **Note:** WiFi XML generation succeeded on Windows, but `netsh wlan add
+> profile` failed because Windows Server 2019 has no wireless interface.
+> On endpoints with Wi-Fi hardware, the profile would apply correctly.
+
+---
+
+### 16.8 lock_device
+
+Locks the workstation screen. No data loss; the user session remains active.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `force` | bool | No | Default `false` |
+| `reason` | string | No | Recorded in command result |
+
+**Policy gate:** None (always allowed).
+
+**API example:**
+
+```bash
+curl -X POST http://SERVER:50053/api/v1/endpoint/command/enqueue \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "agent_id": "agent-4412",
+    "command_type": "lock_device",
+    "issued_by": "admin",
+    "command_data": {"reason": "policy violation detected", "force": true}
+  }'
+```
+
+**Platform behavior:**
+
+| Platform | Command Executed | Notes |
+|----------|-----------------|-------|
+| Linux | `loginctl lock-session`, fallback `xdg-screensaver lock` | Fails on headless servers (no display) |
+| Windows | `rundll32.exe user32.dll,LockWorkStation` | Works on desktop and server with RDP |
+| macOS | `pmset displaysleepnow` | Puts display to sleep |
+
+**E2E results (2026-02-28):**
+
+| Platform | Status | Detail |
+|----------|--------|--------|
+| Linux (headless) | failed | `xdg-screensaver: spawn failed: No such file or directory (os error 2)` |
+| Windows (RDP) | completed | `device lock command issued (force=false, reason=e2e-test-lock)` |
+
+---
+
+### 16.9 update
+
+Signals the agent to check for and apply a software update. The agent validates
+the package checksum and applies the update on the next tick cycle.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `version` | string | No | Target version |
+| `package_url` | string | No | Download URL (server auto-populates) |
+| `package_format` | string | No | `"deb"`, `"rpm"`, `"exe"` |
+| `checksum_sha256` | string | No | Expected hash for integrity verification |
+| `restart_grace_secs` | int | No | Seconds to wait before restarting (default 30) |
+
+**Policy gate:** None.
+
+**API example:**
+
+```bash
+curl -X POST http://SERVER:50053/api/v1/endpoint/command/enqueue \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "agent_id": "agent-31bbb93f38b4",
+    "command_type": "update",
+    "issued_by": "admin",
+    "command_data": {
+      "version": "0.2.7",
+      "package_url": "http://103.49.238.102:50053/api/v1/agent-install/linux-deb",
+      "package_format": "deb",
+      "checksum_sha256": "1f7a9a1bb4c86214dc969c51c5728472d211d0b90708f746599cd1c9af16d232",
+      "restart_grace_secs": 30
+    }
+  }'
+```
+
+**Platform behavior:**
+
+| Platform | Download Path | Installation |
+|----------|--------------|--------------|
+| Linux | `/tmp/eguard-agent-update.deb` | `dpkg -i` or `rpm -U` |
+| Windows | `%TEMP%\eguard-agent-update.exe` | Silent install (`/S` flag) |
+
+**E2E results (2026-02-28):**
+
+| Platform | Status | Detail |
+|----------|--------|--------|
+| Linux | completed | `agent update check scheduled` |
+| Windows | completed | `agent update check scheduled` |
+
+---
+
+### 16.10 uninstall
+
+Flags the agent for uninstallation. The agent sets an internal state flag and
+reports back. The actual uninstallation is handled by the platform package
+manager (dpkg/msi) on the next maintenance cycle.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `auth_token` | string | **Yes** (server-enforced) | Authorization token; server rejects without it |
+
+**Policy gate:** Server requires `auth_token` (returns `invalid_command_data:
+uninstall.auth_token_required` without it).
+
+**API example:**
+
+```bash
+curl -X POST http://SERVER:50053/api/v1/endpoint/command/enqueue \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "agent_id": "agent-31bbb93f38b4",
+    "command_type": "uninstall",
+    "issued_by": "admin",
+    "command_data": {"auth_token": "your-auth-token"}
+  }'
+```
+
+**E2E results (2026-02-28):**
+
+| Platform | Status | Detail |
+|----------|--------|--------|
+| Linux | completed | `uninstall request flagged` |
+| Windows | completed | `uninstall request flagged` |
+
+---
+
+### 16.11 config_change
+
+Applies runtime configuration changes. If the payload contains
+`config_type: "network_profile"`, it is treated as a network profile
+configuration (see section 15 MDM Profile Push). Otherwise, it is treated as
+a general configuration overlay.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `config_json` | object | Yes | Key-value configuration changes |
+| `config_version` | int | No | Configuration version (must be integer, not string) |
+
+**Policy gate:** None.
+
+**API example (general config):**
+
+```bash
+curl -X POST http://SERVER:50053/api/v1/endpoint/command/enqueue \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "agent_id": "agent-31bbb93f38b4",
+    "command_type": "config_change",
+    "issued_by": "admin",
+    "command_data": {
+      "config_json": {"response.dry_run": true},
+      "config_version": 2
+    }
+  }'
+```
+
+**API example (network profile):**
+
+```bash
+curl -X POST http://SERVER:50053/api/v1/endpoint/command/enqueue \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "agent_id": "agent-31bbb93f38b4",
+    "command_type": "config_change",
+    "issued_by": "admin",
+    "command_data": {
+      "config_json": {
+        "config_type": "network_profile",
+        "profile": {
+          "profile_id": "corp-wifi",
+          "ssid": "CorpNetwork",
+          "security": "wpa2_psk",
+          "psk": "YourPassphrase123",
+          "auto_connect": true
+        }
+      },
+      "config_version": 1
+    }
+  }'
+```
+
+> **Note:** `config_version` must be an integer. Passing `"1.0"` (string)
+> returns `invalid_command_data:config_change.invalid_config_version`.
+
+**E2E results (2026-02-28):**
+
+| Platform | Status | Detail |
+|----------|--------|--------|
+| Linux (general) | completed | `configuration change accepted` |
+| Linux (network profile) | completed | Profile stored to profiles directory |
+| Windows (general) | completed | `configuration change accepted` |
+
+---
+
+### 16.12 isolate
+
+Places the host in network isolation mode. Only traffic to/from explicitly
+allowed IPs (plus the eGuard server) is permitted.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `allow_server_ips` | array | No | Additional IPs to allow (max 64). Server IP is auto-included. |
+
+**Policy gate:** None.
+
+**API example:**
+
+```bash
+curl -X POST http://SERVER:50053/api/v1/endpoint/command/enqueue \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "agent_id": "agent-4412",
+    "command_type": "isolate",
+    "issued_by": "admin",
+    "command_data": {"allow_server_ips": ["103.49.238.102", "10.0.0.1"]}
+  }'
+```
+
+**Platform behavior:**
+
+| Platform | Method | Notes |
+|----------|--------|-------|
+| Linux | Sets internal isolation flag (no firewall rules) | Stub implementation; agent tracks state only |
+| Windows | Windows Firewall rules (`netsh advfirewall`) with group `"eGuard Host Isolation"` | Requires Windows Firewall service running. May fail on older Server editions with `'group' is not a valid argument` error. |
+| macOS | `pf` (packet filter) rules | Requires `pf` enabled |
+
+> **Important:** Always send `unisolate` promptly after testing, or include the
+> server's IP in `allow_server_ips` to maintain management connectivity.
+
+**E2E results (2026-02-28):**
+
+| Platform | Status | Detail |
+|----------|--------|--------|
+| Linux | completed | `host switched to isolated mode` (state flag only) |
+| Windows Server 2019 | failed | `host isolation failed: 'group' is not a valid argument for this command.` |
+
+---
+
+### 16.13 unisolate
+
+Removes host network isolation. Restores normal network connectivity.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| (none) | — | — | No parameters needed |
+
+**Policy gate:** None.
+
+**API example:**
+
+```bash
+curl -X POST http://SERVER:50053/api/v1/endpoint/command/enqueue \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "agent_id": "agent-4412",
+    "command_type": "unisolate",
+    "issued_by": "admin",
+    "command_data": {}
+  }'
+```
+
+**Platform behavior:**
+
+| Platform | Method |
+|----------|--------|
+| Linux | Clears internal isolation flag |
+| Windows | Removes Windows Firewall rules in group `"eGuard Host Isolation"` |
+| macOS | Removes `pf` rules |
+
+**E2E results (2026-02-28):**
+
+| Platform | Status | Detail |
+|----------|--------|--------|
+| Linux | completed | `host isolation removed` |
+| Windows | completed | `host isolation removed via Windows Firewall` |
+
+---
+
+### 16.14 install_app
+
+Installs a package using the platform's native package manager. Requires MDM
+app management policy gate.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `package_name` | string | Yes | Package identifier (platform-specific format) |
+| `version` | string | No | Target version. Omit for latest. |
+
+**Package name format per platform:**
+
+| Platform | Format | Example | Allowed Characters |
+|----------|--------|---------|-------------------|
+| Linux (apt) | Debian package name | `curl`, `libssl3` | alphanumeric + `.+-` (max 128) |
+| Windows (winget) | Exact winget ID | `Google.Chrome`, `Microsoft.Edge` | alphanumeric + `._-+` (max 128) |
+| macOS (brew) | Homebrew formula | `google-chrome` | alphanumeric + `.-_+@` (max 128) |
+
+**Input sanitization:** Package names containing `;`, `|`, `&`, `$`, backticks,
+or other shell metacharacters are rejected with `"invalid package_name:
+contains unsupported characters"`. This prevents command injection. Tested:
+`"pkg;calc.exe"` → rejected.
+
+**Policy gate:** `EGUARD_MDM_ALLOW_APP=1` or `EGUARD_MDM_ALLOW_APP_MANAGEMENT=1`
+or `EGUARD_MDM_ALLOW_ALL=1`.
+
+**API example:**
+
+```bash
+curl -X POST http://SERVER:50053/api/v1/endpoint/command/enqueue \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "agent_id": "agent-31bbb93f38b4",
+    "command_type": "install_app",
+    "issued_by": "admin",
+    "command_data": {"package_name": "jq"}
+  }'
+```
+
+**Platform commands executed:**
+
+| Platform | Command |
+|----------|---------|
+| Linux | `apt-get install -y {package_name}[={version}]` |
+| Windows | `winget install --id {package_name} --exact --accept-package-agreements --accept-source-agreements [--version {version}]` |
+| macOS | `brew install {package_name}[@{version}]` |
+
+**E2E results (2026-02-28):**
+
+| Platform | Status | Detail |
+|----------|--------|--------|
+| Linux (no gate) | failed | `app management blocked by policy` |
+| Linux (gated, no root) | failed | `app install failed: E: setgroups 65534 failed` (agent needs root for apt) |
+| Windows (no gate) | failed | `app management blocked by policy` |
+| Windows (no winget) | failed | `app install failed: spawn failed: program not found` (winget not installed on Server 2019) |
+| Windows (bad chars) | failed | `invalid package_name: contains unsupported characters` |
+
+---
+
+### 16.15 remove_app
+
+Removes a package using the platform's native package manager.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `package_name` | string | Yes | Package to remove |
+
+**Policy gate:** Same as `install_app`.
+
+**API example:**
+
+```bash
+curl -X POST http://SERVER:50053/api/v1/endpoint/command/enqueue \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "agent_id": "agent-31bbb93f38b4",
+    "command_type": "remove_app",
+    "issued_by": "admin",
+    "command_data": {"package_name": "jq"}
+  }'
+```
+
+**Platform commands:**
+
+| Platform | Command |
+|----------|---------|
+| Linux | `apt-get remove -y {package_name}` |
+| Windows | `winget uninstall --id {package_name} --exact` |
+| macOS | `brew uninstall {package_name}` |
+
+**E2E results (2026-02-28):**
+
+| Platform | Status | Detail |
+|----------|--------|--------|
+| Linux (gated) | completed | `app remove executed for jq` |
+
+---
+
+### 16.16 update_app
+
+Updates a package to the latest version using the platform's native package
+manager.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `package_name` | string | Yes | Package to update |
+
+**Policy gate:** Same as `install_app`.
+
+**API example:**
+
+```bash
+curl -X POST http://SERVER:50053/api/v1/endpoint/command/enqueue \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "agent_id": "agent-31bbb93f38b4",
+    "command_type": "update_app",
+    "issued_by": "admin",
+    "command_data": {"package_name": "curl"}
+  }'
+```
+
+**Platform commands:**
+
+| Platform | Command |
+|----------|---------|
+| Linux | `apt-get install -y {package_name}[={version}]` (upgrade via reinstall) |
+| Windows | `winget upgrade --id {package_name} --exact` |
+| macOS | `brew upgrade {package_name}` |
+
+---
+
+### 16.17 wipe_device
+
+Deletes agent-managed data files: the offline event buffer, quarantine
+directory, and baselines file. This is **not** an OS-level wipe — it only
+removes eGuard agent data.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `force` | bool | No | Default `false` |
+| `reason` | string | No | Recorded in command result |
+
+**Policy gate:** `EGUARD_MDM_ALLOW_WIPE=1` or `EGUARD_MDM_ALLOW_DESTRUCTIVE=1`
+or `EGUARD_MDM_ALLOW_ALL=1`.
+
+**Files deleted:**
+
+| File | Linux Path | Windows Path |
+|------|-----------|--------------|
+| Offline event buffer | `/var/lib/eguard-agent/offline-events.db` | `C:\ProgramData\eGuard\offline-events.db` |
+| Quarantine directory | `/var/lib/eguard-agent/quarantine/` | `C:\ProgramData\eGuard\quarantine\` |
+| Baselines file | `/var/lib/eguard-agent/baselines.bin` | `C:\ProgramData\eGuard\baselines.bin` |
+
+**API example:**
+
+```bash
+curl -X POST http://SERVER:50053/api/v1/endpoint/command/enqueue \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "agent_id": "agent-31bbb93f38b4",
+    "command_type": "wipe_device",
+    "issued_by": "admin",
+    "command_data": {"reason": "device compromised"}
+  }'
+```
+
+> **Note:** Partial success is possible. If the offline-events.db is locked by
+> the running agent, it may fail while quarantine and baselines are deleted.
+> The result detail lists both removed files and errors.
+
+**E2E results (2026-02-28):**
+
+| Platform | Status | Detail |
+|----------|--------|--------|
+| Linux (no gate) | failed | `device wipe blocked by policy` |
+| Linux (gated) | completed | `wipe completed for offline-events.db, quarantine, baselines.bin` |
+| Windows (no gate) | failed | `device wipe blocked by policy` |
+| Windows (gated, partial) | completed | `removed=[quarantine, baselines.bin] errors=[offline-events.db: being used by another process (os error 32)]` |
+
+---
+
+### 16.18 retire_device
+
+Retires the device from management. Writes a `retired` marker file and sets
+the enrollment state to `false`. The agent stops sending telemetry after
+retirement.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `force` | bool | No | Default `false` |
+| `reason` | string | No | Recorded in command result |
+
+**Policy gate:** `EGUARD_MDM_ALLOW_RETIRE=1` or `EGUARD_MDM_ALLOW_DESTRUCTIVE=1`
+or `EGUARD_MDM_ALLOW_ALL=1`.
+
+**API example:**
+
+```bash
+curl -X POST http://SERVER:50053/api/v1/endpoint/command/enqueue \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "agent_id": "agent-31bbb93f38b4",
+    "command_type": "retire_device",
+    "issued_by": "admin",
+    "command_data": {"reason": "end of life"}
+  }'
+```
+
+**Platform behavior:**
+
+| Platform | Marker Path | Post-Retirement |
+|----------|-------------|-----------------|
+| Linux | `/var/lib/eguard-agent/retired` | Agent continues running but stops enrollment and telemetry |
+| Windows | `C:\ProgramData\eGuard\retired` | Same |
+
+> **Recovery:** Delete the marker file and restart the agent to re-enroll:
+> `rm /var/lib/eguard-agent/retired && systemctl restart eguard-agent`
+
+**E2E results (2026-02-28):**
+
+| Platform | Status | Detail |
+|----------|--------|--------|
+| Linux (no gate) | failed | `device retire blocked by policy` |
+| Linux (gated) | completed | `device retired (force=false, reason=e2e-doc-test-retire)` |
+| Windows (gated) | completed | `device retired (force=false, reason=e2e-doc-test-retire)` |
+
+---
+
+### 16.19 restart_device
+
+Reboots the endpoint. This is a destructive operation — the device will go
+offline temporarily.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `force` | bool | No | Default `false` |
+| `reason` | string | No | Recorded in command result |
+
+**Policy gate:** `EGUARD_MDM_ALLOW_RESTART=1` or `EGUARD_MDM_ALLOW_DESTRUCTIVE=1`
+or `EGUARD_MDM_ALLOW_ALL=1`.
+
+**API example:**
+
+```bash
+curl -X POST http://SERVER:50053/api/v1/endpoint/command/enqueue \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "agent_id": "agent-4412",
+    "command_type": "restart_device",
+    "issued_by": "admin",
+    "command_data": {"reason": "security updates pending", "force": true}
+  }'
+```
+
+**Platform commands:**
+
+| Platform | Command | Fallback |
+|----------|---------|----------|
+| Linux | `systemctl reboot` | `shutdown -r now` |
+| Windows | `shutdown /r /t 0 /f` | — |
+| macOS | `shutdown -r now` | — |
+
+**E2E results (2026-02-28):**
+
+| Platform | Status | Detail |
+|----------|--------|--------|
+| Windows (no gate) | failed | `device restart blocked by policy` |
+| Windows (gated) | completed | `restart requested (force=true, reason=e2e-test-restart)` — VM rebooted |
+
+---
+
+### 16.20 forensics
+
+Collects forensic data from the endpoint. On Windows, creates a process memory
+dump. On macOS, collects a system snapshot. Linux is currently a stub.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `pid` | int | Windows: Yes (>0) | Process ID to dump |
+| `output_path` | string | No | Custom output path; auto-generated if omitted |
+| `process_list` | bool | No | Include process listing (macOS/Linux) |
+| `network_connections` | bool | No | Include network state |
+| `open_files` | bool | No | Include open file handles |
+
+**Policy gate:** None.
+
+**API example (Windows memory dump):**
+
+```bash
+curl -X POST http://SERVER:50053/api/v1/endpoint/command/enqueue \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "agent_id": "agent-4412",
+    "command_type": "forensics",
+    "issued_by": "admin",
+    "command_data": {"pid": 1234}
+  }'
+```
+
+**Platform behavior:**
+
+| Platform | Output | Method |
+|----------|--------|--------|
+| Linux | Stub (no-op) | Returns success with no data |
+| Windows | `.dmp` file in `{data_dir}/forensics/` | MiniDump via Windows Debug Help Library |
+| macOS | `.txt` file with `ps`, `netstat`, `launchctl` output | System snapshot |
+
+**Default output paths:**
+
+| Platform | Path |
+|----------|------|
+| Windows | `C:\ProgramData\eGuard\forensics\pid-{pid}-{timestamp}.dmp` |
+| macOS | `{data_dir}/forensics/snapshot-{timestamp}.txt` |
+
+**E2E results (2026-02-28):**
+
+| Platform | Status | Detail |
+|----------|--------|--------|
+| Linux | completed | Stub (no-op) |
+| Windows (PID 4 = System) | failed | `forensics capture failed: operation failed:` (System process is protected) |
+
+> **Note:** Use a non-system PID for Windows forensics. Protected processes
+> (PID 4 System, csrss, smss) cannot be dumped.
+
+---
+
+### 16.21 restore_quarantine
+
+Restores a previously quarantined file to its original location.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `quarantine_path` | string | Yes | Path to the quarantined file |
+| `original_path` | string | Yes | Restoration target path |
+| `sha256` | string | Yes (server-enforced) | SHA-256 hash for verification |
+
+**Policy gate:** None. Server requires `sha256` field (returns
+`invalid_command_data:restore_quarantine.invalid_sha256` without it).
+
+**API example:**
+
+```bash
+curl -X POST http://SERVER:50053/api/v1/endpoint/command/enqueue \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "agent_id": "agent-31bbb93f38b4",
+    "command_type": "restore_quarantine",
+    "issued_by": "admin",
+    "command_data": {
+      "quarantine_path": "/var/lib/eguard-agent/quarantine/malware-abc.bin",
+      "original_path": "/home/user/document.exe",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  }'
+```
+
+**Platform behavior:**
+
+| Platform | Method | Permissions |
+|----------|--------|-------------|
+| Linux | `fs::copy` + `fs::set_permissions` | 0o600 |
+| Windows | Windows file copy API | Inherits parent directory ACLs |
+
+---
+
+### 16.22 Command Results Summary
+
+Complete E2E test matrix across both platforms (2026-02-28):
+
+| # | Command | Linux | Windows | Gate Required |
+|---|---------|-------|---------|---------------|
+| 1 | `locate_device` | completed | completed | No |
+| 2 | `scan` | completed | completed | No |
+| 3 | `lost_mode` | completed | completed | No |
+| 4 | `emergency_rule_push` | completed | completed | No |
+| 5 | `apply_profile` | completed | completed | No |
+| 6 | `lock_device` | failed (headless) | completed | No |
+| 7 | `update` | completed | completed | No |
+| 8 | `uninstall` | completed | completed | auth_token |
+| 9 | `config_change` | completed | completed | No |
+| 10 | `isolate` | completed (stub) | failed (Server 2019) | No |
+| 11 | `unisolate` | completed | completed | No |
+| 12 | `forensics` | completed (stub) | failed (protected PID) | No |
+| 13 | `install_app` | blocked → failed (no root) | blocked → failed (no winget) | MDM app |
+| 14 | `remove_app` | completed | (not tested) | MDM app |
+| 15 | `update_app` | (same as install) | (same as install) | MDM app |
+| 16 | `wipe_device` | blocked → completed | blocked → partial (DB locked) | MDM destructive |
+| 17 | `retire_device` | blocked → completed | completed | MDM destructive |
+| 18 | `restart_device` | (skipped — would reboot) | completed (rebooted) | MDM destructive |
+| 19 | `restore_quarantine` | (needs sha256 + file) | (needs sha256 + file) | No |
+
+**Legend:** "blocked → X" means tested without policy gate first (blocked), then
+with gate enabled (X result).
+
+---
+
+## Appendix B: Inventory Enrichment Rollout (Feb 2026)
+
+This appendix documents the live rollout of inventory search/export enrichment for
+EDR + MDM operations on the remote lab environment.
+
+### B.1 Scope Delivered
+
+Inventory page (`/admin#/endpoint-inventory`) was enriched with:
+
+- Hostname search (`contains`) and backend hostname API filter support.
+- Hardware filters:
+  - CPU model/arch text
+  - Minimum CPU cores / clock (MHz)
+  - RAM type + minimum RAM size (GB) + minimum RAM clock (MHz)
+  - Disk type (NVMe/SSD/HDD/Virtual) + minimum free disk (GB)
+- Domain join status filter for Windows (`Joined`, `Not Joined`, `Unknown`).
+- CSV export for the **currently filtered** inventory view.
+
+### B.2 Files Changed
+
+#### fe_eguard (server/UI)
+
+- `html/egappserver/root/src/views/endpoint/Inventory.vue`
+  - Added advanced filter controls and CPU/RAM/Storage summary columns.
+  - Added domain-join badge and filtering logic.
+  - Added CSV export button and client-side CSV generation.
+  - Added pagination-safe inventory fetch loop (up to API page limits).
+- `lib/eg/api/endpoint_inventory.pm`
+  - Added `hostname` LIKE filter support.
+- `go/apiserver/store/inventory.go`
+  - Added `Hostname` field to `InventoryFilters` and SQL `hostname LIKE` clause.
+- `go/apiserver/handler/inventory.go`
+  - Added `hostname` query parameter wiring.
+
+#### eguard-agent (endpoint)
+
+- `crates/platform-windows/src/inventory/hardware_detail.rs`
+  - Added `hw.domain.joined` and `hw.domain.name` inventory attributes from
+    `Win32_ComputerSystem.PartOfDomain` and `.Domain`.
+
+### B.3 Build & Deployment Procedure Used
+
+#### Local builds
+
+```bash
+# UI
+cd /home/dimas/fe_eguard/html/egappserver/root
+npm run lint -- src/views/endpoint/Inventory.vue
+npm run build
+
+# Go services
+cd /home/dimas/fe_eguard/go
+EG_SYSTEM_INIT_KEY=dummy go build -o /tmp/eg-agent-server ./cmd/eg-agent-server
+EG_SYSTEM_INIT_KEY=dummy go build -o /tmp/eg-api-server ./cmd/eg-api-server
+
+# Agent (Linux)
+cd /home/dimas/eguard-agent
+cargo build --release -p agent-core
+```
+
+#### eGuard server deployment (`eguard@103.49.238.102`)
+
+1. Upload artifacts to `/tmp` (`eg-agent-server`, `eg-api-server`, dist tarball, Perl API file).
+2. Backup old files to:
+   - `/usr/local/eg/var/backups/inventory-enrichment-<timestamp>/`
+3. Replace:
+   - `/usr/local/eg/sbin/eg-agent-server`
+   - `/usr/local/eg/sbin/eg-api-server`
+   - `/usr/local/eg/lib/eg/api/endpoint_inventory.pm`
+   - `/usr/local/eg/html/egappserver/root/dist/`
+4. Restart services:
+   - `eguard-agent-server.service`
+   - `eguard-api-server.service`
+   - `eguard-httpd.admin_dispatcher.service`
+
+#### Agent VM deployment (`agent@103.183.74.3`)
+
+- Replaced `/usr/bin/eguard-agent` with freshly built binary.
+- Restarted `eguard-agent.service`.
+
+### B.4 Validation Evidence
+
+- API check (auth token flow) confirmed inventory endpoint still works and returns
+  expected pagination payloads.
+- `hostname` server-side query (`?hostname=`) returns filtered results.
+- Browser validation via `agent-browser` on live UI confirmed:
+  - New filters are rendered and interactive.
+  - Hostname filter can reduce result set to zero (`xyz-no-match`).
+  - CPU filter (`Intel`) returns expected subset with hardware summaries.
+  - CSV export downloads successfully with hardware/domain columns.
+
+### B.5 Observed Edge Cases
+
+1. **Windows domain status may remain `Unknown`** on agents running older builds.
+   - Cause: older agent versions do not emit `hw.domain.joined`.
+   - Mitigation: upgrade Windows agents to build containing the
+     `hardware_detail.rs` change above.
+2. **Sparse hardware fields on legacy inventory rows**.
+   - Cause: old snapshots may only include `agent_version`/`policy_id`.
+   - Mitigation: refresh/re-enroll agents or wait for next inventory cycle.
+3. **Frontend build emits existing Sass deprecation warnings** unrelated to this feature.
+   - These warnings are pre-existing and non-blocking for deployment.
+
+### B.6 Rollback
+
+If regression occurs:
+
+1. Restore backup directory contents from
+   `/usr/local/eg/var/backups/inventory-enrichment-<timestamp>/`.
+2. Move backup `dist` back to `/usr/local/eg/html/egappserver/root/dist`.
+3. Restart same three services:
+   - `eguard-agent-server.service`
+   - `eguard-api-server.service`
+   - `eguard-httpd.admin_dispatcher.service`
+4. (Optional) restore endpoint binary on agent VM from
+   `/var/lib/eguard-agent/bin-backup-<timestamp>` and restart `eguard-agent`.

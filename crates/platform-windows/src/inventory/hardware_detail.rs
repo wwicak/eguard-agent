@@ -24,7 +24,7 @@ pub fn collect_hardware_inventory() -> HashMap<String, String> {
         let cmd = concat!(
             "$cpu=Get-CimInstance Win32_Processor | Select-Object -First 1 ",
             "Name,MaxClockSpeed,NumberOfCores,NumberOfLogicalProcessors;",
-            "$cs=Get-CimInstance Win32_ComputerSystem | Select-Object -First 1 TotalPhysicalMemory;",
+            "$cs=Get-CimInstance Win32_ComputerSystem | Select-Object -First 1 TotalPhysicalMemory,PartOfDomain,Domain;",
             "$mem=@(Get-CimInstance Win32_PhysicalMemory | Select-Object Capacity,Speed,SMBIOSMemoryType,Manufacturer);",
             "$disk=@(Get-CimInstance Win32_DiskDrive | Select-Object Model,Size,MediaType);",
             "$vol=@(Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | Select-Object DeviceID,Size,FreeSpace,FileSystem);",
@@ -32,6 +32,7 @@ pub fn collect_hardware_inventory() -> HashMap<String, String> {
             "$net=@(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object Status -eq 'Up' | Select-Object Name,LinkSpeed,MacAddress);",
             "[pscustomobject]@{",
             "cpu=$cpu;ram_total_mb=[math]::Round($cs.TotalPhysicalMemory/1MB);",
+            "domain_joined=$cs.PartOfDomain;domain_name=$cs.Domain;",
             "dimms=$mem;disks=$disk;volumes=$vol;gpu=$gpu;adapters=$net",
             "} | ConvertTo-Json -Depth 3 -Compress",
         );
@@ -87,6 +88,17 @@ fn parse_hardware_detail_json(raw: &str) -> HashMap<String, String> {
     // RAM total
     if let Some(ram_mb) = v.get("ram_total_mb").and_then(Value::as_u64) {
         attrs.insert("hw.ram.total_mb".into(), ram_mb.to_string());
+    }
+
+    // Domain join status (Windows only)
+    if let Some(joined) = v.get("domain_joined").and_then(Value::as_bool) {
+        attrs.insert("hw.domain.joined".into(), joined.to_string());
+    }
+    if let Some(domain_name) = v.get("domain_name").and_then(Value::as_str) {
+        let domain_name = domain_name.trim();
+        if !domain_name.is_empty() {
+            attrs.insert("hw.domain.name".into(), domain_name.to_string());
+        }
     }
 
     // RAM DIMMs
@@ -350,6 +362,8 @@ mod tests {
         let raw = r#"{
             "cpu":{"Name":"Intel(R) Core(TM) i7-12700K","MaxClockSpeed":3600,"NumberOfCores":12,"NumberOfLogicalProcessors":20},
             "ram_total_mb":32768,
+            "domain_joined":true,
+            "domain_name":"LAB.LOCAL",
             "dimms":[
                 {"Capacity":17179869184,"Speed":3200,"SMBIOSMemoryType":26,"Manufacturer":"Samsung"},
                 {"Capacity":17179869184,"Speed":3200,"SMBIOSMemoryType":26,"Manufacturer":"Samsung"}
@@ -373,6 +387,8 @@ mod tests {
         assert_eq!(attrs.get("hw.cpu.cores").unwrap(), "12");
         assert_eq!(attrs.get("hw.cpu.logical_cores").unwrap(), "20");
         assert_eq!(attrs.get("hw.ram.total_mb").unwrap(), "32768");
+        assert_eq!(attrs.get("hw.domain.joined").unwrap(), "true");
+        assert_eq!(attrs.get("hw.domain.name").unwrap(), "LAB.LOCAL");
         assert_eq!(attrs.get("hw.ram.type").unwrap(), "DDR4");
         assert_eq!(attrs.get("hw.ram.speed_mhz").unwrap(), "3200");
         assert_eq!(attrs.get("hw.ram.dimm_count").unwrap(), "2");
