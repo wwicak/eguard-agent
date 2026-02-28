@@ -17,6 +17,7 @@ pub fn collect_hardware_inventory() -> HashMap<String, String> {
     collect_memory_info(&mut attrs);
     collect_disk_info(&mut attrs);
     collect_gpu_info(&mut attrs);
+    collect_security_info(&mut attrs);
     collect_installed_apps(&mut attrs);
 
     attrs
@@ -47,7 +48,10 @@ fn collect_cpu_info(attrs: &mut HashMap<String, String>) {
 
 fn collect_memory_info(attrs: &mut HashMap<String, String>) {
     if let Some(memsize) = sysctl_u64("hw.memsize") {
-        attrs.insert("hw.ram.total_mb".into(), (memsize / (1024 * 1024)).to_string());
+        attrs.insert(
+            "hw.ram.total_mb".into(),
+            (memsize / (1024 * 1024)).to_string(),
+        );
     }
 
     // DIMM details from system_profiler
@@ -77,9 +81,21 @@ fn parse_memory_profiler(json: &str, attrs: &mut HashMap<String, String>) {
             for dimm in dimms {
                 let size_str = dimm.get("dimm_size").and_then(|v| v.as_str()).unwrap_or("");
                 let capacity_mb = parse_size_to_mb(size_str);
-                let dimm_type = dimm.get("dimm_type").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let speed = dimm.get("dimm_speed").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let manufacturer = dimm.get("dimm_manufacturer").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let dimm_type = dimm
+                    .get("dimm_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let speed = dimm
+                    .get("dimm_speed")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let manufacturer = dimm
+                    .get("dimm_manufacturer")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
 
                 if first_type.is_none() && !dimm_type.is_empty() {
                     first_type = Some(dimm_type.clone());
@@ -141,14 +157,41 @@ fn collect_disk_info(attrs: &mut HashMap<String, String>) {
     let mut total_free_gb: u64 = 0;
 
     for item in items {
-        let name = item.get("_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let size_bytes = item.get("size_in_bytes").and_then(|v| v.as_u64()).unwrap_or(0);
-        let free_bytes = item.get("free_space_in_bytes").and_then(|v| v.as_u64()).unwrap_or(0);
-        let medium = item
-            .get("physical_drive")
+        let name = item
+            .get("_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let size_bytes = item
+            .get("size_in_bytes")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let free_bytes = item
+            .get("free_space_in_bytes")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let physical = item.get("physical_drive");
+
+        let medium = physical
             .and_then(|pd| pd.get("medium_type"))
             .and_then(|v| v.as_str())
             .unwrap_or("");
+
+        let interface = physical
+            .and_then(|pd| {
+                first_non_empty(
+                    pd,
+                    &[
+                        "protocol",
+                        "bus_protocol",
+                        "physical_interconnect",
+                        "interconnect",
+                        "interface_type",
+                    ],
+                )
+            })
+            .unwrap_or_else(|| infer_macos_disk_interface(&name, medium));
+        let bus_type = interface.clone();
 
         let size_gb = size_bytes / (1024 * 1024 * 1024);
         let free_gb = free_bytes / (1024 * 1024 * 1024);
@@ -159,6 +202,8 @@ fn collect_disk_info(attrs: &mut HashMap<String, String>) {
             "SSD"
         } else if medium.contains("HDD") || medium.contains("Rotational") {
             "HDD"
+        } else if interface.eq_ignore_ascii_case("NVMe") {
+            "NVMe"
         } else {
             medium
         };
@@ -168,6 +213,8 @@ fn collect_disk_info(attrs: &mut HashMap<String, String>) {
             size_gb,
             free_gb,
             disk_type: disk_type.to_string(),
+            interface,
+            bus_type,
         });
     }
 
@@ -181,6 +228,12 @@ fn collect_disk_info(attrs: &mut HashMap<String, String>) {
         attrs.insert("hw.disk.type".into(), first.disk_type.clone());
         if !first.name.is_empty() {
             attrs.insert("hw.disk.model".into(), first.name.clone());
+        }
+        if !first.interface.is_empty() {
+            attrs.insert("hw.disk.interface".into(), first.interface.clone());
+        }
+        if !first.bus_type.is_empty() {
+            attrs.insert("hw.disk.bus_type".into(), first.bus_type.clone());
         }
     }
     if disk_entries.len() > 1 {
@@ -225,6 +278,50 @@ fn collect_gpu_info(attrs: &mut HashMap<String, String>) {
 }
 
 // ---------------------------------------------------------------------------
+// Security signals — FileVault + Secure Enclave hints
+// ---------------------------------------------------------------------------
+
+fn collect_security_info(attrs: &mut HashMap<String, String>) {
+    attrs.insert("hw.security.tpm.present".into(), "false".to_string());
+
+    if let Ok(output) = Command::new("/usr/bin/fdesetup").arg("status").output() {
+        if output.status.success() {
+            let status = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
+            if status.contains("filevault is on") {
+                attrs.insert("hw.security.filevault_enabled".into(), "true".to_string());
+            } else if status.contains("filevault is off") {
+                attrs.insert("hw.security.filevault_enabled".into(), "false".to_string());
+            }
+        }
+    }
+
+    if let Some(json) = run_system_profiler("SPiBridgeDataType") {
+        let v: serde_json::Value = match serde_json::from_str(&json) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+
+        if let Some(items) = v.get("SPiBridgeDataType").and_then(|v| v.as_array()) {
+            if let Some(chip) = items.first() {
+                attrs.insert(
+                    "hw.security.secure_enclave.present".into(),
+                    "true".to_string(),
+                );
+
+                if let Some(model) = first_non_empty(chip, &["chip_type", "model_name", "_name"]) {
+                    attrs.insert("hw.security.secure_chip.model".into(), model);
+                }
+                if let Some(secure_boot_mode) =
+                    first_non_empty(chip, &["secure_boot", "secure_boot_mode", "boot_security"])
+                {
+                    attrs.insert("hw.security.secure_boot.mode".into(), secure_boot_mode);
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Installed Applications — system_profiler SPApplicationsDataType
 // ---------------------------------------------------------------------------
 
@@ -253,7 +350,11 @@ fn collect_installed_apps(attrs: &mut HashMap<String, String>) {
     let mut apps: Vec<AppEntry> = items
         .iter()
         .filter_map(|app| {
-            let name = app.get("_name").and_then(|v| v.as_str())?.trim().to_string();
+            let name = app
+                .get("_name")
+                .and_then(|v| v.as_str())?
+                .trim()
+                .to_string();
             let version = app
                 .get("version")
                 .and_then(|v| v.as_str())
@@ -292,6 +393,41 @@ struct DiskEntryMac {
     free_gb: u64,
     #[serde(rename = "type")]
     disk_type: String,
+    interface: String,
+    bus_type: String,
+}
+
+fn first_non_empty(v: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        let value = v
+            .get(*key)
+            .and_then(|x| x.as_str())
+            .map(str::trim)
+            .unwrap_or("");
+        if !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+fn infer_macos_disk_interface(name: &str, medium: &str) -> String {
+    let name_lower = name.to_ascii_lowercase();
+    let medium_lower = medium.to_ascii_lowercase();
+
+    if name_lower.contains("nvme") || medium_lower.contains("nvme") {
+        "NVMe".to_string()
+    } else if name_lower.contains("sata") || medium_lower.contains("sata") {
+        "SATA".to_string()
+    } else if name_lower.contains("sas") || medium_lower.contains("sas") {
+        "SAS".to_string()
+    } else if name_lower.contains("usb") || medium_lower.contains("usb") {
+        "USB".to_string()
+    } else if medium_lower.contains("ssd") || medium_lower.contains("hdd") {
+        "SATA".to_string()
+    } else {
+        "Unknown".to_string()
+    }
 }
 
 fn sysctl_string(key: &str) -> Option<String> {
@@ -303,7 +439,11 @@ fn sysctl_string(key: &str) -> Option<String> {
         return None;
     }
     let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if s.is_empty() { None } else { Some(s) }
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
 }
 
 fn sysctl_u64(key: &str) -> Option<u64> {
@@ -319,7 +459,11 @@ fn run_system_profiler(data_type: &str) -> Option<String> {
         return None;
     }
     let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if s.is_empty() { None } else { Some(s) }
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
 }
 
 /// Parse size strings like "8 GB", "16384 MB", "512 GB" to megabytes.
@@ -353,5 +497,21 @@ mod tests {
         assert_eq!(parse_size_to_mb("1 TB"), 1048576);
         assert_eq!(parse_size_to_mb("512 KB"), 0); // rounds to 0
         assert_eq!(parse_size_to_mb(""), 0);
+    }
+
+    #[test]
+    fn infer_macos_disk_interface_detects_common_types() {
+        assert_eq!(
+            infer_macos_disk_interface("APPLE SSD AP0512N", "SSD"),
+            "SATA"
+        );
+        assert_eq!(
+            infer_macos_disk_interface("Samsung NVMe", "Solid State"),
+            "NVMe"
+        );
+        assert_eq!(
+            infer_macos_disk_interface("USB External Disk", "Rotational"),
+            "USB"
+        );
     }
 }

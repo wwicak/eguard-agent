@@ -26,14 +26,17 @@ pub fn collect_hardware_inventory() -> HashMap<String, String> {
             "Name,MaxClockSpeed,NumberOfCores,NumberOfLogicalProcessors;",
             "$cs=Get-CimInstance Win32_ComputerSystem | Select-Object -First 1 TotalPhysicalMemory,PartOfDomain,Domain;",
             "$mem=@(Get-CimInstance Win32_PhysicalMemory | Select-Object Capacity,Speed,SMBIOSMemoryType,Manufacturer);",
-            "$disk=@(Get-CimInstance Win32_DiskDrive | Select-Object Model,Size,MediaType);",
+            "$disk=@(Get-CimInstance Win32_DiskDrive | Select-Object Model,Size,MediaType,InterfaceType,PNPDeviceID);",
             "$vol=@(Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | Select-Object DeviceID,Size,FreeSpace,FileSystem);",
             "$gpu=Get-CimInstance Win32_VideoController | Select-Object -First 1 Name,AdapterRAM;",
             "$net=@(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object Status -eq 'Up' | Select-Object Name,LinkSpeed,MacAddress);",
+            "$secureBoot=$null; try { $secureBoot=Confirm-SecureBootUEFI } catch { $secureBoot=$null };",
+            "$tpm=Get-Tpm -ErrorAction SilentlyContinue | Select-Object -First 1 TpmPresent,TpmReady,ManufacturerVersion;",
             "[pscustomobject]@{",
             "cpu=$cpu;ram_total_mb=[math]::Round($cs.TotalPhysicalMemory/1MB);",
             "domain_joined=$cs.PartOfDomain;domain_name=$cs.Domain;",
-            "dimms=$mem;disks=$disk;volumes=$vol;gpu=$gpu;adapters=$net",
+            "dimms=$mem;disks=$disk;volumes=$vol;gpu=$gpu;adapters=$net;",
+            "secure_boot=$secureBoot;tpm=$tpm",
             "} | ConvertTo-Json -Depth 3 -Compress",
         );
         if let Some(json) = run_powershell(cmd) {
@@ -56,7 +59,11 @@ fn run_powershell(command: &str) -> Option<String> {
         return None;
     }
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if stdout.is_empty() { None } else { Some(stdout) }
+    if stdout.is_empty() {
+        None
+    } else {
+        Some(stdout)
+    }
 }
 
 #[cfg(any(test, target_os = "windows"))]
@@ -101,6 +108,25 @@ fn parse_hardware_detail_json(raw: &str) -> HashMap<String, String> {
         }
     }
 
+    // Security posture
+    if let Some(secure_boot) = v.get("secure_boot").and_then(Value::as_bool) {
+        attrs.insert("hw.security.secure_boot".into(), secure_boot.to_string());
+    }
+    if let Some(tpm) = v.get("tpm") {
+        if let Some(present) = tpm.get("TpmPresent").and_then(Value::as_bool) {
+            attrs.insert("hw.security.tpm.present".into(), present.to_string());
+        }
+        if let Some(ready) = tpm.get("TpmReady").and_then(Value::as_bool) {
+            attrs.insert("hw.security.tpm.ready".into(), ready.to_string());
+        }
+        if let Some(version) = tpm.get("ManufacturerVersion").and_then(Value::as_str) {
+            let version = version.trim();
+            if !version.is_empty() {
+                attrs.insert("hw.security.tpm.version".into(), version.to_string());
+            }
+        }
+    }
+
     // RAM DIMMs
     if let Some(dimms) = v.get("dimms").and_then(Value::as_array) {
         attrs.insert("hw.ram.dimm_count".into(), dimms.len().to_string());
@@ -116,7 +142,10 @@ fn parse_hardware_detail_json(raw: &str) -> HashMap<String, String> {
                 .map(|b| b / (1024 * 1024))
                 .unwrap_or(0);
             let speed = dimm.get("Speed").and_then(Value::as_u64).unwrap_or(0);
-            let smbios_type = dimm.get("SMBIOSMemoryType").and_then(Value::as_u64).unwrap_or(0);
+            let smbios_type = dimm
+                .get("SMBIOSMemoryType")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
             let manufacturer = dimm
                 .get("Manufacturer")
                 .and_then(Value::as_str)
@@ -161,14 +190,33 @@ fn parse_hardware_detail_json(raw: &str) -> HashMap<String, String> {
             let size_gb = size_bytes / (1024 * 1024 * 1024);
             total_gb += size_gb;
 
-            let model = disk.get("Model").and_then(Value::as_str).unwrap_or("").trim().to_string();
+            let model = disk
+                .get("Model")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string();
             let media = disk.get("MediaType").and_then(Value::as_str).unwrap_or("");
-            let disk_type = classify_windows_media_type(media, &model);
+            let interface_type = disk
+                .get("InterfaceType")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let pnp_device_id = disk
+                .get("PNPDeviceID")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let interface =
+                classify_windows_disk_interface(interface_type, pnp_device_id, &model, media);
+            let bus_type = interface.clone();
+            let disk_type =
+                classify_windows_media_type(media, interface_type, pnp_device_id, &model);
 
             disk_entries.push(DiskEntry {
                 model: model.clone(),
                 size_gb,
                 disk_type: disk_type.clone(),
+                interface,
+                bus_type,
             });
         }
 
@@ -179,6 +227,12 @@ fn parse_hardware_detail_json(raw: &str) -> HashMap<String, String> {
             attrs.insert("hw.disk.type".into(), first.disk_type.clone());
             if !first.model.is_empty() {
                 attrs.insert("hw.disk.model".into(), first.model.clone());
+            }
+            if !first.interface.is_empty() {
+                attrs.insert("hw.disk.interface".into(), first.interface.clone());
+            }
+            if !first.bus_type.is_empty() {
+                attrs.insert("hw.disk.bus_type".into(), first.bus_type.clone());
             }
         }
         if disk_entries.len() > 1 {
@@ -223,8 +277,18 @@ fn parse_hardware_detail_json(raw: &str) -> HashMap<String, String> {
             .iter()
             .filter_map(|a| {
                 let name = a.get("Name").and_then(Value::as_str)?.trim().to_string();
-                let speed = a.get("LinkSpeed").and_then(Value::as_str).unwrap_or("").trim().to_string();
-                let mac = a.get("MacAddress").and_then(Value::as_str).unwrap_or("").trim().to_string();
+                let speed = a
+                    .get("LinkSpeed")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                let mac = a
+                    .get("MacAddress")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
                 Some(NetAdapterEntry { name, speed, mac })
             })
             .collect();
@@ -300,6 +364,8 @@ struct DiskEntry {
     size_gb: u64,
     #[serde(rename = "type")]
     disk_type: String,
+    interface: String,
+    bus_type: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -336,18 +402,68 @@ fn smbios_memory_type(code: u64) -> &'static str {
 }
 
 #[cfg(any(test, target_os = "windows"))]
-fn classify_windows_media_type(media: &str, model: &str) -> String {
-    let media_lower = media.to_ascii_lowercase();
+fn classify_windows_disk_interface(
+    interface_type: &str,
+    pnp_device_id: &str,
+    model: &str,
+    media: &str,
+) -> String {
+    let interface_lower = interface_type.to_ascii_lowercase();
+    let pnp_lower = pnp_device_id.to_ascii_lowercase();
     let model_lower = model.to_ascii_lowercase();
-    if model_lower.contains("nvme") || model_lower.contains("nvm") {
+    let media_lower = media.to_ascii_lowercase();
+
+    if model_lower.contains("nvme")
+        || pnp_lower.contains("nvme")
+        || interface_lower.contains("nvme")
+    {
+        "NVMe".to_string()
+    } else if interface_lower.contains("usb") || pnp_lower.contains("usb") {
+        "USB".to_string()
+    } else if interface_lower.contains("ide")
+        || interface_lower.contains("ata")
+        || model_lower.contains("sata")
+    {
+        "SATA".to_string()
+    } else if model_lower.contains("sas") || pnp_lower.contains("sas") {
+        "SAS".to_string()
+    } else if interface_lower.contains("scsi") {
+        if model_lower.contains("virtio") || pnp_lower.contains("virtio") {
+            "VirtIO".to_string()
+        } else {
+            "SCSI".to_string()
+        }
+    } else if media_lower.is_empty() {
+        "Virtual".to_string()
+    } else if !interface_type.trim().is_empty() {
+        interface_type.trim().to_string()
+    } else {
+        "Unknown".to_string()
+    }
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn classify_windows_media_type(
+    media: &str,
+    interface_type: &str,
+    pnp_device_id: &str,
+    model: &str,
+) -> String {
+    let media_lower = media.to_ascii_lowercase();
+    let interface = classify_windows_disk_interface(interface_type, pnp_device_id, model, media);
+
+    if interface.eq_ignore_ascii_case("NVMe") {
         "NVMe".to_string()
     } else if media_lower.contains("solid state") || media_lower.contains("ssd") {
         "SSD".to_string()
     } else if media_lower.contains("fixed hard disk") || media_lower.contains("hdd") {
         "HDD".to_string()
     } else if media_lower.is_empty() {
-        // Virtual disks often have empty MediaType
-        "Virtual".to_string()
+        if interface.eq_ignore_ascii_case("VirtIO") {
+            "Virtual".to_string()
+        } else {
+            "HDD".to_string()
+        }
     } else {
         media.to_string()
     }
@@ -369,12 +485,14 @@ mod tests {
                 {"Capacity":17179869184,"Speed":3200,"SMBIOSMemoryType":26,"Manufacturer":"Samsung"}
             ],
             "disks":[
-                {"Model":"Samsung SSD 970 EVO","Size":512110190592,"MediaType":"Fixed hard disk media"}
+                {"Model":"Samsung SSD 970 EVO","Size":512110190592,"MediaType":"Fixed hard disk media","InterfaceType":"SCSI","PNPDeviceID":"PCI\\VEN_1AF4&DEV_1001"}
             ],
             "volumes":[
                 {"DeviceID":"C:","Size":512058654720,"FreeSpace":234567890000,"FileSystem":"NTFS"}
             ],
             "gpu":{"Name":"NVIDIA GeForce RTX 3080","AdapterRAM":10737418240},
+            "secure_boot":true,
+            "tpm":{"TpmPresent":true,"TpmReady":true,"ManufacturerVersion":"2.0"},
             "adapters":[
                 {"Name":"Ethernet","LinkSpeed":"1 Gbps","MacAddress":"00-1A-2B-3C-4D-5E"}
             ]
@@ -382,7 +500,10 @@ mod tests {
 
         let attrs = parse_hardware_detail_json(raw);
 
-        assert_eq!(attrs.get("hw.cpu.model").unwrap(), "Intel(R) Core(TM) i7-12700K");
+        assert_eq!(
+            attrs.get("hw.cpu.model").unwrap(),
+            "Intel(R) Core(TM) i7-12700K"
+        );
         assert_eq!(attrs.get("hw.cpu.clock_mhz").unwrap(), "3600");
         assert_eq!(attrs.get("hw.cpu.cores").unwrap(), "12");
         assert_eq!(attrs.get("hw.cpu.logical_cores").unwrap(), "20");
@@ -394,9 +515,18 @@ mod tests {
         assert_eq!(attrs.get("hw.ram.dimm_count").unwrap(), "2");
         assert_eq!(attrs.get("hw.disk.total_gb").unwrap(), "476");
         assert_eq!(attrs.get("hw.disk.type").unwrap(), "HDD");
+        assert_eq!(attrs.get("hw.disk.interface").unwrap(), "SCSI");
+        assert_eq!(attrs.get("hw.disk.bus_type").unwrap(), "SCSI");
         assert_eq!(attrs.get("hw.disk.model").unwrap(), "Samsung SSD 970 EVO");
         assert_eq!(attrs.get("hw.disk.free_gb").unwrap(), "218");
-        assert_eq!(attrs.get("hw.gpu.model").unwrap(), "NVIDIA GeForce RTX 3080");
+        assert_eq!(attrs.get("hw.security.secure_boot").unwrap(), "true");
+        assert_eq!(attrs.get("hw.security.tpm.present").unwrap(), "true");
+        assert_eq!(attrs.get("hw.security.tpm.ready").unwrap(), "true");
+        assert_eq!(attrs.get("hw.security.tpm.version").unwrap(), "2.0");
+        assert_eq!(
+            attrs.get("hw.gpu.model").unwrap(),
+            "NVIDIA GeForce RTX 3080"
+        );
         assert_eq!(attrs.get("hw.gpu.vram_mb").unwrap(), "10240");
         assert!(attrs.get("hw.net.adapters").unwrap().contains("Ethernet"));
         assert!(attrs.get("hw.ram.dimms").unwrap().contains("Samsung"));

@@ -14,16 +14,14 @@ use serde::Serialize;
 pub fn collect_hardware_inventory() -> HashMap<String, String> {
     let mut attrs = HashMap::new();
 
-    attrs.insert(
-        "hw.cpu.arch".into(),
-        std::env::consts::ARCH.to_string(),
-    );
+    attrs.insert("hw.cpu.arch".into(), std::env::consts::ARCH.to_string());
 
     collect_cpu_info(&mut attrs);
     collect_memory_info(&mut attrs);
     collect_disk_info(&mut attrs);
     collect_gpu_info(&mut attrs);
     collect_network_info(&mut attrs);
+    collect_security_info(&mut attrs);
     collect_installed_packages(&mut attrs);
 
     attrs
@@ -121,6 +119,9 @@ struct DiskEntry {
     #[serde(rename = "type")]
     disk_type: String,
     model: String,
+    interface: String,
+    bus_type: String,
+    rotational: bool,
 }
 
 fn collect_disk_info(attrs: &mut HashMap<String, String>) {
@@ -152,9 +153,19 @@ fn collect_disk_info(attrs: &mut HashMap<String, String>) {
             continue;
         }
 
-        let rotational = read_trimmed(&block_path.join("queue/rotational"))
+        let rotational = read_trimmed(&block_path.join("queue/rotational")).unwrap_or_default();
+        let rotational_flag = rotational == "1";
+
+        let model = read_trimmed(&block_path.join("device/model")).unwrap_or_default();
+        let device_link = fs::read_link(block_path.join("device"))
+            .ok()
+            .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
-        let disk_type = if name.starts_with("nvme") {
+
+        let interface = infer_linux_disk_interface(&name, &device_link, &model);
+        let bus_type = interface.clone();
+
+        let disk_type = if interface.eq_ignore_ascii_case("NVMe") {
             "NVMe".to_string()
         } else if rotational == "0" {
             "SSD".to_string()
@@ -162,14 +173,14 @@ fn collect_disk_info(attrs: &mut HashMap<String, String>) {
             "HDD".to_string()
         };
 
-        let model = read_trimmed(&block_path.join("device/model"))
-            .unwrap_or_default();
-
         disks.push(DiskEntry {
             name,
             size_gb,
             disk_type,
             model,
+            interface,
+            bus_type,
+            rotational: rotational_flag,
         });
     }
 
@@ -185,6 +196,12 @@ fn collect_disk_info(attrs: &mut HashMap<String, String>) {
         if !first.model.is_empty() {
             attrs.insert("hw.disk.model".into(), first.model.clone());
         }
+        if !first.interface.is_empty() {
+            attrs.insert("hw.disk.interface".into(), first.interface.clone());
+        }
+        if !first.bus_type.is_empty() {
+            attrs.insert("hw.disk.bus_type".into(), first.bus_type.clone());
+        }
     }
 
     // Free space on root filesystem via statvfs
@@ -198,6 +215,35 @@ fn collect_disk_info(attrs: &mut HashMap<String, String>) {
             attrs.insert("hw.disk.disks".into(), json);
         }
     }
+}
+
+fn infer_linux_disk_interface(name: &str, device_link: &str, model: &str) -> String {
+    let name_lower = name.to_ascii_lowercase();
+    let link_lower = device_link.to_ascii_lowercase();
+    let model_lower = model.to_ascii_lowercase();
+
+    if name_lower.starts_with("nvme") || model_lower.contains("nvme") {
+        return "NVMe".to_string();
+    }
+    if name_lower.starts_with("vd")
+        || name_lower.starts_with("xvd")
+        || link_lower.contains("virtio")
+    {
+        return "VirtIO".to_string();
+    }
+    if link_lower.contains("usb") || model_lower.contains("usb") {
+        return "USB".to_string();
+    }
+    if model_lower.contains("sas") || link_lower.contains("sas") {
+        return "SAS".to_string();
+    }
+    if model_lower.contains("sata") || link_lower.contains("/ata") {
+        return "SATA".to_string();
+    }
+    if link_lower.contains("scsi") {
+        return "SCSI".to_string();
+    }
+    "Unknown".to_string()
 }
 
 fn statvfs_free_gb(path: &str) -> Option<u64> {
@@ -239,10 +285,8 @@ fn collect_gpu_info(attrs: &mut HashMap<String, String>) {
         if let Some(uevent) = read_trimmed(&entry.path().join("uevent")) {
             for line in uevent.lines() {
                 if let Some(driver) = line.strip_prefix("DRIVER=") {
-                    let vendor = read_trimmed(&entry.path().join("vendor"))
-                        .unwrap_or_default();
-                    let device = read_trimmed(&entry.path().join("device"))
-                        .unwrap_or_default();
+                    let vendor = read_trimmed(&entry.path().join("vendor")).unwrap_or_default();
+                    let device = read_trimmed(&entry.path().join("device")).unwrap_or_default();
                     attrs.insert(
                         "hw.gpu.model".into(),
                         format!("{} ({}:{})", driver.trim(), vendor, device),
@@ -256,10 +300,7 @@ fn collect_gpu_info(attrs: &mut HashMap<String, String>) {
         let vendor = read_trimmed(&entry.path().join("vendor")).unwrap_or_default();
         let device = read_trimmed(&entry.path().join("device")).unwrap_or_default();
         if !vendor.is_empty() {
-            attrs.insert(
-                "hw.gpu.model".into(),
-                format!("PCI {}:{}", vendor, device),
-            );
+            attrs.insert("hw.gpu.model".into(), format!("PCI {}:{}", vendor, device));
             return;
         }
     }
@@ -297,8 +338,7 @@ fn collect_network_info(attrs: &mut HashMap<String, String>) {
             .map(|s| format!("{} Mbps", s))
             .unwrap_or_default();
 
-        let mac = read_trimmed(&iface_path.join("address"))
-            .unwrap_or_default();
+        let mac = read_trimmed(&iface_path.join("address")).unwrap_or_default();
 
         // Skip interfaces with all-zero MAC
         if mac == "00:00:00:00:00:00" {
@@ -323,6 +363,49 @@ fn collect_network_info(attrs: &mut HashMap<String, String>) {
             attrs.insert("hw.net.adapters".into(), json);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Security signals — Secure Boot + TPM
+// ---------------------------------------------------------------------------
+
+fn collect_security_info(attrs: &mut HashMap<String, String>) {
+    if let Some(secure_boot) = linux_secure_boot_enabled() {
+        attrs.insert("hw.security.secure_boot".into(), secure_boot.to_string());
+    }
+
+    let tpm0 = Path::new("/sys/class/tpm/tpm0");
+    let tpm_present = tpm0.exists();
+    attrs.insert("hw.security.tpm.present".into(), tpm_present.to_string());
+
+    if tpm_present {
+        if let Some(version_major) = read_trimmed(&tpm0.join("tpm_version_major")) {
+            attrs.insert("hw.security.tpm.version".into(), version_major);
+        } else if let Some(version) = read_trimmed(&tpm0.join("tpm_version")) {
+            attrs.insert("hw.security.tpm.version".into(), version);
+        }
+    }
+}
+
+fn linux_secure_boot_enabled() -> Option<bool> {
+    let efivars = fs::read_dir("/sys/firmware/efi/efivars").ok()?;
+
+    for entry in efivars.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.starts_with("SecureBoot-") {
+            continue;
+        }
+
+        let bytes = fs::read(entry.path()).ok()?;
+        if bytes.len() < 5 {
+            continue;
+        }
+
+        // EFI variable payload: first 4 bytes attributes, followed by value byte.
+        return Some(bytes[4] == 1);
+    }
+
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -370,14 +453,22 @@ fn collect_installed_packages(attrs: &mut HashMap<String, String>) {
         // Handle last entry
         if installed && !name.is_empty() {
             let installed_at = dpkg_install_date(&name);
-            packages.push(PackageEntry { name, version, installed_at });
+            packages.push(PackageEntry {
+                name,
+                version,
+                installed_at,
+            });
         }
     }
 
     // Fallback: try RPM database if dpkg not available
     if packages.is_empty() {
         if let Ok(output) = std::process::Command::new("rpm")
-            .args(["-qa", "--queryformat", "%{NAME}\t%{VERSION}-%{RELEASE}\t%{INSTALLTIME}\n"])
+            .args([
+                "-qa",
+                "--queryformat",
+                "%{NAME}\t%{VERSION}-%{RELEASE}\t%{INSTALLTIME}\n",
+            ])
             .output()
         {
             if output.status.success() {
@@ -500,5 +591,25 @@ mod tests {
         let attrs = collect_hardware_inventory();
         assert!(!attrs.is_empty(), "expected non-empty hw attributes");
         assert!(attrs.contains_key("hw.cpu.arch"));
+    }
+
+    #[test]
+    fn infer_linux_disk_interface_classifies_common_paths() {
+        assert_eq!(
+            infer_linux_disk_interface("nvme0n1", "/devices/pci0000/nvme/nvme0", ""),
+            "NVMe"
+        );
+        assert_eq!(
+            infer_linux_disk_interface("vda", "/devices/pci0000/virtio1", ""),
+            "VirtIO"
+        );
+        assert_eq!(
+            infer_linux_disk_interface("sda", "/devices/pci0000/ata1/host0/target0", "SATA SSD"),
+            "SATA"
+        );
+        assert_eq!(
+            infer_linux_disk_interface("sdb", "/devices/pci0000/scsi_host", "Generic Disk"),
+            "SCSI"
+        );
     }
 }

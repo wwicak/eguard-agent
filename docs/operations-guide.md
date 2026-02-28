@@ -3218,3 +3218,41 @@ If regression occurs:
    - `eguard-httpd.admin_dispatcher.service`
 4. (Optional) restore endpoint binary on agent VM from
    `/var/lib/eguard-agent/bin-backup-<timestamp>` and restart `eguard-agent`.
+
+### B.7 OS-level inventory attribute enrichment (Feb 2026)
+
+To improve inventory filtering quality, hardware collectors were expanded across
+Linux/Windows/macOS with additional `hw.*` keys.
+
+#### New cross-platform keys (when detectable)
+
+- `hw.disk.interface`
+- `hw.disk.bus_type`
+
+#### Linux additions
+
+- `hw.security.secure_boot` (UEFI SecureBoot var, if available)
+- `hw.security.tpm.present`
+- `hw.security.tpm.version`
+
+#### Windows additions
+
+- `hw.security.secure_boot`
+- `hw.security.tpm.present`
+- `hw.security.tpm.ready`
+- `hw.security.tpm.version`
+
+#### macOS additions
+
+- `hw.security.filevault_enabled`
+- `hw.security.secure_enclave.present`
+- `hw.security.secure_chip.model`
+- `hw.security.secure_boot.mode`
+- `hw.security.tpm.present=false` (explicitly non-TPM platform)
+
+#### Notes
+
+- Not all keys are guaranteed on all hosts/VMs; virtualization and firmware
+  capabilities can suppress some values.
+- Inventory UI filters should derive dropdown options from observed data values
+  (do not hardcode finite enums for interface/bus/security states).

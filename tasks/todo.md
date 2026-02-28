@@ -1,3 +1,36 @@
+# OS-level inventory enrichment (Linux/Windows/macOS)
+
+## Plan
+- [x] 1) Audit current platform inventory collectors for missing OS-extractable fields (disk interface/bus/security posture).
+- [x] 2) Implement Linux inventory enrichment: disk interface/bus inference + security keys (secure boot, TPM presence/version).
+- [x] 3) Implement Windows inventory enrichment: disk interface extraction + security keys (secure boot, TPM presence/readiness/version).
+- [x] 4) Implement macOS inventory enrichment: disk interface inference + security signals available from OS tools.
+- [x] 5) Add/adjust unit tests for new helper logic and parsing behavior.
+- [x] 6) Run targeted test/build verification and summarize emitted `hw.*` keys for inventory/UI filtering.
+
+## Review
+- Implemented Linux enrichment in `crates/platform-linux/src/inventory.rs`:
+  - new disk metadata keys: `hw.disk.interface`, `hw.disk.bus_type` (+ enriched `hw.disk.disks` entries),
+  - new security keys: `hw.security.secure_boot`, `hw.security.tpm.present`, `hw.security.tpm.version`.
+  - added inference helpers + tests for common interface classification.
+- Implemented Windows enrichment in `crates/platform-windows/src/inventory/hardware_detail.rs`:
+  - disk extraction now includes `InterfaceType` + `PNPDeviceID`,
+  - new keys: `hw.disk.interface`, `hw.disk.bus_type`,
+  - security keys from OS: `hw.security.secure_boot`, `hw.security.tpm.present`, `hw.security.tpm.ready`, `hw.security.tpm.version`.
+- Implemented macOS enrichment in `crates/platform-macos/src/inventory.rs`:
+  - disk metadata keys: `hw.disk.interface`, `hw.disk.bus_type`,
+  - security keys: `hw.security.filevault_enabled`, `hw.security.secure_enclave.present`, `hw.security.secure_chip.model`, `hw.security.secure_boot.mode`, plus explicit `hw.security.tpm.present=false`.
+- Validation:
+  - `cargo fmt --all` ✅
+  - `cargo test -p platform-linux` ✅ (74 passed)
+  - `cargo test -p platform-windows` ✅ (68 passed)
+  - `cargo test -p platform-macos` ✅ (35 passed)
+  - `cargo check -p agent-core` ✅
+- Live Linux VM verification after deploying rebuilt `agent-core`:
+  - server inventory now includes `hw.disk.interface=VirtIO`, `hw.disk.bus_type=VirtIO`, `hw.security.tpm.present=false` for `agent-31bbb93f38b4`.
+
+---
+
 # Windows NAC MAC fallback fix (agent-1356)
 
 ## Plan
@@ -208,3 +241,23 @@
   - self-protect hardening checks,
   - resilience + soak validation,
   - final sign-off + failure report template.
+
+---
+
+# Live 3-VM E2E validation + Endpoint Inventory UX enrichment
+
+## Plan
+- [ ] 1) Baseline all three VMs (server, Linux endpoint, Windows endpoint): connectivity, service health, and existing deployment state.
+- [ ] 2) Execute safe E2E enrollment and telemetry validation flow (Linux + Windows) against eGuard server, including threat-intel ingestion from GitHub pipeline artifacts.
+- [ ] 3) Run MDM and EDR response-command test matrix (safe simulation only), capture evidence/logs, and identify edge cases/bugs.
+- [ ] 4) Implement endpoint inventory enhancements in PacketFence fork UI/API: advanced hardware filters (CPU/RAM/HDD), hostname/domain-join/status filters, intuitive UX, CSV export.
+- [ ] 5) Build and deploy updated server/frontend artifacts to server VM, validate in-browser (admin UI), and verify telemetry + inventory workflows end-to-end.
+- [ ] 6) Update `docs/operations-guide.md` with tested runbook steps, environment-specific findings, fixed issues, and residual gaps.
+
+## Acceptance Criteria
+- [ ] AC-E2E-001 Linux and Windows agents enroll from fresh/bootstrap flow and appear in endpoint inventory.
+- [ ] AC-E2E-002 Telemetry events and command acknowledgements are visible in server UI and API.
+- [ ] AC-E2E-003 MDM command matrix and EDR-safe simulations are executed with documented PASS/FAIL evidence.
+- [ ] AC-E2E-004 Endpoint inventory supports filtering by CPU/RAM/HDD + hostname + join-domain status and supports CSV export.
+- [ ] AC-E2E-005 Updated build artifacts are deployed on server VM and verified from live UI.
+- [ ] AC-E2E-006 Operations guide reflects exact tested commands/procedures and troubleshooting notes.

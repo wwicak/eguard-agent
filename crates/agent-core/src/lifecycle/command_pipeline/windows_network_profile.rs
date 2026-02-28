@@ -257,8 +257,7 @@ pub(super) fn apply_wifi_profile_from_mdm(
     }
 
     if profile.profile_id.trim().is_empty() {
-        profile.profile_id =
-            sanitize_profile_id(&profile.ssid).map_err(ToString::to_string)?;
+        profile.profile_id = sanitize_profile_id(&profile.ssid).map_err(ToString::to_string)?;
     } else {
         profile.profile_id =
             sanitize_profile_id(&profile.profile_id).map_err(ToString::to_string)?;
@@ -300,9 +299,8 @@ pub(super) fn apply_wifi_profile_from_mdm(
         }
     };
 
-    std::fs::create_dir_all(profile_dir).map_err(|e| {
-        format!("failed creating profile dir {}: {e}", profile_dir.display())
-    })?;
+    std::fs::create_dir_all(profile_dir)
+        .map_err(|e| format!("failed creating profile dir {}: {e}", profile_dir.display()))?;
 
     let profile_path = profile_dir.join(format!("{}.xml", profile.profile_id));
     std::fs::write(&profile_path, &xml)
@@ -340,10 +338,8 @@ pub(super) fn apply_wifi_profile_from_mdm(
 
 fn import_ca_certificate(pem: &str, profile_dir: &Path) -> std::result::Result<(), String> {
     let cert_path = profile_dir.join("ca-cert.cer");
-    std::fs::create_dir_all(profile_dir)
-        .map_err(|e| format!("create cert dir: {e}"))?;
-    std::fs::write(&cert_path, pem.as_bytes())
-        .map_err(|e| format!("write CA cert: {e}"))?;
+    std::fs::create_dir_all(profile_dir).map_err(|e| format!("create cert dir: {e}"))?;
+    std::fs::write(&cert_path, pem.as_bytes()).map_err(|e| format!("write CA cert: {e}"))?;
 
     run_command(
         "certutil",
@@ -361,8 +357,7 @@ fn import_client_certificate(
     key_pem: &str,
     profile_dir: &Path,
 ) -> std::result::Result<(), String> {
-    std::fs::create_dir_all(profile_dir)
-        .map_err(|e| format!("create cert dir: {e}"))?;
+    std::fs::create_dir_all(profile_dir).map_err(|e| format!("create cert dir: {e}"))?;
 
     let cert_path = profile_dir.join("client-cert.pem");
     let mut combined = cert_pem.to_string();
