@@ -385,10 +385,24 @@ impl Client {
     }
 
     pub async fn ack_command(&self, agent_id: &str, command_id: &str, status: &str) -> Result<()> {
+        self.ack_command_with_result(agent_id, command_id, status, None).await
+    }
+
+    pub async fn ack_command_with_result(
+        &self,
+        agent_id: &str,
+        command_id: &str,
+        status: &str,
+        result_json: Option<&str>,
+    ) -> Result<()> {
         self.ensure_online()?;
         match self.mode {
-            TransportMode::Http => self.ack_command_http(agent_id, command_id, status).await?,
-            TransportMode::Grpc => self.ack_command_grpc(agent_id, command_id, status).await?,
+            TransportMode::Http => {
+                self.ack_command_http(agent_id, command_id, status, result_json).await?
+            }
+            TransportMode::Grpc => {
+                self.ack_command_grpc(agent_id, command_id, status, result_json).await?
+            }
         }
         Ok(())
     }

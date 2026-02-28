@@ -22,7 +22,7 @@ pub struct InstalledProgram {
 pub fn collect_installed_software() -> Vec<InstalledProgram> {
     #[cfg(target_os = "windows")]
     {
-        let cmd = "Get-ItemProperty HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*,HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\* | Where-Object { $_.DisplayName } | Select-Object -First 250 DisplayName,DisplayVersion,Publisher,InstallDate | ConvertTo-Json -Compress";
+        let cmd = r#"Get-ItemProperty HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*,HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\* -EA SilentlyContinue | Where-Object { $_.DisplayName } | Select-Object -First 250 | ForEach-Object { $d=$_.InstallDate; if(-not $d){ $loc=$_.InstallLocation; if($loc){ try{$d=(Get-Item $loc -EA Stop).CreationTime.ToString('yyyyMMdd')}catch{} } }; if(-not $d){ $ico=($_.DisplayIcon -replace ',.*$','').Trim('"'); if($ico -and (Test-Path $ico -EA SilentlyContinue)){ try{$d=(Get-Item $ico -EA Stop).CreationTime.ToString('yyyyMMdd')}catch{} } }; [pscustomobject]@{DisplayName=$_.DisplayName;DisplayVersion=$_.DisplayVersion;Publisher=$_.Publisher;InstallDate=$d} } | ConvertTo-Json -Compress"#;
         if let Some(json) = run_powershell(cmd) {
             return parse_installed_software_json(&json);
         }

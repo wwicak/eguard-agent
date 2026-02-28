@@ -96,7 +96,8 @@ impl AgentRuntime {
             "received command"
         );
 
-        self.ack_command_result(&command_id, exec.status).await;
+        self.ack_command_result(&command_id, exec.status, &exec.detail)
+            .await;
         self.report_command_result(&command, exec.status, &exec.detail)
             .await;
 
@@ -164,10 +165,18 @@ impl AgentRuntime {
         }
     }
 
-    async fn ack_command_result(&self, command_id: &str, status: &str) {
-        let ack = self
-            .client
-            .ack_command(&self.config.agent_id, command_id, status);
+    async fn ack_command_result(&self, command_id: &str, status: &str, detail: &str) {
+        let result_json = if detail.is_empty() {
+            None
+        } else {
+            Some(serde_json::json!({"detail": detail}).to_string())
+        };
+        let ack = self.client.ack_command_with_result(
+            &self.config.agent_id,
+            command_id,
+            status,
+            result_json.as_deref(),
+        );
         match timeout(Duration::from_millis(COMMAND_ACK_TIMEOUT_MS), ack).await {
             Ok(Ok(())) => {}
             Ok(Err(err)) => {

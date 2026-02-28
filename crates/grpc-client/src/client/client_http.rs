@@ -172,12 +172,18 @@ impl Client {
         agent_id: &str,
         command_id: &str,
         status: &str,
+        result_json: Option<&str>,
     ) -> Result<()> {
-        let payload = json!({
+        let mut payload = json!({
             "agent_id": agent_id,
             "command_id": command_id,
             "status": status,
         });
+        if let Some(rj) = result_json {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(rj) {
+                payload["result_data"] = parsed;
+            }
+        }
         self.post_json_with_retry(
             "ack_command_http",
             PATH_COMMAND_ACK,

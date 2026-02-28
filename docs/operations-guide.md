@@ -21,6 +21,8 @@ responsible for managing eGuard across a fleet of endpoints.
 11. [Firewall / iptables](#11-firewall--iptables)
 12. [Configuration Reference](#12-configuration-reference)
 13. [Troubleshooting](#13-troubleshooting)
+14. [NAC Integration](#14-nac-integration)
+15. [MDM Profile Push](#15-mdm-profile-push)
 
 ---
 
@@ -1880,3 +1882,111 @@ echo "/swapfile none swap sw 0 0" | sudo tee -a /etc/fstab
 
 **Recommendation**: Production eGuard servers should have at least 8GB RAM or
 4GB swap configured. Monitor memory via `eguard-netdata` service.
+
+---
+
+## 14. NAC Integration
+
+eGuard agents automatically register as NAC nodes during enrollment. This
+enables network access decisions to be informed by endpoint posture.
+
+### How Agents Appear as NAC Nodes
+
+When an agent enrolls via gRPC or HTTP, the server creates (or updates) a
+record in the `node` table with `status='reg'`. This makes the device visible
+in the NAC node search (`Admin > Nodes > Search`).
+
+```
+Agent enrollment → ensureNodeForEnrollment() → INSERT node (status='reg')
+                 → SaveEnrollment()          → UPDATE node SET status='reg'
+```
+
+Subsequent heartbeats keep `last_seen` current without downgrading the status.
+
+### Node Status Lifecycle
+
+| Transition | Trigger |
+|---|---|
+| `unreg` → `reg` | Agent enrollment or first heartbeat |
+| `pending` → `reg` | Agent enrollment (legacy nodes) |
+| `reg` (maintained) | Every heartbeat or inventory report |
+
+### Compliance vs. Visibility
+
+An enrolled agent is **always** registered (`status='reg'`) in NAC regardless
+of compliance status. Compliance determines policy enforcement (e.g., quarantine
+VLAN), not whether the device appears in the node list.
+
+- **Compliant** agents: `status='reg'`, full network access
+- **Non-compliant** agents: `status='reg'`, restricted access per policy
+- **Unknown** agents: `status='reg'`, treated as non-compliant for policy
+
+### Node Enrichment from Inventory
+
+When the agent sends inventory data, the server enriches the NAC node record:
+
+| Node Field | Source |
+|---|---|
+| `computername` | `inventory.hostname` |
+| `device_class` | Mapped from `inventory.os_type` (e.g., "Windows OS", "Linux OS") |
+| `device_type` | Set to `EDR Agent` |
+| `last_seen` | `inventory.collected_at` |
+
+### Backfill Existing Agents
+
+If agents enrolled before this fix, their nodes may still be `pending`. Run:
+
+```sql
+UPDATE node n INNER JOIN endpoint_agent a ON a.mac = n.mac
+SET n.status = 'reg' WHERE n.status = 'pending';
+```
+
+---
+
+## 15. MDM Profile Push
+
+The Response Console supports pushing configuration profiles to endpoints,
+including CA certificates, WiFi/802.1x profiles, and arbitrary config payloads.
+
+### Sending a Profile via GUI
+
+1. Navigate to **Endpoint > Response Actions**
+2. Select the target agent and set command type to **Apply Profile**
+3. Enter a Profile ID (e.g., `wifi-corp-802.1x`)
+4. Either paste Profile JSON directly, or attach files:
+   - **CA Certificates** (`.cer`, `.pem`, `.crt`): Auto-populated into
+     `ca_cert_pem` in the profile payload. The agent installs the cert into the
+     system trust store.
+   - **WLAN XML profiles** (`.xml`): Windows WLAN profile XML files. The agent
+     runs `netsh wlan add profile` to install them.
+   - **JSON/mobileconfig**: Arbitrary config payloads forwarded to the agent's
+     profile handler.
+5. Click **Send Command**
+
+### File Upload Behavior
+
+Attached files are base64-encoded and embedded in the command payload as
+`attached_files` in the `profile_json` object:
+
+```json
+{
+  "profile_id": "wifi-corp",
+  "profile_json": {
+    "ca_cert_pem": "<base64 of first .cer/.pem/.crt>",
+    "attached_files": [
+      {"name": "ca-root.cer", "content": "<base64>"},
+      {"name": "corp-wifi.xml", "content": "<base64>"}
+    ]
+  }
+}
+```
+
+### Command Observability
+
+The Commands tab in the Response Console shows:
+
+- **Issued At**: When the command was queued
+- **Completed At**: When the agent reported completion
+- **Result Data**: JSON payload from the agent with execution details (visible in
+  the detail panel when clicking a command row)
+- **Status**: `pending` → `sent` → `acked` → `completed` (or `failed`/`timeout`)

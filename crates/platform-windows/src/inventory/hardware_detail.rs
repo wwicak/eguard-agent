@@ -16,6 +16,9 @@ use serde_json::Value;
 
 /// Collect detailed hardware inventory via a single PowerShell invocation.
 pub fn collect_hardware_inventory() -> HashMap<String, String> {
+    let mut attrs = HashMap::new();
+    attrs.insert("hw.cpu.arch".into(), std::env::consts::ARCH.to_string());
+
     #[cfg(target_os = "windows")]
     {
         let cmd = concat!(
@@ -33,16 +36,12 @@ pub fn collect_hardware_inventory() -> HashMap<String, String> {
             "} | ConvertTo-Json -Depth 3 -Compress",
         );
         if let Some(json) = run_powershell(cmd) {
-            return parse_hardware_detail_json(&json);
+            attrs = parse_hardware_detail_json(&json);
         }
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = (); // suppress unused warnings
+        // Collect installed software from registry
+        collect_software_inventory(&mut attrs);
     }
 
-    let mut attrs = HashMap::new();
-    attrs.insert("hw.cpu.arch".into(), std::env::consts::ARCH.to_string());
     attrs
 }
 
@@ -229,8 +228,51 @@ fn parse_hardware_detail_json(raw: &str) -> HashMap<String, String> {
 }
 
 // ---------------------------------------------------------------------------
+// Installed Software (reuses existing software.rs module)
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "windows")]
+fn collect_software_inventory(attrs: &mut HashMap<String, String>) {
+    let programs = super::collect_installed_software();
+    if programs.is_empty() {
+        return;
+    }
+    attrs.insert("hw.software.count".into(), programs.len().to_string());
+
+    // Convert to simple name+version entries, cap at 500
+    let entries: Vec<SoftwareEntry> = programs
+        .into_iter()
+        .take(500)
+        .map(|p| {
+            // Windows install_date format is "yyyyMMdd", convert to dd/mm/yyyy
+            let installed_at = p
+                .install_date
+                .as_deref()
+                .and_then(format_windows_install_date)
+                .unwrap_or_default();
+            SoftwareEntry {
+                name: p.name,
+                version: p.version.unwrap_or_default(),
+                installed_at,
+            }
+        })
+        .collect();
+    if let Ok(json) = serde_json::to_string(&entries) {
+        attrs.insert("hw.software.packages".into(), json);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Helper types and mappings
 // ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+struct SoftwareEntry {
+    name: String,
+    version: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    installed_at: String,
+}
 
 #[derive(Debug, Serialize)]
 struct DimmEntry {
@@ -253,6 +295,19 @@ struct NetAdapterEntry {
     name: String,
     speed: String,
     mac: String,
+}
+
+/// Convert Windows install date "yyyyMMdd" to "dd/mm/yyyy".
+#[cfg(target_os = "windows")]
+fn format_windows_install_date(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if raw.len() != 8 {
+        return None;
+    }
+    let year = &raw[0..4];
+    let month = &raw[4..6];
+    let day = &raw[6..8];
+    Some(format!("{}/{}/{}", day, month, year))
 }
 
 #[cfg(any(test, target_os = "windows"))]

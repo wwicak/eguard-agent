@@ -309,18 +309,24 @@ impl Client {
         agent_id: &str,
         command_id: &str,
         status: &str,
+        result_json: Option<&str>,
     ) -> Result<()> {
-        self.with_retry("ack_command_grpc", || async {
-            let mut client = self.command_client().await?;
-            client
-                .ack_command(pb::AckCommandRequest {
-                    command_id: command_id.to_string(),
-                    status: status.to_string(),
-                    agent_id: agent_id.to_string(),
-                })
-                .await
-                .context("ack_command RPC failed")?;
-            Ok(())
+        let result_json_owned = result_json.unwrap_or_default().to_string();
+        self.with_retry("ack_command_grpc", || {
+            let result_json_clone = result_json_owned.clone();
+            async move {
+                let mut client = self.command_client().await?;
+                client
+                    .ack_command(pb::AckCommandRequest {
+                        command_id: command_id.to_string(),
+                        status: status.to_string(),
+                        agent_id: agent_id.to_string(),
+                        result_json: result_json_clone,
+                    })
+                    .await
+                    .context("ack_command RPC failed")?;
+                Ok(())
+            }
         })
         .await
     }

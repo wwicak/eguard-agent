@@ -24,6 +24,7 @@ pub fn collect_hardware_inventory() -> HashMap<String, String> {
     collect_disk_info(&mut attrs);
     collect_gpu_info(&mut attrs);
     collect_network_info(&mut attrs);
+    collect_installed_packages(&mut attrs);
 
     attrs
 }
@@ -322,6 +323,126 @@ fn collect_network_info(attrs: &mut HashMap<String, String>) {
             attrs.insert("hw.net.adapters".into(), json);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Installed Packages — /var/lib/dpkg/status (Debian/Ubuntu)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+struct PackageEntry {
+    name: String,
+    version: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    installed_at: String,
+}
+
+fn collect_installed_packages(attrs: &mut HashMap<String, String>) {
+    let mut packages = Vec::new();
+
+    // Try dpkg (Debian/Ubuntu)
+    if let Ok(status) = fs::read_to_string("/var/lib/dpkg/status") {
+        let mut name = String::new();
+        let mut version = String::new();
+        let mut installed = false;
+
+        for line in status.lines() {
+            if line.starts_with("Package: ") {
+                name = line[9..].trim().to_string();
+            } else if line.starts_with("Version: ") {
+                version = line[9..].trim().to_string();
+            } else if line.starts_with("Status: ") {
+                installed = line.contains("installed");
+            } else if line.is_empty() {
+                if installed && !name.is_empty() {
+                    let installed_at = dpkg_install_date(&name);
+                    packages.push(PackageEntry {
+                        name: name.clone(),
+                        version: version.clone(),
+                        installed_at,
+                    });
+                }
+                name.clear();
+                version.clear();
+                installed = false;
+            }
+        }
+        // Handle last entry
+        if installed && !name.is_empty() {
+            let installed_at = dpkg_install_date(&name);
+            packages.push(PackageEntry { name, version, installed_at });
+        }
+    }
+
+    // Fallback: try RPM database if dpkg not available
+    if packages.is_empty() {
+        if let Ok(output) = std::process::Command::new("rpm")
+            .args(["-qa", "--queryformat", "%{NAME}\t%{VERSION}-%{RELEASE}\t%{INSTALLTIME}\n"])
+            .output()
+        {
+            if output.status.success() {
+                for line in String::from_utf8_lossy(&output.stdout).lines() {
+                    let parts: Vec<&str> = line.splitn(3, '\t').collect();
+                    if parts.len() >= 2 {
+                        let installed_at = parts
+                            .get(2)
+                            .and_then(|ts| ts.parse::<i64>().ok())
+                            .map(format_unix_date)
+                            .unwrap_or_default();
+                        packages.push(PackageEntry {
+                            name: parts[0].to_string(),
+                            version: parts[1].to_string(),
+                            installed_at,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    if !packages.is_empty() {
+        attrs.insert("hw.software.count".into(), packages.len().to_string());
+        // Cap at 500 packages to avoid huge JSON blobs
+        let capped: Vec<_> = packages.into_iter().take(500).collect();
+        if let Ok(json) = serde_json::to_string(&capped) {
+            attrs.insert("hw.software.packages".into(), json);
+        }
+    }
+}
+
+/// Get install date from /var/lib/dpkg/info/<name>.list mtime.
+fn dpkg_install_date(name: &str) -> String {
+    let list_path = format!("/var/lib/dpkg/info/{}.list", name);
+    match fs::metadata(&list_path) {
+        Ok(meta) => meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| format_unix_date(d.as_secs() as i64))
+            .unwrap_or_default(),
+        Err(_) => String::new(),
+    }
+}
+
+/// Format a unix timestamp as dd/mm/yyyy.
+fn format_unix_date(ts: i64) -> String {
+    // Simple date formatting without chrono dependency
+    const SECS_PER_DAY: i64 = 86400;
+    let days = ts / SECS_PER_DAY;
+
+    // Algorithm from https://howardhinnant.github.io/date_algorithms.html
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+
+    format!("{:02}/{:02}/{:04}", d, m, y)
 }
 
 // ---------------------------------------------------------------------------

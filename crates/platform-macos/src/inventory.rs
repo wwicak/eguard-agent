@@ -17,6 +17,7 @@ pub fn collect_hardware_inventory() -> HashMap<String, String> {
     collect_memory_info(&mut attrs);
     collect_disk_info(&mut attrs);
     collect_gpu_info(&mut attrs);
+    collect_installed_apps(&mut attrs);
 
     attrs
 }
@@ -219,6 +220,55 @@ fn collect_gpu_info(attrs: &mut HashMap<String, String>) {
             if vram_mb > 0 {
                 attrs.insert("hw.gpu.vram_mb".into(), vram_mb.to_string());
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Installed Applications — system_profiler SPApplicationsDataType
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+struct AppEntry {
+    name: String,
+    version: String,
+}
+
+fn collect_installed_apps(attrs: &mut HashMap<String, String>) {
+    let json = match run_system_profiler("SPApplicationsDataType") {
+        Some(j) => j,
+        None => return,
+    };
+
+    let v: serde_json::Value = match serde_json::from_str(&json) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+
+    let items = match v.get("SPApplicationsDataType").and_then(|v| v.as_array()) {
+        Some(a) => a,
+        None => return,
+    };
+
+    let mut apps: Vec<AppEntry> = items
+        .iter()
+        .filter_map(|app| {
+            let name = app.get("_name").and_then(|v| v.as_str())?.trim().to_string();
+            let version = app
+                .get("version")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            Some(AppEntry { name, version })
+        })
+        .collect();
+
+    if !apps.is_empty() {
+        attrs.insert("hw.software.count".into(), apps.len().to_string());
+        apps.truncate(500); // Cap to prevent huge JSON
+        if let Ok(json) = serde_json::to_string(&apps) {
+            attrs.insert("hw.software.packages".into(), json);
         }
     }
 }
