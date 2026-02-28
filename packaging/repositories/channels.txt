@@ -2,13 +2,14 @@ Primary API channel:
 - https://<server>/api/v1/agent-install/linux-deb
 - https://<server>/api/v1/agent-install/linux-rpm
 - https://<server>/api/v1/agent-install/windows-exe
+- https://<server>/api/v1/agent-install/macos
 
 Repository mirrors:
 - apt repository (Debian/Ubuntu)
 - yum repository (RHEL/Fedora/Rocky)
 
 Manual install:
-- Admin UI downloadable .deb/.rpm files
+- Admin UI downloadable .deb/.rpm/.pkg files
 
 Open-source distribution:
 - GitHub Releases

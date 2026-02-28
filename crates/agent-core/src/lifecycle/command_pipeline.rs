@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use grpc_client::{CommandEnvelope, ResponseEnvelope};
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 use nac::apply_network_profile_config_change;
 use response::{
     execute_server_command_with_state, parse_server_command, CommandExecution, CommandOutcome,
@@ -185,7 +185,32 @@ impl AgentRuntime {
             return;
         }
 
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "macos")]
+        {
+            match platform_macos::response::apply_network_profile_config_change(
+                payload_json,
+                &profile_dir,
+            ) {
+                Ok(Some(report)) => {
+                    exec.detail = format!(
+                        "network profile applied: {} ({})",
+                        report.profile_id,
+                        report.profile_path.display()
+                    );
+                }
+                Ok(None) => {
+                    // Non-network config payloads remain backward-compatible no-ops.
+                }
+                Err(err) => {
+                    exec.outcome = CommandOutcome::Ignored;
+                    exec.status = "failed";
+                    exec.detail = format!("config_change rejected: {}", err);
+                }
+            }
+            return;
+        }
+
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
         {
             match apply_network_profile_config_change(payload_json, &profile_dir) {
                 Ok(Some(report)) => {
@@ -244,7 +269,33 @@ impl AgentRuntime {
             return;
         }
 
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "macos")]
+        {
+            if allowed.is_empty() {
+                exec.outcome = CommandOutcome::Ignored;
+                exec.status = "failed";
+                exec.detail = "isolation rejected: no routable server IPs provided".to_string();
+                return;
+            }
+
+            let refs: Vec<&str> = allowed.iter().map(|value| value.as_str()).collect();
+            match platform_macos::response::isolate_host(&refs) {
+                Ok(()) => {
+                    exec.detail = format!(
+                        "host isolation enforced via pf (allowing: {})",
+                        allowed.join(",")
+                    );
+                }
+                Err(err) => {
+                    exec.outcome = CommandOutcome::Ignored;
+                    exec.status = "failed";
+                    exec.detail = format!("host isolation failed: {}", err);
+                }
+            }
+            return;
+        }
+
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
         {
             let _ = (allowed, exec);
         }
@@ -266,7 +317,22 @@ impl AgentRuntime {
             return;
         }
 
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "macos")]
+        {
+            match platform_macos::response::remove_isolation() {
+                Ok(()) => {
+                    exec.detail = "host isolation removed via pf".to_string();
+                }
+                Err(err) => {
+                    exec.outcome = CommandOutcome::Ignored;
+                    exec.status = "failed";
+                    exec.detail = format!("failed removing host isolation: {}", err);
+                }
+            }
+            return;
+        }
+
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
         {
             let _ = exec;
         }
@@ -314,7 +380,29 @@ impl AgentRuntime {
             return;
         }
 
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "macos")]
+        {
+            match platform_macos::response::restore_file(
+                payload.quarantine_path.trim(),
+                payload.original_path.trim(),
+            ) {
+                Ok(()) => {
+                    exec.detail = format!(
+                        "quarantine restored: {} -> {}",
+                        payload.quarantine_path.trim(),
+                        payload.original_path.trim()
+                    );
+                }
+                Err(err) => {
+                    exec.outcome = CommandOutcome::Ignored;
+                    exec.status = "failed";
+                    exec.detail = format!("restore_quarantine failed: {}", err);
+                }
+            }
+            return;
+        }
+
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
         {
             match response::restore_quarantined(
                 Path::new(payload.quarantine_path.trim()),
@@ -383,7 +471,52 @@ impl AgentRuntime {
             return;
         }
 
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "macos")]
+        {
+            let output_path = if payload.output_path.trim().is_empty() {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or_default();
+                resolve_agent_data_dir()
+                    .join("forensics")
+                    .join(format!("snapshot-{}.txt", now))
+                    .to_string_lossy()
+                    .to_string()
+            } else {
+                payload.output_path.trim().to_string()
+            };
+
+            if let Some(parent) = Path::new(&output_path).parent() {
+                if let Err(err) = std::fs::create_dir_all(parent) {
+                    exec.outcome = CommandOutcome::Ignored;
+                    exec.status = "failed";
+                    exec.detail = format!("forensics output directory failed: {}", err);
+                    return;
+                }
+            }
+
+            let collector = platform_macos::response::ForensicsCollector::new();
+            let snapshot = collector.collect_full_snapshot();
+            let body = format!(
+                "=== processes ===\n{}\n\n=== network ===\n{}\n\n=== launchctl ===\n{}\n",
+                snapshot.processes, snapshot.network, snapshot.launchctl
+            );
+
+            match std::fs::write(&output_path, body.as_bytes()) {
+                Ok(()) => {
+                    exec.detail = format!("forensics snapshot captured: {}", output_path);
+                }
+                Err(err) => {
+                    exec.outcome = CommandOutcome::Ignored;
+                    exec.status = "failed";
+                    exec.detail = format!("forensics capture failed: {}", err);
+                }
+            }
+            return;
+        }
+
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
         {
             let _ = (payload, exec);
         }
@@ -581,6 +714,23 @@ impl AgentRuntime {
         };
 
         let profile_dir = resolve_agent_data_dir().join("profiles");
+
+        #[cfg(target_os = "macos")]
+        let looks_like_mobileconfig = {
+            let trimmed_profile = payload.profile_json.trim_start();
+            trimmed_profile.starts_with("<?xml")
+                || trimmed_profile.contains("<plist")
+                || trimmed_profile.contains("<dict>")
+        };
+
+        #[cfg(target_os = "macos")]
+        let profile_path = if looks_like_mobileconfig {
+            profile_dir.join(format!("{}.mobileconfig", profile_id))
+        } else {
+            profile_dir.join(format!("{}.json", profile_id))
+        };
+
+        #[cfg(not(target_os = "macos"))]
         let profile_path = profile_dir.join(format!("{}.json", profile_id));
 
         if let Err(err) = std::fs::create_dir_all(&profile_dir) {
@@ -595,6 +745,29 @@ impl AgentRuntime {
             exec.detail = format!("profile write failed: {}", err);
             return;
         }
+
+        #[cfg(target_os = "macos")]
+        {
+            if looks_like_mobileconfig {
+                let args = vec![
+                    "install".to_string(),
+                    "-type".to_string(),
+                    "configuration".to_string(),
+                    "-path".to_string(),
+                    profile_path.to_string_lossy().to_string(),
+                ];
+                if let Err(err) = run_command("profiles", &args) {
+                    exec.outcome = CommandOutcome::Ignored;
+                    exec.status = "failed";
+                    exec.detail = format!("profile install failed: {}", err);
+                    return;
+                }
+
+                exec.detail = format!("profile installed: {}", profile_path.display());
+                return;
+            }
+        }
+
         exec.detail = format!("profile stored: {}", profile_path.display());
     }
 
@@ -773,7 +946,7 @@ fn sanitize_profile_id(raw: &str) -> Result<String, &'static str> {
     Ok(profile_id.to_string())
 }
 
-#[cfg(any(test, not(target_os = "windows")))]
+#[cfg(any(test, not(any(target_os = "windows", target_os = "macos"))))]
 fn sanitize_apt_package_name(raw: &str) -> Result<String, &'static str> {
     let package_name = raw.trim();
     if package_name.is_empty() {
@@ -794,7 +967,7 @@ fn sanitize_apt_package_name(raw: &str) -> Result<String, &'static str> {
     Ok(package_name.to_string())
 }
 
-#[cfg(any(test, not(target_os = "windows")))]
+#[cfg(any(test, not(any(target_os = "windows", target_os = "macos"))))]
 fn sanitize_apt_package_version(raw: &str) -> Result<String, &'static str> {
     let version = raw.trim();
     if version.is_empty() {
@@ -838,6 +1011,49 @@ fn sanitize_windows_package_name(raw: &str) -> Result<String, &'static str> {
 
 #[cfg(any(test, target_os = "windows"))]
 fn sanitize_windows_package_version(raw: &str) -> Result<String, &'static str> {
+    let version = raw.trim();
+    if version.is_empty() {
+        return Ok(String::new());
+    }
+    if version.len() > 128 {
+        return Err("version too long");
+    }
+    if version.starts_with('-') {
+        return Err("version must not start with '-'");
+    }
+    if !version
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err("version contains unsupported characters");
+    }
+
+    Ok(version.to_string())
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn sanitize_macos_package_name(raw: &str) -> Result<String, &'static str> {
+    let package_name = raw.trim();
+    if package_name.is_empty() {
+        return Err("package_name required");
+    }
+    if package_name.len() > 128 {
+        return Err("package_name too long");
+    }
+    if package_name.starts_with('-') {
+        return Err("package_name must not start with '-'");
+    }
+    if !package_name.bytes().all(|byte| {
+        byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'+' | b'@')
+    }) {
+        return Err("package_name contains unsupported characters");
+    }
+
+    Ok(package_name.to_string())
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn sanitize_macos_package_version(raw: &str) -> Result<String, &'static str> {
     let version = raw.trim();
     if version.is_empty() {
         return Ok(String::new());
@@ -1337,7 +1553,54 @@ fn apply_app_command(action: &str, payload_json: &str, exec: &mut CommandExecuti
         return;
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        let package_name = match sanitize_macos_package_name(&payload.package_name) {
+            Ok(value) => value,
+            Err(err) => {
+                exec.outcome = CommandOutcome::Ignored;
+                exec.status = "failed";
+                exec.detail = format!("invalid package_name: {}", err);
+                return;
+            }
+        };
+
+        let version = match sanitize_macos_package_version(&payload.version) {
+            Ok(value) => value,
+            Err(err) => {
+                exec.outcome = CommandOutcome::Ignored;
+                exec.status = "failed";
+                exec.detail = format!("invalid version: {}", err);
+                return;
+            }
+        };
+
+        let package = if version.is_empty() {
+            package_name.clone()
+        } else {
+            format!("{}@{}", package_name, version)
+        };
+
+        let args = match action {
+            "install" => vec!["install", package.as_str()],
+            "remove" => vec!["uninstall", package_name.as_str()],
+            "update" => vec!["upgrade", package_name.as_str()],
+            _ => vec!["install", package.as_str()],
+        };
+
+        let cmd_args = args.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+        if let Err(err) = run_command("brew", &cmd_args) {
+            exec.outcome = CommandOutcome::Ignored;
+            exec.status = "failed";
+            exec.detail = format!("app {} failed: {}", action, err);
+        } else {
+            exec.detail = format!("app {} executed for {}", action, package_name);
+        }
+
+        return;
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         let package_name = match sanitize_apt_package_name(&payload.package_name) {
             Ok(value) => value,
@@ -1393,6 +1656,9 @@ mod tests {
 
     #[cfg(any(test, target_os = "windows"))]
     use super::{sanitize_windows_package_name, sanitize_windows_package_version};
+
+    #[cfg(any(test, target_os = "macos"))]
+    use super::{sanitize_macos_package_name, sanitize_macos_package_version};
 
     #[test]
     fn device_action_payload_parser_extracts_force_and_reason() {
@@ -1477,6 +1743,21 @@ mod tests {
         assert_eq!(
             allowed,
             vec!["203.0.113.4".to_string(), "2001:db8::10".to_string()]
+        );
+    }
+
+    #[test]
+    fn sanitize_macos_package_fields_reject_injection_and_accept_safe_values() {
+        assert!(sanitize_macos_package_name("brew;rm -rf /").is_err());
+        assert!(sanitize_macos_package_version("1.0 && whoami").is_err());
+
+        assert_eq!(
+            sanitize_macos_package_name("google-chrome").expect("valid package name"),
+            "google-chrome"
+        );
+        assert_eq!(
+            sanitize_macos_package_version("124.0.2478").expect("valid package version"),
+            "124.0.2478"
         );
     }
 

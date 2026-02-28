@@ -15,6 +15,10 @@ fn captive_portal_auto_detects_os_and_preserves_enrollment_token() {
         detect_install_target("Mozilla/5.0 (Windows NT 10.0; Win64; x64)"),
         InstallTarget::WindowsExe
     );
+    assert_eq!(
+        detect_install_target("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_2_1)"),
+        InstallTarget::MacosPkg
+    );
 
     let install = build_captive_portal_install(
         "Mozilla/5.0 (X11; Linux x86_64; Ubuntu 24.04)",
@@ -32,4 +36,15 @@ fn captive_portal_auto_detects_os_and_preserves_enrollment_token() {
         "/api/v1/agent-install/windows-exe"
     );
     assert_eq!(windows_install.enrollment_token, "token-win-999");
+
+    let macos_install = build_captive_portal_install(
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_2_1)",
+        "token-mac-333",
+    );
+    assert_eq!(macos_install.target, InstallTarget::MacosPkg);
+    assert_eq!(
+        macos_install.install_endpoint,
+        "/api/v1/agent-install/macos"
+    );
+    assert_eq!(macos_install.enrollment_token, "token-mac-333");
 }

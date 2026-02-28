@@ -276,13 +276,16 @@ fn distribution_channels_cover_server_repo_manual_and_github_release() {
         .any(|entry| entry == "https://<server>/api/v1/agent-install/windows-exe"));
     assert!(entries
         .iter()
+        .any(|entry| entry == "https://<server>/api/v1/agent-install/macos"));
+    assert!(entries
+        .iter()
         .any(|entry| entry == "apt repository (Debian/Ubuntu)"));
     assert!(entries
         .iter()
         .any(|entry| entry == "yum repository (RHEL/Fedora/Rocky)"));
     assert!(entries
         .iter()
-        .any(|entry| entry == "Admin UI downloadable .deb/.rpm files"));
+        .any(|entry| entry == "Admin UI downloadable .deb/.rpm/.pkg files"));
     assert!(
         entries.iter().any(|entry| entry == "GitHub Releases"),
         "missing GitHub releases channel entry"

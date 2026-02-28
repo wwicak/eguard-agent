@@ -24,6 +24,7 @@ pub enum InstallTarget {
     LinuxDeb,
     LinuxRpm,
     WindowsExe,
+    MacosPkg,
     Unknown,
 }
 
@@ -75,6 +76,8 @@ pub fn detect_install_target(user_agent: &str) -> InstallTarget {
     let ua = user_agent.to_ascii_lowercase();
     if ua.contains("windows") || ua.contains("win64") || ua.contains("wow64") {
         InstallTarget::WindowsExe
+    } else if ua.contains("macintosh") || ua.contains("mac os x") || ua.contains("darwin") {
+        InstallTarget::MacosPkg
     } else if ua.contains("ubuntu") || ua.contains("debian") {
         InstallTarget::LinuxDeb
     } else if ua.contains("fedora")
@@ -99,6 +102,7 @@ pub fn build_captive_portal_install(
         InstallTarget::LinuxDeb => "/api/v1/agent-install/linux-deb",
         InstallTarget::LinuxRpm => "/api/v1/agent-install/linux-rpm",
         InstallTarget::WindowsExe => "/api/v1/agent-install/windows-exe",
+        InstallTarget::MacosPkg => "/api/v1/agent-install/macos",
         InstallTarget::Unknown => "/api/v1/agent-install",
     };
 

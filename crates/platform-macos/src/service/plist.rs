@@ -36,7 +36,7 @@ pub fn generate_plist(label: &str, binary_path: &str) -> String {
     <key>StandardErrorPath</key>
     <string>/var/log/eguard-agent.err</string>
     <key>ProcessType</key>
-    <string>Interactive</string>
+    <string>Background</string>
     <key>ThrottleInterval</key>
     <integer>5</integer>
 </dict>
