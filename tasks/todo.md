@@ -1,3 +1,29 @@
+# Linux RAM type enrichment (DDR4/DDR5 visibility)
+
+## Plan
+- [x] 1) Add Linux RAM type detection from SMBIOS/DMI and emit `hw.ram.type` when available.
+- [x] 2) Add unit tests for SMBIOS parsing and type mapping logic.
+- [x] 3) Run `cargo test -p platform-linux` and ensure no regressions.
+- [x] 4) Build/redeploy Linux agent VM and verify new inventory snapshot contains `hw.ram.type` when firmware exposes it.
+- [x] 5) Update operations notes with Linux RAM-type extraction behavior and caveats.
+
+## Review
+- Implemented Linux RAM type extraction in `crates/platform-linux/src/inventory.rs` by parsing SMBIOS/DMI Type-17 memory device records (`/sys/firmware/dmi/tables/DMI`) and mapping to `hw.ram.type` (`DDR3/DDR4/DDR5`, LPDDR variants when provided).
+- Added parser tests:
+  - `parse_linux_ram_type_from_dmi_bytes_detects_ddr4`
+  - `parse_linux_ram_type_from_dmi_bytes_prefers_dominant_type`
+  - `parse_linux_ram_type_from_dmi_bytes_returns_none_on_unknown`
+- Validation:
+  - `cargo fmt --all` ✅
+  - `cargo test -p platform-linux` ✅ (77 passed)
+- Live redeploy/verify:
+  - built `agent-core` release, deployed to Linux VM, restarted `eguard-agent.service`.
+  - backup: `/var/lib/eguard-agent/bin-backup-20260228091725`.
+  - latest Linux inventory row (id=60) still shows `hw.ram.type=None` in this VM because firmware exposes generic SMBIOS memory type code `7` (RAM), not DDR generation.
+- Updated docs: `docs/operations-guide.md` now documents Linux `hw.ram.type` extraction + virtualization caveat.
+
+---
+
 # OS-level inventory enrichment (Linux/Windows/macOS)
 
 ## Plan
@@ -28,6 +54,14 @@
   - `cargo check -p agent-core` ✅
 - Live Linux VM verification after deploying rebuilt `agent-core`:
   - server inventory now includes `hw.disk.interface=VirtIO`, `hw.disk.bus_type=VirtIO`, `hw.security.tpm.present=false` for `agent-31bbb93f38b4`.
+- Live Windows VM verification after deploying rebuilt `agent-core.exe`:
+  - server inventory latest row includes `hw.disk.interface=VirtIO`, `hw.disk.bus_type=VirtIO`, `hw.domain.joined=false`, `hw.domain.name=WORKGROUP`, `hw.security.tpm.present=false`, `hw.security.tpm.ready=false` for `agent-4412`.
+- Windows inventory OS-version correction follow-up:
+  - fixed `collect_platform_snapshot()` to stop using `PROCESSOR_ARCHITECTURE` (`Windows (AMD64)`),
+  - now uses registry `ProductName` (+ `DisplayVersion`/`ReleaseId`) with numeric fallback,
+  - verified live row moved to `Windows Server 2019 Standard 1809` (`id=61`).
+- Live UI deployment verification:
+  - new `EndpointInventory` bundle on server includes dropdown filters for `Disk Interface` and `Disk Bus`, plus expanded security posture CSV columns.
 
 ---
 
@@ -261,3 +295,72 @@
 - [ ] AC-E2E-004 Endpoint inventory supports filtering by CPU/RAM/HDD + hostname + join-domain status and supports CSV export.
 - [ ] AC-E2E-005 Updated build artifacts are deployed on server VM and verified from live UI.
 - [ ] AC-E2E-006 Operations guide reflects exact tested commands/procedures and troubleshooting notes.
+
+---
+
+# Operations guide update: Endpoint Audit inline details + whitelist UX
+
+## Plan
+- [x] 1) Document the Endpoint Audit UX rollout scope (inline details, response labeling, whitelist actions).
+- [x] 2) Record deployment evidence (backup path, dist deployment target) from live VM rollout.
+- [x] 3) Record browser smoke validation outcomes and rollback steps in operations guide.
+
+## Review
+- Added **Appendix F** to `docs/operations-guide.md`: `Endpoint Audit Inline Details + Whitelist UX (Feb 2026)`.
+- Captured rollout evidence:
+  - backup: `/usr/local/eg/var/backups/audit-ui-inline-20260228165204`
+  - deployment target: `/usr/local/eg/html/egappserver/root/dist/`
+- Captured browser validation outcomes on live server (`103.49.238.102:1443`) including:
+  - inline audit row expansion behavior,
+  - readable response badges,
+  - audit-driven whitelist creation flow,
+  - endpoint whitelist nav visibility + route reachability.
+- Added rollback procedure for restoring previous dist backup.
+
+---
+
+# NAC operations manual update (debrand PF -> eGuard NAC enforcer)
+
+## Plan
+- [x] 1) Update `docs/nac-edr-operations-manual.md` to reflect new NAC enforcer architecture (`local` default, optional `http` compatibility mode).
+- [x] 2) Replace PF-bridge-specific operational guidance with debranded NAC-enforcer instructions, env vars, and troubleshooting.
+- [x] 3) Add latest live validation notes for GUI isolate/allow/status flow under local mode.
+
+## Review
+- Updated manual version to 1.2 and validation context to local-enforcer mode.
+- Reworked architecture + config sections to use `NACEnforcer` model and `EGUARD_NAC_*` env vars.
+- Kept explicit legacy compatibility note for `EGUARD_PF_*` fallback.
+- Updated troubleshooting and known limitations to local/http mode behavior and removed PF-branded language.
+- Added live validation summary (GUI isolate/allow/status + server log confirmation).
+
+---
+
+# fe_eguard NAC local-only cleanup (remove HTTP/PF bridge path)
+
+## Plan
+- [x] 1) Remove HTTP enforcer implementation (`nac_pf_bridge.go`) and legacy PF env-variable fallback from NAC enforcer selection.
+- [x] 2) Restrict `newNACEnforcer()` to local (default) and disabled modes only, with explicit log when unsupported mode is requested.
+- [x] 3) Run `go test ./...` for `go/agent/server` to verify no regressions.
+- [x] 4) Update review notes and lessons learned for topology assumptions (same-host guaranteed).
+
+## Review
+- Removed file: `/home/dimas/fe_eguard/go/agent/server/nac_pf_bridge.go`.
+- Updated `/home/dimas/fe_eguard/go/agent/server/nac_enforcer.go`:
+  - removed HTTP mode and legacy `EGUARD_PF_BRIDGE_ENABLED` fallback,
+  - mode handling is now local-only by default with optional explicit `disabled`.
+  - unsupported mode values now log and force `local`.
+- Verification:
+  - `cd /home/dimas/fe_eguard/go/agent/server && go test ./...` ✅
+  - `cd /home/dimas/fe_eguard/go/cmd/eg-agent-server && go test ./...` ✅ (compile check)
+- Synced operator doc to local-only contract: updated `/home/dimas/eguard-agent/docs/nac-edr-operations-manual.md` to remove HTTP/split-host/legacy PF variable guidance.
+
+---
+
+# Human-like GUI re-validation after NAC local-only cleanup
+
+## Plan
+- [ ] 1) Re-run backend sanity checks for server package (`go test ./...`) to confirm local-only enforcer compiles and passes.
+- [ ] 2) Execute browser-driven (human-like) NAC workflow in live GUI: login → select endpoint → isolate → status verify → allow → status verify.
+- [ ] 3) Spot-check adjacent endpoint UX impacted by recent rollout (Audit inline details + Inventory filters page loads) to ensure no regressions.
+- [ ] 4) Capture fresh validation evidence screenshot(s) and summarize outcomes/errors in review notes.
+

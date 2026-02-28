@@ -106,6 +106,90 @@ fn collect_memory_info(attrs: &mut HashMap<String, String>) {
             break;
         }
     }
+
+    if let Some(ram_type) = linux_ram_type_from_dmi() {
+        attrs.insert("hw.ram.type".into(), ram_type);
+    }
+}
+
+fn linux_ram_type_from_dmi() -> Option<String> {
+    let dmi = fs::read("/sys/firmware/dmi/tables/DMI").ok()?;
+    parse_linux_ram_type_from_dmi_bytes(&dmi)
+}
+
+fn parse_linux_ram_type_from_dmi_bytes(dmi: &[u8]) -> Option<String> {
+    let mut idx = 0usize;
+    let mut type_counts: HashMap<u8, usize> = HashMap::new();
+
+    while idx + 4 <= dmi.len() {
+        let structure_type = dmi[idx];
+        let structure_len = dmi[idx + 1] as usize;
+
+        if structure_len < 4 || idx + structure_len > dmi.len() {
+            break;
+        }
+
+        // SMBIOS Type 17 = Memory Device
+        if structure_type == 17 && structure_len > 0x12 {
+            let mem_type_code = dmi[idx + 0x12];
+            if linux_smbios_memory_type_name(mem_type_code).is_some() {
+                *type_counts.entry(mem_type_code).or_insert(0) += 1;
+            }
+        }
+
+        // End-of-table marker
+        if structure_type == 127 {
+            break;
+        }
+
+        // Skip unformatted string-set (null-terminated strings ending with double-null)
+        let mut next = idx + structure_len;
+        while next + 1 < dmi.len() {
+            if dmi[next] == 0 && dmi[next + 1] == 0 {
+                next += 2;
+                break;
+            }
+            next += 1;
+        }
+
+        if next <= idx || next > dmi.len() {
+            break;
+        }
+        idx = next;
+    }
+
+    let selected = type_counts
+        .into_iter()
+        .max_by_key(|(code, count)| (*count, linux_smbios_memory_type_rank(*code)))
+        .map(|(code, _)| code)?;
+
+    linux_smbios_memory_type_name(selected).map(str::to_string)
+}
+
+fn linux_smbios_memory_type_rank(code: u8) -> u8 {
+    match code {
+        34 => 9, // DDR5
+        35 => 8, // LPDDR5
+        30 => 7, // LPDDR4
+        26 => 6, // DDR4
+        24 => 5, // DDR3
+        21 => 4, // DDR2
+        20 => 3, // DDR
+        _ => 0,
+    }
+}
+
+fn linux_smbios_memory_type_name(code: u8) -> Option<&'static str> {
+    match code {
+        20 => Some("DDR"),
+        21 => Some("DDR2"),
+        24 => Some("DDR3"),
+        26 => Some("DDR4"),
+        30 => Some("LPDDR4"),
+        34 => Some("DDR5"),
+        35 => Some("LPDDR5"),
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -611,5 +695,43 @@ mod tests {
             infer_linux_disk_interface("sdb", "/devices/pci0000/scsi_host", "Generic Disk"),
             "SCSI"
         );
+    }
+
+    fn dmi_type17_with_memory_type(mem_type: u8) -> Vec<u8> {
+        let mut s = vec![17u8, 0x15, 0x01, 0x00];
+        s.resize(0x15, 0);
+        s[0x12] = mem_type;
+        s.extend_from_slice(&[0, 0]);
+        s
+    }
+
+    #[test]
+    fn parse_linux_ram_type_from_dmi_bytes_detects_ddr4() {
+        let mut dmi = dmi_type17_with_memory_type(26);
+        dmi.extend_from_slice(&[127, 4, 0, 0, 0, 0]);
+
+        let parsed = parse_linux_ram_type_from_dmi_bytes(&dmi);
+        assert_eq!(parsed.as_deref(), Some("DDR4"));
+    }
+
+    #[test]
+    fn parse_linux_ram_type_from_dmi_bytes_prefers_dominant_type() {
+        let mut dmi = Vec::new();
+        dmi.extend_from_slice(&dmi_type17_with_memory_type(26));
+        dmi.extend_from_slice(&dmi_type17_with_memory_type(26));
+        dmi.extend_from_slice(&dmi_type17_with_memory_type(34));
+        dmi.extend_from_slice(&[127, 4, 0, 0, 0, 0]);
+
+        let parsed = parse_linux_ram_type_from_dmi_bytes(&dmi);
+        assert_eq!(parsed.as_deref(), Some("DDR4"));
+    }
+
+    #[test]
+    fn parse_linux_ram_type_from_dmi_bytes_returns_none_on_unknown() {
+        let mut dmi = dmi_type17_with_memory_type(2);
+        dmi.extend_from_slice(&[127, 4, 0, 0, 0, 0]);
+
+        let parsed = parse_linux_ram_type_from_dmi_bytes(&dmi);
+        assert_eq!(parsed, None);
     }
 }

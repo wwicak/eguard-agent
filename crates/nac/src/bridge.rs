@@ -123,7 +123,7 @@ pub fn map_alert_to_security_event(alert: &AlertEvent) -> Option<SecurityEvent> 
         return Some(SecurityEvent {
             event_id: EVENT_LATERAL_MOVEMENT,
             title: "Lateral movement",
-            actions: vec![BridgeAction::EmailAdmin, BridgeAction::Log],
+            actions: vec![BridgeAction::ReevaluateAccess, BridgeAction::EmailAdmin],
         });
     }
 

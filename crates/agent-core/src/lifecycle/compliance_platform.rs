@@ -6,6 +6,8 @@
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use std::collections::HashSet;
+#[cfg(target_os = "windows")]
+use platform_windows::inventory::hardware::HardwareInfo;
 
 use anyhow::Result;
 use compliance::SystemSnapshot;
@@ -37,6 +39,7 @@ pub(super) fn collect_platform_snapshot() -> Result<SystemSnapshot> {
 #[cfg(target_os = "windows")]
 fn collect_windows_snapshot() -> Result<SystemSnapshot> {
     let report = platform_windows::compliance::collect_compliance_report();
+    let hardware = platform_windows::inventory::collect_hardware_info();
 
     let firewall_enabled = report.firewall.domain_profile_enabled
         && report.firewall.private_profile_enabled
@@ -50,11 +53,12 @@ fn collect_windows_snapshot() -> Result<SystemSnapshot> {
     // Use "no reboot required + no pending" as a best-effort proxy.
     let auto_updates_enabled = Some(report.updates.pending_count == 0);
 
-    let kernel_version = std::env::var("OS").unwrap_or_else(|_| "Windows".to_string());
+    let kernel_version = hardware
+        .os_version
+        .clone()
+        .unwrap_or_else(|| std::env::var("OS").unwrap_or_else(|_| "Windows".to_string()));
 
-    let os_version = std::env::var("PROCESSOR_ARCHITECTURE")
-        .ok()
-        .map(|arch| format!("Windows ({})", arch));
+    let os_version = windows_os_version_label(&hardware);
 
     Ok(SystemSnapshot {
         firewall_enabled,
@@ -72,6 +76,53 @@ fn collect_windows_snapshot() -> Result<SystemSnapshot> {
         os_type: "windows".to_string(),
         capabilities: windows_capabilities(),
     })
+}
+
+#[cfg(target_os = "windows")]
+fn windows_os_version_label(hardware: &HardwareInfo) -> Option<String> {
+    let nt_current_version_key = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion";
+
+    let product_name = platform_windows::compliance::registry::read_reg_string(
+        "HKLM",
+        nt_current_version_key,
+        "ProductName",
+    )
+    .map(|v| v.trim().to_string())
+    .filter(|v| !v.is_empty());
+
+    let display_version = platform_windows::compliance::registry::read_reg_string(
+        "HKLM",
+        nt_current_version_key,
+        "DisplayVersion",
+    )
+    .or_else(|| {
+        platform_windows::compliance::registry::read_reg_string(
+            "HKLM",
+            nt_current_version_key,
+            "ReleaseId",
+        )
+    })
+    .map(|v| v.trim().to_string())
+    .filter(|v| !v.is_empty());
+
+    if let Some(mut name) = product_name {
+        if let Some(display) = display_version {
+            let lname = name.to_ascii_lowercase();
+            let ldisplay = display.to_ascii_lowercase();
+            if !lname.contains(&ldisplay) {
+                name = format!("{} {}", name, display);
+            }
+        }
+        return Some(name);
+    }
+
+    match (&hardware.os_version, &hardware.os_build) {
+        (Some(ver), Some(build)) => {
+            Some(format!("Windows {} (build {})", ver.trim(), build.trim()))
+        }
+        (Some(ver), None) => Some(format!("Windows {}", ver.trim())),
+        _ => None,
+    }
 }
 
 #[cfg(target_os = "windows")]

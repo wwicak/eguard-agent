@@ -29,6 +29,11 @@ responsible for managing eGuard across a fleet of endpoints.
 - [Appendix A: E2E Testing Notes](#appendix-a-e2e-testing-notes-feb-2026)
 - [Appendix B: MDM Command E2E Testing Log](#appendix-b-mdm-command-e2e-testing-log)
 - [Appendix C: MDM E2E Test Results](#appendix-c-mdm-e2e-test-results-feb-2026)
+- [Appendix D: MDM Reports UI Improvements](#appendix-d-mdm-reports-ui-improvements-feb-2026)
+- [Appendix E: NAC ↔ EDR/MDM Security Events Integration](#appendix-e-nac--edrmmd-security-events-integration-feb-2026)
+- [Appendix F: NAC Manual Override (Isolate/Allow)](#appendix-f-nac-manual-override-isolateallow-feb-2026)
+- **[📘 NAC ↔ EDR Full Operations Manual](nac-edr-operations-manual.md)** — Comprehensive guide for NAC isolation/allow operations
+- [Appendix F: Endpoint Audit Inline Details + Whitelist UX](#appendix-f-endpoint-audit-inline-details--whitelist-ux-feb-2026)
 
 ---
 
@@ -2055,7 +2060,7 @@ POST /api/v1/endpoint/command/enqueue
 Content-Type: application/json
 ```
 
-**Request body:**
+**Request body (single agent):**
 
 ```json
 {
@@ -2065,6 +2070,8 @@ Content-Type: application/json
   "command_data": { ... }
 }
 ```
+
+Use `agent_ids` (array) for bulk dispatch — see [16.1.1](#1611-bulk-command-dispatch).
 
 **Response (success):**
 
@@ -2089,6 +2096,47 @@ Content-Type: application/json
   "error": "invalid_command_data:<reason>"
 }
 ```
+
+### 16.1.1 Bulk Command Dispatch
+
+Send the same command to multiple agents in a single request using the
+`agent_ids` array field:
+
+```json
+{
+  "agent_ids": ["agent-1", "agent-2", "agent-3"],
+  "command_type": "scan",
+  "issued_by": "admin",
+  "command_data": { "paths": ["/tmp"] }
+}
+```
+
+**Response (bulk success):**
+
+```json
+{
+  "command": { "command_id": "...", "agent_id": "agent-1", ... },
+  "command_count": 3,
+  "status": "commands_bulk_enqueued"
+}
+```
+
+Each agent receives its own `CommandRecord` with a unique `command_id`.
+Approval status is resolved per-record. Max batch size: 1000 agents.
+
+Partial failures are reported in the `errors` array:
+
+```json
+{
+  "command_count": 2,
+  "status": "commands_bulk_enqueued",
+  "errors": ["agent-bad: agent_id_required"]
+}
+```
+
+**UI:** In the Response Console, the "Target Agents" dropdown supports
+multi-select with a "Select All" toggle. The submit button shows
+"Send to N Agents" when multiple agents are selected.
 
 **Checking results:**
 
@@ -3231,6 +3279,7 @@ Linux/Windows/macOS with additional `hw.*` keys.
 
 #### Linux additions
 
+- `hw.ram.type` (from SMBIOS/DMI Type-17 memory device records when firmware exposes DDR generation)
 - `hw.security.secure_boot` (UEFI SecureBoot var, if available)
 - `hw.security.tpm.present`
 - `hw.security.tpm.version`
@@ -3254,5 +3303,558 @@ Linux/Windows/macOS with additional `hw.*` keys.
 
 - Not all keys are guaranteed on all hosts/VMs; virtualization and firmware
   capabilities can suppress some values.
+- `hw.ram.type` on Linux depends on SMBIOS quality. Some VMs expose only generic
+  RAM type codes (for example `RAM`/unknown), so DDR generation (DDR4/DDR5)
+  may be unavailable even after agent upgrade.
 - Inventory UI filters should derive dropdown options from observed data values
   (do not hardcode finite enums for interface/bus/security states).
+
+### B.8 Live rollout validation (Linux + Windows + UI refresh)
+
+Date: 2026-02-28
+
+#### Build + deploy summary
+
+- Linux agent build: `cargo build --release -p agent-core`.
+- Windows agent build (this environment):
+  - `cargo build --release --target x86_64-pc-windows-gnu -p agent-core`
+  - Note: `cargo xwin ... --target x86_64-pc-windows-msvc` failed locally because
+    `clang` is not installed on the build host.
+- UI build: `npm run lint -- src/views/endpoint/Inventory.vue` and `npm run build`.
+
+#### VM updates performed
+
+- Linux endpoint (`agent@103.183.74.3`):
+  - replaced `/usr/bin/eguard-agent`, restarted `eguard-agent.service`.
+  - backup: `/var/lib/eguard-agent/bin-backup-20260228085105`.
+- Windows endpoint (`administrator@103.31.39.30`):
+  - replaced `C:\Program Files\eGuard\eguard-agent.exe`, restarted `eGuardAgent`.
+  - backup: `C:\ProgramData\eGuard\backups\20260228155259\eguard-agent.exe`.
+- Server UI (`eguard@103.49.238.102`):
+  - replaced `/usr/local/eg/html/egappserver/root/dist`, restarted
+    `eguard-httpd.admin_dispatcher.service`.
+  - backup: `/usr/local/eg/var/backups/inventory-ui-enriched-20260228090400/dist`.
+
+#### Validation evidence
+
+- Latest Windows inventory row after agent restart: `id=56`,
+  `collected_at=2026-02-28T08:53:05Z`, includes:
+  - `hw.disk.interface=VirtIO`
+  - `hw.disk.bus_type=VirtIO`
+  - `hw.domain.joined=false`
+  - `hw.domain.name=WORKGROUP`
+  - `hw.security.tpm.present=false`
+  - `hw.security.tpm.ready=false`
+- Windows OS version-label fix validation after follow-up agent update:
+  - previous incorrect value: `Windows (AMD64)` (derived from `PROCESSOR_ARCHITECTURE`)
+  - current value: `Windows Server 2019 Standard 1809` (from registry ProductName/DisplayVersion)
+  - evidence row: `id=61`, `collected_at=2026-02-28T09:31:38Z`
+- Latest Linux inventory row includes:
+  - `hw.disk.interface=VirtIO`
+  - `hw.disk.bus_type=VirtIO`
+  - `hw.security.tpm.present=false`
+- Deployed UI bundle contains inventory controls and CSV columns for:
+  - Disk Type / Disk Interface / Disk Bus
+  - security posture export fields (`secure_boot`, `tpm_present`, `tpm_ready`, `tpm_version`).
+
+---
+
+## Appendix D: MDM Reports UI Improvements (Feb 2026)
+
+This appendix documents the MDM Reports page improvements deployed on
+2026-02-28.
+
+### D.1 Dropdown Filters for Agent ID and Check Type
+
+**Problem:** The MDM Reports page (`/admin#/endpoint-mdm-reports`) previously
+used free-text `<input>` fields for the **Agent** and **Check Type** filters.
+This required operators to know and type exact agent IDs and check type names,
+which was error-prone and poor UX.
+
+**Fix:** Both filters were converted to `<select>` dropdown menus that are
+dynamically populated from the loaded compliance data:
+
+- **Agent dropdown:** Shows "All Agents" (default) plus every distinct
+  `agent_id` observed in the compliance data, sorted alphabetically.
+- **Check Type dropdown:** Shows "All Check Types" (default) plus every distinct
+  `check_type` observed in the compliance data, sorted alphabetically.
+
+Observed check types in production (2026-02-28): `antivirus`, `auto_updates`,
+`disk_encryption`, `firewall`, `kernel_version`, `package_installed`,
+`package_not_installed`, `password_policy`, `screen_lock`, `service`,
+`ssh_config`.
+
+**Filter behavior change:** Text inputs used substring matching (e.g., typing
+"fire" matched "firewall"). Dropdowns use exact match, which is more predictable
+for operational use.
+
+### D.2 Files Changed
+
+- `html/egappserver/root/src/views/endpoint/MDMReports.vue`
+  - Replaced `<input>` with `<select>` for `filters.agent_id` and
+    `filters.check_type`.
+  - Added `agentOptions` and `checkTypeOptions` computed properties that derive
+    distinct values from `this.rows`.
+  - Changed filter matching from `String.includes()` (substring) to strict
+    equality (`===`) for both agent and check type filters.
+
+### D.3 Build & Deployment Procedure
+
+```bash
+# Build frontend
+cd /home/dimas/fe_eguard/html/egappserver/root
+npm run build
+
+# Package and upload
+tar czf /tmp/dist.tar.gz dist/
+scp /tmp/dist.tar.gz eguard@103.49.238.102:/tmp/
+
+# On eGuard server (103.49.238.102):
+BACKUP_DIR="/usr/local/eg/var/backups/mdm-reports-dropdown-$(date +%s)"
+sudo mkdir -p "$BACKUP_DIR"
+sudo cp -r /usr/local/eg/html/egappserver/root/dist "$BACKUP_DIR/"
+cd /tmp && tar xzf dist.tar.gz
+sudo rm -rf /usr/local/eg/html/egappserver/root/dist
+sudo cp -r /tmp/dist /usr/local/eg/html/egappserver/root/
+sudo chown -R eguard:eguard /usr/local/eg/html/egappserver/root/dist
+sudo systemctl restart eguard-httpd.admin_dispatcher
+```
+
+### D.4 Validation Evidence
+
+Validated on live eGuard server via browser automation (2026-02-28):
+
+| Test | Result | Detail |
+|------|--------|--------|
+| Agent dropdown renders | **PASS** | Shows "All Agents", "agent-31bbb93f38b4", "agent-4412" |
+| Check Type dropdown renders | **PASS** | Shows "All Check Types" + 11 check types |
+| Filter by agent (exact match) | **PASS** | Selected `agent-31bbb93f38b4` → 484 rows (from 500 total) |
+| Filter by agent + check type | **PASS** | `agent-31bbb93f38b4` + `firewall` → 79 rows |
+| Reset filters | **PASS** | Returns to 500 rows |
+| Metrics update with filters | **PASS** | Non-compliant, In Grace, Distinct Endpoints update correctly |
+| Table data rendering | **PASS** | All columns (Agent, Policy, Version, Check Type, Status, Severity, OS, Ownership, Disk Encrypted, Data Quality, Checked At) display correctly |
+| Export CSV with filter | **PASS** | Downloads filtered data only |
+| Pagination | **PASS** | Prev/Next buttons work, page resets on filter change |
+
+### D.5 System Status Summary (2026-02-28)
+
+**eGuard Server** (`eguard@103.49.238.102`):
+- Debian 12 (6.1.0-43), 6GB RAM + 4GB swap
+- All core services active: `eguard-agent-server`, `eguard-api-server`,
+  `eguard-httpd.admin_dispatcher`, MariaDB, HAProxy, etc.
+- Only `eguard-cron.service` in failed state (non-critical)
+
+**Linux Agent** (`agent@103.183.74.3`):
+- Agent `agent-31bbb93f38b4` running as systemd service
+- Policy `e2e-comprehensive` active with 11 check types
+- Compliance status: non-compliant (firewall inactive, SSH root login unknown)
+- Baseline mode: active
+- All MDM commands functional (locate_device, scan, lost_mode, etc.)
+
+**Windows Agent** (`administrator@103.31.39.30`):
+- Agent `agent-4412` running as Windows Service (eGuardAgent)
+- Windows Server 2019 Standard (Build 17763)
+- Compliance status: non-compliant
+- Baseline mode: learning
+- MDM commands functional with known limitations (no WLAN, no winget)
+
+**Threat Intel Pipeline:**
+- GitHub repo: `wwicak/eguard-agent`
+- Latest bundle: `2026.02.19.1131` (S:0 Y:0 IOC:0 CVE:0)
+- Auto distribute: enabled
+- Poll interval: 14400s (4h)
+
+### D.6 Rollback
+
+Restore from backup and restart:
+
+```bash
+# On eGuard server
+BACKUP_DIR="/usr/local/eg/var/backups/mdm-reports-dropdown-<timestamp>"
+sudo rm -rf /usr/local/eg/html/egappserver/root/dist
+sudo cp -r "$BACKUP_DIR/dist" /usr/local/eg/html/egappserver/root/
+sudo chown -R eguard:eguard /usr/local/eg/html/egappserver/root/dist
+sudo systemctl restart eguard-httpd.admin_dispatcher
+```
+
+---
+
+## Appendix E: NAC ↔ EDR/MDM Security Events Integration (Feb 2026)
+
+This appendix documents the integration between the eGuard NAC (PacketFence)
+security events system and the EDR/MDM agent detection capabilities. When an
+agent detects a threat or compliance failure, a security event is automatically
+triggered in the NAC layer, which can enforce network-level actions such as
+VLAN isolation.
+
+### E.1 Architecture
+
+```
+Agent (Rust)                         Agent Server (Go)                    PacketFence (Perl)
+─────────────                        ────────────────────                 ──────────────────
+eBPF/ETW → DetectionEngine           gRPC StreamEvents()                 security_event_add()
+  → EventEnvelope              ───→    ingestTelemetryEvent()              → INSERT security_event
+                                         bridgeTelemetryToSecurityEvent()  → action dispatch
+                                           mapAlertToSecurityEvent()         → reevaluate_access
+                                             pfBridge.ApplySecurityEvent()     → VLAN isolation
+                                               └→ POST /api/v1/nodes/{mac}/apply_security_event
+
+Compliance (MDM)                     Agent Server (Go)                    PacketFence (Perl)
+────────────────                     ────────────────────                 ──────────────────
+Agent policy checks              ──→   saveComplianceBatch()             same flow as above
+                                         bridgeComplianceToSecurityEvent()
+                                           if non_compliant → event 1300014
+                                           if compliant → close event 1300014
+```
+
+### E.2 Security Event Definitions
+
+Eight eGuard-specific security events are defined in
+`/usr/local/eg/conf/security_events.conf`:
+
+| ID | Description | Action | VLAN | Trigger |
+|---|---|---|---|---|
+| 1300010 | eGuard: Malware Detected | `reevaluate_access` | isolation | YARA high+ |
+| 1300011 | eGuard: Suspicious Behavior | `log` | — | Sigma high+ |
+| 1300012 | eGuard: Unauthorized Module | `log` | — | Kernel module rule |
+| 1300013 | eGuard: C2 Communication | `reevaluate_access` | isolation | IOC + MITRE T1071 |
+| 1300014 | eGuard: Compliance Failure | `log` | — | MDM non_compliant |
+| 1300015 | eGuard: Agent Tamper | `reevaluate_access` | isolation | Tamper detection |
+| 1300016 | eGuard: Lateral Movement | `reevaluate_access` | isolation | MITRE T1021/T1534 |
+| 1300017 | eGuard: Privilege Escalation | `reevaluate_access` | isolation | MITRE T1548/T1068 |
+
+Events with `reevaluate_access` action trigger network VLAN re-evaluation,
+which moves the device to the isolation VLAN. Events with `log` action only
+record the event without network enforcement.
+
+**To upgrade** a `log` event to `reevaluate_access` (e.g., to isolate on
+compliance failure): edit the event in Configuration → Advanced Setting →
+Compliance → Security Events, or update the `action` table:
+
+```sql
+INSERT INTO action (security_event_id, action) VALUES (1300014, 'reevaluate_access');
+DELETE FROM action WHERE security_event_id = 1300014 AND action = 'log';
+```
+
+### E.3 Detection → Security Event Mapping
+
+The Go agent server maps incoming telemetry/detection events to security event
+IDs using the `mapAlertToSecurityEvent()` function. Mapping logic:
+
+1. `rule_name = "agent_tamper"` → 1300015 (Agent Tamper)
+2. `rule_name = "unauthorized_kernel_module"` → 1300012
+3. `event_type = "compliance"` + severity ≥ medium → 1300014
+4. `rule_type = "yara"` + severity ≥ threshold → 1300010 (Malware)
+5. `rule_type = "sigma"` + severity ≥ threshold → 1300011 (Suspicious)
+6. `rule_type = "ioc"` + MITRE T1071 → 1300013 (C2)
+7. MITRE T1021/T1534 → 1300016 (Lateral Movement)
+8. MITRE T1548/T1068 → 1300017 (Privilege Escalation)
+
+Severity thresholds are configurable via env vars:
+
+| Env Var | Default | Description |
+|---|---|---|
+| `EGUARD_AGENT_SERVER_NAC_SIGMA_MIN_SEVERITY` | `high` | Min severity for Sigma → NAC |
+| `EGUARD_AGENT_SERVER_NAC_YARA_MIN_SEVERITY` | `high` | Min severity for YARA → NAC |
+| `EGUARD_AGENT_SERVER_NAC_IOC_WITHOUT_MITRE_ENABLED` | `false` | Allow IOC events without MITRE mapping |
+| `EGUARD_AGENT_SERVER_NAC_IOC_WITHOUT_MITRE_MIN_SEVERITY` | `critical` | Min severity for unmapped IOCs |
+
+### E.4 PF Bridge Configuration
+
+The Go agent server calls the PacketFence Perl admin API to trigger security
+event actions. This is configured via env vars on the `eguard-agent-server`
+systemd service:
+
+| Env Var | Default | Description |
+|---|---|---|
+| `EGUARD_PF_BRIDGE_ENABLED` | `false` | Enable PF API bridge |
+| `EGUARD_PF_API_URL` | `https://localhost:1443` | PF admin API URL |
+| `EGUARD_PF_API_USER` | `admin` | PF admin username |
+| `EGUARD_PF_API_PASSWORD` | (required) | PF admin password |
+
+**Example systemd override** (`/etc/systemd/system/eguard-agent-server.service.d/override.conf`):
+
+```ini
+[Service]
+Environment=EGUARD_PF_BRIDGE_ENABLED=1
+Environment=EGUARD_PF_API_PASSWORD=YourAdminPassword
+```
+
+When PF bridge is disabled, security events are still recorded in the DB but
+no VLAN actions are triggered. This is a **degraded mode** — events are visible
+in the UI but no network enforcement occurs.
+
+### E.5 Compliance Auto-Close
+
+When an agent's compliance status transitions from `non_compliant` to
+`compliant`, the Go server automatically closes the compliance failure security
+event (1300014) via the PF bridge. This releases the device from any
+compliance-related VLAN restriction.
+
+### E.6 Files Changed
+
+#### fe_eguard (server)
+
+- `go/agent/server/nac_pf_bridge.go` — **New file**. PF Perl admin API client
+  with token-based auth, `ApplySecurityEvent()` and `CloseSecurityEvent()`.
+- `go/agent/server/nac_bridge.go` — Modified `bridgeSecurityEvent()` to call
+  PF bridge instead of raw DB insert; PF bridge handles insert + action dispatch.
+- `go/agent/server/compliance.go` — Added `bridgeComplianceToSecurityEvent()`
+  for automatic MDM compliance → NAC security event wiring.
+- `go/agent/server/server.go` — Added `pfBridge` field to Server struct.
+- `/usr/local/eg/conf/security_events.conf` — Added 8 eGuard security event
+  definitions (1300010–1300017).
+
+### E.7 Validation Evidence (2026-02-28)
+
+| Test | Result | Detail |
+|------|--------|--------|
+| PF bridge startup | **PASS** | Log: `[nac-pf-bridge] enabled: base_url=https://localhost:1443 user=admin` |
+| PF token refresh | **PASS** | Log: `[nac-pf-bridge] refreshed PF API token` |
+| NAC API trigger (malware) | **PASS** | POST `/api/v1/endpoint/nac` → `event_id:1300010, triggered:true` |
+| PF API call (malware) | **PASS** | Log: `applied security_event 1300010 to node aa:bb:cc:dd:ee:ff` |
+| Compliance failure bridge | **PASS** | Auto-triggered `security_event 1300014` on non_compliant status |
+| Suspicious behavior bridge | **PASS** | Auto-triggered `security_event 1300011` for Sigma detections |
+| Security events in DB | **PASS** | Verified via MySQL: events with correct MAC, IDs, and notes |
+| Security events in config UI | **PASS** | All 8 eGuard events visible and enabled at `/admin#/configuration/security_events` |
+| Dedup (no duplicates) | **PASS** | PF bridge mode skips raw INSERT; events created once via PF API |
+
+### E.8 Rollback
+
+1. Disable the PF bridge by removing the env vars:
+   ```bash
+   sudo rm /etc/systemd/system/eguard-agent-server.service.d/override.conf
+   sudo systemctl daemon-reload
+   sudo systemctl restart eguard-agent-server
+   ```
+
+2. Restore the old Go binary from backup:
+   ```bash
+   sudo cp /usr/local/eg/var/backups/nac-bridge-<timestamp>/eg-agent-server /usr/local/eg/sbin/
+   sudo systemctl restart eguard-agent-server
+   ```
+
+3. Disable security events in the database:
+   ```sql
+   UPDATE class SET enabled = 'N' WHERE security_event_id BETWEEN 1300010 AND 1300017;
+   ```
+
+4. Remove config entries by editing `/usr/local/eg/conf/security_events.conf`
+   and deleting the `[1300010]`–`[1300017]` sections.
+
+---
+
+## Appendix F: Endpoint Audit Inline Details + Whitelist UX (Feb 2026)
+
+This rollout improves analyst workflow in **Endpoint → Audit** by switching from
+single top-panel detail to **inline expandable row details** (same operational
+pattern as NAC), clarifying response actions, and exposing fast whitelist
+creation directly from audit events.
+
+### F.1 Scope
+
+Updated UI paths and behavior:
+
+- `#/endpoint-audit`
+  - Inline row expansion (`row-details`) per event
+  - Human-readable response badges (Kill Process, Quarantine File, Isolate Host, Capture Forensics, Alert Only, No Response)
+  - Per-row **Whitelist** action (modal create flow)
+  - Top-right **Whitelist** shortcut button
+- `#/endpoint` endpoint sub-navigation
+  - Added visible **Whitelist** tab entry (permission-gated)
+
+### F.2 Changed Files
+
+- `fe_eguard/html/egappserver/root/src/views/endpoint/Audit.vue`
+  - Replaced detached detail panel with inline expandable table detail rows
+  - Added response action mapping and severity/response badge rendering
+  - Added whitelist create modal and action handlers
+- `fe_eguard/html/egappserver/root/src/views/endpoint/index.vue`
+  - Added `endpointWhitelist` nav item (permission `WHITELIST_MANAGE`)
+
+### F.3 Deployment Evidence
+
+- UI build completed: `npm run build` (no blocking errors)
+- Deployed dist to server:
+  - Backup: `/usr/local/eg/var/backups/audit-ui-inline-20260228165204`
+  - Target: `/usr/local/eg/html/egappserver/root/dist/`
+
+### F.4 Browser Smoke Validation (agent-browser)
+
+Environment:
+
+- URL: `https://103.49.238.102:1443/admin`
+- Credentials: `admin / Eguard123`
+- Session: `agent-browser --session audit-ui`
+
+Validated outcomes:
+
+1. `#/endpoint-audit` loads with new **Audit** table actions and visible **Whitelist** tab.
+2. Clicking an audit row expands inline details (verified by presence of `Show Raw JSON` action in expanded row context).
+3. Response actions render as readable labels/badges (not raw opaque values).
+4. Whitelist modal opens from audit row `Whitelist` button.
+5. Created whitelist entry from audit context:
+   - `match_type = rule_name`
+   - `match_value = linux_crypto_pool_allow_test`
+   - `reason = UI smoke validation`
+6. Success toast/alert shown: `Whitelist entry created successfully.`
+7. `#/endpoint-whitelist` route reachable from endpoint nav and shows created row.
+
+Additional evidence artifact:
+
+- Screenshot: `/tmp/audit-inline-whitelist-validation.png`
+
+### F.5 Rollback
+
+1. Restore previous dist backup:
+
+```bash
+sudo rsync -a --delete \
+  /usr/local/eg/var/backups/audit-ui-inline-20260228165204/dist/ \
+  /usr/local/eg/html/egappserver/root/dist/
+```
+
+2. Refresh browser cache (hard reload) or invalidate CDN/proxy cache if used.
+
+### F.6 Notes
+
+- Existing endpoint permission model is respected:
+  - Whitelist nav/action visibility is controlled by `WHITELIST_MANAGE`.
+- Validation created one test whitelist entry. Remove it from `#/endpoint-whitelist`
+  if not needed in production operations.
+
+---
+
+## Appendix F: NAC Manual Override (Isolate/Allow) (Feb 2026)
+
+This appendix documents the manual network override feature that allows admins
+to manually isolate or allow endpoint network access, overriding automatic
+detection-based security events.
+
+### F.1 Overview
+
+Admins can manually override NAC enforcement for any agent endpoint:
+
+- **Isolate**: Triggers a security event that moves the node to the isolation VLAN
+- **Allow**: Closes all open eGuard security events and triggers VLAN re-evaluation
+  to restore normal network access
+
+### F.2 UI: NAC Enforcement Page
+
+Navigate to **Management → Endpoint Security → NAC**.
+
+The **Manual Network Override** panel at the top provides:
+1. **Agent dropdown** — select the target agent
+2. **Reason field** — optional justification (logged)
+3. **🔒 Isolate** — applies security event → VLAN isolation
+4. **✅ Allow** — closes all events → VLAN restored
+5. **📊 Status** — shows current NAC status (isolated/allowed) with open events
+
+The events table below shows all NAC events with:
+- Open events have a ✅ quick-allow button in the Actions column
+- Closed events show "closed" badge
+
+### F.3 API: Manual Override
+
+**Isolate** a node:
+```bash
+curl -X POST "http://localhost:50053/api/v1/endpoint/nac/override" \
+  -H "Content-Type: application/json" \
+  -d '{"agent_id":"agent-31bbb93f38b4","action":"isolate","reason":"Suspected compromise"}'
+```
+
+**Allow** a node:
+```bash
+curl -X POST "http://localhost:50053/api/v1/endpoint/nac/override" \
+  -H "Content-Type: application/json" \
+  -d '{"agent_id":"agent-31bbb93f38b4","action":"allow","reason":"Investigated — false positive"}'
+```
+
+**Check status**:
+```bash
+curl "http://localhost:50053/api/v1/endpoint/nac/status?agent_id=agent-31bbb93f38b4"
+```
+
+Returns:
+```json
+{
+  "agent_id": "agent-31bbb93f38b4",
+  "mac": "aa:bb:cc:dd:ee:ff",
+  "nac_status": "isolated",
+  "open_events": [1300010]
+}
+```
+
+### F.4 Override Behavior
+
+| Action | What Happens | VLAN Effect |
+|--------|-------------|-------------|
+| Isolate | Creates security event 1300010 (default) via PF API | Node → isolation VLAN |
+| Isolate (custom event) | Creates specified event ID | Depends on event config |
+| Allow | Closes all eGuard events (1300010-1300017) + reevaluates access | Node → normal VLAN |
+
+**Isolate with custom event**:
+```bash
+curl -X POST "http://localhost:50053/api/v1/endpoint/nac/override" \
+  -H "Content-Type: application/json" \
+  -d '{"agent_id":"agent-id","action":"isolate","security_event_id":1300013}'
+```
+
+### F.5 Dedup & Idempotency
+
+- **Isolate** is idempotent: calling it twice does not create duplicate events
+  (PF handles 422 "already open" gracefully)
+- **Allow** is idempotent: calling it on an already-allowed node succeeds silently
+- Automatic detection events are deduped with a 5-minute cooldown window
+  per (mac, event_id) pair to prevent flooding
+
+### F.6 Edge Cases
+
+| Scenario | Result |
+|----------|--------|
+| Override on agent with no MAC | Returns 422: "agent has no valid MAC address" |
+| Override on non-existent agent | Returns 422: "agent has no valid MAC address" |
+| Empty agent_id | Returns 400: "agent_id is required" |
+| Invalid action (not isolate/allow) | Returns 400: "action must be 'isolate' or 'allow'" |
+| PF bridge disabled | Event recorded in DB only, no VLAN enforcement |
+| PF reevaluate_access returns 422 | Expected in lab — nodes not behind real switch; DB state correct |
+
+### F.7 E2E Test Results (2026-02-28)
+
+| # | Test | Result |
+|---|------|--------|
+| 1 | Manual isolate on clean Linux agent | ✅ PASS |
+| 2 | Manual allow on isolated Linux agent | ✅ PASS |
+| 3 | Manual isolate on Windows agent | ✅ PASS |
+| 4 | Manual allow on Windows agent | ✅ PASS |
+| 5 | Isolate with specific event_id (C2) | ✅ PASS |
+| 6 | Non-existent agent override | ✅ PASS (422) |
+| 7 | Empty agent_id | ✅ PASS (400) |
+| 8 | Invalid action | ✅ PASS (400) |
+| 9 | Double isolate (idempotency) | ✅ PASS |
+| 10 | Double allow (idempotency) | ✅ PASS |
+| 11 | Malware detect → auto-isolate → manual allow | ✅ PASS |
+| 12 | Compliance fail → auto-event → manual isolate | ✅ PASS |
+| 13 | GET on override endpoint | ✅ PASS (405) |
+| 14 | UI: Status check | ✅ PASS |
+| 15 | UI: Allow override | ✅ PASS |
+| 16 | UI: Isolate override | ✅ PASS |
+
+### F.8 Files Changed
+
+#### fe_eguard (server)
+- `go/agent/server/nac_override.go` — **New file**: Manual override handlers
+  (isolate, allow, status), with dedup cache clear on manual actions
+- `go/agent/server/nac_bridge.go` — Added PF bridge dedup (5min cooldown),
+  `clearPFBridgeDedup()` for manual override force-trigger
+- `go/agent/server/nac_pf_bridge.go` — Fixed `CloseSecurityEvent` to look up
+  row IDs via PF search API; added `ReevaluateAccess()` for VLAN restoration
+- `go/agent/server/persistence_agents_security.go` — Added
+  `CloseSecurityEventsForMAC()` and `LoadOpenSecurityEventIDs()`
+- `go/agent/server/server.go` — Registered `/nac/override` and `/nac/status`
+  routes
+- `html/egappserver/root/src/views/endpoint/NAC.vue` — Added Manual Network
+  Override panel (agent select, reason, isolate/allow/status buttons),
+  success/error alerts, quick-allow action column
+- `html/egappserver/root/src/views/endpoint/api.js` — Added `nacOverride()`
+  and `nacStatus()` API functions

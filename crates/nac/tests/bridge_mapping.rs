@@ -116,7 +116,7 @@ fn lateral_movement_mitre_maps_to_expected_event() {
     assert_eq!(event.event_id, EVENT_LATERAL_MOVEMENT);
     assert_eq!(
         event.actions,
-        vec![BridgeAction::EmailAdmin, BridgeAction::Log]
+        vec![BridgeAction::ReevaluateAccess, BridgeAction::EmailAdmin]
     );
 }
 
