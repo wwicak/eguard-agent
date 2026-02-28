@@ -117,7 +117,7 @@ Packages are available for all supported platforms:
 |----------|---------------|-----------------|
 | Debian/Ubuntu | `.deb` | `sudo dpkg -i eguard-agent_<version>_amd64.deb` |
 | RHEL/CentOS | `.rpm` | `sudo rpm -i eguard-agent-<version>.x86_64.rpm` |
-| Windows | `.exe` (MSI) | `eguard-agent-<version>-setup.exe /S` |
+| Windows | `.exe` | `.\install.ps1 -Server HOST -Token TOKEN` (see [Section 15.5](#155-windows-agent--installation--operations)) |
 | macOS | `.pkg` | `sudo installer -pkg eguard-agent-<version>.pkg -target /` |
 
 After installation the agent binary is at `/usr/bin/eguard-agent` (Linux) or
@@ -1303,6 +1303,20 @@ sudo systemctl restart eguard-agent
 | `/var/lib/eguard-agent/rules-staging/` | Bundle staging directory |
 | `/etc/systemd/system/eguard-agent.service.d/override.conf` | Systemd overrides |
 
+### File Locations (Windows)
+
+| Path | Purpose |
+|------|---------|
+| `C:\Program Files\eGuard\eguard-agent.exe` | Agent binary |
+| `C:\Program Files\eGuard\uninstall.ps1` | Uninstall script |
+| `C:\ProgramData\eGuard\agent.conf` | Agent configuration |
+| `C:\ProgramData\eGuard\bootstrap.conf` | Bootstrap / enrollment config |
+| `C:\ProgramData\eGuard\certs\` | TLS certificates |
+| `C:\ProgramData\eGuard\logs\agent.log` | Agent log file |
+| `C:\ProgramData\eGuard\offline-events.db` | Offline event buffer (SQLite) |
+| `C:\ProgramData\eGuard\quarantine\` | Quarantined files |
+| `C:\ProgramData\eGuard\rules-staging\` | Bundle staging directory |
+
 ---
 
 ## 15. E2E Testing Notes (Feb 2026)
@@ -1381,13 +1395,193 @@ With the `ebpf-libbpf` feature enabled, all 9 eBPF probes load and attach:
 | `eguard_module_load` | `kprobe/__do_sys_finit_module` | Module loading |
 | `eguard_bprm_check` | `LSM/bprm_check_security` | Binary check |
 
-### 15.5 Windows Agent Status
+### 15.5 Windows Agent — Installation & Operations
 
-The Windows .exe binary (v0.2.2+, commit 2c1be92) includes full platform
-support: SCM service lifecycle, ETW telemetry, WFP network filtering, and
-AMSI integration. MSI installer built via WiX v5.
+#### Installation
 
-Known CI issues resolved:
+The recommended install flow uses the server-hosted `install.ps1` script:
+
+```powershell
+# Download and run (from an elevated PowerShell prompt)
+Invoke-WebRequest -Uri https://SERVER:9999/install.ps1 -OutFile install.ps1
+.\install.ps1 -Server SERVER_HOST -Token ENROLLMENT_TOKEN -GrpcPort 50052
+```
+
+Or with explicit hash verification (offline/air-gapped):
+
+```powershell
+.\install.ps1 -Server http://SERVER:50053 -Token TOKEN -GrpcPort 50052 `
+    -ExpectedSha256 <64-char-hex-hash>
+```
+
+**What the installer does:**
+
+1. Downloads `eguard-agent.exe` from `/api/v1/agent-install/windows-exe`
+2. Verifies SHA-256 integrity against server-provided hash
+3. Installs binary to `C:\Program Files\eGuard\eguard-agent.exe`
+4. Hardens directory ACLs (SYSTEM + Administrators only)
+5. Creates data directories under `C:\ProgramData\eGuard\`
+   (`certs\`, `rules-staging\`, `quarantine\`, `logs\`)
+6. Registers Windows service `eGuardAgent` (auto-start, LocalSystem)
+7. Configures service failure recovery (restart on crash: 5s/10s/30s)
+8. Writes `C:\ProgramData\eGuard\bootstrap.conf` (consumed after enrollment)
+9. Deploys `uninstall.ps1` alongside the binary
+10. Registers in Add/Remove Programs (Settings > Apps)
+11. Starts the service
+
+#### Uninstallation
+
+Users can uninstall via **Settings > Apps > eGuard Endpoint Security Agent > Uninstall**,
+or from an elevated PowerShell prompt:
+
+```powershell
+& "C:\Program Files\eGuard\uninstall.ps1"
+
+# Preserve config/certs for re-enrollment:
+& "C:\Program Files\eGuard\uninstall.ps1" -KeepData
+```
+
+The uninstaller stops and removes the service, cleans the Add/Remove Programs
+entry, removes the binary, and (unless `-KeepData`) removes all agent data.
+
+#### Key Files (Windows)
+
+| Path | Purpose |
+|------|---------|
+| `C:\Program Files\eGuard\eguard-agent.exe` | Agent binary |
+| `C:\Program Files\eGuard\uninstall.ps1` | Uninstall script |
+| `C:\ProgramData\eGuard\agent.conf` | Agent configuration (persisted after enrollment) |
+| `C:\ProgramData\eGuard\bootstrap.conf` | Bootstrap config (consumed after enrollment) |
+| `C:\ProgramData\eGuard\certs\` | TLS certificates |
+| `C:\ProgramData\eGuard\logs\agent.log` | Agent log file (service mode) |
+| `C:\ProgramData\eGuard\offline-events.db` | Offline event buffer (SQLite) |
+| `C:\ProgramData\eGuard\quarantine\` | Quarantined files |
+| `C:\ProgramData\eGuard\rules-staging\` | Threat-intel bundle staging |
+
+#### Windows Service Management
+
+```powershell
+# Check service status
+sc.exe query eGuardAgent
+
+# Stop / start / restart
+Stop-Service eGuardAgent
+Start-Service eGuardAgent
+Restart-Service eGuardAgent
+
+# View recent logs
+Get-Content C:\ProgramData\eGuard\logs\agent.log -Tail 50
+
+# View detections
+Select-String "confidence=" C:\ProgramData\eGuard\logs\agent.log | Select-Object -Last 20
+```
+
+The service name is `eGuardAgent` (not `eguard-agent`). Display name:
+"eGuard Endpoint Security Agent". Runs as `LocalSystem` with auto-start.
+
+#### ETW Telemetry (Windows Kernel Events)
+
+On Windows, the agent uses ETW (Event Tracing for Windows) instead of eBPF.
+The ETW session `eGuardEtwSession` enables 6 kernel providers:
+
+| Provider | Events |
+|----------|--------|
+| Microsoft-Windows-Kernel-Process | ProcessExec, ProcessExit |
+| Microsoft-Windows-Kernel-File | FileOpen, FileWrite, FileRename, FileUnlink |
+| Microsoft-Windows-Kernel-Network | TcpConnect |
+| Microsoft-Windows-DNS-Client | DnsQuery |
+| Microsoft-Windows-Kernel-Registry | (reserved) |
+| Microsoft-Windows-DiskIO | (reserved) |
+
+The ETW consumer runs on a dedicated background thread. Events are decoded,
+enriched, and fed into the same detection pipeline as Linux eBPF events.
+
+**E2E verified results (Feb 2026, Windows Server 2019):**
+- 451+ events captured in 10 minutes of normal operation
+- 15 high-severity Sigma detections (DNS TXT, Antivirus Path, Crypto Mining patterns)
+- 130 MB memory footprint after threat-intel bundle load (354 Sigma + 16,904 YARA rules)
+- Detection engine: 2 shards, full 7-layer pipeline active
+
+### 15.6 Windows Troubleshooting
+
+#### bootstrap.conf UTF-8 BOM
+
+**Symptom**: Service starts then immediately stops (exit code 1), agent.log is
+0 bytes.
+
+**Cause**: Windows PowerShell 5.x's `Set-Content -Encoding UTF8` adds a
+UTF-8 BOM (`EF BB BF`) to the file. The agent's TOML parser cannot parse the
+BOM prefix, causing a silent config load failure.
+
+**Resolution**: The `install.ps1` script uses BOM-free UTF-8 encoding. If
+writing bootstrap.conf manually, use:
+
+```powershell
+$content = @"
+[server]
+address = "server.example.com"
+grpc_port = 50052
+enrollment_token = "your-token"
+"@
+[System.IO.File]::WriteAllText(
+    "C:\ProgramData\eGuard\bootstrap.conf",
+    $content,
+    (New-Object System.Text.UTF8Encoding($false))
+)
+```
+
+Verify no BOM: `[System.IO.File]::ReadAllBytes("C:\ProgramData\eGuard\bootstrap.conf")[0]`
+should be `0x5B` (`[`), not `0xEF`.
+
+#### Console Mode Killed by SSH Disconnect
+
+**Symptom**: Agent started via SSH with `EGUARD_WINDOWS_CONSOLE=1` and
+`start /b` exits after a few seconds during initialization.
+
+**Cause**: When the SSH session closes, Windows sends `CTRL_CLOSE_EVENT` to all
+processes attached to the console. The agent's `tokio::signal::ctrl_c()` handler
+fires, triggering shutdown while `AgentRuntime::new()` is still running.
+
+**Resolution**: Always run the agent as a Windows Service (the default mode).
+Do not use `EGUARD_WINDOWS_CONSOLE=1` for production deployments. If you need
+console output for debugging, keep the SSH session alive:
+
+```cmd
+set EGUARD_WINDOWS_CONSOLE=1
+C:\ProgramData\eGuard\eguard-agent.exe 2>> C:\ProgramData\eGuard\logs\agent.log
+```
+
+#### EGUARD_WINDOWS_CONSOLE Machine-Level Env Var
+
+**Symptom**: Service fails to start with error 1053 (timeout).
+
+**Cause**: `EGUARD_WINDOWS_CONSOLE` was set at the Machine level via
+`[System.Environment]::SetEnvironmentVariable(..., "Machine")`. The service
+inherits this, goes to console mode, and never registers with SCM.
+
+**Resolution**: Remove the machine-level variable:
+
+```powershell
+[System.Environment]::SetEnvironmentVariable("EGUARD_WINDOWS_CONSOLE", $null, "Machine")
+```
+
+Never set this variable at the Machine level. Only use it per-process for
+debugging.
+
+#### Service Name Mismatch
+
+The agent binary expects the Windows service name `eGuardAgent` (defined in
+`main.rs`). Using a different name (e.g., `eguard-agent`) causes the service
+dispatcher to fail. Always use:
+
+```powershell
+sc.exe create eGuardAgent binPath= "C:\Program Files\eGuard\eguard-agent.exe" start= auto
+```
+
+### 15.7 Known CI Issues (Windows)
+
 - WiX v5 uses `-d Key=Value` (space after -d), not `-dKey=Value`
 - Components with `Directory` as KeyPath need explicit GUIDs (not `Guid="*"`)
 - Remove inline `<?define>` for variables passed via CLI `-d`
+- Cross-compile with `x86_64-pc-windows-gnu` produces binaries that work on
+  Windows Server 2019 without MinGW DLLs (Rust statically links the CRT)
