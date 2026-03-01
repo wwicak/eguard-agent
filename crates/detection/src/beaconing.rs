@@ -18,7 +18,9 @@ const MI_THRESHOLD: f64 = 0.5;
 /// Number of discrete buckets for quantization.
 const QUANTIZE_BUCKETS: u32 = 8;
 /// Minimum events before computing MI (need statistical significance).
-const MIN_EVENTS: usize = 16;
+const MIN_EVENTS: usize = 32;
+/// Recompute MI every N events per destination (amortize cost).
+const MI_RECOMPUTE_INTERVAL: usize = 16;
 
 /// Per-destination tracking state.
 #[derive(Debug, Clone)]
@@ -31,6 +33,10 @@ struct DestinationState {
     last_ts: i64,
     /// Tick counter for LRU eviction.
     last_tick: u64,
+    /// Cached MI score (recomputed every MI_RECOMPUTE_INTERVAL events).
+    cached_mi: f64,
+    /// Event count at last MI computation.
+    events_at_last_mi: usize,
 }
 
 /// Result of observing a network event for beaconing.
@@ -92,6 +98,8 @@ impl BeaconingTracker {
                 event_sizes: VecDeque::with_capacity(WINDOW_SIZE),
                 last_ts: ts,
                 last_tick: tick,
+                cached_mi: 0.0,
+                events_at_last_mi: 0,
             });
         state.last_tick = tick;
 
@@ -119,16 +127,28 @@ impl BeaconingTracker {
         }
 
         // Compute MI once we have enough data
-        if state.inter_arrival_times.len() < MIN_EVENTS {
+        let current_len = state.inter_arrival_times.len();
+        if current_len < MIN_EVENTS {
             return BeaconingResult {
                 detected: false,
                 mi_score: 0.0,
             };
         }
 
+        // Only recompute MI every MI_RECOMPUTE_INTERVAL events to amortize cost
+        let events_since_last = current_len.saturating_sub(state.events_at_last_mi);
+        if events_since_last < MI_RECOMPUTE_INTERVAL && state.events_at_last_mi > 0 {
+            return BeaconingResult {
+                detected: state.cached_mi > MI_THRESHOLD,
+                mi_score: state.cached_mi,
+            };
+        }
+
         let iats: Vec<u32> = state.inter_arrival_times.iter().copied().collect();
         let sizes: Vec<u32> = state.event_sizes.iter().copied().collect();
         let mi = mutual_information(&iats, &sizes);
+        state.cached_mi = mi;
+        state.events_at_last_mi = current_len;
 
         BeaconingResult {
             detected: mi > MI_THRESHOLD,

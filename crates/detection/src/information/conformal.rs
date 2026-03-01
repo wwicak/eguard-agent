@@ -52,12 +52,19 @@ impl ConformalCalibrator {
 
     /// Compute the p-value for a new score.
     /// p = |{i : s_i ≥ score}| / (n + 1)
+    ///
+    /// Uses binary search on the sorted calibration scores for O(log n)
+    /// instead of O(n) linear scan.
     pub fn p_value(&self, score: f64) -> f64 {
         let n = self.scores.len();
         if n == 0 {
             return 1.0;
         }
-        let count_geq = self.scores.iter().filter(|&&s| s >= score).count();
+        // scores is sorted ascending (see new()). Find first index where s >= score.
+        let idx = self
+            .scores
+            .partition_point(|&s| s < score);
+        let count_geq = n - idx;
         (count_geq as f64 + 1.0) / (n as f64 + 1.0)
     }
 
