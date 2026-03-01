@@ -276,11 +276,6 @@ impl AnomalyEngine {
         self.windows.get(process_key).map(|w| w.n).unwrap_or(0)
     }
 
-    /// Number of active CUSUM drift detectors.
-    #[cfg(test)]
-    pub(crate) fn cusum_drift_count(&self) -> usize {
-        self.cusum_drift.len()
-    }
 }
 
 impl Default for AnomalyEngine {

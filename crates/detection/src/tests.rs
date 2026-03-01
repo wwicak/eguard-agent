@@ -281,8 +281,10 @@ fn confidence_ordering_matches_policy() {
 #[test]
 // AC-DET-244
 fn confidence_policy_demotes_bare_kernel_integrity_to_medium() {
-    let mut s = DetectionSignals::default();
-    s.kernel_integrity = true;
+    let s = DetectionSignals {
+        kernel_integrity: true,
+        ..Default::default()
+    };
     assert_eq!(confidence_policy(&s), Confidence::Medium);
 }
 
@@ -1579,11 +1581,13 @@ fn ransomware_write_burst_triggers_killchain_and_ignores_sparse_writes() {
         "temp/system paths should not count toward ransomware burst"
     );
 
-    let mut adaptive_policy = RansomwarePolicy::default();
-    adaptive_policy.write_threshold = 100;
-    adaptive_policy.adaptive_min_samples = 1;
-    adaptive_policy.adaptive_floor = 8;
-    adaptive_policy.adaptive_delta = 0.5;
+    let adaptive_policy = RansomwarePolicy {
+        write_threshold: 100,
+        adaptive_min_samples: 1,
+        adaptive_floor: 8,
+        adaptive_delta: 0.5,
+        ..RansomwarePolicy::default()
+    };
     let mut l4_adaptive =
         Layer4Engine::with_capacity_and_policy(300, 8_192, 32_768, adaptive_policy);
     l4_adaptive.add_template(KillChainTemplate {
@@ -3536,14 +3540,18 @@ fn confidence_policy_is_first_match_wins() {
 #[test]
 // AC-DET-259
 fn confidence_policy_escalates_to_very_high_on_two_high_grade_signals() {
-    let mut s = DetectionSignals::default();
-    s.z2_temporal = true;
-    s.exploit_indicator = true;
+    let s = DetectionSignals {
+        z2_temporal: true,
+        exploit_indicator: true,
+        ..Default::default()
+    };
     assert_eq!(confidence_policy(&s), Confidence::VeryHigh);
 
-    let mut s = DetectionSignals::default();
-    s.tamper_indicator = true;
-    s.z4_kill_chain = true;
+    let s = DetectionSignals {
+        tamper_indicator: true,
+        z4_kill_chain: true,
+        ..Default::default()
+    };
     assert_eq!(confidence_policy(&s), Confidence::VeryHigh);
 }
 

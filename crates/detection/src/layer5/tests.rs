@@ -215,8 +215,10 @@ fn top_features_are_interpretable() {
 #[test]
 fn hot_reload_model() {
     let mut engine = MlEngine::new();
-    let mut new_model = MlModel::default();
-    new_model.model_id = "updated-v2".to_string();
+    let mut new_model = MlModel {
+        model_id: "updated-v2".to_string(),
+        ..MlModel::default()
+    };
     new_model.weights[0] = 5.0; // boost IOC weight
     engine.reload_model(new_model).unwrap();
     assert_eq!(engine.model_id(), "updated-v2");
