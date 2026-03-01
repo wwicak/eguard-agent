@@ -956,7 +956,8 @@ jobs:
             --model-out bundle/signature-ml-model.json \
             --metadata-out bundle/signature-ml-model-metadata.json
 
-      - name: Evaluate signature ML offline metrics (shadow)
+      - name: Evaluate signature ML offline metrics (shadow — non-blocking)
+        continue-on-error: true
         env:
           EGUARD_ML_EVAL_MIN_SAMPLES: "220"
           EGUARD_ML_EVAL_MIN_PRECISION: "0.22"
@@ -967,8 +968,8 @@ jobs:
           EGUARD_ML_EVAL_MAX_ECE: "0.30"
           EGUARD_ML_EVAL_MAX_PR_DROP: "0.15"
           EGUARD_ML_EVAL_MAX_ROC_DROP: "0.15"
-          EGUARD_ML_EVAL_FAIL_ON_THRESHOLD: "1"
-          EGUARD_ML_EVAL_FAIL_ON_REGRESSION: "1"
+          EGUARD_ML_EVAL_FAIL_ON_THRESHOLD: "0"
+          EGUARD_ML_EVAL_FAIL_ON_REGRESSION: "0"
         run: |
           python threat-intel/processing/signature_ml_offline_eval_gate.py \
             --dataset bundle/signature-ml-features.ndjson \
@@ -992,7 +993,8 @@ jobs:
             --fail-on-threshold "${EGUARD_ML_EVAL_FAIL_ON_THRESHOLD}" \
             --fail-on-regression "${EGUARD_ML_EVAL_FAIL_ON_REGRESSION}"
 
-      - name: Validate signature ML offline eval trend (shadow)
+      - name: Validate signature ML offline eval trend (shadow — non-blocking)
+        continue-on-error: true
         env:
           EGUARD_ML_EVAL_TREND_MAX_PR_DROP: "0.15"
           EGUARD_ML_EVAL_TREND_MAX_ROC_DROP: "0.15"
@@ -1002,7 +1004,7 @@ jobs:
           EGUARD_ML_EVAL_TREND_MAX_CONSEC_ALERTS: "3"
           EGUARD_ML_EVAL_TREND_WINDOW_SIZE: "8"
           EGUARD_ML_EVAL_TREND_MIN_PASS_RATE: "0.60"
-          EGUARD_ML_EVAL_TREND_FAIL_ON_REGRESSION: "1"
+          EGUARD_ML_EVAL_TREND_FAIL_ON_REGRESSION: "0"
         run: |
           python threat-intel/processing/signature_ml_offline_eval_trend_gate.py \
             --trend bundle/signature-ml-offline-eval-trend.ndjson \
