@@ -34,7 +34,7 @@ jobs:
       - name: Install verification dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y checksec strace yq
+          sudo apt-get install -y checksec strace yq libelf-dev
 
       - name: Install cargo security tools
         run: |
