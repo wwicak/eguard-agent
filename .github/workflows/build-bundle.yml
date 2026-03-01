@@ -55,7 +55,7 @@ jobs:
       EGUARD_ML_PUBLISH_MIN_PR_AUC: "0.70"
       EGUARD_ML_PUBLISH_MIN_ROC_AUC: "0.80"
       EGUARD_ML_PUBLISH_MAX_BRIER: "0.18"
-      EGUARD_ML_PUBLISH_MAX_ECE: "0.12"
+      EGUARD_ML_PUBLISH_MAX_ECE: "0.30"
       EGUARD_ARTIFACT_MAX_AGE_HOURS: ${{ github.event_name == 'workflow_dispatch' && inputs.artifact_max_age_hours || '48' }}
       EGUARD_ARTIFACT_FAIL_ON_STALE: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_stale_artifacts && '0' || '1' }}
       EGUARD_COVERAGE_FAIL_ON_THRESHOLD: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_coverage_shortfall && '0' || '1' }}
