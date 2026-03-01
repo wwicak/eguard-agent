@@ -120,6 +120,7 @@ fn json_number(doc: &str, key: &str) -> f64 {
         .unwrap_or_else(|err| panic!("invalid JSON number for {key}: {err}"))
 }
 
+#[allow(dead_code)]
 fn zig_const_product(doc: &str, const_name: &str) -> u64 {
     let marker = format!("pub const {const_name}:");
     let line = doc

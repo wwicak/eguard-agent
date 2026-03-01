@@ -33,7 +33,7 @@ pub(super) enum ControlPlaneTaskKind {
         compliance: ComplianceResult,
     },
     Inventory {
-        inventory: InventoryEnvelope,
+        inventory: Box<InventoryEnvelope>,
     },
     PolicySync,
     ThreatIntelRefresh,

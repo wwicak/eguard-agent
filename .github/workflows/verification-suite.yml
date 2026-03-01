@@ -28,18 +28,26 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install nightly toolchain for miri
+        if: github.event_name != 'push' && github.event_name != 'pull_request'
         run: |
           rustup toolchain install nightly --component miri,rust-src
 
-      - name: Install verification dependencies
+      - name: Install verification dependencies (core)
         run: |
           sudo apt-get update
-          sudo apt-get install -y checksec strace yq libelf-dev
+          sudo apt-get install -y yq libelf-dev
 
-      - name: Install cargo security tools
+      - name: Install verification dependencies (full profile)
+        if: github.event_name != 'push' && github.event_name != 'pull_request'
         run: |
-          cargo install cargo-audit --locked
-          cargo install cargo-fuzz --locked
+          sudo apt-get install -y checksec strace
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Install cargo-fuzz (full profile)
+        if: github.event_name != 'push' && github.event_name != 'pull_request'
+        run: cargo install cargo-fuzz --locked
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -56,12 +64,16 @@ jobs:
         run: bash scripts/run_workflow_yaml_lint_ci.sh
 
       - name: Run verification suite contracts
+        timeout-minutes: ${{ (github.event_name == 'push' || github.event_name == 'pull_request') && 15 || 180 }}
+        env:
+          EGUARD_VERIFICATION_PROFILE: ${{ (github.event_name == 'push' || github.event_name == 'pull_request') && 'fast' || 'full' }}
         run: |
           mkdir -p artifacts/verification-suite
           set -o pipefail
           ./scripts/run_verification_suite_ci.sh 2>&1 | tee artifacts/verification-suite/run.log
 
       - name: Seed optimization guardrail baselines (best effort)
+        if: github.event_name != 'push' && github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EGUARD_GUARDRAIL_TARGET_BRANCH: ${{ github.ref_name }}
@@ -203,6 +215,7 @@ jobs:
           PY
 
       - name: Run optimization guardrail harnesses
+        if: github.event_name != 'push' && github.event_name != 'pull_request'
         run: |
           bash scripts/run_detection_benchmark_ci.sh
           bash scripts/run_runtime_tick_slo_ci.sh
@@ -215,6 +228,7 @@ jobs:
           bash scripts/run_release_profile_opt_ci.sh
 
       - name: Enforce detection benchmark regression gate
+        if: github.event_name != 'push' && github.event_name != 'pull_request'
         continue-on-error: true
         env:
           EGUARD_BENCHMARK_MAX_REGRESSION_PCT: "50"
@@ -228,6 +242,7 @@ jobs:
             --max-wall-clock-ms "${EGUARD_BENCHMARK_MAX_WALL_MS}"
 
       - name: Enforce rule-push regression gate
+        if: github.event_name != 'push' && github.event_name != 'pull_request'
         env:
           EGUARD_RULE_PUSH_MAX_TRANSFER_SECONDS: "5"
           EGUARD_RULE_PUSH_MAX_ROLLOUT_SECONDS: "30"
@@ -244,6 +259,7 @@ jobs:
             --max-rollout-increase-pct "${EGUARD_RULE_PUSH_MAX_ROLLOUT_INCREASE_PCT}"
 
       - name: Enforce optimization guardrail thresholds
+        if: github.event_name != 'push' && github.event_name != 'pull_request'
         run: python3 scripts/check_optimization_guardrail_thresholds.py --root .
 
       - name: Run cold/warm guardrail threshold realism sweep

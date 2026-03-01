@@ -77,9 +77,8 @@ pub struct UsbViolation {
 
 // ── UsbPolicy implementation ─────────────────────────────────────────
 
-impl UsbPolicy {
-    /// Permissive default: allow all device classes, log everything.
-    pub fn default() -> Self {
+impl Default for UsbPolicy {
+    fn default() -> Self {
         Self {
             allow_storage: true,
             allow_keyboard: true,
@@ -88,7 +87,9 @@ impl UsbPolicy {
             log_all_connections: true,
         }
     }
+}
 
+impl UsbPolicy {
     /// Strict posture: block mass-storage, allow HID, log everything.
     pub fn strict() -> Self {
         Self {

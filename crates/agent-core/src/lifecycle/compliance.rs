@@ -248,8 +248,6 @@ fn load_remediation_allowlist() -> HashMap<String, Vec<RemediationAllowlistEntry
         }
     }
 
-    match serde_json::from_str::<HashMap<String, Vec<RemediationAllowlistEntry>>>(&raw) {
-        Ok(map) => map,
-        Err(_) => HashMap::new(),
-    }
+    serde_json::from_str::<HashMap<String, Vec<RemediationAllowlistEntry>>>(&raw)
+        .unwrap_or_default()
 }

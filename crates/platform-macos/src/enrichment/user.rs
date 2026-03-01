@@ -48,7 +48,7 @@ fn resolve_uid_macos(uid: u32) -> Option<String> {
 mod tests {
     #[test]
     fn username_non_empty_validation() {
-        assert!("alice".trim().is_empty() == false);
+        assert!(!"alice".trim().is_empty());
         assert!("   ".trim().is_empty());
     }
 }

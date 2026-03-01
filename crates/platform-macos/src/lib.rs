@@ -213,9 +213,7 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
             process_cmdline: payload_meta.command_line_hint,
             parent_process: None,
             parent_chain: Vec::new(),
-            file_path: payload_meta
-                .file_path
-                .or_else(|| payload_meta.file_path_secondary),
+            file_path: payload_meta.file_path.or(payload_meta.file_path_secondary),
             file_path_secondary: None,
             file_write: payload_meta.file_write,
             file_sha256: None,

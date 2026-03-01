@@ -1081,6 +1081,24 @@ Key server-side env knobs:
 | `EGUARD_ML_FAIL_ON_THRESHOLD` | `1` | Fail task on quality/eval threshold gate violations |
 | `EGUARD_ML_FAIL_ON_REGRESSION` | `1` | Fail task on offline-eval regression gate violations |
 
+#### Maintenance Task API Compatibility (fe_eguard)
+
+Some environments invoke maintenance tasks through Unified API endpoints while others
+run tasks locally via `egcron`.
+
+Supported run endpoints (server-side compatibility):
+
+- `POST /api/v1/config/maintenance_task/<task_id>/run`
+- `POST /api/v1/config/maintenance_tasks/<task_id>/run`
+
+Operational notes:
+
+- The plural run endpoint is rewritten to singular action handling to avoid router
+  wildcard conflicts with config CRUD routes.
+- If a task has no dedicated Perl module, execution falls back to `/usr/local/eg/sbin/egcron <task_id>`.
+- Health check command:
+  - `sudo /usr/local/eg/sbin/egcron cluster_check`
+
 #### Bundle Signing
 
 | Variable | Default | Description |
@@ -1415,6 +1433,44 @@ re-seeds `eguard-agent` as an allowed process. If FPs persist:
    ```bash
    journalctl -u eguard-agent-server --grep "enroll" --since "1 hour ago"
    ```
+
+### 13.9 verification-suite CI runs too long (timeouts / slow feedback)
+
+**Symptom**: `verification-suite` takes too long on every push/PR, delaying merge feedback.
+
+**Current behavior (March 2026 update)**:
+
+- `push` / `pull_request`: workflow runs **fast profile** with **15-minute timeout** on the verification contract step.
+- `schedule` / `release`: workflow runs **full profile** (fuzz + Miri + release/hardening/integration/guardrail checks).
+
+Profile selector is controlled by:
+
+```bash
+EGUARD_VERIFICATION_PROFILE=fast|full
+```
+
+**Local operator commands**:
+
+```bash
+# Fast pre-push validation (recommended for day-to-day work)
+EGUARD_VERIFICATION_PROFILE=fast ./scripts/run_verification_suite_ci.sh
+
+# Full validation (release/nightly parity)
+EGUARD_VERIFICATION_PROFILE=full ./scripts/run_verification_suite_ci.sh
+```
+
+**Fast profile scope** (for <15m PR feedback):
+- runs: `cargo audit` + workspace `cargo clippy -D warnings`,
+- skips: bundle-signature contracts, fuzz, Miri, release build/hardening probes, extra integration smoke tests, and heavy guardrail gates.
+
+If a push/PR still fails on lints, run targeted clippy first on the touched crate(s):
+
+```bash
+cargo clippy -p detection --all-targets --all-features -- -D warnings
+cargo clippy -p agent-core --all-targets --all-features -- -D warnings
+cargo clippy -p platform-macos --all-targets --all-features -- -D warnings
+cargo clippy -p platform-windows --all-targets --all-features -- -D warnings
+```
 
 ---
 

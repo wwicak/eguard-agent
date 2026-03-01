@@ -176,13 +176,16 @@ fn apply_fleet_baseline_seeds_keeps_mature_local_profiles() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn baseline_upload_dirty_trigger_runs_without_waiting_interval() {
     let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
     std::env::set_var("EGUARD_BASELINE_UPLOAD_MAX_BYTES", "1");
 
-    let mut cfg = crate::config::AgentConfig::default();
-    cfg.transport_mode = "http".to_string();
-    cfg.server_addr = "http://127.0.0.1:65535".to_string();
+    let cfg = crate::config::AgentConfig {
+        transport_mode: "http".to_string(),
+        server_addr: "http://127.0.0.1:65535".to_string(),
+        ..crate::config::AgentConfig::default()
+    };
 
     let mut runtime = AgentRuntime::new(cfg).expect("runtime");
     runtime.baseline_upload_enabled = true;
@@ -219,13 +222,16 @@ async fn baseline_upload_dirty_trigger_runs_without_waiting_interval() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn baseline_upload_canary_zero_disables_upload_path() {
     let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
     std::env::set_var("EGUARD_BASELINE_UPLOAD_CANARY_PERCENT", "0");
 
-    let mut cfg = crate::config::AgentConfig::default();
-    cfg.transport_mode = "http".to_string();
-    cfg.server_addr = "http://127.0.0.1:65535".to_string();
+    let cfg = crate::config::AgentConfig {
+        transport_mode: "http".to_string(),
+        server_addr: "http://127.0.0.1:65535".to_string(),
+        ..crate::config::AgentConfig::default()
+    };
 
     let mut runtime = AgentRuntime::new(cfg).expect("runtime");
     runtime.baseline_upload_enabled = true;
@@ -260,13 +266,16 @@ async fn baseline_upload_canary_zero_disables_upload_path() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn fleet_seed_canary_zero_disables_fetch_path() {
     let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
     std::env::set_var("EGUARD_FLEET_SEED_CANARY_PERCENT", "0");
 
-    let mut cfg = crate::config::AgentConfig::default();
-    cfg.transport_mode = "http".to_string();
-    cfg.server_addr = "http://127.0.0.1:65535".to_string();
+    let cfg = crate::config::AgentConfig {
+        transport_mode: "http".to_string(),
+        server_addr: "http://127.0.0.1:65535".to_string(),
+        ..crate::config::AgentConfig::default()
+    };
 
     let mut runtime = AgentRuntime::new(cfg).expect("runtime");
     runtime.fleet_seed_enabled = true;
@@ -284,13 +293,16 @@ async fn fleet_seed_canary_zero_disables_fetch_path() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn baseline_upload_rejects_oversized_payload_and_tracks_metric() {
     let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
     std::env::set_var("EGUARD_BASELINE_UPLOAD_MAX_BYTES", "128");
 
-    let mut cfg = crate::config::AgentConfig::default();
-    cfg.transport_mode = "http".to_string();
-    cfg.server_addr = "http://127.0.0.1:65535".to_string();
+    let cfg = crate::config::AgentConfig {
+        transport_mode: "http".to_string(),
+        server_addr: "http://127.0.0.1:65535".to_string(),
+        ..crate::config::AgentConfig::default()
+    };
 
     let mut runtime = AgentRuntime::new(cfg).expect("runtime");
     runtime.baseline_upload_enabled = true;
@@ -327,6 +339,7 @@ async fn baseline_upload_rejects_oversized_payload_and_tracks_metric() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn baseline_e2e_upload_fetch_seed_flow_works() {
     let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
     let baseline_path = unique_baseline_path("eguard-baseline-e2e-loop");
@@ -397,9 +410,11 @@ async fn baseline_e2e_upload_fetch_seed_flow_works() {
         }
     });
 
-    let mut cfg = crate::config::AgentConfig::default();
-    cfg.transport_mode = "http".to_string();
-    cfg.server_addr = addr.to_string();
+    let cfg = crate::config::AgentConfig {
+        transport_mode: "http".to_string(),
+        server_addr: addr.to_string(),
+        ..crate::config::AgentConfig::default()
+    };
 
     let mut runtime = AgentRuntime::new(cfg).expect("runtime");
     runtime.baseline_upload_enabled = true;

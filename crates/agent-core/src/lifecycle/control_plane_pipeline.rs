@@ -132,7 +132,9 @@ impl AgentRuntime {
         if inventory_due {
             let inventory = self.collect_inventory(now_unix);
             self.try_enqueue_control_plane_task(
-                ControlPlaneTaskKind::Inventory { inventory },
+                ControlPlaneTaskKind::Inventory {
+                    inventory: Box::new(inventory),
+                },
                 now_unix,
             );
         }
@@ -211,7 +213,7 @@ impl AgentRuntime {
                 }
                 ControlPlaneTaskKind::Inventory { inventory } => {
                     let inventory_started = Instant::now();
-                    self.send_inventory_if_due(now_unix, &inventory);
+                    self.send_inventory_if_due(now_unix, inventory.as_ref());
                     self.metrics.last_compliance_micros = elapsed_micros(inventory_started);
                 }
                 ControlPlaneTaskKind::PolicySync => {

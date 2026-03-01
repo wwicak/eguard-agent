@@ -277,7 +277,7 @@ impl AgentRuntime {
         self.run_connected_telemetry_stage(evaluation).await?;
         self.run_connected_control_plane_stage(now_unix, evaluation)
             .await?;
-        self.run_memory_scan_if_due(now_unix);
+        self.run_memory_scan_if_due(now_unix).await;
         self.drive_async_workers();
 
         self.metrics.last_connected_tick_micros = elapsed_micros(connected_started);

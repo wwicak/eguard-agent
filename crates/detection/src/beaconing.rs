@@ -180,11 +180,19 @@ impl Default for BeaconingTracker {
 /// - value 63    → bucket 6
 /// - value 127+  → bucket 7  (for 8 buckets)
 fn quantize_log(value: f64, buckets: u32) -> u32 {
-    if value <= 0.0 {
+    if value <= 0.0 || buckets == 0 {
         return 0;
     }
-    let bucket = (1.0 + value).log2().floor() as u32;
-    bucket.min(buckets - 1)
+
+    // Integer-like threshold walk to avoid floating-point edge drift under Miri:
+    // bucket 1 starts at 1, bucket 2 at 3, bucket 3 at 7, ... (2^n - 1).
+    let mut bucket = 0u32;
+    let mut threshold = 1.0f64;
+    while bucket + 1 < buckets && value >= threshold {
+        bucket += 1;
+        threshold = threshold * 2.0 + 1.0;
+    }
+    bucket
 }
 
 #[cfg(test)]

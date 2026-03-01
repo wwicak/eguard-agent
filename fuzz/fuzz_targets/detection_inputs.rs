@@ -54,6 +54,10 @@ fuzz_target!(|data: &[u8]| {
         dst_domain: Some(bounded_text(data, 214, 64)),
         command_line: Some(bounded_text(data, 278, 96)),
         event_size: data.get(374).copied().map(u64::from),
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
     };
 
     if let Ok(mut engine) = DETECTION_ENGINE.lock() {

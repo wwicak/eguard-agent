@@ -228,7 +228,7 @@ fn write_private_config_file(path: &Path, data: &[u8]) -> std::io::Result<()> {
             .open(path)?;
         file.write_all(data)?;
         file.sync_all()?;
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(unix))]
@@ -273,18 +273,20 @@ mod tests {
         )
         .expect("write existing config");
 
-        let mut cfg = AgentConfig::default();
-        cfg.agent_id = "agent-a".to_string();
-        cfg.server_addr = "157.10.161.219:50052".to_string();
-        cfg.transport_mode = "grpc".to_string();
-        cfg.enrollment_token = Some("tok-xyz".to_string());
-        cfg.tenant_id = Some("default".to_string());
+        let cfg = AgentConfig {
+            agent_id: "agent-a".to_string(),
+            server_addr: "127.0.0.1:50052".to_string(),
+            transport_mode: "grpc".to_string(),
+            enrollment_token: Some("tok-xyz".to_string()),
+            tenant_id: Some("default".to_string()),
+            ..AgentConfig::default()
+        };
 
         let persisted = persist_runtime_config_snapshot(&cfg).expect("persist runtime config");
         assert_eq!(persisted, path);
 
         let loaded = AgentConfig::load().expect("load persisted config");
-        assert_eq!(loaded.server_addr, "157.10.161.219:50052");
+        assert_eq!(loaded.server_addr, "127.0.0.1:50052");
         assert_eq!(loaded.transport_mode, "grpc");
         assert!(loaded.enrollment_token.is_none());
         assert_eq!(loaded.tenant_id.as_deref(), Some("default"));

@@ -50,14 +50,16 @@ pub(super) fn verify_bundle_signature_with_material(
 }
 
 pub(super) fn build_ransomware_policy(config: &AgentConfig) -> RansomwarePolicy {
-    let mut policy = RansomwarePolicy::default();
-    policy.write_threshold = config.detection_ransomware_write_threshold;
-    policy.write_window_secs = config.detection_ransomware_write_window_secs as i64;
-    policy.adaptive_delta = config.detection_ransomware_adaptive_delta;
-    policy.adaptive_min_samples = config.detection_ransomware_adaptive_min_samples;
-    policy.adaptive_floor = config.detection_ransomware_adaptive_floor;
-    policy.learned_root_min_hits = config.detection_ransomware_learned_root_min_hits;
-    policy.learned_root_max = config.detection_ransomware_learned_root_max;
+    let mut policy = RansomwarePolicy {
+        write_threshold: config.detection_ransomware_write_threshold,
+        write_window_secs: config.detection_ransomware_write_window_secs as i64,
+        adaptive_delta: config.detection_ransomware_adaptive_delta,
+        adaptive_min_samples: config.detection_ransomware_adaptive_min_samples,
+        adaptive_floor: config.detection_ransomware_adaptive_floor,
+        learned_root_min_hits: config.detection_ransomware_learned_root_min_hits,
+        learned_root_max: config.detection_ransomware_learned_root_max,
+        ..RansomwarePolicy::default()
+    };
     if !config.detection_ransomware_user_path_prefixes.is_empty() {
         policy.user_path_prefixes = config.detection_ransomware_user_path_prefixes.clone();
     }

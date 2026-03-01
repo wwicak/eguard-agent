@@ -7,7 +7,7 @@ use response::plan_action;
 use super::{interval_due, AgentRuntime};
 
 impl AgentRuntime {
-    pub(super) fn run_memory_scan_if_due(&mut self, now_unix: i64) {
+    pub(super) async fn run_memory_scan_if_due(&mut self, now_unix: i64) {
         if !self.config.detection_memory_scan_enabled {
             return;
         }
@@ -74,11 +74,11 @@ impl AgentRuntime {
             }
         }
         for detection in detections {
-            self.handle_memory_scan_detection(&detection, now_unix);
+            self.handle_memory_scan_detection(&detection, now_unix).await;
         }
     }
 
-    fn handle_memory_scan_detection(&mut self, detection: &MemoryScanResult, now_unix: i64) {
+    async fn handle_memory_scan_detection(&mut self, detection: &MemoryScanResult, now_unix: i64) {
         let mut notes = Vec::new();
         notes.push(format!("memory_hits={}", detection.hits.len()));
         notes.push(format!("bytes_scanned={}", detection.bytes_scanned));
@@ -107,7 +107,7 @@ impl AgentRuntime {
             dst_ip: None,
             dst_domain: None,
             command_line: Some(notes.join(";")),
-            event_size: Some(detection.bytes_scanned as u64),
+            event_size: Some(detection.bytes_scanned),
             container_runtime: None,
             container_id: None,
             container_escape: false,
@@ -154,14 +154,13 @@ impl AgentRuntime {
             .first()
             .map(|hit| hit.rule_name.clone())
             .unwrap_or_default();
-        let _ = self.report_local_action_if_needed(
+        self.report_local_action_if_needed(
             action,
             confidence,
             &event,
             now_unix,
-            &["BEH_behavioral".to_string()],
-            &rule_name,
-            "behavioral",
-        );
+            (&["BEH_behavioral".to_string()], &rule_name, "behavioral"),
+        )
+        .await;
     }
 }

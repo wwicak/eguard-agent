@@ -159,7 +159,7 @@ fn fill_random_seed(seed: &mut [u8; 32]) -> Result<()> {
     {
         let mut file = std::fs::File::open("/dev/urandom").context("open /dev/urandom")?;
         file.read_exact(seed).context("read /dev/urandom")?;
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(unix))]

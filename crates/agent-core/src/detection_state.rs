@@ -8,7 +8,7 @@ use tracing::info;
 
 enum ShardCommand {
     ProcessEvent {
-        event: TelemetryEvent,
+        event: Box<TelemetryEvent>,
         response: mpsc::Sender<std::result::Result<DetectionOutcome, String>>,
     },
     ScanProcessMemory {
@@ -59,7 +59,7 @@ impl DetectionShard {
         let (response_tx, response_rx) = mpsc::channel();
         self.tx
             .send(ShardCommand::ProcessEvent {
-                event,
+                event: Box::new(event),
                 response: response_tx,
             })
             .map_err(|_| anyhow!("detection shard channel closed"))?;

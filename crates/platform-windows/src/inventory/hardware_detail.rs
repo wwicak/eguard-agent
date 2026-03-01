@@ -10,6 +10,7 @@ use crate::windows_cmd::POWERSHELL_EXE;
 #[cfg(target_os = "windows")]
 use std::process::Command;
 
+#[cfg(any(test, target_os = "windows"))]
 use serde::Serialize;
 #[cfg(any(test, target_os = "windows"))]
 use serde_json::Value;
@@ -342,6 +343,7 @@ fn collect_software_inventory(attrs: &mut HashMap<String, String>) {
 // Helper types and mappings
 // ---------------------------------------------------------------------------
 
+#[cfg(target_os = "windows")]
 #[derive(Debug, Serialize)]
 struct SoftwareEntry {
     name: String,
@@ -350,6 +352,7 @@ struct SoftwareEntry {
     installed_at: String,
 }
 
+#[cfg(any(test, target_os = "windows"))]
 #[derive(Debug, Serialize)]
 struct DimmEntry {
     capacity_mb: u64,
@@ -358,6 +361,7 @@ struct DimmEntry {
     manufacturer: String,
 }
 
+#[cfg(any(test, target_os = "windows"))]
 #[derive(Debug, Serialize)]
 struct DiskEntry {
     model: String,
@@ -368,6 +372,7 @@ struct DiskEntry {
     bus_type: String,
 }
 
+#[cfg(any(test, target_os = "windows"))]
 #[derive(Debug, Serialize)]
 struct NetAdapterEntry {
     name: String,

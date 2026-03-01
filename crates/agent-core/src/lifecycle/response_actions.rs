@@ -108,14 +108,13 @@ impl AgentRuntime {
         confidence: Confidence,
         event: &TelemetryEvent,
         now_unix: i64,
-        detection_layers: &[String],
-        rule_name: &str,
-        threat_category: &str,
+        response_meta: (&[String], &str, &str),
     ) {
         if matches!(action, PlannedAction::AlertOnly | PlannedAction::None) {
             return;
         }
 
+        let (detection_layers, rule_name, threat_category) = response_meta;
         let local = self.execute_planned_action(action, event, now_unix);
         if std::env::var("EGUARD_DEBUG_EVENT_LOG")
             .ok()

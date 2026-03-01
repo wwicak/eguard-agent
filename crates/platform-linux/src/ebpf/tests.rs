@@ -484,7 +484,7 @@ fn replay_backend_reads_ndjson_file() {
             r#"{{"event_type":"file_open","pid":2,"uid":0,"ts_ns":200,"file_path":"/etc/passwd"}}"#
         )
         .unwrap();
-        writeln!(f, "").unwrap(); // blank line
+        writeln!(f).unwrap(); // blank line
         writeln!(f, r#"{{"event_type":"tcp_connect","pid":3,"uid":0,"ts_ns":300,"dst_ip":"10.0.0.1","dst_port":443}}"#).unwrap();
     }
 

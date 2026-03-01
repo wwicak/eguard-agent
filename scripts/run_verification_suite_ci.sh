@@ -9,11 +9,27 @@ artifact_dir="artifacts/verification-suite"
 mkdir -p "$artifact_dir"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+verification_profile="${EGUARD_VERIFICATION_PROFILE:-full}"
+case "$verification_profile" in
+  full|fast) ;;
+  *)
+    echo "[verification-suite] unsupported EGUARD_VERIFICATION_PROFILE: $verification_profile" >&2
+    exit 1
+    ;;
+esac
+log_stage "verification profile: $verification_profile"
+
 # AC-VER-023 / AC-VER-024
 log_stage "cargo audit"
 cargo audit
 log_stage "cargo clippy"
 cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+if [[ "$verification_profile" == "fast" ]]; then
+  log_stage "fast profile: skipping bundle/fuzz/miri/release/hardening/integration/guardrail stages"
+  log_stage "verification suite completed"
+  exit 0
+fi
 
 # AC-VER-052 / AC-VER-053 / AC-VER-054
 log_stage "bundle signature contract gate"
@@ -32,17 +48,20 @@ bash scripts/run_agent_bundle_ingestion_contract_ci.sh \
   --pubhex-file "${bundle_pubhex_file}" \
   --test-selector lifecycle::tests::load_bundle_rules_rejects_tampered_ci_generated_signed_bundle
 
-# AC-VER-025
-log_stage "cargo fuzz protobuf_parse"
-cargo +nightly fuzz run protobuf_parse -- -max_total_time=30 -verbosity=0
-log_stage "cargo fuzz detection_inputs"
-cargo +nightly fuzz run detection_inputs -- -max_total_time=30 -verbosity=0
+# AC-VER-025 / AC-VER-026 are expensive and run in full profile only.
+if [[ "$verification_profile" == "full" ]]; then
+  log_stage "cargo fuzz protobuf_parse"
+  cargo +nightly fuzz run protobuf_parse -- -max_total_time=30 -verbosity=0
+  log_stage "cargo fuzz detection_inputs"
+  cargo +nightly fuzz run detection_inputs -- -max_total_time=30 -verbosity=0
 
-# AC-VER-026
-log_stage "cargo miri setup"
-cargo +nightly miri setup
-log_stage "cargo miri detection tests"
-MIRIFLAGS="-Zmiri-disable-isolation" cargo +nightly miri test -p detection --lib -- --test-threads=1
+  log_stage "cargo miri setup"
+  cargo +nightly miri setup
+  log_stage "cargo miri detection tests"
+  MIRIFLAGS="-Zmiri-disable-isolation" cargo +nightly miri test -p detection --lib -- --test-threads=1
+else
+  log_stage "skip fuzz + miri in fast profile"
+fi
 
 # AC-VER-027 build prerequisite
 log_stage "cargo build release agent-core"
@@ -75,18 +94,20 @@ cargo test -p platform-linux ebpf::tests::parses_structured_lsm_block_payload --
 log_stage "agent-core shard IOC reload test"
 cargo test -p agent-core lifecycle::tests::reload_detection_state_from_bundle_populates_ioc_layers_on_all_shards -- --exact
 
-# AC-VER-031 / AC-VER-032 (profiling + release profile optimization gates)
-log_stage "perf profile gate"
-bash scripts/run_perf_profile_gate_ci.sh
-log_stage "release profile optimization gate"
-bash scripts/run_release_profile_opt_ci.sh
+# AC-VER-031 / AC-VER-032 / AC-DET-093 / AC-VER-033 are heavy guardrails.
+if [[ "$verification_profile" == "full" ]]; then
+  log_stage "perf profile gate"
+  bash scripts/run_perf_profile_gate_ci.sh
+  log_stage "release profile optimization gate"
+  bash scripts/run_release_profile_opt_ci.sh
 
-# AC-DET-093 / AC-DET-094 (replay quality precision/recall/FAR gate)
-log_stage "detection quality gate"
-bash scripts/run_detection_quality_gate_ci.sh
+  log_stage "detection quality gate"
+  bash scripts/run_detection_quality_gate_ci.sh
 
-# AC-VER-033 (sustained drop-rate pressure check)
-log_stage "ebpf drop-rate pressure gate"
-bash scripts/run_ebpf_drop_rate_pressure_ci.sh
+  log_stage "ebpf drop-rate pressure gate"
+  bash scripts/run_ebpf_drop_rate_pressure_ci.sh
+else
+  log_stage "skip perf/release-profile/detection-quality/ebpf-drop gates in fast profile"
+fi
 
 log_stage "verification suite completed"
