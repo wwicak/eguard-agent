@@ -956,7 +956,7 @@ jobs:
             --model-out bundle/signature-ml-model.json \
             --metadata-out bundle/signature-ml-model-metadata.json
 
-      - name: Evaluate signature ML offline metrics (shadow — non-blocking)
+      - name: Evaluate signature ML offline metrics (shadow)
         continue-on-error: true
         env:
           EGUARD_ML_EVAL_MIN_SAMPLES: "220"
@@ -993,7 +993,7 @@ jobs:
             --fail-on-threshold "${EGUARD_ML_EVAL_FAIL_ON_THRESHOLD}" \
             --fail-on-regression "${EGUARD_ML_EVAL_FAIL_ON_REGRESSION}"
 
-      - name: Validate signature ML offline eval trend (shadow — non-blocking)
+      - name: Validate signature ML offline eval trend (shadow)
         continue-on-error: true
         env:
           EGUARD_ML_EVAL_TREND_MAX_PR_DROP: "0.15"
