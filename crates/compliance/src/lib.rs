@@ -1000,7 +1000,7 @@ fn plan_remediation_actions_v2(
         let Some(remediation) = spec.remediation.as_ref() else {
             continue;
         };
-        if remediation.mode.trim().to_ascii_lowercase() != "auto" {
+        if !remediation.mode.trim().eq_ignore_ascii_case("auto") {
             continue;
         }
         if !check_spec_applicable(spec, snapshot) {
