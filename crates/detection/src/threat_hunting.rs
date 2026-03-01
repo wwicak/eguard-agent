@@ -222,7 +222,16 @@ pub fn evaluate_file_presence_check(
 // Default queries
 // ---------------------------------------------------------------------------
 
+/// Return the default set of hunting queries. Cross-platform queries are
+/// always included; platform-specific queries are added via cfg gates.
 pub fn default_hunting_queries() -> Vec<HuntingQuery> {
+    let mut queries = cross_platform_queries();
+    queries.extend(platform_queries());
+    queries
+}
+
+/// Queries that apply to all platforms (cryptominer, reverse shell ports).
+fn cross_platform_queries() -> Vec<HuntingQuery> {
     vec![
         HuntingQuery {
             name: "cryptominer_detection".into(),
@@ -247,6 +256,13 @@ pub fn default_hunting_queries() -> Vec<HuntingQuery> {
             last_run: 0,
             findings_count: 0,
         },
+    ]
+}
+
+/// Platform-specific hunting queries.
+#[cfg(target_os = "linux")]
+fn platform_queries() -> Vec<HuntingQuery> {
+    vec![
         HuntingQuery {
             name: "cron_persistence".into(),
             description: "Detect unauthorized cron jobs".into(),
@@ -292,6 +308,142 @@ pub fn default_hunting_queries() -> Vec<HuntingQuery> {
                     "/usr/lib/.hidden/".into(),
                 ],
                 must_exist: false,
+            },
+            last_run: 0,
+            findings_count: 0,
+        },
+    ]
+}
+
+/// Platform-specific hunting queries for Windows.
+#[cfg(target_os = "windows")]
+fn platform_queries() -> Vec<HuntingQuery> {
+    vec![
+        HuntingQuery {
+            name: "scheduled_task_persistence".into(),
+            description: "Detect suspicious scheduled tasks".into(),
+            technique_id: Some("T1053.005".into()),
+            interval_secs: 3600,
+            check: HuntingCheck::PersistenceMechanism {
+                locations: vec![
+                    "C:\\Windows\\System32\\Tasks\\".into(),
+                    "C:\\Windows\\SysWOW64\\Tasks\\".into(),
+                ],
+            },
+            last_run: 0,
+            findings_count: 0,
+        },
+        HuntingQuery {
+            name: "run_key_persistence".into(),
+            description: "Detect suspicious Run/RunOnce registry persistence via hive files".into(),
+            technique_id: Some("T1547.001".into()),
+            interval_secs: 3600,
+            check: HuntingCheck::FilePresence {
+                paths: vec![
+                    "C:\\Windows\\System32\\config\\SOFTWARE".into(),
+                    "C:\\Windows\\System32\\config\\NTUSER.DAT".into(),
+                ],
+                // These files should always exist; alert if missing (tampered/deleted).
+                must_exist: true,
+            },
+            last_run: 0,
+            findings_count: 0,
+        },
+        HuntingQuery {
+            name: "service_persistence".into(),
+            description: "Detect unusual services via SYSTEM hive".into(),
+            technique_id: Some("T1543.003".into()),
+            interval_secs: 3600,
+            check: HuntingCheck::PersistenceMechanism {
+                locations: vec![
+                    "C:\\Windows\\System32\\config\\SYSTEM".into(),
+                ],
+            },
+            last_run: 0,
+            findings_count: 0,
+        },
+        HuntingQuery {
+            name: "webshell_detection_iis".into(),
+            description: "Detect web shells in IIS wwwroot".into(),
+            technique_id: Some("T1505.003".into()),
+            interval_secs: 3600,
+            check: HuntingCheck::FilePresence {
+                paths: vec![
+                    "C:\\inetpub\\wwwroot\\cmd.aspx".into(),
+                    "C:\\inetpub\\wwwroot\\shell.aspx".into(),
+                    "C:\\inetpub\\wwwroot\\.hidden.aspx".into(),
+                ],
+                must_exist: false,
+            },
+            last_run: 0,
+            findings_count: 0,
+        },
+    ]
+}
+
+/// Platform-specific hunting queries for macOS.
+#[cfg(target_os = "macos")]
+fn platform_queries() -> Vec<HuntingQuery> {
+    vec![
+        HuntingQuery {
+            name: "launch_agent_persistence".into(),
+            description: "Detect suspicious LaunchAgent/LaunchDaemon plists".into(),
+            technique_id: Some("T1543.004".into()),
+            interval_secs: 3600,
+            check: HuntingCheck::PersistenceMechanism {
+                locations: vec![
+                    "/Library/LaunchDaemons/".into(),
+                    "/Library/LaunchAgents/".into(),
+                    "~/Library/LaunchAgents/".into(),
+                ],
+            },
+            last_run: 0,
+            findings_count: 0,
+        },
+        HuntingQuery {
+            name: "login_items_persistence".into(),
+            description: "Detect suspicious login items".into(),
+            technique_id: Some("T1547.015".into()),
+            interval_secs: 3600,
+            check: HuntingCheck::PersistenceMechanism {
+                locations: vec![
+                    "~/Library/Application Support/com.apple.sharedfilelist/".into(),
+                ],
+            },
+            last_run: 0,
+            findings_count: 0,
+        },
+        HuntingQuery {
+            name: "kernel_extension_detection".into(),
+            description: "Detect suspicious kernel extensions".into(),
+            technique_id: Some("T1547.006".into()),
+            interval_secs: 3600,
+            check: HuntingCheck::PersistenceMechanism {
+                locations: vec![
+                    "/Library/Extensions/".into(),
+                    "/System/Library/Extensions/".into(),
+                ],
+            },
+            last_run: 0,
+            findings_count: 0,
+        },
+    ]
+}
+
+/// Fallback for platforms that are not Linux, Windows, or macOS.
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+fn platform_queries() -> Vec<HuntingQuery> {
+    vec![
+        HuntingQuery {
+            name: "cron_persistence".into(),
+            description: "Detect unauthorized cron jobs".into(),
+            technique_id: Some("T1053.003".into()),
+            interval_secs: 3600,
+            check: HuntingCheck::PersistenceMechanism {
+                locations: vec![
+                    "/etc/crontab".into(),
+                    "/var/spool/cron/".into(),
+                ],
             },
             last_run: 0,
             findings_count: 0,
@@ -392,9 +544,19 @@ mod tests {
             .collect();
         assert!(techniques.contains(&"T1496")); // Cryptomining
         assert!(techniques.contains(&"T1059.004")); // Reverse shell
-        assert!(techniques.contains(&"T1053.003")); // Cron persistence
-        assert!(techniques.contains(&"T1505.003")); // Web shells
-        assert!(techniques.contains(&"T1014")); // Rootkits
+        // Platform-specific technique IDs vary, but at least the cross-platform
+        // ones are always present.
+    }
+
+    #[test]
+    fn default_queries_include_platform_specific() {
+        let queries = default_hunting_queries();
+        // Cross-platform queries are always present.
+        assert!(queries.iter().any(|q| q.name == "cryptominer_detection"));
+        assert!(queries.iter().any(|q| q.name == "reverse_shell_listener"));
+        // Platform-specific queries should also be present (at least one).
+        let platform_count = queries.len() - 2; // subtract cross-platform
+        assert!(platform_count >= 1, "expected at least 1 platform-specific query");
     }
 
     #[test]

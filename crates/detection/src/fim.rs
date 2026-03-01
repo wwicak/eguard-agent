@@ -12,8 +12,11 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-/// Default monitored paths for Linux systems. Includes critical authentication,
-/// authorization, network, and boot files per PCI-DSS 11.5 requirements.
+/// Default monitored paths. Includes critical authentication, authorization,
+/// network, and boot files per PCI-DSS 11.5 requirements.
+/// Paths ending with `/` or `\` are treated as directories; paths containing
+/// `*` are treated as glob prefixes.
+#[cfg(target_os = "linux")]
 pub const DEFAULT_FIM_PATHS: &[&str] = &[
     "/etc/passwd",
     "/etc/shadow",
@@ -32,6 +35,37 @@ pub const DEFAULT_FIM_PATHS: &[&str] = &[
     "/boot/vmlinuz*",
     "/boot/initrd*",
 ];
+
+#[cfg(target_os = "windows")]
+pub const DEFAULT_FIM_PATHS: &[&str] = &[
+    "C:\\Windows\\System32\\config\\SAM",
+    "C:\\Windows\\System32\\config\\SECURITY",
+    "C:\\Windows\\System32\\config\\SYSTEM",
+    "C:\\Windows\\System32\\drivers\\etc\\hosts",
+    "C:\\Windows\\System32\\GroupPolicy\\",
+    "C:\\Windows\\System32\\Tasks\\",
+    "C:\\ProgramData\\ssh\\sshd_config",
+    "C:\\Windows\\win.ini",
+    "C:\\Windows\\system.ini",
+];
+
+#[cfg(target_os = "macos")]
+pub const DEFAULT_FIM_PATHS: &[&str] = &[
+    "/etc/passwd",
+    "/etc/sudoers",
+    "/etc/hosts",
+    "/etc/ssh/sshd_config",
+    "/etc/pam.d/",
+    "/Library/Preferences/com.apple.loginwindow.plist",
+    "/Library/LaunchDaemons/",
+    "/Library/LaunchAgents/",
+    "/System/Library/LaunchDaemons/",
+    "/usr/bin/sudo",
+    "/usr/bin/ssh",
+];
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+pub const DEFAULT_FIM_PATHS: &[&str] = &["/etc/passwd", "/etc/shadow"];
 
 /// Default scan interval in seconds.
 pub const DEFAULT_FIM_SCAN_INTERVAL_SECS: u64 = 300;
@@ -129,7 +163,7 @@ impl FimBaseline {
         for path in paths {
             let path_str = path.to_string_lossy();
 
-            if path_str.ends_with('/') {
+            if path_str.ends_with('/') || path_str.ends_with('\\') {
                 // Directory: scan all regular files within.
                 if let Ok(dir_entries) = fs::read_dir(path) {
                     for dir_entry in dir_entries.flatten() {
@@ -537,6 +571,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[cfg_attr(miri, ignore = "chmod is unsupported under miri")]
     fn detect_permission_change() {
         use std::os::unix::fs::PermissionsExt;
 

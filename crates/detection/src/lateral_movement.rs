@@ -15,8 +15,13 @@ const UNUSUAL_LOGIN_BASELINE_SECS: i64 = 7 * 86_400; // 7 days
 // ── Known lateral-movement tool names (lowercase) ────────────────────
 const REMOTE_TOOLS: &[&str] = &[
     "psexec", "psexec64", "psexesvc",
-    "wmic", "winrm",
+    "wmic", "winrm", "winrs",
     "ncat", "socat", "chisel", "ligolo",
+    "schtasks",   // Windows scheduled task creation
+    "mstsc",      // RDP client (unusual if spawned by script)
+    "wmiexec",    // Impacket
+    "smbexec",    // Impacket
+    "atexec",     // Impacket
 ];
 
 const CREDENTIAL_TOOLS: &[&str] = &[
@@ -24,10 +29,37 @@ const CREDENTIAL_TOOLS: &[&str] = &[
     "procdump", "lsass",
 ];
 
+// ── Platform-specific credential store paths ─────────────────────────
+
+#[cfg(target_os = "linux")]
 const CREDENTIAL_PATHS: &[&str] = &[
     "/etc/shadow",
     "/etc/passwd",
 ];
+
+#[cfg(target_os = "windows")]
+const CREDENTIAL_PATHS: &[&str] = &[
+    "\\windows\\system32\\config\\sam",
+    "\\windows\\system32\\config\\security",
+    "\\windows\\ntds\\ntds.dit",
+    "\\windows\\system32\\config\\system",
+];
+
+#[cfg(target_os = "macos")]
+const CREDENTIAL_PATHS: &[&str] = &[
+    "/var/db/dslocal/",
+    "/library/keychains/",
+    "/etc/shadow",
+];
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+const CREDENTIAL_PATHS: &[&str] = &[
+    "/etc/shadow",
+    "/etc/passwd",
+];
+
+/// Port used for RDP brute force detection.
+const RDP_PORT: u16 = 3389;
 
 /// Substrings in command_line that indicate SSH tunnelling.
 const SSH_TUNNEL_FLAGS: &[&str] = &[
@@ -42,6 +74,8 @@ const SSH_TUNNEL_FLAGS: &[&str] = &[
 pub enum LateralTechnique {
     /// 5+ auth failures from same source in 5 min.
     SshBruteForce,
+    /// 5+ failed RDP login attempts from same source in 5 min.
+    RdpBruteForce,
     /// Execution of known remote-admin / tunnelling tools.
     RemoteToolExecution,
     /// Access to credential stores or credential-dumping binaries.
@@ -66,11 +100,13 @@ pub struct LateralMovementAlert {
 
 /// Stateful lateral-movement detector.
 ///
-/// Tracks SSH auth failures and known-good login sources to detect brute
+/// Tracks SSH/RDP auth failures and known-good login sources to detect brute
 /// force, credential dumping, and unusual remote logins.
 pub struct LateralMovementDetector {
     /// `source_ip -> Vec<timestamp>` for failed SSH auth events.
     ssh_auth_failures: HashMap<String, Vec<i64>>,
+    /// `source_ip -> Vec<timestamp>` for failed RDP auth events (port 3389).
+    rdp_auth_failures: HashMap<String, Vec<i64>>,
     /// `source_ip -> last_seen_timestamp` for successful logins.
     known_login_sources: HashMap<String, i64>,
 }
@@ -79,6 +115,7 @@ impl LateralMovementDetector {
     pub fn new() -> Self {
         Self {
             ssh_auth_failures: HashMap::new(),
+            rdp_auth_failures: HashMap::new(),
             known_login_sources: HashMap::new(),
         }
     }
@@ -98,6 +135,9 @@ impl LateralMovementDetector {
         if let Some(alert) = self.check_ssh_brute_force(event) {
             return Some(alert);
         }
+        if let Some(alert) = self.check_rdp_brute_force(event) {
+            return Some(alert);
+        }
         if let Some(alert) = self.check_unusual_login(event) {
             return Some(alert);
         }
@@ -107,11 +147,16 @@ impl LateralMovementDetector {
     // ── Internal detectors ───────────────────────────────────────────
 
     /// Detect SSH brute-force: 5+ login failures from the same source IP
-    /// within a 5-minute window.
+    /// within a 5-minute window. Skips events on the RDP port (3389) which
+    /// are handled by [`check_rdp_brute_force`].
     fn check_ssh_brute_force(&mut self, event: &TelemetryEvent) -> Option<LateralMovementAlert> {
         // Only consider Login events with a source IP (dst_ip on Login events
         // represents the remote source in the existing telemetry model).
         if event.event_class != EventClass::Login {
+            return None;
+        }
+        // Skip RDP-targeted events — handled by check_rdp_brute_force.
+        if event.dst_port == Some(RDP_PORT) {
             return None;
         }
         let src_ip = event.dst_ip.as_deref()?;
@@ -136,6 +181,46 @@ impl LateralMovementDetector {
                 source_ip: Some(src_ip.to_string()),
                 detail: format!(
                     "{} SSH auth failures from {} in {}s",
+                    timestamps.len(),
+                    src_ip,
+                    SSH_BRUTE_FORCE_WINDOW_SECS,
+                ),
+            });
+        }
+        None
+    }
+
+    /// Detect RDP brute-force: 5+ login failures on port 3389 from the same
+    /// source IP within a 5-minute window.
+    fn check_rdp_brute_force(&mut self, event: &TelemetryEvent) -> Option<LateralMovementAlert> {
+        if event.event_class != EventClass::Login {
+            return None;
+        }
+        // Only consider events targeting the RDP port.
+        if event.dst_port != Some(RDP_PORT) {
+            return None;
+        }
+        let src_ip = event.dst_ip.as_deref()?;
+
+        // Only track failures (uid == u32::MAX).
+        if event.uid != u32::MAX {
+            return None;
+        }
+
+        let timestamps = self.rdp_auth_failures.entry(src_ip.to_string()).or_default();
+        timestamps.push(event.ts_unix);
+
+        // Evict entries outside the window.
+        let cutoff = event.ts_unix - SSH_BRUTE_FORCE_WINDOW_SECS;
+        timestamps.retain(|&ts| ts > cutoff);
+
+        if timestamps.len() >= SSH_BRUTE_FORCE_COUNT {
+            return Some(LateralMovementAlert {
+                technique: LateralTechnique::RdpBruteForce,
+                confidence: 0.9,
+                source_ip: Some(src_ip.to_string()),
+                detail: format!(
+                    "{} RDP auth failures from {} in {}s",
                     timestamps.len(),
                     src_ip,
                     SSH_BRUTE_FORCE_WINDOW_SECS,
@@ -192,10 +277,14 @@ impl LateralMovementDetector {
             }
         }
 
-        // File access to /etc/shadow or /etc/passwd
+        // File access to credential stores (case-insensitive for Windows/macOS).
         if event.event_class == EventClass::FileOpen {
             if let Some(ref path) = event.file_path {
-                if CREDENTIAL_PATHS.iter().any(|p| path == *p) {
+                let normalized = path.replace('\\', "/").to_ascii_lowercase();
+                if CREDENTIAL_PATHS
+                    .iter()
+                    .any(|p| normalized.contains(&p.replace('\\', "/").to_ascii_lowercase()))
+                {
                     return Some(LateralMovementAlert {
                         technique: LateralTechnique::CredentialDumping,
                         confidence: 0.75,
@@ -342,19 +431,63 @@ mod tests {
     }
 
     #[test]
-    fn etc_shadow_access_triggers_credential_dumping() {
+    fn credential_path_access_triggers_credential_dumping() {
         let mut det = LateralMovementDetector::new();
+        // Use the first credential path for the current platform.
+        let cred_path = CREDENTIAL_PATHS[0];
         let ev = make_event(
             1_700_000_000,
             EventClass::FileOpen,
             "cat",
             None,
-            Some("/etc/shadow"),
+            Some(cred_path),
             None,
             0,
         );
         let alert = det.check_event(&ev).unwrap();
         assert_eq!(alert.technique, LateralTechnique::CredentialDumping);
+    }
+
+    #[test]
+    fn rdp_brute_force_detected_at_threshold() {
+        let mut det = LateralMovementDetector::new();
+        let base_ts = 1_700_000_000;
+        let ip = "10.0.0.5";
+
+        // Build RDP failure events (Login on port 3389, uid=MAX).
+        let rdp_failure = |ts: i64, src: &str| -> TelemetryEvent {
+            let mut ev = make_event(ts, EventClass::Login, "svchost", Some(src), None, None, u32::MAX);
+            ev.dst_port = Some(3389);
+            ev
+        };
+
+        // First 4 should not trigger.
+        for i in 0..4 {
+            let ev = rdp_failure(base_ts + i * 10, ip);
+            assert!(det.check_event(&ev).is_none(), "unexpected alert at failure #{}", i + 1);
+        }
+
+        // 5th triggers RDP brute-force.
+        let ev5 = rdp_failure(base_ts + 40, ip);
+        let alert = det.check_event(&ev5).unwrap();
+        assert_eq!(alert.technique, LateralTechnique::RdpBruteForce);
+        assert_eq!(alert.source_ip.as_deref(), Some(ip));
+    }
+
+    #[test]
+    fn winrs_triggers_remote_tool() {
+        let mut det = LateralMovementDetector::new();
+        let ev = make_event(1_700_000_000, EventClass::ProcessExec, "winrs", None, None, None, 0);
+        let alert = det.check_event(&ev).unwrap();
+        assert_eq!(alert.technique, LateralTechnique::RemoteToolExecution);
+    }
+
+    #[test]
+    fn smbexec_triggers_remote_tool() {
+        let mut det = LateralMovementDetector::new();
+        let ev = make_event(1_700_000_000, EventClass::ProcessExec, "smbexec", None, None, None, 0);
+        let alert = det.check_event(&ev).unwrap();
+        assert_eq!(alert.technique, LateralTechnique::RemoteToolExecution);
     }
 
     #[test]

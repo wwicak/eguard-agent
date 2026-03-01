@@ -124,44 +124,61 @@ impl Default for DeceptionEngine {
 // Defaults
 // ---------------------------------------------------------------------------
 
+/// Build a canary token with `deployed: true` and zero trigger count.
+fn token(name: &str, token_type: TokenType, path: &str) -> DeceptionToken {
+    DeceptionToken {
+        name: name.into(),
+        token_type,
+        path: path.into(),
+        deployed: true,
+        triggered_count: 0,
+    }
+}
+
 /// Pre-configured canary tokens that cover common attacker targets.
+/// The set is platform-specific so paths are realistic for the target OS.
 pub fn default_tokens() -> Vec<DeceptionToken> {
+    platform_tokens()
+}
+
+#[cfg(target_os = "linux")]
+fn platform_tokens() -> Vec<DeceptionToken> {
     vec![
-        DeceptionToken {
-            name: "ssh_canary".into(),
-            token_type: TokenType::CredentialFile,
-            path: "/root/.ssh/id_rsa_backup".into(),
-            deployed: true,
-            triggered_count: 0,
-        },
-        DeceptionToken {
-            name: "aws_canary".into(),
-            token_type: TokenType::CredentialFile,
-            path: "/opt/.aws/credentials".into(),
-            deployed: true,
-            triggered_count: 0,
-        },
-        DeceptionToken {
-            name: "password_canary".into(),
-            token_type: TokenType::DocumentFile,
-            path: "/usr/local/share/.passwords.csv".into(),
-            deployed: true,
-            triggered_count: 0,
-        },
-        DeceptionToken {
-            name: "db_canary".into(),
-            token_type: TokenType::ConfigFile,
-            path: "/etc/eguard-agent/.db_credentials.conf".into(),
-            deployed: true,
-            triggered_count: 0,
-        },
-        DeceptionToken {
-            name: "backup_key_canary".into(),
-            token_type: TokenType::CredentialFile,
-            path: "/var/backups/.encryption_key".into(),
-            deployed: true,
-            triggered_count: 0,
-        },
+        token("ssh_canary", TokenType::CredentialFile, "/root/.ssh/id_rsa_backup"),
+        token("aws_canary", TokenType::CredentialFile, "/opt/.aws/credentials"),
+        token("password_canary", TokenType::DocumentFile, "/usr/local/share/.passwords.csv"),
+        token("db_canary", TokenType::ConfigFile, "/etc/eguard-agent/.db_credentials.conf"),
+        token("backup_key_canary", TokenType::CredentialFile, "/var/backups/.encryption_key"),
+    ]
+}
+
+#[cfg(target_os = "windows")]
+fn platform_tokens() -> Vec<DeceptionToken> {
+    vec![
+        token("ssh_canary", TokenType::CredentialFile, "C:\\Users\\Administrator\\.ssh\\id_rsa_backup"),
+        token("aws_canary", TokenType::CredentialFile, "C:\\Users\\Administrator\\.aws\\credentials"),
+        token("password_canary", TokenType::DocumentFile, "C:\\Users\\Public\\Documents\\passwords.csv"),
+        token("db_canary", TokenType::ConfigFile, "C:\\ProgramData\\eGuard\\.db_credentials.conf"),
+        token("rdp_canary", TokenType::CredentialFile, "C:\\Users\\Administrator\\Documents\\rdp_servers.rdg"),
+    ]
+}
+
+#[cfg(target_os = "macos")]
+fn platform_tokens() -> Vec<DeceptionToken> {
+    vec![
+        token("ssh_canary", TokenType::CredentialFile, "/Users/admin/.ssh/id_rsa_backup"),
+        token("aws_canary", TokenType::CredentialFile, "/Users/admin/.aws/credentials"),
+        token("password_canary", TokenType::DocumentFile, "/Users/Shared/.passwords.csv"),
+        token("db_canary", TokenType::ConfigFile, "/Library/Application Support/eGuard/.db_credentials.conf"),
+        token("keychain_canary", TokenType::CredentialFile, "/Users/admin/Library/Keychains/backup.keychain-db"),
+    ]
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+fn platform_tokens() -> Vec<DeceptionToken> {
+    vec![
+        token("ssh_canary", TokenType::CredentialFile, "/root/.ssh/id_rsa_backup"),
+        token("db_canary", TokenType::ConfigFile, "/etc/eguard-agent/.db_credentials.conf"),
     ]
 }
 
@@ -173,10 +190,21 @@ pub fn default_tokens() -> Vec<DeceptionToken> {
 mod tests {
     use super::*;
 
+    /// Return the path of the first default token (platform-specific).
+    fn first_token_path() -> String {
+        default_tokens()[0].path.clone()
+    }
+
+    /// Return the path of the second default token (platform-specific).
+    fn second_token_path() -> String {
+        default_tokens()[1].path.clone()
+    }
+
     #[test]
     fn access_to_canary_triggers_alert() {
         let mut engine = DeceptionEngine::new();
-        let alert = engine.check_file_access("/root/.ssh/id_rsa_backup", "evil_proc", 1234);
+        let path = first_token_path();
+        let alert = engine.check_file_access(&path, "evil_proc", 1234);
         assert!(alert.is_some());
         let alert = alert.unwrap();
         assert_eq!(alert.token_name, "ssh_canary");
@@ -188,16 +216,17 @@ mod tests {
     #[test]
     fn access_to_normal_path_returns_none() {
         let mut engine = DeceptionEngine::new();
-        let alert = engine.check_file_access("/etc/passwd", "sshd", 500);
+        let alert = engine.check_file_access("/nonexistent/safe/path", "sshd", 500);
         assert!(alert.is_none());
     }
 
     #[test]
     fn multiple_accesses_increment_trigger_count() {
         let mut engine = DeceptionEngine::new();
-        engine.check_file_access("/opt/.aws/credentials", "proc_a", 100);
-        engine.check_file_access("/opt/.aws/credentials", "proc_b", 200);
-        engine.check_file_access("/opt/.aws/credentials", "proc_c", 300);
+        let path = second_token_path();
+        engine.check_file_access(&path, "proc_a", 100);
+        engine.check_file_access(&path, "proc_b", 200);
+        engine.check_file_access(&path, "proc_c", 300);
 
         let aws_token = engine
             .tokens
@@ -240,11 +269,12 @@ mod tests {
     fn stats_reflect_state() {
         let mut engine = DeceptionEngine::new();
         let (deployed, triggers) = engine.stats();
-        assert_eq!(deployed, 5); // all 5 defaults are deployed
+        assert_eq!(deployed, default_tokens().len());
         assert_eq!(triggers, 0);
 
-        engine.check_file_access("/root/.ssh/id_rsa_backup", "x", 1);
-        engine.check_file_access("/root/.ssh/id_rsa_backup", "y", 2);
+        let path = first_token_path();
+        engine.check_file_access(&path, "x", 1);
+        engine.check_file_access(&path, "y", 2);
         let (_, triggers) = engine.stats();
         assert_eq!(triggers, 2);
     }
