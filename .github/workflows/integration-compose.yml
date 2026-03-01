@@ -2,9 +2,9 @@ name: integration-compose
 
 on:
   workflow_dispatch:
-  pull_request:
-  push:
-    branches: ["main", "feat/eguard-agent"]
+  # Disabled on push/PR — Docker compose E2E tests are flaky on GH runners
+  # and ML integration testing is done in the eguard server repo.
+  # Run manually via workflow_dispatch when needed.
 
 jobs:
   compose-integration:

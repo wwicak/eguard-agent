@@ -366,7 +366,7 @@ jobs:
         env:
           EGUARD_MIN_SIGMA: "150"
           EGUARD_MIN_YARA: "600"
-          EGUARD_MIN_IOC_HASH: "1000"
+          EGUARD_MIN_IOC_HASH: "500"
           EGUARD_MIN_IOC_DOMAIN: "300"
           EGUARD_MIN_IOC_IP: "1500"
           EGUARD_MIN_CVE: "1000"

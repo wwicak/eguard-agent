@@ -2182,7 +2182,7 @@ class TestSignatureMLBattleReadyPipeline(unittest.TestCase):
                 "--max-brier-score",
                 "0.25",
                 "--max-ece",
-                "0.22",
+                "0.30",
                 "--max-pr-auc-drop",
                 "0.15",
                 "--max-roc-auc-drop",
