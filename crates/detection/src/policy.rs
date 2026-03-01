@@ -9,6 +9,7 @@ pub fn confidence_policy(s: &DetectionSignals) -> Confidence {
         s.z4_kill_chain,
         s.exploit_indicator,
         s.tamper_indicator,
+        s.vulnerable_software,
     ]
     .into_iter()
     .filter(|active| *active)
@@ -23,8 +24,18 @@ pub fn confidence_policy(s: &DetectionSignals) -> Confidence {
     if s.z2_temporal || s.z4_kill_chain || s.exploit_indicator || s.tamper_indicator {
         return Confidence::High;
     }
+    // Network IOC hit: dst_domain or dst_ip matched IOC list.
+    // Connecting to a known C2/malicious domain or IP is high signal
+    // even if the match was only a prefilter hit (not yet ExactMatch).
+    if s.network_ioc_hit {
+        return Confidence::High;
+    }
     // Standalone YARA hit (file content matched a rule) → High
     if s.yara_hit {
+        return Confidence::High;
+    }
+    // Actively-exploited CVE with CVSS >= 7.0 loaded at runtime → High
+    if s.vulnerable_software {
         return Confidence::High;
     }
     if s.kernel_integrity {

@@ -32,3 +32,6 @@ pub(super) const RESPONSE_QUEUE_CAPACITY: usize = 128;
 pub(super) const RESPONSE_REPORT_QUEUE_CAPACITY: usize = 256;
 pub(super) const RESPONSE_REPORT_CONCURRENCY: usize = 8;
 pub(super) const DEGRADE_AFTER_SEND_FAILURES: u32 = 3;
+pub(super) const IOC_SIGNAL_UPLOAD_INTERVAL_SECS: i64 = 300;
+pub(super) const IOC_SIGNAL_BUFFER_CAP: usize = 1024;
+pub(super) const CAMPAIGN_FETCH_INTERVAL_SECS: i64 = 600;

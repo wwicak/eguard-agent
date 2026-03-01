@@ -6,7 +6,8 @@ use tracing::{info, warn};
 use baseline::BaselineStatus;
 use compliance::parse_policy_json;
 use grpc_client::{
-    BaselineProfileEnvelope, ComplianceCheckEnvelope, InventoryEnvelope, PolicyEnvelope, TlsConfig,
+    BaselineProfileEnvelope, ComplianceCheckEnvelope, InventoryEnvelope, IocSignalBatch,
+    PolicyEnvelope, TlsConfig,
 };
 
 use crate::config::AgentMode;
@@ -15,8 +16,9 @@ use super::{
     elapsed_micros, interval_due, update_tls_policy_from_server, AgentRuntime, ComplianceResult,
     ControlPlaneTaskKind, PendingControlPlaneSend, PendingControlPlaneTask, TickEvaluation,
     BASELINE_UPLOAD_BATCH_SIZE, BASELINE_UPLOAD_INTERVAL_SECS, BASELINE_UPLOAD_MAX_BYTES,
-    CONTROL_PLANE_TASK_EXECUTION_BUDGET_PER_TICK, CONTROL_PLANE_TASK_QUEUE_CAPACITY,
-    FLEET_BASELINE_FETCH_INTERVAL_SECS, HEARTBEAT_INTERVAL_SECS,
+    CAMPAIGN_FETCH_INTERVAL_SECS, CONTROL_PLANE_TASK_EXECUTION_BUDGET_PER_TICK,
+    CONTROL_PLANE_TASK_QUEUE_CAPACITY, FLEET_BASELINE_FETCH_INTERVAL_SECS,
+    HEARTBEAT_INTERVAL_SECS, IOC_SIGNAL_BUFFER_CAP, IOC_SIGNAL_UPLOAD_INTERVAL_SECS,
 };
 
 fn baseline_upload_max_bytes() -> usize {
@@ -147,6 +149,14 @@ impl AgentRuntime {
             self.try_enqueue_control_plane_task(ControlPlaneTaskKind::FleetBaselineFetch, now_unix);
         }
 
+        if self.ioc_signal_upload_due(now_unix) {
+            self.try_enqueue_control_plane_task(ControlPlaneTaskKind::IocSignalUpload, now_unix);
+        }
+
+        if self.campaign_fetch_due(now_unix) {
+            self.try_enqueue_control_plane_task(ControlPlaneTaskKind::CampaignFetch, now_unix);
+        }
+
         self.try_enqueue_control_plane_task(ControlPlaneTaskKind::CommandSync, now_unix);
     }
 
@@ -228,6 +238,16 @@ impl AgentRuntime {
                         warn!(error = %err, "fleet baseline fetch/apply failed");
                     }
                 }
+                ControlPlaneTaskKind::IocSignalUpload => {
+                    if let Err(err) = self.upload_ioc_signals_if_due(now_unix).await {
+                        warn!(error = %err, "IOC signal upload failed");
+                    }
+                }
+                ControlPlaneTaskKind::CampaignFetch => {
+                    if let Err(err) = self.fetch_and_apply_campaigns_if_due(now_unix).await {
+                        warn!(error = %err, "campaign fetch failed");
+                    }
+                }
             }
 
             executed = executed.saturating_add(1);
@@ -286,6 +306,114 @@ impl AgentRuntime {
                 now_unix,
                 FLEET_BASELINE_FETCH_INTERVAL_SECS,
             )
+    }
+
+    fn ioc_signal_upload_due(&self, now_unix: i64) -> bool {
+        !self.ioc_signal_buffer.is_empty()
+            && interval_due(
+                self.last_ioc_signal_upload_unix,
+                now_unix,
+                IOC_SIGNAL_UPLOAD_INTERVAL_SECS,
+            )
+    }
+
+    fn campaign_fetch_due(&self, now_unix: i64) -> bool {
+        interval_due(
+            self.last_campaign_fetch_unix,
+            now_unix,
+            CAMPAIGN_FETCH_INTERVAL_SECS,
+        )
+    }
+
+    /// Buffer an IOC signal from a detection hit for later batch upload.
+    pub(super) fn buffer_ioc_signal(
+        &mut self,
+        ioc_value: String,
+        ioc_type: String,
+        confidence: &str,
+        now_unix: i64,
+    ) {
+        if self.ioc_signal_buffer.len() >= IOC_SIGNAL_BUFFER_CAP {
+            // Drop oldest to make room — ring-buffer behavior.
+            self.ioc_signal_buffer.remove(0);
+        }
+
+        // Coalesce: if the same IOC is already buffered, bump its event_count.
+        if let Some(existing) = self
+            .ioc_signal_buffer
+            .iter_mut()
+            .find(|s| s.ioc_value == ioc_value)
+        {
+            existing.event_count = existing.event_count.saturating_add(1);
+            return;
+        }
+
+        self.ioc_signal_buffer.push(grpc_client::IocSignal {
+            ioc_value,
+            ioc_type,
+            confidence: confidence.to_string(),
+            first_seen_unix: now_unix,
+            event_count: 1,
+        });
+    }
+
+    async fn upload_ioc_signals_if_due(&mut self, now_unix: i64) -> Result<()> {
+        if !self.ioc_signal_upload_due(now_unix) {
+            return Ok(());
+        }
+        self.last_ioc_signal_upload_unix = Some(now_unix);
+
+        let signals = std::mem::take(&mut self.ioc_signal_buffer);
+        if signals.is_empty() {
+            return Ok(());
+        }
+
+        let batch = IocSignalBatch {
+            agent_id: self.config.agent_id.clone(),
+            signals,
+        };
+
+        self.client.send_ioc_signals(&batch).await?;
+        info!(
+            agent_id = %self.config.agent_id,
+            signal_count = batch.signals.len(),
+            "uploaded IOC signal batch for campaign correlation"
+        );
+        Ok(())
+    }
+
+    async fn fetch_and_apply_campaigns_if_due(&mut self, now_unix: i64) -> Result<()> {
+        if !self.campaign_fetch_due(now_unix) {
+            return Ok(());
+        }
+        self.last_campaign_fetch_unix = Some(now_unix);
+
+        let campaigns = self.client.fetch_campaigns(&self.config.agent_id).await?;
+        if campaigns.is_empty() {
+            self.active_campaign_iocs.clear();
+            return Ok(());
+        }
+
+        let mut new_campaign_iocs = std::collections::HashSet::with_capacity(campaigns.len());
+        for campaign in &campaigns {
+            new_campaign_iocs.insert(campaign.ioc_value.clone());
+        }
+
+        info!(
+            agent_id = %self.config.agent_id,
+            active_campaigns = campaigns.len(),
+            "fetched active campaign alerts"
+        );
+        self.active_campaign_iocs = new_campaign_iocs;
+        Ok(())
+    }
+
+    /// Check if the given IOC values include any active campaign IOCs.
+    /// If so, mark the detection as campaign-correlated.
+    pub(super) fn is_campaign_correlated(&self, ioc_values: &[String]) -> bool {
+        ioc_values
+            .iter()
+            .any(|ioc| self.active_campaign_iocs.contains(ioc))
     }
 
     pub(super) async fn upload_baseline_profiles_if_due(&mut self, now_unix: i64) -> Result<()> {
@@ -809,6 +937,8 @@ impl ControlPlaneTaskKind {
             Self::CommandSync => "command_sync",
             Self::BaselineUpload => "baseline_upload",
             Self::FleetBaselineFetch => "fleet_baseline_fetch",
+            Self::IocSignalUpload => "ioc_signal_upload",
+            Self::CampaignFetch => "campaign_fetch",
         }
     }
 }

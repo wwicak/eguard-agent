@@ -137,4 +137,7 @@ pub struct DetectionSignals {
     pub tamper_indicator: bool,
     pub c2_beaconing_detected: bool,
     pub process_tree_anomaly: bool,
+    pub campaign_correlated: bool,
+    pub network_ioc_hit: bool,
+    pub vulnerable_software: bool,
 }

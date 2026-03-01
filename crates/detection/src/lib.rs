@@ -19,6 +19,7 @@ mod sigma;
 mod tamper;
 mod types;
 pub mod util;
+pub mod vulnerability;
 mod yara_engine;
 
 pub use behavioral::{BehavioralAlarm, BehavioralEngine};
@@ -46,6 +47,7 @@ pub use sigma::{
 };
 pub use tamper::detect_tamper_indicators;
 pub use types::{Confidence, DetectionSignals, EventClass, TelemetryEvent};
+pub use vulnerability::{CveDatabase, CveRecord, VulnerabilityMatch};
 pub use yara_engine::{YaraEngine, YaraError, YaraHit};
 
 #[cfg(test)]

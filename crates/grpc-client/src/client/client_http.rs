@@ -8,9 +8,9 @@ use serde_json::json;
 use tracing::warn;
 
 use crate::types::{
-    BaselineProfileEnvelope, CommandEnvelope, ComplianceEnvelope, EnrollmentEnvelope,
-    EventEnvelope, FleetBaselineEnvelope, InventoryEnvelope, PolicyEnvelope, ResponseEnvelope,
-    ServerState, ThreatIntelVersionEnvelope,
+    BaselineProfileEnvelope, CampaignAlertResponse, CommandEnvelope, ComplianceEnvelope,
+    EnrollmentEnvelope, EventEnvelope, FleetBaselineEnvelope, InventoryEnvelope, IocSignalBatch,
+    PolicyEnvelope, ResponseEnvelope, ServerState, ThreatIntelVersionEnvelope,
 };
 
 use super::Client;
@@ -29,6 +29,8 @@ const PATH_BASELINE_FLEET: &str = "/api/v1/endpoint/baseline/fleet";
 const PATH_BASELINE_BATCH: &str = "/api/v1/endpoint/baseline/batch";
 const PATH_POLICY: &str = "/api/v1/endpoint/policy";
 const PATH_SERVER_STATE: &str = "/api/v1/endpoint/state";
+const PATH_IOC_SIGNALS: &str = "/api/v1/endpoint/threat-intel/ioc-signals";
+const PATH_CAMPAIGNS: &str = "/api/v1/endpoint/threat-intel/campaigns";
 const DEFAULT_MAX_BUNDLE_DOWNLOAD_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
@@ -261,6 +263,25 @@ impl Client {
             )
             .await?;
         Ok(response.fleet_baselines)
+    }
+
+    pub(super) async fn send_ioc_signals_http(&self, batch: &IocSignalBatch) -> Result<()> {
+        if batch.signals.is_empty() {
+            return Ok(());
+        }
+        self.post_json_with_retry("ioc_signals_http", PATH_IOC_SIGNALS, batch, "ioc signals")
+            .await
+    }
+
+    pub(super) async fn fetch_campaigns_http(
+        &self,
+        agent_id: &str,
+    ) -> Result<Vec<crate::types::CampaignAlert>> {
+        let query = vec![("agent_id".to_string(), agent_id.to_string())];
+        let response: CampaignAlertResponse = self
+            .get_json_with_retry("campaigns_http", PATH_CAMPAIGNS, query, "campaigns")
+            .await?;
+        Ok(response.campaigns)
     }
 
     pub(super) async fn fetch_policy_http(&self, agent_id: &str) -> Result<Option<PolicyEnvelope>> {

@@ -317,7 +317,7 @@ fn load_bundle_all_layers(detection: &mut DetectionEngine, path: &Path) -> Bundl
     let elastic_rules = load_elastic_rules(path);
 
     // Layer 6: CVE vulnerability intelligence
-    let cve_entries = load_cve_data(path);
+    let cve_entries = load_cve_data(detection, path);
 
     // ML model: signature-ml-model.json from CI training pipeline
     load_ml_model(detection, path);
@@ -663,8 +663,8 @@ fn load_elastic_rules(bundle_dir: &Path) -> usize {
         .count()
 }
 
-/// Load CVE vulnerability intelligence from JSONL.
-fn load_cve_data(bundle_dir: &Path) -> usize {
+/// Load CVE vulnerability intelligence from JSONL into the detection engine.
+fn load_cve_data(detection: &mut DetectionEngine, bundle_dir: &Path) -> usize {
     let cve_path = bundle_dir.join("cve").join("cves.jsonl");
     if !cve_path.is_file() {
         return 0;
@@ -676,11 +676,23 @@ fn load_cve_data(bundle_dir: &Path) -> usize {
     };
 
     let reader = std::io::BufReader::new(file);
-    reader
-        .lines()
-        .map_while(std::result::Result::ok)
-        .filter(|line| !line.trim().is_empty())
-        .count()
+    let mut records = Vec::new();
+    for line in reader.lines().map_while(std::result::Result::ok) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<detection::CveRecord>(trimmed) {
+            Ok(record) => records.push(record),
+            Err(err) => {
+                warn!(error = %err, "skipping malformed CVE JSONL line");
+            }
+        }
+    }
+
+    let count = records.len();
+    detection.cve.load(records);
+    count
 }
 
 fn prepare_bundle_extraction_dir(bundle_path: &Path) -> std::result::Result<PathBuf, String> {

@@ -151,6 +151,7 @@ impl AgentRuntime {
                     "exploit_indicator": outcome.signals.exploit_indicator,
                     "kernel_integrity": outcome.signals.kernel_integrity,
                     "tamper_indicator": outcome.signals.tamper_indicator,
+                    "campaign_correlated": outcome.signals.campaign_correlated,
                 },
             },
             "audit": {
@@ -167,6 +168,7 @@ impl AgentRuntime {
                     "exploit_indicator": outcome.signals.exploit_indicator,
                     "kernel_integrity": outcome.signals.kernel_integrity,
                     "tamper_indicator": outcome.signals.tamper_indicator,
+                    "campaign_correlated": outcome.signals.campaign_correlated,
                 },
                 "matched_fields": &outcome.layer1.matched_fields,
                 "matched_signatures": &outcome.layer1.matched_signatures,

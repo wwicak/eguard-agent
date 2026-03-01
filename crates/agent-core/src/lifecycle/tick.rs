@@ -81,7 +81,33 @@ impl AgentRuntime {
 
         self.observe_baseline(&detection_event, now_unix);
 
-        let detection_outcome = self.detection_state.process_event(&detection_event)?;
+        let mut detection_outcome = self.detection_state.process_event(&detection_event)?;
+
+        // Buffer IOC signals for cross-endpoint campaign correlation.
+        if detection_outcome.signals.z1_exact_ioc
+            || detection_outcome.signals.yara_hit
+        {
+            for sig in &detection_outcome.layer1.matched_signatures {
+                let ioc_type = Self::classify_ioc_type(sig);
+                self.buffer_ioc_signal(
+                    sig.clone(),
+                    ioc_type.to_string(),
+                    &format!("{:?}", detection_outcome.confidence),
+                    now_unix,
+                );
+            }
+        }
+
+        // Escalate confidence for campaign-correlated IOCs.
+        if self.is_campaign_correlated(&detection_outcome.layer1.matched_signatures) {
+            detection_outcome.signals.campaign_correlated = true;
+            if detection_outcome.signals.z1_exact_ioc
+                && detection_outcome.confidence < detection::Confidence::VeryHigh
+            {
+                detection_outcome.confidence = detection::Confidence::VeryHigh;
+            }
+        }
+
         let confidence = detection_outcome.confidence;
         let response_cfg = self.effective_response_config();
         let action = plan_action(confidence, &response_cfg);
@@ -256,5 +282,23 @@ impl AgentRuntime {
 
         self.metrics.last_connected_tick_micros = elapsed_micros(connected_started);
         Ok(())
+    }
+
+    /// Classify an IOC value by its format (hash, ip, domain).
+    fn classify_ioc_type(ioc: &str) -> &'static str {
+        let trimmed = ioc.trim();
+        // SHA-256
+        if trimmed.len() == 64 && trimmed.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return "hash";
+        }
+        // MD5
+        if trimmed.len() == 32 && trimmed.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return "hash";
+        }
+        // IPv4/IPv6
+        if trimmed.parse::<std::net::IpAddr>().is_ok() {
+            return "ip";
+        }
+        "domain"
     }
 }

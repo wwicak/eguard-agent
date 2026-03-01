@@ -6,7 +6,9 @@ use tracing::{info, warn};
 use crate::platform::{EbpfEngine, EbpfStats, EnrichmentCache};
 use baseline::BaselineStore;
 use compliance::{CompliancePolicy, ComplianceResult, RemediationOutcome};
-use grpc_client::{Client as GrpcClient, CommandEnvelope, EventBuffer, TlsConfig, TransportMode};
+use grpc_client::{
+    Client as GrpcClient, CommandEnvelope, EventBuffer, IocSignal, TlsConfig, TransportMode,
+};
 use response::{AutoIsolationState, HostControlState, KillRateLimiter, ProtectedList};
 use self_protect::SelfProtectEngine;
 #[cfg(target_os = "linux")]
@@ -79,6 +81,10 @@ pub struct AgentRuntime {
     pub(super) metrics: RuntimeMetrics,
     pub(super) host_control: HostControlState,
     pub(super) auto_isolation_state: AutoIsolationState,
+    pub(super) ioc_signal_buffer: Vec<IocSignal>,
+    pub(super) last_ioc_signal_upload_unix: Option<i64>,
+    pub(super) last_campaign_fetch_unix: Option<i64>,
+    pub(super) active_campaign_iocs: std::collections::HashSet<String>,
     pub(super) dirty_baseline_keys: BTreeSet<String>,
     pub(super) pending_control_plane_tasks: VecDeque<PendingControlPlaneTask>,
     pub(super) pending_control_plane_sends: VecDeque<PendingControlPlaneSend>,
@@ -331,6 +337,10 @@ impl AgentRuntime {
             metrics: RuntimeMetrics::default(),
             host_control: HostControlState::default(),
             auto_isolation_state: AutoIsolationState::default(),
+            ioc_signal_buffer: Vec::new(),
+            last_ioc_signal_upload_unix: None,
+            last_campaign_fetch_unix: None,
+            active_campaign_iocs: std::collections::HashSet::new(),
             dirty_baseline_keys,
             pending_control_plane_tasks: VecDeque::new(),
             pending_control_plane_sends: VecDeque::new(),

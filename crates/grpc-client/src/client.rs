@@ -21,10 +21,10 @@ use tracing::{info, warn};
 use crate::pb;
 use crate::retry::RetryPolicy;
 use crate::types::{
-    BaselineProfileEnvelope, CommandEnvelope, ComplianceEnvelope, EnrollmentEnvelope,
-    EnrollmentResultEnvelope, EventEnvelope, FleetBaselineEnvelope, InventoryEnvelope,
-    PolicyEnvelope, ResponseEnvelope, ServerState, ThreatIntelVersionEnvelope, TlsConfig,
-    TransportMode,
+    BaselineProfileEnvelope, CampaignAlert, CommandEnvelope, ComplianceEnvelope,
+    EnrollmentEnvelope, EnrollmentResultEnvelope, EventEnvelope, FleetBaselineEnvelope,
+    InventoryEnvelope, IocSignalBatch, PolicyEnvelope, ResponseEnvelope, ServerState,
+    ThreatIntelVersionEnvelope, TlsConfig, TransportMode,
 };
 
 #[path = "client/client_grpc.rs"]
@@ -447,6 +447,16 @@ impl Client {
     ) -> Result<()> {
         self.ensure_online()?;
         self.send_baseline_profiles_http(agent_id, profiles).await
+    }
+
+    pub async fn send_ioc_signals(&self, batch: &IocSignalBatch) -> Result<()> {
+        self.ensure_online()?;
+        self.send_ioc_signals_http(batch).await
+    }
+
+    pub async fn fetch_campaigns(&self, agent_id: &str) -> Result<Vec<CampaignAlert>> {
+        self.ensure_online()?;
+        self.fetch_campaigns_http(agent_id).await
     }
 
     pub async fn fetch_policy(&self, agent_id: &str) -> Result<Option<PolicyEnvelope>> {

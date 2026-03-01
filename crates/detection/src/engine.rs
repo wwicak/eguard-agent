@@ -14,6 +14,7 @@ use crate::layer5::{MlEngine, MlExtraContext, MlFeatures, MlScore};
 use crate::policy::confidence_policy;
 use crate::tamper::detect_tamper_indicators;
 use crate::types::{Confidence, DetectionSignals, EventClass, TelemetryEvent};
+use crate::vulnerability::CveDatabase;
 use crate::yara_engine::{Result as YaraResult, YaraEngine, YaraHit};
 use crate::SigmaCompileError;
 
@@ -123,6 +124,7 @@ pub struct DetectionEngine {
     pub beaconing: BeaconingTracker,
     pub yara: YaraEngine,
     pub allowlist: DetectionAllowlist,
+    pub cve: CveDatabase,
 }
 
 impl DetectionEngine {
@@ -142,6 +144,7 @@ impl DetectionEngine {
             beaconing: BeaconingTracker::new(),
             yara: YaraEngine::new(),
             allowlist: DetectionAllowlist::new(),
+            cve: CveDatabase::new(),
         }
     }
 
@@ -162,6 +165,7 @@ impl DetectionEngine {
             beaconing: BeaconingTracker::new(),
             yara,
             allowlist: DetectionAllowlist::new(),
+            cve: CveDatabase::new(),
         }
     }
 
@@ -176,6 +180,7 @@ impl DetectionEngine {
             beaconing: BeaconingTracker::new(),
             yara: YaraEngine::new(),
             allowlist: DetectionAllowlist::new(),
+            cve: CveDatabase::new(),
         }
     }
 
@@ -249,10 +254,12 @@ impl DetectionEngine {
 
         // ── Early termination on Definite IOC match ─────────────
         if layer1.result == Layer1Result::ExactMatch {
+            let network_ioc_hit = has_network_ioc_field(&layer1);
             return DetectionOutcome {
                 confidence: Confidence::Definite,
                 signals: DetectionSignals {
                     z1_exact_ioc: true,
+                    network_ioc_hit,
                     ..Default::default()
                 },
                 temporal_hits: Vec::new(),
@@ -312,9 +319,17 @@ impl DetectionEngine {
             .iter()
             .any(|a| a.gated && a.dimension == "tree_branching");
 
+        // ── CVE vulnerability check on ModuleLoad ───────────────
+        let vulnerable_software = event.event_class == EventClass::ModuleLoad
+            && event
+                .file_path
+                .as_deref()
+                .map_or(false, |path| self.cve.check_module_path(path));
+
         let exploit_indicators = detect_exploit_indicators(event);
         let kernel_integrity_indicators = detect_kernel_integrity_indicators(event);
         let tamper_indicators = detect_tamper_indicators(event);
+        let network_ioc_hit = has_network_ioc_field(&layer1);
         let signals = DetectionSignals {
             z1_exact_ioc: layer1.result == Layer1Result::ExactMatch,
             // A genuine malware file triggers a handful of YARA rules.
@@ -332,6 +347,9 @@ impl DetectionEngine {
             tamper_indicator: !tamper_indicators.is_empty(),
             c2_beaconing_detected,
             process_tree_anomaly,
+            network_ioc_hit,
+            vulnerable_software,
+            ..Default::default()
         };
 
         // ── Layer 5: ML meta-scoring ────────────────────────────
@@ -369,6 +387,14 @@ impl DetectionEngine {
             behavioral_alarms,
         }
     }
+}
+
+/// Returns `true` if the Layer 1 hit matched on a network field (dst_domain or dst_ip).
+fn has_network_ioc_field(layer1: &Layer1EventHit) -> bool {
+    layer1
+        .matched_fields
+        .iter()
+        .any(|f| f == "dst_domain" || f == "dst_ip")
 }
 
 /// ML can escalate confidence but never downgrade deterministic decisions.

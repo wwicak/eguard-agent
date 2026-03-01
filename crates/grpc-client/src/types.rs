@@ -287,5 +287,36 @@ pub struct ServerState {
     pub persistence_enabled: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IocSignal {
+    pub ioc_value: String,
+    pub ioc_type: String,
+    pub confidence: String,
+    pub first_seen_unix: i64,
+    pub event_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IocSignalBatch {
+    pub agent_id: String,
+    pub signals: Vec<IocSignal>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CampaignAlert {
+    pub ioc_value: String,
+    pub ioc_type: String,
+    pub host_count: u32,
+    pub severity: String,
+    #[serde(default)]
+    pub first_seen_unix: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CampaignAlertResponse {
+    #[serde(default)]
+    pub campaigns: Vec<CampaignAlert>,
+}
+
 #[cfg(test)]
 mod tests;

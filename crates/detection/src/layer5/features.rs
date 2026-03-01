@@ -64,6 +64,7 @@ impl MlFeatures {
             signals.exploit_indicator,
             signals.kernel_integrity,
             signals.tamper_indicator,
+            signals.network_ioc_hit,
         ]
         .iter()
         .filter(|&&v| v)

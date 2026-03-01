@@ -40,6 +40,8 @@ pub(super) enum ControlPlaneTaskKind {
     CommandSync,
     BaselineUpload,
     FleetBaselineFetch,
+    IocSignalUpload,
+    CampaignFetch,
 }
 
 #[derive(Debug, Clone)]
