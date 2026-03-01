@@ -14,41 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-FEATURES = (
-    "z1_ioc_hit",
-    "z2_temporal_count",
-    "z3_anomaly_high",
-    "z3_anomaly_med",
-    "z4_killchain_count",
-    "yara_hit_count",
-    "string_sig_count",
-    "event_class_risk",
-    "uid_is_root",
-    "dst_port_risk",
-    "has_command_line",
-    "cmdline_length_norm",
-    "prefilter_hit",
-    "multi_layer_count",
-    "cmdline_renyi_h2",
-    "cmdline_compression",
-    "cmdline_min_entropy",
-    "cmdline_entropy_gap",
-    "dns_entropy",
-    "event_size_norm",
-    "container_risk",
-    "file_path_entropy",
-    "file_path_depth",
-    "behavioral_alarm_count",
-    "z1_z2_interaction",
-    "z1_z4_interaction",
-    "anomaly_behavioral",
-    "tree_depth_norm",       # 27: Process chain depth / 10
-    "tree_breadth_norm",     # 28: Sibling count / 20
-    "child_entropy",         # 29: Shannon entropy of child comm names
-    "spawn_rate_norm",       # 30: Children spawned per minute / 10
-    "rare_parent_child",     # 31: 1.0 if parent:child pair unseen in baseline
-    "c2_beacon_mi",          # 32: Mutual information score for destination
-)
+from signature_ml_feature_contract import load_feature_contract
 
 
 def _parse_bool(raw: str) -> bool:
@@ -129,6 +95,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-features", required=True, help="Output features NDJSON")
     parser.add_argument("--output-schema", required=True, help="Output feature schema JSON")
     parser.add_argument("--output-report", required=True, help="Output quality report JSON")
+    parser.add_argument("--output-feature-contract", default="", help="Optional output feature contract JSON")
     parser.add_argument("--min-rows", type=int, default=300)
     parser.add_argument("--min-unique-hosts", type=int, default=40)
     parser.add_argument("--min-unique-rules", type=int, default=60)
@@ -159,12 +126,6 @@ def _synthetic_score(features: dict[str, float]) -> float:
         + 0.5 * features.get("z1_z2_interaction", 0.0)
         + 0.4 * features.get("z1_z4_interaction", 0.0)
         + 0.3 * features.get("anomaly_behavioral", 0.0)
-        + 0.3 * features.get("tree_depth_norm", 0.0)
-        + 0.4 * features.get("tree_breadth_norm", 0.0)
-        + 0.5 * features.get("child_entropy", 0.0)
-        + 0.6 * features.get("spawn_rate_norm", 0.0)
-        + 0.8 * features.get("rare_parent_child", 0.0)
-        + 1.2 * features.get("c2_beacon_mi", 0.0)
     )
     return _clamp(1.0 / (1.0 + pow(2.718281828, -linear)), 0.001, 0.999)
 
@@ -172,6 +133,8 @@ def _synthetic_score(features: dict[str, float]) -> float:
 def main() -> int:
     args = _parser().parse_args()
     fail_on_threshold = _parse_bool(args.fail_on_threshold)
+    feature_contract = load_feature_contract()
+    features = tuple(feature_contract.get("features", []))
 
     try:
         rows = _read_ndjson(Path(args.labels))
@@ -226,7 +189,7 @@ def main() -> int:
             observed_at_values.append(observed_at)
 
         feature_values: dict[str, float] = {}
-        for name in FEATURES:
+        for name in features:
             value_raw = row.get(name)
             if value_raw is None:
                 missing_feature_count += 1
@@ -254,7 +217,7 @@ def main() -> int:
         )
 
     row_count = len(processed)
-    total_feature_cells = row_count * len(FEATURES)
+    total_feature_cells = row_count * len(features)
     missing_feature_ratio = (
         missing_feature_count / total_feature_cells if total_feature_cells > 0 else 1.0
     )
@@ -312,12 +275,25 @@ def main() -> int:
     schema = {
         "suite": "signature_ml_feature_schema",
         "recorded_at_utc": _iso_utc(_now_utc()),
-        "features": [*FEATURES],
+        "features": [*features],
         "dataset": str(features_path),
         "dataset_sha256": features_sha,
+        "feature_contract_version": feature_contract.get("version"),
+        "feature_contract_sha256": feature_contract.get("contract_sha256"),
     }
     schema_path.parent.mkdir(parents=True, exist_ok=True)
     schema_path.write_text(json.dumps(schema, indent=2) + "\n", encoding="utf-8")
+
+    if args.output_feature_contract:
+        contract_path = Path(args.output_feature_contract)
+        contract_path.parent.mkdir(parents=True, exist_ok=True)
+        contract_path.write_text(json.dumps(feature_contract, indent=2) + "\n", encoding="utf-8")
+
+    report["feature_contract"] = {
+        "version": feature_contract.get("version"),
+        "feature_count": feature_contract.get("feature_count"),
+        "contract_sha256": feature_contract.get("contract_sha256"),
+    }
 
     report_path = Path(args.output_report)
     report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -327,6 +303,7 @@ def main() -> int:
     print(f"- rows: {row_count}")
     print(f"- missing feature ratio: {missing_feature_ratio:.6f}")
     print(f"- temporal span days: {temporal_span_days:.3f}")
+    print(f"- feature contract sha256: {feature_contract.get('contract_sha256')}")
     if failures:
         print("\nSignature ML feature snapshot alerts:")
         for failure in failures:

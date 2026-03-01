@@ -253,7 +253,7 @@ impl BehavioralEngine {
 
         // ── Wasserstein distance check (periodic) ────────────────
         // Every 64 observations, compare current window to baseline
-        if self.exec_rate.observations % WINDOW_SIZE as u64 == 0 {
+        if self.exec_rate.observations.is_multiple_of(WINDOW_SIZE as u64) {
             self.check_wasserstein_shifts();
             self.check_cmdline_info_shifts(cmd_entropy, cmd_compression);
         }

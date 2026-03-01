@@ -212,7 +212,7 @@ pub fn scan_kernel_integrity(
 
     if let Some(lsm_raw) = read_trimmed(&opts.lsm_list_path) {
         let list = lsm_raw
-            .split(|ch| ch == ',' || ch == ' ')
+            .split([',', ' '])
             .filter_map(|val| {
                 let trimmed = val.trim();
                 if trimmed.is_empty() {
@@ -295,7 +295,7 @@ fn extract_probe_symbol(line: &str) -> Option<String> {
     if parts.len() < 2 {
         return None;
     }
-    parts.get(parts.len() - 1).map(|val| val.to_string())
+    parts.last().map(|val| val.to_string())
 }
 
 fn is_sensitive_symbol(symbol: &str) -> bool {

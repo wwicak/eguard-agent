@@ -20,7 +20,7 @@ pub fn detect_tamper_indicators(event: &TelemetryEvent) -> Vec<String> {
     let path = event
         .file_path
         .as_deref()
-        .or_else(|| event.command_line.as_deref())
+        .or(event.command_line.as_deref())
         .unwrap_or("");
     if path.is_empty() {
         return Vec::new();

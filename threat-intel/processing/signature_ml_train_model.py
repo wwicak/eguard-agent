@@ -23,6 +23,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from signature_ml_feature_contract import load_feature_contract
+
 RESERVED_FIELDS = {
     "sample_id",
     "observed_at_utc",
@@ -575,70 +577,113 @@ def _temperature_scale(
     return diagnostics["temperature"], diagnostics
 
 
+def _split_group_id(row: dict[str, Any], split_group_key: str) -> str:
+    host = str(row.get("host_id", "")).strip() or "host:unknown"
+    rule = str(row.get("rule_id", "")).strip() or "rule:unknown"
+
+    if split_group_key == "host":
+        return f"host:{host}"
+    if split_group_key == "rule":
+        return f"rule:{rule}"
+    return f"host:{host}|rule:{rule}"
+
+
+def _has_both_labels(indices: list[int], labels: list[int]) -> bool:
+    if not indices:
+        return False
+    pos = sum(1 for idx in indices if labels[idx] == 1)
+    neg = len(indices) - pos
+    return pos > 0 and neg > 0
+
+
+def _sort_groups_by_hash(groups: list[str]) -> list[str]:
+    return sorted(groups, key=lambda value: hashlib.sha256(value.encode("utf-8")).hexdigest())
+
+
 def _deterministic_split(
     rows: list[dict[str, Any]],
     labels: list[int],
     holdout_ratio: float,
-) -> tuple[list[int], list[int]]:
+    split_group_key: str,
+) -> tuple[list[int], list[int], int]:
+    groups: dict[str, list[int]] = {}
+    for idx, row in enumerate(rows):
+        key = _split_group_id(row, split_group_key)
+        groups.setdefault(key, []).append(idx)
+
     train_idx: list[int] = []
     holdout_idx: list[int] = []
-    for idx, row in enumerate(rows):
-        seed = str(row.get("sample_id", idx))
-        digest = hashlib.sha256(seed.encode("utf-8")).digest()
+    for group in _sort_groups_by_hash(list(groups.keys())):
+        digest = hashlib.sha256(group.encode("utf-8")).digest()
         bucket = int.from_bytes(digest[:2], "big") % 100
         if bucket < int((1.0 - holdout_ratio) * 100):
-            train_idx.append(idx)
+            train_idx.extend(groups[group])
         else:
-            holdout_idx.append(idx)
+            holdout_idx.extend(groups[group])
 
-    def has_both(indices: list[int]) -> bool:
-        if not indices:
-            return False
-        pos = sum(1 for idx in indices if labels[idx] == 1)
-        neg = len(indices) - pos
-        return pos > 0 and neg > 0
+    train_idx.sort()
+    holdout_idx.sort()
 
-    if not has_both(holdout_idx):
-        return list(range(len(rows))), []
-    if not has_both(train_idx):
-        return list(range(len(rows))), []
-    return train_idx, holdout_idx
+    if not _has_both_labels(holdout_idx, labels):
+        return list(range(len(rows))), [], len(groups)
+    if not _has_both_labels(train_idx, labels):
+        return list(range(len(rows))), [], len(groups)
+    return train_idx, holdout_idx, len(groups)
 
 
 def _stratified_kfold(
     rows: list[dict[str, Any]],
     labels: list[int],
     n_folds: int,
+    split_group_key: str,
 ) -> list[tuple[list[int], list[int]]]:
-    """Generate stratified k-fold splits deterministically."""
-    pos_indices = [i for i, l in enumerate(labels) if l == 1]
-    neg_indices = [i for i, l in enumerate(labels) if l == 0]
+    """Generate deterministic group-aware stratified k-fold splits."""
+    groups: dict[str, list[int]] = {}
+    for idx, row in enumerate(rows):
+        key = _split_group_id(row, split_group_key)
+        groups.setdefault(key, []).append(idx)
 
-    # Deterministic shuffle by hashing sample_id
-    def sort_key(idx: int) -> str:
-        seed = str(rows[idx].get("sample_id", idx))
-        return hashlib.sha256(seed.encode("utf-8")).hexdigest()
+    pos_groups: list[str] = []
+    neg_groups: list[str] = []
+    for group, group_indices in groups.items():
+        pos = sum(1 for idx in group_indices if labels[idx] == 1)
+        neg = len(group_indices) - pos
+        if pos >= neg:
+            pos_groups.append(group)
+        else:
+            neg_groups.append(group)
 
-    pos_indices.sort(key=sort_key)
-    neg_indices.sort(key=sort_key)
+    fold_groups: list[set[str]] = [set() for _ in range(n_folds)]
+
+    pos_counter = 0
+    for group in _sort_groups_by_hash(pos_groups):
+        fold_groups[pos_counter % n_folds].add(group)
+        pos_counter += 1
+
+    neg_counter = 0
+    for group in _sort_groups_by_hash(neg_groups):
+        fold_groups[neg_counter % n_folds].add(group)
+        neg_counter += 1
 
     folds: list[tuple[list[int], list[int]]] = []
     for fold in range(n_folds):
-        val_idx: list[int] = []
-        train_idx: list[int] = []
+        val_groups = fold_groups[fold]
+        val_idx = sorted(idx for group in val_groups for idx in groups.get(group, []))
+        train_idx = sorted(
+            idx
+            for g, group_indices in groups.items()
+            if g not in val_groups
+            for idx in group_indices
+        )
 
-        for indices in [pos_indices, neg_indices]:
-            fold_size = len(indices) // n_folds
-            start = fold * fold_size
-            end = start + fold_size if fold < n_folds - 1 else len(indices)
-            for i, idx in enumerate(indices):
-                if start <= i < end:
-                    val_idx.append(idx)
-                else:
-                    train_idx.append(idx)
+        if not val_idx or not train_idx:
+            continue
+        if not _has_both_labels(val_idx, labels):
+            continue
+        if not _has_both_labels(train_idx, labels):
+            continue
 
-        if val_idx and train_idx:
-            folds.append((train_idx, val_idx))
+        folds.append((train_idx, val_idx))
 
     return folds
 
@@ -743,6 +788,7 @@ def _build_training_plan(args: argparse.Namespace) -> dict[str, Any]:
 
     return {
         "resource_profile": profile,
+        "split_group_key": str(args.split_group_key or "host_rule").strip() or "host_rule",
         "detected_cpu_count": int(resources.get("cpu_count", 1.0)),
         "detected_memory_gib": float(resources.get("memory_gib", 0.0)),
         "max_iter": max_iter,
@@ -815,6 +861,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--model-out", required=True, help="Output model JSON")
     parser.add_argument("--metadata-out", required=True, help="Output metadata JSON")
     parser.add_argument("--resource-profile", default="auto", choices=["auto", "tiny", "modest", "balanced", "high"], help="Auto-tune training workload for detected hardware")
+    parser.add_argument("--split-group-key", default="host_rule", choices=["host", "rule", "host_rule"], help="Leakage-safe grouping key for holdout/CV splits")
     parser.add_argument("--max-samples", type=int, default=None, help="Hard cap for sampled training rows (0 disables cap)")
     parser.add_argument("--cv-folds", type=int, default=5, help="Stratified k-fold count (minimum 5)")
     parser.add_argument("--l2-grid-points", type=int, default=None, help="Auto L2 sweep size when --l2-grid is not provided")
@@ -846,6 +893,14 @@ def main() -> int:
     features = _load_feature_schema(Path(args.feature_schema))
     if not features:
         raise SystemExit("feature schema has no features")
+
+    feature_contract = load_feature_contract()
+    contract_features = [str(name) for name in feature_contract.get("features", [])]
+    if features != contract_features:
+        raise SystemExit(
+            "feature schema does not match canonical feature contract "
+            f"(contract_sha256={feature_contract.get('contract_sha256')})"
+        )
 
     raw_row_count = len(rows)
     labels = [int(row.get("label", 0)) for row in rows]
@@ -916,7 +971,12 @@ def main() -> int:
     sample_weights = [class_weights[label] for label in labels]
 
     holdout_ratio = _clamp(training_plan["holdout_ratio"], 0.05, 0.5)
-    train_idx, holdout_idx = _deterministic_split(rows, labels, holdout_ratio)
+    train_idx, holdout_idx, split_group_count = _deterministic_split(
+        rows,
+        labels,
+        holdout_ratio,
+        training_plan["split_group_key"],
+    )
 
     l2_grid = (
         _parse_l2_grid(args.l2_grid, args.l2)
@@ -976,7 +1036,12 @@ def main() -> int:
             best_diag = diag
 
     # Stratified cross-validation for regularization sweep (k >= 5).
-    cv_folds = _stratified_kfold(rows, labels, training_plan["cv_folds"])
+    cv_folds = _stratified_kfold(
+        rows,
+        labels,
+        training_plan["cv_folds"],
+        training_plan["split_group_key"],
+    )
     cv_sweep_results: list[dict[str, Any]] = []
 
     if cv_folds:
@@ -1051,17 +1116,6 @@ def main() -> int:
     weights = [w * scale for w in weights]
     bias = bias * scale
 
-    # Conformal calibration: compute nonconformity scores on holdout set.
-    conformal_idx = holdout_idx if holdout_idx else list(range(len(rows)))
-    conformal_scores_raw: list[float] = []
-    for idx in conformal_idx:
-        logit = bias + sum(w * x for w, x in zip(weights, scaled[idx]))
-        pred_prob = _sigmoid(logit)
-        nonconformity = abs(pred_prob - labels[idx])
-        conformal_scores_raw.append(nonconformity)
-    calibration_scores = sorted(round(s, 8) for s in conformal_scores_raw)
-    calibration_alpha = 0.01
-
     # Final predictions (post-calibration).
     preds = [
         _sigmoid(bias + sum(w * x for w, x in zip(weights, row))) for row in scaled
@@ -1101,6 +1155,8 @@ def main() -> int:
         "model_type": "linear_logit_v3_irls",
         "model_version": args.model_version,
         "trained_at_utc": _iso_utc(_now_utc()),
+        "feature_contract_version": feature_contract.get("version"),
+        "feature_contract_sha256": feature_contract.get("contract_sha256"),
         "features": features,
         "weights": weights_by_name,
         "feature_scales": feature_scales,
@@ -1112,8 +1168,6 @@ def main() -> int:
         "negative_samples": len(neg_rows),
         "feature_stats": feature_stats,
         "weight_standard_errors": weight_se,
-        "calibration_scores": calibration_scores,
-        "calibration_alpha": calibration_alpha,
         "training_metrics": training_metrics,
         "training_diagnostics": {
             "optimizer": diag.get("optimizer"),
@@ -1128,6 +1182,8 @@ def main() -> int:
             "temperature": round(temperature, 6),
             "temperature_diagnostics": temp_diag,
             "resource_profile": training_plan["resource_profile"],
+            "split_group_key": training_plan["split_group_key"],
+            "split_group_count": split_group_count,
             "detected_cpu_count": training_plan["detected_cpu_count"],
             "detected_memory_gib": training_plan["detected_memory_gib"],
             "effective_max_iter": training_plan["max_iter"],
@@ -1135,6 +1191,8 @@ def main() -> int:
             "effective_cv_folds": training_plan["cv_folds"],
             "effective_l2_grid_points": training_plan["l2_grid_points"],
             "effective_max_samples": training_plan["max_samples"],
+            "feature_contract_version": feature_contract.get("version"),
+            "feature_contract_sha256": feature_contract.get("contract_sha256"),
             "sampled_from_rows": raw_row_count,
         },
     }
@@ -1168,6 +1226,8 @@ def main() -> int:
         "optimizer": "irls_newton",
         "temperature": round(temperature, 6),
         "resource_profile": training_plan["resource_profile"],
+        "split_group_key": training_plan["split_group_key"],
+        "split_group_count": split_group_count,
         "detected_cpu_count": training_plan["detected_cpu_count"],
         "detected_memory_gib": training_plan["detected_memory_gib"],
         "effective_max_iter": training_plan["max_iter"],
@@ -1175,6 +1235,8 @@ def main() -> int:
         "effective_cv_folds": training_plan["cv_folds"],
         "effective_l2_grid_points": training_plan["l2_grid_points"],
         "effective_max_samples": training_plan["max_samples"],
+        "feature_contract_version": feature_contract.get("version"),
+        "feature_contract_sha256": feature_contract.get("contract_sha256"),
     }
 
     metadata_path = Path(args.metadata_out)
@@ -1189,6 +1251,8 @@ def main() -> int:
         f"- detected hardware: cpu={training_plan['detected_cpu_count']}, memory_gib={training_plan['detected_memory_gib']:.2f}"
     )
     print(f"- effective max_iter: {training_plan['max_iter']}")
+    print(f"- split group key: {training_plan['split_group_key']}")
+    print(f"- split group count: {split_group_count}")
     print(f"- effective cv folds: {training_plan['cv_folds']}")
     print(f"- effective l2 grid points: {training_plan['l2_grid_points']}")
     print(f"- effective max samples: {training_plan['max_samples']}")
@@ -1199,6 +1263,7 @@ def main() -> int:
     print(f"- threshold: {threshold}")
     print(f"- l2: {best_l2}")
     print(f"- temperature: {temperature:.4f}")
+    print(f"- feature contract sha256: {feature_contract.get('contract_sha256')}")
     print(f"- model sha256: {model_sha}")
     return 0
 

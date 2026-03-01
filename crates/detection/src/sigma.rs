@@ -311,10 +311,7 @@ fn select_legacy_selector_names(detection: &Mapping, condition: &str) -> Vec<Str
         lookup.insert(name.to_ascii_lowercase(), name.clone());
     }
 
-    let sanitized = condition
-        .replace('(', " ")
-        .replace(')', " ")
-        .replace('\n', " ");
+    let sanitized = condition.replace(['(', ')', '\n'], " ");
     let mut selected = HashSet::new();
 
     for term in split_condition_terms(&sanitized) {

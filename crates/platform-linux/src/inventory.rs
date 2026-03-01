@@ -514,10 +514,10 @@ fn collect_installed_packages(attrs: &mut HashMap<String, String>) {
         let mut installed = false;
 
         for line in status.lines() {
-            if line.starts_with("Package: ") {
-                name = line[9..].trim().to_string();
-            } else if line.starts_with("Version: ") {
-                version = line[9..].trim().to_string();
+            if let Some(rest) = line.strip_prefix("Package: ") {
+                name = rest.trim().to_string();
+            } else if let Some(rest) = line.strip_prefix("Version: ") {
+                version = rest.trim().to_string();
             } else if line.starts_with("Status: ") {
                 installed = line.contains("installed");
             } else if line.is_empty() {

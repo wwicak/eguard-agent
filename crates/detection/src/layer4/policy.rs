@@ -273,7 +273,7 @@ pub(super) fn path_root_prefix(path: &str) -> Option<String> {
         let sep = if bytes[2] == b'\\' { '\\' } else { '/' };
         let rest = &path[3..];
         let components: Vec<&str> = rest
-            .split(|c| c == '/' || c == '\\')
+            .split(['/', '\\'])
             .filter(|c| !c.is_empty())
             .collect();
         if components.is_empty() {
@@ -288,8 +288,7 @@ pub(super) fn path_root_prefix(path: &str) -> Option<String> {
         return Some(root);
     }
 
-    if path.starts_with("\\\\") {
-        let rest = &path[2..];
+    if let Some(rest) = path.strip_prefix("\\\\") {
         let components: Vec<&str> = rest.split('\\').filter(|c| !c.is_empty()).collect();
         if components.len() >= 2 {
             return Some(format!("\\\\{}\\{}\\", components[0], components[1]));

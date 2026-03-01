@@ -79,7 +79,7 @@ impl CiTrainedModel {
             return Err(MlError::NonFiniteBias(self.bias));
         }
         for (name, &scale) in &self.feature_scales {
-            if scale < 1e-10 || scale > 1e6 {
+            if !(1e-10..=1e6).contains(&scale) {
                 return Err(MlError::UnreasonableScale {
                     name: name.clone(),
                     value: scale,
@@ -116,7 +116,7 @@ impl CiTrainedModel {
         // Fix 10d: Use CI-trained threshold if available and within sane bounds
         let threshold = self
             .threshold
-            .filter(|&t| t >= 0.05 && t <= 0.95)
+            .filter(|&t| (0.05..=0.95).contains(&t))
             .unwrap_or(0.5);
 
         // Fix 10f: Track feature mapping mismatches

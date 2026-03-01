@@ -18,6 +18,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from signature_ml_feature_contract import FEATURES as FEATURE_CONTRACT_FIELDS
+from signature_ml_feature_contract import load_feature_contract
+
 
 EVENT_CLASSES = (
     "process_exec",
@@ -41,41 +44,7 @@ EVENT_CLASS_RISK = {
     "alert": 1.0,
 }
 
-SIGNAL_FEATURE_FIELDS = (
-    "z1_ioc_hit",
-    "z2_temporal_count",
-    "z3_anomaly_high",
-    "z3_anomaly_med",
-    "z4_killchain_count",
-    "yara_hit_count",
-    "string_sig_count",
-    "event_class_risk",
-    "uid_is_root",
-    "dst_port_risk",
-    "has_command_line",
-    "cmdline_length_norm",
-    "prefilter_hit",
-    "multi_layer_count",
-    "cmdline_renyi_h2",
-    "cmdline_compression",
-    "cmdline_min_entropy",
-    "cmdline_entropy_gap",
-    "dns_entropy",
-    "event_size_norm",
-    "container_risk",
-    "file_path_entropy",
-    "file_path_depth",
-    "behavioral_alarm_count",
-    "z1_z2_interaction",
-    "z1_z4_interaction",
-    "anomaly_behavioral",
-    "tree_depth_norm",
-    "tree_breadth_norm",
-    "child_entropy",
-    "spawn_rate_norm",
-    "rare_parent_child",
-    "c2_beacon_mi",
-)
+SIGNAL_FEATURE_FIELDS = tuple(FEATURE_CONTRACT_FIELDS)
 
 
 def _now_utc() -> datetime:
@@ -118,6 +87,10 @@ def _normalize_label(value: Any) -> int | None:
     return None
 
 
+def _parse_bool(raw: Any) -> bool:
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _as_float(value: Any, default: float = 0.0) -> float:
     try:
         return float(value)
@@ -151,6 +124,7 @@ def _normalize_external_row(
     row: dict[str, Any],
     sample_id: str,
     observed_at: datetime,
+    feature_fields: tuple[str, ...],
 ) -> dict[str, Any] | None:
     event_class = str(row.get("event_class") or "process_exec").strip()
     if event_class not in EVENT_CLASSES:
@@ -177,7 +151,7 @@ def _normalize_external_row(
         "label_source": label_source,
     }
 
-    for feature in SIGNAL_FEATURE_FIELDS:
+    for feature in feature_fields:
         normalized[feature] = _as_float(row.get(feature), 0.0)
 
     return normalized
@@ -187,6 +161,7 @@ def _load_external_signals(
     path: Path,
     sample_cap: int,
     now: datetime,
+    feature_fields: tuple[str, ...],
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     if not path.is_file():
         return [], {"external_total": 0, "external_used": 0, "external_invalid": 0}
@@ -224,7 +199,7 @@ def _load_external_signals(
     entries: list[dict[str, Any]] = []
     for idx, (observed, payload) in enumerate(raw_entries):
         sample_id = str(payload.get("sample_id") or f"external-{idx + 1:06d}")
-        normalized = _normalize_external_row(payload, sample_id, observed or now)
+        normalized = _normalize_external_row(payload, sample_id, observed or now, feature_fields)
         if normalized is None:
             invalid += 1
             continue
@@ -238,6 +213,80 @@ def _load_external_signals(
         "external_used": len(entries),
         "external_invalid": invalid,
     }
+
+
+def _stable_row_key(row: dict[str, Any], fallback: str) -> str:
+    sample_id = str(row.get("sample_id", "")).strip()
+    if sample_id:
+        return sample_id
+    observed_at = str(row.get("observed_at_utc", "")).strip()
+    host_id = str(row.get("host_id", "")).strip()
+    rule_id = str(row.get("rule_id", "")).strip()
+    return f"{fallback}|{host_id}|{rule_id}|{observed_at}"
+
+
+def _dedupe_rows(rows: list[dict[str, Any]], prefix: str) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for idx, row in enumerate(rows):
+        key = _stable_row_key(row, f"{prefix}-{idx:08d}")
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(row)
+    return deduped
+
+
+def _cap_external_rows(
+    rows: list[dict[str, Any]],
+    max_per_host: int,
+    max_per_rule: int,
+) -> list[dict[str, Any]]:
+    if not rows:
+        return []
+
+    capped: list[dict[str, Any]] = []
+    host_counts: dict[str, int] = {}
+    rule_counts: dict[str, int] = {}
+
+    for row in rows:
+        host_id = str(row.get("host_id", "")).strip() or "host:unknown"
+        rule_id = str(row.get("rule_id", "")).strip() or "rule:unknown"
+
+        if max_per_host > 0 and host_counts.get(host_id, 0) >= max_per_host:
+            continue
+        if max_per_rule > 0 and rule_counts.get(rule_id, 0) >= max_per_rule:
+            continue
+
+        capped.append(row)
+        host_counts[host_id] = host_counts.get(host_id, 0) + 1
+        rule_counts[rule_id] = rule_counts.get(rule_id, 0) + 1
+
+    return capped
+
+
+def _assemble_external_first_dataset(
+    sample_count: int,
+    synthetic_rows: list[dict[str, Any]],
+    external_rows: list[dict[str, Any]],
+    max_synthetic_ratio: float,
+) -> tuple[list[dict[str, Any]], int]:
+    if sample_count <= 0:
+        return [], 0
+
+    external_count = min(len(external_rows), sample_count)
+    if external_count <= 0:
+        selected_synth = synthetic_rows[:sample_count]
+        return selected_synth, len(selected_synth)
+
+    synth_budget = int(round(external_count * max(max_synthetic_ratio, 0.0)))
+    synth_budget = max(0, synth_budget)
+    synth_budget = min(synth_budget, max(sample_count - external_count, 0))
+
+    selected_external = external_rows[:external_count]
+    selected_synth = synthetic_rows[:synth_budget]
+    dataset = [*selected_external, *selected_synth]
+    return dataset[:sample_count], len(selected_synth)
 
 
 def _rand01(seed: str) -> float:
@@ -310,102 +359,27 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--critical-gate", default="", help="bundle/attack-critical-technique-gate.json")
     parser.add_argument("--output-signals", required=True, help="Output NDJSON path")
     parser.add_argument("--output-summary", default="", help="Optional output summary JSON path")
+    parser.add_argument("--output-feature-contract", default="", help="Optional output feature contract JSON path")
     parser.add_argument("--external-signals", default="", help="Optional external signals NDJSON")
     parser.add_argument("--external-sample-cap", type=int, default=0)
+    parser.add_argument("--external-first", default="1", help="Prefer external rows before synthetic fallback")
+    parser.add_argument("--max-synthetic-ratio", type=float, default=1.0, help="Max synthetic:external ratio when external-first mode is enabled")
+    parser.add_argument("--max-external-per-host", type=int, default=0, help="Optional per-host cap for external samples (0 disables)")
+    parser.add_argument("--max-external-per-rule", type=int, default=0, help="Optional per-rule cap for external samples (0 disables)")
     parser.add_argument("--sample-count", type=int, default=720)
     parser.add_argument("--window-days", type=int, default=45)
     parser.add_argument("--host-pool", type=int, default=160)
     parser.add_argument("--rule-pool", type=int, default=220)
     parser.add_argument("--unresolved-ratio", type=float, default=0.08)
     parser.add_argument("--label-noise", type=float, default=0.03)
-    parser.add_argument("--real-data", default="", help="Optional NDJSON of real adjudicated alerts (33 features + label)")
-    parser.add_argument("--real-weight", default="auto", help="Real data weight: 'auto' (adapts to count), or float 0.0-1.0")
     return parser
-
-
-def _load_real_data(path: Path) -> tuple[list[dict[str, Any]], int]:
-    """Load real adjudicated alerts from NDJSON file.
-
-    Returns (valid_rows, invalid_count).
-    """
-    if not path.is_file():
-        return [], 0
-    valid: list[dict[str, Any]] = []
-    invalid = 0
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        try:
-            payload = json.loads(line)
-        except json.JSONDecodeError:
-            invalid += 1
-            continue
-        if not isinstance(payload, dict):
-            invalid += 1
-            continue
-        label = _normalize_label(payload.get("label"))
-        if label is None:
-            invalid += 1
-            continue
-        row: dict[str, Any] = {
-            "sample_id": payload.get("sample_id", f"real-{len(valid) + 1:06d}"),
-            "observed_at_utc": payload.get("observed_at_utc", ""),
-            "adjudicated_at_utc": payload.get("adjudicated_at_utc", ""),
-            "host_id": str(payload.get("host_id", "")).strip(),
-            "rule_id": str(payload.get("rule_id", "")).strip(),
-            "event_class": str(payload.get("event_class", "process_exec")).strip(),
-            "model_score": _clamp(_as_float(payload.get("model_score"), 0.0), 0.0, 1.0),
-            "label": label,
-            "label_source": "real_feedback",
-        }
-        for feature in SIGNAL_FEATURE_FIELDS:
-            row[feature] = _as_float(payload.get(feature), 0.0)
-        valid.append(row)
-    return valid, invalid
-
-
-def _blend_real_synthetic(
-    real_rows: list[dict[str, Any]],
-    synthetic_rows: list[dict[str, Any]],
-    real_weight: str,
-    target_count: int,
-) -> tuple[list[dict[str, Any]], str]:
-    """Blend real and synthetic data with adaptive weighting.
-
-    Returns (blended_rows, blend_mode).
-    """
-    if not real_rows:
-        return synthetic_rows[:target_count], "synthetic_only"
-
-    real_count = len(real_rows)
-
-    # Determine real weight
-    if real_weight == "auto":
-        if real_count < 500:
-            weight = 0.70  # cold-start: 70% real + 30% synthetic
-        else:
-            weight = 0.95  # mature: 95% real + 5% synthetic
-    else:
-        weight = _clamp(_as_float(real_weight, 0.70), 0.0, 1.0)
-
-    real_target = min(int(target_count * weight), real_count)
-    synthetic_target = target_count - real_target
-
-    # Deterministic selection: sort by sample_id hash for stability
-    def _sort_key(row: dict[str, Any]) -> str:
-        return hashlib.sha256(str(row.get("sample_id", "")).encode("utf-8")).hexdigest()
-
-    selected_real = sorted(real_rows, key=_sort_key)[:real_target]
-    selected_synthetic = sorted(synthetic_rows, key=_sort_key)[:max(synthetic_target, 0)]
-
-    blended = selected_real + selected_synthetic
-    mode = f"blended_real_{weight:.0%}".replace("%", "pct")
-    return blended[:target_count], mode
 
 
 def main() -> int:
     args = _parser().parse_args()
+
+    feature_contract = load_feature_contract()
+    feature_fields = tuple(feature_contract.get("features", SIGNAL_FEATURE_FIELDS))
 
     manifest = _load_json(Path(args.manifest), "bundle manifest", required=True)
     coverage = _load_json(Path(args.coverage), "coverage report", required=True)
@@ -431,6 +405,10 @@ def main() -> int:
     rule_pool = max(args.rule_pool, 12)
     unresolved_ratio = _clamp(args.unresolved_ratio, 0.0, 0.80)
     label_noise = _clamp(args.label_noise, 0.0, 0.40)
+    external_first = _parse_bool(args.external_first)
+    max_synthetic_ratio = _clamp(args.max_synthetic_ratio, 0.0, 10.0)
+    max_external_per_host = max(_as_int(args.max_external_per_host, 0), 0)
+    max_external_per_rule = max(_as_int(args.max_external_per_rule, 0), 0)
 
     measured = coverage.get("measured", {})
     if not isinstance(measured, dict):
@@ -477,7 +455,15 @@ def main() -> int:
             Path(args.external_signals),
             sample_cap,
             now,
+            feature_fields,
         )
+        external_rows = _dedupe_rows(external_rows, "external")
+        external_rows = _cap_external_rows(
+            external_rows,
+            max_external_per_host,
+            max_external_per_rule,
+        )
+        external_stats["external_used"] = len(external_rows)
 
     rows: list[dict[str, Any]] = []
     raw_rows: list[dict[str, Any]] = []
@@ -596,30 +582,6 @@ def main() -> int:
         z1_z4_interaction = z1_ioc_hit * z4_killchain_count
         anomaly_behavioral = z3_anomaly_high * multi_layer_count
 
-        # Process tree features
-        is_malicious_bias = severity / 5.0
-        tree_depth_norm = _clamp(
-            _rand01(seed_prefix + "|tdepth") * (0.5 + 0.3 * is_malicious_bias),
-            0.0, 1.0,
-        )
-        tree_breadth_norm = _clamp(
-            _rand01(seed_prefix + "|tbreadth") * (0.3 + 0.4 * is_malicious_bias),
-            0.0, 1.0,
-        )
-        child_entropy = _clamp(
-            _rand01(seed_prefix + "|centropy") * (0.4 + 0.5 * is_malicious_bias),
-            0.0, 1.0,
-        )
-        spawn_rate_norm = _clamp(
-            _rand01(seed_prefix + "|spawnrate") * (0.2 + 0.6 * is_malicious_bias),
-            0.0, 1.0,
-        )
-        rare_parent_child = 1.0 if _rand01(seed_prefix + "|rarepc") < (0.05 + 0.35 * is_malicious_bias) else 0.0
-        c2_beacon_mi = _clamp(
-            _rand01(seed_prefix + "|c2mi") * (0.1 + 0.8 * is_malicious_bias),
-            0.0, 1.0,
-        )
-
         linear = (
             -3.10
             + 2.25 * z1_ioc_hit
@@ -642,12 +604,6 @@ def main() -> int:
             + 0.5 * z1_z2_interaction
             + 0.4 * z1_z4_interaction
             + 0.3 * anomaly_behavioral
-            + 0.3 * tree_depth_norm
-            + 0.4 * tree_breadth_norm
-            + 0.5 * child_entropy
-            + 0.6 * spawn_rate_norm
-            + 0.8 * rare_parent_child
-            + 1.2 * c2_beacon_mi
             + (_rand01(seed_prefix + "|noise") - 0.5) * 0.6
         )
         model_score = _clamp(_score_to_probability(linear), 0.001, 0.999)
@@ -695,12 +651,6 @@ def main() -> int:
                 "z1_z2_interaction": round(z1_z2_interaction, 6),
                 "z1_z4_interaction": round(z1_z4_interaction, 6),
                 "anomaly_behavioral": round(anomaly_behavioral, 6),
-                "tree_depth_norm": round(tree_depth_norm, 6),
-                "tree_breadth_norm": round(tree_breadth_norm, 6),
-                "child_entropy": round(child_entropy, 6),
-                "spawn_rate_norm": round(spawn_rate_norm, 6),
-                "rare_parent_child": round(rare_parent_child, 6),
-                "c2_beacon_mi": round(c2_beacon_mi, 6),
             }
         )
 
@@ -736,6 +686,7 @@ def main() -> int:
             encoded_label = None
             adjudicated_at_raw = ""
 
+        feature_payload = {feature: row.get(feature, 0.0) for feature in feature_fields}
         rows.append(
             {
                 "sample_id": row.get("sample_id"),
@@ -747,60 +698,31 @@ def main() -> int:
                 "model_score": row.get("model_score"),
                 "label": encoded_label,
                 "label_source": "synthetic_ci",
-                "z1_ioc_hit": row.get("z1_ioc_hit"),
-                "z2_temporal_count": row.get("z2_temporal_count"),
-                "z3_anomaly_high": row.get("z3_anomaly_high"),
-                "z3_anomaly_med": row.get("z3_anomaly_med"),
-                "z4_killchain_count": row.get("z4_killchain_count"),
-                "yara_hit_count": row.get("yara_hit_count"),
-                "string_sig_count": row.get("string_sig_count"),
-                "event_class_risk": row.get("event_class_risk"),
-                "uid_is_root": row.get("uid_is_root"),
-                "dst_port_risk": row.get("dst_port_risk"),
-                "has_command_line": row.get("has_command_line"),
-                "cmdline_length_norm": row.get("cmdline_length_norm"),
-                "prefilter_hit": row.get("prefilter_hit"),
-                "multi_layer_count": row.get("multi_layer_count"),
-                "cmdline_renyi_h2": row.get("cmdline_renyi_h2"),
-                "cmdline_compression": row.get("cmdline_compression"),
-                "cmdline_min_entropy": row.get("cmdline_min_entropy"),
-                "cmdline_entropy_gap": row.get("cmdline_entropy_gap"),
-                "dns_entropy": row.get("dns_entropy"),
-                "event_size_norm": row.get("event_size_norm"),
-                "container_risk": row.get("container_risk"),
-                "file_path_entropy": row.get("file_path_entropy"),
-                "file_path_depth": row.get("file_path_depth"),
-                "behavioral_alarm_count": row.get("behavioral_alarm_count"),
-                "z1_z2_interaction": row.get("z1_z2_interaction"),
-                "z1_z4_interaction": row.get("z1_z4_interaction"),
-                "anomaly_behavioral": row.get("anomaly_behavioral"),
-                "tree_depth_norm": row.get("tree_depth_norm"),
-                "tree_breadth_norm": row.get("tree_breadth_norm"),
-                "child_entropy": row.get("child_entropy"),
-                "spawn_rate_norm": row.get("spawn_rate_norm"),
-                "rare_parent_child": row.get("rare_parent_child"),
-                "c2_beacon_mi": row.get("c2_beacon_mi"),
+                **feature_payload,
             }
         )
 
+    synthetic_count_used = len(rows)
     dataset_mode = "synthetic_ci"
-    if external_rows:
-        combined = external_rows + rows
-        if len(combined) > sample_count:
-            combined = combined[:sample_count]
-        rows = combined
-        dataset_mode = "external_only" if len(rows) == len(external_rows) else "hybrid_external"
 
-    # Real feedback integration: blend real adjudicated alerts with synthetic data
-    real_data_stats = {"real_total": 0, "real_used": 0, "real_invalid": 0}
-    if args.real_data:
-        real_rows, real_invalid = _load_real_data(Path(args.real_data))
-        real_data_stats["real_total"] = len(real_rows) + real_invalid
-        real_data_stats["real_invalid"] = real_invalid
-        if real_rows:
-            rows, blend_mode = _blend_real_synthetic(real_rows, rows, args.real_weight, sample_count)
-            real_data_stats["real_used"] = sum(1 for r in rows if r.get("label_source") == "real_feedback")
-            dataset_mode = blend_mode
+    rows = _dedupe_rows(rows, "synthetic")
+
+    if external_rows:
+        if external_first:
+            rows, synthetic_count_used = _assemble_external_first_dataset(
+                sample_count=sample_count,
+                synthetic_rows=rows,
+                external_rows=external_rows,
+                max_synthetic_ratio=max_synthetic_ratio,
+            )
+            dataset_mode = "external_only" if synthetic_count_used == 0 else "hybrid_external_first"
+        else:
+            combined = _dedupe_rows([*external_rows, *rows], "combined")
+            if len(combined) > sample_count:
+                combined = combined[:sample_count]
+            rows = combined
+            synthetic_count_used = sum(1 for row in rows if str(row.get("label_source", "")).startswith("synthetic"))
+            dataset_mode = "external_only" if synthetic_count_used == 0 else "hybrid_external"
 
     adjudicated_count = 0
     positive_count = 0
@@ -829,6 +751,11 @@ def main() -> int:
         "dataset_mode": dataset_mode,
         "recorded_at_utc": _iso_utc(now),
         "version_seed": version_seed,
+        "feature_contract": {
+            "version": feature_contract.get("version"),
+            "feature_count": feature_contract.get("feature_count"),
+            "contract_sha256": feature_contract.get("contract_sha256"),
+        },
         "measured": {
             "sample_count": len(rows),
             "adjudicated_count": adjudicated_count,
@@ -845,12 +772,10 @@ def main() -> int:
             "window_days": window_days,
             "host_pool": host_pool,
             "rule_pool": rule_pool,
+            "synthetic_used": synthetic_count_used,
             "external_total": external_stats.get("external_total", 0),
             "external_used": external_stats.get("external_used", 0),
             "external_invalid": external_stats.get("external_invalid", 0),
-            "real_total": real_data_stats.get("real_total", 0),
-            "real_used": real_data_stats.get("real_used", 0),
-            "real_invalid": real_data_stats.get("real_invalid", 0),
         },
         "inputs": {
             "manifest": str(args.manifest),
@@ -859,6 +784,10 @@ def main() -> int:
             "attack_coverage": str(args.attack_coverage) if args.attack_coverage else None,
             "critical_gate": str(args.critical_gate) if args.critical_gate else None,
             "external_signals": str(args.external_signals) if args.external_signals else None,
+            "external_first": external_first,
+            "max_synthetic_ratio": max_synthetic_ratio,
+            "max_external_per_host": max_external_per_host,
+            "max_external_per_rule": max_external_per_rule,
         },
     }
 
@@ -867,22 +796,24 @@ def main() -> int:
         summary_path.parent.mkdir(parents=True, exist_ok=True)
         summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
 
+    if args.output_feature_contract:
+        contract_path = Path(args.output_feature_contract)
+        contract_path.parent.mkdir(parents=True, exist_ok=True)
+        contract_path.write_text(json.dumps(feature_contract, indent=2) + "\n", encoding="utf-8")
+
     print("Signature ML training corpus snapshot:")
     print(f"- mode: {summary['dataset_mode']}")
     print(f"- sample count: {len(rows)}")
+    print(f"- synthetic used: {synthetic_count_used}")
     print(f"- adjudicated count: {adjudicated_count}")
     print(f"- unresolved count: {unresolved_count}")
     print(f"- positive count: {positive_count}")
     print(f"- negative count: {negative_count}")
+    print(f"- feature contract sha256: {feature_contract.get('contract_sha256')}")
     if external_stats.get("external_used", 0) > 0:
         print(
             f"- external signals: {external_stats.get('external_used', 0)} used "
             f"(total {external_stats.get('external_total', 0)}, invalid {external_stats.get('external_invalid', 0)})"
-        )
-    if real_data_stats.get("real_used", 0) > 0:
-        print(
-            f"- real feedback: {real_data_stats['real_used']} used "
-            f"(total {real_data_stats['real_total']}, invalid {real_data_stats['real_invalid']})"
         )
     print(f"- output: {out_path}")
     return 0

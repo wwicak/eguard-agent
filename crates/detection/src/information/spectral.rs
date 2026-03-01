@@ -77,18 +77,16 @@ fn fiedler_value(laplacian: &[Vec<f64>]) -> f64 {
     // This maps the zero eigenvalue to 1 while preserving all others.
     let shift = 1.0 / n as f64;
     let mut shifted = laplacian.to_vec();
-    for i in 0..n {
-        for j in 0..n {
-            shifted[i][j] += shift;
+    for row in shifted.iter_mut() {
+        for cell in row.iter_mut() {
+            *cell += shift;
         }
     }
     // Inverse power iteration on shifted matrix finds smallest eigenvalue of L'
     // which corresponds to second-smallest of L (since we shifted the zero).
-    let mut v = vec![0.0; n];
-    // Start with vector orthogonal to constant vector
-    for i in 0..n {
-        v[i] = if i % 2 == 0 { 1.0 } else { -1.0 };
-    }
+    let mut v: Vec<f64> = (0..n)
+        .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
+        .collect();
     let norm: f64 = v.iter().map(|x| x * x).sum::<f64>().sqrt();
     for x in &mut v {
         *x /= norm;

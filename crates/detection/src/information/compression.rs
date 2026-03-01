@@ -77,5 +77,5 @@ fn lz77_estimate(data: &[u8]) -> usize {
             i += 1;
         }
     }
-    (output_bits + 7) / 8
+    output_bits.div_ceil(8)
 }

@@ -57,9 +57,9 @@ impl TemporalPredicate {
                 if !any_of_match && !starts_with_match {
                     return false;
                 }
-            } else if has_any_of && !any_of_match {
-                return false;
-            } else if has_starts_with && !starts_with_match {
+            } else if (has_any_of && !any_of_match)
+                || (has_starts_with && !starts_with_match)
+            {
                 return false;
             }
         }

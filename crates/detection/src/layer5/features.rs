@@ -21,6 +21,7 @@ pub struct MlFeatures {
 
 impl MlFeatures {
     /// Extract feature vector from detection signals and event metadata.
+    #[allow(clippy::too_many_arguments)]
     pub fn extract(
         event: &TelemetryEvent,
         signals: &DetectionSignals,
