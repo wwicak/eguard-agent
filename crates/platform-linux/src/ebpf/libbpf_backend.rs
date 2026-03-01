@@ -1,4 +1,4 @@
-#![cfg(feature = "ebpf-libbpf")]
+// Module-level cfg is already applied in ebpf.rs; no need to duplicate here.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};

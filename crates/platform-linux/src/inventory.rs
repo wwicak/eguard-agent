@@ -336,7 +336,7 @@ fn statvfs_free_gb(path: &str) -> Option<u64> {
     unsafe {
         let mut stat: libc::statvfs = std::mem::zeroed();
         if libc::statvfs(c_path.as_ptr(), &mut stat) == 0 {
-            let free_bytes = stat.f_bavail as u64 * stat.f_frsize as u64;
+            let free_bytes = stat.f_bavail * stat.f_frsize;
             Some(free_bytes / (1024 * 1024 * 1024))
         } else {
             None
