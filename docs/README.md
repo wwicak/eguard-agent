@@ -11,6 +11,32 @@ For deployment + E2E operations across `fe_eguard` and `eguard-agent`, see:
 - `docs/operations-guide.md`
 - `docs/ml-ops-operations-manual.md` (Baseline+ML rollout, canary, kill-switch, rollback, evidence runbook)
 
+## Detection Capabilities
+
+Multi-layer detection engine with CrowdStrike-parity coverage. See
+[operations-guide.md](operations-guide.md) for operational details.
+
+| Layer | Technique | Notes |
+|-------|-----------|-------|
+| L1 — IOC | Hash/domain/IP exact match | Cuckoo prefilter, confidence escalation |
+| L2 — SIGMA | Temporal rule correlation | 361 rules from 5 sources |
+| L3 — Anomaly | KL-divergence + Shannon entropy + CUSUM drift | Per-endpoint adaptive baseline |
+| L4 — Kill Chain | Graph matching against MITRE ATT&CK | Multi-stage attack detection |
+| L5 — ML | 33-feature logistic regression + conformal calibration | Ensemble scoring |
+| Behavioral | 9-dimensional CUSUM + Wasserstein + spectral analysis | Drift detection |
+| YARA | File signature scanning | 2891 rules |
+| CVE | Real-time vuln matching via CveDatabase | Against installed software |
+| Beaconing | C2 detection via mutual information | Inter-arrival/size patterns |
+| Campaign | Cross-endpoint IOC correlation | VeryHigh confidence escalation |
+| Network IOC | DNS/IP matching | Confidence escalation to High |
+
+**On-premise advantages vs cloud EDR:**
+
+- Zero-latency fleet queries (<1ms LAN vs cloud RTT)
+- Full data sovereignty — no data leaves premises
+- Customer-specific homogeneous baselines (20K agents in one org)
+- No cloud compute bills, no vendor lock-in
+
 ## Runtime configuration (current)
 
 Default deployment mode expects the agent to receive `server_addr` during

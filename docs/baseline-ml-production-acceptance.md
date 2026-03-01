@@ -1,6 +1,6 @@
 # Baseline + ML Production Wiring — Acceptance Criteria
 
-**Version:** 2.0
+**Version:** 2.1
 **Date:** 2026-03-01
 **Scope:** eGuard agent (`eguard-agent`) + server (`fe_eguard`) baseline/ML data loop
 
@@ -312,6 +312,50 @@ Design as 3-plane ML system:
   **Verification:** Run agent under reference workload (500 process keys, 1024 network destinations), measure ML-attributed RSS via `/proc/self/statm` delta. Run server aggregation for 20K synthetic agents, measure peak RSS.
 
   **Expected behavior:** ML subsystem fits within resource budget on production hardware without competing with core detection and telemetry paths.
+
+## J. CrowdStrike-Parity Detection
+
+- **AC-BML-090 (CVE vulnerability matching):**
+  CveDatabase loaded from bundle `cves.jsonl`. O(1) per-product lookup via hash map keyed by normalized product name. ModuleLoad events checked against version ranges in the CVE database. CVEs flagged `actively_exploited` with CVSS >= 7.0 produce High confidence detections. Covered by 10 unit tests validating lookup, version range matching, confidence assignment, and edge cases (unknown product, no CVE match, below-threshold CVSS).
+
+  **Verification:** 10 unit tests in the CVE matching module. Synthetic `cves.jsonl` fixture exercises exact match, range boundary, epoch handling, and actively-exploited escalation.
+
+  **Expected behavior:** ModuleLoad of a library with a known actively-exploited CVE triggers a High confidence detection without requiring signature or behavioral corroboration.
+
+- **AC-BML-091 (CVE version matching):**
+  Robust version comparison handles Debian epoch prefixes (e.g., `2:1.14.2-1`), dotted versions of arbitrary depth, and mixed alpha-numeric segments (e.g., `1.2.3rc1`). `check_module_path()` extracts the product name from library file paths via a well-known mapping table (e.g., `/usr/lib/x86_64-linux-gnu/libssl.so.3` -> `openssl`). Unmapped paths are skipped without error.
+
+  **Verification:** Unit tests cover epoch stripping, multi-segment dotted comparison, alpha-numeric suffixes, and path-to-product mapping for common libraries (openssl, curl, zlib, glibc).
+
+  **Expected behavior:** Version comparison produces correct ordering across packaging conventions used by Debian, RHEL, and Alpine.
+
+- **AC-BML-092 (Campaign detection -- agent side):**
+  IOC hits are buffered locally in a ring buffer (1024 entry cap). Entries with the same IOC value are coalesced (hit count incremented, timestamp updated). The buffer is flushed as a batch upload every 300s to `POST /api/v1/endpoint/threat-intel/ioc-signals`. Campaign definitions are fetched every 600s from `GET /api/v1/endpoint/threat-intel/campaigns`. Both intervals are configurable via agent policy.
+
+  **Verification:** Unit tests confirm coalescing behavior, cap enforcement (oldest evicted), and batch serialization format.
+
+  **Expected behavior:** Agent contributes IOC signal telemetry to the server with bounded memory and network overhead.
+
+- **AC-BML-093 (Campaign correlation):**
+  Server-side campaign engine groups IOC signals seen on 3+ distinct agents within a sliding window into a campaign. When an IOC hit on an agent matches a known campaign, the detection confidence is escalated to VeryHigh. The `campaign_correlated` flag is set in `DetectionSignals` and included in telemetry payloads. Campaign membership is cached and refreshed each fetch cycle.
+
+  **Verification:** Integration test simulates 3 agents reporting the same IOC value and confirms campaign creation. Subsequent detection on a 4th agent confirms VeryHigh escalation and `campaign_correlated=true` in the signal output.
+
+  **Expected behavior:** Isolated low-confidence IOC hits that appear across the fleet are automatically promoted to high-fidelity campaign-correlated detections.
+
+- **AC-BML-094 (Network IOC escalation):**
+  `network_ioc_hit` signal fires when an enriched network event's `dst_domain` or `dst_ip` matches an entry in the active IOC list. On match, detection confidence is escalated from PrefilterOnly to High. The multi-layer agreement count in the detection engine includes the network IOC signal as an additional corroborating layer.
+
+  **Verification:** Unit test injects a network event with a dst_domain present in the IOC list and confirms `network_ioc_hit=true`, confidence=High, and agreement count incremented by 1. Second test with a non-matching domain confirms no escalation.
+
+  **Expected behavior:** Network connections to known-bad infrastructure are detected with high confidence even when no file-based or behavioral indicator is present.
+
+- **AC-BML-095 (Bundle pipeline reliability):**
+  IOC collector enforces minimum hash count via `EGUARD_MIN_IOC_HASH=500`; bundles with fewer hashes are rejected as incomplete. Bundle freshness is validated against `EGUARD_ARTIFACT_MAX_AGE_HOURS=48`; stale bundles emit a warning and fall back to the previous valid bundle. SIGMA rule corpus is enriched from 5 sources (community, eGuard custom, emerging threats, MITRE ATT&CK, threat-intel feeds), growing the rule count from 249 to 361. ML evaluation gates run in shadow mode (`continue-on-error`) to collect metrics without blocking bundle promotion.
+
+  **Verification:** CI pipeline test with a fixture bundle containing < 500 hashes confirms rejection. Freshness test with a bundle older than 48h confirms warning log and fallback. SIGMA rule count assertion validates >= 361 rules after enrichment.
+
+  **Expected behavior:** Bundle pipeline rejects incomplete or stale artifacts, ensuring agents always receive high-quality threat intelligence data.
 
 ---
 

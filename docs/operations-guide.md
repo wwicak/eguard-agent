@@ -11,6 +11,9 @@ responsible for managing eGuard across a fleet of endpoints.
 1. [Architecture Overview](#1-architecture-overview)
 2. [Installation & Enrollment](#2-installation--enrollment)
 3. [Detection Engine](#3-detection-engine)
+   - [3.6 CVE Vulnerability Matching](#36-cve-vulnerability-matching)
+   - [3.7 Cross-Endpoint Campaign Detection](#37-cross-endpoint-campaign-detection)
+   - [3.8 Network IOC Escalation](#38-network-ioc-escalation)
 4. [Baseline Learning System](#4-baseline-learning-system)
 5. [Response Actions](#5-response-actions)
 6. [Threat Intelligence Bundles](#6-threat-intelligence-bundles)
@@ -195,7 +198,12 @@ Config load order (first match wins):
 
 The detection engine (`DetectionEngine`) evaluates every telemetry event
 through 7 independent layers, then aggregates the results into a single
-confidence score.
+confidence score. Three additional capabilities extend the core layers:
+**CVE vulnerability matching** (section 3.6) checks loaded modules against
+known-vulnerable software versions, **cross-endpoint campaign detection**
+(section 3.7) correlates IOC hits across the fleet to identify coordinated
+attacks, and **network IOC escalation** (section 3.8) elevates confidence
+when network traffic matches threat intelligence indicators.
 
 ### 3.1 Detection Layers
 
@@ -262,6 +270,106 @@ Detection runs on N shards (one per CPU core by default). Each shard owns its
 own `DetectionEngine` instance and processes events routed by
 `session_id % shard_count`. Communication uses `mpsc` channels. Engine reloads
 (for bundle updates) are atomic via `Arc<ArcSwap<T>>`.
+
+### 3.6 CVE Vulnerability Matching
+
+The agent ships a `CveDatabase` loaded from the threat-intel bundle file
+`cves.jsonl`. Each line is a JSON object describing one CVE, its affected
+products, version ranges, CVSS score, and whether it is actively exploited.
+
+**How it works:**
+
+1. On bundle load, the database indexes CVEs into a `HashMap` keyed by
+   product name. Lookup cost is O(1) per product.
+2. At runtime, every `ModuleLoad` event is checked: the loaded library's
+   package name is looked up in the HashMap, and the installed version is
+   tested against the CVE's affected version range.
+3. Version-range matching handles Debian epoch prefixes (e.g. `2:1.14.2-1`)
+   so that distro-specific version strings compare correctly.
+
+**Confidence assignment:**
+
+- `actively_exploited == true` **and** CVSS >= 7.0 --> **High** confidence
+- Otherwise the hit is recorded at Medium confidence for triage
+
+The signal name is `vulnerable_software` in `DetectionSignals`.
+
+**Operational notes:**
+
+- CVE matching is always active when the bundle contains `cves.jsonl`. There
+  is no separate env-var toggle.
+- Patched packages may still match version ranges until the next bundle update
+  ships refreshed CVE data. If you see persistent FPs after patching, force a
+  bundle refresh or add a detection whitelist entry.
+
+### 3.7 Cross-Endpoint Campaign Detection
+
+This feature correlates IOC detections across the fleet so that a coordinated
+attack hitting multiple endpoints is surfaced as a campaign alert rather than
+isolated incidents.
+
+**Agent-side buffering:**
+
+- Each agent buffers IOC hits (signals `z1_exact_ioc` or `yara_hit`) in a
+  local ring buffer with a capacity of **1024** entries.
+- Duplicate IOC values are coalesced (same hash/domain/IP counted once).
+- Every **5 minutes** (`IOC_SIGNAL_UPLOAD_INTERVAL_SECS=300`) the agent
+  batch-uploads buffered signals to the server via
+  `POST /api/v1/endpoint/threat-intel/ioc-signals`.
+
+**Server-side correlation:**
+
+- The server tracks which IOC values have been reported and by how many
+  distinct agents.
+- When an IOC is seen on **3 or more agents**, the server creates a campaign
+  alert and marks that IOC as campaign-correlated.
+
+**Agent-side escalation:**
+
+- Every **10 minutes** (`CAMPAIGN_FETCH_INTERVAL_SECS=600`) each agent
+  fetches active campaigns from
+  `GET /api/v1/endpoint/threat-intel/campaigns`.
+- Any local IOC hit that matches a campaign-correlated IOC is escalated to
+  **VeryHigh** confidence.
+- The signal name is `campaign_correlated` in `DetectionSignals`.
+
+**Constants:**
+
+| Constant | Default | Description |
+|----------|---------|-------------|
+| `IOC_SIGNAL_UPLOAD_INTERVAL_SECS` | 300 | Batch upload interval |
+| `CAMPAIGN_FETCH_INTERVAL_SECS` | 600 | Campaign list fetch interval |
+| Buffer capacity | 1024 | Max IOC signals buffered per agent |
+| Campaign threshold | 3 agents | Minimum distinct agents for campaign |
+
+### 3.8 Network IOC Escalation
+
+Network-layer IOC matching provides coverage for threat indicators observed in
+live traffic rather than only in file or process metadata.
+
+**Signal production:**
+
+- When a network event's `dst_domain` or `dst_ip` field matches an entry in
+  the IOC list, the engine fires the `network_ioc_hit` signal.
+- Confidence is escalated to **High** (overriding the default `PrefilterOnly`
+  treatment that text-based IOC hits receive).
+
+**Platform enrichment:**
+
+| Platform | Source | Fields populated |
+|----------|--------|-----------------|
+| Linux | eBPF network hooks | `dst_domain`, `dst_ip` |
+| Windows | ETW network provider | `dst_domain`, `dst_ip` |
+
+- `DnsQuery` events populate `dst_domain` from the DNS query name field,
+  enabling domain-based IOC matching even before a connection is established.
+
+**Multi-layer agreement:**
+
+- A `network_ioc_hit` counts toward the Layer 5 `multi_layer_count` feature,
+  meaning it can contribute to ML escalation decisions.
+- When a high-entropy domain (DGA indicator) also matches the IOC list, the
+  combined signal is escalated to **Definite** confidence.
 
 ---
 

@@ -1,7 +1,7 @@
 # eGuard NAC ↔ EDR/MDM Integration — Operations Manual
 
-**Version**: 1.3  
-**Date**: February 28, 2026  
+**Version**: 1.4
+**Date**: March 1, 2026  
 **Audience**: SOC Analysts, System Administrators, Network Engineers  
 **Last Validated**: February 28, 2026 (human-like GUI re-validation after local-only enforcer cleanup)
 
@@ -409,6 +409,15 @@ Agent detects threat
 > Enforcer mode is `EGUARD_NAC_ENFORCER_MODE=local` (direct local bridge to
 > eGuard Perl NAC internals).
 
+> **Note (v1.4):** CVE vulnerability matching and campaign correlation now feed
+> into the auto-detection pipeline. When a ModuleLoad event matches an
+> actively-exploited CVE (CVSS >= 7.0), or when an IOC hit is correlated to a
+> fleet-wide campaign (3+ agents), the detection is escalated and bridged to NAC
+> as a security event. Network IOC hits (dst_domain/dst_ip match) are similarly
+> included. These new detection sources follow the same
+> `bridgeTelemetryToSecurityEvent()` path and respect existing severity
+> thresholds and dedup windows.
+
 ### 11.2 Mapping Rules
 
 | Detection Type | Conditions | Security Event |
@@ -420,6 +429,9 @@ Agent detects threat
 | IOC + MITRE T1071 | `rule_type = "ioc"` + C2 technique | 1300013 |
 | MITRE T1021/T1534 | Lateral movement techniques | 1300016 |
 | MITRE T1548/T1068 | Privilege escalation techniques | 1300017 |
+| CVE vulnerability match | ModuleLoad + `actively_exploited` + CVSS >= 7.0 | 1300010 (Malware Detected) — action: alert + log |
+| Campaign-correlated IOC | IOC seen on 3+ agents, `campaign_correlated=true` | 1300011 (C2 Communication) — action: alert + isolate consideration |
+| Network IOC hit | `dst_domain` or `dst_ip` matches IOC list | 1300012 (Suspicious Network) — action: alert + monitor |
 
 ### 11.3 Severity Thresholds
 
