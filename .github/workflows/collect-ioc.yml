@@ -83,7 +83,7 @@ jobs:
           if not key:
               sys.exit(0)
 
-          payload = urllib.parse.urlencode({"query": "get_recent", "selector": "1000"}).encode()
+          payload = urllib.parse.urlencode({"query": "get_recent", "selector": "time"}).encode()
           req = urllib.request.Request(
               "https://mb-api.abuse.ch/api/v1/",
               data=payload,

@@ -91,8 +91,12 @@ impl MlEngine {
         let score = sigmoid(z);
         let positive = score >= self.model.threshold;
 
-        // Conformal p-value (if calibrator loaded)
-        let conformal_p_value = self.calibrator.as_ref().map(|cal| cal.p_value(score));
+        // Conformal p-value — only compute for positive detections (hot-path optimization)
+        let conformal_p_value = if positive {
+            self.calibrator.as_ref().map(|cal| cal.p_value(score))
+        } else {
+            None
+        };
 
         // Top contributing features (for audit trail / explainability)
         let mut contributions: Vec<(String, f64)> = FEATURE_NAMES
