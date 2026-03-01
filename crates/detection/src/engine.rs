@@ -324,7 +324,7 @@ impl DetectionEngine {
             && event
                 .file_path
                 .as_deref()
-                .map_or(false, |path| self.cve.check_module_path(path));
+                .is_some_and(|path| self.cve.check_module_path(path));
 
         let exploit_indicators = detect_exploit_indicators(event);
         let kernel_integrity_indicators = detect_kernel_integrity_indicators(event);
