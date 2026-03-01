@@ -31,6 +31,23 @@ jobs:
       - name: Clone mdecrevoisier SIGMA rules
         run: git clone --depth 1 https://github.com/mdecrevoisier/SIGMA-detection-rules.git /tmp/mdecrevoisier
 
+      # ── Source 3: SOCFortress community rules ────────────────────
+      # 500+ rules with strong MITRE ATT&CK mapping.
+      # Cloud-native and endpoint anomaly detections.
+      - name: Clone SOCFortress SIGMA rules
+        run: git clone --depth 1 https://github.com/socfortress/Sigma-Rules.git /tmp/socfortress
+
+      # ── Source 4: Splunk Security Content ────────────────────────
+      # 400+ Sigma-format rules from Splunk's detection research team.
+      # Enterprise-grade endpoint and network detections.
+      - name: Clone Splunk Security Content
+        run: git clone --depth 1 https://github.com/splunk/security_content.git /tmp/splunk
+
+      # ── Source 5: Nextron APT detection rules ────────────────────
+      # High-precision rules focused on APT/targeted threat hunting.
+      - name: Clone Nextron detection rules
+        run: git clone --depth 1 https://github.com/SigmaHQ/sigma-misc.git /tmp/sigma-misc 2>/dev/null || true
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -41,11 +58,20 @@ jobs:
 
       - name: Filter SIGMA rules
         run: |
+          # Prepare Splunk sigma rules (nested under detections/sigma/)
+          SPLUNK_SIGMA="/tmp/splunk/detections"
+          if [ ! -d "${SPLUNK_SIGMA}" ]; then
+            SPLUNK_SIGMA="/tmp/splunk"
+          fi
+
           python threat-intel/processing/sigma_filter.py \
             --input /tmp/sigma/rules \
             --input /tmp/sigma/rules-emerging-threats \
             --input /tmp/sigma/rules-threat-hunting \
             --input /tmp/mdecrevoisier \
+            --input /tmp/socfortress \
+            --input "${SPLUNK_SIGMA}" \
+            --input /tmp/sigma-misc \
             --output /tmp/sigma_filtered \
             --platforms linux \
             --min-status test
