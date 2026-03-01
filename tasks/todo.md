@@ -359,8 +359,44 @@
 # Human-like GUI re-validation after NAC local-only cleanup
 
 ## Plan
-- [ ] 1) Re-run backend sanity checks for server package (`go test ./...`) to confirm local-only enforcer compiles and passes.
-- [ ] 2) Execute browser-driven (human-like) NAC workflow in live GUI: login → select endpoint → isolate → status verify → allow → status verify.
-- [ ] 3) Spot-check adjacent endpoint UX impacted by recent rollout (Audit inline details + Inventory filters page loads) to ensure no regressions.
-- [ ] 4) Capture fresh validation evidence screenshot(s) and summarize outcomes/errors in review notes.
+- [x] 1) Re-run backend sanity checks for server package (`go test ./...`) to confirm local-only enforcer compiles and passes.
+- [x] 2) Execute browser-driven (human-like) NAC workflow in live GUI: login → select endpoint → isolate → status verify → allow → status verify.
+- [x] 3) Spot-check adjacent endpoint UX impacted by recent rollout (Audit inline details + Inventory filters page loads) to ensure no regressions.
+- [x] 4) Capture fresh validation evidence screenshot(s) and summarize outcomes/errors in review notes.
+
+## Review
+- Backend sanity:
+  - `cd /home/dimas/fe_eguard/go/agent/server && go test ./...` ✅
+- Human-like GUI NAC validation (live server `https://103.49.238.102:1443/admin`):
+  - login as `admin`
+  - route: `/admin#/endpoint-nac`
+  - selected `eg-agent (agent-31bbb93f38b4)`
+  - manual isolate with reason `human-like revalidation isolate` → banner: `Node isolated — security event applied`
+  - status check → `NAC Status: 🔒 ISOLATED ... Open events: Malware Detected`
+  - manual allow with reason `human-like revalidation allow` → banner: `Node allowed — all eGuard security events closed`
+  - final status check → `NAC Status: ✅ ALLOWED ... No open security events`
+- Adjacent UX regression spot-checks:
+  - `/admin#/endpoint-audit` inline row details toggle works (`▶` → `▼`) and whitelist controls remain visible.
+  - `/admin#/endpoint-inventory` loads advanced filters (OS Platform / OS Type / OS Version / Domain Join / CPU/RAM/Disk dropdowns) and inventory table correctly.
+- Evidence screenshots:
+  - `/tmp/nac-local-only-human-validate-20260228.png`
+  - `/tmp/audit-inline-revalidate-20260228.png`
+  - `/tmp/inventory-filters-revalidate-20260228.png`
+
+---
+
+# NAC operations manual refresh (post re-validation)
+
+## Plan
+- [x] 1) Update `docs/nac-edr-operations-manual.md` version/validation metadata after local-only cleanup and human-like GUI re-test.
+- [x] 2) Refresh validation narrative with exact isolate/status/allow outcomes and evidence artifact paths.
+- [x] 3) Align navigation/config/troubleshooting text with current local-only runtime behavior.
+
+## Review
+- Updated `/home/dimas/eguard-agent/docs/nac-edr-operations-manual.md`:
+  - version bumped to `1.3` with latest validation context.
+  - latest validation block now includes exact GUI outcomes + screenshot artifacts.
+  - NAC page direct URL normalized to `/admin#/endpoint-nac`.
+  - config section clarifies unsupported enforcer mode values are forced to `local`.
+  - troubleshooting expected logs updated to include forced-local warning + local enable message.
 

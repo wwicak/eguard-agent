@@ -1,9 +1,9 @@
 # eGuard NAC ↔ EDR/MDM Integration — Operations Manual
 
-**Version**: 1.2  
+**Version**: 1.3  
 **Date**: February 28, 2026  
 **Audience**: SOC Analysts, System Administrators, Network Engineers  
-**Last Validated**: February 28, 2026 (live GUI validation, NAC local-enforcer mode)
+**Last Validated**: February 28, 2026 (human-like GUI re-validation after local-only enforcer cleanup)
 
 ---
 
@@ -110,12 +110,20 @@ sudo mysql -u root -p<password> eguard -e \
   "SELECT mac, status, device_type FROM node WHERE device_type='EDR Agent'"
 ```
 
-**Latest live validation (2026-02-28):**
-- Enforcer mode: `local`
+**Latest live validation (2026-02-28, human-like GUI run):**
+- Enforcer mode: `local` (HTTP bridge removed; local-only contract)
 - GUI flow validated on `/admin#/endpoint-nac`:
-  - manual **Isolate** → status becomes `🔒 ISOLATED`
-  - manual **Allow** → status becomes `✅ ALLOWED`
-- Server logs confirm override actions (`[nac-override] ISOLATE` / `ALLOW`).
+  - manual **Isolate** (`reason: human-like revalidation isolate`) → banner `Node isolated — security event applied`
+  - **Status** → `NAC Status: 🔒 ISOLATED ... Open events: Malware Detected`
+  - manual **Allow** (`reason: human-like revalidation allow`) → banner `Node allowed — all eGuard security events closed`
+  - **Status** → `NAC Status: ✅ ALLOWED ... No open security events`
+- Adjacent endpoint UX smoke-checks passed:
+  - `/admin#/endpoint-audit`: inline row-details toggle works (`▶` → `▼`), whitelist actions visible
+  - `/admin#/endpoint-inventory`: advanced filters render and table loads
+- Evidence artifacts:
+  - `/tmp/nac-local-only-human-validate-20260228.png`
+  - `/tmp/audit-inline-revalidate-20260228.png`
+  - `/tmp/inventory-filters-revalidate-20260228.png`
 
 ---
 
@@ -136,7 +144,7 @@ This is the primary page for NAC operations:
 ```
 Path: Management → Endpoint Security → NAC tab
 
-Direct URL: https://<server>:1443/admin#/management/endpoint-security/nac
+Direct URL: https://<server>:1443/admin#/endpoint-nac
 Route path: /endpoint-nac
 ```
 
@@ -654,6 +662,9 @@ Environment=EGUARD_NAC_ENFORCER_MODE=local
 Environment=EGUARD_AGENT_SERVER_NAC_SIGMA_MIN_SEVERITY=medium
 ```
 
+> If `EGUARD_NAC_ENFORCER_MODE` is set to an unsupported value, agent-server
+> logs a warning and forces `local` mode.
+
 > **Note**: The override file may be named `e2e-override.conf` or similar in
 > testing environments. Check with:
 > ```bash
@@ -912,8 +923,9 @@ sudo systemctl daemon-reload
 sudo systemctl restart eguard-agent-server
 ```
 
-**Expected log**:
+**Expected logs**:
 ```text
+[nac-enforcer] unsupported mode "<value>" in local-only deployment, forcing local
 [nac-enforcer] mode=local enabled
 ```
 

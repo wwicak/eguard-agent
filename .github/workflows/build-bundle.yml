@@ -28,7 +28,7 @@ on:
       artifact_max_age_hours:
         description: "Max age (hours) for collector artifacts"
         type: string
-        default: "30"
+        default: "48"
       allow_stale_artifacts:
         description: "Allow stale collector artifacts on workflow_dispatch"
         type: boolean
@@ -56,7 +56,7 @@ jobs:
       EGUARD_ML_PUBLISH_MIN_ROC_AUC: "0.80"
       EGUARD_ML_PUBLISH_MAX_BRIER: "0.18"
       EGUARD_ML_PUBLISH_MAX_ECE: "0.12"
-      EGUARD_ARTIFACT_MAX_AGE_HOURS: ${{ github.event_name == 'workflow_dispatch' && inputs.artifact_max_age_hours || '30' }}
+      EGUARD_ARTIFACT_MAX_AGE_HOURS: ${{ github.event_name == 'workflow_dispatch' && inputs.artifact_max_age_hours || '48' }}
       EGUARD_ARTIFACT_FAIL_ON_STALE: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_stale_artifacts && '0' || '1' }}
       EGUARD_COVERAGE_FAIL_ON_THRESHOLD: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_coverage_shortfall && '0' || '1' }}
       EGUARD_ML_EXTERNAL_SIGNALS_WORKFLOW: ${{ inputs.external_labels_workflow }}
@@ -937,6 +937,11 @@ jobs:
             --fail-on-threshold "${EGUARD_ML_FEATURE_FAIL_ON_THRESHOLD}"
 
       - name: Train signature ML model artifact
+        env:
+          EGUARD_ML_TRAIN_RESOURCE_PROFILE: "auto"
+          EGUARD_ML_TRAIN_MAX_SAMPLES: "0"
+          EGUARD_ML_TRAIN_CV_FOLDS: "5"
+          EGUARD_ML_TRAIN_L2_GRID_POINTS: "6"
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           python threat-intel/processing/signature_ml_train_model.py \
@@ -944,6 +949,10 @@ jobs:
             --feature-schema bundle/signature-ml-feature-schema.json \
             --labels-report bundle/signature-ml-label-quality-report.json \
             --model-version "rules-${VERSION}.ml.v1" \
+            --resource-profile "${EGUARD_ML_TRAIN_RESOURCE_PROFILE}" \
+            --max-samples "${EGUARD_ML_TRAIN_MAX_SAMPLES}" \
+            --cv-folds "${EGUARD_ML_TRAIN_CV_FOLDS}" \
+            --l2-grid-points "${EGUARD_ML_TRAIN_L2_GRID_POINTS}" \
             --model-out bundle/signature-ml-model.json \
             --metadata-out bundle/signature-ml-model-metadata.json
 

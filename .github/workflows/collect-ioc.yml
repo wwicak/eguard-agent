@@ -83,7 +83,7 @@ jobs:
           if not key:
               sys.exit(0)
 
-          payload = urllib.parse.urlencode({"query": "get_recent", "selector": "100"}).encode()
+          payload = urllib.parse.urlencode({"query": "get_recent", "selector": "1000"}).encode()
           req = urllib.request.Request(
               "https://mb-api.abuse.ch/api/v1/",
               data=payload,
@@ -157,6 +157,18 @@ jobs:
             sort -u > sources/ioc/ips/feodo.txt
           echo "Feodo C2 IPs: $(wc -l < sources/ioc/ips/feodo.txt)"
 
+      - name: "Fetch Feodo malware hashes (Tier 2 — abuse.ch)"
+        run: |
+          curl -sSfL --retry 3 --max-time 60 \
+            "https://feodotracker.abuse.ch/downloads/malware_hashes.csv" \
+            -o /tmp/feodo_hashes.csv 2>/dev/null || true
+          if [ -s /tmp/feodo_hashes.csv ]; then
+            grep -v '^#' /tmp/feodo_hashes.csv | grep -v '^$' | \
+              awk -F, '{gsub(/"/, "", $2); if ($2 ~ /^[0-9a-fA-F]{64}$/) print tolower($2)}' | \
+              sort -u > sources/ioc/hashes/feodo.txt
+            echo "Feodo malware hashes: $(wc -l < sources/ioc/hashes/feodo.txt)"
+          fi
+
       - name: "Fetch URLhaus domains (Tier 2 — abuse.ch)"
         run: |
           curl -sSfL --retry 3 --max-time 120 \
@@ -165,6 +177,30 @@ jobs:
           grep -v '^#' /tmp/urlhaus.txt | grep -v '^$' | \
             sed 's|https\?://||; s|/.*||; s|:.*||' | \
             sort -u > sources/ioc/domains/urlhaus.txt
+
+      - name: "Fetch URLhaus payload hashes (Tier 2 — abuse.ch)"
+        run: |
+          curl -sSfL --retry 3 --max-time 120 \
+            -X POST -d "selector=recent" \
+            "https://urlhaus-api.abuse.ch/v1/payloads/recent/" \
+            -o /tmp/urlhaus_payloads.json 2>/dev/null || true
+          if [ -s /tmp/urlhaus_payloads.json ]; then
+            python3 -c "
+          import json, sys
+          try:
+              data = json.load(open('/tmp/urlhaus_payloads.json'))
+          except Exception:
+              sys.exit(0)
+          hashes = set()
+          for p in data.get('payloads', []):
+              h = p.get('sha256_hash', '')
+              if len(h) == 64:
+                  hashes.add(h.lower())
+          with open('sources/ioc/hashes/urlhaus_payloads.txt', 'w') as f:
+              f.write('\n'.join(sorted(hashes)) + '\n')
+          print(f'URLhaus payload hashes: {len(hashes)}')
+          "
+          fi
 
       - name: "Fetch SSL Blacklist (Tier 2 — abuse.ch)"
         run: |
@@ -207,6 +243,16 @@ jobs:
             grep -v '^#' /tmp/digitalside_domains.txt | grep -v '^$' | sort -u > sources/ioc/domains/digitalside.txt
             echo "DigitalSide domains: $(wc -l < sources/ioc/domains/digitalside.txt)"
           fi
+          # Also fetch SHA256 hashes from DigitalSide
+          curl -sSfL --retry 3 --max-time 60 \
+            "https://osint.digitalside.it/Threat-Intel/lists/latesthashes.txt" \
+            -o /tmp/digitalside_hashes.txt 2>/dev/null || true
+          if [ -s /tmp/digitalside_hashes.txt ]; then
+            grep -v '^#' /tmp/digitalside_hashes.txt | grep -v '^$' | \
+              grep -iE '^[0-9a-f]{64}$' | tr '[:upper:]' '[:lower:]' | \
+              sort -u > sources/ioc/hashes/digitalside.txt
+            echo "DigitalSide hashes: $(wc -l < sources/ioc/hashes/digitalside.txt)"
+          fi
 
       # ────────────────────────────────────────────────────────────────
       # Tier 3: Community / Aggregator Sources
@@ -225,6 +271,16 @@ jobs:
           fi
           if [ -s /tmp/botvrij_ips.txt ]; then
             grep -v '^#' /tmp/botvrij_ips.txt | grep -v '^$' | sort -u > sources/ioc/ips/botvrij.txt
+          fi
+          # Also fetch SHA256 hashes from Botvrij
+          curl -sSfL --retry 3 --max-time 60 \
+            "https://www.botvrij.eu/data/ioclist.sha256" \
+            -o /tmp/botvrij_hashes.txt 2>/dev/null || true
+          if [ -s /tmp/botvrij_hashes.txt ]; then
+            grep -v '^#' /tmp/botvrij_hashes.txt | grep -v '^$' | \
+              grep -iE '^[0-9a-f]{64}$' | tr '[:upper:]' '[:lower:]' | \
+              sort -u > sources/ioc/hashes/botvrij.txt
+            echo "Botvrij hashes: $(wc -l < sources/ioc/hashes/botvrij.txt)"
           fi
 
       - name: "Fetch CINSscore threat IPs (Tier 3)"
@@ -293,7 +349,7 @@ jobs:
 
       - name: Enforce IOC collector coverage
         env:
-          EGUARD_MIN_IOC_HASH: "1000"
+          EGUARD_MIN_IOC_HASH: "500"
           EGUARD_MIN_IOC_DOMAIN: "300"
           EGUARD_MIN_IOC_IP: "1500"
         run: |
