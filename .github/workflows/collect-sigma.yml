@@ -31,22 +31,20 @@ jobs:
       - name: Clone mdecrevoisier SIGMA rules
         run: git clone --depth 1 https://github.com/mdecrevoisier/SIGMA-detection-rules.git /tmp/mdecrevoisier
 
-      # ── Source 3: SOCFortress community rules ────────────────────
-      # 500+ rules with strong MITRE ATT&CK mapping.
-      # Cloud-native and endpoint anomaly detections.
-      - name: Clone SOCFortress SIGMA rules
-        run: git clone --depth 1 https://github.com/socfortress/Sigma-Rules.git /tmp/socfortress
+      # ── Source 3: Joe Security SIGMA rules ──────────────────────
+      # Malware sandbox analysis rules from Joe Security.
+      - name: Clone Joe Security SIGMA rules
+        run: git clone --depth 1 https://github.com/joesecurity/sigma-rules.git /tmp/joesecurity 2>/dev/null || true
 
-      # ── Source 4: Splunk Security Content ────────────────────────
+      # ── Source 4: Tsale SIGMA rules ──────────────────────────────
+      # Community detection rules with strong ATT&CK mapping.
+      - name: Clone Tsale SIGMA rules
+        run: git clone --depth 1 https://github.com/tsale/Sigma_rules.git /tmp/tsale 2>/dev/null || true
+
+      # ── Source 5: Splunk Security Content ────────────────────────
       # 400+ Sigma-format rules from Splunk's detection research team.
-      # Enterprise-grade endpoint and network detections.
       - name: Clone Splunk Security Content
-        run: git clone --depth 1 https://github.com/splunk/security_content.git /tmp/splunk
-
-      # ── Source 5: Nextron APT detection rules ────────────────────
-      # High-precision rules focused on APT/targeted threat hunting.
-      - name: Clone Nextron detection rules
-        run: git clone --depth 1 https://github.com/SigmaHQ/sigma-misc.git /tmp/sigma-misc 2>/dev/null || true
+        run: git clone --depth 1 https://github.com/splunk/security_content.git /tmp/splunk 2>/dev/null || true
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -64,14 +62,18 @@ jobs:
             SPLUNK_SIGMA="/tmp/splunk"
           fi
 
+          # Build input args — skip sources that failed to clone
+          INPUTS=""
+          INPUTS="${INPUTS} --input /tmp/sigma/rules"
+          INPUTS="${INPUTS} --input /tmp/sigma/rules-emerging-threats"
+          INPUTS="${INPUTS} --input /tmp/sigma/rules-threat-hunting"
+          INPUTS="${INPUTS} --input /tmp/mdecrevoisier"
+          [ -d /tmp/joesecurity ] && INPUTS="${INPUTS} --input /tmp/joesecurity"
+          [ -d /tmp/tsale ] && INPUTS="${INPUTS} --input /tmp/tsale"
+          [ -d "${SPLUNK_SIGMA}" ] && INPUTS="${INPUTS} --input ${SPLUNK_SIGMA}"
+
           python threat-intel/processing/sigma_filter.py \
-            --input /tmp/sigma/rules \
-            --input /tmp/sigma/rules-emerging-threats \
-            --input /tmp/sigma/rules-threat-hunting \
-            --input /tmp/mdecrevoisier \
-            --input /tmp/socfortress \
-            --input "${SPLUNK_SIGMA}" \
-            --input /tmp/sigma-misc \
+            ${INPUTS} \
             --output /tmp/sigma_filtered \
             --platforms linux \
             --min-status test
