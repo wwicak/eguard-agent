@@ -43,6 +43,14 @@ pub fn confidence_policy(s: &DetectionSignals) -> Confidence {
     if s.fim_violation {
         return Confidence::High;
     }
+    // Lateral movement detected: SSH brute-force, credential dumping, etc. → High
+    if s.lateral_movement {
+        return Confidence::High;
+    }
+    // USB policy violation: prohibited device class connected → High
+    if s.usb_violation {
+        return Confidence::High;
+    }
     if s.kernel_integrity {
         return Confidence::Medium;
     }

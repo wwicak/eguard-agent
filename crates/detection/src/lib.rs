@@ -7,6 +7,7 @@ mod exploit;
 pub mod fim;
 pub mod information;
 mod kernel_integrity;
+pub mod lateral_movement;
 mod layer1;
 mod layer2;
 mod layer3;
@@ -19,9 +20,11 @@ mod replay;
 mod sigma;
 mod tamper;
 mod types;
+pub mod usb_control;
 pub mod util;
 pub mod vulnerability;
 mod yara_engine;
+pub mod zero_trust;
 
 pub use behavioral::{BehavioralAlarm, BehavioralEngine};
 pub use calibration::{calibrate_thresholds, sanov_upper_bound, tau_delta, ThresholdCalibration};
@@ -31,6 +34,7 @@ pub use fim::{
     DEFAULT_FIM_PATHS, DEFAULT_FIM_SCAN_INTERVAL_SECS,
 };
 pub use kernel_integrity::detect_kernel_integrity_indicators;
+pub use lateral_movement::{LateralMovementAlert, LateralMovementDetector, LateralTechnique};
 pub use layer1::{IocExactStore, IocLayer1, Layer1EventHit, Layer1Result};
 pub use layer2::{
     TemporalEngine, TemporalEvictionCounters, TemporalPredicate, TemporalRule, TemporalStage,
@@ -52,8 +56,15 @@ pub use sigma::{
 };
 pub use tamper::detect_tamper_indicators;
 pub use types::{Confidence, DetectionSignals, EventClass, TelemetryEvent};
+pub use usb_control::{
+    parse_usb_class, UsbAction, UsbDeviceClass, UsbEvent, UsbPolicy, UsbViolation,
+};
 pub use vulnerability::{CveDatabase, CveRecord, VulnerabilityMatch};
 pub use yara_engine::{YaraEngine, YaraError, YaraHit};
+pub use zero_trust::{
+    compute_score as compute_device_score, default_factors as default_health_factors,
+    recommend_action, DeviceHealthScore, ScoreFactor, TrustAction,
+};
 
 #[cfg(test)]
 mod tests;

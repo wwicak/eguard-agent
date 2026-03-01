@@ -141,4 +141,6 @@ pub struct DetectionSignals {
     pub network_ioc_hit: bool,
     pub vulnerable_software: bool,
     pub fim_violation: bool,
+    pub lateral_movement: bool,
+    pub usb_violation: bool,
 }
