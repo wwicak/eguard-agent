@@ -22,9 +22,8 @@ enum ShardCommand {
         rule_content: String,
         response: mpsc::Sender<std::result::Result<(), String>>,
     },
-    SetAnomalyBaseline {
-        process_key: String,
-        distribution: HashMap<EventClass, f64>,
+    SetAnomalyBaselinesBulk {
+        baselines: Vec<(String, HashMap<EventClass, f64>)>,
         response: mpsc::Sender<std::result::Result<(), String>>,
     },
     SwapEngine {
@@ -89,16 +88,14 @@ impl DetectionShard {
             .map_err(|err| anyhow!(err))
     }
 
-    fn set_anomaly_baseline(
+    fn set_anomaly_baselines_bulk(
         &self,
-        process_key: String,
-        distribution: HashMap<EventClass, f64>,
+        baselines: Vec<(String, HashMap<EventClass, f64>)>,
     ) -> Result<()> {
         let (response_tx, response_rx) = mpsc::channel();
         self.tx
-            .send(ShardCommand::SetAnomalyBaseline {
-                process_key,
-                distribution,
+            .send(ShardCommand::SetAnomalyBaselinesBulk {
+                baselines,
                 response: response_tx,
             })
             .map_err(|_| anyhow!("detection shard channel closed"))?;
@@ -181,12 +178,13 @@ fn shard_worker_loop(mut engine: DetectionEngine, rx: mpsc::Receiver<ShardComman
                 let result = apply_emergency_rule_to_engine(&mut engine, rule_type, &rule_content);
                 let _ = response.send(result);
             }
-            ShardCommand::SetAnomalyBaseline {
-                process_key,
-                distribution,
+            ShardCommand::SetAnomalyBaselinesBulk {
+                baselines,
                 response,
             } => {
-                engine.layer3.set_baseline(process_key, distribution);
+                for (process_key, distribution) in baselines {
+                    engine.layer3.set_baseline(process_key, distribution);
+                }
                 let _ = response.send(Ok(()));
             }
             ShardCommand::SwapEngine {
@@ -386,15 +384,16 @@ impl SharedDetectionState {
         Ok(())
     }
 
-    pub fn set_anomaly_baseline(
+    pub fn set_anomaly_baselines_bulk(
         &self,
-        process_key: String,
-        distribution: HashMap<EventClass, f64>,
+        baselines: Vec<(String, HashMap<EventClass, f64>)>,
     ) -> Result<()> {
         for (idx, shard) in self.inner.shards.iter().enumerate() {
             shard
-                .set_anomaly_baseline(process_key.clone(), distribution.clone())
-                .map_err(|err| anyhow!("set anomaly baseline on shard {idx} failed: {err}"))?;
+                .set_anomaly_baselines_bulk(baselines.clone())
+                .map_err(|err| {
+                    anyhow!("set anomaly baselines bulk on shard {idx} failed: {err}")
+                })?;
         }
         Ok(())
     }

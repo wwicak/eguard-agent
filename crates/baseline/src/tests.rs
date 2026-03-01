@@ -253,3 +253,100 @@ fn learning_completion_updates_last_refresh_timestamp() {
     assert!(store.last_refresh_unix >= before);
     assert_eq!(store.last_refresh_unix, now);
 }
+
+#[test]
+fn configured_windows_override_defaults() {
+    let path = std::env::temp_dir().join(format!(
+        "eguard-baseline-{}.bin",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+
+    let mut store = BaselineStore::new(&path).expect("create store");
+    store.configure_windows(1, 2);
+
+    let transition = store.check_transition_with_now(store.learning_started_unix + 24 * 3600 + 1);
+    assert_eq!(transition, Some(BaselineTransition::LearningComplete));
+
+    store.last_refresh_unix = 100;
+    let stale = store.check_transition_with_now(100 + 2 * 24 * 3600 + 1);
+    assert_eq!(stale, Some(BaselineTransition::BecameStale));
+}
+
+#[test]
+fn journal_tail_replay_survives_corrupted_last_line() {
+    let path = std::env::temp_dir().join(format!(
+        "eguard-baseline-journal-{}.bin",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+
+    let mut store = BaselineStore::new(&path).expect("create store");
+    let key = ProcessKey {
+        comm: "python3".to_string(),
+        parent_comm: "bash".to_string(),
+    };
+    store.learn_event(key.clone(), "process_exec");
+    store.learn_event(key.clone(), "dns_query");
+    store.save().expect("save snapshot");
+
+    store.learn_event(key.clone(), "network_connect");
+    let mut journal = path.clone();
+    journal.set_extension("journal");
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&journal)
+        .expect("open journal");
+    use std::io::Write as _;
+    file.write_all(b"this-is-corrupted-tail\n")
+        .expect("write corruption");
+
+    let loaded = BaselineStore::load(&path).expect("load with replay");
+    let profile = loaded.baselines.get(&key).expect("profile exists");
+    assert_eq!(profile.sample_count, 3);
+    assert_eq!(profile.event_distribution.get("network_connect"), Some(&1));
+
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&journal);
+    let mut meta = path.clone();
+    meta.set_extension("journal.meta");
+    let _ = std::fs::remove_file(meta);
+}
+
+#[test]
+fn profile_count_is_bounded_by_lru_eviction() {
+    let path = std::env::temp_dir().join(format!(
+        "eguard-baseline-cap-{}.bin",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+
+    let mut store = BaselineStore::new(&path).expect("create store");
+    store.configure_limits(64);
+
+    for i in 0..80 {
+        store.learn_event(
+            ProcessKey {
+                comm: format!("proc-{}", i),
+                parent_comm: "systemd".to_string(),
+            },
+            "process_exec",
+        );
+    }
+
+    assert!(store.baselines.len() <= 64);
+
+    let _ = std::fs::remove_file(&path);
+    let mut journal = path.clone();
+    journal.set_extension("journal");
+    let _ = std::fs::remove_file(&journal);
+    let mut meta = path.clone();
+    meta.set_extension("journal.meta");
+    let _ = std::fs::remove_file(meta);
+}

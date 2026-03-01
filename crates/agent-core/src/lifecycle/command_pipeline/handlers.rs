@@ -442,6 +442,8 @@ impl AgentRuntime {
             PathBuf::from(&self.config.offline_buffer_path),
             data_dir.join("quarantine"),
             data_dir.join("baselines.bin"),
+            data_dir.join("baselines.journal"),
+            data_dir.join("baselines.journal.meta"),
         ];
 
         for path in &wipe_targets {

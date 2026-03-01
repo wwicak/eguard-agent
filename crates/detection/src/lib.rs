@@ -1,3 +1,4 @@
+pub mod beaconing;
 pub mod behavioral;
 mod bench_detection;
 mod calibration;
@@ -32,7 +33,8 @@ pub use layer3::{AnomalyConfig, AnomalyDecision, AnomalyEngine};
 pub use layer4::{
     KillChainTemplate, Layer4Engine, Layer4EvictionCounters, RansomwarePolicy, TemplatePredicate,
 };
-pub use layer5::{MlEngine, MlError, MlFeatures, MlModel, MlScore};
+pub use beaconing::{BeaconingResult, BeaconingTracker};
+pub use layer5::{MlEngine, MlError, MlExtraContext, MlFeatures, MlModel, MlScore};
 pub use policy::confidence_policy;
 pub use replay::{
     correlate_campaign_iocs, correlate_cross_agent_iocs, replay_events, report_drift_indicators,

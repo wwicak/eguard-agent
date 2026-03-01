@@ -1,9 +1,13 @@
 use std::collections::{HashMap, VecDeque};
 
+use crate::information::CusumDetector;
 use crate::math::{
     default_uniform_baseline, kl_divergence_bits, robust_z, shannon_entropy_bits, tau_delta_bits,
 };
 use crate::types::{EventClass, TelemetryEvent, EVENT_CLASSES, EVENT_CLASS_COUNT};
+
+/// Maximum number of per-process CUSUM drift detectors (LRU evict beyond this).
+const MAX_CUSUM_PROCESSES: usize = 4096;
 
 #[derive(Debug, Clone)]
 pub struct AnomalyConfig {
@@ -51,6 +55,13 @@ impl Default for WindowState {
     }
 }
 
+/// Per-process CUSUM drift tracker with LRU metadata.
+#[derive(Debug, Clone)]
+struct ProcessCusum {
+    detector: CusumDetector,
+    last_tick: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct AnomalyDecision {
     pub high: bool,
@@ -60,6 +71,10 @@ pub struct AnomalyDecision {
     pub tau_med: f64,
     pub entropy_bits: Option<f64>,
     pub entropy_z: Option<f64>,
+    /// CUSUM drift alarm: the KL-divergence for this process has been
+    /// trending upward across multiple windows, indicating sustained
+    /// baseline drift (not just a single anomalous window).
+    pub drift_alarm: bool,
 }
 
 pub struct AnomalyEngine {
@@ -67,6 +82,11 @@ pub struct AnomalyEngine {
     baselines: HashMap<String, HashMap<EventClass, f64>>,
     windows: HashMap<String, WindowState>,
     entropy_history: HashMap<String, VecDeque<f64>>,
+    /// Per-process CUSUM detectors tracking KL-divergence drift.
+    /// Key is process_key (process:parent), bounded by MAX_CUSUM_PROCESSES.
+    cusum_drift: HashMap<String, ProcessCusum>,
+    /// Monotonic tick counter for LRU eviction.
+    tick: u64,
 }
 
 impl AnomalyEngine {
@@ -76,6 +96,8 @@ impl AnomalyEngine {
             baselines: HashMap::new(),
             windows: HashMap::new(),
             entropy_history: HashMap::new(),
+            cusum_drift: HashMap::new(),
+            tick: 0,
         }
     }
 
@@ -84,6 +106,7 @@ impl AnomalyEngine {
     }
 
     pub fn observe(&mut self, event: &TelemetryEvent) -> Option<AnomalyDecision> {
+        self.tick += 1;
         let (entropy_bits, entropy_z, entropy_high) = self.observe_entropy(event);
 
         let key = event.process_key();
@@ -103,6 +126,7 @@ impl AnomalyEngine {
                         tau_med: 0.0,
                         entropy_bits,
                         entropy_z,
+                        drift_alarm: false,
                     });
                 }
                 return None;
@@ -133,10 +157,13 @@ impl AnomalyEngine {
             self.config.delta_med,
         ));
 
+        // Feed KL-divergence into per-process CUSUM drift detector
+        let drift_alarm = self.observe_cusum_drift(&key, kl);
+
         let high = kl > tau_high || entropy_high;
         let medium = !high && kl > tau_med;
 
-        if high || medium {
+        if high || medium || drift_alarm {
             return Some(AnomalyDecision {
                 high,
                 medium,
@@ -145,10 +172,44 @@ impl AnomalyEngine {
                 tau_med,
                 entropy_bits,
                 entropy_z,
+                drift_alarm,
             });
         }
 
         None
+    }
+
+    /// Feed a KL-divergence value into the per-process CUSUM detector.
+    /// Returns true if the CUSUM signals sustained drift.
+    fn observe_cusum_drift(&mut self, process_key: &str, kl_bits: f64) -> bool {
+        let tick = self.tick;
+
+        // LRU eviction: if at capacity, remove the least-recently-used entry
+        if !self.cusum_drift.contains_key(process_key)
+            && self.cusum_drift.len() >= MAX_CUSUM_PROCESSES
+        {
+            if let Some(oldest_key) = self
+                .cusum_drift
+                .iter()
+                .min_by_key(|(_, v)| v.last_tick)
+                .map(|(k, _)| k.clone())
+            {
+                self.cusum_drift.remove(&oldest_key);
+            }
+        }
+
+        let entry = self
+            .cusum_drift
+            .entry(process_key.to_string())
+            .or_insert_with(|| ProcessCusum {
+                // mu_0 = 0.05 bits (expected KL for normal variation)
+                // allowance = 0.1 bits (minimum shift to detect)
+                // threshold = 2.0 bits (alarm when cumulative shift exceeds this)
+                detector: CusumDetector::new(0.05, 0.1, 2.0),
+                last_tick: tick,
+            });
+        entry.last_tick = tick;
+        entry.detector.observe(kl_bits)
     }
 
     fn distributions_from_window_counts(
@@ -213,6 +274,12 @@ impl AnomalyEngine {
     #[cfg(test)]
     pub(crate) fn debug_window_sample_count(&self, process_key: &str) -> usize {
         self.windows.get(process_key).map(|w| w.n).unwrap_or(0)
+    }
+
+    /// Number of active CUSUM drift detectors.
+    #[cfg(test)]
+    pub(crate) fn cusum_drift_count(&self) -> usize {
+        self.cusum_drift.len()
     }
 }
 

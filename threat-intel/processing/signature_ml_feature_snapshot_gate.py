@@ -42,6 +42,12 @@ FEATURES = (
     "z1_z2_interaction",
     "z1_z4_interaction",
     "anomaly_behavioral",
+    "tree_depth_norm",       # 27: Process chain depth / 10
+    "tree_breadth_norm",     # 28: Sibling count / 20
+    "child_entropy",         # 29: Shannon entropy of child comm names
+    "spawn_rate_norm",       # 30: Children spawned per minute / 10
+    "rare_parent_child",     # 31: 1.0 if parent:child pair unseen in baseline
+    "c2_beacon_mi",          # 32: Mutual information score for destination
 )
 
 
@@ -153,6 +159,12 @@ def _synthetic_score(features: dict[str, float]) -> float:
         + 0.5 * features.get("z1_z2_interaction", 0.0)
         + 0.4 * features.get("z1_z4_interaction", 0.0)
         + 0.3 * features.get("anomaly_behavioral", 0.0)
+        + 0.3 * features.get("tree_depth_norm", 0.0)
+        + 0.4 * features.get("tree_breadth_norm", 0.0)
+        + 0.5 * features.get("child_entropy", 0.0)
+        + 0.6 * features.get("spawn_rate_norm", 0.0)
+        + 0.8 * features.get("rare_parent_child", 0.0)
+        + 1.2 * features.get("c2_beacon_mi", 0.0)
     )
     return _clamp(1.0 / (1.0 + pow(2.718281828, -linear)), 0.001, 0.999)
 

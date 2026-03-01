@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 
 use anyhow::Result;
 use tracing::{info, warn};
@@ -59,6 +59,12 @@ pub struct AgentRuntime {
     pub(super) last_command_fetch_attempt_unix: Option<i64>,
     pub(super) last_threat_intel_refresh_unix: Option<i64>,
     pub(super) last_baseline_save_unix: Option<i64>,
+    pub(super) last_baseline_upload_unix: Option<i64>,
+    pub(super) last_fleet_baseline_fetch_unix: Option<i64>,
+    pub(super) baseline_upload_enabled: bool,
+    pub(super) fleet_seed_enabled: bool,
+    pub(super) baseline_upload_canary_percent: u8,
+    pub(super) fleet_seed_canary_percent: u8,
     pub(super) last_recovery_probe_unix: Option<i64>,
     pub(super) last_memory_scan_unix: Option<i64>,
     pub(super) last_kernel_integrity_scan_unix: Option<i64>,
@@ -73,6 +79,7 @@ pub struct AgentRuntime {
     pub(super) metrics: RuntimeMetrics,
     pub(super) host_control: HostControlState,
     pub(super) auto_isolation_state: AutoIsolationState,
+    pub(super) dirty_baseline_keys: BTreeSet<String>,
     pub(super) pending_control_plane_tasks: VecDeque<PendingControlPlaneTask>,
     pub(super) pending_control_plane_sends: VecDeque<PendingControlPlaneSend>,
     pub(super) completed_command_ids: VecDeque<String>,
@@ -105,7 +112,29 @@ impl AgentRuntime {
             shard_builder,
         );
         info!(detection_shards, "initialized detection shard pool");
-        let baseline_store = load_baseline_store()?;
+        let mut baseline_store = load_baseline_store()?;
+        baseline_store.configure_windows(
+            config.baseline_learning_period_days,
+            config.baseline_stale_after_days,
+        );
+        let max_baseline_profiles = std::env::var("EGUARD_BASELINE_MAX_PROFILES")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+            .unwrap_or(4096);
+        baseline_store.configure_limits(max_baseline_profiles);
+
+        let baseline_upload_enabled = parse_runtime_flag("EGUARD_BASELINE_UPLOAD_ENABLED", true);
+        let fleet_seed_enabled = parse_runtime_flag("EGUARD_FLEET_SEED_ENABLED", true);
+        let baseline_upload_canary_percent =
+            parse_percentage_env("EGUARD_BASELINE_UPLOAD_CANARY_PERCENT", 100);
+        let fleet_seed_canary_percent =
+            parse_percentage_env("EGUARD_FLEET_SEED_CANARY_PERCENT", 100);
+
+        let dirty_baseline_keys = baseline_store
+            .baselines
+            .keys()
+            .map(|key| format!("{}:{}", key.comm, key.parent_comm))
+            .collect::<BTreeSet<_>>();
         seed_anomaly_baselines(&detection_state, &baseline_store)?;
         let compliance_policy = load_compliance_policy();
         let compliance_policy_id = compliance_policy
@@ -283,6 +312,12 @@ impl AgentRuntime {
             last_command_fetch_attempt_unix: None,
             last_threat_intel_refresh_unix: None,
             last_baseline_save_unix: None,
+            last_baseline_upload_unix: None,
+            last_fleet_baseline_fetch_unix: None,
+            baseline_upload_enabled,
+            fleet_seed_enabled,
+            baseline_upload_canary_percent,
+            fleet_seed_canary_percent,
             last_recovery_probe_unix: None,
             last_memory_scan_unix: None,
             last_kernel_integrity_scan_unix: None,
@@ -296,6 +331,7 @@ impl AgentRuntime {
             metrics: RuntimeMetrics::default(),
             host_control: HostControlState::default(),
             auto_isolation_state: AutoIsolationState::default(),
+            dirty_baseline_keys,
             pending_control_plane_tasks: VecDeque::new(),
             pending_control_plane_sends: VecDeque::new(),
             completed_command_ids: VecDeque::new(),
@@ -360,6 +396,10 @@ impl AgentRuntime {
             max_response_queue_depth: self.metrics.max_response_queue_depth,
             last_response_oldest_age_secs: self.metrics.last_response_oldest_age_secs,
             max_response_oldest_age_secs: self.metrics.max_response_oldest_age_secs,
+            baseline_rows_uploaded_total: self.metrics.baseline_rows_uploaded_total,
+            baseline_seed_rows_applied_total: self.metrics.baseline_seed_rows_applied_total,
+            baseline_upload_payload_reject_total: self.metrics.baseline_upload_payload_reject_total,
+            baseline_stale_transition_total: self.metrics.baseline_stale_transition_total,
         }
     }
 
@@ -428,4 +468,25 @@ impl AgentRuntime {
             .flatten()
             .unwrap_or_default()
     }
+}
+
+fn parse_runtime_flag(name: &str, default_value: bool) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|raw| {
+            let raw = raw.trim();
+            raw.eq_ignore_ascii_case("1")
+                || raw.eq_ignore_ascii_case("true")
+                || raw.eq_ignore_ascii_case("yes")
+                || raw.eq_ignore_ascii_case("on")
+        })
+        .unwrap_or(default_value)
+}
+
+fn parse_percentage_env(name: &str, default_value: u8) -> u8 {
+    std::env::var(name)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u16>().ok())
+        .map(|value| value.min(100) as u8)
+        .unwrap_or(default_value.min(100))
 }

@@ -659,6 +659,63 @@ async fn fetch_fleet_baselines_http_returns_seed_rows() {
 }
 
 #[tokio::test]
+// AC-BML-011 AC-BML-012 AC-BML-013
+async fn send_baseline_profiles_http_posts_batch_payload() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind baseline batch mock server");
+    let addr = listener.local_addr().expect("local addr");
+
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("accept client");
+        let mut request_buf = vec![0u8; 8192];
+        let read_len = stream.read(&mut request_buf).await.expect("read request");
+        let request = std::str::from_utf8(&request_buf[..read_len]).expect("utf8 request");
+        assert!(request.starts_with("POST /api/v1/endpoint/baseline/batch "));
+
+        let body = request
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| body)
+            .expect("split request body");
+        let payload: serde_json::Value = serde_json::from_str(body).expect("parse request json");
+        assert_eq!(payload["agent_id"], "agent-baseline-1");
+        assert_eq!(
+            payload["baselines"]
+                .as_array()
+                .map(|arr| arr.len())
+                .unwrap_or_default(),
+            1
+        );
+
+        let response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
+        stream
+            .write_all(response.as_bytes())
+            .await
+            .expect("write mock response");
+    });
+
+    let mut distribution = HashMap::new();
+    distribution.insert("process_exec".to_string(), 0.6);
+    distribution.insert("dns_query".to_string(), 0.4);
+
+    let profiles = vec![crate::types::BaselineProfileEnvelope {
+        process_key: "bash:sshd".to_string(),
+        event_distribution: distribution,
+        sample_count: 120,
+        entropy_threshold: 2.1,
+        learned_at_unix: 1_777_777_777,
+    }];
+
+    let client = Client::new(addr.to_string());
+    client
+        .send_baseline_profiles("agent-baseline-1", &profiles)
+        .await
+        .expect("send baseline profiles");
+
+    server.await.expect("mock server join");
+}
+
+#[tokio::test]
 // AC-REM-002 AC-REM-004
 async fn fetch_policy_http_returns_certificate_policy_payload() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -1075,6 +1132,7 @@ struct EnrollmentMockState {
     last_enrollment_token: Option<String>,
     last_csr_len: Option<usize>,
     heartbeats: Vec<pb::HeartbeatRequest>,
+    heartbeat_fleet_baseline: Option<pb::BaselineReport>,
     threat_intel_requests: Vec<pb::ThreatIntelRequest>,
     threat_intel_response: Option<pb::ThreatIntelVersion>,
 }
@@ -1186,17 +1244,15 @@ impl pb::agent_control_service_server::AgentControlService for MockAgentControlS
         &self,
         request: Request<pb::HeartbeatRequest>,
     ) -> Result<Response<pb::HeartbeatResponse>, Status> {
-        self.state
-            .lock()
-            .expect("state lock")
-            .heartbeats
-            .push(request.into_inner());
+        let mut guard = self.state.lock().expect("state lock");
+        guard.heartbeats.push(request.into_inner());
+        let fleet_baseline = guard.heartbeat_fleet_baseline.clone();
         Ok(Response::new(pb::HeartbeatResponse {
             heartbeat_interval_secs: 30,
             policy_update: None,
             rule_update: None,
             pending_commands: Vec::new(),
-            fleet_baseline: None,
+            fleet_baseline,
             status: "ok".to_string(),
             server_time: String::new(),
         }))
@@ -1945,6 +2001,50 @@ async fn send_heartbeat_grpc_captures_agent_and_compliance_and_config_version() 
         assert_eq!(heartbeat.compliance_status, "compliant");
         assert_eq!(heartbeat.config_version, "cfg-v7");
     }
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn fetch_fleet_baselines_grpc_uses_cached_heartbeat_fleet_report() {
+    let state = Arc::new(Mutex::new(EnrollmentMockState::default()));
+    {
+        let mut guard = state.lock().expect("state lock");
+        guard.heartbeat_fleet_baseline = Some(pb::BaselineReport {
+            status: pb::BaselineStatus::BaselineActive as i32,
+            baselines: vec![pb::ProcessBaseline {
+                process_key: "python3:bash".to_string(),
+                event_distribution: [
+                    ("process_exec".to_string(), 70),
+                    ("dns_query".to_string(), 30),
+                ]
+                .into_iter()
+                .collect(),
+                sample_count: 100,
+                entropy_threshold: 0.0,
+            }],
+            ..Default::default()
+        });
+    }
+    let server = spawn_mock_agent_control(state.clone()).await;
+    let mut client = Client::with_mode("inproc-agent-control".to_string(), TransportMode::Grpc);
+    client.set_test_channel_override(server.channel());
+
+    client
+        .send_heartbeat_with_config("agent-heartbeat-2", "compliant", "cfg-v8", "learning")
+        .await
+        .expect("send_heartbeat should succeed");
+
+    let fleet = client
+        .fetch_fleet_baselines(10)
+        .await
+        .expect("fetch fleet baselines from grpc cache");
+
+    assert_eq!(fleet.len(), 1);
+    assert_eq!(fleet[0].process_key, "python3:bash");
+    assert_eq!(fleet[0].source, "grpc_heartbeat");
+    let total = fleet[0].median_distribution.values().copied().sum::<f64>();
+    assert!((total - 1.0).abs() < 1e-6);
 
     server.shutdown().await;
 }

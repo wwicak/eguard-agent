@@ -1,0 +1,58 @@
+{
+  "baselines": [
+    {
+      "agent_id": "agent-a",
+      "process_key": "python3:bash",
+      "event_distribution": {
+        "process_exec": 0.52,
+        "file_open": 0.30,
+        "dns_query": 0.18
+      }
+    },
+    {
+      "agent_id": "agent-b",
+      "process_key": "python3:bash",
+      "event_distribution": {
+        "process_exec": 0.48,
+        "file_open": 0.34,
+        "dns_query": 0.18
+      }
+    },
+    {
+      "agent_id": "agent-c",
+      "process_key": "python3:bash",
+      "event_distribution": {
+        "process_exec": 0.50,
+        "file_open": 0.32,
+        "dns_query": 0.18
+      }
+    },
+    {
+      "agent_id": "agent-a",
+      "process_key": "nginx:systemd",
+      "event_distribution": {
+        "network_connect": 0.60,
+        "file_open": 0.20,
+        "process_exec": 0.20
+      }
+    },
+    {
+      "agent_id": "agent-b",
+      "process_key": "nginx:systemd",
+      "event_distribution": {
+        "network_connect": 0.57,
+        "file_open": 0.24,
+        "process_exec": 0.19
+      }
+    },
+    {
+      "agent_id": "agent-c",
+      "process_key": "nginx:systemd",
+      "event_distribution": {
+        "network_connect": 0.61,
+        "file_open": 0.22,
+        "process_exec": 0.17
+      }
+    }
+  ]
+}

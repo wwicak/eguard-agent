@@ -69,6 +69,12 @@ SIGNAL_FEATURE_FIELDS = (
     "z1_z2_interaction",
     "z1_z4_interaction",
     "anomaly_behavioral",
+    "tree_depth_norm",
+    "tree_breadth_norm",
+    "child_entropy",
+    "spawn_rate_norm",
+    "rare_parent_child",
+    "c2_beacon_mi",
 )
 
 
@@ -312,7 +318,90 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--rule-pool", type=int, default=220)
     parser.add_argument("--unresolved-ratio", type=float, default=0.08)
     parser.add_argument("--label-noise", type=float, default=0.03)
+    parser.add_argument("--real-data", default="", help="Optional NDJSON of real adjudicated alerts (33 features + label)")
+    parser.add_argument("--real-weight", default="auto", help="Real data weight: 'auto' (adapts to count), or float 0.0-1.0")
     return parser
+
+
+def _load_real_data(path: Path) -> tuple[list[dict[str, Any]], int]:
+    """Load real adjudicated alerts from NDJSON file.
+
+    Returns (valid_rows, invalid_count).
+    """
+    if not path.is_file():
+        return [], 0
+    valid: list[dict[str, Any]] = []
+    invalid = 0
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            invalid += 1
+            continue
+        if not isinstance(payload, dict):
+            invalid += 1
+            continue
+        label = _normalize_label(payload.get("label"))
+        if label is None:
+            invalid += 1
+            continue
+        row: dict[str, Any] = {
+            "sample_id": payload.get("sample_id", f"real-{len(valid) + 1:06d}"),
+            "observed_at_utc": payload.get("observed_at_utc", ""),
+            "adjudicated_at_utc": payload.get("adjudicated_at_utc", ""),
+            "host_id": str(payload.get("host_id", "")).strip(),
+            "rule_id": str(payload.get("rule_id", "")).strip(),
+            "event_class": str(payload.get("event_class", "process_exec")).strip(),
+            "model_score": _clamp(_as_float(payload.get("model_score"), 0.0), 0.0, 1.0),
+            "label": label,
+            "label_source": "real_feedback",
+        }
+        for feature in SIGNAL_FEATURE_FIELDS:
+            row[feature] = _as_float(payload.get(feature), 0.0)
+        valid.append(row)
+    return valid, invalid
+
+
+def _blend_real_synthetic(
+    real_rows: list[dict[str, Any]],
+    synthetic_rows: list[dict[str, Any]],
+    real_weight: str,
+    target_count: int,
+) -> tuple[list[dict[str, Any]], str]:
+    """Blend real and synthetic data with adaptive weighting.
+
+    Returns (blended_rows, blend_mode).
+    """
+    if not real_rows:
+        return synthetic_rows[:target_count], "synthetic_only"
+
+    real_count = len(real_rows)
+
+    # Determine real weight
+    if real_weight == "auto":
+        if real_count < 500:
+            weight = 0.70  # cold-start: 70% real + 30% synthetic
+        else:
+            weight = 0.95  # mature: 95% real + 5% synthetic
+    else:
+        weight = _clamp(_as_float(real_weight, 0.70), 0.0, 1.0)
+
+    real_target = min(int(target_count * weight), real_count)
+    synthetic_target = target_count - real_target
+
+    # Deterministic selection: sort by sample_id hash for stability
+    def _sort_key(row: dict[str, Any]) -> str:
+        return hashlib.sha256(str(row.get("sample_id", "")).encode("utf-8")).hexdigest()
+
+    selected_real = sorted(real_rows, key=_sort_key)[:real_target]
+    selected_synthetic = sorted(synthetic_rows, key=_sort_key)[:max(synthetic_target, 0)]
+
+    blended = selected_real + selected_synthetic
+    mode = f"blended_real_{weight:.0%}".replace("%", "pct")
+    return blended[:target_count], mode
 
 
 def main() -> int:
@@ -507,6 +596,30 @@ def main() -> int:
         z1_z4_interaction = z1_ioc_hit * z4_killchain_count
         anomaly_behavioral = z3_anomaly_high * multi_layer_count
 
+        # Process tree features
+        is_malicious_bias = severity / 5.0
+        tree_depth_norm = _clamp(
+            _rand01(seed_prefix + "|tdepth") * (0.5 + 0.3 * is_malicious_bias),
+            0.0, 1.0,
+        )
+        tree_breadth_norm = _clamp(
+            _rand01(seed_prefix + "|tbreadth") * (0.3 + 0.4 * is_malicious_bias),
+            0.0, 1.0,
+        )
+        child_entropy = _clamp(
+            _rand01(seed_prefix + "|centropy") * (0.4 + 0.5 * is_malicious_bias),
+            0.0, 1.0,
+        )
+        spawn_rate_norm = _clamp(
+            _rand01(seed_prefix + "|spawnrate") * (0.2 + 0.6 * is_malicious_bias),
+            0.0, 1.0,
+        )
+        rare_parent_child = 1.0 if _rand01(seed_prefix + "|rarepc") < (0.05 + 0.35 * is_malicious_bias) else 0.0
+        c2_beacon_mi = _clamp(
+            _rand01(seed_prefix + "|c2mi") * (0.1 + 0.8 * is_malicious_bias),
+            0.0, 1.0,
+        )
+
         linear = (
             -3.10
             + 2.25 * z1_ioc_hit
@@ -529,6 +642,12 @@ def main() -> int:
             + 0.5 * z1_z2_interaction
             + 0.4 * z1_z4_interaction
             + 0.3 * anomaly_behavioral
+            + 0.3 * tree_depth_norm
+            + 0.4 * tree_breadth_norm
+            + 0.5 * child_entropy
+            + 0.6 * spawn_rate_norm
+            + 0.8 * rare_parent_child
+            + 1.2 * c2_beacon_mi
             + (_rand01(seed_prefix + "|noise") - 0.5) * 0.6
         )
         model_score = _clamp(_score_to_probability(linear), 0.001, 0.999)
@@ -576,6 +695,12 @@ def main() -> int:
                 "z1_z2_interaction": round(z1_z2_interaction, 6),
                 "z1_z4_interaction": round(z1_z4_interaction, 6),
                 "anomaly_behavioral": round(anomaly_behavioral, 6),
+                "tree_depth_norm": round(tree_depth_norm, 6),
+                "tree_breadth_norm": round(tree_breadth_norm, 6),
+                "child_entropy": round(child_entropy, 6),
+                "spawn_rate_norm": round(spawn_rate_norm, 6),
+                "rare_parent_child": round(rare_parent_child, 6),
+                "c2_beacon_mi": round(c2_beacon_mi, 6),
             }
         )
 
@@ -649,6 +774,12 @@ def main() -> int:
                 "z1_z2_interaction": row.get("z1_z2_interaction"),
                 "z1_z4_interaction": row.get("z1_z4_interaction"),
                 "anomaly_behavioral": row.get("anomaly_behavioral"),
+                "tree_depth_norm": row.get("tree_depth_norm"),
+                "tree_breadth_norm": row.get("tree_breadth_norm"),
+                "child_entropy": row.get("child_entropy"),
+                "spawn_rate_norm": row.get("spawn_rate_norm"),
+                "rare_parent_child": row.get("rare_parent_child"),
+                "c2_beacon_mi": row.get("c2_beacon_mi"),
             }
         )
 
@@ -659,6 +790,17 @@ def main() -> int:
             combined = combined[:sample_count]
         rows = combined
         dataset_mode = "external_only" if len(rows) == len(external_rows) else "hybrid_external"
+
+    # Real feedback integration: blend real adjudicated alerts with synthetic data
+    real_data_stats = {"real_total": 0, "real_used": 0, "real_invalid": 0}
+    if args.real_data:
+        real_rows, real_invalid = _load_real_data(Path(args.real_data))
+        real_data_stats["real_total"] = len(real_rows) + real_invalid
+        real_data_stats["real_invalid"] = real_invalid
+        if real_rows:
+            rows, blend_mode = _blend_real_synthetic(real_rows, rows, args.real_weight, sample_count)
+            real_data_stats["real_used"] = sum(1 for r in rows if r.get("label_source") == "real_feedback")
+            dataset_mode = blend_mode
 
     adjudicated_count = 0
     positive_count = 0
@@ -706,6 +848,9 @@ def main() -> int:
             "external_total": external_stats.get("external_total", 0),
             "external_used": external_stats.get("external_used", 0),
             "external_invalid": external_stats.get("external_invalid", 0),
+            "real_total": real_data_stats.get("real_total", 0),
+            "real_used": real_data_stats.get("real_used", 0),
+            "real_invalid": real_data_stats.get("real_invalid", 0),
         },
         "inputs": {
             "manifest": str(args.manifest),
@@ -733,6 +878,11 @@ def main() -> int:
         print(
             f"- external signals: {external_stats.get('external_used', 0)} used "
             f"(total {external_stats.get('external_total', 0)}, invalid {external_stats.get('external_invalid', 0)})"
+        )
+    if real_data_stats.get("real_used", 0) > 0:
+        print(
+            f"- real feedback: {real_data_stats['real_used']} used "
+            f"(total {real_data_stats['real_total']}, invalid {real_data_stats['real_invalid']})"
         )
     print(f"- output: {out_path}")
     return 0

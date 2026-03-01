@@ -59,8 +59,9 @@ fn clean_event_scores_low() {
         exploit_indicator: false,
         kernel_integrity: false,
         tamper_indicator: false,
+        ..Default::default()
     };
-    let features = MlFeatures::extract(&event, &signals, 0, 0, 0, 0, 0);
+    let features = MlFeatures::extract(&event, &signals, 0, 0, 0, 0, 0, &Default::default());
     let result = engine.score(&features);
     assert!(
         result.score < 0.3,
@@ -85,8 +86,9 @@ fn ioc_hit_scores_high() {
         exploit_indicator: false,
         kernel_integrity: false,
         tamper_indicator: false,
+        ..Default::default()
     };
-    let features = MlFeatures::extract(&event, &signals, 0, 0, 0, 2, 0);
+    let features = MlFeatures::extract(&event, &signals, 0, 0, 0, 2, 0, &Default::default());
     let result = engine.score(&features);
     assert!(
         result.score > 0.8,
@@ -111,8 +113,9 @@ fn multi_layer_agreement_scores_highest() {
         exploit_indicator: false,
         kernel_integrity: false,
         tamper_indicator: false,
+        ..Default::default()
     };
-    let features = MlFeatures::extract(&event, &signals, 2, 1, 1, 3, 0);
+    let features = MlFeatures::extract(&event, &signals, 2, 1, 1, 3, 0, &Default::default());
     let result = engine.score(&features);
     assert!(
         result.score > 0.99,
@@ -137,8 +140,9 @@ fn anomaly_only_scores_moderate() {
         exploit_indicator: false,
         kernel_integrity: false,
         tamper_indicator: false,
+        ..Default::default()
     };
-    let features = MlFeatures::extract(&event, &signals, 0, 0, 0, 0, 0);
+    let features = MlFeatures::extract(&event, &signals, 0, 0, 0, 0, 0, &Default::default());
     let result = engine.score(&features);
     // Anomaly alone should be moderate — not near 1.0, not near 0.0
     assert!(
@@ -193,8 +197,9 @@ fn top_features_are_interpretable() {
         exploit_indicator: false,
         kernel_integrity: false,
         tamper_indicator: false,
+        ..Default::default()
     };
-    let features = MlFeatures::extract(&event, &signals, 1, 0, 0, 1, 0);
+    let features = MlFeatures::extract(&event, &signals, 1, 0, 0, 1, 0, &Default::default());
     let result = engine.score(&features);
     // Top features should include z1_ioc_hit
     assert!(
@@ -220,7 +225,7 @@ fn hot_reload_model() {
 #[test]
 // AC-DET-263 AC-DET-266
 fn ml_feature_contract_includes_extended_runtime_and_interaction_terms() {
-    assert_eq!(FEATURE_COUNT, 27);
+    assert_eq!(FEATURE_COUNT, 33);
     for name in [
         "event_size_norm",
         "container_risk",
@@ -230,6 +235,12 @@ fn ml_feature_contract_includes_extended_runtime_and_interaction_terms() {
         "z1_z2_interaction",
         "z1_z4_interaction",
         "anomaly_behavioral",
+        "tree_depth_norm",
+        "tree_breadth_norm",
+        "child_entropy",
+        "spawn_rate_norm",
+        "rare_parent_child",
+        "c2_beacon_mi",
     ] {
         assert!(FEATURE_NAMES.contains(&name), "feature list missing {name}");
     }
@@ -357,6 +368,7 @@ fn ci_model_validation_rejects_empty_features_non_finite_and_bad_scales() {
         positive_samples: 5,
         negative_samples: 5,
         threshold: None,
+        calibration_scores: None,
     };
     assert!(empty_features.validate().is_err());
 
@@ -372,6 +384,7 @@ fn ci_model_validation_rejects_empty_features_non_finite_and_bad_scales() {
         positive_samples: 5,
         negative_samples: 5,
         threshold: None,
+        calibration_scores: None,
     };
     assert!(non_finite_weight.validate().is_err());
 
@@ -387,6 +400,7 @@ fn ci_model_validation_rejects_empty_features_non_finite_and_bad_scales() {
         positive_samples: 5,
         negative_samples: 5,
         threshold: None,
+        calibration_scores: None,
     };
     assert!(bad_scale.validate().is_err());
 
@@ -402,6 +416,7 @@ fn ci_model_validation_rejects_empty_features_non_finite_and_bad_scales() {
         positive_samples: 5,
         negative_samples: 5,
         threshold: None,
+        calibration_scores: None,
     };
     assert!(non_finite_bias.validate().is_err());
 }
@@ -427,6 +442,7 @@ fn ci_model_conversion_tracks_feature_mapping_mismatches() {
         positive_samples: 5,
         negative_samples: 5,
         threshold: Some(0.4),
+        calibration_scores: None,
     };
     let runtime = ci.to_runtime_model();
     assert_eq!(runtime.ci_features_dropped, 1);

@@ -274,10 +274,13 @@ endpoint before enabling autonomous response actions.
 
 | Parameter | Value |
 |-----------|-------|
-| Learning duration | **7 days** (`LEARNING_WINDOW_SECS = 604800`) |
-| Staleness threshold | **30 days** (`STALE_WINDOW_SECS = 2592000`) of no events |
+| Learning duration | Config-driven (`baseline.learning_period_days`, default **7 days**) |
+| Staleness threshold | Config-driven (`baseline.stale_after_days`, default **30 days** of no events) |
 | Persistence path | `/var/lib/eguard-agent/baselines.bin` (override: `EGUARD_BASELINE_PATH`) |
-| Save interval | Every 300 seconds |
+| Delta journal | `/var/lib/eguard-agent/baselines.journal` + `/var/lib/eguard-agent/baselines.journal.meta` |
+| Save interval | Every 300 seconds (snapshot + journal metadata checkpoint) |
+| Upload cadence | Every 15 minutes by default (plus significant-change dirty backlog trigger) |
+| Profile cap | Runtime bounded (default 4096 profiles, override `EGUARD_BASELINE_MAX_PROFILES`) |
 
 ### 4.2 What It Learns
 
@@ -333,7 +336,15 @@ to provide reasonable anomaly thresholds before real observations accumulate.
 
 The server can also push fleet-aggregated baselines via `FleetBaselineEnvelope`
 to bootstrap new agents with statistical profiles from other endpoints running
-the same workloads.
+the same workloads. In gRPC mode, the agent caches fleet baselines delivered in
+heartbeat responses and uses that cache during seed fetch cycles.
+
+Current seed merge rules:
+- Agent fetches fleet seeds while baseline is `Learning` or `Stale`.
+- Missing local profiles are seeded immediately.
+- Weak local profiles may be strengthened by fleet seeds.
+- Mature local profiles are protected from overwrite.
+- After apply, seed distributions are pushed to all anomaly shards.
 
 ### 4.7 Staleness
 
@@ -555,7 +566,7 @@ Server (policy stored in DB)
 Agent parses policy JSON
   |
   v
-Applies: compliance checks, detection_allowlist, baseline_mode, bundle_public_key
+Applies: compliance checks, detection_allowlist, baseline_mode, baseline_upload_enabled, fleet_seed_enabled, bundle_public_key
 ```
 
 ### 7.2 Policy Fields
@@ -565,6 +576,10 @@ Applies: compliance checks, detection_allowlist, baseline_mode, bundle_public_ke
 | `compliance_checks` | object | Compliance check configuration (firewall, SSH, packages, etc.) |
 | `detection_allowlist` | object | Processes and path prefixes to exclude from detection |
 | `baseline_mode` | string | `"learning"`, `"force_active"`, or `"skip_learning"` |
+| `baseline_upload_enabled` | bool | Live toggle for baseline upload path (kill switch without restart) |
+| `fleet_seed_enabled` | bool | Live toggle for fleet baseline fetch/apply path (kill switch without restart) |
+| `baseline_upload_canary_percent` | int (0-100) | Canary rollout gate for upload path by agent_id hash bucket |
+| `fleet_seed_canary_percent` | int (0-100) | Canary rollout gate for fleet-seed path by agent_id hash bucket |
 | `bundle_public_key` | string | Hex-encoded Ed25519 public key for bundle verification |
 | `response` | object | Override autonomous response, dry_run, rate limits |
 
@@ -929,8 +944,34 @@ Environment="EGUARD_AGENT_MODE=active"
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `EGUARD_BASELINE_PATH` | `/var/lib/eguard-agent/baselines.bin` | Baseline store file path |
-| `EGUARD_BASELINE_SKIP_LEARNING` | `false` | Skip 7-day learning window |
+| `EGUARD_BASELINE_PATH` | `/var/lib/eguard-agent/baselines.bin` | Baseline snapshot path (`.journal` + `.journal.meta` sidecars are derived automatically) |
+| `EGUARD_BASELINE_SKIP_LEARNING` | `false` | Skip learning window and force active baseline |
+| `EGUARD_BASELINE_MAX_PROFILES` | `4096` | Maximum process profiles retained in baseline store (LRU eviction beyond cap) |
+| `EGUARD_BASELINE_UPLOAD_MAX_BYTES` | `1000000` | Max JSON payload size for one baseline upload request (profiles are chunked/rejected to stay under cap) |
+| `EGUARD_BASELINE_UPLOAD_ENABLED` | `true` | Enable baseline upload scheduler at startup (can be overridden live by policy `baseline_upload_enabled`) |
+| `EGUARD_FLEET_SEED_ENABLED` | `true` | Enable fleet-seed fetch scheduler at startup (can be overridden live by policy `fleet_seed_enabled`) |
+| `EGUARD_BASELINE_UPLOAD_CANARY_PERCENT` | `100` | Percent rollout gate for baseline upload path (0 disables, 100 enables all) |
+| `EGUARD_FLEET_SEED_CANARY_PERCENT` | `100` | Percent rollout gate for fleet-seed fetch/apply path (0 disables, 100 enables all) |
+
+#### Server Runtime ML Feedback Scheduler (fe_eguard)
+
+Closed-loop signature-ML retraining is wired into production scheduler (not CI-only):
+
+- Egcron task: `signature_ml_feedback_train`
+- Default schedule: `0 2 * * *`
+- Task module: `fe_eguard/lib/eg/egcron/task/signature_ml_feedback_train.pm`
+- Pipeline source of truth remains in `eguard-agent/threat-intel/processing/`
+
+Key server-side env knobs:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `EGUARD_ML_AGENT_REPO_PATH` | (optional override) | Optional external `eguard-agent` repository path; default runtime scripts are packaged at `/usr/local/eg/threat-intel/processing` |
+| `EGUARD_ML_OUTPUT_ROOT` | `/usr/local/eg/var/mlops/signature-ml-feedback` | Runtime artifact root (`latest/`, run reports, model/eval outputs) |
+| `EGUARD_ML_MIN_FEEDBACK_ROWS` | `30` | Minimum labeled feedback rows required to train (else task skips safely) |
+| `EGUARD_ML_RESOURCE_PROFILE` | `auto` | Adaptive training profile (`auto`, `tiny`, `modest`, `balanced`, `high`) |
+| `EGUARD_ML_FAIL_ON_THRESHOLD` | `1` | Fail task on quality/eval threshold gate violations |
+| `EGUARD_ML_FAIL_ON_REGRESSION` | `1` | Fail task on offline-eval regression gate violations |
 
 #### Bundle Signing
 
@@ -1203,7 +1244,9 @@ degraded mode.
 4. Review the anomaly engine -- if the baseline was set during an unusual period,
    consider resetting the baseline:
    ```bash
-   sudo rm /var/lib/eguard-agent/baselines.bin
+   sudo rm -f /var/lib/eguard-agent/baselines.bin \
+             /var/lib/eguard-agent/baselines.journal \
+             /var/lib/eguard-agent/baselines.journal.meta
    sudo systemctl restart eguard-agent
    ```
 
@@ -1307,7 +1350,9 @@ sudo systemctl restart eguard-agent
 | `/etc/eguard-agent/agent.conf` | Agent configuration |
 | `/etc/eguard-agent/bootstrap.conf` | Bootstrap / enrollment config |
 | `/etc/eguard-agent/certs/` | TLS certificates |
-| `/var/lib/eguard-agent/baselines.bin` | Baseline store |
+| `/var/lib/eguard-agent/baselines.bin` | Baseline snapshot |
+| `/var/lib/eguard-agent/baselines.journal` | Baseline delta journal |
+| `/var/lib/eguard-agent/baselines.journal.meta` | Baseline journal checkpoint metadata |
 | `/var/lib/eguard-agent/offline-events.db` | Offline event buffer (SQLite) |
 | `/var/lib/eguard-agent/quarantine/` | Quarantined files |
 | `/var/lib/eguard-agent/rules/sigma/` | Sigma rules |
@@ -2905,7 +2950,8 @@ or `EGUARD_MDM_ALLOW_ALL=1`.
 |------|-----------|--------------|
 | Offline event buffer | `/var/lib/eguard-agent/offline-events.db` | `C:\ProgramData\eGuard\offline-events.db` |
 | Quarantine directory | `/var/lib/eguard-agent/quarantine/` | `C:\ProgramData\eGuard\quarantine\` |
-| Baselines file | `/var/lib/eguard-agent/baselines.bin` | `C:\ProgramData\eGuard\baselines.bin` |
+| Baseline snapshot | `/var/lib/eguard-agent/baselines.bin` | `C:\ProgramData\eGuard\baselines.bin` |
+| Baseline journal + meta | `/var/lib/eguard-agent/baselines.journal*` | `C:\ProgramData\eGuard\baselines.journal*` |
 
 **API example:**
 

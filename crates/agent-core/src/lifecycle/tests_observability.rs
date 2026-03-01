@@ -56,6 +56,7 @@ fn tick_evaluation_for_confidence(confidence: Confidence, ts: i64, pid: u32) -> 
                 exploit_indicator: false,
                 kernel_integrity: false,
                 tamper_indicator: false,
+                ..Default::default()
             },
             temporal_hits: Vec::new(),
             kill_chain_hits: Vec::new(),
@@ -152,6 +153,7 @@ fn telemetry_audit_payload_includes_rule_attribution() {
             exploit_indicator: true,
             kernel_integrity: false,
             tamper_indicator: false,
+            ..Default::default()
         },
         temporal_hits: Vec::new(),
         kill_chain_hits: Vec::new(),
@@ -263,6 +265,7 @@ fn telemetry_payload_includes_nac_fields() {
             exploit_indicator: false,
             kernel_integrity: false,
             tamper_indicator: false,
+            ..Default::default()
         },
         temporal_hits: vec!["sigma.exec".to_string()],
         kill_chain_hits: Vec::new(),
@@ -366,6 +369,7 @@ fn telemetry_payload_includes_correlation_event_fields() {
             exploit_indicator: false,
             kernel_integrity: false,
             tamper_indicator: false,
+            ..Default::default()
         },
         temporal_hits: Vec::new(),
         kill_chain_hits: Vec::new(),

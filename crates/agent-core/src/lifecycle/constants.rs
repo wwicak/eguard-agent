@@ -12,6 +12,10 @@ pub(super) const COMPLIANCE_INTERVAL_SECS: i64 = 60;
 pub(super) const POLICY_REFRESH_INTERVAL_SECS: i64 = 300;
 pub(super) const THREAT_INTEL_INTERVAL_SECS: i64 = 150;
 pub(super) const BASELINE_SAVE_INTERVAL_SECS: i64 = 300;
+pub(super) const BASELINE_UPLOAD_INTERVAL_SECS: i64 = 900;
+pub(super) const FLEET_BASELINE_FETCH_INTERVAL_SECS: i64 = 900;
+pub(super) const BASELINE_UPLOAD_BATCH_SIZE: usize = 128;
+pub(super) const BASELINE_UPLOAD_MAX_BYTES: usize = 1_000_000;
 #[cfg(test)]
 pub(super) const SECONDS_PER_DAY: i64 = 86_400;
 pub(super) const EVENT_BATCH_SIZE: usize = 256;

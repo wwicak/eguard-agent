@@ -49,6 +49,11 @@ pub struct CiTrainedModel {
     /// Optional decision threshold from CI training pipeline.
     #[serde(default)]
     pub threshold: Option<f64>,
+    /// Optional calibration scores for conformal prediction.
+    /// When present, the runtime engine constructs a ConformalCalibrator
+    /// from these scores to provide finite-sample FP-rate guarantees.
+    #[serde(default)]
+    pub calibration_scores: Option<Vec<f64>>,
 }
 
 impl CiTrainedModel {
@@ -236,6 +241,13 @@ impl Default for MlModel {
                 0.8, // z1_z2_interaction       — IOC + temporal = strong
                 0.7, // z1_z4_interaction       — IOC + kill chain = strong
                 0.6, // anomaly_behavioral      — anomaly + multi-signal = moderate
+                // Process tree + beaconing weights (Phase 1.3)
+                0.3, // tree_depth_norm         — deeper trees slightly suspicious
+                0.3, // tree_breadth_norm       — many siblings (fork bomb)
+                0.4, // child_entropy           — diverse child names = script runner
+                0.3, // spawn_rate_norm         — rapid spawning = attack automation
+                0.6, // rare_parent_child       — unseen parent:child = novel execution
+                0.7, // c2_beacon_mi            — high MI = periodic C2 beaconing
             ],
             bias: -3.6, // slight bias shift for dns_entropy
             threshold: 0.5,

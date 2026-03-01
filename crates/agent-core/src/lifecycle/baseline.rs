@@ -74,7 +74,7 @@ pub(super) fn seed_anomaly_baselines(
     detection_state: &SharedDetectionState,
     baseline_store: &BaselineStore,
 ) -> Result<()> {
-    let mut seeded = 0usize;
+    let mut bulk = Vec::new();
     for ((comm, parent), distribution) in baseline_store.init_entropy_baselines() {
         let mut parsed = HashMap::new();
         for (event_name, probability) in distribution {
@@ -86,20 +86,21 @@ pub(super) fn seed_anomaly_baselines(
             continue;
         }
 
-        detection_state.set_anomaly_baseline(format!("{}:{}", comm, parent), parsed)?;
-        seeded += 1;
+        bulk.push((format!("{}:{}", comm, parent), parsed));
     }
 
+    let seeded = bulk.len();
     if seeded > 0 {
+        detection_state.set_anomaly_baselines_bulk(bulk)?;
         info!(
             seeded_baselines = seeded,
             "initialized anomaly baselines from baseline store"
         );
     }
+
     Ok(())
 }
 
-#[cfg(test)]
 pub(super) fn apply_fleet_baseline_seeds(
     baseline_store: &mut BaselineStore,
     fleet_baselines: &[grpc_client::FleetBaselineEnvelope],

@@ -38,6 +38,8 @@ pub(super) enum ControlPlaneTaskKind {
     PolicySync,
     ThreatIntelRefresh,
     CommandSync,
+    BaselineUpload,
+    FleetBaselineFetch,
 }
 
 #[derive(Debug, Clone)]
@@ -146,6 +148,10 @@ pub struct RuntimeObservabilitySnapshot {
     pub max_response_queue_depth: usize,
     pub last_response_oldest_age_secs: u64,
     pub max_response_oldest_age_secs: u64,
+    pub baseline_rows_uploaded_total: u64,
+    pub baseline_seed_rows_applied_total: u64,
+    pub baseline_upload_payload_reject_total: u64,
+    pub baseline_stale_transition_total: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,6 +202,10 @@ pub(super) struct RuntimeMetrics {
     pub(super) max_response_queue_depth: usize,
     pub(super) last_response_oldest_age_secs: u64,
     pub(super) max_response_oldest_age_secs: u64,
+    pub(super) baseline_rows_uploaded_total: u64,
+    pub(super) baseline_seed_rows_applied_total: u64,
+    pub(super) baseline_upload_payload_reject_total: u64,
+    pub(super) baseline_stale_transition_total: u64,
 }
 
 pub(super) struct LocalActionResult {

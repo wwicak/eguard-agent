@@ -18,6 +18,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,37 @@ RESERVED_FIELDS = {
     "label_source",
     "event_class",
     "model_score",
+}
+
+RESOURCE_PROFILE_DEFAULTS: dict[str, dict[str, float]] = {
+    # Conservative profile for tiny nodes.
+    "tiny": {
+        "max_iter": 40,
+        "holdout_ratio": 0.18,
+        "max_samples": 30_000,
+        "l2_grid_points": 4,
+    },
+    # Targets modest boxes around 4 vCPU / 6-8 GB RAM.
+    "modest": {
+        "max_iter": 52,
+        "holdout_ratio": 0.20,
+        "max_samples": 90_000,
+        "l2_grid_points": 5,
+    },
+    # Balanced default for common CI/build runners.
+    "balanced": {
+        "max_iter": 60,
+        "holdout_ratio": 0.20,
+        "max_samples": 180_000,
+        "l2_grid_points": 6,
+    },
+    # High-resource profile keeps broad sweep space.
+    "high": {
+        "max_iter": 72,
+        "holdout_ratio": 0.22,
+        "max_samples": 320_000,
+        "l2_grid_points": 7,
+    },
 }
 
 
@@ -625,6 +657,153 @@ def _parse_l2_grid(raw: str, base: float) -> list[float]:
     return sorted({round(_clamp(value, 0.0, 10.0), 6) for value in grid})
 
 
+def _auto_l2_grid(base: float, grid_points: int) -> list[float]:
+    base = _clamp(base, 0.0, 10.0)
+    candidates = [0.0, base / 4.0, base / 2.0, base, base * 2.0, base * 4.0, base * 8.0]
+    normalized = sorted({round(_clamp(value, 0.0, 10.0), 6) for value in candidates})
+    if grid_points >= len(normalized):
+        return normalized
+
+    priority = [base, base / 2.0, base * 2.0, 0.0, base / 4.0, base * 4.0, base * 8.0]
+    picked: list[float] = []
+    for candidate in priority:
+        value = round(_clamp(candidate, 0.0, 10.0), 6)
+        if value in normalized and value not in picked:
+            picked.append(value)
+        if len(picked) >= grid_points:
+            break
+
+    if not picked:
+        picked = normalized[: max(1, grid_points)]
+    return sorted(picked)
+
+
+def _detect_host_resources() -> dict[str, float]:
+    cpu_count = max(1, _as_int(os.cpu_count(), 1))
+    memory_bytes = 0
+
+    try:
+        with Path("/proc/meminfo").open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("MemTotal:"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        memory_bytes = max(0, _as_int(parts[1], 0)) * 1024
+                    break
+    except OSError:
+        memory_bytes = 0
+
+    if memory_bytes <= 0:
+        try:
+            pages = os.sysconf("SC_PHYS_PAGES")
+            page_size = os.sysconf("SC_PAGE_SIZE")
+            if isinstance(pages, int) and isinstance(page_size, int) and pages > 0 and page_size > 0:
+                memory_bytes = pages * page_size
+        except (AttributeError, OSError, ValueError):
+            memory_bytes = 0
+
+    memory_gib = (memory_bytes / (1024.0**3)) if memory_bytes > 0 else 0.0
+    return {
+        "cpu_count": float(cpu_count),
+        "memory_gib": round(memory_gib, 2),
+    }
+
+
+def _resolve_resource_profile(requested: str, resources: dict[str, float]) -> str:
+    profile = requested.strip().lower()
+    if profile and profile != "auto":
+        return profile
+
+    cpu_count = int(resources.get("cpu_count", 1))
+    memory_gib = float(resources.get("memory_gib", 0.0))
+
+    if cpu_count <= 2 or (0.0 < memory_gib <= 4.0):
+        return "tiny"
+    if cpu_count <= 4 or (0.0 < memory_gib <= 8.0):
+        return "modest"
+    if cpu_count <= 8 or (0.0 < memory_gib <= 16.0):
+        return "balanced"
+    return "high"
+
+
+def _build_training_plan(args: argparse.Namespace) -> dict[str, Any]:
+    resources = _detect_host_resources()
+    profile = _resolve_resource_profile(args.resource_profile, resources)
+    defaults = RESOURCE_PROFILE_DEFAULTS.get(profile, RESOURCE_PROFILE_DEFAULTS["balanced"])
+
+    max_iter = max(1, _as_int(args.max_iter, int(defaults["max_iter"])))
+    holdout_ratio = _clamp(
+        _as_float(args.holdout_ratio, float(defaults["holdout_ratio"])),
+        0.05,
+        0.50,
+    )
+    max_samples = max(0, _as_int(args.max_samples, int(defaults["max_samples"])))
+    cv_folds = max(5, _as_int(args.cv_folds, 5))
+    l2_grid_points = max(3, _as_int(args.l2_grid_points, int(defaults["l2_grid_points"])))
+
+    return {
+        "resource_profile": profile,
+        "detected_cpu_count": int(resources.get("cpu_count", 1.0)),
+        "detected_memory_gib": float(resources.get("memory_gib", 0.0)),
+        "max_iter": max_iter,
+        "holdout_ratio": holdout_ratio,
+        "max_samples": max_samples,
+        "cv_folds": cv_folds,
+        "l2_grid_points": l2_grid_points,
+    }
+
+
+def _stable_sample_key(row: dict[str, Any], fallback_idx: int) -> str:
+    return str(row.get("sample_id", fallback_idx))
+
+
+def _deterministic_stratified_downsample(
+    rows: list[dict[str, Any]],
+    labels: list[int],
+    max_samples: int,
+) -> list[int]:
+    if max_samples <= 0 or len(rows) <= max_samples:
+        return list(range(len(rows)))
+
+    positives = [idx for idx, label in enumerate(labels) if label == 1]
+    negatives = [idx for idx, label in enumerate(labels) if label == 0]
+
+    def sort_by_hash(indices: list[int]) -> list[int]:
+        return sorted(
+            indices,
+            key=lambda idx: hashlib.sha256(
+                _stable_sample_key(rows[idx], idx).encode("utf-8")
+            ).hexdigest(),
+        )
+
+    if not positives or not negatives:
+        all_sorted = sort_by_hash(list(range(len(rows))))
+        selected = all_sorted[:max_samples]
+        return sorted(selected)
+
+    total = len(rows)
+    target_pos = int(round(max_samples * (len(positives) / total)))
+    target_pos = max(1, min(target_pos, len(positives) - 1))
+    target_neg = max_samples - target_pos
+    if target_neg <= 0:
+        target_neg = 1
+        target_pos = max_samples - 1
+
+    target_pos = min(target_pos, len(positives))
+    target_neg = min(target_neg, len(negatives))
+
+    picked = set(sort_by_hash(positives)[:target_pos] + sort_by_hash(negatives)[:target_neg])
+
+    if len(picked) < max_samples:
+        all_sorted = sort_by_hash(list(range(len(rows))))
+        for idx in all_sorted:
+            picked.add(idx)
+            if len(picked) >= max_samples:
+                break
+
+    return sorted(picked)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Train deterministic signature ML model with IRLS/Newton optimizer"
@@ -635,7 +814,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--model-version", required=True, help="Model version string")
     parser.add_argument("--model-out", required=True, help="Output model JSON")
     parser.add_argument("--metadata-out", required=True, help="Output metadata JSON")
-    parser.add_argument("--max-iter", type=int, default=60)
+    parser.add_argument("--resource-profile", default="auto", choices=["auto", "tiny", "modest", "balanced", "high"], help="Auto-tune training workload for detected hardware")
+    parser.add_argument("--max-samples", type=int, default=None, help="Hard cap for sampled training rows (0 disables cap)")
+    parser.add_argument("--cv-folds", type=int, default=5, help="Stratified k-fold count (minimum 5)")
+    parser.add_argument("--l2-grid-points", type=int, default=None, help="Auto L2 sweep size when --l2-grid is not provided")
+    parser.add_argument("--max-iter", type=int, default=None)
     parser.add_argument(
         "--learning-rate",
         type=float,
@@ -645,7 +828,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--l2", type=float, default=0.12)
     parser.add_argument("--l2-grid", default="")
     parser.add_argument("--min-precision", type=float, default=0.20)
-    parser.add_argument("--holdout-ratio", type=float, default=0.20)
+    parser.add_argument("--holdout-ratio", type=float, default=None)
     parser.add_argument("--min-step", type=float, default=1e-3)
     parser.add_argument("--tol", type=float, default=1e-4)
     parser.add_argument("--temperature-max-iter", type=int, default=30)
@@ -664,11 +847,27 @@ def main() -> int:
     if not features:
         raise SystemExit("feature schema has no features")
 
+    raw_row_count = len(rows)
     labels = [int(row.get("label", 0)) for row in rows]
+    raw_pos = sum(1 for label in labels if label == 1)
+    raw_neg = len(labels) - raw_pos
+    if raw_pos == 0 or raw_neg == 0:
+        raise SystemExit("dataset must contain both positive and negative labels")
+
+    training_plan = _build_training_plan(args)
+    sampled_indices = _deterministic_stratified_downsample(
+        rows,
+        labels,
+        training_plan["max_samples"],
+    )
+    if len(sampled_indices) != len(rows):
+        rows = [rows[idx] for idx in sampled_indices]
+        labels = [labels[idx] for idx in sampled_indices]
+
     pos_rows = [row for row, label in zip(rows, labels) if label == 1]
     neg_rows = [row for row, label in zip(rows, labels) if label == 0]
     if not pos_rows or not neg_rows:
-        raise SystemExit("dataset must contain both positive and negative labels")
+        raise SystemExit("stratified downsample collapsed class balance; adjust max_samples")
 
     feature_stats: dict[str, dict[str, float]] = {}
     feature_scales: dict[str, float] = {}
@@ -716,10 +915,14 @@ def main() -> int:
     }
     sample_weights = [class_weights[label] for label in labels]
 
-    holdout_ratio = _clamp(args.holdout_ratio, 0.05, 0.5)
+    holdout_ratio = _clamp(training_plan["holdout_ratio"], 0.05, 0.5)
     train_idx, holdout_idx = _deterministic_split(rows, labels, holdout_ratio)
 
-    l2_grid = _parse_l2_grid(args.l2_grid, args.l2)
+    l2_grid = (
+        _parse_l2_grid(args.l2_grid, args.l2)
+        if args.l2_grid
+        else _auto_l2_grid(args.l2, training_plan["l2_grid_points"])
+    )
     sweep_results: list[dict[str, Any]] = []
     best_key = (-1.0, -1.0, 1.0, 0.0)
     best_l2 = args.l2
@@ -736,7 +939,7 @@ def main() -> int:
             train_labels,
             train_weights,
             l2,
-            max(args.max_iter, 1),
+            training_plan["max_iter"],
             args.tol,
             args.learning_rate,
             args.min_step,
@@ -772,8 +975,8 @@ def main() -> int:
             best_bias = bias
             best_diag = diag
 
-    # 5-fold stratified cross-validation for regularization sweep
-    cv_folds = _stratified_kfold(rows, labels, 5)
+    # Stratified cross-validation for regularization sweep (k >= 5).
+    cv_folds = _stratified_kfold(rows, labels, training_plan["cv_folds"])
     cv_sweep_results: list[dict[str, Any]] = []
 
     if cv_folds:
@@ -784,8 +987,14 @@ def main() -> int:
                 fold_train_labels = [labels[idx] for idx in fold_train_idx]
                 fold_train_weights = [sample_weights[idx] for idx in fold_train_idx]
                 fold_weights, fold_bias, _ = _irls_train(
-                    fold_train_X, fold_train_labels, fold_train_weights,
-                    l2, max(args.max_iter, 1), args.tol, args.learning_rate, args.min_step,
+                    fold_train_X,
+                    fold_train_labels,
+                    fold_train_weights,
+                    l2,
+                    training_plan["max_iter"],
+                    args.tol,
+                    args.learning_rate,
+                    args.min_step,
                 )
                 fold_val_X = [scaled[idx] for idx in fold_val_idx]
                 fold_val_labels = [labels[idx] for idx in fold_val_idx]
@@ -817,7 +1026,7 @@ def main() -> int:
         labels,
         sample_weights,
         best_l2,
-        max(args.max_iter, 1),
+        training_plan["max_iter"],
         args.tol,
         args.learning_rate,
         args.min_step,
@@ -841,6 +1050,17 @@ def main() -> int:
     scale = 1.0 / temperature
     weights = [w * scale for w in weights]
     bias = bias * scale
+
+    # Conformal calibration: compute nonconformity scores on holdout set.
+    conformal_idx = holdout_idx if holdout_idx else list(range(len(rows)))
+    conformal_scores_raw: list[float] = []
+    for idx in conformal_idx:
+        logit = bias + sum(w * x for w, x in zip(weights, scaled[idx]))
+        pred_prob = _sigmoid(logit)
+        nonconformity = abs(pred_prob - labels[idx])
+        conformal_scores_raw.append(nonconformity)
+    calibration_scores = sorted(round(s, 8) for s in conformal_scores_raw)
+    calibration_alpha = 0.01
 
     # Final predictions (post-calibration).
     preds = [
@@ -887,10 +1107,13 @@ def main() -> int:
         "bias": round(bias, 6),
         "threshold": threshold,
         "training_samples": len(rows),
+        "sampled_from_rows": raw_row_count,
         "positive_samples": len(pos_rows),
         "negative_samples": len(neg_rows),
         "feature_stats": feature_stats,
         "weight_standard_errors": weight_se,
+        "calibration_scores": calibration_scores,
+        "calibration_alpha": calibration_alpha,
         "training_metrics": training_metrics,
         "training_diagnostics": {
             "optimizer": diag.get("optimizer"),
@@ -904,6 +1127,15 @@ def main() -> int:
             "cv_sweep": cv_sweep_results,
             "temperature": round(temperature, 6),
             "temperature_diagnostics": temp_diag,
+            "resource_profile": training_plan["resource_profile"],
+            "detected_cpu_count": training_plan["detected_cpu_count"],
+            "detected_memory_gib": training_plan["detected_memory_gib"],
+            "effective_max_iter": training_plan["max_iter"],
+            "effective_holdout_ratio": round(training_plan["holdout_ratio"], 6),
+            "effective_cv_folds": training_plan["cv_folds"],
+            "effective_l2_grid_points": training_plan["l2_grid_points"],
+            "effective_max_samples": training_plan["max_samples"],
+            "sampled_from_rows": raw_row_count,
         },
     }
 
@@ -929,11 +1161,20 @@ def main() -> int:
         "labels_report": str(args.labels_report),
         "labels_report_sha256": labels_report_sha,
         "training_samples": len(rows),
+        "sampled_from_rows": raw_row_count,
         "positive_samples": len(pos_rows),
         "negative_samples": len(neg_rows),
         "threshold": threshold,
         "optimizer": "irls_newton",
         "temperature": round(temperature, 6),
+        "resource_profile": training_plan["resource_profile"],
+        "detected_cpu_count": training_plan["detected_cpu_count"],
+        "detected_memory_gib": training_plan["detected_memory_gib"],
+        "effective_max_iter": training_plan["max_iter"],
+        "effective_holdout_ratio": round(training_plan["holdout_ratio"], 6),
+        "effective_cv_folds": training_plan["cv_folds"],
+        "effective_l2_grid_points": training_plan["l2_grid_points"],
+        "effective_max_samples": training_plan["max_samples"],
     }
 
     metadata_path = Path(args.metadata_out)
@@ -943,7 +1184,16 @@ def main() -> int:
     print("Signature ML model training snapshot:")
     print(f"- model version: {args.model_version}")
     print(f"- features: {len(features)}")
+    print(f"- resource profile: {training_plan['resource_profile']}")
+    print(
+        f"- detected hardware: cpu={training_plan['detected_cpu_count']}, memory_gib={training_plan['detected_memory_gib']:.2f}"
+    )
+    print(f"- effective max_iter: {training_plan['max_iter']}")
+    print(f"- effective cv folds: {training_plan['cv_folds']}")
+    print(f"- effective l2 grid points: {training_plan['l2_grid_points']}")
+    print(f"- effective max samples: {training_plan['max_samples']}")
     print(f"- training samples: {len(rows)}")
+    print(f"- sampled from rows: {raw_row_count}")
     print(f"- positive samples: {len(pos_rows)}")
     print(f"- negative samples: {len(neg_rows)}")
     print(f"- threshold: {threshold}")

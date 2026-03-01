@@ -135,4 +135,6 @@ pub struct DetectionSignals {
     pub exploit_indicator: bool,
     pub kernel_integrity: bool,
     pub tamper_indicator: bool,
+    pub c2_beaconing_detected: bool,
+    pub process_tree_anomaly: bool,
 }

@@ -1,5 +1,5 @@
 /// Number of features in the model's input vector.
-pub const FEATURE_COUNT: usize = 27;
+pub const FEATURE_COUNT: usize = 33;
 
 /// Feature names for interpretability / logging.
 pub const FEATURE_NAMES: [&str; FEATURE_COUNT] = [
@@ -32,4 +32,11 @@ pub const FEATURE_NAMES: [&str; FEATURE_COUNT] = [
     "z1_z2_interaction",      // z1_ioc_hit * z2_temporal_count
     "z1_z4_interaction",      // z1_ioc_hit * z4_killchain_count
     "anomaly_behavioral",     // z3_anomaly_high * multi_layer_count
+    // Process tree + beaconing features (Phase 1.3)
+    "tree_depth_norm",    // Process chain depth / 10.0
+    "tree_breadth_norm",  // Sibling count / 20.0
+    "child_entropy",      // Shannon entropy of child comm names
+    "spawn_rate_norm",    // Children spawned per minute / 10.0
+    "rare_parent_child",  // 1.0 if parent:child pair unseen in baseline
+    "c2_beacon_mi",       // Mutual information score for destination
 ];

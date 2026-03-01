@@ -350,8 +350,9 @@ mod tests {
                 exploit_indicator: false,
                 kernel_integrity: false,
                 tamper_indicator: false,
+                ..Default::default()
             };
-            let features = MlFeatures::extract(&event, &signals, 0, 0, 0, 0, 0);
+            let features = MlFeatures::extract(&event, &signals, 0, 0, 0, 0, 0, &Default::default());
             let result = engine.score(&features);
             if result.positive {
                 ml_benign_fp += 1;
@@ -378,9 +379,10 @@ mod tests {
                 exploit_indicator: false,
                 kernel_integrity: false,
                 tamper_indicator: false,
+                ..Default::default()
             };
             let sig_count = if i % 2 == 0 { 1 } else { 0 }; // string sig match
-            let features = MlFeatures::extract(&event, &signals, 0, 0, 0, sig_count, 0);
+            let features = MlFeatures::extract(&event, &signals, 0, 0, 0, sig_count, 0, &Default::default());
             let result = engine.score(&features);
             if result.positive {
                 ml_malicious_tp += 1;

@@ -33,24 +33,50 @@ impl AgentRuntime {
             parent_comm: event.parent_process.clone(),
         };
         self.baseline_store
-            .learn_event(process_key, event.event_class.as_str());
+            .learn_event(process_key.clone(), event.event_class.as_str());
+        self.dirty_baseline_keys
+            .insert(format!("{}:{}", process_key.comm, process_key.parent_comm));
 
         let now = now_unix.max(0) as u64;
         if let Some(transition) = self.baseline_store.check_transition_with_now(now) {
             match transition {
                 BaselineTransition::LearningComplete => {
-                    info!("baseline learning completed; enabling active mode");
+                    info!(
+                        agent_id = %self.config.agent_id,
+                        baseline_status = "active",
+                        "baseline learning completed; enabling active mode"
+                    );
                     if !matches!(self.config.mode, AgentMode::Degraded) {
                         self.runtime_mode = AgentMode::Active;
                     }
                 }
                 BaselineTransition::BecameStale => {
-                    warn!("baseline became stale; anomaly thresholds should be reviewed");
+                    self.metrics.baseline_stale_transition_total = self
+                        .metrics
+                        .baseline_stale_transition_total
+                        .saturating_add(1);
+                    warn!(
+                        agent_id = %self.config.agent_id,
+                        baseline_status = "stale",
+                        stale_transition_total = self.metrics.baseline_stale_transition_total,
+                        "baseline became stale; anomaly thresholds should be reviewed"
+                    );
                 }
             }
 
             if let Err(err) = self.baseline_store.save() {
                 warn!(error = %err, "failed persisting baseline transition state");
+            } else {
+                let stats = self.baseline_store.storage_stats();
+                info!(
+                    agent_id = %self.config.agent_id,
+                    baseline_status = ?self.baseline_store.status,
+                    snapshot_size_bytes = stats.snapshot_size_bytes,
+                    journal_size_bytes = stats.journal_size_bytes,
+                    compaction_count = stats.compaction_count,
+                    last_compaction_reclaimed_bytes = stats.last_compaction_reclaimed_bytes,
+                    "persisted baseline transition state"
+                );
             }
             self.last_baseline_save_unix = Some(now_unix);
         } else if interval_due(
@@ -61,6 +87,17 @@ impl AgentRuntime {
             self.last_baseline_save_unix = Some(now_unix);
             if let Err(err) = self.baseline_store.save() {
                 warn!(error = %err, "failed persisting baseline store snapshot");
+            } else {
+                let stats = self.baseline_store.storage_stats();
+                info!(
+                    agent_id = %self.config.agent_id,
+                    baseline_status = ?self.baseline_store.status,
+                    snapshot_size_bytes = stats.snapshot_size_bytes,
+                    journal_size_bytes = stats.journal_size_bytes,
+                    compaction_count = stats.compaction_count,
+                    last_compaction_reclaimed_bytes = stats.last_compaction_reclaimed_bytes,
+                    "persisted baseline store snapshot"
+                );
             }
         }
     }

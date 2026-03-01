@@ -8,6 +8,8 @@ Initial workspace scaffold for the first-party endpoint agent described in
 For deployment + E2E operations across `fe_eguard` and `eguard-agent`, see:
 
 - `docs/EGUARD_PLATFORM_GUIDE.md`
+- `docs/operations-guide.md`
+- `docs/ml-ops-operations-manual.md` (Baseline+ML rollout, canary, kill-switch, rollback, evidence runbook)
 
 ## Runtime configuration (current)
 

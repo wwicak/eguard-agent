@@ -71,11 +71,8 @@ use detection_event::{
     confidence_label, confidence_to_severity, map_event_class, to_detection_event,
 };
 
-#[cfg(test)]
 #[allow(unused_imports)]
-use baseline::apply_fleet_baseline_seeds;
-#[allow(unused_imports)]
-use baseline::{load_baseline_store, seed_anomaly_baselines};
+use baseline::{apply_fleet_baseline_seeds, load_baseline_store, seed_anomaly_baselines};
 
 #[cfg(test)]
 #[allow(unused_imports)]

@@ -3,6 +3,16 @@ use crate::types::{DetectionSignals, EventClass, TelemetryEvent};
 
 use super::constants::FEATURE_COUNT;
 
+/// Additional context from external trackers for ML feature extraction.
+///
+/// Populated by the detection engine from behavioral/beaconing trackers.
+/// Fields default to zero (safe — contributes nothing to ML score).
+#[derive(Debug, Clone, Default)]
+pub struct MlExtraContext {
+    /// Mutual information score for C2 beaconing detection [0, 1].
+    pub beacon_mi_score: f64,
+}
+
 /// Features extracted from a single event + detection signals.
 #[derive(Debug, Clone)]
 pub struct MlFeatures {
@@ -19,6 +29,7 @@ impl MlFeatures {
         yara_hit_count: usize,
         string_sig_count: usize,
         behavioral_alarm_count: usize,
+        extra: &MlExtraContext,
     ) -> Self {
         let mut values = [0.0f64; FEATURE_COUNT];
 
@@ -116,6 +127,40 @@ impl MlFeatures {
 
         // Index 26: anomaly_behavioral — anomaly with multi-signal
         values[26] = values[2] * values[13];
+
+        // ── Process tree + beaconing features (Phase 1.3) ───────────
+
+        // Index 27: tree_depth_norm — process chain depth / 10.0
+        // Heuristic from available pid/ppid: ppid == 0 or 1 → shallow (depth 1),
+        // otherwise at least depth 2. Full tree tracking improves this later.
+        values[27] = if event.ppid <= 1 {
+            0.1 // depth ~1
+        } else {
+            0.2 // at least depth 2
+        };
+
+        // Index 28: tree_breadth_norm — sibling count / 20.0
+        // Not directly available from TelemetryEvent; defaults to 0.0.
+        // Populated via external process tree tracker in future iterations.
+        values[28] = 0.0;
+
+        // Index 29: child_entropy — Shannon entropy of child comm names
+        // Not available per-event; defaults to 0.0.
+        values[29] = 0.0;
+
+        // Index 30: spawn_rate_norm — children spawned per minute / 10.0
+        // Not available per-event; defaults to 0.0.
+        values[30] = 0.0;
+
+        // Index 31: rare_parent_child — 1.0 if parent:child pair is anomalous
+        values[31] = if signals.process_tree_anomaly {
+            1.0
+        } else {
+            0.0
+        };
+
+        // Index 32: c2_beacon_mi — mutual information score for destination
+        values[32] = extra.beacon_mi_score.min(1.0);
 
         Self { values }
     }

@@ -8,8 +8,9 @@ use serde_json::json;
 use tracing::warn;
 
 use crate::types::{
-    CommandEnvelope, ComplianceEnvelope, EnrollmentEnvelope, EventEnvelope, FleetBaselineEnvelope,
-    InventoryEnvelope, PolicyEnvelope, ResponseEnvelope, ServerState, ThreatIntelVersionEnvelope,
+    BaselineProfileEnvelope, CommandEnvelope, ComplianceEnvelope, EnrollmentEnvelope,
+    EventEnvelope, FleetBaselineEnvelope, InventoryEnvelope, PolicyEnvelope, ResponseEnvelope,
+    ServerState, ThreatIntelVersionEnvelope,
 };
 
 use super::Client;
@@ -25,6 +26,7 @@ const PATH_COMMAND_PENDING: &str = "/api/v1/endpoint/command/pending";
 const PATH_COMMAND_ACK: &str = "/api/v1/endpoint/command/ack";
 const PATH_THREAT_INTEL_VERSION: &str = "/api/v1/endpoint/threat-intel/version";
 const PATH_BASELINE_FLEET: &str = "/api/v1/endpoint/baseline/fleet";
+const PATH_BASELINE_BATCH: &str = "/api/v1/endpoint/baseline/batch";
 const PATH_POLICY: &str = "/api/v1/endpoint/policy";
 const PATH_SERVER_STATE: &str = "/api/v1/endpoint/state";
 const DEFAULT_MAX_BUNDLE_DOWNLOAD_BYTES: usize = 64 * 1024 * 1024;
@@ -48,6 +50,12 @@ struct StateResponse {
 struct FleetBaselineResponse {
     #[serde(default)]
     fleet_baselines: Vec<FleetBaselineEnvelope>,
+}
+
+#[derive(Debug, Serialize)]
+struct BaselineBatchRequest<'a> {
+    agent_id: &'a str,
+    baselines: &'a [BaselineProfileEnvelope],
 }
 
 impl Client {
@@ -115,6 +123,29 @@ impl Client {
     pub(super) async fn send_inventory_http(&self, inventory: &InventoryEnvelope) -> Result<()> {
         self.post_json_with_retry("inventory_http", PATH_INVENTORY, inventory, "inventory")
             .await
+    }
+
+    pub(super) async fn send_baseline_profiles_http(
+        &self,
+        agent_id: &str,
+        profiles: &[BaselineProfileEnvelope],
+    ) -> Result<()> {
+        if profiles.is_empty() {
+            return Ok(());
+        }
+
+        let payload = BaselineBatchRequest {
+            agent_id,
+            baselines: profiles,
+        };
+
+        self.post_json_with_retry(
+            "baseline_batch_http",
+            PATH_BASELINE_BATCH,
+            &payload,
+            "baseline batch",
+        )
+        .await
     }
 
     pub(super) async fn send_response_http(&self, response: &ResponseEnvelope) -> Result<()> {

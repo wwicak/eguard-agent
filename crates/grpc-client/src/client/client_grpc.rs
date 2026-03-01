@@ -8,8 +8,8 @@ use tracing::warn;
 use crate::pb;
 use crate::types::{
     CertificatePolicyEnvelope, CommandEnvelope, ComplianceEnvelope, EnrollmentEnvelope,
-    EnrollmentResultEnvelope, EventEnvelope, InventoryEnvelope, PolicyEnvelope, ResponseEnvelope,
-    ServerState, ThreatIntelVersionEnvelope,
+    EnrollmentResultEnvelope, EventEnvelope, FleetBaselineEnvelope, InventoryEnvelope,
+    PolicyEnvelope, ResponseEnvelope, ServerState, ThreatIntelVersionEnvelope,
 };
 
 use super::{
@@ -110,7 +110,7 @@ impl Client {
     ) -> Result<()> {
         self.with_retry("heartbeat_grpc", || async {
             let mut client = self.agent_control_client().await?;
-            client
+            let response = client
                 .heartbeat(pb::HeartbeatRequest {
                     agent_id: agent_id.to_string(),
                     timestamp: now_unix(),
@@ -131,7 +131,17 @@ impl Client {
                     sent_at_unix: now_unix(),
                 })
                 .await
-                .context("heartbeat RPC failed")?;
+                .context("heartbeat RPC failed")?
+                .into_inner();
+
+            if let Some(fleet_report) = response.fleet_baseline {
+                let fleet_rows = fleet_baselines_from_report(&fleet_report);
+                if !fleet_rows.is_empty() {
+                    if let Ok(mut guard) = self.grpc_last_fleet_baselines.lock() {
+                        *guard = fleet_rows;
+                    }
+                }
+            }
             Ok(())
         })
         .await
@@ -473,6 +483,42 @@ impl Client {
         Ok(pb::agent_service_client::AgentServiceClient::new(channel)
             .max_decoding_message_size(MAX_GRPC_RECV_MSG_SIZE_BYTES))
     }
+}
+
+fn fleet_baselines_from_report(report: &pb::BaselineReport) -> Vec<FleetBaselineEnvelope> {
+    let mut rows = Vec::new();
+    for baseline in &report.baselines {
+        let process_key = baseline.process_key.trim().to_string();
+        if process_key.is_empty() {
+            continue;
+        }
+
+        let mut total = 0.0f64;
+        let mut distribution = std::collections::HashMap::new();
+        for (event_name, count) in &baseline.event_distribution {
+            if *count <= 0 {
+                continue;
+            }
+            let count_f = *count as f64;
+            total += count_f;
+            distribution.insert(event_name.clone(), count_f);
+        }
+        if total <= f64::EPSILON || distribution.is_empty() {
+            continue;
+        }
+        for value in distribution.values_mut() {
+            *value /= total;
+        }
+
+        rows.push(FleetBaselineEnvelope {
+            process_key,
+            median_distribution: distribution,
+            agent_count: 0,
+            stddev_kl: 0.0,
+            source: "grpc_heartbeat".to_string(),
+        });
+    }
+    rows
 }
 
 fn map_threat_intel_response(res: pb::ThreatIntelVersion) -> Option<ThreatIntelVersionEnvelope> {

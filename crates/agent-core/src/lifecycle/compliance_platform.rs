@@ -4,10 +4,10 @@
 //! and `platform-macos`) into the platform-agnostic `SystemSnapshot` used
 //! by the compliance evaluation engine.
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
-use std::collections::HashSet;
 #[cfg(target_os = "windows")]
 use platform_windows::inventory::hardware::HardwareInfo;
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+use std::collections::HashSet;
 
 use anyhow::Result;
 use compliance::SystemSnapshot;

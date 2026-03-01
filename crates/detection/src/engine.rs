@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::fmt;
 use std::path::Path;
 
+use crate::beaconing::BeaconingTracker;
 use crate::behavioral::{BehavioralAlarm, BehavioralEngine};
 use crate::exploit::detect_exploit_indicators;
 use crate::kernel_integrity::detect_kernel_integrity_indicators;
@@ -9,10 +10,10 @@ use crate::layer1::{IocLayer1, Layer1EventHit, Layer1Result};
 use crate::layer2::TemporalEngine;
 use crate::layer3::{AnomalyDecision, AnomalyEngine};
 use crate::layer4::Layer4Engine;
-use crate::layer5::{MlEngine, MlFeatures, MlScore};
+use crate::layer5::{MlEngine, MlExtraContext, MlFeatures, MlScore};
 use crate::policy::confidence_policy;
 use crate::tamper::detect_tamper_indicators;
-use crate::types::{Confidence, DetectionSignals, TelemetryEvent};
+use crate::types::{Confidence, DetectionSignals, EventClass, TelemetryEvent};
 use crate::yara_engine::{Result as YaraResult, YaraEngine, YaraHit};
 use crate::SigmaCompileError;
 
@@ -119,6 +120,7 @@ pub struct DetectionEngine {
     pub layer4: Layer4Engine,
     pub layer5: MlEngine,
     pub behavioral: BehavioralEngine,
+    pub beaconing: BeaconingTracker,
     pub yara: YaraEngine,
     pub allowlist: DetectionAllowlist,
 }
@@ -137,6 +139,7 @@ impl DetectionEngine {
             layer4,
             layer5: MlEngine::new(),
             behavioral: BehavioralEngine::new(),
+            beaconing: BeaconingTracker::new(),
             yara: YaraEngine::new(),
             allowlist: DetectionAllowlist::new(),
         }
@@ -156,6 +159,7 @@ impl DetectionEngine {
             layer4,
             layer5: MlEngine::new(),
             behavioral: BehavioralEngine::new(),
+            beaconing: BeaconingTracker::new(),
             yara,
             allowlist: DetectionAllowlist::new(),
         }
@@ -169,6 +173,7 @@ impl DetectionEngine {
             layer4: Layer4Engine::with_default_templates(),
             layer5: MlEngine::new(),
             behavioral: BehavioralEngine::new(),
+            beaconing: BeaconingTracker::new(),
             yara: YaraEngine::new(),
             allowlist: DetectionAllowlist::new(),
         }
@@ -283,6 +288,30 @@ impl DetectionEngine {
         let behavioral_med = behavioral_alarms
             .iter()
             .any(|a| a.gated && a.magnitude > 1.0);
+
+        // ── Beaconing tracker: MI-based C2 detection ────────────
+        let (c2_beaconing_detected, beacon_mi_score) = if matches!(
+            event.event_class,
+            EventClass::NetworkConnect | EventClass::DnsQuery
+        ) {
+            let dst_key = format!(
+                "{}:{}",
+                event.dst_ip.as_deref().unwrap_or(""),
+                event.dst_port.unwrap_or(0)
+            );
+            let result =
+                self.beaconing
+                    .observe(&dst_key, event.ts_unix, event.event_size.unwrap_or(0));
+            (result.detected, result.mi_score)
+        } else {
+            (false, 0.0)
+        };
+
+        // ── Process tree anomaly: derive from behavioral tree_branching ──
+        let process_tree_anomaly = behavioral_alarms
+            .iter()
+            .any(|a| a.gated && a.dimension == "tree_branching");
+
         let exploit_indicators = detect_exploit_indicators(event);
         let kernel_integrity_indicators = detect_kernel_integrity_indicators(event);
         let tamper_indicators = detect_tamper_indicators(event);
@@ -301,10 +330,13 @@ impl DetectionEngine {
             exploit_indicator: !exploit_indicators.is_empty(),
             kernel_integrity: !kernel_integrity_indicators.is_empty(),
             tamper_indicator: !tamper_indicators.is_empty(),
+            c2_beaconing_detected,
+            process_tree_anomaly,
         };
 
         // ── Layer 5: ML meta-scoring ────────────────────────────
         // Combines all signals + event metadata + information theory
+        let extra = MlExtraContext { beacon_mi_score };
         let features = MlFeatures::extract(
             event,
             &signals,
@@ -313,6 +345,7 @@ impl DetectionEngine {
             yara_hits.len(),
             layer1.matched_signatures.len(),
             behavioral_alarms.len(),
+            &extra,
         );
         let ml_result = self.layer5.score(&features);
 

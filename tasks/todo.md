@@ -1,3 +1,33 @@
+# ML Pipeline Upgrade — Outshine CrowdStrike (2026-03-01)
+
+## Plan
+- [x] 1) Upgrade `docs/ml-ops-operations-manual.md` to v2.0 (sections 3.4-3.7, 5.3, enhanced section 9)
+- [x] 2) Upgrade `docs/baseline-ml-production-acceptance.md` to v2.0 (AC-BML-080 through AC-BML-087)
+- [x] 3) Wire conformal calibrator into L5 engine (calibration_scores in model, p-value in MlScore)
+- [x] 4) Wire CUSUM drift detection per process key in anomaly engine
+- [x] 5) Wire mutual information beaconing detection (per-destination MI tracker)
+- [x] 6) Add 6 new L5 features (27-32): tree_depth, tree_breadth, child_entropy, spawn_rate, rare_parent_child, c2_beacon_mi
+- [x] 7) Add c2_beaconing_detected + process_tree_anomaly to DetectionSignals
+- [x] 8) Add Bayesian Dirichlet prior to fleet seed merge in baseline crate
+- [x] 9) Implement trimmed median aggregation in Go server
+- [x] 10) Implement JS-divergence fleet health monitoring in Go server
+- [x] 11) Implement ADWIN drift monitor in Go server (new baseline_drift.go)
+- [x] 12) Add conformal calibration export to Python training pipeline
+- [x] 13) Extend Python feature schema from 27 to 33 features
+- [x] 14) Add real feedback integration to training corpus builder
+- [x] 15) Create A/B testing framework (signature_ml_ab_test.py)
+
+## Verification
+- `cargo check -p detection` ✅
+- `cargo check -p baseline` ✅
+- `cargo test -p detection` ✅ (186 passed)
+- `cargo test -p baseline` ✅ (24 passed, incl. 4 new Bayesian tests)
+- `go build ./...` ✅ (Go server compiles)
+- `go test ./agent/server/ -run "TestBaseline|TestAdwin|TestJS|TestTrimmed"` ✅ (16 passed)
+- Python syntax validation ✅ (all 4 scripts parse correctly)
+
+---
+
 # Linux RAM type enrichment (DDR4/DDR5 visibility)
 
 ## Plan
@@ -399,4 +429,356 @@
   - NAC page direct URL normalized to `/admin#/endpoint-nac`.
   - config section clarifies unsupported enforcer mode values are forced to `local`.
   - troubleshooting expected logs updated to include forced-local warning + local enable message.
+
+---
+
+# Baseline+ML production wiring acceptance criteria draft
+
+## Plan
+- [x] 1) Define production-ready acceptance criteria for baseline loop wiring (agent learn → upload → fleet aggregate → seed consume).
+- [x] 2) Add explicit acceptance criteria for storage strategy (agent local snapshot/journal + server fleet retention/compaction).
+- [x] 3) Publish criteria in a dedicated doc for engineering sign-off.
+
+## Review
+- Added `/home/dimas/eguard-agent/docs/baseline-ml-production-acceptance.md` with measurable AC IDs covering:
+  - end-to-end baseline data flow,
+  - local-only safe response behavior during learning,
+  - fleet seeding and shard application,
+  - storage efficiency and retention,
+  - rollout safety (canary/kill-switch),
+  - observability and regression gates.
+
+---
+
+# Baseline+ML production wiring implementation (including workflow bundle ingestion)
+
+## Plan
+- [x] 1) Wire agent baseline upload path (batched) and schedule it in control-plane pipeline.
+- [x] 2) Wire agent fleet-baseline fetch/apply path in runtime learning loop and re-seed anomaly shards after apply.
+- [x] 3) Extend server baseline API for efficient batch ingest and workflow bundle fleet-baseline import.
+- [x] 4) Align auth scopes so agent token can post baselines and fetch fleet baselines.
+- [x] 5) Persist baseline entropy/expiry fields in DB path and validate via tests.
+- [x] 6) Run verification tests across Rust + Go.
+
+## Review
+- Agent/runtime wiring (`/home/dimas/eguard-agent`):
+  - Added control-plane tasks: `BaselineUpload`, `FleetBaselineFetch`.
+  - Added periodic upload/fetch intervals + batch size constants.
+  - Baseline dirty-key tracking now marks per-process keys during `observe_baseline()` and uploads changed profiles in bounded batches.
+  - Added client API: `send_baseline_profiles()` and HTTP path `/api/v1/endpoint/baseline/batch`.
+  - Fleet baseline seeds are now applied in runtime (not test-only), persisted, and pushed to anomaly shards.
+- Server wiring (`/home/dimas/fe_eguard`):
+  - Added endpoint: `POST /api/v1/endpoint/baseline/batch` (agent batched baseline ingest).
+  - Added endpoint: `POST /api/v1/endpoint/baseline/fleet/import` (workflow/database bundle ingestion).
+  - Added normalization/validation for baseline distributions and robust upsert flow.
+  - Updated auth scope classification:
+    - agent POST allowed for `/api/v1/endpoint/baseline` and `/api/v1/endpoint/baseline/batch`.
+    - agent/admin GET allowed for `/api/v1/endpoint/baseline/fleet`.
+  - Updated DB persistence to store/load `entropy_threshold` and `expires_at` for endpoint baselines.
+- Acceptance criteria/doc update:
+  - Added workflow ingestion criterion `AC-BML-024` to `/home/dimas/eguard-agent/docs/baseline-ml-production-acceptance.md`.
+- Verification:
+  - `cd /home/dimas/fe_eguard/go/agent/server && go test ./...` ✅
+  - `cd /home/dimas/fe_eguard/go/cmd/eg-agent-server && go test ./...` ✅
+  - `cd /home/dimas/eguard-agent && cargo test -p grpc-client` ✅
+  - `cd /home/dimas/eguard-agent && cargo test -p agent-core` ✅
+
+---
+
+# Baseline+ML acceptance completion pass (no-stub storage + workflow bundle path)
+
+## Plan
+- [x] 1) Implement real baseline journaled storage (snapshot + append journal + replay/compaction) with crash-safe tail handling.
+- [x] 2) Make runtime baseline windows config-driven and enforce bounded baseline profile cardinality.
+- [x] 3) Enforce payload-size bounded baseline upload and strengthen seed merge policy (weak-local only, protect mature-local).
+- [x] 4) Add runtime kill-switch flags for baseline upload/fleet-seed via policy JSON fields.
+- [x] 5) Remove CI placeholder aggregation script and emit real workflow fleet baseline bundle artifact.
+- [x] 6) Persist fleet baseline provenance (`source`, `source_version`) with backward-compatible DB fallback paths.
+- [x] 7) Re-run full verification suite.
+
+## Review
+- Agent storage/runtime (`/home/dimas/eguard-agent`):
+  - `crates/baseline/src/lib.rs`
+    - Added append journal (`*.journal`) + metadata sidecar (`*.journal.meta`).
+    - Added checksum-validated replay and corrupted-tail truncation behavior (ignore invalid tail line, continue from last valid seq).
+    - Added journal compaction trigger (age/size based).
+    - Added profile cap + LRU eviction.
+    - Added weak-local fleet seed strengthening while protecting mature local profiles from overwrite.
+  - `crates/agent-core/src/lifecycle/runtime.rs`
+    - Baseline windows now configured from agent config (`baseline_learning_period_days`, `baseline_stale_after_days`).
+    - Added max-profile runtime limit from env (`EGUARD_BASELINE_MAX_PROFILES`).
+    - Added runtime flags: `baseline_upload_enabled`, `fleet_seed_enabled`.
+  - `crates/agent-core/src/lifecycle/control_plane_pipeline.rs`
+    - Upload/fetch scheduling now respects runtime flags.
+    - Added policy-driven live toggles from policy JSON:
+      - `baseline_upload_enabled`
+      - `fleet_seed_enabled`
+    - Added payload cap for upload (`BASELINE_UPLOAD_MAX_BYTES`), with profile truncation/chunking behavior.
+  - Added/updated tests:
+    - `crates/baseline/src/tests.rs`
+    - `crates/baseline/src/tests_seed.rs`
+    - `crates/agent-core/src/lifecycle/tests_baseline_seed_policy.rs`
+- Workflow path (`/home/dimas/eguard-agent`):
+  - Replaced placeholder script with working median aggregation:
+    - `scripts/run_baseline_aggregation_ci.sh`
+  - Added fixture:
+    - `scripts/fixtures/baseline-ci-input.json`
+  - Artifact now includes:
+    - `artifacts/baseline-aggregation/fleet-baseline-bundle.json`
+    - `artifacts/baseline-aggregation/summary.txt`
+- Server provenance + compatibility (`/home/dimas/fe_eguard`):
+  - `go/agent/server/types.go`: added `source_version` on `FleetBaselineRecord`.
+  - `go/agent/server/baseline.go`:
+    - Fleet import now supports `source`, `bundle_version`, `bundle_sha256` provenance mapping.
+    - Aggregation median output normalized to sum ~1.0.
+  - `go/agent/server/persistence_endpoint_data.go`:
+    - Save/load now includes `source` + `source_version`.
+    - Added legacy-schema fallback for DBs missing new columns (Unknown column fallback).
+  - `db/eg-schema-15.0.sql`:
+    - Added `fleet_baseline.source`, `fleet_baseline.source_version`, and source index.
+  - `lib/eg/dal/fleet_baseline.pm` + `lib/eg/egcron/task/baseline_aggregation.pm`:
+    - Added source/source_version field awareness and write path.
+    - Added stale endpoint baseline pruning in aggregation cycle.
+- Acceptance doc update:
+  - `docs/baseline-ml-production-acceptance.md` bumped to v1.1 with implementation status and verification evidence.
+- Verification:
+  - `cd /home/dimas/eguard-agent && cargo test -p baseline` ✅
+  - `cd /home/dimas/eguard-agent && cargo test -p grpc-client` ✅
+  - `cd /home/dimas/eguard-agent && cargo test -p agent-core` ✅
+  - `cd /home/dimas/fe_eguard/go/agent/server && go test ./...` ✅
+  - `cd /home/dimas/fe_eguard/go/cmd/eg-agent-server && go test ./...` ✅
+  - `cd /home/dimas/eguard-agent && ./scripts/run_baseline_aggregation_ci.sh` ✅
+- Follow-up completion pass (same acceptance scope):
+  - Added runtime baseline observability counters (uploaded rows, seeded rows, payload rejects, stale transitions).
+  - Added `EGUARD_BASELINE_UPLOAD_MAX_BYTES` override + deterministic oversized payload reject test.
+  - Added gRPC heartbeat fleet-baseline response wiring (removed `FleetBaseline: nil` stub path when fleet data exists).
+  - Added end-to-end server test for upload→aggregate→fleet-fetch and expanded GRPC integration assertion for non-empty fleet baseline payload.
+
+---
+
+# ML optimization program (goal: best-in-class SOC performance)
+
+## Plan
+- [ ] 1) Define measurable head-to-head targets in our context (precision/recall, PR-AUC, FPR/day, MTTD, explainability quality) instead of vendor-name claims.
+- [ ] 2) Build an offline benchmark harness from replay corpora + adversarial simulations and establish current baseline metrics.
+- [ ] 3) Improve model pipeline in three tracks: feature quality, calibration/thresholding, and ensemble fusion robustness.
+- [ ] 4) Add SOC explainability outputs for every ML alert (top features, process chain, ATT&CK context, baseline delta reason, confidence band).
+- [ ] 5) Add safe rollout controls (shadow mode, 1/5/20/100 canary, rollback/kill switch) and automated regression gates.
+- [ ] 6) Validate on lab endpoints + production-like replay, then document evidence in `docs/baseline-ml-production-acceptance.md` and `docs/operations-guide.md`.
+
+## Check-in
+- Plan written. Awaiting approval before implementation per workflow rule.
+
+---
+
+# Baseline+ML completion pass (grpc fleet cache + shard bulk apply + E2E loop test)
+
+## Plan
+- [x] 1) Remove HTTP-only dependency for fleet seed fetch in gRPC mode by caching fleet baselines from heartbeat responses.
+- [x] 2) Optimize L3 seed propagation by applying anomaly baselines to shards in bulk instead of per-key RPC loops.
+- [x] 3) Strengthen agent baseline persistence observability with compaction-aware size/reclaim stats in logs.
+- [x] 4) Add end-to-end test for learn/upload/fetch/seed path in agent-core lifecycle tests.
+- [x] 5) Re-verify Rust/Go test suites.
+
+## Review
+- Updated `crates/grpc-client`:
+  - gRPC heartbeat now caches `fleet_baseline` rows in client state.
+  - `fetch_fleet_baselines()` in gRPC mode now returns cached heartbeat fleet rows.
+  - Added test: `fetch_fleet_baselines_grpc_uses_cached_heartbeat_fleet_report`.
+- Updated `crates/agent-core`:
+  - `SharedDetectionState` now supports `set_anomaly_baselines_bulk` for atomic shard fanout in one command per shard.
+  - `seed_anomaly_baselines()` now uses bulk apply path.
+  - `BaselineStore` adds storage stats (`snapshot/journal size`, `compaction_count`, `last_compaction_reclaimed_bytes`).
+  - Runtime baseline save logs now emit compaction-aware structured stats.
+  - Added integration-style lifecycle test: `baseline_e2e_upload_fetch_seed_flow_works`.
+- Updated acceptance doc:
+  - `docs/baseline-ml-production-acceptance.md` bumped to v1.3 with grpc-cache + e2e evidence notes.
+- Verification:
+  - `cd /home/dimas/eguard-agent && cargo test -p baseline` ✅
+  - `cd /home/dimas/eguard-agent && cargo test -p grpc-client` ✅
+  - `cd /home/dimas/eguard-agent && cargo test -p agent-core` ✅
+  - `cd /home/dimas/fe_eguard/go/agent/server && go test ./...` ✅
+  - `cd /home/dimas/fe_eguard/go/cmd/eg-agent-server && go test ./...` ✅
+
+---
+
+# Baseline+ML rollout hardening pass (canary gates + shard bulk + persistence observability)
+
+## Plan
+- [x] 1) Add canary rollout gates for upload/fleet-seed paths (env + policy overrides).
+- [x] 2) Remove per-key shard fanout overhead by applying anomaly baselines in bulk.
+- [x] 3) Add baseline compaction-aware persistence stats and structured logs.
+- [x] 4) Add agent-core end-to-end + canary-disable test coverage.
+- [x] 5) Re-run baseline/grpc-client/agent-core/server tests.
+
+## Review
+- `crates/agent-core/src/lifecycle/runtime.rs`
+  - Added runtime canary config fields:
+    - `baseline_upload_canary_percent`
+    - `fleet_seed_canary_percent`
+  - Added env parsing:
+    - `EGUARD_BASELINE_UPLOAD_CANARY_PERCENT`
+    - `EGUARD_FLEET_SEED_CANARY_PERCENT`
+- `crates/agent-core/src/lifecycle/control_plane_pipeline.rs`
+  - Added deterministic agent-id bucket rollout helper for canary gating.
+  - Upload/fetch due checks now enforce canary percent gates.
+  - Policy JSON supports live canary updates:
+    - `baseline_upload_canary_percent`
+    - `fleet_seed_canary_percent`
+- `crates/agent-core/src/detection_state.rs` + `crates/agent-core/src/lifecycle/baseline.rs`
+  - Added `set_anomaly_baselines_bulk()` and switched baseline seeding to bulk shard apply.
+- `crates/baseline/src/lib.rs` + `crates/agent-core/src/lifecycle/response_actions.rs`
+  - Added `BaselineStorageStats` (snapshot/journal sizes, compaction_count, reclaimed bytes).
+  - Baseline persistence logs now include compaction-aware stats.
+- `crates/agent-core/src/lifecycle/tests_baseline_seed_policy.rs`
+  - Added:
+    - `baseline_upload_canary_zero_disables_upload_path`
+    - `fleet_seed_canary_zero_disables_fetch_path`
+    - `baseline_e2e_upload_fetch_seed_flow_works`
+- `docs/operations-guide.md`
+  - Added env + policy docs for canary rollout fields.
+- `docs/baseline-ml-production-acceptance.md`
+  - bumped to v1.4 and updated implementation/validation notes.
+- Verification:
+  - `cd /home/dimas/eguard-agent && cargo test -p baseline` ✅
+  - `cd /home/dimas/eguard-agent && cargo test -p grpc-client` ✅
+  - `cd /home/dimas/eguard-agent && cargo test -p agent-core` ✅
+  - `cd /home/dimas/fe_eguard/go/agent/server && go test ./...` ✅
+  - `cd /home/dimas/fe_eguard/go/cmd/eg-agent-server && go test ./...` ✅
+
+---
+
+# Lab production-readiness validation (server + linux agent + windows)
+
+## Plan
+- [x] 1) Build latest artifacts locally (`eg-agent-server` binary, frontend dist, linux `eguard-agent` binary).
+- [x] 2) Deploy to eGuard server VM (`103.49.238.102`) with backups and service restart.
+- [x] 3) Deploy linux agent binary to agent VM (`103.183.74.3`) and restart service.
+- [x] 4) Execute baseline loop simulation (high-cardinality process activity -> upload -> aggregate -> fleet seed consume) and collect log/DB evidence.
+- [x] 5) Validate MDM/EDR operator flows in GUI via agent-browser (human-like checks + screenshots).
+- [x] 6) Run cross-host smoke checks (linux + windows endpoint visibility/heartbeat) and summarize confidence gaps.
+
+## Review
+- Build/deploy:
+  - Built:
+    - `/tmp/eg-agent-server.new`
+    - `/tmp/egapp-dist.tgz`
+    - `/home/dimas/eguard-agent/target/release/agent-core`
+  - Deployed to server:
+    - binary: `/usr/local/eg/sbin/eg-agent-server` (sha256 matches local build)
+    - frontend: `/usr/local/eg/html/egappserver/root/dist` (`last-modified: 2026-02-28 14:44:45 GMT`)
+    - services: `eguard-agent-server` + `eguard-api-frontend` active
+  - Deployed to linux agent:
+    - binary: `/usr/bin/eguard-agent` (sha256 matches local build)
+    - service: `eguard-agent` active
+  - Follow-up production parity fix:
+    - rebuilt linux agent with `--features platform-linux/ebpf-libbpf` after validation uncovered `feature 'ebpf-libbpf' is disabled` warning.
+    - post-redeploy logs confirm probes attached (`objects=9 attached=9`) and runtime eBPF initialization success.
+
+- Baseline production-loop validation evidence:
+  - Upload path observed in live agent logs:
+    - `uploaded baseline profile batch ...`
+  - Server ingest + aggregation live-run:
+    - POST `/api/v1/endpoint/baseline/batch` for 3 synthetic agents
+    - POST `/api/v1/endpoint/baseline/aggregate` => `aggregated: 2`
+    - GET `/api/v1/endpoint/baseline/fleet?limit=20` => 2 `fleet_aggregated` rows
+  - gRPC fleet-seed consume validated with canary policy flip:
+    - live policy update log: `updated fleet-seed canary percent from policy fleet_seed_canary_percent=100`
+    - live seed-apply log: `applied fleet baseline seed profiles ... seeded_profiles=1`
+  - DB evidence:
+    - `fleet_baseline` rows present (`python3:bash`, `powershell.exe:services.exe`)
+    - seeded key uploaded back into endpoint baseline rows for `agent-31bbb93f38b4`
+
+- GUI/operator validation (agent-browser, human-like):
+  - Inventory page: `/admin#/endpoint-inventory`
+    - screenshot: `/tmp/inventory-prodready-20260228.png`
+    - body dump confirms latest windows entries now `Windows Server 2019 Standard 1809` (legacy `Windows (AMD64)` remains only in historical rows).
+  - NAC page: `/admin#/endpoint-nac`
+    - isolate/status screenshot: `/tmp/nac-isolated-prodready-20260228.png`
+    - allow/status screenshot: `/tmp/nac-allowed-prodready-20260228.png`
+    - body dump confirms `NAC Status: ✅ ALLOWED`
+  - Audit page: `/admin#/endpoint-audit`
+    - inline row expansion validated (`▶` -> `▼`)
+    - screenshot: `/tmp/audit-inline-prodready-20260228.png`
+  - Whitelist page smoke:
+    - screenshot: `/tmp/whitelist-prodready-20260228.png`
+
+- Cross-host smoke:
+  - Linux agent inventory row current and healthy (`agent-31bbb93f38b4`, `eg-agent`).
+  - Windows endpoint current in inventory (`agent-4412`, `Windows Server 2019 Standard 1809`).
+  - Windows service health checked via SSH/PowerShell (`eGuardAgent` running) and telemetry send lines observed in `C:\ProgramData\eGuard\logs\agent.log`.
+
+- Cleanup after canary validation:
+  - Linux override returned to original skip-learning setting (`EGUARD_BASELINE_SKIP_LEARNING=1`).
+  - temporary fleet canary env override removed from service override file.
+  - agent policy assignment restored to `default` for `agent-31bbb93f38b4`.
+
+- Remaining production-readiness gaps observed in lab (non-baseline wiring):
+  - Linux agent logs still report threat-intel bundle signature/count mismatch on existing staged bundle (`/var/lib/eguard-agent/rules-staging/2026.02.19.1131.bundle.tar.zst`).
+  - Linux agent runs without mTLS files in this lab (`/etc/eguard-agent/tls/agent.crt` missing), so transport is currently non-mTLS.
+
+---
+
+# ML Ops operator manual authoring (master guide)
+
+## Plan
+- [x] 1) Consolidate implemented ML+baseline capabilities and operator controls into one dedicated manual.
+- [x] 2) Write end-to-end runbook sections: deployment, canary, kill-switch, validation, rollback, troubleshooting, and evidence queries.
+- [x] 3) Add AC-BML-oriented operational checklist + production readiness criteria for go-live signoff.
+- [x] 4) Link the new manual from docs index for discoverability.
+
+## Review
+- Added new operator manual:
+  - `docs/ml-ops-operations-manual.md`
+- Manual content includes:
+  - architecture and live wiring summary,
+  - deployment/day-1 runbooks,
+  - canary rollout playbook (0/1/5/20/100),
+  - kill-switch and rollback playbook,
+  - API/DB/log/UI evidence checklist,
+  - dashboard/SLO signals,
+  - troubleshooting matrix (including eBPF build parity, bundle signature mismatches, mTLS readiness),
+  - production sign-off checklist + policy templates.
+- Updated docs index:
+  - `docs/README.md` now links `docs/ml-ops-operations-manual.md`.
+
+---
+
+# Production ML implementation pass (hardware-adaptive training)
+
+## Plan
+- [x] 1) Implement hardware-aware ML training planner in `signature_ml_train_model.py`.
+- [x] 2) Add deterministic stratified downsampling to keep training stable on modest nodes (e.g., 4 vCPU / 6 GB).
+- [x] 3) Wire effective training-plan telemetry into model/metadata artifacts for auditability.
+- [x] 4) Update ML Ops manual with operational command and tuning behavior.
+- [x] 5) Validate script syntax and execute end-to-end sample training run.
+
+## Review
+- Updated `threat-intel/processing/signature_ml_train_model.py`:
+  - Added resource profiles: `tiny`, `modest`, `balanced`, `high` (+ `auto` detection).
+  - Added host hardware detection (CPU + RAM) with Linux + portable fallback paths.
+  - Added adaptive training-plan resolver for:
+    - `max_iter`,
+    - `holdout_ratio`,
+    - `l2_grid_points`,
+    - `max_samples`,
+    - `cv_folds` (guarded to minimum 5).
+  - Added deterministic stratified downsampling with `sample_id` hash ordering.
+  - Added adaptive auto L2 grid shaping when explicit `--l2-grid` is not provided.
+  - Added new CLI options:
+    - `--resource-profile`
+    - `--max-samples`
+    - `--cv-folds`
+    - `--l2-grid-points`
+  - Added artifact diagnostics fields in model + metadata:
+    - `resource_profile`, hardware detection, effective params, `sampled_from_rows`.
+- Updated `docs/ml-ops-operations-manual.md`:
+  - Added section `5.1 Nightly model retraining on modest hardware` with concrete command and behavior.
+
+## Verification
+- `python3 -m py_compile threat-intel/processing/signature_ml_train_model.py` ✅
+- Synthetic end-to-end run with sampling and modest profile:
+  - model + metadata generated successfully,
+  - printed effective resource profile and training plan,
+  - `training_samples` and `sampled_from_rows` reflected downsampling correctly. ✅
 

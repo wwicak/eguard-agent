@@ -21,9 +21,10 @@ use tracing::{info, warn};
 use crate::pb;
 use crate::retry::RetryPolicy;
 use crate::types::{
-    CommandEnvelope, ComplianceEnvelope, EnrollmentEnvelope, EnrollmentResultEnvelope,
-    EventEnvelope, FleetBaselineEnvelope, InventoryEnvelope, PolicyEnvelope, ResponseEnvelope,
-    ServerState, ThreatIntelVersionEnvelope, TlsConfig, TransportMode,
+    BaselineProfileEnvelope, CommandEnvelope, ComplianceEnvelope, EnrollmentEnvelope,
+    EnrollmentResultEnvelope, EventEnvelope, FleetBaselineEnvelope, InventoryEnvelope,
+    PolicyEnvelope, ResponseEnvelope, ServerState, ThreatIntelVersionEnvelope, TlsConfig,
+    TransportMode,
 };
 
 #[path = "client/client_grpc.rs"]
@@ -49,6 +50,7 @@ pub struct Client {
     http: HttpClient,
     grpc_reporting_force_http: Arc<AtomicBool>,
     grpc_channel_cache: Arc<Mutex<Option<Channel>>>,
+    grpc_last_fleet_baselines: Arc<Mutex<Vec<FleetBaselineEnvelope>>>,
     #[cfg(test)]
     grpc_channel_override: Option<Channel>,
 }
@@ -71,6 +73,7 @@ impl Client {
                 .expect("default HTTP client construction should not fail"),
             grpc_reporting_force_http: Arc::new(AtomicBool::new(false)),
             grpc_channel_cache: Arc::new(Mutex::new(None)),
+            grpc_last_fleet_baselines: Arc::new(Mutex::new(Vec::new())),
             #[cfg(test)]
             grpc_channel_override: None,
         }
@@ -420,7 +423,30 @@ impl Client {
 
     pub async fn fetch_fleet_baselines(&self, limit: usize) -> Result<Vec<FleetBaselineEnvelope>> {
         self.ensure_online()?;
-        self.fetch_fleet_baselines_http(limit).await
+        match self.mode {
+            TransportMode::Http => self.fetch_fleet_baselines_http(limit).await,
+            TransportMode::Grpc => {
+                let cached = self
+                    .grpc_last_fleet_baselines
+                    .lock()
+                    .map(|rows| rows.clone())
+                    .unwrap_or_default();
+                if cached.is_empty() {
+                    Ok(Vec::new())
+                } else {
+                    Ok(cached.into_iter().take(limit.max(1)).collect())
+                }
+            }
+        }
+    }
+
+    pub async fn send_baseline_profiles(
+        &self,
+        agent_id: &str,
+        profiles: &[BaselineProfileEnvelope],
+    ) -> Result<()> {
+        self.ensure_online()?;
+        self.send_baseline_profiles_http(agent_id, profiles).await
     }
 
     pub async fn fetch_policy(&self, agent_id: &str) -> Result<Option<PolicyEnvelope>> {

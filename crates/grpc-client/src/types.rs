@@ -260,6 +260,17 @@ pub struct FleetBaselineEnvelope {
     pub source: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BaselineProfileEnvelope {
+    pub process_key: String,
+    pub event_distribution: HashMap<String, f64>,
+    pub sample_count: i64,
+    #[serde(default)]
+    pub entropy_threshold: f64,
+    #[serde(default)]
+    pub learned_at_unix: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TlsConfig {
     pub cert_path: String,
