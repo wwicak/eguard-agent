@@ -140,4 +140,5 @@ pub struct DetectionSignals {
     pub campaign_correlated: bool,
     pub network_ioc_hit: bool,
     pub vulnerable_software: bool,
+    pub fim_violation: bool,
 }

@@ -1,4 +1,4 @@
-use tracing::warn;
+use tracing::{info, warn};
 
 use super::{
     AgentRuntime, PendingResponseAction, TickEvaluation, RESPONSE_EXECUTION_BUDGET_PER_TICK,
@@ -24,6 +24,7 @@ impl AgentRuntime {
 
         self.maybe_apply_auto_isolation(now_unix, evaluation);
         self.enqueue_response_action_if_present(now_unix, evaluation);
+        self.enqueue_playbook_actions_if_present(now_unix, evaluation);
         let executed = self.execute_response_backlog_budget(now_unix).await;
         let oldest_age_secs = self.response_queue_oldest_age_secs(now_unix);
 
@@ -128,6 +129,170 @@ impl AgentRuntime {
             });
     }
 
+    /// Evaluate the playbook engine and enqueue any resulting actions.
+    ///
+    /// Playbook actions augment (not replace) the standard confidence-based
+    /// response. Each playbook action string is mapped to the closest
+    /// [`PlannedAction`] variant. Actions like "alert" and "log" produce
+    /// response reports but no local kill/quarantine.
+    fn enqueue_playbook_actions_if_present(
+        &mut self,
+        now_unix: i64,
+        evaluation: Option<&TickEvaluation>,
+    ) {
+        let Some(evaluation) = evaluation else {
+            return;
+        };
+
+        let playbook_actions = self.playbook_engine.evaluate(
+            &evaluation.detection_outcome,
+            &evaluation.detection_event,
+        );
+
+        if playbook_actions.is_empty() {
+            return;
+        }
+
+        let detection_layers = super::AgentRuntime::detection_layers(&evaluation.detection_outcome);
+        let rule_name = super::AgentRuntime::detection_rule_name(&evaluation.detection_outcome)
+            .unwrap_or_default();
+        let threat_category =
+            super::AgentRuntime::detection_rule_type(&evaluation.detection_outcome).to_string();
+
+        for pb_action in &playbook_actions {
+            match pb_action.action.as_str() {
+                "kill" => {
+                    self.push_playbook_response(
+                        super::PlannedAction::KillOnly,
+                        evaluation,
+                        now_unix,
+                        &detection_layers,
+                        &rule_name,
+                        &threat_category,
+                    );
+                }
+                "quarantine" => {
+                    self.push_playbook_response(
+                        super::PlannedAction::QuarantineOnly,
+                        evaluation,
+                        now_unix,
+                        &detection_layers,
+                        &rule_name,
+                        &threat_category,
+                    );
+                }
+                "capture" => {
+                    self.push_playbook_response(
+                        super::PlannedAction::CaptureScript,
+                        evaluation,
+                        now_unix,
+                        &detection_layers,
+                        &rule_name,
+                        &threat_category,
+                    );
+                }
+                "isolate" => {
+                    self.execute_playbook_isolate(evaluation, now_unix);
+                }
+                "alert" | "log" => {
+                    self.enqueue_playbook_alert_report(
+                        &pb_action.action,
+                        evaluation,
+                        &detection_layers,
+                        &rule_name,
+                        &threat_category,
+                    );
+                }
+                unknown => {
+                    warn!(
+                        action = unknown,
+                        "unknown playbook action type; skipping"
+                    );
+                }
+            }
+        }
+    }
+
+    fn push_playbook_response(
+        &mut self,
+        action: super::PlannedAction,
+        evaluation: &TickEvaluation,
+        now_unix: i64,
+        detection_layers: &[String],
+        rule_name: &str,
+        threat_category: &str,
+    ) {
+        if self.pending_response_actions.len() >= RESPONSE_QUEUE_CAPACITY {
+            warn!(
+                queue_depth = self.pending_response_actions.len(),
+                capacity = RESPONSE_QUEUE_CAPACITY,
+                "response queue reached capacity; dropping oldest for playbook action"
+            );
+            self.pending_response_actions.pop_front();
+        }
+
+        self.pending_response_actions
+            .push_back(PendingResponseAction {
+                action,
+                confidence: evaluation.confidence,
+                event: evaluation.detection_event.clone(),
+                enqueued_at_unix: now_unix,
+                detection_layers: detection_layers.to_vec(),
+                rule_name: rule_name.to_string(),
+                threat_category: threat_category.to_string(),
+            });
+    }
+
+    fn execute_playbook_isolate(&mut self, evaluation: &TickEvaluation, now_unix: i64) {
+        if self.host_control.isolated {
+            info!("playbook isolate skipped: host already isolated");
+            return;
+        }
+
+        let outcome = super::execute_server_command_with_state(
+            super::ServerCommand::Isolate,
+            now_unix,
+            &mut self.host_control,
+        );
+
+        self.enqueue_response_report(super::ResponseEnvelope {
+            agent_id: self.config.agent_id.clone(),
+            action_type: "playbook_isolate".to_string(),
+            confidence: super::confidence_label(evaluation.confidence).to_string(),
+            success: outcome.status == "completed",
+            error_message: outcome.detail,
+            detection_layers: Vec::new(),
+            target_process: evaluation.detection_event.process.clone(),
+            target_pid: evaluation.detection_event.pid,
+            rule_name: String::new(),
+            threat_category: String::new(),
+            file_path: evaluation.detection_event.file_path.clone(),
+        });
+    }
+
+    fn enqueue_playbook_alert_report(
+        &mut self,
+        action_label: &str,
+        evaluation: &TickEvaluation,
+        detection_layers: &[String],
+        rule_name: &str,
+        threat_category: &str,
+    ) {
+        self.enqueue_response_report(super::ResponseEnvelope {
+            agent_id: self.config.agent_id.clone(),
+            action_type: format!("playbook_{}", action_label),
+            confidence: super::confidence_label(evaluation.confidence).to_string(),
+            success: true,
+            error_message: String::new(),
+            detection_layers: detection_layers.to_vec(),
+            target_process: evaluation.detection_event.process.clone(),
+            target_pid: evaluation.detection_event.pid,
+            rule_name: rule_name.to_string(),
+            threat_category: threat_category.to_string(),
+            file_path: evaluation.detection_event.file_path.clone(),
+        });
+    }
+
     async fn execute_response_backlog_budget(&mut self, now_unix: i64) -> usize {
         let mut executed = 0usize;
 
@@ -141,9 +306,11 @@ impl AgentRuntime {
                 pending.confidence,
                 &pending.event,
                 now_unix,
-                &pending.detection_layers,
-                &pending.rule_name,
-                &pending.threat_category,
+                (
+                    &pending.detection_layers,
+                    &pending.rule_name,
+                    &pending.threat_category,
+                ),
             )
             .await;
 

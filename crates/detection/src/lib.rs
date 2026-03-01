@@ -4,6 +4,7 @@ mod bench_detection;
 mod calibration;
 mod engine;
 mod exploit;
+pub mod fim;
 pub mod information;
 mod kernel_integrity;
 mod layer1;
@@ -25,6 +26,10 @@ mod yara_engine;
 pub use behavioral::{BehavioralAlarm, BehavioralEngine};
 pub use calibration::{calibrate_thresholds, sanov_upper_bound, tau_delta, ThresholdCalibration};
 pub use engine::{DetectionAllowlist, DetectionEngine, DetectionOutcome, SigmaLoadError};
+pub use fim::{
+    default_fim_paths, FimBaseline, FimChange, FimChangeType, FimEntry, FimError,
+    DEFAULT_FIM_PATHS, DEFAULT_FIM_SCAN_INTERVAL_SECS,
+};
 pub use kernel_integrity::detect_kernel_integrity_indicators;
 pub use layer1::{IocExactStore, IocLayer1, Layer1EventHit, Layer1Result};
 pub use layer2::{

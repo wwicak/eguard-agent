@@ -10,6 +10,8 @@ use grpc_client::{
     Client as GrpcClient, CommandEnvelope, EventBuffer, IocSignal, TlsConfig, TransportMode,
 };
 use response::{AutoIsolationState, HostControlState, KillRateLimiter, ProtectedList};
+
+use super::response_playbook::PlaybookEngine;
 use self_protect::SelfProtectEngine;
 #[cfg(target_os = "linux")]
 use self_protect::{apply_linux_hardening, LinuxHardeningConfig};
@@ -85,6 +87,7 @@ pub struct AgentRuntime {
     pub(super) last_ioc_signal_upload_unix: Option<i64>,
     pub(super) last_campaign_fetch_unix: Option<i64>,
     pub(super) active_campaign_iocs: std::collections::HashSet<String>,
+    pub(super) playbook_engine: PlaybookEngine,
     pub(super) dirty_baseline_keys: BTreeSet<String>,
     pub(super) pending_control_plane_tasks: VecDeque<PendingControlPlaneTask>,
     pub(super) pending_control_plane_sends: VecDeque<PendingControlPlaneSend>,
@@ -269,6 +272,9 @@ impl AgentRuntime {
 
         let initial_mode = derive_runtime_mode(&config.mode, baseline_store.status);
 
+        let mut playbook_engine = PlaybookEngine::new();
+        playbook_engine.load_default_playbooks();
+
         let mut runtime = Self {
             limiter: KillRateLimiter::new(config.response.max_kills_per_minute),
             protected: {
@@ -341,6 +347,7 @@ impl AgentRuntime {
             last_ioc_signal_upload_unix: None,
             last_campaign_fetch_unix: None,
             active_campaign_iocs: std::collections::HashSet::new(),
+            playbook_engine,
             dirty_baseline_keys,
             pending_control_plane_tasks: VecDeque::new(),
             pending_control_plane_sends: VecDeque::new(),

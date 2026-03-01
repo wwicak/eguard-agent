@@ -38,6 +38,11 @@ pub fn confidence_policy(s: &DetectionSignals) -> Confidence {
     if s.vulnerable_software {
         return Confidence::High;
     }
+    // File Integrity Monitoring violation: critical file modified/deleted → High
+    // Required for PCI-DSS 11.5 and HIPAA 164.312(c)(2) compliance.
+    if s.fim_violation {
+        return Confidence::High;
+    }
     if s.kernel_integrity {
         return Confidence::Medium;
     }

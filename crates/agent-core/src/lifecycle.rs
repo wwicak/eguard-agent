@@ -13,6 +13,7 @@ mod kernel_integrity_scan;
 mod memory_scan;
 mod policy;
 mod response_actions;
+mod response_playbook;
 mod runtime;
 mod runtime_mode;
 mod self_protect;
@@ -33,6 +34,8 @@ mod rule_bundle_verify;
 mod telemetry_pipeline;
 mod threat_intel_pipeline;
 
+#[allow(unused_imports)]
+pub use response_playbook::PlaybookEngine;
 pub use runtime::AgentRuntime;
 pub use types::RuntimeObservabilitySnapshot;
 
