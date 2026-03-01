@@ -1,6 +1,10 @@
 use crate::types::{Confidence, DetectionSignals};
 
 pub fn confidence_policy(s: &DetectionSignals) -> Confidence {
+    // Deception tokens are guaranteed true positives -- zero FP by construction.
+    if s.deception_triggered {
+        return Confidence::Definite;
+    }
     if s.z1_exact_ioc {
         return Confidence::Definite;
     }

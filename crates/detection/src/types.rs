@@ -143,4 +143,5 @@ pub struct DetectionSignals {
     pub fim_violation: bool,
     pub lateral_movement: bool,
     pub usb_violation: bool,
+    pub deception_triggered: bool,
 }

@@ -1,7 +1,9 @@
+pub mod attack_coverage;
 pub mod beaconing;
 pub mod behavioral;
 mod bench_detection;
 mod calibration;
+pub mod deception;
 mod engine;
 mod exploit;
 pub mod fim;
@@ -19,6 +21,7 @@ mod policy;
 mod replay;
 mod sigma;
 mod tamper;
+pub mod threat_hunting;
 mod types;
 pub mod usb_control;
 pub mod util;
@@ -64,6 +67,17 @@ pub use yara_engine::{YaraEngine, YaraError, YaraHit};
 pub use zero_trust::{
     compute_score as compute_device_score, default_factors as default_health_factors,
     recommend_action, DeviceHealthScore, ScoreFactor, TrustAction,
+};
+pub use attack_coverage::{
+    generate_coverage, critical_gaps, AttackCoverageReport, TacticCoverage, TechniqueCoverage,
+};
+pub use deception::{
+    DeceptionAlert, DeceptionEngine, DeceptionToken, TokenType,
+};
+pub use threat_hunting::{
+    HuntingCheck, HuntingEngine, HuntingFinding, HuntingQuery,
+    evaluate_port_check, evaluate_process_check, evaluate_file_presence_check,
+    match_process_pattern,
 };
 
 #[cfg(test)]
