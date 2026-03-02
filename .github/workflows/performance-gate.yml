@@ -19,6 +19,50 @@ on:
         description: "Comma-separated quality flags that fail gate"
         required: false
         default: "low_sample_count,missing_overhead_median,missing_overhead_p95"
+      trend_baseline_summary:
+        description: "Optional baseline summary path/dir on runner for trend comparison"
+        required: false
+        default: ""
+      trend_baseline_pointer:
+        description: "Pointer file containing baseline path/run (default: .ci/perf-baseline.json)"
+        required: false
+        default: ".ci/perf-baseline.json"
+      trend_baseline_pointer_strict:
+        description: "Fail when pointer path is configured but missing (true|false)"
+        required: false
+        default: "false"
+      trend_baseline_run:
+        description: "Optional explicit baseline run tag for compare_trend"
+        required: false
+        default: ""
+      trend_fail_on_regression:
+        description: "Fail workflow if trend regression is detected (true|false)"
+        required: false
+        default: "false"
+      trend_fail_on_new_quality_flags:
+        description: "Treat newly introduced quality flags vs baseline as regression (true|false)"
+        required: false
+        default: "false"
+      trend_max_regression_overhead_median_pct:
+        description: "Max allowed increase vs baseline for overhead median pct"
+        required: false
+        default: "5.0"
+      trend_max_regression_overhead_p95_pct:
+        description: "Max allowed increase vs baseline for overhead p95 pct"
+        required: false
+        default: "8.0"
+      trend_max_regression_agent_cpu_avg_s:
+        description: "Max allowed increase vs baseline for agent cpu avg seconds"
+        required: false
+        default: "0.20"
+      trend_required_platforms:
+        description: "Comma-separated required platforms for trend comparison"
+        required: false
+        default: "linux,windows"
+      trend_emit_candidate_pointer:
+        description: "Emit candidate baseline pointer artifact from current run (true|false)"
+        required: false
+        default: "true"
   schedule:
     - cron: "15 3 * * *"
   release:
@@ -111,6 +155,83 @@ jobs:
             --fail-on-quality-flags "${{ github.event.inputs.fail_on_quality_flags || 'low_sample_count,missing_overhead_median,missing_overhead_p95' }}" \
             --json-output "artifacts/perf/${PERF_DATE}/gate.json"
 
+      - name: Resolve optional trend baseline
+        id: resolve-trend-baseline
+        shell: bash
+        run: |
+          cmd=(
+            python3 scripts/perf/resolve_baseline.py
+            --baseline-summary "${{ github.event.inputs.trend_baseline_summary || '' }}"
+            --baseline-pointer "${{ github.event.inputs.trend_baseline_pointer || '.ci/perf-baseline.json' }}"
+            --workspace-root "${GITHUB_WORKSPACE}"
+            --json-output "artifacts/perf/${PERF_DATE}/trend-baseline-resolution.json"
+            --github-output "${GITHUB_OUTPUT}"
+          )
+
+          if [[ "${{ github.event.inputs.trend_baseline_pointer_strict || 'false' }}" == "true" ]]; then
+            cmd+=(--strict-pointer)
+          fi
+
+          "${cmd[@]}"
+
+      - name: Compare trend vs optional baseline
+        shell: bash
+        run: |
+          RESOLVED="${{ steps.resolve-trend-baseline.outputs.resolved }}"
+          if [[ "${RESOLVED}" != "true" ]]; then
+            echo "trend baseline not resolved; skipping trend comparison"
+            exit 0
+          fi
+
+          BASELINE_INPUT="${{ steps.resolve-trend-baseline.outputs.baseline_input }}"
+          BASELINE_RUN="${{ github.event.inputs.trend_baseline_run || '' }}"
+          if [[ -z "${BASELINE_RUN}" ]]; then
+            BASELINE_RUN="${{ steps.resolve-trend-baseline.outputs.baseline_run }}"
+          fi
+
+          if [[ -z "${BASELINE_RUN}" ]]; then
+            echo "unable to resolve baseline run for trend comparison"
+            exit 1
+          fi
+
+          cmd=(
+            python3 scripts/perf/compare_trend.py
+            --input "artifacts/perf/${PERF_DATE}"
+            --input "${BASELINE_INPUT}"
+            --baseline-run "${BASELINE_RUN}"
+            --json-output "artifacts/perf/${PERF_DATE}/trend.json"
+            --report-output "artifacts/perf/${PERF_DATE}/trend.md"
+            --max-regression-overhead-median-pct "${{ github.event.inputs.trend_max_regression_overhead_median_pct || '5.0' }}"
+            --max-regression-overhead-p95-pct "${{ github.event.inputs.trend_max_regression_overhead_p95_pct || '8.0' }}"
+            --max-regression-agent-cpu-avg-s "${{ github.event.inputs.trend_max_regression_agent_cpu_avg_s || '0.20' }}"
+            --required-platforms "${{ github.event.inputs.trend_required_platforms || 'linux,windows' }}"
+          )
+
+          if [[ "${{ github.event.inputs.trend_fail_on_new_quality_flags || 'false' }}" == "true" ]]; then
+            cmd+=(--fail-on-new-quality-flags)
+          fi
+
+          if [[ "${{ github.event.inputs.trend_fail_on_regression || 'false' }}" == "true" ]]; then
+            cmd+=(--fail-on-regression)
+          fi
+
+          "${cmd[@]}"
+
+      - name: Emit baseline pointer candidate artifact
+        shell: bash
+        run: |
+          if [[ "${{ github.event.inputs.trend_emit_candidate_pointer || 'true' }}" != "true" ]]; then
+            echo "candidate baseline pointer emission disabled"
+            exit 0
+          fi
+
+          python3 scripts/perf/update_baseline_pointer.py \
+            --baseline-summary "artifacts/perf/${PERF_DATE}/summary.json" \
+            --baseline-run "${PERF_DATE}" \
+            --workspace-root "${GITHUB_WORKSPACE}" \
+            --pointer-path "artifacts/perf/${PERF_DATE}/perf-baseline.candidate.json" \
+            --json-output "artifacts/perf/${PERF_DATE}/perf-baseline-candidate-meta.json"
+
       - name: Upload summary artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -119,3 +240,9 @@ jobs:
             artifacts/perf/${{ env.PERF_DATE }}/summary.json
             artifacts/perf/${{ env.PERF_DATE }}/report.md
             artifacts/perf/${{ env.PERF_DATE }}/gate.json
+            artifacts/perf/${{ env.PERF_DATE }}/trend-baseline-resolution.json
+            artifacts/perf/${{ env.PERF_DATE }}/trend.json
+            artifacts/perf/${{ env.PERF_DATE }}/trend.md
+            artifacts/perf/${{ env.PERF_DATE }}/perf-baseline.candidate.json
+            artifacts/perf/${{ env.PERF_DATE }}/perf-baseline-candidate-meta.json
+          if-no-files-found: warn

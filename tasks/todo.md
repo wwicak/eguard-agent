@@ -263,3 +263,272 @@
 - `python3 -m py_compile scripts/perf/gate.py scripts/perf/summarize.py` ✅
 - `python3 scripts/perf/gate.py --summary /tmp/rerun3-summary-polish.json --profile provisional` ✅ (PASS)
 - `python3 scripts/perf/gate.py --summary /tmp/rerun3-summary-polish.json --profile provisional --fail-on-quality-flags 'high_negative_p95_overhead_check_for_noise'` ✅ (expected FAIL)
+
+---
+
+## Additional polish: cross-run trend comparator for regression visibility
+
+### Plan
+- [x] Add a dedicated trend comparator for multiple run summaries.
+- [x] Support explicit baseline selection (not only implicit ordering).
+- [x] Emit both JSON and Markdown outputs for humans + automation.
+- [x] Validate using existing `retest/rerun2/rerun3` artifacts.
+
+### Review
+- Added `scripts/perf/compare_trend.py`:
+  - accepts repeated `--input` (run dir or summary file) or `--artifact-root` discovery,
+  - compares `overhead_median_pct`, `overhead_p95_pct`, `agent_cpu_avg_s` across runs,
+  - detects regressions via configurable max delta thresholds,
+  - supports `--baseline-run` override (default oldest discovered timestamp),
+  - writes optional `--json-output` and `--report-output`,
+  - supports optional non-zero exit via `--fail-on-regression`.
+- Sorting and baseline logic now use timestamp extraction (`YYYYMMDDTHHMMSSZ`) to avoid lexical run-name bias.
+
+### Verification
+- `python3 -m py_compile scripts/perf/compare_trend.py` ✅
+- `python3 scripts/perf/compare_trend.py --input artifacts/perf/retest-20260302T043407Z --input artifacts/perf/rerun2-20260302T061620Z --input artifacts/perf/rerun3-20260302T062911Z --report-output /tmp/perf-trend.md --json-output /tmp/perf-trend.json` ✅
+- `python3 scripts/perf/compare_trend.py --input artifacts/perf/retest-20260302T043407Z --input artifacts/perf/rerun2-20260302T061620Z --input artifacts/perf/rerun3-20260302T062911Z --baseline-run rerun2-20260302T061620Z --report-output /tmp/perf-trend.md --json-output /tmp/perf-trend.json` ✅
+
+---
+
+## Additional polish: trend comparator correctness + CLI regression tests
+
+### Plan
+- [x] Fix baseline-delta reporting bug when explicit baseline is not the first row.
+- [x] Add optional trend regression rule for newly introduced quality flags.
+- [x] Add lightweight CLI tests for gate + trend tools to prevent regressions.
+- [x] Validate against synthetic fixtures and real rerun artifacts.
+
+### Review
+- `scripts/perf/compare_trend.py`
+  - report deltas now resolve baseline row by `baseline_run` (not row index),
+  - added `--fail-on-new-quality-flags` to treat newly introduced flags as regressions,
+  - report now includes `Quality flags` and `New flags vs baseline` columns,
+  - JSON output now records `fail_on_new_quality_flags` policy.
+- Added tests: `scripts/perf/tests/test_perf_cli_tools.py`
+  - verifies baseline override math in generated trend report,
+  - verifies `--fail-on-new-quality-flags` + `--fail-on-regression` exit behavior,
+  - verifies gate min-run enforcement and configurable quality-flag fail-list behavior.
+
+### Verification
+- `python3 -m py_compile scripts/perf/compare_trend.py scripts/perf/gate.py scripts/perf/summarize.py` ✅
+- `python3 -m unittest discover -s scripts/perf/tests -p 'test_*.py'` ✅ (3 passed)
+- `python3 scripts/perf/compare_trend.py --input artifacts/perf/retest-20260302T043407Z --input artifacts/perf/rerun2-20260302T061620Z --input artifacts/perf/rerun3-20260302T062911Z --baseline-run rerun2-20260302T061620Z --report-output /tmp/perf-trend-polish4.md --json-output /tmp/perf-trend-polish4.json` ✅
+- `python3 scripts/perf/compare_trend.py --input artifacts/perf/retest-20260302T043407Z --input artifacts/perf/rerun2-20260302T061620Z --input artifacts/perf/rerun3-20260302T062911Z --baseline-run rerun2-20260302T061620Z --fail-on-regression` ✅ (expected exit `1`)
+
+---
+
+## Additional polish: optional workflow trend-gate integration
+
+### Plan
+- [x] Add workflow inputs to control baseline trend comparison and regression policies.
+- [x] Add optional CI step that runs trend comparison when a baseline path is provided.
+- [x] Publish trend JSON/Markdown artifacts together with summary+gate outputs.
+- [x] Verify workflow YAML validity and CLI regression tests after integration.
+
+### Review
+- `.github/workflows/performance-gate.yml`
+  - new dispatch inputs:
+    - `trend_baseline_summary`
+    - `trend_fail_on_regression`
+    - `trend_fail_on_new_quality_flags`
+    - `trend_max_regression_overhead_median_pct`
+    - `trend_max_regression_overhead_p95_pct`
+    - `trend_max_regression_agent_cpu_avg_s`
+  - new `Compare trend vs optional baseline` step:
+    - skips cleanly when no baseline path is provided,
+    - fails fast if baseline path is configured but missing,
+    - runs `scripts/perf/compare_trend.py` against current run + baseline,
+    - supports optional hard fail on regression / new quality flags.
+  - artifact upload now also includes:
+    - `artifacts/perf/<run>/trend.json`
+    - `artifacts/perf/<run>/trend.md`
+    - with `if-no-files-found: warn` for optional trend outputs.
+
+### Verification
+- `yq '.' .github/workflows/performance-gate.yml` ✅ (valid YAML parse)
+- `python3 -m unittest discover -s scripts/perf/tests -p 'test_*.py'` ✅ (3 passed)
+
+---
+
+## Additional polish: trend baseline safety + required-platform enforcement
+
+### Plan
+- [x] Prevent workflow trend checks from accidentally using current run as baseline.
+- [x] Make trend comparator enforce required platform presence across runs.
+- [x] Add regression tests for required-platform missing cases.
+- [x] Re-validate YAML + test suites + real artifact trend output.
+
+### Review
+- `.github/workflows/performance-gate.yml`
+  - added `trend_baseline_run` input,
+  - trend step now derives baseline run from provided baseline path when not explicitly set,
+  - passes `--baseline-run` to `scripts/perf/compare_trend.py` to avoid implicit ordering mistakes.
+- `scripts/perf/compare_trend.py`
+  - added `--required-platforms` (default `linux,windows`),
+  - regression evaluation now fails on missing required platform data,
+  - regression evaluation now fails on missing required metrics (baseline/current) with explicit diagnostics,
+  - output JSON now records `required_platforms`.
+- `scripts/perf/tests/test_perf_cli_tools.py`
+  - added `test_compare_trend_fails_when_required_platform_data_missing`,
+  - helper now supports per-fixture platform sets for targeted negative tests.
+
+### Verification
+- `python3 -m py_compile scripts/perf/compare_trend.py` ✅
+- `python3 -m unittest discover -s scripts/perf/tests -p 'test_*.py'` ✅ (4 passed)
+- `yq '.' .github/workflows/performance-gate.yml` ✅
+- `python3 scripts/perf/compare_trend.py --input artifacts/perf/retest-20260302T043407Z --input artifacts/perf/rerun2-20260302T061620Z --input artifacts/perf/rerun3-20260302T062911Z --baseline-run rerun2-20260302T061620Z --report-output /tmp/perf-trend-polish5.md --json-output /tmp/perf-trend-polish5.json` ✅
+
+---
+
+## Additional polish: trend validation noise reduction + workflow required-platform control
+
+### Plan
+- [x] Reduce duplicate trend failures when baseline metrics are missing.
+- [x] Add workflow control for required platform set in trend checks.
+- [x] Add tests for required-platform override behavior.
+- [x] Re-run lint/parse/tests and real artifact trend command.
+
+### Review
+- `scripts/perf/compare_trend.py`
+  - baseline-missing metric failures are now emitted once per platform/metric (not repeated for every run),
+  - per-row regression details still record baseline metric absence for transparency,
+  - `--required-platforms` remains enforced for run/platform completeness, now included in end-to-end workflow path.
+- `.github/workflows/performance-gate.yml`
+  - added `trend_required_platforms` dispatch input (default `linux,windows`),
+  - trend compare step now passes `--required-platforms` explicitly,
+  - baseline run selection remains explicit via `trend_baseline_run` or derived from baseline path.
+- `scripts/perf/tests/test_perf_cli_tools.py`
+  - added `test_compare_trend_required_platforms_override_allows_linux_only_runs`,
+  - suite now validates both strict default and explicit relaxed platform requirements.
+
+### Verification
+- `python3 -m py_compile scripts/perf/compare_trend.py scripts/perf/gate.py scripts/perf/summarize.py` ✅
+- `python3 -m unittest discover -s scripts/perf/tests -p 'test_*.py'` ✅ (5 passed)
+- `yq '.' .github/workflows/performance-gate.yml` ✅
+- `python3 scripts/perf/compare_trend.py --input artifacts/perf/retest-20260302T043407Z --input artifacts/perf/rerun2-20260302T061620Z --input artifacts/perf/rerun3-20260302T062911Z --baseline-run rerun2-20260302T061620Z --required-platforms linux,windows --report-output /tmp/perf-trend-polish6.md --json-output /tmp/perf-trend-polish6.json` ✅
+
+---
+
+## Additional polish: baseline pointer resolver + safer workflow baseline selection
+
+### Plan
+- [x] Add a dedicated resolver to unify baseline input handling (direct path vs pointer file).
+- [x] Integrate resolver into workflow and expose pointer-based baseline input.
+- [x] Expand CLI test coverage for resolver behaviors.
+- [x] Re-run parses/tests and validate real baseline resolution command.
+
+### Review
+- Added `scripts/perf/resolve_baseline.py`:
+  - resolves baseline from either `--baseline-summary` or `--baseline-pointer` (JSON/plain text),
+  - supports relative path resolution against `--workspace-root`,
+  - derives baseline run automatically when not provided,
+  - can emit JSON output and GitHub step outputs (`resolved`, `baseline_input`, `baseline_run`).
+- `.github/workflows/performance-gate.yml`
+  - added dispatch input `trend_baseline_pointer`,
+  - added `Resolve optional trend baseline` step (`id: resolve-trend-baseline`),
+  - trend compare step now consumes resolver outputs and skips cleanly when unresolved,
+  - uploads `trend-baseline-resolution.json` artifact for audit/debug.
+- `scripts/perf/tests/test_perf_cli_tools.py`
+  - added `test_resolve_baseline_direct_summary_derives_run`,
+  - added `test_resolve_baseline_pointer_json_relative_path`.
+
+### Verification
+- `python3 -m py_compile scripts/perf/resolve_baseline.py scripts/perf/compare_trend.py scripts/perf/gate.py scripts/perf/summarize.py` ✅
+- `python3 -m unittest discover -s scripts/perf/tests -p 'test_*.py'` ✅ (7 passed)
+- `yq '.' .github/workflows/performance-gate.yml` ✅
+- `python3 scripts/perf/resolve_baseline.py --baseline-summary artifacts/perf/rerun2-20260302T061620Z --workspace-root /home/dimas/eguard-agent` ✅
+
+---
+
+## Additional polish: baseline pointer lifecycle automation + stricter pointer policy controls
+
+### Plan
+- [x] Add a script to update baseline pointer files from chosen run artifacts.
+- [x] Default workflow pointer lookup to `.ci/perf-baseline.json` (auto-resolve when present).
+- [x] Add strict-pointer mode control in workflow inputs.
+- [x] Extend tests to cover pointer update/resolution roundtrip and strict-missing behavior.
+
+### Review
+- Added `scripts/perf/update_baseline_pointer.py`:
+  - writes normalized baseline pointer JSON (`summary_path`, `baseline_run`, `updated_at_utc`),
+  - supports relative path output against workspace root,
+  - supports custom pointer destinations (default `.ci/perf-baseline.json`).
+- Added `.ci/perf-baseline.example.json` as repo convention/sample pointer payload.
+- Updated `.github/workflows/performance-gate.yml`:
+  - `trend_baseline_pointer` now defaults to `.ci/perf-baseline.json`,
+  - added `trend_baseline_pointer_strict` input,
+  - resolver step now conditionally appends `--strict-pointer`.
+- Expanded `scripts/perf/tests/test_perf_cli_tools.py`:
+  - `test_update_baseline_pointer_roundtrip_with_resolver`,
+  - `test_resolve_baseline_strict_pointer_missing_fails`.
+
+### Verification
+- `python3 -m py_compile scripts/perf/resolve_baseline.py scripts/perf/update_baseline_pointer.py scripts/perf/compare_trend.py scripts/perf/gate.py scripts/perf/summarize.py` ✅
+- `python3 -m unittest discover -s scripts/perf/tests -p 'test_*.py'` ✅ (9 passed)
+- `yq '.' .github/workflows/performance-gate.yml` ✅
+- `python3 scripts/perf/update_baseline_pointer.py --baseline-summary artifacts/perf/rerun2-20260302T061620Z/summary.json --workspace-root /home/dimas/eguard-agent --pointer-path /tmp/perf-baseline-pointer.json` ✅
+- `python3 scripts/perf/resolve_baseline.py --baseline-pointer /tmp/perf-baseline-pointer.json --workspace-root /home/dimas/eguard-agent` ✅
+
+---
+
+## Additional polish: perf baseline runbook + candidate pointer emission workflow
+
+### Plan
+- [x] Add operator-facing perf tooling README covering summarize/gate/trend/pointer lifecycle.
+- [x] Emit optional candidate baseline pointer artifact from successful workflow runs.
+- [x] Tighten resolver semantics so direct baseline input fully overrides pointer metadata.
+- [x] Expand CLI tests for pointer precedence and absolute-path update mode.
+
+### Review
+- Added `scripts/perf/README.md`:
+  - concise usage for `summarize.py`, `gate.py`, `compare_trend.py`,
+  - baseline pointer lifecycle commands,
+  - links to `.ci/perf-baseline.example.json` convention.
+- Updated `.github/workflows/performance-gate.yml`:
+  - added `trend_emit_candidate_pointer` input,
+  - added `Emit baseline pointer candidate artifact` step,
+  - uploads `perf-baseline.candidate.json` + metadata artifact.
+- Updated `scripts/perf/resolve_baseline.py`:
+  - direct summary now overrides pointer-provided `baseline_run` (prevents mismatched run labels).
+- Expanded `scripts/perf/tests/test_perf_cli_tools.py`:
+  - `test_resolve_baseline_prefers_direct_input_over_pointer`,
+  - `test_update_baseline_pointer_absolute_paths_mode`.
+
+### Verification
+- `python3 -m py_compile scripts/perf/resolve_baseline.py scripts/perf/update_baseline_pointer.py scripts/perf/compare_trend.py scripts/perf/gate.py scripts/perf/summarize.py` ✅
+- `python3 -m unittest discover -s scripts/perf/tests -p 'test_*.py'` ✅ (11 passed)
+- `yq '.' .github/workflows/performance-gate.yml` ✅
+
+---
+
+## Additional polish: baseline promotion helper + stricter summary-path normalization
+
+### Plan
+- [x] Add one-command baseline promotion helper for run-tag/candidate workflows.
+- [x] Enforce canonical `summary.json` paths in resolver/updater to avoid ambiguous inputs.
+- [x] Expand tests for directory normalization and promotion guardrails.
+- [x] Re-run lint/tests and smoke-check promotion/resolution flow.
+
+### Review
+- Added `scripts/perf/promote_baseline.py`:
+  - promotes baseline from `--run-tag` or `--candidate-pointer`,
+  - requires gate status `pass` by default (`--skip-gate-check` override available),
+  - writes normalized pointer payload to `.ci/perf-baseline.json` (or custom path).
+- Tightened input validation:
+  - `scripts/perf/resolve_baseline.py` now canonicalizes baseline input to `summary.json` and accepts run-dir shorthand only if `summary.json` exists,
+  - `scripts/perf/update_baseline_pointer.py` now writes canonical `summary.json` paths when given run directories and rejects non-summary files.
+- Added/updated docs:
+  - `scripts/perf/README.md` now includes promotion flow commands.
+- Expanded tests in `scripts/perf/tests/test_perf_cli_tools.py`:
+  - `test_resolve_baseline_directory_input_normalizes_to_summary_json`,
+  - `test_update_baseline_pointer_directory_input_writes_summary_json`,
+  - `test_promote_baseline_requires_gate_pass`,
+  - `test_promote_baseline_from_candidate_pointer`.
+
+### Verification
+- `python3 -m py_compile scripts/perf/resolve_baseline.py scripts/perf/update_baseline_pointer.py scripts/perf/promote_baseline.py scripts/perf/compare_trend.py scripts/perf/gate.py scripts/perf/summarize.py` ✅
+- `python3 -m unittest discover -s scripts/perf/tests -p 'test_*.py'` ✅ (15 passed)
+- `yq '.' .github/workflows/performance-gate.yml` ✅
+- `python3 scripts/perf/promote_baseline.py --run-tag rerun3-20260302T062911Z --artifact-root artifacts/perf --workspace-root /home/dimas/eguard-agent --pointer-path /tmp/perf-baseline-promoted.json --skip-gate-check` ✅
+- `python3 scripts/perf/resolve_baseline.py --baseline-pointer /tmp/perf-baseline-promoted.json --workspace-root /home/dimas/eguard-agent` ✅
