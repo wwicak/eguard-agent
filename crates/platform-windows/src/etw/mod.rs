@@ -18,6 +18,7 @@ const DEFAULT_SESSION_NAME: &str = "eGuardEtwSession";
 
 /// Core ETW telemetry engine, analogous to `EbpfEngine` on Linux.
 pub struct EtwEngine {
+    session_name: String,
     session: Option<EtwSession>,
     consumer: Option<EtwConsumer>,
     stats: EtwStats,
@@ -26,7 +27,13 @@ pub struct EtwEngine {
 impl EtwEngine {
     /// Create a new ETW engine (not yet started).
     pub fn new() -> Self {
+        Self::with_session_name(DEFAULT_SESSION_NAME)
+    }
+
+    /// Create a new ETW engine using a custom session name.
+    pub fn with_session_name(session_name: impl Into<String>) -> Self {
         Self {
+            session_name: session_name.into(),
             session: None,
             consumer: None,
             stats: EtwStats::default(),
@@ -39,7 +46,7 @@ impl EtwEngine {
             return Ok(());
         }
 
-        let mut session = EtwSession::new(DEFAULT_SESSION_NAME);
+        let mut session = EtwSession::new(&self.session_name);
         session.start()?;
 
         let mut providers_enabled = 0u32;
@@ -165,10 +172,18 @@ impl std::error::Error for EtwError {}
 #[cfg(test)]
 mod tests {
     use super::EtwEngine;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn test_engine() -> EtwEngine {
+        static NEXT_TEST_SESSION_ID: AtomicU64 = AtomicU64::new(1);
+        let id = NEXT_TEST_SESSION_ID.fetch_add(1, Ordering::Relaxed);
+        let name = format!("eGuardEtwSessionTest-{}-{id}", std::process::id());
+        EtwEngine::with_session_name(name)
+    }
 
     #[test]
     fn start_and_stop_updates_provider_stats() {
-        let mut engine = EtwEngine::new();
+        let mut engine = test_engine();
         engine.start().expect("engine starts in stub mode");
 
         let stats = engine.stats();
@@ -180,13 +195,13 @@ mod tests {
 
     #[test]
     fn stats_tracks_events_lost() {
-        let engine = EtwEngine::new();
+        let engine = test_engine();
         assert_eq!(engine.stats().events_lost, 0);
     }
 
     #[test]
     fn double_start_is_idempotent() {
-        let mut engine = EtwEngine::new();
+        let mut engine = test_engine();
         engine.start().expect("first start");
         engine.start().expect("second start should be ok");
         assert!(engine.is_active());

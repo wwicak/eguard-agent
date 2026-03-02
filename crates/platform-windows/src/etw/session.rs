@@ -13,7 +13,7 @@ use std::collections::HashSet;
 mod win32 {
     use super::super::EtwError;
     use super::ProviderConfig;
-    use windows::Win32::Foundation::ERROR_SUCCESS;
+    use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, ERROR_SUCCESS};
     use windows::Win32::System::Diagnostics::Etw::*;
 
     /// `EVENT_TRACE_REAL_TIME_MODE` — enable real-time delivery.
@@ -81,8 +81,8 @@ mod win32 {
         // Clean up any orphaned session from a previous crash.
         cleanup_orphaned_session(session_name);
 
-        let mut props_buf = alloc_properties(session_name);
-        let props = unsafe { &mut *(props_buf.as_mut_ptr() as *mut EVENT_TRACE_PROPERTIES) };
+        const START_TRACE_MAX_ATTEMPTS: usize = 3;
+        const START_TRACE_RETRY_DELAY_MS: u64 = 50;
 
         let name_wide: Vec<u16> = session_name
             .encode_utf16()
@@ -90,17 +90,32 @@ mod win32 {
             .collect();
         let pcwstr = windows::core::PCWSTR(name_wide.as_ptr());
 
-        let mut trace_handle = handle(0);
-        let result = unsafe { StartTraceW(&mut trace_handle, pcwstr, props) };
+        for attempt in 0..START_TRACE_MAX_ATTEMPTS {
+            let mut props_buf = alloc_properties(session_name);
+            let props = unsafe { &mut *(props_buf.as_mut_ptr() as *mut EVENT_TRACE_PROPERTIES) };
 
-        if result != ERROR_SUCCESS {
+            let mut trace_handle = handle(0);
+            let result = unsafe { StartTraceW(&mut trace_handle, pcwstr, props) };
+
+            if result == ERROR_SUCCESS {
+                return Ok((trace_handle.Value, props_buf));
+            }
+
+            if result == ERROR_ALREADY_EXISTS && attempt + 1 < START_TRACE_MAX_ATTEMPTS {
+                cleanup_orphaned_session(session_name);
+                std::thread::sleep(std::time::Duration::from_millis(START_TRACE_RETRY_DELAY_MS));
+                continue;
+            }
+
             return Err(EtwError::SessionCreate(format!(
                 "StartTraceW failed: {:?}",
                 result
             )));
         }
 
-        Ok((trace_handle.Value, props_buf))
+        Err(EtwError::SessionCreate(
+            "StartTraceW failed after retries".to_string(),
+        ))
     }
 
     /// Enable a provider on the trace session.
