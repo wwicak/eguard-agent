@@ -97,6 +97,68 @@ impl ForensicsCollector {
             Vec::new()
         }
     }
+
+    /// Collect endpoint snapshot data for incident triage.
+    pub fn collect_full_snapshot(
+        &self,
+        include_processes: bool,
+        include_network: bool,
+        include_open_files: bool,
+        include_loaded_modules: bool,
+    ) -> ForensicSnapshot {
+        #[cfg(target_os = "windows")]
+        {
+            let processes = if include_processes {
+                run_powershell_capture(
+                    "Get-Process | Select-Object Id,ProcessName,Path,CPU,WS,StartTime | ConvertTo-Json -Depth 4",
+                )
+            } else {
+                String::new()
+            };
+
+            let network = if include_network {
+                run_powershell_capture(
+                    "Get-NetTCPConnection -ErrorAction SilentlyContinue | Select-Object LocalAddress,LocalPort,RemoteAddress,RemotePort,State,OwningProcess | ConvertTo-Json -Depth 4",
+                )
+            } else {
+                String::new()
+            };
+
+            let open_files = if include_open_files {
+                run_powershell_capture(
+                    "Get-Process | Select-Object Id,ProcessName,Handles,Path | ConvertTo-Json -Depth 4",
+                )
+            } else {
+                String::new()
+            };
+
+            let loaded_modules = if include_loaded_modules {
+                run_powershell_capture(
+                    "driverquery /FO CSV /NH | Out-String",
+                )
+            } else {
+                String::new()
+            };
+
+            return ForensicSnapshot {
+                processes,
+                network,
+                open_files,
+                loaded_modules,
+            };
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (
+                include_processes,
+                include_network,
+                include_open_files,
+                include_loaded_modules,
+            );
+            ForensicSnapshot::default()
+        }
+    }
 }
 
 impl Default for ForensicsCollector {
@@ -111,6 +173,55 @@ pub struct HandleInfo {
     pub handle_value: u64,
     pub object_type: String,
     pub object_name: Option<String>,
+}
+
+/// Collected forensic snapshot sections.
+#[derive(Debug, Clone, Default)]
+pub struct ForensicSnapshot {
+    pub processes: String,
+    pub network: String,
+    pub open_files: String,
+    pub loaded_modules: String,
+}
+
+#[cfg(target_os = "windows")]
+const FORENSICS_OUTPUT_MAX_BYTES: usize = 1_048_576;
+
+#[cfg(target_os = "windows")]
+fn run_powershell_capture(command: &str) -> String {
+    let output = match Command::new(POWERSHELL_EXE)
+        .args(["-NoProfile", "-NonInteractive", "-Command", command])
+        .output()
+    {
+        Ok(output) => output,
+        Err(err) => return format!("spawn failed: {}", err),
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let primary = if !stdout.trim().is_empty() {
+        stdout
+    } else if !stderr.trim().is_empty() {
+        stderr
+    } else {
+        format!("command produced no output: {}", command)
+    };
+
+    truncate_forensics_output(primary, FORENSICS_OUTPUT_MAX_BYTES)
+}
+
+#[cfg(target_os = "windows")]
+fn truncate_forensics_output(text: String, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text;
+    }
+
+    let truncated = text.chars().take(max_bytes).collect::<String>();
+    format!(
+        "{}\n...[truncated, {} bytes omitted]",
+        truncated,
+        text.len() - max_bytes
+    )
 }
 
 #[cfg(any(test, target_os = "windows"))]

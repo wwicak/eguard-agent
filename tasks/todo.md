@@ -879,3 +879,30 @@
     - `eg::enforcement::reevaluate_access`
 - Gap identified: current UI/API `nac_status` reflects open security events (logical enforcement state), not direct switch-port/VLAN confirmation. For strict "it really blocked the endpoint" proof, add/consume explicit PacketFence node-role/switch-session verification in status response.
 
+---
+
+# Forensics command runtime completion (cross-repo wiring)
+
+## Plan
+- [x] Expand forensics payload model to support full command contract (`memory_dump`, snapshot toggles, `target_pids`, legacy `pid`, `output_path`).
+- [x] Implement non-stub forensics execution paths in `agent-core` command handlers for Windows/macOS/Linux.
+- [x] Add Windows collector snapshot support to `platform-windows` forensics module.
+- [x] Add regression tests for payload normalization helpers.
+- [x] Build Windows agent binary and deploy to VM service path for live validation.
+
+## Review
+- Updated files:
+  - `crates/agent-core/src/lifecycle/command_pipeline/payloads.rs`
+  - `crates/agent-core/src/lifecycle/command_pipeline/handlers.rs`
+  - `crates/agent-core/src/lifecycle/command_pipeline/tests.rs`
+  - `crates/platform-windows/src/response/forensics.rs`
+- Runtime semantics now support snapshot-only forensics without forcing PID (memory-dump still PID-driven).
+- Windows VM deployment:
+  - binary built: `target/x86_64-pc-windows-gnu/release/agent-core.exe`
+  - deployed to service binary path: `C:\Program Files\eGuard\eguard-agent.exe`
+  - backup: `C:\Program Files\eGuard\eguard-agent.backup-20260302-102224.exe`
+- Live proof after server compatibility switch disabled:
+  - Windows command `forensics` (no PID) moved to `completed`
+  - result detail reports snapshot file path under `C:\ProgramData\eGuard\forensics\snapshot-*.txt`
+  - file verified on endpoint with process/network sections.
+

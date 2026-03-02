@@ -1,7 +1,7 @@
 use super::command_utils::{extract_server_host, resolve_allowed_server_ips};
 use super::payloads::{
     format_device_action_context, parse_device_action_payload, parse_locate_payload,
-    DeviceActionPayload,
+    DeviceActionPayload, ForensicsPayload,
 };
 use super::sanitize::{
     sanitize_apt_package_name, sanitize_apt_package_version, sanitize_profile_id,
@@ -127,4 +127,24 @@ fn sanitize_windows_package_fields_reject_injection_and_accept_safe_values() {
         sanitize_windows_package_version("124.0.2478.67").expect("valid package version"),
         "124.0.2478.67"
     );
+}
+
+#[test]
+fn forensics_payload_merges_legacy_pid_and_target_pids() {
+    let payload: ForensicsPayload = serde_json::from_str(
+        r#"{"pid":123,"target_pids":[456,123,0],"memory_dump":true}"#,
+    )
+    .expect("valid payload");
+
+    assert!(payload.memory_dump);
+    assert_eq!(payload.effective_target_pids(), vec![456, 123]);
+}
+
+#[test]
+fn forensics_payload_defaults_to_snapshot_when_flags_missing() {
+    let payload: ForensicsPayload = serde_json::from_str("{}").expect("valid empty payload");
+
+    assert!(!payload.memory_dump);
+    assert!(!payload.wants_snapshot());
+    assert!(payload.effective_target_pids().is_empty());
 }

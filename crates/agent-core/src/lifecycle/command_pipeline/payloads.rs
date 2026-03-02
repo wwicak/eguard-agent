@@ -30,13 +30,45 @@ pub(super) struct RestoreQuarantinePayload {
     pub(super) original_path: String,
 }
 
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "windows", target_os = "macos")), allow(dead_code))]
 #[derive(Debug, Deserialize, Default)]
 pub(super) struct ForensicsPayload {
+    #[serde(default)]
+    pub(super) memory_dump: bool,
+    #[serde(default)]
+    pub(super) process_list: bool,
+    #[serde(default)]
+    pub(super) network_connections: bool,
+    #[serde(default)]
+    pub(super) open_files: bool,
+    #[serde(default)]
+    pub(super) loaded_modules: bool,
+    #[serde(default)]
+    pub(super) target_pids: Vec<u32>,
     #[serde(default)]
     pub(super) pid: u32,
     #[serde(default)]
     pub(super) output_path: String,
+}
+
+impl ForensicsPayload {
+    pub(super) fn wants_snapshot(&self) -> bool {
+        self.process_list || self.network_connections || self.open_files || self.loaded_modules
+    }
+
+    pub(super) fn effective_target_pids(&self) -> Vec<u32> {
+        let mut out = Vec::new();
+        for pid in &self.target_pids {
+            if *pid == 0 || out.iter().any(|value| value == pid) {
+                continue;
+            }
+            out.push(*pid);
+        }
+        if self.pid != 0 && !out.iter().any(|value| *value == self.pid) {
+            out.push(self.pid);
+        }
+        out
+    }
 }
 
 #[derive(Debug, Deserialize, Default)]
