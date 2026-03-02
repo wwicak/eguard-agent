@@ -42,7 +42,7 @@ function Normalize-Mode([string]$Mode) {
 }
 
 function Build-WarmupSequence([int]$Count, [string]$PatternCsv) {
-    $pattern = Split-Csv $PatternCsv | ForEach-Object { Normalize-Mode $_ }
+    $pattern = @(Split-Csv $PatternCsv | ForEach-Object { Normalize-Mode $_ })
     if ($pattern.Count -eq 0) { throw 'ORDER_PATTERN must not be empty' }
 
     $result = New-Object System.Collections.Generic.List[string]
@@ -53,7 +53,7 @@ function Build-WarmupSequence([int]$Count, [string]$PatternCsv) {
 }
 
 function Build-MeasuredSequence([int]$PerMode, [string]$PatternCsv) {
-    $pattern = Split-Csv $PatternCsv | ForEach-Object { Normalize-Mode $_ }
+    $pattern = @(Split-Csv $PatternCsv | ForEach-Object { Normalize-Mode $_ })
     if ($pattern.Count -eq 0) { throw 'ORDER_PATTERN must not be empty' }
 
     $onCount = 0
@@ -349,7 +349,7 @@ function Invoke-Workload([string]$Scenario) {
 }
 
 New-Item -ItemType Directory -Path $OutRoot -Force | Out-Null
-$scenarios = Split-Csv $ScenariosCsv
+$scenarios = @(Split-Csv $ScenariosCsv)
 if ($scenarios.Count -eq 0) {
     throw 'No scenarios resolved from EGUARD_PERF_SCENARIOS'
 }
@@ -360,9 +360,11 @@ foreach ($scenario in $scenarios) {
     $scenarioDir = Join-Path $OutRoot $scenario
     New-Item -ItemType Directory -Path $scenarioDir -Force | Out-Null
 
-    $warmupSeq = Build-WarmupSequence -Count $WarmupRuns -PatternCsv $OrderPattern
-    $measuredSeq = Build-MeasuredSequence -PerMode $RunsPerMode -PatternCsv $OrderPattern
-    $sequence = @($warmupSeq + $measuredSeq)
+    $warmupSeq = @(Build-WarmupSequence -Count $WarmupRuns -PatternCsv $OrderPattern)
+    $measuredSeq = @(Build-MeasuredSequence -PerMode $RunsPerMode -PatternCsv $OrderPattern)
+    $sequence = @()
+    $sequence += $warmupSeq
+    $sequence += $measuredSeq
 
     $results = New-Object System.Collections.Generic.List[object]
     $measuredOnIndex = 0
@@ -422,7 +424,9 @@ foreach ($scenario in $scenarios) {
     }
 
     $rawJsonPath = Join-Path $scenarioDir 'raw.json'
-    ($results | ConvertTo-Json -Depth 8) + "`n" | Set-Content -Path $rawJsonPath -Encoding UTF8
+    $rows = @($results.ToArray())
+    $rawPayload = ($rows | ConvertTo-Json -Depth 8)
+    [System.IO.File]::WriteAllText($rawJsonPath, $rawPayload + "`n", (New-Object System.Text.UTF8Encoding($false)))
 
     $metadata = [ordered]@{
         scenario = $scenario
@@ -433,7 +437,8 @@ foreach ($scenario in $scenarios) {
         agent_process_name = $AgentProcessName
     }
     $metaPath = Join-Path $scenarioDir 'metadata.json'
-    ($metadata | ConvertTo-Json -Depth 5) + "`n" | Set-Content -Path $metaPath -Encoding UTF8
+    $metaPayload = ($metadata | ConvertTo-Json -Depth 5)
+    [System.IO.File]::WriteAllText($metaPath, $metaPayload + "`n", (New-Object System.Text.UTF8Encoding($false)))
 
     Write-Log "scenario=$scenario wrote $rawJsonPath"
 }

@@ -68,7 +68,7 @@ def overhead_pct(on_value: Optional[float], off_value: Optional[float]) -> Optio
 
 
 def load_rows(raw_file: pathlib.Path) -> List[Dict[str, Any]]:
-    payload = json.loads(raw_file.read_text(encoding="utf-8"))
+    payload = json.loads(raw_file.read_text(encoding="utf-8-sig"))
     if not isinstance(payload, list):
         raise ValueError(f"{raw_file} must contain a JSON array")
     rows: List[Dict[str, Any]] = []

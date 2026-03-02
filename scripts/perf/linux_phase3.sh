@@ -76,7 +76,7 @@ build_warmup_sequence() {
   while (( idx < count )); do
     local mode="${pattern[$(( idx % ${#pattern[@]} ))]}"
     printf '%s\n' "$mode"
-    ((idx++))
+    ((idx+=1))
   done
 }
 
@@ -100,10 +100,10 @@ build_measured_sequence() {
     for p in "${pattern[@]}"; do
       if [[ "$p" == "ON" && $on_count -lt $runs_per_mode ]]; then
         printf 'ON\n'
-        ((on_count++))
+        ((on_count+=1))
       elif [[ "$p" == "OFF" && $off_count -lt $runs_per_mode ]]; then
         printf 'OFF\n'
-        ((off_count++))
+        ((off_count+=1))
       fi
 
       if (( on_count >= runs_per_mode && off_count >= runs_per_mode )); then
