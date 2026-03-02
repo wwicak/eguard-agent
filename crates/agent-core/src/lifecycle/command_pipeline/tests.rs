@@ -131,10 +131,9 @@ fn sanitize_windows_package_fields_reject_injection_and_accept_safe_values() {
 
 #[test]
 fn forensics_payload_merges_legacy_pid_and_target_pids() {
-    let payload: ForensicsPayload = serde_json::from_str(
-        r#"{"pid":123,"target_pids":[456,123,0],"memory_dump":true}"#,
-    )
-    .expect("valid payload");
+    let payload: ForensicsPayload =
+        serde_json::from_str(r#"{"pid":123,"target_pids":[456,123,0],"memory_dump":true}"#)
+            .expect("valid payload");
 
     assert!(payload.memory_dump);
     assert_eq!(payload.effective_target_pids(), vec![456, 123]);

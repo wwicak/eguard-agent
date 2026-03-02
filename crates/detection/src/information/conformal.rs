@@ -61,9 +61,7 @@ impl ConformalCalibrator {
             return 1.0;
         }
         // scores is sorted ascending (see new()). Find first index where s >= score.
-        let idx = self
-            .scores
-            .partition_point(|&s| s < score);
+        let idx = self.scores.partition_point(|&s| s < score);
         let count_geq = n - idx;
         (count_geq as f64 + 1.0) / (n as f64 + 1.0)
     }

@@ -906,3 +906,79 @@
   - result detail reports snapshot file path under `C:\ProgramData\eGuard\forensics\snapshot-*.txt`
   - file verified on endpoint with process/network sections.
 
+---
+
+# Phase-3 performance gate automation (GitHub repo placement fix)
+
+## Plan
+- [x] Add phase-3 performance scripts under `/home/dimas/eguard-agent/scripts/perf/`.
+- [x] Add GitHub Actions workflow in `/home/dimas/eguard-agent/.github/workflows/performance-gate.yml`.
+- [x] Validate script syntax and summarize result.
+
+## Review
+- Added scripts:
+  - `scripts/perf/linux_phase3.sh`
+  - `scripts/perf/windows_phase3.ps1`
+  - `scripts/perf/summarize.py`
+  - `scripts/perf/gate.py`
+- Added workflow:
+  - `.github/workflows/performance-gate.yml`
+- Gate thresholds in `scripts/perf/gate.py` align with phase-3 plan profiles:
+  - provisional: Linux 12/30/1.0, Windows 6/12/1.0
+  - hard: Linux 8/20/1.0, Windows 5/8/1.0
+
+## Verification
+- `bash -n scripts/perf/linux_phase3.sh` ✅
+- `python3 -m py_compile scripts/perf/summarize.py scripts/perf/gate.py` ✅
+- `bash scripts/run_workflow_yaml_lint_ci.sh` ✅
+- Synthetic smoke:
+  - `python3 scripts/perf/summarize.py --input-root <tmp>` ✅
+  - `python3 scripts/perf/gate.py --summary <tmp>/summary.json --profile provisional` ✅ (PASS)
+- `pwsh` syntax check for `windows_phase3.ps1` ⚠️ skipped here (`pwsh` not installed in this environment).
+
+---
+
+# File-event performance hardening pass (coalesce/hash/backpressure/exclusions)
+
+## Plan
+- [x] Implement file-burst coalescing + dedup before deep analysis in telemetry pipeline.
+- [x] Implement churn-aware delayed file hashing (inode+mtime/size fingerprint with delayed finalize) in Linux enrichment cache.
+- [x] Implement strict budget mode under backlog pressure (sampling + hash-skip mode) and wire runtime controls.
+- [x] Add policy-driven expensive-check exclusions for noisy paths/processes and apply them at runtime.
+- [x] Add/adjust tests for sampling/coalescing/hash behavior and run targeted verification.
+
+## Review
+- Telemetry pipeline hardening (`crates/agent-core/src/lifecycle/telemetry_pipeline.rs`):
+  - added raw-event backlog queue instead of one-shot poll consumption,
+  - added file burst coalescing for repeated `file_write/file_open/file_rename/file_unlink` events,
+  - added adaptive dequeue sampling from backlog,
+  - added strict budget-mode activation based on backlog thresholds.
+- Runtime wiring (`crates/agent-core/src/lifecycle/runtime.rs`, `tick.rs`, `timing.rs`):
+  - new runtime knobs via env:
+    - `EGUARD_FILE_EVENT_COALESCE_WINDOW_MS`
+    - `EGUARD_FILE_EVENT_COALESCE_KEY_LIMIT`
+    - `EGUARD_STRICT_BUDGET_PENDING_THRESHOLD`
+    - `EGUARD_STRICT_BUDGET_RAW_BACKLOG_THRESHOLD`
+    - `EGUARD_EXPENSIVE_CHECK_EXCLUDED_PATHS`
+    - `EGUARD_EXPENSIVE_CHECK_EXCLUDED_PROCESSES`
+    - `EGUARD_FILE_HASH_FINALIZE_DELAY_MS`
+  - strict budget mode now toggles enrichment cache hash behavior per tick.
+  - sampling stride now reacts to backlog even without eBPF drop counters.
+- Linux enrichment cache hardening (`crates/platform-linux/src/lib.rs`):
+  - replaced simple `mtime+size` hash cache with fingerprint state (`inode+mtime(ns)+size`) and pending/stable states,
+  - added delayed hash finalization for churn-aware file hashes,
+  - added expensive-check exclusions for paths/processes,
+  - added strict budget-mode hash skipping for file paths.
+- Policy wiring (`crates/agent-core/src/lifecycle/control_plane_pipeline.rs`):
+  - added policy-driven updates for:
+    - `detection_expensive_check_excluded_paths` / `detection_hot_path_exclusions`
+    - `detection_expensive_check_excluded_processes` / `detection_hot_process_exclusions`
+    - `file_event_coalesce_window_ms`
+    - `strict_budget_pending_threshold`
+    - `strict_budget_raw_backlog_threshold`
+
+## Verification
+- `cargo fmt --all` ✅
+- `cargo test -p platform-linux --quiet` ✅ (79 passed)
+- `cargo test -p agent-core tests_ebpf_policy -- --nocapture` ✅ (11 passed in module)
+

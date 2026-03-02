@@ -17,8 +17,8 @@ use super::{
     ControlPlaneTaskKind, PendingControlPlaneSend, PendingControlPlaneTask, TickEvaluation,
     BASELINE_UPLOAD_BATCH_SIZE, BASELINE_UPLOAD_INTERVAL_SECS, BASELINE_UPLOAD_MAX_BYTES,
     CAMPAIGN_FETCH_INTERVAL_SECS, CONTROL_PLANE_TASK_EXECUTION_BUDGET_PER_TICK,
-    CONTROL_PLANE_TASK_QUEUE_CAPACITY, FLEET_BASELINE_FETCH_INTERVAL_SECS,
-    HEARTBEAT_INTERVAL_SECS, IOC_SIGNAL_BUFFER_CAP, IOC_SIGNAL_UPLOAD_INTERVAL_SECS,
+    CONTROL_PLANE_TASK_QUEUE_CAPACITY, FLEET_BASELINE_FETCH_INTERVAL_SECS, HEARTBEAT_INTERVAL_SECS,
+    IOC_SIGNAL_BUFFER_CAP, IOC_SIGNAL_UPLOAD_INTERVAL_SECS,
 };
 
 fn baseline_upload_max_bytes() -> usize {
@@ -286,10 +286,7 @@ impl AgentRuntime {
     fn baseline_upload_due(&self, now_unix: i64) -> bool {
         if !self.baseline_upload_enabled
             || self.dirty_baseline_keys.is_empty()
-            || !rollout_allows(
-                &self.config.agent_id,
-                self.baseline_upload_canary_percent,
-            )
+            || !rollout_allows(&self.config.agent_id, self.baseline_upload_canary_percent)
         {
             return false;
         }
@@ -786,6 +783,98 @@ impl AgentRuntime {
                     );
                 }
 
+                if let Some(arr) = raw
+                    .get("detection_expensive_check_excluded_paths")
+                    .or_else(|| raw.get("detection_hot_path_exclusions"))
+                {
+                    if let Ok(paths) = serde_json::from_value::<Vec<String>>(arr.clone()) {
+                        self.expensive_check_excluded_paths = paths;
+                    } else if let Some(csv) = arr.as_str() {
+                        self.expensive_check_excluded_paths = csv
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect();
+                    }
+                    self.enrichment_cache.set_expensive_check_exclusions(
+                        self.expensive_check_excluded_paths.clone(),
+                        self.expensive_check_excluded_processes.clone(),
+                    );
+                    info!(
+                        count = self.expensive_check_excluded_paths.len(),
+                        "updated expensive-check path exclusions from policy"
+                    );
+                }
+
+                if let Some(arr) = raw
+                    .get("detection_expensive_check_excluded_processes")
+                    .or_else(|| raw.get("detection_hot_process_exclusions"))
+                {
+                    if let Ok(processes) = serde_json::from_value::<Vec<String>>(arr.clone()) {
+                        self.expensive_check_excluded_processes = processes;
+                    } else if let Some(csv) = arr.as_str() {
+                        self.expensive_check_excluded_processes = csv
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect();
+                    }
+                    self.enrichment_cache.set_expensive_check_exclusions(
+                        self.expensive_check_excluded_paths.clone(),
+                        self.expensive_check_excluded_processes.clone(),
+                    );
+                    info!(
+                        count = self.expensive_check_excluded_processes.len(),
+                        "updated expensive-check process exclusions from policy"
+                    );
+                }
+
+                if let Some(ms) = raw
+                    .get("file_event_coalesce_window_ms")
+                    .and_then(|v| v.as_u64())
+                {
+                    self.file_event_coalesce_window_ns = ms.max(50).saturating_mul(1_000_000);
+                    info!(
+                        file_event_coalesce_window_ms = ms.max(50),
+                        "updated file-event coalesce window from policy"
+                    );
+                }
+
+                if let Some(value) = raw
+                    .get("strict_budget_pending_threshold")
+                    .and_then(|v| v.as_u64())
+                {
+                    self.strict_budget_pending_threshold = (value as usize).max(64);
+                    info!(
+                        strict_budget_pending_threshold = self.strict_budget_pending_threshold,
+                        "updated strict-budget pending threshold from policy"
+                    );
+                }
+
+                if let Some(value) = raw
+                    .get("strict_budget_raw_backlog_threshold")
+                    .and_then(|v| v.as_u64())
+                {
+                    self.strict_budget_raw_backlog_threshold = (value as usize).max(32);
+                    info!(
+                        strict_budget_raw_backlog_threshold =
+                            self.strict_budget_raw_backlog_threshold,
+                        "updated strict-budget raw backlog threshold from policy"
+                    );
+                }
+
+                if let Some(value) = raw
+                    .get("raw_event_backlog_cap")
+                    .or_else(|| raw.get("detection_raw_event_backlog_cap"))
+                    .and_then(|v| v.as_u64())
+                {
+                    self.raw_event_backlog_cap = (value as usize).max(256);
+                    info!(
+                        raw_event_backlog_cap = self.raw_event_backlog_cap,
+                        "updated raw-event backlog cap from policy"
+                    );
+                }
+
                 // Bundle public key — server distributes Ed25519 key via policy.
                 if let Some(key_hex) = raw.get("bundle_public_key").and_then(|v| v.as_str()) {
                     let key_hex = key_hex.trim();
@@ -815,7 +904,10 @@ impl AgentRuntime {
                             .filter(|s| !s.is_empty())
                             .collect();
                     }
-                    info!(count = self.fim_policy.watched_paths.len(), "updated FIM watched paths from policy");
+                    info!(
+                        count = self.fim_policy.watched_paths.len(),
+                        "updated FIM watched paths from policy"
+                    );
                 }
                 if let Some(arr) = raw.get("fim_excluded_paths") {
                     if let Ok(paths) = serde_json::from_value::<Vec<String>>(arr.clone()) {
@@ -827,21 +919,33 @@ impl AgentRuntime {
                             .filter(|s| !s.is_empty())
                             .collect();
                     }
-                    info!(count = self.fim_policy.excluded_paths.len(), "updated FIM excluded paths from policy");
+                    info!(
+                        count = self.fim_policy.excluded_paths.len(),
+                        "updated FIM excluded paths from policy"
+                    );
                 }
                 if let Some(v) = raw.get("fim_scan_interval_secs").and_then(|v| v.as_u64()) {
                     self.fim_policy.scan_interval_secs = v.max(60);
-                    info!(fim_scan_interval_secs = self.fim_policy.scan_interval_secs, "updated FIM scan interval from policy");
+                    info!(
+                        fim_scan_interval_secs = self.fim_policy.scan_interval_secs,
+                        "updated FIM scan interval from policy"
+                    );
                 }
 
                 // --- Feature policy: USB Control ---
                 if let Some(v) = raw.get("usb_storage_blocked").and_then(|v| v.as_bool()) {
                     self.usb_policy.storage_blocked = v;
-                    info!(usb_storage_blocked = v, "updated USB storage blocked from policy");
+                    info!(
+                        usb_storage_blocked = v,
+                        "updated USB storage blocked from policy"
+                    );
                 }
                 if let Some(v) = raw.get("usb_network_blocked").and_then(|v| v.as_bool()) {
                     self.usb_policy.network_blocked = v;
-                    info!(usb_network_blocked = v, "updated USB network blocked from policy");
+                    info!(
+                        usb_network_blocked = v,
+                        "updated USB network blocked from policy"
+                    );
                 }
                 if let Some(v) = raw.get("usb_log_all").and_then(|v| v.as_bool()) {
                     self.usb_policy.log_all = v;
@@ -857,13 +961,19 @@ impl AgentRuntime {
                             .filter(|s| !s.is_empty())
                             .collect();
                     }
-                    info!(count = self.usb_policy.allowed_vendor_ids.len(), "updated USB allowed vendor IDs from policy");
+                    info!(
+                        count = self.usb_policy.allowed_vendor_ids.len(),
+                        "updated USB allowed vendor IDs from policy"
+                    );
                 }
 
                 // --- Feature policy: Deception ---
                 if let Some(v) = raw.get("deception_enabled").and_then(|v| v.as_bool()) {
                     self.deception_policy.enabled = v;
-                    info!(deception_enabled = v, "updated deception enabled from policy");
+                    info!(
+                        deception_enabled = v,
+                        "updated deception enabled from policy"
+                    );
                 }
                 if let Some(arr) = raw.get("deception_custom_paths") {
                     if let Ok(paths) = serde_json::from_value::<Vec<String>>(arr.clone()) {
@@ -875,7 +985,10 @@ impl AgentRuntime {
                             .filter(|s| !s.is_empty())
                             .collect();
                     }
-                    info!(count = self.deception_policy.custom_paths.len(), "updated deception custom paths from policy");
+                    info!(
+                        count = self.deception_policy.custom_paths.len(),
+                        "updated deception custom paths from policy"
+                    );
                 }
 
                 // --- Feature policy: Threat Hunting ---
@@ -885,23 +998,35 @@ impl AgentRuntime {
                 }
                 if let Some(v) = raw.get("hunting_interval_secs").and_then(|v| v.as_u64()) {
                     self.hunting_policy.interval_secs = v.max(300);
-                    info!(hunting_interval_secs = self.hunting_policy.interval_secs, "updated hunting interval from policy");
+                    info!(
+                        hunting_interval_secs = self.hunting_policy.interval_secs,
+                        "updated hunting interval from policy"
+                    );
                 }
 
                 // --- Feature policy: Zero Trust ---
                 if let Some(v) = raw.get("zero_trust_enabled").and_then(|v| v.as_bool()) {
                     self.zero_trust_policy.enabled = v;
-                    info!(zero_trust_enabled = v, "updated zero trust enabled from policy");
+                    info!(
+                        zero_trust_enabled = v,
+                        "updated zero trust enabled from policy"
+                    );
                 }
-                if let Some(v) = raw.get("zero_trust_quarantine_threshold").and_then(|v| v.as_u64())
+                if let Some(v) = raw
+                    .get("zero_trust_quarantine_threshold")
+                    .and_then(|v| v.as_u64())
                 {
                     self.zero_trust_policy.quarantine_threshold = v.min(100) as u8;
                     info!(
-                        zero_trust_quarantine_threshold = self.zero_trust_policy.quarantine_threshold,
+                        zero_trust_quarantine_threshold =
+                            self.zero_trust_policy.quarantine_threshold,
                         "updated zero trust quarantine threshold from policy"
                     );
                 }
-                if let Some(v) = raw.get("zero_trust_restrict_threshold").and_then(|v| v.as_u64()) {
+                if let Some(v) = raw
+                    .get("zero_trust_restrict_threshold")
+                    .and_then(|v| v.as_u64())
+                {
                     self.zero_trust_policy.restrict_threshold = v.min(100) as u8;
                     info!(
                         zero_trust_restrict_threshold = self.zero_trust_policy.restrict_threshold,

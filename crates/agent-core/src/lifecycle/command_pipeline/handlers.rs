@@ -342,22 +342,23 @@ impl AgentRuntime {
                 if target_pids.is_empty() {
                     exec.outcome = CommandOutcome::Ignored;
                     exec.status = "failed";
-                    exec.detail = "forensics memory_dump requested but no target pid provided"
-                        .to_string();
+                    exec.detail =
+                        "forensics memory_dump requested but no target pid provided".to_string();
                     return;
                 }
 
                 let mut success_count = 0usize;
                 let mut dump_errors: Vec<String> = Vec::new();
                 for (idx, pid) in target_pids.iter().enumerate() {
-                    let dump_path = if !payload.output_path.trim().is_empty() && target_pids.len() == 1 {
-                        payload.output_path.trim().to_string()
-                    } else {
-                        output_dir
-                            .join(format!("pid-{}-{}-{}.dmp", pid, now, idx))
-                            .to_string_lossy()
-                            .to_string()
-                    };
+                    let dump_path =
+                        if !payload.output_path.trim().is_empty() && target_pids.len() == 1 {
+                            payload.output_path.trim().to_string()
+                        } else {
+                            output_dir
+                                .join(format!("pid-{}-{}-{}.dmp", pid, now, idx))
+                                .to_string_lossy()
+                                .to_string()
+                        };
 
                     match collector.create_minidump(*pid, &dump_path) {
                         Ok(()) => {
@@ -372,10 +373,8 @@ impl AgentRuntime {
                 if success_count == 0 {
                     exec.outcome = CommandOutcome::Ignored;
                     exec.status = "failed";
-                    exec.detail = format!(
-                        "forensics memory dump failed: {}",
-                        dump_errors.join("; ")
-                    );
+                    exec.detail =
+                        format!("forensics memory dump failed: {}", dump_errors.join("; "));
                     return;
                 }
 

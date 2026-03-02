@@ -116,7 +116,8 @@ fn cmdline_information_consistency_between_layers() {
         ..Default::default()
     };
 
-    let features = layer5::MlFeatures::extract(&event, &signals, 0, 0, 0, 0, 0, &Default::default());
+    let features =
+        layer5::MlFeatures::extract(&event, &signals, 0, 0, 0, 0, 0, &Default::default());
     assert!((features.values[14] - normalized.renyi_h2).abs() < 1e-12);
     assert!((features.values[15] - normalized.compression_ratio).abs() < 1e-12);
     assert!((features.values[16] - normalized.min_entropy).abs() < 1e-12);
@@ -175,7 +176,8 @@ fn dns_entropy_feature_is_stable_and_high_for_dga_like_domains() {
         container_escape: false,
         container_privileged: false,
     };
-    let features = layer5::MlFeatures::extract(&event, &signals, 0, 0, 0, 0, 0, &Default::default());
+    let features =
+        layer5::MlFeatures::extract(&event, &signals, 0, 0, 0, 0, 0, &Default::default());
     let entropy_high = features.values[18];
     assert!(
         entropy_high > 0.5,
@@ -183,7 +185,8 @@ fn dns_entropy_feature_is_stable_and_high_for_dga_like_domains() {
     );
 
     event.dst_domain = Some("updates.example.org".to_string());
-    let features2 = layer5::MlFeatures::extract(&event, &signals, 0, 0, 0, 0, 0, &Default::default());
+    let features2 =
+        layer5::MlFeatures::extract(&event, &signals, 0, 0, 0, 0, 0, &Default::default());
     let entropy_low = features2.values[18];
     assert!(
         entropy_low < entropy_high,

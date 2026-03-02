@@ -280,3 +280,71 @@ fn enrichment_cache_uses_ootb_o1_lru_implementation_for_recency_updates() {
     assert!(src.contains("LruCache<u32, ProcessCacheEntry>"));
     assert!(src.contains("LruCache<String, FileHashCacheEntry>"));
 }
+
+#[test]
+fn churn_aware_hashing_delays_rehash_until_finalize_window_passes() {
+    let base = std::env::temp_dir().join(format!(
+        "eguard-platform-linux-hash-delay-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    fs::create_dir_all(&base).expect("create temp dir");
+
+    let file = base.join("payload.bin");
+    fs::write(&file, b"version-1").expect("write v1");
+    let path = file.to_string_lossy().to_string();
+
+    let mut cache = EnrichmentCache::new(128, 128);
+    cache.set_hash_finalize_delay_ms(5_000);
+
+    let stable_hash = cache.hash_for_path(&path).expect("initial hash");
+
+    fs::write(&file, b"version-2-with-more-bytes").expect("write v2");
+    let deferred_hash = cache
+        .hash_for_path_churn_aware(&path)
+        .expect("deferred hash returns previous stable value");
+    assert_eq!(deferred_hash, stable_hash);
+
+    cache.set_hash_finalize_delay_ms(0);
+    let finalized_hash = cache
+        .hash_for_path_churn_aware(&path)
+        .expect("finalized hash");
+    assert_ne!(finalized_hash, stable_hash);
+
+    let _ = fs::remove_file(file);
+    let _ = fs::remove_dir(base);
+}
+
+#[test]
+fn expensive_check_exclusions_skip_file_hash_on_noisy_paths() {
+    let base = std::env::temp_dir().join(format!(
+        "eguard-platform-linux-noisy-cache-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    fs::create_dir_all(&base).expect("create temp dir");
+
+    let noisy_dir = base.join("build-cache");
+    fs::create_dir_all(&noisy_dir).expect("create noisy dir");
+    let file = noisy_dir.join("artifact.tmp");
+    fs::write(&file, b"payload").expect("write file");
+
+    let mut cache = EnrichmentCache::new(128, 128);
+    cache.set_expensive_check_exclusions(vec!["build-cache".to_string()], Vec::new());
+
+    let raw = RawEvent {
+        event_type: EventType::FileWrite,
+        pid: std::process::id(),
+        uid: 0,
+        ts_ns: 1,
+        payload: format!("path={};fd=3;size=7", file.to_string_lossy()),
+    };
+    let enriched = enrich_event_with_cache(raw, &mut cache);
+    assert!(enriched.file_sha256.is_none());
+
+    let _ = fs::remove_dir_all(base);
+}

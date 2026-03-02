@@ -327,9 +327,10 @@ fn ebpf_resource_budget_workflow_runs_harness_and_publishes_artifacts() {
 
 #[test]
 // AC-EBP-055 AC-RES-021
-fn sampling_stride_increases_only_when_drop_backpressure_is_observed() {
+fn sampling_stride_scales_with_backlog_and_drop_backpressure() {
     assert_eq!(compute_sampling_stride(0, 0), 1);
-    assert_eq!(compute_sampling_stride(9_000, 0), 1);
+    assert_eq!(compute_sampling_stride(1_500, 0), 2);
+    assert_eq!(compute_sampling_stride(9_000, 0), 8);
     assert_eq!(compute_sampling_stride(1_500, 1), 2);
     assert_eq!(compute_sampling_stride(5_000, 7), 4);
     assert_eq!(compute_sampling_stride(9_000, 3), 8);
@@ -389,6 +390,102 @@ fn evaluate_tick_drains_polled_replay_events_across_multiple_ticks() {
     assert!(fourth.is_none());
 
     let _ = std::fs::remove_file(replay_path);
+}
+
+#[test]
+fn file_event_burst_coalescing_drops_repeated_writes_within_short_window() {
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    cfg.server_addr = "127.0.0.1:1".to_string();
+
+    let replay_path = std::env::temp_dir().join(format!(
+        "eguard-agent-replay-coalesce-{}.ndjson",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+
+    let file_path = "/tmp/eguard-coalesce-target.bin";
+    let replay = [
+        format!(r#"{{"event_type":"file_write","pid":9101,"uid":0,"ts_ns":1700000000000000000,"file_path":"{}","size":64}}"#, file_path),
+        format!(r#"{{"event_type":"file_write","pid":9101,"uid":0,"ts_ns":1700000000000100000,"file_path":"{}","size":64}}"#, file_path),
+        format!(r#"{{"event_type":"file_write","pid":9101,"uid":0,"ts_ns":1700000000000200000,"file_path":"{}","size":64}}"#, file_path),
+    ]
+    .join("\n");
+    std::fs::write(&replay_path, replay).expect("write replay file");
+
+    let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+    runtime.ebpf_engine =
+        platform_linux::EbpfEngine::from_replay(&replay_path).expect("replay backend");
+    runtime.file_event_coalesce_window_ns = 5_000_000_000; // 5s
+
+    let first = runtime.evaluate_tick(1_700_000_000).expect("tick 1");
+    let second = runtime.evaluate_tick(1_700_000_001).expect("tick 2");
+    let third = runtime.evaluate_tick(1_700_000_002).expect("tick 3");
+
+    assert!(first.is_some());
+    assert!(second.is_none());
+    assert!(third.is_none());
+
+    let _ = std::fs::remove_file(replay_path);
+}
+
+#[test]
+fn strict_budget_mode_skips_expensive_file_hashing_when_backlog_is_high() {
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    cfg.server_addr = "127.0.0.1:1".to_string();
+
+    let replay_path = std::env::temp_dir().join(format!(
+        "eguard-agent-replay-strict-budget-{}.ndjson",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+
+    let target_file = std::env::temp_dir().join(format!(
+        "eguard-strict-budget-target-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    std::fs::write(&target_file, b"payload").expect("write target file");
+
+    let replay = format!(
+        r#"{{"event_type":"file_write","pid":9201,"uid":0,"ts_ns":1700000005000000000,"file_path":"{}","size":64}}"#,
+        target_file.to_string_lossy()
+    );
+    std::fs::write(&replay_path, replay).expect("write replay file");
+
+    let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+    runtime.ebpf_engine =
+        platform_linux::EbpfEngine::from_replay(&replay_path).expect("replay backend");
+    runtime.strict_budget_pending_threshold = 1;
+    runtime
+        .buffer
+        .enqueue(EventEnvelope {
+            agent_id: "agent-backlog".to_string(),
+            event_type: "telemetry".to_string(),
+            severity: String::new(),
+            rule_name: String::new(),
+            payload_json: "{}".to_string(),
+            created_at_unix: 1,
+        })
+        .expect("enqueue backlog marker");
+
+    let eval = runtime
+        .evaluate_tick(1_700_000_005)
+        .expect("evaluate tick")
+        .expect("tick should produce event");
+
+    assert!(runtime.strict_budget_mode);
+    assert!(eval.detection_event.file_hash.is_none());
+
+    let _ = std::fs::remove_file(replay_path);
+    let _ = std::fs::remove_file(target_file);
 }
 
 #[tokio::test]

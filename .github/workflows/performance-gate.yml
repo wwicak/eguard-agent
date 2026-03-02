@@ -1,0 +1,109 @@
+name: performance-gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      gate_profile:
+        description: "Gate profile to enforce (provisional|hard)"
+        required: false
+        default: provisional
+      headline_scenario:
+        description: "Scenario used for headline + gate checks"
+        required: false
+        default: ransomware
+  schedule:
+    - cron: "15 3 * * *"
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+env:
+  PERF_DATE: "${{ github.run_id }}-${{ github.run_attempt }}"
+
+jobs:
+  benchmark-linux:
+    name: Benchmark Linux endpoint
+    runs-on: [self-hosted, linux, eguard-perf-linux]
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Linux phase-3 benchmark
+        shell: bash
+        run: |
+          chmod +x scripts/perf/linux_phase3.sh
+          EGUARD_PERF_DATE="${PERF_DATE}" \
+          EGUARD_PERF_OUT_DIR="${GITHUB_WORKSPACE}/artifacts/perf/${PERF_DATE}/linux" \
+          scripts/perf/linux_phase3.sh
+
+      - name: Upload Linux raw artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-linux-raw
+          path: artifacts/perf/${{ env.PERF_DATE }}/linux
+          if-no-files-found: error
+
+  benchmark-windows:
+    name: Benchmark Windows endpoint
+    runs-on: [self-hosted, windows, eguard-perf-windows]
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Windows phase-3 benchmark
+        shell: pwsh
+        run: |
+          $env:EGUARD_PERF_DATE = "${env:PERF_DATE}"
+          $env:EGUARD_PERF_OUT_DIR = "${env:GITHUB_WORKSPACE}/artifacts/perf/${env:PERF_DATE}/windows"
+          ./scripts/perf/windows_phase3.ps1
+
+      - name: Upload Windows raw artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-windows-raw
+          path: artifacts/perf/${{ env.PERF_DATE }}/windows
+          if-no-files-found: error
+
+  summarize-and-gate:
+    name: Summarize + enforce performance gate
+    needs: [benchmark-linux, benchmark-windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Linux artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: perf-linux-raw
+          path: artifacts/perf/${{ env.PERF_DATE }}/linux
+
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: perf-windows-raw
+          path: artifacts/perf/${{ env.PERF_DATE }}/windows
+
+      - name: Build summary + report
+        shell: bash
+        run: |
+          python3 scripts/perf/summarize.py \
+            --input-root "artifacts/perf/${PERF_DATE}" \
+            --headline-scenario "${{ github.event.inputs.headline_scenario || 'ransomware' }}"
+
+      - name: Enforce gate
+        shell: bash
+        run: |
+          python3 scripts/perf/gate.py \
+            --summary "artifacts/perf/${PERF_DATE}/summary.json" \
+            --profile "${{ github.event.inputs.gate_profile || 'provisional' }}"
+
+      - name: Upload summary artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-summary
+          path: |
+            artifacts/perf/${{ env.PERF_DATE }}/summary.json
+            artifacts/perf/${{ env.PERF_DATE }}/report.md

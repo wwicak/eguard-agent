@@ -74,7 +74,8 @@ impl AgentRuntime {
             }
         }
         for detection in detections {
-            self.handle_memory_scan_detection(&detection, now_unix).await;
+            self.handle_memory_scan_detection(&detection, now_unix)
+                .await;
         }
     }
 

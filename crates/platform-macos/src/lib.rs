@@ -118,6 +118,17 @@ impl EnrichmentCache {
         }
     }
 
+    pub fn set_budget_mode(&mut self, _enabled: bool) {}
+
+    pub fn set_hash_finalize_delay_ms(&mut self, _delay_ms: u64) {}
+
+    pub fn set_expensive_check_exclusions(
+        &mut self,
+        _path_exclusions: Vec<String>,
+        _process_exclusions: Vec<String>,
+    ) {
+    }
+
     pub fn process_cache_len(&self) -> usize {
         self.process_cache.len()
     }

@@ -133,9 +133,7 @@ impl ForensicsCollector {
             };
 
             let loaded_modules = if include_loaded_modules {
-                run_powershell_capture(
-                    "driverquery /FO CSV /NH | Out-String",
-                )
+                run_powershell_capture("driverquery /FO CSV /NH | Out-String")
             } else {
                 String::new()
             };

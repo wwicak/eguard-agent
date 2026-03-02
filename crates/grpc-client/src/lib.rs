@@ -17,7 +17,7 @@ pub use retry::RetryPolicy;
 pub use types::{
     BaselineProfileEnvelope, CampaignAlert, CampaignAlertResponse, CertificatePolicyEnvelope,
     CommandEnvelope, ComplianceCheckEnvelope, ComplianceEnvelope, EnrollmentEnvelope,
-    EnrollmentResultEnvelope, EventEnvelope, FleetBaselineEnvelope, InventoryEnvelope,
-    IocSignal, IocSignalBatch, PolicyEnvelope, ResponseEnvelope, ServerState,
-    ThreatIntelVersionEnvelope, TlsConfig, TransportMode,
+    EnrollmentResultEnvelope, EventEnvelope, FleetBaselineEnvelope, InventoryEnvelope, IocSignal,
+    IocSignalBatch, PolicyEnvelope, ResponseEnvelope, ServerState, ThreatIntelVersionEnvelope,
+    TlsConfig, TransportMode,
 };

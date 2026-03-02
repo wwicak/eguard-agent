@@ -292,7 +292,10 @@ fn bayesian_all_zero_fleet_distribution_returns_false() {
     dist.insert("file_open".to_string(), f64::NAN);
 
     let seeded = store.seed_from_fleet_baseline("bad:fleet", &dist, 1000);
-    assert!(!seeded, "all-zero/invalid fleet distribution must be rejected");
+    assert!(
+        !seeded,
+        "all-zero/invalid fleet distribution must be rejected"
+    );
 }
 
 #[test]

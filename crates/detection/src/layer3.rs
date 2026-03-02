@@ -275,7 +275,6 @@ impl AnomalyEngine {
     pub(crate) fn debug_window_sample_count(&self, process_key: &str) -> usize {
         self.windows.get(process_key).map(|w| w.n).unwrap_or(0)
     }
-
 }
 
 impl Default for AnomalyEngine {

@@ -76,9 +76,7 @@ impl BeaconingTracker {
         self.tick += 1;
 
         // LRU eviction when at capacity
-        if !self.destinations.contains_key(dst_key)
-            && self.destinations.len() >= MAX_DESTINATIONS
-        {
+        if !self.destinations.contains_key(dst_key) && self.destinations.len() >= MAX_DESTINATIONS {
             if let Some(oldest_key) = self
                 .destinations
                 .iter()

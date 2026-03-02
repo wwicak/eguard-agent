@@ -184,10 +184,7 @@ const BUILTIN_COVERAGE: &[(&str, &str)] = &[
 /// Generate a coverage report given a set of technique IDs detected by
 /// dynamically-loaded rules (e.g., SIGMA rules). The built-in detection
 /// layers are always included.
-pub fn generate_coverage(
-    detected_techniques: &HashSet<String>,
-    now: i64,
-) -> AttackCoverageReport {
+pub fn generate_coverage(detected_techniques: &HashSet<String>, now: i64) -> AttackCoverageReport {
     // Merge built-in and dynamic coverage.
     let mut coverage_map: HashMap<String, Vec<String>> = HashMap::new();
     for &(tid, source) in BUILTIN_COVERAGE {
@@ -323,10 +320,7 @@ mod tests {
         // At least some techniques should be uncovered without SIGMA rules.
         assert!(!gaps.is_empty());
         // Every gap should be a valid technique ID from the catalog.
-        let catalog: HashSet<&str> = CRITICAL_TECHNIQUES
-            .iter()
-            .map(|&(_, tid, _)| tid)
-            .collect();
+        let catalog: HashSet<&str> = CRITICAL_TECHNIQUES.iter().map(|&(_, tid, _)| tid).collect();
         for gap in &gaps {
             assert!(catalog.contains(gap.as_str()), "unexpected gap: {gap}");
         }

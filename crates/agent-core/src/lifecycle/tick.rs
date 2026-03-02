@@ -75,6 +75,8 @@ impl AgentRuntime {
             return Ok(None);
         };
 
+        self.enrichment_cache
+            .set_budget_mode(self.strict_budget_mode);
         let enriched = enrich_event_with_cache(raw, &mut self.enrichment_cache);
 
         let detection_event = to_detection_event(&enriched, now_unix);
@@ -84,9 +86,7 @@ impl AgentRuntime {
         let mut detection_outcome = self.detection_state.process_event(&detection_event)?;
 
         // Buffer IOC signals for cross-endpoint campaign correlation.
-        if detection_outcome.signals.z1_exact_ioc
-            || detection_outcome.signals.yara_hit
-        {
+        if detection_outcome.signals.z1_exact_ioc || detection_outcome.signals.yara_hit {
             for sig in &detection_outcome.layer1.matched_signatures {
                 let ioc_type = Self::classify_ioc_type(sig);
                 self.buffer_ioc_signal(

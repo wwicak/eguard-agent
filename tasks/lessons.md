@@ -25,3 +25,4 @@
 - **Before re-triggering GitHub Actions repeatedly, run the same verification script locally first**: use `./scripts/run_verification_suite_ci.sh` (prefer `EGUARD_VERIFICATION_PROFILE=fast` for pre-push) to eliminate obvious clippy/test failures and reduce CI churn.
 - **Never hardcode lab/real server IPs in tests**: use loopback (`127.0.0.1`) or clearly synthetic placeholders in test fixtures to avoid environment coupling and operator confusion.
 - **Honor explicit CI runtime budgets**: if user sets a max pipeline time (e.g., 15 minutes), implement a strict fast profile and step timeout first, then keep heavy fuzz/Miri/guardrail checks in scheduled/release full profile.
+- **Validate repo ownership before adding CI workflow files**: when working across `fe_eguard` and `eguard-agent`, place `.github/workflows/*` only in the GitHub-backed repo (`eguard-agent`) and keep server-local automation in `fe_eguard` only when explicitly needed.

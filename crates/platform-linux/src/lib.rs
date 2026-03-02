@@ -86,17 +86,43 @@ struct ProcessCacheEntry {
     last_seen_ns: u64,
 }
 
+const DEFAULT_HASH_FINALIZE_DELAY_MS: u64 = 1_200;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileFingerprint {
+    inode: u64,
+    mtime_secs: i64,
+    mtime_nsecs: i64,
+    size_bytes: u64,
+}
+
+#[derive(Debug, Clone)]
+struct FilePendingFingerprint {
+    fingerprint: FileFingerprint,
+    first_seen_ns: u64,
+}
+
 #[derive(Debug, Clone)]
 struct FileHashCacheEntry {
-    mtime_secs: i64,
-    size_bytes: u64,
-    sha256: String,
+    stable_fingerprint: Option<FileFingerprint>,
+    sha256: Option<String>,
+    pending: Option<FilePendingFingerprint>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HashMode {
+    Immediate,
+    ChurnAware,
 }
 
 #[derive(Debug)]
 pub struct EnrichmentCache {
     process_cache: LruCache<u32, ProcessCacheEntry>,
     file_hash_cache: LruCache<String, FileHashCacheEntry>,
+    hash_finalize_delay_ns: u64,
+    strict_budget_mode: bool,
+    expensive_path_exclusions: Vec<String>,
+    expensive_process_exclusions: Vec<String>,
 }
 
 impl Default for EnrichmentCache {
@@ -110,7 +136,28 @@ impl EnrichmentCache {
         Self {
             process_cache: LruCache::new(capacity_from(max_process_entries)),
             file_hash_cache: LruCache::new(capacity_from(max_file_hash_entries)),
+            hash_finalize_delay_ns: DEFAULT_HASH_FINALIZE_DELAY_MS.saturating_mul(1_000_000),
+            strict_budget_mode: false,
+            expensive_path_exclusions: Vec::new(),
+            expensive_process_exclusions: Vec::new(),
         }
+    }
+
+    pub fn set_budget_mode(&mut self, enabled: bool) {
+        self.strict_budget_mode = enabled;
+    }
+
+    pub fn set_hash_finalize_delay_ms(&mut self, delay_ms: u64) {
+        self.hash_finalize_delay_ns = delay_ms.saturating_mul(1_000_000);
+    }
+
+    pub fn set_expensive_check_exclusions(
+        &mut self,
+        path_exclusions: Vec<String>,
+        process_exclusions: Vec<String>,
+    ) {
+        self.expensive_path_exclusions = normalize_exclusions(path_exclusions);
+        self.expensive_process_exclusions = normalize_exclusions(process_exclusions);
     }
 
     pub fn process_cache_len(&self) -> usize {
@@ -179,26 +226,94 @@ impl EnrichmentCache {
     }
 
     fn hash_for_path(&mut self, path: &str) -> Option<String> {
-        let metadata = fs::metadata(path).ok()?;
-        let mtime_secs = metadata.mtime();
-        let size_bytes = metadata.size();
+        self.hash_for_path_mode(path, HashMode::Immediate)
+    }
 
-        if let Some(cached) = self.file_hash_cache.get(path) {
-            if cached.mtime_secs == mtime_secs && cached.size_bytes == size_bytes {
-                return Some(cached.sha256.clone());
+    fn hash_for_path_churn_aware(&mut self, path: &str) -> Option<String> {
+        self.hash_for_path_mode(path, HashMode::ChurnAware)
+    }
+
+    fn hash_for_path_mode(&mut self, path: &str, mode: HashMode) -> Option<String> {
+        let metadata = fs::metadata(path).ok()?;
+        let fingerprint = FileFingerprint {
+            inode: metadata.ino(),
+            mtime_secs: metadata.mtime(),
+            mtime_nsecs: metadata.mtime_nsec(),
+            size_bytes: metadata.size(),
+        };
+
+        let now_ns = unix_now_ns();
+        let entry = self
+            .file_hash_cache
+            .get(path)
+            .cloned()
+            .unwrap_or(FileHashCacheEntry {
+                stable_fingerprint: None,
+                sha256: None,
+                pending: None,
+            });
+
+        if entry.stable_fingerprint == Some(fingerprint) {
+            return entry.sha256;
+        }
+
+        if matches!(mode, HashMode::Immediate) || self.hash_finalize_delay_ns == 0 {
+            return self.compute_and_commit_hash(path, fingerprint, None);
+        }
+
+        let mut next_entry = entry.clone();
+        match entry.pending {
+            Some(pending) if pending.fingerprint == fingerprint => {
+                if now_ns.saturating_sub(pending.first_seen_ns) >= self.hash_finalize_delay_ns {
+                    return self.compute_and_commit_hash(path, fingerprint, Some(next_entry));
+                }
+            }
+            _ => {
+                next_entry.pending = Some(FilePendingFingerprint {
+                    fingerprint,
+                    first_seen_ns: now_ns,
+                });
+                self.file_hash_cache.put(path.to_string(), next_entry);
             }
         }
 
+        entry.sha256
+    }
+
+    fn compute_and_commit_hash(
+        &mut self,
+        path: &str,
+        fingerprint: FileFingerprint,
+        existing_entry: Option<FileHashCacheEntry>,
+    ) -> Option<String> {
         let hash = compute_sha256_file(path).ok()?;
-        self.file_hash_cache.put(
-            path.to_string(),
-            FileHashCacheEntry {
-                mtime_secs,
-                size_bytes,
-                sha256: hash.clone(),
-            },
-        );
+        let mut entry = existing_entry.unwrap_or(FileHashCacheEntry {
+            stable_fingerprint: None,
+            sha256: None,
+            pending: None,
+        });
+        entry.stable_fingerprint = Some(fingerprint);
+        entry.sha256 = Some(hash.clone());
+        entry.pending = None;
+        self.file_hash_cache.put(path.to_string(), entry);
         Some(hash)
+    }
+
+    fn is_excluded_for_expensive_checks(
+        &self,
+        path: Option<&str>,
+        process_exe: Option<&str>,
+    ) -> bool {
+        let process_excluded = process_exe
+            .map(|value| matches_any_exclusion(value, &self.expensive_process_exclusions))
+            .unwrap_or(false);
+
+        if process_excluded {
+            return true;
+        }
+
+        path.map(|value| matches_any_exclusion(value, &self.expensive_path_exclusions))
+            .unwrap_or(false)
     }
 }
 
@@ -246,9 +361,7 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
             process_cmdline: payload_meta.command_line_hint,
             parent_process: None,
             parent_chain: Vec::new(),
-            file_path: payload_meta
-                .file_path
-                .or(payload_meta.file_path_secondary),
+            file_path: payload_meta.file_path.or(payload_meta.file_path_secondary),
             file_path_secondary: None,
             file_write: payload_meta.file_write,
             file_sha256: None,
@@ -265,21 +378,40 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
 
     let entry = cache.process_entry(&raw);
 
-    let process_exe_sha256 = entry
-        .process_exe
-        .as_deref()
-        .and_then(|path| cache.hash_for_path(path));
-    let file_sha256 = payload_meta
-        .file_path
-        .as_deref()
-        .and_then(|path| cache.hash_for_path(path));
-
-    let file_sha256 = file_sha256.or_else(|| {
-        payload_meta
-            .file_path_secondary
-            .as_deref()
-            .and_then(|path| cache.hash_for_path(path))
+    let process_exe_sha256 = entry.process_exe.as_deref().and_then(|path| {
+        if cache.is_excluded_for_expensive_checks(None, Some(path)) {
+            None
+        } else {
+            cache.hash_for_path(path)
+        }
     });
+
+    let file_sha256 = if cache.strict_budget_mode {
+        None
+    } else {
+        let primary = payload_meta.file_path.as_deref().and_then(|path| {
+            if cache.is_excluded_for_expensive_checks(Some(path), entry.process_exe.as_deref()) {
+                None
+            } else {
+                cache.hash_for_path_churn_aware(path)
+            }
+        });
+
+        primary.or_else(|| {
+            payload_meta
+                .file_path_secondary
+                .as_deref()
+                .and_then(|path| {
+                    if cache
+                        .is_excluded_for_expensive_checks(Some(path), entry.process_exe.as_deref())
+                    {
+                        None
+                    } else {
+                        cache.hash_for_path_churn_aware(path)
+                    }
+                })
+        })
+    };
 
     let mut parent_chain = entry.parent_chain.clone();
     if parent_chain.is_empty() {
@@ -322,9 +454,7 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
         process_cmdline: entry.process_cmdline.or(payload_meta.command_line_hint),
         parent_process: entry.parent_process,
         parent_chain,
-        file_path: payload_meta
-            .file_path
-            .or(payload_meta.file_path_secondary),
+        file_path: payload_meta.file_path.or(payload_meta.file_path_secondary),
         file_path_secondary: None,
         file_write: payload_meta.file_write,
         file_sha256,
@@ -623,6 +753,40 @@ fn collect_parent_chain(pid: u32, depth: usize) -> Vec<u32> {
         current = ppid;
     }
     out
+}
+
+fn normalize_exclusions(values: Vec<String>) -> Vec<String> {
+    values
+        .into_iter()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+        .collect()
+}
+
+fn matches_any_exclusion(value: &str, exclusions: &[String]) -> bool {
+    if exclusions.is_empty() {
+        return false;
+    }
+
+    let lowered = value.trim().to_ascii_lowercase();
+    if lowered.is_empty() {
+        return false;
+    }
+
+    let basename = lowered.rsplit('/').next().unwrap_or(&lowered);
+    exclusions.iter().any(|needle| {
+        lowered.starts_with(needle)
+            || lowered.contains(needle)
+            || basename == needle
+            || basename.contains(needle)
+    })
+}
+
+fn unix_now_ns() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos().min(u64::MAX as u128) as u64)
+        .unwrap_or(0)
 }
 
 fn capacity_from(raw: usize) -> NonZeroUsize {

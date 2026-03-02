@@ -355,9 +355,7 @@ fn platform_queries() -> Vec<HuntingQuery> {
             technique_id: Some("T1543.003".into()),
             interval_secs: 3600,
             check: HuntingCheck::PersistenceMechanism {
-                locations: vec![
-                    "C:\\Windows\\System32\\config\\SYSTEM".into(),
-                ],
+                locations: vec!["C:\\Windows\\System32\\config\\SYSTEM".into()],
             },
             last_run: 0,
             findings_count: 0,
@@ -406,9 +404,7 @@ fn platform_queries() -> Vec<HuntingQuery> {
             technique_id: Some("T1547.015".into()),
             interval_secs: 3600,
             check: HuntingCheck::PersistenceMechanism {
-                locations: vec![
-                    "~/Library/Application Support/com.apple.sharedfilelist/".into(),
-                ],
+                locations: vec!["~/Library/Application Support/com.apple.sharedfilelist/".into()],
             },
             last_run: 0,
             findings_count: 0,
@@ -433,22 +429,17 @@ fn platform_queries() -> Vec<HuntingQuery> {
 /// Fallback for platforms that are not Linux, Windows, or macOS.
 #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
 fn platform_queries() -> Vec<HuntingQuery> {
-    vec![
-        HuntingQuery {
-            name: "cron_persistence".into(),
-            description: "Detect unauthorized cron jobs".into(),
-            technique_id: Some("T1053.003".into()),
-            interval_secs: 3600,
-            check: HuntingCheck::PersistenceMechanism {
-                locations: vec![
-                    "/etc/crontab".into(),
-                    "/var/spool/cron/".into(),
-                ],
-            },
-            last_run: 0,
-            findings_count: 0,
+    vec![HuntingQuery {
+        name: "cron_persistence".into(),
+        description: "Detect unauthorized cron jobs".into(),
+        technique_id: Some("T1053.003".into()),
+        interval_secs: 3600,
+        check: HuntingCheck::PersistenceMechanism {
+            locations: vec!["/etc/crontab".into(), "/var/spool/cron/".into()],
         },
-    ]
+        last_run: 0,
+        findings_count: 0,
+    }]
 }
 
 // ---------------------------------------------------------------------------
@@ -461,22 +452,13 @@ mod tests {
 
     #[test]
     fn cryptominer_pattern_matches_xmrig() {
-        assert!(match_process_pattern(
-            "xmrig|minerd|cpuminer",
-            "xmrig"
-        ));
+        assert!(match_process_pattern("xmrig|minerd|cpuminer", "xmrig"));
         assert!(match_process_pattern(
             "xmrig|minerd|cpuminer",
             "/usr/bin/xmrig"
         ));
-        assert!(match_process_pattern(
-            "xmrig|minerd|cpuminer",
-            "XMRIG"
-        ));
-        assert!(!match_process_pattern(
-            "xmrig|minerd|cpuminer",
-            "firefox"
-        ));
+        assert!(match_process_pattern("xmrig|minerd|cpuminer", "XMRIG"));
+        assert!(!match_process_pattern("xmrig|minerd|cpuminer", "firefox"));
     }
 
     #[test]
@@ -544,8 +526,8 @@ mod tests {
             .collect();
         assert!(techniques.contains(&"T1496")); // Cryptomining
         assert!(techniques.contains(&"T1059.004")); // Reverse shell
-        // Platform-specific technique IDs vary, but at least the cross-platform
-        // ones are always present.
+                                                    // Platform-specific technique IDs vary, but at least the cross-platform
+                                                    // ones are always present.
     }
 
     #[test]
@@ -556,7 +538,10 @@ mod tests {
         assert!(queries.iter().any(|q| q.name == "reverse_shell_listener"));
         // Platform-specific queries should also be present (at least one).
         let platform_count = queries.len() - 2; // subtract cross-platform
-        assert!(platform_count >= 1, "expected at least 1 platform-specific query");
+        assert!(
+            platform_count >= 1,
+            "expected at least 1 platform-specific query"
+        );
     }
 
     #[test]
@@ -579,14 +564,7 @@ mod tests {
     fn process_check_min_count_respected() {
         let processes = vec!["sshd", "xmrig"];
         // Require at least 2 matches, but only 1 is present.
-        let findings = evaluate_process_check(
-            "xmrig|minerd",
-            2,
-            &processes,
-            "test",
-            None,
-            0,
-        );
+        let findings = evaluate_process_check("xmrig|minerd", 2, &processes, "test", None, 0);
         assert!(findings.is_empty());
     }
 

@@ -3,7 +3,7 @@ use std::collections::{BTreeSet, HashMap, VecDeque};
 use anyhow::Result;
 use tracing::{info, warn};
 
-use crate::platform::{EbpfEngine, EbpfStats, EnrichmentCache};
+use crate::platform::{EbpfEngine, EbpfStats, EnrichmentCache, RawEvent};
 use baseline::BaselineStore;
 use compliance::{CompliancePolicy, ComplianceResult, RemediationOutcome};
 use grpc_client::{
@@ -54,6 +54,16 @@ pub struct AgentRuntime {
     pub(super) runtime_mode: AgentMode,
     pub(super) last_ebpf_stats: EbpfStats,
     pub(super) recent_ebpf_drops: u64,
+    pub(super) raw_event_backlog: VecDeque<RawEvent>,
+    pub(super) raw_event_backlog_cap: usize,
+    pub(super) recent_file_event_keys: HashMap<String, u64>,
+    pub(super) file_event_coalesce_window_ns: u64,
+    pub(super) file_event_coalesce_key_limit: usize,
+    pub(super) strict_budget_mode: bool,
+    pub(super) strict_budget_pending_threshold: usize,
+    pub(super) strict_budget_raw_backlog_threshold: usize,
+    pub(super) expensive_check_excluded_paths: Vec<String>,
+    pub(super) expensive_check_excluded_processes: Vec<String>,
     pub(super) consecutive_send_failures: u32,
     pub(super) last_self_protect_check_unix: Option<i64>,
     pub(super) last_heartbeat_attempt_unix: Option<i64>,
@@ -175,7 +185,46 @@ impl AgentRuntime {
             .unwrap_or_default();
         let compliance_grace_state = HashMap::new();
         let ebpf_engine = init_ebpf_engine();
-        let enrichment_cache = EnrichmentCache::default();
+        let mut enrichment_cache = EnrichmentCache::default();
+
+        let file_event_coalesce_window_ms = std::env::var("EGUARD_FILE_EVENT_COALESCE_WINDOW_MS")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u64>().ok())
+            .unwrap_or(1_200);
+        let file_event_coalesce_key_limit = std::env::var("EGUARD_FILE_EVENT_COALESCE_KEY_LIMIT")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+            .unwrap_or(16_384)
+            .max(512);
+        let strict_budget_pending_threshold =
+            std::env::var("EGUARD_STRICT_BUDGET_PENDING_THRESHOLD")
+                .ok()
+                .and_then(|raw| raw.trim().parse::<usize>().ok())
+                .unwrap_or(2_048)
+                .max(64);
+        let strict_budget_raw_backlog_threshold =
+            std::env::var("EGUARD_STRICT_BUDGET_RAW_BACKLOG_THRESHOLD")
+                .ok()
+                .and_then(|raw| raw.trim().parse::<usize>().ok())
+                .unwrap_or(512)
+                .max(32);
+        let raw_event_backlog_cap = std::env::var("EGUARD_RAW_EVENT_BACKLOG_CAP")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+            .unwrap_or(32_768)
+            .max(256);
+        let expensive_check_excluded_paths = parse_csv_env("EGUARD_EXPENSIVE_CHECK_EXCLUDED_PATHS");
+        let expensive_check_excluded_processes =
+            parse_csv_env("EGUARD_EXPENSIVE_CHECK_EXCLUDED_PROCESSES");
+        let hash_finalize_delay_ms = std::env::var("EGUARD_FILE_HASH_FINALIZE_DELAY_MS")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u64>().ok())
+            .unwrap_or(1_200);
+        enrichment_cache.set_hash_finalize_delay_ms(hash_finalize_delay_ms);
+        enrichment_cache.set_expensive_check_exclusions(
+            expensive_check_excluded_paths.clone(),
+            expensive_check_excluded_processes.clone(),
+        );
 
         let buffer = if config.offline_buffer_backend.eq_ignore_ascii_case("memory") {
             EventBuffer::memory(config.offline_buffer_cap_bytes)
@@ -320,6 +369,16 @@ impl AgentRuntime {
             runtime_mode: initial_mode,
             last_ebpf_stats: EbpfStats::default(),
             recent_ebpf_drops: 0,
+            raw_event_backlog: VecDeque::new(),
+            raw_event_backlog_cap,
+            recent_file_event_keys: HashMap::new(),
+            file_event_coalesce_window_ns: file_event_coalesce_window_ms.saturating_mul(1_000_000),
+            file_event_coalesce_key_limit,
+            strict_budget_mode: false,
+            strict_budget_pending_threshold,
+            strict_budget_raw_backlog_threshold,
+            expensive_check_excluded_paths,
+            expensive_check_excluded_processes,
             consecutive_send_failures: 0,
             last_self_protect_check_unix: None,
             last_heartbeat_attempt_unix: None,
@@ -386,6 +445,9 @@ impl AgentRuntime {
             pending_event_bytes: self.buffer.pending_bytes(),
             consecutive_send_failures: self.consecutive_send_failures,
             recent_ebpf_drops: self.recent_ebpf_drops,
+            strict_budget_mode: self.strict_budget_mode,
+            raw_event_backlog_depth: self.raw_event_backlog.len(),
+            raw_event_backlog_cap: self.raw_event_backlog_cap,
             ebpf_failed_probe_count: self.last_ebpf_stats.failed_probes.len(),
             ebpf_attach_degraded: !self.last_ebpf_stats.failed_probes.is_empty(),
             ebpf_btf_available: self.last_ebpf_stats.btf_available,
@@ -520,4 +582,16 @@ fn parse_percentage_env(name: &str, default_value: u8) -> u8 {
         .and_then(|raw| raw.trim().parse::<u16>().ok())
         .map(|value| value.min(100) as u8)
         .unwrap_or(default_value.min(100))
+}
+
+fn parse_csv_env(name: &str) -> Vec<String> {
+    std::env::var(name)
+        .ok()
+        .map(|raw| {
+            raw.split(',')
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
 }

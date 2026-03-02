@@ -56,10 +56,7 @@ pub enum TrustAction {
 /// The aggregate score is the weighted average of all factor scores, clamped
 /// to the 0..=100 range.
 pub fn compute_score(factors: &[ScoreFactor], now_unix: i64) -> DeviceHealthScore {
-    let weighted_sum: f64 = factors
-        .iter()
-        .map(|f| f64::from(f.score) * f.weight)
-        .sum();
+    let weighted_sum: f64 = factors.iter().map(|f| f64::from(f.score) * f.weight).sum();
     let total_weight: f64 = factors.iter().map(|f| f.weight).sum();
 
     let raw = if total_weight > 0.0 {
@@ -272,27 +269,31 @@ mod tests {
     #[test]
     fn critical_cves_non_compliant_quarantine() {
         let factors = vec![
-            compliance_factor(false, false),   // 0
-            cve_factor(5),                     // 0 (100-100)
-            fim_factor(false, false),          // 0
-            detection_history_factor(5),       // 0
-            baseline_factor(false, false),     // 0
-            encryption_factor(false),          // 0
+            compliance_factor(false, false), // 0
+            cve_factor(5),                   // 0 (100-100)
+            fim_factor(false, false),        // 0
+            detection_history_factor(5),     // 0
+            baseline_factor(false, false),   // 0
+            encryption_factor(false),        // 0
         ];
         let result = compute_score(&factors, 1_700_000_000);
-        assert!(result.score < QUARANTINE_THRESHOLD, "expected < 40, got {}", result.score);
+        assert!(
+            result.score < QUARANTINE_THRESHOLD,
+            "expected < 40, got {}",
+            result.score
+        );
         assert_eq!(result.recommendation, TrustAction::Quarantine);
     }
 
     #[test]
     fn partial_compliance_learning_baseline_restrict() {
         let factors = vec![
-            compliance_factor(false, true),    // 50
-            cve_factor(1),                     // 80
-            fim_factor(false, true),           // 50
-            detection_history_factor(1),       // 80
-            baseline_factor(false, true),      // 50
-            encryption_factor(true),           // 100
+            compliance_factor(false, true), // 50
+            cve_factor(1),                  // 80
+            fim_factor(false, true),        // 50
+            detection_history_factor(1),    // 80
+            baseline_factor(false, true),   // 50
+            encryption_factor(true),        // 100
         ];
         let result = compute_score(&factors, 1_700_000_000);
         assert!(
@@ -306,25 +307,21 @@ mod tests {
     #[test]
     fn score_clamped_to_0_100() {
         // Even with pathological weights, output stays in range.
-        let factors = vec![
-            ScoreFactor {
-                name: "test".into(),
-                score: 100,
-                weight: 10.0,
-                detail: "max".into(),
-            },
-        ];
+        let factors = vec![ScoreFactor {
+            name: "test".into(),
+            score: 100,
+            weight: 10.0,
+            detail: "max".into(),
+        }];
         let result = compute_score(&factors, 0);
         assert!(result.score <= 100);
 
-        let factors_zero = vec![
-            ScoreFactor {
-                name: "test".into(),
-                score: 0,
-                weight: 10.0,
-                detail: "min".into(),
-            },
-        ];
+        let factors_zero = vec![ScoreFactor {
+            name: "test".into(),
+            score: 0,
+            weight: 10.0,
+            detail: "min".into(),
+        }];
         let result_zero = compute_score(&factors_zero, 0);
         assert_eq!(result_zero.score, 0);
     }
@@ -335,12 +332,12 @@ mod tests {
         // detection(100 * 0.15) + baseline(50 * 0.10) + encryption(100 * 0.05)
         // = 25 + 0 + 10 + 15 + 5 + 5 = 60 / 1.0 = 60
         let factors = vec![
-            compliance_factor(true, false),    // 100
-            cve_factor(5),                     // 0
-            fim_factor(false, true),           // 50
-            detection_history_factor(0),       // 100
-            baseline_factor(false, true),      // 50
-            encryption_factor(true),           // 100
+            compliance_factor(true, false), // 100
+            cve_factor(5),                  // 0
+            fim_factor(false, true),        // 50
+            detection_history_factor(0),    // 100
+            baseline_factor(false, true),   // 50
+            encryption_factor(true),        // 100
         ];
         let result = compute_score(&factors, 0);
         assert_eq!(result.score, 60);

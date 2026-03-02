@@ -14,28 +14,20 @@ const UNUSUAL_LOGIN_BASELINE_SECS: i64 = 7 * 86_400; // 7 days
 
 // ── Known lateral-movement tool names (lowercase) ────────────────────
 const REMOTE_TOOLS: &[&str] = &[
-    "psexec", "psexec64", "psexesvc",
-    "wmic", "winrm", "winrs",
-    "ncat", "socat", "chisel", "ligolo",
-    "schtasks",   // Windows scheduled task creation
-    "mstsc",      // RDP client (unusual if spawned by script)
-    "wmiexec",    // Impacket
-    "smbexec",    // Impacket
-    "atexec",     // Impacket
+    "psexec", "psexec64", "psexesvc", "wmic", "winrm", "winrs", "ncat", "socat", "chisel",
+    "ligolo", "schtasks", // Windows scheduled task creation
+    "mstsc",    // RDP client (unusual if spawned by script)
+    "wmiexec",  // Impacket
+    "smbexec",  // Impacket
+    "atexec",   // Impacket
 ];
 
-const CREDENTIAL_TOOLS: &[&str] = &[
-    "mimikatz", "secretsdump", "hashdump",
-    "procdump", "lsass",
-];
+const CREDENTIAL_TOOLS: &[&str] = &["mimikatz", "secretsdump", "hashdump", "procdump", "lsass"];
 
 // ── Platform-specific credential store paths ─────────────────────────
 
 #[cfg(target_os = "linux")]
-const CREDENTIAL_PATHS: &[&str] = &[
-    "/etc/shadow",
-    "/etc/passwd",
-];
+const CREDENTIAL_PATHS: &[&str] = &["/etc/shadow", "/etc/passwd"];
 
 #[cfg(target_os = "windows")]
 const CREDENTIAL_PATHS: &[&str] = &[
@@ -46,26 +38,16 @@ const CREDENTIAL_PATHS: &[&str] = &[
 ];
 
 #[cfg(target_os = "macos")]
-const CREDENTIAL_PATHS: &[&str] = &[
-    "/var/db/dslocal/",
-    "/library/keychains/",
-    "/etc/shadow",
-];
+const CREDENTIAL_PATHS: &[&str] = &["/var/db/dslocal/", "/library/keychains/", "/etc/shadow"];
 
 #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-const CREDENTIAL_PATHS: &[&str] = &[
-    "/etc/shadow",
-    "/etc/passwd",
-];
+const CREDENTIAL_PATHS: &[&str] = &["/etc/shadow", "/etc/passwd"];
 
 /// Port used for RDP brute force detection.
 const RDP_PORT: u16 = 3389;
 
 /// Substrings in command_line that indicate SSH tunnelling.
-const SSH_TUNNEL_FLAGS: &[&str] = &[
-    " -L ", " -R ", " -D ",
-    " -L\t", " -R\t", " -D\t",
-];
+const SSH_TUNNEL_FLAGS: &[&str] = &[" -L ", " -R ", " -D ", " -L\t", " -R\t", " -D\t"];
 
 // ── Public types ─────────────────────────────────────────────────────
 
@@ -167,7 +149,10 @@ impl LateralMovementDetector {
             return None;
         }
 
-        let timestamps = self.ssh_auth_failures.entry(src_ip.to_string()).or_default();
+        let timestamps = self
+            .ssh_auth_failures
+            .entry(src_ip.to_string())
+            .or_default();
         timestamps.push(event.ts_unix);
 
         // Evict entries outside the window.
@@ -207,7 +192,10 @@ impl LateralMovementDetector {
             return None;
         }
 
-        let timestamps = self.rdp_auth_failures.entry(src_ip.to_string()).or_default();
+        let timestamps = self
+            .rdp_auth_failures
+            .entry(src_ip.to_string())
+            .or_default();
         timestamps.push(event.ts_unix);
 
         // Evict entries outside the window.
@@ -316,7 +304,8 @@ impl LateralMovementDetector {
         if let Some(&last_seen) = self.known_login_sources.get(src_ip) {
             if last_seen >= cutoff {
                 // Known recent source — update timestamp and move on.
-                self.known_login_sources.insert(src_ip.to_string(), event.ts_unix);
+                self.known_login_sources
+                    .insert(src_ip.to_string(), event.ts_unix);
                 return None;
             }
         }
@@ -329,7 +318,8 @@ impl LateralMovementDetector {
             detail: format!("Login from previously unseen source: {}", src_ip),
         };
 
-        self.known_login_sources.insert(src_ip.to_string(), event.ts_unix);
+        self.known_login_sources
+            .insert(src_ip.to_string(), event.ts_unix);
         Some(alert)
     }
 }
@@ -381,7 +371,15 @@ mod tests {
     }
 
     fn ssh_failure(ts: i64, src_ip: &str) -> TelemetryEvent {
-        make_event(ts, EventClass::Login, "sshd", Some(src_ip), None, None, u32::MAX)
+        make_event(
+            ts,
+            EventClass::Login,
+            "sshd",
+            Some(src_ip),
+            None,
+            None,
+            u32::MAX,
+        )
     }
 
     #[test]
@@ -393,7 +391,11 @@ mod tests {
         // First 4 should not trigger.
         for i in 0..4 {
             let ev = ssh_failure(base_ts + i * 10, ip);
-            assert!(det.check_event(&ev).is_none(), "unexpected alert at failure #{}", i + 1);
+            assert!(
+                det.check_event(&ev).is_none(),
+                "unexpected alert at failure #{}",
+                i + 1
+            );
         }
 
         // 5th triggers brute-force.
@@ -417,7 +419,15 @@ mod tests {
     #[test]
     fn psexec_triggers_remote_tool() {
         let mut det = LateralMovementDetector::new();
-        let ev = make_event(1_700_000_000, EventClass::ProcessExec, "PsExec", None, None, None, 0);
+        let ev = make_event(
+            1_700_000_000,
+            EventClass::ProcessExec,
+            "PsExec",
+            None,
+            None,
+            None,
+            0,
+        );
         let alert = det.check_event(&ev).unwrap();
         assert_eq!(alert.technique, LateralTechnique::RemoteToolExecution);
     }
@@ -425,7 +435,15 @@ mod tests {
     #[test]
     fn mimikatz_triggers_credential_dumping() {
         let mut det = LateralMovementDetector::new();
-        let ev = make_event(1_700_000_000, EventClass::ProcessExec, "mimikatz.exe", None, None, None, 0);
+        let ev = make_event(
+            1_700_000_000,
+            EventClass::ProcessExec,
+            "mimikatz.exe",
+            None,
+            None,
+            None,
+            0,
+        );
         let alert = det.check_event(&ev).unwrap();
         assert_eq!(alert.technique, LateralTechnique::CredentialDumping);
     }
@@ -456,7 +474,15 @@ mod tests {
 
         // Build RDP failure events (Login on port 3389, uid=MAX).
         let rdp_failure = |ts: i64, src: &str| -> TelemetryEvent {
-            let mut ev = make_event(ts, EventClass::Login, "svchost", Some(src), None, None, u32::MAX);
+            let mut ev = make_event(
+                ts,
+                EventClass::Login,
+                "svchost",
+                Some(src),
+                None,
+                None,
+                u32::MAX,
+            );
             ev.dst_port = Some(3389);
             ev
         };
@@ -464,7 +490,11 @@ mod tests {
         // First 4 should not trigger.
         for i in 0..4 {
             let ev = rdp_failure(base_ts + i * 10, ip);
-            assert!(det.check_event(&ev).is_none(), "unexpected alert at failure #{}", i + 1);
+            assert!(
+                det.check_event(&ev).is_none(),
+                "unexpected alert at failure #{}",
+                i + 1
+            );
         }
 
         // 5th triggers RDP brute-force.
@@ -477,7 +507,15 @@ mod tests {
     #[test]
     fn winrs_triggers_remote_tool() {
         let mut det = LateralMovementDetector::new();
-        let ev = make_event(1_700_000_000, EventClass::ProcessExec, "winrs", None, None, None, 0);
+        let ev = make_event(
+            1_700_000_000,
+            EventClass::ProcessExec,
+            "winrs",
+            None,
+            None,
+            None,
+            0,
+        );
         let alert = det.check_event(&ev).unwrap();
         assert_eq!(alert.technique, LateralTechnique::RemoteToolExecution);
     }
@@ -485,7 +523,15 @@ mod tests {
     #[test]
     fn smbexec_triggers_remote_tool() {
         let mut det = LateralMovementDetector::new();
-        let ev = make_event(1_700_000_000, EventClass::ProcessExec, "smbexec", None, None, None, 0);
+        let ev = make_event(
+            1_700_000_000,
+            EventClass::ProcessExec,
+            "smbexec",
+            None,
+            None,
+            None,
+            0,
+        );
         let alert = det.check_event(&ev).unwrap();
         assert_eq!(alert.technique, LateralTechnique::RemoteToolExecution);
     }
@@ -497,12 +543,28 @@ mod tests {
         let base_ts = 1_700_000_000;
 
         // First login from this IP: unusual (will trigger).
-        let ev1 = make_event(base_ts, EventClass::Login, "sshd", Some(ip), None, None, 1000);
+        let ev1 = make_event(
+            base_ts,
+            EventClass::Login,
+            "sshd",
+            Some(ip),
+            None,
+            None,
+            1000,
+        );
         let first = det.check_event(&ev1);
         assert!(first.is_some()); // First time = unusual
 
         // Second login within 7 days: should NOT trigger.
-        let ev2 = make_event(base_ts + 3600, EventClass::Login, "sshd", Some(ip), None, None, 1000);
+        let ev2 = make_event(
+            base_ts + 3600,
+            EventClass::Login,
+            "sshd",
+            Some(ip),
+            None,
+            None,
+            1000,
+        );
         let second = det.check_event(&ev2);
         assert!(second.is_none());
     }
@@ -526,7 +588,15 @@ mod tests {
     #[test]
     fn unrelated_process_no_detection() {
         let mut det = LateralMovementDetector::new();
-        let ev = make_event(1_700_000_000, EventClass::ProcessExec, "ls", None, None, None, 0);
+        let ev = make_event(
+            1_700_000_000,
+            EventClass::ProcessExec,
+            "ls",
+            None,
+            None,
+            None,
+            0,
+        );
         assert!(det.check_event(&ev).is_none());
     }
 }

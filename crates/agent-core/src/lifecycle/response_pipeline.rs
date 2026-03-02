@@ -144,10 +144,9 @@ impl AgentRuntime {
             return;
         };
 
-        let playbook_actions = self.playbook_engine.evaluate(
-            &evaluation.detection_outcome,
-            &evaluation.detection_event,
-        );
+        let playbook_actions = self
+            .playbook_engine
+            .evaluate(&evaluation.detection_outcome, &evaluation.detection_event);
 
         if playbook_actions.is_empty() {
             return;
@@ -204,10 +203,7 @@ impl AgentRuntime {
                     );
                 }
                 unknown => {
-                    warn!(
-                        action = unknown,
-                        "unknown playbook action type; skipping"
-                    );
+                    warn!(action = unknown, "unknown playbook action type; skipping");
                 }
             }
         }

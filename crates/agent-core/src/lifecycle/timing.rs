@@ -15,10 +15,7 @@ pub(super) fn compute_poll_timeout(pending: usize, recent_ebpf_drops: u64) -> st
 }
 
 pub(super) fn compute_sampling_stride(pending: usize, recent_ebpf_drops: u64) -> usize {
-    if recent_ebpf_drops == 0 {
-        return 1;
-    }
-    if pending > 8_192 {
+    let backlog_stride = if pending > 8_192 {
         8
     } else if pending > 4_096 {
         4
@@ -26,7 +23,23 @@ pub(super) fn compute_sampling_stride(pending: usize, recent_ebpf_drops: u64) ->
         2
     } else {
         1
+    };
+
+    if recent_ebpf_drops == 0 {
+        return backlog_stride;
     }
+
+    let drop_stride = if pending > 8_192 {
+        8
+    } else if pending > 4_096 {
+        4
+    } else if pending > 1_024 {
+        2
+    } else {
+        2
+    };
+
+    backlog_stride.max(drop_stride)
 }
 
 pub(super) fn resolve_detection_shard_count() -> usize {

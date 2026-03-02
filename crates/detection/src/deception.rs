@@ -144,41 +144,109 @@ pub fn default_tokens() -> Vec<DeceptionToken> {
 #[cfg(target_os = "linux")]
 fn platform_tokens() -> Vec<DeceptionToken> {
     vec![
-        token("ssh_canary", TokenType::CredentialFile, "/root/.ssh/id_rsa_backup"),
-        token("aws_canary", TokenType::CredentialFile, "/opt/.aws/credentials"),
-        token("password_canary", TokenType::DocumentFile, "/usr/local/share/.passwords.csv"),
-        token("db_canary", TokenType::ConfigFile, "/etc/eguard-agent/.db_credentials.conf"),
-        token("backup_key_canary", TokenType::CredentialFile, "/var/backups/.encryption_key"),
+        token(
+            "ssh_canary",
+            TokenType::CredentialFile,
+            "/root/.ssh/id_rsa_backup",
+        ),
+        token(
+            "aws_canary",
+            TokenType::CredentialFile,
+            "/opt/.aws/credentials",
+        ),
+        token(
+            "password_canary",
+            TokenType::DocumentFile,
+            "/usr/local/share/.passwords.csv",
+        ),
+        token(
+            "db_canary",
+            TokenType::ConfigFile,
+            "/etc/eguard-agent/.db_credentials.conf",
+        ),
+        token(
+            "backup_key_canary",
+            TokenType::CredentialFile,
+            "/var/backups/.encryption_key",
+        ),
     ]
 }
 
 #[cfg(target_os = "windows")]
 fn platform_tokens() -> Vec<DeceptionToken> {
     vec![
-        token("ssh_canary", TokenType::CredentialFile, "C:\\Users\\Administrator\\.ssh\\id_rsa_backup"),
-        token("aws_canary", TokenType::CredentialFile, "C:\\Users\\Administrator\\.aws\\credentials"),
-        token("password_canary", TokenType::DocumentFile, "C:\\Users\\Public\\Documents\\passwords.csv"),
-        token("db_canary", TokenType::ConfigFile, "C:\\ProgramData\\eGuard\\.db_credentials.conf"),
-        token("rdp_canary", TokenType::CredentialFile, "C:\\Users\\Administrator\\Documents\\rdp_servers.rdg"),
+        token(
+            "ssh_canary",
+            TokenType::CredentialFile,
+            "C:\\Users\\Administrator\\.ssh\\id_rsa_backup",
+        ),
+        token(
+            "aws_canary",
+            TokenType::CredentialFile,
+            "C:\\Users\\Administrator\\.aws\\credentials",
+        ),
+        token(
+            "password_canary",
+            TokenType::DocumentFile,
+            "C:\\Users\\Public\\Documents\\passwords.csv",
+        ),
+        token(
+            "db_canary",
+            TokenType::ConfigFile,
+            "C:\\ProgramData\\eGuard\\.db_credentials.conf",
+        ),
+        token(
+            "rdp_canary",
+            TokenType::CredentialFile,
+            "C:\\Users\\Administrator\\Documents\\rdp_servers.rdg",
+        ),
     ]
 }
 
 #[cfg(target_os = "macos")]
 fn platform_tokens() -> Vec<DeceptionToken> {
     vec![
-        token("ssh_canary", TokenType::CredentialFile, "/Users/admin/.ssh/id_rsa_backup"),
-        token("aws_canary", TokenType::CredentialFile, "/Users/admin/.aws/credentials"),
-        token("password_canary", TokenType::DocumentFile, "/Users/Shared/.passwords.csv"),
-        token("db_canary", TokenType::ConfigFile, "/Library/Application Support/eGuard/.db_credentials.conf"),
-        token("keychain_canary", TokenType::CredentialFile, "/Users/admin/Library/Keychains/backup.keychain-db"),
+        token(
+            "ssh_canary",
+            TokenType::CredentialFile,
+            "/Users/admin/.ssh/id_rsa_backup",
+        ),
+        token(
+            "aws_canary",
+            TokenType::CredentialFile,
+            "/Users/admin/.aws/credentials",
+        ),
+        token(
+            "password_canary",
+            TokenType::DocumentFile,
+            "/Users/Shared/.passwords.csv",
+        ),
+        token(
+            "db_canary",
+            TokenType::ConfigFile,
+            "/Library/Application Support/eGuard/.db_credentials.conf",
+        ),
+        token(
+            "keychain_canary",
+            TokenType::CredentialFile,
+            "/Users/admin/Library/Keychains/backup.keychain-db",
+        ),
     ]
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
 fn platform_tokens() -> Vec<DeceptionToken> {
     vec![
-        token("ssh_canary", TokenType::CredentialFile, "/root/.ssh/id_rsa_backup"),
-        token("db_canary", TokenType::ConfigFile, "/etc/eguard-agent/.db_credentials.conf"),
+        token(
+            "ssh_canary",
+            TokenType::CredentialFile,
+            "/root/.ssh/id_rsa_backup",
+        ),
+        token(
+            "db_canary",
+            TokenType::ConfigFile,
+            "/etc/eguard-agent/.db_credentials.conf",
+        ),
     ]
 }
 

@@ -29,8 +29,13 @@ pub mod vulnerability;
 mod yara_engine;
 pub mod zero_trust;
 
+pub use attack_coverage::{
+    critical_gaps, generate_coverage, AttackCoverageReport, TacticCoverage, TechniqueCoverage,
+};
+pub use beaconing::{BeaconingResult, BeaconingTracker};
 pub use behavioral::{BehavioralAlarm, BehavioralEngine};
 pub use calibration::{calibrate_thresholds, sanov_upper_bound, tau_delta, ThresholdCalibration};
+pub use deception::{DeceptionAlert, DeceptionEngine, DeceptionToken, TokenType};
 pub use engine::{DetectionAllowlist, DetectionEngine, DetectionOutcome, SigmaLoadError};
 pub use fim::{
     default_fim_paths, FimBaseline, FimChange, FimChangeType, FimEntry, FimError,
@@ -46,7 +51,6 @@ pub use layer3::{AnomalyConfig, AnomalyDecision, AnomalyEngine};
 pub use layer4::{
     KillChainTemplate, Layer4Engine, Layer4EvictionCounters, RansomwarePolicy, TemplatePredicate,
 };
-pub use beaconing::{BeaconingResult, BeaconingTracker};
 pub use layer5::{MlEngine, MlError, MlExtraContext, MlFeatures, MlModel, MlScore};
 pub use policy::confidence_policy;
 pub use replay::{
@@ -58,6 +62,10 @@ pub use sigma::{
     compile_sigma_ast, compile_sigma_rule, BoundedTemporalAst, SigmaCompileError, TemporalExpr,
 };
 pub use tamper::detect_tamper_indicators;
+pub use threat_hunting::{
+    evaluate_file_presence_check, evaluate_port_check, evaluate_process_check,
+    match_process_pattern, HuntingCheck, HuntingEngine, HuntingFinding, HuntingQuery,
+};
 pub use types::{Confidence, DetectionSignals, EventClass, TelemetryEvent};
 pub use usb_control::{
     parse_usb_class, UsbAction, UsbDeviceClass, UsbEvent, UsbPolicy, UsbViolation,
@@ -67,17 +75,6 @@ pub use yara_engine::{YaraEngine, YaraError, YaraHit};
 pub use zero_trust::{
     compute_score as compute_device_score, default_factors as default_health_factors,
     recommend_action, DeviceHealthScore, ScoreFactor, TrustAction,
-};
-pub use attack_coverage::{
-    generate_coverage, critical_gaps, AttackCoverageReport, TacticCoverage, TechniqueCoverage,
-};
-pub use deception::{
-    DeceptionAlert, DeceptionEngine, DeceptionToken, TokenType,
-};
-pub use threat_hunting::{
-    HuntingCheck, HuntingEngine, HuntingFinding, HuntingQuery,
-    evaluate_port_check, evaluate_process_check, evaluate_file_presence_check,
-    match_process_pattern,
 };
 
 #[cfg(test)]

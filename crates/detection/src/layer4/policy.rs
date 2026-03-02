@@ -272,10 +272,7 @@ pub(super) fn path_root_prefix(path: &str) -> Option<String> {
         let drive = &path[..2];
         let sep = if bytes[2] == b'\\' { '\\' } else { '/' };
         let rest = &path[3..];
-        let components: Vec<&str> = rest
-            .split(['/', '\\'])
-            .filter(|c| !c.is_empty())
-            .collect();
+        let components: Vec<&str> = rest.split(['/', '\\']).filter(|c| !c.is_empty()).collect();
         if components.is_empty() {
             return Some(format!("{drive}{sep}"));
         }

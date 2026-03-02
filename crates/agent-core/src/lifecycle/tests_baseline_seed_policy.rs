@@ -243,9 +243,7 @@ async fn baseline_upload_canary_zero_disables_upload_path() {
     runtime.baseline_store.baselines.insert(
         key.clone(),
         ProcessProfile {
-            event_distribution: [("process_exec".to_string(), 1u64)]
-                .into_iter()
-                .collect(),
+            event_distribution: [("process_exec".to_string(), 1u64)].into_iter().collect(),
             sample_count: 1,
             entropy_threshold: 0.0,
         },

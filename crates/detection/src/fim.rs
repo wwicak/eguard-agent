@@ -483,10 +483,7 @@ mod tests {
     #[test]
     fn scan_and_baseline_round_trip() {
         let dir = setup_test_dir();
-        let paths = vec![
-            dir.path().join("file_a.txt"),
-            dir.path().join("file_b.txt"),
-        ];
+        let paths = vec![dir.path().join("file_a.txt"), dir.path().join("file_b.txt")];
 
         let scanned = FimBaseline::scan_paths(&paths);
         assert_eq!(scanned.len(), 2);
@@ -608,10 +605,7 @@ mod tests {
     #[test]
     fn save_and_load_baseline() {
         let dir = setup_test_dir();
-        let paths = vec![
-            dir.path().join("file_a.txt"),
-            dir.path().join("file_b.txt"),
-        ];
+        let paths = vec![dir.path().join("file_a.txt"), dir.path().join("file_b.txt")];
 
         let scanned = FimBaseline::scan_paths(&paths);
         let mut baseline = FimBaseline::new();
@@ -700,7 +694,9 @@ mod tests {
 
     #[test]
     fn scan_nonexistent_path_is_skipped() {
-        let paths = vec![PathBuf::from("/tmp/this_file_does_not_exist_fim_test_12345")];
+        let paths = vec![PathBuf::from(
+            "/tmp/this_file_does_not_exist_fim_test_12345",
+        )];
         let scanned = FimBaseline::scan_paths(&paths);
         assert!(scanned.is_empty());
     }
