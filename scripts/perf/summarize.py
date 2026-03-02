@@ -78,6 +78,31 @@ def load_rows(raw_file: pathlib.Path) -> List[Dict[str, Any]]:
     return rows
 
 
+def scenario_quality_flags(payload: Dict[str, Any]) -> List[str]:
+    flags: List[str] = []
+
+    runs_on = payload.get("runs_on")
+    runs_off = payload.get("runs_off")
+    if isinstance(runs_on, int) and isinstance(runs_off, int):
+        if runs_on < 6 or runs_off < 6:
+            flags.append("low_sample_count")
+
+    if payload.get("overhead_median_pct") is None:
+        flags.append("missing_overhead_median")
+    if payload.get("overhead_p95_pct") is None:
+        flags.append("missing_overhead_p95")
+
+    median_overhead = payload.get("overhead_median_pct")
+    if isinstance(median_overhead, (int, float)) and median_overhead < -20.0:
+        flags.append("high_negative_median_overhead_check_for_noise")
+
+    p95_overhead = payload.get("overhead_p95_pct")
+    if isinstance(p95_overhead, (int, float)) and p95_overhead < -25.0:
+        flags.append("high_negative_p95_overhead_check_for_noise")
+
+    return flags
+
+
 def scenario_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     measured = [r for r in rows if not bool(r.get("warmup", False))]
     on_rows = [r for r in measured if str(r.get("mode", "")).upper() == "ON"]
@@ -93,7 +118,7 @@ def scenario_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     p99_on = percentile(on_elapsed, 0.99)
     p99_off = percentile(off_elapsed, 0.99)
 
-    return {
+    payload = {
         "sample_count_total": len(rows),
         "sample_count_measured": len(measured),
         "runs_on": len(on_elapsed),
@@ -118,6 +143,8 @@ def scenario_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             r.get("disk_write_bytes", r.get("disk_write_bytes_per_sec")) for r in measured
         ),
     }
+    payload["quality_flags"] = scenario_quality_flags(payload)
+    return payload
 
 
 def format_float(value: Optional[float], digits: int = 3) -> str:
@@ -138,11 +165,11 @@ def make_report(summary: Dict[str, Any], headline_scenario: str) -> str:
     for platform, pdata in summary.get("platforms", {}).items():
         lines.append(f"## {platform.capitalize()}")
         lines.append("")
-        lines.append("| Scenario | ON runs | OFF runs | Median ON (s) | Median OFF (s) | Median overhead % | p95 ON (s) | p95 OFF (s) | p95 overhead % | Agent CPU avg (s) |")
-        lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+        lines.append("| Scenario | ON runs | OFF runs | Median ON (s) | Median OFF (s) | Median overhead % | p95 ON (s) | p95 OFF (s) | p95 overhead % | Agent CPU avg (s) | Quality flags |")
+        lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|")
         for scenario, sdata in sorted(pdata.get("scenarios", {}).items()):
             lines.append(
-                "| {scenario} | {runs_on} | {runs_off} | {median_on} | {median_off} | {over_median} | {p95_on} | {p95_off} | {over_p95} | {cpu_avg} |".format(
+                "| {scenario} | {runs_on} | {runs_off} | {median_on} | {median_off} | {over_median} | {p95_on} | {p95_off} | {over_p95} | {cpu_avg} | {quality_flags} |".format(
                     scenario=scenario,
                     runs_on=sdata.get("runs_on", 0),
                     runs_off=sdata.get("runs_off", 0),
@@ -153,6 +180,7 @@ def make_report(summary: Dict[str, Any], headline_scenario: str) -> str:
                     p95_off=format_float(sdata.get("p95_off_s")),
                     over_p95=format_float(sdata.get("overhead_p95_pct"), 2),
                     cpu_avg=format_float(sdata.get("agent_cpu_avg_s"), 3),
+                    quality_flags=", ".join(sdata.get("quality_flags", [])) or "-",
                 )
             )
         lines.append("")
@@ -161,11 +189,12 @@ def make_report(summary: Dict[str, Any], headline_scenario: str) -> str:
         lines.append("**Headline metrics**")
         lines.append("")
         lines.append(
-            "- scenario: `{}`\n- median overhead: `{}`%\n- p95 overhead: `{}`%\n- agent cpu avg: `{}` s".format(
+            "- scenario: `{}`\n- median overhead: `{}`%\n- p95 overhead: `{}`%\n- agent cpu avg: `{}` s\n- quality flags: `{}`".format(
                 pdata.get("headline_scenario"),
                 format_float(headline.get("overhead_median_pct"), 2),
                 format_float(headline.get("overhead_p95_pct"), 2),
                 format_float(headline.get("agent_cpu_avg_s"), 3),
+                ", ".join(headline.get("quality_flags", [])) or "-",
             )
         )
         lines.append("")

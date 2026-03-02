@@ -14,12 +14,18 @@ use super::{parse_emergency_rule_type, AgentRuntime, EmergencyRulePayload};
 
 mod app_management;
 mod command_utils;
+mod config_change;
+mod device_actions;
+mod forensics;
 mod handlers;
+mod host_actions;
 mod paths;
 mod payloads;
+mod profile_apply;
 mod sanitize;
 #[cfg(test)]
 mod tests;
+mod update_agent;
 #[cfg(target_os = "windows")]
 mod windows_network_profile;
 
@@ -65,6 +71,7 @@ impl AgentRuntime {
             ServerCommand::Forensics => {
                 self.apply_forensics_collection(&command.payload_json, &mut exec)
             }
+            ServerCommand::Update => self.apply_agent_update(&command.payload_json, &mut exec),
             ServerCommand::LockDevice => self.apply_device_lock(&command.payload_json, &mut exec),
             ServerCommand::WipeDevice => self.apply_device_wipe(&command.payload_json, &mut exec),
             ServerCommand::RetireDevice => {

@@ -493,6 +493,9 @@ impl AgentRuntime {
             baseline_seed_rows_applied_total: self.metrics.baseline_seed_rows_applied_total,
             baseline_upload_payload_reject_total: self.metrics.baseline_upload_payload_reject_total,
             baseline_stale_transition_total: self.metrics.baseline_stale_transition_total,
+            telemetry_coalesced_events_total: self.metrics.telemetry_coalesced_events_total,
+            telemetry_raw_backlog_dropped_total: self.metrics.telemetry_raw_backlog_dropped_total,
+            strict_budget_mode_transition_total: self.metrics.strict_budget_mode_transition_total,
         }
     }
 

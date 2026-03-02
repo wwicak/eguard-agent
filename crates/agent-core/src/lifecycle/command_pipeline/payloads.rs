@@ -23,6 +23,18 @@ pub(super) struct AppPayload {
 }
 
 #[derive(Debug, Deserialize, Default)]
+pub(super) struct UpdatePayload {
+    #[serde(default, alias = "target_version")]
+    pub(super) version: String,
+    #[serde(default, alias = "download_url")]
+    pub(super) package_url: String,
+    #[serde(default, alias = "checksum")]
+    pub(super) checksum_sha256: String,
+    #[serde(default)]
+    pub(super) package_format: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
 pub(super) struct RestoreQuarantinePayload {
     #[serde(default)]
     pub(super) quarantine_path: String,
@@ -108,4 +120,8 @@ pub(super) fn format_device_action_context(payload: &DeviceActionPayload) -> Str
     } else {
         format!("force={}, reason={}", payload.force, reason)
     }
+}
+
+pub(super) fn parse_update_payload(payload_json: &str) -> UpdatePayload {
+    serde_json::from_str(payload_json).unwrap_or_default()
 }

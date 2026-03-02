@@ -11,6 +11,14 @@ on:
         description: "Scenario used for headline + gate checks"
         required: false
         default: ransomware
+      min_runs_per_mode:
+        description: "Minimum measured ON/OFF runs per platform to pass gate"
+        required: false
+        default: "6"
+      fail_on_quality_flags:
+        description: "Comma-separated quality flags that fail gate"
+        required: false
+        default: "low_sample_count,missing_overhead_median,missing_overhead_p95"
   schedule:
     - cron: "15 3 * * *"
   release:
@@ -98,7 +106,10 @@ jobs:
         run: |
           python3 scripts/perf/gate.py \
             --summary "artifacts/perf/${PERF_DATE}/summary.json" \
-            --profile "${{ github.event.inputs.gate_profile || 'provisional' }}"
+            --profile "${{ github.event.inputs.gate_profile || 'provisional' }}" \
+            --min-runs-per-mode "${{ github.event.inputs.min_runs_per_mode || '6' }}" \
+            --fail-on-quality-flags "${{ github.event.inputs.fail_on_quality_flags || 'low_sample_count,missing_overhead_median,missing_overhead_p95' }}" \
+            --json-output "artifacts/perf/${PERF_DATE}/gate.json"
 
       - name: Upload summary artifacts
         uses: actions/upload-artifact@v4
@@ -107,3 +118,4 @@ jobs:
           path: |
             artifacts/perf/${{ env.PERF_DATE }}/summary.json
             artifacts/perf/${{ env.PERF_DATE }}/report.md
+            artifacts/perf/${{ env.PERF_DATE }}/gate.json

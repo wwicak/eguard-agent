@@ -1,7 +1,7 @@
 use super::command_utils::{extract_server_host, resolve_allowed_server_ips};
 use super::payloads::{
     format_device_action_context, parse_device_action_payload, parse_locate_payload,
-    DeviceActionPayload, ForensicsPayload,
+    parse_update_payload, DeviceActionPayload, ForensicsPayload,
 };
 use super::sanitize::{
     sanitize_apt_package_name, sanitize_apt_package_version, sanitize_profile_id,
@@ -146,4 +146,39 @@ fn forensics_payload_defaults_to_snapshot_when_flags_missing() {
     assert!(!payload.memory_dump);
     assert!(!payload.wants_snapshot());
     assert!(payload.effective_target_pids().is_empty());
+}
+
+#[test]
+fn update_payload_parser_supports_grpc_alias_fields() {
+    let payload = parse_update_payload(
+        r#"{"target_version":"0.2.11","download_url":"https://example.local/eguard-agent_0.2.11_amd64.deb","checksum":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}"#,
+    );
+
+    assert_eq!(payload.version, "0.2.11");
+    assert_eq!(
+        payload.package_url,
+        "https://example.local/eguard-agent_0.2.11_amd64.deb"
+    );
+    assert_eq!(
+        payload.checksum_sha256,
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    );
+}
+
+#[test]
+fn update_payload_parser_supports_rest_fields() {
+    let payload = parse_update_payload(
+        r#"{"version":"0.2.11","package_url":"https://example.local/eguard-agent.exe","checksum_sha256":"feedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface","package_format":"exe"}"#,
+    );
+
+    assert_eq!(payload.version, "0.2.11");
+    assert_eq!(
+        payload.package_url,
+        "https://example.local/eguard-agent.exe"
+    );
+    assert_eq!(
+        payload.checksum_sha256,
+        "feedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface"
+    );
+    assert_eq!(payload.package_format, "exe");
 }

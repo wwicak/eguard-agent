@@ -428,6 +428,50 @@ fn file_event_burst_coalescing_drops_repeated_writes_within_short_window() {
     assert!(second.is_none());
     assert!(third.is_none());
 
+    let snapshot = runtime.observability_snapshot();
+    assert!(snapshot.telemetry_coalesced_events_total >= 2);
+
+    let _ = std::fs::remove_file(replay_path);
+}
+
+#[test]
+fn file_event_burst_coalescing_normalizes_path_case() {
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    cfg.server_addr = "127.0.0.1:1".to_string();
+
+    let replay_path = std::env::temp_dir().join(format!(
+        "eguard-agent-replay-coalesce-case-{}.ndjson",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+
+    let replay = [
+        r#"{"event_type":"file_write","pid":9301,"uid":0,"ts_ns":1700000000000000000,"file_path":"C:\\TEMP\\CASE.TMP","size":64}"#,
+        r#"{"event_type":"file_write","pid":9301,"uid":0,"ts_ns":1700000000000100000,"file_path":"c:\\temp\\case.tmp","size":64}"#,
+    ]
+    .join("\n");
+    std::fs::write(&replay_path, replay).expect("write replay file");
+
+    let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+    runtime.ebpf_engine =
+        platform_linux::EbpfEngine::from_replay(&replay_path).expect("replay backend");
+    runtime.file_event_coalesce_window_ns = 5_000_000_000;
+
+    let first = runtime.evaluate_tick(1_700_000_000).expect("tick 1");
+    let second = runtime.evaluate_tick(1_700_000_001).expect("tick 2");
+
+    assert!(first.is_some());
+    assert!(second.is_none());
+    assert!(
+        runtime
+            .observability_snapshot()
+            .telemetry_coalesced_events_total
+            >= 1
+    );
+
     let _ = std::fs::remove_file(replay_path);
 }
 
@@ -483,6 +527,17 @@ fn strict_budget_mode_skips_expensive_file_hashing_when_backlog_is_high() {
 
     assert!(runtime.strict_budget_mode);
     assert!(eval.detection_event.file_hash.is_none());
+
+    let _ = runtime
+        .buffer
+        .drain_batch(10)
+        .expect("drain backlog marker");
+    let _ = runtime
+        .evaluate_tick(1_700_000_006)
+        .expect("evaluate tick 2");
+    let snapshot = runtime.observability_snapshot();
+    assert!(!snapshot.strict_budget_mode);
+    assert!(snapshot.strict_budget_mode_transition_total >= 2);
 
     let _ = std::fs::remove_file(replay_path);
     let _ = std::fs::remove_file(target_file);

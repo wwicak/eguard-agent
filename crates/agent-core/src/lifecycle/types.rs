@@ -169,6 +169,9 @@ pub struct RuntimeObservabilitySnapshot {
     pub baseline_seed_rows_applied_total: u64,
     pub baseline_upload_payload_reject_total: u64,
     pub baseline_stale_transition_total: u64,
+    pub telemetry_coalesced_events_total: u64,
+    pub telemetry_raw_backlog_dropped_total: u64,
+    pub strict_budget_mode_transition_total: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -223,6 +226,9 @@ pub(super) struct RuntimeMetrics {
     pub(super) baseline_seed_rows_applied_total: u64,
     pub(super) baseline_upload_payload_reject_total: u64,
     pub(super) baseline_stale_transition_total: u64,
+    pub(super) telemetry_coalesced_events_total: u64,
+    pub(super) telemetry_raw_backlog_dropped_total: u64,
+    pub(super) strict_budget_mode_transition_total: u64,
 }
 
 pub(super) struct LocalActionResult {

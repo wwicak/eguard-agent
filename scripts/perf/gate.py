@@ -56,6 +56,20 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Optional output path for machine-readable gate results",
     )
+    parser.add_argument(
+        "--min-runs-per-mode",
+        type=int,
+        default=6,
+        help="Minimum measured ON and OFF runs required per platform/scenario (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--fail-on-quality-flags",
+        default="low_sample_count,missing_overhead_median,missing_overhead_p95",
+        help=(
+            "Comma-separated scenario quality flags that should fail the gate "
+            "(empty to disable quality-flag failures)"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -66,11 +80,17 @@ def get_metric_value(payload: Dict[str, Any], key: str) -> Optional[float]:
     return None
 
 
+def parse_csv_flags(value: str) -> List[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
 def evaluate_platform(
     platform: str,
     pdata: Dict[str, Any],
     threshold: Dict[str, float],
     requested_scenario: str,
+    min_runs_per_mode: int,
+    fail_on_quality_flags: List[str],
 ) -> Tuple[List[str], Dict[str, Any]]:
     failures: List[str] = []
 
@@ -87,6 +107,50 @@ def evaluate_platform(
         return failures, {"scenario": scenario_name, "status": "fail", "checks": []}
 
     checks: List[Dict[str, Any]] = []
+
+    runs_on = metrics.get("runs_on") if isinstance(metrics.get("runs_on"), int) else None
+    runs_off = metrics.get("runs_off") if isinstance(metrics.get("runs_off"), int) else None
+
+    run_count_pass = (
+        runs_on is not None
+        and runs_off is not None
+        and runs_on >= min_runs_per_mode
+        and runs_off >= min_runs_per_mode
+    )
+    checks.append(
+        {
+            "metric": "min_runs_per_mode",
+            "actual": {
+                "runs_on": runs_on,
+                "runs_off": runs_off,
+            },
+            "threshold_min": min_runs_per_mode,
+            "pass": run_count_pass,
+        }
+    )
+    if not run_count_pass:
+        failures.append(
+            f"{platform}/{scenario_name}: insufficient measured runs (runs_on={runs_on}, runs_off={runs_off}, min={min_runs_per_mode})"
+        )
+
+    quality_flags = metrics.get("quality_flags") if isinstance(metrics.get("quality_flags"), list) else []
+    quality_flags = [str(flag) for flag in quality_flags]
+    quality_fail_flags = [flag for flag in quality_flags if flag in fail_on_quality_flags]
+    quality_pass = len(quality_fail_flags) == 0
+    checks.append(
+        {
+            "metric": "quality_flags",
+            "actual": quality_flags,
+            "fail_on": fail_on_quality_flags,
+            "fail_flags": quality_fail_flags,
+            "pass": quality_pass,
+        }
+    )
+    if not quality_pass:
+        failures.append(
+            f"{platform}/{scenario_name}: quality flags triggered failure: {', '.join(quality_fail_flags)}"
+        )
+
     for metric_name, threshold_value in threshold.items():
         actual = get_metric_value(metrics, metric_name)
         passed = actual is not None and actual <= threshold_value
@@ -121,12 +185,15 @@ def main() -> int:
         return 2
 
     profile_threshold = THRESHOLDS[args.profile]
+    fail_on_quality_flags = parse_csv_flags(args.fail_on_quality_flags)
 
     all_failures: List[str] = []
     result: Dict[str, Any] = {
         "profile": args.profile,
         "scenario": args.scenario,
         "summary": str(summary_path),
+        "min_runs_per_mode": args.min_runs_per_mode,
+        "fail_on_quality_flags": fail_on_quality_flags,
         "platforms": {},
     }
 
@@ -142,7 +209,14 @@ def main() -> int:
             }
             continue
 
-        failures, platform_result = evaluate_platform(platform, pdata, threshold, args.scenario)
+        failures, platform_result = evaluate_platform(
+            platform,
+            pdata,
+            threshold,
+            args.scenario,
+            max(1, int(args.min_runs_per_mode)),
+            fail_on_quality_flags,
+        )
         all_failures.extend(failures)
         result["platforms"][platform] = platform_result
 
@@ -164,13 +238,33 @@ def main() -> int:
     for platform, pdata in result["platforms"].items():
         print(f"- {platform}/{pdata.get('scenario')}")
         for check in pdata.get("checks", []):
-            print(
-                "  - {metric}: actual={actual} threshold<={thr}".format(
-                    metric=check.get("metric"),
-                    actual=check.get("actual"),
-                    thr=check.get("threshold_max"),
+            metric = check.get("metric")
+            if check.get("threshold_max") is not None:
+                print(
+                    "  - {metric}: actual={actual} threshold<={thr}".format(
+                        metric=metric,
+                        actual=check.get("actual"),
+                        thr=check.get("threshold_max"),
+                    )
                 )
-            )
+            elif check.get("threshold_min") is not None:
+                print(
+                    "  - {metric}: actual={actual} threshold>={thr}".format(
+                        metric=metric,
+                        actual=check.get("actual"),
+                        thr=check.get("threshold_min"),
+                    )
+                )
+            elif metric == "quality_flags":
+                print(
+                    "  - quality_flags: actual={actual} fail_on={fail_on} fail_flags={fail_flags}".format(
+                        actual=check.get("actual"),
+                        fail_on=check.get("fail_on"),
+                        fail_flags=check.get("fail_flags"),
+                    )
+                )
+            else:
+                print(f"  - {metric}: {check}")
     return 0
 
 

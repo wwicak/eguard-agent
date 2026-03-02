@@ -179,10 +179,15 @@ impl AgentRuntime {
                 let coalesced = self.coalesce_file_event_burst(events);
                 let dropped = before.saturating_sub(coalesced.len());
                 if dropped > 0 {
+                    self.metrics.telemetry_coalesced_events_total = self
+                        .metrics
+                        .telemetry_coalesced_events_total
+                        .saturating_add(dropped as u64);
                     info!(
                         dropped,
                         retained = coalesced.len(),
                         window_ns = self.file_event_coalesce_window_ns,
+                        coalesced_total = self.metrics.telemetry_coalesced_events_total,
                         "coalesced burst file events before deep analysis"
                     );
                 }
@@ -218,9 +223,16 @@ impl AgentRuntime {
     }
 
     fn refresh_strict_budget_mode(&mut self) {
-        self.strict_budget_mode = self.buffer.pending_count()
-            >= self.strict_budget_pending_threshold
+        let next = self.buffer.pending_count() >= self.strict_budget_pending_threshold
             || self.raw_event_backlog.len() >= self.strict_budget_raw_backlog_threshold;
+
+        if next != self.strict_budget_mode {
+            self.metrics.strict_budget_mode_transition_total = self
+                .metrics
+                .strict_budget_mode_transition_total
+                .saturating_add(1);
+        }
+        self.strict_budget_mode = next;
     }
 
     fn sampling_stride(&self) -> usize {
@@ -232,16 +244,17 @@ impl AgentRuntime {
             return None;
         }
 
+        let event = self.raw_event_backlog.pop_front();
+
         let stride = stride.max(1);
         if stride > 1 {
-            let available = self.raw_event_backlog.len();
-            let skips = stride.saturating_sub(1).min(available.saturating_sub(1));
+            let skips = stride.saturating_sub(1).min(self.raw_event_backlog.len());
             for _ in 0..skips {
                 let _ = self.raw_event_backlog.pop_front();
             }
         }
 
-        self.raw_event_backlog.pop_front()
+        event
     }
 
     fn coalesce_file_event_burst(&mut self, events: Vec<RawEvent>) -> Vec<RawEvent> {
@@ -317,10 +330,16 @@ impl AgentRuntime {
             let _ = self.raw_event_backlog.pop_front();
         }
 
+        self.metrics.telemetry_raw_backlog_dropped_total = self
+            .metrics
+            .telemetry_raw_backlog_dropped_total
+            .saturating_add(overflow as u64);
+
         warn!(
             overflow,
             backlog_cap = self.raw_event_backlog_cap,
             backlog_after = self.raw_event_backlog.len(),
+            backlog_dropped_total = self.metrics.telemetry_raw_backlog_dropped_total,
             "raw event backlog exceeded cap; dropped oldest events"
         );
     }
@@ -328,19 +347,19 @@ impl AgentRuntime {
     fn file_event_burst_key(event: &RawEvent) -> Option<String> {
         match event.event_type {
             crate::platform::EventType::FileWrite | crate::platform::EventType::FileOpen => {
-                parse_payload_path(&event.payload).map(|path| format!("write:{}", path))
+                parse_payload_path(&event.payload)
+                    .map(|path| format!("write:{}", normalize_coalesce_value(&path)))
             }
             crate::platform::EventType::FileRename => {
                 let (src, dst) = parse_payload_rename_paths(&event.payload);
                 if let Some(dst) = dst {
-                    Some(format!("rename:{}", dst))
+                    Some(format!("rename:{}", normalize_coalesce_value(&dst)))
                 } else {
-                    src.map(|src| format!("rename:{}", src))
+                    src.map(|src| format!("rename:{}", normalize_coalesce_value(&src)))
                 }
             }
-            crate::platform::EventType::FileUnlink => {
-                parse_payload_path(&event.payload).map(|path| format!("unlink:{}", path))
-            }
+            crate::platform::EventType::FileUnlink => parse_payload_path(&event.payload)
+                .map(|path| format!("unlink:{}", normalize_coalesce_value(&path))),
             _ => None,
         }
     }
@@ -356,6 +375,10 @@ impl AgentRuntime {
             .saturating_sub(self.last_ebpf_stats.events_dropped);
         self.last_ebpf_stats = stats;
     }
+}
+
+fn normalize_coalesce_value(value: &str) -> String {
+    value.trim().to_ascii_lowercase()
 }
 
 fn parse_payload_field(payload: &str, field: &str) -> Option<String> {

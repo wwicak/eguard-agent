@@ -16,7 +16,10 @@ SCENARIOS_CSV="${EGUARD_PERF_SCENARIOS:-idle,office,build,ransomware,command-lat
 AGENT_SERVICE="${EGUARD_AGENT_SERVICE:-eguard-agent.service}"
 AGENT_PROCESS_NAME="${EGUARD_AGENT_PROCESS_NAME:-eguard-agent}"
 AGENT_SETTLE_SECONDS="${EGUARD_AGENT_SETTLE_SECONDS:-2}"
+AGENT_STATE_WAIT_SECS="${EGUARD_AGENT_STATE_WAIT_SECS:-45}"
 SKIP_SERVICE_CONTROL="${EGUARD_PERF_SKIP_SERVICE_CONTROL:-0}"
+RESTORE_SERVICE_STATE="${EGUARD_PERF_RESTORE_SERVICE_STATE:-1}"
+INITIAL_AGENT_STATE="unknown"
 
 SECTOR_SIZE_BYTES=512
 
@@ -37,6 +40,58 @@ systemctl_run() {
   else
     sudo systemctl "$@"
   fi
+}
+
+capture_initial_agent_state() {
+  if [[ "$SKIP_SERVICE_CONTROL" == "1" ]]; then
+    INITIAL_AGENT_STATE="unknown"
+    return
+  fi
+
+  if systemctl_run is-active --quiet "$AGENT_SERVICE"; then
+    INITIAL_AGENT_STATE="active"
+  else
+    INITIAL_AGENT_STATE="inactive"
+  fi
+}
+
+wait_for_service_state() {
+  local expected="$1"
+  local deadline=$(( $(date +%s) + AGENT_STATE_WAIT_SECS ))
+
+  while (( $(date +%s) <= deadline )); do
+    if systemctl_run is-active --quiet "$AGENT_SERVICE"; then
+      if [[ "$expected" == "active" ]]; then
+        return 0
+      fi
+    else
+      if [[ "$expected" == "inactive" ]]; then
+        return 0
+      fi
+    fi
+    sleep 1
+  done
+
+  return 1
+}
+
+restore_agent_state() {
+  if [[ "$SKIP_SERVICE_CONTROL" == "1" || "$RESTORE_SERVICE_STATE" != "1" ]]; then
+    return
+  fi
+
+  case "$INITIAL_AGENT_STATE" in
+    active)
+      systemctl_run start "$AGENT_SERVICE" >/dev/null 2>&1 || true
+      wait_for_service_state active || log "warn: service failed to restore to active within timeout"
+      ;;
+    inactive)
+      systemctl_run stop "$AGENT_SERVICE" >/dev/null 2>&1 || true
+      wait_for_service_state inactive || log "warn: service failed to restore to inactive within timeout"
+      ;;
+    *)
+      ;;
+  esac
 }
 
 normalize_mode() {
@@ -177,8 +232,10 @@ set_agent_mode() {
   fi
   if [[ "$mode" == "ON" ]]; then
     systemctl_run start "$AGENT_SERVICE" >/dev/null 2>&1 || true
+    wait_for_service_state active || log "warn: service did not reach active in time"
   else
     systemctl_run stop "$AGENT_SERVICE" >/dev/null 2>&1 || true
+    wait_for_service_state inactive || log "warn: service did not reach inactive in time"
   fi
   sleep "$AGENT_SETTLE_SECONDS"
 }
@@ -423,10 +480,13 @@ need_cmd awk
 need_cmd findmnt
 need_cmd lsblk
 
+capture_initial_agent_state
+trap restore_agent_state EXIT
+
 mkdir -p "$OUT_ROOT"
 DISK_DEVICE="$(detect_root_disk_device)"
 
-log "date_tag=${DATE_TAG} out_root=${OUT_ROOT} runs_per_mode=${RUNS_PER_MODE} warmup_runs=${WARMUP_RUNS} disk_device=${DISK_DEVICE:-unknown}"
+log "date_tag=${DATE_TAG} out_root=${OUT_ROOT} runs_per_mode=${RUNS_PER_MODE} warmup_runs=${WARMUP_RUNS} disk_device=${DISK_DEVICE:-unknown} initial_agent_state=${INITIAL_AGENT_STATE}"
 
 mapfile -t SCENARIOS < <(split_csv "$SCENARIOS_CSV")
 if [[ "${#SCENARIOS[@]}" -eq 0 ]]; then

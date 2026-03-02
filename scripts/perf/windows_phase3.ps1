@@ -23,6 +23,9 @@ if ([string]::IsNullOrWhiteSpace($OutRoot)) {
     $OutRoot = Join-Path $rootDir ("artifacts/perf/{0}/windows" -f $DateTag)
 }
 $skipServiceControl = ("$env:EGUARD_PERF_SKIP_SERVICE_CONTROL" -eq '1')
+$restoreServiceState = ("$env:EGUARD_PERF_RESTORE_SERVICE_STATE" -ne '0')
+$serviceStateWaitSecs = if ($env:EGUARD_AGENT_STATE_WAIT_SECS) { [int]$env:EGUARD_AGENT_STATE_WAIT_SECS } else { 90 }
+$initialServiceStatus = $null
 
 function Write-Log([string]$Message) {
     Write-Host "[windows_phase3] $Message"
@@ -80,15 +83,79 @@ function Build-MeasuredSequence([int]$PerMode, [string]$PatternCsv) {
     return $result
 }
 
+function Capture-InitialAgentState {
+    if ($skipServiceControl) {
+        $script:initialServiceStatus = $null
+        return
+    }
+
+    try {
+        $svc = Get-Service -Name $AgentService -ErrorAction Stop
+        $script:initialServiceStatus = [string]$svc.Status
+    }
+    catch {
+        $script:initialServiceStatus = $null
+    }
+}
+
+function Wait-AgentServiceStatus([string]$DesiredStatus) {
+    $deadline = (Get-Date).AddSeconds($serviceStateWaitSecs)
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $status = [string](Get-Service -Name $AgentService -ErrorAction Stop).Status
+        }
+        catch {
+            return $false
+        }
+
+        if ($status -eq $DesiredStatus) {
+            return $true
+        }
+
+        Start-Sleep -Seconds 1
+    }
+
+    return $false
+}
+
+function Restore-AgentState {
+    if ($skipServiceControl -or -not $restoreServiceState) {
+        return
+    }
+
+    if ([string]::IsNullOrWhiteSpace($script:initialServiceStatus)) {
+        return
+    }
+
+    if ($script:initialServiceStatus -eq 'Running') {
+        Start-Service -Name $AgentService -ErrorAction SilentlyContinue -WarningAction SilentlyContinue
+        if (-not (Wait-AgentServiceStatus 'Running')) {
+            Write-Log "warn: failed to restore service to Running within timeout"
+        }
+    }
+    else {
+        Stop-Service -Name $AgentService -Force -ErrorAction SilentlyContinue -WarningAction SilentlyContinue
+        if (-not (Wait-AgentServiceStatus 'Stopped')) {
+            Write-Log "warn: failed to restore service to Stopped within timeout"
+        }
+    }
+}
+
 function Set-AgentMode([string]$Mode) {
     if ($skipServiceControl) {
         return
     }
     if ($Mode -eq 'ON') {
-        Start-Service -Name $AgentService -ErrorAction SilentlyContinue
+        Start-Service -Name $AgentService -ErrorAction SilentlyContinue -WarningAction SilentlyContinue
+        if (-not (Wait-AgentServiceStatus 'Running')) {
+            Write-Log "warn: service did not reach Running in time"
+        }
     }
     else {
-        Stop-Service -Name $AgentService -ErrorAction SilentlyContinue
+        Stop-Service -Name $AgentService -Force -ErrorAction SilentlyContinue -WarningAction SilentlyContinue
+        if (-not (Wait-AgentServiceStatus 'Stopped')) {
+            Write-Log "warn: service did not reach Stopped in time"
+        }
     }
     Start-Sleep -Seconds $AgentSettleSeconds
 }
@@ -354,8 +421,10 @@ if ($scenarios.Count -eq 0) {
     throw 'No scenarios resolved from EGUARD_PERF_SCENARIOS'
 }
 
-Write-Log "date_tag=$DateTag out_root=$OutRoot runs_per_mode=$RunsPerMode warmup_runs=$WarmupRuns"
+Capture-InitialAgentState
+Write-Log "date_tag=$DateTag out_root=$OutRoot runs_per_mode=$RunsPerMode warmup_runs=$WarmupRuns initial_service_status=$initialServiceStatus"
 
+try {
 foreach ($scenario in $scenarios) {
     $scenarioDir = Join-Path $OutRoot $scenario
     New-Item -ItemType Directory -Path $scenarioDir -Force | Out-Null
@@ -441,6 +510,10 @@ foreach ($scenario in $scenarios) {
     [System.IO.File]::WriteAllText($metaPath, $metaPayload + "`n", (New-Object System.Text.UTF8Encoding($false)))
 
     Write-Log "scenario=$scenario wrote $rawJsonPath"
+}
+}
+finally {
+    Restore-AgentState
 }
 
 Write-Log 'done'
