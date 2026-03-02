@@ -42,6 +42,18 @@ pub(super) enum ControlPlaneTaskKind {
     FleetBaselineFetch,
     IocSignalUpload,
     CampaignFetch,
+    #[allow(dead_code)]
+    FimUpload,
+    #[allow(dead_code)]
+    UsbUpload,
+    #[allow(dead_code)]
+    DeceptionUpload,
+    #[allow(dead_code)]
+    VulnerabilityUpload,
+    #[allow(dead_code)]
+    HuntingUpload,
+    #[allow(dead_code)]
+    ZeroTrustUpload,
 }
 
 #[derive(Debug, Clone)]

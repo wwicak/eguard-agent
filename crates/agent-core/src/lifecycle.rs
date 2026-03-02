@@ -8,6 +8,8 @@ mod detection_event;
 mod ebpf_support;
 mod emergency_rule;
 mod enrollment;
+mod feature_events;
+mod feature_policy;
 mod inventory;
 mod kernel_integrity_scan;
 mod memory_scan;

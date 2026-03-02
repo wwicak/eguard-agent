@@ -250,6 +250,15 @@ impl AgentRuntime {
                         warn!(error = %err, "campaign fetch failed");
                     }
                 }
+                ControlPlaneTaskKind::FimUpload
+                | ControlPlaneTaskKind::UsbUpload
+                | ControlPlaneTaskKind::DeceptionUpload
+                | ControlPlaneTaskKind::VulnerabilityUpload
+                | ControlPlaneTaskKind::HuntingUpload
+                | ControlPlaneTaskKind::ZeroTrustUpload => {
+                    // Placeholder — feature upload handlers will be wired in
+                    // when the corresponding scan/detection loops are implemented.
+                }
             }
 
             executed = executed.saturating_add(1);
@@ -790,6 +799,115 @@ impl AgentRuntime {
                         info!("bundle public key updated from server policy");
                     }
                 }
+
+                // --- Feature policy: FIM ---
+                if let Some(v) = raw.get("fim_enabled").and_then(|v| v.as_bool()) {
+                    self.fim_policy.enabled = v;
+                    info!(fim_enabled = v, "updated FIM enabled from policy");
+                }
+                if let Some(arr) = raw.get("fim_watched_paths") {
+                    if let Ok(paths) = serde_json::from_value::<Vec<String>>(arr.clone()) {
+                        self.fim_policy.watched_paths = paths;
+                    } else if let Some(csv) = arr.as_str() {
+                        self.fim_policy.watched_paths = csv
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect();
+                    }
+                    info!(count = self.fim_policy.watched_paths.len(), "updated FIM watched paths from policy");
+                }
+                if let Some(arr) = raw.get("fim_excluded_paths") {
+                    if let Ok(paths) = serde_json::from_value::<Vec<String>>(arr.clone()) {
+                        self.fim_policy.excluded_paths = paths;
+                    } else if let Some(csv) = arr.as_str() {
+                        self.fim_policy.excluded_paths = csv
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect();
+                    }
+                    info!(count = self.fim_policy.excluded_paths.len(), "updated FIM excluded paths from policy");
+                }
+                if let Some(v) = raw.get("fim_scan_interval_secs").and_then(|v| v.as_u64()) {
+                    self.fim_policy.scan_interval_secs = v.max(60);
+                    info!(fim_scan_interval_secs = self.fim_policy.scan_interval_secs, "updated FIM scan interval from policy");
+                }
+
+                // --- Feature policy: USB Control ---
+                if let Some(v) = raw.get("usb_storage_blocked").and_then(|v| v.as_bool()) {
+                    self.usb_policy.storage_blocked = v;
+                    info!(usb_storage_blocked = v, "updated USB storage blocked from policy");
+                }
+                if let Some(v) = raw.get("usb_network_blocked").and_then(|v| v.as_bool()) {
+                    self.usb_policy.network_blocked = v;
+                    info!(usb_network_blocked = v, "updated USB network blocked from policy");
+                }
+                if let Some(v) = raw.get("usb_log_all").and_then(|v| v.as_bool()) {
+                    self.usb_policy.log_all = v;
+                    info!(usb_log_all = v, "updated USB log all from policy");
+                }
+                if let Some(arr) = raw.get("usb_allowed_vendor_ids") {
+                    if let Ok(ids) = serde_json::from_value::<Vec<String>>(arr.clone()) {
+                        self.usb_policy.allowed_vendor_ids = ids;
+                    } else if let Some(csv) = arr.as_str() {
+                        self.usb_policy.allowed_vendor_ids = csv
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect();
+                    }
+                    info!(count = self.usb_policy.allowed_vendor_ids.len(), "updated USB allowed vendor IDs from policy");
+                }
+
+                // --- Feature policy: Deception ---
+                if let Some(v) = raw.get("deception_enabled").and_then(|v| v.as_bool()) {
+                    self.deception_policy.enabled = v;
+                    info!(deception_enabled = v, "updated deception enabled from policy");
+                }
+                if let Some(arr) = raw.get("deception_custom_paths") {
+                    if let Ok(paths) = serde_json::from_value::<Vec<String>>(arr.clone()) {
+                        self.deception_policy.custom_paths = paths;
+                    } else if let Some(csv) = arr.as_str() {
+                        self.deception_policy.custom_paths = csv
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect();
+                    }
+                    info!(count = self.deception_policy.custom_paths.len(), "updated deception custom paths from policy");
+                }
+
+                // --- Feature policy: Threat Hunting ---
+                if let Some(v) = raw.get("hunting_enabled").and_then(|v| v.as_bool()) {
+                    self.hunting_policy.enabled = v;
+                    info!(hunting_enabled = v, "updated hunting enabled from policy");
+                }
+                if let Some(v) = raw.get("hunting_interval_secs").and_then(|v| v.as_u64()) {
+                    self.hunting_policy.interval_secs = v.max(300);
+                    info!(hunting_interval_secs = self.hunting_policy.interval_secs, "updated hunting interval from policy");
+                }
+
+                // --- Feature policy: Zero Trust ---
+                if let Some(v) = raw.get("zero_trust_enabled").and_then(|v| v.as_bool()) {
+                    self.zero_trust_policy.enabled = v;
+                    info!(zero_trust_enabled = v, "updated zero trust enabled from policy");
+                }
+                if let Some(v) = raw.get("zero_trust_quarantine_threshold").and_then(|v| v.as_u64())
+                {
+                    self.zero_trust_policy.quarantine_threshold = v.min(100) as u8;
+                    info!(
+                        zero_trust_quarantine_threshold = self.zero_trust_policy.quarantine_threshold,
+                        "updated zero trust quarantine threshold from policy"
+                    );
+                }
+                if let Some(v) = raw.get("zero_trust_restrict_threshold").and_then(|v| v.as_u64()) {
+                    self.zero_trust_policy.restrict_threshold = v.min(100) as u8;
+                    info!(
+                        zero_trust_restrict_threshold = self.zero_trust_policy.restrict_threshold,
+                        "updated zero trust restrict threshold from policy"
+                    );
+                }
             }
         }
 
@@ -941,6 +1059,12 @@ impl ControlPlaneTaskKind {
             Self::FleetBaselineFetch => "fleet_baseline_fetch",
             Self::IocSignalUpload => "ioc_signal_upload",
             Self::CampaignFetch => "campaign_fetch",
+            Self::FimUpload => "fim_upload",
+            Self::UsbUpload => "usb_upload",
+            Self::DeceptionUpload => "deception_upload",
+            Self::VulnerabilityUpload => "vulnerability_upload",
+            Self::HuntingUpload => "hunting_upload",
+            Self::ZeroTrustUpload => "zero_trust_upload",
         }
     }
 }

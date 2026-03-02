@@ -19,6 +19,13 @@ responsible for managing eGuard across a fleet of endpoints.
 6. [Threat Intelligence Bundles](#6-threat-intelligence-bundles)
 7. [Policy Management](#7-policy-management)
 8. [Detection Whitelist (False Positive Suppression)](#8-detection-whitelist-false-positive-suppression)
+8b. [Detection Feature Dashboards](#8b-detection-feature-dashboards-mar-2026)
+   - [8b.1 USB Control](#8b1-usb-control)
+   - [8b.2 Deception Tokens](#8b2-deception-tokens)
+   - [8b.3 Vulnerability Dashboard](#8b3-vulnerability-dashboard)
+   - [8b.4 Threat Hunting](#8b4-threat-hunting)
+   - [8b.5 File Integrity Monitoring](#8b5-file-integrity-monitoring-fim)
+   - [8b.6 Zero Trust Scoring](#8b6-zero-trust-scoring)
 9. [Agent Release & Updates](#9-agent-release--updates)
 10. [gRPC Reliability](#10-grpc-reliability)
 11. [Firewall / iptables](#11-firewall--iptables)
@@ -675,7 +682,7 @@ Server (policy stored in DB)
 Agent parses policy JSON
   |
   v
-Applies: compliance checks, detection_allowlist, baseline_mode, baseline_upload_enabled, fleet_seed_enabled, bundle_public_key
+Applies: compliance checks, detection_allowlist, baseline_mode, baseline_upload_enabled, fleet_seed_enabled, bundle_public_key, fim_policy, usb_policy, deception_policy, hunting_policy, zero_trust_policy
 ```
 
 ### 7.2 Policy Fields
@@ -691,6 +698,22 @@ Applies: compliance checks, detection_allowlist, baseline_mode, baseline_upload_
 | `fleet_seed_canary_percent` | int (0-100) | Canary rollout gate for fleet-seed path by agent_id hash bucket |
 | `bundle_public_key` | string | Hex-encoded Ed25519 public key for bundle verification |
 | `response` | object | Override autonomous response, dry_run, rate limits |
+| `fim_enabled` | bool | Enable file integrity monitoring |
+| `fim_watched_paths` | csv | Paths to monitor for file changes |
+| `fim_excluded_paths` | csv | Paths to exclude from FIM |
+| `fim_scan_interval_secs` | string | Interval between FIM scans (min 60, default 300) |
+| `usb_storage_blocked` | bool | Block USB mass storage devices |
+| `usb_network_blocked` | bool | Block USB network adapters |
+| `usb_log_all` | bool | Log all USB device connections |
+| `usb_allowed_vendor_ids` | csv | Vendor IDs exempted from USB blocking |
+| `deception_enabled` | bool | Enable deception token deployment |
+| `deception_custom_paths` | csv | Custom paths for deception token placement |
+| `hunting_enabled` | bool | Enable automated threat hunting queries |
+| `hunting_interval_secs` | string | Interval between hunting sweeps (min 300, default 3600) |
+| `zero_trust_enabled` | bool | Enable zero trust endpoint scoring |
+| `zero_trust_quarantine_threshold` | string | Score below which endpoint is quarantined (0-100, default 30) |
+| `zero_trust_restrict_threshold` | string | Score below which endpoint is restricted (0-100, default 50) |
+| `playbooks_enabled` | bool | Enable automated response playbooks |
 
 ### 7.3 Refresh Interval
 
@@ -777,6 +800,208 @@ curl -X POST https://server:9999/api/v1/endpoint/whitelist \
 # Delete a whitelist entry
 curl -X DELETE https://server:9999/api/v1/endpoint/whitelist/42
 ```
+
+---
+
+## 8b. Detection Feature Dashboards (Mar 2026)
+
+Six CrowdStrike-parity detection features are now fully operable from the web
+GUI — each with a dedicated Vue dashboard, Go API endpoints, agent policy
+parsing, and telemetry-driven data flow.
+
+### GUI Navigation
+
+All six pages are in the Endpoint Security sidebar under their respective tabs:
+
+| Tab | Route | Description |
+|-----|-------|-------------|
+| USB Control | `/endpoint-usb-control` | USB device policy enforcement and violation log |
+| Deception Tokens | `/endpoint-deception-tokens` | Canary file deployment and trigger monitoring |
+| Vulnerabilities | `/endpoint-vulnerability` | CVE inventory with CVSS/EPSS scoring and KEV flags |
+| Threat Hunting | `/endpoint-threat-hunting` | Automated MITRE ATT&CK technique queries |
+| File Integrity | `/endpoint-file-integrity` | FIM change log with acknowledge workflow |
+| Zero Trust | `/endpoint-zero-trust` | Endpoint trust scores with factor breakdown |
+
+### 8b.1 USB Control
+
+Monitors and enforces USB device access policies. Events are telemetry-driven
+(agent detects USB device connections and reports violations).
+
+**Policy fields** (set via Policies page):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `usb_storage_blocked` | bool | Block USB mass storage devices |
+| `usb_network_blocked` | bool | Block USB network adapters |
+| `usb_log_all` | bool | Log all USB device connections |
+| `usb_allowed_vendor_ids` | csv | Vendor IDs exempted from blocking (e.g., `0x1234,0x5678`) |
+
+**API**: `GET /api/v1/endpoint/usb-events?agent_id=&device_class=&violation=1|0`
+
+**Telemetry event type**: `usb_violation`
+
+### 8b.2 Deception Tokens
+
+Deploy canary files (honeypot credentials, fake SSH keys, decoy configs) to
+endpoints. When an attacker accesses a deception token, the agent reports a
+trigger alert.
+
+**Policy fields**:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `deception_enabled` | bool | Enable deception token deployment |
+| `deception_custom_paths` | csv | Custom paths for token placement |
+
+**API**:
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/v1/endpoint/deception-tokens?agent_id=&type=` | List deployed tokens |
+| `POST` | `/api/v1/endpoint/deception-tokens` | Deploy a new token |
+| `DELETE` | `/api/v1/endpoint/deception-tokens/{id}` | Revoke a token |
+
+```bash
+# Deploy a deception token
+curl -X POST https://server:9999/api/v1/endpoint/deception-tokens \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent_id": "agent-abc",
+    "name": "admin_ssh_key",
+    "token_type": "file",
+    "path": "/home/admin/.ssh/id_rsa.bak"
+  }'
+```
+
+**Telemetry event type**: `deception_alert`
+
+### 8b.3 Vulnerability Dashboard
+
+CVE vulnerability inventory populated by the agent's local package scan.
+Displays CVSS scores with color coding, EPSS exploitation probability, and
+CISA Known Exploited Vulnerability (KEV) flags.
+
+**API**: `GET /api/v1/endpoint/vulnerability?agent_id=&severity=&actively_exploited=1|0`
+
+**Telemetry event type**: `vulnerability_match`
+
+**Key columns**:
+- **CVSS**: Color-coded (red ≥9.0, orange ≥7.0, yellow ≥4.0)
+- **EPSS**: Color-coded (red ≥0.5, orange ≥0.2)
+- **Exploited**: Shows `KEV` badge when vulnerability is in CISA's known-exploited list
+
+### 8b.4 Threat Hunting
+
+Automated threat hunting queries mapped to MITRE ATT&CK techniques. Each
+query result includes the technique ID (clickable link to attack.mitre.org),
+execution status, and findings count.
+
+**Policy fields**:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `hunting_enabled` | bool | Enable automated threat hunting queries |
+| `hunting_interval_secs` | string | Interval between hunting sweeps (default: 3600) |
+
+**API**: `GET /api/v1/endpoint/hunting?agent_id=&status=&severity=`
+
+**Telemetry event type**: `hunting_finding`
+
+### 8b.5 File Integrity Monitoring (FIM)
+
+Tracks file system changes (created, modified, deleted) on monitored paths.
+SOC analysts can acknowledge reviewed changes to reduce noise.
+
+**Policy fields**:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `fim_enabled` | bool | Enable file integrity monitoring |
+| `fim_watched_paths` | csv | Paths to monitor (e.g., `/etc,/usr/bin`) |
+| `fim_excluded_paths` | csv | Paths to exclude (e.g., `/tmp,/var/log`) |
+| `fim_scan_interval_secs` | string | Interval between FIM scans (default: 300) |
+
+**API**:
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/v1/endpoint/fim?agent_id=&change_type=&acknowledged=1\|0` | List FIM changes |
+| `GET` | `/api/v1/endpoint/fim/{id}` | Get a specific change |
+| `POST` | `/api/v1/endpoint/fim` | Acknowledge a change (`{"id": 42, "acknowledged": true}`) |
+
+**Telemetry event type**: `fim_change`
+
+### 8b.6 Zero Trust Scoring
+
+Computes a composite trust score (0-100) for each endpoint based on six
+factors: patch level, antivirus status, firewall, disk encryption, compliance,
+and network posture. Enforcement actions (allow, restrict, quarantine) are
+applied based on configurable thresholds.
+
+**Policy fields**:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `zero_trust_enabled` | bool | Enable zero trust endpoint scoring |
+| `zero_trust_quarantine_threshold` | string | Score below which endpoint is quarantined (default: 30) |
+| `zero_trust_restrict_threshold` | string | Score below which endpoint is restricted (default: 50) |
+
+**API**: `GET /api/v1/endpoint/zero-trust?agent_id=&action=`
+
+**Telemetry event type**: `zero_trust_score`
+
+**Score color coding**: Green (>70), Yellow (40-70), Red (<40)
+
+### 8b.7 Database Tables
+
+All feature data is persisted to MySQL. Apply the migration on the server:
+
+```bash
+mysql -u root -p eguard < /path/to/upgrade-agent-detection-features.sql
+```
+
+| Table | Feature |
+|-------|---------|
+| `endpoint_usb_events` | USB Control |
+| `endpoint_deception_tokens` | Deception Tokens |
+| `endpoint_vulnerabilities` | Vulnerabilities |
+| `endpoint_hunting_queries` | Threat Hunting |
+| `endpoint_fim_changes` | File Integrity |
+| `endpoint_zero_trust_scores` | Zero Trust |
+
+Data is loaded from the database on server startup and kept in an in-memory
+store for fast queries. Writes go to both the in-memory store and the database.
+
+### 8b.8 Telemetry Routing
+
+Feature events arrive via the standard telemetry endpoint and are automatically
+routed to their dedicated stores based on `event_type`:
+
+```
+Agent telemetry → POST /api/v1/endpoint/telemetry
+  |
+  routeFeatureTelemetry()
+  |
+  switch event_type:
+    "usb_violation"      → usbEvents store
+    "deception_alert"    → deceptionTokens store
+    "vulnerability_match"→ vulnerabilities store
+    "hunting_finding"    → huntingQueries store
+    "fim_change"         → fimChanges store
+    "zero_trust_score"   → zeroTrustScores store
+```
+
+### 8b.9 Policy Form Builder
+
+All feature policy fields are configured from the Policies page form builder.
+Categories auto-discover new fields — no template changes needed:
+
+- **File Integrity**: FIM Enabled, Watched Paths, Excluded Paths, Scan Interval
+- **USB Control**: Block Storage, Block Network, Log All, Allowed Vendors
+- **Deception**: Deception Enabled, Custom Paths
+- **Threat Hunting**: Hunting Enabled, Interval
+- **Zero Trust**: Zero Trust Enabled, Quarantine Threshold, Restrict Threshold
+- **Response Playbooks**: Playbooks Enabled
 
 ---
 
@@ -4092,14 +4317,14 @@ can match.
 | **Cross-Endpoint Correlation** | Threat Graph (cloud) | Storyline (cloud) | Incident graph (cloud) | On-premise campaign detection (<1ms fleet query, zero cloud RTT) |
 | **Network IOC Detection** | Falcon NDR (add-on, $$$) | Ranger (add-on) | Network protection | Built-in dst_domain/dst_ip matching, confidence escalation |
 | **C2 Beaconing Detection** | Behavioral analytics | AI-based | Limited | Mutual information on inter-arrival/size pairs, quantized 8×8 buckets |
-| **File Integrity Monitoring** | Falcon FIM (add-on) | FIM module | File auditing | SHA-256 baselines of critical system files, 5-min scan interval |
+| **File Integrity Monitoring** | Falcon FIM (add-on) | FIM module | File auditing | SHA-256 baselines, 5-min scan, **GUI dashboard with acknowledge workflow** |
 | **Response Playbooks** | Falcon Response | Storyline ActiveResponse | Automated investigation | 5 built-in conditional playbooks, server-loadable via policy JSON |
 | **Identity/Lateral Movement** | Falcon Identity (add-on, $$$) | Identity module | Defender for Identity | SSH/RDP brute force, credential theft, Impacket tool detection |
-| **USB Device Control** | Device Control | Device Control | Device Control | Policy-based USB class filtering, vendor allowlisting |
-| **Zero Trust Scoring** | ZTA (add-on, $$$) | Singularity ZT | Conditional Access | Device health score (0-100), 6 weighted factors, NAC integration |
-| **Deception/Honeypots** | None | None | None (separate product) | **Built-in deception tokens — zero FP by design** |
+| **USB Device Control** | Device Control | Device Control | Device Control | Policy-based USB class filtering, vendor allowlisting, **GUI event log with filters** |
+| **Zero Trust Scoring** | ZTA (add-on, $$$) | Singularity ZT | Conditional Access | Device health score (0-100), 6 weighted factors, **GUI dashboard with factor breakdown** |
+| **Deception/Honeypots** | None | None | None (separate product) | **Built-in deception tokens — zero FP by design, GUI deploy/revoke** |
 | **MITRE ATT&CK Coverage** | Manual mapping | Manual mapping | Manual mapping | **Auto-generated coverage report (44 techniques, 12 tactics)** |
-| **Threat Hunting** | OverWatch (managed, $$$$) | Vigilance (managed, $$$) | Experts (managed, $$$) | **Built-in automated hunting (cryptominer, persistence, rootkit)** |
+| **Threat Hunting** | OverWatch (managed, $$$$) | Vigilance (managed, $$$) | Experts (managed, $$$) | **Built-in automated hunting, GUI with MITRE technique links** |
 | **NAC Integration** | None (requires 3rd party) | None | None (requires NPS) | **Built-in NAC enforcer — auto-isolate, VLAN assignment** |
 | **MDM Commands** | None (requires 3rd party) | None | Intune (separate) | **Built-in 10 MDM commands (lock, wipe, profile, app mgmt)** |
 | **Fleet Baseline Intelligence** | Cloud analytics | Cloud analytics | Cloud analytics | Bayesian Dirichlet priors, α-trimmed median, ADWIN drift detection |

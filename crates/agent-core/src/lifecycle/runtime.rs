@@ -11,6 +11,10 @@ use grpc_client::{
 };
 use response::{AutoIsolationState, HostControlState, KillRateLimiter, ProtectedList};
 
+use super::feature_policy::{
+    DeceptionPolicyConfig, FimPolicyConfig, HuntingPolicyConfig, UsbPolicyConfig,
+    ZeroTrustPolicyConfig,
+};
 use super::response_playbook::PlaybookEngine;
 use self_protect::SelfProtectEngine;
 #[cfg(target_os = "linux")]
@@ -66,6 +70,11 @@ pub struct AgentRuntime {
     pub(super) last_baseline_upload_unix: Option<i64>,
     pub(super) last_fleet_baseline_fetch_unix: Option<i64>,
     pub(super) baseline_upload_enabled: bool,
+    pub(super) fim_policy: FimPolicyConfig,
+    pub(super) usb_policy: UsbPolicyConfig,
+    pub(super) deception_policy: DeceptionPolicyConfig,
+    pub(super) hunting_policy: HuntingPolicyConfig,
+    pub(super) zero_trust_policy: ZeroTrustPolicyConfig,
     pub(super) fleet_seed_enabled: bool,
     pub(super) baseline_upload_canary_percent: u8,
     pub(super) fleet_seed_canary_percent: u8,
@@ -327,6 +336,11 @@ impl AgentRuntime {
             last_baseline_upload_unix: None,
             last_fleet_baseline_fetch_unix: None,
             baseline_upload_enabled,
+            fim_policy: FimPolicyConfig::default(),
+            usb_policy: UsbPolicyConfig::default(),
+            deception_policy: DeceptionPolicyConfig::default(),
+            hunting_policy: HuntingPolicyConfig::default(),
+            zero_trust_policy: ZeroTrustPolicyConfig::default(),
             fleet_seed_enabled,
             baseline_upload_canary_percent,
             fleet_seed_canary_percent,
