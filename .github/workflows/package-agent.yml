@@ -2,6 +2,11 @@ name: package-agent
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Optional package version override (e.g. 0.1.1)"
+        required: false
+        type: string
   push:
     tags:
       - "agent-v*"
@@ -25,7 +30,9 @@ jobs:
       - name: Install Linux packaging tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y dpkg-dev rpm gnupg musl-tools
+          sudo apt-get install -y \
+            dpkg-dev rpm gnupg musl-tools \
+            pkg-config libelf-dev zlib1g-dev
 
       - name: Install nfpm
         run: |
@@ -36,10 +43,22 @@ jobs:
       - name: Resolve package version
         id: package-version
         run: |
+          INPUT_VERSION="${{ github.event.inputs.version }}"
           if [[ "${GITHUB_REF:-}" == refs/tags/agent-v* ]]; then
             echo "version=${GITHUB_REF_NAME#agent-v}" >> "$GITHUB_OUTPUT"
+          elif [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -n "${INPUT_VERSION}" ]]; then
+            echo "version=${INPUT_VERSION}" >> "$GITHUB_OUTPUT"
           else
-            echo "version=0.1.0" >> "$GITHUB_OUTPUT"
+            VERSION_FROM_CARGO="$(python3 - <<'PY'
+          import pathlib
+          import tomllib
+
+          cargo = pathlib.Path('Cargo.toml').read_text(encoding='utf-8')
+          data = tomllib.loads(cargo)
+          print(data.get('workspace', {}).get('package', {}).get('version', '0.1.0'))
+          PY
+            )"
+            echo "version=${VERSION_FROM_CARGO}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Run release optimization preflight
