@@ -121,17 +121,20 @@ done
 docker_exit_code=0
 set +e
 docker run --rm \
+  -e CORE_PKG_BASENAME="${core_pkg_basename}" \
+  -e RULES_PKG_BASENAME="${rules_pkg_basename}" \
+  -e RUNTIME_TIMEOUT_SECS="${RUNTIME_TIMEOUT_SECS}" \
   -v "${ARTIFACT_DIR}:/artifacts" \
   "${IMAGE}" \
-  bash -lc "
+  bash -se <<'EOF'
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 apt-get update >/dev/null
 apt-get install -y --no-install-recommends ca-certificates systemd >/dev/null
 
 dpkg -i \
-  /artifacts/debian/${core_pkg_basename} \
-  /artifacts/debian/${rules_pkg_basename} \
+  "/artifacts/debian/${CORE_PKG_BASENAME}" \
+  "/artifacts/debian/${RULES_PKG_BASENAME}" \
   >/artifacts/container-install-smoke/dpkg-install.log 2>&1
 
 dpkg-query -W eguard-agent eguard-agent-rules >/artifacts/container-install-smoke/dpkg-query.log
@@ -143,16 +146,16 @@ test -f /var/lib/eguard-agent/rules/yara/default.yar
 test -f /var/lib/eguard-agent/rules/ioc/default_ioc.txt
 
 set +e
-RUST_LOG=info timeout ${RUNTIME_TIMEOUT_SECS} /usr/bin/eguard-agent >/artifacts/container-install-smoke/agent-start.log 2>&1
-agent_rc=\$?
+RUST_LOG=info timeout "${RUNTIME_TIMEOUT_SECS}" /usr/bin/eguard-agent >/artifacts/container-install-smoke/agent-start.log 2>&1
+agent_rc=$?
 set -e
-printf '%s\n' "\${agent_rc}" >/artifacts/container-install-smoke/agent-exit-code.txt
+printf '%s\n' "${agent_rc}" >/artifacts/container-install-smoke/agent-exit-code.txt
 
-if [ "\${agent_rc}" -ne 124 ]; then
-  echo "unexpected agent runtime exit code: \${agent_rc}" >&2
+if [ "${agent_rc}" -ne 124 ]; then
+  echo "unexpected agent runtime exit code: ${agent_rc}" >&2
   exit 1
 fi
-"
+EOF
 docker_exit_code=$?
 set -e
 
