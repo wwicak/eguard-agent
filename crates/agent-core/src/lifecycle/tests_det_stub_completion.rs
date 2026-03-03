@@ -422,6 +422,128 @@ fn reload_detection_state_accepts_signature_drop_within_guard_threshold() {
 }
 
 #[test]
+// AC-DET-ML-RES-001
+fn reload_detection_state_keeps_previous_ml_model_when_bundle_model_is_missing() {
+    let _guard = env_var_lock().lock().expect("lock env vars");
+
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+
+    let bundle_with_model = unique_temp_dir("eguard-ml-fallback-missing-model-a");
+    std::fs::create_dir_all(&bundle_with_model).expect("create bundle with model");
+    write_ioc_hash_bundle(&bundle_with_model, 5);
+    write_bundle_ml_model(&bundle_with_model, "bundle-model-a", "bundle-model-a.1");
+
+    runtime
+        .reload_detection_state(
+            "v-ml-fallback-a",
+            bundle_with_model.to_string_lossy().as_ref(),
+            None,
+        )
+        .expect("reload with explicit bundle model should pass");
+
+    let model_after_first = runtime
+        .detection_state
+        .layer5_model_snapshot()
+        .expect("snapshot ml model after first reload");
+    assert_eq!(model_after_first.model_id, "bundle-model-a");
+    assert_eq!(model_after_first.model_version, "bundle-model-a.1");
+
+    let bundle_without_model = unique_temp_dir("eguard-ml-fallback-missing-model-b");
+    std::fs::create_dir_all(&bundle_without_model).expect("create bundle without model");
+    write_ioc_hash_bundle(&bundle_without_model, 6);
+
+    runtime
+        .reload_detection_state(
+            "v-ml-fallback-b",
+            bundle_without_model.to_string_lossy().as_ref(),
+            None,
+        )
+        .expect("reload should keep previous model when bundle model is missing");
+
+    let model_after_second = runtime
+        .detection_state
+        .layer5_model_snapshot()
+        .expect("snapshot ml model after second reload");
+    assert_eq!(model_after_second.model_id, "bundle-model-a");
+    assert_eq!(model_after_second.model_version, "bundle-model-a.1");
+    assert_eq!(
+        runtime
+            .detection_state
+            .version()
+            .expect("read version after second reload")
+            .as_deref(),
+        Some("v-ml-fallback-b")
+    );
+
+    let _ = std::fs::remove_dir_all(bundle_with_model);
+    let _ = std::fs::remove_dir_all(bundle_without_model);
+}
+
+#[test]
+// AC-DET-ML-RES-002
+fn reload_detection_state_keeps_previous_ml_model_when_bundle_model_is_invalid() {
+    let _guard = env_var_lock().lock().expect("lock env vars");
+
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+
+    let bundle_with_model = unique_temp_dir("eguard-ml-fallback-invalid-model-a");
+    std::fs::create_dir_all(&bundle_with_model).expect("create first bundle");
+    write_ioc_hash_bundle(&bundle_with_model, 5);
+    write_bundle_ml_model(
+        &bundle_with_model,
+        "bundle-model-valid",
+        "bundle-model-valid.1",
+    );
+
+    runtime
+        .reload_detection_state(
+            "v-ml-invalid-a",
+            bundle_with_model.to_string_lossy().as_ref(),
+            None,
+        )
+        .expect("reload with valid bundle model should pass");
+
+    let invalid_bundle = unique_temp_dir("eguard-ml-fallback-invalid-model-b");
+    std::fs::create_dir_all(&invalid_bundle).expect("create invalid bundle");
+    write_ioc_hash_bundle(&invalid_bundle, 6);
+    std::fs::write(
+        invalid_bundle.join("signature-ml-model.json"),
+        "{ not-json }",
+    )
+    .expect("write malformed model");
+
+    runtime
+        .reload_detection_state(
+            "v-ml-invalid-b",
+            invalid_bundle.to_string_lossy().as_ref(),
+            None,
+        )
+        .expect("reload should continue with previous model when bundle model is invalid");
+
+    let model_after_invalid = runtime
+        .detection_state
+        .layer5_model_snapshot()
+        .expect("snapshot ml model after invalid reload");
+    assert_eq!(model_after_invalid.model_id, "bundle-model-valid");
+    assert_eq!(model_after_invalid.model_version, "bundle-model-valid.1");
+    assert_eq!(
+        runtime
+            .detection_state
+            .version()
+            .expect("read version after invalid reload")
+            .as_deref(),
+        Some("v-ml-invalid-b")
+    );
+
+    let _ = std::fs::remove_dir_all(bundle_with_model);
+    let _ = std::fs::remove_dir_all(invalid_bundle);
+}
+
+#[test]
 // AC-DET-152
 fn heartbeat_config_version_prefers_latest_threat_version_then_detection_state() {
     let mut cfg = AgentConfig::default();

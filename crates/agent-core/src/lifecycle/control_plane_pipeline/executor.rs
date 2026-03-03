@@ -4,7 +4,7 @@ use anyhow::Result;
 use tracing::warn;
 
 use super::super::{
-    elapsed_micros, AgentRuntime, ControlPlaneTaskKind,
+    elapsed_micros, AgentRuntime, ControlPlaneTaskKind, PendingControlPlaneTask,
     CONTROL_PLANE_TASK_EXECUTION_BUDGET_PER_TICK,
 };
 
@@ -37,7 +37,7 @@ impl AgentRuntime {
                 ControlPlaneTaskKind::Inventory { inventory } => {
                     let inventory_started = Instant::now();
                     self.send_inventory_if_due(now_unix, inventory.as_ref());
-                    self.metrics.last_compliance_micros = elapsed_micros(inventory_started);
+                    self.metrics.last_inventory_micros = elapsed_micros(inventory_started);
                 }
                 ControlPlaneTaskKind::PolicySync => {
                     self.refresh_policy_if_due(now_unix).await?;
@@ -88,5 +88,75 @@ impl AgentRuntime {
         }
 
         Ok(executed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AgentConfig;
+    use compliance::ComplianceResult;
+
+    fn new_runtime() -> AgentRuntime {
+        let mut cfg = AgentConfig::default();
+        cfg.offline_buffer_backend = "memory".to_string();
+        cfg.server_addr = "127.0.0.1:1".to_string();
+        cfg.self_protection_integrity_check_interval_secs = 0;
+        AgentRuntime::new(cfg).expect("runtime")
+    }
+
+    #[tokio::test]
+    async fn inventory_task_updates_inventory_metric_without_touching_compliance_metric() {
+        let mut runtime = new_runtime();
+        let now = 1_700_000_000;
+        let inventory = runtime.collect_inventory(now);
+        runtime.metrics.last_compliance_micros = 777;
+        runtime.metrics.last_inventory_micros = u64::MAX;
+        runtime
+            .pending_control_plane_tasks
+            .push_back(PendingControlPlaneTask {
+                kind: ControlPlaneTaskKind::Inventory {
+                    inventory: Box::new(inventory),
+                },
+                enqueued_at_unix: now,
+            });
+
+        let executed = runtime
+            .execute_control_plane_task_budget(now)
+            .await
+            .expect("execute inventory task");
+
+        assert_eq!(executed, 1);
+        assert_eq!(runtime.metrics.last_compliance_micros, 777);
+        assert_ne!(runtime.metrics.last_inventory_micros, u64::MAX);
+    }
+
+    #[tokio::test]
+    async fn compliance_task_updates_compliance_metric_without_touching_inventory_metric() {
+        let mut runtime = new_runtime();
+        let now = 1_700_000_000;
+        runtime.metrics.last_compliance_micros = u64::MAX;
+        runtime.metrics.last_inventory_micros = 888;
+        runtime
+            .pending_control_plane_tasks
+            .push_back(PendingControlPlaneTask {
+                kind: ControlPlaneTaskKind::Compliance {
+                    compliance: ComplianceResult {
+                        status: "ok".to_string(),
+                        detail: "ok".to_string(),
+                        checks: Vec::new(),
+                    },
+                },
+                enqueued_at_unix: now,
+            });
+
+        let executed = runtime
+            .execute_control_plane_task_budget(now)
+            .await
+            .expect("execute compliance task");
+
+        assert_eq!(executed, 1);
+        assert_ne!(runtime.metrics.last_compliance_micros, u64::MAX);
+        assert_eq!(runtime.metrics.last_inventory_micros, 888);
     }
 }

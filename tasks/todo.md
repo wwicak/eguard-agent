@@ -1,3 +1,11 @@
+## Agent package workflow recovery (agent-v0.1.1 follow-up)
+
+### Plan
+- [x] Diagnose package-agent run failure and identify missing dependency.
+- [x] Fix workflow dependency install for release preflight.
+- [ ] Re-run package workflow and capture artifact evidence for update simulation.
+- [ ] Document outcomes and any follow-up actions.
+
 - [x] Review existing control-plane pipeline responsibilities and boundaries.
 - [x] Split control-plane pipeline into focused submodules (scheduler, executor, policy, baseline, IOC/campaign, outbound sends, rollout helpers).
 - [x] Keep behavior and public runtime method signatures unchanged while refactoring.
@@ -1035,6 +1043,24 @@ Generalize performance optimizations into a shared internal architecture so endp
 - `cargo test -p platform-windows --lib -- --nocapture` ✅ (72 passed)
 - `cargo test -p platform-macos --lib -- --nocapture` ✅ (38 passed)
 
+### Implementation status — Phase M (control-plane stage metric correctness polish) ✅
+- [x] Fixed control-plane executor metric attribution so inventory sends update `last_inventory_micros` (instead of overwriting `last_compliance_micros`).
+- [x] Added `last_inventory_micros` to runtime metrics + observability snapshot and reset path.
+- [x] Added deterministic executor regression tests:
+  - `inventory_task_updates_inventory_metric_without_touching_compliance_metric`
+  - `compliance_task_updates_compliance_metric_without_touching_inventory_metric`
+
+### Verification — Phase M
+- `cargo test -p agent-core control_plane_pipeline::executor::tests -- --nocapture` ✅ (2 passed)
+- `cargo test -p agent-core control_plane_pipeline::scheduler::tests -- --nocapture` ✅ (2 passed)
+- `cargo test -p grpc-client heartbeat -- --nocapture` ✅ (9 passed)
+- `cargo test -p agent-core tests_observability -- --nocapture` ✅ (13 passed)
+- `cargo test -p agent-core tests_ebpf_policy -- --nocapture` ✅ (13 passed)
+- `cargo test -p agent-core response_action_dedupe -- --nocapture` ✅ (6 passed)
+- `cargo test -p agent-core policy_ -- --nocapture` ✅ (17 passed)
+- `cargo test -p platform-windows --lib -- --nocapture` ✅ (72 passed)
+- `cargo test -p platform-macos --lib -- --nocapture` ✅ (38 passed)
+
 ---
 
 ## ML hardening: conformal-gated Layer-5 decisions + observability enrichment
@@ -1066,8 +1092,39 @@ Generalize performance optimizations into a shared internal architecture so endp
 ## Hardening pass — resilient ML model continuity on bundle reload (2026-03-03)
 
 ### Plan
-- [ ] Add a runtime-safe way to snapshot the currently active Layer-5 ML model from detection shards.
-- [ ] Seed reload candidate engines with previous active ML model before bundle ingestion (non-strict continuity fallback).
-- [ ] Improve ML bundle-loader diagnostics to explicitly state when existing model is retained (missing/invalid bundle model).
-- [ ] Add regression tests for both missing-model and invalid-model bundle scenarios.
-- [ ] Run targeted + package-level agent-core tests to verify no reload regressions.
+- [x] Add a runtime-safe way to snapshot the currently active Layer-5 ML model from detection shards.
+- [x] Seed reload candidate engines with previous active ML model before bundle ingestion (non-strict continuity fallback).
+- [x] Improve ML bundle-loader diagnostics to explicitly state when existing model is retained (missing/invalid bundle model).
+- [x] Add regression tests for both missing-model and invalid-model bundle scenarios.
+- [x] Run targeted + package-level agent-core tests to verify no reload regressions.
+
+### Review
+- Confirmed existing runtime hardening path is already in place across:
+  - `crates/detection/src/layer5/engine.rs` (`model_snapshot()`),
+  - `crates/agent-core/src/detection_state.rs` (`SnapshotLayer5Model`, `layer5_model_snapshot()`),
+  - `crates/agent-core/src/lifecycle/threat_intel_pipeline/reload.rs` (pre-seed reload candidates with previous active model),
+  - `crates/agent-core/src/lifecycle/rule_bundle_loader.rs` (missing/invalid model keeps existing model).
+- Added explicit regression coverage for reliability/robustness guarantees:
+  - `crates/agent-core/src/lifecycle/tests_det_stub_completion.rs`
+    - `reload_detection_state_keeps_previous_ml_model_when_bundle_model_is_missing`
+    - `reload_detection_state_keeps_previous_ml_model_when_bundle_model_is_invalid`.
+
+### Verification
+- `cargo test -p agent-core reload_detection_state_keeps_previous_ml_model_when_bundle_model_is_missing -- --nocapture` ✅
+- `cargo test -p agent-core reload_detection_state_keeps_previous_ml_model_when_bundle_model_is_invalid -- --nocapture` ✅
+- `cargo test -p agent-core load_bundle_full_loads_ml_model_from_ci_generated_bundle -- --nocapture` ✅
+- `cargo test -p agent-core detection_state::tests -- --nocapture` ✅ (10 passed)
+- `cargo test -p agent-core -- --nocapture` ✅ (217 passed)
+- `rustfmt --edition 2021 crates/detection/src/layer5/engine.rs crates/agent-core/src/detection_state.rs crates/agent-core/src/lifecycle/threat_intel_pipeline/reload.rs crates/agent-core/src/lifecycle/rule_bundle_loader.rs crates/agent-core/src/lifecycle/tests_det_stub_completion.rs` ✅
+
+---
+
+## Ops simulation — bump agent version + GH build + webgui update flow (2026-03-03)
+
+### Plan
+- [ ] Bump workspace agent version for update simulation.
+- [ ] Commit version bump and create a release-style tag (`agent-v*`) to trigger package build workflow.
+- [ ] Monitor GitHub Actions run (`package-agent`) until artifacts/releases are available.
+- [ ] Collect package URL + checksum for update payload.
+- [ ] Perform WebGUI-driven agent update flow via browser automation (human-like steps) and capture evidence.
+- [ ] Report step-by-step outcome and final status.

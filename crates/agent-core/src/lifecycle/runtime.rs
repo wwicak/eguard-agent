@@ -502,6 +502,7 @@ impl AgentRuntime {
             last_send_event_batch_micros: self.metrics.last_send_event_batch_micros,
             last_heartbeat_micros: self.metrics.last_heartbeat_micros,
             last_compliance_micros: self.metrics.last_compliance_micros,
+            last_inventory_micros: self.metrics.last_inventory_micros,
             last_threat_intel_refresh_micros: self.metrics.last_threat_intel_refresh_micros,
             last_control_plane_sync_micros: self.metrics.last_control_plane_sync_micros,
             pending_control_plane_task_count: self.pending_control_plane_tasks.len(),
@@ -565,6 +566,7 @@ impl AgentRuntime {
         self.metrics.last_send_event_batch_micros = 0;
         self.metrics.last_heartbeat_micros = 0;
         self.metrics.last_compliance_micros = 0;
+        self.metrics.last_inventory_micros = 0;
         self.metrics.last_threat_intel_refresh_micros = 0;
         self.metrics.last_control_plane_sync_micros = 0;
         self.metrics.last_control_plane_execute_count = 0;

@@ -36,3 +36,5 @@
 - **When a payload is sent from both scheduled and degraded recovery paths, factor out one shared builder** so both paths remain semantically identical over time.
 - **When dedupe/coalescing keys encode policy context, still clear in-memory key maps on policy-hash rollover** to avoid stale suppression windows carrying across policy generations.
 - **For bounded control-plane queues, re-enqueue of same task kind should refresh payload-in-place (not no-op)** so delayed execution uses freshest compliance/inventory/heartbeat context without queue growth.
+- **Keep per-stage control-plane latency metrics separated (heartbeat/compliance/inventory)**; never reuse one metric slot for another stage, and lock this with executor-level tests.
+- **When hardening reliability for malformed/missing bundle ML artifacts, prefer continuity fallback over brittle fail-close**: pre-seed reload candidates with last active model, then let bundle model override when valid; this preserves service continuity while still surfacing diagnostics.
