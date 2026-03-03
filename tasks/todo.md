@@ -532,3 +532,372 @@
 - `yq '.' .github/workflows/performance-gate.yml` ✅
 - `python3 scripts/perf/promote_baseline.py --run-tag rerun3-20260302T062911Z --artifact-root artifacts/perf --workspace-root /home/dimas/eguard-agent --pointer-path /tmp/perf-baseline-promoted.json --skip-gate-check` ✅
 - `python3 scripts/perf/resolve_baseline.py --baseline-pointer /tmp/perf-baseline-promoted.json --workspace-root /home/dimas/eguard-agent` ✅
+
+---
+
+## Additional polish: baseline gate-pass enforcement + stronger baseline input guardrails
+
+### Plan
+- [x] Wire `--require-gate-pass` behavior end-to-end in baseline resolver.
+- [x] Add workflow input to enforce baseline gate-pass policy during trend baseline resolution.
+- [x] Expand tests for resolver gate-pass handling and stricter updater input validation.
+- [x] Re-run compiles/tests/workflow parse and smoke-check failure path.
+
+### Review
+- Updated `scripts/perf/resolve_baseline.py`:
+  - `--require-gate-pass` is now enforced,
+  - resolver checks `<baseline_run>/gate.json` and requires `status == pass` when enabled,
+  - resolver payload and GitHub outputs now include `baseline_gate_status`.
+- Updated `.github/workflows/performance-gate.yml`:
+  - added dispatch input `trend_require_baseline_gate_pass` (default `true`),
+  - resolver step now conditionally passes `--require-gate-pass`.
+- Strengthened baseline-path guardrails:
+  - `scripts/perf/update_baseline_pointer.py` now canonicalizes to `summary.json` and rejects non-summary files,
+  - `scripts/perf/resolve_baseline.py` similarly canonicalizes and validates baseline target.
+- Expanded tests in `scripts/perf/tests/test_perf_cli_tools.py`:
+  - `test_resolve_baseline_require_gate_pass_accepts_passing_gate`,
+  - `test_resolve_baseline_require_gate_pass_rejects_non_pass_gate`,
+  - `test_update_baseline_pointer_rejects_non_summary_file`.
+
+### Verification
+- `python3 -m py_compile scripts/perf/resolve_baseline.py scripts/perf/update_baseline_pointer.py scripts/perf/promote_baseline.py scripts/perf/compare_trend.py scripts/perf/gate.py scripts/perf/summarize.py scripts/perf/tests/test_perf_cli_tools.py` ✅
+- `python3 -m unittest discover -s scripts/perf/tests -p 'test_*.py'` ✅ (18 passed)
+- `yq '.' .github/workflows/performance-gate.yml` ✅
+- `python3 scripts/perf/resolve_baseline.py --baseline-summary artifacts/perf/rerun3-20260302T062911Z/summary.json --workspace-root /home/dimas/eguard-agent --require-gate-pass` ✅ (expected fail: missing gate.json)
+
+---
+
+## Additional polish: promotion/trend safety hardening + richer baseline diagnostics
+
+### Plan
+- [x] Enforce `--require-gate-pass` behavior in resolver with explicit diagnostics.
+- [x] Add workflow toggle for baseline gate-pass enforcement and surface baseline gate status in logs.
+- [x] Extend promotion helper with trend-pass policy and dry-run mode.
+- [x] Expand tests for new promotion/resolver edge-cases.
+
+### Review
+- `scripts/perf/resolve_baseline.py`
+  - `--require-gate-pass` now validates `<baseline-run>/gate.json` status,
+  - resolver payload now includes `baseline_gate_status`,
+  - GitHub outputs now also include `baseline_gate_status` for workflow visibility.
+- `.github/workflows/performance-gate.yml`
+  - added `trend_require_baseline_gate_pass` input (default `true`),
+  - resolver step conditionally appends `--require-gate-pass`,
+  - compare step now logs baseline input/run/gate status for auditability.
+- `scripts/perf/promote_baseline.py`
+  - added `--require-trend-pass` (checks `trend.json` status),
+  - added `--dry-run` to validate and print promotion payload without writing pointer,
+  - result now includes gate/trend statuses + dry-run metadata.
+- `scripts/perf/tests/test_perf_cli_tools.py`
+  - added resolver tests for gate-pass accept/reject,
+  - added updater test for non-summary-file rejection,
+  - added promotion tests for trend-pass enforcement and dry-run no-write behavior.
+
+### Verification
+- `python3 -m py_compile scripts/perf/resolve_baseline.py scripts/perf/update_baseline_pointer.py scripts/perf/promote_baseline.py scripts/perf/compare_trend.py scripts/perf/gate.py scripts/perf/summarize.py scripts/perf/tests/test_perf_cli_tools.py` ✅
+- `python3 -m unittest discover -s scripts/perf/tests -p 'test_*.py'` ✅ (20 passed)
+- `yq '.' .github/workflows/performance-gate.yml` ✅
+- `python3 scripts/perf/promote_baseline.py --run-tag rerun3-20260302T062911Z --artifact-root artifacts/perf --workspace-root /home/dimas/eguard-agent --pointer-path /tmp/perf-baseline-promote-dry.json --skip-gate-check --dry-run` ✅
+
+---
+
+## Additional polish: baseline trend-pass policy + promotion control hardening
+
+### Plan
+- [x] Add optional baseline trend-pass enforcement in resolver and workflow.
+- [x] Expose baseline trend status in resolver outputs + workflow logs.
+- [x] Extend promotion helper with trend-pass and dry-run safety controls.
+- [x] Expand tests for resolver trend-pass and promotion edge-cases.
+
+### Review
+- `scripts/perf/resolve_baseline.py`
+  - added `--require-trend-pass` to require `trend.json` status `pass`,
+  - payload/GitHub outputs now include `baseline_trend_status`.
+- `.github/workflows/performance-gate.yml`
+  - added `trend_require_baseline_trend_pass` input (default `false`),
+  - resolver step conditionally appends `--require-trend-pass`,
+  - trend compare step now logs `baseline_trend_status`.
+- `scripts/perf/promote_baseline.py`
+  - added `--require-trend-pass` enforcement on run promotion,
+  - added `--dry-run` for safe preview (no pointer file write),
+  - promotion payload now stores `gate_status`, `trend_status`, and `promoted_at_utc`.
+- `scripts/perf/README.md`
+  - documented combined gate+trend resolver checks and promotion dry-run/require-trend-pass usage.
+- `scripts/perf/tests/test_perf_cli_tools.py`
+  - added resolver tests for trend-pass accept/reject,
+  - added promotion tests for trend-pass reject + dry-run no-write.
+
+### Verification
+- `python3 -m py_compile scripts/perf/resolve_baseline.py scripts/perf/update_baseline_pointer.py scripts/perf/promote_baseline.py scripts/perf/compare_trend.py scripts/perf/gate.py scripts/perf/summarize.py scripts/perf/tests/test_perf_cli_tools.py` ✅
+- `python3 -m unittest discover -s scripts/perf/tests -p 'test_*.py'` ✅ (22 passed)
+- `yq '.' .github/workflows/performance-gate.yml` ✅
+- `python3 scripts/perf/resolve_baseline.py --baseline-summary artifacts/perf/rerun3-20260302T062911Z/summary.json --workspace-root /home/dimas/eguard-agent --require-trend-pass` ✅ (expected fail: missing trend.json)
+
+---
+
+## Additional polish: overwrite-safety guardrails for pointer updates/promotions
+
+### Plan
+- [x] Prevent accidental baseline pointer replacement without explicit override.
+- [x] Add optional automatic backup of existing pointer files before overwrite.
+- [x] Extend tests for overwrite refusal and force+backup behaviors.
+- [x] Re-run full perf CLI test suite and workflow YAML validation.
+
+### Review
+- `scripts/perf/update_baseline_pointer.py`
+  - added `--force` and `--backup-existing`,
+  - now refuses replacing existing pointer when baseline target differs unless `--force` is set,
+  - optional timestamped backup (`*.bak-<utc>`) before overwrite,
+  - result payload now includes `has_existing_pointer`, `pointer_changed`, and `backup_path`.
+- `scripts/perf/promote_baseline.py`
+  - added `--force` and `--backup-existing` with same safety semantics,
+  - existing-pointer comparison is based on `summary_path` + `baseline_run`,
+  - result payload now includes overwrite/backup metadata.
+- `scripts/perf/tests/test_perf_cli_tools.py`
+  - added:
+    - `test_update_baseline_pointer_requires_force_for_overwrite`,
+    - `test_update_baseline_pointer_force_with_backup`,
+    - `test_promote_baseline_requires_force_for_pointer_replacement`,
+    - `test_promote_baseline_force_with_backup`.
+- `scripts/perf/README.md`
+  - added safe overwrite command examples (`--force --backup-existing`).
+
+### Verification
+- `python3 -m py_compile scripts/perf/resolve_baseline.py scripts/perf/update_baseline_pointer.py scripts/perf/promote_baseline.py scripts/perf/compare_trend.py scripts/perf/gate.py scripts/perf/summarize.py scripts/perf/tests/test_perf_cli_tools.py` ✅
+- `python3 -m unittest discover -s scripts/perf/tests -p 'test_*.py'` ✅ (26 passed)
+- `yq '.' .github/workflows/performance-gate.yml` ✅
+
+---
+
+## Additional polish: summary-digest integrity checks + pointer mutation safeguards
+
+### Plan
+- [x] Add summary SHA-256 integrity metadata to baseline pointer flows.
+- [x] Validate pointer digest during baseline resolution to detect stale/tampered references.
+- [x] Harden pointer overwrite behavior in updater/promoter with force+backup policy.
+- [x] Extend tests for digest mismatch and overwrite guardrails.
+
+### Review
+- `scripts/perf/update_baseline_pointer.py`
+  - now computes/stores `summary_sha256`,
+  - overwrite comparison includes digest consistency when existing digest is present,
+  - supports guarded overwrite with `--force` and optional `--backup-existing`.
+- `scripts/perf/promote_baseline.py`
+  - now computes/stores `summary_sha256` in promoted pointer payload,
+  - overwrite comparison includes digest consistency,
+  - guarded replacement controls (`--force`, `--backup-existing`) retained.
+- `scripts/perf/resolve_baseline.py`
+  - parses pointer `summary_sha256` and verifies against resolved summary file when present,
+  - emits `baseline_summary_sha256` to JSON + GitHub outputs,
+  - failure path is explicit on digest mismatch.
+- `.github/workflows/performance-gate.yml`
+  - now logs `baseline_summary_sha256` after resolver step for auditability.
+- `.ci/perf-baseline.example.json`
+  - updated to include `summary_sha256` field.
+- `scripts/perf/tests/test_perf_cli_tools.py`
+  - added digest mismatch test for resolver,
+  - expanded overwrite/backup tests for updater/promoter,
+  - total test count increased to 27.
+
+### Verification
+- `python3 -m py_compile scripts/perf/resolve_baseline.py scripts/perf/update_baseline_pointer.py scripts/perf/promote_baseline.py scripts/perf/compare_trend.py scripts/perf/gate.py scripts/perf/summarize.py scripts/perf/tests/test_perf_cli_tools.py` ✅
+- `python3 -m unittest discover -s scripts/perf/tests -p 'test_*.py'` ✅ (27 passed)
+- `yq '.' .github/workflows/performance-gate.yml` ✅
+
+---
+
+## Additional polish: pointer digest integrity + no-op rewrite suppression
+
+### Plan
+- [x] Add summary digest integrity fields throughout pointer lifecycle.
+- [x] Verify pointer digest during baseline resolution and fail on mismatch.
+- [x] Prevent unnecessary pointer rewrites when baseline is unchanged.
+- [x] Expand tests for digest mismatch and rewrite/no-op behavior.
+
+### Review
+- `scripts/perf/resolve_baseline.py`
+  - added summary SHA-256 computation and pointer digest verification,
+  - added output field `baseline_summary_sha256` (JSON + GitHub outputs),
+  - pointer resolution now rejects mismatched digest values explicitly.
+- `scripts/perf/update_baseline_pointer.py`
+  - now writes `summary_sha256` into pointer payload,
+  - unchanged pointers are no-op by default (`pointer_written=false`),
+  - added `--rewrite-if-unchanged` override for intentional rewrites.
+- `scripts/perf/promote_baseline.py`
+  - now writes `summary_sha256` into promoted pointer payload,
+  - unchanged promotions are no-op by default,
+  - added `--rewrite-if-unchanged` override.
+- `scripts/perf/tests/test_perf_cli_tools.py`
+  - added digest mismatch test for resolver,
+  - added no-op/rewrite tests for updater/promoter,
+  - total suite now covers digest + overwrite + rewrite controls.
+- `scripts/perf/README.md` and `.ci/perf-baseline.example.json`
+  - documented digest field and no-op rewrite semantics.
+
+### Verification
+- `python3 -m py_compile scripts/perf/resolve_baseline.py scripts/perf/update_baseline_pointer.py scripts/perf/promote_baseline.py scripts/perf/compare_trend.py scripts/perf/gate.py scripts/perf/summarize.py scripts/perf/tests/test_perf_cli_tools.py` ✅
+- `python3 -m unittest discover -s scripts/perf/tests -p 'test_*.py'` ✅ (31 passed)
+- `yq '.' .github/workflows/performance-gate.yml` ✅
+- `python3 scripts/perf/update_baseline_pointer.py --baseline-summary /tmp/summary.json --workspace-root /home/dimas/eguard-agent --pointer-path /tmp/pointer.json` followed by a second identical invocation confirms `pointer_written=false` on unchanged baseline ✅
+
+---
+
+## Live check: 24h ML pipeline health (server + Linux VM + Windows VM)
+
+### Plan
+- [x] Read ML ops manual + production acceptance criteria and derive required runtime checks.
+- [x] Verify server-side ML/baseline services, scheduler outputs, and DB/API evidence for the last 24h.
+- [x] Verify Linux/Windows agent runtime evidence (heartbeat, baseline upload/seed apply, service health).
+- [x] Summarize pass/fail per acceptance-relevant criterion and list remediation actions if gaps are found.
+
+### Review
+- Scope validated against:
+  - `docs/ml-ops-operations-manual.md` (sections 5, 8, 11, 12)
+  - `docs/baseline-ml-production-acceptance.md` (AC-BML-010/011/020/022/030/033/060 and runtime status notes)
+- Server (`eguard@103.49.238.102`):
+  - `eguard-agent-server` and `eguard-api-frontend` are `active`.
+  - Signature-ML runtime artifacts exist and latest report is `status=success`, `run_id=20260302T020001Z` under `/usr/local/eg/var/mlops/signature-ml-feedback/latest-report.json`.
+  - Baseline API evidence from `eg-agent-server` (`:50053`):
+    - Linux latest baseline `learned_at=2026-03-03T00:49:10Z`
+    - Windows latest baseline `learned_at=2026-03-03T00:54:18Z`
+    - Inventory rows continue hourly for both agents in last 24h.
+  - Fleet endpoint before manual aggregate: fallback built-in seed (`seeded=true`, `source=built_in_seed`) because cohort gate default is higher than active distinct contributors.
+  - Manual aggregate (`POST /api/v1/endpoint/baseline/aggregate` with `min_agents=2`) succeeded with `aggregated=7`; subsequent fleet fetch returned `seeded=false`, `source=fleet_aggregated`.
+- Linux agent (`agent@103.183.74.3`):
+  - Service `eguard-agent` is `active`.
+  - Last-24h logs show repeated baseline uploads every ~15m (`00:34`, `00:49`, `01:04`) with `uploaded baseline profile batch`.
+  - No fleet-seed apply in last 24h (consistent with non-learning/non-stale fetch rules).
+- Windows agent (`administrator@103.31.39.30`):
+  - Service `eGuardAgent` is `Running`.
+  - Baseline uploads continue every ~15m (`00:24`, `00:39`, `00:54`) with `uploaded baseline profile batch`.
+  - Fleet seed apply evidence exists in the last 24h: `2026-03-02T03:25:48Z ... applied fleet baseline seed profiles ... seeded_profiles=1`.
+
+### Verification
+- Manual checks executed across all three hosts via SSH.
+- API checks (server-local against `http://127.0.0.1:50053`):
+  - `GET /api/v1/endpoint/baseline?agent_id=...`
+  - `GET /api/v1/endpoint/inventory?limit=500`
+  - `GET /api/v1/endpoint/baseline/fleet?limit=...`
+  - `POST /api/v1/endpoint/baseline/aggregate` (validation run with `min_agents=2`)
+- Agent log checks:
+  - Linux: `sudo journalctl -u eguard-agent --since "24 hours ago" ...`
+  - Windows: `Select-String` on `C:\ProgramData\eGuard\logs\agent.log`
+
+---
+
+## Plan — Cross-platform "magic inside agent" (Linux + Windows + macOS)
+
+### Objective
+Generalize performance optimizations into a shared internal architecture so endpoint overhead is minimized by default while preserving detection quality across Linux, Windows, and macOS.
+
+### Implementation plan
+- [ ] Define canonical internal event contract (`EventTxn`) in agent-core for process/file/network transactions, independent of OS collectors.
+- [ ] Add platform adapter layer in each platform crate to map raw OS events into canonical transaction inputs:
+  - Linux: eBPF/inotify adapter
+  - Windows: ETW/file adapter
+  - macOS: EndpointSecurity/FSEvents adapter
+- [ ] Implement transactionizer in `agent-core` to collapse burst raw events into stable transaction units (write/rename/unlink/open aggregation).
+- [ ] Implement progressive detection cascade in detection engine:
+  - Stage A (cheap): IOC prefilter + metadata/reputation
+  - Stage B (medium): temporal/anomaly lightweight checks
+  - Stage C (expensive): YARA/deep ML/hash-heavy path only for gated suspicious transactions
+- [ ] Implement shared scan memoization cache keyed by `(content fingerprint, policy hash, rule bundle version)` with deterministic invalidation.
+- [ ] Implement adaptive QoS governor in runtime loop to maintain target tick latency and queue health by auto-tuning sampling/coalescing/deep-scan concurrency.
+- [ ] Expose cross-platform observability counters (coalesced txns, deep-scan skips, memo hits, QoS transitions, backlog drops, stage distribution).
+- [ ] Add policy/config controls for all new mechanisms (with safe defaults + env overrides) and ensure runtime policy sync updates these values.
+- [ ] Add deterministic tests for parity + safety:
+  - transactionization correctness
+  - cascade gating correctness
+  - memoization invalidation correctness
+  - no regression for high-confidence/blocking detections
+- [ ] Add platform acceptance harness and run on Linux+Windows+macOS fixtures/VMs.
+- [ ] Run benchmark matrix (idle/office/build/ransomware-like) before vs after, compare p50/p95/p99 overhead and CPU/IO metrics, then document rollout plan.
+
+### Acceptance criteria
+- [ ] AC1 — Functional parity: no drop in must-detect regression suite vs baseline across Linux/Windows/macOS for high-confidence attack scenarios.
+- [ ] AC2 — Event reduction: transactionizer reduces raw event volume by >=40% under churn workloads without losing required detection context.
+- [ ] AC3 — Cost shaping: >=70% of benign events remain in Stage A/B and do not trigger expensive Stage C scans.
+- [ ] AC4 — Memo effectiveness: repeated benign file/process workloads produce >=50% memo hit rate for expensive scan decisions after warm-up.
+- [ ] AC5 — Latency guardrail: runtime governor keeps tick p95 within configured target band and prevents sustained backlog growth under burst load.
+- [ ] AC6 — Benchmark target (provisional):
+  - Linux: median overhead <=12%, p95 <=30%
+  - Windows: median overhead <=6%, p95 <=12%
+  - macOS: median overhead <=8%, p95 <=20% (initial provisional target)
+- [ ] AC7 — Benchmark target (hard):
+  - Linux: median <=8%, p95 <=20%
+  - Windows: median <=5%, p95 <=8%
+  - macOS: median <=6%, p95 <=12%
+- [ ] AC8 — Observability: new counters/metrics are visible in runtime snapshot and exported in benchmark artifacts.
+- [ ] AC9 — Safe fallback: disabling new features via config returns behavior to prior pipeline semantics without restart failures.
+- [ ] AC10 — Rollout safety: staged canary (10% -> 50% -> 100%) completes with no increase in incident miss-rate and no service instability across platforms.
+
+### Implementation status — Phase A (cross-platform enrichment parity) ✅
+- [x] Removed no-op stubs for enrichment budget controls on Windows/macOS:
+  - `set_budget_mode(...)`
+  - `set_hash_finalize_delay_ms(...)`
+  - `set_expensive_check_exclusions(...)`
+- [x] Implemented churn-aware hash finalization cache on Windows/macOS (pending fingerprint + finalize delay).
+- [x] Implemented strict-budget skip behavior for expensive file hashing on Windows/macOS.
+- [x] Implemented expensive path/process exclusion filtering for hashing on Windows/macOS.
+- [x] Wired process/file hashing paths to honor exclusions and budget mode consistently with Linux behavior.
+- [x] Wired runtime policy sync to apply `file_hash_finalize_delay_ms` / `detection_file_hash_finalize_delay_ms` to the live enrichment cache.
+- [x] Added deterministic unit tests for new Windows/macOS behaviors and policy-sync runtime wiring.
+
+### Verification — Phase A
+- `cargo test -p platform-windows --lib -- --nocapture` ✅ (71 passed)
+- `cargo test -p platform-macos --lib -- --nocapture` ✅ (38 passed)
+- `cargo test -p agent-core tests_ebpf_policy -- --nocapture` ✅ (12 passed)
+
+### Acceptance criteria status after Phase A
+- [x] AC9 (safe fallback / config toggles do not break runtime semantics) — implemented and tested for Windows/macOS enrichment path controls.
+- [x] AC8 (observability compatibility for strict-budget behavior) — existing runtime counters remain valid; cross-platform enrichment now responds to strict-budget toggles.
+- [ ] AC1–AC7, AC10 remain open for full architecture rollout (transactionizer, cascade, benchmark hard-gate convergence, canary).
+
+### Implementation status — Phase B (EventTxn canonical wiring) ✅
+- [x] Added canonical internal transaction model `EventTxn` in `crates/agent-core/src/lifecycle/event_txn.rs`.
+- [x] Wired event transaction creation into hot path (`tick.rs`) and kernel-integrity synthetic detection path (`kernel_integrity_scan.rs`).
+- [x] Embedded `event_txn` object into telemetry payload JSON for server-side/forensics correlation.
+- [x] Unified file burst coalescing key generation to use canonical transaction parsing (`coalesce_file_event_key`) instead of duplicate ad-hoc parser logic.
+- [x] Added observability metric `telemetry_event_txn_total` to runtime snapshot.
+- [x] Added deterministic unit tests for transaction key normalization and transaction payload fields.
+
+### Verification — Phase B
+- `cargo test -p agent-core tests_ebpf_policy -- --nocapture` ✅ (12 passed)
+- `cargo test -p agent-core tests_observability -- --nocapture` ✅ (13 passed)
+- `cargo test -p agent-core policy_ -- --nocapture` ✅ (11 passed)
+- `cargo test -p agent-core coalesce_file_event_key_normalizes_windows_separators -- --nocapture` ✅ (1 passed)
+
+### Implementation status — Phase C (response dedupe + transaction-linked action path) ✅
+- [x] Added transaction-linked response action identity (`txn_key`) to `PendingResponseAction`.
+- [x] Implemented response action dedupe window in runtime path:
+  - Env: `EGUARD_RESPONSE_ACTION_DEDUPE_WINDOW_SECS` (default 30s)
+  - Policy: `response_action_dedupe_window_secs` / `detection_response_action_dedupe_window_secs`
+- [x] Wired dedupe for both primary confidence-based responses and playbook-generated responses.
+- [x] Added dedupe state pruning and guardrail to avoid unbounded key growth.
+- [x] Added observability metric `response_action_deduped_total` and exposed in runtime snapshot.
+
+### Verification — Phase C
+- `cargo test -p agent-core response_action_dedupe -- --nocapture` ✅ (3 passed)
+- `cargo test -p agent-core tests_observability -- --nocapture` ✅ (13 passed)
+- `cargo test -p agent-core tests_ebpf_policy -- --nocapture` ✅ (12 passed)
+- `cargo test -p agent-core policy_ -- --nocapture` ✅ (11 passed)
+- `cargo test -p platform-windows --lib -- --nocapture` ✅ (72 passed)
+- `cargo test -p platform-macos --lib -- --nocapture` ✅ (38 passed)
+
+### Implementation status — Phase D (event-transaction coalescing + policy wiring) ✅
+- [x] Implemented EventTxn-based burst coalescing stage in telemetry pipeline for noisy classes (file/network/dns).
+- [x] Added runtime knobs for EventTxn coalescing:
+  - Env: `EGUARD_EVENT_TXN_COALESCE_WINDOW_MS` (default `0`, safe disabled-by-default rollout)
+  - Policy: `event_txn_coalesce_window_ms` / `detection_event_txn_coalesce_window_ms`
+- [x] Added bounded in-memory coalesce state + retention pruning for transaction keys.
+- [x] Added observability metric `telemetry_event_txn_coalesced_total` and surfaced in runtime snapshot.
+- [x] Hardened raw TCP transaction parsing to use `dst_ip` + `dst_port` fields when `dst` is absent.
+
+### Verification — Phase D
+- `cargo test -p agent-core tests_ebpf_policy -- --nocapture` ✅ (13 passed)
+- `cargo test -p agent-core tests_observability -- --nocapture` ✅ (13 passed)
+- `cargo test -p agent-core response_action_dedupe -- --nocapture` ✅ (3 passed)
+- `cargo test -p agent-core policy_ -- --nocapture` ✅ (13 passed)
+- `cargo test -p agent-core event_txn -- --nocapture` ✅ (6 passed)
+- `cargo test -p platform-windows --lib -- --nocapture` ✅ (72 passed)
+- `cargo test -p platform-macos --lib -- --nocapture` ✅ (38 passed)

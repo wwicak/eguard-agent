@@ -102,6 +102,15 @@ impl AgentRuntime {
             return;
         }
 
+        if !self.should_enqueue_response_action(
+            now_unix,
+            evaluation.action,
+            &evaluation.event_txn.key,
+            "primary",
+        ) {
+            return;
+        }
+
         if self.pending_response_actions.len() >= RESPONSE_QUEUE_CAPACITY {
             warn!(
                 queue_depth = self.pending_response_actions.len(),
@@ -122,6 +131,7 @@ impl AgentRuntime {
                 action: evaluation.action,
                 confidence: evaluation.confidence,
                 event: evaluation.detection_event.clone(),
+                txn_key: evaluation.event_txn.key.clone(),
                 enqueued_at_unix: now_unix,
                 detection_layers,
                 rule_name,
@@ -218,6 +228,15 @@ impl AgentRuntime {
         rule_name: &str,
         threat_category: &str,
     ) {
+        if !self.should_enqueue_response_action(
+            now_unix,
+            action,
+            &evaluation.event_txn.key,
+            "playbook",
+        ) {
+            return;
+        }
+
         if self.pending_response_actions.len() >= RESPONSE_QUEUE_CAPACITY {
             warn!(
                 queue_depth = self.pending_response_actions.len(),
@@ -232,6 +251,7 @@ impl AgentRuntime {
                 action,
                 confidence: evaluation.confidence,
                 event: evaluation.detection_event.clone(),
+                txn_key: evaluation.event_txn.key.clone(),
                 enqueued_at_unix: now_unix,
                 detection_layers: detection_layers.to_vec(),
                 rule_name: rule_name.to_string(),
@@ -297,6 +317,18 @@ impl AgentRuntime {
                 break;
             };
 
+            if std::env::var("EGUARD_DEBUG_EVENT_TXN_LOG")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+                .is_some()
+            {
+                info!(
+                    txn_key = %pending.txn_key,
+                    action = ?pending.action,
+                    "executing response action for event transaction"
+                );
+            }
+
             self.report_local_action_if_needed(
                 pending.action,
                 pending.confidence,
@@ -316,11 +348,175 @@ impl AgentRuntime {
         executed
     }
 
+    fn should_enqueue_response_action(
+        &mut self,
+        now_unix: i64,
+        action: super::PlannedAction,
+        txn_key: &str,
+        source: &str,
+    ) -> bool {
+        if self.response_action_dedupe_window_secs <= 0 {
+            return true;
+        }
+
+        self.prune_response_action_dedupe_state(now_unix);
+        let policy_context = self.compliance_policy_hash.as_str();
+        let bundle_context = self.latest_custom_rule_hash.as_deref().unwrap_or_default();
+        let dedupe_key = format!(
+            "{}|{:?}|{}|policy:{}|bundle:{}",
+            source, action, txn_key, policy_context, bundle_context
+        );
+
+        if let Some(last_seen_unix) = self.recent_response_action_keys.get(&dedupe_key) {
+            let age_secs = now_unix.saturating_sub(*last_seen_unix);
+            if age_secs <= self.response_action_dedupe_window_secs {
+                self.metrics.response_action_deduped_total =
+                    self.metrics.response_action_deduped_total.saturating_add(1);
+                info!(
+                    source,
+                    action = ?action,
+                    txn_key,
+                    age_secs,
+                    dedupe_window_secs = self.response_action_dedupe_window_secs,
+                    deduped_total = self.metrics.response_action_deduped_total,
+                    "skipping duplicate response action inside dedupe window"
+                );
+                return false;
+            }
+        }
+
+        self.recent_response_action_keys
+            .insert(dedupe_key, now_unix);
+        true
+    }
+
+    fn prune_response_action_dedupe_state(&mut self, now_unix: i64) {
+        if self.recent_response_action_keys.is_empty() {
+            return;
+        }
+
+        let retention = self
+            .response_action_dedupe_window_secs
+            .max(1)
+            .saturating_mul(4);
+        self.recent_response_action_keys
+            .retain(|_, ts| now_unix.saturating_sub(*ts) <= retention);
+
+        if self.recent_response_action_keys.len() > 32_768 {
+            self.recent_response_action_keys.clear();
+        }
+    }
+
     fn response_queue_oldest_age_secs(&self, now_unix: i64) -> u64 {
         let Some(item) = self.pending_response_actions.front() else {
             return 0;
         };
 
         now_unix.saturating_sub(item.enqueued_at_unix).max(0) as u64
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AgentConfig;
+
+    fn runtime() -> AgentRuntime {
+        let mut cfg = AgentConfig::default();
+        cfg.offline_buffer_backend = "memory".to_string();
+        cfg.server_addr = "127.0.0.1:1".to_string();
+        cfg.self_protection_integrity_check_interval_secs = 0;
+        AgentRuntime::new(cfg).expect("runtime")
+    }
+
+    #[test]
+    fn response_action_dedupe_window_suppresses_duplicate_actions() {
+        let mut runtime = runtime();
+        runtime.response_action_dedupe_window_secs = 60;
+
+        assert!(runtime.should_enqueue_response_action(
+            1_700_000_000,
+            super::super::PlannedAction::KillOnly,
+            "txn-key-1",
+            "primary"
+        ));
+        assert!(!runtime.should_enqueue_response_action(
+            1_700_000_010,
+            super::super::PlannedAction::KillOnly,
+            "txn-key-1",
+            "primary"
+        ));
+        assert_eq!(runtime.metrics.response_action_deduped_total, 1);
+
+        assert!(runtime.should_enqueue_response_action(
+            1_700_000_061,
+            super::super::PlannedAction::KillOnly,
+            "txn-key-1",
+            "primary"
+        ));
+    }
+
+    #[test]
+    fn response_action_dedupe_key_distinguishes_sources_and_actions() {
+        let mut runtime = runtime();
+        runtime.response_action_dedupe_window_secs = 60;
+
+        assert!(runtime.should_enqueue_response_action(
+            1_700_000_100,
+            super::super::PlannedAction::KillOnly,
+            "txn-key-2",
+            "primary"
+        ));
+        assert!(runtime.should_enqueue_response_action(
+            1_700_000_101,
+            super::super::PlannedAction::QuarantineOnly,
+            "txn-key-2",
+            "primary"
+        ));
+        assert!(runtime.should_enqueue_response_action(
+            1_700_000_102,
+            super::super::PlannedAction::KillOnly,
+            "txn-key-2",
+            "playbook"
+        ));
+
+        assert_eq!(runtime.metrics.response_action_deduped_total, 0);
+    }
+
+    #[test]
+    fn response_action_dedupe_key_includes_policy_and_bundle_context() {
+        let mut runtime = runtime();
+        runtime.response_action_dedupe_window_secs = 60;
+        runtime.compliance_policy_hash = "policy-hash-a".to_string();
+        runtime.latest_custom_rule_hash = Some("bundle-hash-a".to_string());
+
+        assert!(runtime.should_enqueue_response_action(
+            1_700_000_200,
+            super::super::PlannedAction::KillOnly,
+            "txn-key-3",
+            "primary"
+        ));
+        assert!(!runtime.should_enqueue_response_action(
+            1_700_000_201,
+            super::super::PlannedAction::KillOnly,
+            "txn-key-3",
+            "primary"
+        ));
+
+        runtime.compliance_policy_hash = "policy-hash-b".to_string();
+        assert!(runtime.should_enqueue_response_action(
+            1_700_000_202,
+            super::super::PlannedAction::KillOnly,
+            "txn-key-3",
+            "primary"
+        ));
+
+        runtime.latest_custom_rule_hash = Some("bundle-hash-b".to_string());
+        assert!(runtime.should_enqueue_response_action(
+            1_700_000_203,
+            super::super::PlannedAction::KillOnly,
+            "txn-key-3",
+            "primary"
+        ));
     }
 }

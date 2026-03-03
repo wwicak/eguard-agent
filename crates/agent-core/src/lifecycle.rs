@@ -8,6 +8,7 @@ mod detection_event;
 mod ebpf_support;
 mod emergency_rule;
 mod enrollment;
+mod event_txn;
 mod feature_events;
 mod feature_policy;
 mod inventory;
@@ -75,6 +76,9 @@ use timing::{
 use detection_event::{
     confidence_label, confidence_to_severity, map_event_class, to_detection_event,
 };
+
+#[allow(unused_imports)]
+use event_txn::{coalesce_file_event_key, EventTxn};
 
 #[allow(unused_imports)]
 use baseline::{apply_fleet_baseline_seeds, load_baseline_store, seed_anomaly_baselines};

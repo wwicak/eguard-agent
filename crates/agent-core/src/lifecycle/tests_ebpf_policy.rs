@@ -72,10 +72,12 @@ fn tick_pipeline_produces_detection_compliance_envelope_and_baseline_learning() 
     let confidence = detection_outcome.confidence;
     let action = plan_action(confidence, &runtime.effective_response_config());
     let compliance = runtime.evaluate_compliance();
+    let event_txn = EventTxn::from_enriched(&enriched, &detection_event, now);
     let event_envelope = runtime.build_event_envelope(
         &enriched,
         &detection_event,
         &detection_outcome,
+        &event_txn,
         confidence,
         now,
     );
@@ -94,6 +96,11 @@ fn tick_pipeline_produces_detection_compliance_envelope_and_baseline_learning() 
     let payload: serde_json::Value =
         serde_json::from_str(&event_envelope.payload_json).expect("parse payload");
     assert!(payload.get("event").is_some());
+    assert!(payload.get("event_txn").is_some());
+    assert_eq!(
+        payload["event_txn"]["operation"],
+        serde_json::Value::from("process_exec")
+    );
     assert!(payload.get("detection").is_some());
     assert!(!compliance.status.trim().is_empty());
     assert!(matches!(
@@ -469,6 +476,47 @@ fn file_event_burst_coalescing_normalizes_path_case() {
         runtime
             .observability_snapshot()
             .telemetry_coalesced_events_total
+            >= 1
+    );
+
+    let _ = std::fs::remove_file(replay_path);
+}
+
+#[test]
+fn event_txn_coalescing_drops_duplicate_dns_queries_within_window() {
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    cfg.server_addr = "127.0.0.1:1".to_string();
+
+    let replay_path = std::env::temp_dir().join(format!(
+        "eguard-agent-replay-txn-coalesce-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+
+    let replay = [
+        r#"{"event_type":"dns_query","pid":9401,"uid":0,"ts_ns":1700000000000000000,"domain":"dup.example"}"#,
+        r#"{"event_type":"dns_query","pid":9401,"uid":0,"ts_ns":1700000000000100000,"domain":"dup.example"}"#,
+    ]
+    .join("\n");
+    std::fs::write(&replay_path, replay).expect("write replay file");
+
+    let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+    runtime.ebpf_engine =
+        platform_linux::EbpfEngine::from_replay(&replay_path).expect("replay backend");
+    runtime.event_txn_coalesce_window_ns = 5_000_000_000;
+
+    let first = runtime.evaluate_tick(1_700_000_000).expect("tick 1");
+    let second = runtime.evaluate_tick(1_700_000_001).expect("tick 2");
+
+    assert!(first.is_some());
+    assert!(second.is_none());
+    assert!(
+        runtime
+            .observability_snapshot()
+            .telemetry_event_txn_coalesced_total
             >= 1
     );
 

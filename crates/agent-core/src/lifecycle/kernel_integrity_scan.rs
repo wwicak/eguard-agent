@@ -108,8 +108,12 @@ impl AgentRuntime {
             container_privileged: false,
         };
 
-        let mut event_envelope =
-            self.build_event_envelope(&enriched, &event, &outcome, confidence, now_unix);
+        let event_txn = super::EventTxn::from_enriched(&enriched, &event, now_unix);
+        self.metrics.telemetry_event_txn_total =
+            self.metrics.telemetry_event_txn_total.saturating_add(1);
+        let mut event_envelope = self.build_event_envelope(
+            &enriched, &event, &outcome, &event_txn, confidence, now_unix,
+        );
         event_envelope.event_type = event.event_class.as_str().to_string();
         event_envelope.severity = confidence_to_severity(confidence).to_string();
         if let Some(rule_name) = Self::detection_rule_name(&outcome) {

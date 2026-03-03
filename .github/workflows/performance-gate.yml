@@ -31,6 +31,14 @@ on:
         description: "Fail when pointer path is configured but missing (true|false)"
         required: false
         default: "false"
+      trend_require_baseline_gate_pass:
+        description: "Require resolved baseline gate.json status to be pass (true|false)"
+        required: false
+        default: "true"
+      trend_require_baseline_trend_pass:
+        description: "Require resolved baseline trend.json status to be pass (true|false)"
+        required: false
+        default: "false"
       trend_baseline_run:
         description: "Optional explicit baseline run tag for compare_trend"
         required: false
@@ -172,6 +180,14 @@ jobs:
             cmd+=(--strict-pointer)
           fi
 
+          if [[ "${{ github.event.inputs.trend_require_baseline_gate_pass || 'true' }}" == "true" ]]; then
+            cmd+=(--require-gate-pass)
+          fi
+
+          if [[ "${{ github.event.inputs.trend_require_baseline_trend_pass || 'false' }}" == "true" ]]; then
+            cmd+=(--require-trend-pass)
+          fi
+
           "${cmd[@]}"
 
       - name: Compare trend vs optional baseline
@@ -193,6 +209,12 @@ jobs:
             echo "unable to resolve baseline run for trend comparison"
             exit 1
           fi
+
+          echo "trend baseline input: ${BASELINE_INPUT}"
+          echo "trend baseline run: ${BASELINE_RUN}"
+          echo "trend baseline gate status: ${{ steps.resolve-trend-baseline.outputs.baseline_gate_status }}"
+          echo "trend baseline trend status: ${{ steps.resolve-trend-baseline.outputs.baseline_trend_status }}"
+          echo "trend baseline summary sha256: ${{ steps.resolve-trend-baseline.outputs.baseline_summary_sha256 }}"
 
           cmd=(
             python3 scripts/perf/compare_trend.py

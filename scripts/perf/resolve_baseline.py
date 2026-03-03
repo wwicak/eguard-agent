@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import pathlib
 import sys
@@ -20,6 +21,11 @@ def parse_args() -> argparse.Namespace:
         "--require-gate-pass",
         action="store_true",
         help="Require resolved baseline run to have gate.json status=pass",
+    )
+    parser.add_argument(
+        "--require-trend-pass",
+        action="store_true",
+        help="Require resolved baseline run to have trend.json status=pass",
     )
     parser.add_argument("--json-output", default="", help="Optional path for JSON resolution payload")
     parser.add_argument(
@@ -44,20 +50,22 @@ def parse_pointer(path: pathlib.Path) -> Dict[str, str]:
     if isinstance(payload, dict):
         baseline_summary = payload.get("baseline_summary") or payload.get("summary_path") or payload.get("baseline_input")
         baseline_run = payload.get("baseline_run") or payload.get("run")
+        summary_sha256 = payload.get("summary_sha256")
         return {
             "baseline_summary": str(baseline_summary).strip() if baseline_summary is not None else "",
             "baseline_run": str(baseline_run).strip() if baseline_run is not None else "",
+            "summary_sha256": str(summary_sha256).strip() if summary_sha256 is not None else "",
         }
 
     if isinstance(payload, str):
         value = payload.strip()
-        return {"baseline_summary": value, "baseline_run": ""} if value else {}
+        return {"baseline_summary": value, "baseline_run": "", "summary_sha256": ""} if value else {}
 
     for line in text.splitlines():
         candidate = line.strip()
         if not candidate or candidate.startswith("#"):
             continue
-        return {"baseline_summary": candidate, "baseline_run": ""}
+        return {"baseline_summary": candidate, "baseline_run": "", "summary_sha256": ""}
 
     return {}
 
@@ -93,20 +101,36 @@ def derive_run_name(path: pathlib.Path) -> str:
     return path.name
 
 
-def read_gate_status(summary_path: pathlib.Path) -> str:
-    gate_path = summary_path.parent / "gate.json"
-    if not gate_path.exists():
-        raise ValueError(f"gate.json missing for baseline run: {summary_path.parent}")
+def compute_sha256(path: pathlib.Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
 
-    payload = json.loads(gate_path.read_text(encoding="utf-8-sig"))
+
+def read_status(summary_path: pathlib.Path, file_name: str) -> str:
+    status_path = summary_path.parent / file_name
+    if not status_path.exists():
+        raise ValueError(f"{file_name} missing for baseline run: {summary_path.parent}")
+
+    payload = json.loads(status_path.read_text(encoding="utf-8-sig"))
     if not isinstance(payload, dict):
-        raise ValueError(f"invalid gate.json payload: {gate_path}")
+        raise ValueError(f"invalid {file_name} payload: {status_path}")
 
     status = payload.get("status")
     if not isinstance(status, str) or not status.strip():
-        raise ValueError(f"gate.json missing string status: {gate_path}")
+        raise ValueError(f"{file_name} missing string status: {status_path}")
 
     return status.strip().lower()
+
+
+def read_gate_status(summary_path: pathlib.Path) -> str:
+    return read_status(summary_path, "gate.json")
+
+
+def read_trend_status(summary_path: pathlib.Path) -> str:
+    return read_status(summary_path, "trend.json")
 
 
 def write_github_output(path: pathlib.Path, payload: Dict[str, Any]) -> None:
@@ -116,6 +140,8 @@ def write_github_output(path: pathlib.Path, payload: Dict[str, Any]) -> None:
         fh.write(f"baseline_input={payload.get('baseline_input', '')}\n")
         fh.write(f"baseline_run={payload.get('baseline_run', '')}\n")
         fh.write(f"baseline_gate_status={payload.get('baseline_gate_status', '')}\n")
+        fh.write(f"baseline_trend_status={payload.get('baseline_trend_status', '')}\n")
+        fh.write(f"baseline_summary_sha256={payload.get('baseline_summary_sha256', '')}\n")
 
 
 def main() -> int:
@@ -138,12 +164,16 @@ def main() -> int:
 
     baseline_summary_raw = direct_summary or pointer_data.get("baseline_summary", "")
     baseline_run_raw = "" if direct_summary else pointer_data.get("baseline_run", "")
+    pointer_summary_sha256 = "" if direct_summary else pointer_data.get("summary_sha256", "")
 
     payload: Dict[str, Any] = {
         "resolved": False,
         "source": source,
         "baseline_input": "",
         "baseline_run": "",
+        "baseline_gate_status": "",
+        "baseline_trend_status": "",
+        "baseline_summary_sha256": "",
     }
 
     if baseline_summary_raw:
@@ -156,11 +186,54 @@ def main() -> int:
             return 2
 
         baseline_run = baseline_run_raw or derive_run_name(baseline_path)
+
+        summary_sha256 = compute_sha256(baseline_path)
+        if pointer_summary_sha256 and pointer_summary_sha256.lower() != summary_sha256.lower():
+            print(
+                (
+                    "baseline summary SHA256 mismatch for pointer input: "
+                    f"expected {pointer_summary_sha256}, got {summary_sha256}"
+                ),
+                file=sys.stderr,
+            )
+            return 2
+
+        gate_status = ""
+        if args.require_gate_pass:
+            try:
+                gate_status = read_gate_status(baseline_path)
+            except ValueError as exc:
+                print(str(exc), file=sys.stderr)
+                return 2
+            if gate_status != "pass":
+                print(
+                    f"baseline gate status must be pass, got '{gate_status}' for run: {baseline_path.parent}",
+                    file=sys.stderr,
+                )
+                return 2
+
+        trend_status = ""
+        if args.require_trend_pass:
+            try:
+                trend_status = read_trend_status(baseline_path)
+            except ValueError as exc:
+                print(str(exc), file=sys.stderr)
+                return 2
+            if trend_status != "pass":
+                print(
+                    f"baseline trend status must be pass, got '{trend_status}' for run: {baseline_path.parent}",
+                    file=sys.stderr,
+                )
+                return 2
+
         payload = {
             "resolved": True,
             "source": source,
             "baseline_input": str(baseline_path),
             "baseline_run": baseline_run,
+            "baseline_gate_status": gate_status,
+            "baseline_trend_status": trend_status,
+            "baseline_summary_sha256": summary_sha256,
         }
 
     if args.json_output:

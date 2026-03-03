@@ -6,8 +6,9 @@ use serde_json::json;
 use tracing::{info, warn};
 
 use super::{
-    compute_poll_timeout, compute_sampling_stride, elapsed_micros, AgentRuntime, DegradedCause,
-    EventEnvelope, RawEvent, TickEvaluation, DEGRADE_AFTER_SEND_FAILURES, EVENT_BATCH_SIZE,
+    coalesce_file_event_key, compute_poll_timeout, compute_sampling_stride, elapsed_micros,
+    AgentRuntime, DegradedCause, EventEnvelope, RawEvent, TickEvaluation,
+    DEGRADE_AFTER_SEND_FAILURES, EVENT_BATCH_SIZE,
 };
 
 impl AgentRuntime {
@@ -18,6 +19,18 @@ impl AgentRuntime {
         let Some(evaluation) = evaluation else {
             return Ok(());
         };
+
+        if std::env::var("EGUARD_DEBUG_EVENT_TXN_LOG")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .is_some()
+        {
+            info!(
+                txn_key = %evaluation.event_txn.key,
+                txn_operation = %evaluation.event_txn.operation,
+                "debug event transaction"
+            );
+        }
 
         let send_batch_started = Instant::now();
         self.send_event_batch(evaluation.event_envelope.clone())
@@ -176,23 +189,41 @@ impl AgentRuntime {
                 }
 
                 let before = events.len();
-                let coalesced = self.coalesce_file_event_burst(events);
-                let dropped = before.saturating_sub(coalesced.len());
-                if dropped > 0 {
+                let file_coalesced = self.coalesce_file_event_burst(events);
+                let file_dropped = before.saturating_sub(file_coalesced.len());
+                if file_dropped > 0 {
                     self.metrics.telemetry_coalesced_events_total = self
                         .metrics
                         .telemetry_coalesced_events_total
-                        .saturating_add(dropped as u64);
+                        .saturating_add(file_dropped as u64);
                     info!(
-                        dropped,
-                        retained = coalesced.len(),
+                        dropped = file_dropped,
+                        retained = file_coalesced.len(),
                         window_ns = self.file_event_coalesce_window_ns,
                         coalesced_total = self.metrics.telemetry_coalesced_events_total,
                         "coalesced burst file events before deep analysis"
                     );
                 }
 
-                self.raw_event_backlog.extend(coalesced);
+                let txn_coalesced = self.coalesce_event_txn_burst(file_coalesced);
+                let txn_dropped = before
+                    .saturating_sub(file_dropped)
+                    .saturating_sub(txn_coalesced.len());
+                if txn_dropped > 0 {
+                    self.metrics.telemetry_event_txn_coalesced_total = self
+                        .metrics
+                        .telemetry_event_txn_coalesced_total
+                        .saturating_add(txn_dropped as u64);
+                    info!(
+                        dropped = txn_dropped,
+                        retained = txn_coalesced.len(),
+                        window_ns = self.event_txn_coalesce_window_ns,
+                        txn_coalesced_total = self.metrics.telemetry_event_txn_coalesced_total,
+                        "coalesced duplicate event transactions before deep analysis"
+                    );
+                }
+
+                self.raw_event_backlog.extend(txn_coalesced);
                 self.enforce_raw_event_backlog_cap();
                 self.refresh_strict_budget_mode();
 
@@ -301,6 +332,50 @@ impl AgentRuntime {
         output
     }
 
+    fn coalesce_event_txn_burst(&mut self, events: Vec<RawEvent>) -> Vec<RawEvent> {
+        if self.event_txn_coalesce_window_ns == 0 {
+            return events;
+        }
+
+        let mut output = Vec::with_capacity(events.len());
+        let mut batch_seen = HashSet::new();
+
+        for event in events {
+            let key = Self::event_txn_burst_key(&event);
+            let Some(key) = key else {
+                output.push(event);
+                continue;
+            };
+
+            let event_ts = if event.ts_ns == 0 {
+                unix_now_ns()
+            } else {
+                event.ts_ns
+            };
+
+            if !batch_seen.insert(key.clone()) {
+                continue;
+            }
+
+            let should_drop = self
+                .recent_event_txn_keys
+                .get(&key)
+                .map(|prev_ts| {
+                    event_ts.saturating_sub(*prev_ts) <= self.event_txn_coalesce_window_ns
+                })
+                .unwrap_or(false);
+            if should_drop {
+                continue;
+            }
+
+            self.recent_event_txn_keys.insert(key, event_ts);
+            output.push(event);
+        }
+
+        self.prune_event_txn_coalesce_state();
+        output
+    }
+
     fn prune_file_event_coalesce_state(&mut self) {
         if self.recent_file_event_keys.len() <= self.file_event_coalesce_key_limit {
             return;
@@ -314,6 +389,21 @@ impl AgentRuntime {
         if self.recent_file_event_keys.len() > self.file_event_coalesce_key_limit.saturating_mul(2)
         {
             self.recent_file_event_keys.clear();
+        }
+    }
+
+    fn prune_event_txn_coalesce_state(&mut self) {
+        if self.recent_event_txn_keys.len() <= self.file_event_coalesce_key_limit {
+            return;
+        }
+
+        let now_ns = unix_now_ns();
+        let retention = self.event_txn_coalesce_window_ns.max(1).saturating_mul(4);
+        self.recent_event_txn_keys
+            .retain(|_, seen_ns| now_ns.saturating_sub(*seen_ns) <= retention);
+
+        if self.recent_event_txn_keys.len() > self.file_event_coalesce_key_limit.saturating_mul(2) {
+            self.recent_event_txn_keys.clear();
         }
     }
 
@@ -345,21 +435,23 @@ impl AgentRuntime {
     }
 
     fn file_event_burst_key(event: &RawEvent) -> Option<String> {
+        coalesce_file_event_key(event)
+    }
+
+    fn event_txn_burst_key(event: &RawEvent) -> Option<String> {
         match event.event_type {
-            crate::platform::EventType::FileWrite | crate::platform::EventType::FileOpen => {
-                parse_payload_path(&event.payload)
-                    .map(|path| format!("write:{}", normalize_coalesce_value(&path)))
-            }
-            crate::platform::EventType::FileRename => {
-                let (src, dst) = parse_payload_rename_paths(&event.payload);
-                if let Some(dst) = dst {
-                    Some(format!("rename:{}", normalize_coalesce_value(&dst)))
-                } else {
-                    src.map(|src| format!("rename:{}", normalize_coalesce_value(&src)))
+            crate::platform::EventType::FileOpen
+            | crate::platform::EventType::FileWrite
+            | crate::platform::EventType::FileRename
+            | crate::platform::EventType::FileUnlink
+            | crate::platform::EventType::TcpConnect
+            | crate::platform::EventType::DnsQuery => {
+                let txn = super::EventTxn::from_raw(event);
+                if txn.subject.is_none() && txn.object.is_none() {
+                    return None;
                 }
+                Some(format!("txn:{}", txn.key))
             }
-            crate::platform::EventType::FileUnlink => parse_payload_path(&event.payload)
-                .map(|path| format!("unlink:{}", normalize_coalesce_value(&path))),
             _ => None,
         }
     }
@@ -375,51 +467,6 @@ impl AgentRuntime {
             .saturating_sub(self.last_ebpf_stats.events_dropped);
         self.last_ebpf_stats = stats;
     }
-}
-
-fn normalize_coalesce_value(value: &str) -> String {
-    value.trim().to_ascii_lowercase()
-}
-
-fn parse_payload_field(payload: &str, field: &str) -> Option<String> {
-    payload
-        .split([';', ','])
-        .filter_map(|segment| segment.split_once('='))
-        .find_map(|(key, value)| {
-            if key.trim().eq_ignore_ascii_case(field) {
-                let value = value.trim();
-                if value.is_empty() {
-                    None
-                } else {
-                    Some(value.to_string())
-                }
-            } else {
-                None
-            }
-        })
-}
-
-fn parse_payload_path(payload: &str) -> Option<String> {
-    if let Some(path) = parse_payload_field(payload, "path") {
-        return Some(path);
-    }
-
-    let trimmed = payload.trim();
-    if trimmed.is_empty() || trimmed.contains('=') {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
-}
-
-fn parse_payload_rename_paths(payload: &str) -> (Option<String>, Option<String>) {
-    let src = parse_payload_field(payload, "src")
-        .or_else(|| parse_payload_field(payload, "old"))
-        .or_else(|| parse_payload_field(payload, "old_path"));
-    let dst = parse_payload_field(payload, "dst")
-        .or_else(|| parse_payload_field(payload, "new"))
-        .or_else(|| parse_payload_field(payload, "new_path"));
-    (src, dst)
 }
 
 fn unix_now_ns() -> u64 {

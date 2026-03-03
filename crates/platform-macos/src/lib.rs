@@ -85,18 +85,42 @@ struct ProcessCacheEntry {
     last_seen_ns: u64,
 }
 
-#[derive(Debug, Clone)]
-struct FileHashCacheEntry {
+const DEFAULT_HASH_FINALIZE_DELAY_MS: u64 = 1_200;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileFingerprint {
     modified_ns: i128,
     size_bytes: u64,
     inode: u64,
-    sha256: String,
+}
+
+#[derive(Debug, Clone)]
+struct FilePendingFingerprint {
+    fingerprint: FileFingerprint,
+    first_seen_ns: u64,
+}
+
+#[derive(Debug, Clone)]
+struct FileHashCacheEntry {
+    stable_fingerprint: Option<FileFingerprint>,
+    sha256: Option<String>,
+    pending: Option<FilePendingFingerprint>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HashMode {
+    Immediate,
+    ChurnAware,
 }
 
 #[derive(Debug)]
 pub struct EnrichmentCache {
     process_cache: LruCache<u32, ProcessCacheEntry>,
     file_hash_cache: LruCache<String, FileHashCacheEntry>,
+    hash_finalize_delay_ns: u64,
+    strict_budget_mode: bool,
+    expensive_path_exclusions: Vec<String>,
+    expensive_process_exclusions: Vec<String>,
 }
 
 thread_local! {
@@ -115,18 +139,28 @@ impl EnrichmentCache {
         Self {
             process_cache: LruCache::new(capacity_from(max_process_entries)),
             file_hash_cache: LruCache::new(capacity_from(max_file_hash_entries)),
+            hash_finalize_delay_ns: DEFAULT_HASH_FINALIZE_DELAY_MS.saturating_mul(1_000_000),
+            strict_budget_mode: false,
+            expensive_path_exclusions: Vec::new(),
+            expensive_process_exclusions: Vec::new(),
         }
     }
 
-    pub fn set_budget_mode(&mut self, _enabled: bool) {}
+    pub fn set_budget_mode(&mut self, enabled: bool) {
+        self.strict_budget_mode = enabled;
+    }
 
-    pub fn set_hash_finalize_delay_ms(&mut self, _delay_ms: u64) {}
+    pub fn set_hash_finalize_delay_ms(&mut self, delay_ms: u64) {
+        self.hash_finalize_delay_ns = delay_ms.saturating_mul(1_000_000);
+    }
 
     pub fn set_expensive_check_exclusions(
         &mut self,
-        _path_exclusions: Vec<String>,
-        _process_exclusions: Vec<String>,
+        path_exclusions: Vec<String>,
+        process_exclusions: Vec<String>,
     ) {
+        self.expensive_path_exclusions = normalize_exclusions(path_exclusions);
+        self.expensive_process_exclusions = normalize_exclusions(process_exclusions);
     }
 
     pub fn process_cache_len(&self) -> usize {
@@ -162,6 +196,14 @@ impl EnrichmentCache {
     }
 
     fn hash_for_path(&mut self, path: &str) -> Option<String> {
+        self.hash_for_path_mode(path, HashMode::Immediate)
+    }
+
+    fn hash_for_path_churn_aware(&mut self, path: &str) -> Option<String> {
+        self.hash_for_path_mode(path, HashMode::ChurnAware)
+    }
+
+    fn hash_for_path_mode(&mut self, path: &str, mode: HashMode) -> Option<String> {
         let metadata = fs::metadata(path).ok()?;
         let modified_ns = metadata
             .modified()
@@ -173,29 +215,84 @@ impl EnrichmentCache {
                     .saturating_add(duration.subsec_nanos() as i128)
             })
             .unwrap_or(0);
-        let size_bytes = metadata.len();
-        let inode = file_inode(&metadata);
+        let fingerprint = FileFingerprint {
+            modified_ns,
+            size_bytes: metadata.len(),
+            inode: file_inode(&metadata),
+        };
 
-        if let Some(cached) = self.file_hash_cache.get(path) {
-            if cached.modified_ns == modified_ns
-                && cached.size_bytes == size_bytes
-                && cached.inode == inode
-            {
-                return Some(cached.sha256.clone());
+        let now_ns = unix_now_ns();
+        let entry = self
+            .file_hash_cache
+            .get(path)
+            .cloned()
+            .unwrap_or(FileHashCacheEntry {
+                stable_fingerprint: None,
+                sha256: None,
+                pending: None,
+            });
+
+        if entry.stable_fingerprint == Some(fingerprint) {
+            return entry.sha256;
+        }
+
+        if matches!(mode, HashMode::Immediate) || self.hash_finalize_delay_ns == 0 {
+            return self.compute_and_commit_hash(path, fingerprint, None);
+        }
+
+        let mut next_entry = entry.clone();
+        match entry.pending {
+            Some(pending) if pending.fingerprint == fingerprint => {
+                if now_ns.saturating_sub(pending.first_seen_ns) >= self.hash_finalize_delay_ns {
+                    return self.compute_and_commit_hash(path, fingerprint, Some(next_entry));
+                }
+            }
+            _ => {
+                next_entry.pending = Some(FilePendingFingerprint {
+                    fingerprint,
+                    first_seen_ns: now_ns,
+                });
+                self.file_hash_cache.put(path.to_string(), next_entry);
             }
         }
 
+        entry.sha256
+    }
+
+    fn compute_and_commit_hash(
+        &mut self,
+        path: &str,
+        fingerprint: FileFingerprint,
+        existing_entry: Option<FileHashCacheEntry>,
+    ) -> Option<String> {
         let hash = enrichment::file::compute_sha256(path).ok()?;
-        self.file_hash_cache.put(
-            path.to_string(),
-            FileHashCacheEntry {
-                modified_ns,
-                size_bytes,
-                inode,
-                sha256: hash.clone(),
-            },
-        );
+        let mut entry = existing_entry.unwrap_or(FileHashCacheEntry {
+            stable_fingerprint: None,
+            sha256: None,
+            pending: None,
+        });
+        entry.stable_fingerprint = Some(fingerprint);
+        entry.sha256 = Some(hash.clone());
+        entry.pending = None;
+        self.file_hash_cache.put(path.to_string(), entry);
         Some(hash)
+    }
+
+    fn is_excluded_for_expensive_checks(
+        &self,
+        path: Option<&str>,
+        process_exe: Option<&str>,
+    ) -> bool {
+        let process_excluded = process_exe
+            .map(|value| matches_any_exclusion(value, &self.expensive_process_exclusions))
+            .unwrap_or(false);
+
+        if process_excluded {
+            return true;
+        }
+
+        path.map(|value| matches_any_exclusion(value, &self.expensive_path_exclusions))
+            .unwrap_or(false)
     }
 }
 
@@ -241,16 +338,44 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
 
     let entry = cache.process_entry(&raw);
 
-    let process_exe_sha256 = entry
-        .process_exe
-        .as_deref()
-        .and_then(|p| cache.hash_for_path(p));
+    let process_exe_sha256 = entry.process_exe.as_deref().and_then(|path| {
+        if cache.is_excluded_for_expensive_checks(None, Some(path)) {
+            None
+        } else {
+            cache.hash_for_path(path)
+        }
+    });
 
     let file_path = payload_meta
         .file_path
         .or_else(|| matches!(raw.event_type, EventType::ModuleLoad).then(|| raw.payload.clone()));
 
-    let file_sha256 = file_path.as_deref().and_then(|p| cache.hash_for_path(p));
+    let file_sha256 = if cache.strict_budget_mode {
+        None
+    } else {
+        let primary = file_path.as_deref().and_then(|path| {
+            if cache.is_excluded_for_expensive_checks(Some(path), entry.process_exe.as_deref()) {
+                None
+            } else {
+                cache.hash_for_path_churn_aware(path)
+            }
+        });
+
+        primary.or_else(|| {
+            payload_meta
+                .file_path_secondary
+                .as_deref()
+                .and_then(|path| {
+                    if cache
+                        .is_excluded_for_expensive_checks(Some(path), entry.process_exe.as_deref())
+                    {
+                        None
+                    } else {
+                        cache.hash_for_path_churn_aware(path)
+                    }
+                })
+        })
+    };
 
     // macOS does not use containers in the same way as Linux.
     EnrichedEvent {
@@ -460,6 +585,40 @@ fn parse_endpoint(raw: &str) -> (Option<String>, Option<u16>) {
 
 // -- Helpers ----------------------------------------------------------------
 
+fn normalize_exclusions(values: Vec<String>) -> Vec<String> {
+    values
+        .into_iter()
+        .map(|value| value.trim().replace('\\', "/").to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+        .collect()
+}
+
+fn matches_any_exclusion(value: &str, exclusions: &[String]) -> bool {
+    if exclusions.is_empty() {
+        return false;
+    }
+
+    let lowered = value.trim().replace('\\', "/").to_ascii_lowercase();
+    if lowered.is_empty() {
+        return false;
+    }
+
+    let basename = lowered.rsplit('/').next().unwrap_or(&lowered);
+    exclusions.iter().any(|needle| {
+        lowered.starts_with(needle)
+            || lowered.contains(needle)
+            || basename == needle
+            || basename.contains(needle)
+    })
+}
+
+fn unix_now_ns() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos().min(u64::MAX as u128) as u64)
+        .unwrap_or(0)
+}
+
 #[cfg(unix)]
 fn file_inode(metadata: &fs::Metadata) -> u64 {
     metadata.ino()
@@ -480,6 +639,19 @@ mod tests {
     use super::{enrich_event_with_cache, EnrichmentCache, EventType, RawEvent};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_path(label: &str) -> std::path::PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "eguard-macos-{}-{}-{}",
+            label,
+            std::process::id(),
+            nonce
+        ))
+    }
 
     #[test]
     fn enrich_macos_process_event_uses_cmdline_payload_hint() {
@@ -520,15 +692,7 @@ mod tests {
 
     #[test]
     fn file_hash_cache_rehashes_when_file_size_changes() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock before unix epoch")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "eguard-macos-hash-cache-test-{}-{}",
-            std::process::id(),
-            nonce
-        ));
+        let path = unique_temp_path("hash-cache-size-change");
 
         fs::write(&path, b"v1").expect("write v1 payload");
 
@@ -551,15 +715,7 @@ mod tests {
 
     #[test]
     fn file_hash_cache_rehashes_when_file_changes_but_size_matches() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock before unix epoch")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "eguard-macos-hash-cache-size-stable-test-{}-{}",
-            std::process::id(),
-            nonce
-        ));
+        let path = unique_temp_path("hash-cache-size-stable");
 
         fs::write(&path, b"AAAA").expect("write v1 payload");
 
@@ -578,6 +734,68 @@ mod tests {
             first, second,
             "hash must refresh even when size is unchanged"
         );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn strict_budget_mode_skips_file_hashing_for_macos_events() {
+        let path = unique_temp_path("strict-budget");
+        fs::write(&path, b"payload").expect("write payload");
+
+        let raw = RawEvent {
+            event_type: EventType::FileWrite,
+            pid: std::process::id(),
+            uid: 0,
+            ts_ns: 12,
+            payload: format!("path={}", path.to_string_lossy()),
+        };
+
+        let mut cache = EnrichmentCache::default();
+        cache.set_budget_mode(true);
+
+        let enriched = enrich_event_with_cache(raw, &mut cache);
+        assert_eq!(enriched.file_sha256, None);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn expensive_path_exclusion_skips_macos_hashing() {
+        let path = unique_temp_path("path-exclusion");
+        fs::write(&path, b"payload").expect("write payload");
+
+        let mut cache = EnrichmentCache::default();
+        cache.set_expensive_check_exclusions(vec![path.to_string_lossy().to_string()], Vec::new());
+
+        let raw = RawEvent {
+            event_type: EventType::FileWrite,
+            pid: std::process::id(),
+            uid: 0,
+            ts_ns: 13,
+            payload: format!("path={}", path.to_string_lossy()),
+        };
+
+        let enriched = enrich_event_with_cache(raw, &mut cache);
+        assert_eq!(enriched.file_sha256, None);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn hash_finalize_delay_defers_macos_churn_hash_until_stable() {
+        let path = unique_temp_path("finalize-delay");
+        fs::write(&path, b"v1").expect("write v1 payload");
+
+        let mut cache = EnrichmentCache::default();
+        cache.set_hash_finalize_delay_ms(20);
+
+        let first = cache.hash_for_path_churn_aware(&path.to_string_lossy());
+        assert_eq!(first, None, "first churn-aware hash should defer");
+
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let second = cache.hash_for_path_churn_aware(&path.to_string_lossy());
+        assert!(second.is_some(), "hash should finalize after delay");
+
         let _ = fs::remove_file(path);
     }
 }

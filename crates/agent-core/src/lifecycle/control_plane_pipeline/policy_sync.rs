@@ -290,6 +290,18 @@ impl AgentRuntime {
             );
         }
 
+        if let Some(ms) = raw
+            .get("event_txn_coalesce_window_ms")
+            .or_else(|| raw.get("detection_event_txn_coalesce_window_ms"))
+            .and_then(|v| v.as_u64())
+        {
+            self.event_txn_coalesce_window_ns = ms.saturating_mul(1_000_000);
+            info!(
+                event_txn_coalesce_window_ms = ms,
+                "updated event-transaction coalesce window from policy"
+            );
+        }
+
         if let Some(value) = raw
             .get("strict_budget_pending_threshold")
             .and_then(|v| v.as_u64())
@@ -321,6 +333,30 @@ impl AgentRuntime {
             info!(
                 raw_event_backlog_cap = self.raw_event_backlog_cap,
                 "updated raw-event backlog cap from policy"
+            );
+        }
+
+        if let Some(value) = raw
+            .get("response_action_dedupe_window_secs")
+            .or_else(|| raw.get("detection_response_action_dedupe_window_secs"))
+            .and_then(|v| v.as_i64())
+        {
+            self.response_action_dedupe_window_secs = value.max(0);
+            info!(
+                response_action_dedupe_window_secs = self.response_action_dedupe_window_secs,
+                "updated response-action dedupe window from policy"
+            );
+        }
+
+        if let Some(delay_ms) = raw
+            .get("file_hash_finalize_delay_ms")
+            .or_else(|| raw.get("detection_file_hash_finalize_delay_ms"))
+            .and_then(|v| v.as_u64())
+        {
+            self.enrichment_cache.set_hash_finalize_delay_ms(delay_ms);
+            info!(
+                file_hash_finalize_delay_ms = delay_ms,
+                "updated file-hash finalize delay from policy"
             );
         }
     }
@@ -475,4 +511,131 @@ fn parse_string_vec_or_csv(value: &serde_json::Value) -> Option<Vec<String>> {
             .filter(|s| !s.is_empty())
             .collect()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AgentConfig;
+    use crate::platform::{enrich_event_with_cache, EventType, RawEvent};
+    use serde_json::json;
+    use std::fs;
+
+    fn new_runtime() -> AgentRuntime {
+        let mut cfg = AgentConfig::default();
+        cfg.offline_buffer_backend = "memory".to_string();
+        cfg.server_addr = "127.0.0.1:1".to_string();
+        cfg.self_protection_integrity_check_interval_secs = 0;
+        AgentRuntime::new(cfg).expect("runtime")
+    }
+
+    fn unique_temp_path(label: &str) -> std::path::PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock before unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "eguard-policy-sync-{}-{}-{}",
+            label,
+            std::process::id(),
+            nonce
+        ))
+    }
+
+    #[test]
+    fn policy_file_hash_finalize_delay_override_changes_enrichment_behavior() {
+        let path = unique_temp_path("hash-delay");
+        fs::write(&path, b"payload").expect("write payload");
+
+        let mut runtime = new_runtime();
+        runtime.apply_runtime_tuning_overrides(&json!({
+            "file_hash_finalize_delay_ms": 5_000
+        }));
+
+        let raw = RawEvent {
+            event_type: EventType::FileWrite,
+            pid: std::process::id(),
+            uid: 0,
+            ts_ns: 1,
+            payload: format!("path={}", path.to_string_lossy()),
+        };
+        let delayed = enrich_event_with_cache(raw, &mut runtime.enrichment_cache);
+        assert_eq!(
+            delayed.file_sha256, None,
+            "high finalize delay should defer first churn-aware hash"
+        );
+
+        runtime.apply_runtime_tuning_overrides(&json!({
+            "detection_file_hash_finalize_delay_ms": 0
+        }));
+
+        let raw = RawEvent {
+            event_type: EventType::FileWrite,
+            pid: std::process::id(),
+            uid: 0,
+            ts_ns: 2,
+            payload: format!("path={}", path.to_string_lossy()),
+        };
+        let immediate = enrich_event_with_cache(raw, &mut runtime.enrichment_cache);
+        assert!(
+            immediate.file_sha256.is_some(),
+            "zero finalize delay should hash immediately"
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn policy_expensive_path_exclusions_skip_file_hashing() {
+        let path = unique_temp_path("path-exclusion");
+        fs::write(&path, b"payload").expect("write payload");
+
+        let mut runtime = new_runtime();
+        runtime.apply_runtime_tuning_overrides(&json!({
+            "detection_expensive_check_excluded_paths": [path.to_string_lossy().to_string()]
+        }));
+
+        let raw = RawEvent {
+            event_type: EventType::FileWrite,
+            pid: std::process::id(),
+            uid: 0,
+            ts_ns: 3,
+            payload: format!("path={}", path.to_string_lossy()),
+        };
+        let excluded = enrich_event_with_cache(raw, &mut runtime.enrichment_cache);
+        assert_eq!(
+            excluded.file_sha256, None,
+            "policy exclusion should disable expensive hash"
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn policy_response_action_dedupe_window_override_updates_runtime_state() {
+        let mut runtime = new_runtime();
+        runtime.apply_runtime_tuning_overrides(&json!({
+            "response_action_dedupe_window_secs": 120
+        }));
+        assert_eq!(runtime.response_action_dedupe_window_secs, 120);
+
+        runtime.apply_runtime_tuning_overrides(&json!({
+            "detection_response_action_dedupe_window_secs": -10
+        }));
+        assert_eq!(runtime.response_action_dedupe_window_secs, 0);
+    }
+
+    #[test]
+    fn policy_event_txn_coalesce_window_override_updates_runtime_state() {
+        let mut runtime = new_runtime();
+        runtime.apply_runtime_tuning_overrides(&json!({
+            "event_txn_coalesce_window_ms": 250
+        }));
+        assert_eq!(runtime.event_txn_coalesce_window_ns, 250_000_000);
+
+        runtime.apply_runtime_tuning_overrides(&json!({
+            "detection_event_txn_coalesce_window_ms": 0
+        }));
+        assert_eq!(runtime.event_txn_coalesce_window_ns, 0);
+    }
 }

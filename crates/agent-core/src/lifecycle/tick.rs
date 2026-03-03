@@ -144,10 +144,15 @@ impl AgentRuntime {
         let posture = posture_from_compliance(&compliance.status);
         self.log_posture(posture);
 
+        let event_txn = super::EventTxn::from_enriched(&enriched, &detection_event, now_unix);
+        self.metrics.telemetry_event_txn_total =
+            self.metrics.telemetry_event_txn_total.saturating_add(1);
+
         let mut event_envelope = self.build_event_envelope(
             &enriched,
             &detection_event,
             &detection_outcome,
+            &event_txn,
             confidence,
             now_unix,
         );
@@ -165,6 +170,7 @@ impl AgentRuntime {
             confidence,
             action,
             compliance,
+            event_txn,
             event_envelope,
         }))
     }

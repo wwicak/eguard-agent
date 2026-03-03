@@ -12,11 +12,12 @@ impl AgentRuntime {
         enriched: &crate::platform::EnrichedEvent,
         event: &TelemetryEvent,
         outcome: &DetectionOutcome,
+        event_txn: &super::EventTxn,
         confidence: Confidence,
         now_unix: i64,
     ) -> EventEnvelope {
         let payload_json =
-            self.telemetry_payload_json(enriched, event, outcome, confidence, now_unix);
+            self.telemetry_payload_json(enriched, event, outcome, event_txn, confidence, now_unix);
         if std::env::var("EGUARD_DEBUG_AUDIT_LOG")
             .ok()
             .filter(|v| !v.trim().is_empty())
@@ -39,6 +40,7 @@ impl AgentRuntime {
         enriched: &crate::platform::EnrichedEvent,
         event: &TelemetryEvent,
         outcome: &DetectionOutcome,
+        event_txn: &super::EventTxn,
         confidence: Confidence,
         now_unix: i64,
     ) -> String {
@@ -120,6 +122,17 @@ impl AgentRuntime {
                 "dst_domain": event.dst_domain.as_deref(),
                 "command_line": event.command_line.as_deref(),
                 "event_size": event.event_size,
+            },
+            "event_txn": {
+                "event_class": &event_txn.event_class,
+                "operation": &event_txn.operation,
+                "subject": event_txn.subject.as_deref(),
+                "object": event_txn.object.as_deref(),
+                "pid": event_txn.pid,
+                "uid": event_txn.uid,
+                "session_id": event_txn.session_id,
+                "ts_unix": event_txn.ts_unix,
+                "key": &event_txn.key,
             },
             "container": {
                 "runtime": enriched.container_runtime.as_deref(),

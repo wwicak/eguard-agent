@@ -58,6 +58,8 @@ pub struct AgentRuntime {
     pub(super) raw_event_backlog_cap: usize,
     pub(super) recent_file_event_keys: HashMap<String, u64>,
     pub(super) file_event_coalesce_window_ns: u64,
+    pub(super) event_txn_coalesce_window_ns: u64,
+    pub(super) recent_event_txn_keys: HashMap<String, u64>,
     pub(super) file_event_coalesce_key_limit: usize,
     pub(super) strict_budget_mode: bool,
     pub(super) strict_budget_pending_threshold: usize,
@@ -113,6 +115,8 @@ pub struct AgentRuntime {
     pub(super) completed_command_ids: VecDeque<String>,
     pub(super) pending_commands: VecDeque<PendingCommand>,
     pub(super) pending_response_actions: VecDeque<PendingResponseAction>,
+    pub(super) response_action_dedupe_window_secs: i64,
+    pub(super) recent_response_action_keys: HashMap<String, i64>,
     pub(super) pending_response_reports: VecDeque<PendingResponseReport>,
     pub(super) control_plane_send_tasks: JoinSet<AsyncWorkerResult>,
     pub(super) response_report_tasks: JoinSet<AsyncWorkerResult>,
@@ -191,6 +195,10 @@ impl AgentRuntime {
             .ok()
             .and_then(|raw| raw.trim().parse::<u64>().ok())
             .unwrap_or(1_200);
+        let event_txn_coalesce_window_ms = std::env::var("EGUARD_EVENT_TXN_COALESCE_WINDOW_MS")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u64>().ok())
+            .unwrap_or(0);
         let file_event_coalesce_key_limit = std::env::var("EGUARD_FILE_EVENT_COALESCE_KEY_LIMIT")
             .ok()
             .and_then(|raw| raw.trim().parse::<usize>().ok())
@@ -213,6 +221,12 @@ impl AgentRuntime {
             .and_then(|raw| raw.trim().parse::<usize>().ok())
             .unwrap_or(32_768)
             .max(256);
+        let response_action_dedupe_window_secs =
+            std::env::var("EGUARD_RESPONSE_ACTION_DEDUPE_WINDOW_SECS")
+                .ok()
+                .and_then(|raw| raw.trim().parse::<i64>().ok())
+                .unwrap_or(30)
+                .max(0);
         let expensive_check_excluded_paths = parse_csv_env("EGUARD_EXPENSIVE_CHECK_EXCLUDED_PATHS");
         let expensive_check_excluded_processes =
             parse_csv_env("EGUARD_EXPENSIVE_CHECK_EXCLUDED_PROCESSES");
@@ -373,6 +387,8 @@ impl AgentRuntime {
             raw_event_backlog_cap,
             recent_file_event_keys: HashMap::new(),
             file_event_coalesce_window_ns: file_event_coalesce_window_ms.saturating_mul(1_000_000),
+            event_txn_coalesce_window_ns: event_txn_coalesce_window_ms.saturating_mul(1_000_000),
+            recent_event_txn_keys: HashMap::new(),
             file_event_coalesce_key_limit,
             strict_budget_mode: false,
             strict_budget_pending_threshold,
@@ -427,6 +443,8 @@ impl AgentRuntime {
             completed_command_ids: VecDeque::new(),
             pending_commands: VecDeque::new(),
             pending_response_actions: VecDeque::new(),
+            response_action_dedupe_window_secs,
+            recent_response_action_keys: HashMap::new(),
             pending_response_reports: VecDeque::new(),
             control_plane_send_tasks: JoinSet::new(),
             response_report_tasks: JoinSet::new(),
@@ -495,6 +513,9 @@ impl AgentRuntime {
             baseline_stale_transition_total: self.metrics.baseline_stale_transition_total,
             telemetry_coalesced_events_total: self.metrics.telemetry_coalesced_events_total,
             telemetry_raw_backlog_dropped_total: self.metrics.telemetry_raw_backlog_dropped_total,
+            telemetry_event_txn_total: self.metrics.telemetry_event_txn_total,
+            telemetry_event_txn_coalesced_total: self.metrics.telemetry_event_txn_coalesced_total,
+            response_action_deduped_total: self.metrics.response_action_deduped_total,
             strict_budget_mode_transition_total: self.metrics.strict_budget_mode_transition_total,
         }
     }

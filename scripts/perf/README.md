@@ -36,7 +36,7 @@ python3 scripts/perf/compare_trend.py \
 ## Baseline pointer convention
 
 - Recommended pointer path: `.ci/perf-baseline.json`
-- Example payload: `.ci/perf-baseline.example.json`
+- Example payload: `.ci/perf-baseline.example.json` (includes `summary_sha256` integrity field)
 
 Update pointer after promoting a run:
 
@@ -47,12 +47,43 @@ python3 scripts/perf/update_baseline_pointer.py \
   --pointer-path .ci/perf-baseline.json
 ```
 
+Safe overwrite pattern (force + backup):
+
+```bash
+python3 scripts/perf/update_baseline_pointer.py \
+  --baseline-summary artifacts/perf/<run-tag>/summary.json \
+  --workspace-root . \
+  --pointer-path .ci/perf-baseline.json \
+  --force --backup-existing
+```
+
+By default unchanged pointers are not rewritten (prevents timestamp-only churn). Use `--rewrite-if-unchanged` to force rewrite.
+
 Resolve pointer for tooling:
 
 ```bash
 python3 scripts/perf/resolve_baseline.py \
   --baseline-pointer .ci/perf-baseline.json \
   --workspace-root .
+```
+
+Require that the resolved baseline run has `gate.json` status `pass`:
+
+```bash
+python3 scripts/perf/resolve_baseline.py \
+  --baseline-pointer .ci/perf-baseline.json \
+  --workspace-root . \
+  --require-gate-pass
+```
+
+Optionally require both gate and trend pass:
+
+```bash
+python3 scripts/perf/resolve_baseline.py \
+  --baseline-pointer .ci/perf-baseline.json \
+  --workspace-root . \
+  --require-gate-pass \
+  --require-trend-pass
 ```
 
 Promote a run as baseline (requires `gate.json` status `pass` by default):
@@ -63,6 +94,24 @@ python3 scripts/perf/promote_baseline.py \
   --workspace-root .
 ```
 
+Require both gate + trend pass before promotion:
+
+```bash
+python3 scripts/perf/promote_baseline.py \
+  --run-tag <run-tag> \
+  --workspace-root . \
+  --require-trend-pass
+```
+
+Preview promotion payload without writing pointer:
+
+```bash
+python3 scripts/perf/promote_baseline.py \
+  --run-tag <run-tag> \
+  --workspace-root . \
+  --dry-run
+```
+
 Promote from a candidate pointer artifact:
 
 ```bash
@@ -70,3 +119,14 @@ python3 scripts/perf/promote_baseline.py \
   --candidate-pointer artifacts/perf/<run-tag>/perf-baseline.candidate.json \
   --workspace-root .
 ```
+
+Force + backup when replacing an existing baseline pointer:
+
+```bash
+python3 scripts/perf/promote_baseline.py \
+  --run-tag <run-tag> \
+  --workspace-root . \
+  --force --backup-existing
+```
+
+Like the updater, unchanged promotions are no-op by default; set `--rewrite-if-unchanged` when you intentionally want to refresh metadata.

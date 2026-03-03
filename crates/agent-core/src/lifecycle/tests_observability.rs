@@ -41,8 +41,9 @@ fn detection_event(ts: i64, pid: u32) -> TelemetryEvent {
 }
 
 fn tick_evaluation_for_confidence(confidence: Confidence, ts: i64, pid: u32) -> TickEvaluation {
+    let det_event = detection_event(ts, pid);
     TickEvaluation {
-        detection_event: detection_event(ts, pid),
+        detection_event: det_event.clone(),
         detection_outcome: detection::DetectionOutcome {
             confidence,
             signals: detection::DetectionSignals {
@@ -75,6 +76,20 @@ fn tick_evaluation_for_confidence(confidence: Confidence, ts: i64, pid: u32) -> 
             status: "ok".to_string(),
             detail: "ok".to_string(),
             checks: Vec::new(),
+        },
+        event_txn: EventTxn {
+            event_class: det_event.event_class.as_str().to_string(),
+            operation: "process_exec".to_string(),
+            subject: Some(det_event.process.clone()),
+            object: None,
+            pid: det_event.pid,
+            uid: det_event.uid,
+            session_id: det_event.session_id,
+            ts_unix: ts,
+            key: format!(
+                "process_exec|process_exec|{}|-|pid:{}|sid:{}",
+                det_event.process, det_event.pid, det_event.session_id
+            ),
         },
         event_envelope: event(ts),
     }
@@ -167,10 +182,12 @@ fn telemetry_audit_payload_includes_rule_attribution() {
         behavioral_alarms: Vec::new(),
     };
 
+    let event_txn = EventTxn::from_enriched(&enriched, &event, 10);
     let payload = runtime.telemetry_payload_json(
         &enriched,
         &event,
         &outcome,
+        &event_txn,
         detection::Confidence::High,
         10,
     );
@@ -279,10 +296,12 @@ fn telemetry_payload_includes_nac_fields() {
         behavioral_alarms: Vec::new(),
     };
 
+    let event_txn = EventTxn::from_enriched(&enriched, &event, 10);
     let payload = runtime.telemetry_payload_json(
         &enriched,
         &event,
         &outcome,
+        &event_txn,
         detection::Confidence::High,
         10,
     );
@@ -383,10 +402,12 @@ fn telemetry_payload_includes_correlation_event_fields() {
         behavioral_alarms: Vec::new(),
     };
 
+    let event_txn = EventTxn::from_enriched(&enriched, &event, 99);
     let payload = runtime.telemetry_payload_json(
         &enriched,
         &event,
         &outcome,
+        &event_txn,
         detection::Confidence::High,
         99,
     );
@@ -597,6 +618,7 @@ async fn observability_snapshot_reports_bounded_response_queue_progress() {
                 action: PlannedAction::CaptureScript,
                 confidence: Confidence::High,
                 event: detection_event(1_700_000_300 + i as i64, 10_000 + i as u32),
+                txn_key: format!("test-txn-{}", i),
                 enqueued_at_unix: 1_700_000_300,
                 detection_layers: Vec::new(),
                 rule_name: String::new(),

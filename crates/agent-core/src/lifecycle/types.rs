@@ -14,6 +14,7 @@ pub(super) struct TickEvaluation {
     pub(super) confidence: Confidence,
     pub(super) action: PlannedAction,
     pub(super) compliance: ComplianceResult,
+    pub(super) event_txn: super::EventTxn,
     pub(super) event_envelope: EventEnvelope,
 }
 
@@ -67,6 +68,7 @@ pub(super) struct PendingResponseAction {
     pub(super) action: PlannedAction,
     pub(super) confidence: Confidence,
     pub(super) event: TelemetryEvent,
+    pub(super) txn_key: String,
     pub(super) enqueued_at_unix: i64,
     pub(super) detection_layers: Vec<String>,
     pub(super) rule_name: String,
@@ -171,6 +173,9 @@ pub struct RuntimeObservabilitySnapshot {
     pub baseline_stale_transition_total: u64,
     pub telemetry_coalesced_events_total: u64,
     pub telemetry_raw_backlog_dropped_total: u64,
+    pub telemetry_event_txn_total: u64,
+    pub telemetry_event_txn_coalesced_total: u64,
+    pub response_action_deduped_total: u64,
     pub strict_budget_mode_transition_total: u64,
 }
 
@@ -228,6 +233,9 @@ pub(super) struct RuntimeMetrics {
     pub(super) baseline_stale_transition_total: u64,
     pub(super) telemetry_coalesced_events_total: u64,
     pub(super) telemetry_raw_backlog_dropped_total: u64,
+    pub(super) telemetry_event_txn_total: u64,
+    pub(super) telemetry_event_txn_coalesced_total: u64,
+    pub(super) response_action_deduped_total: u64,
     pub(super) strict_budget_mode_transition_total: u64,
 }
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import pathlib
 import subprocess
@@ -60,6 +61,20 @@ def write_gate(run_dir: pathlib.Path, status: str) -> pathlib.Path:
     gate_path = run_dir / "gate.json"
     gate_path.write_text(json.dumps({"status": status}, indent=2) + "\n", encoding="utf-8")
     return gate_path
+
+
+def write_trend(run_dir: pathlib.Path, status: str) -> pathlib.Path:
+    trend_path = run_dir / "trend.json"
+    trend_path.write_text(json.dumps({"status": status}, indent=2) + "\n", encoding="utf-8")
+    return trend_path
+
+
+def sha256_file(path: pathlib.Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
 
 
 class PerfCliToolsTest(unittest.TestCase):
@@ -275,6 +290,45 @@ class PerfCliToolsTest(unittest.TestCase):
             self.assertEqual(payload.get("baseline_run"), "blessed-rerun3")
             self.assertTrue(str(payload.get("baseline_input", "")).endswith("rerun3-20260302T062911Z/summary.json"))
 
+    def test_resolve_baseline_rejects_pointer_sha_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            summary = make_summary(
+                root / "rerun-sha-20260302T070000Z",
+                overhead_median=1.0,
+                overhead_p95=1.1,
+                agent_cpu=0.100,
+            )
+            pointer = root / "sha-pointer.json"
+            pointer.write_text(
+                json.dumps(
+                    {
+                        "summary_path": str(summary),
+                        "baseline_run": "rerun-sha-20260302T070000Z",
+                        "summary_sha256": "deadbeef",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            proc = subprocess.run(
+                [
+                    "python3",
+                    str(RESOLVE_BASELINE_SCRIPT),
+                    "--baseline-pointer",
+                    str(pointer),
+                    "--workspace-root",
+                    str(root),
+                ],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 2)
+            self.assertIn("SHA256 mismatch", proc.stderr)
+
     def test_update_baseline_pointer_roundtrip_with_resolver(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)
@@ -305,6 +359,10 @@ class PerfCliToolsTest(unittest.TestCase):
             )
             self.assertEqual(update_proc.returncode, 0, update_proc.stdout + "\n" + update_proc.stderr)
 
+            pointer_payload = json.loads(pointer_path.read_text(encoding="utf-8"))
+            expected_sha = sha256_file(run_dir / "summary.json")
+            self.assertEqual(pointer_payload.get("summary_sha256"), expected_sha)
+
             resolve_proc = subprocess.run(
                 [
                     "python3",
@@ -323,6 +381,7 @@ class PerfCliToolsTest(unittest.TestCase):
             payload = json.loads(resolve_proc.stdout.strip())
             self.assertTrue(payload.get("resolved"))
             self.assertEqual(payload.get("baseline_run"), "rerun4-20260302T072000Z")
+            self.assertEqual(payload.get("baseline_summary_sha256"), expected_sha)
 
     def test_resolve_baseline_prefers_direct_input_over_pointer(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -366,6 +425,128 @@ class PerfCliToolsTest(unittest.TestCase):
             self.assertTrue(payload.get("resolved"))
             self.assertEqual(payload.get("source"), "direct")
             self.assertEqual(payload.get("baseline_run"), "direct-20260302T080000Z")
+
+    def test_resolve_baseline_require_gate_pass_accepts_passing_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            run_dir = root / "run-gate-pass-20260302T091000Z"
+            summary = make_summary(
+                run_dir,
+                overhead_median=1.0,
+                overhead_p95=1.0,
+                agent_cpu=0.100,
+            )
+            write_gate(run_dir, "pass")
+
+            proc = subprocess.run(
+                [
+                    "python3",
+                    str(RESOLVE_BASELINE_SCRIPT),
+                    "--baseline-summary",
+                    str(summary),
+                    "--workspace-root",
+                    str(root),
+                    "--require-gate-pass",
+                ],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
+            payload = json.loads(proc.stdout.strip())
+            self.assertEqual(payload.get("baseline_gate_status"), "pass")
+
+    def test_resolve_baseline_require_gate_pass_rejects_non_pass_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            run_dir = root / "run-gate-fail-20260302T091500Z"
+            summary = make_summary(
+                run_dir,
+                overhead_median=1.0,
+                overhead_p95=1.0,
+                agent_cpu=0.100,
+            )
+            write_gate(run_dir, "fail")
+
+            proc = subprocess.run(
+                [
+                    "python3",
+                    str(RESOLVE_BASELINE_SCRIPT),
+                    "--baseline-summary",
+                    str(summary),
+                    "--workspace-root",
+                    str(root),
+                    "--require-gate-pass",
+                ],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 2)
+            self.assertIn("baseline gate status must be pass", proc.stderr)
+
+    def test_resolve_baseline_require_trend_pass_accepts_passing_trend(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            run_dir = root / "run-trend-pass-20260302T091700Z"
+            summary = make_summary(
+                run_dir,
+                overhead_median=1.0,
+                overhead_p95=1.0,
+                agent_cpu=0.100,
+            )
+            write_trend(run_dir, "pass")
+
+            proc = subprocess.run(
+                [
+                    "python3",
+                    str(RESOLVE_BASELINE_SCRIPT),
+                    "--baseline-summary",
+                    str(summary),
+                    "--workspace-root",
+                    str(root),
+                    "--require-trend-pass",
+                ],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
+            payload = json.loads(proc.stdout.strip())
+            self.assertEqual(payload.get("baseline_trend_status"), "pass")
+
+    def test_resolve_baseline_require_trend_pass_rejects_non_pass_trend(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            run_dir = root / "run-trend-fail-20260302T091800Z"
+            summary = make_summary(
+                run_dir,
+                overhead_median=1.0,
+                overhead_p95=1.0,
+                agent_cpu=0.100,
+            )
+            write_trend(run_dir, "fail")
+
+            proc = subprocess.run(
+                [
+                    "python3",
+                    str(RESOLVE_BASELINE_SCRIPT),
+                    "--baseline-summary",
+                    str(summary),
+                    "--workspace-root",
+                    str(root),
+                    "--require-trend-pass",
+                ],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 2)
+            self.assertIn("baseline trend status must be pass", proc.stderr)
 
     def test_resolve_baseline_strict_pointer_missing_fails(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -486,6 +667,166 @@ class PerfCliToolsTest(unittest.TestCase):
                 "dir-run-20260302T084000Z/summary.json",
             )
 
+    def test_update_baseline_pointer_rejects_non_summary_file(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            run_dir = root / "run-bad-input-20260302T084500Z"
+            run_dir.mkdir(parents=True, exist_ok=True)
+            bad_file = run_dir / "not-summary.json"
+            bad_file.write_text("{}\n", encoding="utf-8")
+
+            proc = subprocess.run(
+                [
+                    "python3",
+                    str(UPDATE_BASELINE_POINTER_SCRIPT),
+                    "--baseline-summary",
+                    str(bad_file),
+                    "--workspace-root",
+                    str(root),
+                    "--pointer-path",
+                    str(root / "bad-pointer.json"),
+                ],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 2)
+            self.assertIn("baseline file must be summary.json", proc.stderr)
+
+    def test_update_baseline_pointer_requires_force_for_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            run_old = root / "run-old-20260302T084600Z"
+            run_new = root / "run-new-20260302T084700Z"
+            make_summary(run_old, overhead_median=1.0, overhead_p95=1.0, agent_cpu=0.10)
+            make_summary(run_new, overhead_median=1.1, overhead_p95=1.1, agent_cpu=0.11)
+            pointer_path = root / ".ci" / "perf-baseline.json"
+
+            first = subprocess.run(
+                [
+                    "python3", str(UPDATE_BASELINE_POINTER_SCRIPT),
+                    "--baseline-summary", str(run_old / "summary.json"),
+                    "--workspace-root", str(root),
+                    "--pointer-path", str(pointer_path),
+                ],
+                cwd=REPO_ROOT, text=True, capture_output=True, check=False,
+            )
+            self.assertEqual(first.returncode, 0, first.stdout + "\n" + first.stderr)
+
+            second = subprocess.run(
+                [
+                    "python3", str(UPDATE_BASELINE_POINTER_SCRIPT),
+                    "--baseline-summary", str(run_new / "summary.json"),
+                    "--workspace-root", str(root),
+                    "--pointer-path", str(pointer_path),
+                ],
+                cwd=REPO_ROOT, text=True, capture_output=True, check=False,
+            )
+            self.assertEqual(second.returncode, 2)
+            self.assertIn("use --force", second.stderr)
+
+    def test_update_baseline_pointer_force_with_backup(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            run_old = root / "run-old-20260302T084800Z"
+            run_new = root / "run-new-20260302T084900Z"
+            make_summary(run_old, overhead_median=1.0, overhead_p95=1.0, agent_cpu=0.10)
+            make_summary(run_new, overhead_median=1.1, overhead_p95=1.1, agent_cpu=0.11)
+            pointer_path = root / ".ci" / "perf-baseline.json"
+
+            subprocess.run(
+                [
+                    "python3", str(UPDATE_BASELINE_POINTER_SCRIPT),
+                    "--baseline-summary", str(run_old / "summary.json"),
+                    "--workspace-root", str(root),
+                    "--pointer-path", str(pointer_path),
+                ],
+                cwd=REPO_ROOT, text=True, capture_output=True, check=True,
+            )
+
+            second = subprocess.run(
+                [
+                    "python3", str(UPDATE_BASELINE_POINTER_SCRIPT),
+                    "--baseline-summary", str(run_new / "summary.json"),
+                    "--workspace-root", str(root),
+                    "--pointer-path", str(pointer_path),
+                    "--force", "--backup-existing",
+                ],
+                cwd=REPO_ROOT, text=True, capture_output=True, check=False,
+            )
+            self.assertEqual(second.returncode, 0, second.stdout + "\n" + second.stderr)
+            result = json.loads(second.stdout.strip())
+            backup_path = result.get("backup_path")
+            self.assertTrue(backup_path)
+            self.assertTrue(pathlib.Path(backup_path).exists())
+
+    def test_update_baseline_pointer_noop_when_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            run_dir = root / "run-stable-20260302T085050Z"
+            make_summary(run_dir, overhead_median=1.0, overhead_p95=1.0, agent_cpu=0.10)
+            pointer_path = root / ".ci" / "perf-baseline.json"
+
+            first = subprocess.run(
+                [
+                    "python3", str(UPDATE_BASELINE_POINTER_SCRIPT),
+                    "--baseline-summary", str(run_dir / "summary.json"),
+                    "--workspace-root", str(root),
+                    "--pointer-path", str(pointer_path),
+                ],
+                cwd=REPO_ROOT, text=True, capture_output=True, check=False,
+            )
+            self.assertEqual(first.returncode, 0, first.stdout + "\n" + first.stderr)
+            content_before = pointer_path.read_text(encoding="utf-8")
+
+            second = subprocess.run(
+                [
+                    "python3", str(UPDATE_BASELINE_POINTER_SCRIPT),
+                    "--baseline-summary", str(run_dir / "summary.json"),
+                    "--workspace-root", str(root),
+                    "--pointer-path", str(pointer_path),
+                ],
+                cwd=REPO_ROOT, text=True, capture_output=True, check=False,
+            )
+            self.assertEqual(second.returncode, 0, second.stdout + "\n" + second.stderr)
+            result = json.loads(second.stdout.strip())
+            self.assertFalse(result.get("pointer_written"))
+            self.assertEqual(content_before, pointer_path.read_text(encoding="utf-8"))
+
+    def test_update_baseline_pointer_rewrite_if_unchanged_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            run_dir = root / "run-stable-20260302T085150Z"
+            make_summary(run_dir, overhead_median=1.0, overhead_p95=1.0, agent_cpu=0.10)
+            pointer_path = root / ".ci" / "perf-baseline.json"
+
+            subprocess.run(
+                [
+                    "python3", str(UPDATE_BASELINE_POINTER_SCRIPT),
+                    "--baseline-summary", str(run_dir / "summary.json"),
+                    "--workspace-root", str(root),
+                    "--pointer-path", str(pointer_path),
+                ],
+                cwd=REPO_ROOT, text=True, capture_output=True, check=True,
+            )
+            content_before = pointer_path.read_text(encoding="utf-8")
+
+            second = subprocess.run(
+                [
+                    "python3", str(UPDATE_BASELINE_POINTER_SCRIPT),
+                    "--baseline-summary", str(run_dir / "summary.json"),
+                    "--workspace-root", str(root),
+                    "--pointer-path", str(pointer_path),
+                    "--rewrite-if-unchanged",
+                ],
+                cwd=REPO_ROOT, text=True, capture_output=True, check=False,
+            )
+            self.assertEqual(second.returncode, 0, second.stdout + "\n" + second.stderr)
+            result = json.loads(second.stdout.strip())
+            self.assertTrue(result.get("pointer_written"))
+            self.assertNotEqual(content_before, pointer_path.read_text(encoding="utf-8"))
+
     def test_promote_baseline_requires_gate_pass(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)
@@ -566,6 +907,237 @@ class PerfCliToolsTest(unittest.TestCase):
             payload = json.loads(pointer_path.read_text(encoding="utf-8"))
             self.assertEqual(payload.get("baseline_run"), run_tag)
             self.assertEqual(payload.get("summary_path"), f"artifacts/perf/{run_tag}/summary.json")
+            self.assertEqual(payload.get("summary_sha256"), sha256_file(summary_path))
+
+    def test_promote_baseline_requires_force_for_pointer_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            old_tag = "run-promote-old-20260302T090500Z"
+            new_tag = "run-promote-new-20260302T090600Z"
+            old_dir = root / "artifacts" / "perf" / old_tag
+            new_dir = root / "artifacts" / "perf" / new_tag
+            make_summary(old_dir, overhead_median=0.8, overhead_p95=0.9, agent_cpu=0.08)
+            make_summary(new_dir, overhead_median=0.9, overhead_p95=1.0, agent_cpu=0.09)
+            write_gate(old_dir, "pass")
+            write_gate(new_dir, "pass")
+            pointer_path = root / ".ci" / "perf-baseline.json"
+
+            first = subprocess.run(
+                [
+                    "python3", str(PROMOTE_BASELINE_SCRIPT),
+                    "--run-tag", old_tag,
+                    "--artifact-root", "artifacts/perf",
+                    "--workspace-root", str(root),
+                    "--pointer-path", str(pointer_path),
+                ],
+                cwd=REPO_ROOT, text=True, capture_output=True, check=False,
+            )
+            self.assertEqual(first.returncode, 0, first.stdout + "\n" + first.stderr)
+
+            second = subprocess.run(
+                [
+                    "python3", str(PROMOTE_BASELINE_SCRIPT),
+                    "--run-tag", new_tag,
+                    "--artifact-root", "artifacts/perf",
+                    "--workspace-root", str(root),
+                    "--pointer-path", str(pointer_path),
+                ],
+                cwd=REPO_ROOT, text=True, capture_output=True, check=False,
+            )
+            self.assertEqual(second.returncode, 2)
+            self.assertIn("use --force", second.stderr)
+
+    def test_promote_baseline_force_with_backup(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            old_tag = "run-promote-old-20260302T090700Z"
+            new_tag = "run-promote-new-20260302T090800Z"
+            old_dir = root / "artifacts" / "perf" / old_tag
+            new_dir = root / "artifacts" / "perf" / new_tag
+            make_summary(old_dir, overhead_median=0.8, overhead_p95=0.9, agent_cpu=0.08)
+            make_summary(new_dir, overhead_median=0.9, overhead_p95=1.0, agent_cpu=0.09)
+            write_gate(old_dir, "pass")
+            write_gate(new_dir, "pass")
+            pointer_path = root / ".ci" / "perf-baseline.json"
+
+            subprocess.run(
+                [
+                    "python3", str(PROMOTE_BASELINE_SCRIPT),
+                    "--run-tag", old_tag,
+                    "--artifact-root", "artifacts/perf",
+                    "--workspace-root", str(root),
+                    "--pointer-path", str(pointer_path),
+                ],
+                cwd=REPO_ROOT, text=True, capture_output=True, check=True,
+            )
+
+            second = subprocess.run(
+                [
+                    "python3", str(PROMOTE_BASELINE_SCRIPT),
+                    "--run-tag", new_tag,
+                    "--artifact-root", "artifacts/perf",
+                    "--workspace-root", str(root),
+                    "--pointer-path", str(pointer_path),
+                    "--force", "--backup-existing",
+                ],
+                cwd=REPO_ROOT, text=True, capture_output=True, check=False,
+            )
+            self.assertEqual(second.returncode, 0, second.stdout + "\n" + second.stderr)
+            result = json.loads(second.stdout.strip())
+            backup_path = result.get("backup_path")
+            self.assertTrue(backup_path)
+            self.assertTrue(pathlib.Path(backup_path).exists())
+
+    def test_promote_baseline_noop_when_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            run_tag = "run-promote-stable-20260302T090850Z"
+            run_dir = root / "artifacts" / "perf" / run_tag
+            make_summary(run_dir, overhead_median=0.8, overhead_p95=0.9, agent_cpu=0.08)
+            write_gate(run_dir, "pass")
+            pointer_path = root / ".ci" / "perf-baseline.json"
+
+            first = subprocess.run(
+                [
+                    "python3", str(PROMOTE_BASELINE_SCRIPT),
+                    "--run-tag", run_tag,
+                    "--artifact-root", "artifacts/perf",
+                    "--workspace-root", str(root),
+                    "--pointer-path", str(pointer_path),
+                ],
+                cwd=REPO_ROOT, text=True, capture_output=True, check=False,
+            )
+            self.assertEqual(first.returncode, 0, first.stdout + "\n" + first.stderr)
+            content_before = pointer_path.read_text(encoding="utf-8")
+
+            second = subprocess.run(
+                [
+                    "python3", str(PROMOTE_BASELINE_SCRIPT),
+                    "--run-tag", run_tag,
+                    "--artifact-root", "artifacts/perf",
+                    "--workspace-root", str(root),
+                    "--pointer-path", str(pointer_path),
+                ],
+                cwd=REPO_ROOT, text=True, capture_output=True, check=False,
+            )
+            self.assertEqual(second.returncode, 0, second.stdout + "\n" + second.stderr)
+            result = json.loads(second.stdout.strip())
+            self.assertFalse(result.get("pointer_written"))
+            self.assertEqual(content_before, pointer_path.read_text(encoding="utf-8"))
+
+    def test_promote_baseline_rewrite_if_unchanged_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            run_tag = "run-promote-stable-20260302T090855Z"
+            run_dir = root / "artifacts" / "perf" / run_tag
+            make_summary(run_dir, overhead_median=0.8, overhead_p95=0.9, agent_cpu=0.08)
+            write_gate(run_dir, "pass")
+            pointer_path = root / ".ci" / "perf-baseline.json"
+
+            subprocess.run(
+                [
+                    "python3", str(PROMOTE_BASELINE_SCRIPT),
+                    "--run-tag", run_tag,
+                    "--artifact-root", "artifacts/perf",
+                    "--workspace-root", str(root),
+                    "--pointer-path", str(pointer_path),
+                ],
+                cwd=REPO_ROOT, text=True, capture_output=True, check=True,
+            )
+            content_before = pointer_path.read_text(encoding="utf-8")
+
+            second = subprocess.run(
+                [
+                    "python3", str(PROMOTE_BASELINE_SCRIPT),
+                    "--run-tag", run_tag,
+                    "--artifact-root", "artifacts/perf",
+                    "--workspace-root", str(root),
+                    "--pointer-path", str(pointer_path),
+                    "--rewrite-if-unchanged",
+                ],
+                cwd=REPO_ROOT, text=True, capture_output=True, check=False,
+            )
+            self.assertEqual(second.returncode, 0, second.stdout + "\n" + second.stderr)
+            result = json.loads(second.stdout.strip())
+            self.assertTrue(result.get("pointer_written"))
+            self.assertNotEqual(content_before, pointer_path.read_text(encoding="utf-8"))
+
+    def test_promote_baseline_require_trend_pass_rejects_fail(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            run_tag = "run-promote-trend-fail-20260302T091000Z"
+            run_dir = root / "artifacts" / "perf" / run_tag
+            make_summary(
+                run_dir,
+                overhead_median=0.9,
+                overhead_p95=1.0,
+                agent_cpu=0.090,
+            )
+            write_gate(run_dir, "pass")
+            write_trend(run_dir, "fail")
+
+            proc = subprocess.run(
+                [
+                    "python3",
+                    str(PROMOTE_BASELINE_SCRIPT),
+                    "--run-tag",
+                    run_tag,
+                    "--artifact-root",
+                    "artifacts/perf",
+                    "--workspace-root",
+                    str(root),
+                    "--pointer-path",
+                    str(root / ".ci" / "perf-baseline.json"),
+                    "--require-trend-pass",
+                ],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 2)
+            self.assertIn("cannot promote baseline: trend status", proc.stderr)
+
+    def test_promote_baseline_dry_run_does_not_write_pointer(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            run_tag = "run-promote-dry-20260302T091500Z"
+            run_dir = root / "artifacts" / "perf" / run_tag
+            make_summary(
+                run_dir,
+                overhead_median=0.9,
+                overhead_p95=1.0,
+                agent_cpu=0.090,
+            )
+            write_gate(run_dir, "pass")
+            write_trend(run_dir, "pass")
+            pointer_path = root / ".ci" / "perf-baseline.json"
+
+            proc = subprocess.run(
+                [
+                    "python3",
+                    str(PROMOTE_BASELINE_SCRIPT),
+                    "--run-tag",
+                    run_tag,
+                    "--artifact-root",
+                    "artifacts/perf",
+                    "--workspace-root",
+                    str(root),
+                    "--pointer-path",
+                    str(pointer_path),
+                    "--require-trend-pass",
+                    "--dry-run",
+                ],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
+            self.assertFalse(pointer_path.exists())
+            payload = json.loads(proc.stdout.strip())
+            self.assertTrue(payload.get("dry_run"))
+            self.assertEqual(payload.get("trend_status"), "pass")
 
     def test_gate_min_runs_and_quality_flag_controls(self) -> None:
         with tempfile.TemporaryDirectory() as td:

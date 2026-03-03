@@ -43,8 +43,15 @@ responsible for managing eGuard across a fleet of endpoints.
 - [Appendix D: MDM Reports UI Improvements](#appendix-d-mdm-reports-ui-improvements-feb-2026)
 - [Appendix E: NAC ↔ EDR/MDM Security Events Integration](#appendix-e-nac--edrmmd-security-events-integration-feb-2026)
 - [Appendix F: NAC Manual Override (Isolate/Allow)](#appendix-f-nac-manual-override-isolateallow-feb-2026)
-- **[📘 NAC ↔ EDR Full Operations Manual](nac-edr-operations-manual.md)** — Comprehensive guide for NAC isolation/allow operations
+- **[NAC ↔ EDR Full Operations Manual](nac-edr-operations-manual.md)** — Comprehensive guide for NAC isolation/allow operations
 - [Appendix F: Endpoint Audit Inline Details + Whitelist UX](#appendix-f-endpoint-audit-inline-details--whitelist-ux-feb-2026)
+- [Appendix G: Build & Deploy Procedures](#appendix-g-build--deploy-procedures)
+- [Appendix H: Endpoint Feature E2E Test Matrix](#appendix-h-endpoint-feature-e2e-test-matrix)
+- [Appendix I: Forensics Feature Completion](#appendix-i-forensics-feature-completion)
+- [Appendix J: Performance Gate Automation](#appendix-j-performance-gate-automation)
+- [Appendix K: UI Wiring Polish & Verification](#appendix-k-ui-wiring-polish--verification)
+- [Appendix L: Effective-State Smoke Harness](#appendix-l-effective-state-smoke-harness)
+- [Appendix M: Endpoint Feedback Operation](#appendix-m-endpoint-feedback-operation)
 
 ---
 
@@ -58,10 +65,10 @@ UI.
 +---------------------+          +----------------------+         +-------------------+
 |     Endpoint(s)     |          |    eGuard Server     |         |    Dashboard      |
 |                     |          |                      |         |                   |
-|  +--------------+   |  gRPC/   |  +---------------+  |  REST   |  +-------------+ |
-|  | eGuard Agent |---+--------->|  | Agent Server  |--+-------->|  |   Vue.js    | |
-|  |   (Rust)     |   |  HTTP    |  |    (Go)       |  |  API    |  |   Admin UI  | |
-|  +--------------+   |          |  +---------------+  |         |  +-------------+ |
+|  +--------------+   |  gRPC/   |  +---------------+   |  REST   |  +-------------+  |
+|  | eGuard Agent |---+--------->|  | Agent Server  |---+-------->|  |   Vue.js    |  |
+|  |   (Rust)     |   |  HTTP    |  |    (Go)       |   |  API    |  |   Admin UI  |  |
+|  +--------------+   |          |  +---------------+   |         |  +-------------+  |
 |        |            |          |        |             |         +-------------------+
 |   eBPF Probes       |          |   MySQL / Storage    |
 |     (Zig)           |          |                      |
@@ -1697,6 +1704,45 @@ cargo clippy -p agent-core --all-targets --all-features -- -D warnings
 cargo clippy -p platform-macos --all-targets --all-features -- -D warnings
 cargo clippy -p platform-windows --all-targets --all-features -- -D warnings
 ```
+
+### 13.10 502 Proxy Error on Endpoint Pages/APIs
+
+**Symptom**: `502 Proxy Error` for endpoint pages and APIs:
+- `/api/v1/endpoint/detection-stats?period=24h`
+- `/api/v1/endpoint/usb-events`
+- `/api/v1/endpoint/deception-tokens`
+- `/api/v1/endpoint/vulnerability`
+- `/api/v1/endpoint/hunting`
+- `/api/v1/endpoint/fim`
+- `/api/v1/endpoint/zero-trust`
+
+**Root cause**: `eguard-agent-server` inactive on the eGuard VM.
+
+**Immediate remediation**:
+
+```bash
+sshpass -p 'Eguard123' ssh eguard@103.49.238.102 \
+  'sudo systemctl start eguard-agent-server && systemctl is-active eguard-agent-server'
+```
+
+**Deep diagnostics**:
+
+```bash
+sshpass -p 'Eguard123' ssh eguard@103.49.238.102 \
+  'sudo systemctl status eguard-agent-server --no-pager -l'
+
+sshpass -p 'Eguard123' ssh eguard@103.49.238.102 \
+  'sudo journalctl -u eguard-agent-server -n 200 --no-pager'
+```
+
+**Pre-flight check**: Add this check before any UI/API validation run:
+
+```bash
+sshpass -p 'Eguard123' ssh eguard@103.49.238.102 \
+  'systemctl is-active eguard-api-frontend eguard-api-server eguard-agent-server --no-pager'
+```
+
+Fail fast if any service is not `active`.
 
 ---
 
@@ -4423,3 +4469,618 @@ Current eGuard detection engine performance (as of March 2026):
 | Air-gapped networks | ✗ | ✗ | ✗ | **✓** |
 | ARM64 (Linux) | ✓ | ✓ | ✗ | ✓ (cross-compile) |
 | Container/K8s | ✓ (add-on) | ✓ (add-on) | ✓ | ✓ (cgroup detection) |
+
+---
+
+## Appendix G: Build & Deploy Procedures
+
+### G.1 Go Binaries (Local Build, SCP Deploy)
+
+```bash
+# eg-agent-server
+cd /home/dimas/fe_eguard/go
+go build -o /tmp/eg-agent-server-new ./cmd/eg-agent-server
+
+sshpass -p 'Eguard123' scp /tmp/eg-agent-server-new eguard@103.49.238.102:/tmp/
+sshpass -p 'Eguard123' ssh eguard@103.49.238.102 \
+  'sudo install -m 0755 /tmp/eg-agent-server-new /usr/local/eg/sbin/eg-agent-server-new && \
+   sudo systemctl restart eguard-agent-server && \
+   systemctl is-active eguard-agent-server'
+```
+
+```bash
+# eg-api-server (if needed)
+cd /home/dimas/fe_eguard/go
+go build -o /tmp/eg-api-server ./cmd/eg-api-server
+
+sshpass -p 'Eguard123' scp /tmp/eg-api-server eguard@103.49.238.102:/tmp/
+sshpass -p 'Eguard123' ssh eguard@103.49.238.102 \
+  'sudo install -m 0755 /tmp/eg-api-server /usr/local/eg/sbin/eg-api-server && \
+   sudo systemctl restart eguard-api-server && \
+   systemctl is-active eguard-api-server'
+```
+
+### G.2 Vue Admin UI Dist (Local Build, SCP Deploy)
+
+```bash
+cd /home/dimas/fe_eguard/html/egappserver/root
+npm install
+npm run build
+
+# Copy build artifacts to eGuard server staging
+sshpass -p 'Eguard123' ssh eguard@103.49.238.102 \
+  'mkdir -p /tmp/egapp-dist /tmp/egapp-errors && rm -rf /tmp/egapp-dist/* /tmp/egapp-errors/*'
+
+sshpass -p 'Eguard123' scp -r dist/* eguard@103.49.238.102:/tmp/egapp-dist/
+sshpass -p 'Eguard123' scp -r errors/* eguard@103.49.238.102:/tmp/egapp-errors/
+
+# IMPORTANT: /admin is served from root/dist (not root/)
+sshpass -p 'Eguard123' ssh eguard@103.49.238.102 \
+  'sudo rsync -a --delete /tmp/egapp-dist/ /usr/local/eg/html/egappserver/root/dist/ && \
+   sudo rsync -a --delete /tmp/egapp-errors/ /usr/local/eg/html/egappserver/root/errors/ && \
+   sudo systemctl restart eguard-httpd.admin_dispatcher eguard-api-frontend && \
+   systemctl is-active eguard-httpd.admin_dispatcher eguard-api-frontend --no-pager'
+```
+
+Quick verification:
+
+```bash
+curl -k -sSI 'https://103.49.238.102:1443/admin'
+curl -k -sSI 'https://103.49.238.102:1443/admin/js/app.fbf6be24.js'
+```
+
+Expected: both return `HTTP/1.1 200`.
+
+### G.3 Endpoint Health Checks
+
+#### G.3.1 eGuard Services
+
+```bash
+sshpass -p 'Eguard123' ssh eguard@103.49.238.102 \
+  'systemctl is-active eguard-api-frontend eguard-api-server eguard-agent-server --no-pager'
+```
+
+Expected: all `active`.
+
+#### G.3.2 Linux Endpoint
+
+```bash
+sshpass -p 'Eguard123' ssh agent@103.183.74.3 \
+  'hostname && systemctl is-active eguard-agent && systemctl status eguard-agent --no-pager -l | head -n 20'
+```
+
+#### G.3.3 Windows Endpoint (PowerShell over SSH)
+
+```bash
+printf '%s\n' 'Get-Service eGuardAgent | Select-Object Name,Status,DisplayName | Format-Table -AutoSize' \
+| sshpass -p 'Eguard123' ssh administrator@103.31.39.30 'powershell -NoProfile -NonInteractive -Command -'
+```
+
+Expected status: `Running`.
+
+---
+
+## Appendix H: Endpoint Feature E2E Test Matrix
+
+### H.1 Windows VM E2E (22/22 Passed)
+
+This section validates endpoint feature flows from the **Windows VM** (`administrator@103.31.39.30`).
+
+#### H.1.1 Target Pages/Features
+
+- `#/endpoint-usb-control`
+- `#/endpoint-deception-tokens`
+- `#/endpoint-vulnerability`
+- `#/endpoint-threat-hunting`
+- `#/endpoint-file-integrity`
+- `#/endpoint-zero-trust`
+
+#### H.1.2 Approach
+
+- Resolve active Windows agent (`hostname = F9443E95-E586-4`, latest heartbeat agent id).
+- Use Windows PowerShell over SSH to call API.
+- Inject deterministic telemetry test events from Windows VM for:
+  - `usb_violation`
+  - `vulnerability_match`
+  - `hunting_finding`
+  - `fim_change`
+  - `zero_trust_score`
+- Exercise admin CRUD flows for deception token deployment/revoke.
+- Run edge checks for empty/invalid filters and invalid payloads.
+
+#### H.1.3 Executed Run (Latest)
+
+- Run ID: `20260302020637`
+- Windows hostname: `F9443E95-E586-4`
+- Windows agent id used: `agent-4412`
+- Result: **22/22 tests passed**
+
+Passed checks:
+
+1. `auth.login.admin`
+2. `agent.resolve.windows`
+3. `usb.telemetry.accepted`
+4. `usb.windows.e2e`
+5. `usb.edge.unknown-agent-empty`
+6. `deception.deploy.windows`
+7. `deception.list.windows`
+8. `deception.revoke.windows`
+9. `deception.edge.missing-name`
+10. `vulnerability.telemetry.accepted`
+11. `vulnerability.windows.e2e`
+12. `hunting.telemetry.accepted`
+13. `hunting.windows.e2e`
+14. `hunting.edge.invalid-status-empty`
+15. `fim.telemetry.accepted`
+16. `fim.windows.e2e`
+17. `fim.ack.windows`
+18. `fim.ack.verify`
+19. `fim.edge.invalid-id`
+20. `zerotrust.telemetry.accepted`
+21. `zerotrust.windows.e2e`
+22. `zerotrust.edge.invalid-action-empty`
+
+#### H.1.4 Notes
+
+- Telemetry POSTs were sent with admin bearer token to satisfy frontend auth middleware, while still validating Windows-origin traffic path.
+- This run confirms the six endpoint feature APIs are working for Windows endpoint identity (`agent-4412`) including positive and negative/edge paths.
+
+### H.2 Dual-OS Actionable E2E Matrix (Windows + Linux, 32/32 Passed)
+
+This run extends H.1 by validating **actionable controls** for the six endpoint admin pages on both endpoint identities.
+
+#### H.2.1 Scope
+
+Pages/features:
+
+- `#/endpoint-usb-control`
+- `#/endpoint-deception-tokens`
+- `#/endpoint-vulnerability`
+- `#/endpoint-threat-hunting`
+- `#/endpoint-file-integrity`
+- `#/endpoint-zero-trust`
+
+Actionability validated:
+
+- Incident promotion: `POST /api/v1/endpoint/incidents/promote`
+- Forensics queue: `POST /api/v1/endpoint/command/enqueue`
+- NAC isolate/allow rollback: `POST /api/v1/endpoint/nac/override`
+
+#### H.2.2 Runtime Caveat Found + Fixed
+
+`incidents/promote` initially returned `404` because runtime service override executes:
+
+- `ExecStart=/usr/local/eg/sbin/eg-agent-server-new --listen :50053`
+
+(not `/usr/local/eg/sbin/eg-agent-server`).
+
+Fix applied:
+
+- Rebuilt latest `eg-agent-server` binary from source.
+- Deployed to `/usr/local/eg/sbin/eg-agent-server-new`.
+- Restarted `eguard-agent-server`.
+- Verified health: `ActiveState=active`, `SubState=running`, `NRestarts=0`.
+
+#### H.2.3 Executed Run (Latest)
+
+- Windows source VM: `administrator@103.31.39.30`
+- Linux endpoint identity: `agent-31bbb93f38b4`
+- Linux VM SSH note: direct SSH to `agent@103.183.74.3` was blocked (`kex_exchange_identification: Connection closed by remote host`), so Linux identity was validated through server-side authenticated API path.
+- Linux telemetry run marker: `20260302T022320Z`
+- Result: **32/32 passed**
+
+#### H.2.4 Evidence Highlights
+
+- Windows markers found in all five telemetry-backed feeds:
+  - USB reason: `windows-20260302T022114Z`
+  - Vulnerability CVE: `CVE-WIN-20260302T022134Z`
+  - Hunting query: `win-hunting-20260302T022147Z`
+  - FIM file: `C:/Windows/Temp/fim-20260302T022200Z.txt`
+  - Zero-trust factor source: `windows-20260302T022213Z`
+- Linux markers found in all five telemetry-backed feeds:
+  - USB/Zero-trust source: `linux-20260302T022320Z`
+  - Vulnerability CVE: `CVE-LINUX-20260302T022320Z`
+  - Hunting query: `linux-hunting-20260302T022320Z`
+  - FIM file: `/tmp/fim-20260302T022320Z.txt`
+- Promote API smoke via frontend path:
+  - `POST /api/v1/endpoint/incidents/promote` => `201`, `status=incident_promoted`.
+
+---
+
+## Appendix I: Forensics Feature Completion
+
+### I.1 Problem Observed
+
+Forensics action was initially enqueueing from GUI but failing later on Windows with:
+
+- `forensics payload requires pid`
+
+This produced a "green enqueue / red execution" gap.
+
+### I.2 Hardening Applied
+
+Server/API side (`fe_eguard`):
+
+- Added forensics payload normalization and strict validation in command enqueue path.
+- Added compatibility guard capability (`EGUARD_WINDOWS_FORENSICS_REQUIRE_PID`) to control legacy Windows behavior.
+- Added explicit `422` validation errors for invalid payloads.
+
+Frontend side (`egappserver`):
+
+- Added first-class **Forensics Collection** command in `#/endpoint-responses` with:
+  - memory dump toggle
+  - snapshot toggles
+  - target PID input
+  - output path input
+- Updated endpoint row actions to send normalized forensics payload shape.
+
+Agent runtime side (`eguard-agent`):
+
+- Updated command handler to support snapshot-only forensics without PID, and PID-based memory dump when requested.
+- Added richer Windows snapshot collector output sections.
+
+### I.3 Live Rollout Done
+
+- Rebuilt and deployed `eg-agent-server-new` on server.
+- Rebuilt and deployed frontend dist.
+- Rebuilt Windows agent binary from source and deployed to:
+  - `C:\Program Files\eGuard\eguard-agent.exe`
+- Set server compatibility flag in runtime override:
+  - `EGUARD_WINDOWS_FORENSICS_REQUIRE_PID=0`
+
+### I.4 Live Evidence
+
+- Windows no-PID forensics command completed:
+  - command id: `e094849c-fc82-4d4a-8dfa-d9889ec640f8`
+  - status: `completed`
+  - detail: `forensics capture completed (snapshot=C:\ProgramData\eGuard\forensics\snapshot-1772421948.txt)`
+- Follow-up matrix recheck:
+  - Windows snapshot command `85b54c2a-5a45-4d02-adcc-846a6ecfa217` => `completed`
+  - Linux snapshot command `dfad9d6d-621f-4737-8308-259471521076` => `completed`
+- Post-polish regression recheck:
+  - Windows snapshot command `f34d9d57-fe8c-4117-a4cc-21ccead95bfd` => `completed`
+  - Linux snapshot command `914a7a16-f6f6-48e6-a7a5-d9ca0c852131` => `completed`
+- Snapshot file exists on endpoint and contains process/network sections.
+
+### I.5 Operational Guidance
+
+- If mixed legacy/new Windows agents are present, use `EGUARD_WINDOWS_FORENSICS_REQUIRE_PID=1` until all Windows agents are upgraded.
+- After all Windows agents run upgraded binary, set `EGUARD_WINDOWS_FORENSICS_REQUIRE_PID=0` for snapshot-only row actions to execute successfully.
+
+---
+
+## Appendix J: Performance Gate Automation
+
+### J.1 Scripts Added
+
+- Linux runner: `scripts/perf/linux_phase3.sh`
+- Windows runner: `scripts/perf/windows_phase3.ps1`
+- Summary compiler: `scripts/perf/summarize.py`
+- Gate evaluator: `scripts/perf/gate.py`
+- CI workflow: `.github/workflows/performance-gate.yml`
+
+### J.2 Local Execution Flow
+
+```bash
+# 1) Run Linux benchmark on Linux endpoint host
+EGUARD_PERF_DATE=$(date -u +%Y%m%dT%H%M%SZ) \
+EGUARD_PERF_SCENARIOS='idle,office,build,ransomware,command-latency' \
+./scripts/perf/linux_phase3.sh
+
+# 2) Aggregate results (run from repo root where artifacts/perf/<date> exists)
+python3 scripts/perf/summarize.py \
+  --input-root artifacts/perf/${EGUARD_PERF_DATE}
+
+# 3) Enforce provisional gate (non-zero exit on failure)
+python3 scripts/perf/gate.py \
+  --summary artifacts/perf/${EGUARD_PERF_DATE}/summary.json \
+  --profile provisional
+```
+
+### J.3 Notes
+
+- Raw artifacts are emitted per scenario under:
+  - `artifacts/perf/<date>/<platform>/<scenario>/raw.json`
+- `summarize.py` writes:
+  - `artifacts/perf/<date>/summary.json`
+  - `artifacts/perf/<date>/report.md`
+- `gate.py` defaults to evaluating each platform headline scenario (`ransomware` by default from summary generation).
+- `command-latency` scenario can call live API if these env vars are set on runner:
+  - `EGUARD_PERF_COMMAND_LATENCY_BASE_URL`
+  - `EGUARD_PERF_COMMAND_LATENCY_AGENT_ID`
+  - optional `EGUARD_PERF_COMMAND_LATENCY_BEARER`
+
+---
+
+## Appendix K: UI Wiring Polish & Verification
+
+### K.1 Forensics Execution Verification (Row Actions)
+
+Action buttons on these pages now verify command execution after enqueue:
+- `#/endpoint-threat-hunting`
+- `#/endpoint-vulnerability`
+- `#/endpoint-file-integrity`
+- `#/endpoint-deception-tokens`
+
+UI behavior for forensics action:
+- shows `Verifying execution...` right after enqueue
+- reports final `completed/failed` detail if command finalizes quickly
+- otherwise shows `queued + still running` guidance to check `Response > Commands`
+
+`#/endpoint-responses` command table now includes `Result` column (derived from `result_data.detail`) so operators can triage outcomes without expanding every row.
+
+### K.2 NAC Effective-State Verification
+
+Isolate/allow actions now verify effective NAC status after override acceptance instead of assuming success immediately.
+
+Pages wired:
+- `#/endpoint-threat-hunting`
+- `#/endpoint-vulnerability`
+- `#/endpoint-file-integrity`
+- `#/endpoint-deception-tokens`
+- `#/endpoint-zero-trust` (isolate + allow)
+
+Added API helper:
+- `endpointApi.waitForNacStatus(agentId, expectedStatus, {timeoutMs,pollMs})`
+- returns matched state + observed status for better UI messaging.
+
+UI behavior:
+- shows `Verifying NAC status...` after isolate/allow click
+- success only when expected state is observed
+- warning includes observed state when expectation is not reached (e.g. policy/compliance races).
+
+### K.3 Incident Promote Persistence Verification
+
+Promote actions now verify that promoted incidents are persisted/listed, instead of only trusting the immediate `incident_promoted` response.
+
+Pages wired:
+- `#/endpoint-threat-hunting`
+- `#/endpoint-vulnerability`
+- `#/endpoint-file-integrity`
+- `#/endpoint-deception-tokens`
+- `#/endpoint-zero-trust`
+
+Added API helper:
+- `endpointApi.waitForIncident(incidentId, {timeoutMs,pollMs,limit})`
+- checks incident presence in open incidents list API.
+
+UI behavior:
+- shows `Verifying persistence...` after promote click
+- success only when incident is discoverable by list API
+- warning when list confirmation is delayed.
+
+### K.4 Allowlist Persistence Verification
+
+Threat Hunting `Allowlist` create now verifies entry persistence after POST acceptance.
+
+Added endpoint helper in `html/egappserver/root/src/views/endpoint/api.js`:
+- `endpointApi.waitForWhitelistEntry(criteria, { timeoutMs, pollMs, limit })`
+- polls `/endpoint/whitelist` and matches on:
+  - `match_type`
+  - `match_value`
+  - `agent_id` (or global empty agent for global entries)
+
+Updated `html/egappserver/root/src/views/endpoint/ThreatHunting.vue` (`allowlistRow`):
+- after create, shows `Allowlist create accepted ... Verifying persistence...`
+- success only if `waitForWhitelistEntry` confirms entry
+- warning when confirmation is delayed, with operator guidance to refresh Whitelist.
+
+### K.5 Shared Action Verification Utility
+
+Promote/NAC/forensics/allowlist verification logic was consolidated into a shared helper to prevent drift across pages.
+
+Shared verification helper module:
+- `html/egappserver/root/src/views/endpoint/actionVerification.js`
+
+Shared helper owns:
+- incident persistence verification (`verifyIncidentPromotion`)
+- NAC effective-state verification (`verifyNacStatus`)
+- forensics execution verification (`verifyForensicsExecution`)
+- allowlist persistence verification (`verifyWhitelistEntry`)
+- enqueue command-id extraction (`commandIdFromEnqueueResult`)
+
+Refactored pages:
+- `ThreatHunting.vue`
+- `VulnerabilityDashboard.vue`
+- `FileIntegrity.vue`
+- `DeceptionTokens.vue`
+- `ZeroTrustDashboard.vue`
+
+### K.6 NAC + Whitelist Consistency Pass
+
+After shared helper rollout, remaining endpoint pages were aligned to the effective-state UX contract.
+
+NAC page consistency (`NAC.vue`):
+- manual override actions (`Isolate`, `Allow`) now verify effective NAC status before final success message
+- quick allow action now verifies effective NAC status too
+- added warning alert channel for pending state with observed NAC status context.
+
+Whitelist consistency for remaining create flows:
+- `Whitelist.vue` create form now verifies persistence after create acceptance
+- `Audit.vue` whitelist modal now verifies persistence
+- `EndpointAgentView.vue` whitelist modal now verifies persistence.
+
+### K.7 Backend Whitelist Contract Completion (API-Side Hardening)
+
+Updated `go/agent/server/whitelist.go`:
+- `whitelistCreate` now accepts `admin_user` alias as fallback for `created_by`
+- `whitelistList` now supports:
+  - `agent_id`
+  - `match_type`
+  - `enabled` filter (`1/0/true/false/...`)
+  - `page` + `per_page` pagination (with `limit` fallback)
+- invalid `enabled` filter returns explicit `400 invalid_enabled_filter`.
+
+Added tests in `go/agent/server/whitelist_test.go`:
+- `TestWhitelistCreateAcceptsAdminUserAlias`
+- `TestWhitelistListSupportsFiltersAndPagination`
+
+### K.8 Response Console Forensics Verification
+
+`ResponseActions.vue` command submission for single-agent `forensics` commands now:
+- extracts command id from enqueue response (`commandIdFromEnqueueResult`)
+- immediately shows pending verification message
+- calls shared `verifyForensicsExecution(endpointApi, agentId, commandId, ...)`
+- maps result to success/warning/danger message consistently.
+
+### K.9 Response Console Isolate/Unisolate Hardening
+
+During live validation, isolate command enqueue path from Response Console produced runtime failure on Windows agent. Fix applied:
+
+- `ResponseActions.vue`: isolate/unisolate submissions now use `endpointApi.nacOverride(...)` directly.
+- single-agent path now verifies terminal NAC status via shared helper (`verifyNacStatus(...)`).
+- multi-agent path reports accepted/failed counts and explicit operator guidance.
+- approval UX guard: `Requires Approval` is disabled for isolate/unisolate and helper text explains direct NAC path semantics.
+- `api.js`: expanded expected NAC status aliases in `waitForNacStatus(...)`:
+  - `isolate`, `isolated`, `block`, `blocked`.
+
+---
+
+## Appendix L: Effective-State Smoke Harness
+
+### L.1 Purpose
+
+To prevent partial/broken behavior regressions, this script validates the full endpoint effective-state contract in one run:
+
+1. forensics enqueue -> completed command
+2. NAC isolate/allow override -> observed NAC state transitions
+3. incident promote -> persisted in open incidents list
+4. whitelist create -> persisted in whitelist list.
+
+### L.2 Single-Agent Smoke Script
+
+- Path: `scripts/endpoint/effective_state_smoke.sh`
+- Input:
+  - required: `--agent-id <agent-id>` (or `EGUARD_AGENT_ID`)
+  - optional: `--base-url`, `--username`, `--password`
+- Dependencies: `bash`, `curl`, `jq`
+
+Run example:
+
+```bash
+cd /home/dimas/fe_eguard
+scripts/endpoint/effective_state_smoke.sh --agent-id agent-4412
+```
+
+### L.3 Reliability Behavior
+
+Given intermittent API transport timeouts in lab environments, the script includes:
+
+- retry loop for API calls
+- polling loops for command/NAC/incident/whitelist effective-state confirmation
+- NAC timeout tolerance: if override call times out, script still verifies authoritative final NAC status before declaring failure.
+
+### L.4 Dual-OS Matrix Runner
+
+- Path: `scripts/endpoint/effective_state_matrix.sh`
+- Inputs:
+  - `--agents <id1,id2,...>` or repeated `--agent-id <id>`
+  - pass-through auth/base URL options:
+    - `--base-url`, `--username`, `--password`
+  - or environment: `EGUARD_AGENT_IDS=id1,id2`
+
+Examples:
+
+```bash
+cd /home/dimas/fe_eguard
+scripts/endpoint/effective_state_matrix.sh --agents agent-4412,agent-31bbb93f38b4
+
+# Makefile wrappers
+make endpoint-effective-state-smoke AGENT_ID=agent-4412
+make endpoint-effective-state-matrix AGENT_IDS=agent-4412,agent-31bbb93f38b4
+```
+
+### L.5 Latest Matrix Evidence
+
+- Result: `PASS` (2/2)
+- Windows run:
+  - Run ID: `esmoke-20260302T074756Z-1928622`
+  - forensics command `bdd135dc-09e3-4ff7-a9d3-72cfde4b0d34` => `completed`
+  - incident `incident-1772437782813498608` persisted
+- Linux run:
+  - Run ID: `esmoke-20260302T074943Z-1929175`
+  - forensics command `345fdfc2-6ace-4f8d-bc37-647abd266597` => `completed`
+  - incident `incident-1772437887539103818` persisted
+- Both runs observed NAC isolate/allow terminal states and whitelist persistence.
+- Matrix run tolerated transient API failures (`timeout`, intermittent `503`) via retry + state polling and still produced final authoritative pass/fail outcomes.
+
+---
+
+## Appendix M: Endpoint Feedback Operation
+
+### M.1 Intended Operator Flow
+
+Feedback should be submitted from incident triage UI, not by manual API call:
+
+1. Open `#/endpoint-incidents`.
+2. Click `View` on an incident with related events.
+3. In `Related Events`, use inline `TP`, `FP`, or `Tune` buttons.
+4. Open `#/endpoint-feedback` to review aggregate precision stats.
+
+UI wiring reference:
+
+- `html/egappserver/root/src/views/endpoint/IncidentView.vue`
+  - renders `<alert-feedback>` in `Related Events` row.
+- `html/egappserver/root/src/views/endpoint/AlertFeedback.vue`
+  - loads aggregate rows and rule dropdown options.
+
+### M.2 Dropdown Data Sources (`Search rule`)
+
+`Search rule` dropdown is populated from a merged set of:
+
+- threat-intel rules (`GET /api/v1/threat-intel/rules`)
+- feedback stats rows (`GET /api/v1/alert-feedback/stats`)
+- recent endpoint events with `rule_name` (`GET /api/v1/endpoint-events`)
+
+This prevents empty dropdowns when custom threat-intel rules are not yet created.
+
+### M.3 Incident Detail Wiring (apiserver fallback)
+
+`GET /api/v1/endpoint-incidents/:id` now hydrates these frontend-facing fields:
+
+- `affected_agent_ids`
+- `events`
+- `responses`
+
+Hydration order for `events`:
+
+1. Decode IDs from `endpoint_incident.related_events` (when present).
+2. If empty, load by `affected_agent_ids` within incident time window (created_at -24h to +10m), `rule_name <> ''`.
+3. If still empty, fallback to latest agent events with non-empty `rule_name`.
+
+Hydration order for `responses`:
+
+1. Decode IDs from `endpoint_incident.related_responses` (when present).
+2. If empty, load by `affected_agent_ids` in the same time window.
+3. If still empty, fallback to latest response actions for the affected agents.
+
+Result: TP/FP/Tune controls remain available in `IncidentView` even when `related_events` is null in legacy rows.
+
+### M.4 Troubleshooting Checklist (`#/endpoint-feedback` looks empty)
+
+1. Wait 2-5s after page load (dropdown options load asynchronously).
+2. Verify APIs with admin token:
+
+```bash
+curl -k -sS 'https://103.49.238.102:1443/api/v1/threat-intel/rules?limit=20' -H "Authorization: Bearer $TOKEN"
+curl -k -sS 'https://103.49.238.102:1443/api/v1/alert-feedback/stats?page=1&per_page=20' -H "Authorization: Bearer $TOKEN"
+curl -k -sS 'https://103.49.238.102:1443/api/v1/endpoint-events?limit=200' -H "Authorization: Bearer $TOKEN"
+```
+
+3. If incidents show no `Related Events`, inspect incident detail payload and source data:
+
+```bash
+curl -k -sS "https://103.49.238.102:1443/api/v1/endpoint-incidents/${INCIDENT_ID}" -H "Authorization: Bearer $TOKEN"
+```
+
+Check that `affected_agent_ids` is not empty. Then inspect DB linkage for that incident:
+
+```bash
+sshpass -p 'Eguard123' ssh eguard@103.49.238.102 \
+  "mysql -uroot -pEguard123 -D eguard -e \"SELECT incident_id, created_at, affected_agents, related_events, related_responses FROM endpoint_incident WHERE incident_id='${INCIDENT_ID}'\\G\""
+
+sshpass -p 'Eguard123' ssh eguard@103.49.238.102 \
+  "mysql -uroot -pEguard123 -D eguard -e \"SELECT agent_id, COUNT(*) cnt FROM endpoint_event WHERE rule_name <> '' GROUP BY agent_id ORDER BY cnt DESC LIMIT 20;\""
+```
+
+If `affected_agent_ids` is empty or no events exist for those agents, incident feedback rows cannot be rendered.

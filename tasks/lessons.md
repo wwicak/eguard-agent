@@ -26,3 +26,6 @@
 - **Never hardcode lab/real server IPs in tests**: use loopback (`127.0.0.1`) or clearly synthetic placeholders in test fixtures to avoid environment coupling and operator confusion.
 - **Honor explicit CI runtime budgets**: if user sets a max pipeline time (e.g., 15 minutes), implement a strict fast profile and step timeout first, then keep heavy fuzz/Miri/guardrail checks in scheduled/release full profile.
 - **Validate repo ownership before adding CI workflow files**: when working across `fe_eguard` and `eguard-agent`, place `.github/workflows/*` only in the GitHub-backed repo (`eguard-agent`) and keep server-local automation in `fe_eguard` only when explicitly needed.
+- **When user asks for “magic inside agent,” prioritize runtime internals over orchestration wrappers**: implement concrete platform/runtime behavior (cache, gating, budget controls, coalescing) before proposing process-level “sprints” or external workflow packaging.
+- **When user repeats “fully implement, no stub”, immediately continue coding additional integrated runtime slices** instead of pausing at one subsystem; keep shipping end-to-end wiring + tests in consecutive phases.
+- **When introducing a canonical model (like `EventTxn`), immediately route adjacent duplicate logic through it** (coalescing keys, response dedupe keys, telemetry payload identity) to avoid divergence.
