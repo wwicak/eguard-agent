@@ -87,6 +87,10 @@ impl AgentRuntime {
             json!({
                 "score": score.score,
                 "positive": score.positive,
+                "raw_positive": score.raw_positive,
+                "conformal_gated": score.conformal_gated,
+                "conformal_p_value": score.conformal_p_value,
+                "decision_threshold": score.decision_threshold,
                 "top_features": top_features,
             })
         });

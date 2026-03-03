@@ -241,9 +241,18 @@ impl AgentRuntime {
         self.client.set_online(true);
         match self.client.check_server_state().await {
             Ok(Some(_)) => {
+                let config_version = self.heartbeat_config_version();
+                let baseline_status = self.baseline_status_label().to_string();
+                let runtime = self.build_heartbeat_runtime_payload(&baseline_status);
                 match self
                     .client
-                    .send_heartbeat(&self.config.agent_id, compliance_status)
+                    .send_heartbeat_with_runtime_config(
+                        &self.config.agent_id,
+                        compliance_status,
+                        &config_version,
+                        &baseline_status,
+                        Some(&runtime),
+                    )
                     .await
                 {
                     Ok(_) => {

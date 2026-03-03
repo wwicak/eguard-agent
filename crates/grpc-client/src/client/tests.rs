@@ -602,6 +602,82 @@ async fn send_heartbeat_offline_returns_error() {
 }
 
 #[tokio::test]
+// AC-GRP-010 AC-GRP-019 AC-GRP-081
+async fn send_heartbeat_http_includes_runtime_status_and_resource_usage() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind heartbeat mock server");
+    let addr = listener.local_addr().expect("local addr");
+
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("accept client");
+        let mut request_buf = vec![0u8; 8192];
+        let read_len = stream.read(&mut request_buf).await.expect("read request");
+        let request = std::str::from_utf8(&request_buf[..read_len]).expect("utf8 request");
+        assert!(request.starts_with("POST /api/v1/endpoint/heartbeat "));
+
+        let body = request
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| body)
+            .expect("split request body");
+        let payload: serde_json::Value = serde_json::from_str(body).expect("parse request json");
+        assert_eq!(payload["agent_id"], "agent-http-hb");
+        assert_eq!(payload["compliance_status"], "compliant");
+        assert_eq!(payload["config_version"], "cfg-h1");
+        assert_eq!(payload["baseline_status"], "active");
+        assert_eq!(payload["buffered_events"], 9);
+        assert_eq!(payload["status"]["mode"], "active");
+        assert_eq!(payload["status"]["active_sigma_rules"], 111);
+        assert_eq!(payload["status"]["active_yara_rules"], 222);
+        assert_eq!(payload["status"]["active_ioc_entries"], 333);
+        assert_eq!(
+            payload["status"]["autonomous_response_enabled"],
+            serde_json::Value::from(true)
+        );
+        assert_eq!(payload["resource_usage"]["memory_rss_bytes"], 456789);
+        assert_eq!(payload["resource_usage"]["disk_usage_bytes"], 123456);
+
+        let response =
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
+        stream
+            .write_all(response.as_bytes())
+            .await
+            .expect("write mock response");
+    });
+
+    let client = Client::new(addr.to_string());
+    client
+        .send_heartbeat_with_runtime_config(
+            "agent-http-hb",
+            "compliant",
+            "cfg-h1",
+            "active",
+            Some(&crate::types::HeartbeatRuntimeEnvelope {
+                status: crate::types::HeartbeatAgentStatusEnvelope {
+                    mode: "active".to_string(),
+                    autonomous_response_enabled: true,
+                    active_sigma_rules: 111,
+                    active_yara_rules: 222,
+                    active_ioc_entries: 333,
+                    last_detection: "process_exec:high".to_string(),
+                    last_response_action: "kill".to_string(),
+                },
+                resource_usage: crate::types::HeartbeatResourceUsageEnvelope {
+                    cpu_percent: 1.25,
+                    memory_rss_bytes: 456_789,
+                    disk_usage_bytes: 123_456,
+                    events_per_second: 14.5,
+                },
+                buffered_events: 9,
+            }),
+        )
+        .await
+        .expect("send heartbeat should succeed");
+
+    server.await.expect("mock server join");
+}
+
+#[tokio::test]
 // AC-BSL-031 AC-BSL-032 AC-BSL-033
 async fn fetch_fleet_baselines_http_returns_seed_rows() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -1989,7 +2065,30 @@ async fn send_heartbeat_grpc_captures_agent_and_compliance_and_config_version() 
     client.set_test_channel_override(server.channel());
 
     client
-        .send_heartbeat_with_config("agent-heartbeat-1", "compliant", "cfg-v7", "active")
+        .send_heartbeat_with_runtime_config(
+            "agent-heartbeat-1",
+            "compliant",
+            "cfg-v7",
+            "active",
+            Some(&crate::types::HeartbeatRuntimeEnvelope {
+                status: crate::types::HeartbeatAgentStatusEnvelope {
+                    mode: "active".to_string(),
+                    autonomous_response_enabled: true,
+                    active_sigma_rules: 321,
+                    active_yara_rules: 654,
+                    active_ioc_entries: 987,
+                    last_detection: "process_exec:high".to_string(),
+                    last_response_action: "kill".to_string(),
+                },
+                resource_usage: crate::types::HeartbeatResourceUsageEnvelope {
+                    cpu_percent: 2.5,
+                    memory_rss_bytes: 123_456,
+                    disk_usage_bytes: 654_321,
+                    events_per_second: 42.0,
+                },
+                buffered_events: 7,
+            }),
+        )
         .await
         .expect("send_heartbeat should succeed");
 
@@ -2000,6 +2099,53 @@ async fn send_heartbeat_grpc_captures_agent_and_compliance_and_config_version() 
         assert_eq!(heartbeat.agent_id, "agent-heartbeat-1");
         assert_eq!(heartbeat.compliance_status, "compliant");
         assert_eq!(heartbeat.config_version, "cfg-v7");
+        assert_eq!(heartbeat.buffered_events, 7);
+        assert_eq!(heartbeat.status.as_ref().map(|s| s.mode), Some(1));
+        assert_eq!(
+            heartbeat
+                .status
+                .as_ref()
+                .map(|s| s.autonomous_response_enabled),
+            Some(true)
+        );
+        assert_eq!(
+            heartbeat.status.as_ref().map(|s| s.active_sigma_rules),
+            Some(321)
+        );
+        assert_eq!(
+            heartbeat
+                .resource_usage
+                .as_ref()
+                .map(|r| r.memory_rss_bytes),
+            Some(123_456)
+        );
+    }
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
+// AC-GRP-010 AC-GRP-019
+async fn send_heartbeat_grpc_legacy_wrapper_remains_backward_compatible() {
+    let state = Arc::new(Mutex::new(EnrollmentMockState::default()));
+    let server = spawn_mock_agent_control(state.clone()).await;
+    let mut client = Client::with_mode("inproc-agent-control".to_string(), TransportMode::Grpc);
+    client.set_test_channel_override(server.channel());
+
+    client
+        .send_heartbeat_with_config("agent-heartbeat-legacy", "compliant", "cfg-v9", "learning")
+        .await
+        .expect("send_heartbeat_with_config should succeed");
+
+    {
+        let guard = state.lock().expect("state lock");
+        assert_eq!(guard.heartbeats.len(), 1);
+        let heartbeat = &guard.heartbeats[0];
+        assert_eq!(heartbeat.agent_id, "agent-heartbeat-legacy");
+        assert_eq!(heartbeat.compliance_status, "compliant");
+        assert_eq!(heartbeat.config_version, "cfg-v9");
+        assert!(heartbeat.status.is_none());
+        assert!(heartbeat.resource_usage.is_none());
     }
 
     server.shutdown().await;

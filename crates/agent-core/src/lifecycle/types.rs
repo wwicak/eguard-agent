@@ -3,7 +3,8 @@ use serde::Deserialize;
 use compliance::ComplianceResult;
 use detection::{Confidence, DetectionOutcome, TelemetryEvent};
 use grpc_client::{
-    CommandEnvelope, ComplianceEnvelope, EventEnvelope, InventoryEnvelope, ResponseEnvelope,
+    CommandEnvelope, ComplianceEnvelope, EventEnvelope, HeartbeatRuntimeEnvelope,
+    InventoryEnvelope, ResponseEnvelope,
 };
 use response::PlannedAction;
 
@@ -82,6 +83,7 @@ pub(super) enum PendingControlPlaneSend {
         compliance_status: String,
         config_version: String,
         baseline_status: String,
+        runtime: HeartbeatRuntimeEnvelope,
     },
     Compliance {
         envelope: ComplianceEnvelope,
@@ -129,6 +131,8 @@ pub struct RuntimeObservabilitySnapshot {
     pub strict_budget_mode: bool,
     pub raw_event_backlog_depth: usize,
     pub raw_event_backlog_cap: usize,
+    pub event_txn_coalesce_key_count: usize,
+    pub response_action_dedupe_key_count: usize,
     pub ebpf_failed_probe_count: usize,
     pub ebpf_attach_degraded: bool,
     pub ebpf_btf_available: bool,

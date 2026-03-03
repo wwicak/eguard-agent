@@ -24,15 +24,10 @@ impl AgentRuntime {
             let status = evaluation
                 .map(|eval| eval.compliance.status.clone())
                 .unwrap_or_else(|| self.evaluate_compliance().status);
-            let baseline_label = match self.baseline_store.status {
-                BaselineStatus::Learning => "learning",
-                BaselineStatus::Active => "active",
-                BaselineStatus::Stale => "stale",
-            };
             self.try_enqueue_control_plane_task(
                 ControlPlaneTaskKind::Heartbeat {
                     compliance_status: status,
-                    baseline_status: baseline_label.to_string(),
+                    baseline_status: self.baseline_status_label().to_string(),
                 },
                 now_unix,
             );
@@ -102,7 +97,12 @@ impl AgentRuntime {
         kind: ControlPlaneTaskKind,
         now_unix: i64,
     ) {
-        if self.has_pending_control_plane_task(&kind) {
+        if let Some(existing) = self
+            .pending_control_plane_tasks
+            .iter_mut()
+            .find(|task| task.kind.kind_name() == kind.kind_name())
+        {
+            existing.kind = kind;
             return;
         }
 
@@ -120,12 +120,6 @@ impl AgentRuntime {
                 kind,
                 enqueued_at_unix: now_unix,
             });
-    }
-
-    fn has_pending_control_plane_task(&self, kind: &ControlPlaneTaskKind) -> bool {
-        self.pending_control_plane_tasks
-            .iter()
-            .any(|task| task.kind.kind_name() == kind.kind_name())
     }
 
     pub(super) fn control_plane_queue_oldest_age_secs(&self, now_unix: i64) -> u64 {
@@ -224,6 +218,91 @@ impl ControlPlaneTaskKind {
             Self::VulnerabilityUpload => "vulnerability_upload",
             Self::HuntingUpload => "hunting_upload",
             Self::ZeroTrustUpload => "zero_trust_upload",
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AgentConfig;
+
+    fn new_runtime() -> AgentRuntime {
+        let mut cfg = AgentConfig::default();
+        cfg.offline_buffer_backend = "memory".to_string();
+        cfg.server_addr = "127.0.0.1:1".to_string();
+        cfg.self_protection_integrity_check_interval_secs = 0;
+        AgentRuntime::new(cfg).expect("runtime")
+    }
+
+    #[test]
+    fn reenqueue_heartbeat_replaces_payload_but_preserves_queue_age_anchor() {
+        let mut runtime = new_runtime();
+
+        runtime.try_enqueue_control_plane_task(
+            ControlPlaneTaskKind::Heartbeat {
+                compliance_status: "warn".to_string(),
+                baseline_status: "learning".to_string(),
+            },
+            1_700_000_000,
+        );
+        runtime.try_enqueue_control_plane_task(
+            ControlPlaneTaskKind::Heartbeat {
+                compliance_status: "ok".to_string(),
+                baseline_status: "active".to_string(),
+            },
+            1_700_000_120,
+        );
+
+        assert_eq!(runtime.pending_control_plane_tasks.len(), 1);
+        let task = runtime
+            .pending_control_plane_tasks
+            .front()
+            .expect("queued heartbeat");
+        assert_eq!(task.enqueued_at_unix, 1_700_000_000);
+        match &task.kind {
+            ControlPlaneTaskKind::Heartbeat {
+                compliance_status,
+                baseline_status,
+            } => {
+                assert_eq!(compliance_status, "ok");
+                assert_eq!(baseline_status, "active");
+            }
+            other => panic!("expected heartbeat task, got {}", other.kind_name()),
+        }
+    }
+
+    #[test]
+    fn reenqueue_inventory_replaces_payload_without_queue_growth() {
+        let mut runtime = new_runtime();
+
+        let first = runtime.collect_inventory(1_700_000_000);
+        let second = runtime.collect_inventory(1_700_000_060);
+
+        runtime.try_enqueue_control_plane_task(
+            ControlPlaneTaskKind::Inventory {
+                inventory: Box::new(first),
+            },
+            1_700_000_000,
+        );
+        runtime.try_enqueue_control_plane_task(
+            ControlPlaneTaskKind::Inventory {
+                inventory: Box::new(second),
+            },
+            1_700_000_060,
+        );
+
+        assert_eq!(runtime.pending_control_plane_tasks.len(), 1);
+        let task = runtime
+            .pending_control_plane_tasks
+            .front()
+            .expect("queued inventory");
+        assert_eq!(task.enqueued_at_unix, 1_700_000_000);
+        match &task.kind {
+            ControlPlaneTaskKind::Inventory { inventory } => {
+                assert_eq!(inventory.collected_at_unix, 1_700_000_060);
+            }
+            other => panic!("expected inventory task, got {}", other.kind_name()),
         }
     }
 }

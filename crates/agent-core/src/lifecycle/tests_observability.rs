@@ -449,6 +449,13 @@ async fn observability_snapshot_tracks_send_failure_degraded_transition_and_queu
         .await
         .expect("send batch 3");
 
+    runtime
+        .recent_event_txn_keys
+        .insert("txn-a".to_string(), 1_700_000_000_000_000_000);
+    runtime
+        .recent_response_action_keys
+        .insert("rsp-a".to_string(), 1_700_000_000);
+
     let snapshot = runtime.observability_snapshot();
     assert_eq!(snapshot.runtime_mode, "degraded");
     assert_eq!(snapshot.consecutive_send_failures, 3);
@@ -460,6 +467,8 @@ async fn observability_snapshot_tracks_send_failure_degraded_transition_and_queu
         Some("send_failures")
     );
     assert!(snapshot.last_send_event_batch_micros > 0);
+    assert_eq!(snapshot.event_txn_coalesce_key_count, 1);
+    assert_eq!(snapshot.response_action_dedupe_key_count, 1);
 }
 
 #[tokio::test]
@@ -733,6 +742,30 @@ async fn async_worker_queue_dispatches_control_plane_sends() {
 
     assert!(runtime.pending_control_plane_sends.len() >= 2);
     assert_eq!(runtime.control_plane_send_tasks.len(), 0);
+
+    let mut saw_heartbeat = false;
+    for send in &runtime.pending_control_plane_sends {
+        if let PendingControlPlaneSend::Heartbeat {
+            baseline_status,
+            runtime,
+            ..
+        } = send
+        {
+            saw_heartbeat = true;
+            assert!(!runtime.status.mode.is_empty());
+            assert!(runtime.status.last_detection.contains("txn_keys="));
+            assert!(runtime.status.last_detection.contains("baseline="));
+            assert!(runtime
+                .status
+                .last_detection
+                .contains(&format!("baseline={baseline_status}")));
+            assert!(runtime.status.last_response_action.contains("deduped="));
+            assert!(runtime.status.last_response_action.contains("dedupe_keys="));
+            assert!(runtime.resource_usage.memory_rss_bytes >= 0);
+            assert!(runtime.buffered_events >= 0);
+        }
+    }
+    assert!(saw_heartbeat, "expected queued heartbeat send");
 
     runtime.drive_async_workers();
     assert_eq!(runtime.pending_control_plane_sends.len(), 0);

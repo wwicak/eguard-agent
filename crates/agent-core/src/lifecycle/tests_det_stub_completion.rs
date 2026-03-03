@@ -1,6 +1,6 @@
 use super::*;
 use crate::config::AgentConfig;
-use detection::DetectionEngine;
+use detection::{DetectionEngine, MlModel};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -49,6 +49,14 @@ fn write_ioc_hash_bundle(bundle_root: &Path, hash_count: usize) {
         payload.push_str(&format!("bundle-ioc-hash-{idx:04}\n"));
     }
     std::fs::write(ioc_dir.join("hashes.txt"), payload).expect("write ioc hashes");
+}
+
+fn write_bundle_ml_model(bundle_root: &Path, model_id: &str, model_version: &str) {
+    let mut model = MlModel::default();
+    model.model_id = model_id.to_string();
+    model.model_version = model_version.to_string();
+    let raw = serde_json::to_string_pretty(&model).expect("serialize ml model");
+    std::fs::write(bundle_root.join("signature-ml-model.json"), raw).expect("write ml model");
 }
 
 #[derive(Debug, PartialEq, Eq)]

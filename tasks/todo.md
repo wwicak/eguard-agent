@@ -844,9 +844,9 @@ Generalize performance optimizations into a shared internal architecture so endp
 - [x] Added deterministic unit tests for new Windows/macOS behaviors and policy-sync runtime wiring.
 
 ### Verification — Phase A
-- `cargo test -p platform-windows --lib -- --nocapture` ✅ (71 passed)
+- `cargo test -p platform-windows --lib -- --nocapture` ✅ (72 passed)
 - `cargo test -p platform-macos --lib -- --nocapture` ✅ (38 passed)
-- `cargo test -p agent-core tests_ebpf_policy -- --nocapture` ✅ (12 passed)
+- `cargo test -p agent-core tests_ebpf_policy -- --nocapture` ✅ (13 passed)
 
 ### Acceptance criteria status after Phase A
 - [x] AC9 (safe fallback / config toggles do not break runtime semantics) — implemented and tested for Windows/macOS enrichment path controls.
@@ -862,10 +862,10 @@ Generalize performance optimizations into a shared internal architecture so endp
 - [x] Added deterministic unit tests for transaction key normalization and transaction payload fields.
 
 ### Verification — Phase B
-- `cargo test -p agent-core tests_ebpf_policy -- --nocapture` ✅ (12 passed)
+- `cargo test -p agent-core tests_ebpf_policy -- --nocapture` ✅ (13 passed)
 - `cargo test -p agent-core tests_observability -- --nocapture` ✅ (13 passed)
-- `cargo test -p agent-core policy_ -- --nocapture` ✅ (11 passed)
-- `cargo test -p agent-core coalesce_file_event_key_normalizes_windows_separators -- --nocapture` ✅ (1 passed)
+- `cargo test -p agent-core policy_ -- --nocapture` ✅ (15 passed)
+- `cargo test -p agent-core event_txn -- --nocapture` ✅ (6 passed)
 
 ### Implementation status — Phase C (response dedupe + transaction-linked action path) ✅
 - [x] Added transaction-linked response action identity (`txn_key`) to `PendingResponseAction`.
@@ -877,10 +877,10 @@ Generalize performance optimizations into a shared internal architecture so endp
 - [x] Added observability metric `response_action_deduped_total` and exposed in runtime snapshot.
 
 ### Verification — Phase C
-- `cargo test -p agent-core response_action_dedupe -- --nocapture` ✅ (3 passed)
+- `cargo test -p agent-core response_action_dedupe -- --nocapture` ✅ (6 passed)
 - `cargo test -p agent-core tests_observability -- --nocapture` ✅ (13 passed)
-- `cargo test -p agent-core tests_ebpf_policy -- --nocapture` ✅ (12 passed)
-- `cargo test -p agent-core policy_ -- --nocapture` ✅ (11 passed)
+- `cargo test -p agent-core tests_ebpf_policy -- --nocapture` ✅ (13 passed)
+- `cargo test -p agent-core policy_ -- --nocapture` ✅ (16 passed)
 - `cargo test -p platform-windows --lib -- --nocapture` ✅ (72 passed)
 - `cargo test -p platform-macos --lib -- --nocapture` ✅ (38 passed)
 
@@ -896,8 +896,178 @@ Generalize performance optimizations into a shared internal architecture so endp
 ### Verification — Phase D
 - `cargo test -p agent-core tests_ebpf_policy -- --nocapture` ✅ (13 passed)
 - `cargo test -p agent-core tests_observability -- --nocapture` ✅ (13 passed)
-- `cargo test -p agent-core response_action_dedupe -- --nocapture` ✅ (3 passed)
-- `cargo test -p agent-core policy_ -- --nocapture` ✅ (13 passed)
+- `cargo test -p agent-core response_action_dedupe -- --nocapture` ✅ (6 passed)
+- `cargo test -p agent-core policy_ -- --nocapture` ✅ (16 passed)
 - `cargo test -p agent-core event_txn -- --nocapture` ✅ (6 passed)
 - `cargo test -p platform-windows --lib -- --nocapture` ✅ (72 passed)
 - `cargo test -p platform-macos --lib -- --nocapture` ✅ (38 passed)
+
+### Implementation status — Phase E (policy/bundle-aware response dedupe hardening) ✅
+- [x] Extended response dedupe identity to include policy and bundle context (`compliance_policy_hash`, `latest_custom_rule_hash`) to prevent stale dedupe suppression across policy/rule updates.
+- [x] Added deterministic test coverage for policy/bundle-context rollover behavior in dedupe logic.
+
+### Verification — Phase E
+- `cargo test -p agent-core response_action_dedupe -- --nocapture` ✅ (6 passed)
+- `cargo test -p agent-core policy_ -- --nocapture` ✅ (16 passed)
+- `cargo test -p agent-core tests_ebpf_policy -- --nocapture` ✅ (13 passed)
+- `cargo test -p agent-core tests_observability -- --nocapture` ✅ (13 passed)
+- `cargo test -p platform-windows --lib -- --nocapture` ✅ (72 passed)
+- `cargo test -p platform-macos --lib -- --nocapture` ✅ (38 passed)
+
+### Implementation status — Phase F (EventTxn coalesce key-limit hardening) ✅
+- [x] Added dedicated EventTxn coalesce key-limit runtime control:
+  - Env: `EGUARD_EVENT_TXN_COALESCE_KEY_LIMIT`
+  - Policy: `event_txn_coalesce_key_limit` / `detection_event_txn_coalesce_key_limit`
+- [x] Switched EventTxn coalesce-state pruning to use its own key-limit (decoupled from file coalesce key-limit).
+- [x] Added policy-sync test to verify floor semantics and runtime update behavior.
+
+### Verification — Phase F
+- `cargo test -p agent-core policy_ -- --nocapture` ✅ (16 passed)
+- `cargo test -p agent-core tests_ebpf_policy -- --nocapture` ✅ (13 passed)
+- `cargo test -p agent-core response_action_dedupe -- --nocapture` ✅ (6 passed)
+- `cargo test -p agent-core tests_observability -- --nocapture` ✅ (13 passed)
+- `cargo test -p platform-windows --lib -- --nocapture` ✅ (72 passed)
+- `cargo test -p platform-macos --lib -- --nocapture` ✅ (38 passed)
+
+### Implementation status — Phase G (dedupe scalability + observability key-count wiring) ✅
+- [x] Added dedicated response-action dedupe key-limit runtime control:
+  - Env: `EGUARD_RESPONSE_ACTION_DEDUPE_KEY_LIMIT`
+  - Policy: `response_action_dedupe_key_limit` / `detection_response_action_dedupe_key_limit`
+- [x] Updated response-action dedupe pruning to honor configured key limit instead of hardcoded cap.
+- [x] Added safety behavior to clear response dedupe / EventTxn coalesce key state when corresponding policy window is set to `0`.
+- [x] Exposed key-state cardinality in runtime observability snapshot:
+  - `event_txn_coalesce_key_count`
+  - `response_action_dedupe_key_count`
+- [x] Added deterministic tests:
+  - response dedupe pruning honors key limit
+  - policy override for response dedupe key limit
+  - policy window `0` clearing behavior
+  - snapshot wiring for key counts
+
+### Verification — Phase G
+- `cargo test -p agent-core response_action_dedupe -- --nocapture` ✅ (6 passed)
+- `cargo test -p agent-core policy_ -- --nocapture` ✅ (16 passed)
+- `cargo test -p agent-core tests_observability -- --nocapture` ✅ (13 passed)
+- `cargo test -p agent-core tests_ebpf_policy -- --nocapture` ✅ (13 passed)
+- `cargo test -p platform-windows --lib -- --nocapture` ✅ (72 passed)
+- `cargo test -p platform-macos --lib -- --nocapture` ✅ (38 passed)
+
+### Implementation status — Phase H (heartbeat runtime telemetry wiring) ✅
+- [x] Added typed heartbeat runtime envelopes in `grpc-client` (`HeartbeatRuntimeEnvelope`, `HeartbeatAgentStatusEnvelope`, `HeartbeatResourceUsageEnvelope`).
+- [x] Added client API path `send_heartbeat_with_runtime_config(...)` while preserving existing compatibility methods.
+- [x] Wired heartbeat runtime payload for both transports:
+  - gRPC: maps runtime status/resource into proto `AgentStatus` + `ResourceUsage` + `buffered_events`.
+  - HTTP: includes equivalent `status`, `resource_usage`, and `buffered_events` JSON fields.
+- [x] Wired agent runtime -> heartbeat runtime payload generation in control-plane outbound send path.
+- [x] Added Linux RSS probe (`/proc/self/statm`) for heartbeat resource payload (safe zero fallback on non-Linux).
+- [x] Extended observability/queue send path to include heartbeat runtime payload in async workers.
+
+### Verification — Phase H
+- `cargo test -p grpc-client send_heartbeat_grpc_captures_agent_and_compliance_and_config_version -- --nocapture` ✅ (1 passed)
+- `cargo test -p grpc-client heartbeat -- --nocapture` ✅ (8 passed)
+- `cargo test -p agent-core tests_observability -- --nocapture` ✅ (13 passed)
+- `cargo test -p agent-core policy_ -- --nocapture` ✅ (16 passed)
+- `cargo test -p agent-core tests_ebpf_policy -- --nocapture` ✅ (13 passed)
+- `cargo test -p agent-core response_action_dedupe -- --nocapture` ✅ (6 passed)
+- `cargo test -p platform-windows --lib -- --nocapture` ✅ (72 passed)
+- `cargo test -p platform-macos --lib -- --nocapture` ✅ (38 passed)
+
+### Implementation status — Phase I (heartbeat payload parity and queue-runtime assertions) ✅
+- [x] Added HTTP heartbeat runtime payload contract test to verify `status`, `resource_usage`, and `buffered_events` serialization.
+- [x] Extended observability/control-plane async test to assert queued heartbeat send contains populated runtime payload.
+- [x] Confirmed runtime heartbeat payload path remains fully compatible with existing grpc-client API wrappers.
+
+### Verification — Phase I
+- `cargo test -p grpc-client heartbeat -- --nocapture` ✅ (8 passed)
+- `cargo test -p agent-core tests_observability -- --nocapture` ✅ (13 passed)
+- `cargo test -p agent-core tests_ebpf_policy -- --nocapture` ✅ (13 passed)
+- `cargo test -p agent-core response_action_dedupe -- --nocapture` ✅ (6 passed)
+- `cargo test -p agent-core policy_ -- --nocapture` ✅ (16 passed)
+- `cargo test -p platform-windows --lib -- --nocapture` ✅ (72 passed)
+- `cargo test -p platform-macos --lib -- --nocapture` ✅ (38 passed)
+
+### Implementation status — Phase J (heartbeat degraded-path/runtime builder polish) ✅
+- [x] Refactored heartbeat runtime construction into shared `build_heartbeat_runtime_payload()` helper.
+- [x] Refactored baseline label construction into shared `baseline_status_label()` helper to remove duplicated status mapping logic.
+- [x] Upgraded degraded recovery probe heartbeat path to send full runtime payload (same path as scheduled control-plane heartbeat).
+- [x] Extended heartbeat coverage with a new legacy-wrapper compatibility test (`send_heartbeat_with_config`) to lock backward compatibility.
+- [x] Extended heartbeat HTTP contract test coverage and control-plane queue assertions to validate runtime payload content fields.
+
+### Verification — Phase J
+- `cargo test -p grpc-client heartbeat -- --nocapture` ✅ (9 passed)
+- `cargo test -p agent-core tests_observability -- --nocapture` ✅ (13 passed)
+- `cargo test -p agent-core tests_ebpf_policy -- --nocapture` ✅ (13 passed)
+- `cargo test -p agent-core response_action_dedupe -- --nocapture` ✅ (6 passed)
+- `cargo test -p agent-core policy_ -- --nocapture` ✅ (16 passed)
+- `cargo test -p platform-windows --lib -- --nocapture` ✅ (72 passed)
+- `cargo test -p platform-macos --lib -- --nocapture` ✅ (38 passed)
+
+### Implementation status — Phase K (policy-rollover and heartbeat status context polish) ✅
+- [x] Cleared `recent_response_action_keys` and `recent_event_txn_keys` automatically when policy hash changes to avoid stale cross-policy suppression/coalescing state.
+- [x] Added deterministic regression test `policy_hash_change_clears_response_and_event_txn_dedupe_state`.
+- [x] Enriched heartbeat runtime status strings with explicit `baseline=` and `dedupe_keys=` context for faster operator triage.
+- [x] Extended observability heartbeat queue assertions to lock new status-context fields.
+
+### Verification — Phase K
+- `cargo test -p grpc-client heartbeat -- --nocapture` ✅ (9 passed)
+- `cargo test -p agent-core tests_observability -- --nocapture` ✅ (13 passed)
+- `cargo test -p agent-core tests_ebpf_policy -- --nocapture` ✅ (13 passed)
+- `cargo test -p agent-core response_action_dedupe -- --nocapture` ✅ (6 passed)
+- `cargo test -p agent-core policy_ -- --nocapture` ✅ (17 passed)
+- `cargo test -p platform-windows --lib -- --nocapture` ✅ (72 passed)
+- `cargo test -p platform-macos --lib -- --nocapture` ✅ (38 passed)
+
+### Implementation status — Phase L (control-plane freshness + heartbeat baseline consistency polish) ✅
+- [x] Upgraded control-plane task enqueue behavior to **replace same-kind pending task payloads** (heartbeat/compliance/inventory/etc.) instead of dropping re-enqueue attempts, keeping queue depth stable while preserving the oldest age anchor.
+- [x] Added deterministic scheduler tests:
+  - `reenqueue_heartbeat_replaces_payload_but_preserves_queue_age_anchor`
+  - `reenqueue_inventory_replaces_payload_without_queue_growth`
+- [x] Hardened heartbeat payload consistency by passing one shared `baseline_status` value into `build_heartbeat_runtime_payload(...)` so heartbeat envelope fields and runtime status text cannot drift.
+- [x] Extended observability heartbeat assertions to verify baseline text in runtime status matches queued heartbeat baseline status exactly.
+
+### Verification — Phase L
+- `cargo test -p agent-core control_plane_pipeline::scheduler::tests -- --nocapture` ✅ (2 passed)
+- `cargo test -p grpc-client heartbeat -- --nocapture` ✅ (9 passed)
+- `cargo test -p agent-core tests_observability -- --nocapture` ✅ (13 passed)
+- `cargo test -p agent-core tests_ebpf_policy -- --nocapture` ✅ (13 passed)
+- `cargo test -p agent-core response_action_dedupe -- --nocapture` ✅ (6 passed)
+- `cargo test -p agent-core policy_ -- --nocapture` ✅ (17 passed)
+- `cargo test -p platform-windows --lib -- --nocapture` ✅ (72 passed)
+- `cargo test -p platform-macos --lib -- --nocapture` ✅ (38 passed)
+
+---
+
+## ML hardening: conformal-gated Layer-5 decisions + observability enrichment
+
+### Plan
+- [x] Add a two-stage ML decision path (`raw threshold` + optional `conformal gate`) to reduce false positives without losing deterministic detection paths.
+- [x] Add explicit decision observability fields (`raw_positive`, `conformal_gated`, `decision_threshold`, `conformal_p_value`) in Layer-5 score output.
+- [x] Extend Layer-5 tests to lock in conformal gating behavior and no-calibration compatibility.
+- [x] Wire enriched ML decision metadata into telemetry payload JSON.
+
+### Review
+- Updated `crates/detection/src/layer5/engine.rs`:
+  - final `positive` now uses model threshold plus optional conformal gating,
+  - added extreme-score bypass (`CONFORMAL_BYPASS_SCORE=0.995`) to protect recall if calibration is stale,
+  - added decision metadata fields on `MlScore` for operator/debug visibility.
+- Updated `crates/detection/src/layer5/tests.rs`:
+  - `conformal_gates_borderline_raw_positive_scores`,
+  - `no_calibration_keeps_raw_decision_path`.
+- Updated `crates/agent-core/src/lifecycle/telemetry.rs` to emit ML decision metadata in event payloads.
+
+### Verification
+- `cargo test -p detection layer5::tests -- --nocapture` ✅ (19 passed)
+- `cargo test -p detection -- --nocapture` ✅ (262 passed)
+- `rustfmt crates/detection/src/layer5/engine.rs crates/detection/src/layer5/tests.rs crates/agent-core/src/lifecycle/telemetry.rs` ✅
+- `cargo test -p agent-core tests_observability -- --nocapture` ✅ (13 passed)
+
+---
+
+## Hardening pass — resilient ML model continuity on bundle reload (2026-03-03)
+
+### Plan
+- [ ] Add a runtime-safe way to snapshot the currently active Layer-5 ML model from detection shards.
+- [ ] Seed reload candidate engines with previous active ML model before bundle ingestion (non-strict continuity fallback).
+- [ ] Improve ML bundle-loader diagnostics to explicitly state when existing model is retained (missing/invalid bundle model).
+- [ ] Add regression tests for both missing-model and invalid-model bundle scenarios.
+- [ ] Run targeted + package-level agent-core tests to verify no reload regressions.

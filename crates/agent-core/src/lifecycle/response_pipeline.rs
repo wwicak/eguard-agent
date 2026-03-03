@@ -402,7 +402,9 @@ impl AgentRuntime {
         self.recent_response_action_keys
             .retain(|_, ts| now_unix.saturating_sub(*ts) <= retention);
 
-        if self.recent_response_action_keys.len() > 32_768 {
+        if self.recent_response_action_keys.len()
+            > self.response_action_dedupe_key_limit.saturating_mul(2)
+        {
             self.recent_response_action_keys.clear();
         }
     }
@@ -518,5 +520,26 @@ mod tests {
             "txn-key-3",
             "primary"
         ));
+    }
+
+    #[test]
+    fn response_action_dedupe_pruning_respects_configured_key_limit() {
+        let mut runtime = runtime();
+        runtime.response_action_dedupe_window_secs = 60;
+        runtime.response_action_dedupe_key_limit = 4;
+
+        for i in 0..10 {
+            runtime
+                .recent_response_action_keys
+                .insert(format!("k-{i}"), 1_600_000_000);
+        }
+
+        assert!(runtime.should_enqueue_response_action(
+            1_700_000_000,
+            super::super::PlannedAction::KillOnly,
+            "txn-key-prune",
+            "primary"
+        ));
+        assert!(runtime.recent_response_action_keys.len() <= 2);
     }
 }

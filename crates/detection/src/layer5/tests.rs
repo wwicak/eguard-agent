@@ -459,3 +459,71 @@ fn ci_trained_model_auto_detect_vs_native() {
     assert_eq!(model.weights.len(), FEATURE_COUNT);
     model.validate().unwrap();
 }
+
+#[test]
+fn conformal_gates_borderline_raw_positive_scores() {
+    let model = MlModel {
+        model_id: "conformal-gate-test".to_string(),
+        model_version: "1.0.0".to_string(),
+        weights: vec![0.0; FEATURE_COUNT],
+        bias: 0.0,
+        threshold: 0.5,
+        feature_names: FEATURE_NAMES.iter().map(|name| name.to_string()).collect(),
+        ci_features_dropped: 0,
+        runtime_features_unmapped: 0,
+    };
+    let engine = MlEngine::with_model_and_calibration(model, vec![0.7, 0.8, 0.9], 0.1);
+
+    let event = make_event(EventClass::FileOpen, 1000, None);
+    let signals = DetectionSignals::default();
+    let features = MlFeatures::extract(&event, &signals, 0, 0, 0, 0, 0, &Default::default());
+
+    let result = engine.score(&features);
+    assert!(
+        (result.score - 0.5).abs() < 1e-12,
+        "expected sigmoid(0)=0.5"
+    );
+    assert!(result.raw_positive, "raw threshold should pass at 0.5");
+    assert!(
+        result.conformal_gated,
+        "conformal gate should suppress borderline score"
+    );
+    assert!(!result.positive, "final decision should be gated negative");
+    assert!(
+        result.decision_threshold >= 0.8,
+        "effective threshold should reflect conformal quantile"
+    );
+    assert!(
+        result.conformal_p_value.is_some(),
+        "p-value should be emitted"
+    );
+}
+
+#[test]
+fn no_calibration_keeps_raw_decision_path() {
+    let model = MlModel {
+        model_id: "raw-decision-test".to_string(),
+        model_version: "1.0.0".to_string(),
+        weights: vec![0.0; FEATURE_COUNT],
+        bias: 0.0,
+        threshold: 0.5,
+        feature_names: FEATURE_NAMES.iter().map(|name| name.to_string()).collect(),
+        ci_features_dropped: 0,
+        runtime_features_unmapped: 0,
+    };
+    let engine = MlEngine::with_model(model);
+
+    let event = make_event(EventClass::FileOpen, 1000, None);
+    let signals = DetectionSignals::default();
+    let features = MlFeatures::extract(&event, &signals, 0, 0, 0, 0, 0, &Default::default());
+
+    let result = engine.score(&features);
+    assert!(result.raw_positive);
+    assert!(
+        result.positive,
+        "without conformal calibration decision is raw threshold"
+    );
+    assert!(!result.conformal_gated);
+    assert!(result.conformal_p_value.is_none());
+    assert!((result.decision_threshold - 0.5).abs() < 1e-12);
+}

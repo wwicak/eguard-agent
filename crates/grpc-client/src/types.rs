@@ -192,6 +192,46 @@ pub struct ResponseEnvelope {
     pub file_path: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HeartbeatAgentStatusEnvelope {
+    #[serde(default)]
+    pub mode: String,
+    #[serde(default)]
+    pub autonomous_response_enabled: bool,
+    #[serde(default)]
+    pub active_sigma_rules: i64,
+    #[serde(default)]
+    pub active_yara_rules: i64,
+    #[serde(default)]
+    pub active_ioc_entries: i64,
+    #[serde(default)]
+    pub last_detection: String,
+    #[serde(default)]
+    pub last_response_action: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HeartbeatResourceUsageEnvelope {
+    #[serde(default)]
+    pub cpu_percent: f64,
+    #[serde(default)]
+    pub memory_rss_bytes: i64,
+    #[serde(default)]
+    pub disk_usage_bytes: i64,
+    #[serde(default)]
+    pub events_per_second: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HeartbeatRuntimeEnvelope {
+    #[serde(default)]
+    pub status: HeartbeatAgentStatusEnvelope,
+    #[serde(default)]
+    pub resource_usage: HeartbeatResourceUsageEnvelope,
+    #[serde(default)]
+    pub buffered_events: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThreatIntelVersionEnvelope {
     pub version: String,

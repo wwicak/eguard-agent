@@ -29,3 +29,10 @@
 - **When user asks for “magic inside agent,” prioritize runtime internals over orchestration wrappers**: implement concrete platform/runtime behavior (cache, gating, budget controls, coalescing) before proposing process-level “sprints” or external workflow packaging.
 - **When user repeats “fully implement, no stub”, immediately continue coding additional integrated runtime slices** instead of pausing at one subsystem; keep shipping end-to-end wiring + tests in consecutive phases.
 - **When introducing a canonical model (like `EventTxn`), immediately route adjacent duplicate logic through it** (coalescing keys, response dedupe keys, telemetry payload identity) to avoid divergence.
+- **If the user repeats “go go go / fully implement”, keep shipping another integrated runtime slice in the same turn** (code + wiring + tests), not just status updates.
+- **Avoid hardcoded caps in runtime dedupe/coalesce paths**: expose them as env+policy-controlled limits and surface current key cardinality in observability snapshots.
+- **When adding new runtime observability data, wire it through both transports (gRPC + HTTP) and keep compatibility wrappers intact** so old call sites keep working while new payloads are adopted.
+- **For transport payload changes, always add one gRPC assertion test and one HTTP request-body assertion test** to prevent silent parity drift.
+- **When a payload is sent from both scheduled and degraded recovery paths, factor out one shared builder** so both paths remain semantically identical over time.
+- **When dedupe/coalescing keys encode policy context, still clear in-memory key maps on policy-hash rollover** to avoid stale suppression windows carrying across policy generations.
+- **For bounded control-plane queues, re-enqueue of same task kind should refresh payload-in-place (not no-op)** so delayed execution uses freshest compliance/inventory/heartbeat context without queue growth.

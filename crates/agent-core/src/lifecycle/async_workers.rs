@@ -89,13 +89,15 @@ impl AgentRuntime {
                         compliance_status,
                         config_version,
                         baseline_status,
+                        runtime,
                     } => {
                         let error = client
-                            .send_heartbeat_with_config(
+                            .send_heartbeat_with_runtime_config(
                                 &agent_id,
                                 &compliance_status,
                                 &config_version,
                                 &baseline_status,
+                                Some(&runtime),
                             )
                             .await
                             .err()

@@ -4,6 +4,12 @@ use super::math::{dot, sigmoid};
 use super::model::{MlError, MlModel};
 use crate::information::ConformalCalibrator;
 
+/// Very high-confidence model scores bypass conformal gating.
+///
+/// This protects recall for extreme detections in the unlikely case where
+/// calibration data becomes stale or overly conservative.
+const CONFORMAL_BYPASS_SCORE: f64 = 0.995;
+
 /// The ML inference engine. Stateless — call `score()` per event.
 #[derive(Debug, Clone)]
 pub struct MlEngine {
@@ -17,11 +23,20 @@ pub struct MlEngine {
 pub struct MlScore {
     /// Probability score in [0, 1].
     pub score: f64,
-    /// Whether score exceeds the model's decision threshold.
+    /// Final ML decision after threshold + optional conformal gating.
     pub positive: bool,
+    /// Raw model decision using only the configured model threshold.
+    pub raw_positive: bool,
+    /// Whether a raw-positive event was suppressed by conformal gating.
+    pub conformal_gated: bool,
+    /// Effective decision threshold used for observability.
+    ///
+    /// When conformal calibration is active this is the maximum of model and
+    /// conformal thresholds; otherwise this is the model threshold.
+    pub decision_threshold: f64,
     /// Top contributing features (for explainability).
     pub top_features: Vec<(String, f64)>,
-    /// Conformal p-value (if calibrator is loaded).
+    /// Conformal p-value (if calibrator is loaded and raw-positive).
     /// Low p-value (e.g., < 0.01) means the score is unusually high
     /// relative to the calibration set — strong evidence of anomaly.
     pub conformal_p_value: Option<f64>,
@@ -77,6 +92,11 @@ impl MlEngine {
         &self.model.model_version
     }
 
+    /// Snapshot current loaded model (for safe reload continuity fallback).
+    pub fn model_snapshot(&self) -> MlModel {
+        self.model.clone()
+    }
+
     /// Whether conformal calibration is active.
     pub fn has_calibration(&self) -> bool {
         self.calibrator.is_some()
@@ -89,11 +109,25 @@ impl MlEngine {
 
         // Logistic sigmoid: σ(z) = 1 / (1 + e^(-z))
         let score = sigmoid(z);
-        let positive = score >= self.model.threshold;
+        let raw_positive = score >= self.model.threshold;
 
-        // Conformal p-value — only compute for positive detections (hot-path optimization)
-        let conformal_p_value = if positive {
-            self.calibrator.as_ref().map(|cal| cal.p_value(score))
+        let mut positive = raw_positive;
+        let mut conformal_gated = false;
+        let mut decision_threshold = self.model.threshold;
+
+        // Conformal p-value — compute only on raw-positive events for hot-path efficiency.
+        let conformal_p_value = if raw_positive {
+            self.calibrator.as_ref().map(|cal| {
+                decision_threshold = decision_threshold.max(cal.threshold);
+                let p = cal.p_value(score);
+
+                if score < CONFORMAL_BYPASS_SCORE && !cal.is_anomalous(score) {
+                    positive = false;
+                    conformal_gated = true;
+                }
+
+                p
+            })
         } else {
             None
         };
@@ -114,6 +148,9 @@ impl MlEngine {
         MlScore {
             score,
             positive,
+            raw_positive,
+            conformal_gated,
+            decision_threshold,
             top_features: contributions,
             conformal_p_value,
         }

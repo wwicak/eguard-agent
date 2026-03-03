@@ -9,8 +9,9 @@ use tracing::warn;
 
 use crate::types::{
     BaselineProfileEnvelope, CampaignAlertResponse, CommandEnvelope, ComplianceEnvelope,
-    EnrollmentEnvelope, EventEnvelope, FleetBaselineEnvelope, InventoryEnvelope, IocSignalBatch,
-    PolicyEnvelope, ResponseEnvelope, ServerState, ThreatIntelVersionEnvelope,
+    EnrollmentEnvelope, EventEnvelope, FleetBaselineEnvelope, HeartbeatRuntimeEnvelope,
+    InventoryEnvelope, IocSignalBatch, PolicyEnvelope, ResponseEnvelope, ServerState,
+    ThreatIntelVersionEnvelope,
 };
 
 use super::Client;
@@ -105,14 +106,35 @@ impl Client {
         compliance_status: &str,
         config_version: &str,
         baseline_status: &str,
+        runtime: Option<&HeartbeatRuntimeEnvelope>,
     ) -> Result<()> {
-        let body = json!({
+        let mut body = json!({
             "agent_id": agent_id,
             "agent_version": self.agent_version.clone(),
             "compliance_status": compliance_status,
             "config_version": config_version,
             "baseline_status": baseline_status,
         });
+
+        if let Some(runtime) = runtime {
+            body["status"] = json!({
+                "mode": &runtime.status.mode,
+                "autonomous_response_enabled": runtime.status.autonomous_response_enabled,
+                "active_sigma_rules": runtime.status.active_sigma_rules,
+                "active_yara_rules": runtime.status.active_yara_rules,
+                "active_ioc_entries": runtime.status.active_ioc_entries,
+                "last_detection": &runtime.status.last_detection,
+                "last_response_action": &runtime.status.last_response_action,
+            });
+            body["resource_usage"] = json!({
+                "cpu_percent": runtime.resource_usage.cpu_percent,
+                "memory_rss_bytes": runtime.resource_usage.memory_rss_bytes,
+                "disk_usage_bytes": runtime.resource_usage.disk_usage_bytes,
+                "events_per_second": runtime.resource_usage.events_per_second,
+            });
+            body["buffered_events"] = runtime.buffered_events.into();
+        }
+
         self.post_json_with_retry("heartbeat_http", PATH_HEARTBEAT, &body, "heartbeat")
             .await
     }

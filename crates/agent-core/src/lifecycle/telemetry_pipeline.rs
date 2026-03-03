@@ -393,7 +393,7 @@ impl AgentRuntime {
     }
 
     fn prune_event_txn_coalesce_state(&mut self) {
-        if self.recent_event_txn_keys.len() <= self.file_event_coalesce_key_limit {
+        if self.recent_event_txn_keys.len() <= self.event_txn_coalesce_key_limit {
             return;
         }
 
@@ -402,7 +402,7 @@ impl AgentRuntime {
         self.recent_event_txn_keys
             .retain(|_, seen_ns| now_ns.saturating_sub(*seen_ns) <= retention);
 
-        if self.recent_event_txn_keys.len() > self.file_event_coalesce_key_limit.saturating_mul(2) {
+        if self.recent_event_txn_keys.len() > self.event_txn_coalesce_key_limit.saturating_mul(2) {
             self.recent_event_txn_keys.clear();
         }
     }

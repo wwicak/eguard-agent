@@ -23,8 +23,8 @@ use crate::retry::RetryPolicy;
 use crate::types::{
     BaselineProfileEnvelope, CampaignAlert, CommandEnvelope, ComplianceEnvelope,
     EnrollmentEnvelope, EnrollmentResultEnvelope, EventEnvelope, FleetBaselineEnvelope,
-    InventoryEnvelope, IocSignalBatch, PolicyEnvelope, ResponseEnvelope, ServerState,
-    ThreatIntelVersionEnvelope, TlsConfig, TransportMode,
+    HeartbeatRuntimeEnvelope, InventoryEnvelope, IocSignalBatch, PolicyEnvelope, ResponseEnvelope,
+    ServerState, ThreatIntelVersionEnvelope, TlsConfig, TransportMode,
 };
 
 #[path = "client/client_grpc.rs"]
@@ -187,7 +187,7 @@ impl Client {
     }
 
     pub async fn send_heartbeat(&self, agent_id: &str, compliance_status: &str) -> Result<()> {
-        self.send_heartbeat_with_config(agent_id, compliance_status, "", "")
+        self.send_heartbeat_with_runtime_config(agent_id, compliance_status, "", "", None)
             .await
     }
 
@@ -198,6 +198,24 @@ impl Client {
         config_version: &str,
         baseline_status: &str,
     ) -> Result<()> {
+        self.send_heartbeat_with_runtime_config(
+            agent_id,
+            compliance_status,
+            config_version,
+            baseline_status,
+            None,
+        )
+        .await
+    }
+
+    pub async fn send_heartbeat_with_runtime_config(
+        &self,
+        agent_id: &str,
+        compliance_status: &str,
+        config_version: &str,
+        baseline_status: &str,
+        runtime: Option<&HeartbeatRuntimeEnvelope>,
+    ) -> Result<()> {
         self.ensure_online()?;
         match self.mode {
             TransportMode::Http => {
@@ -206,6 +224,7 @@ impl Client {
                     compliance_status,
                     config_version,
                     baseline_status,
+                    runtime,
                 )
                 .await?
             }
@@ -215,6 +234,7 @@ impl Client {
                     compliance_status,
                     config_version,
                     baseline_status,
+                    runtime,
                 )
                 .await?
             }

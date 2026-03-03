@@ -24,10 +24,12 @@ impl AgentRuntime {
             .last_reload_report
             .as_ref()
             .map(|report| report.sigma_rules + report.yara_rules + report.ioc_entries);
+        let previous_layer5_model = self.capture_previous_layer5_model();
 
         let mut next_engine = detection_bootstrap::build_detection_engine_with_ransomware_policy(
             build_ransomware_policy(&self.config),
         );
+        apply_previous_layer5_model_fallback(&mut next_engine, previous_layer5_model.as_ref());
         let summary = load_bundle_full(&mut next_engine, bundle_path);
         let ioc_entries = bundle_ioc_total(&summary);
         let signature_total = signature_database_total(&summary);
@@ -49,6 +51,10 @@ impl AgentRuntime {
                     detection_bootstrap::build_detection_engine_with_ransomware_policy(
                         build_ransomware_policy(&self.config),
                     );
+                apply_previous_layer5_model_fallback(
+                    &mut shard_engine,
+                    previous_layer5_model.as_ref(),
+                );
                 let shard_summary = load_bundle_full(&mut shard_engine, bundle_path);
 
                 // Corroboration against expected intel is done on the primary shard summary.
@@ -94,6 +100,19 @@ impl AgentRuntime {
         }
 
         Ok(())
+    }
+
+    fn capture_previous_layer5_model(&self) -> Option<detection::MlModel> {
+        match self.detection_state.layer5_model_snapshot() {
+            Ok(model) => Some(model),
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    "failed capturing active layer5 model snapshot; reload will use default fallback"
+                );
+                None
+            }
+        }
     }
 
     fn corroborate_threat_intel_update(
@@ -147,5 +166,21 @@ impl AgentRuntime {
         }
 
         Ok(())
+    }
+}
+
+fn apply_previous_layer5_model_fallback(
+    engine: &mut detection::DetectionEngine,
+    previous_model: Option<&detection::MlModel>,
+) {
+    let Some(previous_model) = previous_model else {
+        return;
+    };
+
+    if let Err(err) = engine.layer5.reload_model(previous_model.clone()) {
+        warn!(
+            error = %err,
+            "failed applying previous layer5 model fallback; using default model"
+        );
     }
 }

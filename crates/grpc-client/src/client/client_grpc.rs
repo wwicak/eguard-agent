@@ -8,8 +8,8 @@ use tracing::warn;
 use crate::pb;
 use crate::types::{
     CertificatePolicyEnvelope, CommandEnvelope, ComplianceEnvelope, EnrollmentEnvelope,
-    EnrollmentResultEnvelope, EventEnvelope, FleetBaselineEnvelope, InventoryEnvelope,
-    PolicyEnvelope, ResponseEnvelope, ServerState, ThreatIntelVersionEnvelope,
+    EnrollmentResultEnvelope, EventEnvelope, FleetBaselineEnvelope, HeartbeatRuntimeEnvelope,
+    InventoryEnvelope, PolicyEnvelope, ResponseEnvelope, ServerState, ThreatIntelVersionEnvelope,
 };
 
 use super::{
@@ -107,6 +107,7 @@ impl Client {
         compliance_status: &str,
         config_version: &str,
         baseline_status: &str,
+        runtime: Option<&HeartbeatRuntimeEnvelope>,
     ) -> Result<()> {
         self.with_retry("heartbeat_grpc", || async {
             let mut client = self.agent_control_client().await?;
@@ -115,8 +116,25 @@ impl Client {
                     agent_id: agent_id.to_string(),
                     timestamp: now_unix(),
                     agent_version: self.agent_version.clone(),
-                    status: None,
-                    resource_usage: None,
+                    status: runtime.map(|runtime| pb::AgentStatus {
+                        mode: match runtime.status.mode.trim().to_ascii_lowercase().as_str() {
+                            "active" => pb::AgentMode::Active as i32,
+                            "degraded" => pb::AgentMode::Degraded as i32,
+                            _ => pb::AgentMode::Learning as i32,
+                        },
+                        autonomous_response_enabled: runtime.status.autonomous_response_enabled,
+                        active_sigma_rules: runtime.status.active_sigma_rules,
+                        active_yara_rules: runtime.status.active_yara_rules,
+                        active_ioc_entries: runtime.status.active_ioc_entries,
+                        last_detection: runtime.status.last_detection.clone(),
+                        last_response_action: runtime.status.last_response_action.clone(),
+                    }),
+                    resource_usage: runtime.map(|runtime| pb::ResourceUsage {
+                        cpu_percent: runtime.resource_usage.cpu_percent,
+                        memory_rss_bytes: runtime.resource_usage.memory_rss_bytes,
+                        disk_usage_bytes: runtime.resource_usage.disk_usage_bytes,
+                        events_per_second: runtime.resource_usage.events_per_second,
+                    }),
                     baseline_report: Some(pb::BaselineReport {
                         status: match baseline_status {
                             "active" => pb::BaselineStatus::BaselineActive as i32,
@@ -126,7 +144,7 @@ impl Client {
                         ..Default::default()
                     }),
                     config_version: config_version.to_string(),
-                    buffered_events: 0,
+                    buffered_events: runtime.map(|r| r.buffered_events).unwrap_or(0),
                     compliance_status: compliance_status.to_string(),
                     sent_at_unix: now_unix(),
                 })

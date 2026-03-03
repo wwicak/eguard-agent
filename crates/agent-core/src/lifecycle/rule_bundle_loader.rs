@@ -352,8 +352,9 @@ fn load_bundle_all_layers(detection: &mut DetectionEngine, path: &Path) -> Bundl
 /// Load the ML model from the bundle if present.
 ///
 /// Tries both the CI-trained format (`signature-ml-model.json` with named
-/// weights + feature scales) and the native runtime format. Falls back
-/// to the compiled-in default if the bundle model is missing or invalid.
+/// weights + feature scales) and the native runtime format. If the bundle
+/// model is missing/invalid, the engine keeps whatever model is currently
+/// loaded (typically pre-seeded from the previous active model by reload path).
 fn load_ml_model(detection: &mut DetectionEngine, bundle_dir: &Path) {
     // Look for the ML model in standard locations
     let candidates = [
@@ -363,7 +364,14 @@ fn load_ml_model(detection: &mut DetectionEngine, bundle_dir: &Path) {
     ];
     let model_path = match candidates.iter().find(|p| p.is_file()) {
         Some(p) => p.clone(),
-        None => return,
+        None => {
+            info!(
+                model_id = %detection.layer5.model_id(),
+                model_version = %detection.layer5.model_version(),
+                "bundle has no ML model; keeping existing layer5 model"
+            );
+            return;
+        }
     };
 
     let content = match fs::read_to_string(&model_path) {
@@ -384,11 +392,22 @@ fn load_ml_model(detection: &mut DetectionEngine, bundle_dir: &Path) {
                 );
             }
             Err(err) => {
-                warn!(error = %err, "ML model from bundle failed validation; keeping default");
+                warn!(
+                    error = %err,
+                    model_id = %detection.layer5.model_id(),
+                    model_version = %detection.layer5.model_version(),
+                    "ML model from bundle failed validation; keeping existing model"
+                );
             }
         },
         Err(err) => {
-            warn!(error = %err, path = %model_path.display(), "failed parsing ML model from bundle");
+            warn!(
+                error = %err,
+                path = %model_path.display(),
+                model_id = %detection.layer5.model_id(),
+                model_version = %detection.layer5.model_version(),
+                "failed parsing ML model from bundle; keeping existing model"
+            );
         }
     }
 }

@@ -1,4 +1,8 @@
-use grpc_client::{ComplianceCheckEnvelope, InventoryEnvelope};
+use baseline::BaselineStatus;
+use grpc_client::{
+    ComplianceCheckEnvelope, HeartbeatAgentStatusEnvelope, HeartbeatResourceUsageEnvelope,
+    HeartbeatRuntimeEnvelope, InventoryEnvelope,
+};
 
 use super::super::{
     interval_due, AgentRuntime, ComplianceResult, PendingControlPlaneSend, HEARTBEAT_INTERVAL_SECS,
@@ -21,12 +25,64 @@ impl AgentRuntime {
         self.last_heartbeat_attempt_unix = Some(now_unix);
 
         let config_version = self.heartbeat_config_version();
+        let runtime = self.build_heartbeat_runtime_payload(baseline_status);
+
         self.enqueue_control_plane_send(PendingControlPlaneSend::Heartbeat {
             agent_id: self.config.agent_id.clone(),
             compliance_status: compliance_status.to_string(),
             config_version,
             baseline_status: baseline_status.to_string(),
+            runtime,
         });
+    }
+
+    pub(crate) fn baseline_status_label(&self) -> &'static str {
+        match self.baseline_store.status {
+            BaselineStatus::Learning => "learning",
+            BaselineStatus::Active => "active",
+            BaselineStatus::Stale => "stale",
+        }
+    }
+
+    pub(crate) fn build_heartbeat_runtime_payload(
+        &self,
+        baseline_status: &str,
+    ) -> HeartbeatRuntimeEnvelope {
+        let snapshot = self.observability_snapshot();
+        let response_cfg = self.effective_response_config();
+        let report = self.last_reload_report.as_ref();
+
+        HeartbeatRuntimeEnvelope {
+            status: HeartbeatAgentStatusEnvelope {
+                mode: snapshot.runtime_mode.clone(),
+                autonomous_response_enabled: response_cfg.autonomous_response,
+                active_sigma_rules: report.map(|r| r.sigma_rules as i64).unwrap_or_default(),
+                active_yara_rules: report.map(|r| r.yara_rules as i64).unwrap_or_default(),
+                active_ioc_entries: report.map(|r| r.ioc_entries as i64).unwrap_or_default(),
+                last_detection: format!(
+                    "tick={} strict_budget={} backlog={} txn_keys={} baseline={}",
+                    snapshot.tick_count,
+                    snapshot.strict_budget_mode,
+                    snapshot.raw_event_backlog_depth,
+                    snapshot.event_txn_coalesce_key_count,
+                    baseline_status
+                ),
+                last_response_action: format!(
+                    "last_response_exec={} queue_depth={} deduped={} dedupe_keys={}",
+                    snapshot.last_response_execute_count,
+                    snapshot.pending_response_count,
+                    snapshot.response_action_deduped_total,
+                    snapshot.response_action_dedupe_key_count
+                ),
+            },
+            resource_usage: HeartbeatResourceUsageEnvelope {
+                cpu_percent: 0.0,
+                memory_rss_bytes: current_process_rss_bytes(),
+                disk_usage_bytes: snapshot.pending_event_bytes as i64,
+                events_per_second: 0.0,
+            },
+            buffered_events: snapshot.pending_event_count as i64,
+        }
     }
 
     pub(super) fn send_compliance_if_due(&mut self, now_unix: i64, compliance: &ComplianceResult) {
@@ -112,4 +168,22 @@ impl AgentRuntime {
 
         self.enqueue_control_plane_send(PendingControlPlaneSend::Inventory { envelope });
     }
+}
+
+#[cfg(target_os = "linux")]
+fn current_process_rss_bytes() -> i64 {
+    let Ok(contents) = std::fs::read_to_string("/proc/self/statm") else {
+        return 0;
+    };
+    let mut parts = contents.split_whitespace();
+    let _total_pages = parts.next();
+    let Some(rss_pages) = parts.next().and_then(|raw| raw.parse::<i64>().ok()) else {
+        return 0;
+    };
+    rss_pages.saturating_mul(4096)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn current_process_rss_bytes() -> i64 {
+    0
 }

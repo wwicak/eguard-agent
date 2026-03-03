@@ -35,6 +35,9 @@ enum ShardCommand {
         path_prefixes: Vec<String>,
         response: mpsc::Sender<std::result::Result<(), String>>,
     },
+    SnapshotLayer5Model {
+        response: mpsc::Sender<std::result::Result<detection::MlModel, String>>,
+    },
 }
 
 #[derive(Clone)]
@@ -134,6 +137,19 @@ impl DetectionShard {
             .map_err(|err| anyhow!(err))
     }
 
+    fn snapshot_layer5_model(&self) -> Result<detection::MlModel> {
+        let (response_tx, response_rx) = mpsc::channel();
+        self.tx
+            .send(ShardCommand::SnapshotLayer5Model {
+                response: response_tx,
+            })
+            .map_err(|_| anyhow!("detection shard channel closed"))?;
+        response_rx
+            .recv()
+            .map_err(|_| anyhow!("detection shard response channel closed"))?
+            .map_err(|err| anyhow!(err))
+    }
+
     fn scan_process_memory(
         &self,
         pid: u32,
@@ -201,6 +217,9 @@ fn shard_worker_loop(mut engine: DetectionEngine, rx: mpsc::Receiver<ShardComman
             } => {
                 engine.allowlist.load_from_lists(processes, path_prefixes);
                 let _ = response.send(Ok(()));
+            }
+            ShardCommand::SnapshotLayer5Model { response } => {
+                let _ = response.send(Ok(engine.layer5.model_snapshot()));
             }
         }
     }
@@ -358,6 +377,13 @@ impl SharedDetectionState {
 
     pub fn shard_count(&self) -> usize {
         self.inner.shards.len()
+    }
+
+    pub fn layer5_model_snapshot(&self) -> Result<detection::MlModel> {
+        let Some(primary) = self.inner.shards.first() else {
+            return Err(anyhow!("detection shard pool is empty"));
+        };
+        primary.snapshot_layer5_model()
     }
 
     pub fn apply_emergency_rule(&self, rule: EmergencyRule) -> Result<()> {

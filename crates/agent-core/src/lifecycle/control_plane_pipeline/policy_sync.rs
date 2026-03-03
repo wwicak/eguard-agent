@@ -81,6 +81,12 @@ impl AgentRuntime {
         {
             self.compliance_policy_hash = policy.policy_hash.clone();
             policy_changed = true;
+            self.recent_response_action_keys.clear();
+            self.recent_event_txn_keys.clear();
+            info!(
+                policy_hash = %self.compliance_policy_hash,
+                "policy hash changed; cleared response-dedupe and event-txn coalesce key state"
+            );
         }
         if !policy.policy_signature.trim().is_empty()
             && self.compliance_policy_signature != policy.policy_signature
@@ -296,9 +302,25 @@ impl AgentRuntime {
             .and_then(|v| v.as_u64())
         {
             self.event_txn_coalesce_window_ns = ms.saturating_mul(1_000_000);
+            if self.event_txn_coalesce_window_ns == 0 {
+                self.recent_event_txn_keys.clear();
+            }
             info!(
                 event_txn_coalesce_window_ms = ms,
+                coalesce_key_count = self.recent_event_txn_keys.len(),
                 "updated event-transaction coalesce window from policy"
+            );
+        }
+
+        if let Some(value) = raw
+            .get("event_txn_coalesce_key_limit")
+            .or_else(|| raw.get("detection_event_txn_coalesce_key_limit"))
+            .and_then(|v| v.as_u64())
+        {
+            self.event_txn_coalesce_key_limit = (value as usize).max(512);
+            info!(
+                event_txn_coalesce_key_limit = self.event_txn_coalesce_key_limit,
+                "updated event-transaction coalesce key limit from policy"
             );
         }
 
@@ -342,9 +364,25 @@ impl AgentRuntime {
             .and_then(|v| v.as_i64())
         {
             self.response_action_dedupe_window_secs = value.max(0);
+            if self.response_action_dedupe_window_secs == 0 {
+                self.recent_response_action_keys.clear();
+            }
             info!(
                 response_action_dedupe_window_secs = self.response_action_dedupe_window_secs,
+                dedupe_key_count = self.recent_response_action_keys.len(),
                 "updated response-action dedupe window from policy"
+            );
+        }
+
+        if let Some(value) = raw
+            .get("response_action_dedupe_key_limit")
+            .or_else(|| raw.get("detection_response_action_dedupe_key_limit"))
+            .and_then(|v| v.as_u64())
+        {
+            self.response_action_dedupe_key_limit = (value as usize).max(1_024);
+            info!(
+                response_action_dedupe_key_limit = self.response_action_dedupe_key_limit,
+                "updated response-action dedupe key limit from policy"
             );
         }
 
@@ -619,10 +657,28 @@ mod tests {
         }));
         assert_eq!(runtime.response_action_dedupe_window_secs, 120);
 
+        runtime
+            .recent_response_action_keys
+            .insert("k".to_string(), 1_700_000_000);
         runtime.apply_runtime_tuning_overrides(&json!({
             "detection_response_action_dedupe_window_secs": -10
         }));
         assert_eq!(runtime.response_action_dedupe_window_secs, 0);
+        assert!(runtime.recent_response_action_keys.is_empty());
+    }
+
+    #[test]
+    fn policy_response_action_dedupe_key_limit_override_updates_runtime_state() {
+        let mut runtime = new_runtime();
+        runtime.apply_runtime_tuning_overrides(&json!({
+            "response_action_dedupe_key_limit": 2048
+        }));
+        assert_eq!(runtime.response_action_dedupe_key_limit, 2048);
+
+        runtime.apply_runtime_tuning_overrides(&json!({
+            "detection_response_action_dedupe_key_limit": 8
+        }));
+        assert_eq!(runtime.response_action_dedupe_key_limit, 1024);
     }
 
     #[test]
@@ -633,9 +689,49 @@ mod tests {
         }));
         assert_eq!(runtime.event_txn_coalesce_window_ns, 250_000_000);
 
+        runtime
+            .recent_event_txn_keys
+            .insert("txn".to_string(), 1_700_000_000_000_000_000);
         runtime.apply_runtime_tuning_overrides(&json!({
             "detection_event_txn_coalesce_window_ms": 0
         }));
         assert_eq!(runtime.event_txn_coalesce_window_ns, 0);
+        assert!(runtime.recent_event_txn_keys.is_empty());
+    }
+
+    #[test]
+    fn policy_event_txn_coalesce_key_limit_override_updates_runtime_state() {
+        let mut runtime = new_runtime();
+        runtime.apply_runtime_tuning_overrides(&json!({
+            "event_txn_coalesce_key_limit": 1024
+        }));
+        assert_eq!(runtime.event_txn_coalesce_key_limit, 1024);
+
+        runtime.apply_runtime_tuning_overrides(&json!({
+            "detection_event_txn_coalesce_key_limit": 128
+        }));
+        assert_eq!(runtime.event_txn_coalesce_key_limit, 512);
+    }
+
+    #[test]
+    fn policy_hash_change_clears_response_and_event_txn_dedupe_state() {
+        let mut runtime = new_runtime();
+        runtime.compliance_policy_hash = "old-policy-hash".to_string();
+        runtime
+            .recent_response_action_keys
+            .insert("resp-key".to_string(), 1_700_000_000);
+        runtime
+            .recent_event_txn_keys
+            .insert("txn-key".to_string(), 1_700_000_000_000_000_000);
+
+        let policy = PolicyEnvelope {
+            policy_hash: "new-policy-hash".to_string(),
+            ..PolicyEnvelope::default()
+        };
+        runtime.apply_policy_from_server(policy);
+
+        assert_eq!(runtime.compliance_policy_hash, "new-policy-hash");
+        assert!(runtime.recent_response_action_keys.is_empty());
+        assert!(runtime.recent_event_txn_keys.is_empty());
     }
 }

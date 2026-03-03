@@ -61,6 +61,7 @@ pub struct AgentRuntime {
     pub(super) event_txn_coalesce_window_ns: u64,
     pub(super) recent_event_txn_keys: HashMap<String, u64>,
     pub(super) file_event_coalesce_key_limit: usize,
+    pub(super) event_txn_coalesce_key_limit: usize,
     pub(super) strict_budget_mode: bool,
     pub(super) strict_budget_pending_threshold: usize,
     pub(super) strict_budget_raw_backlog_threshold: usize,
@@ -116,6 +117,7 @@ pub struct AgentRuntime {
     pub(super) pending_commands: VecDeque<PendingCommand>,
     pub(super) pending_response_actions: VecDeque<PendingResponseAction>,
     pub(super) response_action_dedupe_window_secs: i64,
+    pub(super) response_action_dedupe_key_limit: usize,
     pub(super) recent_response_action_keys: HashMap<String, i64>,
     pub(super) pending_response_reports: VecDeque<PendingResponseReport>,
     pub(super) control_plane_send_tasks: JoinSet<AsyncWorkerResult>,
@@ -204,6 +206,11 @@ impl AgentRuntime {
             .and_then(|raw| raw.trim().parse::<usize>().ok())
             .unwrap_or(16_384)
             .max(512);
+        let event_txn_coalesce_key_limit = std::env::var("EGUARD_EVENT_TXN_COALESCE_KEY_LIMIT")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+            .unwrap_or(16_384)
+            .max(512);
         let strict_budget_pending_threshold =
             std::env::var("EGUARD_STRICT_BUDGET_PENDING_THRESHOLD")
                 .ok()
@@ -227,6 +234,12 @@ impl AgentRuntime {
                 .and_then(|raw| raw.trim().parse::<i64>().ok())
                 .unwrap_or(30)
                 .max(0);
+        let response_action_dedupe_key_limit =
+            std::env::var("EGUARD_RESPONSE_ACTION_DEDUPE_KEY_LIMIT")
+                .ok()
+                .and_then(|raw| raw.trim().parse::<usize>().ok())
+                .unwrap_or(32_768)
+                .max(1_024);
         let expensive_check_excluded_paths = parse_csv_env("EGUARD_EXPENSIVE_CHECK_EXCLUDED_PATHS");
         let expensive_check_excluded_processes =
             parse_csv_env("EGUARD_EXPENSIVE_CHECK_EXCLUDED_PROCESSES");
@@ -390,6 +403,7 @@ impl AgentRuntime {
             event_txn_coalesce_window_ns: event_txn_coalesce_window_ms.saturating_mul(1_000_000),
             recent_event_txn_keys: HashMap::new(),
             file_event_coalesce_key_limit,
+            event_txn_coalesce_key_limit,
             strict_budget_mode: false,
             strict_budget_pending_threshold,
             strict_budget_raw_backlog_threshold,
@@ -444,6 +458,7 @@ impl AgentRuntime {
             pending_commands: VecDeque::new(),
             pending_response_actions: VecDeque::new(),
             response_action_dedupe_window_secs,
+            response_action_dedupe_key_limit,
             recent_response_action_keys: HashMap::new(),
             pending_response_reports: VecDeque::new(),
             control_plane_send_tasks: JoinSet::new(),
@@ -466,6 +481,8 @@ impl AgentRuntime {
             strict_budget_mode: self.strict_budget_mode,
             raw_event_backlog_depth: self.raw_event_backlog.len(),
             raw_event_backlog_cap: self.raw_event_backlog_cap,
+            event_txn_coalesce_key_count: self.recent_event_txn_keys.len(),
+            response_action_dedupe_key_count: self.recent_response_action_keys.len(),
             ebpf_failed_probe_count: self.last_ebpf_stats.failed_probes.len(),
             ebpf_attach_degraded: !self.last_ebpf_stats.failed_probes.is_empty(),
             ebpf_btf_available: self.last_ebpf_stats.btf_available,
