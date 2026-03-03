@@ -13,7 +13,7 @@ on:
 
 jobs:
   build-and-package:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
@@ -90,6 +90,38 @@ jobs:
           EGUARD_PACKAGE_GENERATE_EPHEMERAL_GPG: "1"
           EGUARD_AGENT_VERSION: ${{ steps.package-version.outputs.version }}
         run: ./scripts/build-agent-packages-ci.sh
+
+      - name: Enforce Linux glibc compatibility floor
+        run: |
+          python3 - <<'PY'
+          import re
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          binary = Path('artifacts/package-agent/eguard-agent')
+          if not binary.is_file():
+              raise SystemExit(f'missing built agent binary: {binary}')
+
+          out = subprocess.check_output(['objdump', '-T', str(binary)], text=True, errors='ignore')
+          versions = []
+          for line in out.splitlines():
+              m = re.search(r'GLIBC_(\d+)\.(\d+)', line)
+              if m:
+                  versions.append((int(m.group(1)), int(m.group(2))))
+
+          if not versions:
+              print('no GLIBC symbol requirements detected; skipping floor check')
+              sys.exit(0)
+
+          max_glibc = max(versions)
+          allowed_max = (2, 35)
+          print(f'max required glibc: {max_glibc[0]}.{max_glibc[1]}')
+          if max_glibc > allowed_max:
+              raise SystemExit(
+                  f'glibc requirement too new: {max_glibc[0]}.{max_glibc[1]} > {allowed_max[0]}.{allowed_max[1]}'
+              )
+          PY
 
       - name: Validate package artifact structure
         run: python3 scripts/verify_package_artifacts_ci.py --artifact-dir artifacts/package-agent
