@@ -24,6 +24,44 @@ pub struct MlModel {
     /// Number of runtime features with no corresponding CI model weight.
     #[serde(default)]
     pub runtime_features_unmapped: usize,
+    /// Inference family used by runtime.
+    #[serde(default)]
+    pub family: ModelFamily,
+    /// Tree ensemble base score (used when family=Tree).
+    #[serde(default)]
+    pub tree_base_score: f64,
+    /// Optional tree ensemble for non-linear inference.
+    #[serde(default)]
+    pub trees: Vec<TreeModel>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelFamily {
+    #[default]
+    Linear,
+    GbdtTree,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TreeModel {
+    pub weight: f64,
+    pub nodes: Vec<TreeNode>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TreeNode {
+    pub id: i32,
+    #[serde(default)]
+    pub feature: String,
+    #[serde(default)]
+    pub threshold: Option<f64>,
+    #[serde(default)]
+    pub left: Option<i32>,
+    #[serde(default)]
+    pub right: Option<i32>,
+    #[serde(default)]
+    pub leaf: Option<f64>,
 }
 
 /// CI-trained model format (from `signature_ml_train_model.py`).
@@ -54,6 +92,10 @@ pub struct CiTrainedModel {
     /// from these scores to provide finite-sample FP-rate guarantees.
     #[serde(default)]
     pub calibration_scores: Option<Vec<f64>>,
+    #[serde(default)]
+    pub base_score: Option<f64>,
+    #[serde(default)]
+    pub trees: Option<Vec<TreeModel>>,
 }
 
 impl CiTrainedModel {
@@ -137,7 +179,7 @@ impl CiTrainedModel {
             }
         }
 
-        MlModel {
+        let mut model = MlModel {
             model_id: format!("ci-{}", self.model_version),
             model_version: self.model_version.clone(),
             weights,
@@ -146,7 +188,24 @@ impl CiTrainedModel {
             feature_names: FEATURE_NAMES.iter().map(|s| s.to_string()).collect(),
             ci_features_dropped,
             runtime_features_unmapped,
+            family: ModelFamily::Linear,
+            tree_base_score: 0.0,
+            trees: Vec::new(),
+        };
+
+        let model_type = self.model_type.to_ascii_lowercase();
+        if (model_type.contains("tree") || model_type.contains("gbdt"))
+            && self.trees.as_ref().is_some_and(|t| !t.is_empty())
+        {
+            model.family = ModelFamily::GbdtTree;
+            model.tree_base_score = self.base_score.unwrap_or(0.0);
+            model.trees = self.trees.clone().unwrap_or_default();
+            if !self.bias.is_finite() || self.bias == 0.0 {
+                model.bias = model.tree_base_score;
+            }
         }
+
+        model
     }
 }
 
@@ -185,6 +244,21 @@ impl MlModel {
         }
         if !self.bias.is_finite() {
             return Err(MlError::NonFiniteBias(self.bias));
+        }
+        if self.family == ModelFamily::GbdtTree {
+            if !self.tree_base_score.is_finite() {
+                return Err(MlError::NonFiniteBias(self.tree_base_score));
+            }
+            for (i, tree) in self.trees.iter().enumerate() {
+                if !tree.weight.is_finite() {
+                    return Err(MlError::InvalidTreeModel(format!(
+                        "tree[{i}] has non-finite weight"
+                    )));
+                }
+                if tree.nodes.is_empty() {
+                    return Err(MlError::InvalidTreeModel(format!("tree[{i}] has no nodes")));
+                }
+            }
         }
         Ok(())
     }
@@ -241,19 +315,43 @@ impl Default for MlModel {
                 0.8, // z1_z2_interaction       — IOC + temporal = strong
                 0.7, // z1_z4_interaction       — IOC + kill chain = strong
                 0.6, // anomaly_behavioral      — anomaly + multi-signal = moderate
-                // Process tree + beaconing weights (Phase 1.3)
-                0.3, // tree_depth_norm         — deeper trees slightly suspicious
-                0.3, // tree_breadth_norm       — many siblings (fork bomb)
-                0.4, // child_entropy           — diverse child names = script runner
-                0.3, // spawn_rate_norm         — rapid spawning = attack automation
-                0.6, // rare_parent_child       — unseen parent:child = novel execution
-                0.7, // c2_beacon_mi            — high MI = periodic C2 beaconing
+                // Process tree / lineage
+                0.3, // process_tree_depth_norm
+                0.6, // rare_parent_child_pair
+                0.3, // parent_cmdline_hash_risk
+                0.3, // parent_child_cmdline_distance
+                0.4, // sibling_spawn_burst_norm
+                // File mutation behavior
+                0.3, // sensitive_path_write_velocity
+                0.2, // rename_churn_norm
+                0.1, // extension_entropy
+                0.2, // executable_write_ratio
+                0.2, // temp_to_system_write_ratio
+                // Network graph / beaconing
+                0.3, // conn_fanout_norm
+                0.2, // unique_dst_ip_norm
+                0.2, // unique_dst_port_norm
+                0.7, // beacon_periodicity_score
+                0.2, // network_graph_centrality
+                // Credential access indicators
+                0.5, // credential_access_indicator
+                0.4, // lsass_access_indicator
+                0.3, // sam_access_indicator
+                0.3, // token_theft_indicator
+                0.3, // lolbin_credential_chain
+                // Cross-domain interactions
+                0.3, // network_credential_interaction
+                0.2, // tree_network_interaction
+                0.2, // file_behavior_interaction
             ],
             bias: -3.6, // slight bias shift for dns_entropy
             threshold: 0.5,
             feature_names: FEATURE_NAMES.iter().map(|s| s.to_string()).collect(),
             ci_features_dropped: 0,
             runtime_features_unmapped: 0,
+            family: ModelFamily::Linear,
+            tree_base_score: 0.0,
+            trees: Vec::new(),
         }
     }
 }
@@ -284,6 +382,7 @@ pub enum MlError {
         name: String,
         value: f64,
     },
+    InvalidTreeModel(String),
 }
 
 impl std::fmt::Display for MlError {
@@ -312,6 +411,7 @@ impl std::fmt::Display for MlError {
                     "CI model feature scale for '{name}' is unreasonable: {value}"
                 )
             }
+            Self::InvalidTreeModel(reason) => write!(f, "invalid tree model: {reason}"),
         }
     }
 }

@@ -1,5 +1,5 @@
 /// Number of features in the model's input vector.
-pub const FEATURE_COUNT: usize = 33;
+pub const FEATURE_COUNT: usize = 50;
 
 /// Feature names for interpretability / logging.
 pub const FEATURE_NAMES: [&str; FEATURE_COUNT] = [
@@ -32,11 +32,32 @@ pub const FEATURE_NAMES: [&str; FEATURE_COUNT] = [
     "z1_z2_interaction",      // z1_ioc_hit * z2_temporal_count
     "z1_z4_interaction",      // z1_ioc_hit * z4_killchain_count
     "anomaly_behavioral",     // z3_anomaly_high * multi_layer_count
-    // Process tree + beaconing features (Phase 1.3)
-    "tree_depth_norm",   // Process chain depth / 10.0
-    "tree_breadth_norm", // Sibling count / 20.0
-    "child_entropy",     // Shannon entropy of child comm names
-    "spawn_rate_norm",   // Children spawned per minute / 10.0
-    "rare_parent_child", // 1.0 if parent:child pair unseen in baseline
-    "c2_beacon_mi",      // Mutual information score for destination
+    // Process tree / lineage
+    "process_tree_depth_norm",
+    "rare_parent_child_pair",
+    "parent_cmdline_hash_risk",
+    "parent_child_cmdline_distance",
+    "sibling_spawn_burst_norm",
+    // File mutation behavior
+    "sensitive_path_write_velocity",
+    "rename_churn_norm",
+    "extension_entropy",
+    "executable_write_ratio",
+    "temp_to_system_write_ratio",
+    // Network graph / beaconing
+    "conn_fanout_norm",
+    "unique_dst_ip_norm",
+    "unique_dst_port_norm",
+    "beacon_periodicity_score",
+    "network_graph_centrality",
+    // Credential access indicators
+    "credential_access_indicator",
+    "lsass_access_indicator",
+    "sam_access_indicator",
+    "token_theft_indicator",
+    "lolbin_credential_chain",
+    // Cross-domain interactions
+    "network_credential_interaction",
+    "tree_network_interaction",
+    "file_behavior_interaction",
 ];

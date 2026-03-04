@@ -1,5 +1,6 @@
 use super::math::sigmoid;
 use super::*;
+use crate::layer5::model::ModelFamily;
 use crate::{DetectionSignals, EventClass, TelemetryEvent};
 
 fn make_event(class: EventClass, uid: u32, dst_port: Option<u16>) -> TelemetryEvent {
@@ -25,6 +26,13 @@ fn make_event(class: EventClass, uid: u32, dst_port: Option<u16>) -> TelemetryEv
         container_escape: false,
         container_privileged: false,
     }
+}
+
+fn feature_index(name: &str) -> usize {
+    FEATURE_NAMES
+        .iter()
+        .position(|n| *n == name)
+        .expect("feature should exist in FEATURE_NAMES")
 }
 
 #[test]
@@ -227,8 +235,26 @@ fn hot_reload_model() {
 #[test]
 // AC-DET-263 AC-DET-266
 fn ml_feature_contract_includes_extended_runtime_and_interaction_terms() {
-    assert_eq!(FEATURE_COUNT, 33);
-    for name in [
+    let expected = [
+        "z1_ioc_hit",
+        "z2_temporal_count",
+        "z3_anomaly_high",
+        "z3_anomaly_med",
+        "z4_killchain_count",
+        "yara_hit_count",
+        "string_sig_count",
+        "event_class_risk",
+        "uid_is_root",
+        "dst_port_risk",
+        "has_command_line",
+        "cmdline_length_norm",
+        "prefilter_hit",
+        "multi_layer_count",
+        "cmdline_renyi_h2",
+        "cmdline_compression",
+        "cmdline_min_entropy",
+        "cmdline_entropy_gap",
+        "dns_entropy",
         "event_size_norm",
         "container_risk",
         "file_path_entropy",
@@ -237,14 +263,74 @@ fn ml_feature_contract_includes_extended_runtime_and_interaction_terms() {
         "z1_z2_interaction",
         "z1_z4_interaction",
         "anomaly_behavioral",
-        "tree_depth_norm",
-        "tree_breadth_norm",
-        "child_entropy",
-        "spawn_rate_norm",
-        "rare_parent_child",
-        "c2_beacon_mi",
+        "process_tree_depth_norm",
+        "rare_parent_child_pair",
+        "parent_cmdline_hash_risk",
+        "parent_child_cmdline_distance",
+        "sibling_spawn_burst_norm",
+        "sensitive_path_write_velocity",
+        "rename_churn_norm",
+        "extension_entropy",
+        "executable_write_ratio",
+        "temp_to_system_write_ratio",
+        "conn_fanout_norm",
+        "unique_dst_ip_norm",
+        "unique_dst_port_norm",
+        "beacon_periodicity_score",
+        "network_graph_centrality",
+        "credential_access_indicator",
+        "lsass_access_indicator",
+        "sam_access_indicator",
+        "token_theft_indicator",
+        "lolbin_credential_chain",
+        "network_credential_interaction",
+        "tree_network_interaction",
+        "file_behavior_interaction",
+    ];
+    assert_eq!(FEATURE_COUNT, expected.len());
+    assert_eq!(FEATURE_NAMES, expected);
+}
+
+#[test]
+fn event_size_normalization_uses_4096_divisor() {
+    let mut event = make_event(EventClass::FileOpen, 1000, None);
+    event.event_size = Some(2048);
+    let signals = DetectionSignals::default();
+    let features = MlFeatures::extract(&event, &signals, 0, 0, 0, 0, 0, &Default::default());
+    let idx = feature_index("event_size_norm");
+    assert!(
+        (features.values[idx] - 0.5).abs() < 1e-12,
+        "expected 2048/4096=0.5, got {}",
+        features.values[idx]
+    );
+}
+
+#[test]
+fn process_tree_v2_features_are_deterministically_non_zero_when_context_exists() {
+    let mut event = make_event(EventClass::ProcessExec, 0, Some(4444));
+    event.ppid = 2222;
+    event.pid = 3333;
+    event.parent_process = "python".to_string();
+    event.process = "bash".to_string();
+    event.command_line = Some("python -c 'import os; os.system(\"bash\")'".to_string());
+    let signals = DetectionSignals {
+        process_tree_anomaly: true,
+        ..Default::default()
+    };
+    let features = MlFeatures::extract(&event, &signals, 0, 0, 0, 0, 2, &Default::default());
+
+    for name in [
+        "process_tree_depth_norm",
+        "rare_parent_child_pair",
+        "parent_cmdline_hash_risk",
+        "parent_child_cmdline_distance",
+        "sibling_spawn_burst_norm",
     ] {
-        assert!(FEATURE_NAMES.contains(&name), "feature list missing {name}");
+        let idx = feature_index(name);
+        assert!(
+            features.values[idx] > 0.0,
+            "{name} should be non-zero with populated process context"
+        );
     }
 }
 
@@ -318,6 +404,51 @@ fn ci_trained_model_converts_to_runtime() {
 }
 
 #[test]
+fn ci_tree_model_converts_and_scores_with_tree_engine() {
+    let ci_json = r#"{
+            "suite": "signature_ml_tree_ensemble_model",
+            "model_type": "gbdt_tree_ensemble_v1",
+            "model_version": "rules-2026.03.04.ml.tree.v1",
+            "features": ["z1_ioc_hit", "z2_temporal_count"],
+            "weights": {"z1_ioc_hit": 0.1, "z2_temporal_count": 0.1},
+            "feature_scales": {"z1_ioc_hit": 1.0, "z2_temporal_count": 1.0},
+            "bias": 0.0,
+            "base_score": -0.4,
+            "threshold": 0.5,
+            "trees": [
+                {
+                    "weight": 1.0,
+                    "nodes": [
+                        {"id":0,"feature":"z1_ioc_hit","threshold":0.5,"left":1,"right":2},
+                        {"id":1,"leaf":-0.2},
+                        {"id":2,"leaf":1.2}
+                    ]
+                }
+            ]
+        }"#;
+
+    let model = MlModel::from_json_auto(ci_json).unwrap();
+    assert_eq!(model.family, ModelFamily::GbdtTree);
+    assert_eq!(model.trees.len(), 1);
+
+    let mut engine = MlEngine::new();
+    engine.reload_model(model).unwrap();
+
+    let event = make_event(EventClass::ProcessExec, 0, None);
+    let signals = DetectionSignals {
+        z1_exact_ioc: true,
+        ..Default::default()
+    };
+    let f = MlFeatures::extract(&event, &signals, 0, 0, 0, 0, 0, &Default::default());
+    let s = engine.score(&f);
+    assert!(
+        s.score > 0.6,
+        "tree engine should produce elevated score, got {}",
+        s.score
+    );
+}
+
+#[test]
 // AC-DET-267
 fn ci_threshold_passthrough_uses_ci_value_and_bounds_fallback() {
     let valid_threshold_json = r#"{
@@ -371,6 +502,8 @@ fn ci_model_validation_rejects_empty_features_non_finite_and_bad_scales() {
         negative_samples: 5,
         threshold: None,
         calibration_scores: None,
+        base_score: None,
+        trees: None,
     };
     assert!(empty_features.validate().is_err());
 
@@ -387,6 +520,8 @@ fn ci_model_validation_rejects_empty_features_non_finite_and_bad_scales() {
         negative_samples: 5,
         threshold: None,
         calibration_scores: None,
+        base_score: None,
+        trees: None,
     };
     assert!(non_finite_weight.validate().is_err());
 
@@ -403,6 +538,8 @@ fn ci_model_validation_rejects_empty_features_non_finite_and_bad_scales() {
         negative_samples: 5,
         threshold: None,
         calibration_scores: None,
+        base_score: None,
+        trees: None,
     };
     assert!(bad_scale.validate().is_err());
 
@@ -419,6 +556,8 @@ fn ci_model_validation_rejects_empty_features_non_finite_and_bad_scales() {
         negative_samples: 5,
         threshold: None,
         calibration_scores: None,
+        base_score: None,
+        trees: None,
     };
     assert!(non_finite_bias.validate().is_err());
 }
@@ -445,6 +584,8 @@ fn ci_model_conversion_tracks_feature_mapping_mismatches() {
         negative_samples: 5,
         threshold: Some(0.4),
         calibration_scores: None,
+        base_score: None,
+        trees: None,
     };
     let runtime = ci.to_runtime_model();
     assert_eq!(runtime.ci_features_dropped, 1);
@@ -471,6 +612,9 @@ fn conformal_gates_borderline_raw_positive_scores() {
         feature_names: FEATURE_NAMES.iter().map(|name| name.to_string()).collect(),
         ci_features_dropped: 0,
         runtime_features_unmapped: 0,
+        family: ModelFamily::Linear,
+        tree_base_score: 0.0,
+        trees: Vec::new(),
     };
     let engine = MlEngine::with_model_and_calibration(model, vec![0.7, 0.8, 0.9], 0.1);
 
@@ -510,6 +654,9 @@ fn no_calibration_keeps_raw_decision_path() {
         feature_names: FEATURE_NAMES.iter().map(|name| name.to_string()).collect(),
         ci_features_dropped: 0,
         runtime_features_unmapped: 0,
+        family: ModelFamily::Linear,
+        tree_base_score: 0.0,
+        trees: Vec::new(),
     };
     let engine = MlEngine::with_model(model);
 

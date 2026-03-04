@@ -639,7 +639,6 @@ impl Client {
         let current_port = parsed.port_or_known_default()?;
         let alternate_port = match current_port {
             50052 => 50053,
-            50053 => 50052,
             _ => return None,
         };
         parsed.set_port(Some(alternate_port)).ok()?;

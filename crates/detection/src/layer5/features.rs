@@ -92,7 +92,7 @@ impl MlFeatures {
         // Index 19: event_size_norm — normalized event size
         values[19] = event
             .event_size
-            .map(|s| (s as f64 / 8192.0).min(1.0))
+            .map(|s| clamp01(s as f64 / 4096.0))
             .unwrap_or(0.0);
 
         // Index 20: container_risk
@@ -130,39 +130,40 @@ impl MlFeatures {
         // Index 26: anomaly_behavioral — anomaly with multi-signal
         values[26] = values[2] * values[13];
 
-        // ── Process tree + beaconing features (Phase 1.3) ───────────
+        // ── v2 process tree / file / network / credential features ───
 
-        // Index 27: tree_depth_norm — process chain depth / 10.0
-        // Heuristic from available pid/ppid: ppid == 0 or 1 → shallow (depth 1),
-        // otherwise at least depth 2. Full tree tracking improves this later.
-        values[27] = if event.ppid <= 1 {
-            0.1 // depth ~1
-        } else {
-            0.2 // at least depth 2
-        };
+        // Process tree / lineage
+        values[27] = process_tree_depth_norm(event, signals);
+        values[28] = rare_parent_child_pair(event, signals);
+        values[29] = parent_cmdline_hash_risk(event);
+        values[30] = parent_child_cmdline_distance(event);
+        values[31] = sibling_spawn_burst_norm(event, signals);
 
-        // Index 28: tree_breadth_norm — sibling count / 20.0
-        // Not directly available from TelemetryEvent; defaults to 0.0.
-        // Populated via external process tree tracker in future iterations.
-        values[28] = 0.0;
+        // File mutation behavior
+        values[32] = sensitive_path_write_velocity(event, signals);
+        values[33] = rename_churn_norm(event);
+        values[34] = extension_entropy(event.file_path.as_deref());
+        values[35] = executable_write_ratio(event);
+        values[36] = temp_to_system_write_ratio(event);
 
-        // Index 29: child_entropy — Shannon entropy of child comm names
-        // Not available per-event; defaults to 0.0.
-        values[29] = 0.0;
+        // Network graph / beaconing
+        values[37] = conn_fanout_norm(event, signals);
+        values[38] = unique_dst_ip_norm(event);
+        values[39] = unique_dst_port_norm(event);
+        values[40] = beacon_periodicity_score(signals, extra);
+        values[41] = network_graph_centrality(values[37], values[38], values[40]);
 
-        // Index 30: spawn_rate_norm — children spawned per minute / 10.0
-        // Not available per-event; defaults to 0.0.
-        values[30] = 0.0;
+        // Credential access indicators
+        values[42] = credential_access_indicator(event, signals);
+        values[43] = lsass_access_indicator(event);
+        values[44] = sam_access_indicator(event);
+        values[45] = token_theft_indicator(event, signals);
+        values[46] = lolbin_credential_chain(event, values[42], values[45]);
 
-        // Index 31: rare_parent_child — 1.0 if parent:child pair is anomalous
-        values[31] = if signals.process_tree_anomaly {
-            1.0
-        } else {
-            0.0
-        };
-
-        // Index 32: c2_beacon_mi — mutual information score for destination
-        values[32] = extra.beacon_mi_score.min(1.0);
+        // Cross-domain interactions
+        values[47] = clamp01(values[37] * values[42]);
+        values[48] = clamp01(values[27] * values[37]);
+        values[49] = clamp01(values[32] * values[23]);
 
         Self { values }
     }
@@ -188,6 +189,344 @@ fn shannon_entropy(data: &[u8]) -> f64 {
     }
     // Normalize to [0, 1] where 8.0 is max for byte data
     (entropy / 8.0).min(1.0)
+}
+
+fn clamp01(v: f64) -> f64 {
+    v.clamp(0.0, 1.0)
+}
+
+fn process_tree_depth_norm(event: &TelemetryEvent, signals: &DetectionSignals) -> f64 {
+    if !matches!(event.event_class, EventClass::ProcessExec) && !signals.process_tree_anomaly {
+        return 0.0;
+    }
+    let mut depth = if event.ppid <= 1 { 0.08 } else { 0.24 };
+    if event.session_id != 0 && event.session_id != event.pid {
+        depth += 0.12;
+    }
+    if signals.process_tree_anomaly {
+        depth += 0.30;
+    }
+    if matches!(event.event_class, EventClass::ProcessExec) {
+        depth += 0.08;
+    }
+    clamp01(depth)
+}
+
+fn rare_parent_child_pair(event: &TelemetryEvent, signals: &DetectionSignals) -> f64 {
+    if !matches!(event.event_class, EventClass::ProcessExec) && !signals.process_tree_anomaly {
+        return 0.0;
+    }
+    let parent = event.parent_process.to_ascii_lowercase();
+    let child = event.process.to_ascii_lowercase();
+    let uncommon_parent = matches!(parent.as_str(), "python" | "perl" | "node" | "java");
+    let admin_child = matches!(
+        child.as_str(),
+        "sudo" | "su" | "bash" | "sh" | "powershell" | "cmd.exe"
+    );
+    let mut score = 0.0;
+    if uncommon_parent && admin_child {
+        score = 0.8;
+    } else if signals.process_tree_anomaly {
+        score = 0.6;
+    } else if parent != child && !parent.is_empty() {
+        score = 0.2;
+    }
+    clamp01(score)
+}
+
+fn parent_cmdline_hash_risk(event: &TelemetryEvent) -> f64 {
+    if !matches!(event.event_class, EventClass::ProcessExec) {
+        return 0.0;
+    }
+    let Some(cmd) = event.command_line.as_deref() else {
+        return 0.0;
+    };
+    let entropy = shannon_entropy(cmd.as_bytes());
+    let has_encoded = contains_any_case_insensitive(
+        cmd,
+        &["base64", "-enc", "frombase64string", "certutil", "xxd -r"],
+    );
+    let mut score = entropy * 0.7;
+    if has_encoded {
+        score += 0.3;
+    }
+    clamp01(score)
+}
+
+fn parent_child_cmdline_distance(event: &TelemetryEvent) -> f64 {
+    if !matches!(event.event_class, EventClass::ProcessExec) {
+        return 0.0;
+    }
+    let p = event.parent_process.to_ascii_lowercase();
+    let c = event.process.to_ascii_lowercase();
+    if p.is_empty() || c.is_empty() {
+        return 0.0;
+    }
+    if p == c {
+        return 0.0;
+    }
+    let max_len = p.len().max(c.len()) as f64;
+    let common_prefix = p.chars().zip(c.chars()).take_while(|(a, b)| a == b).count() as f64;
+    clamp01(1.0 - common_prefix / max_len)
+}
+
+fn sibling_spawn_burst_norm(event: &TelemetryEvent, signals: &DetectionSignals) -> f64 {
+    if !matches!(event.event_class, EventClass::ProcessExec) && !signals.process_tree_anomaly {
+        return 0.0;
+    }
+    let mut score = if matches!(event.event_class, EventClass::ProcessExec) {
+        0.35
+    } else {
+        0.05
+    };
+    if event.ppid > 1 {
+        score += 0.2;
+    }
+    if signals.process_tree_anomaly {
+        score += 0.35;
+    }
+    clamp01(score)
+}
+
+fn sensitive_path_write_velocity(event: &TelemetryEvent, signals: &DetectionSignals) -> f64 {
+    if !event.file_write {
+        return 0.0;
+    }
+    let path = event
+        .file_path
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let sensitive = contains_any_case_insensitive(
+        &path,
+        &[
+            "/etc/",
+            "/root/",
+            "/boot/",
+            "/usr/bin/",
+            "/windows/system32/",
+        ],
+    );
+    let mut score = if sensitive { 0.75 } else { 0.35 };
+    if signals.tamper_indicator || signals.kernel_integrity {
+        score += 0.15;
+    }
+    clamp01(score)
+}
+
+fn rename_churn_norm(event: &TelemetryEvent) -> f64 {
+    let Some(path) = event.file_path.as_deref() else {
+        return 0.0;
+    };
+    let lower = path.to_ascii_lowercase();
+    let mut score = 0.0;
+    if contains_any_case_insensitive(&lower, &[".tmp", ".swp", ".bak", ".new", ".old"]) {
+        score += 0.45;
+    }
+    let dot_count = lower.matches('.').count();
+    if dot_count >= 2 {
+        score += 0.25;
+    }
+    if event.file_write {
+        score += 0.2;
+    }
+    clamp01(score)
+}
+
+fn extension_entropy(path: Option<&str>) -> f64 {
+    let Some(path) = path else { return 0.0 };
+    let ext = path.rsplit('.').next().unwrap_or("");
+    if ext == path || ext.is_empty() {
+        return 0.0;
+    }
+    shannon_entropy(ext.as_bytes())
+}
+
+fn executable_write_ratio(event: &TelemetryEvent) -> f64 {
+    if !event.file_write {
+        return 0.0;
+    }
+    let path = event.file_path.as_deref().unwrap_or_default();
+    let executable = contains_any_case_insensitive(
+        path,
+        &[
+            ".exe", ".dll", ".so", ".dylib", ".bin", ".run", ".sh", ".ps1", ".bat",
+        ],
+    );
+    if executable {
+        1.0
+    } else {
+        0.2
+    }
+}
+
+fn temp_to_system_write_ratio(event: &TelemetryEvent) -> f64 {
+    if !event.file_write {
+        return 0.0;
+    }
+    let path = event
+        .file_path
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let temp = contains_any_case_insensitive(&path, &["/tmp/", "/var/tmp/", "/temp/"]);
+    let system = contains_any_case_insensitive(
+        &path,
+        &["/etc/", "/usr/", "/bin/", "/sbin/", "/windows/system32/"],
+    );
+    match (temp, system) {
+        (true, true) => 1.0,
+        (true, false) => 0.85,
+        (false, true) => 0.15,
+        (false, false) => 0.3,
+    }
+}
+
+fn conn_fanout_norm(event: &TelemetryEvent, signals: &DetectionSignals) -> f64 {
+    let mut score = if matches!(
+        event.event_class,
+        EventClass::NetworkConnect | EventClass::DnsQuery
+    ) {
+        0.25
+    } else {
+        0.0
+    };
+    if event.dst_ip.is_some() {
+        score += 0.2;
+    }
+    if event.dst_port.is_some() {
+        score += 0.15;
+    }
+    if signals.network_ioc_hit {
+        score += 0.25;
+    }
+    if signals.c2_beaconing_detected {
+        score += 0.15;
+    }
+    clamp01(score)
+}
+
+fn unique_dst_ip_norm(event: &TelemetryEvent) -> f64 {
+    let Some(ip) = event.dst_ip.as_deref() else {
+        return 0.0;
+    };
+    if ip.is_empty() {
+        return 0.0;
+    }
+    if ip.starts_with("10.") || ip.starts_with("192.168.") || ip.starts_with("172.") {
+        0.4
+    } else {
+        0.9
+    }
+}
+
+fn unique_dst_port_norm(event: &TelemetryEvent) -> f64 {
+    let Some(port) = event.dst_port else {
+        return 0.0;
+    };
+    clamp01(port as f64 / 65535.0)
+}
+
+fn beacon_periodicity_score(signals: &DetectionSignals, extra: &MlExtraContext) -> f64 {
+    let mut score = clamp01(extra.beacon_mi_score);
+    if signals.c2_beaconing_detected {
+        score = score.max(0.75);
+    }
+    clamp01(score)
+}
+
+fn network_graph_centrality(conn_fanout: f64, unique_ip: f64, beacon_score: f64) -> f64 {
+    clamp01((conn_fanout * 0.4) + (unique_ip * 0.3) + (beacon_score * 0.3))
+}
+
+fn credential_access_indicator(event: &TelemetryEvent, signals: &DetectionSignals) -> f64 {
+    let cmd = event.command_line.as_deref().unwrap_or_default();
+    let path = event.file_path.as_deref().unwrap_or_default();
+    let process = event.process.as_str();
+    let indicator =
+        contains_any_case_insensitive(
+            cmd,
+            &[
+                "credential",
+                "password",
+                "hashdump",
+                "sekurlsa",
+                "vault",
+                "keychain",
+            ],
+        ) || contains_any_case_insensitive(path, &["shadow", "passwd", "ntds", "credentials"])
+            || contains_any_case_insensitive(process, &["mimikatz", "procdump", "secretsdump"]);
+    let mut score = if indicator { 1.0 } else { 0.0 };
+    if signals.exploit_indicator && score > 0.0 {
+        score = 1.0;
+    }
+    score
+}
+
+fn lsass_access_indicator(event: &TelemetryEvent) -> f64 {
+    let cmd = event.command_line.as_deref().unwrap_or_default();
+    let proc = event.process.as_str();
+    if contains_any_case_insensitive(cmd, &["lsass", "comsvcs.dll", "minidump"])
+        || contains_any_case_insensitive(proc, &["procdump", "rundll32"])
+    {
+        1.0
+    } else {
+        0.0
+    }
+}
+
+fn sam_access_indicator(event: &TelemetryEvent) -> f64 {
+    let cmd = event.command_line.as_deref().unwrap_or_default();
+    let path = event.file_path.as_deref().unwrap_or_default();
+    if contains_any_case_insensitive(cmd, &["sam", "reg save", "hklm\\sam"])
+        || contains_any_case_insensitive(path, &["/etc/shadow", "windows/system32/config/sam"])
+    {
+        1.0
+    } else {
+        0.0
+    }
+}
+
+fn token_theft_indicator(event: &TelemetryEvent, signals: &DetectionSignals) -> f64 {
+    let cmd = event.command_line.as_deref().unwrap_or_default();
+    if contains_any_case_insensitive(
+        cmd,
+        &[
+            "token",
+            "impersonat",
+            "seassignprimarytoken",
+            "seimpersonate",
+        ],
+    ) || signals.exploit_indicator
+    {
+        1.0
+    } else {
+        0.0
+    }
+}
+
+fn lolbin_credential_chain(
+    event: &TelemetryEvent,
+    credential_access: f64,
+    token_theft: f64,
+) -> f64 {
+    let process = event.process.to_ascii_lowercase();
+    let lolbin = matches!(
+        process.as_str(),
+        "powershell" | "pwsh" | "cmd.exe" | "wmic" | "rundll32" | "mshta" | "regsvr32" | "certutil"
+    );
+    if lolbin {
+        clamp01(0.5 * credential_access + 0.5 * token_theft)
+    } else {
+        0.0
+    }
+}
+
+fn contains_any_case_insensitive(haystack: &str, needles: &[&str]) -> bool {
+    let lower = haystack.to_ascii_lowercase();
+    needles
+        .iter()
+        .any(|n| lower.contains(&n.to_ascii_lowercase()))
 }
 
 fn event_class_risk_score(class: EventClass) -> f64 {

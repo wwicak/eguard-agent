@@ -1,7 +1,7 @@
 use super::constants::FEATURE_NAMES;
 use super::features::MlFeatures;
 use super::math::{dot, sigmoid};
-use super::model::{MlError, MlModel};
+use super::model::{MlError, MlModel, ModelFamily};
 use crate::information::ConformalCalibrator;
 
 /// Very high-confidence model scores bypass conformal gating.
@@ -104,8 +104,11 @@ impl MlEngine {
 
     /// Compute ML risk score for one event.
     pub fn score(&self, features: &MlFeatures) -> MlScore {
-        // Linear combination: z = w · x + b
-        let z = dot(&self.model.weights, &features.values) + self.model.bias;
+        // Linear combination by default; switch to tree traversal when available.
+        let z = match self.model.family {
+            ModelFamily::GbdtTree => self.score_tree_logit(features),
+            ModelFamily::Linear => dot(&self.model.weights, &features.values) + self.model.bias,
+        };
 
         // Logistic sigmoid: σ(z) = 1 / (1 + e^(-z))
         let score = sigmoid(z);
@@ -154,6 +157,43 @@ impl MlEngine {
             top_features: contributions,
             conformal_p_value,
         }
+    }
+
+    fn score_tree_logit(&self, features: &MlFeatures) -> f64 {
+        let mut z = self.model.tree_base_score;
+
+        for tree in &self.model.trees {
+            let mut current_id = 0i32;
+            let mut steps = 0usize;
+            let mut leaf_value = 0.0f64;
+
+            while steps < 64 {
+                steps += 1;
+                let node = match tree.nodes.iter().find(|n| n.id == current_id) {
+                    Some(n) => n,
+                    None => break,
+                };
+
+                if let Some(leaf) = node.leaf {
+                    leaf_value = leaf;
+                    break;
+                }
+
+                let threshold = node.threshold.unwrap_or(0.0);
+                let feature_idx = FEATURE_NAMES.iter().position(|name| *name == node.feature);
+                let feature_value = feature_idx.map(|idx| features.values[idx]).unwrap_or(0.0);
+
+                current_id = if feature_value <= threshold {
+                    node.left.unwrap_or(current_id)
+                } else {
+                    node.right.unwrap_or(current_id)
+                };
+            }
+
+            z += tree.weight * leaf_value;
+        }
+
+        z
     }
 }
 

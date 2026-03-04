@@ -1297,3 +1297,277 @@ Generalize performance optimizations into a shared internal architecture so endp
   - `agent_stop_tamper` alert observed in DB after SIGTERM tamper simulation/restart cycle ✅
 - Live ML sensitivity smoke:
   - injected strong multi-signal telemetry produced `detection.ml_score.score=0.961457` and `positive=true` (decision threshold `0.033071`) ✅
+
+---
+
+## P0-P3 continuous polish (2026-03-04, pass-3)
+
+### Plan
+- [x] Remove latent API status-code ambiguity (`STATUS::ACCEPTED`) and warning noise in threat-intel Perl tests.
+- [x] Strengthen detection-stats rule attribution fallback for signature-array payloads (multi-signature, deduped labels).
+- [x] Expand regression coverage for the above behavior changes (Perl + Go).
+- [x] Restore endpoint-events API responsiveness under production-scale telemetry volume.
+- [x] Run deeper live resilience tests (Linux repeated SIGTERM tamper loop, Windows forced-process-kill recovery, telemetry/heartbeat freshness).
+- [x] Capture final evidence snapshot and update closure notes.
+
+### Review
+- Perl API/runtime polish:
+  - Restored missing HTTP status constant `STATUS::ACCEPTED=202` in `lib/eg/error.pm` (previously undefined, causing ambiguous status flow in `threat_intel->sync`).
+  - Hardened `is_success`/`is_error` to return `0` on undefined codes, removing warning noise and preventing undefined numeric comparisons.
+  - Added threat-intel Perl unit coverage for versions filtering contract:
+    - default query includes `version NOT LIKE 'feedback-%'`
+    - `include_feedback=true` removes that exclusion.
+- Go detection-stats polish:
+  - Reworked rule-label extraction into `detectionRuleNamesForStats`:
+    - explicit `rule_name` still authoritative;
+    - fallback to `audit/detection.primary_rule_name`;
+    - final fallback uses deduped union of `audit/detection.matched_signatures[]`.
+  - This prevents signature-array payloads from collapsing to a single rule and improves reverse-shell/persistence visibility.
+- Go threat-intel list parsing polish:
+  - Switched to shared boolean parser (`parseQueryBool`) for `include_feedback` query handling (supports `1/true/yes/on`).
+- Feedback publish hardening (future zero-count prevention):
+  - Updated `signature_ml_feedback_train` publisher to seed `sigma/yara/ioc/cve` counts from latest non-feedback threat-intel version instead of hardcoded zeroes, preventing recurrent zero-count `feedback-*` rows.
+- Events API performance hardening:
+  - Changed `LoadRecentEvents*` SQL ordering from `ORDER BY created_at DESC` (full table filesort on large table) to indexed `ORDER BY id DESC` for low-latency dashboard/event feed reads.
+
+### Verification
+- Go tests:
+  - `go test ./agent/server` ✅
+  - targeted: `TestAggregateDetectionStatsUsesMatchedSignatureAsRuleFallback` ✅
+  - targeted: `TestAggregateDetectionStatsRuleFallbackDedupesMatchedSignatures` ✅
+  - targeted: `TestThreatIntelVersionListFiltersFeedbackVersionsByDefault` (includes `include_feedback=yes`) ✅
+- Perl tests:
+  - `prove -v t/unittest/api/threat_intel.t` ✅ (`105` tests, no previous undefined-code warning)
+- Agent-core + detection regressions:
+  - `cargo test -p detection layer5:: -- --nocapture` ✅
+  - `cargo test -p agent-core config::tests::env_` ✅
+  - `cargo test -p agent-core config::tests::eguard_server_` ✅
+- Live deploy/restart:
+  - redeployed `eg-agent-server` binary and restarted `eguard-agent-server` ✅
+  - redeployed Perl `error.pm` + `api/threat_intel.pm` and restarted `eguard-httpd.webservices` ✅
+- Live endpoint-events responsiveness:
+  - before fix, direct SQL `ORDER BY created_at DESC LIMIT 1` on `endpoint_event` took ~120s and `/api/v1/endpoint/events` timed out ✅(observed issue)
+  - after fix, `/api/v1/endpoint/events?limit=1` and `/api/v1/endpoint-events?limit=1` return `status=ok` within request timeout window ✅
+- Live Linux resilience stress:
+  - executed 6x `systemctl kill -s SIGTERM eguard-agent` loop; service remained recoverable and returned `active/running`; `StartLimitBurst=0`, `StartLimitIntervalSec=0` confirmed ✅
+  - `systemctl stop eguard-agent` still refused (`RefuseManualStop=yes`) ✅
+- Live tamper signal path:
+  - recent `agent_stop_tamper` alert observed in DB after stress sequence ✅
+- Live Windows resilience stress:
+  - forced process termination (`taskkill /PID <agent> /F`) resulted in automatic service recovery with new PID and `STATE: RUNNING` ✅
+  - `sc stop eGuardAgent` still denied (`FAILED 1052`, `NOT_STOPPABLE`) ✅
+- Live telemetry/control-plane freshness:
+  - both Linux + Windows `endpoint_agent.last_heartbeat` advance over repeated 20s sampling windows post-stress ✅
+- Live detection visibility smoke:
+  - telemetry with `matched_signatures=["sigma.reverse_shell","sigma.persistence"]` and no explicit `rule_name` appears in detection-stats (agent-scoped) as both rules ✅
+- Live threat-intel list filter smoke:
+  - temporary `feedback-*` row hidden by default list and visible with `include_feedback=yes`, then cleaned from DB ✅
+
+---
+
+## P0-P3 continuous polish (2026-03-04, pass-4)
+
+### Plan
+- [x] Improve telemetry ingest quality by inferring `rule_name` from detection/audit payloads when omitted.
+- [x] Add regression tests for inferred rule-name behavior and explicit-rule precedence.
+- [x] Add regression tests for `LoadRecentEvents*` query ordering (`id DESC`) to prevent performance regressions.
+- [x] Strengthen Windows install script resilience by enabling failure actions on non-crash failures.
+- [x] Re-run full targeted test suites and live endpoint/service validation checks.
+
+### Review
+- Telemetry ingest + correlation quality:
+  - Added `inferTelemetryRuleName(...)` in `go/agent/server/telemetry.go`:
+    - uses explicit `rule_name` when provided;
+    - falls back to `audit.primary_rule_name` / `detection.primary_rule_name`;
+    - intentionally does **not** collapse signature arrays into a single stored `rule_name`.
+  - Updated correlation path in `go/agent/server/correlator_handler.go` to ingest rule firings from `detectionRuleNamesForStats(record)` (supports signature-array-only payloads for rule-flood correlation without requiring stored `rule_name`).
+- Regression coverage added:
+  - `go/agent/server/telemetry_rule_name_test.go`
+    - explicit/primary/signature-only inference behavior.
+  - `go/agent/server/telemetry_correlation_test.go`
+    - `TestSaveTelemetryCreatesIncidentOnRuleFloodFromMatchedSignatures`.
+  - `go/agent/server/persistence_endpoint_data_test.go`
+    - locks `LoadRecentEvents*` query order on `id DESC`.
+  - `go/agent/server/agent_install_test.go`
+    - validates Windows install template enables non-crash failure recovery flags.
+- Windows install hardening:
+  - Updated `go/agent/server/install.ps1` to set:
+    - `sc.exe failureflag $ServiceName 1` during install;
+    - `sc.exe failureflag $ServiceName 0` during uninstall/reset path.
+  - Deployed updated script to `/usr/local/eg/install-eguard-agent.ps1`.
+- Feedback publish hardening rollout (continued):
+  - deployed updated `signature_ml_feedback_train.pm` and restarted `eguard-cron` so future `feedback-*` publishes inherit non-zero reference counts instead of writing `0/0/0/0` by default.
+
+### Verification
+- Go tests:
+  - `go test ./agent/server` ✅
+  - targeted: `TestInferTelemetryRuleName` ✅
+  - targeted: `TestTelemetryHTTPInfersMissingRuleNameFromPrimaryRule` ✅
+  - targeted: `TestSaveTelemetryCreatesIncidentOnRuleFloodFromMatchedSignatures` ✅
+  - targeted: `TestLoadRecentEventsOrdersByIDDesc` / `TestLoadRecentEventsForAgentOrdersByIDDesc` ✅
+  - targeted: `TestAgentInstallWindowsScriptTemplateConfiguresNonCrashFailureRecovery` ✅
+- Perl tests:
+  - `prove -v t/unittest/api/threat_intel.t` ✅
+- Rust regressions (safety re-check):
+  - `cargo test -p detection layer5:: -- --nocapture` ✅
+  - `cargo test -p agent-core config::tests::env_` ✅
+  - `cargo test -p agent-core config::tests::eguard_server_` ✅
+- Live deploy/restart:
+  - redeployed `eg-agent-server` and restarted `eguard-agent-server` ✅
+  - redeployed updated `/install.ps1` template ✅
+- Live telemetry ingest checks:
+  - `primary_rule_name` payload without explicit `rule_name` now persists with inferred `rule_name` (`sigma.primary`) ✅
+  - signature-array-only payload persists empty `rule_name` (no lossy collapse) while detection-stats still shows both signatures ✅
+- Live endpoint-events performance:
+  - `/api/v1/endpoint/events?limit=1` and `/api/v1/endpoint-events?limit=1` return `status=ok` within normal timeout window ✅
+- Live Windows service resilience:
+  - set and verified `FAILURE_ACTIONS_ON_NONCRASH_FAILURES: TRUE` via `sc qfailureflag eGuardAgent` ✅
+  - `sc stop eGuardAgent` still denied (`FAILED 1052`, `NOT_STOPPABLE`) ✅
+- Live Linux and pipeline health:
+  - Linux service remains hardened/active (`RefuseManualStop=yes`, no start-limit throttle) ✅
+  - Linux + Windows heartbeats advancing and process-parent unknown ratio remains `0` in sampled 30m window ✅
+- Live threat-intel hygiene:
+  - runtime compile check on host: `perl -I/usr/local/eg/lib -I/usr/local/eg/lib_perl/lib/perl5 -c signature_ml_feedback_train.pm` ✅
+  - runtime helper check on host: `_feedback_publish_counts()` resolves non-zero inherited counts (`361/2891/61368/4409`) ✅
+  - active `feedback-*` publish now records inherited non-zero counts (`361/2891/61368/4409`) instead of `0/0/0/0`; default API listing still hides feedback rows unless explicitly requested ✅
+
+---
+
+## P0-P3 continuous polish (2026-03-04, pass-5)
+
+### Plan
+- [x] Prevent production agents from auto-consuming `feedback-*` threat-intel versions by default.
+- [x] Add explicit opt-in env control for feedback bundle rollout to agents.
+- [x] Add gRPC regression coverage for default-skip and opt-in-allow behavior.
+- [x] Re-run full server test suite and live health checks after redeploy.
+
+### Review
+- Agent control-plane threat-intel gating:
+  - Updated `go/agent/server/grpc_agent_control.go` so `lookupLatestThreatIntelVersionForAgent()` now filters out `feedback-*` versions by default.
+  - Added explicit opt-in env override: `EGUARD_AGENT_ALLOW_FEEDBACK_BUNDLES=true` to allow feedback bundle rollout to agents when intentionally requested.
+  - Added defensive pagination escalation for persistence mode lookup (`200 -> 400 -> ... -> 5000`) so heavy feedback-version churn does not starve stable-version discovery.
+- gRPC regression coverage:
+  - `go/agent/server/grpc_server_test.go`
+    - `TestGRPCGetLatestThreatIntelSkipsFeedbackVersionByDefault`
+    - `TestGRPCGetLatestThreatIntelAllowsFeedbackVersionWhenEnabled`
+- ML conformal reliability fix (discovered during full-suite rerun):
+  - Full `go test ./agent/server -count=1` surfaced failing conformal gate test due runtime clone dropping calibration scores.
+  - Fixed `signature_ml_runtime.activeModel()` clone path to copy `CalibrationScores`, restoring conformal gating behavior.
+  - This preserves P2 ML correctness and prevents silent conformal bypass.
+
+### Verification
+- Go targeted:
+  - `go test ./agent/server -run 'TestGRPCGetLatestThreatIntelSkipsUnusableLatestVersion|TestGRPCGetLatestThreatIntelSkipsFeedbackVersionByDefault|TestGRPCGetLatestThreatIntelAllowsFeedbackVersionWhenEnabled' -count=1` ✅
+  - `go test ./agent/server -run 'TestSignatureMlRuntimeAppliesConformalGate' -count=1 -v` ✅
+  - `go test ./agent/server -run 'TestInferTelemetryRuleName|TestTelemetryHTTPInfersMissingRuleNameFromPrimaryRule|TestSaveTelemetryCreatesIncidentOnRuleFloodFromMatchedSignatures|TestLoadRecentEventsOrdersByIDDesc|TestAgentInstallWindowsScriptTemplateConfiguresNonCrashFailureRecovery|TestSignatureMlRuntimeAppliesConformalGate' -count=1` ✅
+- Go full suite (cache-bypass):
+  - `go test ./agent/server -count=1` ✅
+- Perl:
+  - `prove -v t/unittest/api/threat_intel.t` ✅
+- Rust regressions:
+  - `cargo test -p detection layer5:: -- --nocapture` ✅
+  - `cargo test -p agent-core config::tests::env_` ✅
+  - `cargo test -p agent-core config::tests::eguard_server_` ✅
+- Live deploy/restart:
+  - redeployed latest `eg-agent-server` binary and restarted `eguard-agent-server` ✅
+- Live health checks:
+  - Linux service hardening still intact (`RefuseManualStop=yes`, start-limit disabled, active/running) ✅
+  - Windows service still `RUNNING`, `NOT_STOPPABLE`, with `FAILURE_ACTIONS_ON_NONCRASH_FAILURES: TRUE` ✅
+  - endpoint-events API aliases still responsive (`/endpoint/events`, `/endpoint-events`) ✅
+  - Linux + Windows heartbeats advancing and process-parent unknown ratio remains `0` in sampled 30m window ✅
+  - threat-intel API behavior remains correct: default list hides feedback rows; `include_feedback=yes` explicitly shows latest feedback version ✅
+
+---
+
+## P0-P3 continuous polish (2026-03-04, pass-6)
+
+### Plan
+- [x] Harden telemetry HTTP backpressure semantics to avoid ambiguous 500s under queue saturation.
+- [x] Add deterministic HTTP/gRPC regression tests for telemetry queue-full behavior.
+- [x] Re-run full server suite with cache bypass and re-validate conformal + threat-intel gating paths.
+- [x] Re-deploy and run live Linux/Windows/server resilience checks.
+
+### Review
+- Telemetry backpressure hardening:
+  - Updated `go/agent/server/telemetry.go` so queue-full path (`errTelemetryBackpressure`) returns:
+    - HTTP `503 Service Unavailable`
+    - `Retry-After: 1`
+    - explicit error payload `{"error":"telemetry_queue_full"}`
+  - This replaces opaque generic 500 behavior and gives agents/controllers actionable retry semantics.
+- New regression tests:
+  - `go/agent/server/telemetry_rate_limit_test.go`
+    - `TestTelemetryHTTPBackpressureReturnsServiceUnavailable`
+    - `TestTelemetryGRPCBackpressureReturnsResourceExhausted`
+  - Tests use deterministic no-worker bounded queue setup to force queue-full behavior without timing flakiness.
+- Reliability re-validation:
+  - Re-ran feedback bundle gating + conformal-gate tests with `-count=1` to ensure no cache artifacts and no regressions from previous passes.
+
+### Verification
+- Go targeted:
+  - `go test ./agent/server -run 'TestTelemetryHTTPBackpressureReturnsServiceUnavailable|TestTelemetryGRPCBackpressureReturnsResourceExhausted|TestTelemetryHTTPRateLimit|TestTelemetryGRPCRateLimit|TestGRPCGetLatestThreatIntelSkipsFeedbackVersionByDefault|TestGRPCGetLatestThreatIntelAllowsFeedbackVersionWhenEnabled|TestSignatureMlRuntimeAppliesConformalGate' -count=1` ✅
+- Go full suite:
+  - `go test ./agent/server -count=1` ✅
+- Perl:
+  - `prove -v t/unittest/api/threat_intel.t` ✅
+- Rust regressions:
+  - `cargo test -p detection layer5:: -- --nocapture` ✅
+  - `cargo test -p agent-core config::tests::env_` ✅
+  - `cargo test -p agent-core config::tests::eguard_server_` ✅
+- Live deploy/restart:
+  - redeployed latest `eg-agent-server` and restarted `eguard-agent-server` ✅
+- Live resilience health checks:
+  - endpoint-events API aliases responsive (`/endpoint/events`, `/endpoint-events`) ✅
+  - Linux service hardened + active (`RefuseManualStop=yes`, no start-limit throttle) ✅
+  - Windows service `RUNNING`, `NOT_STOPPABLE`, with `FAILURE_ACTIONS_ON_NONCRASH_FAILURES: TRUE` ✅
+  - Linux + Windows heartbeats advancing; process-parent unknown ratio remains `0` in sampled 30m window ✅
+  - threat-intel listing behavior unchanged/healthy (default hides feedback, explicit include shows feedback) ✅
+
+---
+
+## P0-P3 continuous polish (2026-03-04, pass-7)
+
+### Plan
+- [x] Expose telemetry async pipeline saturation/health counters in runtime state for resilience observability.
+- [x] Add regression tests for queue-pressure boundary semantics (69/70/90%) and enqueue reject accounting.
+- [x] Re-run full backend test suites and re-deploy server.
+- [x] Re-validate Linux/Windows/service heartbeat hardening on live infra.
+
+### Review
+- Telemetry pipeline observability hardening:
+  - Updated `go/agent/server/telemetry_pipeline.go`:
+    - added queue/counter telemetry: `enqueue_attempt_total`, `enqueue_accepted_total`, `enqueue_rejected_total`, `processed_total`, `handler_error_total`, `panic_recovered_total`;
+    - added queue pressure classifier: `normal/elevated/critical` with boundaries at 70% and 90%;
+    - added `snapshot()` helper for state export.
+- State API resiliency visibility:
+  - Updated `go/agent/server/state.go` to always include:
+    - `state.telemetry_pipeline` snapshot (enabled/queue depth/capacity/utilization/pressure + counters),
+    - `state.agent_allow_feedback_bundles` (effective gRPC threat-intel feedback rollout policy).
+- Test coverage added/expanded:
+  - `go/agent/server/telemetry_pipeline_test.go`
+    - panic recovery + processed counter assertion,
+    - queue pressure boundary checks (`69% -> normal`, `70% -> elevated`, `90% -> critical`),
+    - rejected enqueue counter behavior.
+  - `go/agent/server/state_test.go`
+    - validates state payload includes telemetry pipeline snapshot and `agent_allow_feedback_bundles` flag.
+
+### Verification
+- Go targeted:
+  - `go test ./agent/server -run 'TestTelemetryAsyncPipelineRecoversFromPanicAndDrainsPending|TestTelemetryQueuePressureBoundaries|TestTelemetryAsyncPipelineSnapshotReflectsRejectedEnqueue|TestStateEndpointIncludesTelemetryPipelineSnapshotAndFeedbackFlag|TestTelemetryHTTPBackpressureReturnsServiceUnavailable|TestTelemetryGRPCBackpressureReturnsResourceExhausted' -count=1` ✅
+- Go full suite:
+  - `go test ./agent/server -count=1` ✅
+- Perl:
+  - `prove -v t/unittest/api/threat_intel.t` ✅
+- Rust regressions:
+  - `cargo test -p detection layer5:: -- --nocapture` ✅
+  - `cargo test -p agent-core config::tests::env_` ✅
+  - `cargo test -p agent-core config::tests::eguard_server_` ✅
+- Live deploy/restart:
+  - redeployed latest `eg-agent-server` and restarted `eguard-agent-server` ✅
+- Live observability checks:
+  - `/api/v1/endpoint/state` now shows `agent_allow_feedback_bundles=false` and telemetry pipeline snapshot fields (capacity/depth/pressure/counters) ✅
+  - sampled telemetry pipeline counters present and non-negative (`attempt=254 accepted=254 rejected=0 processed=254`) ✅
+- Live resilience health checks:
+  - Linux service hardened + active (`RefuseManualStop=yes`, start-limit disabled) and manual stop refused ✅
+  - Windows service `RUNNING`, `NOT_STOPPABLE`, with `FAILURE_ACTIONS_ON_NONCRASH_FAILURES: TRUE` ✅
+  - endpoint-events API aliases remain responsive ✅
+  - Linux + Windows heartbeats advancing; process-parent unknown ratio remains `0` in sampled 30m window ✅

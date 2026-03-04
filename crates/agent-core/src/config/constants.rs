@@ -40,7 +40,7 @@ pub(super) const BOOTSTRAP_CONFIG_CANDIDATES: [&str; 3] = [
     "./bootstrap.conf",
 ];
 
-pub(super) const DEFAULT_SERVER_ADDR: &str = "eguard-server:50052";
+pub(super) const DEFAULT_SERVER_ADDR: &str = "eguard-server:50053";
 pub(super) const ENCRYPTED_CONFIG_PREFIX: &str = "eguardcfg:v1:";
 pub(super) const ENCRYPTED_CONFIG_AAD: &[u8] = b"eguard-agent-config-v1";
 pub(super) const MACHINE_ID_PATH_ENV: &str = "EGUARD_MACHINE_ID_PATH";
