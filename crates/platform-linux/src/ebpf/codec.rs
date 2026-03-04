@@ -126,6 +126,25 @@ fn parse_file_open_payload(raw: &[u8]) -> String {
 
     let flags = read_u32_le(raw, 0).unwrap_or_default();
     let mode = read_u32_le(raw, 4).unwrap_or_default();
+
+    // New payload layout includes pid lineage/process hints:
+    // flags(4) + mode(4) + ppid(4) + cgroup_id(8) + comm(32) + parent_comm(32) + path(256)
+    if raw.len() >= 4 + 4 + 4 + 8 + 32 + 32 + 256 {
+        let ppid = read_u32_le(raw, 8).unwrap_or_default();
+        let cgroup_id = read_u64_le(raw, 12).unwrap_or_default();
+        let comm = parse_c_string(slice_window(raw, 20, 32));
+        let parent_comm = parse_c_string(slice_window(raw, 52, 32));
+        let path = parse_c_string(slice_window(raw, 84, 256));
+        if path.is_empty() && comm.is_empty() && parent_comm.is_empty() {
+            return parse_c_string(raw);
+        }
+
+        return format!(
+            "path={};flags={};mode={};ppid={};cgroup_id={};comm={};parent_comm={}",
+            path, flags, mode, ppid, cgroup_id, comm, parent_comm
+        );
+    }
+
     let path = parse_c_string(slice_window(raw, 8, 256));
     if path.is_empty() {
         return parse_c_string(raw);

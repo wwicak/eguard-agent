@@ -547,6 +547,7 @@ fn parse_payload_metadata(event_type: &EventType, payload: &str) -> PayloadMetad
             .get("cmdline")
             .cloned()
             .or_else(|| fields.get("command_line").cloned())
+            .or_else(|| fields.get("comm").cloned())
             .or_else(|| fields.get("subject").cloned()),
         parent_process_hint: fields
             .get("parent_comm")

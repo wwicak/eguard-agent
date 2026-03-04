@@ -30,6 +30,12 @@ pub(super) fn to_detection_event(
         .process_exe
         .as_deref()
         .map(process_basename)
+        .or_else(|| {
+            enriched
+                .process_cmdline
+                .as_deref()
+                .and_then(process_name_from_cmdline)
+        })
         .unwrap_or("unknown")
         .to_string();
 
@@ -93,6 +99,15 @@ fn process_basename(path: &str) -> &str {
     path.rsplit(['/', '\\']).next().unwrap_or(path)
 }
 
+fn process_name_from_cmdline(cmdline: &str) -> Option<&str> {
+    let first = cmdline.split_whitespace().next()?.trim();
+    if first.is_empty() {
+        None
+    } else {
+        Some(process_basename(first))
+    }
+}
+
 pub(super) fn map_event_class(event_type: &crate::platform::EventType) -> EventClass {
     match event_type {
         crate::platform::EventType::ProcessExec => EventClass::ProcessExec,
@@ -110,7 +125,7 @@ pub(super) fn map_event_class(event_type: &crate::platform::EventType) -> EventC
 
 #[cfg(test)]
 mod tests {
-    use super::process_basename;
+    use super::{process_basename, process_name_from_cmdline};
     use detection::Confidence;
 
     #[test]
@@ -150,5 +165,18 @@ mod tests {
             "powershell.exe"
         );
         assert_eq!(process_basename("name-only"), "name-only");
+    }
+
+    #[test]
+    fn process_name_from_cmdline_uses_first_token_basename() {
+        assert_eq!(
+            process_name_from_cmdline("/usr/sbin/sshd -D [listener]"),
+            Some("sshd")
+        );
+        assert_eq!(
+            process_name_from_cmdline(r"C:\\Windows\\System32\\cmd.exe /c whoami"),
+            Some("cmd.exe")
+        );
+        assert_eq!(process_name_from_cmdline("   "), None);
     }
 }

@@ -188,8 +188,17 @@ impl AgentRuntime {
                     return None;
                 }
 
-                let before = events.len();
-                let file_coalesced = self.coalesce_file_event_burst(events);
+                let self_filtered: Vec<RawEvent> = events
+                    .into_iter()
+                    .filter(|event| !Self::is_agent_self_event(event))
+                    .collect();
+                if self_filtered.is_empty() {
+                    self.refresh_strict_budget_mode();
+                    return None;
+                }
+
+                let before = self_filtered.len();
+                let file_coalesced = self.coalesce_file_event_burst(self_filtered);
                 let file_dropped = before.saturating_sub(file_coalesced.len());
                 if file_dropped > 0 {
                     self.metrics.telemetry_coalesced_events_total = self
@@ -247,6 +256,10 @@ impl AgentRuntime {
         }
     }
 
+    fn is_agent_self_event(event: &RawEvent) -> bool {
+        event.pid == std::process::id()
+    }
+
     fn telemetry_backlog_depth(&self) -> usize {
         self.buffer
             .pending_count()
@@ -271,21 +284,26 @@ impl AgentRuntime {
     }
 
     fn dequeue_sampled_raw_event(&mut self, stride: usize) -> Option<RawEvent> {
-        if self.raw_event_backlog.is_empty() {
-            return None;
-        }
-
-        let event = self.raw_event_backlog.pop_front();
-
         let stride = stride.max(1);
-        if stride > 1 {
-            let skips = stride.saturating_sub(1).min(self.raw_event_backlog.len());
-            for _ in 0..skips {
-                let _ = self.raw_event_backlog.pop_front();
-            }
-        }
 
-        event
+        loop {
+            let Some(event) = self.raw_event_backlog.pop_front() else {
+                return None;
+            };
+
+            if Self::is_agent_self_event(&event) {
+                continue;
+            }
+
+            if stride > 1 {
+                let skips = stride.saturating_sub(1).min(self.raw_event_backlog.len());
+                for _ in 0..skips {
+                    let _ = self.raw_event_backlog.pop_front();
+                }
+            }
+
+            return Some(event);
+        }
     }
 
     fn coalesce_file_event_burst(&mut self, events: Vec<RawEvent>) -> Vec<RawEvent> {

@@ -1140,8 +1140,66 @@ Generalize performance optimizations into a shared internal architecture so endp
 - [x] Fix Linux parent attribution reliability (`process_exec` probe parent metadata + userspace fallback enrichment) with regression tests.
 - [x] Fix dashboard API compatibility (`/api/v1/ml-ops/summary` alias + frontend payload normalization for detection/ML ops).
 - [x] Run targeted validation suites (Rust platform/grpc/agent-core + Go ml-ops server tests).
-- [ ] Deploy to isolated environment and execute real-condition attack simulation + UI visual verification.
+- [x] Deploy to isolated environment and execute real-condition attack simulation + UI visual verification.
 
 ### Review
 - Local implementation and targeted test validation completed.
-- Deployment + live-environment validation pending.
+- Deployment + live-environment validation completed (Linux + Windows + dashboard checks).
+
+---
+
+## Live critical fix deploy + real-infra validation (Linux + Windows + Dashboard)
+
+### Plan
+- [x] Validate Linux self-protection behavior under real systemd control.
+- [x] Restore telemetry/control-plane connectivity on Linux and Windows to server `:50053`.
+- [x] Fix API route compatibility for endpoint events + audit visibility regressions.
+- [x] Re-run UI real-condition checks (Detection, ML Ops, Audit, Telemetry) with browser automation.
+
+### Review
+- Linux VM (`agent@103.183.74.3`)
+  - Service hardened and active with `Type=notify`, watchdog enabled.
+  - Manual stop blocked as intended (`RefuseManualStop=yes`):
+    - `sudo systemctl stop eguard-agent` => refused.
+  - SIGTERM tamper path verified and delivered:
+    - `agent_stop_tamper` alert persisted in server DB.
+- Windows VM (`administrator@103.31.39.30`)
+  - Deployed updated `agent-core.exe` to `C:\Program Files\eGuard\eguard-agent.exe`.
+  - Updated runtime endpoint to `103.49.238.102:50053` (machine env + config), restarted service.
+  - Confirmed policy sync, baseline upload, and telemetry send on `:50053` in agent logs.
+- Server (`eguard@103.49.238.102`)
+  - Deployed refreshed `eg-agent-server` binary.
+  - Added endpoint-events compatibility alias route and verified route-level tests.
+- Frontend/API compatibility
+  - Added fallback API path resolution for events endpoints.
+  - Browser validation with `agent-browser`:
+    - Detection Dashboard populated (`Total Detections` non-zero).
+    - ML Ops dashboard populated (`kpis`/pipeline visible).
+    - Audit table populated after reset/apply (200 rows visible, including `agent_stop_tamper`).
+    - Telemetry stream populated after reset/apply (non-zero rows).
+
+### Verification
+- Rust (already validated earlier in this task):
+  - `cargo test -p platform-linux` ✅
+  - `cargo test -p grpc-client` ✅
+  - `cargo test -p agent-core` ✅
+- Go:
+  - `go test ./agent/server -run 'TestAgentsEventsCommandsEndpoints|TestMlOpsSummaryLegacyAliasPath'` ✅
+- Live runtime checks:
+  - Linux service active + manual stop refused ✅
+  - Windows service running + latest heartbeat/inventory advancing in DB ✅
+  - Audit/Dashboard/ML Ops/Telemetry visible via browser automation ✅
+
+### Follow-up polish (continued live hardening)
+- [x] Rebuild/deploy Linux agent with `platform-linux/ebpf-libbpf` enabled (previous live binary had eBPF disabled).
+- [x] Remove agent self-generated telemetry feedback loop by filtering self-PID raw events before queue/coalesce.
+- [x] Enrich Linux `file_open` eBPF payload with `ppid/cgroup_id/comm/parent_comm` and parse those hints in userspace.
+- [x] Improve process-name fallback: derive process from command-line first token when executable path is unavailable.
+- [x] Redeploy updated Linux binary + eBPF objects and re-validate live DB/UI behavior.
+
+### Follow-up verification
+- `cargo test -p platform-linux` ✅
+- `cargo test -p agent-core tests_ebpf_policy -- --nocapture` ✅
+- `cargo test -p agent-core detection_event::tests::process_` ✅
+- Live Linux logs now confirm eBPF libbpf probes attached (`attached=9`) ✅
+- Live Linux endpoint events now carry concrete process/parent values (e.g., `sshd/sshd`, `systemd-journald/systemd`) instead of persistent `unknown/unknown` ✅
