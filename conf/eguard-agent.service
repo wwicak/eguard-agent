@@ -7,12 +7,10 @@ StartLimitIntervalSec=0
 StartLimitBurst=0
 
 [Service]
-Type=notify
+Type=simple
 ExecStart=/usr/local/eg/sbin/eguard-agent
 Restart=always
 RestartSec=1s
-WatchdogSec=30s
-NotifyAccess=all
 NoNewPrivileges=true
 ProtectSystem=full
 ProtectHome=true
