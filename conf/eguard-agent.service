@@ -4,6 +4,7 @@ After=network-online.target
 Wants=network-online.target
 RefuseManualStop=yes
 StartLimitIntervalSec=0
+StartLimitBurst=0
 
 [Service]
 Type=notify
@@ -11,7 +12,7 @@ ExecStart=/usr/local/eg/sbin/eguard-agent
 Restart=always
 RestartSec=1s
 WatchdogSec=30s
-NotifyAccess=main
+NotifyAccess=all
 NoNewPrivileges=true
 ProtectSystem=full
 ProtectHome=true

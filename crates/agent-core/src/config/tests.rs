@@ -247,6 +247,7 @@ fn env_overrides_file_config() {
 
     std::env::set_var("EGUARD_AGENT_CONFIG", &path);
     std::env::set_var("EGUARD_SERVER_ADDR", "10.9.9.9:50052");
+    std::env::set_var("EGUARD_SERVER_ADDR_FORCE", "true");
     std::env::set_var("EGUARD_TRANSPORT", "http");
     std::env::set_var("EGUARD_AUTONOMOUS_RESPONSE", "true");
     std::env::set_var("EGUARD_RESPONSE_AUTO_ISOLATION_ENABLED", "true");
@@ -258,6 +259,33 @@ fn env_overrides_file_config() {
     assert!(cfg.response.autonomous_response);
     assert!(cfg.response.auto_isolation.enabled);
     assert_eq!(cfg.response.auto_isolation.min_incidents_in_window, 5);
+
+    clear_env();
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+// AC-CFG-004
+fn env_server_addr_does_not_override_file_config_without_force() {
+    let _guard = env_lock().lock().expect("env lock");
+    clear_env();
+
+    let path = std::env::temp_dir().join(format!(
+        "eguard-agent-config-{}.toml",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+
+    let mut f = std::fs::File::create(&path).expect("create file");
+    writeln!(f, "[agent]\nserver_addr=\"10.0.0.1:50052\"").expect("write file");
+
+    std::env::set_var("EGUARD_AGENT_CONFIG", &path);
+    std::env::set_var("EGUARD_SERVER_ADDR", "10.9.9.9:50052");
+
+    let cfg = AgentConfig::load().expect("load config");
+    assert_eq!(cfg.server_addr, "10.0.0.1:50052");
 
     clear_env();
     let _ = std::fs::remove_file(path);

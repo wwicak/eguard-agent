@@ -1209,7 +1209,91 @@ Generalize performance optimizations into a shared internal architecture so endp
 ## P0-P3 closure polish (2026-03-04)
 
 ### Plan
-- [ ] Prevent zero-count threat-intel versions when manual publish omits explicit counts.
-- [ ] Make agent server endpoint resolution deterministic (bootstrap/config wins by default; env override only when explicitly forced).
-- [ ] Add targeted regression tests for both fixes.
-- [ ] Re-validate with focused test runs and live DB/API evidence.
+- [x] Prevent zero-count threat-intel versions when manual publish omits explicit counts.
+- [x] Make agent server endpoint resolution deterministic (bootstrap/config wins by default; env override only when explicitly forced).
+- [x] Add targeted regression tests for both fixes.
+- [x] Re-validate with focused test runs and live DB/API evidence.
+
+### Review
+- Go server hardening (`/home/dimas/fe_eguard/go/agent/server`):
+  - `publishThreatIntelVersion` now auto-hydrates missing `sigma/yara/ioc/cve` counts from bundle `manifest.json` before persistence.
+  - Added regression test `TestThreatIntelVersionPublishHydratesCountsFromManifest`.
+  - Live deploy completed to `103.49.238.102` (`eguard-agent-server`, binary `/usr/local/eg/sbin/eg-agent-server-new`).
+- Perl API hardening (`/home/dimas/fe_eguard/lib/eg/api/threat_intel.pm`):
+  - `notify` path now hydrates missing/zero counts from bundle `manifest.json` when `bundle_path` is provided, preventing future zero-count rows from UI/manual publish path.
+  - Added targeted unit tests in `/home/dimas/fe_eguard/t/unittest/api/threat_intel.t` to lock missing-count hydration and explicit-count preservation behavior.
+- Agent config hardening (`/home/dimas/eguard-agent/crates/agent-core/src/config`):
+  - `EGUARD_SERVER_ADDR` no longer overrides explicit config/bootstrap server by default.
+  - New explicit opt-in override switch: `EGUARD_SERVER_ADDR_FORCE=true`.
+  - Added regression coverage for file/bootstrapped + forced/unforced precedence cases.
+- Live cleanup + validation:
+  - Removed stale validation-only threat-intel rows with zero counts.
+  - Verified current `threat_intel_version` top production rows now show non-zero counts (including backfilled historical row `2026.02.19.1131`).
+  - Verified live smoke publish without counts now persists non-zero counts from manifest.
+  - Redeployed Windows agent binary and verified service still targets `103.49.238.102:50053` even when machine env `EGUARD_SERVER_ADDR` is set to bogus value (config remains source of truth).
+  - Re-hardened Linux systemd unit after detecting drifted runtime unit (`Type=simple`, no `RefuseManualStop`) on host: restored hardened notify unit + `RefuseManualStop=yes`, and validated manual stop refusal behavior live.
+  - Updated Linux runtime `agent.conf` endpoint from legacy `50052` to `103.49.238.102:50053` and confirmed heartbeat progression post-restart.
+
+### Verification
+- `cd /home/dimas/fe_eguard/go && go test ./agent/server -run 'TestThreatIntelVersionPublishHydratesCountsFromManifest|TestThreatIntelSourceAndVersionHandlers'` ✅
+- `cd /home/dimas/eguard-agent && cargo test -p agent-core config::tests::env_` ✅
+- `cd /home/dimas/eguard-agent && cargo test -p agent-core config::tests::eguard_server_` ✅
+- `cd /home/dimas/fe_eguard && prove -v t/unittest/api/threat_intel.t` ✅
+- Live server smoke: POST `/api/v1/endpoint/threat-intel/version` (without counts) produced persisted non-zero counts ✅
+- Live DB snapshot (`threat_intel_version`) now shows production versions with non-zero counts ✅
+- Windows live log evidence confirms runtime startup + sends on `server=103.49.238.102:50053` after precedence hardening deploy ✅
+- Linux service hardening re-check: `systemctl stop eguard-agent` refused (`RefuseManualStop`) and service remains active ✅
+- Linux + Windows heartbeat freshness re-check in `endpoint_agent` confirms both agents advancing after latest deploys ✅
+- Process-parent attribution quality re-check (`event_type='process'`, last 30m): `unknown parent = 0 / 4996` ✅
+
+---
+
+## Audit follow-up hardening sweep (2026-03-04, pass-2)
+
+### Plan
+- [x] Eliminate Linux service restart-rate-limit risk under repeated SIGTERM tamper attempts.
+- [x] Enforce Windows service stop refusal behavior in service-control handler when self-protection is enabled.
+- [x] Improve shutdown tamper alert reliability to send immediately before termination (with buffer fallback).
+- [x] Increase ML triage sensitivity for strong multi-signal attack events and expose calibration knobs.
+- [x] Align Windows install script defaults to production gRPC port `50053` (remove legacy `50052` drift).
+- [x] Re-run targeted tests and live tamper/heartbeat validation on Linux+Windows+server.
+
+### Review
+- Agent Linux service template hardening:
+  - Added `StartLimitBurst=0` to both service templates to prevent restart suppression during repeated kill attempts.
+  - Kept `Restart=always`, `RestartSec=1`, `RefuseManualStop=yes`, `Type=notify`, and `NotifyAccess=all`.
+- Agent Windows service runtime hardening:
+  - Windows service handler now denies SCM `Stop` control when self-protection uninstall prevention is enabled (default); service reports `NOT_STOPPABLE` and still accepts `SHUTDOWN`.
+  - Added optional override env `EGUARD_WINDOWS_ALLOW_STOP` for controlled maintenance windows.
+- Agent tamper alert reliability:
+  - `report_shutdown_tamper` now attempts immediate send (`2s` timeout) before shutdown; falls back to persistent local buffer when send fails/timeouts.
+- Server ML sensitivity polish:
+  - Added strong-signal score boosting path in signature-ML runtime (IOC + kill-chain/anomaly/prefilter/yara/behavioral/sequence cues) with env knobs:
+    - `EGUARD_SIGNATURE_ML_STRONG_SIGNAL_BOOST`
+    - `EGUARD_SIGNATURE_ML_STRONG_SIGNAL_MIN_SCORE`
+    - `EGUARD_SIGNATURE_ML_THRESHOLD_OVERRIDE`
+  - Runtime status snapshot now exposes these calibration settings.
+- Installer path alignment:
+  - Updated `go/agent/server/install.ps1` defaults/fallbacks from `50052` to `50053` and redeployed live served script (`/install.ps1`) accordingly.
+
+### Verification
+- Rust:
+  - `cargo test -p agent-core config::tests::env_` ✅
+  - `cargo test -p agent-core config::tests::eguard_server_` ✅
+  - `cargo build -p agent-core --release --features platform-linux/ebpf-libbpf` ✅
+  - `cargo build -p agent-core --release --target x86_64-pc-windows-gnu` ✅
+- Go:
+  - `go test ./agent/server -run 'TestAgentInstall|TestThreatIntelVersionPublishHydratesCountsFromManifest|TestThreatIntelSourceAndVersionHandlers|TestSignatureMlRuntime|TestSignatureMl'` ✅
+- Perl:
+  - `prove -v t/unittest/api/threat_intel.t` ✅
+- Live Linux tamper resilience:
+  - repeated `systemctl kill -s SIGTERM eguard-agent` no longer trips start limits (`StartLimitBurst=0`), service remains recoverable and returns `active` ✅
+  - `systemctl stop eguard-agent` still refused as intended (`RefuseManualStop`) ✅
+- Live Windows stop-resistance:
+  - `sc stop eGuardAgent` returns `FAILED 1052` (`NOT_STOPPABLE`) and service remains `RUNNING` ✅
+- Live telemetry/control-plane freshness:
+  - Linux + Windows agent heartbeats continue advancing in `endpoint_agent` after hardening redeploys ✅
+- Live tamper alert:
+  - `agent_stop_tamper` alert observed in DB after SIGTERM tamper simulation/restart cycle ✅
+- Live ML sensitivity smoke:
+  - injected strong multi-signal telemetry produced `detection.ml_score.score=0.961457` and `positive=true` (decision threshold `0.033071`) ✅

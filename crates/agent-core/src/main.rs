@@ -397,6 +397,7 @@ mod windows_service_entry {
 
     fn run_service_main() -> Result<()> {
         let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
+        let allow_stop_control = resolve_windows_service_stop_control_policy();
 
         // Share the status handle with the event handler closure so it can
         // immediately transition to StopPending when SCM sends Stop/Shutdown.
@@ -409,9 +410,33 @@ mod windows_service_entry {
         let status_handle =
             service_control_handler::register(SERVICE_NAME, move |control| match control {
                 ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
-                ServiceControl::Stop | ServiceControl::Shutdown => {
+                ServiceControl::Stop => {
+                    if !allow_stop_control {
+                        warn!(
+                            "ignoring Windows service stop control due to self-protection policy"
+                        );
+                        return ServiceControlHandlerResult::NotImplemented;
+                    }
+
                     // Immediately tell SCM we are stopping. This must happen
                     // inside the handler callback for SCM to accept the stop.
+                    if let Ok(guard) = handler_status_handle.lock() {
+                        if let Some(handle) = guard.as_ref() {
+                            let _ = handle.set_service_status(ServiceStatus {
+                                service_type: ServiceType::OWN_PROCESS,
+                                current_state: ServiceState::StopPending,
+                                controls_accepted: ServiceControlAccept::empty(),
+                                exit_code: ServiceExitCode::Win32(0),
+                                checkpoint: 1,
+                                wait_hint: Duration::from_secs(15),
+                                process_id: None,
+                            });
+                        }
+                    }
+                    let _ = shutdown_tx.send(());
+                    ServiceControlHandlerResult::NoError
+                }
+                ServiceControl::Shutdown => {
                     if let Ok(guard) = handler_status_handle.lock() {
                         if let Some(handle) = guard.as_ref() {
                             let _ = handle.set_service_status(ServiceStatus {
@@ -452,10 +477,16 @@ mod windows_service_entry {
 
         let runtime = Builder::new_multi_thread().enable_all().build()?;
 
+        let controls_accepted = if allow_stop_control {
+            ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN
+        } else {
+            ServiceControlAccept::SHUTDOWN
+        };
+
         set_service_status(
             &status_handle,
             ServiceState::Running,
-            ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
+            controls_accepted,
             0,
             0,
             0,
@@ -485,6 +516,23 @@ mod windows_service_entry {
         )?;
 
         run_result
+    }
+
+    fn resolve_windows_service_stop_control_policy() -> bool {
+        if std::env::var_os("EGUARD_WINDOWS_ALLOW_STOP").is_some() {
+            return super::env_flag_enabled("EGUARD_WINDOWS_ALLOW_STOP");
+        }
+
+        match super::AgentConfig::load() {
+            Ok(config) => !config.self_protection_prevent_uninstall,
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    "failed loading config for Windows stop-control policy; defaulting to deny stop"
+                );
+                false
+            }
+        }
     }
 
     async fn wait_for_service_shutdown(rx: mpsc::Receiver<()>) -> super::ShutdownReason {

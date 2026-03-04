@@ -1,3 +1,4 @@
+use super::constants::DEFAULT_SERVER_ADDR;
 use super::types::AgentConfig;
 use super::util::{
     default_agent_id, env_non_empty, env_usize, non_empty, parse_bool, parse_cap_mb, parse_mode,
@@ -155,8 +156,11 @@ impl AgentConfig {
             .map(|value| parse_bool(&value))
             .unwrap_or(false);
 
-        if self.bootstrap_config_path.is_some() && !force_override {
-            return;
+        if !force_override {
+            let has_explicit_config_server = self.server_addr != DEFAULT_SERVER_ADDR;
+            if self.bootstrap_config_path.is_some() || has_explicit_config_server {
+                return;
+            }
         }
 
         if let Some(server) = server {

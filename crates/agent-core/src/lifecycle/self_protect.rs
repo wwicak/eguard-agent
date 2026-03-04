@@ -1,5 +1,6 @@
 use anyhow::Result;
 use serde_json::json;
+use tokio::time::{timeout, Duration};
 use tracing::warn;
 
 use grpc_client::EventEnvelope;
@@ -124,6 +125,36 @@ impl AgentRuntime {
             payload_json: payload,
             created_at_unix: now_unix,
         };
+
+        if self.client.is_online() {
+            match timeout(
+                Duration::from_secs(2),
+                self.client.send_events(std::slice::from_ref(&alert)),
+            )
+            .await
+            {
+                Ok(Ok(())) => {
+                    warn!(
+                        signal = signal_name,
+                        "sent shutdown tamper alert before termination"
+                    );
+                    return Ok(());
+                }
+                Ok(Err(err)) => {
+                    warn!(
+                        signal = signal_name,
+                        error = %err,
+                        "failed immediate shutdown tamper send; buffering for post-restart delivery"
+                    );
+                }
+                Err(_) => {
+                    warn!(
+                        signal = signal_name,
+                        "timed out sending shutdown tamper alert; buffering for post-restart delivery"
+                    );
+                }
+            }
+        }
 
         self.buffer.enqueue(alert)?;
         warn!(
