@@ -1203,3 +1203,13 @@ Generalize performance optimizations into a shared internal architecture so endp
 - `cargo test -p agent-core detection_event::tests::process_` ✅
 - Live Linux logs now confirm eBPF libbpf probes attached (`attached=9`) ✅
 - Live Linux endpoint events now carry concrete process/parent values (e.g., `sshd/sshd`, `systemd-journald/systemd`) instead of persistent `unknown/unknown` ✅
+
+---
+
+## P0-P3 closure polish (2026-03-04)
+
+### Plan
+- [ ] Prevent zero-count threat-intel versions when manual publish omits explicit counts.
+- [ ] Make agent server endpoint resolution deterministic (bootstrap/config wins by default; env override only when explicitly forced).
+- [ ] Add targeted regression tests for both fixes.
+- [ ] Re-validate with focused test runs and live DB/API evidence.

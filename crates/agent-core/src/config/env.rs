@@ -151,6 +151,14 @@ impl AgentConfig {
 
     fn apply_env_server_address(&mut self) {
         let server = env_non_empty("EGUARD_SERVER_ADDR").or_else(|| env_non_empty("EGUARD_SERVER"));
+        let force_override = env_non_empty("EGUARD_SERVER_ADDR_FORCE")
+            .map(|value| parse_bool(&value))
+            .unwrap_or(false);
+
+        if self.bootstrap_config_path.is_some() && !force_override {
+            return;
+        }
+
         if let Some(server) = server {
             self.server_addr = server;
         }

@@ -21,6 +21,7 @@ fn clear_env() {
         "EGUARD_AGENT_ID",
         "EGUARD_SERVER_ADDR",
         "EGUARD_SERVER",
+        "EGUARD_SERVER_ADDR_FORCE",
         "EGUARD_AGENT_MODE",
         "EGUARD_TRANSPORT_MODE",
         "EGUARD_TRANSPORT",
@@ -693,6 +694,41 @@ fn eguard_server_addr_takes_precedence_over_eguard_server() {
 
     let mut cfg = AgentConfig::default();
     cfg.apply_env_overrides();
+    assert_eq!(cfg.server_addr, "10.9.9.9:50052");
+
+    clear_env();
+}
+
+#[test]
+// AC-CFG-004
+fn eguard_server_addr_does_not_override_bootstrap_by_default() {
+    let _guard = env_lock().lock().expect("env lock");
+    clear_env();
+    std::env::set_var("EGUARD_SERVER_ADDR", "10.9.9.9:50052");
+
+    let mut cfg = AgentConfig::default();
+    cfg.server_addr = "10.11.12.13:50053".to_string();
+    cfg.bootstrap_config_path = Some(std::path::PathBuf::from("/tmp/bootstrap.conf"));
+    cfg.apply_env_overrides();
+
+    assert_eq!(cfg.server_addr, "10.11.12.13:50053");
+
+    clear_env();
+}
+
+#[test]
+// AC-CFG-004
+fn eguard_server_addr_force_override_applies_even_with_bootstrap() {
+    let _guard = env_lock().lock().expect("env lock");
+    clear_env();
+    std::env::set_var("EGUARD_SERVER_ADDR", "10.9.9.9:50052");
+    std::env::set_var("EGUARD_SERVER_ADDR_FORCE", "true");
+
+    let mut cfg = AgentConfig::default();
+    cfg.server_addr = "10.11.12.13:50053".to_string();
+    cfg.bootstrap_config_path = Some(std::path::PathBuf::from("/tmp/bootstrap.conf"));
+    cfg.apply_env_overrides();
+
     assert_eq!(cfg.server_addr, "10.9.9.9:50052");
 
     clear_env();
