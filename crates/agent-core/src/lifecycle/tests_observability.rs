@@ -471,6 +471,267 @@ async fn observability_snapshot_tracks_send_failure_degraded_transition_and_queu
     assert_eq!(snapshot.response_action_dedupe_key_count, 1);
 }
 
+#[test]
+fn observability_snapshot_reports_control_plane_queue_churn_totals() {
+    let cfg = AgentConfig::default();
+    let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+    runtime.metrics.control_plane_task_replaced_total = 3;
+    runtime.metrics.control_plane_send_replaced_total = 4;
+    runtime.metrics.control_plane_task_dropped_total = 5;
+    runtime.metrics.control_plane_send_dropped_total = 6;
+    runtime.metrics.response_report_dropped_total = 7;
+
+    let hb_runtime = runtime.build_heartbeat_runtime_payload("learning");
+    runtime
+        .pending_control_plane_sends
+        .push_back(PendingControlPlaneSend::Heartbeat {
+            agent_id: "agent-test".to_string(),
+            compliance_status: "ok".to_string(),
+            config_version: "cfg-v1".to_string(),
+            baseline_status: "learning".to_string(),
+            runtime: hb_runtime,
+        });
+    runtime
+        .pending_response_reports
+        .push_back(PendingResponseReport {
+            envelope: ResponseEnvelope {
+                agent_id: "agent-test".to_string(),
+                action_type: "auto_isolate".to_string(),
+                confidence: "definite".to_string(),
+                success: true,
+                error_message: String::new(),
+                detection_layers: vec!["l5_ml".to_string()],
+                target_process: "proc".to_string(),
+                target_pid: 42,
+                rule_name: "rule".to_string(),
+                threat_category: "malware".to_string(),
+                file_path: None,
+            },
+        });
+
+    let snapshot = runtime.observability_snapshot();
+    assert_eq!(snapshot.control_plane_task_replaced_total, 3);
+    assert_eq!(snapshot.control_plane_send_replaced_total, 4);
+    assert_eq!(snapshot.control_plane_task_dropped_total, 5);
+    assert_eq!(snapshot.control_plane_send_dropped_total, 6);
+    assert_eq!(snapshot.response_report_dropped_total, 7);
+    assert_eq!(snapshot.pending_control_plane_send_count, 1);
+    assert_eq!(snapshot.pending_response_report_count, 1);
+}
+
+#[test]
+fn heartbeat_runtime_status_surfaces_queue_pressure_levels() {
+    let cfg = AgentConfig::default();
+    let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+
+    for i in 0..CONTROL_PLANE_SEND_QUEUE_CAPACITY {
+        runtime
+            .pending_control_plane_sends
+            .push_back(PendingControlPlaneSend::Heartbeat {
+                agent_id: format!("agent-{i}"),
+                compliance_status: "ok".to_string(),
+                config_version: "cfg-v1".to_string(),
+                baseline_status: "active".to_string(),
+                runtime: grpc_client::HeartbeatRuntimeEnvelope::default(),
+            });
+    }
+
+    for i in 0..RESPONSE_REPORT_QUEUE_CAPACITY {
+        runtime
+            .pending_response_reports
+            .push_back(PendingResponseReport {
+                envelope: ResponseEnvelope {
+                    agent_id: format!("agent-{i}"),
+                    action_type: "auto_isolate".to_string(),
+                    confidence: "definite".to_string(),
+                    success: true,
+                    error_message: String::new(),
+                    detection_layers: Vec::new(),
+                    target_process: String::new(),
+                    target_pid: 0,
+                    rule_name: String::new(),
+                    threat_category: String::new(),
+                    file_path: None,
+                },
+            });
+    }
+
+    let hb = runtime.build_heartbeat_runtime_payload("active");
+    assert!(
+        hb.status.last_detection.contains("queue_pressure=critical"),
+        "expected critical control-plane queue pressure, got: {}",
+        hb.status.last_detection
+    );
+    assert!(
+        hb.status.last_detection.contains("send_pressure=critical"),
+        "expected critical send-queue pressure marker, got: {}",
+        hb.status.last_detection
+    );
+    assert!(
+        hb.status.last_detection.contains(&format!(
+            "send_queue={}/{}",
+            CONTROL_PLANE_SEND_QUEUE_CAPACITY, CONTROL_PLANE_SEND_QUEUE_CAPACITY
+        )),
+        "expected full send queue marker, got: {}",
+        hb.status.last_detection
+    );
+    assert!(
+        hb.status
+            .last_response_action
+            .contains("response_pressure=critical"),
+        "expected critical response queue pressure, got: {}",
+        hb.status.last_response_action
+    );
+    assert!(
+        hb.status
+            .last_response_action
+            .contains("report_queue_pressure=critical"),
+        "expected critical response-report pressure marker, got: {}",
+        hb.status.last_response_action
+    );
+    assert!(
+        hb.status.last_response_action.contains(&format!(
+            "report_queue={}/{}",
+            RESPONSE_REPORT_QUEUE_CAPACITY, RESPONSE_REPORT_QUEUE_CAPACITY
+        )),
+        "expected full response-report queue marker, got: {}",
+        hb.status.last_response_action
+    );
+}
+
+#[test]
+fn heartbeat_runtime_status_queue_pressure_thresholds_are_stable() {
+    let cfg = AgentConfig::default();
+    let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+
+    for i in 0..44 {
+        runtime
+            .pending_control_plane_tasks
+            .push_back(PendingControlPlaneTask {
+                kind: ControlPlaneTaskKind::PolicySync,
+                enqueued_at_unix: 1_700_100_000 + i as i64,
+            });
+    }
+
+    for i in 0..89 {
+        runtime
+            .pending_response_actions
+            .push_back(PendingResponseAction {
+                action: PlannedAction::CaptureScript,
+                confidence: Confidence::High,
+                event: detection_event(1_700_100_000 + i as i64, 50_000 + i as u32),
+                txn_key: format!("threshold-{i}"),
+                enqueued_at_unix: 1_700_100_000,
+                detection_layers: Vec::new(),
+                rule_name: String::new(),
+                threat_category: String::new(),
+            });
+    }
+
+    let normal = runtime.build_heartbeat_runtime_payload("active");
+    assert!(
+        normal
+            .status
+            .last_detection
+            .contains("queue_pressure=normal"),
+        "expected normal control-plane pressure below threshold, got: {}",
+        normal.status.last_detection
+    );
+    assert!(
+        normal
+            .status
+            .last_detection
+            .contains("task_pressure=normal"),
+        "expected normal task-queue pressure below threshold, got: {}",
+        normal.status.last_detection
+    );
+    assert!(
+        normal.status.last_detection.contains(&format!(
+            "task_queue={}/{}",
+            44, CONTROL_PLANE_TASK_QUEUE_CAPACITY
+        )),
+        "expected task queue ratio marker, got: {}",
+        normal.status.last_detection
+    );
+    assert!(
+        normal
+            .status
+            .last_response_action
+            .contains("response_pressure=normal"),
+        "expected normal response pressure below threshold, got: {}",
+        normal.status.last_response_action
+    );
+    assert!(
+        normal
+            .status
+            .last_response_action
+            .contains("response_queue_pressure=normal"),
+        "expected normal response-queue pressure below threshold, got: {}",
+        normal.status.last_response_action
+    );
+    assert!(
+        normal
+            .status
+            .last_response_action
+            .contains(&format!("queue_depth={}/{}", 89, RESPONSE_QUEUE_CAPACITY)),
+        "expected response queue ratio marker, got: {}",
+        normal.status.last_response_action
+    );
+
+    runtime
+        .pending_control_plane_tasks
+        .push_back(PendingControlPlaneTask {
+            kind: ControlPlaneTaskKind::PolicySync,
+            enqueued_at_unix: 1_700_100_100,
+        });
+    runtime
+        .pending_response_actions
+        .push_back(PendingResponseAction {
+            action: PlannedAction::CaptureScript,
+            confidence: Confidence::High,
+            event: detection_event(1_700_100_100, 60_000),
+            txn_key: "threshold-elevated".to_string(),
+            enqueued_at_unix: 1_700_100_100,
+            detection_layers: Vec::new(),
+            rule_name: String::new(),
+            threat_category: String::new(),
+        });
+
+    let elevated = runtime.build_heartbeat_runtime_payload("active");
+    assert!(
+        elevated
+            .status
+            .last_detection
+            .contains("queue_pressure=elevated"),
+        "expected elevated control-plane pressure at threshold, got: {}",
+        elevated.status.last_detection
+    );
+    assert!(
+        elevated
+            .status
+            .last_detection
+            .contains("task_pressure=elevated"),
+        "expected elevated task-queue pressure at threshold, got: {}",
+        elevated.status.last_detection
+    );
+    assert!(
+        elevated
+            .status
+            .last_response_action
+            .contains("response_pressure=elevated"),
+        "expected elevated response pressure at threshold, got: {}",
+        elevated.status.last_response_action
+    );
+    assert!(
+        elevated
+            .status
+            .last_response_action
+            .contains("response_queue_pressure=elevated"),
+        "expected elevated response-queue pressure at threshold, got: {}",
+        elevated.status.last_response_action
+    );
+}
+
 #[tokio::test]
 // AC-OBS-002 AC-OBS-003
 async fn observability_snapshot_tracks_self_protect_degraded_transition_once() {
@@ -759,8 +1020,39 @@ async fn async_worker_queue_dispatches_control_plane_sends() {
                 .status
                 .last_detection
                 .contains(&format!("baseline={baseline_status}")));
+            assert!(runtime.status.last_detection.contains("task_replaced="));
+            assert!(runtime.status.last_detection.contains("send_replaced="));
+            assert!(runtime.status.last_detection.contains("task_dropped="));
+            assert!(runtime.status.last_detection.contains("send_dropped="));
+            assert!(runtime.status.last_detection.contains("queue_pressure="));
+            assert!(runtime.status.last_detection.contains("command_pressure="));
+            assert!(runtime.status.last_detection.contains("task_pressure="));
+            assert!(runtime.status.last_detection.contains("send_pressure="));
+            assert!(runtime.status.last_detection.contains("command_queue="));
+            assert!(runtime.status.last_detection.contains("task_queue="));
+            assert!(runtime.status.last_detection.contains("send_queue="));
             assert!(runtime.status.last_response_action.contains("deduped="));
             assert!(runtime.status.last_response_action.contains("dedupe_keys="));
+            assert!(runtime
+                .status
+                .last_response_action
+                .contains("report_dropped="));
+            assert!(runtime
+                .status
+                .last_response_action
+                .contains("response_pressure="));
+            assert!(runtime
+                .status
+                .last_response_action
+                .contains("response_queue_pressure="));
+            assert!(runtime
+                .status
+                .last_response_action
+                .contains("report_queue_pressure="));
+            assert!(runtime
+                .status
+                .last_response_action
+                .contains("report_queue="));
             assert!(runtime.resource_usage.memory_rss_bytes >= 0);
             assert!(runtime.buffered_events >= 0);
         }

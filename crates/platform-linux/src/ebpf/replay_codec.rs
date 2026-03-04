@@ -87,12 +87,18 @@ fn encode_process_exec_payload(v: &serde_json::Value, buf: &mut Vec<u8>) {
     let ppid = v.get("ppid").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
     let cgroup_id = v.get("cgroup_id").and_then(|v| v.as_u64()).unwrap_or(0);
     let comm = v.get("comm").and_then(|v| v.as_str()).unwrap_or("");
+    let parent_comm = v
+        .get("parent_comm")
+        .or_else(|| v.get("parent_process"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let path = v.get("path").and_then(|v| v.as_str()).unwrap_or("");
     let cmdline = v.get("cmdline").and_then(|v| v.as_str()).unwrap_or("");
 
     buf.extend_from_slice(&ppid.to_le_bytes());
     buf.extend_from_slice(&cgroup_id.to_le_bytes());
     push_c_string_padded(buf, comm, 32);
+    push_c_string_padded(buf, parent_comm, 32);
     push_c_string_padded(buf, path, 160);
     push_c_string_padded(buf, cmdline, 160);
 }

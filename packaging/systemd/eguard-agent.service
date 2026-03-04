@@ -2,14 +2,17 @@
 Description=eGuard Endpoint Agent
 After=network-online.target
 Wants=network-online.target
+RefuseManualStop=yes
+StartLimitIntervalSec=0
 
 [Service]
 Type=notify
 ExecStart=/usr/bin/eguard-agent
 Restart=always
-RestartSec=5
+RestartSec=1
 WatchdogSec=30s
 NotifyAccess=main
+TimeoutStopSec=5s
 
 [Install]
 WantedBy=multi-user.target

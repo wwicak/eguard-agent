@@ -102,7 +102,24 @@ impl AgentRuntime {
             .iter_mut()
             .find(|task| task.kind.kind_name() == kind.kind_name())
         {
-            existing.kind = kind;
+            match kind {
+                ControlPlaneTaskKind::Heartbeat { .. }
+                | ControlPlaneTaskKind::Compliance { .. }
+                | ControlPlaneTaskKind::Inventory { .. } => {
+                    if existing.kind == kind {
+                        return;
+                    }
+                    existing.kind = kind;
+                    self.metrics.control_plane_task_replaced_total = self
+                        .metrics
+                        .control_plane_task_replaced_total
+                        .saturating_add(1);
+                }
+                _ => {
+                    // Payloadless tasks are already deduped by kind; keep the original queue entry
+                    // and avoid counting synthetic replacement churn.
+                }
+            }
             return;
         }
 
@@ -113,6 +130,10 @@ impl AgentRuntime {
                 "control-plane queue reached capacity; dropping oldest task"
             );
             self.pending_control_plane_tasks.pop_front();
+            self.metrics.control_plane_task_dropped_total = self
+                .metrics
+                .control_plane_task_dropped_total
+                .saturating_add(1);
         }
 
         self.pending_control_plane_tasks
@@ -226,6 +247,7 @@ impl ControlPlaneTaskKind {
 mod tests {
     use super::*;
     use crate::config::AgentConfig;
+    use compliance::ComplianceResult;
 
     fn new_runtime() -> AgentRuntime {
         let mut cfg = AgentConfig::default();
@@ -255,6 +277,7 @@ mod tests {
         );
 
         assert_eq!(runtime.pending_control_plane_tasks.len(), 1);
+        assert_eq!(runtime.metrics.control_plane_task_replaced_total, 1);
         let task = runtime
             .pending_control_plane_tasks
             .front()
@@ -270,6 +293,29 @@ mod tests {
             }
             other => panic!("expected heartbeat task, got {}", other.kind_name()),
         }
+    }
+
+    #[test]
+    fn reenqueue_heartbeat_same_payload_is_noop_for_replacement_counter() {
+        let mut runtime = new_runtime();
+
+        runtime.try_enqueue_control_plane_task(
+            ControlPlaneTaskKind::Heartbeat {
+                compliance_status: "ok".to_string(),
+                baseline_status: "active".to_string(),
+            },
+            1_700_000_000,
+        );
+        runtime.try_enqueue_control_plane_task(
+            ControlPlaneTaskKind::Heartbeat {
+                compliance_status: "ok".to_string(),
+                baseline_status: "active".to_string(),
+            },
+            1_700_000_120,
+        );
+
+        assert_eq!(runtime.pending_control_plane_tasks.len(), 1);
+        assert_eq!(runtime.metrics.control_plane_task_replaced_total, 0);
     }
 
     #[test]
@@ -293,6 +339,7 @@ mod tests {
         );
 
         assert_eq!(runtime.pending_control_plane_tasks.len(), 1);
+        assert_eq!(runtime.metrics.control_plane_task_replaced_total, 1);
         let task = runtime
             .pending_control_plane_tasks
             .front()
@@ -304,5 +351,65 @@ mod tests {
             }
             other => panic!("expected inventory task, got {}", other.kind_name()),
         }
+    }
+
+    #[test]
+    fn queue_capacity_drop_increments_task_dropped_counter() {
+        let mut runtime = new_runtime();
+        runtime.pending_control_plane_tasks.clear();
+        runtime.metrics.control_plane_task_dropped_total = 0;
+
+        for i in 0..CONTROL_PLANE_TASK_QUEUE_CAPACITY {
+            runtime
+                .pending_control_plane_tasks
+                .push_back(PendingControlPlaneTask {
+                    kind: ControlPlaneTaskKind::Heartbeat {
+                        compliance_status: format!("status-{i}"),
+                        baseline_status: "learning".to_string(),
+                    },
+                    enqueued_at_unix: 1_700_000_000 + i as i64,
+                });
+        }
+
+        runtime.try_enqueue_control_plane_task(
+            ControlPlaneTaskKind::Compliance {
+                compliance: ComplianceResult {
+                    status: "ok".to_string(),
+                    detail: "ok".to_string(),
+                    checks: Vec::new(),
+                },
+            },
+            1_700_000_500,
+        );
+
+        assert_eq!(
+            runtime.pending_control_plane_tasks.len(),
+            CONTROL_PLANE_TASK_QUEUE_CAPACITY
+        );
+        assert_eq!(runtime.metrics.control_plane_task_dropped_total, 1);
+        assert!(matches!(
+            runtime.pending_control_plane_tasks.back(),
+            Some(PendingControlPlaneTask {
+                kind: ControlPlaneTaskKind::Compliance { .. },
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn reenqueue_payloadless_task_does_not_increment_replacement_counter() {
+        let mut runtime = new_runtime();
+
+        runtime.try_enqueue_control_plane_task(ControlPlaneTaskKind::CommandSync, 1_700_000_000);
+        runtime.try_enqueue_control_plane_task(ControlPlaneTaskKind::CommandSync, 1_700_000_120);
+
+        assert_eq!(runtime.pending_control_plane_tasks.len(), 1);
+        assert_eq!(runtime.metrics.control_plane_task_replaced_total, 0);
+        let task = runtime
+            .pending_control_plane_tasks
+            .front()
+            .expect("queued command sync");
+        assert_eq!(task.enqueued_at_unix, 1_700_000_000);
+        assert!(matches!(task.kind, ControlPlaneTaskKind::CommandSync));
     }
 }

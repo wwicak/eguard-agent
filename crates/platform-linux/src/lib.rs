@@ -416,9 +416,14 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
     let mut parent_chain = entry.parent_chain.clone();
     if parent_chain.is_empty() {
         if let Some(ppid) = payload_meta.ppid {
-            parent_chain = vec![ppid];
+            parent_chain = collect_parent_chain_from_ppid(ppid, MAX_PARENT_CHAIN_DEPTH);
         }
     }
+
+    let parent_process = entry
+        .parent_process
+        .or_else(|| payload_meta.parent_process_hint.clone())
+        .or_else(|| parent_chain.first().and_then(|pid| read_process_name(*pid)));
 
     // Container detection: extract runtime and ID from cgroup
     let (container_runtime, container_id, container_escape, container_privileged) = {
@@ -452,7 +457,7 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
         process_exe,
         process_exe_sha256,
         process_cmdline: entry.process_cmdline.or(payload_meta.command_line_hint),
-        parent_process: entry.parent_process,
+        parent_process,
         parent_chain,
         file_path: payload_meta.file_path.or(payload_meta.file_path_secondary),
         file_path_secondary: None,
@@ -508,6 +513,7 @@ struct PayloadMetadata {
     file_path: Option<String>,
     file_path_secondary: Option<String>,
     command_line_hint: Option<String>,
+    parent_process_hint: Option<String>,
     ppid: Option<u32>,
     dst_ip: Option<String>,
     dst_port: Option<u16>,
@@ -542,6 +548,10 @@ fn parse_payload_metadata(event_type: &EventType, payload: &str) -> PayloadMetad
             .cloned()
             .or_else(|| fields.get("command_line").cloned())
             .or_else(|| fields.get("subject").cloned()),
+        parent_process_hint: fields
+            .get("parent_comm")
+            .cloned()
+            .or_else(|| fields.get("parent_process").cloned()),
         ppid: fields
             .get("ppid")
             .and_then(|value| value.parse::<u32>().ok()),
@@ -752,6 +762,27 @@ fn collect_parent_chain(pid: u32, depth: usize) -> Vec<u32> {
         out.push(ppid);
         current = ppid;
     }
+    out
+}
+
+fn collect_parent_chain_from_ppid(ppid: u32, depth: usize) -> Vec<u32> {
+    if ppid == 0 {
+        return Vec::new();
+    }
+
+    let mut out = vec![ppid];
+    let mut current = ppid;
+    for _ in 1..depth {
+        let Some(next_ppid) = read_ppid(current) else {
+            break;
+        };
+        if next_ppid == 0 || next_ppid == current {
+            break;
+        }
+        out.push(next_ppid);
+        current = next_ppid;
+    }
+
     out
 }
 

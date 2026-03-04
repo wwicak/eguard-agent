@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-CONTRACT_VERSION = "v1"
+CONTRACT_VERSION = "v2"
 
 FEATURES: tuple[str, ...] = (
     "z1_ioc_hit",
@@ -38,6 +38,34 @@ FEATURES: tuple[str, ...] = (
     "z1_z2_interaction",
     "z1_z4_interaction",
     "anomaly_behavioral",
+    # Process tree / lineage
+    "process_tree_depth_norm",
+    "rare_parent_child_pair",
+    "parent_cmdline_hash_risk",
+    "parent_child_cmdline_distance",
+    "sibling_spawn_burst_norm",
+    # File mutation behavior
+    "sensitive_path_write_velocity",
+    "rename_churn_norm",
+    "extension_entropy",
+    "executable_write_ratio",
+    "temp_to_system_write_ratio",
+    # Network graph / beaconing
+    "conn_fanout_norm",
+    "unique_dst_ip_norm",
+    "unique_dst_port_norm",
+    "beacon_periodicity_score",
+    "network_graph_centrality",
+    # Credential access indicators
+    "credential_access_indicator",
+    "lsass_access_indicator",
+    "sam_access_indicator",
+    "token_theft_indicator",
+    "lolbin_credential_chain",
+    # Cross-domain interactions
+    "network_credential_interaction",
+    "tree_network_interaction",
+    "file_behavior_interaction",
 )
 
 

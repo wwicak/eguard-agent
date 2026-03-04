@@ -1,5 +1,5 @@
 [server]
 address = eguard.example.com
-grpc_port = 50051
+grpc_port = 50053
 enrollment_token = replace-with-one-time-token
 tenant_id = default

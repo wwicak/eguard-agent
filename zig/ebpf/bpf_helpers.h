@@ -17,6 +17,23 @@ typedef unsigned long long  __u64;
 typedef long long           __s64;
 typedef int                 __s32;
 
+#ifndef __has_attribute
+#define __has_attribute(x) 0
+#endif
+
+#if __has_attribute(preserve_access_index)
+#define __preserve_access_index __attribute__((preserve_access_index))
+#else
+#define __preserve_access_index
+#endif
+
+/* Minimal CO-RE-aware task struct subset used for parent process attribution. */
+struct task_struct {
+    struct task_struct *real_parent;
+    __u32 tgid;
+    char comm[16];
+} __preserve_access_index;
+
 /* ── Section / map macros (libbpf BTF-style) ───────────────── */
 #define SEC(name) __attribute__((section(name), used))
 #define __uint(field, val) int (*field)[val]
@@ -38,6 +55,8 @@ static __u64 (*bpf_get_current_uid_gid)(void) =
     (__u64 (*)(void))(long)15;
 static long (*bpf_get_current_comm)(void *, __u32) =
     (long (*)(void *, __u32))(long)16;
+static void *(*bpf_get_current_task)(void) =
+    (void *(*)(void))(long)35;
 static __u64 (*bpf_get_current_cgroup_id)(void) =
     (__u64 (*)(void))(long)80;
 static long (*bpf_probe_read_user)(void *, __u32, const void *) =

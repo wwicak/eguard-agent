@@ -889,6 +889,8 @@ jobs:
             --output-summary bundle/signature-ml-training-corpus-summary.json \
             --sample-count 960 \
             --window-days 60 \
+            --external-first 1 \
+            --max-synthetic-ratio 0.4 \
             "${EXTRA_ARGS[@]}"
 
       - name: Validate signature ML label quality (shadow)
@@ -936,23 +938,27 @@ jobs:
             --min-temporal-span-days "${EGUARD_ML_FEATURE_MIN_SPAN_DAYS}" \
             --fail-on-threshold "${EGUARD_ML_FEATURE_FAIL_ON_THRESHOLD}"
 
-      - name: Train signature ML model artifact
+      - name: Train signature ML tree model artifact
         env:
-          EGUARD_ML_TRAIN_RESOURCE_PROFILE: "auto"
-          EGUARD_ML_TRAIN_MAX_SAMPLES: "0"
-          EGUARD_ML_TRAIN_CV_FOLDS: "5"
-          EGUARD_ML_TRAIN_L2_GRID_POINTS: "6"
+          EGUARD_ML_TREE_COUNT: "48"
+          EGUARD_ML_TREE_LEARNING_RATE: "0.15"
+          EGUARD_ML_TREE_L2: "1.0"
+          EGUARD_ML_TREE_THRESHOLD_BINS: "12"
+          EGUARD_ML_TREE_MIN_GAIN: "0.000001"
+          EGUARD_ML_MIN_PRECISION: "0.75"
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          python threat-intel/processing/signature_ml_train_model.py \
+          python threat-intel/processing/signature_ml_train_tree_model.py \
             --dataset bundle/signature-ml-features.ndjson \
             --feature-schema bundle/signature-ml-feature-schema.json \
             --labels-report bundle/signature-ml-label-quality-report.json \
             --model-version "rules-${VERSION}.ml.v1" \
-            --resource-profile "${EGUARD_ML_TRAIN_RESOURCE_PROFILE}" \
-            --max-samples "${EGUARD_ML_TRAIN_MAX_SAMPLES}" \
-            --cv-folds "${EGUARD_ML_TRAIN_CV_FOLDS}" \
-            --l2-grid-points "${EGUARD_ML_TRAIN_L2_GRID_POINTS}" \
+            --trees "${EGUARD_ML_TREE_COUNT}" \
+            --learning-rate "${EGUARD_ML_TREE_LEARNING_RATE}" \
+            --l2 "${EGUARD_ML_TREE_L2}" \
+            --threshold-bins "${EGUARD_ML_TREE_THRESHOLD_BINS}" \
+            --min-gain "${EGUARD_ML_TREE_MIN_GAIN}" \
+            --min-precision "${EGUARD_ML_MIN_PRECISION}" \
             --model-out bundle/signature-ml-model.json \
             --metadata-out bundle/signature-ml-model-metadata.json
 
@@ -1019,6 +1025,23 @@ jobs:
             --min-window-pass-rate "${EGUARD_ML_EVAL_TREND_MIN_PASS_RATE}" \
             --fail-on-regression "${EGUARD_ML_EVAL_TREND_FAIL_ON_REGRESSION}"
 
+      - name: Run signature ML adversarial robustness gate
+        continue-on-error: true
+        env:
+          EGUARD_ML_ADV_MAX_RECALL_DROP: "0.10"
+          EGUARD_ML_ADV_MAX_PR_DROP: "0.12"
+          EGUARD_ML_ADV_MIN_POSITIVE: "120"
+          EGUARD_ML_ADV_FAIL_ON_THRESHOLD: "0"
+        run: |
+          python threat-intel/processing/signature_ml_adversarial_eval_gate.py \
+            --dataset bundle/signature-ml-features.ndjson \
+            --model bundle/signature-ml-model.json \
+            --output bundle/signature-ml-adversarial-eval-report.json \
+            --max-recall-drop "${EGUARD_ML_ADV_MAX_RECALL_DROP}" \
+            --max-pr-auc-drop "${EGUARD_ML_ADV_MAX_PR_DROP}" \
+            --min-positive-samples "${EGUARD_ML_ADV_MIN_POSITIVE}" \
+            --fail-on-threshold "${EGUARD_ML_ADV_FAIL_ON_THRESHOLD}"
+
       - name: Sign signature ML model artifact
         run: |
           TMP_KEY="$(mktemp /tmp/eguard-ml-model-key.XXXXXX.pem)"
@@ -1044,6 +1067,7 @@ jobs:
             --metadata bundle/signature-ml-model-metadata.json \
             --offline-eval bundle/signature-ml-offline-eval-report.json \
             --offline-eval-trend-report bundle/signature-ml-offline-eval-trend-report.json \
+            --adversarial-report bundle/signature-ml-adversarial-eval-report.json \
             --feature-schema bundle/signature-ml-feature-schema.json \
             --labels-report bundle/signature-ml-label-quality-report.json \
             --signature-file bundle/signature-ml-model.json.sig \
@@ -1054,6 +1078,7 @@ jobs:
             --require-signed-model 1 \
             --verify-signature 1 \
             --require-offline-eval-trend-pass 1 \
+            --require-adversarial-pass 1 \
             --fail-on-threshold "${EGUARD_ML_REGISTRY_FAIL_ON_THRESHOLD}"
 
       - name: Summarize ML regression budgets
@@ -1214,6 +1239,7 @@ jobs:
             bundle/signature-ml-offline-eval-report.json
             bundle/signature-ml-offline-eval-trend.ndjson
             bundle/signature-ml-offline-eval-trend-report.json
+            bundle/signature-ml-adversarial-eval-report.json
             bundle/signature-ml-model-registry.json
           retention-days: ${{ env.EGUARD_ML_TREND_RETENTION_DAYS }}
 
@@ -1291,8 +1317,9 @@ jobs:
           if missing:
               print(f"FAIL: ML model missing required fields: {missing}")
               sys.exit(1)
-          if model.get("suite") != "signature_ml_linear_logit_model":
-              print(f"FAIL: unexpected suite: {model.get('suite')}")
+          suite = model.get("suite")
+          if suite not in {"signature_ml_linear_logit_model", "signature_ml_tree_ensemble_model"}:
+              print(f"FAIL: unexpected suite: {suite}")
               sys.exit(1)
           feature_count = len(model.get("features", []))
           weight_count = len(model.get("weights", {}))
@@ -1302,6 +1329,12 @@ jobs:
           if weight_count != feature_count:
               print(f"FAIL: feature/weight mismatch: {feature_count} features vs {weight_count} weights")
               sys.exit(1)
+          model_type = str(model.get("model_type", "")).lower()
+          if "tree" in model_type or "gbdt" in model_type:
+              trees = model.get("trees", [])
+              if not isinstance(trees, list) or len(trees) == 0:
+                  print("FAIL: tree model_type declared but trees[] missing")
+                  sys.exit(1)
           # Verify the 20 runtime features are present
           RUNTIME_FEATURES = [
               "z1_ioc_hit", "z2_temporal_count", "z3_anomaly_high", "z3_anomaly_med",
@@ -1820,6 +1853,7 @@ jobs:
             "bundle/signature-ml-offline-eval-report.json" \
             "bundle/signature-ml-offline-eval-trend.ndjson" \
             "bundle/signature-ml-offline-eval-trend-report.json" \
+            "bundle/signature-ml-adversarial-eval-report.json" \
             "bundle/signature-ml-model-registry.json" \
             --title "Rule Bundle ${VERSION}" \
             --notes-file /tmp/release_notes.md

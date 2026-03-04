@@ -1128,3 +1128,20 @@ Generalize performance optimizations into a shared internal architecture so endp
 - [ ] Collect package URL + checksum for update payload.
 - [ ] Perform WebGUI-driven agent update flow via browser automation (human-like steps) and capture evidence.
 - [ ] Report step-by-step outcome and final status.
+
+---
+
+## P0 hardening + telemetry recovery + dashboard wiring (2026-03-04)
+
+### Plan
+- [x] Scope affected code paths in `eguard-agent` and `fe_eguard` for the reported P0 failures.
+- [x] Implement transport resilience updates (installer/bootstrap defaults + retry budget + alternate 50052/50053 gRPC fallback).
+- [x] Implement Linux anti-tamper hardening updates (systemd watchdog-ready unit, manual-stop refusal, SIGTERM tamper alert emission).
+- [x] Fix Linux parent attribution reliability (`process_exec` probe parent metadata + userspace fallback enrichment) with regression tests.
+- [x] Fix dashboard API compatibility (`/api/v1/ml-ops/summary` alias + frontend payload normalization for detection/ML ops).
+- [x] Run targeted validation suites (Rust platform/grpc/agent-core + Go ml-ops server tests).
+- [ ] Deploy to isolated environment and execute real-condition attack simulation + UI visual verification.
+
+### Review
+- Local implementation and targeted test validation completed.
+- Deployment + live-environment validation pending.

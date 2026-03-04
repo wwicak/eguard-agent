@@ -582,6 +582,94 @@ def main() -> int:
         z1_z4_interaction = z1_ioc_hit * z4_killchain_count
         anomaly_behavioral = z3_anomaly_high * multi_layer_count
 
+        # Process tree / lineage features
+        process_tree_depth_norm = _clamp(
+            0.2 + 0.55 * _rand01(seed_prefix + "|tree_depth") + 0.1 * severity / 5.0,
+            0.0,
+            1.0,
+        )
+        rare_parent_child_pair = 1.0 if _rand01(seed_prefix + "|rare_pair") < (0.08 + 0.16 * attack_norm) else 0.0
+        parent_cmdline_hash_risk = _clamp(
+            0.10 + 0.60 * _rand01(seed_prefix + "|parent_hash") + 0.15 * (1 - readiness_norm),
+            0.0,
+            1.0,
+        )
+        parent_child_cmdline_distance = _clamp(
+            0.2 + 0.5 * _rand01(seed_prefix + "|pc_distance") + 0.15 * source_norm,
+            0.0,
+            1.0,
+        )
+        sibling_spawn_burst_norm = _clamp(
+            int(_rand01(seed_prefix + "|sibling_spawn") * (2 + severity * 1.2)) / 8.0,
+            0.0,
+            1.0,
+        )
+
+        # File mutation behavior
+        sensitive_path_write_velocity = _clamp(
+            int(_rand01(seed_prefix + "|sensitive_write") * (2 + severity * 1.4 + critical_norm * 3.0)) / 10.0,
+            0.0,
+            1.0,
+        )
+        rename_churn_norm = _clamp(
+            int(_rand01(seed_prefix + "|rename_churn") * (2 + severity)) / 8.0,
+            0.0,
+            1.0,
+        )
+        extension_entropy = _clamp(
+            0.15 + 0.65 * _rand01(seed_prefix + "|extension_entropy") + 0.05 * severity / 5.0,
+            0.0,
+            1.0,
+        )
+        executable_write_ratio = _clamp(
+            0.05 + 0.60 * _rand01(seed_prefix + "|exec_write") + 0.10 * attack_norm,
+            0.0,
+            1.0,
+        )
+        temp_to_system_write_ratio = _clamp(
+            0.1 + 0.65 * _rand01(seed_prefix + "|tmp_to_sys") + 0.1 * source_norm,
+            0.0,
+            1.0,
+        )
+
+        # Network graph / beaconing
+        conn_fanout_norm = _clamp(
+            int(_rand01(seed_prefix + "|fanout") * (2 + severity * 1.6 + attack_norm * 4.0)) / 12.0,
+            0.0,
+            1.0,
+        )
+        unique_dst_ip_norm = _clamp(
+            int(_rand01(seed_prefix + "|dst_ip") * (2 + severity * 1.3 + attack_norm * 3.0)) / 12.0,
+            0.0,
+            1.0,
+        )
+        unique_dst_port_norm = _clamp(
+            int(_rand01(seed_prefix + "|dst_port") * (2 + severity * 1.2 + source_norm * 2.0)) / 12.0,
+            0.0,
+            1.0,
+        )
+        beacon_periodicity_score = _clamp(
+            0.05 + 0.8 * _rand01(seed_prefix + "|beacon") * (0.3 + attack_norm),
+            0.0,
+            1.0,
+        )
+        network_graph_centrality = _clamp(
+            0.05 + 0.7 * _rand01(seed_prefix + "|net_centrality") + 0.1 * severity / 5.0,
+            0.0,
+            1.0,
+        )
+
+        # Credential access indicators
+        credential_access_indicator = 1.0 if _rand01(seed_prefix + "|cred_access") < (0.05 + 0.14 * attack_norm) else 0.0
+        lsass_access_indicator = 1.0 if _rand01(seed_prefix + "|lsass") < (0.02 + 0.10 * attack_norm) else 0.0
+        sam_access_indicator = 1.0 if _rand01(seed_prefix + "|sam") < (0.02 + 0.09 * attack_norm) else 0.0
+        token_theft_indicator = 1.0 if _rand01(seed_prefix + "|token_theft") < (0.02 + 0.08 * attack_norm) else 0.0
+        lolbin_credential_chain = 1.0 if _rand01(seed_prefix + "|lolbin_cred") < (0.03 + 0.10 * attack_norm) else 0.0
+
+        network_credential_interaction = conn_fanout_norm * credential_access_indicator
+        tree_network_interaction = process_tree_depth_norm * conn_fanout_norm
+        file_behavior_interaction = sensitive_path_write_velocity * behavioral_alarm_count
+
         linear = (
             -3.10
             + 2.25 * z1_ioc_hit
@@ -604,6 +692,29 @@ def main() -> int:
             + 0.5 * z1_z2_interaction
             + 0.4 * z1_z4_interaction
             + 0.3 * anomaly_behavioral
+            + 0.25 * process_tree_depth_norm
+            + 0.35 * rare_parent_child_pair
+            + 0.22 * parent_cmdline_hash_risk
+            + 0.20 * parent_child_cmdline_distance
+            + 0.18 * sibling_spawn_burst_norm
+            + 0.34 * sensitive_path_write_velocity
+            + 0.24 * rename_churn_norm
+            + 0.20 * extension_entropy
+            + 0.23 * executable_write_ratio
+            + 0.20 * temp_to_system_write_ratio
+            + 0.30 * conn_fanout_norm
+            + 0.22 * unique_dst_ip_norm
+            + 0.20 * unique_dst_port_norm
+            + 0.28 * beacon_periodicity_score
+            + 0.20 * network_graph_centrality
+            + 0.50 * credential_access_indicator
+            + 0.42 * lsass_access_indicator
+            + 0.32 * sam_access_indicator
+            + 0.30 * token_theft_indicator
+            + 0.26 * lolbin_credential_chain
+            + 0.35 * network_credential_interaction
+            + 0.24 * tree_network_interaction
+            + 0.22 * file_behavior_interaction
             + (_rand01(seed_prefix + "|noise") - 0.5) * 0.6
         )
         model_score = _clamp(_score_to_probability(linear), 0.001, 0.999)
@@ -651,6 +762,29 @@ def main() -> int:
                 "z1_z2_interaction": round(z1_z2_interaction, 6),
                 "z1_z4_interaction": round(z1_z4_interaction, 6),
                 "anomaly_behavioral": round(anomaly_behavioral, 6),
+                "process_tree_depth_norm": round(process_tree_depth_norm, 6),
+                "rare_parent_child_pair": round(rare_parent_child_pair, 6),
+                "parent_cmdline_hash_risk": round(parent_cmdline_hash_risk, 6),
+                "parent_child_cmdline_distance": round(parent_child_cmdline_distance, 6),
+                "sibling_spawn_burst_norm": round(sibling_spawn_burst_norm, 6),
+                "sensitive_path_write_velocity": round(sensitive_path_write_velocity, 6),
+                "rename_churn_norm": round(rename_churn_norm, 6),
+                "extension_entropy": round(extension_entropy, 6),
+                "executable_write_ratio": round(executable_write_ratio, 6),
+                "temp_to_system_write_ratio": round(temp_to_system_write_ratio, 6),
+                "conn_fanout_norm": round(conn_fanout_norm, 6),
+                "unique_dst_ip_norm": round(unique_dst_ip_norm, 6),
+                "unique_dst_port_norm": round(unique_dst_port_norm, 6),
+                "beacon_periodicity_score": round(beacon_periodicity_score, 6),
+                "network_graph_centrality": round(network_graph_centrality, 6),
+                "credential_access_indicator": round(credential_access_indicator, 6),
+                "lsass_access_indicator": round(lsass_access_indicator, 6),
+                "sam_access_indicator": round(sam_access_indicator, 6),
+                "token_theft_indicator": round(token_theft_indicator, 6),
+                "lolbin_credential_chain": round(lolbin_credential_chain, 6),
+                "network_credential_interaction": round(network_credential_interaction, 6),
+                "tree_network_interaction": round(tree_network_interaction, 6),
+                "file_behavior_interaction": round(file_behavior_interaction, 6),
             }
         )
 

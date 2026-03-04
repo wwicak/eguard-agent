@@ -16,7 +16,14 @@ impl AgentRuntime {
             .iter_mut()
             .find(|existing| control_plane_send_kind(existing) == kind)
         {
+            if existing == &send {
+                return;
+            }
             *existing = send;
+            self.metrics.control_plane_send_replaced_total = self
+                .metrics
+                .control_plane_send_replaced_total
+                .saturating_add(1);
             return;
         }
 
@@ -27,6 +34,10 @@ impl AgentRuntime {
                 "control-plane send queue reached capacity; dropping oldest pending send"
             );
             self.pending_control_plane_sends.pop_front();
+            self.metrics.control_plane_send_dropped_total = self
+                .metrics
+                .control_plane_send_dropped_total
+                .saturating_add(1);
         }
 
         self.pending_control_plane_sends.push_back(send);
@@ -40,6 +51,8 @@ impl AgentRuntime {
                 "response report queue reached capacity; dropping oldest pending report"
             );
             self.pending_response_reports.pop_front();
+            self.metrics.response_report_dropped_total =
+                self.metrics.response_report_dropped_total.saturating_add(1);
         }
 
         self.pending_response_reports
@@ -226,6 +239,34 @@ mod tests {
         }
     }
 
+    fn response_report(action_type: &str) -> ResponseEnvelope {
+        ResponseEnvelope {
+            agent_id: "agent-1".to_string(),
+            action_type: action_type.to_string(),
+            confidence: "high".to_string(),
+            success: true,
+            error_message: String::new(),
+            detection_layers: vec!["l5_ml".to_string()],
+            target_process: "proc".to_string(),
+            target_pid: 42,
+            rule_name: "rule-a".to_string(),
+            threat_category: "malware".to_string(),
+            file_path: None,
+        }
+    }
+
+    #[test]
+    fn enqueue_control_plane_send_same_payload_is_noop_for_replacement_counter() {
+        let mut runtime = new_runtime();
+
+        let heartbeat = heartbeat_send("cfg-old", "learning");
+        runtime.enqueue_control_plane_send(heartbeat.clone());
+        runtime.enqueue_control_plane_send(heartbeat);
+
+        assert_eq!(runtime.pending_control_plane_sends.len(), 1);
+        assert_eq!(runtime.metrics.control_plane_send_replaced_total, 0);
+    }
+
     #[test]
     fn enqueue_control_plane_send_replaces_heartbeat_payload_without_queue_growth() {
         let mut runtime = new_runtime();
@@ -234,6 +275,7 @@ mod tests {
         runtime.enqueue_control_plane_send(heartbeat_send("cfg-new", "active"));
 
         assert_eq!(runtime.pending_control_plane_sends.len(), 1);
+        assert_eq!(runtime.metrics.control_plane_send_replaced_total, 1);
         let heartbeat = runtime
             .pending_control_plane_sends
             .front()
@@ -283,6 +325,7 @@ mod tests {
         });
 
         assert_eq!(runtime.pending_control_plane_sends.len(), 3);
+        assert_eq!(runtime.metrics.control_plane_send_replaced_total, 1);
         assert!(matches!(
             runtime.pending_control_plane_sends.get(0),
             Some(PendingControlPlaneSend::Heartbeat {
@@ -299,5 +342,62 @@ mod tests {
             runtime.pending_control_plane_sends.get(2),
             Some(PendingControlPlaneSend::Inventory { envelope }) if envelope.hostname == "host"
         ));
+    }
+
+    #[test]
+    fn queue_capacity_drop_increments_send_dropped_counter() {
+        let mut runtime = new_runtime();
+        runtime.pending_control_plane_sends.clear();
+        runtime.metrics.control_plane_send_dropped_total = 0;
+
+        for i in 0..CONTROL_PLANE_SEND_QUEUE_CAPACITY {
+            runtime
+                .pending_control_plane_sends
+                .push_back(heartbeat_send(&format!("cfg-{i}"), "learning"));
+        }
+
+        runtime.enqueue_control_plane_send(compliance_send("warn"));
+
+        assert_eq!(
+            runtime.pending_control_plane_sends.len(),
+            CONTROL_PLANE_SEND_QUEUE_CAPACITY
+        );
+        assert_eq!(runtime.metrics.control_plane_send_dropped_total, 1);
+        assert!(matches!(
+            runtime.pending_control_plane_sends.back(),
+            Some(PendingControlPlaneSend::Compliance { envelope }) if envelope.status == "warn"
+        ));
+    }
+
+    #[test]
+    fn queue_capacity_drop_increments_response_report_dropped_counter() {
+        let mut runtime = new_runtime();
+        runtime.pending_response_reports.clear();
+        runtime.metrics.response_report_dropped_total = 0;
+
+        for i in 0..RESPONSE_REPORT_QUEUE_CAPACITY {
+            runtime
+                .pending_response_reports
+                .push_back(PendingResponseReport {
+                    envelope: response_report(&format!("action-{i}")),
+                });
+        }
+
+        runtime.enqueue_response_report(response_report("action-new"));
+
+        assert_eq!(
+            runtime.pending_response_reports.len(),
+            RESPONSE_REPORT_QUEUE_CAPACITY
+        );
+        assert_eq!(runtime.metrics.response_report_dropped_total, 1);
+        assert_eq!(
+            runtime
+                .pending_response_reports
+                .back()
+                .expect("queued response report")
+                .envelope
+                .action_type,
+            "action-new"
+        );
     }
 }

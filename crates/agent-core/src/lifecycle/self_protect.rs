@@ -102,6 +102,39 @@ impl AgentRuntime {
         Ok(())
     }
 
+    pub(crate) async fn report_shutdown_tamper(
+        &mut self,
+        now_unix: i64,
+        signal_name: &str,
+    ) -> Result<()> {
+        let payload = json!({
+            "rule_name": "agent_stop_tamper",
+            "severity": "critical",
+            "timestamp": now_unix,
+            "signal": signal_name,
+            "detail": "agent received termination signal; restart is expected under self-protection",
+        })
+        .to_string();
+
+        let alert = EventEnvelope {
+            agent_id: self.config.agent_id.clone(),
+            event_type: "alert".to_string(),
+            severity: "critical".to_string(),
+            rule_name: "agent_stop_tamper".to_string(),
+            payload_json: payload,
+            created_at_unix: now_unix,
+        };
+
+        self.buffer.enqueue(alert)?;
+        warn!(
+            signal = signal_name,
+            pending = self.buffer.pending_count(),
+            "recorded shutdown tamper alert into local buffer for post-restart delivery"
+        );
+
+        Ok(())
+    }
+
     pub(super) fn self_protect_alert_payload(
         &self,
         report: &SelfProtectReport,

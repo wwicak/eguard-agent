@@ -83,7 +83,7 @@ if [[ -n "${TOKEN}" ]]; then
   (umask 077; {
     printf '[server]\n'
     printf 'address = %s\n' "${SERVER}"
-    printf 'grpc_port = 50052\n'
+    printf 'grpc_port = 50053\n'
     printf 'enrollment_token = %s\n' "${TOKEN}"
   } > /etc/eguard-agent/bootstrap.conf)
   chmod 0600 /etc/eguard-agent/bootstrap.conf

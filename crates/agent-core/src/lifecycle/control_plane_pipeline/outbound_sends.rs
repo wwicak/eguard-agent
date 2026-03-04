@@ -5,7 +5,9 @@ use grpc_client::{
 };
 
 use super::super::{
-    interval_due, AgentRuntime, ComplianceResult, PendingControlPlaneSend, HEARTBEAT_INTERVAL_SECS,
+    interval_due, AgentRuntime, ComplianceResult, PendingControlPlaneSend,
+    COMMAND_BACKLOG_CAPACITY, CONTROL_PLANE_SEND_QUEUE_CAPACITY, CONTROL_PLANE_TASK_QUEUE_CAPACITY,
+    HEARTBEAT_INTERVAL_SECS, RESPONSE_QUEUE_CAPACITY, RESPONSE_REPORT_QUEUE_CAPACITY,
 };
 
 impl AgentRuntime {
@@ -52,6 +54,31 @@ impl AgentRuntime {
         let response_cfg = self.effective_response_config();
         let report = self.last_reload_report.as_ref();
 
+        let command_pressure_grade =
+            queue_pressure_grade(snapshot.pending_command_count, COMMAND_BACKLOG_CAPACITY);
+        let task_pressure_grade = queue_pressure_grade(
+            snapshot.pending_control_plane_task_count,
+            CONTROL_PLANE_TASK_QUEUE_CAPACITY,
+        );
+        let send_pressure_grade = queue_pressure_grade(
+            snapshot.pending_control_plane_send_count,
+            CONTROL_PLANE_SEND_QUEUE_CAPACITY,
+        );
+        let control_plane_pressure = queue_pressure_label(
+            command_pressure_grade
+                .max(task_pressure_grade)
+                .max(send_pressure_grade),
+        );
+
+        let response_queue_pressure_grade =
+            queue_pressure_grade(snapshot.pending_response_count, RESPONSE_QUEUE_CAPACITY);
+        let report_queue_pressure_grade = queue_pressure_grade(
+            snapshot.pending_response_report_count,
+            RESPONSE_REPORT_QUEUE_CAPACITY,
+        );
+        let response_pressure =
+            queue_pressure_label(response_queue_pressure_grade.max(report_queue_pressure_grade));
+
         HeartbeatRuntimeEnvelope {
             status: HeartbeatAgentStatusEnvelope {
                 mode: snapshot.runtime_mode.clone(),
@@ -60,19 +87,40 @@ impl AgentRuntime {
                 active_yara_rules: report.map(|r| r.yara_rules as i64).unwrap_or_default(),
                 active_ioc_entries: report.map(|r| r.ioc_entries as i64).unwrap_or_default(),
                 last_detection: format!(
-                    "tick={} strict_budget={} backlog={} txn_keys={} baseline={}",
+                    "tick={} strict_budget={} backlog={} txn_keys={} baseline={} task_replaced={} send_replaced={} task_dropped={} send_dropped={} queue_pressure={} command_pressure={} task_pressure={} send_pressure={} command_queue={}/{} task_queue={}/{} send_queue={}/{}",
                     snapshot.tick_count,
                     snapshot.strict_budget_mode,
                     snapshot.raw_event_backlog_depth,
                     snapshot.event_txn_coalesce_key_count,
-                    baseline_status
+                    baseline_status,
+                    snapshot.control_plane_task_replaced_total,
+                    snapshot.control_plane_send_replaced_total,
+                    snapshot.control_plane_task_dropped_total,
+                    snapshot.control_plane_send_dropped_total,
+                    control_plane_pressure,
+                    queue_pressure_label(command_pressure_grade),
+                    queue_pressure_label(task_pressure_grade),
+                    queue_pressure_label(send_pressure_grade),
+                    snapshot.pending_command_count,
+                    COMMAND_BACKLOG_CAPACITY,
+                    snapshot.pending_control_plane_task_count,
+                    CONTROL_PLANE_TASK_QUEUE_CAPACITY,
+                    snapshot.pending_control_plane_send_count,
+                    CONTROL_PLANE_SEND_QUEUE_CAPACITY,
                 ),
                 last_response_action: format!(
-                    "last_response_exec={} queue_depth={} deduped={} dedupe_keys={}",
+                    "last_response_exec={} queue_depth={}/{} deduped={} dedupe_keys={} report_dropped={} response_pressure={} response_queue_pressure={} report_queue_pressure={} report_queue={}/{}",
                     snapshot.last_response_execute_count,
                     snapshot.pending_response_count,
+                    RESPONSE_QUEUE_CAPACITY,
                     snapshot.response_action_deduped_total,
-                    snapshot.response_action_dedupe_key_count
+                    snapshot.response_action_dedupe_key_count,
+                    snapshot.response_report_dropped_total,
+                    response_pressure,
+                    queue_pressure_label(response_queue_pressure_grade),
+                    queue_pressure_label(report_queue_pressure_grade),
+                    snapshot.pending_response_report_count,
+                    RESPONSE_REPORT_QUEUE_CAPACITY,
                 ),
             },
             resource_usage: HeartbeatResourceUsageEnvelope {
@@ -167,6 +215,26 @@ impl AgentRuntime {
         }
 
         self.enqueue_control_plane_send(PendingControlPlaneSend::Inventory { envelope });
+    }
+}
+
+fn queue_pressure_grade(depth: usize, capacity: usize) -> u8 {
+    let capacity = capacity.max(1);
+    let usage_percent = depth.saturating_mul(100) / capacity;
+    if usage_percent >= 90 {
+        2
+    } else if usage_percent >= 70 {
+        1
+    } else {
+        0
+    }
+}
+
+fn queue_pressure_label(grade: u8) -> &'static str {
+    match grade {
+        2 => "critical",
+        1 => "elevated",
+        _ => "normal",
     }
 }
 

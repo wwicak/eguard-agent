@@ -83,7 +83,7 @@ pub struct EnrollmentResultEnvelope {
     pub initial_policy: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ComplianceCheckEnvelope {
     pub check_type: String,
     pub status: String,
@@ -113,7 +113,7 @@ pub struct ComplianceCheckEnvelope {
     pub remediation_action_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ComplianceEnvelope {
     pub agent_id: String,
     pub policy_id: String,
@@ -136,7 +136,7 @@ pub struct ComplianceEnvelope {
     pub actual_value: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct InventoryEnvelope {
     pub agent_id: String,
     #[serde(default)]
@@ -192,7 +192,7 @@ pub struct ResponseEnvelope {
     pub file_path: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct HeartbeatAgentStatusEnvelope {
     #[serde(default)]
     pub mode: String,
@@ -210,7 +210,7 @@ pub struct HeartbeatAgentStatusEnvelope {
     pub last_response_action: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct HeartbeatResourceUsageEnvelope {
     #[serde(default)]
     pub cpu_percent: f64,
@@ -222,7 +222,7 @@ pub struct HeartbeatResourceUsageEnvelope {
     pub events_per_second: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct HeartbeatRuntimeEnvelope {
     #[serde(default)]
     pub status: HeartbeatAgentStatusEnvelope,

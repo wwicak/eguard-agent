@@ -79,6 +79,23 @@ fn payload_parser_extracts_kv_network_fields() {
 }
 
 #[test]
+fn process_exec_payload_parent_hint_backfills_parent_process_when_proc_lookup_fails() {
+    let mut cache = EnrichmentCache::default();
+    let raw = RawEvent {
+        event_type: EventType::ProcessExec,
+        pid: 999_999,
+        uid: 0,
+        ts_ns: 1,
+        payload: "ppid=1;parent_comm=systemd;comm=bash;path=/usr/bin/bash;cmdline=bash -lc whoami"
+            .to_string(),
+    };
+
+    let enriched = enrich_event_with_cache(raw, &mut cache);
+    assert_eq!(enriched.parent_process.as_deref(), Some("systemd"));
+    assert_eq!(enriched.parent_chain.first().copied(), Some(1));
+}
+
+#[test]
 // AC-EBP-030
 fn payload_parser_fallbacks_for_dns_and_file_open() {
     let dns = parse_payload_metadata(&EventType::DnsQuery, "malicious.example");

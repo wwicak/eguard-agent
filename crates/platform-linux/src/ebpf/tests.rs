@@ -220,6 +220,10 @@ fn parses_structured_process_exec_payload() {
     comm[..5].copy_from_slice(b"bash\0");
     payload.extend_from_slice(&comm);
 
+    let mut parent_comm = [0u8; 32];
+    parent_comm[..8].copy_from_slice(b"systemd\0");
+    payload.extend_from_slice(&parent_comm);
+
     let mut filename = [0u8; 160];
     filename[..14].copy_from_slice(b"/usr/bin/bash\0");
     payload.extend_from_slice(&filename);
@@ -233,6 +237,7 @@ fn parses_structured_process_exec_payload() {
     assert!(event.payload.contains("ppid=321"));
     assert!(event.payload.contains("cgroup_id=777"));
     assert!(event.payload.contains("comm=bash"));
+    assert!(event.payload.contains("parent_comm=systemd"));
     assert!(event.payload.contains("path=/usr/bin/bash"));
     assert!(event.payload.contains("cmdline=bash -lc whoami"));
 }

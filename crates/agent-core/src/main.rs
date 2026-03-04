@@ -16,7 +16,15 @@ use tracing::{info, warn};
 use config::AgentConfig;
 use lifecycle::AgentRuntime;
 
-type ShutdownFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
+type ShutdownFuture = Pin<Box<dyn Future<Output = ShutdownReason> + Send>>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShutdownReason {
+    SigInt,
+    SigTerm,
+    ServiceStop,
+    CtrlC,
+}
 
 // NOTE: We intentionally do NOT use #[tokio::main] here.
 //
@@ -62,6 +70,11 @@ async fn run_console_with_shutdown(shutdown: ShutdownFuture) -> Result<()> {
         "eguard-agent core started"
     );
 
+    #[cfg(target_os = "linux")]
+    let mut systemd_notifier = SystemdNotifier::from_env();
+    #[cfg(target_os = "linux")]
+    systemd_notifier.notify_ready();
+
     if env_flag_enabled("EGUARD_SELF_PROTECT_RUN_ONCE") {
         if let Some(delay_secs) = env_u64("EGUARD_SELF_PROTECT_RUN_ONCE_DELAY_SECS") {
             time::sleep(Duration::from_secs(delay_secs)).await;
@@ -75,13 +88,34 @@ async fn run_console_with_shutdown(shutdown: ShutdownFuture) -> Result<()> {
         return Ok(());
     }
 
-    run_tick_loop(&mut runtime, shutdown).await;
+    #[cfg(target_os = "linux")]
+    let shutdown_reason = run_tick_loop(&mut runtime, shutdown, &mut systemd_notifier).await;
+    #[cfg(not(target_os = "linux"))]
+    let shutdown_reason = run_tick_loop(&mut runtime, shutdown).await;
 
-    info!("eguard-agent stopped");
+    if matches!(shutdown_reason, ShutdownReason::SigTerm) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or_default();
+        if let Err(err) = runtime.report_shutdown_tamper(now, "sigterm").await {
+            warn!(error = %err, "failed to emit shutdown tamper alert");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    systemd_notifier.notify_stopping();
+
+    info!(reason = ?shutdown_reason, "eguard-agent stopped");
     Ok(())
 }
 
-async fn run_tick_loop(runtime: &mut AgentRuntime, shutdown: ShutdownFuture) {
+#[cfg(target_os = "linux")]
+async fn run_tick_loop(
+    runtime: &mut AgentRuntime,
+    shutdown: ShutdownFuture,
+    systemd_notifier: &mut SystemdNotifier,
+) -> ShutdownReason {
     let mut tick = time::interval(Duration::from_millis(100));
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
@@ -89,8 +123,34 @@ async fn run_tick_loop(runtime: &mut AgentRuntime, shutdown: ShutdownFuture) {
 
     loop {
         tokio::select! {
-            _ = &mut shutdown => {
-                break;
+            reason = &mut shutdown => {
+                return reason;
+            }
+            _ = tick.tick() => {
+                systemd_notifier.notify_watchdog_if_due();
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or_default();
+                if let Err(err) = runtime.tick(now).await {
+                    warn!(error = %err, "runtime tick failed; continuing");
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn run_tick_loop(runtime: &mut AgentRuntime, shutdown: ShutdownFuture) -> ShutdownReason {
+    let mut tick = time::interval(Duration::from_millis(100));
+    tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+    let mut shutdown = shutdown;
+
+    loop {
+        tokio::select! {
+            reason = &mut shutdown => {
+                return reason;
             }
             _ = tick.tick() => {
                 let now = std::time::SystemTime::now()
@@ -162,7 +222,101 @@ fn env_u64(name: &str) -> Option<u64> {
         .and_then(|raw| raw.trim().parse::<u64>().ok())
 }
 
-async fn wait_for_shutdown_signal() {
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+struct SystemdNotifier {
+    notify_socket: Option<String>,
+    watchdog_interval: Option<std::time::Duration>,
+    next_watchdog_ping: Option<std::time::Instant>,
+}
+
+#[cfg(target_os = "linux")]
+impl SystemdNotifier {
+    fn from_env() -> Self {
+        let mut notify_socket = std::env::var("NOTIFY_SOCKET")
+            .ok()
+            .map(|raw| raw.trim().to_string())
+            .filter(|raw| !raw.is_empty());
+
+        if notify_socket
+            .as_deref()
+            .map(|raw| raw.starts_with('@'))
+            .unwrap_or(false)
+        {
+            if let Some(path) = notify_socket.as_deref() {
+                warn!(
+                    notify_socket = path,
+                    "abstract NOTIFY_SOCKET is unsupported by built-in notifier"
+                );
+            }
+            notify_socket = None;
+        }
+
+        let watchdog_interval = std::env::var("WATCHDOG_USEC")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u64>().ok())
+            .filter(|usec| *usec > 0)
+            .map(|usec| {
+                let half_usec = (usec / 2).max(1_000_000);
+                std::time::Duration::from_micros(half_usec)
+            });
+
+        let next_watchdog_ping =
+            watchdog_interval.map(|interval| std::time::Instant::now() + interval);
+
+        Self {
+            notify_socket,
+            watchdog_interval,
+            next_watchdog_ping,
+        }
+    }
+
+    fn notify_ready(&mut self) {
+        let _ = self.send("READY=1\nSTATUS=eGuard agent runtime online");
+        if let Some(interval) = self.watchdog_interval {
+            self.next_watchdog_ping = Some(std::time::Instant::now() + interval);
+        }
+    }
+
+    fn notify_watchdog_if_due(&mut self) {
+        let Some(interval) = self.watchdog_interval else {
+            return;
+        };
+
+        let now = std::time::Instant::now();
+        let Some(next) = self.next_watchdog_ping else {
+            self.next_watchdog_ping = Some(now + interval);
+            return;
+        };
+
+        if now < next {
+            return;
+        }
+
+        if self.send("WATCHDOG=1").is_ok() {
+            self.next_watchdog_ping = Some(now + interval);
+        } else {
+            self.next_watchdog_ping = Some(now + std::time::Duration::from_secs(1));
+        }
+    }
+
+    fn notify_stopping(&self) {
+        let _ = self.send("STOPPING=1\nSTATUS=eGuard agent shutting down");
+    }
+
+    fn send(&self, message: &str) -> std::io::Result<()> {
+        let Some(socket_path) = self.notify_socket.as_deref() else {
+            return Ok(());
+        };
+
+        use std::os::unix::net::UnixDatagram;
+        let socket = UnixDatagram::unbound()?;
+        let _ = socket.send_to(message.as_bytes(), socket_path)?;
+        Ok(())
+    }
+}
+
+async fn wait_for_shutdown_signal() -> ShutdownReason {
     #[cfg(unix)]
     {
         let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -170,9 +324,11 @@ async fn wait_for_shutdown_signal() {
         tokio::select! {
             _ = signal::ctrl_c() => {
                 info!("shutdown signal received (SIGINT)");
+                ShutdownReason::SigInt
             }
             _ = sigterm.recv() => {
                 info!("shutdown signal received (SIGTERM)");
+                ShutdownReason::SigTerm
             }
         }
     }
@@ -181,6 +337,7 @@ async fn wait_for_shutdown_signal() {
     {
         let _ = signal::ctrl_c().await;
         info!("shutdown signal received");
+        ShutdownReason::CtrlC
     }
 }
 
@@ -330,9 +487,10 @@ mod windows_service_entry {
         run_result
     }
 
-    async fn wait_for_service_shutdown(rx: mpsc::Receiver<()>) {
+    async fn wait_for_service_shutdown(rx: mpsc::Receiver<()>) -> super::ShutdownReason {
         let _ = tokio::task::spawn_blocking(move || rx.recv()).await;
         info!("shutdown signal received (Windows service control)");
+        super::ShutdownReason::ServiceStop
     }
 
     fn set_service_status(

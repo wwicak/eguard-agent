@@ -95,16 +95,27 @@ fn parse_process_exec_payload(raw: &[u8]) -> String {
     let ppid = read_u32_le(raw, 0).unwrap_or_default();
     let cgroup_id = read_u64_le(raw, 4).unwrap_or_default();
     let comm = parse_c_string(slice_window(raw, 12, 32));
-    let path = parse_c_string(slice_window(raw, 44, 160));
-    let cmdline = parse_c_string(slice_window(raw, 204, 160));
 
-    if comm.is_empty() && path.is_empty() && cmdline.is_empty() {
+    // New payload layout includes parent_comm after comm.
+    let has_parent_comm = raw.len() >= 4 + 8 + 32 + 32 + 160 + 160;
+    let parent_comm = if has_parent_comm {
+        parse_c_string(slice_window(raw, 44, 32))
+    } else {
+        String::new()
+    };
+
+    let path_offset = if has_parent_comm { 76 } else { 44 };
+    let cmdline_offset = if has_parent_comm { 236 } else { 204 };
+    let path = parse_c_string(slice_window(raw, path_offset, 160));
+    let cmdline = parse_c_string(slice_window(raw, cmdline_offset, 160));
+
+    if comm.is_empty() && parent_comm.is_empty() && path.is_empty() && cmdline.is_empty() {
         return parse_c_string(raw);
     }
 
     format!(
-        "ppid={};cgroup_id={};comm={};path={};cmdline={}",
-        ppid, cgroup_id, comm, path, cmdline
+        "ppid={};cgroup_id={};comm={};parent_comm={};path={};cmdline={}",
+        ppid, cgroup_id, comm, parent_comm, path, cmdline
     )
 }
 

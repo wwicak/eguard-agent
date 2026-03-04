@@ -111,7 +111,7 @@ pub struct ComplianceRemediation {
     pub allowlist_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ComplianceCheck {
     pub check_id: String,
     pub check_type: String,
@@ -141,7 +141,7 @@ pub struct ComplianceCheck {
     pub remediation_detail: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ComplianceResult {
     pub status: String,
     pub detail: String,

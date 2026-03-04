@@ -533,7 +533,11 @@ impl Client {
     }
 
     fn grpc_base_url(&self) -> String {
-        let raw = self.url_for_base();
+        self.grpc_base_url_for(&self.server_addr)
+    }
+
+    fn grpc_base_url_for(&self, server_addr: &str) -> String {
+        let raw = self.url_for_base_for(server_addr);
         if raw.starts_with("https://") || raw.starts_with("http://") {
             raw
         } else {
@@ -542,13 +546,17 @@ impl Client {
     }
 
     fn url_for_base(&self) -> String {
-        if self.server_addr.starts_with("http://") || self.server_addr.starts_with("https://") {
-            return self.server_addr.clone();
+        self.url_for_base_for(&self.server_addr)
+    }
+
+    fn url_for_base_for(&self, server_addr: &str) -> String {
+        if server_addr.starts_with("http://") || server_addr.starts_with("https://") {
+            return server_addr.to_string();
         }
         if self.tls.is_some() {
-            format!("https://{}", self.server_addr)
+            format!("https://{}", server_addr)
         } else {
-            format!("http://{}", self.server_addr)
+            format!("http://{}", server_addr)
         }
     }
 
@@ -596,7 +604,11 @@ impl Client {
     }
 
     fn grpc_endpoint(&self) -> Result<Endpoint> {
-        let endpoint = Endpoint::from_shared(self.grpc_base_url())
+        self.grpc_endpoint_for(&self.server_addr)
+    }
+
+    fn grpc_endpoint_for(&self, server_addr: &str) -> Result<Endpoint> {
+        let endpoint = Endpoint::from_shared(self.grpc_base_url_for(server_addr))
             .context("invalid gRPC endpoint URL")?
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(15))
@@ -611,6 +623,36 @@ impl Client {
                 .context("invalid gRPC TLS config")?)
         } else {
             Ok(endpoint)
+        }
+    }
+
+    fn alternate_grpc_server_addr(&self) -> Option<String> {
+        let base = if self.server_addr.starts_with("http://")
+            || self.server_addr.starts_with("https://")
+        {
+            self.server_addr.clone()
+        } else {
+            format!("http://{}", self.server_addr)
+        };
+
+        let mut parsed = HttpUrl::parse(&base).ok()?;
+        let current_port = parsed.port_or_known_default()?;
+        let alternate_port = match current_port {
+            50052 => 50053,
+            50053 => 50052,
+            _ => return None,
+        };
+        parsed.set_port(Some(alternate_port)).ok()?;
+
+        if self.server_addr.starts_with("http://") || self.server_addr.starts_with("https://") {
+            Some(parsed.to_string().trim_end_matches('/').to_string())
+        } else {
+            let host = parsed.host_str()?;
+            if host.contains(':') {
+                Some(format!("[{}]:{}", host, alternate_port))
+            } else {
+                Some(format!("{}:{}", host, alternate_port))
+            }
         }
     }
 
@@ -754,10 +796,26 @@ impl Client {
         }
 
         let endpoint = self.grpc_endpoint()?;
-        let channel = endpoint
-            .connect()
-            .await
-            .context("failed connecting gRPC channel")?;
+        let channel = match endpoint.connect().await {
+            Ok(channel) => channel,
+            Err(primary_err) => {
+                if let Some(alternate_addr) = self.alternate_grpc_server_addr() {
+                    warn!(
+                        server = %self.server_addr,
+                        alternate = %alternate_addr,
+                        error = %primary_err,
+                        "primary gRPC endpoint failed; retrying with alternate known service port"
+                    );
+                    let alternate_endpoint = self.grpc_endpoint_for(&alternate_addr)?;
+                    alternate_endpoint
+                        .connect()
+                        .await
+                        .context("failed connecting gRPC channel (alternate port)")?
+                } else {
+                    return Err(primary_err).context("failed connecting gRPC channel");
+                }
+            }
+        };
 
         if let Ok(mut cached) = self.grpc_channel_cache.lock() {
             *cached = Some(channel.clone());

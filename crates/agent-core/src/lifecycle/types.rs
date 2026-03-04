@@ -25,7 +25,7 @@ pub(super) struct PendingCommand {
     pub(super) enqueued_at_unix: i64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) enum ControlPlaneTaskKind {
     Heartbeat {
         compliance_status: String,
@@ -76,7 +76,7 @@ pub(super) struct PendingResponseAction {
     pub(super) threat_category: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) enum PendingControlPlaneSend {
     Heartbeat {
         agent_id: String,
@@ -153,6 +153,7 @@ pub struct RuntimeObservabilitySnapshot {
     pub last_threat_intel_refresh_micros: u64,
     pub last_control_plane_sync_micros: u64,
     pub pending_control_plane_task_count: usize,
+    pub pending_control_plane_send_count: usize,
     pub last_control_plane_execute_count: usize,
     pub last_control_plane_queue_depth: usize,
     pub max_control_plane_queue_depth: usize,
@@ -167,6 +168,7 @@ pub struct RuntimeObservabilitySnapshot {
     pub last_command_backlog_oldest_age_secs: u64,
     pub max_command_backlog_oldest_age_secs: u64,
     pub pending_response_count: usize,
+    pub pending_response_report_count: usize,
     pub last_response_execute_count: usize,
     pub last_response_queue_depth: usize,
     pub max_response_queue_depth: usize,
@@ -182,6 +184,11 @@ pub struct RuntimeObservabilitySnapshot {
     pub telemetry_event_txn_coalesced_total: u64,
     pub response_action_deduped_total: u64,
     pub strict_budget_mode_transition_total: u64,
+    pub control_plane_task_replaced_total: u64,
+    pub control_plane_send_replaced_total: u64,
+    pub control_plane_task_dropped_total: u64,
+    pub control_plane_send_dropped_total: u64,
+    pub response_report_dropped_total: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -243,6 +250,11 @@ pub(super) struct RuntimeMetrics {
     pub(super) telemetry_event_txn_coalesced_total: u64,
     pub(super) response_action_deduped_total: u64,
     pub(super) strict_budget_mode_transition_total: u64,
+    pub(super) control_plane_task_replaced_total: u64,
+    pub(super) control_plane_send_replaced_total: u64,
+    pub(super) control_plane_task_dropped_total: u64,
+    pub(super) control_plane_send_dropped_total: u64,
+    pub(super) response_report_dropped_total: u64,
 }
 
 pub(super) struct LocalActionResult {

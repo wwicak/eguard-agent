@@ -22,6 +22,7 @@
 - **When user asks to “fully implement (no stub)” against an acceptance doc, audit every integration seam for nil/placeholders**: specifically check transport responses (e.g., gRPC response fields), CI scripts that only emit contract text, and storage paths that look single-file but need journal/compaction behavior. Close those seams before declaring complete.
 - **Closed-loop ML requirements must land in runtime orchestration, not only CI workflows**: if feedback-loop behavior is requested, prioritize server/agent scheduler wiring and local execution paths first; treat GitHub workflows as secondary tooling.
 - **Clarify runtime script locality across repos early**: when server-side operators require self-contained execution, mirror required processing scripts into `fe_eguard` package/runtime paths instead of assuming external checkout dependencies.
+- **When adding new ML trainer/eval scripts, place canonical runtime copies in `/home/dimas/fe_eguard/threat-intel/processing` first** and then mirror to GitHub CI repos; `egcron` on server consumes `fe_eguard` paths directly.
 - **Before re-triggering GitHub Actions repeatedly, run the same verification script locally first**: use `./scripts/run_verification_suite_ci.sh` (prefer `EGUARD_VERIFICATION_PROFILE=fast` for pre-push) to eliminate obvious clippy/test failures and reduce CI churn.
 - **Never hardcode lab/real server IPs in tests**: use loopback (`127.0.0.1`) or clearly synthetic placeholders in test fixtures to avoid environment coupling and operator confusion.
 - **Honor explicit CI runtime budgets**: if user sets a max pipeline time (e.g., 15 minutes), implement a strict fast profile and step timeout first, then keep heavy fuzz/Miri/guardrail checks in scheduled/release full profile.
@@ -38,3 +39,16 @@
 - **For bounded control-plane queues, re-enqueue of same task kind should refresh payload-in-place (not no-op)** so delayed execution uses freshest compliance/inventory/heartbeat context without queue growth.
 - **Keep per-stage control-plane latency metrics separated (heartbeat/compliance/inventory)**; never reuse one metric slot for another stage, and lock this with executor-level tests.
 - **When hardening reliability for malformed/missing bundle ML artifacts, prefer continuity fallback over brittle fail-close**: pre-seed reload candidates with last active model, then let bundle model override when valid; this preserves service continuity while still surfacing diagnostics.
+- **Apply freshness-by-kind not only at task enqueue but also at async send enqueue** to prevent stale heartbeat/compliance/inventory payloads from waiting behind obsolete duplicates.
+- **Whenever enqueue semantics change (replace vs append), add an explicit replacement counter in observability** so operators can detect churn/instability instead of inferring it indirectly.
+- **For mirrored control-plane freshness paths (task queue + send queue), expose both counters side-by-side in heartbeat/runtime status** to make drift/churn diagnosis immediate.
+- **When queues are bounded, expose explicit dropped-item counters (not just replacement counters/warnings)** so capacity pressure is visible in snapshots and heartbeat diagnostics.
+- **Count replacement churn only where payload actually changes state**; payloadless dedupe kinds should not inflate replacement counters and obscure real queue churn.
+- **For payload-bearing dedupe queues, treat identical re-enqueues as no-op** (do not increment replacement counters) so churn metrics reflect real state updates, not repeated identical emissions.
+- **Mirror queue-pressure observability across all bounded control-plane queues** (tasks, sends, and response reports) so operators can detect where backpressure is actually occurring.
+- **Use identical-payload no-op semantics consistently for both task and send dedupe queues** so replacement counters represent actual state transitions, not repeated equivalent updates.
+- **Expose both queue churn counters and live pending queue depth in heartbeat diagnostics**; counters explain history, depth explains current pressure.
+- **Add normalized queue-pressure labels (`normal|elevated|critical`) alongside raw depths/caps** so operators can alert on stable semantics instead of parsing ad-hoc numeric strings.
+- **Whenever introducing thresholded observability labels, lock the exact boundary behavior with 69%/70% regression tests** to prevent silent off-by-one drift in alert semantics.
+- **Expose both aggregate pressure and per-queue pressure labels in heartbeat status** so operators can distinguish “overall unhealthy” from the exact queue causing it without external parsing.
+- **When ML runtime/eval payload fields are added or changed, always reflect queryable DB projections in `fe_eguard/db/eg-schema-*.sql` (and matching upgrade SQL) in the same implementation pass**; do not leave JSON-path-only querying as an undocumented implicit contract.

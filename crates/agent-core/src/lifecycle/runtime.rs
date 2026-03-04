@@ -506,6 +506,7 @@ impl AgentRuntime {
             last_threat_intel_refresh_micros: self.metrics.last_threat_intel_refresh_micros,
             last_control_plane_sync_micros: self.metrics.last_control_plane_sync_micros,
             pending_control_plane_task_count: self.pending_control_plane_tasks.len(),
+            pending_control_plane_send_count: self.pending_control_plane_sends.len(),
             last_control_plane_execute_count: self.metrics.last_control_plane_execute_count,
             last_control_plane_queue_depth: self.metrics.last_control_plane_queue_depth,
             max_control_plane_queue_depth: self.metrics.max_control_plane_queue_depth,
@@ -520,6 +521,7 @@ impl AgentRuntime {
             last_command_backlog_oldest_age_secs: self.metrics.last_command_backlog_oldest_age_secs,
             max_command_backlog_oldest_age_secs: self.metrics.max_command_backlog_oldest_age_secs,
             pending_response_count: self.pending_response_actions.len(),
+            pending_response_report_count: self.pending_response_reports.len(),
             last_response_execute_count: self.metrics.last_response_execute_count,
             last_response_queue_depth: self.metrics.last_response_queue_depth,
             max_response_queue_depth: self.metrics.max_response_queue_depth,
@@ -535,6 +537,11 @@ impl AgentRuntime {
             telemetry_event_txn_coalesced_total: self.metrics.telemetry_event_txn_coalesced_total,
             response_action_deduped_total: self.metrics.response_action_deduped_total,
             strict_budget_mode_transition_total: self.metrics.strict_budget_mode_transition_total,
+            control_plane_task_replaced_total: self.metrics.control_plane_task_replaced_total,
+            control_plane_send_replaced_total: self.metrics.control_plane_send_replaced_total,
+            control_plane_task_dropped_total: self.metrics.control_plane_task_dropped_total,
+            control_plane_send_dropped_total: self.metrics.control_plane_send_dropped_total,
+            response_report_dropped_total: self.metrics.response_report_dropped_total,
         }
     }
 

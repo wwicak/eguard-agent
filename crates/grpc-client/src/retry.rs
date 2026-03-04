@@ -17,7 +17,7 @@ impl Default for RetryPolicy {
             min_backoff: Duration::from_secs(1),
             max_backoff: Duration::from_secs(30),
             multiplier: 2,
-            max_attempts: 3,
+            max_attempts: 5,
             jitter_percent: 20,
         }
     }

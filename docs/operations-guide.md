@@ -27,6 +27,7 @@ responsible for managing eGuard across a fleet of endpoints.
    - [8b.5 File Integrity Monitoring](#8b5-file-integrity-monitoring-fim)
    - [8b.6 Zero Trust Scoring](#8b6-zero-trust-scoring)
 9. [Agent Release & Updates](#9-agent-release--updates)
+   - [9.5 Server-side Signature ML Runtime Inference](#95-server-side-signature-ml-runtime-inference-mar-2026)
 10. [gRPC Reliability](#10-grpc-reliability)
 11. [Firewall / iptables](#11-firewall--iptables)
 12. [Configuration Reference](#12-configuration-reference)
@@ -1086,6 +1087,283 @@ The agent supports the following remote commands from the server:
 | `install_app` / `remove_app` / `update_app` | Application management |
 | `apply_profile` | Apply configuration profile |
 
+### 9.5 Server-side Signature ML Runtime Inference (Mar 2026)
+
+To close the runtime gap between training and detection, `eg-agent-server` now
+runs **on-server signature ML inference** when incoming telemetry does not
+already contain `detection.ml_score` / `audit.ml_score` from the endpoint.
+
+#### Runtime behavior
+
+1. Threat-intel version publish/sync (`/api/v1/endpoint/threat-intel/version`
+   or syncer workflow) validates bundle assets as before.
+2. Server extracts `signature-ml-model.json` from bundle locations:
+   - `signature-ml-model.json`
+   - `ml/signature-ml-model.json`
+   - `models/signature-ml-model.json`
+3. Model is validated and compiled. Supported runtime families:
+   - `linear_logit_v3_irls` (legacy linear fallback)
+   - `gbdt_tree_ensemble_v1` (deterministic tree-ensemble runtime path)
+   - `shallow_nn_v1` (deterministic shallow neural path with hashed command/process/tree embeddings)
+4. Active scorer is atomically hot-swapped (no service restart required).
+5. On telemetry ingest, if `ml_score` is missing, server computes score and
+   writes populated `detection.ml_score` + `audit.ml_score` fields before
+   persistence.
+6. Sequence-aware escalation runs in parallel using a per-agent sliding window
+   (default 300s) so multi-step chains can elevate low raw model scores.
+
+For `shallow_nn_v1`, runtime also derives deterministic hashed embedding features
+from telemetry text fields (`event.command_line`, `event.process_name`,
+`event.parent_process`) via feature prefixes:
+- `cmd_embed_XX`
+- `proc_embed_XX`
+- `tree_embed_XX`
+
+Embedding dimensions are model-driven:
+- preferred source: artifact `embedding.{cmd_embed_dims,proc_embed_dims,tree_embed_dims}`
+- fallback: inferred from maximum feature index in `features[]` per prefix.
+
+#### Last-known-good fallback
+
+- If a new bundle contains invalid/missing model payload, publish/sync remains
+  successful for threat-intel metadata, but scorer reload is rejected.
+- Server keeps previous active model (last-known-good) and records reload
+  failure diagnostics.
+- This prevents blind windows during bad model releases.
+
+#### Runtime observability
+
+`GET /api/v1/endpoint/state` now includes `state.signature_ml_runtime` with:
+
+- active model identity (`model_version`, `model_type`, `model_family`, `model_sha256`, `source_bundle_version`)
+- neural model details when active (`hidden_size`, `cmd_embed_dims`, `proc_embed_dims`, `tree_embed_dims`)
+- load metadata (`loaded_at`, `feature_count`, `threshold`)
+- sequence runtime metrics (`sequence_window_secs`, `sequence_tracked_agents`, `sequence_escalations_total`)
+- reload counters (`reload_success_total`, `reload_failure_total`)
+- ingest counters (`events_scored_total`, skip counters)
+- latency budget telemetry (`latency_budget_us`, avg/last/max inference latency,
+  budget exceed count)
+- last reload error (`last_reload_error`, `last_reload_error_at`)
+
+#### Operational validation checklist (P0)
+
+Use these checks after each bundle promotion in lab/prod:
+
+```bash
+# 1) Trigger sync (authenticated path)
+curl -X POST https://<server>:1443/api/v1/endpoint/threat-intel/sync \
+  -H "Authorization: Bearer <token>"
+
+# 2) Confirm runtime model is active
+curl -s http://127.0.0.1:50053/api/v1/endpoint/state | jq '.state.signature_ml_runtime'
+
+# 3) Verify fields
+# - active == true
+# - model_version / model_sha256 populated
+# - loaded_at recent
+# - reload_failure_total unchanged
+```
+
+Telemetry verification target:
+
+- For events lacking endpoint-side `ml_score`, persisted `endpoint_event.event_data`
+  must contain:
+  - `detection.ml_score.score`
+  - `detection.ml_score.model_version`
+  - `detection.ml_score.model_sha256`
+  - `detection.ml_score.model_family`
+  - `detection.ml_score.sequence.escalated` (when sequence correlation fires)
+  - mirrored under `audit.ml_score.*`
+- DB schema (`fe_eguard/db/eg-schema-15.0.sql`) now projects these into generated
+  columns for faster queries/indexing:
+  - `endpoint_event.ml_model_family`
+  - `endpoint_event.ml_model_type`
+  - `endpoint_event.ml_inference_source`
+  - `endpoint_event.ml_score`
+
+#### Validation evidence (2026-03-03 final sweep)
+
+Server-side runtime + model family switch was re-validated end-to-end on
+`103.49.238.102`:
+
+```bash
+# Publish a local validation bundle with tree model payload
+curl -s -X POST http://127.0.0.1:50053/api/v1/endpoint/threat-intel/version \
+  -H 'Content-Type: application/json' \
+  -d '{"version":"rules-mltree-validation","bundle_path":"/usr/local/eg/var/threat-intel/rules-mltree-validation.bundle.tar.zst"}'
+
+# Confirm runtime family/model switched
+curl -s http://127.0.0.1:50053/api/v1/endpoint/state | jq '.state.signature_ml_runtime'
+# observed: model_family=gbdt_tree, model_type=gbdt_tree_ensemble_v1,
+# source_bundle_version=rules-mltree-validation
+
+# Latency budget check
+curl -s http://127.0.0.1:50053/api/v1/endpoint/state | jq '.state.signature_ml_runtime | {inference_avg_latency_us, inference_max_latency_us, latency_budget_us, latency_budget_exceeded_total}'
+# observed: 51 / 51 / 500 / 0
+
+# Inject telemetry without precomputed ml_score and verify enrichment
+curl -s -X POST http://127.0.0.1:50053/api/v1/endpoint/telemetry -H 'Content-Type: application/json' --data @/tmp/mltree_event.json
+mysql -uroot -pEguard123 -D eguard -N -e "
+SELECT id,
+  ml_inference_source,
+  ml_model_family,
+  ml_model_type,
+  JSON_EXTRACT(event_data,'$.audit.ml_score.sequence.escalated'),
+  JSON_EXTRACT(event_data,'$.audit.ml_score.sequence.stage_count')
+FROM endpoint_event WHERE agent_id='mltree-validate-agent' ORDER BY id DESC LIMIT 1;"
+# observed: server_runtime / gbdt_tree / gbdt_tree_ensemble_v1 / true / 5
+
+# Optional shallow-NN runtime check (temporary validation bundle)
+curl -s -X POST http://127.0.0.1:50053/api/v1/endpoint/threat-intel/version \
+  -H 'Content-Type: application/json' \
+  -d '{"version":"rules-mlnn-validation","bundle_path":"/usr/local/eg/var/threat-intel/rules-mlnn-validation.bundle.tar.zst"}'
+curl -s http://127.0.0.1:50053/api/v1/endpoint/state | jq '.state.signature_ml_runtime | {model_family,model_type,source_bundle_version,cmd_embed_dims,proc_embed_dims,tree_embed_dims}'
+# observed (example): shallow_nn / shallow_nn_v1 / rules-mlnn-dims-validation / 20 / 10 / 6
+
+mysql -uroot -pEguard123 -D eguard -N -e "
+SELECT id,
+  ml_model_family,
+  ml_model_type,
+  ml_inference_source,
+  ml_score
+FROM endpoint_event WHERE agent_id='mlnn-validate-agent' ORDER BY id DESC LIMIT 1;"
+# observed: shallow_nn / shallow_nn_v1 / server_runtime / <score>
+```
+
+Visual browser validation (browser-use) captured screenshots:
+
+- `/home/dimas/eguard-agent/artifacts/validation/20260303-mlruntime/01-state.png` (`/api/v1/endpoint/state`)
+- `/home/dimas/eguard-agent/artifacts/validation/20260303-mlruntime/02-mlops-summary.png` (`/api/v1/endpoint/ml-ops/summary`)
+- `/home/dimas/eguard-agent/artifacts/validation/20260303-mlruntime/03-signature-training-latest.png`
+- `/home/dimas/eguard-agent/artifacts/validation/20260303-mlruntime/04-threat-intel-version.png`
+- `/home/dimas/eguard-agent/artifacts/validation/20260303-mlruntime/05-webgui-9090.png`
+- `/home/dimas/eguard-agent/artifacts/validation/20260303-mlruntime/06-webgui-400-after-proceed.png`
+
+Note: admin web UI on `https://103.49.238.102:9090` currently presents a
+certificate privacy interstitial (`net::ERR_CERT_AUTHORITY_INVALID`) and then a
+`400 Bad Request` page after proceed; API-runtime validation remains healthy via
+`:50053` and DB telemetry evidence.
+
+Post-validation safety rollback was applied by re-publishing official bundle
+`rules-2026.03.03.0653` so production runtime returned to its prior active
+model family after temporary tree/shallow-NN validation bundles.
+
+Post-resize hardening sweep (2026-03-03):
+- server disk/filesystem confirmed expanded to `50G` (`/dev/vda1`) with ample free space.
+- install package resolver hardened for legacy package directory layouts when
+  `EGUARD_AGENT_PACKAGE_DIR=/usr/local/eg/var/packages`:
+  - `windows/` fallback for `msi|exe`
+  - `macos/` fallback for `pkg`
+- live endpoint install endpoints validated after deploy:
+  - `/api/v1/agent-install/linux-deb` ✅
+  - `/api/v1/agent-install/linux-rpm` ✅
+  - `/api/v1/agent-install/windows` ✅
+  - `/api/v1/agent-install/windows-exe` ✅
+  - `/api/v1/agent-install/macos` ✅
+- endpoint_event generated-column migration was re-attempted and then aborted
+  due prolonged metadata lock on high-write table; apply in maintenance window
+  (or via online migration strategy) to avoid telemetry ingest interruption.
+
+#### Runtime knobs
+
+| Env var | Default | Purpose |
+|---------|---------|---------|
+| `EGUARD_SIGNATURE_ML_LATENCY_BUDGET_US` | `500` | Per-event inference budget threshold for runtime diagnostics |
+| `EGUARD_SIGNATURE_ML_MAX_MODEL_BYTES` | `4194304` | Max accepted `signature-ml-model.json` payload size |
+| `EGUARD_SIGNATURE_ML_MODEL_PATH` | unset | Optional direct model override path (debug/emergency only) |
+| `EGUARD_SIGNATURE_ML_SEQUENCE_WINDOW_SECS` | `300` | Sliding window size for sequence-aware escalation |
+| `EGUARD_SIGNATURE_ML_SEQUENCE_MAX_AGENTS` | `10000` | Max per-agent sequence states retained in memory |
+
+#### Endpoint event storage policy knobs (`egcron endpoint_event_cleanup`)
+
+To prevent `endpoint_event` unbounded growth (dev and production), use tiered
+retention plus a table-size guard.
+
+**Package default baseline** (`conf/egcron.conf.defaults`):
+
+```ini
+[endpoint_event_cleanup]
+status=enabled
+schedule=@every 15m
+batch=5000
+timeout=45s
+
+# Legacy fallback if new windows are absent
+window=30D
+
+# Tiered retention
+telemetry_window=7D
+noisy_window=2D
+alert_window=180D
+
+# Daily rollup (aggregate non-alert raw rows older than telemetry_window)
+rollup_enabled=enabled
+rollup_max_days_per_run=3
+
+# Size guard (oldest non-alert trim when max exceeded)
+max_table_size_mb=15360
+target_table_size_mb=12288
+```
+
+Recommended deployment profiles:
+
+- **Small VM / lab (~50GB root disk)**
+  - `telemetry_window=3D`, `noisy_window=1D`, `alert_window=180D`
+  - `max_table_size_mb=8192`, `target_table_size_mb=6144`
+- **Production (example: 600GB x2 RAID1, ~600GB usable)**
+  - `telemetry_window=14D`, `noisy_window=1D`, `alert_window=365D`
+  - `max_table_size_mb=122880` (120GB), `target_table_size_mb=98304` (96GB)
+
+Apply a high-capacity production profile once (adjust as needed):
+
+```bash
+/usr/local/eg/bin/egcmd egcron endpoint_event_cleanup \
+  batch=20000 timeout=180s telemetry_window=14D noisy_window=1D alert_window=365D \
+  rollup_enabled=enabled rollup_max_days_per_run=7 \
+  max_table_size_mb=122880 target_table_size_mb=98304
+```
+
+Validate effect:
+
+```sql
+SELECT ROUND((data_length+index_length)/1024/1024,2) AS endpoint_event_mb, table_rows
+FROM information_schema.tables
+WHERE table_schema='eguard' AND table_name='endpoint_event';
+
+SELECT rollup_date, COUNT(*) AS buckets, SUM(event_count) AS events
+FROM endpoint_event_daily_rollup
+GROUP BY rollup_date
+ORDER BY rollup_date DESC
+LIMIT 14;
+```
+
+Additional guard in server persistence normalizes telemetry enum values before DB
+insert (`event_type`, `severity`) to avoid invalid-enum writes turning into empty
+`event_type=''` rows under permissive SQL modes.
+
+Packaging/deploy propagation note (`/home/dimas/fe_eguard`):
+- Debian packages include these runtime/db changes automatically because `debian/rules`
+  installs almost the full tree into `/usr/local/eg` (including `lib/eg/egcron/task/*.pm`,
+  `conf/egcron.conf.defaults`, and `db/*.sql`).
+- Upgrade package (`addons/full-upgrade`) consumes SQL from `/usr/local/eg/db`, so
+  adding `endpoint_event_daily_rollup` to both `db/eg-schema-15.0.sql` and
+  `db/upgrade-14.1-15.0.sql` ensures upgrade/ISO flows pick it up.
+
+#### Feedback trainer knobs (`fe_eguard` egcron task)
+
+For `/usr/local/eg/lib/eg/egcron/task/signature_ml_feedback_train.pm`:
+
+| Env var | Default | Purpose |
+|---------|---------|---------|
+| `EGUARD_ML_MODEL_FAMILY` | `tree` | Trainer selection: `tree` or `shallow_nn` |
+| `EGUARD_ML_EXTERNAL_FIRST` | `1` | Prefer external labeled telemetry before synthetic fallback |
+| `EGUARD_ML_MAX_SYNTHETIC_RATIO` | `0.40` | Max synthetic:external ratio when external-first is enabled |
+| `EGUARD_ML_MAX_EXTERNAL_PER_HOST` | `0` | Optional per-host cap for external rows (`0` disables) |
+| `EGUARD_ML_MAX_EXTERNAL_PER_RULE` | `0` | Optional per-rule cap for external rows (`0` disables) |
+| `EGUARD_ML_NN_HIDDEN_SIZE` | `24` | Hidden-layer width for `shallow_nn` trainer |
+| `EGUARD_ML_NN_EPOCHS` | `50` | Training epochs for `shallow_nn` trainer |
+| `EGUARD_ML_NN_LEARNING_RATE` | `0.03` | Learning rate for `shallow_nn` trainer |
+
 ---
 
 ## 10. gRPC Reliability
@@ -1826,6 +2104,18 @@ EGUARD_AGENT_SERVER_DSN=root:PASSWORD@unix(/var/run/mysqld/mysqld.sock)/eguard?p
 EGUARD_AGENT_PACKAGE_DIR=/usr/local/eg/var/packages
 EGUARD_THREAT_INTEL_ED25519_PUBLIC_KEY_HEX=<bundle-signing-pubkey>
 ```
+
+When `EGUARD_AGENT_PACKAGE_DIR=/usr/local/eg/var/packages`, keep package formats
+reachable by extension-based resolver paths expected by server runtime:
+- `deb/` for `.deb`
+- `rpm/` for `.rpm`
+- `msi/` for `.msi`
+- `exe/` for `.exe`
+- `pkg/` for `.pkg`
+
+Runtime resolver now also supports legacy alias directories as fallback:
+- `windows/` for `msi|exe`
+- `macos/` for `pkg`
 
 **Critical**: The DSN **must** include `?parseTime=true` for datetime column
 scanning. Without it, `LoadAgents()` and other DB queries fail silently.

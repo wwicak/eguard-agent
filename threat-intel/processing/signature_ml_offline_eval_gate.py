@@ -99,37 +99,102 @@ def _load_ndjson_optional(path: Path | None) -> list[dict[str, Any]]:
     return rows
 
 
-def _extract_model(
-    model_payload: dict[str, Any] | None,
-) -> tuple[dict[str, float], float, dict[str, float]]:
+def _extract_model(model_payload: dict[str, Any] | None) -> dict[str, Any]:
     if not model_payload:
-        return {}, 0.0, {}
+        return {
+            "family": "passthrough",
+            "weights": {},
+            "bias": 0.0,
+            "feature_scales": {},
+            "trees": [],
+            "base_score": 0.0,
+        }
+
+    model_type = str(model_payload.get("model_type", "")).strip().lower()
+    suite = str(model_payload.get("suite", "")).strip().lower()
+
     weights_raw = model_payload.get("weights", {})
-    if not isinstance(weights_raw, dict):
-        return {}, 0.0, {}
-    weights = {str(name): _as_float(value, 0.0) for name, value in weights_raw.items()}
+    weights = (
+        {str(name): _as_float(value, 0.0) for name, value in weights_raw.items()}
+        if isinstance(weights_raw, dict)
+        else {}
+    )
     scales_raw = model_payload.get("feature_scales", {})
     scales = (
         {str(name): max(_as_float(value, 1.0), 1.0) for name, value in scales_raw.items()}
         if isinstance(scales_raw, dict)
         else {}
     )
-    bias = _as_float(model_payload.get("bias"), 0.0)
-    return weights, bias, scales
+
+    trees = model_payload.get("trees", [])
+    if ("tree" in model_type or "gbdt" in model_type or "tree" in suite) and isinstance(trees, list) and trees:
+        return {
+            "family": "gbdt_tree",
+            "weights": weights,
+            "bias": _as_float(model_payload.get("bias"), 0.0),
+            "feature_scales": scales,
+            "trees": trees,
+            "base_score": _as_float(model_payload.get("base_score"), _as_float(model_payload.get("bias"), 0.0)),
+        }
+
+    return {
+        "family": "linear_logit",
+        "weights": weights,
+        "bias": _as_float(model_payload.get("bias"), 0.0),
+        "feature_scales": scales,
+        "trees": [],
+        "base_score": 0.0,
+    }
 
 
-def _score_row(
-    row: dict[str, Any],
-    model_weights: dict[str, float],
-    bias: float,
-    feature_scales: dict[str, float],
-) -> float:
-    if model_weights:
+def _score_row(row: dict[str, Any], model: dict[str, Any]) -> float:
+    family = str(model.get("family", "linear_logit"))
+
+    if family == "gbdt_tree":
+        raw_score = _as_float(model.get("base_score"), 0.0)
+        trees = model.get("trees", [])
+        if isinstance(trees, list):
+            for tree in trees:
+                if not isinstance(tree, dict):
+                    continue
+                tree_weight = _as_float(tree.get("weight"), 1.0)
+                nodes = tree.get("nodes", [])
+                if not isinstance(nodes, list) or not nodes:
+                    continue
+                node_map = {
+                    _as_int(node.get("id"), -1): node
+                    for node in nodes
+                    if isinstance(node, dict) and _as_int(node.get("id"), -1) >= 0
+                }
+                current = 0
+                leaf_value = 0.0
+                for _ in range(64):
+                    node = node_map.get(current)
+                    if not isinstance(node, dict):
+                        break
+                    leaf = node.get("leaf")
+                    if leaf is not None:
+                        leaf_value = _as_float(leaf, 0.0)
+                        break
+                    feature = str(node.get("feature", "")).strip()
+                    threshold = _as_float(node.get("threshold"), 0.0)
+                    left = _as_int(node.get("left"), current)
+                    right = _as_int(node.get("right"), current)
+                    value = _as_float(row.get(feature), 0.0)
+                    current = left if value <= threshold else right
+                raw_score += tree_weight * leaf_value
+        return _clamp(_sigmoid(raw_score), 0.001, 0.999)
+
+    model_weights = model.get("weights", {})
+    feature_scales = model.get("feature_scales", {})
+    bias = _as_float(model.get("bias"), 0.0)
+    if isinstance(model_weights, dict) and model_weights:
         linear = bias
         for feature, weight in model_weights.items():
             scale = max(_as_float(feature_scales.get(feature), 1.0), 1.0)
-            linear += weight * (_as_float(row.get(feature), 0.0) / scale)
+            linear += _as_float(weight, 0.0) * (_as_float(row.get(feature), 0.0) / scale)
         return _clamp(_sigmoid(linear), 0.001, 0.999)
+
     return _clamp(_as_float(row.get("model_score"), 0.0), 0.001, 0.999)
 
 
@@ -355,7 +420,7 @@ def main() -> int:
         return 1
 
     model_payload = _load_json_optional(Path(args.model)) if args.model else None
-    model_weights, model_bias, feature_scales = _extract_model(model_payload)
+    model_runtime = _extract_model(model_payload)
 
     valid_rows: list[dict[str, Any]] = []
     for row in rows:
@@ -377,7 +442,7 @@ def main() -> int:
 
     eval_rows = valid_rows[-eval_count:] if eval_count > 0 else []
     labels = [int(row["_label"]) for row in eval_rows]
-    scores = [_score_row(row, model_weights, model_bias, feature_scales) for row in eval_rows]
+    scores = [_score_row(row, model_runtime) for row in eval_rows]
 
     fixed_threshold = _clamp(args.threshold, 0.0, 1.0)
     if auto_threshold:
@@ -407,7 +472,7 @@ def main() -> int:
 
         split_eval_rows = valid_rows[-split_eval_count:] if split_eval_count > 0 else []
         split_labels = [int(row["_label"]) for row in split_eval_rows]
-        split_scores = [_score_row(row, model_weights, model_bias, feature_scales) for row in split_eval_rows]
+        split_scores = [_score_row(row, model_runtime) for row in split_eval_rows]
 
         if auto_threshold:
             split_threshold, split_metrics, split_strategy = _select_operating_threshold(
@@ -596,7 +661,7 @@ def main() -> int:
             "ece": report["metrics"]["ece"],
             "dataset_total": total_count,
             "eval_count": len(eval_rows),
-            "model_mode": "trained_model" if model_weights else "pre_scored_dataset",
+            "model_mode": "trained_model" if model_runtime.get("family") != "passthrough" else "pre_scored_dataset",
             "operating_threshold": report["metrics"]["operating_threshold"],
             "operating_threshold_strategy": threshold_strategy,
         }

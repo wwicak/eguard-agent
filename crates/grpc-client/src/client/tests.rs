@@ -391,6 +391,27 @@ fn grpc_base_url_preserves_existing_scheme() {
 }
 
 #[test]
+fn alternate_grpc_server_addr_switches_known_agent_ports() {
+    let c = Client::new("10.0.0.1:50052".to_string());
+    assert_eq!(
+        c.alternate_grpc_server_addr().as_deref(),
+        Some("10.0.0.1:50053")
+    );
+
+    let c_https = Client::new("https://agent.example:50053".to_string());
+    assert_eq!(
+        c_https.alternate_grpc_server_addr().as_deref(),
+        Some("https://agent.example:50052")
+    );
+}
+
+#[test]
+fn alternate_grpc_server_addr_ignores_non_standard_ports() {
+    let c = Client::new("10.0.0.1:8443".to_string());
+    assert!(c.alternate_grpc_server_addr().is_none());
+}
+
+#[test]
 // AC-PKG-027
 fn client_agent_version_can_be_updated_for_subsequent_heartbeat_reporting() {
     let mut c = Client::new("127.0.0.1:50052".to_string());
@@ -955,8 +976,8 @@ async fn send_events_grpc_falls_back_to_http_when_grpc_stream_is_unavailable() {
     let addr = listener.local_addr().expect("local addr");
 
     let server = tokio::spawn(async move {
-        let result = tokio::time::timeout(std::time::Duration::from_secs(12), async move {
-            for _ in 0..8 {
+        let result = tokio::time::timeout(std::time::Duration::from_secs(20), async move {
+            for _ in 0..24 {
                 let (mut stream, _) = listener.accept().await.expect("accept client");
                 let mut request_buf = vec![0u8; 8192];
                 let read_len = stream.read(&mut request_buf).await.expect("read request");

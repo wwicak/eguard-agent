@@ -1,7 +1,7 @@
 /* eguard — process exec probe
  *
  * Hook:    tracepoint/sched/sched_process_exec
- * Payload: ppid(4) + cgroup_id(8) + comm(32) + path(160) + cmdline(160)
+ * Payload: ppid(4) + cgroup_id(8) + comm(32) + parent_comm(32) + path(160) + cmdline(160)
  */
 #include "bpf_helpers.h"
 
@@ -19,6 +19,7 @@ struct process_exec_event {
     __u32 ppid;
     __u64 cgroup_id;
     char  comm[COMM_SZ];
+    char  parent_comm[COMM_SZ];
     char  path[PATH_SZ];
     char  cmdline[CMDLINE_SZ];
 } __attribute__((packed));
@@ -37,6 +38,18 @@ int eguard_sched_process_exec(void *ctx)
     fill_hdr(&e->hdr, EVENT_PROCESS_EXEC);
     e->cgroup_id = bpf_get_current_cgroup_id();
     bpf_get_current_comm(e->comm, COMM_SZ);
+
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    if (task) {
+        struct task_struct *parent = 0;
+        if (bpf_probe_read_kernel(&parent, sizeof(parent), &task->real_parent) == 0 && parent) {
+            __u32 parent_tgid = 0;
+            if (bpf_probe_read_kernel(&parent_tgid, sizeof(parent_tgid), &parent->tgid) == 0) {
+                e->ppid = parent_tgid;
+            }
+            bpf_probe_read_kernel_str(e->parent_comm, COMM_SZ, parent->comm);
+        }
+    }
 
     /* filename via __data_loc at tp offset 8 */
     read_tp_data_loc_str(e->path, PATH_SZ, ctx, 8);

@@ -79,6 +79,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--metadata", required=True)
     parser.add_argument("--offline-eval", required=True)
     parser.add_argument("--offline-eval-trend-report", default="")
+    parser.add_argument("--adversarial-report", default="")
     parser.add_argument("--feature-schema", required=True)
     parser.add_argument("--labels-report", required=True)
     parser.add_argument("--signature-file", default="")
@@ -89,6 +90,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--require-signed-model", default="1")
     parser.add_argument("--verify-signature", default="1")
     parser.add_argument("--require-offline-eval-trend-pass", default="0")
+    parser.add_argument("--require-adversarial-pass", default="0")
     parser.add_argument("--fail-on-threshold", default="1")
     return parser
 
@@ -98,6 +100,7 @@ def main() -> int:
     require_signed_model = _parse_bool(args.require_signed_model)
     verify_signature = _parse_bool(args.verify_signature)
     require_offline_eval_trend_pass = _parse_bool(args.require_offline_eval_trend_pass)
+    require_adversarial_pass = _parse_bool(args.require_adversarial_pass)
     fail_on_threshold = _parse_bool(args.fail_on_threshold)
 
     model_path = Path(args.model_artifact)
@@ -106,6 +109,7 @@ def main() -> int:
     offline_eval_trend_report_path = (
         Path(args.offline_eval_trend_report) if args.offline_eval_trend_report else None
     )
+    adversarial_report_path = Path(args.adversarial_report) if args.adversarial_report else None
     feature_schema_path = Path(args.feature_schema)
     labels_report_path = Path(args.labels_report)
     signature_path = Path(args.signature_file) if args.signature_file else None
@@ -196,6 +200,20 @@ def main() -> int:
                 f"offline eval trend report not healthy: status={trend_status or 'unknown'}"
             )
 
+    adversarial_report = None
+    if adversarial_report_path is not None:
+        try:
+            adversarial_report = _load_json_required(adversarial_report_path, "adversarial eval report")
+        except (FileNotFoundError, ValueError, json.JSONDecodeError) as err:
+            failures.append(str(err))
+    elif require_adversarial_pass:
+        failures.append("adversarial eval report required but not provided")
+
+    if adversarial_report is not None and require_adversarial_pass:
+        adv_status = str(adversarial_report.get("status", "")).strip().lower()
+        if adv_status not in {"pass", "pass_no_baseline"}:
+            failures.append(f"adversarial eval report not healthy: status={adv_status or 'unknown'}")
+
     signature_verified = None
     signature_detail = "not_checked"
     if require_signed_model:
@@ -234,6 +252,7 @@ def main() -> int:
             "require_signed_model": require_signed_model,
             "verify_signature": verify_signature,
             "require_offline_eval_trend_pass": require_offline_eval_trend_pass,
+            "require_adversarial_pass": require_adversarial_pass,
             "fail_on_threshold": fail_on_threshold,
         },
         "provenance": {
@@ -243,6 +262,7 @@ def main() -> int:
             "offline_eval_trend_report": str(offline_eval_trend_report_path)
             if offline_eval_trend_report_path is not None
             else None,
+            "adversarial_report": str(adversarial_report_path) if adversarial_report_path is not None else None,
             "feature_schema": str(feature_schema_path),
             "labels_report": str(labels_report_path),
             "signature_file": str(signature_path) if signature_path is not None else None,
@@ -254,6 +274,9 @@ def main() -> int:
             "pr_auc": round(pr_auc, 6),
             "roc_auc": round(roc_auc, 6),
         },
+        "adversarial_status": str(adversarial_report.get("status", "")).strip().lower()
+        if isinstance(adversarial_report, dict)
+        else None,
         "model_version": str(metadata.get("model_version", "")).strip(),
         "failures": failures,
     }
