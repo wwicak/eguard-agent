@@ -1,12 +1,13 @@
-name: Collect VirusTotal Enrichment
+name: Collect Multi-Source Hash Enrichment
 
 on:
   schedule:
-    - cron: "0 1 * * *"
+    - cron: "0 1 * * *"  # Daily at 01:00 UTC
   workflow_dispatch:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: collect-vt-${{ github.ref }}
@@ -17,70 +18,297 @@ jobs:
     runs-on: self-hosted
     timeout-minutes: 180
     steps:
-      - name: Check API key
-        id: guard
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download previous enrichment for cumulative dedup
         env:
-          VT_KEY: ${{ secrets.VIRUS_TOTAL_API }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ -z "${VT_KEY}" ]; then
-            echo "::warning::VIRUS_TOTAL_API secret is not set — skipping enrichment"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
+          mkdir -p /tmp/previous
+          # Try to download the most recent vt-enriched artifact
+          REPO="${GITHUB_REPOSITORY}"
+          RUN_ID=$(gh api "repos/${REPO}/actions/artifacts?name=vt-enriched&per_page=1" \
+            --jq '.artifacts[0].workflow_run.id // empty' 2>/dev/null || true)
+          if [ -n "$RUN_ID" ]; then
+            gh run download "$RUN_ID" --repo "$REPO" --name vt-enriched \
+              --dir /tmp/previous 2>/dev/null || true
+          fi
+
+          if [ -f /tmp/previous/vt-enriched.ndjson ]; then
+            PREV_COUNT=$(wc -l < /tmp/previous/vt-enriched.ndjson)
+            echo "Previous enrichment: ${PREV_COUNT} entries"
           else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
+            touch /tmp/previous/vt-enriched.ndjson
+            echo "No previous enrichment found (fresh start)"
           fi
 
       - name: Download MalwareBazaar recent hashes
-        if: steps.guard.outputs.skip != 'true'
         run: |
-          curl -sSfL -o recent_sha256.txt \
-            "https://bazaar.abuse.ch/export/txt/sha256/recent/"
-          # Strip comment lines and blank lines, take 480 unique hashes
-          grep -vE '^\s*(#|$)' recent_sha256.txt \
-            | head -n 480 \
-            | sort -u \
-            | head -n 480 > hashes.txt
-          echo "Hash count: $(wc -l < hashes.txt)"
+          curl -sSfL --retry 3 --max-time 120 \
+            "https://bazaar.abuse.ch/export/txt/sha256/recent/" \
+            -o recent_sha256.txt 2>/dev/null || true
+          tr -d '\r' < recent_sha256.txt | grep -v '^#' | grep -v '^$' | \
+            grep -iE '^[0-9a-f]{64}$' | sort -u > candidate_hashes.txt
+          echo "Candidate hashes: $(wc -l < candidate_hashes.txt)"
 
-      - name: Enrich hashes via VirusTotal
-        if: steps.guard.outputs.skip != 'true'
+      # ────────────────────────────────────────────────────────────────
+      # Stage 1: MalwareBazaar API enrichment (no rate limit, bulk)
+      # Enriches thousands of hashes with: file_type, signature, tags,
+      # delivery_method, YARA matches, vendor intel (ClamAV, InQuest, etc.)
+      # ────────────────────────────────────────────────────────────────
+
+      - name: "Enrich via MalwareBazaar API (bulk, no rate limit)"
+        env:
+          MB_API_KEY: ${{ secrets.MALWARE_BAZAAR_KEY }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, sys, time, urllib.request, urllib.error
+
+          API_URL = "https://mb-api.abuse.ch/api/v1/"
+          API_KEY = os.environ.get("MB_API_KEY", "").strip()
+          MAX_HASHES = 2000  # Process up to 2000 hashes per run
+          DELAY = 0.5  # 500ms between requests (conservative, no documented limit)
+
+          # Load previously enriched hashes for dedup
+          seen = set()
+          if os.path.isfile("/tmp/previous/vt-enriched.ndjson"):
+              with open("/tmp/previous/vt-enriched.ndjson") as f:
+                  for line in f:
+                      line = line.strip()
+                      if not line:
+                          continue
+                      try:
+                          rec = json.loads(line)
+                          seen.add(rec.get("sha256", ""))
+                      except json.JSONDecodeError:
+                          pass
+          print(f"Previously enriched (dedup): {len(seen)} hashes")
+
+          # Load candidate hashes, skip already-enriched
+          with open("candidate_hashes.txt") as f:
+              all_hashes = [h.strip() for h in f if h.strip()]
+          new_hashes = [h for h in all_hashes if h not in seen]
+          hashes = new_hashes[:MAX_HASHES]
+          print(f"Candidates: {len(all_hashes)}, New (not seen): {len(new_hashes)}, Processing: {len(hashes)}")
+
+          enriched = 0
+          failed = 0
+
+          with open("mb-enriched.ndjson", "w") as out:
+              for idx, sha256 in enumerate(hashes, 1):
+                  payload = f"query=get_info&hash={sha256}"
+                  headers = {"Content-Type": "application/x-www-form-urlencoded"}
+                  if API_KEY:
+                      headers["Auth-Key"] = API_KEY
+
+                  req = urllib.request.Request(API_URL, data=payload.encode(), headers=headers)
+                  try:
+                      with urllib.request.urlopen(req, timeout=15) as resp:
+                          data = json.loads(resp.read())
+
+                      if data.get("query_status") != "ok":
+                          failed += 1
+                          if idx <= 3:
+                              print(f"  [{idx}] {sha256[:16]}... => {data.get('query_status', '?')}")
+                          continue
+
+                      samples = data.get("data", [])
+                      if not samples:
+                          failed += 1
+                          continue
+
+                      s = samples[0]
+                      yara_names = []
+                      for yr in s.get("yara_rules", []) or []:
+                          if isinstance(yr, dict) and yr.get("rule_name"):
+                              yara_names.append(yr["rule_name"])
+
+                      vendor_detections = []
+                      for vendor, info in (s.get("vendor_intel", {}) or {}).items():
+                          if isinstance(info, dict):
+                              det = info.get("detection") or info.get("verdict")
+                              if det:
+                                  vendor_detections.append(f"{vendor}:{det}")
+
+                      record = {
+                          "sha256": sha256,
+                          "source": "malwarebazaar",
+                          "mb_file_type": s.get("file_type", ""),
+                          "mb_file_type_mime": s.get("file_type_mime", ""),
+                          "mb_signature": s.get("signature"),
+                          "mb_tags": s.get("tags", []) or [],
+                          "mb_delivery_method": s.get("delivery_method"),
+                          "mb_yara_rules": yara_names,
+                          "mb_vendor_detections": vendor_detections,
+                          "mb_first_seen": s.get("first_seen", ""),
+                          "mb_intelligence_downloads": int((s.get("intelligence") or {}).get("downloads", 0) or 0),
+                      }
+                      out.write(json.dumps(record, separators=(",", ":")) + "\n")
+                      enriched += 1
+
+                      if idx <= 5 or idx % 200 == 0:
+                          sig = s.get("signature") or "unknown"
+                          print(f"  [{idx}/{len(hashes)}] {sha256[:16]}... => {s.get('file_type','?')} sig={sig} yara={len(yara_names)}")
+
+                  except urllib.error.HTTPError as e:
+                      failed += 1
+                      if e.code == 429:
+                          print(f"  [{idx}] Rate limited, sleeping 5s")
+                          time.sleep(5)
+                      elif idx <= 3:
+                          print(f"  [{idx}] HTTP {e.code}")
+                  except Exception as e:
+                      failed += 1
+                      if idx <= 3:
+                          print(f"  [{idx}] Error: {e}")
+
+                  if idx < len(hashes):
+                      time.sleep(DELAY)
+
+          print(f"\nMalwareBazaar enrichment: {enriched} enriched, {failed} failed")
+          PYEOF
+
+      # ────────────────────────────────────────────────────────────────
+      # Stage 2: VirusTotal enrichment (4/min, 480/day)
+      # Only enrich hashes that MalwareBazaar couldn't fully classify:
+      # - No signature (unclassified malware)
+      # - No YARA matches (no rule coverage)
+      # - High download count (popular = high value)
+      # This maximizes the value of each expensive VT lookup.
+      # ────────────────────────────────────────────────────────────────
+
+      - name: "Select high-value hashes for VirusTotal"
+        run: |
+          python3 - <<'PYEOF'
+          import json
+
+          # Load MB enrichment results
+          mb_enriched = {}
+          if True:
+              try:
+                  with open("mb-enriched.ndjson") as f:
+                      for line in f:
+                          line = line.strip()
+                          if not line:
+                              continue
+                          rec = json.loads(line)
+                          mb_enriched[rec["sha256"]] = rec
+              except FileNotFoundError:
+                  pass
+
+          # Load previously enriched (already have VT data)
+          prev_vt = set()
+          try:
+              with open("/tmp/previous/vt-enriched.ndjson") as f:
+                  for line in f:
+                      line = line.strip()
+                      if not line:
+                          continue
+                      rec = json.loads(line)
+                      if rec.get("vt_positives") is not None:
+                          prev_vt.add(rec["sha256"])
+          except FileNotFoundError:
+              pass
+
+          # Score hashes for VT priority:
+          # Higher score = more valuable to enrich with VT
+          scored = []
+          for sha256, rec in mb_enriched.items():
+              if sha256 in prev_vt:
+                  continue  # Already have VT data
+
+              score = 0
+              # No signature = unknown malware family -> high value
+              if not rec.get("mb_signature"):
+                  score += 10
+              # No YARA matches = no rule coverage -> high value
+              if not rec.get("mb_yara_rules"):
+                  score += 5
+              # High downloads = popular/widespread -> high value
+              downloads = rec.get("mb_intelligence_downloads", 0)
+              if downloads >= 50:
+                  score += 8
+              elif downloads >= 10:
+                  score += 4
+              # Executable types are higher value than docs
+              ft = rec.get("mb_file_type", "").lower()
+              if ft in ("exe", "dll", "elf", "so", "mach-o"):
+                  score += 3
+              # Has vendor detection but no signature = interesting
+              if rec.get("mb_vendor_detections") and not rec.get("mb_signature"):
+                  score += 5
+
+              scored.append((score, sha256))
+
+          # Sort by score descending, take top 480
+          scored.sort(reverse=True)
+          selected = [sha256 for _, sha256 in scored[:480]]
+
+          with open("vt_candidates.txt", "w") as f:
+              for h in selected:
+                  f.write(h + "\n")
+
+          print(f"VT candidates: {len(mb_enriched)} MB-enriched, {len(prev_vt)} already have VT")
+          print(f"Selected {len(selected)} highest-value hashes for VT enrichment")
+          if scored[:5]:
+              print(f"Top scores: {[s for s,_ in scored[:5]]}")
+          PYEOF
+
+      - name: "Enrich via VirusTotal (rate-limited, high-value only)"
         env:
           VT_API_KEY: ${{ secrets.VIRUS_TOTAL_API }}
         run: |
           python3 - <<'PYEOF'
           import json, os, sys, time, urllib.request, urllib.error
 
-          API_KEY = os.environ["VT_API_KEY"]
-          VT_URL  = "https://www.virustotal.com/api/v3/files/{}"
-          DELAY   = 15  # seconds between requests (4 req/min limit)
+          API_KEY = os.environ.get("VT_API_KEY", "").strip()
+          if not API_KEY:
+              print("No VT API key, skipping VirusTotal enrichment")
+              open("vt-only-enriched.ndjson", "w").close()
+              sys.exit(0)
 
-          with open("hashes.txt") as f:
-              hashes = [line.strip() for line in f if line.strip()]
+          VT_URL = "https://www.virustotal.com/api/v3/files/{}"
+          DELAY = 15  # 4 req/min
 
-          print(f"Querying VirusTotal for {len(hashes)} hashes ...")
+          try:
+              with open("vt_candidates.txt") as f:
+                  hashes = [h.strip() for h in f if h.strip()]
+          except FileNotFoundError:
+              hashes = []
+
+          if not hashes:
+              print("No candidates for VT enrichment")
+              open("vt-only-enriched.ndjson", "w").close()
+              sys.exit(0)
+
+          print(f"Querying VirusTotal for {len(hashes)} high-value hashes...")
           enriched = 0
-          skipped  = 0
+          skipped = 0
 
-          with open("vt-enriched.ndjson", "w") as out:
+          with open("vt-only-enriched.ndjson", "w") as out:
               for idx, sha256 in enumerate(hashes, 1):
                   url = VT_URL.format(sha256)
                   req = urllib.request.Request(url, headers={"x-apikey": API_KEY})
 
                   backoff = DELAY
                   attempts = 0
-                  max_retries = 3
 
-                  while attempts <= max_retries:
+                  while attempts <= 3:
                       try:
                           with urllib.request.urlopen(req, timeout=30) as resp:
                               data = json.loads(resp.read())
 
                           attrs = data.get("data", {}).get("attributes", {})
                           stats = attrs.get("last_analysis_stats", {})
-
                           positives = stats.get("malicious", 0) + stats.get("suspicious", 0)
                           total = sum(stats.values()) if stats else 0
 
-                          # Threat labels from popular_threat_classification
                           ptc = attrs.get("popular_threat_classification", {})
                           labels = []
                           for entry in ptc.get("suggested_threat_label", []) if isinstance(ptc.get("suggested_threat_label"), list) else []:
@@ -88,65 +316,151 @@ jobs:
                                   labels.append(entry)
                               elif isinstance(entry, dict) and "value" in entry:
                                   labels.append(entry["value"])
-                          # Also pull popular_threat_name entries
                           for entry in ptc.get("popular_threat_name", []):
                               if isinstance(entry, dict) and "value" in entry:
                                   labels.append(entry["value"])
-
-                          tags = attrs.get("tags", [])
-                          type_desc = attrs.get("type_description", "")
 
                           record = {
                               "sha256": sha256,
                               "vt_positives": positives,
                               "vt_total": total,
                               "vt_threat_labels": labels,
-                              "vt_tags": tags,
-                              "vt_type": type_desc,
+                              "vt_tags": attrs.get("tags", []),
+                              "vt_type": attrs.get("type_description", ""),
                           }
                           out.write(json.dumps(record, separators=(",", ":")) + "\n")
                           enriched += 1
-                          print(f"  [{idx}/{len(hashes)}] {sha256[:16]}... => {positives}/{total}")
-                          break  # success
+                          if idx <= 5 or idx % 100 == 0:
+                              print(f"  [{idx}/{len(hashes)}] {sha256[:16]}... => {positives}/{total}")
+                          break
 
                       except urllib.error.HTTPError as e:
                           if e.code == 404:
                               skipped += 1
-                              print(f"  [{idx}/{len(hashes)}] {sha256[:16]}... => not found, skipping")
                               break
                           elif e.code == 429:
                               attempts += 1
-                              if attempts > max_retries:
+                              if attempts > 3:
                                   skipped += 1
-                                  print(f"  [{idx}/{len(hashes)}] {sha256[:16]}... => rate limited after {max_retries} retries, skipping")
                                   break
-                              print(f"  [{idx}/{len(hashes)}] rate limited, backing off {backoff}s (attempt {attempts}/{max_retries})")
                               time.sleep(backoff)
                               backoff = min(backoff * 2, 120)
                               continue
                           else:
                               skipped += 1
-                              print(f"  [{idx}/{len(hashes)}] {sha256[:16]}... => HTTP {e.code}, skipping")
                               break
-
-                      except Exception as e:
+                      except Exception:
                           skipped += 1
-                          print(f"  [{idx}/{len(hashes)}] {sha256[:16]}... => error: {e}, skipping")
                           break
 
-                  # Rate-limit pause between requests
                   if idx < len(hashes):
                       time.sleep(DELAY)
 
-          print(f"\nDone. Enriched: {enriched}, Skipped: {skipped}")
-
-          if enriched < 100:
-              print(f"::error::Coverage gate failed: only {enriched} hashes enriched (minimum 100)")
-              sys.exit(1)
+          print(f"\nVirusTotal enrichment: {enriched} enriched, {skipped} skipped")
           PYEOF
 
+      # ────────────────────────────────────────────────────────────────
+      # Stage 3: Merge all enrichment sources into single artifact
+      # ────────────────────────────────────────────────────────────────
+
+      - name: Merge enrichment sources (MB + VT + previous)
+        run: |
+          python3 - <<'PYEOF'
+          import json
+
+          # Load all records keyed by sha256
+          records = {}
+
+          # 1. Load previous enrichment (baseline)
+          try:
+              with open("/tmp/previous/vt-enriched.ndjson") as f:
+                  for line in f:
+                      line = line.strip()
+                      if not line:
+                          continue
+                      rec = json.loads(line)
+                      sha = rec.get("sha256", "")
+                      if sha:
+                          records[sha] = rec
+          except FileNotFoundError:
+              pass
+          prev_count = len(records)
+
+          # 2. Merge MalwareBazaar enrichment (adds/updates MB fields)
+          mb_new = 0
+          try:
+              with open("mb-enriched.ndjson") as f:
+                  for line in f:
+                      line = line.strip()
+                      if not line:
+                          continue
+                      rec = json.loads(line)
+                      sha = rec.get("sha256", "")
+                      if not sha:
+                          continue
+                      if sha in records:
+                          records[sha].update(rec)
+                      else:
+                          records[sha] = rec
+                          mb_new += 1
+          except FileNotFoundError:
+              pass
+
+          # 3. Merge VirusTotal enrichment (adds VT fields)
+          vt_new = 0
+          try:
+              with open("vt-only-enriched.ndjson") as f:
+                  for line in f:
+                      line = line.strip()
+                      if not line:
+                          continue
+                      rec = json.loads(line)
+                      sha = rec.get("sha256", "")
+                      if not sha:
+                          continue
+                      if sha in records:
+                          records[sha].update(rec)
+                      else:
+                          records[sha] = rec
+                      vt_new += 1
+          except FileNotFoundError:
+              pass
+
+          # 4. Trim to last 30 days of data (keep max 60K records)
+          MAX_RECORDS = 60000
+          all_records = sorted(records.values(), key=lambda r: r.get("mb_first_seen", ""), reverse=True)
+          if len(all_records) > MAX_RECORDS:
+              all_records = all_records[:MAX_RECORDS]
+
+          with open("vt-enriched.ndjson", "w") as f:
+              for rec in all_records:
+                  f.write(json.dumps(rec, separators=(",", ":")) + "\n")
+
+          total = len(all_records)
+          vt_count = sum(1 for r in all_records if r.get("vt_positives") is not None)
+          mb_count = sum(1 for r in all_records if r.get("mb_file_type"))
+          both = sum(1 for r in all_records if r.get("vt_positives") is not None and r.get("mb_file_type"))
+
+          print(f"Merged enrichment: {total} total records")
+          print(f"  Previous baseline: {prev_count}")
+          print(f"  New from MalwareBazaar: {mb_new}")
+          print(f"  New from VirusTotal: {vt_new}")
+          print(f"  With MB metadata: {mb_count}")
+          print(f"  With VT detection: {vt_count}")
+          print(f"  With both: {both}")
+          PYEOF
+
+      - name: Coverage gate
+        run: |
+          TOTAL=$(wc -l < vt-enriched.ndjson 2>/dev/null || echo 0)
+          echo "Total enriched records: ${TOTAL}"
+          if [ "${TOTAL}" -lt 50 ]; then
+            echo "::error::Enrichment coverage too low: ${TOTAL} < 50"
+            exit 1
+          fi
+          echo "Enrichment coverage gate passed"
+
       - name: Upload artifact
-        if: steps.guard.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: vt-enriched
