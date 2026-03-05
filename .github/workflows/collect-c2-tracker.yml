@@ -1,0 +1,140 @@
+name: Collect C2 Tracker IOCs
+
+on:
+  schedule:
+    - cron: "30 1 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: collect-c2-tracker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  collect-c2-ips:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout own repo
+        uses: actions/checkout@v4
+
+      - name: Clone C2-Tracker repo
+        run: git clone --depth 1 https://github.com/montysecurity/C2-Tracker.git /tmp/c2-tracker
+
+      - name: Collect, validate, deduplicate, and tag C2 IPs
+        run: |
+          set -euo pipefail
+
+          WORK_DIR=$(mktemp -d)
+          RAW_IPS="$WORK_DIR/raw_ips.txt"
+          METADATA_RAW="$WORK_DIR/metadata_raw.csv"
+
+          touch "$RAW_IPS" "$METADATA_RAW"
+
+          IPV4_REGEX='^([0-9]{1,3}\.){3}[0-9]{1,3}$'
+
+          FRAMEWORKS=(
+            "CobaltStrike"
+            "Sliver"
+            "Mythic"
+            "Havoc"
+            "BruteRatel"
+            "Posh"
+            "Metasploit"
+          )
+
+          for framework in "${FRAMEWORKS[@]}"; do
+            # Find all .txt files under the framework directory (case-insensitive match)
+            find /tmp/c2-tracker -type f -ipath "*${framework}*" -name "*.txt" | while read -r txt_file; do
+              while IFS= read -r line; do
+                ip=$(echo "$line" | xargs)  # trim whitespace
+                if [[ -z "$ip" || "$ip" == \#* ]]; then
+                  continue
+                fi
+                if echo "$ip" | grep -qE "$IPV4_REGEX"; then
+                  # Validate each octet is 0-255
+                  valid=true
+                  IFS='.' read -ra octets <<< "$ip"
+                  for octet in "${octets[@]}"; do
+                    if (( octet > 255 )); then
+                      valid=false
+                      break
+                    fi
+                  done
+                  if $valid; then
+                    echo "$ip" >> "$RAW_IPS"
+                    echo "${ip},${framework}" >> "$METADATA_RAW"
+                  fi
+                fi
+              done < "$txt_file"
+            done
+          done
+
+          # Also sweep any .txt files at the repo root or other locations not covered above
+          find /tmp/c2-tracker -type f -name "*.txt" | while read -r txt_file; do
+            # Derive framework name from parent directory
+            parent_dir=$(basename "$(dirname "$txt_file")")
+            # Skip if already processed via known frameworks
+            already_handled=false
+            for framework in "${FRAMEWORKS[@]}"; do
+              if echo "$txt_file" | grep -qi "$framework"; then
+                already_handled=true
+                break
+              fi
+            done
+            if $already_handled; then
+              continue
+            fi
+            while IFS= read -r line; do
+              ip=$(echo "$line" | xargs)
+              if [[ -z "$ip" || "$ip" == \#* ]]; then
+                continue
+              fi
+              if echo "$ip" | grep -qE "$IPV4_REGEX"; then
+                valid=true
+                IFS='.' read -ra octets <<< "$ip"
+                for octet in "${octets[@]}"; do
+                  if (( octet > 255 )); then
+                    valid=false
+                    break
+                  fi
+                done
+                if $valid; then
+                  echo "$ip" >> "$RAW_IPS"
+                  echo "${ip},${parent_dir}" >> "$METADATA_RAW"
+                fi
+              fi
+            done < "$txt_file"
+          done
+
+          # Deduplicate and sort the IP list
+          sort -u -t '.' -k1,1n -k2,2n -k3,3n -k4,4n "$RAW_IPS" > c2_ips.txt
+
+          # Build metadata CSV: for IPs appearing under multiple frameworks, keep all associations
+          echo "ip,framework" > c2_metadata.csv
+          sort -u "$METADATA_RAW" | sort -t '.' -k1,1n -k2,2n -k3,3n -k4,4n >> c2_metadata.csv
+
+          TOTAL=$(wc -l < c2_ips.txt)
+          echo "Total unique C2 IPs collected: $TOTAL"
+
+          rm -rf "$WORK_DIR"
+
+      - name: Coverage gate - minimum 200 unique IPs
+        run: |
+          TOTAL=$(wc -l < c2_ips.txt)
+          echo "Unique C2 IPs: $TOTAL"
+          if (( TOTAL < 200 )); then
+            echo "::error::Coverage gate failed: only $TOTAL unique IPs collected (minimum 200 required)"
+            exit 1
+          fi
+          echo "Coverage gate passed: $TOTAL IPs (>= 200)"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: c2-tracker-collected
+          retention-days: 7
+          path: |
+            c2_ips.txt
+            c2_metadata.csv

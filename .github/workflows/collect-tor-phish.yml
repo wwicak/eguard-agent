@@ -1,0 +1,113 @@
+name: Collect Tor Exit Nodes & Phishing Domains
+
+on:
+  schedule:
+    - cron: "45 1 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: collect-tor-phish-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Collect Tor exit nodes
+        run: |
+          curl -fsSL --retry 3 --retry-delay 5 \
+            https://check.torproject.org/torbulkexitlist \
+            -o tor_exit_raw.txt || true
+
+          if [ -f tor_exit_raw.txt ]; then
+            grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' tor_exit_raw.txt \
+              | sort -u > tor_exit_ips.txt || true
+          fi
+
+          touch tor_exit_ips.txt
+          echo "Tor exit IPs collected: $(wc -l < tor_exit_ips.txt)"
+
+      - name: Collect OpenPhish domains
+        run: |
+          curl -fsSL --retry 3 --retry-delay 5 \
+            https://openphish.com/feed.txt \
+            -o openphish_raw.txt || true
+
+          if [ -f openphish_raw.txt ]; then
+            sed 's|https\?://||; s|/.*||; s|:.*||' openphish_raw.txt \
+              | grep -v '^$' \
+              | sort -u > openphish_domains.txt || true
+          fi
+
+          touch openphish_domains.txt
+          echo "OpenPhish domains collected: $(wc -l < openphish_domains.txt)"
+
+      - name: Collect Phishing.Database domains
+        run: |
+          git clone --depth 1 \
+            https://github.com/mitchellkrogza/Phishing.Database.git \
+            phishing-db || true
+
+          if [ -d phishing-db ]; then
+            ACTIVE_FILE=$(find phishing-db -maxdepth 1 -name '*domains*ACTIVE*' -o -name '*ACTIVE*domains*' | head -1)
+            if [ -z "$ACTIVE_FILE" ]; then
+              ACTIVE_FILE=$(find phishing-db -maxdepth 1 -name 'phishing-domains-ACTIVE.txt' | head -1)
+            fi
+
+            if [ -n "$ACTIVE_FILE" ] && [ -f "$ACTIVE_FILE" ]; then
+              grep -v '^#' "$ACTIVE_FILE" \
+                | grep -v '^$' \
+                | sort -u > phishing_database_domains.txt || true
+            fi
+          fi
+
+          touch phishing_database_domains.txt
+          echo "Phishing.Database domains collected: $(wc -l < phishing_database_domains.txt)"
+
+      - name: Merge and deduplicate phishing domains
+        run: |
+          cat openphish_domains.txt phishing_database_domains.txt \
+            | grep -v '^$' \
+            | sort -u > phishing_domains.txt
+
+          echo "Combined phishing domains: $(wc -l < phishing_domains.txt)"
+
+      - name: Coverage gate
+        run: |
+          TOR_COUNT=$(wc -l < tor_exit_ips.txt)
+          PHISH_COUNT=$(wc -l < phishing_domains.txt)
+
+          echo "Tor exit IPs: $TOR_COUNT (minimum 500)"
+          echo "Phishing domains: $PHISH_COUNT (minimum 200)"
+
+          PASS=true
+
+          if [ "$TOR_COUNT" -lt 500 ]; then
+            echo "::warning::Tor exit IP count ($TOR_COUNT) is below minimum threshold of 500"
+            PASS=false
+          fi
+
+          if [ "$PHISH_COUNT" -lt 200 ]; then
+            echo "::warning::Phishing domain count ($PHISH_COUNT) is below minimum threshold of 200"
+            PASS=false
+          fi
+
+          if [ "$PASS" = false ]; then
+            echo "::error::Coverage gate failed — see warnings above"
+            exit 1
+          fi
+
+          echo "Coverage gate passed"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tor-phish-collected
+          retention-days: 7
+          path: |
+            tor_exit_ips.txt
+            phishing_domains.txt

@@ -1,0 +1,92 @@
+name: Collect JA3 TLS Fingerprints
+
+on:
+  schedule:
+    - cron: "30 2 * * *"  # Daily at 02:30 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: collect-ja3-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  collect-ja3:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch abuse.ch JA3 fingerprint blacklist
+        run: |
+          curl -sSfL --retry 3 --max-time 120 \
+            "https://sslbl.abuse.ch/blacklist/ja3_fingerprints.csv" \
+            -o /tmp/ja3_raw.csv 2>/dev/null || true
+
+          if [ ! -s /tmp/ja3_raw.csv ]; then
+            echo "ERROR: failed to download JA3 fingerprint list"
+            exit 1
+          fi
+
+          # Parse CSV: skip comments (#) and header, extract JA3 hash (field 1)
+          # and associated malware name (field 2)
+          mkdir -p /tmp/ja3_output
+
+          python3 - <<'PY'
+          import csv
+          import re
+          import sys
+
+          JA3_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+          hashes = set()
+          metadata_rows = []
+
+          with open("/tmp/ja3_raw.csv", "r", encoding="utf-8", errors="replace") as f:
+              for line in f:
+                  line = line.strip()
+                  if not line or line.startswith("#"):
+                      continue
+                  parts = line.split(",", 2)
+                  if len(parts) < 2:
+                      continue
+                  ja3_hash = parts[0].strip().strip('"').lower()
+                  malware = parts[1].strip().strip('"')
+                  if not JA3_PATTERN.match(ja3_hash):
+                      continue
+                  if ja3_hash not in hashes:
+                      hashes.add(ja3_hash)
+                      metadata_rows.append((ja3_hash, malware))
+
+          with open("/tmp/ja3_output/ja3_fingerprints.txt", "w") as f:
+              for h in sorted(hashes):
+                  f.write(h + "\n")
+
+          with open("/tmp/ja3_output/ja3_metadata.csv", "w") as f:
+              f.write("ja3_hash,malware_family\n")
+              for h, m in sorted(metadata_rows):
+                  f.write(f"{h},{m}\n")
+
+          print(f"JA3 fingerprints collected: {len(hashes)} unique hashes")
+          if len(hashes) < 10:
+              print("ERROR: too few JA3 fingerprints collected")
+              sys.exit(1)
+          PY
+
+      - name: Enforce JA3 coverage gate
+        run: |
+          COUNT=$(wc -l < /tmp/ja3_output/ja3_fingerprints.txt 2>/dev/null || echo 0)
+          echo "JA3 fingerprints: ${COUNT}"
+          if [ "${COUNT}" -lt 10 ]; then
+            echo "JA3 collector coverage gate failed: ${COUNT} < 10"
+            exit 1
+          fi
+          echo "JA3 collector coverage gate passed"
+
+      - name: Upload JA3 fingerprints as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ja3-collected
+          path: /tmp/ja3_output/
+          retention-days: 7

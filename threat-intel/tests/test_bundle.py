@@ -53,6 +53,7 @@ class TestBundleStructure(unittest.TestCase):
             "version", "timestamp", "sigma_count", "yara_count",
             "ioc_hash_count", "ioc_domain_count", "ioc_ip_count",
             "cve_count", "cve_kev_count", "cve_epss_count",
+            "ja3_count", "vt_enriched_count",
             "sources", "files",
         ]
         for field in required:

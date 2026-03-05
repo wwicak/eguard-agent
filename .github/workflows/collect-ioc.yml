@@ -63,8 +63,22 @@ jobs:
       # Tier 2: Community-Vetted Sources (abuse.ch, SANS, DigitalSide)
       # ────────────────────────────────────────────────────────────────
 
-      - name: "Fetch MalwareBazaar hashes (Tier 2 — abuse.ch)"
+      - name: "Fetch MalwareBazaar full SHA256 dump (Tier 2 — abuse.ch)"
         run: |
+          # Full dump: 200K+ hashes (significantly more than "recent" endpoint)
+          curl -sSfL --retry 3 --max-time 300 \
+            "https://bazaar.abuse.ch/export/txt/sha256/full/" \
+            -o /tmp/bazaar_full.txt 2>/dev/null || true
+          if [ -s /tmp/bazaar_full.txt ]; then
+            grep -v '^#' /tmp/bazaar_full.txt | grep -v '^$' | \
+              grep -iE '^[0-9a-f]{64}$' | sort -u > /tmp/bazaar_full_hashes.txt
+            echo "MalwareBazaar full dump: $(wc -l < /tmp/bazaar_full_hashes.txt) hashes"
+          else
+            echo "MalwareBazaar full dump unavailable, falling back to recent"
+            touch /tmp/bazaar_full_hashes.txt
+          fi
+
+          # Recent export as supplement
           curl -sSfL --retry 3 --max-time 120 \
             "https://bazaar.abuse.ch/export/txt/sha256/recent/" \
             -o /tmp/bazaar_hashes.txt
@@ -115,11 +129,11 @@ jobs:
           PY
           fi
 
-          if [ -s /tmp/bazaar_api_hashes.txt ]; then
-            cat /tmp/bazaar_export_hashes.txt /tmp/bazaar_api_hashes.txt | sort -u > sources/ioc/hashes/malwarebazaar.txt
-          else
-            cp /tmp/bazaar_export_hashes.txt sources/ioc/hashes/malwarebazaar.txt
-          fi
+          {
+            cat /tmp/bazaar_full_hashes.txt 2>/dev/null
+            cat /tmp/bazaar_export_hashes.txt 2>/dev/null
+            cat /tmp/bazaar_api_hashes.txt 2>/dev/null
+          } | grep -iE '^[0-9a-f]{64}$' | sort -u > sources/ioc/hashes/malwarebazaar.txt
 
           echo "MalwareBazaar hashes: $(wc -l < sources/ioc/hashes/malwarebazaar.txt)"
 
@@ -329,7 +343,7 @@ jobs:
 
       - name: Enforce IOC collector coverage
         env:
-          EGUARD_MIN_IOC_HASH: "500"
+          EGUARD_MIN_IOC_HASH: "5000"
           EGUARD_MIN_IOC_DOMAIN: "300"
           EGUARD_MIN_IOC_IP: "1500"
         run: |

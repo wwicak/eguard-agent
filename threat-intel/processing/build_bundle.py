@@ -166,6 +166,8 @@ def main():
     parser.add_argument("--cve", default="", help="Path to CVE JSONL file")
     parser.add_argument("--suricata", default="", help="Directory of Suricata rules")
     parser.add_argument("--elastic", default="", help="Directory of Elastic detection rules")
+    parser.add_argument("--ja3", default="", help="Directory of JA3 TLS fingerprint files")
+    parser.add_argument("--vt-enriched", default="", help="Directory of VirusTotal enrichment files")
     parser.add_argument("--ml-model", default="", help="Path to signature-ml-model.json")
     parser.add_argument("--output", required=True, help="Output bundle directory")
     parser.add_argument("--version", default="", help="Bundle version (default: date-based)")
@@ -253,6 +255,32 @@ def main():
                 elastic_count = count_lines(jsonl_path)
     print(f"Bundle: {elastic_count} Elastic behavioral rules")
 
+    # Copy JA3 fingerprints
+    ja3_count = 0
+    if args.ja3:
+        ja3_dir = os.path.abspath(args.ja3)
+        ja3_fp = os.path.join(ja3_dir, "ja3_fingerprints.txt")
+        if os.path.isfile(ja3_fp):
+            ja3_dst = os.path.join(output_dir, "ja3", "ja3_fingerprints.txt")
+            if copy_file(ja3_fp, ja3_dst):
+                ja3_count = count_lines(ja3_dst)
+            # Copy metadata if available
+            ja3_meta = os.path.join(ja3_dir, "ja3_metadata.csv")
+            if os.path.isfile(ja3_meta):
+                copy_file(ja3_meta, os.path.join(output_dir, "ja3", "ja3_metadata.csv"))
+    print(f"Bundle: {ja3_count} JA3 TLS fingerprints")
+
+    # Copy VT enrichment
+    vt_count = 0
+    if args.vt_enriched:
+        vt_dir = os.path.abspath(args.vt_enriched)
+        vt_ndjson = os.path.join(vt_dir, "vt-enriched.ndjson")
+        if os.path.isfile(vt_ndjson):
+            vt_dst = os.path.join(output_dir, "vt-enriched", "vt-enriched.ndjson")
+            if copy_file(vt_ndjson, vt_dst):
+                vt_count = count_lines(vt_dst)
+    print(f"Bundle: {vt_count} VT enrichment entries")
+
     # Copy ML model
     ml_model_copied = False
     if args.ml_model:
@@ -287,6 +315,8 @@ def main():
         "elastic_count": elastic_count,
         "cve_kev_count": cve_kev_count,
         "cve_epss_count": cve_epss_count,
+        "ja3_count": ja3_count,
+        "vt_enriched_count": vt_count,
         "sources": sources,
         "source_rule_counts": source_rule_counts,
         "files": file_hashes,
