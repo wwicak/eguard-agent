@@ -170,12 +170,134 @@ jobs:
           PYEOF
 
       # ────────────────────────────────────────────────────────────────
-      # Stage 2: VirusTotal enrichment (4/min, 480/day)
-      # Only enrich hashes that MalwareBazaar couldn't fully classify:
-      # - No signature (unclassified malware)
-      # - No YARA matches (no rule coverage)
-      # - High download count (popular = high value)
-      # This maximizes the value of each expensive VT lookup.
+      # Stage 2: MetaDefender Reputation (1000 req/day, no per-min limit)
+      # Multi-AV detection ratio, malware family, threat name.
+      # Complements MalwareBazaar with independent AV engine verdicts.
+      # ────────────────────────────────────────────────────────────────
+
+      - name: "Enrich via MetaDefender Reputation (950 hashes)"
+        env:
+          MD_API_KEY: ${{ secrets.METADEFENDER_API_KEY }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, sys, time, urllib.request, urllib.error
+
+          API_KEY = os.environ.get("MD_API_KEY", "").strip()
+          if not API_KEY:
+              print("No METADEFENDER_API_KEY, skipping MetaDefender enrichment")
+              open("md-enriched.ndjson", "w").close()
+              sys.exit(0)
+
+          MD_URL = "https://api.metadefender.com/v4/hash/{}"
+          MAX_HASHES = 950  # Keep 50 buffer under 1000/day reputation limit
+          DELAY = 0.1  # No per-minute limit, just be polite
+
+          # Load MB-enriched hashes as candidates (prioritize unclassified)
+          mb_records = {}
+          try:
+              with open("mb-enriched.ndjson") as f:
+                  for line in f:
+                      line = line.strip()
+                      if not line:
+                          continue
+                      rec = json.loads(line)
+                      mb_records[rec.get("sha256", "")] = rec
+          except FileNotFoundError:
+              pass
+
+          # Load previously MD-enriched to skip
+          prev_md = set()
+          try:
+              with open("/tmp/previous/vt-enriched.ndjson") as f:
+                  for line in f:
+                      line = line.strip()
+                      if not line:
+                          continue
+                      rec = json.loads(line)
+                      if rec.get("md_total_avs") is not None:
+                          prev_md.add(rec["sha256"])
+          except FileNotFoundError:
+              pass
+
+          # Score: prefer unclassified by MB, then by download count
+          scored = []
+          for sha256, rec in mb_records.items():
+              if sha256 in prev_md:
+                  continue
+              score = 0
+              if not rec.get("mb_signature"):
+                  score += 10
+              if not rec.get("mb_yara_rules"):
+                  score += 5
+              score += min(rec.get("mb_intelligence_downloads", 0), 20)
+              scored.append((score, sha256))
+
+          # Also add candidate hashes not yet in MB
+          with open("candidate_hashes.txt") as f:
+              all_candidates = {h.strip() for h in f if h.strip()}
+          for h in all_candidates:
+              if h not in mb_records and h not in prev_md:
+                  scored.append((1, h))
+
+          scored.sort(reverse=True)
+          hashes = [sha256 for _, sha256 in scored[:MAX_HASHES]]
+          print(f"MetaDefender: {len(scored)} candidates, processing {len(hashes)} (skip {len(prev_md)} already done)")
+
+          enriched = 0
+          skipped = 0
+
+          with open("md-enriched.ndjson", "w") as out:
+              for idx, sha256 in enumerate(hashes, 1):
+                  url = MD_URL.format(sha256)
+                  req = urllib.request.Request(url, headers={"apikey": API_KEY})
+
+                  try:
+                      with urllib.request.urlopen(req, timeout=15) as resp:
+                          data = json.loads(resp.read())
+
+                      pi = data.get("process_info", {})
+                      sr = data.get("scan_results", {})
+
+                      record = {
+                          "sha256": sha256,
+                          "md_result": pi.get("result", ""),
+                          "md_threat_name": data.get("threat_name", ""),
+                          "md_malware_family": data.get("malware_family", ""),
+                          "md_malware_type": data.get("malware_type", []),
+                          "md_total_avs": sr.get("total_avs", 0),
+                          "md_detected_avs": sr.get("total_detected_avs", 0),
+                          "md_scan_result": sr.get("scan_all_result_a", ""),
+                      }
+                      out.write(json.dumps(record, separators=(",", ":")) + "\n")
+                      enriched += 1
+
+                      if idx <= 5 or idx % 200 == 0:
+                          det = sr.get("total_detected_avs", 0)
+                          tot = sr.get("total_avs", 0)
+                          fam = data.get("malware_family", "")
+                          print(f"  [{idx}/{len(hashes)}] {sha256[:16]}... => {det}/{tot} family={fam}")
+
+                  except urllib.error.HTTPError as e:
+                      if e.code == 404:
+                          skipped += 1
+                      elif e.code == 429:
+                          print(f"  [{idx}] MetaDefender rate limited, stopping early")
+                          break
+                      else:
+                          skipped += 1
+                  except Exception:
+                      skipped += 1
+
+                  if idx < len(hashes):
+                      time.sleep(DELAY)
+
+          print(f"\nMetaDefender enrichment: {enriched} enriched, {skipped} skipped")
+          PYEOF
+
+      # ────────────────────────────────────────────────────────────────
+      # Stage 3: VirusTotal enrichment (4/min, 480/day)
+      # Only enrich hashes that NEITHER MalwareBazaar NOR MetaDefender
+      # could fully classify. Each VT lookup provides unique signal.
       # ────────────────────────────────────────────────────────────────
 
       - name: "Select high-value hashes for VirusTotal"
@@ -185,19 +307,33 @@ jobs:
 
           # Load MB enrichment results
           mb_enriched = {}
-          if True:
-              try:
-                  with open("mb-enriched.ndjson") as f:
-                      for line in f:
-                          line = line.strip()
-                          if not line:
-                              continue
-                          rec = json.loads(line)
-                          mb_enriched[rec["sha256"]] = rec
-              except FileNotFoundError:
-                  pass
+          try:
+              with open("mb-enriched.ndjson") as f:
+                  for line in f:
+                      line = line.strip()
+                      if not line:
+                          continue
+                      rec = json.loads(line)
+                      mb_enriched[rec["sha256"]] = rec
+          except FileNotFoundError:
+              pass
 
-          # Load previously enriched (already have VT data)
+          # Load MD enrichment results
+          md_classified = set()
+          try:
+              with open("md-enriched.ndjson") as f:
+                  for line in f:
+                      line = line.strip()
+                      if not line:
+                          continue
+                      rec = json.loads(line)
+                      # Consider classified if MD detected by 5+ AVs or has family
+                      if rec.get("md_detected_avs", 0) >= 5 or rec.get("md_malware_family"):
+                          md_classified.add(rec["sha256"])
+          except FileNotFoundError:
+              pass
+
+          # Load previously VT-enriched
           prev_vt = set()
           try:
               with open("/tmp/previous/vt-enriched.ndjson") as f:
@@ -211,37 +347,32 @@ jobs:
           except FileNotFoundError:
               pass
 
-          # Score hashes for VT priority:
-          # Higher score = more valuable to enrich with VT
+          # Score: only hashes not classified by MB signature AND not classified by MD
           scored = []
           for sha256, rec in mb_enriched.items():
               if sha256 in prev_vt:
-                  continue  # Already have VT data
+                  continue
+              if rec.get("mb_signature") and sha256 in md_classified:
+                  continue  # Already well-classified by both sources
 
               score = 0
-              # No signature = unknown malware family -> high value
               if not rec.get("mb_signature"):
                   score += 10
-              # No YARA matches = no rule coverage -> high value
+              if sha256 not in md_classified:
+                  score += 8  # Neither source classified it
               if not rec.get("mb_yara_rules"):
                   score += 5
-              # High downloads = popular/widespread -> high value
               downloads = rec.get("mb_intelligence_downloads", 0)
               if downloads >= 50:
                   score += 8
               elif downloads >= 10:
                   score += 4
-              # Executable types are higher value than docs
               ft = rec.get("mb_file_type", "").lower()
               if ft in ("exe", "dll", "elf", "so", "mach-o"):
                   score += 3
-              # Has vendor detection but no signature = interesting
-              if rec.get("mb_vendor_detections") and not rec.get("mb_signature"):
-                  score += 5
 
               scored.append((score, sha256))
 
-          # Sort by score descending, take top 480
           scored.sort(reverse=True)
           selected = [sha256 for _, sha256 in scored[:480]]
 
@@ -249,8 +380,8 @@ jobs:
               for h in selected:
                   f.write(h + "\n")
 
-          print(f"VT candidates: {len(mb_enriched)} MB-enriched, {len(prev_vt)} already have VT")
-          print(f"Selected {len(selected)} highest-value hashes for VT enrichment")
+          print(f"VT selection: {len(mb_enriched)} MB-enriched, {len(md_classified)} MD-classified, {len(prev_vt)} prev-VT")
+          print(f"Selected {len(selected)} highest-value hashes for VT (unclassified by MB+MD)")
           if scored[:5]:
               print(f"Top scores: {[s for s,_ in scored[:5]]}")
           PYEOF
@@ -325,8 +456,8 @@ jobs:
                           }
                           out.write(json.dumps(record, separators=(",", ":")) + "\n")
                           enriched += 1
-                          if idx <= 5 or idx % 100 == 0:
-                              print(f"  [{idx}/{len(hashes)}] {sha256[:16]}... => {positives}/{total}")
+                          if idx <= 10 or idx % 50 == 0:
+                              print(f"  [{idx}/{len(hashes)}] {sha256[:16]}... => {positives}/{total} labels={labels[:2]}")
                           break
 
                       except urllib.error.HTTPError as e:
@@ -358,7 +489,7 @@ jobs:
       # Stage 3: Merge all enrichment sources into single artifact
       # ────────────────────────────────────────────────────────────────
 
-      - name: Merge enrichment sources (MB + VT + previous)
+      - name: Merge enrichment sources (MB + MD + VT + previous)
         run: |
           python3 - <<'PYEOF'
           import json
@@ -383,8 +514,29 @@ jobs:
 
           # 2. Merge MalwareBazaar enrichment (adds/updates MB fields)
           mb_new = 0
+          for src_file in ["mb-enriched.ndjson"]:
+              try:
+                  with open(src_file) as f:
+                      for line in f:
+                          line = line.strip()
+                          if not line:
+                              continue
+                          rec = json.loads(line)
+                          sha = rec.get("sha256", "")
+                          if not sha:
+                              continue
+                          if sha in records:
+                              records[sha].update(rec)
+                          else:
+                              records[sha] = rec
+                              mb_new += 1
+              except FileNotFoundError:
+                  pass
+
+          # 3. Merge MetaDefender enrichment (adds MD fields)
+          md_new = 0
           try:
-              with open("mb-enriched.ndjson") as f:
+              with open("md-enriched.ndjson") as f:
                   for line in f:
                       line = line.strip()
                       if not line:
@@ -397,11 +549,11 @@ jobs:
                           records[sha].update(rec)
                       else:
                           records[sha] = rec
-                          mb_new += 1
+                      md_new += 1
           except FileNotFoundError:
               pass
 
-          # 3. Merge VirusTotal enrichment (adds VT fields)
+          # 4. Merge VirusTotal enrichment (adds VT fields)
           vt_new = 0
           try:
               with open("vt-only-enriched.ndjson") as f:
@@ -421,7 +573,7 @@ jobs:
           except FileNotFoundError:
               pass
 
-          # 4. Trim to last 30 days of data (keep max 60K records)
+          # 5. Trim to rolling window (keep max 60K records)
           MAX_RECORDS = 60000
           all_records = sorted(records.values(), key=lambda r: r.get("mb_first_seen", ""), reverse=True)
           if len(all_records) > MAX_RECORDS:
@@ -432,17 +584,21 @@ jobs:
                   f.write(json.dumps(rec, separators=(",", ":")) + "\n")
 
           total = len(all_records)
-          vt_count = sum(1 for r in all_records if r.get("vt_positives") is not None)
           mb_count = sum(1 for r in all_records if r.get("mb_file_type"))
-          both = sum(1 for r in all_records if r.get("vt_positives") is not None and r.get("mb_file_type"))
+          md_count = sum(1 for r in all_records if r.get("md_total_avs") is not None)
+          vt_count = sum(1 for r in all_records if r.get("vt_positives") is not None)
+          all_three = sum(1 for r in all_records if r.get("mb_file_type") and r.get("md_total_avs") is not None and r.get("vt_positives") is not None)
 
-          print(f"Merged enrichment: {total} total records")
-          print(f"  Previous baseline: {prev_count}")
+          print(f"=== Merged enrichment summary ===")
+          print(f"  Total records:          {total}")
+          print(f"  Previous baseline:      {prev_count}")
           print(f"  New from MalwareBazaar: {mb_new}")
-          print(f"  New from VirusTotal: {vt_new}")
-          print(f"  With MB metadata: {mb_count}")
-          print(f"  With VT detection: {vt_count}")
-          print(f"  With both: {both}")
+          print(f"  New from MetaDefender:  {md_new}")
+          print(f"  New from VirusTotal:    {vt_new}")
+          print(f"  With MB metadata:       {mb_count}")
+          print(f"  With MD detection:      {md_count}")
+          print(f"  With VT detection:      {vt_count}")
+          print(f"  With all 3 sources:     {all_three}")
           PYEOF
 
       - name: Coverage gate
