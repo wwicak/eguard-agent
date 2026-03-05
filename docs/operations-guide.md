@@ -1541,13 +1541,52 @@ gRPC send attempt
                           +-- Failure --> remain on HTTP
 ```
 
-### 10.6 Firewall Requirements
+### 10.6 Firewall / NAT / Port-Forward Requirements
 
-| Port | Protocol | Direction | Purpose |
-|------|----------|-----------|---------|
-| 50052 | TCP | Agent -> Server | gRPC via Caddy TLS proxy |
-| 50053 | TCP | Agent -> Server | Direct gRPC (no TLS proxy) |
-| 9999 | TCP | Agent -> Server | HTTPS (HTTP fallback) |
+**Server-side ports (must be reachable by agents and admin browsers):**
+
+| Port | Protocol | Direction | Purpose | Required? |
+|------|----------|-----------|---------|-----------|
+| **1443** | TCP | Browser → Server | Admin Web GUI (HTTPS, Caddy) | Yes (admin access) |
+| **50053** | TCP | Agent → Server | gRPC primary (h2c direct) | Yes (agent comms) |
+| **50052** | TCP | Agent → Server | gRPC via Caddy TLS proxy | Optional (external agents) |
+| **9999** | TCP | Agent → Server | HTTPS REST API (HTTP fallback) | Yes (API + agent fallback) |
+| **22** | TCP | Admin → Server | SSH management access | Recommended |
+
+> **QEMU / VM NAT setup**: Forward all 5 ports from the host to the guest.
+> Example with QEMU user-mode networking:
+>
+> ```bash
+> -netdev user,id=net0,\
+>   hostfwd=tcp::1443-:1443,\
+>   hostfwd=tcp::50053-:50053,\
+>   hostfwd=tcp::50052-:50052,\
+>   hostfwd=tcp::9999-:9999,\
+>   hostfwd=tcp::2222-:22
+> ```
+>
+> Or with `iptables` DNAT on the hypervisor host:
+>
+> ```bash
+> for port in 1443 50052 50053 9999; do
+>   iptables -t nat -A PREROUTING -p tcp --dport $port -j DNAT --to-destination GUEST_IP:$port
+> done
+> ```
+
+**Minimum ports for agent-only connectivity** (no admin GUI):
+
+| Port | Required for |
+|------|-------------|
+| 50053 | gRPC enrollment, heartbeat, telemetry, commands, policy |
+| 9999 | HTTP fallback when gRPC is unavailable |
+
+**Minimum ports for full deployment** (agents + admin):
+
+| Port | Required for |
+|------|-------------|
+| 1443 | Web GUI (enrollment tokens, detection dashboard, ML Ops, response actions) |
+| 50053 | Agent gRPC |
+| 9999 | REST API + agent HTTP fallback |
 
 ---
 
@@ -1563,23 +1602,28 @@ closed when they stop.
 
 | Service | Port | Protocol | Description |
 |---------|------|----------|-------------|
-| `eguard-agent-server` | 50052 | TCP | Caddy TLS proxy for gRPC |
-| `eguard-agent-server` | 50053 | TCP | Direct gRPC endpoint     |
-| `eguard-api-server`   | 22230 | TCP | REST API server          |
+| `eguard-api-frontend` (Caddy) | 1443 | TCP | Admin Web GUI (HTTPS) |
+| `eguard-api-frontend` (Caddy) | 50052 | TCP | Caddy TLS proxy for agent gRPC |
+| `eg-agent-server` | 50053 | TCP | Direct gRPC endpoint (h2c) |
+| `eguard-api-server` | 9999 | TCP | REST API + agent HTTP fallback |
+| `eguard-api-server` | 22230 | TCP | Internal REST API server |
 
 ### 11.3 Manual iptables Rules
 
 If automatic firewall management is not available, add rules manually:
 
 ```bash
-# Allow agent gRPC connections (Caddy TLS proxy)
-sudo iptables -A INPUT -p tcp --dport 50052 -j ACCEPT
+# Admin Web GUI
+sudo iptables -A INPUT -p tcp --dport 1443 -j ACCEPT
 
-# Allow direct gRPC connections
+# Agent gRPC (direct)
 sudo iptables -A INPUT -p tcp --dport 50053 -j ACCEPT
 
-# Allow API server
-sudo iptables -A INPUT -p tcp --dport 22230 -j ACCEPT
+# Agent gRPC (Caddy TLS proxy, optional for external agents)
+sudo iptables -A INPUT -p tcp --dport 50052 -j ACCEPT
+
+# REST API + agent HTTP fallback
+sudo iptables -A INPUT -p tcp --dport 9999 -j ACCEPT
 
 # Persist rules
 sudo iptables-save > /etc/iptables/rules.v4
