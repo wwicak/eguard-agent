@@ -104,10 +104,17 @@ EventEnvelope --> EventBuffer --> gRPC/HTTP send to server
 
 ### Communication Model
 
-| Transport | Purpose | Port |
-|-----------|---------|------|
-| gRPC (primary) | Enrollment, heartbeat, telemetry streaming, commands, policy | 50052 (TLS via Caddy) or 50053 (direct) |
-| HTTP (fallback) | Same RPCs via REST endpoints when gRPC is unavailable | 9999 (HTTPS) |
+| Transport | Purpose | Port | Notes |
+|-----------|---------|------|-------|
+| gRPC (primary) | Enrollment, heartbeat, telemetry, commands, policy | **50053** (direct h2c) | Canonical server port |
+| gRPC via Caddy | Same as above with TLS termination | **50052** (TLS proxy) | For external agents |
+| HTTP (fallback) | Same RPCs via REST when gRPC unavailable | 9999 (HTTPS) | Auto-fallback |
+
+> **Port clarification**: The Go agent server listens on **50053** (h2c).
+> Caddy reverse-proxies port **50052** (TLS) → 50053 (h2c).
+> Agents should use `grpc_port = 50053` in `bootstrap.conf` for direct
+> connectivity, or `grpc_port = 50052` when connecting through the Caddy
+> TLS proxy. Both ports are valid.
 
 The agent uses gRPC as the primary transport and automatically falls back to
 HTTP when gRPC connections fail. The fallback is transparent and the agent
@@ -143,18 +150,68 @@ Environment="EGUARD_BUNDLE_PUBLIC_KEY_PATH=/etc/eguard-server/bundle-pubkey.hex"
 
 ### 2.2 Agent Installation
 
-Packages are available for all supported platforms:
+#### One-liner install (recommended)
+
+The server hosts an install script that auto-detects the OS, downloads the
+correct package, writes `bootstrap.conf`, and starts the service:
+
+```bash
+curl -s http://SERVER:50053/install.sh -o /tmp/install.sh && \
+  sudo EGUARD_SERVER=SERVER:50053 EGUARD_ENROLLMENT_TOKEN=TOKEN bash /tmp/install.sh
+```
+
+The script supports Debian/Ubuntu (dpkg), RHEL/Rocky/Alma (yum),
+Fedora 41+ (dnf5), Windows (install.ps1), and macOS (install-macos.sh).
+It auto-probes HTTPS then HTTP for server connectivity and writes a hardened
+fallback systemd unit if the package does not provide one.
+
+#### Manual package install
 
 | Platform | Package Format | Install Command |
 |----------|---------------|-----------------|
 | Debian/Ubuntu | `.deb` | `sudo dpkg -i eguard-agent_<version>_amd64.deb` |
-| RHEL/CentOS | `.rpm` | `sudo rpm -i eguard-agent-<version>.x86_64.rpm` |
+| RHEL/CentOS/Rocky | `.rpm` | `sudo rpm -ivh eguard-agent-<version>.x86_64.rpm` |
+| Fedora 41+ | `.rpm` | `sudo dnf5 install -y eguard-agent-<version>.x86_64.rpm` |
 | Windows | `.exe` | `.\install.ps1 -Server HOST -Token TOKEN` (see [Section 15.5](#155-windows-agent--installation--operations)) |
 | macOS | `.pkg` | `sudo installer -pkg eguard-agent-<version>.pkg -target /` |
 
 After installation the agent binary is at `/usr/bin/eguard-agent` (Linux) or
 `C:\Program Files\eGuard\eguard-agent.exe` (Windows) and runs as a systemd
 service (Linux) or Windows Service.
+
+#### Systemd service hardening
+
+The shipped systemd unit includes self-protection and OS hardening:
+
+```ini
+[Unit]
+RefuseManualStop=yes          # Prevents systemctl stop (tamper resistance)
+StartLimitIntervalSec=0       # No restart rate limiting
+StartLimitBurst=0             # Unlimited restart attempts
+
+[Service]
+Type=simple                   # Compatible with all systemd versions
+Restart=always                # Auto-restart on any exit
+RestartSec=1                  # 1-second restart delay
+NoNewPrivileges=true          # Prevent privilege escalation
+ProtectSystem=full            # Read-only /usr, /boot, /etc
+ProtectHome=true              # Inaccessible /home, /root
+PrivateTmp=true               # Private /tmp namespace
+TimeoutStopSec=5s             # Fast shutdown on legitimate stop
+```
+
+> **Note on `Type=simple` vs `Type=notify`**: Early versions used `Type=notify`
+> with `WatchdogSec`, but this fails on Fedora 41+ (systemd v256) where
+> `NOTIFY_SOCKET` is not inherited by the tokio async runtime.
+> `Type=simple` works reliably on Debian 12, Ubuntu 24.04, RHEL 9, Rocky 9,
+> and Fedora 41. Changed in agent v0.2.15.
+
+#### Enrollment via Web GUI
+
+1. Navigate to **Management → Endpoint Security → Configuration → Enrollment & Install**
+2. Create an enrollment token (name, max uses, expiration)
+3. Select the token and package format (DEB / RPM / EXE / PKG)
+4. Copy the generated install command and run on the endpoint
 
 ### 2.3 Enrollment Flow
 
@@ -176,7 +233,7 @@ and receives TLS certificates for subsequent communication.
 [server]
 schema_version = 1
 address = eguard-server.example.com
-grpc_port = 50052
+grpc_port = 50053
 enrollment_token = your-enrollment-token-here
 tenant_id = default
 ```
@@ -186,7 +243,7 @@ tenant_id = default
 ```json
 {
   "address": "eguard-server.example.com",
-  "grpc_port": 50052,
+  "grpc_port": 50053,
   "enrollment_token": "your-enrollment-token-here",
   "tenant_id": "default"
 }
@@ -475,6 +532,59 @@ Current seed merge rules:
 If no events are observed for 30 consecutive days, the baseline transitions to
 `Stale`. A stale baseline still allows autonomous response but triggers a
 warning log (`baseline became stale; anomaly thresholds should be reviewed`).
+
+### 4.8 Fleet Aggregation (Server-side)
+
+The server aggregates baselines from all agents into fleet-wide median
+distributions. This enables new agents to bootstrap with real fleet data
+and feeds the ADWIN drift detection system.
+
+**Requirements:**
+- Minimum **3 active agents** reporting the same `ProcessKey`
+- Agents must have sent a heartbeat within the last 7 days
+- Aggregation runs automatically via egcron (`baseline_aggregation` task)
+
+**Schedule:** `@every 1h` (configurable in `egcron.conf`)
+
+**Manual trigger** (from server or via ML Ops dashboard "Run Aggregate" button):
+```bash
+curl -s -X POST http://localhost:50053/api/v1/endpoint/baseline/aggregate \
+  -H "Content-Type: application/json" -d '{"min_agents": 3}'
+```
+
+**Algorithm:**
+- Groups endpoint baselines by `ProcessKey`
+- Skips keys with fewer than `min_agents` (default 3) distinct agents
+- Computes median distribution (standard median for <20 agents, 5% trimmed
+  median for >=20 agents)
+- Calculates KL-divergence stddev across contributors
+- Feeds Jensen-Shannon divergence into ADWIN drift detector
+- Stores result in `fleet_baseline` table (upsert)
+- Prunes stale fleet baselines whose source agents are all gone
+
+**Cohort gate:** The ML Ops pipeline requires `max_contributors >= 3` before
+the cohort gate is considered met. This prevents training on single-agent data.
+
+**egcron configuration:** The `baseline_aggregation` task is a built-in default
+in egcron (since v15.0). It runs automatically even if `egcron.conf` is empty.
+To override the schedule:
+
+```ini
+# /usr/local/eg/conf/egcron.conf
+[baseline_aggregation]
+type=baseline_aggregation
+status=enabled
+schedule=@every 30m
+```
+
+**Built-in egcron defaults** (auto-injected when missing from config):
+
+| Task | Schedule | Purpose |
+|------|----------|---------|
+| `signature_ml_feedback_train` | `0 2 * * *` (daily 2 AM) | ML model retraining from alert feedback |
+| `threat_intel_update` | `@every 4h` | Fetch threat-intel bundles |
+| `baseline_aggregation` | `@every 1h` | Fleet baseline median aggregation |
+| `endpoint_event_cleanup` | `@every 15m` | Tiered event retention + size guard |
 
 ---
 
@@ -4738,7 +4848,7 @@ Current eGuard detection engine performance (as of March 2026):
 | Metric | Value | Industry Benchmark |
 |---|---|---|
 | Detection layers | 6 + behavioral + ML | Typical: 2-3 layers |
-| ML features | 33 | CrowdStrike: ~20 (estimated) |
+| ML features | 50 (contract v2) | CrowdStrike: ~20 (estimated) |
 | SIGMA rules | 361 (5 sources) | SentinelOne: 0 (no SIGMA) |
 | YARA rules | 2,891 | CrowdStrike: limited |
 | IOC indicators | 59,528 (hashes + domains + IPs) | Varies by vendor |
