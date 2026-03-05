@@ -1,0 +1,154 @@
+name: Collect VirusTotal Enrichment
+
+on:
+  schedule:
+    - cron: "0 1 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: collect-vt-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  enrich:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Check API key
+        id: guard
+        env:
+          VT_KEY: ${{ secrets.VIRUS_TOTAL_API }}
+        run: |
+          if [ -z "${VT_KEY}" ]; then
+            echo "::warning::VIRUS_TOTAL_API secret is not set — skipping enrichment"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download MalwareBazaar recent hashes
+        if: steps.guard.outputs.skip != 'true'
+        run: |
+          curl -sSfL -o recent_sha256.txt \
+            "https://bazaar.abuse.ch/export/txt/sha256/recent/"
+          # Strip comment lines and blank lines, take 480 unique hashes
+          grep -vE '^\s*(#|$)' recent_sha256.txt \
+            | head -n 480 \
+            | sort -u \
+            | head -n 480 > hashes.txt
+          echo "Hash count: $(wc -l < hashes.txt)"
+
+      - name: Enrich hashes via VirusTotal
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          VT_API_KEY: ${{ secrets.VIRUS_TOTAL_API }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, sys, time, urllib.request, urllib.error
+
+          API_KEY = os.environ["VT_API_KEY"]
+          VT_URL  = "https://www.virustotal.com/api/v3/files/{}"
+          DELAY   = 15  # seconds between requests (4 req/min limit)
+
+          with open("hashes.txt") as f:
+              hashes = [line.strip() for line in f if line.strip()]
+
+          print(f"Querying VirusTotal for {len(hashes)} hashes ...")
+          enriched = 0
+          skipped  = 0
+
+          with open("vt-enriched.ndjson", "w") as out:
+              for idx, sha256 in enumerate(hashes, 1):
+                  url = VT_URL.format(sha256)
+                  req = urllib.request.Request(url, headers={"x-apikey": API_KEY})
+
+                  backoff = DELAY
+                  attempts = 0
+                  max_retries = 3
+
+                  while attempts <= max_retries:
+                      try:
+                          with urllib.request.urlopen(req, timeout=30) as resp:
+                              data = json.loads(resp.read())
+
+                          attrs = data.get("data", {}).get("attributes", {})
+                          stats = attrs.get("last_analysis_stats", {})
+
+                          positives = stats.get("malicious", 0) + stats.get("suspicious", 0)
+                          total = sum(stats.values()) if stats else 0
+
+                          # Threat labels from popular_threat_classification
+                          ptc = attrs.get("popular_threat_classification", {})
+                          labels = []
+                          for entry in ptc.get("suggested_threat_label", []) if isinstance(ptc.get("suggested_threat_label"), list) else []:
+                              if isinstance(entry, str):
+                                  labels.append(entry)
+                              elif isinstance(entry, dict) and "value" in entry:
+                                  labels.append(entry["value"])
+                          # Also pull popular_threat_name entries
+                          for entry in ptc.get("popular_threat_name", []):
+                              if isinstance(entry, dict) and "value" in entry:
+                                  labels.append(entry["value"])
+
+                          tags = attrs.get("tags", [])
+                          type_desc = attrs.get("type_description", "")
+
+                          record = {
+                              "sha256": sha256,
+                              "vt_positives": positives,
+                              "vt_total": total,
+                              "vt_threat_labels": labels,
+                              "vt_tags": tags,
+                              "vt_type": type_desc,
+                          }
+                          out.write(json.dumps(record, separators=(",", ":")) + "\n")
+                          enriched += 1
+                          print(f"  [{idx}/{len(hashes)}] {sha256[:16]}... => {positives}/{total}")
+                          break  # success
+
+                      except urllib.error.HTTPError as e:
+                          if e.code == 404:
+                              skipped += 1
+                              print(f"  [{idx}/{len(hashes)}] {sha256[:16]}... => not found, skipping")
+                              break
+                          elif e.code == 429:
+                              attempts += 1
+                              if attempts > max_retries:
+                                  skipped += 1
+                                  print(f"  [{idx}/{len(hashes)}] {sha256[:16]}... => rate limited after {max_retries} retries, skipping")
+                                  break
+                              print(f"  [{idx}/{len(hashes)}] rate limited, backing off {backoff}s (attempt {attempts}/{max_retries})")
+                              time.sleep(backoff)
+                              backoff = min(backoff * 2, 120)
+                              continue
+                          else:
+                              skipped += 1
+                              print(f"  [{idx}/{len(hashes)}] {sha256[:16]}... => HTTP {e.code}, skipping")
+                              break
+
+                      except Exception as e:
+                          skipped += 1
+                          print(f"  [{idx}/{len(hashes)}] {sha256[:16]}... => error: {e}, skipping")
+                          break
+
+                  # Rate-limit pause between requests
+                  if idx < len(hashes):
+                      time.sleep(DELAY)
+
+          print(f"\nDone. Enriched: {enriched}, Skipped: {skipped}")
+
+          if enriched < 100:
+              print(f"::error::Coverage gate failed: only {enriched} hashes enriched (minimum 100)")
+              sys.exit(1)
+          PYEOF
+
+      - name: Upload artifact
+        if: steps.guard.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: vt-enriched
+          path: vt-enriched.ndjson
+          retention-days: 7

@@ -67,7 +67,7 @@ for workflow in "${WORKFLOWS[@]}"; do
       "Build signature ML training corpus"
       "Validate signature ML label quality (shadow)"
       "Build signature ML feature snapshot (shadow)"
-      "Train signature ML model artifact"
+      "Train signature ML tree model artifact"
       "Evaluate signature ML offline metrics (shadow)"
       "Validate signature ML offline eval trend (shadow)"
       "Sign signature ML model artifact"
@@ -91,7 +91,7 @@ for workflow in "${WORKFLOWS[@]}"; do
     ml_corpus_run="$(yq -r '.jobs."build-bundle".steps[] | select(.name == "Build signature ML training corpus") | .run' "${path}" 2>/dev/null || true)"
     ml_label_run="$(yq -r '.jobs."build-bundle".steps[] | select(.name == "Validate signature ML label quality (shadow)") | .run' "${path}" 2>/dev/null || true)"
     ml_feature_run="$(yq -r '.jobs."build-bundle".steps[] | select(.name == "Build signature ML feature snapshot (shadow)") | .run' "${path}" 2>/dev/null || true)"
-    ml_train_run="$(yq -r '.jobs."build-bundle".steps[] | select(.name == "Train signature ML model artifact") | .run' "${path}" 2>/dev/null || true)"
+    ml_train_run="$(yq -r '.jobs."build-bundle".steps[] | select(.name == "Train signature ML tree model artifact") | .run' "${path}" 2>/dev/null || true)"
     ml_eval_run="$(yq -r '.jobs."build-bundle".steps[] | select(.name == "Evaluate signature ML offline metrics (shadow)") | .run' "${path}" 2>/dev/null || true)"
     ml_eval_trend_run="$(yq -r '.jobs."build-bundle".steps[] | select(.name == "Validate signature ML offline eval trend (shadow)") | .run' "${path}" 2>/dev/null || true)"
     ml_sign_run="$(yq -r '.jobs."build-bundle".steps[] | select(.name == "Sign signature ML model artifact") | .run' "${path}" 2>/dev/null || true)"
@@ -217,7 +217,7 @@ for workflow in "${WORKFLOWS[@]}"; do
       attack_contract_ok=false
     fi
 
-    if [[ "${ml_train_run}" != *"signature_ml_train_model.py"* ]]; then
+    if [[ "${ml_train_run}" != *"signature_ml_train_tree_model.py"* ]]; then
       echo "build-bundle ML train step missing train model script invocation" >&2
       attack_contract_ok=false
     fi
