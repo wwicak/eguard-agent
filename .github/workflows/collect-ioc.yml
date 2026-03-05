@@ -65,14 +65,21 @@ jobs:
 
       - name: "Fetch MalwareBazaar full SHA256 dump (Tier 2 — abuse.ch)"
         run: |
-          # Full dump: 200K+ hashes (significantly more than "recent" endpoint)
+          # Full dump: 200K+ hashes (ZIP archive containing full_sha256.txt)
           curl -sSfL --retry 3 --max-time 300 \
             "https://bazaar.abuse.ch/export/txt/sha256/full/" \
-            -o /tmp/bazaar_full.txt 2>/dev/null || true
-          if [ -s /tmp/bazaar_full.txt ]; then
-            grep -v '^#' /tmp/bazaar_full.txt | grep -v '^$' | \
-              grep -iE '^[0-9a-f]{64}$' | sort -u > /tmp/bazaar_full_hashes.txt
-            echo "MalwareBazaar full dump: $(wc -l < /tmp/bazaar_full_hashes.txt) hashes"
+            -o /tmp/bazaar_full.zip 2>/dev/null || true
+          if [ -s /tmp/bazaar_full.zip ]; then
+            unzip -o -q /tmp/bazaar_full.zip -d /tmp/bazaar_full_extract 2>/dev/null || true
+            FULL_FILE=$(find /tmp/bazaar_full_extract -name '*.txt' -type f | head -1)
+            if [ -n "$FULL_FILE" ] && [ -s "$FULL_FILE" ]; then
+              tr -d '\r' < "$FULL_FILE" | grep -v '^#' | grep -v '^$' | \
+                grep -iE '^[0-9a-f]{64}$' | sort -u > /tmp/bazaar_full_hashes.txt
+              echo "MalwareBazaar full dump: $(wc -l < /tmp/bazaar_full_hashes.txt) hashes"
+            else
+              echo "MalwareBazaar full dump: no valid text file in archive"
+              touch /tmp/bazaar_full_hashes.txt
+            fi
           else
             echo "MalwareBazaar full dump unavailable, falling back to recent"
             touch /tmp/bazaar_full_hashes.txt
@@ -82,7 +89,7 @@ jobs:
           curl -sSfL --retry 3 --max-time 120 \
             "https://bazaar.abuse.ch/export/txt/sha256/recent/" \
             -o /tmp/bazaar_hashes.txt
-          grep -v '^#' /tmp/bazaar_hashes.txt | grep -v '^$' | \
+          tr -d '\r' < /tmp/bazaar_hashes.txt | grep -v '^#' | grep -v '^$' | \
             awk '{print $1}' > /tmp/bazaar_export_hashes.txt
 
           if [ -n "${MALWARE_BAZAAR_KEY:-}" ]; then
