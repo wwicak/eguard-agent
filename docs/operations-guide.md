@@ -5746,3 +5746,32 @@ when `vcruntime140.dll` or `msvcp140.dll` is missing. Previously caused silent `
 
 **ProtectSystem=full edge case**: Systemd `ProtectSystem=full` makes `/etc` read-only,
 blocking `agent.conf` persistence after enrollment. Fixed with `ReadWritePaths=/etc/eguard-agent`.
+
+### N.9 Known Issues from E2E Testing (Mar 2026)
+
+**Issue 1: EICAR hash-based IOC detection gap** (Priority: HIGH)
+- The eBPF sensor does not compute `file_hash` for write events to `/tmp`
+- IOC hash matching (`z1_exact_ioc`) never fires when `file_hash` is null
+- Emergency IOC pushes are ineffective for files created via write operations
+- Fix needed: compute file hash on `file_open` for paths matching IOC prefixes
+
+**Issue 2: Firewall compliance — UFW not detected** (Priority: MEDIUM)
+- Agent's firewall check does not recognize UFW as an active firewall
+- It checks for `firewalld.service` instead of inspecting iptables/nftables rules
+- Fix needed: add UFW detection (`ufw status` or check iptables INPUT policy)
+
+**Issue 3: YARA test marker rule not in bundle** (Priority: LOW)
+- `default.yar` contains `eguard-malware-test-marker` rule but it's not loaded
+- Real YARA rules (Autumn_Backdoor, RedLine, etc.) fire correctly (169 matches)
+- The test marker needs to be in the threat-intel bundle to work at runtime
+
+**Issue 4: Deception tokens require explicit deployment** (Priority: LOW)
+- Creating a token via API does NOT deploy it — `deployed=0`, no `agent_id`
+- Operators may create tokens thinking they're active, but monitoring isn't engaged
+- UI should clarify that deployment is a separate step, or auto-deploy on creation
+
+**Issue 5: Threat intel bundles not configured** (Priority: MEDIUM)
+- `threat_intel_source` table is empty — no upstream feed configured
+- Sync webhook triggers but cannot download content
+- The GitHub Actions threat-intel pipeline publishes bundles but the server
+  needs configuration to fetch from the correct GitHub release URL
