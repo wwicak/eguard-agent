@@ -295,9 +295,64 @@ jobs:
           PYEOF
 
       # ────────────────────────────────────────────────────────────────
-      # Stage 3: VirusTotal enrichment (4/min, 480/day)
+      # Checkpoint: merge MB+MD results NOW so they're safe if VT
+      # stage times out. The final merge step will layer VT on top.
+      # ────────────────────────────────────────────────────────────────
+
+      - name: "Checkpoint: merge MB + MD into baseline"
+        run: |
+          python3 - <<'PYEOF'
+          import json
+
+          records = {}
+          # Load previous baseline
+          try:
+              with open("/tmp/previous/vt-enriched.ndjson") as f:
+                  for line in f:
+                      line = line.strip()
+                      if line:
+                          rec = json.loads(line)
+                          sha = rec.get("sha256", "")
+                          if sha:
+                              records[sha] = rec
+          except FileNotFoundError:
+              pass
+
+          # Merge MB
+          for src in ["mb-enriched.ndjson", "md-enriched.ndjson"]:
+              try:
+                  with open(src) as f:
+                      for line in f:
+                          line = line.strip()
+                          if not line:
+                              continue
+                          rec = json.loads(line)
+                          sha = rec.get("sha256", "")
+                          if sha:
+                              if sha in records:
+                                  records[sha].update(rec)
+                              else:
+                                  records[sha] = rec
+              except FileNotFoundError:
+                  pass
+
+          # Save checkpoint (will be overwritten by final merge if VT succeeds)
+          MAX_RECORDS = 60000
+          all_recs = sorted(records.values(), key=lambda r: r.get("mb_first_seen", ""), reverse=True)[:MAX_RECORDS]
+          with open("vt-enriched.ndjson", "w") as f:
+              for rec in all_recs:
+                  f.write(json.dumps(rec, separators=(",", ":")) + "\n")
+
+          mb_count = sum(1 for r in all_recs if r.get("mb_file_type"))
+          md_count = sum(1 for r in all_recs if r.get("md_total_avs") is not None)
+          print(f"Checkpoint saved: {len(all_recs)} records (MB: {mb_count}, MD: {md_count})")
+          PYEOF
+
+      # ────────────────────────────────────────────────────────────────
+      # Stage 3: VirusTotal enrichment (4/min, 250/run)
       # Only enrich hashes that NEITHER MalwareBazaar NOR MetaDefender
-      # could fully classify. Each VT lookup provides unique signal.
+      # could fully classify. Capped at 250 to fit within timeout.
+      # continue-on-error: true so merge+upload always runs.
       # ────────────────────────────────────────────────────────────────
 
       - name: "Select high-value hashes for VirusTotal"
@@ -374,7 +429,7 @@ jobs:
               scored.append((score, sha256))
 
           scored.sort(reverse=True)
-          selected = [sha256 for _, sha256 in scored[:480]]
+          selected = [sha256 for _, sha256 in scored[:250]]
 
           with open("vt_candidates.txt", "w") as f:
               for h in selected:
@@ -387,6 +442,7 @@ jobs:
           PYEOF
 
       - name: "Enrich via VirusTotal (rate-limited, high-value only)"
+        continue-on-error: true
         env:
           VT_API_KEY: ${{ secrets.VIRUS_TOTAL_API }}
         run: |
@@ -489,71 +545,27 @@ jobs:
       # Stage 3: Merge all enrichment sources into single artifact
       # ────────────────────────────────────────────────────────────────
 
-      - name: Merge enrichment sources (MB + MD + VT + previous)
+      - name: "Final merge: layer VT results onto checkpoint"
         run: |
           python3 - <<'PYEOF'
           import json
 
-          # Load all records keyed by sha256
+          # Load checkpoint (already has previous + MB + MD)
           records = {}
-
-          # 1. Load previous enrichment (baseline)
           try:
-              with open("/tmp/previous/vt-enriched.ndjson") as f:
+              with open("vt-enriched.ndjson") as f:
                   for line in f:
                       line = line.strip()
-                      if not line:
-                          continue
-                      rec = json.loads(line)
-                      sha = rec.get("sha256", "")
-                      if sha:
-                          records[sha] = rec
-          except FileNotFoundError:
-              pass
-          prev_count = len(records)
-
-          # 2. Merge MalwareBazaar enrichment (adds/updates MB fields)
-          mb_new = 0
-          for src_file in ["mb-enriched.ndjson"]:
-              try:
-                  with open(src_file) as f:
-                      for line in f:
-                          line = line.strip()
-                          if not line:
-                              continue
+                      if line:
                           rec = json.loads(line)
                           sha = rec.get("sha256", "")
-                          if not sha:
-                              continue
-                          if sha in records:
-                              records[sha].update(rec)
-                          else:
+                          if sha:
                               records[sha] = rec
-                              mb_new += 1
-              except FileNotFoundError:
-                  pass
-
-          # 3. Merge MetaDefender enrichment (adds MD fields)
-          md_new = 0
-          try:
-              with open("md-enriched.ndjson") as f:
-                  for line in f:
-                      line = line.strip()
-                      if not line:
-                          continue
-                      rec = json.loads(line)
-                      sha = rec.get("sha256", "")
-                      if not sha:
-                          continue
-                      if sha in records:
-                          records[sha].update(rec)
-                      else:
-                          records[sha] = rec
-                      md_new += 1
           except FileNotFoundError:
               pass
+          checkpoint_count = len(records)
 
-          # 4. Merge VirusTotal enrichment (adds VT fields)
+          # Layer VT enrichment on top (may be empty if VT timed out)
           vt_new = 0
           try:
               with open("vt-only-enriched.ndjson") as f:
@@ -573,11 +585,9 @@ jobs:
           except FileNotFoundError:
               pass
 
-          # 5. Trim to rolling window (keep max 60K records)
+          # Write final output
           MAX_RECORDS = 60000
-          all_records = sorted(records.values(), key=lambda r: r.get("mb_first_seen", ""), reverse=True)
-          if len(all_records) > MAX_RECORDS:
-              all_records = all_records[:MAX_RECORDS]
+          all_records = sorted(records.values(), key=lambda r: r.get("mb_first_seen", ""), reverse=True)[:MAX_RECORDS]
 
           with open("vt-enriched.ndjson", "w") as f:
               for rec in all_records:
@@ -589,12 +599,10 @@ jobs:
           vt_count = sum(1 for r in all_records if r.get("vt_positives") is not None)
           all_three = sum(1 for r in all_records if r.get("mb_file_type") and r.get("md_total_avs") is not None and r.get("vt_positives") is not None)
 
-          print(f"=== Merged enrichment summary ===")
+          print(f"=== Final enrichment summary ===")
           print(f"  Total records:          {total}")
-          print(f"  Previous baseline:      {prev_count}")
-          print(f"  New from MalwareBazaar: {mb_new}")
-          print(f"  New from MetaDefender:  {md_new}")
-          print(f"  New from VirusTotal:    {vt_new}")
+          print(f"  From checkpoint (MB+MD):{checkpoint_count}")
+          print(f"  VT enriched this run:   {vt_new}")
           print(f"  With MB metadata:       {mb_count}")
           print(f"  With MD detection:      {md_count}")
           print(f"  With VT detection:      {vt_count}")
