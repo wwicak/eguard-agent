@@ -354,10 +354,14 @@ fi
 # Build with glibc target and eBPF support for full EDR capability.
 # The musl target is incompatible with system libelf.a (glibc-compiled).
 # Using native glibc toolchain enables libbpf linking for runtime eBPF loading.
+# zig-cc linker (.cargo/config.toml) enforces glibc version ceiling:
+#   - eBPF builds: GLIBC_TARGET=2.35 (Ubuntu 22.04+ minimum, links libelf)
+#   - Non-eBPF builds: GLIBC_TARGET=2.31 (Ubuntu 20.04+ minimum)
 if [[ "${EGUARD_BUILD_EBPF:-1}" == "1" ]]; then
   if [[ -n "${MOCK_LOG:-}" ]]; then
     echo "cargo build --release --target x86_64-unknown-linux-musl -p agent-core" >> "${MOCK_LOG}"
   fi
+  export EGUARD_GLIBC_TARGET="${EGUARD_GLIBC_TARGET:-2.35}"
   cargo build --release -p agent-core --features platform-linux/ebpf-libbpf
   BIN_DIR="${ROOT_DIR}/target/release"
 else
