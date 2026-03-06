@@ -429,7 +429,7 @@ jobs:
               scored.append((score, sha256))
 
           scored.sort(reverse=True)
-          selected = [sha256 for _, sha256 in scored[:250]]
+          selected = [sha256 for _, sha256 in scored[:100]]
 
           with open("vt_candidates.txt", "w") as f:
               for h in selected:
@@ -521,6 +521,11 @@ jobs:
                               skipped += 1
                               break
                           elif e.code == 429:
+                              if idx <= 3:
+                                  # Quota exhausted from the start — stop immediately
+                                  print(f"  VT daily quota exhausted (429 on hash #{idx}), stopping VT stage")
+                                  hashes.clear()
+                                  break
                               attempts += 1
                               if attempts > 3:
                                   skipped += 1
