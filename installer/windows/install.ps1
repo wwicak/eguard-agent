@@ -52,6 +52,23 @@ New-Item -Path (Join-Path $programDataRoot 'logs') -ItemType Directory -Force | 
 New-Item -Path (Join-Path $programDataRoot 'certs') -ItemType Directory -Force | Out-Null
 New-Item -Path (Join-Path $programDataRoot 'rules-staging') -ItemType Directory -Force | Out-Null
 
+# Ensure Visual C++ Redistributable is installed (required for agent binary)
+if (-not (Test-Path "$env:SystemRoot\System32\vcruntime140.dll") -or
+    -not (Test-Path "$env:SystemRoot\System32\msvcp140.dll")) {
+    Write-Step "Installing Visual C++ Redistributable (required dependency)"
+    $vcRedistUrl = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
+    $vcRedistPath = Join-Path $env:TEMP "vc_redist.x64.exe"
+    Invoke-WebRequest -Uri $vcRedistUrl -OutFile $vcRedistPath -UseBasicParsing
+    $vcProc = Start-Process -FilePath $vcRedistPath -ArgumentList '/install', '/quiet', '/norestart' -Wait -PassThru
+    if ($vcProc.ExitCode -notin @(0, 1638, 3010)) {
+        throw "Visual C++ Redistributable installation failed (exit code: $($vcProc.ExitCode))"
+    }
+    Remove-Item -Path $vcRedistPath -Force -ErrorAction SilentlyContinue
+    Write-Step "Visual C++ Redistributable installed"
+} else {
+    Write-Step "Visual C++ Redistributable already present"
+}
+
 $headers = @{
     'X-Enrollment-Token' = $EnrollmentToken
 }

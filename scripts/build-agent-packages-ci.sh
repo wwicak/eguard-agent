@@ -361,7 +361,7 @@ if [[ "${EGUARD_BUILD_EBPF:-1}" == "1" ]]; then
   if [[ -n "${MOCK_LOG:-}" ]]; then
     echo "cargo build --release --target x86_64-unknown-linux-musl -p agent-core" >> "${MOCK_LOG}"
   fi
-  export EGUARD_GLIBC_TARGET="${EGUARD_GLIBC_TARGET:-2.35}"
+  export EGUARD_GLIBC_TARGET="${EGUARD_GLIBC_TARGET:-2.31}"
   cargo build --release -p agent-core --features platform-linux/ebpf-libbpf
   BIN_DIR="${ROOT_DIR}/target/release"
 else
