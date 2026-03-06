@@ -5528,3 +5528,149 @@ sshpass -p 'Eguard123' ssh eguard@103.49.238.102 \
 ```
 
 If `affected_agent_ids` is empty or no events exist for those agents, incident feedback rows cannot be rendered.
+
+---
+
+## Appendix N: Agent Package Distribution Runtime Pitfalls (Mar 2026)
+
+### N.1 Symptom
+
+`install.sh` is reachable, but package endpoints return 404:
+
+- `GET /api/v1/agent-install/linux-deb` -> `{"error":"agent_package_not_found"}`
+- `GET /api/v1/agent-install/linux-rpm` -> `{"error":"agent_package_not_found"}`
+
+This can happen even when enrollment token handling is correct.
+
+### N.2 Root cause observed in ISO VM lab
+
+1. `eguard-cron` was inactive, so `agent_package_sync` did not run.
+2. `eg-agent-server` release syncer default path differed from install endpoint default lookup path:
+   - release syncer default: `/usr/local/eg/var/packages`
+   - install endpoint default: `/usr/local/eg/var/agent-packages`
+3. GitHub `releases/latest` pointed to `rules-*` bundle tag, not `eGuard Agent ...` release.
+
+Result: install endpoints had no downloadable `.deb`/`.rpm` payloads.
+
+Also observed in lab: when `eg-agent-server` runs with `persistence_enabled=false`, enrollment tokens are in-memory only and are lost after service restart. Recreate token after restart before re-running install flows.
+
+### N.3 Fixes applied
+
+- Started and enabled cron scheduler:
+
+```bash
+sudo systemctl enable --now eguard-cron
+```
+
+- Updated `eg-agent-server` syncer behavior:
+  - default package dir aligned to `/usr/local/eg/var/agent-packages`
+  - fallback to `EGUARD_AGENT_PACKAGE_DIR` when `EGUARD_AGENT_RELEASE_PACKAGE_DIR` is unset
+  - release selection now scans release list and prioritizes releases named like `eGuard Agent ...` instead of blindly using `releases/latest`
+  - excludes companion rules packages (`eguard-agent-rules*.deb/.rpm`) from install payload selection
+
+- Hardened configurator/systemd update flow (`egcmd service eg updatesystemd`):
+  - when enabling managed units, if `eguard.target` is already active, the service manager also starts the unit (`systemctl start --no-block <unit>`)
+  - prevents "enabled but inactive until reboot/manual start" state during ISO install and first-time configuration
+
+- Hardened Debian/ISO post-install script (`debian/eguard.postinst`):
+  - after `updatesystemd`, if `eguard.target` is active, it iterates `/etc/systemd/system/eguard.target.wants/eguard-*` and starts each unit with `systemctl start --no-block`
+  - ensures newly enabled eGuard units are activated in the same install/configurator run
+
+- Hardened Go apiserver async task handling for configurator step 4:
+  - `POST /api/v1/configurator/service/eg/update_systemd` can take >60s on fresh installs because `updatesystemd` now enables and starts many units
+  - added task keepalive/heartbeat so `/api/v1/configurator/egqueue/task/<id>/status/poll` does not falsely return `task timed out`
+  - verified final step now reaches `/admin#/login` after services finish enabling
+
+- Hardened `eguard-agent-server` fresh-install bootstrap:
+  - commit `eee2871b5b92d60186fcd7887ad83b16a7ff4d77` adds `EnvironmentFile=-/usr/local/eg/var/conf/agent-server.env` plus `ExecStartPre=/usr/local/eg/sbin/agent-server-env-gen`
+  - `agent-server-env-gen` synthesizes `EGUARD_AGENT_SERVER_DSN` from `eg.conf` so the service no longer depends on a pre-created manual env file after configurator
+  - corrected generated `EGUARD_AGENT_PACKAGE_DIR` to `/usr/local/eg/var/agent-packages` (matching install endpoint + release sync defaults)
+  - Debian packaging already picks up the new script via generic source-tree copy in `debian/rules`; RPM packaging needed an explicit `%files` entry for `/usr/local/eg/sbin/agent-server-env-gen`
+
+### N.4 Verification commands
+
+```bash
+# server-side package sync evidence
+journalctl -u eguard-agent-server --since '10 minutes ago' --no-pager | grep -i 'release syncer'
+find /usr/local/eg/var/agent-packages -maxdepth 2 -type f
+
+# install endpoint now serves binaries with valid enrollment token
+curl -sS -D - \
+  -H "X-Enrollment-Token: <token>" \
+  http://127.0.0.1:50053/api/v1/agent-install/linux-deb -o /tmp/agent.deb
+```
+
+Expected: HTTP `200` with `Content-Disposition: attachment; filename="eguard-agent_...deb"`.
+
+### N.5 Additional lab edge case (Ubuntu VM)
+
+When using `agent-v0.1.1` package on Ubuntu endpoint, agent startup failed due glibc mismatch:
+
+- `GLIBC_2.38 not found`
+- `GLIBC_2.39 not found`
+
+Operational guidance: use a compatible agent build for the target distro libc baseline (or static/musl build policy for Linux endpoints).
+
+**FIX (Mar 2026)**: Implemented `zig cc` as the Rust linker with glibc 2.31 targeting.
+Binary now requires max GLIBC_2.30 — compatible with Ubuntu 20.04+ (glibc 2.31).
+See `.cargo/config.toml` and `scripts/zig-cc.sh` in the agent repo.
+
+### N.6 Enrollment Token Mismatch Hardening (Mar 2026)
+
+**Problem**: When an agent is deployed with a wrong enrollment token, it retried enrollment
+on every tick (100ms), flooding the `endpoint_enrollment_audit` table with thousands of
+rejected entries per second. An operator without DB access had no clear recovery path.
+
+**Fixes applied**:
+
+1. **Exponential backoff on enrollment failure** (`crates/agent-core/src/lifecycle/enrollment.rs`):
+   - First retry after 5s, doubles each failure, caps at 5 minutes
+   - Reduces audit table pollution from ~600/min to ~3/min at steady state
+   - On success, backoff resets to 5s
+
+2. **Detection shard count capped at 2** (`crates/agent-core/src/lifecycle/timing.rs`):
+   - Previously defaulted to CPU core count (8+ on modern systems)
+   - Each shard loaded full detection bundle (IOCs, CVEs, YARA, Sigma) independently
+   - 8 shards x 200MB = 1.6GB; now 2 shards x 200MB = 400MB max
+   - Override: `EGUARD_DETECTION_SHARDS=<N>` env var
+
+3. **IOC duplicate storage removed** (`crates/detection/src/layer1.rs`):
+   - Removed `exact_hashes`, `exact_domains`, `exact_ips` HashSets
+   - Now uses `prefilter_*` HashSets + SQLite `IocExactStore` (no duplication)
+   - Saves ~155MB per shard
+
+**Operator recovery flow for token mismatch**:
+
+1. In Admin UI: Management > Endpoint Security > Configuration > Enrollment & Install
+2. Verify the active enrollment token (create a new one if needed)
+3. Copy the correct token from the UI
+4. SSH to the endpoint: update `/etc/eguard-agent/bootstrap.conf` with the correct token
+5. Remove `/etc/eguard-agent/agent.conf` if it exists (forces re-enrollment)
+6. Agent auto-restarts via systemd and enrolls with the correct token
+
+**E2E test results (Mar 2026)**:
+
+| Test | Result | Note |
+|------|--------|------|
+| Wrong token → backoff | PASS | 2 attempts in 60s (was 600+/sec before fix) |
+| Fix token → re-enroll | PASS | Agent enrolled on next restart |
+| Memory usage (Fedora) | PASS | 424MB systemd-reported (was 1.7GB peak) |
+| Memory usage (Ubuntu) | PASS | 14MB (down from crash-looping) |
+| glibc compatibility | PASS | Max GLIBC_2.30, works on Ubuntu 22.04 |
+| Server auto-start | PASS | `agent-server-env-gen` synthesizes DSN from eg.conf |
+
+### N.7 Agent Server EnvironmentFile Bootstrap (Mar 2026)
+
+The `eguard-agent-server.service` now uses:
+
+```ini
+EnvironmentFile=-/usr/local/eg/var/conf/agent-server.env
+ExecStartPre=/usr/local/eg/sbin/agent-server-env-gen
+```
+
+`agent-server-env-gen` reads `[database]` from `eg.conf` and generates:
+- `EGUARD_AGENT_SERVER_DSN` (auto-discovers unix socket or falls back to TCP)
+- `EGUARD_SERVER_AUTH_MODE=permissive`
+- `EGUARD_AGENT_PACKAGE_DIR=/usr/local/eg/var/agent-packages`
+
+This eliminates the need for manual systemd overrides after ISO install.

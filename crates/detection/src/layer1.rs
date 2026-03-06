@@ -225,11 +225,8 @@ impl IocExactStore {
 #[derive(Debug)]
 pub struct IocLayer1 {
     prefilter_hashes: HashSet<String>,
-    exact_hashes: HashSet<String>,
     prefilter_domains: HashSet<String>,
-    exact_domains: HashSet<String>,
     prefilter_ips: HashSet<String>,
-    exact_ips: HashSet<String>,
     matcher_patterns: Vec<String>,
     matcher: Option<AhoCorasick>,
     exact_store: Option<IocExactStore>,
@@ -240,11 +237,8 @@ impl IocLayer1 {
     pub fn new() -> Self {
         Self {
             prefilter_hashes: HashSet::new(),
-            exact_hashes: HashSet::new(),
             prefilter_domains: HashSet::new(),
-            exact_domains: HashSet::new(),
             prefilter_ips: HashSet::new(),
-            exact_ips: HashSet::new(),
             matcher_patterns: Vec::new(),
             matcher: None,
             exact_store: None,
@@ -270,7 +264,6 @@ impl IocLayer1 {
         for v in values {
             let normalized = v.to_ascii_lowercase();
             self.prefilter_hashes.insert(normalized.clone());
-            self.exact_hashes.insert(normalized.clone());
             copy.push(normalized);
         }
         rebuild_prefilter_if_needed(&mut self.prefilter_hashes, &mut self.prefilter_rebuilds);
@@ -287,7 +280,6 @@ impl IocLayer1 {
         for v in values {
             let normalized = v.trim_end_matches('.').to_ascii_lowercase();
             self.prefilter_domains.insert(normalized.clone());
-            self.exact_domains.insert(normalized.clone());
             copy.push(normalized);
         }
         rebuild_prefilter_if_needed(&mut self.prefilter_domains, &mut self.prefilter_rebuilds);
@@ -304,7 +296,6 @@ impl IocLayer1 {
         for v in values {
             let normalized = normalize_ip_for_matching(&v);
             self.prefilter_ips.insert(normalized.clone());
-            self.exact_ips.insert(normalized.clone());
             copy.push(normalized);
         }
         rebuild_prefilter_if_needed(&mut self.prefilter_ips, &mut self.prefilter_rebuilds);
@@ -354,15 +345,15 @@ impl IocLayer1 {
         if !self.prefilter_hashes.contains(&normalized) {
             return Layer1Result::Clean;
         }
-        if self.exact_hashes.contains(&normalized) {
-            return Layer1Result::ExactMatch;
-        }
+        // Prefilter hit — confirm via exact store (SQLite).
+        // When no exact_store is configured, prefilter is authoritative.
         if let Some(store) = &self.exact_store {
             if store.contains_hash(&normalized).unwrap_or(false) {
                 return Layer1Result::ExactMatch;
             }
+            return Layer1Result::PrefilterOnly;
         }
-        Layer1Result::PrefilterOnly
+        Layer1Result::ExactMatch
     }
 
     pub fn check_domain(&self, domain: &str) -> Layer1Result {
@@ -377,12 +368,6 @@ impl IocLayer1 {
         {
             return Layer1Result::Clean;
         }
-        if candidates
-            .iter()
-            .any(|candidate| self.exact_domains.contains(*candidate))
-        {
-            return Layer1Result::ExactMatch;
-        }
         if let Some(store) = &self.exact_store {
             if candidates
                 .iter()
@@ -390,8 +375,9 @@ impl IocLayer1 {
             {
                 return Layer1Result::ExactMatch;
             }
+            return Layer1Result::PrefilterOnly;
         }
-        Layer1Result::PrefilterOnly
+        Layer1Result::ExactMatch
     }
 
     pub fn check_ip(&self, ip: &str) -> Layer1Result {
@@ -399,15 +385,13 @@ impl IocLayer1 {
         if !self.prefilter_ips.contains(&normalized) {
             return Layer1Result::Clean;
         }
-        if self.exact_ips.contains(&normalized) {
-            return Layer1Result::ExactMatch;
-        }
         if let Some(store) = &self.exact_store {
             if store.contains_ip(&normalized).unwrap_or(false) {
                 return Layer1Result::ExactMatch;
             }
+            return Layer1Result::PrefilterOnly;
         }
-        Layer1Result::PrefilterOnly
+        Layer1Result::ExactMatch
     }
 
     pub fn check_text(&self, text: &str) -> Vec<String> {
@@ -507,7 +491,7 @@ impl IocLayer1 {
     }
 
     pub fn ioc_entry_count(&self) -> usize {
-        self.exact_hashes.len() + self.exact_domains.len() + self.exact_ips.len()
+        self.prefilter_hashes.len() + self.prefilter_domains.len() + self.prefilter_ips.len()
     }
 
     fn apply_result(result: Layer1Result, field: &str, hit: &mut Layer1EventHit) {

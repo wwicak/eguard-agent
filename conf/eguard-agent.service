@@ -15,6 +15,7 @@ NoNewPrivileges=true
 ProtectSystem=full
 ProtectHome=true
 PrivateTmp=true
+ReadWritePaths=/etc/eguard-agent /var/lib/eguard-agent
 TimeoutStopSec=5s
 
 [Install]

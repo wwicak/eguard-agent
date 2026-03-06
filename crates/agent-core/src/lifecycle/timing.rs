@@ -44,18 +44,19 @@ pub(super) fn compute_sampling_stride(pending: usize, recent_ebpf_drops: u64) ->
 
 pub(super) fn resolve_detection_shard_count() -> usize {
     const MAX_DETECTION_SHARDS: usize = 16;
+    const DEFAULT_DETECTION_SHARDS: usize = 2;
     if let Ok(raw) = std::env::var("EGUARD_DETECTION_SHARDS") {
         match raw.trim().parse::<usize>() {
             Ok(value) if value > 0 => return value.min(MAX_DETECTION_SHARDS),
             _ => warn!(
                 value = %raw,
-                "invalid EGUARD_DETECTION_SHARDS value; falling back to CPU-based default"
+                "invalid EGUARD_DETECTION_SHARDS value; falling back to default"
             ),
         }
     }
 
     std::thread::available_parallelism()
-        .map(|n| n.get().clamp(1, MAX_DETECTION_SHARDS))
+        .map(|n| n.get().clamp(1, DEFAULT_DETECTION_SHARDS))
         .unwrap_or(1)
 }
 

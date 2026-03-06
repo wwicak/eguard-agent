@@ -102,6 +102,35 @@ jobs:
           EGUARD_AGENT_VERSION: ${{ steps.semver.outputs.version }}
         run: ./scripts/build-agent-packages-ci.sh
 
+      - name: Enforce glibc floor (max GLIBC_2.31 for Ubuntu 20.04+ compat)
+        run: |
+          BINARY="artifacts/package-agent/eguard-agent"
+          if [ ! -f "$BINARY" ]; then
+            BINARY=$(find artifacts/package-agent -name 'agent-core' -o -name 'eguard-agent' | head -1)
+          fi
+          if [ -z "$BINARY" ] || [ ! -f "$BINARY" ]; then
+            echo "WARN: agent binary not found for glibc check, skipping"
+            exit 0
+          fi
+          MAX_GLIBC="2.31"
+          ACTUAL=$(objdump -T "$BINARY" 2>/dev/null | grep -oP 'GLIBC_\K[0-9.]+' | sort -V | tail -1)
+          echo "Binary glibc floor: GLIBC_${ACTUAL} (max allowed: GLIBC_${MAX_GLIBC})"
+          if [ -n "$ACTUAL" ]; then
+            python3 -c "
+          from packaging.version import Version
+          actual, maximum = Version('${ACTUAL}'), Version('${MAX_GLIBC}')
+          if actual > maximum:
+              raise SystemExit(f'glibc floor {actual} exceeds max {maximum}')
+          print(f'glibc floor check passed: {actual} <= {maximum}')
+          " 2>/dev/null || python3 -c "
+          a = tuple(int(x) for x in '${ACTUAL}'.split('.'))
+          m = tuple(int(x) for x in '${MAX_GLIBC}'.split('.'))
+          if a > m:
+              raise SystemExit(f'glibc floor GLIBC_${ACTUAL} exceeds max GLIBC_${MAX_GLIBC}')
+          print(f'glibc floor check passed: GLIBC_${ACTUAL} <= GLIBC_${MAX_GLIBC}')
+          "
+          fi
+
       - name: Validate package artifact structure
         run: python3 scripts/verify_package_artifacts_ci.py --artifact-dir artifacts/package-agent
 

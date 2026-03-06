@@ -25,6 +25,18 @@ impl AgentRuntime {
             return;
         }
 
+        // Exponential backoff: skip enrollment if we tried recently and failed.
+        // Backoff starts at 5s, doubles each failure, caps at 5 minutes.
+        let now = super::timing::now_unix();
+        if let Some(last_attempt) = self.last_enrollment_attempt_unix {
+            let backoff_secs = self.enrollment_backoff_secs.min(300);
+            if now.saturating_sub(last_attempt) < backoff_secs {
+                return;
+            }
+        }
+
+        self.last_enrollment_attempt_unix = Some(now);
+
         let enroll = self.build_enrollment_envelope();
         match self.client.enroll_with_material(&enroll).await {
             Ok(Some(result)) => {
@@ -33,10 +45,12 @@ impl AgentRuntime {
                     self.config.agent_id = result.agent_id;
                 }
                 self.enrolled = true;
+                self.enrollment_backoff_secs = 5;
                 self.consume_bootstrap_config();
             }
             Ok(None) => {
                 self.enrolled = true;
+                self.enrollment_backoff_secs = 5;
                 self.consume_bootstrap_config();
             }
             Err(err) => {
@@ -44,9 +58,15 @@ impl AgentRuntime {
                 if err_str.contains("already exists") || err_str.contains("already_enrolled") {
                     tracing::info!("agent already enrolled on server, marking as enrolled");
                     self.enrolled = true;
+                    self.enrollment_backoff_secs = 5;
                     self.consume_bootstrap_config();
                 } else {
-                    warn!(error = %err, "enrollment failed");
+                    warn!(
+                        error = %err,
+                        next_retry_secs = self.enrollment_backoff_secs.min(300),
+                        "enrollment failed, will retry with backoff"
+                    );
+                    self.enrollment_backoff_secs = (self.enrollment_backoff_secs * 2).min(300);
                 }
             }
         }
