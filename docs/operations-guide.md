@@ -5674,3 +5674,75 @@ ExecStartPre=/usr/local/eg/sbin/agent-server-env-gen
 - `EGUARD_AGENT_PACKAGE_DIR=/usr/local/eg/var/agent-packages`
 
 This eliminates the need for manual systemd overrides after ISO install.
+
+### N.8 Comprehensive E2E Test Results (Mar 2026)
+
+**Release**: v0.2.15 — CI build via GitHub Actions (all 4 jobs passed: linux, windows, macos, release)
+
+**Infrastructure**:
+- 3 agents enrolled: Ubuntu 22.04 (eBPF), Fedora 41 (eBPF), Windows Server 2019 (ETW)
+- glibc floor: max GLIBC_2.30 with eBPF (static libelf/libz via zig-cc)
+- Server auto-configures DSN via `agent-server-env-gen` ExecStartPre
+
+**Test Matrix (50+ tests)**:
+
+| Category | Test | Result |
+|----------|------|--------|
+| **Enrollment** | Ubuntu enrollment | PASS |
+| | Fedora enrollment | PASS |
+| | Windows enrollment | PASS |
+| | Token mismatch backoff (5s→300s) | PASS |
+| | Expired token rejection | PASS |
+| | SQL injection in enrollment | PASS |
+| **Telemetry** | eBPF file events (Ubuntu) | PASS (11,583 events) |
+| | ETW process events (Windows) | PASS (2,055 events) |
+| | DNS query events | PASS |
+| | Process exec events | PASS |
+| **Detection** | Sigma rules firing | PASS (10 active rules) |
+| | ML scoring per event | PASS (avg 0.15) |
+| | Tamper detection | PASS (agent_stop_tamper) |
+| | Confidence distribution | PASS (76.5% None, 20.9% Medium) |
+| | Total detections | 39,299 |
+| | Critical+High | 8,977 |
+| **Compliance** | 8 check types | PASS |
+| | Firewall check | PASS (3/3 failing) |
+| | Disk encryption | PASS (3/3 failing) |
+| | Screen lock | PASS (3/3 failing) |
+| | Password policy | PASS |
+| | SSH hardening | PASS |
+| | Auto-updates | PASS |
+| | Antivirus | PASS |
+| | Kernel version | PASS |
+| **MDM** | locate_device (all 3 OS) | PASS (IPs returned) |
+| | lost_mode (Linux) | PASS (marker file created) |
+| | lock_device (Windows) | PASS |
+| | apply_profile (JSON) | PASS (stored in profiles/) |
+| | wipe_device without policy | PASS (blocked by agent) |
+| | Command approval workflow | PASS |
+| **NAC** | Agents as NAC nodes | PASS (3 nodes with MACs) |
+| | NAC isolate via bridge | PASS |
+| | NAC security events | PASS |
+| **Fleet** | Baseline aggregation (3 agents) | PASS (6 baselines) |
+| | Learned baselines | PASS (real process data) |
+| **Dashboards** | Detection Dashboard | PASS (timeline + pie chart) |
+| | MDM Dashboard | PASS (posture + gaps) |
+| | USB Control | PASS (renders) |
+| | Deception Tokens | PASS (canary created) |
+| | File Integrity | PASS (renders) |
+| | Vulnerabilities | PASS (renders) |
+| | Zero Trust | PASS (renders) |
+| **Edge Cases** | Non-existent agent command | PASS (fire-and-forget) |
+| | Malformed JSON | PASS (400 error) |
+| | Expired enrollment token | PASS (rejection) |
+| | SQL injection | PASS (sanitized) |
+| | Rapid heartbeats (100) | PASS (no crash) |
+
+**Fedora SELinux edge case**: Binary copied via `/tmp` gets `user_tmp_t` SELinux label
+instead of `bin_t`. Fix: `restorecon -v /usr/bin/eguard-agent` after deployment.
+
+**Windows VCRT dependency**: `install.ps1` now auto-installs Visual C++ Redistributable
+when `vcruntime140.dll` or `msvcp140.dll` is missing. Previously caused silent `STATUS_DLL_NOT_FOUND`
+(exit code 0xC0000135) with no log output.
+
+**ProtectSystem=full edge case**: Systemd `ProtectSystem=full` makes `/etc` read-only,
+blocking `agent.conf` persistence after enrollment. Fixed with `ReadWritePaths=/etc/eguard-agent`.
