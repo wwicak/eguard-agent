@@ -390,6 +390,37 @@ impl EnrichmentCache {
             .put(file_object.to_ascii_lowercase(), path);
     }
 
+    fn remember_inferred_process_exe(&mut self, pid: u32, process_exe: String) {
+        let normalized = normalize_windows_path(&process_exe);
+        if normalized.is_empty() {
+            return;
+        }
+
+        if let Some(mut entry) = self.process_cache.get(&pid).cloned() {
+            if entry
+                .process_exe
+                .as_deref()
+                .map(is_weak_windows_identity)
+                .unwrap_or(true)
+            {
+                entry.process_exe = Some(normalized.clone());
+                self.process_cache.put(pid, entry);
+            }
+            return;
+        }
+
+        self.process_cache.put(
+            pid,
+            ProcessCacheEntry {
+                process_exe: Some(normalized),
+                process_cmdline: None,
+                parent_process: None,
+                parent_chain: Vec::new(),
+                last_seen_ns: 0,
+            },
+        );
+    }
+
     fn file_path_from_object(&mut self, file_object: Option<&str>) -> Option<String> {
         let key = file_object?.trim().to_ascii_lowercase();
         if key.is_empty() {
@@ -538,19 +569,6 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
 
     let entry = cache.process_entry(&raw, &payload_meta);
 
-    let process_exe = entry
-        .process_exe
-        .clone()
-        .or_else(|| payload_meta.process_path_hint.clone());
-
-    let process_exe_sha256 = process_exe.as_deref().and_then(|path| {
-        if cache.is_excluded_for_expensive_checks(None, Some(path)) {
-            None
-        } else {
-            cache.hash_for_path(path)
-        }
-    });
-
     let file_path = payload_meta
         .file_path
         .clone()
@@ -561,6 +579,32 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
         });
 
     cache.remember_file_object_path(payload_meta.file_object.as_deref(), file_path.as_deref());
+
+    let mut process_exe = entry
+        .process_exe
+        .clone()
+        .or_else(|| payload_meta.process_path_hint.clone());
+    if process_exe
+        .as_deref()
+        .map(is_weak_windows_identity)
+        .unwrap_or(true)
+    {
+        if let Some(inferred) = file_path
+            .as_deref()
+            .and_then(infer_windows_process_exe_from_file_path)
+        {
+            process_exe = Some(inferred.to_string());
+            cache.remember_inferred_process_exe(raw.pid, inferred.to_string());
+        }
+    }
+
+    let process_exe_sha256 = process_exe.as_deref().and_then(|path| {
+        if cache.is_excluded_for_expensive_checks(None, Some(path)) {
+            None
+        } else {
+            cache.hash_for_path(path)
+        }
+    });
 
     let file_sha256 = if cache.strict_budget_mode {
         None
@@ -920,6 +964,34 @@ fn process_name_from_entry(entry: &ProcessCacheEntry) -> Option<String> {
         .filter(|value| !value.trim().is_empty())
 }
 
+fn infer_windows_process_exe_from_file_path(path: &str) -> Option<&'static str> {
+    let mut normalized = path.replace('\\', "/").to_ascii_lowercase();
+    while normalized.contains("//") {
+        normalized = normalized.replace("//", "/");
+    }
+
+    if normalized.is_empty() {
+        return None;
+    }
+
+    if normalized.contains("__psscriptpolicytest_")
+        || normalized.contains("windowspowershell/v1.0")
+        || normalized.contains("windows powershell")
+        || normalized.contains("powershell/modules")
+        || normalized.contains("/psreadline/")
+    {
+        return Some(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe");
+    }
+
+    if normalized.contains("program files/openssh")
+        || normalized.contains("windows/system32/openssh")
+    {
+        return Some(r"C:\Program Files\OpenSSH\sshd.exe");
+    }
+
+    None
+}
+
 fn is_weak_windows_identity(name: &str) -> bool {
     let lowered = name.trim().to_ascii_lowercase();
     lowered.is_empty()
@@ -1066,6 +1138,53 @@ mod tests {
         assert_eq!(
             enriched.process_exe, None,
             "file object paths should not be reused as process image hints"
+        );
+    }
+
+    #[test]
+    fn weak_windows_file_event_infers_powershell_process_exe() {
+        let raw = RawEvent {
+            event_type: EventType::FileOpen,
+            pid: 3508,
+            uid: 0,
+            ts_ns: 3,
+            payload: r"path=C:\Windows\System32\WindowsPowerShell\v1.0\Modules\ServerManager\ServerManager.psd1".to_string(),
+        };
+
+        let mut cache = EnrichmentCache::default();
+        let enriched = enrich_event_with_cache(raw, &mut cache);
+
+        assert_eq!(
+            enriched.process_exe.as_deref(),
+            Some(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
+        );
+    }
+
+    #[test]
+    fn inferred_powershell_identity_sticks_for_same_pid() {
+        let mut cache = EnrichmentCache::default();
+
+        let first = RawEvent {
+            event_type: EventType::FileOpen,
+            pid: 3508,
+            uid: 0,
+            ts_ns: 4,
+            payload: r"path=C:\Windows\System32\WindowsPowerShell\v1.0\Modules\ServerManager\ServerManager.psd1".to_string(),
+        };
+        let _ = enrich_event_with_cache(first, &mut cache);
+
+        let second = RawEvent {
+            event_type: EventType::FileOpen,
+            pid: 3508,
+            uid: 0,
+            ts_ns: 5,
+            payload: r"path=C:\Windows\System32\ncrypt.dll".to_string(),
+        };
+        let enriched = enrich_event_with_cache(second, &mut cache);
+
+        assert_eq!(
+            enriched.process_exe.as_deref(),
+            Some(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
         );
     }
 
