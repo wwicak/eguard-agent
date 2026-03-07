@@ -26,7 +26,7 @@ pub(super) fn to_detection_event(
     enriched: &crate::platform::EnrichedEvent,
     now_unix: i64,
 ) -> TelemetryEvent {
-    let process = enriched
+    let mut process = enriched
         .process_exe
         .as_deref()
         .map(process_basename)
@@ -40,6 +40,16 @@ pub(super) fn to_detection_event(
         })
         .unwrap_or("unknown")
         .to_string();
+
+    if is_weak_windows_process_identity(&process) {
+        if let Some(parent) = enriched
+            .parent_process
+            .as_deref()
+            .filter(|value| !is_weak_windows_process_identity(value))
+        {
+            process = parent.to_string();
+        }
+    }
 
     let session_id = enriched
         .parent_chain
@@ -103,12 +113,26 @@ fn process_basename(path: &str) -> &str {
 }
 
 fn process_name_from_cmdline(cmdline: &str) -> Option<&str> {
-    let first = cmdline.split_whitespace().next()?.trim();
+    let first = cmdline
+        .split(['\0', ' '])
+        .find(|segment| !segment.trim().is_empty())?
+        .trim();
     if first.is_empty() {
         None
     } else {
         Some(process_basename(first))
     }
+}
+
+fn is_weak_windows_process_identity(process: &str) -> bool {
+    let lowered = process.trim().to_ascii_lowercase();
+    lowered.is_empty()
+        || lowered == "unknown"
+        || lowered == "system"
+        || matches!(
+            lowered.as_str(),
+            "conhost.exe" | "conhost" | "csrss.exe" | "csrss"
+        )
 }
 
 pub(super) fn map_event_class(event_type: &crate::platform::EventType) -> EventClass {
@@ -196,8 +220,10 @@ mod tests {
             },
             process_exe: Some(String::new()),
             process_exe_sha256: None,
-            process_cmdline: Some(r"\\??\\C:\\Windows\\system32\\conhost.exe 0x4".to_string()),
-            parent_process: Some("powershell.exe".to_string()),
+            process_cmdline: Some(
+                r"\\??\\C:\\Windows\\system32\\notepad.exe C:\\Windows\\win.ini".to_string(),
+            ),
+            parent_process: Some("explorer.exe".to_string()),
             parent_chain: vec![5768],
             file_path: Some(r"C:\\Windows\\Temp\\__PSScriptPolicyTest.ps1".to_string()),
             file_path_secondary: None,
@@ -214,7 +240,41 @@ mod tests {
         };
 
         let event = super::to_detection_event(&enriched, 123);
-        assert_eq!(event.process, "conhost.exe");
+        assert_eq!(event.process, "notepad.exe");
+        assert_eq!(event.parent_process, "explorer.exe");
+    }
+
+    #[test]
+    fn to_detection_event_uses_meaningful_parent_when_process_is_proxy_host() {
+        let enriched = EnrichedEvent {
+            event: RawEvent {
+                event_type: EventType::FileOpen,
+                pid: 1688,
+                uid: 0,
+                ts_ns: 1,
+                payload: String::new(),
+            },
+            process_exe: Some(r"C:\\Windows\\System32\\conhost.exe".to_string()),
+            process_exe_sha256: None,
+            process_cmdline: None,
+            parent_process: Some("powershell.exe".to_string()),
+            parent_chain: vec![5768],
+            file_path: Some(r"C:\\Windows\\Temp\\script.ps1".to_string()),
+            file_path_secondary: None,
+            file_write: false,
+            file_sha256: None,
+            event_size: None,
+            dst_ip: None,
+            dst_port: None,
+            dst_domain: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        };
+
+        let event = super::to_detection_event(&enriched, 123);
+        assert_eq!(event.process, "powershell.exe");
         assert_eq!(event.parent_process, "powershell.exe");
     }
 }

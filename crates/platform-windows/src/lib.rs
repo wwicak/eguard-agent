@@ -219,6 +219,7 @@ impl EnrichmentCache {
                 }
             }
 
+            self.rewrite_proxy_process_context(&mut entry);
             self.process_cache.put(raw.pid, entry.clone());
             return entry;
         }
@@ -236,7 +237,7 @@ impl EnrichmentCache {
                 .and_then(|pid| self.process_name_for_pid(pid))
         });
 
-        let entry = ProcessCacheEntry {
+        let mut entry = ProcessCacheEntry {
             process_exe: info
                 .exe_path
                 .or_else(|| payload_meta.process_path_hint.clone()),
@@ -248,6 +249,7 @@ impl EnrichmentCache {
             last_seen_ns: raw.ts_ns,
         };
 
+        self.rewrite_proxy_process_context(&mut entry);
         self.process_cache.put(raw.pid, entry.clone());
         entry
     }
@@ -260,19 +262,96 @@ impl EnrichmentCache {
             if let Some(cmdline) = cached.process_cmdline.as_deref() {
                 return process_name_from_cmdline(cmdline).map(ToString::to_string);
             }
+            if let Some(parent) = cached.parent_process.as_deref() {
+                return Some(parent.to_string());
+            }
         }
 
         let info = enrichment::process::query_process_info(pid);
-        info.exe_path
+        let entry = ProcessCacheEntry {
+            process_exe: info.exe_path,
+            process_cmdline: info.command_line,
+            parent_process: info.parent_name,
+            parent_chain: info.parent_chain,
+            last_seen_ns: 0,
+        };
+
+        let name = process_name_from_entry(&entry)
+            .or_else(|| entry.parent_process.clone())
+            .filter(|value| !value.trim().is_empty());
+        if name.is_some() || !entry.parent_chain.is_empty() {
+            self.process_cache.put(pid, entry.clone());
+        }
+        name
+    }
+
+    fn rewrite_proxy_process_context(&mut self, entry: &mut ProcessCacheEntry) {
+        let current_name = process_name_from_entry(entry);
+        let Some(ancestor) = self.first_meaningful_ancestor_entry(&entry.parent_chain) else {
+            return;
+        };
+        let ancestor_name = process_name_from_entry(&ancestor);
+        let ancestor_parent = ancestor
+            .parent_process
+            .clone()
+            .filter(|value| !is_weak_windows_identity(value));
+
+        if entry
+            .parent_process
             .as_deref()
-            .map(process_basename)
-            .map(ToString::to_string)
-            .or_else(|| {
-                info.command_line
-                    .as_deref()
-                    .and_then(process_name_from_cmdline)
-                    .map(ToString::to_string)
-            })
+            .map(is_weak_windows_identity)
+            .unwrap_or(true)
+        {
+            entry.parent_process = ancestor_parent.or_else(|| ancestor_name.clone());
+        }
+
+        let current_is_weak = current_name
+            .as_deref()
+            .map(is_weak_windows_identity)
+            .unwrap_or(true);
+        if current_is_weak {
+            if entry.process_cmdline.is_none() {
+                entry.process_cmdline = ancestor.process_cmdline.clone();
+            }
+            if entry.process_exe.is_none() {
+                entry.process_exe = ancestor
+                    .process_exe
+                    .clone()
+                    .or_else(|| ancestor_name.clone());
+            }
+        }
+    }
+
+    fn first_meaningful_ancestor_entry(
+        &mut self,
+        parent_chain: &[u32],
+    ) -> Option<ProcessCacheEntry> {
+        for pid in parent_chain {
+            let candidate = if let Some(cached) = self.process_cache.peek(pid) {
+                cached.clone()
+            } else {
+                let info = enrichment::process::query_process_info(*pid);
+                let entry = ProcessCacheEntry {
+                    process_exe: info.exe_path,
+                    process_cmdline: info.command_line,
+                    parent_process: info.parent_name,
+                    parent_chain: info.parent_chain,
+                    last_seen_ns: 0,
+                };
+                if process_name_from_entry(&entry).is_some() || !entry.parent_chain.is_empty() {
+                    self.process_cache.put(*pid, entry.clone());
+                }
+                entry
+            };
+
+            if let Some(name) = process_name_from_entry(&candidate) {
+                if !is_weak_windows_identity(&name) {
+                    return Some(candidate);
+                }
+            }
+        }
+
+        None
     }
 
     fn parent_chain_from_hint(&mut self, parent_pid: Option<u32>) -> Vec<u32> {
@@ -813,12 +892,43 @@ fn process_basename(path: &str) -> &str {
 }
 
 fn process_name_from_cmdline(cmdline: &str) -> Option<&str> {
-    let first = cmdline.split_whitespace().next()?.trim();
+    let first = cmdline
+        .split(['\0', ' '])
+        .find(|segment| !segment.trim().is_empty())?
+        .trim();
     if first.is_empty() {
         None
     } else {
         Some(process_basename(first))
     }
+}
+
+fn process_name_from_entry(entry: &ProcessCacheEntry) -> Option<String> {
+    entry
+        .process_exe
+        .as_deref()
+        .map(process_basename)
+        .map(ToString::to_string)
+        .or_else(|| {
+            entry
+                .process_cmdline
+                .as_deref()
+                .and_then(process_name_from_cmdline)
+                .map(ToString::to_string)
+        })
+        .or_else(|| entry.parent_process.clone())
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn is_weak_windows_identity(name: &str) -> bool {
+    let lowered = name.trim().to_ascii_lowercase();
+    lowered.is_empty()
+        || lowered == "unknown"
+        || lowered == "system"
+        || matches!(
+            lowered.as_str(),
+            "conhost.exe" | "conhost" | "csrss.exe" | "csrss"
+        )
 }
 
 fn normalize_exclusions(values: Vec<String>) -> Vec<String> {
