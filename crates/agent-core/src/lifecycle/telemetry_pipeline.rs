@@ -11,6 +11,40 @@ use super::{
     DEGRADE_AFTER_SEND_FAILURES, EVENT_BATCH_SIZE,
 };
 
+const WINDOWS_SENSOR_CHILD_TTL_NS: u64 = 15 * 60 * 1_000_000_000;
+const WINDOWS_SENSOR_CHILD_PID_LIMIT: usize = 4_096;
+const WINDOWS_SENSOR_CHILD_PATTERNS_POWERSHELL: &[&str] = &[
+    "get-mpcomputerstatus",
+    "get-netfirewallprofile",
+    "get-bitlockervolume",
+    "get-ciminstance win32_computersystem",
+    "get-ciminstance win32_networkadapterconfiguration",
+    "get-ciminstance -classname win32_deviceguard",
+    "get-ciminstance win32_processor",
+    "get-ciminstance win32_operatingsystem",
+    "get-ciminstance win32_bios",
+    "get-ciminstance win32_physicalmemory",
+    "get-ciminstance win32_diskdrive",
+    "get-ciminstance win32_logicaldisk",
+    "get-ciminstance win32_videocontroller",
+    "get-netadapter",
+    "confirm-securebootuefi",
+    "get-tpm",
+    "get-itemproperty hklm:\\software\\microsoft\\windows\\currentversion\\uninstall",
+    "attacksurfacereductionrules_ids",
+    "get-mppreference",
+    "get-nettcpconnection -owningprocess",
+    "[system.security.principal.securityidentifier]::new",
+    "windowsupdate\\auto update\\rebootrequired",
+];
+const WINDOWS_SENSOR_CHILD_PATTERNS_REG: &[&str] = &[
+    "\\windows nt\\currentversion",
+    "\\control\\deviceguard",
+    "\\control\\lsa",
+    "\\policies\\system",
+];
+const WINDOWS_SENSOR_CHILD_PATTERNS_AUDITPOL: &[&str] = &["subcategory:\"process creation\""];
+
 impl AgentRuntime {
     pub(super) async fn run_connected_telemetry_stage(
         &mut self,
@@ -188,10 +222,7 @@ impl AgentRuntime {
                     return None;
                 }
 
-                let self_filtered: Vec<RawEvent> = events
-                    .into_iter()
-                    .filter(|event| !Self::is_agent_self_event(event))
-                    .collect();
+                let self_filtered = self.filter_agent_noise_events(events);
                 if self_filtered.is_empty() {
                     self.refresh_strict_budget_mode();
                     return None;
@@ -260,6 +291,119 @@ impl AgentRuntime {
         event.pid == std::process::id()
     }
 
+    fn filter_agent_noise_events(&mut self, events: Vec<RawEvent>) -> Vec<RawEvent> {
+        let now_ns = events
+            .last()
+            .map(|event| event.ts_ns)
+            .filter(|value| *value > 0)
+            .unwrap_or_else(unix_now_ns);
+        self.prune_suppressed_windows_sensor_pids(now_ns);
+
+        let mut kept = Vec::with_capacity(events.len());
+        for event in events {
+            if Self::is_agent_self_event(&event) || self.should_suppress_sensor_child_event(&event)
+            {
+                continue;
+            }
+            kept.push(event);
+        }
+        kept
+    }
+
+    fn should_suppress_sensor_child_event(&mut self, event: &RawEvent) -> bool {
+        let event_ns = if event.ts_ns == 0 {
+            unix_now_ns()
+        } else {
+            event.ts_ns
+        };
+        self.prune_suppressed_windows_sensor_pids(event_ns);
+
+        if matches!(event.event_type, crate::platform::EventType::ProcessExit) {
+            return self
+                .suppressed_windows_sensor_pids
+                .remove(&event.pid)
+                .is_some();
+        }
+
+        if let Some(expires_ns) = self.suppressed_windows_sensor_pids.get(&event.pid).copied() {
+            if event_ns <= expires_ns {
+                return true;
+            }
+            self.suppressed_windows_sensor_pids.remove(&event.pid);
+        }
+
+        if Self::is_known_windows_sensor_child_process(event, std::process::id()) {
+            self.suppressed_windows_sensor_pids.insert(
+                event.pid,
+                event_ns.saturating_add(WINDOWS_SENSOR_CHILD_TTL_NS),
+            );
+            self.prune_suppressed_windows_sensor_pids(event_ns);
+            return true;
+        }
+
+        false
+    }
+
+    fn prune_suppressed_windows_sensor_pids(&mut self, now_ns: u64) {
+        self.suppressed_windows_sensor_pids
+            .retain(|_, expires_ns| now_ns <= *expires_ns);
+        if self.suppressed_windows_sensor_pids.len()
+            > WINDOWS_SENSOR_CHILD_PID_LIMIT.saturating_mul(2)
+        {
+            self.suppressed_windows_sensor_pids.clear();
+        }
+    }
+
+    fn is_known_windows_sensor_child_process(event: &RawEvent, agent_pid: u32) -> bool {
+        if !matches!(event.event_type, crate::platform::EventType::ProcessExec) {
+            return false;
+        }
+
+        let process_name = payload_process_name(&event.payload)
+            .map(|value| value.to_ascii_lowercase())
+            .unwrap_or_default();
+        if process_name.is_empty() {
+            return false;
+        }
+
+        let parent_pid = parse_payload_u32_field(&event.payload, "ppid")
+            .or_else(|| parse_payload_u32_field(&event.payload, "parent_pid"));
+        let parent_process = parse_payload_field(&event.payload, "parent_process")
+            .or_else(|| parse_payload_field(&event.payload, "parent_process_name"))
+            .or_else(|| parse_payload_field(&event.payload, "parent_name"))
+            .map(|value| value.to_ascii_lowercase())
+            .unwrap_or_default();
+        let parent_name = process_basename(&parent_process).to_ascii_lowercase();
+        let parent_matches = parent_pid == Some(agent_pid) || parent_name == "eguard-agent.exe";
+        if !parent_matches {
+            return false;
+        }
+
+        let command_line = parse_payload_field(&event.payload, "cmdline")
+            .or_else(|| parse_payload_field(&event.payload, "command_line"))
+            .map(|value| value.to_ascii_lowercase())
+            .unwrap_or_default();
+        if command_line.is_empty() {
+            return false;
+        }
+
+        match process_name.as_str() {
+            "powershell.exe" => WINDOWS_SENSOR_CHILD_PATTERNS_POWERSHELL
+                .iter()
+                .any(|pattern| command_line.contains(pattern)),
+            "reg.exe" => {
+                command_line.contains(" query")
+                    && WINDOWS_SENSOR_CHILD_PATTERNS_REG
+                        .iter()
+                        .any(|pattern| command_line.contains(pattern))
+            }
+            "auditpol.exe" => WINDOWS_SENSOR_CHILD_PATTERNS_AUDITPOL
+                .iter()
+                .any(|pattern| command_line.contains(pattern)),
+            _ => false,
+        }
+    }
+
     fn telemetry_backlog_depth(&self) -> usize {
         self.buffer
             .pending_count()
@@ -291,7 +435,8 @@ impl AgentRuntime {
                 return None;
             };
 
-            if Self::is_agent_self_event(&event) {
+            if Self::is_agent_self_event(&event) || self.should_suppress_sensor_child_event(&event)
+            {
                 continue;
             }
 
@@ -485,6 +630,86 @@ impl AgentRuntime {
             .saturating_sub(self.last_ebpf_stats.events_dropped);
         self.last_ebpf_stats = stats;
     }
+}
+
+fn parse_payload_field(payload: &str, field: &str) -> Option<String> {
+    payload
+        .split([';', ','])
+        .filter_map(|segment| segment.split_once('='))
+        .find_map(|(key, value)| {
+            if key.trim().eq_ignore_ascii_case(field) {
+                let value = value.trim().trim_matches('"');
+                if value.is_empty() {
+                    None
+                } else {
+                    Some(decode_payload_value(value))
+                }
+            } else {
+                None
+            }
+        })
+}
+
+fn parse_payload_u32_field(payload: &str, field: &str) -> Option<u32> {
+    let raw = parse_payload_field(payload, field)?;
+    let trimmed = raw.trim();
+    if let Some(hex) = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+    {
+        return u64::from_str_radix(hex, 16)
+            .ok()
+            .and_then(|value| u32::try_from(value).ok());
+    }
+    trimmed.parse::<u32>().ok()
+}
+
+fn payload_process_name(payload: &str) -> Option<String> {
+    parse_payload_field(payload, "path")
+        .or_else(|| parse_payload_field(payload, "exe"))
+        .or_else(|| parse_payload_field(payload, "process_path"))
+        .or_else(|| parse_payload_field(payload, "process_image"))
+        .map(|value| process_basename(&value).to_string())
+        .or_else(|| {
+            parse_payload_field(payload, "cmdline")
+                .or_else(|| parse_payload_field(payload, "command_line"))
+                .and_then(|value| {
+                    value
+                        .split(['\0', ' '])
+                        .find(|segment| !segment.trim().is_empty())
+                        .map(|segment| process_basename(segment).to_string())
+                })
+        })
+}
+
+fn process_basename(value: &str) -> &str {
+    value.rsplit(['/', '\\']).next().unwrap_or(value)
+}
+
+fn decode_payload_value(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out = String::with_capacity(raw.len());
+    let mut index = 0;
+
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            let hex = &raw[index + 1..index + 3];
+            if let Ok(value) = u8::from_str_radix(hex, 16) {
+                out.push(value as char);
+                index += 3;
+                continue;
+            }
+        }
+
+        if let Some(ch) = raw[index..].chars().next() {
+            out.push(ch);
+            index += ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+
+    out
 }
 
 fn unix_now_ns() -> u64 {

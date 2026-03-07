@@ -400,6 +400,98 @@ fn evaluate_tick_drains_polled_replay_events_across_multiple_ticks() {
 }
 
 #[test]
+fn evaluate_tick_suppresses_known_windows_powershell_sensor_child() {
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    cfg.server_addr = "127.0.0.1:1".to_string();
+
+    let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+    runtime.raw_event_backlog.push_back(platform_linux::RawEvent {
+        event_type: platform_linux::EventType::ProcessExec,
+        pid: 4701,
+        uid: 0,
+        ts_ns: 1_700_000_100_000_000_000,
+        payload: format!(
+            r#"path=C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe;ppid={};parent_process=C:\Program Files\eGuard\eguard-agent.exe;cmdline=C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -NonInteractive -Command Get-MpComputerStatus"#,
+            std::process::id()
+        ),
+    });
+
+    let evaluation = runtime
+        .evaluate_tick(1_700_000_100)
+        .expect("evaluate tick for self-noise powershell");
+    assert!(evaluation.is_none());
+}
+
+#[test]
+fn windows_sensor_child_pid_suppression_clears_on_process_exit() {
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    cfg.server_addr = "127.0.0.1:1".to_string();
+
+    let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+    let sensor_pid = 4702u32;
+    runtime.raw_event_backlog.push_back(platform_linux::RawEvent {
+        event_type: platform_linux::EventType::ProcessExec,
+        pid: sensor_pid,
+        uid: 0,
+        ts_ns: 1_700_000_200_000_000_000,
+        payload: format!(
+            r#"path=C:\Windows\System32\reg.exe;ppid={};parent_process=C:\Program Files\eGuard\eguard-agent.exe;cmdline=C:\Windows\System32\reg.exe query HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion /v ProductName"#,
+            std::process::id()
+        ),
+    });
+
+    assert!(runtime
+        .evaluate_tick(1_700_000_200)
+        .expect("sensor process exec tick")
+        .is_none());
+
+    runtime
+        .raw_event_backlog
+        .push_back(platform_linux::RawEvent {
+            event_type: platform_linux::EventType::FileOpen,
+            pid: sensor_pid,
+            uid: 0,
+            ts_ns: 1_700_000_200_100_000_000,
+            payload: r#"path=C:\Windows\System32\drivers\etc\hosts"#.to_string(),
+        });
+    assert!(runtime
+        .evaluate_tick(1_700_000_201)
+        .expect("sensor child file tick")
+        .is_none());
+
+    runtime
+        .raw_event_backlog
+        .push_back(platform_linux::RawEvent {
+            event_type: platform_linux::EventType::ProcessExit,
+            pid: sensor_pid,
+            uid: 0,
+            ts_ns: 1_700_000_200_200_000_000,
+            payload: "exit_code=0".to_string(),
+        });
+    assert!(runtime
+        .evaluate_tick(1_700_000_202)
+        .expect("sensor process exit tick")
+        .is_none());
+
+    runtime
+        .raw_event_backlog
+        .push_back(platform_linux::RawEvent {
+            event_type: platform_linux::EventType::ProcessExec,
+            pid: sensor_pid,
+            uid: 0,
+            ts_ns: 1_700_000_200_300_000_000,
+            payload: "cmdline=/usr/bin/bash -lc whoami".to_string(),
+        });
+    let evaluation = runtime
+        .evaluate_tick(1_700_000_203)
+        .expect("post-exit reused pid tick")
+        .expect("reused pid should no longer be suppressed");
+    assert_eq!(evaluation.detection_event.pid, sensor_pid);
+}
+
+#[test]
 fn file_event_burst_coalescing_drops_repeated_writes_within_short_window() {
     let mut cfg = AgentConfig::default();
     cfg.offline_buffer_backend = "memory".to_string();
