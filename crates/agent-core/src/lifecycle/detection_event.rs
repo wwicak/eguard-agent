@@ -46,14 +46,19 @@ pub(super) fn to_detection_event(
         None
     };
 
-    let file_path = enriched.file_path.clone().or(module_payload).or_else(|| {
-        matches!(
-            enriched.event.event_type,
-            crate::platform::EventType::ProcessExec | crate::platform::EventType::ProcessExit
-        )
-        .then(|| enriched.process_exe.clone())
-        .flatten()
-    });
+    let file_path = enriched
+        .file_path
+        .clone()
+        .filter(|path| !is_low_value_windows_pseudo_identity(path))
+        .or(module_payload)
+        .or_else(|| {
+            matches!(
+                enriched.event.event_type,
+                crate::platform::EventType::ProcessExec | crate::platform::EventType::ProcessExit
+            )
+            .then(|| enriched.process_exe.clone())
+            .flatten()
+        });
 
     let process_name_from_path = enriched
         .process_exe
@@ -199,7 +204,17 @@ pub(super) fn should_drop_low_value_windows_event(
         return false;
     }
 
-    if enriched.file_path.is_some() || enriched.file_path_secondary.is_some() {
+    let has_meaningful_subject = enriched
+        .file_path
+        .as_deref()
+        .filter(|path| !is_low_value_windows_pseudo_identity(path))
+        .is_some()
+        || enriched
+            .file_path_secondary
+            .as_deref()
+            .filter(|path| !is_low_value_windows_pseudo_identity(path))
+            .is_some();
+    if has_meaningful_subject {
         return false;
     }
 
@@ -452,21 +467,21 @@ mod tests {
     }
 
     #[test]
-    fn to_detection_event_file_open_without_subject_does_not_fake_system_file_path() {
+    fn to_detection_event_file_open_without_subject_does_not_keep_pseudo_system_path() {
         let enriched = EnrichedEvent {
             event: RawEvent {
                 event_type: EventType::FileOpen,
                 pid: 4,
                 uid: 0,
                 ts_ns: 1,
-                payload: "file_key=0x44".to_string(),
+                payload: "System".to_string(),
             },
             process_exe: Some("System".to_string()),
             process_exe_sha256: None,
             process_cmdline: None,
             parent_process: Some("unknown".to_string()),
             parent_chain: Vec::new(),
-            file_path: None,
+            file_path: Some("System".to_string()),
             file_path_secondary: None,
             file_write: false,
             file_sha256: None,
@@ -486,21 +501,21 @@ mod tests {
     }
 
     #[test]
-    fn should_drop_low_value_windows_event_for_pathless_system_file_noise() {
+    fn should_drop_low_value_windows_event_for_pseudo_system_file_noise() {
         let enriched = EnrichedEvent {
             event: RawEvent {
                 event_type: EventType::FileOpen,
                 pid: 4,
                 uid: 0,
                 ts_ns: 1,
-                payload: "file_key=0x44".to_string(),
+                payload: "System".to_string(),
             },
             process_exe: Some("System".to_string()),
             process_exe_sha256: None,
             process_cmdline: None,
             parent_process: Some("unknown".to_string()),
             parent_chain: Vec::new(),
-            file_path: None,
+            file_path: Some("System".to_string()),
             file_path_secondary: None,
             file_write: false,
             file_sha256: None,
