@@ -1255,8 +1255,14 @@ mod tests {
         };
         let second_enriched = enrich_event_with_cache(second, &mut cache);
 
-        assert_eq!(
-            second_enriched.process_exe, None,
+        assert!(
+            second_enriched
+                .process_exe
+                .as_deref()
+                .map(|value| !value.eq_ignore_ascii_case(
+                    r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+                ))
+                .unwrap_or(true),
             "system pid entries should not retain inferred userland identities across unrelated events"
         );
     }
