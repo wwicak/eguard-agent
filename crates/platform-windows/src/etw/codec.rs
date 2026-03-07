@@ -82,6 +82,7 @@ fn decode_kernel_process(opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Optio
             if data.len() < 24 {
                 return fallback_event(EventType::ProcessExec, pid, ts_ns, data);
             }
+            let process_pid = read_u32_le(data, 0);
             let parent_pid = read_u32_le(data, 12);
             let session_id = read_u32_le(data, 16);
             let image_name = read_utf16_str(data, 24);
@@ -93,7 +94,7 @@ fn decode_kernel_process(opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Optio
 
             Some(RawEvent {
                 event_type: EventType::ProcessExec,
-                pid,
+                pid: process_pid,
                 uid: 0,
                 ts_ns,
                 payload,
@@ -105,6 +106,7 @@ fn decode_kernel_process(opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Optio
             if data.len() < 24 {
                 return fallback_event(EventType::ProcessExit, pid, ts_ns, data);
             }
+            let process_pid = read_u32_le(data, 0);
             let exit_code = read_u32_le(data, 20);
             let image_name = read_utf16_str(data, 24);
 
@@ -115,7 +117,7 @@ fn decode_kernel_process(opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Optio
 
             Some(RawEvent {
                 event_type: EventType::ProcessExit,
-                pid,
+                pid: process_pid,
                 uid: 0,
                 ts_ns,
                 payload,
@@ -227,6 +229,7 @@ fn decode_kernel_file(opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Option<R
 fn decode_kernel_network(_opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Option<RawEvent> {
     // Try IPv4 first (20 bytes minimum).
     if data.len() >= 20 {
+        let process_pid = read_u32_le(data, 0);
         let dst_ip = format_ipv4(data, 8);
         let src_ip = format_ipv4(data, 12);
         let dst_port = read_u16_be(data, 16); // Network byte order
@@ -236,7 +239,7 @@ fn decode_kernel_network(_opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Opti
             format!("src_ip={src_ip};src_port={src_port};dst_ip={dst_ip};dst_port={dst_port}");
         return Some(RawEvent {
             event_type: EventType::TcpConnect,
-            pid,
+            pid: process_pid,
             uid: 0,
             ts_ns,
             payload,
@@ -502,7 +505,7 @@ mod tests {
         }
         data.extend_from_slice(&0u16.to_le_bytes()); // null terminator
 
-        let event = decode_etw_record(super::super::providers::KERNEL_PROCESS, 1, 100, 999, &data)
+        let event = decode_etw_record(super::super::providers::KERNEL_PROCESS, 1, 9999, 999, &data)
             .expect("should decode");
 
         assert!(matches!(event.event_type, EventType::ProcessExec));
@@ -524,10 +527,17 @@ mod tests {
         }
         data.extend_from_slice(&0u16.to_le_bytes());
 
-        let event = decode_etw_record(super::super::providers::KERNEL_PROCESS, 2, 200, 1000, &data)
-            .expect("should decode");
+        let event = decode_etw_record(
+            super::super::providers::KERNEL_PROCESS,
+            2,
+            9999,
+            1000,
+            &data,
+        )
+        .expect("should decode");
 
         assert!(matches!(event.event_type, EventType::ProcessExit));
+        assert_eq!(event.pid, 200);
         assert!(event.payload.contains("exit_code=1"));
         assert!(event.payload.contains("path=svchost.exe"));
     }
@@ -587,13 +597,14 @@ mod tests {
         let event = decode_etw_record(
             super::super::providers::KERNEL_NETWORK,
             10,
-            1000,
+            9999,
             700,
             &data,
         )
         .expect("should decode");
 
         assert!(matches!(event.event_type, EventType::TcpConnect));
+        assert_eq!(event.pid, 1000);
         assert!(event.payload.contains("dst_ip=203.0.113.1"));
         assert!(event.payload.contains("dst_port=443"));
         assert!(event.payload.contains("src_ip=10.0.0.1"));
