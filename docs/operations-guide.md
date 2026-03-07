@@ -1374,6 +1374,75 @@ Post-resize hardening sweep (2026-03-03):
   due prolonged metadata lock on high-write table; apply in maintenance window
   (or via online migration strategy) to avoid telemetry ingest interruption.
 
+#### ML Ops retrain empty-state validation (2026-03-06)
+
+When signature retraining has not been configured yet and
+`/usr/local/eg/var/mlops/signature-ml-feedback/latest-report.json` is absent,
+the API and dashboard should expose a clean empty state instead of raw Go
+`%v` output.
+
+Expected API checks:
+
+```bash
+curl -s http://127.0.0.1:50053/api/v1/endpoint/ml-ops/summary?range=24h | jq '.pipeline.retrain'
+curl -s http://127.0.0.1:50053/api/v1/endpoint/ml-ops/signature-training/latest | jq '.'
+```
+
+Expected values:
+
+- `available = false`
+- `run_id = ""`
+- `finished_at_utc = ""`
+- `latest_status = "unknown"`
+- no literal `<nil>` anywhere in the payload
+
+Live lab validation on `root@192.168.122.25`:
+
+- Pre-fix summary payload returned `<nil>` for `run_id`, `finished_at_utc`, and
+  `latest_status` while `latest-report.json` was missing.
+- Rebuilt and deployed `eg-agent-server`, then synced fresh Vue assets with
+  rollback backup under `/root/backup-mlops-nil-fix-20260306143735`.
+- Active `/admin` document root on this VM is
+  `/usr/local/eg/html/egappserver/root/dist/`.
+- From the host, direct SSH to `192.168.122.25` uses port `22`; external NAT
+  exposes the same VM on `103.132.18.221:2222`.
+- Post-fix summary now returns:
+  - `.pipeline.retrain.available = false`
+  - `.pipeline.retrain.run_id = ""`
+  - `.pipeline.retrain.finished_at_utc = ""`
+  - `.pipeline.retrain.latest_status = "unknown"`
+- Browser validation at `https://192.168.122.25:1443/admin#/endpoint-ml-ops`
+  (`admin / Eguard123`) now shows:
+  - pipeline card status `not configured`
+  - info banner `Signature retraining is not configured yet...`
+  - no `<nil>` strings in page text
+
+Lab deploy commands used:
+
+```bash
+cd /home/dimas/fe_eguard/go
+make eg-agent-server
+
+cd /home/dimas/fe_eguard/html/egappserver/root
+npm run lint -- src/views/endpoint/MlOpsDashboard.vue
+npm run build
+
+sshpass -p 'Eguard123' scp /home/dimas/fe_eguard/go/eg-agent-server \
+  root@192.168.122.25:/tmp/eg-agent-server-mlops-fix
+
+SSHPASS='Eguard123' sshpass -e rsync -av --delete \
+  -e 'ssh -o StrictHostKeyChecking=no' \
+  /home/dimas/fe_eguard/html/egappserver/root/dist/ \
+  root@192.168.122.25:/tmp/egapp-dist-mlops-fix/
+
+sshpass -p 'Eguard123' ssh -o StrictHostKeyChecking=no root@192.168.122.25 '
+  install -o root -g root -m 0755 /tmp/eg-agent-server-mlops-fix /usr/local/eg/sbin/eg-agent-server &&
+  rsync -a --delete /tmp/egapp-dist-mlops-fix/ /usr/local/eg/html/egappserver/root/dist/ &&
+  systemctl restart eguard-agent-server.service &&
+  systemctl is-active eguard-agent-server.service
+'
+```
+
 #### Runtime knobs
 
 | Env var | Default | Purpose |
@@ -4544,6 +4613,83 @@ compliance-related VLAN restriction.
 | Security events in DB | **PASS** | Verified via MySQL: events with correct MAC, IDs, and notes |
 | Security events in config UI | **PASS** | All 8 eGuard events visible and enabled at `/admin#/configuration/security_events` |
 | Dedup (no duplicates) | **PASS** | PF bridge mode skips raw INSERT; events created once via PF API |
+
+### E.7A Fresh-install class-table hardening (2026-03-06)
+
+A fresh-install regression was later found where the `class` table contained **0
+rows**. The agent server was still mapping detections to eGuard security events
+(for example `1300011` for Sigma and `1300014` for compliance), but inserts into
+`security_event` failed on the `security_event_id_fkey_class` foreign key. Under
+load, that created a noisy retry/error loop and drove `eguard-agent-server` CPU
+usage very high.
+
+Important nuance: package post-install normally runs
+`/usr/local/eg/bin/egcmd configreload`, and `eg::config::load_configdata_into_db()`
+calls `eg::security_event_config::loadSecurityEventsIntoDb()`. However,
+`debian/eguard.postinst` executes that block under `set +e`, so the agent server
+can still come up with an empty `class` table if config reload does not finish
+successfully.
+
+Hardening applied in `go/agent/server/nac_local_enforcer.go`:
+
+- `newNACLocalEnforcer()` now calls the local Perl bridge at startup and runs
+  `eg::security_event_config::loadSecurityEventsIntoDb()`.
+- If startup seeding fails, the local enforcer retries seeding **once on the
+  first event** before continuing.
+- Added Go unit coverage for the Perl bridge JSON-marker parsing path and the
+  startup-failure → first-event retry path.
+
+Validation completed on `2026-03-06`:
+
+- **Unit/integration (local source tree)**
+  - `go test ./agent/server/...` → **PASS**
+  - Current branch mapping still uses agent security event IDs `1300010–1300017`
+    (`conf/security_events.conf.defaults`, `go/agent/server/nac_bridge*.go`)
+  - Packaging/startup audit confirms the new seed path is **defense in depth**:
+    installer `configreload` should still populate `class`, but `eguard-agent-server`
+    no longer depends solely on that step.
+- **Live VM validation (`root@192.168.122.25`)**
+  - Deployed rebuilt `/usr/local/eg/sbin/eg-agent-server` and restarted the service.
+  - Startup log now contains:
+    - `[nac-enforcer] mode=local enabled`
+    - `[nac-enforcer] security-event classes seeded into DB`
+  - `class` row count changed from the broken/manual state (**10 rows**) to the
+    config-backed state (**58 rows**).
+  - Explicit empty-table simulation:
+    1. `systemctl stop eguard-agent-server`
+    2. `DELETE FROM class;` → confirmed **0 rows**
+    3. `systemctl start eguard-agent-server`
+    4. startup seeding restored **58 rows** automatically
+  - Post-restart health checks:
+    - backend `/healthz` on port `50053` returned `ok`
+    - new security events were inserted again without FK errors
+- **Known follow-up observed during live testing**
+  - Some local Perl bridge apply calls still log:
+    - `[nac-enforcer] apply failed security_event=...: nac perl bridge failed: signal: killed (...) — fallback DB record`
+  - With the `class` table seeded, this no longer causes FK failures, but the
+    Perl bridge timeout/exit behavior remains a separate issue to investigate.
+
+Recommended VM checks when validating a live install:
+
+```bash
+mysql -uroot -pEguard123 eg -e '
+  SELECT COUNT(*) AS class_rows FROM class;
+  SELECT security_event_id, description
+  FROM class
+  WHERE security_event_id BETWEEN 1300010 AND 1300017
+  ORDER BY security_event_id;
+'
+
+journalctl -u eguard-agent-server -n 100 --no-pager \
+  | rg 'seed security-event classes|foreign key|security_event'
+```
+
+Expected log lines:
+
+- `[nac-enforcer] security-event classes seeded into DB`
+- or, if DB/config is not ready at process start:
+  - `[nac-enforcer] seed security-event classes at startup: ... (will retry on first event)`
+  - `[nac-enforcer] security-event classes seeded into DB on first event`
 
 ### E.8 Rollback
 

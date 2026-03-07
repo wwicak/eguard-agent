@@ -26,8 +26,11 @@ impl AgentRuntime {
             .map(|report| report.sigma_rules + report.yara_rules + report.ioc_entries);
         let previous_layer5_model = self.capture_previous_layer5_model();
 
+        let detection_sources =
+            detection_bootstrap::DetectionSourcePaths::from_config(&self.config);
         let mut next_engine = detection_bootstrap::build_detection_engine_with_ransomware_policy(
             build_ransomware_policy(&self.config),
+            &detection_sources,
         );
         apply_previous_layer5_model_fallback(&mut next_engine, previous_layer5_model.as_ref());
         let summary = load_bundle_full(&mut next_engine, bundle_path);
@@ -50,6 +53,7 @@ impl AgentRuntime {
                 let mut shard_engine =
                     detection_bootstrap::build_detection_engine_with_ransomware_policy(
                         build_ransomware_policy(&self.config),
+                        &detection_sources,
                     );
                 apply_previous_layer5_model_fallback(
                     &mut shard_engine,

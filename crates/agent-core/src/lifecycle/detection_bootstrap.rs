@@ -1,10 +1,30 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use detection::{DetectionEngine, KillChainTemplate, RansomwarePolicy, TemplatePredicate};
 use tracing::{info, warn};
 
+use crate::config::AgentConfig;
+
+#[derive(Debug, Clone)]
+pub(super) struct DetectionSourcePaths {
+    pub sigma_dir: PathBuf,
+    pub yara_dir: PathBuf,
+    pub ioc_dir: PathBuf,
+}
+
+impl DetectionSourcePaths {
+    pub(super) fn from_config(config: &AgentConfig) -> Self {
+        Self {
+            sigma_dir: PathBuf::from(config.detection_sigma_rules_dir.clone()),
+            yara_dir: PathBuf::from(config.detection_yara_rules_dir.clone()),
+            ioc_dir: PathBuf::from(config.detection_ioc_dir.clone()),
+        }
+    }
+}
+
 pub(super) fn build_detection_engine_with_ransomware_policy(
     policy: RansomwarePolicy,
+    sources: &DetectionSourcePaths,
 ) -> DetectionEngine {
     let mut detection = DetectionEngine::default_with_rules();
     detection.layer4 =
@@ -13,10 +33,10 @@ pub(super) fn build_detection_engine_with_ransomware_policy(
     seed_ioc_domains(&mut detection);
     seed_ioc_ips(&mut detection);
     seed_string_signatures(&mut detection);
-    seed_sigma_rules(&mut detection);
-    seed_yara_rules(&mut detection);
+    seed_sigma_rules(&mut detection, &sources.sigma_dir);
+    seed_yara_rules(&mut detection, &sources.yara_dir);
     seed_kill_chain_templates(&mut detection);
-    load_ioc_files(&mut detection);
+    load_ioc_files(&mut detection, &sources.ioc_dir);
     seed_detection_allowlist(&mut detection);
     detection
 }
@@ -127,7 +147,7 @@ fn seed_string_signatures(detection: &mut DetectionEngine) {
 }
 
 // ── Layer 2: SIGMA Temporal Rules ───────────────────────────────
-fn seed_sigma_rules(detection: &mut DetectionEngine) {
+fn seed_sigma_rules(detection: &mut DetectionEngine, configured_dir: &Path) {
     let rules: &[(&str, &str)] = &[
         ("builtin_webshell", SIGMA_WEBSHELL),
         ("builtin_reverse_shell", SIGMA_REVERSE_SHELL),
@@ -148,10 +168,11 @@ fn seed_sigma_rules(detection: &mut DetectionEngine) {
         }
     }
 
-    // Load rules from rules/sigma/ directory
-    let rules_dir = Path::new("rules/sigma");
-    if rules_dir.exists() {
-        match detection.load_sigma_rules_from_dir(rules_dir) {
+    for rules_dir in configured_or_fallback_dirs(configured_dir, Path::new("rules/sigma")) {
+        if !rules_dir.exists() {
+            continue;
+        }
+        match detection.load_sigma_rules_from_dir(&rules_dir) {
             Ok(count) => loaded += count,
             Err(err) => {
                 warn!(error = %err, path = %rules_dir.display(), "failed loading SIGMA rules from directory")
@@ -271,7 +292,7 @@ detection:
 "#;
 
 // ── Layer 3: YARA Rules ─────────────────────────────────────────
-fn seed_yara_rules(detection: &mut DetectionEngine) {
+fn seed_yara_rules(detection: &mut DetectionEngine, configured_dir: &Path) {
     const YARA_RULES: &str = r#"
 rule eguard_builtin_test_marker {
   strings:
@@ -301,9 +322,11 @@ rule eguard_shellcode_marker {
         Err(err) => warn!(error = %err, "failed loading built-in YARA rules"),
     }
 
-    let rules_dir = Path::new("rules/yara");
-    if rules_dir.exists() {
-        match detection.load_yara_rules_from_dir(rules_dir) {
+    for rules_dir in configured_or_fallback_dirs(configured_dir, Path::new("rules/yara")) {
+        if !rules_dir.exists() {
+            continue;
+        }
+        match detection.load_yara_rules_from_dir(&rules_dir) {
             Ok(count) => loaded += count,
             Err(err) => {
                 warn!(error = %err, path = %rules_dir.display(), "failed loading YARA rules from directory")
@@ -628,61 +651,264 @@ fn seed_kill_chain_templates(detection: &mut DetectionEngine) {
     });
 }
 
+fn configured_or_fallback_dirs(configured_dir: &Path, fallback_dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+
+    if !configured_dir.as_os_str().is_empty() {
+        out.push(configured_dir.to_path_buf());
+    }
+
+    if fallback_dir != configured_dir {
+        out.push(fallback_dir.to_path_buf());
+    }
+
+    out
+}
+
 // ── Load IOC files from rules/ioc/ directory ────────────────────
-fn load_ioc_files(detection: &mut DetectionEngine) {
-    let ioc_dir = Path::new("rules/ioc");
-    if !ioc_dir.exists() {
-        return;
-    }
+fn load_ioc_files(detection: &mut DetectionEngine, configured_dir: &Path) {
+    for ioc_dir in configured_or_fallback_dirs(configured_dir, Path::new("rules/ioc")) {
+        if !ioc_dir.exists() {
+            continue;
+        }
 
-    // hashes.txt — one SHA-256 per line
-    let hashes_path = ioc_dir.join("hashes.txt");
-    if hashes_path.exists() {
-        if let Ok(content) = std::fs::read_to_string(&hashes_path) {
-            let hashes: Vec<String> = content
-                .lines()
-                .map(|l| l.trim().to_string())
-                .filter(|l| !l.is_empty() && !l.starts_with('#'))
-                .collect();
-            let count = hashes.len();
-            detection.layer1.load_hashes(hashes);
-            if count > 0 {
-                info!(count, path = %hashes_path.display(), "loaded IOC hashes from file");
+        // hashes.txt — one SHA-256 per line
+        let hashes_path = ioc_dir.join("hashes.txt");
+        if hashes_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&hashes_path) {
+                let hashes: Vec<String> = content
+                    .lines()
+                    .map(|l| l.trim().to_string())
+                    .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                    .collect();
+                let count = hashes.len();
+                detection.layer1.load_hashes(hashes);
+                if count > 0 {
+                    info!(count, path = %hashes_path.display(), "loaded IOC hashes from file");
+                }
+            }
+        }
+
+        // domains.txt — one domain per line
+        let domains_path = ioc_dir.join("domains.txt");
+        if domains_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&domains_path) {
+                let domains: Vec<String> = content
+                    .lines()
+                    .map(|l| l.trim().to_string())
+                    .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                    .collect();
+                let count = domains.len();
+                detection.layer1.load_domains(domains);
+                if count > 0 {
+                    info!(count, path = %domains_path.display(), "loaded IOC domains from file");
+                }
+            }
+        }
+
+        // ips.txt — one IP per line
+        let ips_path = ioc_dir.join("ips.txt");
+        if ips_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&ips_path) {
+                let ips: Vec<String> = content
+                    .lines()
+                    .map(|l| l.trim().to_string())
+                    .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                    .collect();
+                let count = ips.len();
+                detection.layer1.load_ips(ips);
+                if count > 0 {
+                    info!(count, path = %ips_path.display(), "loaded IOC IPs from file");
+                }
             }
         }
     }
+}
 
-    // domains.txt — one domain per line
-    let domains_path = ioc_dir.join("domains.txt");
-    if domains_path.exists() {
-        if let Ok(content) = std::fs::read_to_string(&domains_path) {
-            let domains: Vec<String> = content
-                .lines()
-                .map(|l| l.trim().to_string())
-                .filter(|l| !l.is_empty() && !l.starts_with('#'))
-                .collect();
-            let count = domains.len();
-            detection.layer1.load_domains(domains);
-            if count > 0 {
-                info!(count, path = %domains_path.display(), "loaded IOC domains from file");
-            }
+#[cfg(test)]
+mod tests {
+    use super::{
+        build_detection_engine_with_ransomware_policy, configured_or_fallback_dirs,
+        DetectionSourcePaths,
+    };
+    use detection::{EventClass, RansomwarePolicy, TelemetryEvent};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(label: &str) -> std::path::PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "eguard-detection-bootstrap-{}-{}-{}",
+            label,
+            std::process::id(),
+            nonce
+        ))
+    }
+
+    fn base_event() -> TelemetryEvent {
+        TelemetryEvent {
+            ts_unix: 1_700_000_000,
+            event_class: EventClass::ProcessExec,
+            pid: 4242,
+            ppid: 1,
+            uid: 1000,
+            process: "bash".to_string(),
+            parent_process: "nginx".to_string(),
+            session_id: 1,
+            file_path: None,
+            file_write: false,
+            file_hash: None,
+            dst_port: None,
+            dst_ip: None,
+            dst_domain: None,
+            command_line: None,
+            event_size: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
         }
     }
 
-    // ips.txt — one IP per line
-    let ips_path = ioc_dir.join("ips.txt");
-    if ips_path.exists() {
-        if let Ok(content) = std::fs::read_to_string(&ips_path) {
-            let ips: Vec<String> = content
-                .lines()
-                .map(|l| l.trim().to_string())
-                .filter(|l| !l.is_empty() && !l.starts_with('#'))
-                .collect();
-            let count = ips.len();
-            detection.layer1.load_ips(ips);
-            if count > 0 {
-                info!(count, path = %ips_path.display(), "loaded IOC IPs from file");
-            }
-        }
+    #[test]
+    fn configured_or_fallback_dirs_prefers_configured_then_relative_fallback() {
+        let configured = std::path::Path::new("/opt/eguard/rules/yara");
+        let dirs = configured_or_fallback_dirs(configured, std::path::Path::new("rules/yara"));
+        assert_eq!(dirs.len(), 2);
+        assert_eq!(dirs[0], configured);
+        assert_eq!(dirs[1], std::path::Path::new("rules/yara"));
+    }
+
+    #[test]
+    fn bootstrap_loads_sigma_rules_from_configured_directory() {
+        let base = unique_temp_dir("sigma");
+        let sigma_dir = base.join("sigma");
+        let yara_dir = base.join("yara");
+        let ioc_dir = base.join("ioc");
+        std::fs::create_dir_all(&sigma_dir).expect("create sigma dir");
+        std::fs::create_dir_all(&yara_dir).expect("create yara dir");
+        std::fs::create_dir_all(&ioc_dir).expect("create ioc dir");
+        std::fs::write(
+            sigma_dir.join("custom.yml"),
+            r#"
+title: sigma_custom_runtime_rule
+detection:
+  sequence:
+    - event_class: process_exec
+      process_any_of: [bash]
+      parent_any_of: [nginx]
+      within_secs: 30
+    - event_class: network_connect
+      dst_port_not_in: [80, 443]
+      within_secs: 10
+"#,
+        )
+        .expect("write sigma rule");
+
+        let sources = DetectionSourcePaths {
+            sigma_dir,
+            yara_dir,
+            ioc_dir,
+        };
+        let mut engine =
+            build_detection_engine_with_ransomware_policy(RansomwarePolicy::default(), &sources);
+
+        let first = base_event();
+        let mut second = base_event();
+        second.ts_unix += 1;
+        second.event_class = EventClass::NetworkConnect;
+        second.dst_port = Some(8443);
+
+        let _ = engine.process_event(&first);
+        let outcome = engine.process_event(&second);
+        assert!(outcome
+            .temporal_hits
+            .iter()
+            .any(|hit| hit == "sigma_custom_runtime_rule"));
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn bootstrap_loads_yara_rules_from_configured_directory() {
+        let base = unique_temp_dir("yara");
+        let sigma_dir = base.join("sigma");
+        let yara_dir = base.join("yara");
+        let ioc_dir = base.join("ioc");
+        std::fs::create_dir_all(&sigma_dir).expect("create sigma dir");
+        std::fs::create_dir_all(&yara_dir).expect("create yara dir");
+        std::fs::create_dir_all(&ioc_dir).expect("create ioc dir");
+        std::fs::write(
+            yara_dir.join("custom.yar"),
+            r#"
+rule eguard_custom_dir_test {
+  strings:
+    $marker = "eguard-custom-yara-marker"
+  condition:
+    $marker
+}
+"#,
+        )
+        .expect("write yara rule");
+
+        let sample_path = base.join("sample.bin");
+        std::fs::write(&sample_path, b"eguard-custom-yara-marker").expect("write sample");
+
+        let sources = DetectionSourcePaths {
+            sigma_dir,
+            yara_dir,
+            ioc_dir,
+        };
+        let mut engine =
+            build_detection_engine_with_ransomware_policy(RansomwarePolicy::default(), &sources);
+
+        let mut event = base_event();
+        event.event_class = EventClass::FileOpen;
+        event.file_path = Some(sample_path.to_string_lossy().to_string());
+
+        let outcome = engine.process_event(&event);
+        assert!(outcome
+            .yara_hits
+            .iter()
+            .any(|hit| hit.rule_name == "eguard_custom_dir_test"));
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn bootstrap_loads_iocs_from_configured_directory() {
+        let base = unique_temp_dir("ioc");
+        let sigma_dir = base.join("sigma");
+        let yara_dir = base.join("yara");
+        let ioc_dir = base.join("ioc");
+        std::fs::create_dir_all(&sigma_dir).expect("create sigma dir");
+        std::fs::create_dir_all(&yara_dir).expect("create yara dir");
+        std::fs::create_dir_all(&ioc_dir).expect("create ioc dir");
+        let custom_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        std::fs::write(ioc_dir.join("hashes.txt"), format!("{custom_hash}\n"))
+            .expect("write hash IOC file");
+
+        let sources = DetectionSourcePaths {
+            sigma_dir,
+            yara_dir,
+            ioc_dir,
+        };
+        let mut engine =
+            build_detection_engine_with_ransomware_policy(RansomwarePolicy::default(), &sources);
+
+        let mut event = base_event();
+        event.file_hash = Some(custom_hash.to_string());
+
+        let outcome = engine.process_event(&event);
+        assert!(outcome.signals.z1_exact_ioc);
+        assert!(outcome
+            .layer1
+            .matched_fields
+            .iter()
+            .any(|field| field == "file_hash"));
+
+        let _ = std::fs::remove_dir_all(base);
     }
 }

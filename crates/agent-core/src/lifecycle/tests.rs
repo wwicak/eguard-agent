@@ -527,9 +527,11 @@ fn reload_detection_state_from_bundle_populates_ioc_layers_on_all_shards() {
     cfg.server_addr = "127.0.0.1:1".to_string();
 
     let mut runtime = AgentRuntime::new(cfg.clone()).expect("build runtime");
+    let detection_sources = detection_bootstrap::DetectionSourcePaths::from_config(&cfg);
     runtime.detection_state = SharedDetectionState::new_with_shards(
         detection_bootstrap::build_detection_engine_with_ransomware_policy(
             build_ransomware_policy(&cfg),
+            &detection_sources,
         ),
         runtime
             .detection_state
@@ -539,6 +541,7 @@ fn reload_detection_state_from_bundle_populates_ioc_layers_on_all_shards() {
         || {
             detection_bootstrap::build_detection_engine_with_ransomware_policy(
                 build_ransomware_policy(&cfg),
+                &detection_sources,
             )
         },
     );

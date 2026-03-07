@@ -139,11 +139,12 @@ fn decode_kernel_file(opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Option<R
         // FileCreate
         12 | 0 | 32 => {
             // IrpPtr(8) + FileObject(8) + CreateOptions(4) + FileAttributes(4) + ShareAccess(4) = 28
+            let file_object = read_u64_le(data, 8);
             let filename = read_utf16_str(data, 28);
-            let payload = match filename {
-                Some(name) => format!("path={name}"),
-                None => String::new(),
-            };
+            let mut payload = format!("file_object=0x{file_object:x}");
+            if let Some(name) = filename {
+                payload.push_str(&format!(";path={name}"));
+            }
             Some(RawEvent {
                 event_type: EventType::FileOpen,
                 pid,
@@ -155,8 +156,13 @@ fn decode_kernel_file(opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Option<R
         // FileWrite
         15 | 35 => {
             // ByteOffset(8)+IrpPtr(8)+FileObject(8)+FileKey(8)+ExtraInfo(8)+InfoClass(4)+IoSize(4)+IoFlags(4) = 52
-            let io_size = if data.len() >= 52 {
-                read_u32_le(data, 48)
+            let file_object = if data.len() >= 24 {
+                read_u64_le(data, 16)
+            } else {
+                0
+            };
+            let io_size = if data.len() >= 48 {
+                read_u32_le(data, 44)
             } else {
                 0
             };
@@ -165,17 +171,22 @@ fn decode_kernel_file(opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Option<R
                 pid,
                 uid: 0,
                 ts_ns,
-                payload: format!("size={io_size}"),
+                payload: format!("file_object=0x{file_object:x};size={io_size}"),
             })
         }
         // FileRename
         14 | 64 => {
             // IrpPtr(8)+FileObject(8)+FileKey(8)+ExtraInfo(8)+InfoClass(4) = 36
-            let filename = read_utf16_str(data, 36);
-            let payload = match filename {
-                Some(name) => format!("path={name}"),
-                None => String::new(),
+            let file_object = if data.len() >= 16 {
+                read_u64_le(data, 8)
+            } else {
+                0
             };
+            let filename = read_utf16_str(data, 36);
+            let mut payload = format!("file_object=0x{file_object:x}");
+            if let Some(name) = filename {
+                payload.push_str(&format!(";path={name}"));
+            }
             Some(RawEvent {
                 event_type: EventType::FileRename,
                 pid,
@@ -187,11 +198,16 @@ fn decode_kernel_file(opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Option<R
         // FileDelete
         26 | 70 => {
             // Same layout as Rename.
-            let filename = read_utf16_str(data, 36);
-            let payload = match filename {
-                Some(name) => format!("path={name}"),
-                None => String::new(),
+            let file_object = if data.len() >= 16 {
+                read_u64_le(data, 8)
+            } else {
+                0
             };
+            let filename = read_utf16_str(data, 36);
+            let mut payload = format!("file_object=0x{file_object:x}");
+            if let Some(name) = filename {
+                payload.push_str(&format!(";path={name}"));
+            }
             Some(RawEvent {
                 event_type: EventType::FileUnlink,
                 pid,
@@ -335,6 +351,23 @@ fn read_u32_le(data: &[u8], offset: usize) -> u32 {
         data[offset + 1],
         data[offset + 2],
         data[offset + 3],
+    ])
+}
+
+/// Read a little-endian u64 from `data` at `offset`. Returns 0 if out of bounds.
+fn read_u64_le(data: &[u8], offset: usize) -> u64 {
+    if offset + 8 > data.len() {
+        return 0;
+    }
+    u64::from_le_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+        data[offset + 4],
+        data[offset + 5],
+        data[offset + 6],
+        data[offset + 7],
     ])
 }
 
@@ -517,7 +550,28 @@ mod tests {
             .expect("should decode");
 
         assert!(matches!(event.event_type, EventType::FileOpen));
+        assert!(event.payload.contains("file_object=0x0"));
         assert!(event.payload.contains(r"path=C:\test.txt"));
+    }
+
+    #[test]
+    fn decode_kernel_file_write_binary_includes_file_object() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&0u64.to_le_bytes()); // ByteOffset
+        data.extend_from_slice(&0u64.to_le_bytes()); // IrpPtr
+        data.extend_from_slice(&0x1234u64.to_le_bytes()); // FileObject
+        data.extend_from_slice(&0u64.to_le_bytes()); // FileKey
+        data.extend_from_slice(&0u64.to_le_bytes()); // ExtraInfo
+        data.extend_from_slice(&0u32.to_le_bytes()); // InfoClass
+        data.extend_from_slice(&99u32.to_le_bytes()); // IoSize
+        data.extend_from_slice(&0u32.to_le_bytes()); // IoFlags
+
+        let event = decode_etw_record(super::super::providers::KERNEL_FILE, 15, 42, 501, &data)
+            .expect("should decode");
+
+        assert!(matches!(event.event_type, EventType::FileWrite));
+        assert!(event.payload.contains("file_object=0x1234"));
+        assert!(event.payload.contains("size=99"));
     }
 
     #[test]

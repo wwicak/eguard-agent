@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use serde_json::json;
 use tracing::info;
 
@@ -47,6 +49,7 @@ impl AgentRuntime {
         let rule_type = Self::detection_rule_type(outcome);
         let detection_layers = Self::detection_layers(outcome);
         let primary_rule_name = Self::detection_rule_name(outcome);
+        let mitre_techniques = Self::mitre_techniques(event, outcome);
         let yara_hits = outcome
             .yara_hits
             .iter()
@@ -109,6 +112,7 @@ impl AgentRuntime {
 
         json!({
             "observed_at_unix": now_unix,
+            "mitre_techniques": &mitre_techniques,
             "event": {
                 "ts_unix": event.ts_unix,
                 "event_class": event.event_class.as_str(),
@@ -148,6 +152,7 @@ impl AgentRuntime {
                 "confidence": super::confidence_label(confidence),
                 "rule_type": rule_type,
                 "detection_layers": detection_layers,
+                "mitre_techniques": &mitre_techniques,
                 "temporal_hits": &outcome.temporal_hits,
                 "kill_chain_hits": &outcome.kill_chain_hits,
                 "exploit_indicators": &outcome.exploit_indicators,
@@ -175,6 +180,7 @@ impl AgentRuntime {
                 "primary_rule_name": primary_rule_name,
                 "rule_type": rule_type,
                 "detection_layers": detection_layers,
+                "mitre_techniques": &mitre_techniques,
                 "signals": {
                     "z1_exact_ioc": outcome.signals.z1_exact_ioc,
                     "z2_temporal": outcome.signals.z2_temporal,
@@ -299,6 +305,132 @@ impl AgentRuntime {
         layers
     }
 
+    pub(super) fn mitre_techniques(
+        event: &TelemetryEvent,
+        outcome: &DetectionOutcome,
+    ) -> Vec<String> {
+        let mut techniques = BTreeSet::new();
+
+        for rule_name in &outcome.temporal_hits {
+            for technique in Self::mitre_techniques_for_label(rule_name) {
+                techniques.insert(technique.to_string());
+            }
+        }
+        for hit in &outcome.kill_chain_hits {
+            for technique in Self::mitre_techniques_for_label(hit) {
+                techniques.insert(technique.to_string());
+            }
+        }
+        for indicator in &outcome.exploit_indicators {
+            for technique in Self::mitre_techniques_for_label(indicator) {
+                techniques.insert(technique.to_string());
+            }
+        }
+        for indicator in &outcome.kernel_integrity_indicators {
+            for technique in Self::mitre_techniques_for_label(indicator) {
+                techniques.insert(technique.to_string());
+            }
+        }
+        for indicator in &outcome.tamper_indicators {
+            for technique in Self::mitre_techniques_for_label(indicator) {
+                techniques.insert(technique.to_string());
+            }
+        }
+
+        if !outcome.yara_hits.is_empty() {
+            techniques.insert("T1027".to_string());
+        }
+
+        let process = event.process.to_ascii_lowercase();
+        let command_line = event
+            .command_line
+            .as_deref()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let file_path = event
+            .file_path
+            .as_deref()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+
+        if process.contains("powershell") || command_line.contains("powershell") {
+            techniques.insert("T1059.001".to_string());
+        }
+        if matches!(event.event_class, detection::EventClass::ProcessExec)
+            && (process == "bash"
+                || process == "sh"
+                || process == "dash"
+                || process == "zsh"
+                || command_line.contains("/bin/sh")
+                || command_line.contains("/bin/bash"))
+        {
+            techniques.insert("T1059.004".to_string());
+        }
+        if file_path.contains("hklm\\sam")
+            || file_path.contains("security")
+            || file_path.contains("system32\\config\\sam")
+            || file_path.contains("/etc/shadow")
+            || file_path.contains("/etc/master.passwd")
+            || command_line.contains("reg save")
+            || command_line.contains("minidump")
+            || command_line.contains("lsass")
+        {
+            techniques.insert("T1003".to_string());
+        }
+
+        techniques.into_iter().collect()
+    }
+
+    fn mitre_techniques_for_label(label: &str) -> &'static [&'static str] {
+        let normalized = label.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "eguard_builtin_webshell" | "killchain_webshell_network" => &["T1505.003", "T1190"],
+            "eguard_builtin_reverse_shell" | "killchain_reverse_shell" => &["T1059.004", "T1071"],
+            "eguard_builtin_download_exec" => &["T1105", "T1059"],
+            "eguard_builtin_privesc" | "killchain_user_root_module" => &["T1548", "T1068"],
+            "eguard_builtin_kernel_module" | "rootkit_load" => &["T1014"],
+            "eguard_builtin_persistence" => &["T1053", "T1543"],
+            "eguard_builtin_lateral_movement" | "killchain_lateral_ssh" => {
+                &["T1021", "T1021.004", "T1570"]
+            }
+            "eguard_builtin_sensitive_file_access" | "killchain_credential_theft" => {
+                &["T1003", "T1552"]
+            }
+            "eguard_builtin_data_exfil"
+            | "killchain_data_theft"
+            | "eguard_dns_tunneling_detected" => &["T1048", "T1041"],
+            "eguard_c2_beaconing_detected" => &["T1071", "T1105"],
+            "killchain_ransomware_write_burst" => &["T1486"],
+            "killchain_exploit_ptrace_fileless"
+            | "killchain_exploit_userfaultfd_execveat"
+            | "killchain_exploit_proc_mem_fileless" => &["T1055", "T1068"],
+            _ => {
+                if normalized.contains("powershell") {
+                    &["T1059.001"]
+                } else if normalized.contains("credential")
+                    || normalized.contains("lsass")
+                    || normalized.contains("sam")
+                {
+                    &["T1003"]
+                } else if normalized.contains("lateral") || normalized.contains("ssh") {
+                    &["T1021"]
+                } else if normalized.contains("persist") || normalized.contains("autorun") {
+                    &["T1053", "T1543"]
+                } else if normalized.contains("exfil") || normalized.contains("dns") {
+                    &["T1048", "T1041"]
+                } else if normalized.contains("ransom") {
+                    &["T1486"]
+                } else if normalized.contains("tamper") || normalized.contains("defender") {
+                    &["T1562", "T1070"]
+                } else if normalized.contains("kernel") || normalized.contains("rootkit") {
+                    &["T1014"]
+                } else {
+                    &[]
+                }
+            }
+        }
+    }
+
     pub(super) fn log_detection_evaluation(&self, evaluation: &TickEvaluation) {
         info!(
             action = ?evaluation.action,
@@ -314,5 +446,67 @@ impl AgentRuntime {
             yara_hits = evaluation.detection_outcome.yara_hits.len(),
             "event evaluated"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AgentRuntime;
+    use detection::{
+        Confidence, DetectionOutcome, DetectionSignals, EventClass, Layer1EventHit, TelemetryEvent,
+    };
+
+    fn event(process: &str, cmdline: Option<&str>) -> TelemetryEvent {
+        TelemetryEvent {
+            ts_unix: 1_700_000_000,
+            event_class: EventClass::ProcessExec,
+            pid: 42,
+            ppid: 1,
+            uid: 0,
+            process: process.to_string(),
+            parent_process: "cmd.exe".to_string(),
+            session_id: 1,
+            file_path: None,
+            file_write: false,
+            file_hash: None,
+            dst_port: None,
+            dst_ip: None,
+            dst_domain: None,
+            command_line: cmdline.map(ToString::to_string),
+            event_size: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        }
+    }
+
+    #[test]
+    fn mitre_techniques_include_rule_and_process_context() {
+        let outcome = DetectionOutcome {
+            confidence: Confidence::High,
+            signals: DetectionSignals {
+                z2_temporal: true,
+                ..DetectionSignals::default()
+            },
+            temporal_hits: vec!["eguard_builtin_sensitive_file_access".to_string()],
+            kill_chain_hits: Vec::new(),
+            exploit_indicators: Vec::new(),
+            kernel_integrity_indicators: Vec::new(),
+            tamper_indicators: Vec::new(),
+            yara_hits: Vec::new(),
+            anomaly: None,
+            layer1: Layer1EventHit::default(),
+            ml_score: None,
+            behavioral_alarms: Vec::new(),
+        };
+
+        let techniques = AgentRuntime::mitre_techniques(
+            &event("powershell.exe", Some("powershell -enc AAA")),
+            &outcome,
+        );
+
+        assert!(techniques.iter().any(|value| value == "T1003"));
+        assert!(techniques.iter().any(|value| value == "T1059.001"));
     }
 }

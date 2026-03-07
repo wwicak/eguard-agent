@@ -131,10 +131,13 @@ impl AgentRuntime {
         let detection_shards = resolve_detection_shard_count();
         let bundle_path = config.detection_bundle_path.clone();
         let ransomware_policy = build_ransomware_policy(&config);
+        let detection_sources =
+            super::detection_bootstrap::DetectionSourcePaths::from_config(&config);
         let shard_builder = move || {
             let mut engine =
                 super::detection_bootstrap::build_detection_engine_with_ransomware_policy(
                     ransomware_policy.clone(),
+                    &detection_sources,
                 );
             if !bundle_path.is_empty() {
                 load_bundle_full(&mut engine, &bundle_path);

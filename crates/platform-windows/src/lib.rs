@@ -115,6 +115,7 @@ enum HashMode {
 pub struct EnrichmentCache {
     process_cache: LruCache<u32, ProcessCacheEntry>,
     file_hash_cache: LruCache<String, FileHashCacheEntry>,
+    file_object_cache: LruCache<String, String>,
     hash_finalize_delay_ns: u64,
     strict_budget_mode: bool,
     expensive_path_exclusions: Vec<String>,
@@ -132,6 +133,7 @@ impl EnrichmentCache {
         Self {
             process_cache: LruCache::new(capacity_from(max_process_entries)),
             file_hash_cache: LruCache::new(capacity_from(max_file_hash_entries)),
+            file_object_cache: LruCache::new(capacity_from(max_file_hash_entries)),
             hash_finalize_delay_ns: DEFAULT_HASH_FINALIZE_DELAY_MS.saturating_mul(1_000_000),
             strict_budget_mode: false,
             expensive_path_exclusions: Vec::new(),
@@ -168,24 +170,125 @@ impl EnrichmentCache {
         self.process_cache.pop(&pid).is_some()
     }
 
-    fn process_entry(&mut self, raw: &RawEvent) -> ProcessCacheEntry {
+    fn process_entry(
+        &mut self,
+        raw: &RawEvent,
+        payload_meta: &PayloadMetadata,
+    ) -> ProcessCacheEntry {
+        let hinted_parent_chain = self.parent_chain_from_hint(payload_meta.parent_pid);
+        let hinted_parent_name = self.parent_name_from_hint(payload_meta.parent_pid);
+
         if let Some(entry) = self.process_cache.get_mut(&raw.pid) {
             entry.last_seen_ns = raw.ts_ns;
+            if entry.process_exe.is_none() {
+                entry.process_exe = payload_meta.process_path_hint.clone();
+            }
+            if entry.process_cmdline.is_none() {
+                entry.process_cmdline = payload_meta.command_line_hint.clone();
+            }
+            if entry.parent_chain.is_empty() {
+                entry.parent_chain = hinted_parent_chain.clone();
+            }
+            if entry.parent_process.is_none() {
+                entry.parent_process = hinted_parent_name.clone();
+            }
             return entry.clone();
         }
 
         let info = enrichment::process::query_process_info(raw.pid);
+        let parent_chain = if info.parent_chain.is_empty() {
+            hinted_parent_chain
+        } else {
+            info.parent_chain
+        };
+        let parent_process = info.parent_name.or_else(|| {
+            parent_chain
+                .first()
+                .copied()
+                .and_then(|pid| self.process_name_for_pid(pid))
+        });
 
         let entry = ProcessCacheEntry {
-            process_exe: info.exe_path,
-            process_cmdline: info.command_line,
-            parent_process: info.parent_name,
-            parent_chain: info.parent_chain,
+            process_exe: info
+                .exe_path
+                .or_else(|| payload_meta.process_path_hint.clone()),
+            process_cmdline: info
+                .command_line
+                .or_else(|| payload_meta.command_line_hint.clone()),
+            parent_process,
+            parent_chain,
             last_seen_ns: raw.ts_ns,
         };
 
         self.process_cache.put(raw.pid, entry.clone());
         entry
+    }
+
+    fn process_name_for_pid(&mut self, pid: u32) -> Option<String> {
+        if let Some(cached) = self.process_cache.peek(&pid) {
+            if let Some(path) = cached.process_exe.as_deref() {
+                return Some(process_basename(path).to_string());
+            }
+            if let Some(cmdline) = cached.process_cmdline.as_deref() {
+                return process_name_from_cmdline(cmdline).map(ToString::to_string);
+            }
+        }
+
+        let info = enrichment::process::query_process_info(pid);
+        info.exe_path
+            .as_deref()
+            .map(process_basename)
+            .map(ToString::to_string)
+            .or_else(|| {
+                info.command_line
+                    .as_deref()
+                    .and_then(process_name_from_cmdline)
+                    .map(ToString::to_string)
+            })
+    }
+
+    fn parent_chain_from_hint(&mut self, parent_pid: Option<u32>) -> Vec<u32> {
+        let Some(ppid) = parent_pid.filter(|value| *value > 0) else {
+            return Vec::new();
+        };
+
+        let mut chain = vec![ppid];
+        let info = enrichment::process::query_process_info(ppid);
+        for ancestor in info.parent_chain {
+            if ancestor == 0 || chain.contains(&ancestor) {
+                continue;
+            }
+            chain.push(ancestor);
+        }
+        chain
+    }
+
+    fn parent_name_from_hint(&mut self, parent_pid: Option<u32>) -> Option<String> {
+        parent_pid
+            .filter(|value| *value > 0)
+            .and_then(|pid| self.process_name_for_pid(pid))
+    }
+
+    fn remember_file_object_path(&mut self, file_object: Option<&str>, path: Option<&str>) {
+        let Some(file_object) = file_object.map(str::trim).filter(|value| !value.is_empty()) else {
+            return;
+        };
+        let Some(path) = path
+            .map(normalize_windows_path)
+            .filter(|value| !value.is_empty())
+        else {
+            return;
+        };
+        self.file_object_cache
+            .put(file_object.to_ascii_lowercase(), path);
+    }
+
+    fn file_path_from_object(&mut self, file_object: Option<&str>) -> Option<String> {
+        let key = file_object?.trim().to_ascii_lowercase();
+        if key.is_empty() {
+            return None;
+        }
+        self.file_object_cache.get(&key).cloned()
     }
 
     fn hash_for_path(&mut self, path: &str) -> Option<String> {
@@ -326,9 +429,14 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
         };
     }
 
-    let entry = cache.process_entry(&raw);
+    let entry = cache.process_entry(&raw, &payload_meta);
 
-    let process_exe_sha256 = entry.process_exe.as_deref().and_then(|path| {
+    let process_exe = entry
+        .process_exe
+        .clone()
+        .or_else(|| payload_meta.process_path_hint.clone());
+
+    let process_exe_sha256 = process_exe.as_deref().and_then(|path| {
         if cache.is_excluded_for_expensive_checks(None, Some(path)) {
             None
         } else {
@@ -338,13 +446,20 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
 
     let file_path = payload_meta
         .file_path
-        .or_else(|| matches!(raw.event_type, EventType::ModuleLoad).then(|| raw.payload.clone()));
+        .clone()
+        .or_else(|| cache.file_path_from_object(payload_meta.file_object.as_deref()))
+        .or_else(|| {
+            matches!(raw.event_type, EventType::ModuleLoad)
+                .then(|| normalize_windows_path(&raw.payload))
+        });
+
+    cache.remember_file_object_path(payload_meta.file_object.as_deref(), file_path.as_deref());
 
     let file_sha256 = if cache.strict_budget_mode {
         None
     } else {
         let primary = file_path.as_deref().and_then(|path| {
-            if cache.is_excluded_for_expensive_checks(Some(path), entry.process_exe.as_deref()) {
+            if cache.is_excluded_for_expensive_checks(Some(path), process_exe.as_deref()) {
                 None
             } else {
                 cache.hash_for_path_churn_aware(path)
@@ -356,9 +471,7 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
                 .file_path_secondary
                 .as_deref()
                 .and_then(|path| {
-                    if cache
-                        .is_excluded_for_expensive_checks(Some(path), entry.process_exe.as_deref())
-                    {
+                    if cache.is_excluded_for_expensive_checks(Some(path), process_exe.as_deref()) {
                         None
                     } else {
                         cache.hash_for_path_churn_aware(path)
@@ -370,9 +483,11 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
     // Windows does not use containers in the same way as Linux.
     EnrichedEvent {
         event: raw,
-        process_exe: entry.process_exe,
+        process_exe,
         process_exe_sha256,
-        process_cmdline: entry.process_cmdline.or(payload_meta.command_line_hint),
+        process_cmdline: entry
+            .process_cmdline
+            .or_else(|| payload_meta.command_line_hint.clone()),
         parent_process: entry.parent_process,
         parent_chain: entry.parent_chain,
         file_path,
@@ -394,7 +509,10 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
 struct PayloadMetadata {
     file_path: Option<String>,
     file_path_secondary: Option<String>,
+    process_path_hint: Option<String>,
     command_line_hint: Option<String>,
+    parent_pid: Option<u32>,
+    file_object: Option<String>,
     dst_ip: Option<String>,
     dst_port: Option<u16>,
     dst_domain: Option<String>,
@@ -416,18 +534,33 @@ fn parse_payload_metadata(event_type: &EventType, payload: &str) -> PayloadMetad
     let mut metadata = PayloadMetadata {
         file_path: fields
             .get("path")
-            .cloned()
-            .or_else(|| fields.get("file").cloned())
-            .or_else(|| fields.get("src").cloned()),
+            .or_else(|| fields.get("file"))
+            .or_else(|| fields.get("src"))
+            .map(|value| normalize_windows_path(value)),
         file_path_secondary: fields
             .get("dst")
-            .cloned()
-            .or_else(|| fields.get("target").cloned())
-            .or_else(|| fields.get("new").cloned()),
+            .or_else(|| fields.get("target"))
+            .or_else(|| fields.get("new"))
+            .map(|value| normalize_windows_path(value)),
+        process_path_hint: fields
+            .get("path")
+            .or_else(|| fields.get("exe"))
+            .or_else(|| fields.get("image"))
+            .map(|value| normalize_windows_path(value)),
         command_line_hint: fields
             .get("cmdline")
-            .cloned()
-            .or_else(|| fields.get("command_line").cloned()),
+            .or_else(|| fields.get("command_line"))
+            .map(|value| sanitize_windows_text(value)),
+        parent_pid: fields
+            .get("ppid")
+            .or_else(|| fields.get("parent_pid"))
+            .and_then(|value| value.parse::<u32>().ok()),
+        file_object: fields
+            .get("file_object")
+            .or_else(|| fields.get("fileobj"))
+            .or_else(|| fields.get("file_key"))
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| !value.is_empty()),
         dst_ip: fields
             .get("dst_ip")
             .cloned()
@@ -460,6 +593,10 @@ fn parse_payload_metadata(event_type: &EventType, payload: &str) -> PayloadMetad
         }
     }
 
+    if matches!(event_type, EventType::FileWrite) {
+        metadata.file_write = true;
+    }
+
     metadata
 }
 
@@ -486,20 +623,20 @@ fn parse_kv_fields(payload: &str) -> HashMap<String, String> {
 fn parse_payload_fallback(event_type: &EventType, payload: &str) -> PayloadMetadata {
     match event_type {
         EventType::FileOpen | EventType::FileWrite => PayloadMetadata {
-            file_path: Some(payload.to_string()),
+            file_path: Some(normalize_windows_path(payload)),
             file_write: matches!(event_type, EventType::FileWrite),
             ..PayloadMetadata::default()
         },
         EventType::FileRename => PayloadMetadata {
-            file_path: Some(payload.to_string()),
+            file_path: Some(normalize_windows_path(payload)),
             ..PayloadMetadata::default()
         },
         EventType::FileUnlink => PayloadMetadata {
-            file_path: Some(payload.to_string()),
+            file_path: Some(normalize_windows_path(payload)),
             ..PayloadMetadata::default()
         },
         EventType::DnsQuery => PayloadMetadata {
-            dst_domain: Some(payload.to_string()),
+            dst_domain: Some(sanitize_windows_text(payload)),
             ..PayloadMetadata::default()
         },
         EventType::TcpConnect => {
@@ -511,16 +648,16 @@ fn parse_payload_fallback(event_type: &EventType, payload: &str) -> PayloadMetad
             }
         }
         EventType::ProcessExec => PayloadMetadata {
-            command_line_hint: Some(payload.to_string()),
+            command_line_hint: Some(sanitize_windows_text(payload)),
             ..PayloadMetadata::default()
         },
         EventType::ProcessExit => PayloadMetadata::default(),
         EventType::ModuleLoad => PayloadMetadata {
-            file_path: Some(payload.to_string()),
+            file_path: Some(normalize_windows_path(payload)),
             ..PayloadMetadata::default()
         },
         EventType::LsmBlock => PayloadMetadata {
-            command_line_hint: Some(payload.to_string()),
+            command_line_hint: Some(sanitize_windows_text(payload)),
             ..PayloadMetadata::default()
         },
     }
@@ -572,10 +709,53 @@ fn parse_endpoint(raw: &str) -> (Option<String>, Option<u16>) {
     (Some(trimmed.to_string()), None)
 }
 
+fn sanitize_windows_text(raw: &str) -> String {
+    raw.chars()
+        .filter(|ch| !ch.is_control())
+        .collect::<String>()
+        .trim()
+        .trim_matches('"')
+        .to_string()
+}
+
+fn normalize_windows_path(raw: &str) -> String {
+    let mut value = sanitize_windows_text(raw).replace('/', "\\");
+    if let Some(stripped) = value.strip_prefix(r"\\?\") {
+        value = stripped.to_string();
+    }
+    if let Some(stripped) = value.strip_prefix(r"\??\") {
+        value = stripped.to_string();
+    }
+    if let Some(stripped) = value.strip_prefix(r"\Device\Mup\") {
+        value = format!(r"\\{}", stripped.trim_start_matches('\\'));
+    }
+    while value.contains("\\\\") && !value.starts_with(r"\\") {
+        value = value.replace("\\\\", "\\");
+    }
+    value.trim().trim_matches('"').to_string()
+}
+
+fn process_basename(path: &str) -> &str {
+    path.rsplit(['/', '\\']).next().unwrap_or(path)
+}
+
+fn process_name_from_cmdline(cmdline: &str) -> Option<&str> {
+    let first = cmdline.split_whitespace().next()?.trim();
+    if first.is_empty() {
+        None
+    } else {
+        Some(process_basename(first))
+    }
+}
+
 fn normalize_exclusions(values: Vec<String>) -> Vec<String> {
     values
         .into_iter()
-        .map(|value| value.trim().replace('\\', "/").to_ascii_lowercase())
+        .map(|value| {
+            normalize_windows_path(&value)
+                .replace('\\', "/")
+                .to_ascii_lowercase()
+        })
         .filter(|value| !value.is_empty())
         .collect()
 }
@@ -585,7 +765,9 @@ fn matches_any_exclusion(value: &str, exclusions: &[String]) -> bool {
         return false;
     }
 
-    let lowered = value.trim().replace('\\', "/").to_ascii_lowercase();
+    let lowered = normalize_windows_path(value)
+        .replace('\\', "/")
+        .to_ascii_lowercase();
     if lowered.is_empty() {
         return false;
     }
@@ -615,7 +797,9 @@ fn capacity_from(raw: usize) -> NonZeroUsize {
 
 #[cfg(test)]
 mod tests {
-    use super::{enrich_event_with_cache, EnrichmentCache, EventType, RawEvent};
+    use super::{
+        enrich_event_with_cache, normalize_windows_path, EnrichmentCache, EventType, RawEvent,
+    };
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -633,13 +817,13 @@ mod tests {
     }
 
     #[test]
-    fn enrich_windows_process_event_uses_cmdline_payload_hint() {
+    fn enrich_windows_process_event_uses_payload_hints_for_cache() {
         let raw = RawEvent {
             event_type: EventType::ProcessExec,
             pid: 4242,
             uid: 0,
             ts_ns: 1,
-            payload: r#"path=C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe;cmdline=powershell -enc AAA"#
+            payload: r#"path=C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe;cmdline=powershell -enc AAA;ppid=321"#
                 .to_string(),
         };
 
@@ -647,9 +831,14 @@ mod tests {
         let enriched = enrich_event_with_cache(raw, &mut cache);
 
         assert_eq!(
+            enriched.process_exe.as_deref(),
+            Some(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
+        );
+        assert_eq!(
             enriched.process_cmdline.as_deref(),
             Some("powershell -enc AAA")
         );
+        assert_eq!(enriched.parent_chain.first().copied(), Some(321));
         assert_eq!(
             enriched.file_path.as_deref(),
             Some(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
@@ -756,5 +945,51 @@ mod tests {
         assert!(second.is_some(), "hash should finalize after delay");
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn file_write_recovers_path_from_file_object_cache() {
+        let path = unique_temp_path("file-object-cache");
+        fs::write(&path, b"payload").expect("write payload");
+        let normalized = path.to_string_lossy().replace('/', "\\");
+
+        let mut cache = EnrichmentCache::default();
+        let open = RawEvent {
+            event_type: EventType::FileOpen,
+            pid: 77,
+            uid: 0,
+            ts_ns: 20,
+            payload: format!("file_object=0x99;path={normalized}"),
+        };
+        let _ = enrich_event_with_cache(open, &mut cache);
+
+        let write = RawEvent {
+            event_type: EventType::FileWrite,
+            pid: 77,
+            uid: 0,
+            ts_ns: 21,
+            payload: "file_object=0x99;size=7".to_string(),
+        };
+        let enriched = enrich_event_with_cache(write, &mut cache);
+
+        assert_eq!(
+            enriched.file_path.as_deref(),
+            Some(normalized.as_str()),
+            "file write should recover file path from prior file_object mapping"
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn normalize_windows_path_strips_common_kernel_prefixes() {
+        assert_eq!(
+            normalize_windows_path(r"\\?\C:\Windows\Temp\a.exe"),
+            r"C:\Windows\Temp\a.exe"
+        );
+        assert_eq!(
+            normalize_windows_path("\u{0007}\\??\\C:\\Windows\\Temp\\b.exe"),
+            r"C:\Windows\Temp\b.exe"
+        );
     }
 }
