@@ -1749,6 +1749,48 @@ fn credential_theft_killchain_ignores_root_access() {
 }
 
 #[test]
+fn credential_theft_killchain_ignores_benign_sudo_auth_stack_reads() {
+    let mut l4 = Layer4Engine::with_default_templates();
+
+    let mut ev = event(12, EventClass::FileOpen, "sudo", "bash", 1000);
+    ev.pid = 6250;
+    ev.ppid = 1;
+    ev.session_id = ev.pid;
+    ev.file_path = Some("/etc/sudoers".to_string());
+
+    let first = l4.observe(&ev);
+    assert!(
+        !first.iter().any(|h| h == "killchain_credential_theft"),
+        "legitimate sudo policy reads should not trigger credential theft"
+    );
+
+    ev.ts_unix += 1;
+    ev.file_path = Some("/etc/pam.d/system-auth".to_string());
+    let second = l4.observe(&ev);
+    assert!(
+        !second.iter().any(|h| h == "killchain_credential_theft"),
+        "sudo auth-stack follow-up reads should not inherit credential-theft state"
+    );
+}
+
+#[test]
+fn credential_theft_killchain_ignores_expected_unix_chkpwd_shadow_access() {
+    let mut l4 = Layer4Engine::with_default_templates();
+
+    let mut ev = event(13, EventClass::FileOpen, "unix_chkpwd", "sudo", 1000);
+    ev.pid = 6251;
+    ev.ppid = 6250;
+    ev.session_id = ev.pid;
+    ev.file_path = Some("/etc/shadow".to_string());
+
+    let hits = l4.observe(&ev);
+    assert!(
+        !hits.iter().any(|h| h == "killchain_credential_theft"),
+        "expected auth helpers should not trip credential-theft killchain"
+    );
+}
+
+#[test]
 // AC-DET-214
 fn credential_theft_killchain_triggers_on_windows_paths() {
     let mut l4 = Layer4Engine::with_default_templates();

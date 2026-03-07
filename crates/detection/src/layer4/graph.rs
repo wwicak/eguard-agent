@@ -3,7 +3,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use crate::information;
 use crate::types::{EventClass, TelemetryEvent};
 
-use super::policy::{is_sensitive_credential_path, path_root_prefix, RansomwarePolicy};
+use super::policy::{
+    is_expected_auth_stack_access, is_sensitive_credential_path, path_root_prefix, RansomwarePolicy,
+};
 
 #[derive(Debug, Clone)]
 pub(super) struct GraphNode {
@@ -175,7 +177,8 @@ impl ProcessGraph {
         let (sensitive_access, ransomware_burst) = match event.event_class {
             EventClass::FileOpen => {
                 if let Some(path) = &event.file_path {
-                    let sensitive = is_sensitive_credential_path(path);
+                    let sensitive = is_sensitive_credential_path(path)
+                        && !is_expected_auth_stack_access(&event.process, path);
                     if event.file_write {
                         self.learn_ransomware_root(path);
                         if !self.ransomware_policy.is_system_or_temp(path) {

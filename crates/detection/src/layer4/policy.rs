@@ -59,8 +59,6 @@ pub(super) fn is_sensitive_credential_path(path: &str) -> bool {
 
     if lower.starts_with("/etc/shadow")
         || lower.starts_with("/etc/gshadow")
-        || lower.starts_with("/etc/passwd")
-        || lower.starts_with("/etc/sudoers")
         || lower.starts_with("/etc/master.passwd")
     {
         return true;
@@ -88,6 +86,7 @@ pub(super) fn is_sensitive_credential_path(path: &str) -> bool {
     if lower.contains("/library/keychains")
         || lower.contains("/var/db/dslocal/")
         || lower.contains("/private/var/db/dslocal/")
+        || lower.contains("/.aws/credentials")
     {
         return true;
     }
@@ -102,11 +101,56 @@ pub(super) fn is_sensitive_credential_path(path: &str) -> bool {
         return true;
     }
 
-    if lower.contains("credential") {
-        return true;
+    false
+}
+
+pub(super) fn is_expected_auth_stack_access(process: &str, path: &str) -> bool {
+    let process = process_basename(process).to_ascii_lowercase();
+    if !matches!(
+        process.as_str(),
+        "sudo"
+            | "sudoedit"
+            | "su"
+            | "login"
+            | "sshd"
+            | "sshd-session"
+            | "unix_chkpwd"
+            | "chkpwd"
+            | "passwd"
+            | "chage"
+            | "chfn"
+            | "chsh"
+            | "newusers"
+            | "useradd"
+            | "usermod"
+            | "userdel"
+            | "groupadd"
+            | "groupmod"
+            | "groupdel"
+            | "polkitd"
+            | "gdm-password"
+            | "gdm-session-worker"
+            | "systemd-homed"
+            | "sssd"
+            | "winbindd"
+    ) {
+        return false;
     }
 
-    false
+    let lower = path.replace('\\', "/").to_ascii_lowercase();
+    lower.starts_with("/etc/shadow")
+        || lower.starts_with("/etc/gshadow")
+        || lower.starts_with("/etc/master.passwd")
+        || lower.starts_with("/etc/ssh/ssh_host_")
+        || lower.contains("/var/db/dslocal/")
+        || lower.contains("/private/var/db/dslocal/")
+        || lower.contains("/windows/system32/config/sam")
+        || lower.contains("/windows/system32/config/security")
+        || lower.contains("/windows/system32/config/system")
+}
+
+fn process_basename(process: &str) -> &str {
+    process.rsplit(['/', '\\']).next().unwrap_or(process).trim()
 }
 
 #[derive(Debug, Clone)]

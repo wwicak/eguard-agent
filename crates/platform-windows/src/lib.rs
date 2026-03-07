@@ -178,7 +178,7 @@ impl EnrichmentCache {
         let hinted_parent_chain = self.parent_chain_from_hint(payload_meta.parent_pid);
         let hinted_parent_name = self.parent_name_from_hint(payload_meta.parent_pid);
 
-        if let Some(entry) = self.process_cache.get_mut(&raw.pid) {
+        if let Some(mut entry) = self.process_cache.get(&raw.pid).cloned() {
             entry.last_seen_ns = raw.ts_ns;
             if entry.process_exe.is_none() {
                 entry.process_exe = payload_meta.process_path_hint.clone();
@@ -192,7 +192,35 @@ impl EnrichmentCache {
             if entry.parent_process.is_none() {
                 entry.parent_process = hinted_parent_name.clone();
             }
-            return entry.clone();
+
+            let needs_refresh = entry.process_exe.is_none()
+                || entry.process_cmdline.is_none()
+                || entry.parent_process.is_none()
+                || entry.parent_chain.is_empty();
+            if needs_refresh {
+                let info = enrichment::process::query_process_info(raw.pid);
+                if entry.process_exe.is_none() {
+                    entry.process_exe = info.exe_path;
+                }
+                if entry.process_cmdline.is_none() {
+                    entry.process_cmdline = info.command_line;
+                }
+                if entry.parent_chain.is_empty() && !info.parent_chain.is_empty() {
+                    entry.parent_chain = info.parent_chain;
+                }
+                if entry.parent_process.is_none() {
+                    entry.parent_process = info.parent_name.or_else(|| {
+                        entry
+                            .parent_chain
+                            .first()
+                            .copied()
+                            .and_then(|pid| self.process_name_for_pid(pid))
+                    });
+                }
+            }
+
+            self.process_cache.put(raw.pid, entry.clone());
+            return entry;
         }
 
         let info = enrichment::process::query_process_info(raw.pid);
