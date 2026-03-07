@@ -26,31 +26,6 @@ pub(super) fn to_detection_event(
     enriched: &crate::platform::EnrichedEvent,
     now_unix: i64,
 ) -> TelemetryEvent {
-    let mut process = enriched
-        .process_exe
-        .as_deref()
-        .map(process_basename)
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| {
-            enriched
-                .process_cmdline
-                .as_deref()
-                .and_then(process_name_from_cmdline)
-                .filter(|value| !value.trim().is_empty())
-        })
-        .unwrap_or("unknown")
-        .to_string();
-
-    if is_weak_windows_process_identity(&process) {
-        if let Some(parent) = enriched
-            .parent_process
-            .as_deref()
-            .filter(|value| !is_weak_windows_process_identity(value))
-        {
-            process = parent.to_string();
-        }
-    }
-
     let session_id = enriched
         .parent_chain
         .last()
@@ -76,6 +51,36 @@ pub(super) fn to_detection_event(
         .clone()
         .or(module_payload)
         .or_else(|| enriched.process_exe.clone());
+
+    let mut process = enriched
+        .process_exe
+        .as_deref()
+        .map(process_basename)
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            enriched
+                .process_cmdline
+                .as_deref()
+                .and_then(process_name_from_cmdline)
+                .filter(|value| !value.trim().is_empty())
+        })
+        .unwrap_or("unknown")
+        .to_string();
+
+    if is_weak_windows_process_identity(&process) {
+        if let Some(parent) = enriched
+            .parent_process
+            .as_deref()
+            .filter(|value| !is_weak_windows_process_identity(value))
+        {
+            process = parent.to_string();
+        } else if let Some(inferred) = file_path
+            .as_deref()
+            .and_then(infer_windows_process_from_file_path)
+        {
+            process = inferred.to_string();
+        }
+    }
 
     TelemetryEvent {
         ts_unix: now_unix,
@@ -135,6 +140,33 @@ fn is_weak_windows_process_identity(process: &str) -> bool {
         )
 }
 
+fn infer_windows_process_from_file_path(path: &str) -> Option<&'static str> {
+    let mut normalized = path.replace('\\', "/").to_ascii_lowercase();
+    while normalized.contains("//") {
+        normalized = normalized.replace("//", "/");
+    }
+    if normalized.is_empty() {
+        return None;
+    }
+
+    if normalized.contains("__psscriptpolicytest_")
+        || normalized.contains("windowspowershell/v1.0")
+        || normalized.contains("windows powershell")
+        || normalized.contains("powershell/modules")
+        || normalized.contains("/psreadline/")
+    {
+        return Some("powershell.exe");
+    }
+
+    if normalized.contains("program files/openssh")
+        || normalized.contains("windows/system32/openssh")
+    {
+        return Some("sshd.exe");
+    }
+
+    None
+}
+
 pub(super) fn map_event_class(event_type: &crate::platform::EventType) -> EventClass {
     match event_type {
         crate::platform::EventType::ProcessExec => EventClass::ProcessExec,
@@ -152,7 +184,9 @@ pub(super) fn map_event_class(event_type: &crate::platform::EventType) -> EventC
 
 #[cfg(test)]
 mod tests {
-    use super::{process_basename, process_name_from_cmdline};
+    use super::{
+        infer_windows_process_from_file_path, process_basename, process_name_from_cmdline,
+    };
     use crate::platform::{EnrichedEvent, EventType, RawEvent};
     use detection::Confidence;
 
@@ -276,5 +310,58 @@ mod tests {
         let event = super::to_detection_event(&enriched, 123);
         assert_eq!(event.process, "powershell.exe");
         assert_eq!(event.parent_process, "powershell.exe");
+    }
+
+    #[test]
+    fn infer_windows_process_from_file_path_detects_powershell_modules() {
+        assert_eq!(
+            infer_windows_process_from_file_path(
+                r"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules\\NetSecurity\\NetSecurity.psd1"
+            ),
+            Some("powershell.exe")
+        );
+        assert_eq!(
+            infer_windows_process_from_file_path(
+                r"C:\\Windows\\Temp\\__PSScriptPolicyTest_abc123.ps1"
+            ),
+            Some("powershell.exe")
+        );
+    }
+
+    #[test]
+    fn to_detection_event_infers_powershell_when_identity_is_weak() {
+        let enriched = EnrichedEvent {
+            event: RawEvent {
+                event_type: EventType::FileOpen,
+                pid: 4724,
+                uid: 0,
+                ts_ns: 1,
+                payload: String::new(),
+            },
+            process_exe: None,
+            process_exe_sha256: None,
+            process_cmdline: None,
+            parent_process: Some("unknown".to_string()),
+            parent_chain: Vec::new(),
+            file_path: Some(
+                r"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules\\WindowsUpdateProvider\\MSFT_WUOperations.psm1"
+                    .to_string(),
+            ),
+            file_path_secondary: None,
+            file_write: false,
+            file_sha256: None,
+            event_size: None,
+            dst_ip: None,
+            dst_port: None,
+            dst_domain: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        };
+
+        let event = super::to_detection_event(&enriched, 123);
+        assert_eq!(event.process, "powershell.exe");
+        assert_eq!(event.parent_process, "unknown");
     }
 }
