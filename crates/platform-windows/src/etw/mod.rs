@@ -7,6 +7,7 @@ mod codec;
 mod consumer;
 pub(crate) mod providers;
 mod security_auditing;
+mod security_eventlog;
 mod session;
 
 pub use codec::decode_etw_event;
@@ -23,6 +24,7 @@ pub struct EtwEngine {
     session_name: String,
     session: Option<EtwSession>,
     consumer: Option<EtwConsumer>,
+    security_eventlog: Option<security_eventlog::SecurityEventLogReader>,
     stats: EtwStats,
 }
 
@@ -38,6 +40,7 @@ impl EtwEngine {
             session_name: session_name.into(),
             session: None,
             consumer: None,
+            security_eventlog: None,
             stats: EtwStats::default(),
         }
     }
@@ -90,6 +93,7 @@ impl EtwEngine {
         consumer.run(session.name())?;
 
         self.consumer = Some(consumer);
+        self.security_eventlog = Some(security_eventlog::SecurityEventLogReader::new());
         self.stats.providers_active = providers_enabled;
         self.session = Some(session);
 
@@ -113,6 +117,7 @@ impl EtwEngine {
                 .events_lost
                 .saturating_add(consumer.drops_count());
         }
+        self.security_eventlog = None;
 
         self.stats.providers_active = 0;
         Ok(())
@@ -132,7 +137,17 @@ impl EtwEngine {
             return Ok(Vec::new());
         };
 
-        let events = consumer.poll_events(max_batch);
+        let mut events = consumer.poll_events(max_batch);
+        if events.len() < max_batch {
+            if let Some(reader) = self.security_eventlog.as_mut() {
+                let remaining = max_batch.saturating_sub(events.len());
+                let mut security_events = reader
+                    .poll_events(remaining)
+                    .map_err(EtwError::ConsumerStart)?;
+                events.append(&mut security_events);
+            }
+        }
+
         self.stats.events_received = self
             .stats
             .events_received
