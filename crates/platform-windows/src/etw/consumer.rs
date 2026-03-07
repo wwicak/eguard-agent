@@ -9,7 +9,10 @@
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
+use std::num::NonZeroUsize;
 use std::path::Path;
+
+use lru::LruCache;
 
 use crate::RawEvent;
 
@@ -19,27 +22,140 @@ const ETW_REPLAY_PATH_ENV: &str = "EGUARD_ETW_REPLAY_PATH";
 #[cfg(target_os = "windows")]
 const CHANNEL_CAPACITY: usize = 16_384;
 
+const THREAD_PID_CACHE_CAPACITY: usize = 16_384;
+const THREAD_PID_CACHE_TTL_NS: u64 = 120 * 1_000_000_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ThreadPidCacheEntry {
+    pid: u32,
+    last_seen_ns: u64,
+}
+
+fn thread_pid_cache() -> LruCache<u32, ThreadPidCacheEntry> {
+    LruCache::new(
+        NonZeroUsize::new(THREAD_PID_CACHE_CAPACITY).expect("thread pid cache capacity > 0"),
+    )
+}
+
+fn remember_thread_pid(
+    cache: &mut LruCache<u32, ThreadPidCacheEntry>,
+    thread_id: u32,
+    pid: u32,
+    ts_ns: u64,
+) {
+    if thread_id == 0 || pid <= 4 {
+        return;
+    }
+
+    cache.put(
+        thread_id,
+        ThreadPidCacheEntry {
+            pid,
+            last_seen_ns: ts_ns,
+        },
+    );
+}
+
+fn remap_kernel_file_pid(
+    cache: &mut LruCache<u32, ThreadPidCacheEntry>,
+    header_pid: u32,
+    thread_id: u32,
+    ts_ns: u64,
+    resolved_thread_pid: Option<u32>,
+) -> u32 {
+    if thread_id == 0 {
+        return header_pid;
+    }
+
+    if header_pid > 4 {
+        remember_thread_pid(cache, thread_id, header_pid, ts_ns);
+        return header_pid;
+    }
+
+    if let Some(entry) = cache.get(&thread_id).copied() {
+        if ts_ns.saturating_sub(entry.last_seen_ns) <= THREAD_PID_CACHE_TTL_NS && entry.pid > 4 {
+            remember_thread_pid(cache, thread_id, entry.pid, ts_ns);
+            return entry.pid;
+        }
+        cache.pop(&thread_id);
+    }
+
+    if let Some(pid) = resolved_thread_pid.filter(|pid| *pid > 4) {
+        remember_thread_pid(cache, thread_id, pid, ts_ns);
+        return pid;
+    }
+
+    header_pid
+}
+
 // ── Windows: real ProcessTrace consumer ──────────────────────────────
 
 #[cfg(target_os = "windows")]
 mod win32 {
     use super::super::codec;
+    use super::{remap_kernel_file_pid, thread_pid_cache, ThreadPidCacheEntry};
     use crate::RawEvent;
+    use lru::LruCache;
     use std::cell::RefCell;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::mpsc::SyncSender;
     use std::sync::Arc;
+    use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Diagnostics::Etw::*;
+    use windows::Win32::System::Threading::{
+        GetProcessIdOfThread, OpenThread, THREAD_QUERY_LIMITED_INFORMATION,
+    };
 
     /// State passed to the ETW callback via thread-local storage.
     struct CallbackState {
         sender: SyncSender<RawEvent>,
         agent_pid: u32,
         drops: Arc<AtomicU64>,
+        thread_pid_cache: RefCell<LruCache<u32, ThreadPidCacheEntry>>,
     }
 
     thread_local! {
         static CALLBACK_STATE: RefCell<Option<CallbackState>> = const { RefCell::new(None) };
+    }
+
+    impl CallbackState {
+        fn resolve_event_pid(
+            &self,
+            provider_guid: &str,
+            header_pid: u32,
+            thread_id: u32,
+            ts_ns: u64,
+        ) -> u32 {
+            if thread_id == 0 {
+                return header_pid;
+            }
+
+            let mut cache = self.thread_pid_cache.borrow_mut();
+            if provider_guid.eq_ignore_ascii_case(super::super::providers::KERNEL_FILE) {
+                let resolved = if header_pid > 4 {
+                    None
+                } else {
+                    resolve_thread_owner_pid(thread_id)
+                };
+                return remap_kernel_file_pid(&mut cache, header_pid, thread_id, ts_ns, resolved);
+            }
+
+            super::remember_thread_pid(&mut cache, thread_id, header_pid, ts_ns);
+            header_pid
+        }
+    }
+
+    fn resolve_thread_owner_pid(thread_id: u32) -> Option<u32> {
+        if thread_id == 0 {
+            return None;
+        }
+
+        unsafe {
+            let handle = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, false, thread_id).ok()?;
+            let pid = GetProcessIdOfThread(handle);
+            let _ = CloseHandle(handle);
+            (pid > 0).then_some(pid)
+        }
     }
 
     /// The raw ETW event callback invoked by `ProcessTrace` on the consumer thread.
@@ -56,10 +172,6 @@ mod win32 {
             let Some(state) = borrow.as_ref() else {
                 return;
             };
-
-            if header.ProcessId == state.agent_pid {
-                return;
-            }
 
             // Extract provider GUID as string for codec dispatch.
             let guid = &header.ProviderId;
@@ -82,7 +194,11 @@ mod win32 {
             let ts_ns = filetime_to_unix_ns(header.TimeStamp);
 
             let opcode = header.EventDescriptor.Opcode;
-            let pid = header.ProcessId;
+            let pid = state.resolve_event_pid(&guid_str, header.ProcessId, header.ThreadId, ts_ns);
+
+            if header.ProcessId == state.agent_pid || pid == state.agent_pid {
+                return;
+            }
 
             // Parse the binary UserData into a structured RawEvent.
             let user_data = if record.UserDataLength > 0 && !record.UserData.is_null() {
@@ -95,6 +211,17 @@ mod win32 {
             } else {
                 &[]
             };
+
+            if pid != header.ProcessId
+                && guid_str.eq_ignore_ascii_case(super::super::providers::KERNEL_FILE)
+            {
+                tracing::trace!(
+                    header_pid = header.ProcessId,
+                    resolved_pid = pid,
+                    thread_id = header.ThreadId,
+                    "remapped kernel file ETW pid via thread ownership"
+                );
+            }
 
             let event = codec::decode_etw_record(&guid_str, opcode, pid, ts_ns, user_data);
 
@@ -134,6 +261,7 @@ mod win32 {
                         sender,
                         agent_pid,
                         drops,
+                        thread_pid_cache: RefCell::new(thread_pid_cache()),
                     });
                 });
 
@@ -388,8 +516,46 @@ fn load_replay_events(path: &Path) -> std::io::Result<Vec<RawEvent>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{load_replay_events, EtwConsumer};
+    use super::{
+        load_replay_events, remap_kernel_file_pid, remember_thread_pid, thread_pid_cache,
+        EtwConsumer,
+    };
     use crate::{EventType, RawEvent};
+
+    #[test]
+    fn kernel_file_pid_remap_prefers_recent_thread_cache_entry() {
+        let mut cache = thread_pid_cache();
+        remember_thread_pid(&mut cache, 401, 9001, 10);
+
+        let pid = remap_kernel_file_pid(&mut cache, 4, 401, 20, None);
+        assert_eq!(pid, 9001);
+    }
+
+    #[test]
+    fn kernel_file_pid_remap_uses_live_thread_lookup_when_header_pid_is_system() {
+        let mut cache = thread_pid_cache();
+
+        let pid = remap_kernel_file_pid(&mut cache, 4, 777, 20, Some(4242));
+        assert_eq!(pid, 4242);
+
+        let cached = remap_kernel_file_pid(&mut cache, 4, 777, 21, None);
+        assert_eq!(
+            cached, 4242,
+            "successful lookup should seed the thread cache"
+        );
+    }
+
+    #[test]
+    fn kernel_file_pid_remap_ignores_stale_thread_cache_entries() {
+        let mut cache = thread_pid_cache();
+        remember_thread_pid(&mut cache, 900, 31337, 1);
+
+        let pid = remap_kernel_file_pid(&mut cache, 4, 900, 121_000_000_001, None);
+        assert_eq!(
+            pid, 4,
+            "stale thread ownership should not override a weak header pid"
+        );
+    }
 
     #[test]
     fn load_replay_events_parses_ndjson_lines() {
