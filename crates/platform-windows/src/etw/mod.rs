@@ -137,10 +137,13 @@ impl EtwEngine {
             return Ok(Vec::new());
         };
 
-        let mut events = consumer.poll_events(max_batch);
-        if events.len() < max_batch {
-            if let Some(reader) = self.security_eventlog.as_mut() {
-                let remaining = max_batch.saturating_sub(events.len());
+        let security_reserve = max_batch.min(32);
+        let etw_budget = max_batch.saturating_sub(security_reserve);
+
+        let mut events = consumer.poll_events(etw_budget);
+        if let Some(reader) = self.security_eventlog.as_mut() {
+            let remaining = max_batch.saturating_sub(events.len());
+            if remaining > 0 {
                 let mut security_events = reader
                     .poll_events(remaining)
                     .map_err(EtwError::ConsumerStart)?;
