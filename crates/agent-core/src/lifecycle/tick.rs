@@ -11,8 +11,8 @@ use crate::platform::enrich_event_with_cache;
 use crate::config::AgentMode;
 
 use super::{
-    confidence_to_severity, elapsed_micros, interval_due, to_detection_event, AgentRuntime,
-    TickEvaluation, HEARTBEAT_INTERVAL_SECS,
+    confidence_to_severity, elapsed_micros, interval_due, should_drop_low_value_windows_event,
+    to_detection_event, AgentRuntime, TickEvaluation, HEARTBEAT_INTERVAL_SECS,
 };
 
 impl AgentRuntime {
@@ -80,6 +80,9 @@ impl AgentRuntime {
         let enriched = enrich_event_with_cache(raw, &mut self.enrichment_cache);
 
         let detection_event = to_detection_event(&enriched, now_unix);
+        if should_drop_low_value_windows_event(&enriched, &detection_event) {
+            return Ok(None);
+        }
 
         self.observe_baseline(&detection_event, now_unix);
 

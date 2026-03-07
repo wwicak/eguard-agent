@@ -46,11 +46,14 @@ pub(super) fn to_detection_event(
         None
     };
 
-    let file_path = enriched
-        .file_path
-        .clone()
-        .or(module_payload)
-        .or_else(|| enriched.process_exe.clone());
+    let file_path = enriched.file_path.clone().or(module_payload).or_else(|| {
+        matches!(
+            enriched.event.event_type,
+            crate::platform::EventType::ProcessExec | crate::platform::EventType::ProcessExit
+        )
+        .then(|| enriched.process_exe.clone())
+        .flatten()
+    });
 
     let process_name_from_path = enriched
         .process_exe
@@ -171,6 +174,47 @@ fn infer_windows_process_from_file_path(path: &str) -> Option<&'static str> {
     }
 
     None
+}
+
+fn is_low_value_windows_pseudo_identity(process: &str) -> bool {
+    let lowered = process.trim().to_ascii_lowercase();
+    lowered.is_empty()
+        || lowered == "unknown"
+        || lowered == "system"
+        || lowered == "registry"
+        || lowered == "registry.exe"
+}
+
+pub(super) fn should_drop_low_value_windows_event(
+    enriched: &crate::platform::EnrichedEvent,
+    event: &TelemetryEvent,
+) -> bool {
+    if !matches!(
+        enriched.event.event_type,
+        crate::platform::EventType::FileOpen
+            | crate::platform::EventType::FileWrite
+            | crate::platform::EventType::FileRename
+            | crate::platform::EventType::FileUnlink
+    ) {
+        return false;
+    }
+
+    if enriched.file_path.is_some() || enriched.file_path_secondary.is_some() {
+        return false;
+    }
+
+    if event
+        .command_line
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some()
+    {
+        return false;
+    }
+
+    is_low_value_windows_pseudo_identity(&event.process)
+        && is_low_value_windows_pseudo_identity(&event.parent_process)
 }
 
 pub(super) fn map_event_class(event_type: &crate::platform::EventType) -> EventClass {
@@ -405,5 +449,113 @@ mod tests {
         let event = super::to_detection_event(&enriched, 123);
         assert_eq!(event.process, "powershell.exe");
         assert_eq!(event.parent_process, "unknown");
+    }
+
+    #[test]
+    fn to_detection_event_file_open_without_subject_does_not_fake_system_file_path() {
+        let enriched = EnrichedEvent {
+            event: RawEvent {
+                event_type: EventType::FileOpen,
+                pid: 4,
+                uid: 0,
+                ts_ns: 1,
+                payload: "file_key=0x44".to_string(),
+            },
+            process_exe: Some("System".to_string()),
+            process_exe_sha256: None,
+            process_cmdline: None,
+            parent_process: Some("unknown".to_string()),
+            parent_chain: Vec::new(),
+            file_path: None,
+            file_path_secondary: None,
+            file_write: false,
+            file_sha256: None,
+            event_size: None,
+            dst_ip: None,
+            dst_port: None,
+            dst_domain: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        };
+
+        let event = super::to_detection_event(&enriched, 123);
+        assert_eq!(event.process, "System");
+        assert_eq!(event.file_path, None);
+    }
+
+    #[test]
+    fn should_drop_low_value_windows_event_for_pathless_system_file_noise() {
+        let enriched = EnrichedEvent {
+            event: RawEvent {
+                event_type: EventType::FileOpen,
+                pid: 4,
+                uid: 0,
+                ts_ns: 1,
+                payload: "file_key=0x44".to_string(),
+            },
+            process_exe: Some("System".to_string()),
+            process_exe_sha256: None,
+            process_cmdline: None,
+            parent_process: Some("unknown".to_string()),
+            parent_chain: Vec::new(),
+            file_path: None,
+            file_path_secondary: None,
+            file_write: false,
+            file_sha256: None,
+            event_size: None,
+            dst_ip: None,
+            dst_port: None,
+            dst_domain: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        };
+
+        let event = super::to_detection_event(&enriched, 123);
+        assert!(super::should_drop_low_value_windows_event(
+            &enriched, &event
+        ));
+    }
+
+    #[test]
+    fn should_not_drop_windows_file_event_when_real_subject_path_exists() {
+        let enriched = EnrichedEvent {
+            event: RawEvent {
+                event_type: EventType::FileOpen,
+                pid: 4,
+                uid: 0,
+                ts_ns: 1,
+                payload: "file_key=0x44".to_string(),
+            },
+            process_exe: Some("System".to_string()),
+            process_exe_sha256: None,
+            process_cmdline: None,
+            parent_process: Some("unknown".to_string()),
+            parent_chain: Vec::new(),
+            file_path: Some(r"C:\\Windows\\System32\\kernel32.dll".to_string()),
+            file_path_secondary: None,
+            file_write: false,
+            file_sha256: None,
+            event_size: None,
+            dst_ip: None,
+            dst_port: None,
+            dst_domain: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        };
+
+        let event = super::to_detection_event(&enriched, 123);
+        assert!(!super::should_drop_low_value_windows_event(
+            &enriched, &event
+        ));
+        assert_eq!(
+            event.file_path.as_deref(),
+            Some(r"C:\\Windows\\System32\\kernel32.dll")
+        );
     }
 }
