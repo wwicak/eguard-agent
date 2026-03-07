@@ -1,26 +1,43 @@
 //! Process introspection for Windows.
 //!
-//! Uses command-backed process metadata queries to populate path/cmdline/parent chain.
+//! Uses native Win32 / NT process queries to populate path/cmdline/parent chain
+//! without spawning helper shells that create attribution noise.
 
 #[cfg(any(test, target_os = "windows"))]
 use std::collections::HashMap;
 #[cfg(target_os = "windows")]
-use std::process::Command;
+use std::mem::size_of;
 #[cfg(target_os = "windows")]
 use std::sync::{OnceLock, RwLock};
 #[cfg(target_os = "windows")]
 use std::time::{Duration, Instant};
 
 #[cfg(target_os = "windows")]
-use crate::windows_cmd::POWERSHELL_EXE;
-
-#[cfg(any(test, target_os = "windows"))]
-use serde_json::Value;
+use windows::{
+    core::PWSTR,
+    Wdk::System::Threading::{NtQueryInformationProcess, ProcessCommandLineInformation},
+    Win32::{
+        Foundation::{
+            CloseHandle, HANDLE, STATUS_BUFFER_OVERFLOW, STATUS_BUFFER_TOO_SMALL,
+            STATUS_INFO_LENGTH_MISMATCH,
+        },
+        System::{
+            Diagnostics::ToolHelp::{
+                CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+                TH32CS_SNAPPROCESS,
+            },
+            Threading::{
+                OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT,
+                PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ,
+            },
+        },
+    },
+};
 
 #[cfg(any(test, target_os = "windows"))]
 const MAX_PARENT_CHAIN_DEPTH: usize = 12;
 #[cfg(target_os = "windows")]
-const PROCESS_SNAPSHOT_TTL: Duration = Duration::from_secs(2);
+const PROCESS_SNAPSHOT_TTL: Duration = Duration::from_millis(1500);
 
 /// Collected process metadata.
 #[derive(Debug, Clone, Default)]
@@ -94,24 +111,40 @@ pub fn read_ppid(pid: u32) -> Option<u32> {
 #[cfg(target_os = "windows")]
 fn query_process_info_windows(pid: u32) -> ProcessInfo {
     let snapshot = load_process_snapshot(false);
-    if let Some(info) = process_info_from_snapshot(pid, &snapshot) {
-        if info.exe_path.is_some() || info.command_line.is_some() || info.parent_name.is_some() {
-            return info;
-        }
+    let parent_chain = parent_chain_from_snapshot(pid, &snapshot);
+    let parent_name = parent_chain
+        .first()
+        .and_then(|ppid| snapshot.get(ppid))
+        .and_then(record_display_name);
+
+    let mut record = snapshot.get(&pid).cloned().unwrap_or_default();
+    if record.exe_path.is_none() {
+        record.exe_path = query_process_image_path(pid);
+    }
+    if record.command_line.is_none() {
+        record.command_line = query_process_command_line(pid);
+    }
+    if record.name.is_none() {
+        record.name = record
+            .exe_path
+            .as_deref()
+            .map(process_basename)
+            .map(ToString::to_string);
     }
 
-    if let Some(value) = query_process_json(pid) {
-        let direct = process_info_from_value(pid, &value, &snapshot);
-        if direct.exe_path.is_some()
-            || direct.command_line.is_some()
-            || direct.parent_name.is_some()
-        {
-            return direct;
-        }
+    if !record_is_empty(&record) {
+        update_cached_record(pid, record.clone());
     }
 
-    let refreshed = load_process_snapshot(true);
-    process_info_from_snapshot(pid, &refreshed).unwrap_or_default()
+    ProcessInfo {
+        exe_path: record
+            .exe_path
+            .clone()
+            .or_else(|| record_display_name(&record)),
+        command_line: record.command_line,
+        parent_name,
+        parent_chain,
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -133,16 +166,8 @@ fn read_ppid_windows(pid: u32) -> Option<u32> {
         return record.parent_pid;
     }
 
-    query_process_json(pid).and_then(|value| extract_parent_pid(&value))
-}
-
-#[cfg(target_os = "windows")]
-fn query_process_name(pid: u32) -> Option<String> {
-    let snapshot = load_process_snapshot(false);
-    snapshot
-        .get(&pid)
-        .and_then(record_display_name)
-        .or_else(|| query_process_json(pid).and_then(|value| extract_process_name(&value)))
+    let refreshed = load_process_snapshot(true);
+    refreshed.get(&pid).and_then(|record| record.parent_pid)
 }
 
 #[cfg(target_os = "windows")]
@@ -160,9 +185,7 @@ fn load_process_snapshot(force_refresh: bool) -> HashMap<u32, SnapshotProcessRec
         }
     }
 
-    if let Some(fresh) =
-        query_process_snapshot_json().and_then(|value| parse_process_snapshot(&value))
-    {
+    if let Some(fresh) = snapshot_processes_native() {
         if let Ok(mut state) = cache.write() {
             state.refreshed_at = Some(Instant::now());
             state.records = fresh.clone();
@@ -177,59 +200,250 @@ fn load_process_snapshot(force_refresh: bool) -> HashMap<u32, SnapshotProcessRec
 }
 
 #[cfg(target_os = "windows")]
-fn process_info_from_value(
-    pid: u32,
-    value: &Value,
-    snapshot: &HashMap<u32, SnapshotProcessRecord>,
-) -> ProcessInfo {
-    let parent_pid = extract_parent_pid(value);
-    let parent_chain = parent_pid
-        .map(|ppid| parent_chain_from_parent(ppid, snapshot))
-        .unwrap_or_default();
-    let parent_name = parent_pid
-        .and_then(|ppid| snapshot.get(&ppid).and_then(record_display_name))
-        .or_else(|| parent_pid.and_then(query_process_name));
+fn update_cached_record(pid: u32, record: SnapshotProcessRecord) {
+    let cache = PROCESS_SNAPSHOT.get_or_init(|| RwLock::new(SnapshotState::default()));
+    if let Ok(mut state) = cache.write() {
+        let entry = state.records.entry(pid).or_default();
+        if entry.parent_pid.is_none() {
+            entry.parent_pid = record.parent_pid;
+        }
+        if entry.exe_path.is_none() {
+            entry.exe_path = record.exe_path;
+        }
+        if entry.command_line.is_none() {
+            entry.command_line = record.command_line;
+        }
+        if entry.name.is_none() {
+            entry.name = record.name;
+        }
+    }
+}
 
-    ProcessInfo {
-        exe_path: extract_executable_path(value)
-            .or_else(|| extract_process_name(value))
-            .or_else(|| {
-                snapshot
-                    .get(&pid)
-                    .and_then(|record| record.exe_path.clone())
-            })
-            .or_else(|| snapshot.get(&pid).and_then(record_display_name)),
-        command_line: extract_command_line(value).or_else(|| {
-            snapshot
-                .get(&pid)
-                .and_then(|record| record.command_line.clone())
-        }),
-        parent_name,
-        parent_chain,
+#[cfg(target_os = "windows")]
+fn snapshot_processes_native() -> Option<HashMap<u32, SnapshotProcessRecord>> {
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()? };
+    let mut entry = PROCESSENTRY32W::default();
+    entry.dwSize = size_of::<PROCESSENTRY32W>() as u32;
+
+    let mut records = HashMap::new();
+    let first = unsafe { Process32FirstW(snapshot, &mut entry) };
+    if first.is_err() {
+        let _ = unsafe { CloseHandle(snapshot) };
+        return Some(records);
+    }
+
+    loop {
+        let pid = entry.th32ProcessID;
+        let parent_pid = (entry.th32ParentProcessID != 0).then_some(entry.th32ParentProcessID);
+        let name = wide_nul_terminated_to_string(&entry.szExeFile);
+        records.insert(
+            pid,
+            SnapshotProcessRecord {
+                parent_pid,
+                exe_path: None,
+                command_line: None,
+                name,
+            },
+        );
+
+        if unsafe { Process32NextW(snapshot, &mut entry) }.is_err() {
+            break;
+        }
+    }
+
+    let _ = unsafe { CloseHandle(snapshot) };
+    Some(records)
+}
+
+#[cfg(target_os = "windows")]
+fn query_process_image_path(pid: u32) -> Option<String> {
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()? };
+
+    let mut buf = vec![0u16; 1024];
+    let mut len = buf.len() as u32;
+    let result = unsafe {
+        QueryFullProcessImageNameW(
+            handle,
+            PROCESS_NAME_FORMAT(0),
+            PWSTR(buf.as_mut_ptr()),
+            &mut len,
+        )
+    };
+    let _ = unsafe { CloseHandle(handle) };
+    if result.is_err() || len == 0 {
+        return None;
+    }
+
+    Some(String::from_utf16_lossy(&buf[..len as usize]))
+}
+
+#[cfg(target_os = "windows")]
+fn query_process_command_line(pid: u32) -> Option<String> {
+    let handle = unsafe {
+        OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid)
+            .ok()
+            .or_else(|| OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok())?
+    };
+
+    let result = query_process_command_line_from_handle(handle);
+    let _ = unsafe { CloseHandle(handle) };
+    result
+}
+
+#[cfg(target_os = "windows")]
+fn query_process_command_line_from_handle(handle: HANDLE) -> Option<String> {
+    let buffer = query_process_variable_buffer(handle, ProcessCommandLineInformation)?;
+    parse_command_line_query_buffer(&buffer)
+}
+
+#[cfg(target_os = "windows")]
+fn query_process_variable_buffer(
+    handle: HANDLE,
+    information_class: windows::Wdk::System::Threading::PROCESSINFOCLASS,
+) -> Option<Vec<u8>> {
+    let mut return_length = 0u32;
+    let status = unsafe {
+        NtQueryInformationProcess(
+            handle,
+            information_class,
+            std::ptr::null_mut(),
+            0,
+            &mut return_length,
+        )
+    };
+
+    if status.is_err()
+        && status != STATUS_BUFFER_OVERFLOW
+        && status != STATUS_BUFFER_TOO_SMALL
+        && status != STATUS_INFO_LENGTH_MISMATCH
+    {
+        return None;
+    }
+    if return_length == 0 {
+        return None;
+    }
+
+    let mut buffer = vec![0u8; return_length as usize];
+    let status = unsafe {
+        NtQueryInformationProcess(
+            handle,
+            information_class,
+            buffer.as_mut_ptr().cast(),
+            buffer.len() as u32,
+            &mut return_length,
+        )
+    };
+    if status.is_err() {
+        return None;
+    }
+
+    buffer.truncate(return_length as usize);
+    Some(buffer)
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn parse_command_line_query_buffer(buffer: &[u8]) -> Option<String> {
+    if buffer.len() < size_of_unicode_string() {
+        return None;
+    }
+
+    let header = read_unicode_string_header(buffer)?;
+    let byte_len = header.length as usize;
+    if byte_len == 0 || byte_len % 2 != 0 {
+        return None;
+    }
+
+    let buffer_bytes = unicode_string_bytes(buffer, &header, byte_len)?;
+    utf16_bytes_to_string(buffer_bytes)
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn unicode_string_bytes<'a>(
+    backing: &'a [u8],
+    header: &RawUnicodeString,
+    byte_len: usize,
+) -> Option<&'a [u8]> {
+    let backing_start = backing.as_ptr() as usize;
+    let backing_end = backing_start.checked_add(backing.len())?;
+    let target_ptr = header.buffer_ptr;
+
+    if target_ptr >= backing_start && target_ptr.checked_add(byte_len)? <= backing_end {
+        let offset = target_ptr.checked_sub(backing_start)?;
+        return backing.get(offset..offset + byte_len);
+    }
+
+    let inline_start = size_of_unicode_string();
+    backing.get(inline_start..inline_start + byte_len)
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn utf16_bytes_to_string(bytes: &[u8]) -> Option<String> {
+    if bytes.is_empty() || bytes.len() % 2 != 0 {
+        return None;
+    }
+
+    let wide: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+        .collect();
+    let value = String::from_utf16_lossy(&wide).trim().to_string();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
     }
 }
 
 #[cfg(any(test, target_os = "windows"))]
-fn process_info_from_snapshot(
-    pid: u32,
-    snapshot: &HashMap<u32, SnapshotProcessRecord>,
-) -> Option<ProcessInfo> {
-    let record = snapshot.get(&pid)?;
-    let parent_chain = parent_chain_from_snapshot(pid, snapshot);
-    let parent_name = parent_chain
-        .first()
-        .and_then(|ppid| snapshot.get(ppid))
-        .and_then(record_display_name);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RawUnicodeString {
+    length: u16,
+    maximum_length: u16,
+    buffer_ptr: usize,
+}
 
-    Some(ProcessInfo {
-        exe_path: record
-            .exe_path
-            .clone()
-            .or_else(|| record_display_name(record)),
-        command_line: record.command_line.clone(),
-        parent_name,
-        parent_chain,
+#[cfg(any(test, target_os = "windows"))]
+fn read_unicode_string_header(buffer: &[u8]) -> Option<RawUnicodeString> {
+    if buffer.len() < size_of_unicode_string() {
+        return None;
+    }
+
+    let length = u16::from_le_bytes([buffer[0], buffer[1]]);
+    let maximum_length = u16::from_le_bytes([buffer[2], buffer[3]]);
+    let pointer_size = size_of::<usize>();
+    let ptr_offset = if pointer_size == 8 { 8 } else { 4 };
+    let ptr_end = ptr_offset + pointer_size;
+    let ptr_bytes = buffer.get(ptr_offset..ptr_end)?;
+    let buffer_ptr = if pointer_size == 8 {
+        let bytes: [u8; 8] = ptr_bytes.try_into().ok()?;
+        u64::from_le_bytes(bytes) as usize
+    } else {
+        let bytes: [u8; 4] = ptr_bytes.try_into().ok()?;
+        u32::from_le_bytes(bytes) as usize
+    };
+
+    Some(RawUnicodeString {
+        length,
+        maximum_length,
+        buffer_ptr,
     })
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn size_of_unicode_string() -> usize {
+    if size_of::<usize>() == 8 {
+        16
+    } else {
+        8
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn record_is_empty(record: &SnapshotProcessRecord) -> bool {
+    record.parent_pid.is_none()
+        && record.exe_path.is_none()
+        && record.command_line.is_none()
+        && record.name.is_none()
 }
 
 #[cfg(any(test, target_os = "windows"))]
@@ -265,135 +479,27 @@ fn parent_chain_from_parent(
     out
 }
 
-#[cfg(target_os = "windows")]
-fn query_process_snapshot_json() -> Option<Value> {
-    let command = "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine,Name | ConvertTo-Json -Compress";
+#[cfg(test)]
+fn process_info_from_snapshot(
+    pid: u32,
+    snapshot: &HashMap<u32, SnapshotProcessRecord>,
+) -> Option<ProcessInfo> {
+    let record = snapshot.get(&pid)?;
+    let parent_chain = parent_chain_from_snapshot(pid, snapshot);
+    let parent_name = parent_chain
+        .first()
+        .and_then(|ppid| snapshot.get(ppid))
+        .and_then(record_display_name);
 
-    let output = Command::new(POWERSHELL_EXE)
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            command,
-        ])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-
-    let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if raw.is_empty() {
-        return None;
-    }
-
-    serde_json::from_str::<Value>(&raw).ok()
-}
-
-#[cfg(target_os = "windows")]
-fn query_process_json(pid: u32) -> Option<Value> {
-    let command = format!(
-        "Get-CimInstance Win32_Process -Filter \"ProcessId = {}\" | Select-Object -First 1 ProcessId,ParentProcessId,ExecutablePath,CommandLine,Name | ConvertTo-Json -Compress",
-        pid
-    );
-
-    let output = Command::new(POWERSHELL_EXE)
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            &command,
-        ])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-
-    let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if raw.is_empty() {
-        return None;
-    }
-
-    serde_json::from_str::<Value>(&raw).ok()
-}
-
-#[cfg(any(test, target_os = "windows"))]
-fn parse_process_snapshot(value: &Value) -> Option<HashMap<u32, SnapshotProcessRecord>> {
-    let mut out = HashMap::new();
-
-    match value {
-        Value::Array(entries) => {
-            for entry in entries {
-                if let Some((pid, record)) = snapshot_record_from_value(entry) {
-                    out.insert(pid, record);
-                }
-            }
-        }
-        Value::Object(_) => {
-            if let Some((pid, record)) = snapshot_record_from_value(value) {
-                out.insert(pid, record);
-            }
-        }
-        _ => return None,
-    }
-
-    Some(out)
-}
-
-#[cfg(any(test, target_os = "windows"))]
-fn snapshot_record_from_value(value: &Value) -> Option<(u32, SnapshotProcessRecord)> {
-    let pid = value
-        .get("ProcessId")
-        .and_then(Value::as_u64)
-        .map(|value| value as u32)?;
-
-    Some((
-        pid,
-        SnapshotProcessRecord {
-            parent_pid: extract_parent_pid(value).filter(|value| *value > 0),
-            exe_path: extract_executable_path(value),
-            command_line: extract_command_line(value),
-            name: extract_process_name(value),
-        },
-    ))
-}
-
-#[cfg(any(test, target_os = "windows"))]
-fn extract_parent_pid(value: &Value) -> Option<u32> {
-    value
-        .get("ParentProcessId")
-        .and_then(Value::as_u64)
-        .map(|v| v as u32)
-}
-
-#[cfg(any(test, target_os = "windows"))]
-fn extract_executable_path(value: &Value) -> Option<String> {
-    json_string(value, "ExecutablePath")
-}
-
-#[cfg(any(test, target_os = "windows"))]
-fn extract_command_line(value: &Value) -> Option<String> {
-    json_string(value, "CommandLine")
-}
-
-#[cfg(any(test, target_os = "windows"))]
-fn extract_process_name(value: &Value) -> Option<String> {
-    json_string(value, "Name")
-}
-
-#[cfg(any(test, target_os = "windows"))]
-fn json_string(value: &Value, key: &str) -> Option<String> {
-    value
-        .get(key)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string)
+    Some(ProcessInfo {
+        exe_path: record
+            .exe_path
+            .clone()
+            .or_else(|| record_display_name(record)),
+        command_line: record.command_line.clone(),
+        parent_name,
+        parent_chain,
+    })
 }
 
 #[cfg(any(test, target_os = "windows"))]
@@ -412,54 +518,53 @@ fn process_basename(path: &str) -> &str {
     path.rsplit(['/', '\\']).next().unwrap_or(path)
 }
 
+#[cfg(any(test, target_os = "windows"))]
+fn wide_nul_terminated_to_string(raw: &[u16]) -> Option<String> {
+    let len = raw
+        .iter()
+        .position(|value| *value == 0)
+        .unwrap_or(raw.len());
+    let value = String::from_utf16_lossy(&raw[..len]).trim().to_string();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_parent_pid, parse_process_snapshot, process_basename, process_info_from_snapshot,
+        parent_chain_from_snapshot, parse_command_line_query_buffer, process_basename,
+        process_info_from_snapshot, size_of_unicode_string, wide_nul_terminated_to_string,
+        SnapshotProcessRecord,
     };
-
-    #[test]
-    fn extracts_parent_pid_from_json() {
-        let value: serde_json::Value =
-            serde_json::from_str(r#"{"ParentProcessId":4321}"#).expect("valid json");
-        assert_eq!(extract_parent_pid(&value), Some(4321));
-    }
-
-    #[test]
-    fn parses_process_snapshot_arrays() {
-        let value: serde_json::Value = serde_json::from_str(
-            r#"[
-              {"ProcessId":100,"ParentProcessId":4,"ExecutablePath":"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe","CommandLine":"powershell -NoProfile","Name":"powershell.exe"},
-              {"ProcessId":4,"ParentProcessId":0,"ExecutablePath":null,"CommandLine":null,"Name":"System"}
-            ]"#,
-        )
-        .expect("valid json array");
-
-        let snapshot = parse_process_snapshot(&value).expect("snapshot parsed");
-        assert_eq!(snapshot.len(), 2);
-        assert_eq!(
-            snapshot.get(&100).and_then(|record| record.parent_pid),
-            Some(4)
-        );
-        assert_eq!(
-            snapshot.get(&4).and_then(|record| record.name.as_deref()),
-            Some("System")
-        );
-    }
+    use std::collections::HashMap;
 
     #[test]
     fn snapshot_process_info_uses_name_when_executable_path_is_missing() {
-        let value: serde_json::Value = serde_json::from_str(
-            r#"[
-              {"ProcessId":100,"ParentProcessId":4,"ExecutablePath":null,"CommandLine":"powershell -NoProfile","Name":"powershell.exe"},
-              {"ProcessId":4,"ParentProcessId":0,"ExecutablePath":null,"CommandLine":null,"Name":"System"}
-            ]"#,
-        )
-        .expect("valid json array");
+        let snapshot = HashMap::from([
+            (
+                100,
+                SnapshotProcessRecord {
+                    parent_pid: Some(4),
+                    exe_path: None,
+                    command_line: Some("powershell -NoProfile".to_string()),
+                    name: Some("powershell.exe".to_string()),
+                },
+            ),
+            (
+                4,
+                SnapshotProcessRecord {
+                    parent_pid: None,
+                    exe_path: None,
+                    command_line: None,
+                    name: Some("System".to_string()),
+                },
+            ),
+        ]);
 
-        let snapshot = parse_process_snapshot(&value).expect("snapshot parsed");
         let info = process_info_from_snapshot(100, &snapshot).expect("process info");
-
         assert_eq!(info.exe_path.as_deref(), Some("powershell.exe"));
         assert_eq!(info.command_line.as_deref(), Some("powershell -NoProfile"));
         assert_eq!(info.parent_name.as_deref(), Some("System"));
@@ -467,8 +572,66 @@ mod tests {
     }
 
     #[test]
+    fn parent_chain_stops_on_cycles() {
+        let snapshot = HashMap::from([
+            (
+                10,
+                SnapshotProcessRecord {
+                    parent_pid: Some(20),
+                    exe_path: None,
+                    command_line: None,
+                    name: Some("child.exe".to_string()),
+                },
+            ),
+            (
+                20,
+                SnapshotProcessRecord {
+                    parent_pid: Some(30),
+                    exe_path: None,
+                    command_line: None,
+                    name: Some("mid.exe".to_string()),
+                },
+            ),
+            (
+                30,
+                SnapshotProcessRecord {
+                    parent_pid: Some(20),
+                    exe_path: None,
+                    command_line: None,
+                    name: Some("loop.exe".to_string()),
+                },
+            ),
+        ]);
+
+        assert_eq!(parent_chain_from_snapshot(10, &snapshot), vec![20, 30]);
+    }
+
+    #[test]
+    fn parse_command_line_buffer_supports_inline_storage() {
+        let command = "powershell.exe -NoProfile";
+        let utf16: Vec<u16> = command.encode_utf16().collect();
+        let byte_len = (utf16.len() * 2) as u16;
+        let mut buffer = vec![0u8; size_of_unicode_string() + utf16.len() * 2];
+        buffer[0..2].copy_from_slice(&byte_len.to_le_bytes());
+        buffer[2..4].copy_from_slice(&byte_len.to_le_bytes());
+        for (idx, unit) in utf16.iter().enumerate() {
+            let start = size_of_unicode_string() + idx * 2;
+            buffer[start..start + 2].copy_from_slice(&unit.to_le_bytes());
+        }
+
+        let parsed = parse_command_line_query_buffer(&buffer).expect("parsed command line");
+        assert_eq!(parsed, command);
+    }
+
+    #[test]
     fn process_basename_supports_windows_style_paths() {
         assert_eq!(process_basename(r"C:\Windows\System32\cmd.exe"), "cmd.exe");
         assert_eq!(process_basename("powershell.exe"), "powershell.exe");
+    }
+
+    #[test]
+    fn wide_nul_terminated_conversion_trims_after_nul() {
+        let raw = [b'p' as u16, b's' as u16, 0, b'x' as u16];
+        assert_eq!(wide_nul_terminated_to_string(&raw).as_deref(), Some("ps"));
     }
 }
