@@ -288,6 +288,24 @@ detection:
   sequence:
     - event_class: file_open
       uid_ne: 0
+      file_path_any_of: [
+        /etc/shadow,
+        /etc/passwd,
+        /etc/sudoers,
+        /root/.ssh/id_rsa,
+        C:\Windows\System32\config\SAM,
+        C:\Windows\System32\config\SECURITY,
+        C:\Windows\System32\config\SYSTEM,
+        C:\Windows\NTDS\ntds.dit,
+        /Library/Keychains/System.keychain
+      ]
+      file_path_contains: [
+        '/.ssh/id_rsa',
+        '\\.aws\\credentials',
+        'keepass',
+        'keychain',
+        'ntds.dit'
+      ]
       within_secs: 300
 "#;
 
@@ -1111,6 +1129,64 @@ rule eguard_custom_dir_test {
             .temporal_hits
             .iter()
             .any(|hit| hit == "eguard_win_shadow_copy_delete"));
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn bootstrap_sensitive_file_rule_ignores_benign_non_root_file_reads() {
+        let base = unique_temp_dir("benign-file-open");
+        let sources = DetectionSourcePaths {
+            sigma_dir: base.join("sigma"),
+            yara_dir: base.join("yara"),
+            ioc_dir: base.join("ioc"),
+        };
+        std::fs::create_dir_all(&sources.sigma_dir).expect("create sigma dir");
+        std::fs::create_dir_all(&sources.yara_dir).expect("create yara dir");
+        std::fs::create_dir_all(&sources.ioc_dir).expect("create ioc dir");
+
+        let mut engine =
+            build_detection_engine_with_ransomware_policy(RansomwarePolicy::default(), &sources);
+        let mut event = base_event();
+        event.event_class = EventClass::FileOpen;
+        event.process = "hostnamectl".to_string();
+        event.parent_process = "bash".to_string();
+        event.file_path = Some("/usr/lib64/libseccomp.so.2".to_string());
+
+        let outcome = engine.process_event(&event);
+        assert!(outcome
+            .temporal_hits
+            .iter()
+            .all(|hit| hit != "eguard_builtin_sensitive_file_access"));
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn bootstrap_sensitive_file_rule_matches_real_sensitive_paths() {
+        let base = unique_temp_dir("sensitive-file-open");
+        let sources = DetectionSourcePaths {
+            sigma_dir: base.join("sigma"),
+            yara_dir: base.join("yara"),
+            ioc_dir: base.join("ioc"),
+        };
+        std::fs::create_dir_all(&sources.sigma_dir).expect("create sigma dir");
+        std::fs::create_dir_all(&sources.yara_dir).expect("create yara dir");
+        std::fs::create_dir_all(&sources.ioc_dir).expect("create ioc dir");
+
+        let mut engine =
+            build_detection_engine_with_ransomware_policy(RansomwarePolicy::default(), &sources);
+        let mut event = base_event();
+        event.event_class = EventClass::FileOpen;
+        event.process = "cat".to_string();
+        event.parent_process = "bash".to_string();
+        event.file_path = Some("/home/user/.ssh/id_rsa".to_string());
+
+        let outcome = engine.process_event(&event);
+        assert!(outcome
+            .temporal_hits
+            .iter()
+            .any(|hit| hit == "eguard_builtin_sensitive_file_access"));
 
         let _ = std::fs::remove_dir_all(base);
     }
