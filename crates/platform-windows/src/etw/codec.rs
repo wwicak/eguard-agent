@@ -129,37 +129,124 @@ fn decode_kernel_process(opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Optio
 
 /// Microsoft-Windows-Kernel-File
 ///
-/// Event ID 12 (Create): IrpPtr(8) + FileObject(8) + CreateOptions(4) +
-///   FileAttributes(4) + ShareAccess(4) + FileName(UTF-16)
-/// Event ID 15 (Write): ByteOffset(8) + IrpPtr(8) + FileObject(8) + FileKey(8) +
-///   ExtraInfo(8) + InfoClass(4) + IoSize(4) + IoFlags(4)
-/// Event ID 14 (Rename): IrpPtr(8) + FileObject(8) + FileKey(8) + ExtraInfo(8) +
-///   InfoClass(4) + FileName(UTF-16)
-/// Event ID 26 (Delete): same layout as Rename
+/// We primarily subscribe to the manifest provider (`Microsoft-Windows-Kernel-File`),
+/// whose opcode/layout conventions differ from the classic kernel provider. The most
+/// useful low-volume events for this agent are:
+///
+/// - 0 / 32 / 35 / 36 → name-style events: `FileKey(8) + FileName(UTF-16)`
+/// - 64 → create: `IrpPtr(8) + FileObject(8) + ... + FileName(UTF-16 @ 32 on x64)`
+/// - 68 → write: `ByteOffset(8) + IrpPtr(8) + FileObject(8) + FileKey(8) + ...`
+/// - 70 / 71 → delete/rename info events: `IrpPtr(8) + FileObject(8) + FileKey(8) + ...`
+///
+/// We also retain legacy classic-provider decoding (`12/15/14/26`) for compatibility.
 fn decode_kernel_file(opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Option<RawEvent> {
+    let raw_event = |event_type: EventType, payload: String| RawEvent {
+        event_type,
+        pid,
+        uid: 0,
+        ts_ns,
+        payload,
+    };
+
     match opcode {
-        // FileCreate
-        12 | 0 | 32 => {
-            // IrpPtr(8) + FileObject(8) + CreateOptions(4) + FileAttributes(4) + ShareAccess(4) = 28
-            let file_object = read_u64_le(data, 8);
-            let filename = read_utf16_str(data, 28);
+        // Manifest provider: Name / FileCreate / FileDelete / FileRundown.
+        0 | 32 | 35 | 36 => {
+            let file_key = read_u64_le(data, 0);
+            let filename = read_utf16_path_at_offsets(data, &[8, 4]);
+            let mut payload = format!("file_key=0x{file_key:x}");
+            if let Some(name) = filename {
+                payload.push_str(&format!(";path={name}"));
+            }
+            let event_type = if matches!(opcode, 35) {
+                EventType::FileUnlink
+            } else {
+                EventType::FileOpen
+            };
+            Some(raw_event(event_type, payload))
+        }
+        // Manifest provider: Create.
+        64 => {
+            let file_object = if data.len() >= 16 {
+                read_u64_le(data, 8)
+            } else {
+                0
+            };
+            let filename = read_utf16_path_at_offsets(data, &[32, 28, 24]);
             let mut payload = format!("file_object=0x{file_object:x}");
             if let Some(name) = filename {
                 payload.push_str(&format!(";path={name}"));
             }
-            Some(RawEvent {
-                event_type: EventType::FileOpen,
-                pid,
-                uid: 0,
-                ts_ns,
-                payload,
-            })
+            Some(raw_event(EventType::FileOpen, payload))
         }
-        // FileWrite
-        15 | 35 => {
-            // ByteOffset(8)+IrpPtr(8)+FileObject(8)+FileKey(8)+ExtraInfo(8)+InfoClass(4)+IoSize(4)+IoFlags(4) = 52
+        // Manifest provider: Write.
+        68 => {
             let file_object = if data.len() >= 24 {
                 read_u64_le(data, 16)
+            } else {
+                0
+            };
+            let file_key = if data.len() >= 32 {
+                read_u64_le(data, 24)
+            } else {
+                0
+            };
+            let io_size = if data.len() >= 40 {
+                read_u32_le(data, 36)
+            } else {
+                0
+            };
+            Some(raw_event(
+                EventType::FileWrite,
+                format!("file_object=0x{file_object:x};file_key=0x{file_key:x};size={io_size}"),
+            ))
+        }
+        // Manifest provider: Delete / Rename info events.
+        70 | 71 => {
+            let file_object = if data.len() >= 16 {
+                read_u64_le(data, 8)
+            } else {
+                0
+            };
+            let file_key = if data.len() >= 24 {
+                read_u64_le(data, 16)
+            } else {
+                0
+            };
+            let info_class = if data.len() >= 40 {
+                read_u32_le(data, 36)
+            } else {
+                0
+            };
+            let event_type = if matches!(opcode, 70) {
+                EventType::FileUnlink
+            } else {
+                EventType::FileRename
+            };
+            Some(raw_event(
+                event_type,
+                format!(
+                    "file_object=0x{file_object:x};file_key=0x{file_key:x};info_class={info_class}"
+                ),
+            ))
+        }
+        // Classic / legacy aliases retained while the provider set evolves.
+        12 => {
+            let file_object = read_u64_le(data, 8);
+            let filename = read_utf16_path_at_offsets(data, &[28, 32, 24]);
+            let mut payload = format!("file_object=0x{file_object:x}");
+            if let Some(name) = filename {
+                payload.push_str(&format!(";path={name}"));
+            }
+            Some(raw_event(EventType::FileOpen, payload))
+        }
+        15 => {
+            let file_object = if data.len() >= 24 {
+                read_u64_le(data, 16)
+            } else {
+                0
+            };
+            let file_key = if data.len() >= 32 {
+                read_u64_le(data, 24)
             } else {
                 0
             };
@@ -168,55 +255,46 @@ fn decode_kernel_file(opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Option<R
             } else {
                 0
             };
-            Some(RawEvent {
-                event_type: EventType::FileWrite,
-                pid,
-                uid: 0,
-                ts_ns,
-                payload: format!("file_object=0x{file_object:x};size={io_size}"),
-            })
+            Some(raw_event(
+                EventType::FileWrite,
+                format!("file_object=0x{file_object:x};file_key=0x{file_key:x};size={io_size}"),
+            ))
         }
-        // FileRename
-        14 | 64 => {
-            // IrpPtr(8)+FileObject(8)+FileKey(8)+ExtraInfo(8)+InfoClass(4) = 36
+        14 => {
             let file_object = if data.len() >= 16 {
                 read_u64_le(data, 8)
             } else {
                 0
             };
-            let filename = read_utf16_str(data, 36);
-            let mut payload = format!("file_object=0x{file_object:x}");
+            let file_key = if data.len() >= 24 {
+                read_u64_le(data, 16)
+            } else {
+                0
+            };
+            let filename = read_utf16_path_at_offsets(data, &[36, 32]);
+            let mut payload = format!("file_object=0x{file_object:x};file_key=0x{file_key:x}");
             if let Some(name) = filename {
                 payload.push_str(&format!(";path={name}"));
             }
-            Some(RawEvent {
-                event_type: EventType::FileRename,
-                pid,
-                uid: 0,
-                ts_ns,
-                payload,
-            })
+            Some(raw_event(EventType::FileRename, payload))
         }
-        // FileDelete
-        26 | 70 => {
-            // Same layout as Rename.
+        26 => {
             let file_object = if data.len() >= 16 {
                 read_u64_le(data, 8)
             } else {
                 0
             };
-            let filename = read_utf16_str(data, 36);
-            let mut payload = format!("file_object=0x{file_object:x}");
+            let file_key = if data.len() >= 24 {
+                read_u64_le(data, 16)
+            } else {
+                0
+            };
+            let filename = read_utf16_path_at_offsets(data, &[36, 32]);
+            let mut payload = format!("file_object=0x{file_object:x};file_key=0x{file_key:x}");
             if let Some(name) = filename {
                 payload.push_str(&format!(";path={name}"));
             }
-            Some(RawEvent {
-                event_type: EventType::FileUnlink,
-                pid,
-                uid: 0,
-                ts_ns,
-                payload,
-            })
+            Some(raw_event(EventType::FileUnlink, payload))
         }
         _ => None,
     }
@@ -306,16 +384,16 @@ fn map_provider_opcode(provider_guid: &str, opcode: u8) -> Option<EventType> {
             _ => None,
         },
         KERNEL_FILE => match opcode {
-            // Design-doc canonical IDs.
+            // Classic / legacy provider IDs.
             12 => Some(EventType::FileOpen),
             15 => Some(EventType::FileWrite),
             14 => Some(EventType::FileRename),
             26 => Some(EventType::FileUnlink),
-            // Legacy aliases retained while parser/event manifests evolve.
-            0 | 32 => Some(EventType::FileOpen),
-            35 => Some(EventType::FileWrite),
-            64 => Some(EventType::FileRename),
-            70 => Some(EventType::FileUnlink),
+            // Manifest provider IDs used by Microsoft-Windows-Kernel-File.
+            0 | 32 | 36 | 64 => Some(EventType::FileOpen),
+            68 => Some(EventType::FileWrite),
+            71 => Some(EventType::FileRename),
+            35 | 70 => Some(EventType::FileUnlink),
             _ => None,
         },
         KERNEL_NETWORK => Some(EventType::TcpConnect),
@@ -409,7 +487,41 @@ fn read_utf16_str(data: &[u8], offset: usize) -> Option<String> {
         return None;
     }
 
-    Some(String::from_utf16_lossy(&chars))
+    let value = String::from_utf16_lossy(&chars)
+        .trim_start_matches('\u{feff}')
+        .trim()
+        .to_string();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+fn read_utf16_path_at_offsets(data: &[u8], offsets: &[usize]) -> Option<String> {
+    for offset in offsets {
+        if let Some(candidate) = read_utf16_str(data, *offset) {
+            if looks_like_windows_path(&candidate) {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+fn looks_like_windows_path(candidate: &str) -> bool {
+    let trimmed = candidate.trim_start_matches('\u{feff}').trim();
+    if trimmed.len() < 4 {
+        return false;
+    }
+
+    let lowered = trimmed.replace('/', "\\").to_ascii_lowercase();
+    lowered.starts_with(r"\\")
+        || lowered.starts_with(r"\??\")
+        || lowered.starts_with(r"\device\")
+        || lowered.starts_with("harddiskvolume")
+        || lowered.starts_with("rddiskvolume")
+        || matches!(lowered.as_bytes().get(1), Some(b':'))
 }
 
 /// Format 4 bytes starting at `offset` as an IPv4 dotted-decimal string.
@@ -565,12 +677,71 @@ mod tests {
     }
 
     #[test]
+    fn decode_kernel_file_manifest_name_event_uses_file_key_and_name_offset() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&0x7788u64.to_le_bytes()); // FileKey
+        for ch in r"\Device\HarddiskVolume1\Windows\System32\kernel32.dll".encode_utf16() {
+            data.extend_from_slice(&ch.to_le_bytes());
+        }
+        data.extend_from_slice(&0u16.to_le_bytes());
+
+        let event = decode_etw_record(super::super::providers::KERNEL_FILE, 32, 42, 500, &data)
+            .expect("should decode");
+
+        assert!(matches!(event.event_type, EventType::FileOpen));
+        assert!(event.payload.contains("file_key=0x7788"));
+        assert!(event
+            .payload
+            .contains(r"path=\Device\HarddiskVolume1\Windows\System32\kernel32.dll"));
+    }
+
+    #[test]
+    fn decode_kernel_file_manifest_delete_name_event_maps_to_unlink() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&0x7788u64.to_le_bytes()); // FileKey
+        for ch in r"C:\Windows\Temp\gone.txt".encode_utf16() {
+            data.extend_from_slice(&ch.to_le_bytes());
+        }
+        data.extend_from_slice(&0u16.to_le_bytes());
+
+        let event = decode_etw_record(super::super::providers::KERNEL_FILE, 35, 42, 500, &data)
+            .expect("should decode");
+
+        assert!(matches!(event.event_type, EventType::FileUnlink));
+        assert!(event.payload.contains("file_key=0x7788"));
+        assert!(event.payload.contains(r"path=C:\Windows\Temp\gone.txt"));
+    }
+
+    #[test]
+    fn decode_kernel_file_manifest_create_uses_x64_name_offset() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&0u64.to_le_bytes()); // IrpPtr
+        data.extend_from_slice(&0x1234u64.to_le_bytes()); // FileObject
+        data.extend_from_slice(&0u32.to_le_bytes()); // CreateOptions
+        data.extend_from_slice(&0u32.to_le_bytes()); // FileAttributes
+        data.extend_from_slice(&0u32.to_le_bytes()); // ShareAccess
+        for ch in r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe".encode_utf16() {
+            data.extend_from_slice(&ch.to_le_bytes());
+        }
+        data.extend_from_slice(&0u16.to_le_bytes());
+
+        let event = decode_etw_record(super::super::providers::KERNEL_FILE, 64, 42, 500, &data)
+            .expect("should decode");
+
+        assert!(matches!(event.event_type, EventType::FileOpen));
+        assert!(event.payload.contains("file_object=0x1234"));
+        assert!(event
+            .payload
+            .contains(r"path=C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"));
+    }
+
+    #[test]
     fn decode_kernel_file_write_binary_includes_file_object() {
         let mut data = Vec::new();
         data.extend_from_slice(&0u64.to_le_bytes()); // ByteOffset
         data.extend_from_slice(&0u64.to_le_bytes()); // IrpPtr
         data.extend_from_slice(&0x1234u64.to_le_bytes()); // FileObject
-        data.extend_from_slice(&0u64.to_le_bytes()); // FileKey
+        data.extend_from_slice(&0x5678u64.to_le_bytes()); // FileKey
         data.extend_from_slice(&0u64.to_le_bytes()); // ExtraInfo
         data.extend_from_slice(&0u32.to_le_bytes()); // InfoClass
         data.extend_from_slice(&99u32.to_le_bytes()); // IoSize
@@ -581,7 +752,48 @@ mod tests {
 
         assert!(matches!(event.event_type, EventType::FileWrite));
         assert!(event.payload.contains("file_object=0x1234"));
+        assert!(event.payload.contains("file_key=0x5678"));
         assert!(event.payload.contains("size=99"));
+    }
+
+    #[test]
+    fn decode_kernel_file_manifest_write_uses_file_key_and_manifest_offsets() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&0u64.to_le_bytes()); // ByteOffset
+        data.extend_from_slice(&0u64.to_le_bytes()); // IrpPtr
+        data.extend_from_slice(&0x2222u64.to_le_bytes()); // FileObject
+        data.extend_from_slice(&0x3333u64.to_le_bytes()); // FileKey
+        data.extend_from_slice(&0u32.to_le_bytes()); // padding / thread field before IoSize on x64 manifest layout
+        data.extend_from_slice(&77u32.to_le_bytes()); // IoSize @ x64 manifest offset 36
+        data.extend_from_slice(&0u32.to_le_bytes()); // IoFlags
+
+        let event = decode_etw_record(super::super::providers::KERNEL_FILE, 68, 42, 501, &data)
+            .expect("should decode");
+
+        assert!(matches!(event.event_type, EventType::FileWrite));
+        assert!(event.payload.contains("file_object=0x2222"));
+        assert!(event.payload.contains("file_key=0x3333"));
+        assert!(event.payload.contains("size=77"));
+    }
+
+    #[test]
+    fn decode_kernel_file_manifest_rejects_non_path_garbage() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&0x7788u64.to_le_bytes()); // FileKey
+        data.extend_from_slice(&0x9c82u16.to_le_bytes());
+        data.extend_from_slice(&0xffffu16.to_le_bytes());
+        data.extend_from_slice(&0x00b4u16.to_le_bytes());
+        data.extend_from_slice(&0u16.to_le_bytes());
+
+        let event = decode_etw_record(super::super::providers::KERNEL_FILE, 32, 42, 500, &data)
+            .expect("should decode");
+
+        assert!(matches!(event.event_type, EventType::FileOpen));
+        assert!(event.payload.contains("file_key=0x7788"));
+        assert!(
+            !event.payload.contains(";path="),
+            "garbage UTF-16 should not be promoted into a file path"
+        );
     }
 
     #[test]

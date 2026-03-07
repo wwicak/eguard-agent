@@ -376,21 +376,33 @@ impl EnrichmentCache {
             .and_then(|pid| self.process_name_for_pid(pid))
     }
 
-    fn remember_file_object_path(&mut self, file_object: Option<&str>, path: Option<&str>) {
-        let Some(file_object) = file_object.map(str::trim).filter(|value| !value.is_empty()) else {
-            return;
-        };
+    fn remember_file_object_path(
+        &mut self,
+        file_object: Option<&str>,
+        file_object_secondary: Option<&str>,
+        path: Option<&str>,
+    ) {
         let Some(path) = path
             .map(normalize_windows_path)
             .filter(|value| !value.is_empty())
         else {
             return;
         };
-        self.file_object_cache
-            .put(file_object.to_ascii_lowercase(), path);
+
+        for key in [file_object, file_object_secondary] {
+            let Some(key) = key.map(str::trim).filter(|value| !value.is_empty()) else {
+                continue;
+            };
+            self.file_object_cache
+                .put(key.to_ascii_lowercase(), path.clone());
+        }
     }
 
     fn remember_inferred_process_exe(&mut self, pid: u32, process_exe: String) {
+        if pid <= 4 {
+            return;
+        }
+
         let normalized = normalize_windows_path(&process_exe);
         if normalized.is_empty() {
             return;
@@ -421,12 +433,21 @@ impl EnrichmentCache {
         );
     }
 
-    fn file_path_from_object(&mut self, file_object: Option<&str>) -> Option<String> {
-        let key = file_object?.trim().to_ascii_lowercase();
-        if key.is_empty() {
-            return None;
+    fn file_path_from_object(
+        &mut self,
+        file_object: Option<&str>,
+        file_object_secondary: Option<&str>,
+    ) -> Option<String> {
+        for key in [file_object, file_object_secondary] {
+            let Some(key) = key.map(str::trim).filter(|value| !value.is_empty()) else {
+                continue;
+            };
+            let key = key.to_ascii_lowercase();
+            if let Some(path) = self.file_object_cache.get(&key).cloned() {
+                return Some(path);
+            }
         }
-        self.file_object_cache.get(&key).cloned()
+        None
     }
 
     fn hash_for_path(&mut self, path: &str) -> Option<String> {
@@ -572,13 +593,22 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
     let file_path = payload_meta
         .file_path
         .clone()
-        .or_else(|| cache.file_path_from_object(payload_meta.file_object.as_deref()))
+        .or_else(|| {
+            cache.file_path_from_object(
+                payload_meta.file_object.as_deref(),
+                payload_meta.file_object_secondary.as_deref(),
+            )
+        })
         .or_else(|| {
             matches!(raw.event_type, EventType::ModuleLoad)
                 .then(|| normalize_windows_path(&raw.payload))
         });
 
-    cache.remember_file_object_path(payload_meta.file_object.as_deref(), file_path.as_deref());
+    cache.remember_file_object_path(
+        payload_meta.file_object.as_deref(),
+        payload_meta.file_object_secondary.as_deref(),
+        file_path.as_deref(),
+    );
 
     let mut process_exe = entry
         .process_exe
@@ -664,6 +694,7 @@ struct PayloadMetadata {
     command_line_hint: Option<String>,
     parent_pid: Option<u32>,
     file_object: Option<String>,
+    file_object_secondary: Option<String>,
     dst_ip: Option<String>,
     dst_port: Option<u16>,
     dst_domain: Option<String>,
@@ -714,6 +745,20 @@ fn parse_payload_metadata(event_type: &EventType, payload: &str) -> PayloadMetad
             .map(|value| normalize_windows_path(value)),
     };
 
+    let mut primary_file_object = fields
+        .get("file_object")
+        .or_else(|| fields.get("fileobj"))
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty());
+    let mut secondary_file_object = fields
+        .get("file_key")
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty());
+    if primary_file_object.is_none() {
+        primary_file_object = secondary_file_object.clone();
+        secondary_file_object = None;
+    }
+
     let mut metadata = PayloadMetadata {
         file_path,
         file_path_secondary: fields
@@ -730,12 +775,8 @@ fn parse_payload_metadata(event_type: &EventType, payload: &str) -> PayloadMetad
             .get("ppid")
             .or_else(|| fields.get("parent_pid"))
             .and_then(|value| value.parse::<u32>().ok()),
-        file_object: fields
-            .get("file_object")
-            .or_else(|| fields.get("fileobj"))
-            .or_else(|| fields.get("file_key"))
-            .map(|value| value.trim().to_ascii_lowercase())
-            .filter(|value| !value.is_empty()),
+        file_object: primary_file_object,
+        file_object_secondary: secondary_file_object,
         dst_ip: fields
             .get("dst_ip")
             .cloned()
@@ -1189,6 +1230,38 @@ mod tests {
     }
 
     #[test]
+    fn inferred_identity_does_not_stick_to_system_pid() {
+        let mut cache = EnrichmentCache::default();
+
+        let first = RawEvent {
+            event_type: EventType::FileOpen,
+            pid: 4,
+            uid: 0,
+            ts_ns: 4,
+            payload: r"path=C:\Windows\System32\WindowsPowerShell\v1.0\Modules\ServerManager\ServerManager.psd1".to_string(),
+        };
+        let first_enriched = enrich_event_with_cache(first, &mut cache);
+        assert_eq!(
+            first_enriched.process_exe.as_deref(),
+            Some(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
+        );
+
+        let second = RawEvent {
+            event_type: EventType::FileOpen,
+            pid: 4,
+            uid: 0,
+            ts_ns: 5,
+            payload: r"path=C:\Windows\System32\drivers\etc\hosts".to_string(),
+        };
+        let second_enriched = enrich_event_with_cache(second, &mut cache);
+
+        assert_eq!(
+            second_enriched.process_exe, None,
+            "system pid entries should not retain inferred userland identities across unrelated events"
+        );
+    }
+
+    #[test]
     fn enrich_windows_tcp_event_parses_endpoint_from_payload() {
         let raw = RawEvent {
             event_type: EventType::TcpConnect,
@@ -1319,6 +1392,40 @@ mod tests {
             enriched.file_path.as_deref(),
             Some(normalized.as_str()),
             "file write should recover file path from prior file_object mapping"
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn file_write_recovers_path_from_file_key_cache() {
+        let path = unique_temp_path("file-key-cache");
+        fs::write(&path, b"payload").expect("write payload");
+        let normalized = path.to_string_lossy().replace('/', "\\");
+
+        let mut cache = EnrichmentCache::default();
+        let name_event = RawEvent {
+            event_type: EventType::FileOpen,
+            pid: 88,
+            uid: 0,
+            ts_ns: 30,
+            payload: format!("file_key=0x55;path={normalized}"),
+        };
+        let _ = enrich_event_with_cache(name_event, &mut cache);
+
+        let write = RawEvent {
+            event_type: EventType::FileWrite,
+            pid: 88,
+            uid: 0,
+            ts_ns: 31,
+            payload: "file_object=0x99;file_key=0x55;size=7".to_string(),
+        };
+        let enriched = enrich_event_with_cache(write, &mut cache);
+
+        assert_eq!(
+            enriched.file_path.as_deref(),
+            Some(normalized.as_str()),
+            "file write should recover file path from prior file_key mapping"
         );
 
         let _ = fs::remove_file(path);
