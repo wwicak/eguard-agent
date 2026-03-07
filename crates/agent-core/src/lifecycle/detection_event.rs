@@ -52,22 +52,28 @@ pub(super) fn to_detection_event(
         .or(module_payload)
         .or_else(|| enriched.process_exe.clone());
 
-    let mut process = enriched
+    let process_name_from_path = enriched
         .process_exe
         .as_deref()
         .map(process_basename)
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| {
-            enriched
-                .process_cmdline
-                .as_deref()
-                .and_then(process_name_from_cmdline)
-                .filter(|value| !value.trim().is_empty())
-        })
+        .filter(|value| !value.trim().is_empty());
+    let process_name_from_cmd = enriched
+        .process_cmdline
+        .as_deref()
+        .and_then(process_name_from_cmdline)
+        .filter(|value| !value.trim().is_empty());
+    let authoritative_process_exec = matches!(
+        enriched.event.event_type,
+        crate::platform::EventType::ProcessExec
+    ) && (process_name_from_path.is_some()
+        || process_name_from_cmd.is_some());
+
+    let mut process = process_name_from_path
+        .or(process_name_from_cmd)
         .unwrap_or("unknown")
         .to_string();
 
-    if is_weak_windows_process_identity(&process) {
+    if is_weak_windows_process_identity(&process) && !authoritative_process_exec {
         if let Some(parent) = enriched
             .parent_process
             .as_deref()
@@ -309,6 +315,42 @@ mod tests {
 
         let event = super::to_detection_event(&enriched, 123);
         assert_eq!(event.process, "powershell.exe");
+        assert_eq!(event.parent_process, "powershell.exe");
+    }
+
+    #[test]
+    fn to_detection_event_preserves_authoritative_process_exec_identity_for_conhost() {
+        let enriched = EnrichedEvent {
+            event: RawEvent {
+                event_type: EventType::ProcessExec,
+                pid: 4242,
+                uid: 0,
+                ts_ns: 1,
+                payload: String::new(),
+            },
+            process_exe: Some(r"C:\\Windows\\System32\\conhost.exe".to_string()),
+            process_exe_sha256: None,
+            process_cmdline: Some(
+                r"\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1".to_string(),
+            ),
+            parent_process: Some("powershell.exe".to_string()),
+            parent_chain: vec![1337],
+            file_path: None,
+            file_path_secondary: None,
+            file_write: false,
+            file_sha256: None,
+            event_size: None,
+            dst_ip: None,
+            dst_port: None,
+            dst_domain: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        };
+
+        let event = super::to_detection_event(&enriched, 123);
+        assert_eq!(event.process, "conhost.exe");
         assert_eq!(event.parent_process, "powershell.exe");
     }
 
