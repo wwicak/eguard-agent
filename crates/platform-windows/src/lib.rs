@@ -559,22 +559,46 @@ fn parse_payload_metadata(event_type: &EventType, payload: &str) -> PayloadMetad
         return parse_payload_fallback(event_type, trimmed);
     }
 
-    let mut metadata = PayloadMetadata {
-        file_path: fields
+    let file_path = match *event_type {
+        EventType::FileOpen
+        | EventType::FileWrite
+        | EventType::FileRename
+        | EventType::FileUnlink => fields
             .get("path")
             .or_else(|| fields.get("file"))
             .or_else(|| fields.get("src"))
             .map(|value| normalize_windows_path(value)),
+        EventType::ModuleLoad => fields
+            .get("path")
+            .or_else(|| fields.get("file"))
+            .map(|value| normalize_windows_path(value)),
+        _ => None,
+    };
+
+    let process_path_hint = match *event_type {
+        EventType::ProcessExec | EventType::ProcessExit => fields
+            .get("process_path")
+            .or_else(|| fields.get("process_image"))
+            .or_else(|| fields.get("path"))
+            .or_else(|| fields.get("exe"))
+            .or_else(|| fields.get("image"))
+            .map(|value| normalize_windows_path(value)),
+        _ => fields
+            .get("process_path")
+            .or_else(|| fields.get("process_image"))
+            .or_else(|| fields.get("exe"))
+            .or_else(|| fields.get("image"))
+            .map(|value| normalize_windows_path(value)),
+    };
+
+    let mut metadata = PayloadMetadata {
+        file_path,
         file_path_secondary: fields
             .get("dst")
             .or_else(|| fields.get("target"))
             .or_else(|| fields.get("new"))
             .map(|value| normalize_windows_path(value)),
-        process_path_hint: fields
-            .get("path")
-            .or_else(|| fields.get("exe"))
-            .or_else(|| fields.get("image"))
-            .map(|value| normalize_windows_path(value)),
+        process_path_hint,
         command_line_hint: fields
             .get("cmdline")
             .or_else(|| fields.get("command_line"))
@@ -847,7 +871,8 @@ fn capacity_from(raw: usize) -> NonZeroUsize {
 #[cfg(test)]
 mod tests {
     use super::{
-        enrich_event_with_cache, normalize_windows_path, EnrichmentCache, EventType, RawEvent,
+        enrich_event_with_cache, normalize_windows_path, parse_payload_metadata, EnrichmentCache,
+        EventType, RawEvent,
     };
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -863,6 +888,23 @@ mod tests {
             std::process::id(),
             nonce
         ))
+    }
+
+    #[test]
+    fn process_exec_payload_uses_path_as_process_hint() {
+        let metadata = parse_payload_metadata(
+            &EventType::ProcessExec,
+            r#"path=C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe;cmdline=powershell -enc AAA;ppid=321"#,
+        );
+        assert_eq!(
+            metadata.process_path_hint.as_deref(),
+            Some(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
+        );
+        assert_eq!(
+            metadata.command_line_hint.as_deref(),
+            Some("powershell -enc AAA")
+        );
+        assert_eq!(metadata.parent_pid, Some(321));
     }
 
     #[test]
@@ -889,8 +931,31 @@ mod tests {
         );
         assert_eq!(enriched.parent_chain.first().copied(), Some(321));
         assert_eq!(
+            enriched.file_path, None,
+            "process start payloads should seed process identity without reusing it as a file object"
+        );
+    }
+
+    #[test]
+    fn file_open_payload_path_does_not_pollute_process_identity() {
+        let raw = RawEvent {
+            event_type: EventType::FileOpen,
+            pid: 9001,
+            uid: 0,
+            ts_ns: 2,
+            payload: r"path=C:\Windows\Temp\artifact.txt".to_string(),
+        };
+
+        let mut cache = EnrichmentCache::default();
+        let enriched = enrich_event_with_cache(raw, &mut cache);
+
+        assert_eq!(
             enriched.file_path.as_deref(),
-            Some(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
+            Some(r"C:\Windows\Temp\artifact.txt")
+        );
+        assert_eq!(
+            enriched.process_exe, None,
+            "file object paths should not be reused as process image hints"
         );
     }
 
