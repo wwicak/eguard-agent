@@ -732,7 +732,28 @@ fn normalize_windows_path(raw: &str) -> String {
     while value.contains("\\\\") && !value.starts_with(r"\\") {
         value = value.replace("\\\\", "\\");
     }
+    value = translate_harddisk_volume_to_dos(&value);
     value.trim().trim_matches('"').to_string()
+}
+
+fn translate_harddisk_volume_to_dos(raw: &str) -> String {
+    let trimmed = raw.trim_start_matches('\\');
+    let lowered = trimmed.to_ascii_lowercase();
+
+    for prefix in ["device\\harddiskvolume", "harddiskvolume", "rddiskvolume"] {
+        if let Some(rest) = lowered.strip_prefix(prefix) {
+            let digits_len = rest.chars().take_while(|ch| ch.is_ascii_digit()).count();
+            if digits_len == 0 {
+                continue;
+            }
+            let remainder = &trimmed[prefix.len() + digits_len..];
+            if remainder.starts_with('\\') {
+                return format!(r"C:{}", remainder);
+            }
+        }
+    }
+
+    raw.to_string()
 }
 
 fn process_basename(path: &str) -> &str {
@@ -990,6 +1011,14 @@ mod tests {
         assert_eq!(
             normalize_windows_path("\u{0007}\\??\\C:\\Windows\\Temp\\b.exe"),
             r"C:\Windows\Temp\b.exe"
+        );
+        assert_eq!(
+            normalize_windows_path(r"\Device\HarddiskVolume1\Windows\System32\conhost.exe"),
+            r"C:\Windows\System32\conhost.exe"
+        );
+        assert_eq!(
+            normalize_windows_path(r"rddiskVolume1\Windows\Temp\sample.txt"),
+            r"C:\Windows\Temp\sample.txt"
         );
     }
 }

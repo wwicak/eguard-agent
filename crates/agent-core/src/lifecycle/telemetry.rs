@@ -400,6 +400,12 @@ impl AgentRuntime {
             | "killchain_data_theft"
             | "eguard_dns_tunneling_detected" => &["T1048", "T1041"],
             "eguard_c2_beaconing_detected" => &["T1071", "T1105"],
+            "eguard_win_reg_save_sam" => &["T1003"],
+            "eguard_win_ps_download_cradle" => &["T1059.001", "T1105"],
+            "eguard_win_shadow_copy_delete" => &["T1490", "T1486"],
+            "eguard_win_event_log_clear" => &["T1070"],
+            "eguard_win_schtask_creation" => &["T1053"],
+            "eguard_win_service_creation_suspicious" => &["T1543"],
             "killchain_ransomware_write_burst" => &["T1486"],
             "killchain_exploit_ptrace_fileless"
             | "killchain_exploit_userfaultfd_execveat"
