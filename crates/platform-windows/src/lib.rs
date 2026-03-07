@@ -1186,7 +1186,7 @@ mod tests {
     fn weak_windows_file_event_infers_powershell_process_exe() {
         let raw = RawEvent {
             event_type: EventType::FileOpen,
-            pid: 3508,
+            pid: 424_242,
             uid: 0,
             ts_ns: 3,
             payload: r"path=C:\Windows\System32\WindowsPowerShell\v1.0\Modules\ServerManager\ServerManager.psd1".to_string(),
@@ -1207,7 +1207,7 @@ mod tests {
 
         let first = RawEvent {
             event_type: EventType::FileOpen,
-            pid: 3508,
+            pid: 424_243,
             uid: 0,
             ts_ns: 4,
             payload: r"path=C:\Windows\System32\WindowsPowerShell\v1.0\Modules\ServerManager\ServerManager.psd1".to_string(),
@@ -1216,7 +1216,7 @@ mod tests {
 
         let second = RawEvent {
             event_type: EventType::FileOpen,
-            pid: 3508,
+            pid: 424_243,
             uid: 0,
             ts_ns: 5,
             payload: r"path=C:\Windows\System32\ncrypt.dll".to_string(),
