@@ -175,13 +175,24 @@ impl EnrichmentCache {
         raw: &RawEvent,
         payload_meta: &PayloadMetadata,
     ) -> ProcessCacheEntry {
+        let authoritative_process_exec = matches!(raw.event_type, EventType::ProcessExec);
         let hinted_parent_chain = self.parent_chain_from_hint(payload_meta.parent_pid);
-        let hinted_parent_name = self.parent_name_from_hint(payload_meta.parent_pid);
+        let hinted_parent_name = payload_meta
+            .parent_process_hint
+            .clone()
+            .or_else(|| self.parent_name_from_hint(payload_meta.parent_pid));
 
         if let Some(mut entry) = self.process_cache.get(&raw.pid).cloned() {
             entry.last_seen_ns = raw.ts_ns;
-            if entry.process_exe.is_none() {
-                entry.process_exe = payload_meta.process_path_hint.clone();
+            if entry.process_exe.is_none()
+                || (authoritative_process_exec
+                    && entry
+                        .process_exe
+                        .as_deref()
+                        .map(is_weak_windows_identity)
+                        .unwrap_or(true))
+            {
+                entry.process_exe = payload_meta.process_path_hint.clone().or(entry.process_exe);
             }
             if entry.process_cmdline.is_none() {
                 entry.process_cmdline = payload_meta.command_line_hint.clone();
@@ -189,13 +200,23 @@ impl EnrichmentCache {
             if entry.parent_chain.is_empty() {
                 entry.parent_chain = hinted_parent_chain.clone();
             }
-            if entry.parent_process.is_none() {
-                entry.parent_process = hinted_parent_name.clone();
+            if entry.parent_process.is_none()
+                || entry
+                    .parent_process
+                    .as_deref()
+                    .map(is_weak_windows_identity)
+                    .unwrap_or(true)
+            {
+                entry.parent_process = hinted_parent_name.clone().or(entry.parent_process);
             }
 
             let needs_refresh = entry.process_exe.is_none()
                 || entry.process_cmdline.is_none()
-                || entry.parent_process.is_none()
+                || entry
+                    .parent_process
+                    .as_deref()
+                    .map(is_weak_windows_identity)
+                    .unwrap_or(true)
                 || entry.parent_chain.is_empty();
             if needs_refresh {
                 let info = enrichment::process::query_process_info(raw.pid);
@@ -208,13 +229,20 @@ impl EnrichmentCache {
                 if entry.parent_chain.is_empty() && !info.parent_chain.is_empty() {
                     entry.parent_chain = info.parent_chain;
                 }
-                if entry.parent_process.is_none() {
-                    entry.parent_process = info.parent_name.or_else(|| {
-                        entry
-                            .parent_chain
-                            .first()
-                            .copied()
-                            .and_then(|pid| self.process_name_for_pid(pid))
+                if entry
+                    .parent_process
+                    .as_deref()
+                    .map(is_weak_windows_identity)
+                    .unwrap_or(true)
+                {
+                    entry.parent_process = hinted_parent_name.clone().or_else(|| {
+                        info.parent_name.or_else(|| {
+                            entry
+                                .parent_chain
+                                .first()
+                                .copied()
+                                .and_then(|pid| self.process_name_for_pid(pid))
+                        })
                     });
                 }
             }
@@ -230,20 +258,28 @@ impl EnrichmentCache {
         } else {
             info.parent_chain
         };
-        let parent_process = info.parent_name.or_else(|| {
-            parent_chain
-                .first()
-                .copied()
-                .and_then(|pid| self.process_name_for_pid(pid))
+        let parent_process = hinted_parent_name.clone().or_else(|| {
+            info.parent_name.or_else(|| {
+                parent_chain
+                    .first()
+                    .copied()
+                    .and_then(|pid| self.process_name_for_pid(pid))
+            })
         });
 
         let mut entry = ProcessCacheEntry {
-            process_exe: info
-                .exe_path
-                .or_else(|| payload_meta.process_path_hint.clone()),
-            process_cmdline: info
-                .command_line
-                .or_else(|| payload_meta.command_line_hint.clone()),
+            process_exe: if authoritative_process_exec {
+                payload_meta.process_path_hint.clone().or(info.exe_path)
+            } else {
+                info.exe_path
+                    .or_else(|| payload_meta.process_path_hint.clone())
+            },
+            process_cmdline: if authoritative_process_exec {
+                payload_meta.command_line_hint.clone().or(info.command_line)
+            } else {
+                info.command_line
+                    .or_else(|| payload_meta.command_line_hint.clone())
+            },
             parent_process,
             parent_chain,
             last_seen_ns: raw.ts_ns,
@@ -693,6 +729,7 @@ struct PayloadMetadata {
     process_path_hint: Option<String>,
     command_line_hint: Option<String>,
     parent_pid: Option<u32>,
+    parent_process_hint: Option<String>,
     file_object: Option<String>,
     file_object_secondary: Option<String>,
     dst_ip: Option<String>,
@@ -770,11 +807,16 @@ fn parse_payload_metadata(event_type: &EventType, payload: &str) -> PayloadMetad
         command_line_hint: fields
             .get("cmdline")
             .or_else(|| fields.get("command_line"))
-            .map(|value| sanitize_windows_text(value)),
+            .map(|value| sanitize_windows_command_line(value)),
         parent_pid: fields
             .get("ppid")
             .or_else(|| fields.get("parent_pid"))
-            .and_then(|value| value.parse::<u32>().ok()),
+            .and_then(|value| parse_windows_u32_hint(value)),
+        parent_process_hint: fields
+            .get("parent_process")
+            .or_else(|| fields.get("parent_process_name"))
+            .or_else(|| fields.get("parent_name"))
+            .map(|value| process_basenameish(value)),
         file_object: primary_file_object,
         file_object_secondary: secondary_file_object,
         dst_ip: fields
@@ -828,11 +870,37 @@ fn parse_kv_fields(payload: &str) -> HashMap<String, String> {
             continue;
         };
         let key = key.trim().to_ascii_lowercase();
-        let value = value.trim().trim_matches('"').to_string();
+        let value = decode_payload_value(value.trim().trim_matches('"'));
         if !key.is_empty() && !value.is_empty() {
             out.insert(key, value);
         }
     }
+    out
+}
+
+fn decode_payload_value(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out = String::with_capacity(raw.len());
+    let mut index = 0;
+
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            let hex = &raw[index + 1..index + 3];
+            if let Ok(value) = u8::from_str_radix(hex, 16) {
+                out.push(value as char);
+                index += 3;
+                continue;
+            }
+        }
+
+        if let Some(ch) = raw[index..].chars().next() {
+            out.push(ch);
+            index += ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+
     out
 }
 
@@ -864,7 +932,7 @@ fn parse_payload_fallback(event_type: &EventType, payload: &str) -> PayloadMetad
             }
         }
         EventType::ProcessExec => PayloadMetadata {
-            command_line_hint: Some(sanitize_windows_text(payload)),
+            command_line_hint: Some(sanitize_windows_command_line(payload)),
             ..PayloadMetadata::default()
         },
         EventType::ProcessExit => PayloadMetadata::default(),
@@ -873,7 +941,7 @@ fn parse_payload_fallback(event_type: &EventType, payload: &str) -> PayloadMetad
             ..PayloadMetadata::default()
         },
         EventType::LsmBlock => PayloadMetadata {
-            command_line_hint: Some(sanitize_windows_text(payload)),
+            command_line_hint: Some(sanitize_windows_command_line(payload)),
             ..PayloadMetadata::default()
         },
     }
@@ -934,6 +1002,14 @@ fn sanitize_windows_text(raw: &str) -> String {
         .to_string()
 }
 
+fn sanitize_windows_command_line(raw: &str) -> String {
+    raw.chars()
+        .filter(|ch| !ch.is_control())
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
 fn normalize_windows_path(raw: &str) -> String {
     let mut value = sanitize_windows_text(raw).replace('/', "\\");
     if let Some(stripped) = value.strip_prefix(r"\\?\") {
@@ -974,6 +1050,23 @@ fn translate_harddisk_volume_to_dos(raw: &str) -> String {
 
 fn process_basename(path: &str) -> &str {
     path.rsplit(['/', '\\']).next().unwrap_or(path)
+}
+
+fn process_basenameish(raw: &str) -> String {
+    process_basename(&sanitize_windows_text(raw)).to_string()
+}
+
+fn parse_windows_u32_hint(raw: &str) -> Option<u32> {
+    let trimmed = raw.trim().trim_matches('"');
+    if let Some(hex) = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+    {
+        return u64::from_str_radix(hex, 16)
+            .ok()
+            .and_then(|value| u32::try_from(value).ok());
+    }
+    trimmed.parse::<u32>().ok()
 }
 
 fn process_name_from_cmdline(cmdline: &str) -> Option<&str> {
@@ -1131,6 +1224,20 @@ mod tests {
     }
 
     #[test]
+    fn process_exec_payload_decodes_percent_escaped_command_line_and_parent() {
+        let metadata = parse_payload_metadata(
+            &EventType::ProcessExec,
+            r#"path=C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe;cmdline=powershell.exe -Command %22Get-Process%3B Get-Service%22;ppid=0x3c8;parent_process=C:\Windows\System32\cmd.exe"#,
+        );
+        assert_eq!(metadata.parent_pid, Some(968));
+        assert_eq!(metadata.parent_process_hint.as_deref(), Some("cmd.exe"));
+        assert_eq!(
+            metadata.command_line_hint.as_deref(),
+            Some(r#"powershell.exe -Command "Get-Process; Get-Service""#)
+        );
+    }
+
+    #[test]
     fn enrich_windows_process_event_uses_payload_hints_for_cache() {
         let raw = RawEvent {
             event_type: EventType::ProcessExec,
@@ -1157,6 +1264,24 @@ mod tests {
             enriched.file_path, None,
             "process start payloads should seed process identity without reusing it as a file object"
         );
+    }
+
+    #[test]
+    fn process_exec_parent_process_hint_beats_unknown_parent() {
+        let raw = RawEvent {
+            event_type: EventType::ProcessExec,
+            pid: 4243,
+            uid: 0,
+            ts_ns: 2,
+            payload: r#"path=C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe;cmdline=powershell -NoProfile;ppid=0x3c8;parent_process=C:\Windows\System32\cmd.exe"#
+                .to_string(),
+        };
+
+        let mut cache = EnrichmentCache::default();
+        let enriched = enrich_event_with_cache(raw, &mut cache);
+
+        assert_eq!(enriched.parent_chain.first().copied(), Some(968));
+        assert_eq!(enriched.parent_process.as_deref(), Some("cmd.exe"));
     }
 
     #[test]

@@ -223,7 +223,12 @@ mod win32 {
                 );
             }
 
-            let event = codec::decode_etw_record(&guid_str, opcode, pid, ts_ns, user_data);
+            let event = if guid_str.eq_ignore_ascii_case(super::super::providers::SECURITY_AUDITING)
+            {
+                super::super::security_auditing::decode_security_auditing_record(record, ts_ns)
+            } else {
+                codec::decode_etw_record(&guid_str, opcode, pid, ts_ns, user_data)
+            };
 
             if let Some(event) = event {
                 if state.sender.try_send(event).is_err() {

@@ -20,3 +20,5 @@ pub(crate) const REG_EXE: &str = r"C:\Windows\System32\reg.exe";
 pub(crate) const ICACLS_EXE: &str = r"C:\Windows\System32\icacls.exe";
 #[cfg(target_os = "windows")]
 pub(crate) const EVENTCREATE_EXE: &str = r"C:\Windows\System32\eventcreate.exe";
+#[cfg(target_os = "windows")]
+pub(crate) const AUDITPOL_EXE: &str = r"C:\Windows\System32\auditpol.exe";

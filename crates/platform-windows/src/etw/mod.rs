@@ -2,9 +2,11 @@
 //!
 //! Provides real-time kernel and user-mode event collection via ETW sessions.
 
+mod audit;
 mod codec;
 mod consumer;
 pub(crate) mod providers;
+mod security_auditing;
 mod session;
 
 pub use codec::decode_etw_event;
@@ -44,6 +46,24 @@ impl EtwEngine {
     pub fn start(&mut self) -> Result<(), EtwError> {
         if self.is_active() {
             return Ok(());
+        }
+
+        match audit::ensure_process_creation_auditing() {
+            Ok(status) => {
+                if status.changed {
+                    tracing::info!(
+                        process_creation_success_enabled = status.process_creation_success_enabled,
+                        process_creation_cmdline_enabled = status.process_creation_cmdline_enabled,
+                        "updated Windows audit-policy prerequisites for process creation telemetry"
+                    );
+                }
+            }
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "failed to ensure Windows process-creation audit prerequisites; continuing with ETW startup"
+                );
+            }
         }
 
         let mut session = EtwSession::new(&self.session_name);
