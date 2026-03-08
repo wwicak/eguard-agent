@@ -143,6 +143,9 @@ mod tests_det_stub_completion;
 mod tests_ebpf_memory;
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)]
+mod tests_network_profile_push;
+#[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests_observability;
 #[cfg(test)]
 mod tests_pkg_contract;

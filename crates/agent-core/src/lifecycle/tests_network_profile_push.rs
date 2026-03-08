@@ -172,3 +172,88 @@ fn config_change_non_network_payload_keeps_backward_compatible_noop() {
     assert_eq!(exec.status, "completed");
     assert_eq!(exec.detail, "configuration change accepted");
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn config_change_agent_control_restart_schedules_service_restart() {
+    let _env_guard = env_lock().lock().expect("env lock");
+
+    let fake_bin_dir = temp_dir("agent-restart-service-bin");
+    let capture_path = fake_bin_dir.join("systemd-run.args");
+    let fake_systemd_run = fake_bin_dir.join("systemd-run");
+    let script = format!(
+        "#!/usr/bin/env bash\nprintf '%s\n' \"$@\" > '{}'\n",
+        capture_path.display()
+    );
+    fs::write(&fake_systemd_run, script).expect("write fake systemd-run");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&fake_systemd_run)
+            .expect("stat fake systemd-run")
+            .permissions();
+        perms.set_mode(0o700);
+        fs::set_permissions(&fake_systemd_run, perms).expect("chmod fake systemd-run");
+    }
+
+    let old_path = std::env::var("PATH").unwrap_or_default();
+    let combined_path = if old_path.is_empty() {
+        fake_bin_dir.to_string_lossy().to_string()
+    } else {
+        format!("{}:{}", fake_bin_dir.display(), old_path)
+    };
+    let _path_guard = EnvGuard::set("PATH", &combined_path);
+
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+
+    let runtime = AgentRuntime::new(cfg).expect("runtime");
+    let mut state = response::HostControlState::default();
+    let mut exec = response::execute_server_command_with_state(
+        response::parse_server_command("config_change"),
+        125,
+        &mut state,
+    );
+
+    let payload = serde_json::json!({
+        "config_json": {
+            "config_type": "agent_control",
+            "agent_control": {
+                "restart_service": true,
+                "reason": "activate staged package"
+            }
+        }
+    })
+    .to_string();
+
+    runtime.apply_config_change(&payload, &mut exec);
+
+    assert_eq!(exec.outcome, response::CommandOutcome::Applied);
+    assert_eq!(exec.status, "completed");
+    assert!(
+        exec.detail.contains("agent service restart scheduled"),
+        "detail={}",
+        exec.detail
+    );
+    assert!(
+        exec.detail.contains("activate staged package"),
+        "detail={}",
+        exec.detail
+    );
+
+    let captured = fs::read_to_string(&capture_path).expect("read captured systemd-run args");
+    assert!(captured.contains("--unit"), "captured={captured}");
+    assert!(
+        captured.contains("eguard-agent-self-restart-"),
+        "captured={captured}"
+    );
+    assert!(captured.contains("/bin/sh"), "captured={captured}");
+    assert!(captured.contains("-lc"), "captured={captured}");
+    assert!(
+        captured
+            .contains("systemctl restart eguard-agent.service || systemctl restart eguard-agent"),
+        "captured={captured}"
+    );
+
+    let _ = fs::remove_dir_all(fake_bin_dir);
+}
