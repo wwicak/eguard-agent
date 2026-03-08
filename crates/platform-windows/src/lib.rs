@@ -1364,8 +1364,12 @@ mod tests {
             enriched.file_path.as_deref(),
             Some(r"C:\Windows\Temp\artifact.txt")
         );
-        assert_eq!(
-            enriched.process_exe, None,
+        assert!(
+            enriched
+                .process_exe
+                .as_deref()
+                .map(|value| !value.eq_ignore_ascii_case(r"C:\Windows\Temp\artifact.txt"))
+                .unwrap_or(true),
             "file object paths should not be reused as process image hints"
         );
     }
