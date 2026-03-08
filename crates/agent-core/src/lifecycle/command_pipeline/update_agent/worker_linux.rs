@@ -124,7 +124,11 @@ else
 fi
 
 systemctl daemon-reload || true
-systemctl start eguard-agent || true
+systemctl reset-failed eguard-agent || true
+if ! systemctl start eguard-agent; then
+  sleep 2
+  systemctl restart eguard-agent || true
+fi
 "#;
 
     fs::write(path, SCRIPT)

@@ -16,7 +16,7 @@ ProtectSystem=full
 ProtectHome=true
 PrivateTmp=true
 ReadWritePaths=/etc/eguard-agent /var/lib/eguard-agent
-TimeoutStopSec=5s
+TimeoutStopSec=15s
 
 [Install]
 WantedBy=multi-user.target

@@ -192,6 +192,38 @@ fn package_manifests_define_agent_and_optional_rules_for_deb_and_rpm() {
 #[test]
 // AC-PKG-004 AC-PKG-005 AC-PKG-006 AC-PKG-007 AC-PKG-008 AC-PKG-009 AC-PKG-010 AC-PKG-011 AC-PKG-012
 // AC-PKG-028 AC-PKG-029 AC-PKG-030 AC-PKG-031 AC-PKG-032 AC-PKG-033
+fn linux_update_packaging_recovers_service_after_upgrade() {
+    let service_unit = read("packaging/systemd/eguard-agent.service");
+    assert!(
+        service_unit.contains("TimeoutStopSec=15s"),
+        "systemd unit should allow a longer graceful stop window during upgrades"
+    );
+
+    let postinstall = read("packaging/postinstall.sh");
+    assert!(
+        postinstall.contains("systemctl reset-failed eguard-agent.service || true"),
+        "postinstall should clear failed state before restart"
+    );
+    assert!(
+        postinstall.contains("systemctl start eguard-agent.service || systemctl restart eguard-agent.service || true"),
+        "postinstall should retry service recovery after upgrade"
+    );
+
+    let worker_source =
+        read("crates/agent-core/src/lifecycle/command_pipeline/update_agent/worker_linux.rs");
+    assert!(
+        worker_source.contains("systemctl reset-failed eguard-agent || true"),
+        "linux update worker should clear failed service state after package install"
+    );
+    assert!(
+        worker_source.contains("systemctl restart eguard-agent || true"),
+        "linux update worker should retry service restart if start fails"
+    );
+}
+
+#[test]
+// AC-PKG-004 AC-PKG-005 AC-PKG-006 AC-PKG-007 AC-PKG-008 AC-PKG-009 AC-PKG-010 AC-PKG-011 AC-PKG-012
+// AC-PKG-028 AC-PKG-029 AC-PKG-030 AC-PKG-031 AC-PKG-032 AC-PKG-033
 fn package_build_harness_executes_and_emits_metrics_with_mocked_toolchain() {
     let _guard = script_lock().lock().unwrap_or_else(|e| e.into_inner());
     let root = workspace_root();
