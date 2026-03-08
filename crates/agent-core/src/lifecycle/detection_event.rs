@@ -276,10 +276,56 @@ fn is_low_signal_self_image_windows_command_line(
     normalize(command_line) == normalize(process_exe)
 }
 
+fn is_low_value_windows_system_file_path(path: &str) -> bool {
+    let mut normalized = path
+        .trim()
+        .trim_matches('"')
+        .replace('/', "\\")
+        .to_ascii_lowercase();
+    while normalized.contains("\\\\") {
+        normalized = normalized.replace("\\\\", "\\");
+    }
+
+    normalized == r"c:\$logfile"
+        || normalized == r"c:\$mft"
+        || normalized.starts_with(r"c:\windows\system32\logfiles\wmi")
+        || normalized.starts_with(r"c:\windows\system32\winevt\logs")
+        || normalized.starts_with(r"c:\windows\system32\wbem\repository")
+        || normalized == r"c:\programdata\microsoft\windows defender\scans\defenderecscache.bin64"
+        || normalized
+            .starts_with(r"c:\programdata\microsoft\windows defender\support\mpwpptracing-")
+        || normalized.starts_with(r"c:\programdata\microsoft\windows\wfp\")
+        || normalized.starts_with(r"c:\windows\appcompat\programs\amcache.hve.log")
+        || (normalized.starts_with(r"c:\windows\system32\config\")
+            && (normalized.ends_with(".log1") || normalized.ends_with(".log2")))
+}
+
 pub(super) fn should_drop_low_value_windows_event(
     enriched: &crate::platform::EnrichedEvent,
     event: &TelemetryEvent,
 ) -> bool {
+    if matches!(
+        enriched.event.event_type,
+        crate::platform::EventType::ProcessExit
+    ) {
+        let has_meaningful_subject = event
+            .file_path
+            .as_deref()
+            .filter(|path| !is_low_value_windows_pseudo_identity(path))
+            .is_some();
+        let has_meaningful_cmdline = event
+            .command_line
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_some();
+        return is_low_value_windows_pseudo_identity(&event.process)
+            && is_low_value_windows_pseudo_identity(&event.parent_process)
+            && !has_meaningful_subject
+            && !has_meaningful_cmdline
+            && event.ppid == 0;
+    }
+
     if !matches!(
         enriched.event.event_type,
         crate::platform::EventType::FileOpen
@@ -301,6 +347,20 @@ pub(super) fn should_drop_low_value_windows_event(
             .filter(|path| !is_low_value_windows_pseudo_identity(path))
             .is_some();
     if has_meaningful_subject {
+        if matches!(
+            enriched.event.event_type,
+            crate::platform::EventType::FileOpen
+        ) && !event.file_write
+            && event.process.eq_ignore_ascii_case("System")
+            && event.parent_process.eq_ignore_ascii_case("unknown")
+            && event
+                .file_path
+                .as_deref()
+                .map(is_low_value_windows_system_file_path)
+                .unwrap_or(false)
+        {
+            return true;
+        }
         return false;
     }
 
@@ -636,6 +696,45 @@ mod tests {
     }
 
     #[test]
+    fn should_drop_low_value_windows_event_for_system_logfile_open_chatter() {
+        let enriched = EnrichedEvent {
+            event: RawEvent {
+                event_type: EventType::FileOpen,
+                pid: 4,
+                uid: 0,
+                ts_ns: 1,
+                payload: "file_key=0x88".to_string(),
+            },
+            process_exe: Some("System".to_string()),
+            process_exe_sha256: None,
+            process_cmdline: None,
+            parent_process: Some("unknown".to_string()),
+            parent_chain: Vec::new(),
+            file_path: Some(
+                r"C:\\Windows\\System32\\winevt\\Logs\\Microsoft-Windows-PowerShell%4Operational.evtx"
+                    .to_string(),
+            ),
+            file_path_secondary: None,
+            file_write: false,
+            file_sha256: None,
+            event_size: None,
+            dst_ip: None,
+            dst_port: None,
+            dst_domain: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        };
+
+        let event = super::to_detection_event(&enriched, 123);
+        assert_eq!(event.process, "System");
+        assert!(super::should_drop_low_value_windows_event(
+            &enriched, &event
+        ));
+    }
+
+    #[test]
     fn should_drop_low_value_windows_event_for_pathless_svchost_host_chatter() {
         let enriched = EnrichedEvent {
             event: RawEvent {
@@ -770,6 +869,84 @@ mod tests {
             ),
             parent_process: Some("cmd.exe".to_string()),
             parent_chain: vec![4540],
+            file_path: None,
+            file_path_secondary: None,
+            file_write: false,
+            file_sha256: None,
+            event_size: None,
+            dst_ip: None,
+            dst_port: None,
+            dst_domain: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        };
+
+        let event = super::to_detection_event(&enriched, 123);
+        assert_eq!(event.process, "powershell.exe");
+        assert_eq!(event.parent_process, "cmd.exe");
+        assert!(!super::should_drop_low_value_windows_event(
+            &enriched, &event
+        ));
+    }
+
+    #[test]
+    fn should_drop_process_exit_when_identity_and_context_are_unknown() {
+        let enriched = EnrichedEvent {
+            event: RawEvent {
+                event_type: EventType::ProcessExit,
+                pid: 1876,
+                uid: 0,
+                ts_ns: 1,
+                payload: String::new(),
+            },
+            process_exe: None,
+            process_exe_sha256: None,
+            process_cmdline: None,
+            parent_process: None,
+            parent_chain: Vec::new(),
+            file_path: None,
+            file_path_secondary: None,
+            file_write: false,
+            file_sha256: None,
+            event_size: None,
+            dst_ip: None,
+            dst_port: None,
+            dst_domain: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        };
+
+        let event = super::to_detection_event(&enriched, 123);
+        assert_eq!(event.process, "unknown");
+        assert_eq!(event.parent_process, "unknown");
+        assert!(super::should_drop_low_value_windows_event(
+            &enriched, &event
+        ));
+    }
+
+    #[test]
+    fn should_not_drop_process_exit_when_identity_is_present() {
+        let enriched = EnrichedEvent {
+            event: RawEvent {
+                event_type: EventType::ProcessExit,
+                pid: 4244,
+                uid: 0,
+                ts_ns: 1,
+                payload: String::new(),
+            },
+            process_exe: Some(
+                r"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe".to_string(),
+            ),
+            process_exe_sha256: None,
+            process_cmdline: Some(
+                "powershell.exe -NoProfile -File C:\\Windows\\Temp\\demo.ps1".to_string(),
+            ),
+            parent_process: Some("cmd.exe".to_string()),
+            parent_chain: vec![968],
             file_path: None,
             file_path_secondary: None,
             file_write: false,

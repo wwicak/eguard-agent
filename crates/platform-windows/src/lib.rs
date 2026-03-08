@@ -601,14 +601,38 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
     let payload_meta = parse_payload_metadata(&raw.event_type, &raw.payload);
 
     if matches!(raw.event_type, EventType::ProcessExit) {
+        let cached = cache.process_cache.peek(&raw.pid).cloned();
+        let hinted_parent_chain = cache.parent_chain_from_hint(payload_meta.parent_pid);
+        let hinted_parent_name = payload_meta
+            .parent_process_hint
+            .clone()
+            .or_else(|| cache.parent_name_from_hint(payload_meta.parent_pid));
+        let process_exe = cached
+            .as_ref()
+            .and_then(|entry| entry.process_exe.clone())
+            .or_else(|| payload_meta.process_path_hint.clone());
+        let process_cmdline = cached
+            .as_ref()
+            .and_then(|entry| entry.process_cmdline.clone())
+            .or_else(|| payload_meta.command_line_hint.clone());
+        let parent_process = cached
+            .as_ref()
+            .and_then(|entry| entry.parent_process.clone())
+            .or(hinted_parent_name);
+        let parent_chain = cached
+            .as_ref()
+            .map(|entry| entry.parent_chain.clone())
+            .filter(|chain| !chain.is_empty())
+            .unwrap_or(hinted_parent_chain);
+
         let _ = cache.evict_process(raw.pid);
         return EnrichedEvent {
             event: raw,
-            process_exe: None,
+            process_exe,
             process_exe_sha256: None,
-            process_cmdline: payload_meta.command_line_hint,
-            parent_process: None,
-            parent_chain: Vec::new(),
+            process_cmdline,
+            parent_process,
+            parent_chain,
             file_path: payload_meta.file_path.or(payload_meta.file_path_secondary),
             file_path_secondary: None,
             file_write: payload_meta.file_write,
@@ -1282,6 +1306,45 @@ mod tests {
 
         assert_eq!(enriched.parent_chain.first().copied(), Some(968));
         assert_eq!(enriched.parent_process.as_deref(), Some("cmd.exe"));
+    }
+
+    #[test]
+    fn process_exit_reuses_cached_process_context_before_eviction() {
+        let mut cache = EnrichmentCache::default();
+
+        let exec = RawEvent {
+            event_type: EventType::ProcessExec,
+            pid: 4244,
+            uid: 0,
+            ts_ns: 1,
+            payload: r#"path=C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe;cmdline=powershell.exe -NoProfile -File C:\Windows\Temp\demo.ps1;ppid=0x3c8;parent_process=C:\Windows\System32\cmd.exe"#
+                .to_string(),
+        };
+        let _ = enrich_event_with_cache(exec, &mut cache);
+
+        let exit = RawEvent {
+            event_type: EventType::ProcessExit,
+            pid: 4244,
+            uid: 0,
+            ts_ns: 2,
+            payload: String::new(),
+        };
+        let enriched = enrich_event_with_cache(exit, &mut cache);
+
+        assert_eq!(
+            enriched.process_exe.as_deref(),
+            Some(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
+        );
+        assert_eq!(
+            enriched.process_cmdline.as_deref(),
+            Some("powershell.exe -NoProfile -File C:\\Windows\\Temp\\demo.ps1")
+        );
+        assert_eq!(enriched.parent_process.as_deref(), Some("cmd.exe"));
+        assert_eq!(enriched.parent_chain.first().copied(), Some(968));
+        assert!(
+            !cache.evict_process(4244),
+            "process exit should evict the cached PID after reusing its identity"
+        );
     }
 
     #[test]
