@@ -87,11 +87,16 @@ jobs:
 
           metrics = json.loads(path.read_text())
           build_ms = int(metrics.get('baseline_release_build_ms', 10**9))
-          if build_ms > 180_000:
-              print(f'release optimization preflight build too high: {build_ms} ms > 180000 ms')
+          # Cold GitHub-hosted Linux container runs have been observed around
+          # ~183s even when local preflight stays comfortably below 90s. Keep
+          # the guardrail tight enough to catch regressions, but high enough to
+          # avoid flaking release builds on routine runner variance.
+          max_build_ms = 210_000
+          if build_ms > max_build_ms:
+              print(f'release optimization preflight build too high: {build_ms} ms > {max_build_ms} ms')
               sys.exit(1)
 
-          print(f'release optimization preflight threshold passed: {build_ms} ms')
+          print(f'release optimization preflight threshold passed: {build_ms} ms <= {max_build_ms} ms')
           PY
 
       - name: Build .deb and .rpm packages
