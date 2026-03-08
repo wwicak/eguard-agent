@@ -1,7 +1,7 @@
 #[cfg(any(test, target_os = "linux"))]
 use std::path::{Path, PathBuf};
 
-use crate::platform::EbpfEngine;
+use crate::platform::{EbpfEngine, EbpfStats};
 use tracing::{info, warn};
 
 pub(super) fn init_ebpf_engine() -> EbpfEngine {
@@ -53,6 +53,7 @@ pub(super) fn init_ebpf_engine() -> EbpfEngine {
         }
 
         // Priority 2: Real eBPF from object directory
+        let capability_snapshot = EbpfEngine::disabled().stats();
         let objects_dir = std::env::var("EGUARD_EBPF_OBJECTS_DIR")
             .ok()
             .filter(|v| !v.trim().is_empty())
@@ -67,13 +68,17 @@ pub(super) fn init_ebpf_engine() -> EbpfEngine {
             .unwrap_or_else(|| "events".to_string());
 
         if let Some(dir) = objects_dir {
-            if let Some(engine) = try_init_ebpf_from_object_dir(&dir, &map_name) {
+            if let Some(engine) =
+                try_init_ebpf_from_object_dir(&dir, &map_name, &capability_snapshot)
+            {
                 return engine;
             }
         }
 
-        for dir in default_ebpf_objects_dirs() {
-            if let Some(engine) = try_init_ebpf_from_object_dir(&dir, &map_name) {
+        for dir in preferred_ebpf_objects_dirs(&capability_snapshot) {
+            if let Some(engine) =
+                try_init_ebpf_from_object_dir(&dir, &map_name, &capability_snapshot)
+            {
                 return engine;
             }
         }
@@ -106,8 +111,9 @@ pub(super) fn init_ebpf_engine() -> EbpfEngine {
 pub(super) fn try_init_ebpf_from_object_dir(
     objects_dir: &Path,
     map_name: &str,
+    capabilities: &EbpfStats,
 ) -> Option<EbpfEngine> {
-    let object_paths = candidate_ebpf_object_paths(objects_dir);
+    let object_paths = candidate_ebpf_object_paths_for_capabilities(objects_dir, capabilities);
     if object_paths.is_empty() {
         return None;
     }
@@ -154,6 +160,47 @@ pub(super) fn default_ebpf_objects_dirs() -> Vec<PathBuf> {
 }
 
 #[cfg(any(test, target_os = "linux"))]
+fn kernel_prefers_perf_objects(capabilities: &EbpfStats) -> bool {
+    let stripped = capabilities
+        .kernel_version
+        .split(['-', ' '])
+        .next()
+        .unwrap_or("");
+    let mut parts = stripped.split('.');
+    let major = parts
+        .next()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(0);
+    let minor = parts
+        .next()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(0);
+    (major, minor) != (0, 0) && (major, minor) < (5, 8)
+}
+
+#[cfg(any(test, target_os = "linux"))]
+pub(super) fn preferred_ebpf_objects_dirs(capabilities: &EbpfStats) -> Vec<PathBuf> {
+    let mut ring_dirs = Vec::new();
+    let mut perf_dirs = Vec::new();
+
+    for dir in default_ebpf_objects_dirs() {
+        if dir.to_string_lossy().contains("ebpf-perf") {
+            perf_dirs.push(dir)
+        } else {
+            ring_dirs.push(dir)
+        }
+    }
+
+    if kernel_prefers_perf_objects(capabilities) {
+        perf_dirs.extend(ring_dirs);
+        return perf_dirs;
+    }
+
+    ring_dirs.extend(perf_dirs);
+    ring_dirs
+}
+
+#[cfg(any(test, target_os = "linux"))]
 pub(super) fn candidate_ebpf_object_paths(objects_dir: &Path) -> Vec<PathBuf> {
     const OBJECT_NAMES: [&str; 9] = [
         "process_exec_bpf.o",
@@ -173,6 +220,18 @@ pub(super) fn candidate_ebpf_object_paths(objects_dir: &Path) -> Vec<PathBuf> {
         if candidate.exists() {
             out.push(candidate);
         }
+    }
+    out
+}
+
+#[cfg(any(test, target_os = "linux"))]
+pub(super) fn candidate_ebpf_object_paths_for_capabilities(
+    objects_dir: &Path,
+    capabilities: &EbpfStats,
+) -> Vec<PathBuf> {
+    let mut out = candidate_ebpf_object_paths(objects_dir);
+    if !capabilities.lsm_available {
+        out.retain(|path| !path.to_string_lossy().contains("lsm_block_bpf.o"));
     }
     out
 }

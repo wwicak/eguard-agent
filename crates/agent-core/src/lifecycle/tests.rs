@@ -132,6 +132,58 @@ fn default_ebpf_object_dirs_include_expected_targets() {
 }
 
 #[test]
+fn preferred_ebpf_object_dirs_prioritize_perf_fallback_on_older_kernels() {
+    let dirs = preferred_ebpf_objects_dirs(&crate::platform::EbpfStats {
+        kernel_version: "5.4.0-216-generic".to_string(),
+        lsm_available: false,
+        ..Default::default()
+    });
+    let perf_idx = dirs
+        .iter()
+        .position(|d| d == &PathBuf::from("/usr/lib/eguard-agent/ebpf-perf"))
+        .expect("perf buffer package dir");
+    let ring_idx = dirs
+        .iter()
+        .position(|d| d == &PathBuf::from("/usr/lib/eguard-agent/ebpf"))
+        .expect("ring buffer package dir");
+    assert!(
+        perf_idx < ring_idx,
+        "older kernels should prefer perf fallback directories first"
+    );
+}
+
+#[test]
+fn candidate_ebpf_object_paths_for_capabilities_skips_lsm_when_unavailable() {
+    let base = std::env::temp_dir().join(format!(
+        "eguard-ebpf-cap-filter-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    std::fs::create_dir_all(&base).expect("create temp dir");
+
+    let process = base.join("process_exec_bpf.o");
+    let lsm = base.join("lsm_block_bpf.o");
+    std::fs::write(&process, b"obj").expect("write process obj");
+    std::fs::write(&lsm, b"obj").expect("write lsm obj");
+
+    let paths = candidate_ebpf_object_paths_for_capabilities(
+        &base,
+        &crate::platform::EbpfStats {
+            kernel_version: "5.4.0-216-generic".to_string(),
+            lsm_available: false,
+            ..Default::default()
+        },
+    );
+    assert_eq!(paths, vec![process.clone()]);
+
+    let _ = std::fs::remove_file(process);
+    let _ = std::fs::remove_file(lsm);
+    let _ = std::fs::remove_dir(base);
+}
+
+#[test]
 // AC-ATP-084
 fn parse_certificate_not_after_unix_reads_pem_validity() {
     let not_after =

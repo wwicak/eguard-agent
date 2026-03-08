@@ -97,7 +97,10 @@ use runtime_mode::{derive_runtime_mode, runtime_mode_label};
 use ebpf_support::init_ebpf_engine;
 #[cfg(test)]
 #[allow(unused_imports)]
-use ebpf_support::{candidate_ebpf_object_paths, default_ebpf_objects_dirs};
+use ebpf_support::{
+    candidate_ebpf_object_paths, candidate_ebpf_object_paths_for_capabilities,
+    default_ebpf_objects_dirs, preferred_ebpf_objects_dirs,
+};
 
 #[allow(unused_imports)]
 use bundle_path::resolve_rules_staging_root;
