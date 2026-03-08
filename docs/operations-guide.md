@@ -29,6 +29,7 @@ responsible for managing eGuard across a fleet of endpoints.
 9. [Agent Release & Updates](#9-agent-release--updates)
    - [9.5 Server-side Signature ML Runtime Inference](#95-server-side-signature-ml-runtime-inference-mar-2026)
    - [9.6 Released Agent Version Reporting Truth](#96-released-agent-version-reporting-truth-mar-2026)
+   - [9.7 Windows Self-Update Hardening](#97-windows-self-update-hardening-mar-2026)
 10. [gRPC Reliability](#10-grpc-reliability)
 11. [Firewall / iptables](#11-firewall--iptables)
 12. [Configuration Reference](#12-configuration-reference)
@@ -1616,6 +1617,66 @@ If a newly released agent still shows the workspace fallback version instead of
 its shipped release tag, treat that as a release-build metadata regression.
 The build job must export `EGUARD_AGENT_VERSION` **during compilation**, not
 only in post-install runtime environment.
+
+### 9.7 Windows Self-Update Hardening (Mar 2026)
+
+Live Windows validation showed that a naive stop/copy/start worker was not
+sufficient for unattended agent upgrades. The service could restart itself
+mid-swap, and `taskkill /T` from a child updater could accidentally kill the
+updater process along with the agent service tree.
+
+#### Hardened worker behavior
+
+`crates/agent-core/src/lifecycle/command_pipeline/update_agent/worker_windows.rs`
+now hardens EXE/MSI rollout by:
+
+- downloading the package and verifying the downloaded SHA256 first
+- disabling SCM failure recovery before shutdown
+- disabling `failureflag` before forced stop/kill
+- switching the service temporarily to `start=demand`
+- stopping the service cleanly and falling back to direct PID kill when needed
+- killing only the target service PID (no `/T` tree kill that would terminate
+  the detached updater itself)
+- copying/verifying the installed EXE hash after replacement
+- restoring canonical service `binPath`
+- restoring `start=auto`, failure actions, and `failureflag=1`
+
+#### Validation
+
+Targeted regression checks:
+
+```bash
+cargo test -p agent-core linux_update_packaging_recovers_service_after_upgrade -- --nocapture
+cargo test -p platform-windows process_exit_reuses_cached_process_context_before_eviction -- --nocapture
+cargo test -p platform-windows -- --nocapture
+cargo build --release -p agent-core
+```
+
+Release / live validation sequence:
+
+- Windows CI flake fixed in `v0.2.58` (`run 22820272216` all green)
+- Windows updater hardening shipped through:
+  - `v0.2.63` baseline lift
+  - `v0.2.66` unattended validation target
+- Live endpoint: `agent-1736`
+- Final unattended command:
+  - command id: `e2bf55fc-adad-4563-a763-4e7b2d0996e5`
+  - target version: `0.2.66`
+  - package URL: `https://github.com/wwicak/eguard-agent/releases/download/v0.2.66/eguard-agent.exe`
+- Final observed truth:
+  - `endpoint_agent.agent_version = 0.2.66`
+  - `endpoint_inventory.attributes.agent_version = 0.2.66`
+  - on-disk SHA256:
+    `2563569b1c094e5a47d63addba226aa154930a11e714199a8818bc0ab03c8d1e`
+  - service path:
+    `C:\Program Files\eGuard\eguard-agent.exe`
+  - service state: `Running`
+
+#### Remaining caveat
+
+Legacy Windows agents that predate the hardened updater may still require one
+manual uplift before unattended update commands become trustworthy. Once the
+hardened worker is on disk, subsequent EXE-based upgrades are operator-grade.
 
 ## 10. gRPC Reliability
 
