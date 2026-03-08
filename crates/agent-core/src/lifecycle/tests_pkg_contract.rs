@@ -214,6 +214,16 @@ fn linux_update_packaging_recovers_service_after_upgrade() {
         "postinstall should retry service recovery after upgrade"
     );
 
+    let preremove = read("packaging/preremove.sh");
+    assert!(
+        preremove.contains("upgrade|failed-upgrade|1)"),
+        "preremove should skip stop/disable work during package upgrades"
+    );
+    assert!(
+        preremove.contains("systemctl stop eguard-agent.service || true"),
+        "preremove should still stop the service on real removals"
+    );
+
     let worker_source =
         read("crates/agent-core/src/lifecycle/command_pipeline/update_agent/worker_linux.rs");
     assert!(
