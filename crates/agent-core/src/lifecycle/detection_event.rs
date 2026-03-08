@@ -313,6 +313,43 @@ fn is_low_value_windows_agent_self_path(path: &str) -> bool {
     normalized == r"c:\program files\eguard\eguard-agent.exe"
 }
 
+fn is_low_value_windows_agent_state_path(path: &str) -> bool {
+    let mut normalized = path
+        .trim()
+        .trim_matches('"')
+        .replace('/', "\\")
+        .to_ascii_lowercase();
+    while normalized.contains("\\\\") {
+        normalized = normalized.replace("\\\\", "\\");
+    }
+
+    normalized == r"c:\programdata\eguard\logs\agent.log"
+        || normalized == r"c:\var\lib\eguard-agent\baselines.journal"
+}
+
+fn is_low_value_windows_browser_profile_path(path: &str) -> bool {
+    let mut normalized = path
+        .trim()
+        .trim_matches('"')
+        .replace('/', "\\")
+        .to_ascii_lowercase();
+    while normalized.contains("\\\\") {
+        normalized = normalized.replace("\\\\", "\\");
+    }
+
+    (normalized.contains(r"\mozilla\firefox\profiles\")
+        && (normalized.contains(r"\cache2\")
+            || normalized.contains(r"\storage\permanent\chrome\idb\")
+            || normalized.contains(r"\datareporting\")
+            || normalized.contains(r"\safebrowsing\")
+            || normalized.ends_with(r"\prefs.js")))
+        || normalized.starts_with(
+            r"c:\windows\system32\config\systemprofile\appdata\local\microsoft\windows\webcache\",
+        )
+        || normalized == r"c:\programdata\microsoft\diagnosis"
+        || normalized.starts_with(r"c:\programdata\microsoft\diagnosis\eventstore")
+}
+
 fn is_low_value_windows_powershell_policy_test_path(path: &str) -> bool {
     let mut normalized = path
         .trim()
@@ -324,6 +361,20 @@ fn is_low_value_windows_powershell_policy_test_path(path: &str) -> bool {
     }
 
     normalized.starts_with(r"c:\windows\temp\__psscriptpolicytest_")
+}
+
+fn is_low_value_windows_powershell_module_path(path: &str) -> bool {
+    let mut normalized = path
+        .trim()
+        .trim_matches('"')
+        .replace('/', "\\")
+        .to_ascii_lowercase();
+    while normalized.contains("\\\\") {
+        normalized = normalized.replace("\\\\", "\\");
+    }
+
+    normalized.starts_with(r"c:\windows\system32\windowspowershell\v1.0\modules\")
+        || normalized == r"c:\windows\system32\winevt\logs\windows powershell.evtx"
 }
 
 fn is_low_value_windows_proxy_host_lifecycle_event(event: &TelemetryEvent) -> bool {
@@ -436,7 +487,23 @@ pub(super) fn should_drop_low_value_windows_event(
                     .map(|path| {
                         is_low_value_windows_system_file_path(path)
                             || is_low_value_windows_agent_self_path(path)
+                            || is_low_value_windows_agent_state_path(path)
+                            || is_low_value_windows_browser_profile_path(path)
                     })
+                    .unwrap_or(false)
+            {
+                return true;
+            }
+
+            if event.process.eq_ignore_ascii_case("firefox.exe")
+                && is_low_signal_self_image_windows_command_line(
+                    event.command_line.as_deref(),
+                    enriched.process_exe.as_deref(),
+                )
+                && event
+                    .file_path
+                    .as_deref()
+                    .map(is_low_value_windows_browser_profile_path)
                     .unwrap_or(false)
             {
                 return true;
@@ -444,10 +511,20 @@ pub(super) fn should_drop_low_value_windows_event(
 
             if event.pid <= 4
                 && event.ppid == 0
+                && event.process.eq_ignore_ascii_case("powershell.exe")
+                && event
+                    .command_line
+                    .as_deref()
+                    .map(str::trim)
+                    .unwrap_or("")
+                    .is_empty()
                 && event
                     .file_path
                     .as_deref()
-                    .map(is_low_value_windows_powershell_policy_test_path)
+                    .map(|path| {
+                        is_low_value_windows_powershell_policy_test_path(path)
+                            || is_low_value_windows_powershell_module_path(path)
+                    })
                     .unwrap_or(false)
             {
                 return true;
@@ -894,6 +971,198 @@ mod tests {
 
         let event = super::to_detection_event(&enriched, 123);
         assert!(super::should_drop_low_value_windows_event(
+            &enriched, &event
+        ));
+    }
+
+    #[test]
+    fn should_drop_low_value_windows_event_for_pid4_powershell_module_file_noise() {
+        let enriched = EnrichedEvent {
+            event: RawEvent {
+                event_type: EventType::FileOpen,
+                pid: 4,
+                uid: 0,
+                ts_ns: 1,
+                payload: "file_key=0xab".to_string(),
+            },
+            process_exe: Some(
+                r"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+                    .to_string(),
+            ),
+            process_exe_sha256: None,
+            process_cmdline: None,
+            parent_process: Some("unknown".to_string()),
+            parent_chain: Vec::new(),
+            file_path: Some(
+                r"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules\\PrintManagement\\MSFT_Printer.format.ps1xml".to_string(),
+            ),
+            file_path_secondary: None,
+            file_write: false,
+            file_sha256: None,
+            event_size: None,
+            dst_ip: None,
+            dst_port: None,
+            dst_domain: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        };
+
+        let event = super::to_detection_event(&enriched, 123);
+        assert!(super::should_drop_low_value_windows_event(
+            &enriched, &event
+        ));
+    }
+
+    #[test]
+    fn should_drop_low_value_windows_event_for_firefox_profile_file_chatter() {
+        let enriched = EnrichedEvent {
+            event: RawEvent {
+                event_type: EventType::FileOpen,
+                pid: 4388,
+                uid: 0,
+                ts_ns: 1,
+                payload: "file_key=0xac".to_string(),
+            },
+            process_exe: Some(
+                r"C:\\Program Files (x86)\\Mozilla Firefox\\firefox.exe".to_string(),
+            ),
+            process_exe_sha256: None,
+            process_cmdline: Some(
+                r#""C:\Program Files (x86)\Mozilla Firefox\firefox.exe""#.to_string(),
+            ),
+            parent_process: Some("unknown".to_string()),
+            parent_chain: vec![4296],
+            file_path: Some(
+                r"C:\\Users\\Administrator\\AppData\\Roaming\\Mozilla\\Firefox\\Profiles\\mcpwrwi8.default-release\\storage\\permanent\\chrome\\idb\\1657114595AmcateirvtiSty.sqlite-shm".to_string(),
+            ),
+            file_path_secondary: None,
+            file_write: false,
+            file_sha256: None,
+            event_size: None,
+            dst_ip: None,
+            dst_port: None,
+            dst_domain: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        };
+
+        let event = super::to_detection_event(&enriched, 123);
+        assert_eq!(event.process, "firefox.exe");
+        assert!(super::should_drop_low_value_windows_event(
+            &enriched, &event
+        ));
+    }
+
+    #[test]
+    fn should_drop_low_value_windows_event_for_system_agent_state_chatter() {
+        let enriched = EnrichedEvent {
+            event: RawEvent {
+                event_type: EventType::FileOpen,
+                pid: 4,
+                uid: 0,
+                ts_ns: 1,
+                payload: "file_key=0xad".to_string(),
+            },
+            process_exe: Some("System".to_string()),
+            process_exe_sha256: None,
+            process_cmdline: None,
+            parent_process: Some("unknown".to_string()),
+            parent_chain: Vec::new(),
+            file_path: Some(r"C:\\var\\lib\\eguard-agent\\baselines.journal".to_string()),
+            file_path_secondary: None,
+            file_write: false,
+            file_sha256: None,
+            event_size: None,
+            dst_ip: None,
+            dst_port: None,
+            dst_domain: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        };
+
+        let event = super::to_detection_event(&enriched, 123);
+        assert!(super::should_drop_low_value_windows_event(
+            &enriched, &event
+        ));
+    }
+
+    #[test]
+    fn should_drop_low_value_windows_event_for_system_browser_profile_chatter() {
+        let enriched = EnrichedEvent {
+            event: RawEvent {
+                event_type: EventType::FileOpen,
+                pid: 4,
+                uid: 0,
+                ts_ns: 1,
+                payload: "file_key=0xae".to_string(),
+            },
+            process_exe: Some("System".to_string()),
+            process_exe_sha256: None,
+            process_cmdline: None,
+            parent_process: Some("unknown".to_string()),
+            parent_chain: Vec::new(),
+            file_path: Some(
+                r"C:\\Users\\Administrator\\AppData\\Roaming\\Mozilla\\Firefox\\Profiles\\mcpwrwi8.default-release\\storage\\permanent\\chrome\\idb\\1657114595AmcateirvtiSty.sqlite-shm".to_string(),
+            ),
+            file_path_secondary: None,
+            file_write: false,
+            file_sha256: None,
+            event_size: None,
+            dst_ip: None,
+            dst_port: None,
+            dst_domain: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        };
+
+        let event = super::to_detection_event(&enriched, 123);
+        assert!(super::should_drop_low_value_windows_event(
+            &enriched, &event
+        ));
+    }
+
+    #[test]
+    fn should_not_drop_firefox_file_event_for_non_profile_user_path() {
+        let enriched = EnrichedEvent {
+            event: RawEvent {
+                event_type: EventType::FileOpen,
+                pid: 4388,
+                uid: 0,
+                ts_ns: 1,
+                payload: "file_key=0xaf".to_string(),
+            },
+            process_exe: Some(r"C:\\Program Files (x86)\\Mozilla Firefox\\firefox.exe".to_string()),
+            process_exe_sha256: None,
+            process_cmdline: Some(
+                r#""C:\Program Files (x86)\Mozilla Firefox\firefox.exe""#.to_string(),
+            ),
+            parent_process: Some("unknown".to_string()),
+            parent_chain: vec![4296],
+            file_path: Some(r"C:\\Users\\Administrator\\Downloads\\invoice.zip".to_string()),
+            file_path_secondary: None,
+            file_write: false,
+            file_sha256: None,
+            event_size: None,
+            dst_ip: None,
+            dst_port: None,
+            dst_domain: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        };
+
+        let event = super::to_detection_event(&enriched, 123);
+        assert_eq!(event.process, "firefox.exe");
+        assert!(!super::should_drop_low_value_windows_event(
             &enriched, &event
         ));
     }
