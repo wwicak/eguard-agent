@@ -190,6 +190,63 @@ fn is_low_value_windows_pseudo_identity(process: &str) -> bool {
         || lowered == "registry.exe"
 }
 
+fn is_low_value_windows_host_process(process: &str) -> bool {
+    let lowered = process.trim().to_ascii_lowercase();
+    matches!(
+        lowered.as_str(),
+        "conhost.exe"
+            | "conhost"
+            | "csrss.exe"
+            | "csrss"
+            | "dllhost.exe"
+            | "dllhost"
+            | "logonui.exe"
+            | "logonui"
+            | "lsass.exe"
+            | "lsass"
+            | "mpdefendercoreservice.exe"
+            | "mpdefendercoreservice"
+            | "msmpeng.exe"
+            | "msmpeng"
+            | "services.exe"
+            | "services"
+            | "sshd-auth.exe"
+            | "sshd-auth"
+            | "sshd-session.exe"
+            | "sshd-session"
+            | "sshd.exe"
+            | "sshd"
+            | "svchost.exe"
+            | "svchost"
+            | "winlogon.exe"
+            | "winlogon"
+            | "wmiapsrv.exe"
+            | "wmiapsrv"
+            | "wmiprvse.exe"
+            | "wmiprvse"
+    )
+}
+
+fn effective_windows_process_basename<'a>(
+    enriched: &'a crate::platform::EnrichedEvent,
+    event: &'a TelemetryEvent,
+) -> Option<&'a str> {
+    enriched
+        .process_exe
+        .as_deref()
+        .map(process_basename)
+        .or_else(|| {
+            event
+                .command_line
+                .as_deref()
+                .and_then(process_name_from_cmdline)
+        })
+        .or_else(|| {
+            let process = event.process.trim();
+            (!process.is_empty()).then_some(process)
+        })
+}
+
 pub(super) fn should_drop_low_value_windows_event(
     enriched: &crate::platform::EnrichedEvent,
     event: &TelemetryEvent,
@@ -216,6 +273,13 @@ pub(super) fn should_drop_low_value_windows_event(
             .is_some();
     if has_meaningful_subject {
         return false;
+    }
+
+    if effective_windows_process_basename(enriched, event)
+        .map(is_low_value_windows_host_process)
+        .unwrap_or(false)
+    {
+        return true;
     }
 
     if event
@@ -531,6 +595,125 @@ mod tests {
 
         let event = super::to_detection_event(&enriched, 123);
         assert!(super::should_drop_low_value_windows_event(
+            &enriched, &event
+        ));
+    }
+
+    #[test]
+    fn should_drop_low_value_windows_event_for_pathless_svchost_host_chatter() {
+        let enriched = EnrichedEvent {
+            event: RawEvent {
+                event_type: EventType::FileOpen,
+                pid: 996,
+                uid: 0,
+                ts_ns: 1,
+                payload: "file_object=0x44".to_string(),
+            },
+            process_exe: Some(r"C:\\Windows\\System32\\svchost.exe".to_string()),
+            process_exe_sha256: None,
+            process_cmdline: Some(r"C:\\Windows\\system32\\svchost.exe -k netsvcs -p".to_string()),
+            parent_process: Some("services.exe".to_string()),
+            parent_chain: vec![580],
+            file_path: None,
+            file_path_secondary: None,
+            file_write: false,
+            file_sha256: None,
+            event_size: None,
+            dst_ip: None,
+            dst_port: None,
+            dst_domain: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        };
+
+        let event = super::to_detection_event(&enriched, 123);
+        assert_eq!(event.process, "svchost.exe");
+        assert_eq!(event.file_path, None);
+        assert!(super::should_drop_low_value_windows_event(
+            &enriched, &event
+        ));
+    }
+
+    #[test]
+    fn should_drop_low_value_windows_event_for_proxy_host_pathless_chatter() {
+        let enriched = EnrichedEvent {
+            event: RawEvent {
+                event_type: EventType::FileOpen,
+                pid: 1372,
+                uid: 0,
+                ts_ns: 1,
+                payload: "file_object=0x55".to_string(),
+            },
+            process_exe: Some(r"C:\\Windows\\System32\\conhost.exe".to_string()),
+            process_exe_sha256: None,
+            process_cmdline: Some(
+                r"\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1".to_string(),
+            ),
+            parent_process: Some("powershell.exe".to_string()),
+            parent_chain: vec![2316],
+            file_path: None,
+            file_path_secondary: None,
+            file_write: false,
+            file_sha256: None,
+            event_size: None,
+            dst_ip: None,
+            dst_port: None,
+            dst_domain: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        };
+
+        let event = super::to_detection_event(&enriched, 123);
+        assert_eq!(event.process, "powershell.exe");
+        assert_eq!(event.parent_process, "powershell.exe");
+        assert!(super::should_drop_low_value_windows_event(
+            &enriched, &event
+        ));
+    }
+
+    #[test]
+    fn should_not_drop_pathless_windows_powershell_smoke_with_meaningful_cmdline() {
+        let enriched = EnrichedEvent {
+            event: RawEvent {
+                event_type: EventType::FileOpen,
+                pid: 4952,
+                uid: 0,
+                ts_ns: 1,
+                payload: "file_object=0x66".to_string(),
+            },
+            process_exe: Some(
+                r"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+                    .to_string(),
+            ),
+            process_exe_sha256: None,
+            process_cmdline: Some(
+                r#"powershell -NoProfile -ExecutionPolicy Bypass -Command "'eguardtdh038' | Out-File -FilePath C:\Windows\Temp\eguardtdh038.txt -Encoding ascii""#
+                    .to_string(),
+            ),
+            parent_process: Some("cmd.exe".to_string()),
+            parent_chain: vec![4540],
+            file_path: None,
+            file_path_secondary: None,
+            file_write: false,
+            file_sha256: None,
+            event_size: None,
+            dst_ip: None,
+            dst_port: None,
+            dst_domain: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        };
+
+        let event = super::to_detection_event(&enriched, 123);
+        assert_eq!(event.process, "powershell.exe");
+        assert_eq!(event.parent_process, "cmd.exe");
+        assert!(!super::should_drop_low_value_windows_event(
             &enriched, &event
         ));
     }
