@@ -1,5 +1,5 @@
 use baseline::BaselineStatus;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use super::super::{
     interval_due, AgentRuntime, ControlPlaneTaskKind, PendingControlPlaneTask, TickEvaluation,
@@ -21,6 +21,11 @@ impl AgentRuntime {
             HEARTBEAT_INTERVAL_SECS,
         );
         if heartbeat_due {
+            debug!(
+                now_unix,
+                last_heartbeat_attempt_unix = ?self.last_heartbeat_attempt_unix,
+                "heartbeat task due"
+            );
             let status = evaluation
                 .map(|eval| eval.compliance.status.clone())
                 .unwrap_or_else(|| self.evaluate_compliance().status);

@@ -1,8 +1,10 @@
 use std::fs;
 use std::path::Path;
+use std::time::Duration;
 
 use response::{CommandExecution, CommandOutcome};
-use tracing::warn;
+use tokio::time::timeout;
+use tracing::{debug, warn};
 
 use super::paths::resolve_agent_data_dir;
 use super::payloads::parse_update_payload;
@@ -20,6 +22,8 @@ mod worker_macos;
 #[cfg(target_os = "windows")]
 mod worker_windows;
 
+const UPDATE_OUTCOME_ACK_TIMEOUT_MS: u64 = 1_000;
+
 impl AgentRuntime {
     pub(crate) async fn flush_update_outcome_reports(&self) {
         let update_dir = resolve_agent_data_dir().join("update");
@@ -32,28 +36,39 @@ impl AgentRuntime {
         };
 
         for (path, report) in reports {
+            debug!(command_id = %report.command_id, path = %path.display(), "flushing persisted update outcome report");
             let result_json = serde_json::json!({ "detail": report.detail }).to_string();
-            match self
-                .client
-                .ack_command_with_result(
+            match timeout(
+                Duration::from_millis(UPDATE_OUTCOME_ACK_TIMEOUT_MS),
+                self.client.ack_command_with_result(
                     &self.config.agent_id,
                     &report.command_id,
                     &report.status,
                     Some(&result_json),
-                )
-                .await
+                ),
+            )
+            .await
             {
-                Ok(()) => {
+                Ok(Ok(())) => {
+                    debug!(command_id = %report.command_id, path = %path.display(), "flushed update outcome report");
                     if let Err(err) = std::fs::remove_file(&path) {
                         warn!(error = %err, path = %path.display(), "failed to remove applied update outcome report");
                     }
                 }
-                Err(err) => {
+                Ok(Err(err)) => {
                     warn!(
                         error = %err,
                         command_id = %report.command_id,
                         path = %path.display(),
                         "failed to flush update outcome report"
+                    );
+                }
+                Err(_) => {
+                    warn!(
+                        command_id = %report.command_id,
+                        path = %path.display(),
+                        timeout_ms = UPDATE_OUTCOME_ACK_TIMEOUT_MS,
+                        "timed out while flushing update outcome report"
                     );
                 }
             }
@@ -127,6 +142,8 @@ fn spawn_update_worker(
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::outcome::{load_update_outcome_reports, write_update_outcome_report};
@@ -207,6 +224,51 @@ mod tests {
             .is_empty());
 
         server.await.expect("mock server join");
+        std::env::remove_var("EGUARD_AGENT_DATA_DIR");
+        let _ = std::fs::remove_dir_all(&data_dir);
+    }
+
+    #[tokio::test]
+    async fn flush_update_outcome_reports_times_out_and_keeps_file() {
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let data_dir = unique_temp_dir("timeout");
+        let update_dir = data_dir.join("update");
+        std::env::set_var("EGUARD_AGENT_DATA_DIR", &data_dir);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock timeout server");
+        let addr = listener.local_addr().expect("mock server addr");
+
+        let server = tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.expect("accept client");
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+
+        write_update_outcome_report(
+            &update_dir,
+            "cmd-update-outcome-timeout",
+            "failed",
+            "package checksum verification failed",
+        )
+        .expect("write outcome report");
+
+        let cfg = AgentConfig {
+            transport_mode: "http".to_string(),
+            server_addr: addr.to_string(),
+            agent_id: "agent-test-outcome-timeout".to_string(),
+            ..AgentConfig::default()
+        };
+        let runtime = AgentRuntime::new(cfg).expect("runtime");
+        runtime.flush_update_outcome_reports().await;
+
+        let reports = load_update_outcome_reports(&update_dir).expect("reload reports");
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].1.command_id, "cmd-update-outcome-timeout");
+
+        server.abort();
         std::env::remove_var("EGUARD_AGENT_DATA_DIR");
         let _ = std::fs::remove_dir_all(&data_dir);
     }

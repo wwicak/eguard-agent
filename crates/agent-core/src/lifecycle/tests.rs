@@ -1601,6 +1601,27 @@ fn synthetic_rule_bundle_sizes_fit_expected_uncompressed_and_zstd_ranges() {
 }
 
 #[tokio::test]
+async fn update_command_does_not_enqueue_response_report() {
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    cfg.server_addr = "127.0.0.1:1".to_string();
+
+    let mut runtime = AgentRuntime::new(cfg).expect("build runtime");
+    runtime.client.set_online(false);
+
+    let command = grpc_client::CommandEnvelope {
+        command_id: "cmd-update-1".to_string(),
+        command_type: "update".to_string(),
+        payload_json: "{}".to_string(),
+    };
+
+    runtime.handle_command(command, 123).await;
+
+    assert!(runtime.pending_response_reports.is_empty());
+    assert_eq!(runtime.completed_command_ids.back().map(String::as_str), Some("cmd-update-1"));
+}
+
+#[tokio::test]
 // AC-DET-160 AC-DET-161 AC-DET-163 AC-DET-183
 async fn emergency_command_is_applied_immediately_in_command_path() {
     let mut cfg = AgentConfig::default();

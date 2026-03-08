@@ -3,6 +3,7 @@ use grpc_client::{
     ComplianceCheckEnvelope, HeartbeatAgentStatusEnvelope, HeartbeatResourceUsageEnvelope,
     HeartbeatRuntimeEnvelope, InventoryEnvelope,
 };
+use tracing::debug;
 
 use super::super::{
     interval_due, AgentRuntime, ComplianceResult, PendingControlPlaneSend,
@@ -25,6 +26,7 @@ impl AgentRuntime {
             return;
         }
         self.last_heartbeat_attempt_unix = Some(now_unix);
+        debug!(now_unix, compliance_status, baseline_status, "enqueueing heartbeat send");
 
         let config_version = self.heartbeat_config_version();
         let runtime = self.build_heartbeat_runtime_payload(baseline_status);

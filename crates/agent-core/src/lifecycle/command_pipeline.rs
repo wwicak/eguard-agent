@@ -31,7 +31,6 @@ mod windows_network_profile;
 
 const COMPLETED_COMMAND_CURSOR_CAP: usize = 256;
 const COMMAND_ACK_TIMEOUT_MS: u64 = 250;
-const COMMAND_REPORT_TIMEOUT_MS: u64 = 250;
 
 impl AgentRuntime {
     pub(super) fn completed_command_cursor(&self) -> Vec<String> {
@@ -107,8 +106,7 @@ impl AgentRuntime {
 
         self.ack_command_result(&command_id, exec.status, &exec.detail)
             .await;
-        self.report_command_result(&command, exec.status, &exec.detail)
-            .await;
+        self.report_command_result(&command, exec.status, &exec.detail);
 
         self.track_completed_command(&command_id);
     }
@@ -201,8 +199,12 @@ impl AgentRuntime {
         }
     }
 
-    async fn report_command_result(&self, command: &CommandEnvelope, status: &str, detail: &str) {
-        let report = ResponseEnvelope {
+    fn report_command_result(&mut self, command: &CommandEnvelope, status: &str, detail: &str) {
+        if command.command_type.eq_ignore_ascii_case("update") {
+            return;
+        }
+
+        self.enqueue_response_report(ResponseEnvelope {
             agent_id: self.config.agent_id.clone(),
             action_type: format!("command:{}", command.command_type),
             confidence: "high".to_string(),
@@ -218,25 +220,6 @@ impl AgentRuntime {
             rule_name: String::new(),
             threat_category: String::new(),
             file_path: None,
-        };
-
-        let send = self.client.send_response(&report);
-        match timeout(Duration::from_millis(COMMAND_REPORT_TIMEOUT_MS), send).await {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => {
-                warn!(
-                    error = %err,
-                    command_id = %command.command_id,
-                    "failed to send command response report"
-                );
-            }
-            Err(_) => {
-                warn!(
-                    command_id = %command.command_id,
-                    timeout_ms = COMMAND_REPORT_TIMEOUT_MS,
-                    "timed out while reporting command result"
-                );
-            }
-        }
+        });
     }
 }

@@ -1,17 +1,23 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use tracing::warn;
+use tokio::time::timeout;
+use tracing::{debug, warn};
 
 use super::{
     elapsed_micros, interval_due, AgentRuntime, PendingCommand, COMMAND_BACKLOG_CAPACITY,
     COMMAND_EXECUTION_BUDGET_PER_TICK, COMMAND_FETCH_INTERVAL_SECS, COMMAND_FETCH_LIMIT,
 };
 
+const COMMAND_FETCH_TIMEOUT_MS: u64 = 2_000;
+
 impl AgentRuntime {
     pub(super) async fn run_connected_command_stage(&mut self, now_unix: i64) {
         let command_sync_started = Instant::now();
+        debug!(now_unix, pending_commands = self.pending_commands.len(), "command sync stage start");
         self.flush_update_outcome_reports().await;
+        debug!(now_unix, pending_commands = self.pending_commands.len(), "command outcome flush complete");
         self.sync_pending_commands(now_unix).await;
+        debug!(now_unix, pending_commands = self.pending_commands.len(), "command sync stage complete");
         self.metrics.last_command_sync_micros = elapsed_micros(command_sync_started);
     }
 
@@ -64,13 +70,22 @@ impl AgentRuntime {
         }
 
         let completed_cursor = self.completed_command_cursor();
-        match self
-            .client
-            .fetch_commands(&self.config.agent_id, &completed_cursor, fetch_limit)
-            .await
+        debug!(
+            now_unix,
+            fetch_limit,
+            completed_cursor_len = completed_cursor.len(),
+            "fetching command backlog"
+        );
+        match timeout(
+            Duration::from_millis(COMMAND_FETCH_TIMEOUT_MS),
+            self.client
+                .fetch_commands(&self.config.agent_id, &completed_cursor, fetch_limit),
+        )
+        .await
         {
-            Ok(commands) => {
+            Ok(Ok(commands)) => {
                 let fetched = commands.len();
+                debug!(now_unix, fetched, "command fetch returned");
                 self.pending_commands
                     .extend(commands.into_iter().map(|envelope| PendingCommand {
                         envelope,
@@ -78,8 +93,12 @@ impl AgentRuntime {
                     }));
                 fetched
             }
-            Err(err) => {
+            Ok(Err(err)) => {
                 warn!(error = %err, "command fetch failed");
+                0
+            }
+            Err(_) => {
+                warn!(timeout_ms = COMMAND_FETCH_TIMEOUT_MS, "command fetch timed out");
                 0
             }
         }
@@ -105,5 +124,44 @@ impl AgentRuntime {
         };
 
         now_unix.saturating_sub(oldest.enqueued_at_unix).max(0) as u64
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AgentConfig;
+
+    #[tokio::test]
+    async fn fetch_command_backlog_batch_times_out_without_wedging_runtime() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock command server");
+        let addr = listener.local_addr().expect("mock server addr");
+
+        let server = tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.expect("accept client");
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+
+        let mut cfg = AgentConfig::default();
+        cfg.transport_mode = "http".to_string();
+        cfg.server_addr = addr.to_string();
+        cfg.offline_buffer_backend = "memory".to_string();
+        cfg.self_protection_integrity_check_interval_secs = 0;
+
+        let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+        let started = Instant::now();
+        let fetched = runtime.fetch_command_backlog_batch(1_700_000_000).await;
+        let elapsed = started.elapsed();
+
+        assert_eq!(fetched, 0);
+        assert!(runtime.pending_commands.is_empty());
+        assert!(
+            elapsed < Duration::from_secs(4),
+            "command fetch should time out promptly, elapsed={elapsed:?}"
+        );
+
+        server.abort();
     }
 }

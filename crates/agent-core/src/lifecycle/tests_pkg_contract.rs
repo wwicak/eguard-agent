@@ -239,8 +239,10 @@ fn linux_update_packaging_recovers_service_after_upgrade() {
         "linux update worker should prefer a full service restart after package install"
     );
     assert!(
-        worker_source.contains("systemctl start eguard-agent || true"),
-        "linux update worker should still fall back to start if restart cannot be used"
+        worker_source.contains(
+            "systemctl start eguard-agent || fail_outcome \"agent service restart failed after package install\""
+        ),
+        "linux update worker should still fall back to start and report failure if recovery cannot bring the service back"
     );
     assert!(
         worker_source.contains("Command::new(\"/bin/bash\")"),

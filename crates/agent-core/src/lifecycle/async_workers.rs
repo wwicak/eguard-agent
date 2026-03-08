@@ -1,4 +1,7 @@
-use tracing::warn;
+use std::time::Duration;
+
+use tokio::time::timeout;
+use tracing::{debug, warn};
 
 use grpc_client::ResponseEnvelope;
 
@@ -7,6 +10,8 @@ use super::{
     CONTROL_PLANE_SEND_CONCURRENCY, CONTROL_PLANE_SEND_QUEUE_CAPACITY, RESPONSE_REPORT_CONCURRENCY,
     RESPONSE_REPORT_QUEUE_CAPACITY,
 };
+
+const CONTROL_PLANE_SEND_TIMEOUT_MS: u64 = 10_000;
 
 impl AgentRuntime {
     pub(super) fn enqueue_control_plane_send(&mut self, send: PendingControlPlaneSend) {
@@ -40,6 +45,7 @@ impl AgentRuntime {
                 .saturating_add(1);
         }
 
+        debug!(kind, queue_depth = self.pending_control_plane_sends.len() + 1, "queued control-plane send");
         self.pending_control_plane_sends.push_back(send);
     }
 
@@ -72,6 +78,8 @@ impl AgentRuntime {
                 Ok(AsyncWorkerResult::ControlPlaneSend { kind, error }) => {
                     if let Some(err) = error {
                         warn!(kind, error = %err, "control-plane async send failed");
+                    } else {
+                        debug!(kind, "control-plane async send completed");
                     }
                 }
                 Ok(AsyncWorkerResult::ResponseReport { .. }) => {}
@@ -104,55 +112,16 @@ impl AgentRuntime {
                 break;
             };
 
+            let kind = control_plane_send_kind(&send);
+            debug!(kind, in_flight = self.control_plane_send_tasks.len() + 1, "dispatching control-plane send");
             let client = self.client.clone();
             self.control_plane_send_tasks.spawn(async move {
-                match send {
-                    PendingControlPlaneSend::Heartbeat {
-                        agent_id,
-                        compliance_status,
-                        config_version,
-                        baseline_status,
-                        runtime,
-                    } => {
-                        let error = client
-                            .send_heartbeat_with_runtime_config(
-                                &agent_id,
-                                &compliance_status,
-                                &config_version,
-                                &baseline_status,
-                                Some(&runtime),
-                            )
-                            .await
-                            .err()
-                            .map(|err| err.to_string());
-                        AsyncWorkerResult::ControlPlaneSend {
-                            kind: "heartbeat",
-                            error,
-                        }
-                    }
-                    PendingControlPlaneSend::Compliance { envelope } => {
-                        let error = client
-                            .send_compliance(&envelope)
-                            .await
-                            .err()
-                            .map(|err| err.to_string());
-                        AsyncWorkerResult::ControlPlaneSend {
-                            kind: "compliance",
-                            error,
-                        }
-                    }
-                    PendingControlPlaneSend::Inventory { envelope } => {
-                        let error = client
-                            .send_inventory(&envelope)
-                            .await
-                            .err()
-                            .map(|err| err.to_string());
-                        AsyncWorkerResult::ControlPlaneSend {
-                            kind: "inventory",
-                            error,
-                        }
-                    }
-                }
+                run_control_plane_send_with_timeout(
+                    client,
+                    send,
+                    Duration::from_millis(CONTROL_PLANE_SEND_TIMEOUT_MS),
+                )
+                .await
             });
         }
     }
@@ -174,6 +143,59 @@ impl AgentRuntime {
                 AsyncWorkerResult::ResponseReport { action_type, error }
             });
         }
+    }
+}
+
+async fn run_control_plane_send_with_timeout(
+    client: grpc_client::Client,
+    send: PendingControlPlaneSend,
+    timeout_duration: Duration,
+) -> AsyncWorkerResult {
+    let kind = control_plane_send_kind(&send);
+    match timeout(timeout_duration, run_control_plane_send(client, send)).await {
+        Ok(error) => AsyncWorkerResult::ControlPlaneSend { kind, error },
+        Err(_) => AsyncWorkerResult::ControlPlaneSend {
+            kind,
+            error: Some(format!(
+                "control-plane send timed out after {}ms",
+                timeout_duration.as_millis()
+            )),
+        },
+    }
+}
+
+async fn run_control_plane_send(
+    client: grpc_client::Client,
+    send: PendingControlPlaneSend,
+) -> Option<String> {
+    match send {
+        PendingControlPlaneSend::Heartbeat {
+            agent_id,
+            compliance_status,
+            config_version,
+            baseline_status,
+            runtime,
+        } => client
+            .send_heartbeat_with_runtime_config(
+                &agent_id,
+                &compliance_status,
+                &config_version,
+                &baseline_status,
+                Some(&runtime),
+            )
+            .await
+            .err()
+            .map(|err| err.to_string()),
+        PendingControlPlaneSend::Compliance { envelope } => client
+            .send_compliance(&envelope)
+            .await
+            .err()
+            .map(|err| err.to_string()),
+        PendingControlPlaneSend::Inventory { envelope } => client
+            .send_inventory(&envelope)
+            .await
+            .err()
+            .map(|err| err.to_string()),
     }
 }
 
@@ -367,6 +389,43 @@ mod tests {
             runtime.pending_control_plane_sends.back(),
             Some(PendingControlPlaneSend::Compliance { envelope }) if envelope.status == "warn"
         ));
+    }
+
+    #[tokio::test]
+    async fn control_plane_send_timeout_bounds_hung_heartbeat_send() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock control-plane server");
+        let addr = listener.local_addr().expect("mock control-plane addr");
+        let server = tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.expect("accept client");
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+
+        let client = grpc_client::Client::new(addr.to_string());
+        let started = std::time::Instant::now();
+        let result = run_control_plane_send_with_timeout(
+            client,
+            heartbeat_send("cfg-timeout", "learning"),
+            Duration::from_millis(100),
+        )
+        .await;
+        let elapsed = started.elapsed();
+
+        match result {
+            AsyncWorkerResult::ControlPlaneSend { kind, error } => {
+                assert_eq!(kind, "heartbeat");
+                let error = error.expect("timeout error");
+                assert!(error.contains("timed out after 100ms"), "unexpected error: {error}");
+            }
+            other => panic!("expected control-plane send result, got {:?}", other),
+        }
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "control-plane send timeout should bound hung requests, elapsed={elapsed:?}"
+        );
+
+        server.abort();
     }
 
     #[test]

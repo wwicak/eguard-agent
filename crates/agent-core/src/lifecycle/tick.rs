@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use anyhow::Result;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use nac::posture_from_compliance;
 use response::plan_action;
@@ -287,18 +287,24 @@ impl AgentRuntime {
         evaluation: Option<&TickEvaluation>,
     ) -> Result<()> {
         let connected_started = Instant::now();
+        debug!(now_unix, "connected tick start");
         self.client.set_online(true);
         self.run_connected_response_stage(now_unix, evaluation)
             .await;
         self.ensure_enrolled().await;
 
         self.run_connected_telemetry_stage(evaluation).await?;
+        debug!(now_unix, "connected telemetry stage complete");
         self.run_connected_control_plane_stage(now_unix, evaluation)
             .await?;
+        debug!(now_unix, "connected control-plane stage complete");
         self.run_memory_scan_if_due(now_unix).await;
+        debug!(now_unix, "connected memory scan complete");
         self.drive_async_workers();
+        debug!(now_unix, "connected async worker drive complete");
 
         self.metrics.last_connected_tick_micros = elapsed_micros(connected_started);
+        debug!(now_unix, tick_micros = self.metrics.last_connected_tick_micros, "connected tick complete");
         Ok(())
     }
 
