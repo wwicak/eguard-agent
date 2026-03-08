@@ -254,7 +254,7 @@ fn linux_update_packaging_recovers_service_after_upgrade() {
     let windows_worker_source =
         read("crates/agent-core/src/lifecycle/command_pipeline/update_agent/worker_windows.rs");
     assert!(
-        windows_worker_source.contains("taskkill /F /PID $runningProc /T"),
+        windows_worker_source.contains("taskkill /F /PID $runningProc.Id /T"),
         "windows update worker should force-kill a lingering service process before replacing the binary"
     );
     assert!(
