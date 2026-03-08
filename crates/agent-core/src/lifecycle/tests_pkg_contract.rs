@@ -250,6 +250,22 @@ fn linux_update_packaging_recovers_service_after_upgrade() {
         worker_source.contains(".arg(\"/bin/bash\")"),
         "linux update worker systemd-run path should invoke /bin/bash explicitly"
     );
+
+    let windows_worker_source =
+        read("crates/agent-core/src/lifecycle/command_pipeline/update_agent/worker_windows.rs");
+    assert!(
+        windows_worker_source.contains("taskkill /F /PID $runningProc /T"),
+        "windows update worker should force-kill a lingering service process before replacing the binary"
+    );
+    assert!(
+        windows_worker_source.contains("sc.exe config $ServiceName binPath="),
+        "windows update worker should re-assert the canonical service binary path after update"
+    );
+    assert!(
+        windows_worker_source
+            .contains("Verify-FileHash -Path $agentPath -ExpectedSha256 $ExpectedSha256"),
+        "windows EXE update worker should verify the installed binary hash after copy"
+    );
 }
 
 #[test]

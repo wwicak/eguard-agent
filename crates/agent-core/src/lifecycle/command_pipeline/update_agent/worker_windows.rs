@@ -64,47 +64,83 @@ function Write-Log {
     Add-Content -Path $LogPath -Value $line
 }
 
+function Get-ServiceProcessId {
+    param([string]$ServiceName)
+    try {
+        $service = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
+        return [int]$service.ProcessId
+    }
+    catch {
+        return 0
+    }
+}
+
+function Stop-AgentService {
+    param([string]$ServiceName)
+    Write-Log "stopping service $ServiceName"
+    Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
+
+    $runningProc = Get-ServiceProcessId -ServiceName $ServiceName
+    if ($runningProc -gt 0) {
+        Write-Log "taskkill fallback for pid $runningProc"
+        & taskkill /F /PID $runningProc /T | Out-Null
+        Start-Sleep -Seconds 2
+    }
+}
+
+function Ensure-ServiceBinPath {
+    param([string]$ServiceName, [string]$BinaryPath)
+    & sc.exe config $ServiceName binPath= "\"$BinaryPath\"" | Out-Null
+}
+
+function Verify-FileHash {
+    param([string]$Path, [string]$ExpectedSha256)
+    $actual = (Get-FileHash -Path $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    $expected = $ExpectedSha256.ToLowerInvariant()
+    if ($actual -ne $expected) {
+        throw "sha256 mismatch: expected $expected got $actual"
+    }
+    return $actual
+}
+
 try {
     New-Item -ItemType Directory -Path $WorkingDir -Force | Out-Null
     $ext = if ($PackageKind -eq 'msi') { 'msi' } else { 'exe' }
     $pkgPath = Join-Path $WorkingDir ("eguard-agent-$TargetVersion.$ext")
     $tmpPath = "$pkgPath.download"
+    $serviceName = 'eGuardAgent'
+    $agentPath = 'C:\Program Files\eGuard\eguard-agent.exe'
+    $backupPath = "${agentPath}.backup-$(Get-Date -Format yyyyMMddHHmmss)"
 
     Write-Log "downloading update from $PackageUrl"
     Invoke-WebRequest -Uri $PackageUrl -OutFile $tmpPath -UseBasicParsing
-
-    $actual = (Get-FileHash -Path $tmpPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    $expected = $ExpectedSha256.ToLowerInvariant()
-    if ($actual -ne $expected) {
-        throw "sha256 mismatch: expected $expected got $actual"
-    }
+    $downloadHash = Verify-FileHash -Path $tmpPath -ExpectedSha256 $ExpectedSha256
+    Write-Log "download verified sha256=$downloadHash"
 
     Move-Item -Path $tmpPath -Destination $pkgPath -Force
-    $serviceName = 'eGuardAgent'
 
     if ($PackageKind -eq 'msi') {
+        Stop-AgentService -ServiceName $serviceName
         Write-Log "installing MSI package"
-        Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
         Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/i', $pkgPath, '/qn', '/norestart') -Wait -NoNewWindow
+        Ensure-ServiceBinPath -ServiceName $serviceName -BinaryPath $agentPath
         Start-Service -Name $serviceName -ErrorAction SilentlyContinue
         Write-Log "MSI update finished"
         exit 0
     }
 
-    $agentPath = 'C:\Program Files\eGuard\eguard-agent.exe'
-    $backupPath = "${agentPath}.backup-$(Get-Date -Format yyyyMMddHHmmss)"
-
-    Write-Log "stopping service $serviceName"
-    Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 2
+    Stop-AgentService -ServiceName $serviceName
 
     if (Test-Path $agentPath) {
         Copy-Item -Path $agentPath -Destination $backupPath -Force
     }
 
     Copy-Item -Path $pkgPath -Destination $agentPath -Force
+    $installedHash = Verify-FileHash -Path $agentPath -ExpectedSha256 $ExpectedSha256
+    Ensure-ServiceBinPath -ServiceName $serviceName -BinaryPath $agentPath
     Start-Service -Name $serviceName
-    Write-Log "EXE update finished"
+    Write-Log "EXE update finished (installed_sha256=$installedHash)"
 }
 catch {
     Write-Log "update failed: $($_.Exception.Message)"
