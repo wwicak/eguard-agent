@@ -201,6 +201,11 @@ fn linux_update_packaging_recovers_service_after_upgrade() {
 
     let postinstall = read("packaging/postinstall.sh");
     assert!(
+        postinstall
+            .contains("sed -i 's/^TimeoutStopSec=.*/TimeoutStopSec=15s/' \"$legacy_unit\" || true"),
+        "postinstall should patch legacy /etc unit files to the safer stop timeout"
+    );
+    assert!(
         postinstall.contains("systemctl reset-failed eguard-agent.service || true"),
         "postinstall should clear failed state before restart"
     );
