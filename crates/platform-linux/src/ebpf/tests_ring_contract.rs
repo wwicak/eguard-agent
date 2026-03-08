@@ -187,6 +187,16 @@ fn engine_supports_perf_buffer_fallback_backend_initialization() {
 }
 
 #[test]
+fn perf_fallback_marks_optional_object_files_for_skip_on_load_failure() {
+    let source = std::fs::read_to_string(
+        workspace_root().join("crates/platform-linux/src/ebpf/libbpf_backend.rs"),
+    )
+    .expect("read libbpf backend source");
+    assert!(source.contains("name.contains(\"lsm_block\") || name.contains(\"module_load\")"));
+    assert!(source.contains("optional eBPF object failed to load and will be skipped"));
+}
+
+#[test]
 // AC-EBP-013
 fn poll_and_forward_sends_polled_events_to_mpsc_sender() {
     let mut backend = QueueRingBufferBackend::default();

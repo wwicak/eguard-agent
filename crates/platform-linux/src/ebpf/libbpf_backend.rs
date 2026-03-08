@@ -139,11 +139,28 @@ fn load_objects_with_degradation(
     let mut failed_probes = Vec::new();
     let mut loaded = Vec::with_capacity(elf_paths.len());
     for path in elf_paths {
-        loaded.push(load_object_with_degradation(
-            path,
-            event_map_name,
-            &mut failed_probes,
-        )?);
+        match load_object_with_degradation(path, event_map_name, &mut failed_probes) {
+            Ok(object) => loaded.push(object),
+            Err(err) if is_optional_ebpf_object_path(path) => {
+                let optional = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("optional-ebpf-object");
+                failed_probes.push(format!("{}:{}", optional, err));
+                warn!(
+                    error = %err,
+                    path = %path.display(),
+                    "optional eBPF object failed to load and will be skipped"
+                );
+            }
+            Err(err) => return Err(err),
+        }
+    }
+
+    if loaded.is_empty() {
+        return Err(EbpfError::Backend(
+            "no eBPF objects loaded successfully".to_string(),
+        ));
     }
 
     let total_attached: usize = loaded.iter().map(|o| o.attached_programs.len()).sum();
@@ -344,6 +361,14 @@ fn collect_drop_counter_sources(loaded: &[LoadedObject]) -> Result<Vec<DropCount
 
 fn is_bss_map_name(raw: &str) -> bool {
     raw == ".bss" || raw.ends_with(".bss")
+}
+
+pub(super) fn is_optional_ebpf_object_path(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+
+    name.contains("lsm_block") || name.contains("module_load")
 }
 
 fn collect_event_map_sources(
