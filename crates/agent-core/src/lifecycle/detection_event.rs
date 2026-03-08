@@ -288,6 +288,11 @@ fn is_low_value_windows_system_file_path(path: &str) -> bool {
 
     normalized == r"c:\$logfile"
         || normalized == r"c:\$mft"
+        || normalized.starts_with(r"c:\windows\winsxs\")
+        || normalized.starts_with(r"c:\windows\system32\catroot\")
+        || normalized.starts_with(r"c:\windows\system32\catroot2\")
+        || normalized.starts_with(r"c:\windows\assembly\")
+        || normalized.starts_with(r"c:\windows\microsoft.net\assembly\")
         || normalized.starts_with(r"c:\windows\system32\logfiles\wmi")
         || normalized.starts_with(r"c:\windows\system32\winevt\logs")
         || normalized.starts_with(r"c:\windows\system32\wbem\repository")
@@ -882,6 +887,121 @@ mod tests {
             file_path: Some(
                 r"C:\\Windows\\System32\\winevt\\Logs\\Microsoft-Windows-PowerShell%4Operational.evtx"
                     .to_string(),
+            ),
+            file_path_secondary: None,
+            file_write: false,
+            file_sha256: None,
+            event_size: None,
+            dst_ip: None,
+            dst_port: None,
+            dst_domain: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        };
+
+        let event = super::to_detection_event(&enriched, 123);
+        assert_eq!(event.process, "System");
+        assert!(super::should_drop_low_value_windows_event(
+            &enriched, &event
+        ));
+    }
+
+    #[test]
+    fn should_drop_low_value_windows_event_for_system_winsxs_chatter() {
+        let enriched = EnrichedEvent {
+            event: RawEvent {
+                event_type: EventType::FileOpen,
+                pid: 4,
+                uid: 0,
+                ts_ns: 1,
+                payload: "file_key=0x98".to_string(),
+            },
+            process_exe: Some("System".to_string()),
+            process_exe_sha256: None,
+            process_cmdline: None,
+            parent_process: Some("unknown".to_string()),
+            parent_chain: Vec::new(),
+            file_path: Some(
+                r"C:\\Windows\\WinSxS\\amd64_microsoft-windows-appid_31bf3856ad364e35_10.0.17763.1_none_4811fa310a50b802".to_string(),
+            ),
+            file_path_secondary: None,
+            file_write: false,
+            file_sha256: None,
+            event_size: None,
+            dst_ip: None,
+            dst_port: None,
+            dst_domain: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        };
+
+        let event = super::to_detection_event(&enriched, 123);
+        assert_eq!(event.process, "System");
+        assert!(super::should_drop_low_value_windows_event(
+            &enriched, &event
+        ));
+    }
+
+    #[test]
+    fn should_drop_low_value_windows_event_for_system_catroot_chatter() {
+        let enriched = EnrichedEvent {
+            event: RawEvent {
+                event_type: EventType::FileOpen,
+                pid: 4,
+                uid: 0,
+                ts_ns: 1,
+                payload: "file_key=0x98b".to_string(),
+            },
+            process_exe: Some("System".to_string()),
+            process_exe_sha256: None,
+            process_cmdline: None,
+            parent_process: Some("unknown".to_string()),
+            parent_chain: Vec::new(),
+            file_path: Some(
+                r"C:\\Windows\\System32\\CatRoot\\{127D0A1D-4EF2-11D1-8608-00C04FC295EE}"
+                    .to_string(),
+            ),
+            file_path_secondary: None,
+            file_write: false,
+            file_sha256: None,
+            event_size: None,
+            dst_ip: None,
+            dst_port: None,
+            dst_domain: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        };
+
+        let event = super::to_detection_event(&enriched, 123);
+        assert_eq!(event.process, "System");
+        assert!(super::should_drop_low_value_windows_event(
+            &enriched, &event
+        ));
+    }
+
+    #[test]
+    fn should_drop_low_value_windows_event_for_system_gac_chatter() {
+        let enriched = EnrichedEvent {
+            event: RawEvent {
+                event_type: EventType::FileOpen,
+                pid: 4,
+                uid: 0,
+                ts_ns: 1,
+                payload: "file_key=0x98c".to_string(),
+            },
+            process_exe: Some("System".to_string()),
+            process_exe_sha256: None,
+            process_cmdline: None,
+            parent_process: Some("unknown".to_string()),
+            parent_chain: Vec::new(),
+            file_path: Some(
+                r"C:\\Windows\\Microsoft.NET\\assembly\\GAC_MSIL\\System.Management\\v4.0_4.0.0.0__b03f5f7f11d50a3a\\System.Management.dll".to_string(),
             ),
             file_path_secondary: None,
             file_write: false,
