@@ -45,7 +45,8 @@ pub(super) fn spawn_update_worker(
         .try_clone()
         .map_err(|err| format!("clone update log {}: {}", log_path.display(), err))?;
 
-    Command::new(&script_path)
+    Command::new("/bin/bash")
+        .arg(&script_path)
         .args(&script_args)
         .stdout(Stdio::from(log_file))
         .stderr(Stdio::from(stderr_file))
@@ -156,6 +157,7 @@ fn spawn_worker_via_systemd_run(
         .arg("--unit")
         .arg(&unit_name)
         .arg("--collect")
+        .arg("/bin/bash")
         .arg(script_path)
         .args(script_args)
         .output()

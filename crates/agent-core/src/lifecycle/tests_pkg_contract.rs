@@ -242,6 +242,14 @@ fn linux_update_packaging_recovers_service_after_upgrade() {
         worker_source.contains("systemctl start eguard-agent || true"),
         "linux update worker should still fall back to start if restart cannot be used"
     );
+    assert!(
+        worker_source.contains("Command::new(\"/bin/bash\")"),
+        "linux update worker fallback should launch via /bin/bash so noexec update dirs do not block self-update"
+    );
+    assert!(
+        worker_source.contains(".arg(\"/bin/bash\")"),
+        "linux update worker systemd-run path should invoke /bin/bash explicitly"
+    );
 }
 
 #[test]
