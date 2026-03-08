@@ -72,7 +72,7 @@ fn collect_windows_snapshot() -> Result<SystemSnapshot> {
         screen_lock_enabled: None,
         auto_updates_enabled,
         antivirus_running,
-        agent_version: env!("CARGO_PKG_VERSION").to_string(),
+        agent_version: compliance::current_agent_version().to_string(),
         os_type: "windows".to_string(),
         capabilities: windows_capabilities(),
     })
@@ -171,7 +171,7 @@ fn collect_macos_snapshot() -> Result<SystemSnapshot> {
         screen_lock_enabled,
         auto_updates_enabled,
         antivirus_running: None,
-        agent_version: env!("CARGO_PKG_VERSION").to_string(),
+        agent_version: compliance::current_agent_version().to_string(),
         os_type: "macos".to_string(),
         capabilities: macos_capabilities(),
     })

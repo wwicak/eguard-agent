@@ -17,6 +17,7 @@ tonic.workspace = true
 tonic-prost.workspace = true
 prost.workspace = true
 sha2.workspace = true
+agent-version = { path = "../agent-version" }
 zstd = "0.13"
 
 [build-dependencies]

@@ -932,7 +932,8 @@ fn is_connection_error(err: &anyhow::Error) -> bool {
 }
 
 fn default_agent_version() -> String {
-    std::env::var("EGUARD_AGENT_VERSION").unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string())
+    std::env::var(agent_version::BUILD_VERSION_ENV)
+        .unwrap_or_else(|_| agent_version::current_agent_version().to_string())
 }
 
 fn allow_tofu_pin_bootstrap() -> bool {

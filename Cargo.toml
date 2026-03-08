@@ -13,6 +13,7 @@ members = [
   "crates/platform-macos",
   "crates/crypto-accel",
   "crates/self-protect",
+  "crates/agent-version",
 ]
 exclude = ["fuzz"]
 resolver = "2"

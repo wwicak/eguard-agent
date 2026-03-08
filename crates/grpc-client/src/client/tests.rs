@@ -415,7 +415,7 @@ fn alternate_grpc_server_addr_ignores_non_standard_ports() {
 // AC-PKG-027
 fn client_agent_version_can_be_updated_for_subsequent_heartbeat_reporting() {
     let mut c = Client::new("127.0.0.1:50052".to_string());
-    assert_eq!(c.agent_version(), env!("CARGO_PKG_VERSION"));
+    assert_eq!(c.agent_version(), agent_version::current_agent_version());
 
     c.set_agent_version("1.2.3");
     assert_eq!(c.agent_version(), "1.2.3");

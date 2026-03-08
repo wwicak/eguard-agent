@@ -1380,7 +1380,7 @@ fn detect_antivirus_running() -> Option<bool> {
 }
 
 pub fn current_agent_version() -> &'static str {
-    env!("CARGO_PKG_VERSION")
+    agent_version::current_agent_version()
 }
 
 pub fn default_runtime_settings() -> (u64, bool) {

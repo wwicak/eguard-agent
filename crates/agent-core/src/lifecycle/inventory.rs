@@ -26,7 +26,7 @@ impl AgentRuntime {
         let mut attributes = HashMap::new();
         attributes.insert(
             "agent_version".to_string(),
-            env!("CARGO_PKG_VERSION").to_string(),
+            compliance::current_agent_version().to_string(),
         );
         if !self.compliance_policy_id.is_empty() {
             attributes.insert("policy_id".to_string(), self.compliance_policy_id.clone());

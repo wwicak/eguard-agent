@@ -8,3 +8,4 @@ license.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 regex.workspace = true
+agent-version = { path = "../agent-version" }

@@ -188,5 +188,8 @@ fn default_agent_version_prefers_environment_override() {
     std::env::set_var("EGUARD_AGENT_VERSION", "9.9.9");
     assert_eq!(default_agent_version(), "9.9.9");
     std::env::remove_var("EGUARD_AGENT_VERSION");
-    assert_eq!(default_agent_version(), env!("CARGO_PKG_VERSION"));
+    assert_eq!(
+        default_agent_version(),
+        agent_version::current_agent_version()
+    );
 }
