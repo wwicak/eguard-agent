@@ -258,6 +258,10 @@ fn linux_update_packaging_recovers_service_after_upgrade() {
         "windows update worker should force-kill a lingering service process before replacing the binary"
     );
     assert!(
+        windows_worker_source.contains("failureflag $ServiceName 0"),
+        "windows update worker should disable non-crash failure recovery before killing the service"
+    );
+    assert!(
         windows_worker_source.contains("sc.exe config $ServiceName binPath="),
         "windows update worker should re-assert the canonical service binary path after update"
     );
@@ -265,6 +269,10 @@ fn linux_update_packaging_recovers_service_after_upgrade() {
         windows_worker_source
             .contains("Verify-FileHash -Path $agentPath -ExpectedSha256 $ExpectedSha256"),
         "windows EXE update worker should verify the installed binary hash after copy"
+    );
+    assert!(
+        windows_worker_source.contains("failureflag $ServiceName 1"),
+        "windows update worker should restore non-crash failure recovery after update"
     );
 }
 

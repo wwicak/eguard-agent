@@ -87,6 +87,7 @@ function Stop-AgentService {
     param([string]$ServiceName)
     Write-Log "stopping service $ServiceName"
     & sc.exe failure $ServiceName reset= 0 actions= "" 2>$null | Out-Null
+    & sc.exe failureflag $ServiceName 0 2>$null | Out-Null
     & sc.exe config $ServiceName start= demand 2>$null | Out-Null
     Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
 
