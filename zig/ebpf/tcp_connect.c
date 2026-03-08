@@ -24,10 +24,7 @@
 #define TCP_SYN_SENT    2
 #define TCP_ESTABLISHED 1
 
-struct {
-    __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, DEFAULT_RINGBUF_CAPACITY);
-} events SEC(".maps");
+EGUARD_DEFINE_EVENTS_MAP(events);
 
 struct tcp_connect_event {
     struct event_hdr hdr;
@@ -46,20 +43,13 @@ SEC("tracepoint/sock/inet_sock_set_state")
 int eguard_inet_sock_set_state(void *ctx)
 {
     __s32 oldstate = 0, newstate = 0;
-    bpf_probe_read(&oldstate, sizeof(oldstate), ctx + 16);
-    bpf_probe_read(&newstate, sizeof(newstate), ctx + 20);
+    bpf_probe_read(&oldstate, sizeof(oldstate), (__u8 *)ctx + 16);
+    bpf_probe_read(&newstate, sizeof(newstate), (__u8 *)ctx + 20);
 
     if (oldstate != TCP_SYN_SENT || newstate != TCP_ESTABLISHED)
         return 0;
 
-    struct tcp_connect_event *e =
-        bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-    if (!e) {
-        record_drop();
-        return 0;
-    }
-
-    bpf_memzero(e, sizeof(*e));
+    EGUARD_ALLOC_EVENT(tcp_connect_event, e);
     fill_hdr(&e->hdr, EVENT_TCP_CONNECT);
 
     bpf_probe_read(&e->sport,    2,  (__u8 *)ctx + 24);
@@ -78,6 +68,5 @@ int eguard_inet_sock_set_state(void *ctx)
     bpf_probe_read(e->saddr_v6,  16, (__u8 *)ctx + 40);
     bpf_probe_read(e->daddr_v6,  16, (__u8 *)ctx + 56);
 
-    bpf_ringbuf_submit(e, 0);
-    return 0;
+    EGUARD_SUBMIT_EVENT(ctx, e);
 }

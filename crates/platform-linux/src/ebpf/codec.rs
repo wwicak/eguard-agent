@@ -169,8 +169,15 @@ fn parse_file_write_payload(raw: &[u8]) -> String {
 }
 
 fn parse_file_rename_payload(raw: &[u8]) -> String {
-    let old_path = parse_c_string(slice_window(raw, 0, 256));
-    let new_path = parse_c_string(slice_window(raw, 256, 256));
+    let (old_window, new_offset, new_window) = if (384..512).contains(&raw.len()) {
+        let half = raw.len() / 2;
+        (half, half, raw.len().saturating_sub(half))
+    } else {
+        (256, 256, 256)
+    };
+
+    let old_path = parse_c_string(slice_window(raw, 0, old_window));
+    let new_path = parse_c_string(slice_window(raw, new_offset, new_window));
     if old_path.is_empty() && new_path.is_empty() {
         return parse_c_string(raw);
     }

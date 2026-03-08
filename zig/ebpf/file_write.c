@@ -12,10 +12,7 @@
 
 #define FILE_PATH_SZ 256
 
-struct {
-    __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, DEFAULT_RINGBUF_CAPACITY);
-} events SEC(".maps");
+EGUARD_DEFINE_EVENTS_MAP(events);
 
 struct file_write_event {
     struct event_hdr hdr;
@@ -27,14 +24,7 @@ struct file_write_event {
 SEC("tracepoint/syscalls/sys_enter_write")
 int eguard_sys_enter_write(void *ctx)
 {
-    struct file_write_event *e =
-        bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-    if (!e) {
-        record_drop();
-        return 0;
-    }
-
-    bpf_memzero(e, sizeof(*e));
+    EGUARD_ALLOC_EVENT(file_write_event, e);
     fill_hdr(&e->hdr, EVENT_FILE_WRITE);
 
     __s64 fd_val = 0;
@@ -43,7 +33,7 @@ int eguard_sys_enter_write(void *ctx)
     bpf_probe_read(&count_val, sizeof(count_val), (__u8 *)ctx + 24);
 
     if (fd_val < 0) {
-        bpf_ringbuf_discard(e, 0);
+        EGUARD_DISCARD_EVENT(e);
         return 0;
     }
 
@@ -51,10 +41,9 @@ int eguard_sys_enter_write(void *ctx)
     e->size = count_val > 0 ? (__u64)count_val : 0;
 
     if (e->size == 0) {
-        bpf_ringbuf_discard(e, 0);
+        EGUARD_DISCARD_EVENT(e);
         return 0;
     }
 
-    bpf_ringbuf_submit(e, 0);
-    return 0;
+    EGUARD_SUBMIT_EVENT(ctx, e);
 }

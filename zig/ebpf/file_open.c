@@ -15,10 +15,7 @@
 #define COMM_SZ      32
 #define FILE_PATH_SZ 256
 
-struct {
-    __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, DEFAULT_RINGBUF_CAPACITY);
-} events SEC(".maps");
+EGUARD_DEFINE_EVENTS_MAP(events);
 
 struct file_open_event {
     struct event_hdr hdr;
@@ -34,14 +31,7 @@ struct file_open_event {
 SEC("tracepoint/syscalls/sys_enter_openat")
 int eguard_sys_enter_openat(void *ctx)
 {
-    struct file_open_event *e =
-        bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-    if (!e) {
-        record_drop();
-        return 0;
-    }
-
-    bpf_memzero(e, sizeof(*e));
+    EGUARD_ALLOC_EVENT(file_open_event, e);
     fill_hdr(&e->hdr, EVENT_FILE_OPEN);
     e->cgroup_id = bpf_get_current_cgroup_id();
     bpf_get_current_comm(e->comm, COMM_SZ);
@@ -73,6 +63,5 @@ int eguard_sys_enter_openat(void *ctx)
         bpf_probe_read_user_str(e->path, FILE_PATH_SZ,
                                 (const void *)filename_ptr);
 
-    bpf_ringbuf_submit(e, 0);
-    return 0;
+    EGUARD_SUBMIT_EVENT(ctx, e);
 }

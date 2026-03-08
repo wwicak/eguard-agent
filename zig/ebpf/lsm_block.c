@@ -13,10 +13,7 @@
 
 #define SUBJECT_SZ 128
 
-struct {
-    __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, DEFAULT_RINGBUF_CAPACITY);
-} events SEC(".maps");
+EGUARD_DEFINE_EVENTS_MAP(events);
 
 struct lsm_block_event {
     struct event_hdr hdr;
@@ -28,19 +25,11 @@ struct lsm_block_event {
 SEC("lsm/bprm_check_security")
 int eguard_bprm_check(void *ctx)
 {
-    struct lsm_block_event *e =
-        bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-    if (!e) {
-        record_drop();
-        return 0;
-    }
-
-    bpf_memzero(e, sizeof(*e));
+    EGUARD_ALLOC_EVENT(lsm_block_event, e);
     fill_hdr(&e->hdr, EVENT_LSM_BLOCK);
 
     e->reason = 1; /* exec audit */
     bpf_get_current_comm(e->subject, SUBJECT_SZ);
 
-    bpf_ringbuf_submit(e, 0);
-    return 0; /* allow — audit only */
+    EGUARD_SUBMIT_EVENT(ctx, e);
 }

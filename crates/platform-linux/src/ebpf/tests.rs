@@ -183,6 +183,21 @@ fn parses_structured_file_rename_payload() {
 }
 
 #[test]
+fn parses_truncated_perf_buffer_file_rename_payload() {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(b"/tmp/perf-old\0");
+    payload.extend_from_slice(&[0u8; 192 - 14]);
+    payload.extend_from_slice(b"/tmp/perf-new\0");
+    payload.extend_from_slice(&[0u8; 192 - 14]);
+
+    let event = parse_raw_event(&encode_event(9, 401, 1000, 100, &payload))
+        .expect("parse perf rename event");
+    assert!(matches!(event.event_type, EventType::FileRename));
+    assert!(event.payload.contains("src=/tmp/perf-old"));
+    assert!(event.payload.contains("dst=/tmp/perf-new"));
+}
+
+#[test]
 // AC-EBP-192
 fn parses_structured_file_unlink_payload() {
     let mut payload = Vec::new();

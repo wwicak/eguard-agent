@@ -10,7 +10,7 @@ use super::replay::ReplayBackend;
 use super::types::{EbpfError, EbpfStats, Result, EVENT_HEADER_SIZE};
 
 #[cfg(feature = "ebpf-libbpf")]
-use super::libbpf_backend::LibbpfRingBufferBackend;
+use super::libbpf_backend::{LibbpfPerfBufferBackend, LibbpfRingBufferBackend};
 
 pub struct EbpfEngine {
     pub(super) backend: Box<dyn RingBufferBackend>,
@@ -29,30 +29,40 @@ impl EbpfEngine {
 
     #[cfg(feature = "ebpf-libbpf")]
     pub fn from_elf(elf_path: &Path, ring_buffer_map: &str) -> Result<Self> {
-        let backend = LibbpfRingBufferBackend::new(elf_path.to_path_buf(), ring_buffer_map)?;
-        let mut stats = EbpfStats::default();
-        detect_kernel_capabilities(&mut stats);
-        stats.failed_probes = backend.failed_probes();
-        stats.attached_program_count = backend.attached_program_count();
-        stats.attached_program_names = backend.attached_program_names();
-        Ok(Self {
-            backend: Box::new(backend),
-            stats,
-        })
+        Self::from_elfs(&[elf_path.to_path_buf()], ring_buffer_map)
     }
 
     #[cfg(feature = "ebpf-libbpf")]
     pub fn from_elfs(elf_paths: &[PathBuf], ring_buffer_map: &str) -> Result<Self> {
-        let backend = LibbpfRingBufferBackend::new_many(elf_paths, ring_buffer_map)?;
         let mut stats = EbpfStats::default();
         detect_kernel_capabilities(&mut stats);
-        stats.failed_probes = backend.failed_probes();
-        stats.attached_program_count = backend.attached_program_count();
-        stats.attached_program_names = backend.attached_program_names();
-        Ok(Self {
-            backend: Box::new(backend),
-            stats,
-        })
+
+        match LibbpfRingBufferBackend::new_many(elf_paths, ring_buffer_map) {
+            Ok(backend) => {
+                stats.failed_probes = backend.failed_probes();
+                stats.attached_program_count = backend.attached_program_count();
+                stats.attached_program_names = backend.attached_program_names();
+                Ok(Self {
+                    backend: Box::new(backend),
+                    stats,
+                })
+            }
+            Err(ring_err) => match LibbpfPerfBufferBackend::new_many(elf_paths, ring_buffer_map) {
+                Ok(backend) => {
+                    stats.failed_probes = backend.failed_probes();
+                    stats.attached_program_count = backend.attached_program_count();
+                    stats.attached_program_names = backend.attached_program_names();
+                    Ok(Self {
+                        backend: Box::new(backend),
+                        stats,
+                    })
+                }
+                Err(perf_err) => Err(EbpfError::Backend(format!(
+                    "ring buffer backend failed: {}; perf buffer fallback failed: {}",
+                    ring_err, perf_err
+                ))),
+            },
+        }
     }
 
     #[cfg(not(feature = "ebpf-libbpf"))]

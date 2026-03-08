@@ -147,6 +147,9 @@ pub(super) fn default_ebpf_objects_dirs() -> Vec<PathBuf> {
         PathBuf::from("./zig-out/ebpf"),
         PathBuf::from("zig-out/ebpf"),
         PathBuf::from("/usr/lib/eguard-agent/ebpf"),
+        PathBuf::from("./zig-out/ebpf-perf"),
+        PathBuf::from("zig-out/ebpf-perf"),
+        PathBuf::from("/usr/lib/eguard-agent/ebpf-perf"),
     ]
 }
 

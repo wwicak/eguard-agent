@@ -11,10 +11,7 @@
 
 #define MOD_NAME_SZ 64
 
-struct {
-    __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, DEFAULT_RINGBUF_CAPACITY);
-} events SEC(".maps");
+EGUARD_DEFINE_EVENTS_MAP(events);
 
 struct module_load_event {
     struct event_hdr hdr;
@@ -24,19 +21,11 @@ struct module_load_event {
 SEC("tracepoint/module/module_load")
 int eguard_module_load(void *ctx)
 {
-    struct module_load_event *e =
-        bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-    if (!e) {
-        record_drop();
-        return 0;
-    }
-
-    bpf_memzero(e, sizeof(*e));
+    EGUARD_ALLOC_EVENT(module_load_event, e);
     fill_hdr(&e->hdr, EVENT_MODULE_LOAD);
 
     /* name via __data_loc at tp offset 12 */
     read_tp_data_loc_str(e->module_name, MOD_NAME_SZ, ctx, 12);
 
-    bpf_ringbuf_submit(e, 0);
-    return 0;
+    EGUARD_SUBMIT_EVENT(ctx, e);
 }

@@ -13,10 +13,7 @@
 
 #define FILE_PATH_SZ 256
 
-struct {
-    __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, DEFAULT_RINGBUF_CAPACITY);
-} events SEC(".maps");
+EGUARD_DEFINE_EVENTS_MAP(events);
 
 struct file_unlink_event {
     struct event_hdr hdr;
@@ -26,14 +23,7 @@ struct file_unlink_event {
 SEC("tracepoint/syscalls/sys_enter_unlinkat")
 int eguard_sys_enter_unlinkat(void *ctx)
 {
-    struct file_unlink_event *e =
-        bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-    if (!e) {
-        record_drop();
-        return 0;
-    }
-
-    bpf_memzero(e, sizeof(*e));
+    EGUARD_ALLOC_EVENT(file_unlink_event, e);
     fill_hdr(&e->hdr, EVENT_FILE_UNLINK);
 
     __u64 path_ptr = 0;
@@ -41,6 +31,5 @@ int eguard_sys_enter_unlinkat(void *ctx)
     if (path_ptr)
         bpf_probe_read_user_str(e->path, FILE_PATH_SZ, (const void *)path_ptr);
 
-    bpf_ringbuf_submit(e, 0);
-    return 0;
+    EGUARD_SUBMIT_EVENT(ctx, e);
 }

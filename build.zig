@@ -42,11 +42,12 @@ pub fn build(b: *std.Build) void {
     // ── eBPF probes (C sources compiled via `zig cc -target bpfel`) ──
     //
     // Zig's native BPF backend does not emit BTF sections, which
-    // libbpf >= 1.0 requires for map definitions.  Using `zig cc`
+    // libbpf >= 1.0 requires for map definitions. Using `zig cc`
     // (clang wrapper) solves this: it emits .BTF and .BTF.ext.
     //
-    // The C sources live next to the original .zig files in zig/ebpf/
-    // and share bpf_helpers.h for types, helpers, and event layout.
+    // We build two object sets from the same sources:
+    //   - ebpf/      → ring-buffer transport for newer kernels
+    //   - ebpf-perf/ → perf-event-array fallback for older kernels
     const ebpf_c_sources = [_]struct { name: []const u8, file: []const u8 }{
         .{ .name = "process_exec_bpf", .file = "zig/ebpf/process_exec.c" },
         .{ .name = "file_open_bpf", .file = "zig/ebpf/file_open.c" },
@@ -58,27 +59,36 @@ pub fn build(b: *std.Build) void {
         .{ .name = "module_load_bpf", .file = "zig/ebpf/module_load.c" },
         .{ .name = "lsm_block_bpf", .file = "zig/ebpf/lsm_block.c" },
     };
+    const ebpf_variants = [_]struct { out_dir: []const u8, use_perfbuf: bool }{
+        .{ .out_dir = "ebpf", .use_perfbuf = false },
+        .{ .out_dir = "ebpf-perf", .use_perfbuf = true },
+    };
 
-    for (ebpf_c_sources) |entry| {
-        const out_path = b.fmt("ebpf/{s}.o", .{entry.name});
-        const cmd = b.addSystemCommand(&.{
-            "zig",
-            "cc",
-            "-target",
-            "bpfel-freestanding-none",
-            "-g",
-            "-O2",
-            "-Werror",
-            "-fno-asynchronous-unwind-tables",
-            "-fno-unwind-tables",
-            "-I",
-            "zig/ebpf",
-            "-c",
-        });
-        cmd.addFileArg(b.path(entry.file));
-        const output = cmd.addPrefixedOutputFileArg("-o", out_path);
-        const install = b.addInstallFile(output, out_path);
-        b.getInstallStep().dependOn(&install.step);
-        ebpf_step.dependOn(&install.step);
+    for (ebpf_variants) |variant| {
+        for (ebpf_c_sources) |entry| {
+            const out_path = b.fmt("{s}/{s}.o", .{ variant.out_dir, entry.name });
+            const cmd = b.addSystemCommand(&.{
+                "zig",
+                "cc",
+                "-target",
+                "bpfel-freestanding-none",
+                "-g",
+                "-O2",
+                "-Werror",
+                "-fno-asynchronous-unwind-tables",
+                "-fno-unwind-tables",
+                "-I",
+                "zig/ebpf",
+                "-c",
+            });
+            if (variant.use_perfbuf) {
+                cmd.addArg("-DEGUARD_USE_PERFBUF=1");
+            }
+            cmd.addFileArg(b.path(entry.file));
+            const output = cmd.addPrefixedOutputFileArg("-o", out_path);
+            const install = b.addInstallFile(output, out_path);
+            b.getInstallStep().dependOn(&install.step);
+            ebpf_step.dependOn(&install.step);
+        }
     }
 }

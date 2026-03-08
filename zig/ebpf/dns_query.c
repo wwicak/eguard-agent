@@ -12,10 +12,7 @@
 
 #define QNAME_SZ 128
 
-struct {
-    __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, DEFAULT_RINGBUF_CAPACITY);
-} events SEC(".maps");
+EGUARD_DEFINE_EVENTS_MAP(events);
 
 struct dns_query_event {
     struct event_hdr hdr;
@@ -27,20 +24,12 @@ struct dns_query_event {
 SEC("kprobe/udp_sendmsg")
 int eguard_udp_sendmsg(void *ctx)
 {
-    struct dns_query_event *e =
-        bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-    if (!e) {
-        record_drop();
-        return 0;
-    }
-
-    bpf_memzero(e, sizeof(*e));
+    EGUARD_ALLOC_EVENT(dns_query_event, e);
     fill_hdr(&e->hdr, EVENT_DNS_QUERY);
 
     e->qtype  = 1;  /* A */
     e->qclass = 1;  /* IN */
     bpf_get_current_comm(e->qname, QNAME_SZ);
 
-    bpf_ringbuf_submit(e, 0);
-    return 0;
+    EGUARD_SUBMIT_EVENT(ctx, e);
 }

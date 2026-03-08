@@ -110,11 +110,16 @@ fn workspace_root() -> PathBuf {
 
 #[test]
 // AC-EBP-010 AC-EBP-011 AC-EBP-101
-fn zig_ebpf_programs_share_single_default_8mb_ring_buffer_definition() {
+fn zig_ebpf_programs_support_ringbuf_and_perf_fallback_transports() {
     let root = workspace_root();
     let helpers =
         std::fs::read_to_string(root.join("zig/ebpf/bpf_helpers.h")).expect("read bpf_helpers.h");
     assert!(helpers.contains("#define BPF_MAP_TYPE_RINGBUF 27"));
+    assert!(helpers.contains("#define BPF_MAP_TYPE_PERF_EVENT_ARRAY 4"));
+    assert!(helpers.contains("bpf_perf_event_output"));
+    assert!(helpers.contains("EGUARD_DEFINE_EVENTS_MAP(name)"));
+    assert!(helpers.contains("EGUARD_ALLOC_EVENT(type, name)"));
+    assert!(helpers.contains("EGUARD_SUBMIT_EVENT(ctx, name)"));
     assert!(helpers.contains("FALLBACK_LAST_EVENT_DATA_SIZE 512"));
     assert!(helpers.contains("struct event_hdr"));
     assert!(helpers.contains("struct fallback_ringbuf_state"));
@@ -137,29 +142,48 @@ fn zig_ebpf_programs_share_single_default_8mb_ring_buffer_definition() {
             "{program} must include bpf_helpers.h"
         );
         assert!(
-            source.contains("bpf_ringbuf_reserve"),
-            "{program} must reserve ring buffer"
+            source.contains("EGUARD_DEFINE_EVENTS_MAP(events);"),
+            "{program} must define the shared event map transport via helper macro"
+        );
+        assert!(
+            source.contains("EGUARD_ALLOC_EVENT("),
+            "{program} must allocate events through the transport helper macro"
+        );
+        assert!(
+            source.contains("EGUARD_SUBMIT_EVENT(ctx, e);"),
+            "{program} must submit events through the transport helper macro"
         );
         assert!(
             !source.contains("pub export var events"),
-            "{program} must not define a separate ring buffer map"
+            "{program} must not define a legacy Zig map export"
         );
     }
 }
 
 #[test]
 // AC-EBP-012 AC-RES-020
-fn rust_ebpf_backend_uses_libbpf_ringbuffer_poll_path_without_read_syscall_api() {
+fn rust_ebpf_backend_uses_libbpf_ring_and_perf_poll_paths_without_read_syscall_api() {
     let source = std::fs::read_to_string(
         workspace_root().join("crates/platform-linux/src/ebpf/libbpf_backend.rs"),
     )
     .expect("read libbpf backend source");
 
     assert!(source.contains("libbpf_rs::RingBuffer"));
-    assert!(source.contains(".poll(timeout)"));
+    assert!(source.contains("PerfBuffer"));
+    assert!(source.contains("poll ring buffer"));
+    assert!(source.contains("poll perf buffer"));
     assert!(!source.contains("libc::read("));
     assert!(!source.contains("nix::unistd::read("));
     assert!(!source.contains("std::io::Read"));
+}
+
+#[test]
+fn engine_supports_perf_buffer_fallback_backend_initialization() {
+    let source =
+        std::fs::read_to_string(workspace_root().join("crates/platform-linux/src/ebpf/engine.rs"))
+            .expect("read engine source");
+    assert!(source.contains("LibbpfPerfBufferBackend"));
+    assert!(source.contains("perf buffer fallback failed"));
 }
 
 #[test]

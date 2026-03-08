@@ -156,7 +156,7 @@ prepare_stage_payload() {
   ensure_file "${ROOT_DIR}/conf/agent.conf.example" "${core_root}/etc/eguard-agent/agent.conf" "[agent]"
   ensure_file "${ROOT_DIR}/rules/baseline/seed_profiles.txt" "${core_root}/var/lib/eguard-agent/baselines/seed.bin" "seed_profiles"
 
-  mkdir -p "${core_root}/usr/lib/eguard-agent/ebpf" "${core_root}/usr/lib/eguard-agent/lib"
+  mkdir -p "${core_root}/usr/lib/eguard-agent/ebpf" "${core_root}/usr/lib/eguard-agent/ebpf-perf" "${core_root}/usr/lib/eguard-agent/lib"
 
   ensure_file "${ROOT_DIR}/zig-out/ebpf/process_exec_bpf.o" "${core_root}/usr/lib/eguard-agent/ebpf/process_exec_bpf.o"
   ensure_file "${ROOT_DIR}/zig-out/ebpf/file_open_bpf.o" "${core_root}/usr/lib/eguard-agent/ebpf/file_open_bpf.o"
@@ -167,6 +167,16 @@ prepare_stage_payload() {
   ensure_file "${ROOT_DIR}/zig-out/ebpf/dns_query_bpf.o" "${core_root}/usr/lib/eguard-agent/ebpf/dns_query_bpf.o"
   ensure_file "${ROOT_DIR}/zig-out/ebpf/module_load_bpf.o" "${core_root}/usr/lib/eguard-agent/ebpf/module_load_bpf.o"
   ensure_file "${ROOT_DIR}/zig-out/ebpf/lsm_block_bpf.o" "${core_root}/usr/lib/eguard-agent/ebpf/lsm_block_bpf.o"
+
+  ensure_file "${ROOT_DIR}/zig-out/ebpf-perf/process_exec_bpf.o" "${core_root}/usr/lib/eguard-agent/ebpf-perf/process_exec_bpf.o"
+  ensure_file "${ROOT_DIR}/zig-out/ebpf-perf/file_open_bpf.o" "${core_root}/usr/lib/eguard-agent/ebpf-perf/file_open_bpf.o"
+  ensure_file "${ROOT_DIR}/zig-out/ebpf-perf/file_write_bpf.o" "${core_root}/usr/lib/eguard-agent/ebpf-perf/file_write_bpf.o"
+  ensure_file "${ROOT_DIR}/zig-out/ebpf-perf/file_rename_bpf.o" "${core_root}/usr/lib/eguard-agent/ebpf-perf/file_rename_bpf.o"
+  ensure_file "${ROOT_DIR}/zig-out/ebpf-perf/file_unlink_bpf.o" "${core_root}/usr/lib/eguard-agent/ebpf-perf/file_unlink_bpf.o"
+  ensure_file "${ROOT_DIR}/zig-out/ebpf-perf/tcp_connect_bpf.o" "${core_root}/usr/lib/eguard-agent/ebpf-perf/tcp_connect_bpf.o"
+  ensure_file "${ROOT_DIR}/zig-out/ebpf-perf/dns_query_bpf.o" "${core_root}/usr/lib/eguard-agent/ebpf-perf/dns_query_bpf.o"
+  ensure_file "${ROOT_DIR}/zig-out/ebpf-perf/module_load_bpf.o" "${core_root}/usr/lib/eguard-agent/ebpf-perf/module_load_bpf.o"
+  ensure_file "${ROOT_DIR}/zig-out/ebpf-perf/lsm_block_bpf.o" "${core_root}/usr/lib/eguard-agent/ebpf-perf/lsm_block_bpf.o"
 
   local asm_bundle="${core_root}/usr/lib/eguard-agent/lib/libeguard_asm.a"
   local asm_temp_dir="${STAGE_DIR}/asm-temp"
@@ -249,6 +259,24 @@ contents:
     dst: /usr/lib/eguard-agent/ebpf/module_load_bpf.o
   - src: ${core_root}/usr/lib/eguard-agent/ebpf/lsm_block_bpf.o
     dst: /usr/lib/eguard-agent/ebpf/lsm_block_bpf.o
+  - src: ${core_root}/usr/lib/eguard-agent/ebpf-perf/process_exec_bpf.o
+    dst: /usr/lib/eguard-agent/ebpf-perf/process_exec_bpf.o
+  - src: ${core_root}/usr/lib/eguard-agent/ebpf-perf/file_open_bpf.o
+    dst: /usr/lib/eguard-agent/ebpf-perf/file_open_bpf.o
+  - src: ${core_root}/usr/lib/eguard-agent/ebpf-perf/file_write_bpf.o
+    dst: /usr/lib/eguard-agent/ebpf-perf/file_write_bpf.o
+  - src: ${core_root}/usr/lib/eguard-agent/ebpf-perf/file_rename_bpf.o
+    dst: /usr/lib/eguard-agent/ebpf-perf/file_rename_bpf.o
+  - src: ${core_root}/usr/lib/eguard-agent/ebpf-perf/file_unlink_bpf.o
+    dst: /usr/lib/eguard-agent/ebpf-perf/file_unlink_bpf.o
+  - src: ${core_root}/usr/lib/eguard-agent/ebpf-perf/tcp_connect_bpf.o
+    dst: /usr/lib/eguard-agent/ebpf-perf/tcp_connect_bpf.o
+  - src: ${core_root}/usr/lib/eguard-agent/ebpf-perf/dns_query_bpf.o
+    dst: /usr/lib/eguard-agent/ebpf-perf/dns_query_bpf.o
+  - src: ${core_root}/usr/lib/eguard-agent/ebpf-perf/module_load_bpf.o
+    dst: /usr/lib/eguard-agent/ebpf-perf/module_load_bpf.o
+  - src: ${core_root}/usr/lib/eguard-agent/ebpf-perf/lsm_block_bpf.o
+    dst: /usr/lib/eguard-agent/ebpf-perf/lsm_block_bpf.o
   - src: ${core_root}/usr/lib/eguard-agent/lib/libeguard_asm.a
     dst: /usr/lib/eguard-agent/lib/libeguard_asm.a
   - src: ${core_root}/var/lib/eguard-agent/baselines/seed.bin

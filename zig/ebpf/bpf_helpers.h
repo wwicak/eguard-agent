@@ -1,10 +1,11 @@
 /* eguard-agent BPF helpers
  *
  * Minimal, self-contained header for eBPF programs compiled with
- * `zig cc -target bpfel`.  No kernel-header dependency — builds on
+ * `zig cc -target bpfel`. No kernel-header dependency — builds on
  * any host with Zig >= 0.12.
  *
- * Portable across Linux >= 5.8 (ringbuf support).
+ * Supports ring-buffer transport on newer kernels and perf-event-array
+ * fallback on older kernels that reject BPF_MAP_TYPE_RINGBUF.
  */
 #ifndef EGUARD_BPF_HELPERS_H
 #define EGUARD_BPF_HELPERS_H
@@ -39,10 +40,13 @@ struct task_struct {
 #define __uint(field, val) int (*field)[val]
 
 /* ── Map types ─────────────────────────────────────────────── */
+#define BPF_MAP_TYPE_PERF_EVENT_ARRAY 4
 #define BPF_MAP_TYPE_RINGBUF 27
 
-/* ── Ring buffer capacity (bytes) ───────────────────────────── */
+/* ── Event transport sizing ────────────────────────────────── */
 #define DEFAULT_RINGBUF_CAPACITY (8 * 1024 * 1024)
+#define PERF_EVENT_ARRAY_MAX_ENTRIES 1024
+#define BPF_F_CURRENT_CPU 0xffffffffULL
 
 /* ── BPF helper prototypes (function-pointer-by-ID) ────────── */
 static long (*bpf_probe_read)(void *, __u32, const void *) =
@@ -55,6 +59,8 @@ static __u64 (*bpf_get_current_uid_gid)(void) =
     (__u64 (*)(void))(long)15;
 static long (*bpf_get_current_comm)(void *, __u32) =
     (long (*)(void *, __u32))(long)16;
+static long (*bpf_perf_event_output)(void *, void *, __u64, void *, __u64) =
+    (long (*)(void *, void *, __u64, void *, __u64))(long)25;
 static void *(*bpf_get_current_task)(void) =
     (void *(*)(void))(long)35;
 static __u64 (*bpf_get_current_cgroup_id)(void) =
@@ -107,6 +113,56 @@ record_drop(void)
 }
 
 /* Drop-counter BSS buffer is defined in legacy Zig programs; keep C lean. */
+
+/* ── Event transport helpers ───────────────────────────────── */
+#ifdef EGUARD_USE_PERFBUF
+#define EGUARD_DEFINE_EVENTS_MAP(name)                                    \
+    struct {                                                              \
+        __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);                      \
+        __uint(key_size, sizeof(__u32));                                  \
+        __uint(value_size, sizeof(__u32));                                \
+        __uint(max_entries, PERF_EVENT_ARRAY_MAX_ENTRIES);                \
+    } name SEC(".maps")
+
+#define EGUARD_ALLOC_EVENT(type, name)                                    \
+    struct type name##_storage;                                           \
+    struct type *name = &name##_storage;                                  \
+    bpf_memzero(name, sizeof(*name))
+
+#define EGUARD_DISCARD_EVENT(name) do { (void)(name); } while (0)
+
+#define EGUARD_SUBMIT_EVENT(ctx, name)                                    \
+    do {                                                                  \
+        long __eguard_rc = bpf_perf_event_output(                         \
+            (ctx), &events, BPF_F_CURRENT_CPU, (name), sizeof(*(name)));  \
+        if (__eguard_rc != 0)                                             \
+            record_drop();                                                \
+        return 0;                                                         \
+    } while (0)
+#else
+#define EGUARD_DEFINE_EVENTS_MAP(name)                                    \
+    struct {                                                              \
+        __uint(type, BPF_MAP_TYPE_RINGBUF);                               \
+        __uint(max_entries, DEFAULT_RINGBUF_CAPACITY);                    \
+    } name SEC(".maps")
+
+#define EGUARD_ALLOC_EVENT(type, name)                                    \
+    struct type *name = bpf_ringbuf_reserve(&events, sizeof(*name), 0);   \
+    if (!(name)) {                                                        \
+        record_drop();                                                    \
+        return 0;                                                         \
+    }                                                                     \
+    bpf_memzero(name, sizeof(*name))
+
+#define EGUARD_DISCARD_EVENT(name) do { bpf_ringbuf_discard((name), 0); } while (0)
+
+#define EGUARD_SUBMIT_EVENT(ctx, name)                                    \
+    do {                                                                  \
+        (void)(ctx);                                                      \
+        bpf_ringbuf_submit((name), 0);                                    \
+        return 0;                                                         \
+    } while (0)
+#endif
 
 /* ── Tracepoint __data_loc safety ──────────────────────────── *
  * __data_loc fields encode (len << 16 | offset) in a u32.
@@ -174,7 +230,7 @@ fill_hdr(struct event_hdr *h, __u8 etype)
     h->timestamp_ns = bpf_ktime_get_ns();
 }
 
-/* GPL — required for probe_read* and ringbuf helpers */
+/* GPL — required for probe_read*, perf_event_output, and ringbuf helpers */
 char LICENSE[] SEC("license") = "GPL";
 
 #endif /* EGUARD_BPF_HELPERS_H */

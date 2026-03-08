@@ -107,6 +107,28 @@ fn default_ebpf_object_dirs_include_expected_targets() {
     assert!(dirs
         .iter()
         .any(|d| d == &PathBuf::from("/usr/lib/eguard-agent/ebpf")));
+    assert!(dirs
+        .iter()
+        .any(|d| d == &PathBuf::from("./zig-out/ebpf-perf")));
+    assert!(dirs
+        .iter()
+        .any(|d| d == &PathBuf::from("zig-out/ebpf-perf")));
+    assert!(dirs
+        .iter()
+        .any(|d| d == &PathBuf::from("/usr/lib/eguard-agent/ebpf-perf")));
+
+    let ring_idx = dirs
+        .iter()
+        .position(|d| d == &PathBuf::from("/usr/lib/eguard-agent/ebpf"))
+        .expect("ring buffer package dir");
+    let perf_idx = dirs
+        .iter()
+        .position(|d| d == &PathBuf::from("/usr/lib/eguard-agent/ebpf-perf"))
+        .expect("perf buffer package dir");
+    assert!(
+        ring_idx < perf_idx,
+        "ring-buffer dirs should be attempted before perf fallback dirs"
+    );
 }
 
 #[test]

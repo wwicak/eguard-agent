@@ -9,10 +9,7 @@
 #define PATH_SZ   160
 #define CMDLINE_SZ 160
 
-struct {
-    __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, DEFAULT_RINGBUF_CAPACITY);
-} events SEC(".maps");
+EGUARD_DEFINE_EVENTS_MAP(events);
 
 struct process_exec_event {
     struct event_hdr hdr;
@@ -27,14 +24,7 @@ struct process_exec_event {
 SEC("tracepoint/sched/sched_process_exec")
 int eguard_sched_process_exec(void *ctx)
 {
-    struct process_exec_event *e =
-        bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-    if (!e) {
-        record_drop();
-        return 0;
-    }
-
-    bpf_memzero(e, sizeof(*e));
+    EGUARD_ALLOC_EVENT(process_exec_event, e);
     fill_hdr(&e->hdr, EVENT_PROCESS_EXEC);
     e->cgroup_id = bpf_get_current_cgroup_id();
     bpf_get_current_comm(e->comm, COMM_SZ);
@@ -57,6 +47,5 @@ int eguard_sched_process_exec(void *ctx)
     /* cmdline: best-effort copy of comm */
     bpf_get_current_comm(e->cmdline, CMDLINE_SZ);
 
-    bpf_ringbuf_submit(e, 0);
-    return 0;
+    EGUARD_SUBMIT_EVENT(ctx, e);
 }
