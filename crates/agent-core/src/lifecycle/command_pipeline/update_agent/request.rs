@@ -159,7 +159,19 @@ fn resolve_update_base_url(server_addr: &str) -> Result<String, String> {
         }
     }
 
-    let host = extract_server_host(server_addr);
+    let raw_server = server_addr.trim();
+    if raw_server.is_empty() {
+        return Err("unable to derive update host from server_addr".to_string());
+    }
+
+    if let Some(port) = extract_server_port(raw_server) {
+        if port == 50053 {
+            return Ok(format!("http://{}", raw_server));
+        }
+        return Ok(format!("https://{}", raw_server));
+    }
+
+    let host = extract_server_host(raw_server);
     if host.trim().is_empty() {
         return Err("unable to derive update host from server_addr".to_string());
     }
@@ -177,6 +189,30 @@ fn resolve_update_base_url(server_addr: &str) -> Result<String, String> {
         .unwrap_or_else(|| "1443".to_string());
 
     Ok(format!("https://{}:{}", host_token, port))
+}
+
+fn extract_server_port(server_addr: &str) -> Option<u16> {
+    let raw = server_addr.trim();
+    if raw.is_empty() {
+        return None;
+    }
+
+    if let Some(stripped) = raw.strip_prefix('[') {
+        if let Some((_host, rest)) = stripped.split_once(']') {
+            if let Some(port) = rest.strip_prefix(':') {
+                return port.parse::<u16>().ok();
+            }
+            return None;
+        }
+    }
+
+    if let Some((host, port)) = raw.rsplit_once(':') {
+        if !host.contains(':') {
+            return port.parse::<u16>().ok();
+        }
+    }
+
+    None
 }
 
 fn parse_package_kind_hint(raw: &str) -> Result<Option<UpdatePackageKind>, String> {
@@ -264,4 +300,54 @@ fn enforce_package_kind_for_target(kind: UpdatePackageKind) -> Result<(), String
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn linux_payload(url: &str, checksum: &str, format: &str) -> UpdatePayload {
+        UpdatePayload {
+            version: "0.2.54".to_string(),
+            package_url: url.to_string(),
+            checksum_sha256: checksum.to_string(),
+            package_format: format.to_string(),
+        }
+    }
+
+    #[test]
+    fn relative_linux_update_urls_use_direct_http_for_agent_server_port_50053() {
+        let request = normalize_update_request(
+            linux_payload(
+                "/api/v1/agent-install/linux-deb?version=0.2.54",
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "deb",
+            ),
+            "103.132.18.221:50053",
+        )
+        .expect("normalize request");
+
+        assert_eq!(
+            request.package_url(),
+            "http://103.132.18.221:50053/api/v1/agent-install/linux-deb?version=0.2.54"
+        );
+    }
+
+    #[test]
+    fn relative_linux_update_urls_keep_https_for_tls_frontend_ports() {
+        let request = normalize_update_request(
+            linux_payload(
+                "/api/v1/agent-install/linux-rpm?version=0.2.54",
+                "feedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface",
+                "rpm",
+            ),
+            "eguard.example:50052",
+        )
+        .expect("normalize request");
+
+        assert_eq!(
+            request.package_url(),
+            "https://eguard.example:50052/api/v1/agent-install/linux-rpm?version=0.2.54"
+        );
+    }
 }
