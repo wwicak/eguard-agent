@@ -5,6 +5,7 @@ use std::process::Command;
 use super::request::NormalizedUpdateRequest;
 
 pub(super) fn spawn_update_worker(
+    command_id: &str,
     request: &NormalizedUpdateRequest,
     update_dir: &Path,
 ) -> Result<String, String> {
@@ -24,6 +25,8 @@ pub(super) fn spawn_update_worker(
         .arg("Bypass")
         .arg("-File")
         .arg(&worker_path)
+        .arg("-CommandId")
+        .arg(command_id)
         .arg("-PackageUrl")
         .arg(request.package_url())
         .arg("-ExpectedSha256")
@@ -48,6 +51,7 @@ pub(super) fn spawn_update_worker(
 
 fn write_windows_update_worker_script(path: &Path) -> Result<(), String> {
     const SCRIPT: &str = r#"param(
+    [Parameter(Mandatory=$true)] [string]$CommandId,
     [Parameter(Mandatory=$true)] [string]$PackageUrl,
     [Parameter(Mandatory=$true)] [string]$ExpectedSha256,
     [Parameter(Mandatory=$true)] [string]$TargetVersion,
@@ -57,6 +61,7 @@ fn write_windows_update_worker_script(path: &Path) -> Result<(), String> {
 )
 
 $ErrorActionPreference = 'Stop'
+$outcomePath = Join-Path $WorkingDir ("update-outcome-" + $CommandId + ".txt")
 
 function Write-Log {
     param([string]$Message)
@@ -73,6 +78,11 @@ function Get-ServiceProcessId {
     catch {
         return 0
     }
+}
+
+function Write-Outcome {
+    param([string]$Status, [string]$Detail)
+    @($CommandId, $Status, $Detail) | Set-Content -Path $outcomePath -Encoding UTF8
 }
 
 function Restore-ServicePolicy {
@@ -149,6 +159,7 @@ try {
         Restore-ServicePolicy -ServiceName $serviceName -BinaryPath $agentPath
         Start-Service -Name $serviceName -ErrorAction SilentlyContinue
         Write-Log "MSI update finished"
+        Write-Outcome -Status 'completed' -Detail ("agent update applied (version=" + $TargetVersion + ", kind=msi)")
         exit 0
     }
 
@@ -163,6 +174,7 @@ try {
     Restore-ServicePolicy -ServiceName $serviceName -BinaryPath $agentPath
     Start-Service -Name $serviceName
     Write-Log "EXE update finished (installed_sha256=$installedHash)"
+    Write-Outcome -Status 'completed' -Detail ("agent update applied (version=" + $TargetVersion + ", kind=exe, sha256=" + $installedHash + ")")
 }
 catch {
     try {
@@ -171,7 +183,9 @@ catch {
     catch {
         Write-Log "failed to restore service policy after error: $($_.Exception.Message)"
     }
-    Write-Log "update failed: $($_.Exception.Message)"
+    $detail = "update failed: $($_.Exception.Message)"
+    Write-Log $detail
+    Write-Outcome -Status 'failed' -Detail $detail
     exit 1
 }
 "#;

@@ -7,6 +7,7 @@ use std::process::{Command, Stdio};
 use super::request::NormalizedUpdateRequest;
 
 pub(super) fn spawn_update_worker(
+    command_id: &str,
     request: &NormalizedUpdateRequest,
     update_dir: &Path,
 ) -> Result<String, String> {
@@ -19,6 +20,8 @@ pub(super) fn spawn_update_worker(
     write_linux_update_worker_script(&script_path)?;
 
     let script_args = vec![
+        "--command-id".to_string(),
+        command_id.to_string(),
         "--update-dir".to_string(),
         update_dir.to_string_lossy().to_string(),
         "--version".to_string(),
@@ -64,14 +67,33 @@ fn write_linux_update_worker_script(path: &Path) -> Result<(), String> {
     const SCRIPT: &str = r#"#!/usr/bin/env bash
 set -euo pipefail
 
+COMMAND_ID=""
 UPDATE_DIR=""
 VERSION=""
 CHECKSUM=""
 PACKAGE_URL=""
 FORMAT=""
 
+write_outcome() {
+  local status="$1"
+  local detail="$2"
+  local outcome_path="$UPDATE_DIR/update-outcome-${COMMAND_ID}.txt"
+  printf '%s\n%s\n%s\n' "$COMMAND_ID" "$status" "$detail" > "$outcome_path"
+}
+
+fail_outcome() {
+  local detail="$1"
+  write_outcome "failed" "$detail"
+  echo "$detail" >&2
+  exit 1
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --command-id)
+      COMMAND_ID="${2:-}"
+      shift 2
+      ;;
     --update-dir)
       UPDATE_DIR="${2:-}"
       shift 2
@@ -99,14 +121,13 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$UPDATE_DIR" || -z "$VERSION" || -z "$CHECKSUM" || -z "$PACKAGE_URL" || -z "$FORMAT" ]]; then
+if [[ -z "$COMMAND_ID" || -z "$UPDATE_DIR" || -z "$VERSION" || -z "$CHECKSUM" || -z "$PACKAGE_URL" || -z "$FORMAT" ]]; then
   echo "missing required update worker parameters" >&2
   exit 1
 fi
 
 if [[ "$FORMAT" != "deb" && "$FORMAT" != "rpm" ]]; then
-  echo "unsupported format: $FORMAT" >&2
-  exit 1
+  fail_outcome "unsupported format: $FORMAT"
 fi
 
 install -d -m 0755 "$UPDATE_DIR"
@@ -114,22 +135,24 @@ pkg_path="$UPDATE_DIR/eguard-agent-${VERSION}.${FORMAT}"
 tmp_path="${pkg_path}.download"
 trap 'rm -f "$tmp_path"' EXIT
 
-curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 10 --max-time 900 "$PACKAGE_URL" -o "$tmp_path"
-echo "$CHECKSUM  $tmp_path" | sha256sum --check --status
+curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 10 --max-time 900 "$PACKAGE_URL" -o "$tmp_path" || fail_outcome "package download failed from $PACKAGE_URL"
+echo "$CHECKSUM  $tmp_path" | sha256sum --check --status || fail_outcome "package checksum verification failed for $PACKAGE_URL"
 mv -f "$tmp_path" "$pkg_path"
 
 if [[ "$FORMAT" == "deb" ]]; then
-  dpkg -i "$pkg_path"
+  dpkg -i "$pkg_path" || fail_outcome "deb package install failed for $pkg_path"
 else
-  rpm -Uvh "$pkg_path"
+  rpm -Uvh "$pkg_path" || fail_outcome "rpm package install failed for $pkg_path"
 fi
 
 systemctl daemon-reload || true
 systemctl reset-failed eguard-agent || true
 if ! systemctl restart eguard-agent; then
   sleep 2
-  systemctl start eguard-agent || true
+  systemctl start eguard-agent || fail_outcome "agent service restart failed after package install"
 fi
+
+write_outcome "completed" "agent update applied (version=$VERSION, format=$FORMAT)"
 "#;
 
     fs::write(path, SCRIPT)

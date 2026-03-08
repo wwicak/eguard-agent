@@ -247,6 +247,14 @@ fn linux_update_packaging_recovers_service_after_upgrade() {
         "linux update worker fallback should launch via /bin/bash so noexec update dirs do not block self-update"
     );
     assert!(
+        worker_source.contains("write_outcome \"failed\"" ) || worker_source.contains("write_outcome \"completed\""),
+        "linux update worker should persist outcome files for later command truth reporting"
+    );
+    assert!(
+        worker_source.contains("--command-id"),
+        "linux update worker should receive the originating command id"
+    );
+    assert!(
         worker_source.contains(".arg(\"/bin/bash\")"),
         "linux update worker systemd-run path should invoke /bin/bash explicitly"
     );
@@ -273,6 +281,21 @@ fn linux_update_packaging_recovers_service_after_upgrade() {
     assert!(
         windows_worker_source.contains("failureflag $ServiceName 1"),
         "windows update worker should restore non-crash failure recovery after update"
+    );
+    assert!(
+        windows_worker_source.contains("Write-Outcome -Status 'failed'"),
+        "windows update worker should persist failed outcomes for later command truth reporting"
+    );
+    assert!(
+        windows_worker_source.contains("[string]$CommandId"),
+        "windows update worker should receive the originating command id"
+    );
+
+    let command_control_source =
+        read("crates/agent-core/src/lifecycle/command_control_pipeline.rs");
+    assert!(
+        command_control_source.contains("self.flush_update_outcome_reports().await;"),
+        "connected command stage should flush persisted update outcomes before fetching new commands"
     );
 }
 

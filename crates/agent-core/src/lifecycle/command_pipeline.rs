@@ -71,7 +71,9 @@ impl AgentRuntime {
             ServerCommand::Forensics => {
                 self.apply_forensics_collection(&command.payload_json, &mut exec)
             }
-            ServerCommand::Update => self.apply_agent_update(&command.payload_json, &mut exec),
+            ServerCommand::Update => {
+                self.apply_agent_update(&command.command_id, &command.payload_json, &mut exec)
+            }
             ServerCommand::LockDevice => self.apply_device_lock(&command.payload_json, &mut exec),
             ServerCommand::WipeDevice => self.apply_device_wipe(&command.payload_json, &mut exec),
             ServerCommand::RetireDevice => {

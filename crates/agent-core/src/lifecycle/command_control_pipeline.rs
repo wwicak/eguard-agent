@@ -10,6 +10,7 @@ use super::{
 impl AgentRuntime {
     pub(super) async fn run_connected_command_stage(&mut self, now_unix: i64) {
         let command_sync_started = Instant::now();
+        self.flush_update_outcome_reports().await;
         self.sync_pending_commands(now_unix).await;
         self.metrics.last_command_sync_micros = elapsed_micros(command_sync_started);
     }
