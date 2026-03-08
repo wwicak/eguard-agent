@@ -206,6 +206,10 @@ fn linux_update_packaging_recovers_service_after_upgrade() {
         "postinstall should patch legacy /etc unit files to the safer stop timeout"
     );
     assert!(
+        postinstall.contains("systemd-run --unit \"eguard-agent-postinstall-$(date +%s)\" --collect /bin/sh -c \"$recover_cmd\""),
+        "postinstall should prefer delayed systemd-run recovery so upgrade cleanup cannot immediately undo it"
+    );
+    assert!(
         postinstall.contains("systemctl reset-failed eguard-agent.service || true"),
         "postinstall should clear failed state before restart"
     );
