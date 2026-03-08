@@ -104,7 +104,7 @@ function Stop-AgentService {
         $runningProc = Get-Process -Name 'eguard-agent' -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($runningProc) {
             Write-Log "taskkill fallback for pid $($runningProc.Id)"
-            & taskkill /F /PID $runningProc.Id /T | Out-Null
+            & taskkill /F /PID $runningProc.Id | Out-Null
             Start-Sleep -Seconds 3
         }
     }
