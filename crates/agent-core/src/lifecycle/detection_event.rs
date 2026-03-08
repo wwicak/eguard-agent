@@ -300,13 +300,77 @@ fn is_low_value_windows_system_file_path(path: &str) -> bool {
             && (normalized.ends_with(".log1") || normalized.ends_with(".log2")))
 }
 
+fn is_low_value_windows_agent_self_path(path: &str) -> bool {
+    let mut normalized = path
+        .trim()
+        .trim_matches('"')
+        .replace('/', "\\")
+        .to_ascii_lowercase();
+    while normalized.contains("\\\\") {
+        normalized = normalized.replace("\\\\", "\\");
+    }
+
+    normalized == r"c:\program files\eguard\eguard-agent.exe"
+}
+
+fn is_low_value_windows_powershell_policy_test_path(path: &str) -> bool {
+    let mut normalized = path
+        .trim()
+        .trim_matches('"')
+        .replace('/', "\\")
+        .to_ascii_lowercase();
+    while normalized.contains("\\\\") {
+        normalized = normalized.replace("\\\\", "\\");
+    }
+
+    normalized.starts_with(r"c:\windows\temp\__psscriptpolicytest_")
+}
+
+fn is_low_value_windows_proxy_host_lifecycle_event(event: &TelemetryEvent) -> bool {
+    let process = event.process.trim().to_ascii_lowercase();
+    if !matches!(
+        process.as_str(),
+        "conhost.exe" | "conhost" | "csrss.exe" | "csrss"
+    ) {
+        return false;
+    }
+    if !event.parent_process.eq_ignore_ascii_case("unknown") {
+        return false;
+    }
+    if event
+        .command_line
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some()
+    {
+        return false;
+    }
+
+    event
+        .file_path
+        .as_deref()
+        .map(|path| {
+            let mut normalized = path
+                .trim()
+                .trim_matches('"')
+                .replace('/', "\\")
+                .to_ascii_lowercase();
+            while normalized.contains("\\\\") {
+                normalized = normalized.replace("\\\\", "\\");
+            }
+            normalized.ends_with(r"\conhost.exe") || normalized.ends_with(r"\csrss.exe")
+        })
+        .unwrap_or(false)
+}
+
 pub(super) fn should_drop_low_value_windows_event(
     enriched: &crate::platform::EnrichedEvent,
     event: &TelemetryEvent,
 ) -> bool {
     if matches!(
         enriched.event.event_type,
-        crate::platform::EventType::ProcessExit
+        crate::platform::EventType::ProcessExec | crate::platform::EventType::ProcessExit
     ) {
         let has_meaningful_subject = event
             .file_path
@@ -319,11 +383,23 @@ pub(super) fn should_drop_low_value_windows_event(
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .is_some();
-        return is_low_value_windows_pseudo_identity(&event.process)
-            && is_low_value_windows_pseudo_identity(&event.parent_process)
-            && !has_meaningful_subject
-            && !has_meaningful_cmdline
-            && event.ppid == 0;
+
+        if is_low_value_windows_proxy_host_lifecycle_event(event) {
+            return true;
+        }
+
+        if matches!(
+            enriched.event.event_type,
+            crate::platform::EventType::ProcessExit
+        ) {
+            return is_low_value_windows_pseudo_identity(&event.process)
+                && is_low_value_windows_pseudo_identity(&event.parent_process)
+                && !has_meaningful_subject
+                && !has_meaningful_cmdline
+                && event.ppid == 0;
+        }
+
+        return false;
     }
 
     if !matches!(
@@ -351,15 +427,31 @@ pub(super) fn should_drop_low_value_windows_event(
             enriched.event.event_type,
             crate::platform::EventType::FileOpen
         ) && !event.file_write
-            && event.process.eq_ignore_ascii_case("System")
             && event.parent_process.eq_ignore_ascii_case("unknown")
-            && event
-                .file_path
-                .as_deref()
-                .map(is_low_value_windows_system_file_path)
-                .unwrap_or(false)
         {
-            return true;
+            if event.process.eq_ignore_ascii_case("System")
+                && event
+                    .file_path
+                    .as_deref()
+                    .map(|path| {
+                        is_low_value_windows_system_file_path(path)
+                            || is_low_value_windows_agent_self_path(path)
+                    })
+                    .unwrap_or(false)
+            {
+                return true;
+            }
+
+            if event.pid <= 4
+                && event.ppid == 0
+                && event
+                    .file_path
+                    .as_deref()
+                    .map(is_low_value_windows_powershell_policy_test_path)
+                    .unwrap_or(false)
+            {
+                return true;
+            }
         }
         return false;
     }
@@ -735,6 +827,78 @@ mod tests {
     }
 
     #[test]
+    fn should_drop_low_value_windows_event_for_system_agent_binary_open() {
+        let enriched = EnrichedEvent {
+            event: RawEvent {
+                event_type: EventType::FileOpen,
+                pid: 4,
+                uid: 0,
+                ts_ns: 1,
+                payload: "file_key=0x99".to_string(),
+            },
+            process_exe: Some("System".to_string()),
+            process_exe_sha256: None,
+            process_cmdline: None,
+            parent_process: Some("unknown".to_string()),
+            parent_chain: Vec::new(),
+            file_path: Some(r"C:\\Program Files\\eGuard\\eguard-agent.exe".to_string()),
+            file_path_secondary: None,
+            file_write: false,
+            file_sha256: None,
+            event_size: None,
+            dst_ip: None,
+            dst_port: None,
+            dst_domain: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        };
+
+        let event = super::to_detection_event(&enriched, 123);
+        assert!(super::should_drop_low_value_windows_event(
+            &enriched, &event
+        ));
+    }
+
+    #[test]
+    fn should_drop_low_value_windows_event_for_pid4_powershell_policytest_file_noise() {
+        let enriched = EnrichedEvent {
+            event: RawEvent {
+                event_type: EventType::FileOpen,
+                pid: 4,
+                uid: 0,
+                ts_ns: 1,
+                payload: "file_key=0xaa".to_string(),
+            },
+            process_exe: Some(
+                r"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe".to_string(),
+            ),
+            process_exe_sha256: None,
+            process_cmdline: None,
+            parent_process: Some("unknown".to_string()),
+            parent_chain: Vec::new(),
+            file_path: Some(r"C:\\Windows\\Temp\\__PSScriptPolicyTest_demo.abc.ps1".to_string()),
+            file_path_secondary: None,
+            file_write: false,
+            file_sha256: None,
+            event_size: None,
+            dst_ip: None,
+            dst_port: None,
+            dst_domain: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        };
+
+        let event = super::to_detection_event(&enriched, 123);
+        assert!(super::should_drop_low_value_windows_event(
+            &enriched, &event
+        ));
+    }
+
+    #[test]
     fn should_drop_low_value_windows_event_for_pathless_svchost_host_chatter() {
         let enriched = EnrichedEvent {
             event: RawEvent {
@@ -886,6 +1050,82 @@ mod tests {
         let event = super::to_detection_event(&enriched, 123);
         assert_eq!(event.process, "powershell.exe");
         assert_eq!(event.parent_process, "cmd.exe");
+        assert!(!super::should_drop_low_value_windows_event(
+            &enriched, &event
+        ));
+    }
+
+    #[test]
+    fn should_drop_proxy_host_process_lifecycle_when_parent_is_unknown() {
+        let enriched = EnrichedEvent {
+            event: RawEvent {
+                event_type: EventType::ProcessExec,
+                pid: 3860,
+                uid: 0,
+                ts_ns: 1,
+                payload: String::new(),
+            },
+            process_exe: Some(r"C:\\Windows\\System32\\conhost.exe".to_string()),
+            process_exe_sha256: None,
+            process_cmdline: None,
+            parent_process: Some("unknown".to_string()),
+            parent_chain: vec![1676],
+            file_path: Some(r"C:\\Windows\\System32\\conhost.exe".to_string()),
+            file_path_secondary: None,
+            file_write: false,
+            file_sha256: None,
+            event_size: None,
+            dst_ip: None,
+            dst_port: None,
+            dst_domain: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        };
+
+        let event = super::to_detection_event(&enriched, 123);
+        assert_eq!(event.process, "conhost.exe");
+        assert_eq!(event.parent_process, "unknown");
+        assert!(super::should_drop_low_value_windows_event(
+            &enriched, &event
+        ));
+    }
+
+    #[test]
+    fn should_not_drop_proxy_host_process_lifecycle_when_parent_is_known() {
+        let enriched = EnrichedEvent {
+            event: RawEvent {
+                event_type: EventType::ProcessExec,
+                pid: 4242,
+                uid: 0,
+                ts_ns: 1,
+                payload: String::new(),
+            },
+            process_exe: Some(r"C:\\Windows\\System32\\conhost.exe".to_string()),
+            process_exe_sha256: None,
+            process_cmdline: Some(
+                r"\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1".to_string(),
+            ),
+            parent_process: Some("powershell.exe".to_string()),
+            parent_chain: vec![1337],
+            file_path: Some(r"C:\\Windows\\System32\\conhost.exe".to_string()),
+            file_path_secondary: None,
+            file_write: false,
+            file_sha256: None,
+            event_size: None,
+            dst_ip: None,
+            dst_port: None,
+            dst_domain: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        };
+
+        let event = super::to_detection_event(&enriched, 123);
+        assert_eq!(event.process, "conhost.exe");
+        assert_eq!(event.parent_process, "powershell.exe");
         assert!(!super::should_drop_low_value_windows_event(
             &enriched, &event
         ));
