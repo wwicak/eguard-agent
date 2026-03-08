@@ -28,6 +28,7 @@ responsible for managing eGuard across a fleet of endpoints.
    - [8b.6 Zero Trust Scoring](#8b6-zero-trust-scoring)
 9. [Agent Release & Updates](#9-agent-release--updates)
    - [9.5 Server-side Signature ML Runtime Inference](#95-server-side-signature-ml-runtime-inference-mar-2026)
+   - [9.6 Released Agent Version Reporting Truth](#96-released-agent-version-reporting-truth-mar-2026)
 10. [gRPC Reliability](#10-grpc-reliability)
 11. [Firewall / iptables](#11-firewall--iptables)
 12. [Configuration Reference](#12-configuration-reference)
@@ -1544,6 +1545,77 @@ For `/usr/local/eg/lib/eg/egcron/task/signature_ml_feedback_train.pm`:
 | `EGUARD_ML_NN_LEARNING_RATE` | `0.03` | Learning rate for `shallow_nn` trainer |
 
 ---
+
+### 9.6 Released Agent Version Reporting Truth (Mar 2026)
+
+Live operators found a high-severity trust gap in Mar 2026: freshly released
+agents (`v0.2.49` through `v0.2.52`) still reported `agent_version = 0.1.1`
+on the server, even when the package on disk had been upgraded correctly.
+
+#### Root cause
+
+Official GitHub release workflows already exported `EGUARD_AGENT_VERSION=<tag>`
+while building release binaries, but the agent runtime was not using that value
+as **compile-time** metadata. Instead, the runtime surfaced:
+
+- `env!("CARGO_PKG_VERSION")` in inventory/compliance paths, or
+- a **runtime** `EGUARD_AGENT_VERSION` env lookup in the gRPC client.
+
+That meant the shipped release tag version was never embedded into the binary
+unless an operator also injected the same env var into the running service.
+
+#### Fix
+
+A shared helper crate now centralizes version truth:
+
+- `crates/agent-version/src/lib.rs`
+- `current_agent_version()` resolves compile-time
+  `option_env!("EGUARD_AGENT_VERSION")`
+- fallback remains the workspace `CARGO_PKG_VERSION` for local developer builds
+
+The agent now uses that shared helper for all operator-facing version surfaces:
+
+- heartbeat / transport default agent version (`grpc-client`)
+- inventory attribute `agent_version`
+- compliance snapshot `agent_version`
+- Windows/macOS platform compliance conversions
+
+#### Validation
+
+Targeted regression checks:
+
+```bash
+cargo test -p agent-version -- --nocapture
+cargo test -p grpc-client default_agent_version_prefers_environment_override -- --nocapture
+cargo test -p grpc-client client_agent_version_can_be_updated_for_subsequent_heartbeat_reporting -- --nocapture
+cargo test -p compliance agent_version_is_reported_from_package_metadata -- --nocapture
+cargo build --release -p agent-core --features platform-linux/ebpf-libbpf
+```
+
+Release proof:
+
+- commit: `c00c7eb` — `fix(version): report shipped agent release`
+- release: `v0.2.53`
+- GitHub Actions run: `22818682849`
+- server sync:
+  `POST http://192.168.122.25:50053/api/v1/endpoint/agent-release/notify {"tag":"v0.2.53"}`
+
+Live Fedora upgrade proof (`agent-5d3dc8654c99`):
+
+- package: `eguard-agent-0.2.53-1.x86_64`
+- binary SHA256:
+  `32510bb5afbbaff1f7486b32c37cc196d1d7baf59e202bacd261827f3e4fbe37`
+- post-upgrade service state: `active`
+- server DB truth after fresh heartbeat:
+  - `endpoint_agent.agent_version = 0.2.53`
+  - `endpoint_inventory.attributes.agent_version = 0.2.53`
+
+#### Operator takeaway
+
+If a newly released agent still shows the workspace fallback version instead of
+its shipped release tag, treat that as a release-build metadata regression.
+The build job must export `EGUARD_AGENT_VERSION` **during compilation**, not
+only in post-install runtime environment.
 
 ## 10. gRPC Reliability
 
