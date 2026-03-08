@@ -6108,3 +6108,78 @@ blocking `agent.conf` persistence after enrollment. Fixed with `ReadWritePaths=/
 - Sync webhook triggers but cannot download content
 - The GitHub Actions threat-intel pipeline publishes bundles but the server
   needs configuration to fetch from the correct GitHub release URL
+
+### N.10 Remote agent-service restart control for staged updates (Mar 2026)
+
+When update truth shows a package is installed but the running agent service still
+reports an older version, operators need a lighter-weight recovery path than full
+host reboot.
+
+#### Agent behavior
+
+`crates/agent-core/src/lifecycle/command_pipeline/config_change.rs` now recognizes
+an `agent_control.restart_service = true` directive inside the existing
+`config_change` payload shape:
+
+```json
+{
+  "config_json": {
+    "config_type": "agent_control",
+    "agent_control": {
+      "restart_service": true,
+      "reason": "activate staged agent package"
+    }
+  }
+}
+```
+
+The agent schedules a detached service restart instead of rebooting the device:
+
+- Linux: transient `systemd-run` unit that restarts `eguard-agent.service`
+- Windows: detached PowerShell restart of service `eGuardAgent`
+- macOS: detached `launchctl kickstart -k system/com.eguard.agent`
+
+#### Validation
+
+Targeted tests:
+
+```bash
+cd /home/dimas/eguard-agent
+cargo test -p agent-core config_change_ -- --nocapture
+```
+
+Notable new coverage:
+
+- `config_change_agent_control_restart_schedules_service_restart`
+- existing network-profile and backward-compatible no-op config-change tests still pass
+
+#### Live Fedora proof
+
+Because Ubuntu `agent-31bbb93f38b4` is still running legacy runtime `0.1.1`, the
+new command cannot help that host yet. I validated the feature on Fedora after a
+manual binary uplift:
+
+- deployed updated binary to `agent@10.6.108.247`
+- queued config-change restart command `60efc48e-1f37-4ed1-8fa3-d708ae55c09c`
+- command result detail became:
+  - `agent service restart scheduled (eguard-agent-self-restart-1773010551; reason=validate remote agent service restart)`
+- `systemctl show eguard-agent.service` showed a fresh start timestamp at
+  `2026-03-08 22:55:53 UTC`
+- server truth after restart:
+  - `agent_version = 0.2.78`
+  - `last_heartbeat` advanced again to `2026-03-08T22:56:37Z`
+
+#### Honest legacy caveat
+
+I also queued the same config-change restart attempt to Ubuntu
+`agent-31bbb93f38b4`:
+
+- command `5e4ead0f-20bf-48b7-bca5-99a70f9c6544`
+- result detail: `configuration change accepted`
+- runtime remained `0.1.1`
+- rollout truth remained `partial_install`
+
+That proves the legacy `0.1.1` runtime treats this newer control payload as a
+backward-compatible no-op. So the remote restart control is valuable for modern
+agents, but it does **not** rescue the already-stuck legacy Ubuntu host until a
+newer runtime is active.
