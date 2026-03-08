@@ -30,6 +30,7 @@ responsible for managing eGuard across a fleet of endpoints.
    - [9.5 Server-side Signature ML Runtime Inference](#95-server-side-signature-ml-runtime-inference-mar-2026)
    - [9.6 Released Agent Version Reporting Truth](#96-released-agent-version-reporting-truth-mar-2026)
    - [9.7 Windows Self-Update Hardening](#97-windows-self-update-hardening-mar-2026)
+   - [9.8 Linux Failed-Update Heartbeat Recovery](#98-linux-failed-update-heartbeat-recovery-mar-2026)
 10. [gRPC Reliability](#10-grpc-reliability)
 11. [Firewall / iptables](#11-firewall--iptables)
 12. [Configuration Reference](#12-configuration-reference)
@@ -1677,6 +1678,59 @@ Release / live validation sequence:
 Legacy Windows agents that predate the hardened updater may still require one
 manual uplift before unattended update commands become trustworthy. Once the
 hardened worker is on disk, subsequent EXE-based upgrades are operator-grade.
+
+### 9.8 Linux Failed-Update Heartbeat Recovery (Mar 2026)
+
+Live Fedora validation uncovered a subtler Linux update regression than package
+installation itself: a checksum-mismatch update could fail correctly, yet the
+agent would stop advancing `last_heartbeat` until a manual restart even though
+`eguard-agent.service` still showed `active`.
+
+#### Root cause pattern
+
+The failed update path could leave async control-plane sends (heartbeat,
+compliance, inventory) occupied long enough that fresh heartbeat work could not
+reclaim send concurrency on schedule. The transport layer already had retry
+logic, but those retries were too expensive to use as the only outer bound for
+background control-plane reliability.
+
+#### Hardened runtime behavior
+
+`crates/agent-core/src/lifecycle/async_workers.rs` now adds an explicit outer
+`CONTROL_PLANE_SEND_TIMEOUT_MS = 10_000` around async control-plane sends. If a
+background heartbeat/compliance/inventory send wedges, the worker is cancelled,
+a timeout error is surfaced, and the next heartbeat can be queued and sent
+normally instead of waiting minutes for retry exhaustion.
+
+#### Validation
+
+Targeted regression coverage:
+
+```bash
+cargo test -p agent-core async_workers::tests -- --nocapture
+cargo test -p agent-core fetch_command_backlog_batch_times_out_without_wedging_runtime -- --nocapture
+```
+
+Live Fedora validation:
+
+- baseline package: `eguard-agent-0.2.78-1.x86_64`
+- endpoint: `agent-5d3dc8654c99`
+- failing validation command:
+  - `054ef7f3-c761-436b-a0f4-ba70bb5c00d9`
+  - target version: `0.2.78`
+  - failure detail: `package checksum verification failed for http://103.132.18.221:50053/api/v1/agent-install/linux-rpm?version=0.2.78`
+- post-failure truth:
+  - `status = failed`
+  - `update_verification_status = failed`
+  - `observed_agent_version = 0.2.78`
+  - `last_heartbeat` continued advancing every ~30 seconds through
+    `2026-03-08T21:33:41Z`
+
+#### Operator takeaway
+
+A failed update must never require a manual service restart just to restore
+fleet truth. Keep a short outer timeout around background control-plane sends so
+heartbeat freshness stays resilient even when one transport call wedges.
 
 ## 10. gRPC Reliability
 
