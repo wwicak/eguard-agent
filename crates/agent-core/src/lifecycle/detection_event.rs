@@ -247,6 +247,35 @@ fn effective_windows_process_basename<'a>(
         })
 }
 
+fn is_low_signal_self_image_windows_command_line(
+    command_line: Option<&str>,
+    process_exe: Option<&str>,
+) -> bool {
+    let Some(command_line) = command_line
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return false;
+    };
+    let Some(process_exe) = process_exe.map(str::trim).filter(|value| !value.is_empty()) else {
+        return false;
+    };
+
+    let normalize = |value: &str| {
+        let mut normalized = value
+            .trim()
+            .trim_matches('"')
+            .replace('/', "\\")
+            .to_ascii_lowercase();
+        while normalized.contains("\\\\") {
+            normalized = normalized.replace("\\\\", "\\");
+        }
+        normalized
+    };
+
+    normalize(command_line) == normalize(process_exe)
+}
+
 pub(super) fn should_drop_low_value_windows_event(
     enriched: &crate::platform::EnrichedEvent,
     event: &TelemetryEvent,
@@ -279,6 +308,13 @@ pub(super) fn should_drop_low_value_windows_event(
         .map(is_low_value_windows_host_process)
         .unwrap_or(false)
     {
+        return true;
+    }
+
+    if is_low_signal_self_image_windows_command_line(
+        event.command_line.as_deref(),
+        enriched.process_exe.as_deref(),
+    ) {
         return true;
     }
 
@@ -670,6 +706,44 @@ mod tests {
         let event = super::to_detection_event(&enriched, 123);
         assert_eq!(event.process, "powershell.exe");
         assert_eq!(event.parent_process, "powershell.exe");
+        assert!(super::should_drop_low_value_windows_event(
+            &enriched, &event
+        ));
+    }
+
+    #[test]
+    fn should_drop_pathless_windows_self_image_firefox_chatter() {
+        let enriched = EnrichedEvent {
+            event: RawEvent {
+                event_type: EventType::FileOpen,
+                pid: 4388,
+                uid: 0,
+                ts_ns: 1,
+                payload: "file_object=0x77".to_string(),
+            },
+            process_exe: Some(r"C:\\Program Files (x86)\\Mozilla Firefox\\firefox.exe".to_string()),
+            process_exe_sha256: None,
+            process_cmdline: Some(
+                r#""C:\Program Files (x86)\Mozilla Firefox\firefox.exe""#.to_string(),
+            ),
+            parent_process: Some("unknown".to_string()),
+            parent_chain: vec![4296],
+            file_path: None,
+            file_path_secondary: None,
+            file_write: false,
+            file_sha256: None,
+            event_size: None,
+            dst_ip: None,
+            dst_port: None,
+            dst_domain: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        };
+
+        let event = super::to_detection_event(&enriched, 123);
+        assert_eq!(event.process, "firefox.exe");
         assert!(super::should_drop_low_value_windows_event(
             &enriched, &event
         ));
