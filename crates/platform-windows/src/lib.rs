@@ -1312,9 +1312,10 @@ mod tests {
     fn process_exit_reuses_cached_process_context_before_eviction() {
         let mut cache = EnrichmentCache::default();
 
+        let test_pid = 9_999_991;
         let exec = RawEvent {
             event_type: EventType::ProcessExec,
-            pid: 4244,
+            pid: test_pid,
             uid: 0,
             ts_ns: 1,
             payload: r#"path=C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe;cmdline=powershell.exe -NoProfile -File C:\Windows\Temp\demo.ps1;ppid=0x3c8;parent_process=C:\Windows\System32\cmd.exe"#
@@ -1324,7 +1325,7 @@ mod tests {
 
         let exit = RawEvent {
             event_type: EventType::ProcessExit,
-            pid: 4244,
+            pid: test_pid,
             uid: 0,
             ts_ns: 2,
             payload: String::new(),
@@ -1342,7 +1343,7 @@ mod tests {
         assert_eq!(enriched.parent_process.as_deref(), Some("cmd.exe"));
         assert_eq!(enriched.parent_chain.first().copied(), Some(968));
         assert!(
-            !cache.evict_process(4244),
+            !cache.evict_process(test_pid),
             "process exit should evict the cached PID after reusing its identity"
         );
     }
