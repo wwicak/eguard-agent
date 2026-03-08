@@ -10,7 +10,7 @@ if [ -f "$legacy_unit" ] && [ ! -L "$legacy_unit" ]; then
 fi
 
 if [ -d /run/systemd/system ]; then
-    recover_cmd='sleep 2; systemctl daemon-reload || true; systemctl enable eguard-agent.service || true; systemctl reset-failed eguard-agent.service || true; systemctl start eguard-agent.service || systemctl restart eguard-agent.service || true'
+    recover_cmd='sleep 2; systemctl daemon-reload || true; systemctl enable eguard-agent.service || true; systemctl reset-failed eguard-agent.service || true; systemctl restart eguard-agent.service || systemctl start eguard-agent.service || true'
     if command -v systemd-run >/dev/null 2>&1; then
         systemd-run --unit "eguard-agent-postinstall-$(date +%s)" --collect /bin/sh -c "$recover_cmd" >/dev/null 2>&1 || /bin/sh -c "$recover_cmd"
     else

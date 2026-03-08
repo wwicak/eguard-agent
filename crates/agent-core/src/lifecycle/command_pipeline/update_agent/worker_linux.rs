@@ -125,9 +125,9 @@ fi
 
 systemctl daemon-reload || true
 systemctl reset-failed eguard-agent || true
-if ! systemctl start eguard-agent; then
+if ! systemctl restart eguard-agent; then
   sleep 2
-  systemctl restart eguard-agent || true
+  systemctl start eguard-agent || true
 fi
 "#;
 

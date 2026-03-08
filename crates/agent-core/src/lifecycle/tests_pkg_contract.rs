@@ -214,7 +214,7 @@ fn linux_update_packaging_recovers_service_after_upgrade() {
         "postinstall should clear failed state before restart"
     );
     assert!(
-        postinstall.contains("systemctl start eguard-agent.service || systemctl restart eguard-agent.service || true"),
+        postinstall.contains("systemctl restart eguard-agent.service || systemctl start eguard-agent.service || true"),
         "postinstall should retry service recovery after upgrade"
     );
 
@@ -235,8 +235,12 @@ fn linux_update_packaging_recovers_service_after_upgrade() {
         "linux update worker should clear failed service state after package install"
     );
     assert!(
-        worker_source.contains("systemctl restart eguard-agent || true"),
-        "linux update worker should retry service restart if start fails"
+        worker_source.contains("if ! systemctl restart eguard-agent; then"),
+        "linux update worker should prefer a full service restart after package install"
+    );
+    assert!(
+        worker_source.contains("systemctl start eguard-agent || true"),
+        "linux update worker should still fall back to start if restart cannot be used"
     );
 }
 
