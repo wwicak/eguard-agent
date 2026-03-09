@@ -1,0 +1,17 @@
+title: linux_ld_preload_defense_evasion
+id: linux_ld_preload_defense_evasion
+status: experimental
+tags:
+  - attack.t1574
+  - attack.t1562
+mitre_techniques:
+  - T1574
+  - T1562
+
+detection:
+  sequence:
+    - event_class: process_exec
+      command_line_contains:
+        - LD_PRELOAD=
+        - LD_LIBRARY_PATH=
+      within_secs: 30

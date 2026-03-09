@@ -69,18 +69,18 @@ contents:
     type: dir
     file_info:
       mode: 0750
-  - dst: /var/lib/eguard-agent/rules/sigma/
-    type: dir
+  - src: rules/sigma/
+    dst: /var/lib/eguard-agent/rules/sigma/
     file_info:
-      mode: 0750
-  - dst: /var/lib/eguard-agent/rules/yara/
-    type: dir
+      mode: 0644
+  - src: rules/yara/
+    dst: /var/lib/eguard-agent/rules/yara/
     file_info:
-      mode: 0750
-  - dst: /var/lib/eguard-agent/rules/ioc/
-    type: dir
+      mode: 0644
+  - src: rules/ioc/
+    dst: /var/lib/eguard-agent/rules/ioc/
     file_info:
-      mode: 0750
+      mode: 0644
   - dst: /var/lib/eguard-agent/rules-staging/
     type: dir
     file_info:

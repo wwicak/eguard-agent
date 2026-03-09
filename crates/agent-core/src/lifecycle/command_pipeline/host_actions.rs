@@ -4,6 +4,7 @@ use std::path::Path;
 use response::{CommandExecution, CommandOutcome};
 
 use super::command_utils::resolve_allowed_server_ips;
+use super::host_isolation_linux::{apply_linux_host_isolation, remove_linux_host_isolation};
 use super::payloads::RestoreQuarantinePayload;
 use super::AgentRuntime;
 
@@ -73,7 +74,19 @@ impl AgentRuntime {
 
         #[cfg(not(any(target_os = "windows", target_os = "macos")))]
         {
-            let _ = (allowed, exec);
+            match apply_linux_host_isolation(&allowed) {
+                Ok(()) => {
+                    exec.detail = format!(
+                        "host isolation enforced via iptables (allowing: {})",
+                        allowed.join(",")
+                    );
+                }
+                Err(err) => {
+                    exec.outcome = CommandOutcome::Ignored;
+                    exec.status = "failed";
+                    exec.detail = format!("host isolation failed: {}", err);
+                }
+            }
         }
     }
 
@@ -110,7 +123,16 @@ impl AgentRuntime {
 
         #[cfg(not(any(target_os = "windows", target_os = "macos")))]
         {
-            let _ = exec;
+            match remove_linux_host_isolation() {
+                Ok(()) => {
+                    exec.detail = "host isolation removed via iptables".to_string();
+                }
+                Err(err) => {
+                    exec.outcome = CommandOutcome::Ignored;
+                    exec.status = "failed";
+                    exec.detail = format!("failed removing host isolation: {}", err);
+                }
+            }
         }
     }
 

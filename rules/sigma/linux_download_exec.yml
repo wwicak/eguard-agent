@@ -1,0 +1,28 @@
+title: linux_download_exec
+id: linux_download_exec
+status: experimental
+tags:
+  - attack.t1105
+  - attack.t1059
+mitre_techniques:
+  - T1105
+  - T1059
+
+detection:
+  sequence:
+    - event_class: process_exec
+      process_any_of:
+        - curl
+        - wget
+        - fetch
+      command_line_contains:
+        - "http://"
+        - "https://"
+      within_secs: 30
+    - event_class: process_exec
+      process_any_of:
+        - bash
+        - sh
+        - python
+        - python3
+      within_secs: 20

@@ -51,6 +51,7 @@ pub(super) fn to_detection_event(
         .clone()
         .filter(|path| !is_low_value_windows_pseudo_identity(path))
         .or(module_payload)
+        .or_else(|| fallback_file_path_from_payload(enriched))
         .or_else(|| {
             matches!(
                 enriched.event.event_type,
@@ -141,6 +142,32 @@ fn process_name_from_cmdline(cmdline: &str) -> Option<&str> {
     } else {
         Some(process_basename(first))
     }
+}
+
+fn fallback_file_path_from_payload(enriched: &crate::platform::EnrichedEvent) -> Option<String> {
+    match enriched.event.event_type {
+        crate::platform::EventType::FileOpen
+        | crate::platform::EventType::FileWrite
+        | crate::platform::EventType::FileRename
+        | crate::platform::EventType::FileUnlink
+        | crate::platform::EventType::ProcessExec => parse_payload_field(&enriched.event.payload, "path")
+            .or_else(|| parse_payload_field(&enriched.event.payload, "file"))
+            .or_else(|| parse_payload_field(&enriched.event.payload, "src")),
+        _ => None,
+    }
+}
+
+fn parse_payload_field(payload: &str, field: &str) -> Option<String> {
+    payload
+        .split([';', ','])
+        .filter_map(|segment| segment.split_once('='))
+        .find_map(|(key, value)| {
+            key.trim()
+                .eq_ignore_ascii_case(field)
+                .then(|| value.trim().trim_matches('"'))
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+        })
 }
 
 fn is_weak_windows_process_identity(process: &str) -> bool {
@@ -639,6 +666,39 @@ mod tests {
             Some("cmd.exe")
         );
         assert_eq!(process_name_from_cmdline("   "), None);
+    }
+
+    #[test]
+    fn to_detection_event_recovers_file_path_from_raw_payload_when_enrichment_misses_it() {
+        let enriched = EnrichedEvent {
+            event: RawEvent {
+                event_type: EventType::FileOpen,
+                pid: 4242,
+                uid: 1000,
+                ts_ns: 1,
+                payload: "path=/tmp/payload.bin;flags=0;mode=0".to_string(),
+            },
+            process_exe: Some("/usr/bin/bash".to_string()),
+            process_exe_sha256: None,
+            process_cmdline: Some("/usr/bin/bash -lc test".to_string()),
+            parent_process: Some("sshd".to_string()),
+            parent_chain: vec![100],
+            file_path: None,
+            file_path_secondary: None,
+            file_write: false,
+            file_sha256: None,
+            event_size: None,
+            dst_ip: None,
+            dst_port: None,
+            dst_domain: None,
+            container_runtime: Some("host".to_string()),
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        };
+
+        let event = super::to_detection_event(&enriched, 55);
+        assert_eq!(event.file_path.as_deref(), Some("/tmp/payload.bin"));
     }
 
     #[test]

@@ -1,0 +1,23 @@
+title: linux_data_staging_archive
+id: linux_data_staging_archive
+status: experimental
+tags:
+  - attack.t1074
+  - attack.t1560
+mitre_techniques:
+  - T1074
+  - T1560
+
+detection:
+  sequence:
+    - event_class: process_exec
+      process_any_of:
+        - tar
+        - zip
+        - gzip
+        - 7z
+      command_line_contains:
+        - /etc/
+        - /home/
+        - /var/
+      within_secs: 30

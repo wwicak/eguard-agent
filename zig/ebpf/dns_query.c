@@ -5,8 +5,8 @@
  *
  * This is a coarse probe: it fires on every UDP send, not just DNS.
  * The agent-side parser filters by port / payload heuristics.
- * For V1 we emit the sending process's comm as qname placeholder;
- * real DNS extraction requires skb parsing (TC/XDP, future work).
+ * Real DNS extraction requires skb parsing (TC/XDP, future work), so
+ * the qname field is left empty unless a future parser populates it.
  */
 #include "bpf_helpers.h"
 
@@ -29,7 +29,6 @@ int eguard_udp_sendmsg(void *ctx)
 
     e->qtype  = 1;  /* A */
     e->qclass = 1;  /* IN */
-    bpf_get_current_comm(e->qname, QNAME_SZ);
 
     EGUARD_SUBMIT_EVENT(ctx, e);
 }

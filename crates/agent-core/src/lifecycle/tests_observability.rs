@@ -506,6 +506,10 @@ fn observability_snapshot_reports_control_plane_queue_churn_totals() {
                 rule_name: "rule".to_string(),
                 threat_category: "malware".to_string(),
                 file_path: None,
+                quarantine_path: None,
+                sha256: None,
+                file_size: 0,
+                killed_pids: Vec::new(),
             },
         });
 
@@ -552,6 +556,10 @@ fn heartbeat_runtime_status_surfaces_queue_pressure_levels() {
                     rule_name: String::new(),
                     threat_category: String::new(),
                     file_path: None,
+                    quarantine_path: None,
+                    sha256: None,
+                    file_size: 0,
+                    killed_pids: Vec::new(),
                 },
             });
     }
@@ -1090,6 +1098,10 @@ async fn async_worker_queue_dispatches_response_reports() {
         rule_name: String::new(),
         threat_category: String::new(),
         file_path: None,
+        quarantine_path: None,
+        sha256: None,
+        file_size: 0,
+        killed_pids: Vec::new(),
     });
 
     assert_eq!(runtime.pending_response_reports.len(), 1);

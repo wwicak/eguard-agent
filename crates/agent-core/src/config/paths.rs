@@ -8,12 +8,41 @@ use anyhow::Result;
 
 use super::constants::{AGENT_CONFIG_CANDIDATES, BOOTSTRAP_CONFIG_CANDIDATES};
 
+#[cfg(target_os = "linux")]
+const DEFAULT_LAST_KNOWN_GOOD_CONFIG_PATH: &str = "/var/lib/eguard-agent/agent.last_known_good.toml";
+#[cfg(target_os = "macos")]
+const DEFAULT_LAST_KNOWN_GOOD_CONFIG_PATH: &str =
+    "/Library/Application Support/eGuard/agent.last_known_good.toml";
+#[cfg(target_os = "windows")]
+const DEFAULT_LAST_KNOWN_GOOD_CONFIG_PATH: &str =
+    r"C:\ProgramData\eGuard\agent.last_known_good.toml";
+
 pub(super) fn resolve_config_path() -> Result<Option<PathBuf>> {
     resolve_path_from_env_or_candidates("EGUARD_AGENT_CONFIG", &AGENT_CONFIG_CANDIDATES)
 }
 
 pub(super) fn resolve_bootstrap_path() -> Result<Option<PathBuf>> {
     resolve_path_from_env_or_candidates("EGUARD_BOOTSTRAP_CONFIG", &BOOTSTRAP_CONFIG_CANDIDATES)
+}
+
+pub(super) fn primary_config_path() -> PathBuf {
+    if let Ok(raw) = std::env::var("EGUARD_AGENT_CONFIG") {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
+    PathBuf::from(AGENT_CONFIG_CANDIDATES[0])
+}
+
+pub(super) fn resolve_last_known_good_config_path() -> PathBuf {
+    if let Ok(raw) = std::env::var("EGUARD_LAST_KNOWN_AGENT_CONFIG") {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
+    PathBuf::from(DEFAULT_LAST_KNOWN_GOOD_CONFIG_PATH)
 }
 
 #[cfg(test)]

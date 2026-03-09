@@ -1,4 +1,18 @@
 # Optional rules package payload contract
+/var/lib/eguard-agent/rules/sigma/credential_access.yml
 /var/lib/eguard-agent/rules/sigma/default_webshell.yml
+/var/lib/eguard-agent/rules/sigma/linux_data_staging_archive.yml
+/var/lib/eguard-agent/rules/sigma/linux_download_exec.yml
+/var/lib/eguard-agent/rules/sigma/linux_ld_preload_defense_evasion.yml
+/var/lib/eguard-agent/rules/sigma/linux_persistence_cron_systemd.yml
+/var/lib/eguard-agent/rules/sigma/linux_reverse_shell_devtcp.yml
+/var/lib/eguard-agent/rules/sigma/linux_ssh_lateral_movement.yml
+/var/lib/eguard-agent/rules/sigma/windows_certutil_download.yml
+/var/lib/eguard-agent/rules/sigma/windows_lateral_movement_service_exec.yml
+/var/lib/eguard-agent/rules/sigma/windows_lsass_access_dump.yml
+/var/lib/eguard-agent/rules/sigma/windows_mshta_lolbin_download.yml
+/var/lib/eguard-agent/rules/sigma/windows_powershell_download_cradle.yml
+/var/lib/eguard-agent/rules/sigma/windows_registry_runkey_persistence.yml
+/var/lib/eguard-agent/rules/sigma/windows_uac_bypass_signals.yml
 /var/lib/eguard-agent/rules/yara/default.yar
 /var/lib/eguard-agent/rules/ioc/default_ioc.txt

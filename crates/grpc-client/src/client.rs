@@ -426,8 +426,14 @@ impl Client {
                     .await?
             }
             TransportMode::Grpc => {
-                self.ack_command_grpc(agent_id, command_id, status, result_json)
-                    .await?
+                if let Err(err) = self
+                    .ack_command_grpc(agent_id, command_id, status, result_json)
+                    .await
+                {
+                    warn!(error = %err, "gRPC command ack failed, falling back to HTTP ack endpoint");
+                    self.ack_command_http(agent_id, command_id, status, result_json)
+                        .await?
+                }
             }
         }
         Ok(())

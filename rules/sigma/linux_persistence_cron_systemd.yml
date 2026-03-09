@@ -1,0 +1,21 @@
+title: linux_persistence_cron_systemd
+id: linux_persistence_cron_systemd
+status: experimental
+tags:
+  - attack.t1053
+  - attack.t1543
+mitre_techniques:
+  - T1053
+  - T1543
+
+detection:
+  sequence:
+    - event_class: process_exec
+      process_any_of:
+        - crontab
+        - systemctl
+      command_line_contains:
+        - enable
+        - --user
+        - /etc/cron.
+      within_secs: 30

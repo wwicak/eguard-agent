@@ -251,18 +251,43 @@ impl Client {
     pub(super) async fn send_response_grpc(&self, response: &ResponseEnvelope) -> Result<()> {
         self.with_retry("response_grpc", || async {
             let mut client = self.response_client().await?;
+            let action = map_response_action(&response.action_type);
+            let detail = match action {
+                pb::ResponseAction::KillProcess | pb::ResponseAction::KillTree => {
+                    Some(pb::response_report::Detail::Kill(pb::KillReport {
+                        target_pid: response.target_pid as i64,
+                        target_exe: response.target_process.clone(),
+                        killed_pids: response
+                            .killed_pids
+                            .iter()
+                            .map(|pid| *pid as i64)
+                            .collect(),
+                    }))
+                }
+                pb::ResponseAction::QuarantineFile => Some(pb::response_report::Detail::Quarantine(
+                    pb::QuarantineReport {
+                        original_path: response.file_path.clone().unwrap_or_default(),
+                        quarantine_path: response.quarantine_path.clone().unwrap_or_default(),
+                        sha256: response.sha256.clone().unwrap_or_default(),
+                        file_size: response.file_size as i64,
+                        detection_rule: response.rule_name.clone(),
+                    },
+                )),
+                _ => None,
+            };
+
             client
                 .report_response(pb::ResponseReport {
                     agent_id: response.agent_id.clone(),
                     alert_id: String::new(),
-                    action: map_response_action(&response.action_type) as i32,
+                    action: action as i32,
                     confidence: map_response_confidence(&response.confidence) as i32,
-                    detection_layers: Vec::new(),
+                    detection_layers: response.detection_layers.clone(),
                     detection_to_action_us: 0,
                     success: response.success,
                     error_message: response.error_message.clone(),
                     timestamp: now_unix(),
-                    detail: None,
+                    detail,
                     detail_text: response.error_message.clone(),
                     created_at_unix: now_unix(),
                 })

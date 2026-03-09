@@ -19,6 +19,7 @@ mod device_actions;
 mod forensics;
 mod handlers;
 mod host_actions;
+mod host_isolation_linux;
 mod paths;
 mod payloads;
 mod profile_apply;
@@ -127,7 +128,8 @@ impl AgentRuntime {
 
         self.ack_command_result(&command_id, exec.status, &exec.detail)
             .await;
-        self.report_command_result(&command, exec.status, &exec.detail);
+        self.report_command_result(&command, exec.status, &exec.detail)
+            .await;
 
         self.track_completed_command(&command_id);
     }
@@ -220,14 +222,14 @@ impl AgentRuntime {
         }
     }
 
-    fn report_command_result(&mut self, command: &CommandEnvelope, status: &str, detail: &str) {
-        if command.command_type.eq_ignore_ascii_case("update") {
+    async fn report_command_result(&mut self, command: &CommandEnvelope, status: &str, detail: &str) {
+        let Some(action_type) = response_action_for_command(&command.command_type) else {
             return;
-        }
+        };
 
-        self.enqueue_response_report(ResponseEnvelope {
+        let response = ResponseEnvelope {
             agent_id: self.config.agent_id.clone(),
-            action_type: format!("command:{}", command.command_type),
+            action_type: action_type.to_string(),
             confidence: "high".to_string(),
             success: status == "completed",
             error_message: if status == "completed" {
@@ -241,6 +243,34 @@ impl AgentRuntime {
             rule_name: String::new(),
             threat_category: String::new(),
             file_path: None,
-        });
+            quarantine_path: None,
+            sha256: None,
+            file_size: 0,
+            killed_pids: Vec::new(),
+        };
+
+        match timeout(
+            Duration::from_millis(COMMAND_ACK_TIMEOUT_MS),
+            self.client.send_response(&response),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                warn!(error = %err, command_type = %command.command_type, "failed to send command response report immediately; queueing retry");
+                self.enqueue_response_report(response);
+            }
+            Err(_) => {
+                warn!(command_type = %command.command_type, timeout_ms = COMMAND_ACK_TIMEOUT_MS, "timed out sending command response report immediately; queueing retry");
+                self.enqueue_response_report(response);
+            }
+        }
+    }
+}
+
+fn response_action_for_command(command_type: &str) -> Option<&'static str> {
+    match command_type.trim().to_ascii_lowercase().as_str() {
+        "isolate" | "isolate_host" | "network_isolate" => Some("network_isolate"),
+        _ => None,
     }
 }

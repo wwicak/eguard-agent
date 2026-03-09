@@ -204,9 +204,14 @@ prepare_stage_payload() {
 
   rm -rf "${asm_temp_dir}"
 
-  ensure_file "${ROOT_DIR}/rules/sigma/default_webshell.yml" "${rules_root}/var/lib/eguard-agent/rules/sigma/default_webshell.yml"
-  ensure_file "${ROOT_DIR}/rules/yara/default.yar" "${rules_root}/var/lib/eguard-agent/rules/yara/default.yar"
-  ensure_file "${ROOT_DIR}/rules/ioc/default_ioc.txt" "${rules_root}/var/lib/eguard-agent/rules/ioc/default_ioc.txt"
+  mkdir -p "${core_root}/var/lib/eguard-agent/rules" "${rules_root}/var/lib/eguard-agent/rules"
+  for family in sigma yara ioc; do
+    if [[ -d "${ROOT_DIR}/rules/${family}" ]]; then
+      mkdir -p "${core_root}/var/lib/eguard-agent/rules/${family}" "${rules_root}/var/lib/eguard-agent/rules/${family}"
+      cp -a "${ROOT_DIR}/rules/${family}/." "${core_root}/var/lib/eguard-agent/rules/${family}/"
+      cp -a "${ROOT_DIR}/rules/${family}/." "${rules_root}/var/lib/eguard-agent/rules/${family}/"
+    fi
+  done
 }
 
 generate_nfpm_configs() {
@@ -281,8 +286,12 @@ contents:
     dst: /usr/lib/eguard-agent/lib/libeguard_asm.a
   - src: ${core_root}/var/lib/eguard-agent/baselines/seed.bin
     dst: /var/lib/eguard-agent/baselines/seed.bin
-  - dst: /var/lib/eguard-agent/rules
-    type: dir
+  - src: ${core_root}/var/lib/eguard-agent/rules/sigma/
+    dst: /var/lib/eguard-agent/rules/sigma/
+  - src: ${core_root}/var/lib/eguard-agent/rules/yara/
+    dst: /var/lib/eguard-agent/rules/yara/
+  - src: ${core_root}/var/lib/eguard-agent/rules/ioc/
+    dst: /var/lib/eguard-agent/rules/ioc/
   - dst: /var/lib/eguard-agent/rules-staging
     type: dir
   - dst: /var/lib/eguard-agent/quarantine
@@ -305,12 +314,12 @@ license: GPL-2.0-or-later
 depends:
   - eguard-agent
 contents:
-  - src: ${rules_root}/var/lib/eguard-agent/rules/sigma/default_webshell.yml
-    dst: /var/lib/eguard-agent/rules/sigma/default_webshell.yml
-  - src: ${rules_root}/var/lib/eguard-agent/rules/yara/default.yar
-    dst: /var/lib/eguard-agent/rules/yara/default.yar
-  - src: ${rules_root}/var/lib/eguard-agent/rules/ioc/default_ioc.txt
-    dst: /var/lib/eguard-agent/rules/ioc/default_ioc.txt
+  - src: ${rules_root}/var/lib/eguard-agent/rules/sigma/
+    dst: /var/lib/eguard-agent/rules/sigma/
+  - src: ${rules_root}/var/lib/eguard-agent/rules/yara/
+    dst: /var/lib/eguard-agent/rules/yara/
+  - src: ${rules_root}/var/lib/eguard-agent/rules/ioc/
+    dst: /var/lib/eguard-agent/rules/ioc/
 overrides:
   rpm:
     depends:

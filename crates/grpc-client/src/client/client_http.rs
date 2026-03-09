@@ -173,7 +173,39 @@ impl Client {
     }
 
     pub(super) async fn send_response_http(&self, response: &ResponseEnvelope) -> Result<()> {
-        self.post_json_with_retry("response_http", PATH_RESPONSE, response, "response")
+        let mut target_detail = json!({
+            "target_pid": response.target_pid,
+            "target_exe": response.target_process,
+        });
+
+        if let Some(file_path) = response.file_path.as_ref() {
+            target_detail["original_path"] = json!(file_path);
+            target_detail["file_path"] = json!(file_path);
+        }
+        if let Some(quarantine_path) = response.quarantine_path.as_ref() {
+            target_detail["quarantine_path"] = json!(quarantine_path);
+        }
+        if let Some(sha256) = response.sha256.as_ref() {
+            target_detail["sha256"] = json!(sha256);
+        }
+        if response.file_size > 0 {
+            target_detail["file_size"] = json!(response.file_size);
+        }
+        if !response.killed_pids.is_empty() {
+            target_detail["killed_pids"] = json!(response.killed_pids);
+        }
+
+        let payload = json!({
+            "agent_id": response.agent_id,
+            "action_type": response.action_type,
+            "target_detail": target_detail,
+            "confidence": response.confidence,
+            "detection_layers": response.detection_layers,
+            "success": response.success,
+            "error_message": response.error_message,
+        });
+
+        self.post_json_with_retry("response_http", PATH_RESPONSE, &payload, "response")
             .await
     }
 

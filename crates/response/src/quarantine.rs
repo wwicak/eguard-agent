@@ -72,6 +72,7 @@ pub fn quarantine_file_with_dir(
                 .to_string(),
         ));
     }
+    let normalized_sha256 = normalize_quarantine_id(sha256);
 
     // Use symlink_metadata to detect symlinks without following them.
     let sym_meta = fs::symlink_metadata(path)?;
@@ -98,7 +99,7 @@ pub fn quarantine_file_with_dir(
     }
 
     fs::create_dir_all(quarantine_dir)?;
-    let quarantine_path = quarantine_dir.join(sha256);
+    let quarantine_path = quarantine_dir.join(&normalized_sha256);
 
     fs::copy(&effective_path, &quarantine_path)?;
 
@@ -112,7 +113,7 @@ pub fn quarantine_file_with_dir(
     Ok(QuarantineReport {
         original_path: path.to_path_buf(),
         quarantine_path,
-        sha256: sha256.to_string(),
+        sha256: normalized_sha256,
         file_size: metadata.len(),
         original_mode,
         owner_uid,
@@ -205,6 +206,10 @@ fn restore_permissions(path: &Path, _original_mode: u32) -> ResponseResult<()> {
 
 fn is_valid_quarantine_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 128 && id.chars().all(|c| c.is_ascii_hexdigit() || c == ':')
+}
+
+fn normalize_quarantine_id(id: &str) -> String {
+    id.trim().to_ascii_lowercase()
 }
 
 #[cfg(test)]

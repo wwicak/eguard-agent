@@ -282,6 +282,10 @@ mod tests {
             rule_name: "rule-a".to_string(),
             threat_category: "malware".to_string(),
             file_path: None,
+            quarantine_path: None,
+            sha256: None,
+            file_size: 0,
+            killed_pids: Vec::new(),
         }
     }
 

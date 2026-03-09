@@ -1113,6 +1113,10 @@ async fn send_response_offline_returns_error() {
             rule_name: String::new(),
             threat_category: String::new(),
             file_path: None,
+            quarantine_path: None,
+            sha256: None,
+            file_size: 0,
+            killed_pids: Vec::new(),
         })
         .await
         .expect_err("offline response report should fail");
@@ -2018,6 +2022,10 @@ async fn send_response_grpc_reports_payload_to_server() {
             rule_name: "unit-test-rule".to_string(),
             threat_category: "malware".to_string(),
             file_path: Some(r"C:\\Windows\\Temp\\payload.ps1".to_string()),
+            quarantine_path: Some(r"C:\\ProgramData\\eGuard\\quarantine\\payload.ps1".to_string()),
+            sha256: Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string()),
+            file_size: 128,
+            killed_pids: vec![4242],
         })
         .await
         .expect("send_response should succeed");
@@ -2031,6 +2039,15 @@ async fn send_response_grpc_reports_payload_to_server() {
         assert_eq!(report.confidence, pb::ResponseConfidence::VeryHigh as i32);
         assert!(!report.success);
         assert_eq!(report.error_message, "access denied");
+        assert_eq!(report.detection_layers, vec!["sigma".to_string()]);
+        match report.detail.as_ref().expect("response detail present") {
+            pb::response_report::Detail::Kill(kill) => {
+                assert_eq!(kill.target_pid, 4242);
+                assert_eq!(kill.target_exe, "powershell.exe");
+                assert_eq!(kill.killed_pids, vec![4242]);
+            }
+            other => panic!("unexpected response detail: {other:?}"),
+        }
         assert!(report.created_at_unix > 0);
     }
 

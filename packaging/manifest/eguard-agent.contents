@@ -22,3 +22,12 @@
 /var/lib/eguard-agent/baselines/seed.bin
 /usr/lib/systemd/system/eguard-agent.service
 /etc/eguard-agent/agent.conf
+/var/lib/eguard-agent/rules/sigma/credential_access.yml
+/var/lib/eguard-agent/rules/sigma/default_webshell.yml
+/var/lib/eguard-agent/rules/sigma/windows_lateral_movement_service_exec.yml
+/var/lib/eguard-agent/rules/sigma/windows_lsass_access_dump.yml
+/var/lib/eguard-agent/rules/sigma/windows_powershell_download_cradle.yml
+/var/lib/eguard-agent/rules/sigma/windows_registry_runkey_persistence.yml
+/var/lib/eguard-agent/rules/sigma/windows_uac_bypass_signals.yml
+/var/lib/eguard-agent/rules/yara/default.yar
+/var/lib/eguard-agent/rules/ioc/default_ioc.txt

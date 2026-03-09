@@ -44,6 +44,8 @@ pub(super) struct LibbpfPerfBufferBackend {
 type RecordSink = Arc<Mutex<Vec<Vec<u8>>>>;
 type RecordPool = Arc<Mutex<Vec<Vec<u8>>>>;
 
+const MAX_PENDING_RAW_RECORDS: usize = 8_192;
+
 struct LoadedObject {
     path: PathBuf,
     object: libbpf_rs::Object,
@@ -512,8 +514,21 @@ fn push_raw_record(raw: &[u8], records_sink: &RecordSink, pool_sink: &RecordPool
     record.clear();
     record.extend_from_slice(raw);
 
+    let mut dropped_record = None;
     if let Ok(mut guard) = records_sink.lock() {
+        if guard.len() >= MAX_PENDING_RAW_RECORDS {
+            dropped_record = Some(guard.swap_remove(0));
+        }
         guard.push(record);
+    }
+
+    if let Some(mut dropped) = dropped_record {
+        dropped.clear();
+        if let Ok(mut pool) = pool_sink.lock() {
+            if pool.len() < MAX_PENDING_RAW_RECORDS {
+                pool.push(dropped);
+            }
+        }
     }
 }
 

@@ -130,7 +130,10 @@ impl AgentRuntime {
         }
         let response = ResponseEnvelope {
             agent_id: self.config.agent_id.clone(),
-            action_type: format!("{:?}", action).to_ascii_lowercase(),
+            action_type: local
+                .action_type
+                .clone()
+                .unwrap_or_else(|| format!("{:?}", action).to_ascii_lowercase()),
             confidence: confidence_label(confidence).to_string(),
             success: local.success,
             error_message: local.detail,
@@ -139,7 +142,11 @@ impl AgentRuntime {
             target_pid: event.pid,
             rule_name: rule_name.to_string(),
             threat_category: threat_category.to_string(),
-            file_path: event.file_path.clone(),
+            file_path: local.file_path.clone().or_else(|| event.file_path.clone()),
+            quarantine_path: local.quarantine_path.clone(),
+            sha256: local.sha256.clone(),
+            file_size: local.file_size,
+            killed_pids: local.killed_pids.clone(),
         };
         self.enqueue_response_report(response);
     }
@@ -152,19 +159,28 @@ impl AgentRuntime {
     ) -> LocalActionResult {
         let mut success = true;
         let mut notes = Vec::new();
+        let mut result = LocalActionResult {
+            success: true,
+            detail: String::new(),
+            action_type: None,
+            file_path: None,
+            quarantine_path: None,
+            sha256: None,
+            file_size: 0,
+            killed_pids: Vec::new(),
+        };
 
         self.execute_capture_step(action, event, &mut success, &mut notes);
-        self.execute_kill_step(action, event, &mut success, &mut notes);
-        self.execute_quarantine_step(action, event, &mut success, &mut notes);
+        self.execute_kill_step(action, event, &mut success, &mut notes, &mut result);
+        self.execute_quarantine_step(action, event, &mut success, &mut notes, &mut result);
 
         if notes.is_empty() {
             notes.push("no_local_action".to_string());
         }
 
-        LocalActionResult {
-            success,
-            detail: notes.join("; "),
-        }
+        result.success = success;
+        result.detail = notes.join("; ");
+        result
     }
 
     fn execute_capture_step(
@@ -201,6 +217,7 @@ impl AgentRuntime {
         event: &TelemetryEvent,
         success: &mut bool,
         notes: &mut Vec<String>,
+        result: &mut LocalActionResult,
     ) {
         if !requires_kill(action) {
             return;
@@ -219,7 +236,11 @@ impl AgentRuntime {
         }
 
         match kill_process_tree(event.pid, &self.protected) {
-            Ok(report) => notes.push(format!("killed_pids={}", report.killed_pids.len())),
+            Ok(report) => {
+                result.action_type = Some("kill_tree".to_string());
+                result.killed_pids = report.killed_pids.clone();
+                notes.push(format!("killed_pids={}", report.killed_pids.len()));
+            }
             Err(err) => {
                 *success = false;
                 notes.push(format!("kill_failed:{}", err));
@@ -233,6 +254,7 @@ impl AgentRuntime {
         event: &TelemetryEvent,
         success: &mut bool,
         notes: &mut Vec<String>,
+        result: &mut LocalActionResult,
     ) {
         if !requires_quarantine(action) {
             return;
@@ -246,10 +268,18 @@ impl AgentRuntime {
 
         let sha = event
             .file_hash
-            .clone()
+            .as_deref()
+            .and_then(normalize_quarantine_sha256)
             .unwrap_or_else(|| synthetic_quarantine_id(event));
         match quarantine_file(Path::new(path), &sha, &self.protected) {
-            Ok(report) => notes.push(format!("quarantined:{}", report.quarantine_path.display())),
+            Ok(report) => {
+                result.action_type = Some("quarantine_file".to_string());
+                result.file_path = Some(report.original_path.display().to_string());
+                result.quarantine_path = Some(report.quarantine_path.display().to_string());
+                result.sha256 = Some(report.sha256.clone());
+                result.file_size = report.file_size;
+                notes.push(format!("quarantined:{}", report.quarantine_path.display()));
+            }
             Err(err) => {
                 *success = false;
                 notes.push(format!("quarantine_failed:{}", err));
@@ -302,4 +332,12 @@ fn is_script_interpreter(process: &str) -> bool {
 
 fn synthetic_quarantine_id(event: &TelemetryEvent) -> String {
     format!("pid:{}:{}", event.pid, event.ts_unix)
+}
+
+fn normalize_quarantine_sha256(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.len() != 64 || !trimmed.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(trimmed.to_ascii_lowercase())
 }

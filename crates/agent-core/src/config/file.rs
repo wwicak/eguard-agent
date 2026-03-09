@@ -1,9 +1,15 @@
+use std::fs;
+
 use anyhow::{Context, Result};
 use response::ResponsePolicy;
 use serde::Deserialize;
+use tracing::{info, warn};
 
+use super::bootstrap::parse_bootstrap_config;
 use super::crypto::read_agent_config_text;
-use super::paths::resolve_config_path;
+use super::paths::{
+    primary_config_path, resolve_bootstrap_path, resolve_config_path, resolve_last_known_good_config_path,
+};
 use super::types::AgentConfig;
 use super::util::{format_server_addr, non_empty, parse_mode};
 
@@ -34,7 +40,29 @@ impl AgentConfig {
         self.apply_file_baseline(file_cfg.baseline);
         self.apply_file_self_protection(file_cfg.self_protection);
 
+        if let Err(err) = persist_last_known_good_agent_config(&raw) {
+            warn!(error = %err, "failed persisting last-known-good agent config");
+        }
         Ok(true)
+    }
+
+    pub(super) fn recover_missing_agent_config(&mut self) -> Result<bool> {
+        let target = primary_config_path();
+        if target.exists() {
+            return Ok(false);
+        }
+
+        if restore_last_known_good_agent_config(&target)? {
+            info!(path = %target.display(), "restored missing agent config from last-known-good copy");
+            return Ok(true);
+        }
+
+        if reconstruct_agent_config_from_bootstrap(&target)? {
+            info!(path = %target.display(), "reconstructed missing agent config from bootstrap config");
+            return Ok(true);
+        }
+
+        Ok(false)
     }
 
     fn apply_file_agent(&mut self, agent: Option<FileAgentConfig>) {
@@ -624,4 +652,80 @@ pub(super) fn apply_response_policy(dst: &mut ResponsePolicy, src: Option<FileRe
     if let Some(v) = src.capture_script {
         dst.capture_script = v;
     }
+}
+
+fn persist_last_known_good_agent_config(raw: &str) -> Result<()> {
+    let target = resolve_last_known_good_config_path();
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create last-known-good dir {}", parent.display()))?;
+    }
+    fs::write(&target, raw)
+        .with_context(|| format!("write last-known-good config {}", target.display()))?;
+    Ok(())
+}
+
+fn restore_last_known_good_agent_config(target: &std::path::Path) -> Result<bool> {
+    let source = resolve_last_known_good_config_path();
+    if !source.exists() {
+        return Ok(false);
+    }
+
+    let raw = fs::read_to_string(&source)
+        .with_context(|| format!("read last-known-good config {}", source.display()))?;
+    write_recovered_agent_config(target, &raw)?;
+    Ok(true)
+}
+
+fn reconstruct_agent_config_from_bootstrap(target: &std::path::Path) -> Result<bool> {
+    let Some(bootstrap_path) = resolve_bootstrap_path()? else {
+        return Ok(false);
+    };
+
+    let raw = fs::read_to_string(&bootstrap_path)
+        .with_context(|| format!("read bootstrap config {}", bootstrap_path.display()))?;
+    let bootstrap = parse_bootstrap_config(&raw)
+        .with_context(|| format!("parse bootstrap config {}", bootstrap_path.display()))?;
+
+    let Some(token) = bootstrap.enrollment_token.as_deref().filter(|value| !value.trim().is_empty()) else {
+        return Ok(false);
+    };
+
+    let server_addr = bootstrap
+        .address
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| format_server_addr(value, bootstrap.grpc_port))
+        .unwrap_or_default();
+
+    let mut rendered = String::from("[agent]\n");
+    rendered.push_str("id = \"\"\n");
+    if !server_addr.is_empty() {
+        rendered.push_str(&format!("server_addr = \"{}\"\n", server_addr));
+    }
+    rendered.push_str(&format!("enrollment_token = \"{}\"\n", token.trim()));
+    if let Some(tenant_id) = bootstrap.tenant_id.as_deref().filter(|value| !value.trim().is_empty()) {
+        rendered.push_str(&format!("tenant_id = \"{}\"\n", tenant_id.trim()));
+    }
+    rendered.push_str("mode = \"active\"\n\n");
+    rendered.push_str("[transport]\nmode = \"grpc\"\n\n");
+    rendered.push_str("[response]\nautonomous_response = true\ndry_run = false\n");
+
+    write_recovered_agent_config(target, &rendered)?;
+    Ok(true)
+}
+
+fn write_recovered_agent_config(target: &std::path::Path, raw: &str) -> Result<()> {
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create config dir {}", parent.display()))?;
+    }
+
+    fs::write(target, raw)
+        .with_context(|| format!("write recovered config {}", target.display()))?;
+
+    if let Err(err) = persist_last_known_good_agent_config(raw) {
+        warn!(path = %target.display(), error = %err, "failed updating last-known-good config during recovery");
+    }
+    Ok(())
 }

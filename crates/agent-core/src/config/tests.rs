@@ -18,6 +18,7 @@ fn clear_env() {
     let vars = [
         "EGUARD_AGENT_CONFIG",
         "EGUARD_BOOTSTRAP_CONFIG",
+        "EGUARD_LAST_KNOWN_AGENT_CONFIG",
         "EGUARD_AGENT_ID",
         "EGUARD_SERVER_ADDR",
         "EGUARD_SERVER",
@@ -289,6 +290,37 @@ fn env_server_addr_does_not_override_file_config_without_force() {
 
     clear_env();
     let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn missing_agent_config_is_restored_from_last_known_good_copy() {
+    let _guard = env_lock().lock().expect("env lock");
+    clear_env();
+
+    let suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let config_path = std::env::temp_dir().join(format!("eguard-agent-config-missing-{suffix}.toml"));
+    let lkg_path = std::env::temp_dir().join(format!("eguard-agent-lkg-{suffix}.toml"));
+
+    std::fs::write(
+        &lkg_path,
+        "[agent]\nserver_addr=\"203.0.113.10:50052\"\nenrollment_token=\"tok-lkg\"\nmode=\"active\"\n\n[transport]\nmode=\"grpc\"\n",
+    )
+    .expect("write lkg file");
+
+    std::env::set_var("EGUARD_AGENT_CONFIG", &config_path);
+    std::env::set_var("EGUARD_LAST_KNOWN_AGENT_CONFIG", &lkg_path);
+    let cfg = AgentConfig::load().expect("load config from lkg");
+
+    assert_eq!(cfg.server_addr, "203.0.113.10:50052");
+    assert_eq!(cfg.enrollment_token.as_deref(), Some("tok-lkg"));
+    assert!(config_path.exists(), "missing agent.conf should be restored");
+
+    clear_env();
+    let _ = std::fs::remove_file(config_path);
+    let _ = std::fs::remove_file(lkg_path);
 }
 
 #[test]

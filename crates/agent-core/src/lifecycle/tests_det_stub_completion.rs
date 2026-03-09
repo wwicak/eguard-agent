@@ -70,16 +70,21 @@ fn project_command_report_fields(
     command_type: &str,
     status: &str,
     detail: &str,
-) -> CommandReportProjection {
-    CommandReportProjection {
-        action_type: format!("command:{}", command_type),
+) -> Option<CommandReportProjection> {
+    let action_type = match command_type.trim().to_ascii_lowercase().as_str() {
+        "isolate" | "isolate_host" | "network_isolate" => "network_isolate",
+        _ => return None,
+    };
+
+    Some(CommandReportProjection {
+        action_type: action_type.to_string(),
         success: status == "completed",
         error_message: if status == "completed" {
             String::new()
         } else {
             detail.to_string()
         },
-    }
+    })
 }
 
 #[test]
@@ -754,11 +759,11 @@ fn command_pipeline_maps_command_outcomes_to_reporting_fields() {
         project_command_report_fields("isolate", isolate_exec.status, &isolate_exec.detail);
     assert_eq!(
         isolate_report,
-        CommandReportProjection {
-            action_type: "command:isolate".to_string(),
+        Some(CommandReportProjection {
+            action_type: "network_isolate".to_string(),
             success: true,
             error_message: String::new(),
-        }
+        })
     );
 
     let unknown_exec = response::execute_server_command_with_state(
@@ -776,14 +781,7 @@ fn command_pipeline_maps_command_outcomes_to_reporting_fields() {
         unknown_exec.status,
         &unknown_exec.detail,
     );
-    assert_eq!(
-        unknown_report,
-        CommandReportProjection {
-            action_type: "command:not_supported_command".to_string(),
-            success: false,
-            error_message: "unknown command type".to_string(),
-        }
-    );
+    assert_eq!(unknown_report, None);
 }
 
 #[test]
@@ -817,15 +815,7 @@ fn command_pipeline_maps_emergency_rule_push_rejections_to_failed_reporting_fiel
     );
 
     let report = project_command_report_fields("emergency_rule_push", exec.status, &exec.detail);
-    assert_eq!(
-        report,
-        CommandReportProjection {
-            action_type: "command:emergency_rule_push".to_string(),
-            success: false,
-            error_message: "emergency rule push rejected: unsupported emergency severity: urgent"
-                .to_string(),
-        }
-    );
+    assert_eq!(report, None);
 }
 
 #[test]
@@ -856,14 +846,7 @@ fn command_pipeline_maps_emergency_rule_push_success_to_completed_reporting_fiel
     assert_eq!(exec.detail, "emergency rule applied: cmd-emergency-valid");
 
     let report = project_command_report_fields("emergency_rule_push", exec.status, &exec.detail);
-    assert_eq!(
-        report,
-        CommandReportProjection {
-            action_type: "command:emergency_rule_push".to_string(),
-            success: true,
-            error_message: String::new(),
-        }
-    );
+    assert_eq!(report, None);
 }
 
 #[tokio::test]

@@ -83,6 +83,10 @@ impl AgentRuntime {
             rule_name: String::new(),
             threat_category: String::new(),
             file_path: None,
+            quarantine_path: None,
+            sha256: None,
+            file_size: 0,
+            killed_pids: Vec::new(),
         });
     }
 
@@ -283,6 +287,10 @@ impl AgentRuntime {
             rule_name: String::new(),
             threat_category: String::new(),
             file_path: evaluation.detection_event.file_path.clone(),
+            quarantine_path: None,
+            sha256: None,
+            file_size: 0,
+            killed_pids: Vec::new(),
         });
     }
 
@@ -306,6 +314,10 @@ impl AgentRuntime {
             rule_name: rule_name.to_string(),
             threat_category: threat_category.to_string(),
             file_path: evaluation.detection_event.file_path.clone(),
+            quarantine_path: None,
+            sha256: None,
+            file_size: 0,
+            killed_pids: Vec::new(),
         });
     }
 

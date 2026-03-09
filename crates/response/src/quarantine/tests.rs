@@ -186,6 +186,38 @@ fn empty_sha256_is_rejected() {
 }
 
 #[test]
+fn quarantine_normalizes_uppercase_sha256_ids() {
+    let base = std::env::temp_dir().join(format!(
+        "eguard-quarantine-normalize-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    let quarantine_dir = base.join("quarantine");
+    fs::create_dir_all(&base).expect("create base");
+
+    let original = base.join("sample.bin");
+    fs::write(&original, b"normalize me").expect("write original");
+
+    let protected = ProtectedList::default_linux();
+    let uppercase = "ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789";
+    let report = quarantine_file_with_dir(&original, uppercase, &protected, &quarantine_dir)
+        .expect("quarantine file with uppercase sha");
+
+    assert_eq!(
+        report.sha256,
+        "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+    );
+    assert_eq!(
+        report.quarantine_path,
+        quarantine_dir.join("abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")
+    );
+
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
 // AC-RSP-031
 fn default_quarantine_dir_matches_contract() {
     assert_eq!(DEFAULT_QUARANTINE_DIR, "/var/lib/eguard-agent/quarantine");

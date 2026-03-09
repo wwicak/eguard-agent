@@ -260,6 +260,12 @@ pub(super) struct RuntimeMetrics {
 pub(super) struct LocalActionResult {
     pub(super) success: bool,
     pub(super) detail: String,
+    pub(super) action_type: Option<String>,
+    pub(super) file_path: Option<String>,
+    pub(super) quarantine_path: Option<String>,
+    pub(super) sha256: Option<String>,
+    pub(super) file_size: u64,
+    pub(super) killed_pids: Vec<u32>,
 }
 
 #[derive(Debug, Deserialize)]

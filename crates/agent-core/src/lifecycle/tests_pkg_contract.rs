@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use detection::DetectionEngine;
 use grpc_client::{pb, Client};
 
 fn workspace_root() -> PathBuf {
@@ -69,6 +70,7 @@ fn install_mock_tools(bin_dir: &Path) {
         "systemctl",
         "sha256sum",
         "install",
+        "tee",
         "cargo",
         "zig",
         "strip",
@@ -103,6 +105,10 @@ case \"{}\" in
     if [[ -n \"$target\" ]]; then
       mkdir -p \"$target\" 2>/dev/null || true
     fi
+    exit 0
+    ;;
+  tee)
+    cat >/dev/null || true
     exit 0
     ;;
   ar)
@@ -179,6 +185,14 @@ fn package_manifests_define_agent_and_optional_rules_for_deb_and_rpm() {
     let rules_entries = non_comment_lines(&rules_manifest);
     for required in [
         "/var/lib/eguard-agent/rules/sigma/default_webshell.yml",
+        "/var/lib/eguard-agent/rules/sigma/linux_reverse_shell_devtcp.yml",
+        "/var/lib/eguard-agent/rules/sigma/linux_ld_preload_defense_evasion.yml",
+        "/var/lib/eguard-agent/rules/sigma/linux_download_exec.yml",
+        "/var/lib/eguard-agent/rules/sigma/linux_persistence_cron_systemd.yml",
+        "/var/lib/eguard-agent/rules/sigma/linux_ssh_lateral_movement.yml",
+        "/var/lib/eguard-agent/rules/sigma/linux_data_staging_archive.yml",
+        "/var/lib/eguard-agent/rules/sigma/windows_mshta_lolbin_download.yml",
+        "/var/lib/eguard-agent/rules/sigma/windows_certutil_download.yml",
         "/var/lib/eguard-agent/rules/yara/default.yar",
         "/var/lib/eguard-agent/rules/ioc/default_ioc.txt",
     ] {
@@ -192,6 +206,17 @@ fn package_manifests_define_agent_and_optional_rules_for_deb_and_rpm() {
 #[test]
 // AC-PKG-004 AC-PKG-005 AC-PKG-006 AC-PKG-007 AC-PKG-008 AC-PKG-009 AC-PKG-010 AC-PKG-011 AC-PKG-012
 // AC-PKG-028 AC-PKG-029 AC-PKG-030 AC-PKG-031 AC-PKG-032 AC-PKG-033
+fn repo_sigma_rules_compile_from_rules_directory() {
+    let mut detection = DetectionEngine::default_with_rules();
+    let sigma_dir = workspace_root().join("rules/sigma");
+    let loaded = detection
+        .load_sigma_rules_from_dir(&sigma_dir)
+        .expect("load repo sigma rules");
+
+    assert!(loaded >= 10, "loaded {loaded} sigma rules, want >= 10");
+}
+
+#[test]
 fn linux_update_packaging_recovers_service_after_upgrade() {
     let service_unit = read("packaging/systemd/eguard-agent.service");
     assert!(
@@ -449,7 +474,8 @@ fn install_script_executes_with_mocked_package_manager_and_systemd() {
     assert!(help.status.success());
     assert!(String::from_utf8_lossy(&help.stdout)
         .lines()
-        .any(|line| line == "Usage: install-eguard-agent.sh --server <host[:port]> [--token <token>] [--url <package-url>]"));
+        .any(|line| line
+            == "Usage: install-eguard-agent.sh --server <host[:port]> [--token <token>] [--grpc-port <port>] [--url <package-url>]"));
 
     let missing_server = std::process::Command::new("bash")
         .arg(root.join("scripts/install-eguard-agent.sh"))
@@ -459,7 +485,7 @@ fn install_script_executes_with_mocked_package_manager_and_systemd() {
     assert!(!missing_server.status.success());
     assert!(String::from_utf8_lossy(&missing_server.stderr)
         .lines()
-        .any(|line| line == "error: --server is required"));
+        .any(|line| line == "Error: --server is required"));
 
     let run = std::process::Command::new("bash")
         .arg(root.join("scripts/install-eguard-agent.sh"))
@@ -476,7 +502,7 @@ fn install_script_executes_with_mocked_package_manager_and_systemd() {
     assert!(run.status.success());
     let stdout_text = String::from_utf8_lossy(&run.stdout);
     let stdout_lines: Vec<&str> = stdout_text.lines().collect();
-    assert!(stdout_lines.contains(&"eguard-agent installed from https://example.local/pkg.deb"));
+    assert!(stdout_lines.contains(&"eGuard Agent installed and enrolling with example.local:50052"));
 
     let log = std::fs::read_to_string(&log_path).expect("read mock log");
     let log_lines = non_comment_lines(&log);
@@ -489,7 +515,7 @@ fn install_script_executes_with_mocked_package_manager_and_systemd() {
             || log_lines.iter().any(|line| line.starts_with("rpm -i "))
     );
     assert!(has_line(&log_lines, "systemctl enable eguard-agent"));
-    assert!(has_line(&log_lines, "systemctl start eguard-agent"));
+    assert!(has_line(&log_lines, "systemctl restart eguard-agent"));
 
     let _ = std::fs::remove_dir_all(&sandbox);
 }

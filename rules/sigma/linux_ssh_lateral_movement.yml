@@ -1,0 +1,20 @@
+title: linux_ssh_lateral_movement
+id: linux_ssh_lateral_movement
+status: experimental
+tags:
+  - attack.t1021
+  - attack.t1098
+mitre_techniques:
+  - T1021
+  - T1098
+
+detection:
+  sequence:
+    - event_class: process_exec
+      process_any_of:
+        - ssh
+        - scp
+      command_line_contains:
+        - "@"
+        - "-i "
+      within_secs: 30

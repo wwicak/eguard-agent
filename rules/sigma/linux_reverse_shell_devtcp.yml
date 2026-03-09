@@ -1,0 +1,22 @@
+title: linux_reverse_shell_devtcp
+id: linux_reverse_shell_devtcp
+status: experimental
+tags:
+  - attack.t1059
+  - attack.t1071
+mitre_techniques:
+  - T1059
+  - T1071
+
+detection:
+  sequence:
+    - event_class: process_exec
+      process_any_of:
+        - bash
+        - sh
+        - dash
+        - zsh
+      command_line_contains:
+        - /dev/tcp/
+        - bash -i
+      within_secs: 30

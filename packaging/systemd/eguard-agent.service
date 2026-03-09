@@ -12,6 +12,7 @@ ExecStart=/usr/bin/eguard-agent
 Restart=always
 RestartSec=1s
 NoNewPrivileges=true
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
 ProtectSystem=full
 ProtectHome=true
 PrivateTmp=true
