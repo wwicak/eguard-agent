@@ -13,11 +13,23 @@ const COMMAND_FETCH_TIMEOUT_MS: u64 = 2_000;
 impl AgentRuntime {
     pub(super) async fn run_connected_command_stage(&mut self, now_unix: i64) {
         let command_sync_started = Instant::now();
-        debug!(now_unix, pending_commands = self.pending_commands.len(), "command sync stage start");
+        debug!(
+            now_unix,
+            pending_commands = self.pending_commands.len(),
+            "command sync stage start"
+        );
         self.flush_update_outcome_reports().await;
-        debug!(now_unix, pending_commands = self.pending_commands.len(), "command outcome flush complete");
+        debug!(
+            now_unix,
+            pending_commands = self.pending_commands.len(),
+            "command outcome flush complete"
+        );
         self.sync_pending_commands(now_unix).await;
-        debug!(now_unix, pending_commands = self.pending_commands.len(), "command sync stage complete");
+        debug!(
+            now_unix,
+            pending_commands = self.pending_commands.len(),
+            "command sync stage complete"
+        );
         self.metrics.last_command_sync_micros = elapsed_micros(command_sync_started);
     }
 
@@ -98,7 +110,10 @@ impl AgentRuntime {
                 0
             }
             Err(_) => {
-                warn!(timeout_ms = COMMAND_FETCH_TIMEOUT_MS, "command fetch timed out");
+                warn!(
+                    timeout_ms = COMMAND_FETCH_TIMEOUT_MS,
+                    "command fetch timed out"
+                );
                 0
             }
         }

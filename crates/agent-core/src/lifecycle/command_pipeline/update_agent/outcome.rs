@@ -152,7 +152,10 @@ mod tests {
     fn outcome_path_sanitizes_file_component() {
         let dir = unique_temp_dir("sanitize");
         let path = update_outcome_path(&dir, "cmd/update:123");
-        let name = path.file_name().and_then(|value| value.to_str()).unwrap_or_default();
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
         assert!(name.contains("cmd_update_123"));
     }
 }

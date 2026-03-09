@@ -249,7 +249,8 @@ fn linux_update_packaging_recovers_service_after_upgrade() {
         "linux update worker fallback should launch via /bin/bash so noexec update dirs do not block self-update"
     );
     assert!(
-        worker_source.contains("write_outcome \"failed\"" ) || worker_source.contains("write_outcome \"completed\""),
+        worker_source.contains("write_outcome \"failed\"")
+            || worker_source.contains("write_outcome \"completed\""),
         "linux update worker should persist outcome files for later command truth reporting"
     );
     assert!(

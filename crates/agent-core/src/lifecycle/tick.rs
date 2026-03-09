@@ -304,7 +304,11 @@ impl AgentRuntime {
         debug!(now_unix, "connected async worker drive complete");
 
         self.metrics.last_connected_tick_micros = elapsed_micros(connected_started);
-        debug!(now_unix, tick_micros = self.metrics.last_connected_tick_micros, "connected tick complete");
+        debug!(
+            now_unix,
+            tick_micros = self.metrics.last_connected_tick_micros,
+            "connected tick complete"
+        );
         Ok(())
     }
 

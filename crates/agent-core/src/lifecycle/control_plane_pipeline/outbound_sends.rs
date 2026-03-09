@@ -26,7 +26,10 @@ impl AgentRuntime {
             return;
         }
         self.last_heartbeat_attempt_unix = Some(now_unix);
-        debug!(now_unix, compliance_status, baseline_status, "enqueueing heartbeat send");
+        debug!(
+            now_unix,
+            compliance_status, baseline_status, "enqueueing heartbeat send"
+        );
 
         let config_version = self.heartbeat_config_version();
         let runtime = self.build_heartbeat_runtime_payload(baseline_status);

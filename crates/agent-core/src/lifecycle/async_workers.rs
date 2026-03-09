@@ -45,7 +45,11 @@ impl AgentRuntime {
                 .saturating_add(1);
         }
 
-        debug!(kind, queue_depth = self.pending_control_plane_sends.len() + 1, "queued control-plane send");
+        debug!(
+            kind,
+            queue_depth = self.pending_control_plane_sends.len() + 1,
+            "queued control-plane send"
+        );
         self.pending_control_plane_sends.push_back(send);
     }
 
@@ -113,7 +117,11 @@ impl AgentRuntime {
             };
 
             let kind = control_plane_send_kind(&send);
-            debug!(kind, in_flight = self.control_plane_send_tasks.len() + 1, "dispatching control-plane send");
+            debug!(
+                kind,
+                in_flight = self.control_plane_send_tasks.len() + 1,
+                "dispatching control-plane send"
+            );
             let client = self.client.clone();
             self.control_plane_send_tasks.spawn(async move {
                 run_control_plane_send_with_timeout(
@@ -416,7 +424,10 @@ mod tests {
             AsyncWorkerResult::ControlPlaneSend { kind, error } => {
                 assert_eq!(kind, "heartbeat");
                 let error = error.expect("timeout error");
-                assert!(error.contains("timed out after 100ms"), "unexpected error: {error}");
+                assert!(
+                    error.contains("timed out after 100ms"),
+                    "unexpected error: {error}"
+                );
             }
             other => panic!("expected control-plane send result, got {:?}", other),
         }

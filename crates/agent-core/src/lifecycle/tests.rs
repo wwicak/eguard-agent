@@ -1618,7 +1618,10 @@ async fn update_command_does_not_enqueue_response_report() {
     runtime.handle_command(command, 123).await;
 
     assert!(runtime.pending_response_reports.is_empty());
-    assert_eq!(runtime.completed_command_ids.back().map(String::as_str), Some("cmd-update-1"));
+    assert_eq!(
+        runtime.completed_command_ids.back().map(String::as_str),
+        Some("cmd-update-1")
+    );
 }
 
 #[tokio::test]
