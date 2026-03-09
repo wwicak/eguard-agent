@@ -1,5 +1,5 @@
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 use super::command_utils::run_command;
+use std::process::Command;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct FirewallCommand {
@@ -22,8 +22,10 @@ pub(super) fn apply_linux_host_isolation(allowed_server_ips: &[String]) -> Resul
     for command in build_ipv4_apply_commands(allowed_server_ips) {
         run_command(command.bin, &command.args)?;
     }
-    for command in build_ipv6_apply_commands(allowed_server_ips) {
-        run_command(command.bin, &command.args)?;
+    if firewall_filter_table_available("ip6tables") {
+        for command in build_ipv6_apply_commands(allowed_server_ips) {
+            run_command(command.bin, &command.args)?;
+        }
     }
     Ok(())
 }
@@ -32,15 +34,15 @@ pub(super) fn remove_linux_host_isolation() -> Result<(), String> {
     let mut last_err = None;
     for command in build_remove_commands() {
         if let Err(err) = run_command(command.bin, &command.args) {
-            last_err = Some(err);
+            if !is_nonfatal_firewall_cleanup_error(&err) {
+                last_err = Some(err);
+            }
         }
     }
 
     match last_err {
-        Some(err) if !err.contains("No chain/target/match") && !err.contains("Bad rule") => {
-            Err(err)
-        }
-        _ => Ok(()),
+        Some(err) => Err(err),
+        None => Ok(()),
     }
 }
 
@@ -60,6 +62,24 @@ fn build_ipv6_apply_commands(allowed_server_ips: &[String]) -> Vec<FirewallComma
         .cloned()
         .collect::<Vec<_>>();
     build_apply_commands("ip6tables", IPV6_INPUT_CHAIN, IPV6_OUTPUT_CHAIN, &allowed)
+}
+
+fn firewall_filter_table_available(bin: &str) -> bool {
+    match Command::new(bin).arg("-S").output() {
+        Ok(output) if output.status.success() => true,
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            !stderr.contains("Table does not exist")
+        }
+        Err(_) => false,
+    }
+}
+
+fn is_nonfatal_firewall_cleanup_error(err: &str) -> bool {
+    err.contains("No chain/target/match")
+        || err.contains("Bad rule")
+        || err.contains("Table does not exist")
+        || err.contains("Chain already exists")
 }
 
 fn build_apply_commands(
@@ -87,8 +107,8 @@ fn build_apply_commands(
     }
 
     commands.extend([
-        fw(bin, ["-A", input_chain, "-j", "REJECT"]),
-        fw(bin, ["-A", output_chain, "-j", "REJECT"]),
+        fw(bin, ["-A", input_chain, "-j", "DROP"]),
+        fw(bin, ["-A", output_chain, "-j", "DROP"]),
         fw(bin, ["-I", "INPUT", "1", "-j", input_chain]),
         fw(bin, ["-I", "OUTPUT", "1", "-j", output_chain]),
     ]);
@@ -124,11 +144,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn build_ipv4_apply_commands_allows_management_server_and_rejects_rest() {
+    fn build_ipv4_apply_commands_allows_management_server_and_drops_rest() {
         let commands = build_ipv4_apply_commands(&["203.0.113.10".to_string()]);
         assert!(commands.iter().any(|cmd| cmd.args == vec!["-A", IPV4_INPUT_CHAIN, "-s", "203.0.113.10", "-j", "ACCEPT"].into_iter().map(str::to_string).collect::<Vec<_>>()));
         assert!(commands.iter().any(|cmd| cmd.args == vec!["-A", IPV4_OUTPUT_CHAIN, "-d", "203.0.113.10", "-j", "ACCEPT"].into_iter().map(str::to_string).collect::<Vec<_>>()));
-        assert!(commands.iter().any(|cmd| cmd.args.ends_with(&["REJECT".to_string()])));
+        assert!(commands.iter().any(|cmd| cmd.args.ends_with(&["DROP".to_string()])));
+    }
+
+    #[test]
+    fn cleanup_error_classifier_treats_missing_ipv6_filter_table_as_nonfatal() {
+        assert!(is_nonfatal_firewall_cleanup_error("Table does not exist (do you need to insmod?)"));
+        assert!(!is_nonfatal_firewall_cleanup_error("Permission denied"));
     }
 
     #[test]

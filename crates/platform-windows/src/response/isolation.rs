@@ -30,6 +30,8 @@ struct FirewallProfileDefaults {
     default_inbound_action: String,
     #[serde(rename = "DefaultOutboundAction")]
     default_outbound_action: String,
+    #[serde(rename = "AllowInboundRules")]
+    allow_inbound_rules: String,
 }
 
 /// Isolate a host from the network, allowing only the specified server IPs.
@@ -95,7 +97,7 @@ fn load_or_persist_firewall_profile_defaults(
 fn query_current_firewall_profile_defaults(
 ) -> Result<Vec<FirewallProfileDefaults>, super::process::ResponseError> {
     let raw = run_powershell_script(
-        "Get-NetFirewallProfile | Select-Object Name,@{Name='DefaultInboundAction';Expression={$_.DefaultInboundAction.ToString()}},@{Name='DefaultOutboundAction';Expression={$_.DefaultOutboundAction.ToString()}} | ConvertTo-Json -Compress",
+        "Get-NetFirewallProfile | Select-Object Name,@{Name='DefaultInboundAction';Expression={$_.DefaultInboundAction.ToString()}},@{Name='DefaultOutboundAction';Expression={$_.DefaultOutboundAction.ToString()}},@{Name='AllowInboundRules';Expression={$_.AllowInboundRules.ToString()}} | ConvertTo-Json -Compress",
     )?;
     parse_firewall_profile_defaults(&raw)
 }
@@ -221,7 +223,7 @@ fn build_apply_isolation_script(allowed_ips: &[String]) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        "$ErrorActionPreference='Stop'; {remove}; $group={group}; $allowed=@({allowed}); foreach ($ip in $allowed) {{ New-NetFirewallRule -DisplayName ('eGuard Allow Outbound ' + $ip) -Group $group -Direction Outbound -Action Allow -RemoteAddress $ip -Profile Any | Out-Null; New-NetFirewallRule -DisplayName ('eGuard Allow Inbound ' + $ip) -Group $group -Direction Inbound -Action Allow -RemoteAddress $ip -Profile Any | Out-Null; }} Set-NetFirewallProfile -Profile Domain,Private,Public -DefaultInboundAction Block -DefaultOutboundAction Block | Out-Null;",
+        "$ErrorActionPreference='Stop'; {remove}; $group={group}; $allowed=@({allowed}); foreach ($ip in $allowed) {{ New-NetFirewallRule -DisplayName ('eGuard Allow Outbound ' + $ip) -Group $group -Direction Outbound -Action Allow -RemoteAddress $ip -Profile Any | Out-Null; }} Set-NetFirewallProfile -Profile Domain,Private,Public -DefaultInboundAction Block -DefaultOutboundAction Block -AllowInboundRules False | Out-Null;",
         remove = build_remove_isolation_rules_script(),
     )
 }
@@ -231,10 +233,11 @@ fn build_restore_profiles_script(defaults: &[FirewallProfileDefaults]) -> String
     let mut script = String::from("$ErrorActionPreference='Stop';");
     for profile in defaults {
         script.push_str(&format!(
-            " Set-NetFirewallProfile -Profile {profile_name} -DefaultInboundAction {inbound} -DefaultOutboundAction {outbound} | Out-Null;",
+            " Set-NetFirewallProfile -Profile {profile_name} -DefaultInboundAction {inbound} -DefaultOutboundAction {outbound} -AllowInboundRules {allow_inbound_rules} | Out-Null;",
             profile_name = powershell_single_quote(&profile.name),
             inbound = powershell_single_quote(&profile.default_inbound_action),
             outbound = powershell_single_quote(&profile.default_outbound_action),
+            allow_inbound_rules = powershell_single_quote(&profile.allow_inbound_rules),
         ));
     }
     script
@@ -416,6 +419,8 @@ mod tests {
         assert!(script.contains("Set-NetFirewallProfile"));
         assert!(script.contains("203.0.113.10"));
         assert!(script.contains("2001:db8::1"));
+        assert!(script.contains("AllowInboundRules False"));
+        assert!(!script.contains("Allow Inbound"));
         assert!(!script.contains("advfirewall"));
         assert!(!script.contains("firewall add rule"));
         assert!(!script.contains("netsh"));
@@ -428,30 +433,34 @@ mod tests {
                 name: "Domain".to_string(),
                 default_inbound_action: "Allow".to_string(),
                 default_outbound_action: "Block".to_string(),
+                allow_inbound_rules: "True".to_string(),
             },
             FirewallProfileDefaults {
                 name: "Public".to_string(),
                 default_inbound_action: "Block".to_string(),
                 default_outbound_action: "Allow".to_string(),
+                allow_inbound_rules: "False".to_string(),
             },
         ]);
 
-        assert!(script.contains("Set-NetFirewallProfile -Profile 'Domain' -DefaultInboundAction 'Allow' -DefaultOutboundAction 'Block'"));
-        assert!(script.contains("Set-NetFirewallProfile -Profile 'Public' -DefaultInboundAction 'Block' -DefaultOutboundAction 'Allow'"));
+        assert!(script.contains("Set-NetFirewallProfile -Profile 'Domain' -DefaultInboundAction 'Allow' -DefaultOutboundAction 'Block' -AllowInboundRules 'True'"));
+        assert!(script.contains("Set-NetFirewallProfile -Profile 'Public' -DefaultInboundAction 'Block' -DefaultOutboundAction 'Allow' -AllowInboundRules 'False'"));
     }
 
     #[test]
     fn parse_firewall_profile_defaults_accepts_profile_array_json() {
         let parsed = parse_firewall_profile_defaults(
             r#"[
-                {"Name":"Public","DefaultInboundAction":"Block","DefaultOutboundAction":"Allow"},
-                {"Name":"Domain","DefaultInboundAction":"Allow","DefaultOutboundAction":"Block"}
+                {"Name":"Public","DefaultInboundAction":"Block","DefaultOutboundAction":"Allow","AllowInboundRules":"True"},
+                {"Name":"Domain","DefaultInboundAction":"Allow","DefaultOutboundAction":"Block","AllowInboundRules":"False"}
             ]"#,
         )
         .expect("profile defaults should parse");
 
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].name, "Domain");
+        assert_eq!(parsed[0].allow_inbound_rules, "False");
         assert_eq!(parsed[1].name, "Public");
+        assert_eq!(parsed[1].allow_inbound_rules, "True");
     }
 }

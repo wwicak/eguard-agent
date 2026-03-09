@@ -93,11 +93,16 @@ Output locations:
 
 ```bash
 # Debug build (faster compilation, includes debug symbols)
-cargo build -p agent-core
+cargo build -p agent-core --features platform-linux/ebpf-libbpf
 
 # Release build (optimized, stripped)
-cargo build --release -p agent-core
+cargo build --release -p agent-core --features platform-linux/ebpf-libbpf
 ```
+
+> Linux note: runtime eBPF telemetry is compiled behind the
+> `platform-linux/ebpf-libbpf` feature. A plain `cargo build --release -p agent-core`
+> produces a heartbeat-capable binary, but Linux telemetry/enforcement falls back to
+> the disabled backend and real eBPF event collection will not work.
 
 The binary is at `target/release/agent-core` (renamed to `eguard-agent` for packaging).
 

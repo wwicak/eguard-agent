@@ -17,6 +17,6 @@ detection:
       process_any_of:
         - reg.exe
       command_line_contains:
-        - reg add
+        - " add "
         - CurrentVersion\\Run
       within_secs: 30
