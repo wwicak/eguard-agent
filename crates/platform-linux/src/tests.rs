@@ -335,6 +335,56 @@ fn churn_aware_hashing_delays_rehash_until_finalize_window_passes() {
 }
 
 #[test]
+fn file_open_hashes_newly_written_file_immediately_even_when_write_event_is_pending() {
+    let base = std::env::temp_dir().join(format!(
+        "eguard-platform-linux-file-open-hash-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    fs::create_dir_all(&base).expect("create temp dir");
+
+    let file = base.join("eicar.com");
+    let payload = b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*";
+    fs::write(&file, payload).expect("write test file");
+
+    let expected_hash = compute_sha256_file(file.to_string_lossy().as_ref()).expect("hash file");
+
+    let mut cache = EnrichmentCache::new(128, 128);
+    cache.set_hash_finalize_delay_ms(60_000);
+
+    let write_raw = RawEvent {
+        event_type: EventType::FileWrite,
+        pid: std::process::id(),
+        uid: 0,
+        ts_ns: 1,
+        payload: format!(
+            "path={};fd=3;size={}",
+            file.to_string_lossy(),
+            payload.len()
+        ),
+    };
+    let write_enriched = enrich_event_with_cache(write_raw, &mut cache);
+    assert!(write_enriched.file_sha256.is_none());
+
+    let open_raw = RawEvent {
+        event_type: EventType::FileOpen,
+        pid: std::process::id(),
+        uid: 0,
+        ts_ns: 2,
+        payload: format!("path={};flags=0", file.to_string_lossy()),
+    };
+    let open_enriched = enrich_event_with_cache(open_raw, &mut cache);
+    assert_eq!(
+        open_enriched.file_sha256.as_deref(),
+        Some(expected_hash.as_str())
+    );
+
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
 fn expensive_check_exclusions_skip_file_hash_on_noisy_paths() {
     let base = std::env::temp_dir().join(format!(
         "eguard-platform-linux-noisy-cache-{}",

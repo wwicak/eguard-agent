@@ -229,6 +229,7 @@ impl EnrichmentCache {
         self.hash_for_path_mode(path, HashMode::Immediate)
     }
 
+    #[cfg(test)]
     fn hash_for_path_churn_aware(&mut self, path: &str) -> Option<String> {
         self.hash_for_path_mode(path, HashMode::ChurnAware)
     }
@@ -389,11 +390,17 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
     let file_sha256 = if cache.strict_budget_mode {
         None
     } else {
+        let file_hash_mode = if matches!(raw.event_type, EventType::FileOpen) {
+            HashMode::Immediate
+        } else {
+            HashMode::ChurnAware
+        };
+
         let primary = payload_meta.file_path.as_deref().and_then(|path| {
             if cache.is_excluded_for_expensive_checks(Some(path), entry.process_exe.as_deref()) {
                 None
             } else {
-                cache.hash_for_path_churn_aware(path)
+                cache.hash_for_path_mode(path, file_hash_mode)
             }
         });
 
@@ -407,7 +414,7 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
                     {
                         None
                     } else {
-                        cache.hash_for_path_churn_aware(path)
+                        cache.hash_for_path_mode(path, file_hash_mode)
                     }
                 })
         })
