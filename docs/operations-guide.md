@@ -6246,3 +6246,53 @@ That proves the legacy `0.1.1` runtime treats this newer control payload as a
 backward-compatible no-op. So the remote restart control is valuable for modern
 agents, but it does **not** rescue the already-stuck legacy Ubuntu host until a
 newer runtime is active.
+
+### N.12 Linux file-open IOC hash enrichment for newly written files (Mar 2026)
+
+Known-hash IOC matching can miss a fresh file if the first event seen is a
+`file_write` and the file hash is still intentionally delayed by the
+churn-aware hash cache.
+
+#### Root cause
+
+`crates/platform-linux/src/lib.rs` used churn-aware hashing for all file-path
+telemetry, including `FileOpen` events.
+
+That meant a sequence like this could happen:
+
+1. `FileWrite` on a newly created file records a pending fingerprint and emits
+   no hash yet.
+2. `FileOpen` for the same stable file arrives shortly afterward.
+3. because `FileOpen` also used churn-aware hashing, the cached hash could still
+   remain `None` until the finalize window elapsed.
+4. Layer1 exact IOC matching sees `event.file_hash = null`, so `z1_exact_ioc`
+   never fires for that open.
+
+#### Fix
+
+`FileOpen` events now hash immediately, while churn-aware delay remains in place
+for the noisier write-paths.
+
+That preserves the anti-churn behavior for hot write activity, but gives the
+first stable open event a real `file_sha256` / `file_hash` value so exact IOC
+matching can trigger when it matters.
+
+Changed files:
+
+- `crates/platform-linux/src/lib.rs`
+- `crates/platform-linux/src/tests.rs`
+
+#### Validation
+
+```bash
+cd /home/dimas/eguard-agent
+cargo test -p platform-linux -- --nocapture
+```
+
+New focused regression:
+
+- `file_open_hashes_newly_written_file_immediately_even_when_write_event_is_pending`
+
+This test writes an EICAR-style sample file, forces a long churn-finalize
+window, proves `FileWrite` still emits no hash yet, and then proves the next
+`FileOpen` immediately produces the expected SHA-256.
