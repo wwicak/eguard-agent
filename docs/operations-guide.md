@@ -6109,7 +6109,70 @@ blocking `agent.conf` persistence after enrollment. Fixed with `ReadWritePaths=/
 - The GitHub Actions threat-intel pipeline publishes bundles but the server
   needs configuration to fetch from the correct GitHub release URL
 
-### N.10 Remote agent-service restart control for staged updates (Mar 2026)
+### N.10 Windows host isolation firewall fix (Mar 2026)
+
+Windows isolate commands were failing live with:
+
+- `host isolation failed: operation failed: 'group' is not a valid argument for this command.`
+
+#### Root cause
+
+`crates/platform-windows/src/response/isolation.rs` used a `netsh advfirewall`
+pattern with `group=...`, which the Windows firewall CLI rejected.
+
+There was also a command-state truth bug in
+`crates/agent-core/src/lifecycle/command_pipeline.rs`: isolate/unisolate
+mutated `host_control.isolated` before the platform action finished, so a failed
+platform call could still leave the in-memory state flipped.
+
+#### Fix
+
+Replaced the Windows isolation path with PowerShell firewall cmdlets:
+
+- `New-NetFirewallRule`
+- `Get-NetFirewallRule -Group ... | Remove-NetFirewallRule`
+- `Set-NetFirewallProfile`
+
+Behavior now:
+
+- snapshot current firewall profile defaults
+- persist them under the agent data directory
+- create allowlist rules for the management server IPs
+- set firewall profile defaults to block inbound/outbound traffic
+- on unisolate, remove the rules and restore the saved defaults
+- on isolate failure, roll back rules/defaults
+- on failed isolate/unisolate command handling, restore prior
+  `host_control.isolated` value in memory
+
+#### Validation
+
+Targeted validation:
+
+```bash
+cd /home/dimas/eguard-agent
+cargo test -p platform-windows response::isolation -- --nocapture
+cargo test -p agent-core command_pipeline::tests -- --nocapture
+cargo check -p platform-windows --target x86_64-pc-windows-gnu
+cargo check -p agent-core --target x86_64-pc-windows-gnu
+```
+
+Live Windows proof on `administrator@103.31.39.30`:
+
+- queried profile defaults with explicit `.ToString()` conversion and confirmed:
+  - `Domain/Private/Public => NotConfigured`
+- created/remediated grouped allow rules successfully with:
+  - `New-NetFirewallRule`
+  - `Get-NetFirewallRule -Group ... | Remove-NetFirewallRule`
+- exercised a temporary full isolation flow with allowlist:
+  - server IP `103.132.18.221`
+  - current SSH client IP `103.132.18.217`
+- observed during isolation:
+  - firewall defaults => `Block`
+  - `Invoke-WebRequest http://103.132.18.221:50053/healthz` => `ok`
+- restored defaults afterward:
+  - `Domain/Private/Public => NotConfigured`
+
+### N.11 Remote agent-service restart control for staged updates (Mar 2026)
 
 When update truth shows a package is installed but the running agent service still
 reports an older version, operators need a lighter-weight recovery path than full
