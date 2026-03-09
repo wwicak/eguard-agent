@@ -1,3 +1,5 @@
+use response::ServerCommand;
+
 use super::command_utils::{extract_server_host, resolve_allowed_server_ips};
 use super::payloads::{
     format_device_action_context, parse_device_action_payload, parse_locate_payload,
@@ -97,6 +99,39 @@ fn resolve_allowed_server_ips_merges_payload_and_server_literal_ip() {
         allowed,
         vec!["203.0.113.4".to_string(), "2001:db8::10".to_string()]
     );
+}
+
+#[test]
+fn reconcile_isolation_state_restores_previous_value_on_failed_isolate() {
+    let reconciled = super::reconcile_isolation_state_after_command(
+        ServerCommand::Isolate,
+        false,
+        "failed",
+        true,
+    );
+    assert!(!reconciled);
+}
+
+#[test]
+fn reconcile_isolation_state_restores_previous_value_on_failed_unisolate() {
+    let reconciled = super::reconcile_isolation_state_after_command(
+        ServerCommand::Unisolate,
+        true,
+        "failed",
+        false,
+    );
+    assert!(reconciled);
+}
+
+#[test]
+fn reconcile_isolation_state_keeps_successful_transition() {
+    let reconciled = super::reconcile_isolation_state_after_command(
+        ServerCommand::Isolate,
+        false,
+        "completed",
+        true,
+    );
+    assert!(reconciled);
 }
 
 #[test]

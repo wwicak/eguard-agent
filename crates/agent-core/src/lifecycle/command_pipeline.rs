@@ -32,6 +32,19 @@ mod windows_network_profile;
 const COMPLETED_COMMAND_CURSOR_CAP: usize = 256;
 const COMMAND_ACK_TIMEOUT_MS: u64 = 250;
 
+fn reconcile_isolation_state_after_command(
+    parsed: ServerCommand,
+    isolated_before: bool,
+    status: &str,
+    isolated_after: bool,
+) -> bool {
+    if matches!(parsed, ServerCommand::Isolate | ServerCommand::Unisolate) && status != "completed"
+    {
+        return isolated_before;
+    }
+    isolated_after
+}
+
 impl AgentRuntime {
     pub(super) fn completed_command_cursor(&self) -> Vec<String> {
         self.completed_command_ids.iter().cloned().collect()
@@ -51,6 +64,7 @@ impl AgentRuntime {
     pub(super) async fn handle_command(&mut self, command: CommandEnvelope, now_unix: i64) {
         let command_id = command.command_id.clone();
         let parsed = parse_server_command(&command.command_type);
+        let isolated_before = self.host_control.isolated;
         let mut exec = execute_server_command_with_state(parsed, now_unix, &mut self.host_control);
 
         if parsed == ServerCommand::EmergencyRulePush {
@@ -93,6 +107,13 @@ impl AgentRuntime {
             }
             _ => {}
         }
+
+        self.host_control.isolated = reconcile_isolation_state_after_command(
+            parsed,
+            isolated_before,
+            exec.status,
+            self.host_control.isolated,
+        );
 
         info!(
             command_id = %command.command_id,
