@@ -98,11 +98,25 @@ fn build_apply_commands(
     for ip in allowed_server_ips {
         commands.push(FirewallCommand {
             bin,
-            args: vec!["-A".into(), input_chain.into(), "-s".into(), ip.clone(), "-j".into(), "ACCEPT".into()],
+            args: vec![
+                "-A".into(),
+                input_chain.into(),
+                "-s".into(),
+                ip.clone(),
+                "-j".into(),
+                "ACCEPT".into(),
+            ],
         });
         commands.push(FirewallCommand {
             bin,
-            args: vec!["-A".into(), output_chain.into(), "-d".into(), ip.clone(), "-j".into(), "ACCEPT".into()],
+            args: vec![
+                "-A".into(),
+                output_chain.into(),
+                "-d".into(),
+                ip.clone(),
+                "-j".into(),
+                "ACCEPT".into(),
+            ],
         });
     }
 
@@ -146,21 +160,50 @@ mod tests {
     #[test]
     fn build_ipv4_apply_commands_allows_management_server_and_drops_rest() {
         let commands = build_ipv4_apply_commands(&["203.0.113.10".to_string()]);
-        assert!(commands.iter().any(|cmd| cmd.args == vec!["-A", IPV4_INPUT_CHAIN, "-s", "203.0.113.10", "-j", "ACCEPT"].into_iter().map(str::to_string).collect::<Vec<_>>()));
-        assert!(commands.iter().any(|cmd| cmd.args == vec!["-A", IPV4_OUTPUT_CHAIN, "-d", "203.0.113.10", "-j", "ACCEPT"].into_iter().map(str::to_string).collect::<Vec<_>>()));
-        assert!(commands.iter().any(|cmd| cmd.args.ends_with(&["DROP".to_string()])));
+        assert!(commands.iter().any(|cmd| cmd.args
+            == vec!["-A", IPV4_INPUT_CHAIN, "-s", "203.0.113.10", "-j", "ACCEPT"]
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>()));
+        assert!(commands.iter().any(|cmd| cmd.args
+            == vec![
+                "-A",
+                IPV4_OUTPUT_CHAIN,
+                "-d",
+                "203.0.113.10",
+                "-j",
+                "ACCEPT"
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()));
+        assert!(commands
+            .iter()
+            .any(|cmd| cmd.args.ends_with(&["DROP".to_string()])));
     }
 
     #[test]
     fn cleanup_error_classifier_treats_missing_ipv6_filter_table_as_nonfatal() {
-        assert!(is_nonfatal_firewall_cleanup_error("Table does not exist (do you need to insmod?)"));
+        assert!(is_nonfatal_firewall_cleanup_error(
+            "Table does not exist (do you need to insmod?)"
+        ));
         assert!(!is_nonfatal_firewall_cleanup_error("Permission denied"));
     }
 
     #[test]
     fn build_remove_commands_cleans_up_ipv4_and_ipv6_chains() {
         let commands = build_remove_commands();
-        assert!(commands.iter().any(|cmd| cmd.bin == "iptables" && cmd.args == vec!["-X", IPV4_INPUT_CHAIN].into_iter().map(str::to_string).collect::<Vec<_>>()));
-        assert!(commands.iter().any(|cmd| cmd.bin == "ip6tables" && cmd.args == vec!["-X", IPV6_OUTPUT_CHAIN].into_iter().map(str::to_string).collect::<Vec<_>>()));
+        assert!(commands.iter().any(|cmd| cmd.bin == "iptables"
+            && cmd.args
+                == vec!["-X", IPV4_INPUT_CHAIN]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()));
+        assert!(commands.iter().any(|cmd| cmd.bin == "ip6tables"
+            && cmd.args
+                == vec!["-X", IPV6_OUTPUT_CHAIN]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()));
     }
 }

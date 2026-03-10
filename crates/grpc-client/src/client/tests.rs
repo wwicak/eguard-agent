@@ -2023,7 +2023,9 @@ async fn send_response_grpc_reports_payload_to_server() {
             threat_category: "malware".to_string(),
             file_path: Some(r"C:\\Windows\\Temp\\payload.ps1".to_string()),
             quarantine_path: Some(r"C:\\ProgramData\\eGuard\\quarantine\\payload.ps1".to_string()),
-            sha256: Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string()),
+            sha256: Some(
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
+            ),
             file_size: 128,
             killed_pids: vec![4242],
         })

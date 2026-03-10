@@ -16,6 +16,7 @@ detection:
     - event_class: process_exec
       process_any_of:
         - reg.exe
+        - cmd.exe
       command_line_contains:
         - " add "
         - CurrentVersion\\Run

@@ -9,7 +9,8 @@ use anyhow::Result;
 use super::constants::{AGENT_CONFIG_CANDIDATES, BOOTSTRAP_CONFIG_CANDIDATES};
 
 #[cfg(target_os = "linux")]
-const DEFAULT_LAST_KNOWN_GOOD_CONFIG_PATH: &str = "/var/lib/eguard-agent/agent.last_known_good.toml";
+const DEFAULT_LAST_KNOWN_GOOD_CONFIG_PATH: &str =
+    "/var/lib/eguard-agent/agent.last_known_good.toml";
 #[cfg(target_os = "macos")]
 const DEFAULT_LAST_KNOWN_GOOD_CONFIG_PATH: &str =
     "/Library/Application Support/eGuard/agent.last_known_good.toml";

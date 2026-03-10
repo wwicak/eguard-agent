@@ -299,7 +299,14 @@ fn zig_programs_apply_kernel_side_filters_for_new_connections_and_file_open_scop
     let file_open =
         std::fs::read_to_string(root.join("zig/ebpf/file_open.c")).expect("read file_open.c");
     assert!(file_open.contains("tracepoint/syscalls/sys_enter_openat"));
+    assert!(file_open.contains("tracepoint/syscalls/sys_enter_openat2"));
     assert!(file_open.contains("FILE_PATH_SZ"));
+
+    let libbpf_backend =
+        std::fs::read_to_string(root.join("crates/platform-linux/src/ebpf/libbpf_backend.rs"))
+            .expect("read libbpf_backend.rs");
+    assert!(libbpf_backend.contains("self.ring_buffer\n                .consume()"));
+    assert!(libbpf_backend.contains("consume_perf_buffers(&self.perf_buffers)?;"));
 }
 
 #[test]

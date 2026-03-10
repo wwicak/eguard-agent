@@ -3,6 +3,7 @@ use std::time::Instant;
 
 use anyhow::Result;
 use serde_json::json;
+use tokio::time::timeout;
 use tracing::{info, warn};
 
 use super::{
@@ -44,6 +45,7 @@ const WINDOWS_SENSOR_CHILD_PATTERNS_REG: &[&str] = &[
     "\\policies\\system",
 ];
 const WINDOWS_SENSOR_CHILD_PATTERNS_AUDITPOL: &[&str] = &["subcategory:\"process creation\""];
+const TELEMETRY_SEND_TIMEOUT_MS: u64 = 5_000;
 
 impl AgentRuntime {
     pub(super) async fn run_connected_telemetry_stage(
@@ -88,7 +90,19 @@ impl AgentRuntime {
         let mut batch = self.buffer.drain_batch(EVENT_BATCH_SIZE)?;
         batch.push(envelope);
 
-        if let Err(err) = self.client.send_events(&batch).await {
+        let send_result = timeout(
+            std::time::Duration::from_millis(TELEMETRY_SEND_TIMEOUT_MS),
+            self.client.send_events(&batch),
+        )
+        .await;
+
+        if let Err(err) = match send_result {
+            Ok(result) => result,
+            Err(_) => Err(anyhow::anyhow!(
+                "telemetry send timed out after {}ms",
+                TELEMETRY_SEND_TIMEOUT_MS
+            )),
+        } {
             for ev in batch {
                 self.buffer.enqueue(ev)?;
             }
@@ -101,6 +115,7 @@ impl AgentRuntime {
             warn!(
                 error = %err,
                 pending = self.buffer.pending_count(),
+                timeout_ms = TELEMETRY_SEND_TIMEOUT_MS,
                 "send failed, events re-buffered"
             );
         } else {
@@ -216,70 +231,7 @@ impl AgentRuntime {
         self.observe_ebpf_stats();
 
         match polled {
-            Ok(events) => {
-                if events.is_empty() {
-                    self.refresh_strict_budget_mode();
-                    return None;
-                }
-
-                let self_filtered = self.filter_agent_noise_events(events);
-                if self_filtered.is_empty() {
-                    self.refresh_strict_budget_mode();
-                    return None;
-                }
-
-                let before = self_filtered.len();
-                let file_coalesced = self.coalesce_file_event_burst(self_filtered);
-                let file_dropped = before.saturating_sub(file_coalesced.len());
-                if file_dropped > 0 {
-                    self.metrics.telemetry_coalesced_events_total = self
-                        .metrics
-                        .telemetry_coalesced_events_total
-                        .saturating_add(file_dropped as u64);
-                    info!(
-                        dropped = file_dropped,
-                        retained = file_coalesced.len(),
-                        window_ns = self.file_event_coalesce_window_ns,
-                        coalesced_total = self.metrics.telemetry_coalesced_events_total,
-                        "coalesced burst file events before deep analysis"
-                    );
-                }
-
-                let txn_coalesced = self.coalesce_event_txn_burst(file_coalesced);
-                let txn_dropped = before
-                    .saturating_sub(file_dropped)
-                    .saturating_sub(txn_coalesced.len());
-                if txn_dropped > 0 {
-                    self.metrics.telemetry_event_txn_coalesced_total = self
-                        .metrics
-                        .telemetry_event_txn_coalesced_total
-                        .saturating_add(txn_dropped as u64);
-                    info!(
-                        dropped = txn_dropped,
-                        retained = txn_coalesced.len(),
-                        window_ns = self.event_txn_coalesce_window_ns,
-                        txn_coalesced_total = self.metrics.telemetry_event_txn_coalesced_total,
-                        "coalesced duplicate event transactions before deep analysis"
-                    );
-                }
-
-                self.raw_event_backlog.extend(txn_coalesced);
-                self.enforce_raw_event_backlog_cap();
-                self.refresh_strict_budget_mode();
-
-                let stride = self.sampling_stride();
-                if stride > 1 {
-                    info!(
-                        sampling_stride = stride,
-                        backlog = self.telemetry_backlog_depth(),
-                        recent_ebpf_drops = self.recent_ebpf_drops,
-                        strict_budget_mode = self.strict_budget_mode,
-                        "applying statistical sampling due to telemetry backpressure"
-                    );
-                }
-
-                self.dequeue_sampled_raw_event(stride)
-            }
+            Ok(events) => self.ingest_polled_raw_events(events),
             Err(err) => {
                 warn!(error = %err, "eBPF poll failed; skipping telemetry event for this tick");
                 None
@@ -289,6 +241,73 @@ impl AgentRuntime {
 
     fn is_agent_self_event(event: &RawEvent) -> bool {
         event.pid == std::process::id()
+    }
+
+    fn ingest_polled_raw_events(&mut self, events: Vec<RawEvent>) -> Option<RawEvent> {
+        if events.is_empty() {
+            self.refresh_strict_budget_mode();
+            return None;
+        }
+
+        let self_filtered = self.filter_agent_noise_events(events);
+        if self_filtered.is_empty() {
+            self.refresh_strict_budget_mode();
+            return None;
+        }
+
+        let before = self_filtered.len();
+        let file_coalesced = self.coalesce_file_event_burst(self_filtered);
+        let file_dropped = before.saturating_sub(file_coalesced.len());
+        if file_dropped > 0 {
+            self.metrics.telemetry_coalesced_events_total = self
+                .metrics
+                .telemetry_coalesced_events_total
+                .saturating_add(file_dropped as u64);
+            info!(
+                dropped = file_dropped,
+                retained = file_coalesced.len(),
+                window_ns = self.file_event_coalesce_window_ns,
+                coalesced_total = self.metrics.telemetry_coalesced_events_total,
+                "coalesced burst file events before deep analysis"
+            );
+        }
+
+        let txn_coalesced = self.coalesce_event_txn_burst(file_coalesced);
+        let txn_dropped = before
+            .saturating_sub(file_dropped)
+            .saturating_sub(txn_coalesced.len());
+        if txn_dropped > 0 {
+            self.metrics.telemetry_event_txn_coalesced_total = self
+                .metrics
+                .telemetry_event_txn_coalesced_total
+                .saturating_add(txn_dropped as u64);
+            info!(
+                dropped = txn_dropped,
+                retained = txn_coalesced.len(),
+                window_ns = self.event_txn_coalesce_window_ns,
+                txn_coalesced_total = self.metrics.telemetry_event_txn_coalesced_total,
+                "coalesced duplicate event transactions before deep analysis"
+            );
+        }
+
+        let prioritized = Self::prioritize_raw_events(txn_coalesced);
+        let retained = self.limit_raw_event_ingress(prioritized);
+        self.enqueue_raw_events_with_priority(retained);
+        self.enforce_raw_event_backlog_cap();
+        self.refresh_strict_budget_mode();
+
+        let stride = self.sampling_stride();
+        if stride > 1 {
+            info!(
+                sampling_stride = stride,
+                backlog = self.telemetry_backlog_depth(),
+                recent_ebpf_drops = self.recent_ebpf_drops,
+                strict_budget_mode = self.strict_budget_mode,
+                "applying statistical sampling due to telemetry backpressure"
+            );
+        }
+
+        self.dequeue_sampled_raw_event(stride)
     }
 
     fn filter_agent_noise_events(&mut self, events: Vec<RawEvent>) -> Vec<RawEvent> {
@@ -301,13 +320,56 @@ impl AgentRuntime {
 
         let mut kept = Vec::with_capacity(events.len());
         for event in events {
-            if Self::is_agent_self_event(&event) || self.should_suppress_sensor_child_event(&event)
+            if Self::is_agent_self_event(&event)
+                || self.should_suppress_sensor_child_event(&event)
+                || Self::should_drop_low_value_linux_raw_event(&event)
             {
                 continue;
             }
             kept.push(event);
         }
         kept
+    }
+
+    pub(super) fn should_drop_low_value_linux_raw_event(event: &RawEvent) -> bool {
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = event;
+            false
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            if !matches!(event.event_type, crate::platform::EventType::FileOpen) {
+                return false;
+            }
+
+            let path = parse_payload_field(&event.payload, "path").unwrap_or_default();
+            let comm = parse_payload_field(&event.payload, "comm")
+                .map(|value| value.to_ascii_lowercase())
+                .unwrap_or_default();
+            let parent_comm = parse_payload_field(&event.payload, "parent_comm")
+                .map(|value| value.to_ascii_lowercase())
+                .unwrap_or_default();
+
+            if comm == "systemd" && is_low_value_linux_systemd_path(&path) {
+                return true;
+            }
+
+            if parent_comm == "systemd"
+                && (path.is_empty()
+                    || path.starts_with("/usr/lib/systemd/")
+                    || path.starts_with("/usr/lib64/systemd/"))
+            {
+                return true;
+            }
+
+            if is_expected_linux_auth_stack_noise(&comm, &parent_comm, &path) {
+                return true;
+            }
+
+            false
+        }
     }
 
     fn should_suppress_sensor_child_event(&mut self, event: &RawEvent) -> bool {
@@ -570,7 +632,30 @@ impl AgentRuntime {
         }
     }
 
-    fn enforce_raw_event_backlog_cap(&mut self) {
+    pub(super) fn limit_raw_event_ingress(&mut self, mut events: Vec<RawEvent>) -> Vec<RawEvent> {
+        if events.len() <= self.raw_event_ingest_cap {
+            return events;
+        }
+
+        let dropped = events.len().saturating_sub(self.raw_event_ingest_cap);
+        events.truncate(self.raw_event_ingest_cap);
+        self.metrics.telemetry_raw_backlog_dropped_total = self
+            .metrics
+            .telemetry_raw_backlog_dropped_total
+            .saturating_add(dropped as u64);
+
+        warn!(
+            dropped,
+            ingest_cap = self.raw_event_ingest_cap,
+            retained = events.len(),
+            backlog_dropped_total = self.metrics.telemetry_raw_backlog_dropped_total,
+            "raw event ingress exceeded cap; dropped lowest-priority events from this poll"
+        );
+
+        events
+    }
+
+    pub(super) fn enforce_raw_event_backlog_cap(&mut self) {
         if self.raw_event_backlog.len() <= self.raw_event_backlog_cap {
             return;
         }
@@ -595,6 +680,55 @@ impl AgentRuntime {
             backlog_dropped_total = self.metrics.telemetry_raw_backlog_dropped_total,
             "raw event backlog exceeded cap; dropped oldest events"
         );
+    }
+
+    fn prioritize_raw_events(mut events: Vec<RawEvent>) -> Vec<RawEvent> {
+        events.sort_by_key(Self::raw_event_priority);
+        events
+    }
+
+    pub(super) fn enqueue_raw_events_with_priority(&mut self, events: Vec<RawEvent>) {
+        let mut frontload = Vec::new();
+        let mut normal = Vec::new();
+
+        for event in events {
+            if Self::raw_event_priority(&event) <= 1 {
+                frontload.push(event);
+            } else {
+                normal.push(event);
+            }
+        }
+
+        for event in frontload.into_iter().rev() {
+            self.raw_event_backlog.push_front(event);
+        }
+        self.raw_event_backlog.extend(normal);
+    }
+
+    pub(super) fn raw_event_priority(event: &RawEvent) -> u8 {
+        match event.event_type {
+            crate::platform::EventType::ProcessExec => 0,
+            crate::platform::EventType::ProcessExit => 1,
+            crate::platform::EventType::FileWrite
+            | crate::platform::EventType::FileRename
+            | crate::platform::EventType::FileUnlink
+            | crate::platform::EventType::TcpConnect
+            | crate::platform::EventType::DnsQuery
+            | crate::platform::EventType::LsmBlock => 1,
+            crate::platform::EventType::FileOpen => {
+                if Self::should_drop_low_value_linux_raw_event(event) {
+                    return 3;
+                }
+
+                let path = parse_payload_field(&event.payload, "path").unwrap_or_default();
+                if is_high_value_linux_file_path(&path) {
+                    0
+                } else {
+                    2
+                }
+            }
+            crate::platform::EventType::ModuleLoad => 2,
+        }
     }
 
     fn file_event_burst_key(event: &RawEvent) -> Option<String> {
@@ -630,6 +764,67 @@ impl AgentRuntime {
             .saturating_sub(self.last_ebpf_stats.events_dropped);
         self.last_ebpf_stats = stats;
     }
+}
+
+fn is_expected_linux_auth_stack_noise(comm: &str, parent_comm: &str, path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    let process = comm.to_ascii_lowercase();
+    let parent = parent_comm.to_ascii_lowercase();
+
+    if matches!(process.as_str(), "unix_chkpwd" | "chkpwd")
+        && (lower.starts_with("/etc/shadow")
+            || lower.starts_with("/etc/gshadow")
+            || lower.starts_with("/etc/master.passwd"))
+    {
+        return true;
+    }
+
+    if matches!(process.as_str(), "sudo" | "sudoedit" | "su" | "login") {
+        if lower.starts_with("/etc/sudoers")
+            || lower.starts_with("/etc/sudoers.d")
+            || lower.starts_with("/etc/pam.d/")
+            || lower.starts_with("/etc/security/")
+            || lower.starts_with("/usr/lib64/security/pam_")
+            || lower.starts_with("/usr/lib/security/pam_")
+            || lower.starts_with("/lib64/security/pam_")
+            || lower.starts_with("/lib/security/pam_")
+            || lower == "/etc/login.defs"
+            || lower == "/etc/group"
+            || lower == "/dev/tty"
+        {
+            return true;
+        }
+    }
+
+    if process == "systemd-userwork" && lower.starts_with("/etc/shadow") {
+        return true;
+    }
+
+    if process == "sudo" && parent == "bash" && lower.starts_with("/run/systemd/userdb/") {
+        return true;
+    }
+
+    false
+}
+
+fn is_low_value_linux_systemd_path(path: &str) -> bool {
+    path.is_empty()
+        || !path.starts_with('/')
+        || path.starts_with("/sys/fs/cgroup/")
+        || path.starts_with("/proc/self/")
+        || path.starts_with("/proc/")
+        || path.starts_with("/run/udev/data/")
+}
+
+fn is_high_value_linux_file_path(path: &str) -> bool {
+    path.starts_with("/tmp/")
+        || path.starts_with("/var/tmp/")
+        || path.starts_with("/etc/eguard-agent/")
+        || path.starts_with("/home/")
+        || path.starts_with("/root/")
+        || path.starts_with("/opt/")
+        || path.starts_with("/srv/")
+        || path.starts_with("/var/www/")
 }
 
 fn parse_payload_field(payload: &str, field: &str) -> Option<String> {

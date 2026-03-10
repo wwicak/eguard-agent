@@ -336,10 +336,11 @@ fn ebpf_resource_budget_workflow_runs_harness_and_publishes_artifacts() {
 // AC-EBP-055 AC-RES-021
 fn sampling_stride_scales_with_backlog_and_drop_backpressure() {
     assert_eq!(compute_sampling_stride(0, 0), 1);
-    assert_eq!(compute_sampling_stride(1_500, 0), 2);
+    assert_eq!(compute_sampling_stride(300, 0), 2);
+    assert_eq!(compute_sampling_stride(1_500, 0), 4);
     assert_eq!(compute_sampling_stride(9_000, 0), 8);
-    assert_eq!(compute_sampling_stride(1_500, 1), 2);
-    assert_eq!(compute_sampling_stride(5_000, 7), 4);
+    assert_eq!(compute_sampling_stride(1_500, 1), 4);
+    assert_eq!(compute_sampling_stride(5_000, 7), 8);
     assert_eq!(compute_sampling_stride(9_000, 3), 8);
 }
 
@@ -397,6 +398,37 @@ fn evaluate_tick_drains_polled_replay_events_across_multiple_ticks() {
     assert!(fourth.is_none());
 
     let _ = std::fs::remove_file(replay_path);
+}
+
+#[test]
+fn ingest_polled_events_caps_per_poll_burst_and_backlog_growth() {
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    cfg.server_addr = "127.0.0.1:1".to_string();
+
+    let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+    runtime.raw_event_ingest_cap = 4;
+    runtime.raw_event_backlog_cap = 4;
+
+    let burst = (0..12)
+        .map(|idx| platform_linux::RawEvent {
+            event_type: platform_linux::EventType::ProcessExec,
+            pid: 5100 + idx,
+            uid: 0,
+            ts_ns: 1_700_000_000_000_000_000 + idx as u64,
+            payload: format!(
+                "path=/usr/bin/bash;comm=bash;cmdline=bash -lc echo {};ppid=1",
+                idx
+            ),
+        })
+        .collect::<Vec<_>>();
+
+    let retained = runtime.limit_raw_event_ingress(burst);
+    runtime.enqueue_raw_events_with_priority(retained);
+    runtime.enforce_raw_event_backlog_cap();
+
+    assert!(runtime.raw_event_backlog.len() <= 4);
+    assert!(runtime.observability_snapshot().telemetry_raw_backlog_dropped_total >= 8);
 }
 
 #[test]
@@ -726,4 +758,206 @@ async fn send_event_batch_failures_rebuffer_events_and_trigger_degraded_mode() {
     assert_eq!(runtime.buffer.pending_count(), 3);
     assert_eq!(runtime.consecutive_send_failures, 3);
     assert!(matches!(runtime.runtime_mode, AgentMode::Degraded));
+}
+
+#[tokio::test]
+async fn send_event_batch_timeout_rebuffers_and_returns_promptly() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind mock telemetry server");
+    let addr = listener.local_addr().expect("mock telemetry addr");
+
+    let server = tokio::spawn(async move {
+        let (_stream, _) = listener.accept().await.expect("accept telemetry client");
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+    });
+
+    let mut cfg = AgentConfig::default();
+    cfg.transport_mode = "http".to_string();
+    cfg.offline_buffer_backend = "memory".to_string();
+    cfg.server_addr = addr.to_string();
+    cfg.self_protection_integrity_check_interval_secs = 0;
+
+    let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+    runtime.runtime_mode = AgentMode::Active;
+
+    let started = std::time::Instant::now();
+    runtime
+        .send_event_batch(EventEnvelope {
+            agent_id: "agent-test".to_string(),
+            event_type: "process_exec".to_string(),
+            severity: String::new(),
+            rule_name: String::new(),
+            payload_json: "{\"ts\":1}".to_string(),
+            created_at_unix: 1,
+        })
+        .await
+        .expect("timeout send attempt");
+    let elapsed = started.elapsed();
+
+    assert_eq!(runtime.buffer.pending_count(), 1);
+    assert_eq!(runtime.consecutive_send_failures, 1);
+    assert!(matches!(runtime.runtime_mode, AgentMode::Active));
+    assert!(
+        elapsed < std::time::Duration::from_secs(10),
+        "telemetry timeout should bound stalled sends, elapsed={elapsed:?}"
+    );
+
+    server.abort();
+}
+
+#[test]
+fn low_value_linux_systemd_cgroup_chatter_is_filtered_before_backloging() {
+    let raw = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::FileOpen,
+        pid: 1,
+        uid: 0,
+        ts_ns: 1,
+        payload: "path=/sys/fs/cgroup/user.slice/memory.events;flags=0;mode=0;ppid=0;cgroup_id=30;comm=systemd;parent_comm=swapper/0".to_string(),
+    };
+
+    assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
+}
+
+#[test]
+fn systemd_spawned_loader_library_chatter_is_filtered_before_backloging() {
+    let raw = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::FileOpen,
+        pid: 4997,
+        uid: 0,
+        ts_ns: 1,
+        payload: "path=/usr/lib64/systemd/libpam.so.0;flags=524288;mode=0;ppid=1;cgroup_id=30;comm=16;parent_comm=systemd".to_string(),
+    };
+
+    assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
+}
+
+#[test]
+fn sudo_auth_stack_reads_are_filtered_before_backloging() {
+    let raw = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::FileOpen,
+        pid: 7001,
+        uid: 1000,
+        ts_ns: 1,
+        payload: "path=/etc/sudoers;flags=0;mode=0;ppid=6999;cgroup_id=30;comm=sudo;parent_comm=bash".to_string(),
+    };
+
+    assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
+}
+
+#[test]
+fn sudo_pam_library_reads_are_filtered_before_backloging() {
+    let raw = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::FileOpen,
+        pid: 7002,
+        uid: 1000,
+        ts_ns: 1,
+        payload: "path=/usr/lib64/security/pam_unix.so;flags=0;mode=0;ppid=6999;cgroup_id=30;comm=sudo;parent_comm=bash".to_string(),
+    };
+
+    assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
+}
+
+#[test]
+fn unix_chkpwd_shadow_reads_are_filtered_before_backloging() {
+    let raw = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::FileOpen,
+        pid: 7003,
+        uid: 1000,
+        ts_ns: 1,
+        payload: "path=/etc/shadow;flags=0;mode=0;ppid=7002;cgroup_id=30;comm=unix_chkpwd;parent_comm=sudo".to_string(),
+    };
+
+    assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
+}
+
+#[test]
+fn sudo_security_policy_reads_are_filtered_before_backloging() {
+    let raw = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::FileOpen,
+        pid: 7004,
+        uid: 1000,
+        ts_ns: 1,
+        payload: "path=/etc/security/limits.conf;flags=0;mode=0;ppid=6999;cgroup_id=30;comm=sudo;parent_comm=bash".to_string(),
+    };
+
+    assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
+}
+
+#[test]
+fn systemd_userwork_shadow_reads_are_filtered_before_backloging() {
+    let raw = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::FileOpen,
+        pid: 7005,
+        uid: 1000,
+        ts_ns: 1,
+        payload: "path=/etc/shadow;flags=0;mode=0;ppid=1;cgroup_id=30;comm=systemd-userwork;parent_comm=systemd".to_string(),
+    };
+
+    assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
+}
+
+#[test]
+fn suspicious_linux_tmp_file_open_is_not_filtered() {
+    let raw = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::FileOpen,
+        pid: 5986,
+        uid: 0,
+        ts_ns: 1,
+        payload: "path=/tmp/eguard-dump-proof.bin;flags=0;mode=0;ppid=5980;cgroup_id=23998;comm=cat;parent_comm=bash".to_string(),
+    };
+
+    assert!(!AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
+}
+
+#[test]
+fn suspicious_linux_tmp_file_open_is_prioritized_ahead_of_systemd_chatter() {
+    let noisy = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::FileOpen,
+        pid: 1,
+        uid: 0,
+        ts_ns: 1,
+        payload: "path=/sys/fs/cgroup/user.slice/memory.events;flags=0;mode=0;ppid=0;cgroup_id=30;comm=systemd;parent_comm=swapper/0".to_string(),
+    };
+    let suspicious = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::FileOpen,
+        pid: 5986,
+        uid: 0,
+        ts_ns: 2,
+        payload: "path=/tmp/eguard-dump-proof.bin;flags=0;mode=0;ppid=5980;cgroup_id=23998;comm=cat;parent_comm=bash".to_string(),
+    };
+
+    assert!(
+        AgentRuntime::raw_event_priority(&suspicious) < AgentRuntime::raw_event_priority(&noisy)
+    );
+}
+
+#[test]
+fn frontloaded_high_priority_linux_event_is_dequeued_before_existing_low_value_backlog() {
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    cfg.server_addr = "127.0.0.1:1".to_string();
+
+    let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+    runtime.raw_event_backlog.push_back(platform_linux::RawEvent {
+        event_type: platform_linux::EventType::FileOpen,
+        pid: 1,
+        uid: 0,
+        ts_ns: 1,
+        payload: "path=/sys/fs/cgroup/user.slice/memory.events;flags=0;mode=0;ppid=0;cgroup_id=30;comm=systemd;parent_comm=swapper/0".to_string(),
+    });
+
+    runtime.enqueue_raw_events_with_priority(vec![platform_linux::RawEvent {
+        event_type: platform_linux::EventType::FileOpen,
+        pid: 5986,
+        uid: 0,
+        ts_ns: 2,
+        payload: "path=/tmp/eguard-dump-proof.bin;flags=0;mode=0;ppid=5980;cgroup_id=23998;comm=cat;parent_comm=bash".to_string(),
+    }]);
+
+    let first = runtime
+        .raw_event_backlog
+        .pop_front()
+        .expect("frontloaded event");
+    assert!(first.payload.contains("/tmp/eguard-dump-proof.bin"));
 }

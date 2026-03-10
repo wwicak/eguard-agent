@@ -275,9 +275,15 @@ fn load_object_with_degradation(
 
 impl RingBufferBackend for LibbpfRingBufferBackend {
     fn poll_raw_events(&mut self, timeout: Duration) -> Result<PollBatch> {
-        self.ring_buffer
-            .poll(timeout)
-            .map_err(|err| EbpfError::Backend(format!("poll ring buffer: {}", err)))?;
+        if timeout.is_zero() {
+            self.ring_buffer
+                .consume()
+                .map_err(|err| EbpfError::Backend(format!("consume ring buffer: {}", err)))?;
+        } else {
+            self.ring_buffer
+                .poll(timeout)
+                .map_err(|err| EbpfError::Backend(format!("poll ring buffer: {}", err)))?;
+        }
 
         let records = drain_record_sink(&self.records)?;
         let dropped = sample_drop_counters(&mut self.drop_counter_sources)?;
@@ -304,7 +310,11 @@ impl RingBufferBackend for LibbpfRingBufferBackend {
 
 impl RingBufferBackend for LibbpfPerfBufferBackend {
     fn poll_raw_events(&mut self, timeout: Duration) -> Result<PollBatch> {
-        poll_perf_buffers(&self.perf_buffers, timeout, &mut self.next_poll_buffer)?;
+        if timeout.is_zero() {
+            consume_perf_buffers(&self.perf_buffers)?;
+        } else {
+            poll_perf_buffers(&self.perf_buffers, timeout, &mut self.next_poll_buffer)?;
+        }
 
         let records = drain_record_sink(&self.records)?;
         let dropped = sample_drop_counters(&mut self.drop_counter_sources)?.saturating_add(
@@ -530,6 +540,20 @@ fn push_raw_record(raw: &[u8], records_sink: &RecordSink, pool_sink: &RecordPool
             }
         }
     }
+}
+
+fn consume_perf_buffers(perf_buffers: &[PerfBufferSlot]) -> Result<()> {
+    for slot in perf_buffers {
+        slot.buffer.consume().map_err(|err| {
+            EbpfError::Backend(format!(
+                "consume perf buffer from '{}': {}",
+                slot.owner_path.display(),
+                err
+            ))
+        })?;
+    }
+
+    Ok(())
 }
 
 fn poll_perf_buffers(

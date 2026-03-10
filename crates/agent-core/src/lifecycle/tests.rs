@@ -265,22 +265,22 @@ fn update_tls_policy_from_server_ignores_empty_values() {
 
 #[test]
 // AC-EBP-051 AC-EBP-052 AC-EBP-053 AC-EBP-054 AC-DET-184
-fn compute_poll_timeout_prioritizes_drop_backpressure() {
+fn compute_poll_timeout_keeps_main_tick_non_blocking() {
     assert_eq!(
         compute_poll_timeout(0, 1),
-        std::time::Duration::from_millis(1)
+        std::time::Duration::from_millis(0)
     );
     assert_eq!(
         compute_poll_timeout(5000, 0),
-        std::time::Duration::from_millis(5)
+        std::time::Duration::from_millis(0)
     );
     assert_eq!(
         compute_poll_timeout(2000, 0),
-        std::time::Duration::from_millis(20)
+        std::time::Duration::from_millis(0)
     );
     assert_eq!(
         compute_poll_timeout(10, 0),
-        std::time::Duration::from_millis(100)
+        std::time::Duration::from_millis(0)
     );
 }
 

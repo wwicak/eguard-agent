@@ -150,9 +150,11 @@ fn fallback_file_path_from_payload(enriched: &crate::platform::EnrichedEvent) ->
         | crate::platform::EventType::FileWrite
         | crate::platform::EventType::FileRename
         | crate::platform::EventType::FileUnlink
-        | crate::platform::EventType::ProcessExec => parse_payload_field(&enriched.event.payload, "path")
-            .or_else(|| parse_payload_field(&enriched.event.payload, "file"))
-            .or_else(|| parse_payload_field(&enriched.event.payload, "src")),
+        | crate::platform::EventType::ProcessExec => {
+            parse_payload_field(&enriched.event.payload, "path")
+                .or_else(|| parse_payload_field(&enriched.event.payload, "file"))
+                .or_else(|| parse_payload_field(&enriched.event.payload, "src"))
+        }
         _ => None,
     }
 }

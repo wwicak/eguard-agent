@@ -2,24 +2,24 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tracing::warn;
 
-pub(super) fn compute_poll_timeout(pending: usize, recent_ebpf_drops: u64) -> std::time::Duration {
-    if recent_ebpf_drops > 0 {
-        std::time::Duration::from_millis(1)
-    } else if pending > 4096 {
-        std::time::Duration::from_millis(5)
-    } else if pending > 1024 {
-        std::time::Duration::from_millis(20)
-    } else {
-        std::time::Duration::from_millis(100)
-    }
+pub(super) fn compute_poll_timeout(
+    _pending: usize,
+    _recent_ebpf_drops: u64,
+) -> std::time::Duration {
+    // The outer runtime already ticks every 100ms. Blocking inside the eBPF
+    // poll path can therefore only hurt us: if the kernel-side poll ignores or
+    // stretches the requested timeout, heartbeats/control-plane work starve even
+    // though no telemetry is available. Use a non-blocking poll and let the main
+    // tick cadence provide the pacing.
+    std::time::Duration::from_millis(0)
 }
 
 pub(super) fn compute_sampling_stride(pending: usize, recent_ebpf_drops: u64) -> usize {
-    let backlog_stride = if pending > 8_192 {
+    let backlog_stride = if pending > 2_048 {
         8
-    } else if pending > 4_096 {
-        4
     } else if pending > 1_024 {
+        4
+    } else if pending > 256 {
         2
     } else {
         1
@@ -29,12 +29,10 @@ pub(super) fn compute_sampling_stride(pending: usize, recent_ebpf_drops: u64) ->
         return backlog_stride;
     }
 
-    let drop_stride = if pending > 8_192 {
+    let drop_stride = if pending > 2_048 {
         8
-    } else if pending > 4_096 {
-        4
     } else if pending > 1_024 {
-        2
+        4
     } else {
         2
     };

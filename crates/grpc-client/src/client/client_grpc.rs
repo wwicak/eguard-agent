@@ -257,22 +257,18 @@ impl Client {
                     Some(pb::response_report::Detail::Kill(pb::KillReport {
                         target_pid: response.target_pid as i64,
                         target_exe: response.target_process.clone(),
-                        killed_pids: response
-                            .killed_pids
-                            .iter()
-                            .map(|pid| *pid as i64)
-                            .collect(),
+                        killed_pids: response.killed_pids.iter().map(|pid| *pid as i64).collect(),
                     }))
                 }
-                pb::ResponseAction::QuarantineFile => Some(pb::response_report::Detail::Quarantine(
-                    pb::QuarantineReport {
+                pb::ResponseAction::QuarantineFile => Some(
+                    pb::response_report::Detail::Quarantine(pb::QuarantineReport {
                         original_path: response.file_path.clone().unwrap_or_default(),
                         quarantine_path: response.quarantine_path.clone().unwrap_or_default(),
                         sha256: response.sha256.clone().unwrap_or_default(),
                         file_size: response.file_size as i64,
                         detection_rule: response.rule_name.clone(),
-                    },
-                )),
+                    }),
+                ),
                 _ => None,
             };
 

@@ -7,9 +7,10 @@ impl AgentConfig {
         let mut cfg = Self::default();
         let loaded = match cfg.apply_file_config() {
             Ok(loaded) => loaded,
-            Err(err) if err
-                .to_string()
-                .contains("configured EGUARD_AGENT_CONFIG does not exist") =>
+            Err(err)
+                if err
+                    .to_string()
+                    .contains("configured EGUARD_AGENT_CONFIG does not exist") =>
             {
                 if cfg.recover_missing_agent_config()? {
                     cfg.apply_file_config()?

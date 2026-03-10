@@ -222,7 +222,12 @@ impl AgentRuntime {
         }
     }
 
-    async fn report_command_result(&mut self, command: &CommandEnvelope, status: &str, detail: &str) {
+    async fn report_command_result(
+        &mut self,
+        command: &CommandEnvelope,
+        status: &str,
+        detail: &str,
+    ) {
         let Some(action_type) = response_action_for_command(&command.command_type) else {
             return;
         };

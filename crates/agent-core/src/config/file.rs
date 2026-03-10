@@ -8,7 +8,8 @@ use tracing::{info, warn};
 use super::bootstrap::parse_bootstrap_config;
 use super::crypto::read_agent_config_text;
 use super::paths::{
-    primary_config_path, resolve_bootstrap_path, resolve_config_path, resolve_last_known_good_config_path,
+    primary_config_path, resolve_bootstrap_path, resolve_config_path,
+    resolve_last_known_good_config_path,
 };
 use super::types::AgentConfig;
 use super::util::{format_server_addr, non_empty, parse_mode};
@@ -687,7 +688,11 @@ fn reconstruct_agent_config_from_bootstrap(target: &std::path::Path) -> Result<b
     let bootstrap = parse_bootstrap_config(&raw)
         .with_context(|| format!("parse bootstrap config {}", bootstrap_path.display()))?;
 
-    let Some(token) = bootstrap.enrollment_token.as_deref().filter(|value| !value.trim().is_empty()) else {
+    let Some(token) = bootstrap
+        .enrollment_token
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    else {
         return Ok(false);
     };
 
@@ -704,7 +709,11 @@ fn reconstruct_agent_config_from_bootstrap(target: &std::path::Path) -> Result<b
         rendered.push_str(&format!("server_addr = \"{}\"\n", server_addr));
     }
     rendered.push_str(&format!("enrollment_token = \"{}\"\n", token.trim()));
-    if let Some(tenant_id) = bootstrap.tenant_id.as_deref().filter(|value| !value.trim().is_empty()) {
+    if let Some(tenant_id) = bootstrap
+        .tenant_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
         rendered.push_str(&format!("tenant_id = \"{}\"\n", tenant_id.trim()));
     }
     rendered.push_str("mode = \"active\"\n\n");

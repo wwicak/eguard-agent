@@ -301,7 +301,8 @@ fn missing_agent_config_is_restored_from_last_known_good_copy() {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or_default();
-    let config_path = std::env::temp_dir().join(format!("eguard-agent-config-missing-{suffix}.toml"));
+    let config_path =
+        std::env::temp_dir().join(format!("eguard-agent-config-missing-{suffix}.toml"));
     let lkg_path = std::env::temp_dir().join(format!("eguard-agent-lkg-{suffix}.toml"));
 
     std::fs::write(
@@ -316,7 +317,10 @@ fn missing_agent_config_is_restored_from_last_known_good_copy() {
 
     assert_eq!(cfg.server_addr, "203.0.113.10:50052");
     assert_eq!(cfg.enrollment_token.as_deref(), Some("tok-lkg"));
-    assert!(config_path.exists(), "missing agent.conf should be restored");
+    assert!(
+        config_path.exists(),
+        "missing agent.conf should be restored"
+    );
 
     clear_env();
     let _ = std::fs::remove_file(config_path);

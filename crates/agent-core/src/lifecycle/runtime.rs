@@ -56,6 +56,7 @@ pub struct AgentRuntime {
     pub(super) recent_ebpf_drops: u64,
     pub(super) raw_event_backlog: VecDeque<RawEvent>,
     pub(super) raw_event_backlog_cap: usize,
+    pub(super) raw_event_ingest_cap: usize,
     pub(super) recent_file_event_keys: HashMap<String, u64>,
     pub(super) file_event_coalesce_window_ns: u64,
     pub(super) event_txn_coalesce_window_ns: u64,
@@ -221,19 +222,24 @@ impl AgentRuntime {
             std::env::var("EGUARD_STRICT_BUDGET_PENDING_THRESHOLD")
                 .ok()
                 .and_then(|raw| raw.trim().parse::<usize>().ok())
-                .unwrap_or(2_048)
+                .unwrap_or(512)
                 .max(64);
         let strict_budget_raw_backlog_threshold =
             std::env::var("EGUARD_STRICT_BUDGET_RAW_BACKLOG_THRESHOLD")
                 .ok()
                 .and_then(|raw| raw.trim().parse::<usize>().ok())
-                .unwrap_or(512)
+                .unwrap_or(128)
                 .max(32);
         let raw_event_backlog_cap = std::env::var("EGUARD_RAW_EVENT_BACKLOG_CAP")
             .ok()
             .and_then(|raw| raw.trim().parse::<usize>().ok())
-            .unwrap_or(32_768)
+            .unwrap_or(4_096)
             .max(256);
+        let raw_event_ingest_cap = std::env::var("EGUARD_RAW_EVENT_INGEST_CAP")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+            .unwrap_or(1_024)
+            .clamp(128, raw_event_backlog_cap);
         let response_action_dedupe_window_secs =
             std::env::var("EGUARD_RESPONSE_ACTION_DEDUPE_WINDOW_SECS")
                 .ok()
@@ -406,6 +412,7 @@ impl AgentRuntime {
             recent_ebpf_drops: 0,
             raw_event_backlog: VecDeque::new(),
             raw_event_backlog_cap,
+            raw_event_ingest_cap,
             recent_file_event_keys: HashMap::new(),
             file_event_coalesce_window_ns: file_event_coalesce_window_ms.saturating_mul(1_000_000),
             event_txn_coalesce_window_ns: event_txn_coalesce_window_ms.saturating_mul(1_000_000),
