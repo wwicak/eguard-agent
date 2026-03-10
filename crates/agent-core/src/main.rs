@@ -9,6 +9,7 @@ use anyhow::Result;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Once;
+#[cfg(not(unix))]
 use tokio::signal;
 use tokio::time::{self, Duration, MissedTickBehavior};
 use tracing::{info, warn};
@@ -319,10 +320,12 @@ impl SystemdNotifier {
 async fn wait_for_shutdown_signal() -> ShutdownReason {
     #[cfg(unix)]
     {
+        let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+            .expect("register SIGINT handler");
         let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
             .expect("register SIGTERM handler");
         tokio::select! {
-            _ = signal::ctrl_c() => {
+            _ = sigint.recv() => {
                 info!("shutdown signal received (SIGINT)");
                 ShutdownReason::SigInt
             }

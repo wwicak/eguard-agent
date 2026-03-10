@@ -235,7 +235,15 @@ impl EnrichmentCache {
     }
 
     fn hash_for_path_mode(&mut self, path: &str, mode: HashMode) -> Option<String> {
+        if !is_hashable_regular_path(path) {
+            return None;
+        }
+
         let metadata = fs::metadata(path).ok()?;
+        if !metadata.file_type().is_file() {
+            return None;
+        }
+
         let fingerprint = FileFingerprint {
             inode: metadata.ino(),
             mtime_secs: metadata.mtime(),
@@ -831,6 +839,15 @@ fn unix_now_ns() -> u64 {
 fn capacity_from(raw: usize) -> NonZeroUsize {
     let bounded = raw.max(128);
     NonZeroUsize::new(bounded).expect("cache capacity is always non-zero")
+}
+
+fn is_hashable_regular_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/").to_ascii_lowercase();
+    !(normalized.starts_with("/proc/")
+        || normalized.starts_with("/sys/")
+        || normalized.starts_with("/dev/")
+        || normalized.starts_with("/run/")
+        || normalized.starts_with("/var/run/"))
 }
 
 fn compute_sha256_file(path: &str) -> std::io::Result<String> {

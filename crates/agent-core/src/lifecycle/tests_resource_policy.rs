@@ -122,6 +122,14 @@ fn runtime_loop_progresses_without_busy_wait_under_offline_conditions() {
 }
 
 #[test]
+fn unix_runtime_shutdown_listener_uses_signalkind_interrupt_not_ctrl_c_helper() {
+    let root = workspace_root();
+    let main_src = std::fs::read_to_string(root.join("crates/agent-core/src/main.rs")).expect("read main.rs");
+    assert!(main_src.contains("SignalKind::interrupt()"));
+    assert!(!main_src.contains("_ = signal::ctrl_c() =>"));
+}
+
+#[test]
 // AC-RES-009
 fn disabled_ebpf_engine_poll_and_forward_return_immediately_without_errors() {
     let mut engine = EbpfEngine::disabled();

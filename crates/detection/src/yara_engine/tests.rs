@@ -126,6 +126,27 @@ rule sample_from_dir {
     let _ = std::fs::remove_dir(base);
 }
 
+#[test]
+fn yara_scanning_skips_pseudo_and_non_regular_paths() {
+    let tmp_dir = std::env::temp_dir().join(format!(
+        "eguard-yara-path-safety-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
+    let regular = tmp_dir.join("sample.bin");
+    std::fs::write(&regular, b"ok").expect("write regular file");
+
+    assert!(is_scannable_regular_file(&regular));
+    assert!(!is_scannable_regular_file(Path::new("/dev/null")));
+    assert!(!is_scannable_regular_file(Path::new("/proc/self/stat")));
+    assert!(!is_scannable_regular_file(Path::new("/sys/kernel/uevent_seqnum")));
+
+    let _ = std::fs::remove_dir_all(tmp_dir);
+}
+
 #[cfg(feature = "yara-rust")]
 #[test]
 fn yara_rust_backend_compiles_and_scans() {

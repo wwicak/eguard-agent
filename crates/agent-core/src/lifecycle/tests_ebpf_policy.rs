@@ -898,6 +898,19 @@ fn systemd_userwork_shadow_reads_are_filtered_before_backloging() {
 }
 
 #[test]
+fn linux_console_device_reads_are_filtered_before_backloging() {
+    let raw = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::FileOpen,
+        pid: 7006,
+        uid: 1000,
+        ts_ns: 1,
+        payload: "path=/dev/console;flags=0;mode=0;ppid=6999;cgroup_id=30;comm=bash;parent_comm=sshd".to_string(),
+    };
+
+    assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
+}
+
+#[test]
 fn suspicious_linux_tmp_file_open_is_not_filtered() {
     let raw = platform_linux::RawEvent {
         event_type: platform_linux::EventType::FileOpen,

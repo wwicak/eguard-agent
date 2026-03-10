@@ -144,7 +144,11 @@ impl YaraEngine {
             if self.is_excluded_path(path) {
                 return hits;
             }
-            if let Ok(content) = read_limited_file(Path::new(path), self.max_scan_bytes) {
+            let scan_path = Path::new(path);
+            if !is_scannable_regular_file(scan_path) {
+                return hits;
+            }
+            if let Ok(content) = read_limited_file(scan_path, self.max_scan_bytes) {
                 hits.extend(self.backend.scan_bytes(path, &content));
             }
         }
@@ -416,6 +420,22 @@ fn is_yara_file(path: &Path) -> bool {
         path.extension().and_then(|ext| ext.to_str()),
         Some("yar") | Some("yara")
     )
+}
+
+fn is_scannable_regular_file(path: &Path) -> bool {
+    let normalized = path.to_string_lossy().replace('\\', "/").to_ascii_lowercase();
+    if normalized.starts_with("/proc/")
+        || normalized.starts_with("/sys/")
+        || normalized.starts_with("/dev/")
+        || normalized.starts_with("/run/")
+        || normalized.starts_with("/var/run/")
+    {
+        return false;
+    }
+
+    fs::metadata(path)
+        .map(|metadata| metadata.file_type().is_file())
+        .unwrap_or(false)
 }
 
 fn read_limited_file(path: &Path, cap: usize) -> std::io::Result<Vec<u8>> {

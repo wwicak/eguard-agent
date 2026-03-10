@@ -352,6 +352,13 @@ impl AgentRuntime {
                 .map(|value| value.to_ascii_lowercase())
                 .unwrap_or_default();
 
+            if path == "/dev/console"
+                || path == "/dev/tty"
+                || path.starts_with("/dev/pts/")
+            {
+                return true;
+            }
+
             if comm == "systemd" && is_low_value_linux_systemd_path(&path) {
                 return true;
             }

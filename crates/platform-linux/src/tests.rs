@@ -385,6 +385,31 @@ fn file_open_hashes_newly_written_file_immediately_even_when_write_event_is_pend
 }
 
 #[test]
+fn pseudo_and_device_paths_skip_file_hashing() {
+    let mut cache = EnrichmentCache::new(128, 128);
+
+    let proc_raw = RawEvent {
+        event_type: EventType::FileOpen,
+        pid: std::process::id(),
+        uid: 0,
+        ts_ns: 1,
+        payload: "path=/proc/self/stat;fd=3;size=0".to_string(),
+    };
+    let proc_enriched = enrich_event_with_cache(proc_raw, &mut cache);
+    assert!(proc_enriched.file_sha256.is_none());
+
+    let dev_raw = RawEvent {
+        event_type: EventType::FileOpen,
+        pid: std::process::id(),
+        uid: 0,
+        ts_ns: 2,
+        payload: "path=/dev/null;fd=3;size=0".to_string(),
+    };
+    let dev_enriched = enrich_event_with_cache(dev_raw, &mut cache);
+    assert!(dev_enriched.file_sha256.is_none());
+}
+
+#[test]
 fn expensive_check_exclusions_skip_file_hash_on_noisy_paths() {
     let base = std::env::temp_dir().join(format!(
         "eguard-platform-linux-noisy-cache-{}",

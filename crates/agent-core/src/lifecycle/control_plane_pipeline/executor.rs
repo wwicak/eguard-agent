@@ -1,12 +1,31 @@
-use std::time::Instant;
+use std::future::Future;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use tokio::time::timeout;
 use tracing::warn;
 
 use super::super::{
-    elapsed_micros, AgentRuntime, ControlPlaneTaskKind, PendingControlPlaneTask,
+    elapsed_micros, AgentRuntime, ControlPlaneTaskKind,
     CONTROL_PLANE_TASK_EXECUTION_BUDGET_PER_TICK,
 };
+
+const CONTROL_PLANE_AWAIT_TIMEOUT_MS: u64 = 5_000;
+
+async fn run_bounded_control_plane_future<F>(task_name: &'static str, fut: F)
+where
+    F: Future<Output = Result<()>>,
+{
+    match timeout(Duration::from_millis(CONTROL_PLANE_AWAIT_TIMEOUT_MS), fut).await {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => {
+            warn!(task = task_name, error = %err, "control-plane task failed");
+        }
+        Err(_) => {
+            warn!(task = task_name, timeout_ms = CONTROL_PLANE_AWAIT_TIMEOUT_MS, "control-plane task timed out");
+        }
+    }
+}
 
 impl AgentRuntime {
     pub(super) async fn execute_control_plane_task_budget(
@@ -40,13 +59,19 @@ impl AgentRuntime {
                     self.metrics.last_inventory_micros = elapsed_micros(inventory_started);
                 }
                 ControlPlaneTaskKind::PolicySync => {
-                    self.refresh_policy_if_due(now_unix).await?;
+                    run_bounded_control_plane_future(
+                        "policy_sync",
+                        self.refresh_policy_if_due(now_unix),
+                    )
+                    .await;
                 }
                 ControlPlaneTaskKind::ThreatIntelRefresh => {
                     let threat_refresh_started = Instant::now();
-                    if let Err(err) = self.refresh_threat_intel_if_due(now_unix).await {
-                        warn!(error = %err, "threat intel refresh failed");
-                    }
+                    run_bounded_control_plane_future(
+                        "threat_intel_refresh",
+                        self.refresh_threat_intel_if_due(now_unix),
+                    )
+                    .await;
                     self.metrics.last_threat_intel_refresh_micros =
                         elapsed_micros(threat_refresh_started);
                 }
@@ -54,24 +79,32 @@ impl AgentRuntime {
                     self.run_connected_command_stage(now_unix).await;
                 }
                 ControlPlaneTaskKind::BaselineUpload => {
-                    if let Err(err) = self.upload_baseline_profiles_if_due(now_unix).await {
-                        warn!(error = %err, "baseline upload sync failed");
-                    }
+                    run_bounded_control_plane_future(
+                        "baseline_upload",
+                        self.upload_baseline_profiles_if_due(now_unix),
+                    )
+                    .await;
                 }
                 ControlPlaneTaskKind::FleetBaselineFetch => {
-                    if let Err(err) = self.fetch_and_apply_fleet_baselines_if_due(now_unix).await {
-                        warn!(error = %err, "fleet baseline fetch/apply failed");
-                    }
+                    run_bounded_control_plane_future(
+                        "fleet_baseline_fetch",
+                        self.fetch_and_apply_fleet_baselines_if_due(now_unix),
+                    )
+                    .await;
                 }
                 ControlPlaneTaskKind::IocSignalUpload => {
-                    if let Err(err) = self.upload_ioc_signals_if_due(now_unix).await {
-                        warn!(error = %err, "IOC signal upload failed");
-                    }
+                    run_bounded_control_plane_future(
+                        "ioc_signal_upload",
+                        self.upload_ioc_signals_if_due(now_unix),
+                    )
+                    .await;
                 }
                 ControlPlaneTaskKind::CampaignFetch => {
-                    if let Err(err) = self.fetch_and_apply_campaigns_if_due(now_unix).await {
-                        warn!(error = %err, "campaign fetch failed");
-                    }
+                    run_bounded_control_plane_future(
+                        "campaign_fetch",
+                        self.fetch_and_apply_campaigns_if_due(now_unix),
+                    )
+                    .await;
                 }
                 ControlPlaneTaskKind::FimUpload
                 | ControlPlaneTaskKind::UsbUpload
@@ -95,6 +128,7 @@ impl AgentRuntime {
 mod tests {
     use super::*;
     use crate::config::AgentConfig;
+    use crate::lifecycle::PendingControlPlaneTask;
     use compliance::ComplianceResult;
 
     fn new_runtime() -> AgentRuntime {
@@ -158,5 +192,48 @@ mod tests {
         assert_eq!(executed, 1);
         assert_ne!(runtime.metrics.last_compliance_micros, u64::MAX);
         assert_eq!(runtime.metrics.last_inventory_micros, 888);
+    }
+
+    #[tokio::test]
+    async fn policy_sync_timeout_does_not_wedge_control_plane_budget() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock policy server");
+        let addr = listener.local_addr().expect("mock server addr");
+
+        let server = tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.expect("accept client");
+            tokio::time::sleep(Duration::from_secs(15)).await;
+        });
+
+        let mut cfg = AgentConfig::default();
+        cfg.transport_mode = "http".to_string();
+        cfg.server_addr = addr.to_string();
+        cfg.offline_buffer_backend = "memory".to_string();
+        cfg.self_protection_integrity_check_interval_secs = 0;
+
+        let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+        let now = 1_700_000_000;
+        runtime
+            .pending_control_plane_tasks
+            .push_back(PendingControlPlaneTask {
+                kind: ControlPlaneTaskKind::PolicySync,
+                enqueued_at_unix: now,
+            });
+
+        let started = Instant::now();
+        let executed = runtime
+            .execute_control_plane_task_budget(now)
+            .await
+            .expect("execute policy sync task");
+        let elapsed = started.elapsed();
+
+        assert_eq!(executed, 1);
+        assert!(
+            elapsed < Duration::from_secs(8),
+            "policy sync should be bounded, elapsed={elapsed:?}"
+        );
+
+        server.abort();
     }
 }
