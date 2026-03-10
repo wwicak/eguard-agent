@@ -88,9 +88,12 @@ jobs:
         run: |
           ZIG_VER="0.14.0"
           ZIG_TARBALL="zig-linux-x86_64-${ZIG_VER}.tar.xz"
-          curl -sSfL "https://ziglang.org/download/${ZIG_VER}/${ZIG_TARBALL}" | tar -xJ -C /usr/local
-          ln -sf /usr/local/zig-linux-x86_64-${ZIG_VER}/zig /usr/local/bin/zig
-          zig version
+          ZIG_ROOT="${RUNNER_TEMP}/zig-${ZIG_VER}"
+          rm -rf "${ZIG_ROOT}"
+          mkdir -p "${ZIG_ROOT}"
+          curl -sSfL "https://ziglang.org/download/${ZIG_VER}/${ZIG_TARBALL}" | tar -xJ -C "${ZIG_ROOT}" --strip-components=1
+          echo "${ZIG_ROOT}" >> "$GITHUB_PATH"
+          "${ZIG_ROOT}/zig" version
 
       - name: Set version
         id: version
