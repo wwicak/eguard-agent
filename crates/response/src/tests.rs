@@ -95,6 +95,7 @@ fn default_linux_protected_paths_match_acceptance_baseline() {
     assert!(protected.is_protected_path(Path::new("/usr/bin/ls")));
     assert!(protected.is_protected_path(Path::new("/usr/sbin/sshd")));
     assert!(protected.is_protected_path(Path::new("/usr/lib/libc.so")));
+    assert!(protected.is_protected_path(Path::new("/usr/libexec/openssh/sshd-session")));
     assert!(protected.is_protected_path(Path::new("/lib/modules")));
     assert!(protected.is_protected_path(Path::new("/boot/vmlinuz")));
     assert!(protected.is_protected_path(Path::new("/usr/local/eg/agent")));

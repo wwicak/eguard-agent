@@ -232,7 +232,7 @@ impl AgentRuntime {
             return;
         };
 
-        let response = ResponseEnvelope {
+        let mut response = ResponseEnvelope {
             agent_id: self.config.agent_id.clone(),
             action_type: action_type.to_string(),
             confidence: "high".to_string(),
@@ -253,6 +253,7 @@ impl AgentRuntime {
             file_size: 0,
             killed_pids: Vec::new(),
         };
+        populate_command_response_detail(command, &mut response);
 
         match timeout(
             Duration::from_millis(COMMAND_ACK_TIMEOUT_MS),
@@ -276,6 +277,31 @@ impl AgentRuntime {
 fn response_action_for_command(command_type: &str) -> Option<&'static str> {
     match command_type.trim().to_ascii_lowercase().as_str() {
         "isolate" | "isolate_host" | "network_isolate" => Some("network_isolate"),
+        "restore_quarantine" => Some("restore_quarantine"),
         _ => None,
     }
+}
+
+fn populate_command_response_detail(command: &CommandEnvelope, response: &mut ResponseEnvelope) {
+    if !command.command_type.eq_ignore_ascii_case("restore_quarantine") {
+        return;
+    }
+
+    let payload: serde_json::Value = match serde_json::from_str(&command.payload_json) {
+        Ok(value) => value,
+        Err(_) => return,
+    };
+
+    response.file_path = payload
+        .get("original_path")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    response.quarantine_path = payload
+        .get("quarantine_path")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    response.sha256 = payload
+        .get("sha256")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
 }

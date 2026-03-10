@@ -1625,6 +1625,42 @@ async fn update_command_does_not_enqueue_response_report() {
 }
 
 #[tokio::test]
+async fn restore_quarantine_command_enqueues_response_report_when_delivery_fails() {
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    cfg.server_addr = "127.0.0.1:1".to_string();
+
+    let mut runtime = AgentRuntime::new(cfg).expect("build runtime");
+    runtime.client.set_online(false);
+
+    let command = grpc_client::CommandEnvelope {
+        command_id: "cmd-restore-1".to_string(),
+        command_type: "restore_quarantine".to_string(),
+        payload_json: serde_json::json!({
+            "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "original_path": "/tmp/restored.bin",
+            "quarantine_path": "/var/lib/eguard-agent/quarantine/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        })
+        .to_string(),
+    };
+
+    runtime.handle_command(command, 123).await;
+
+    assert_eq!(runtime.pending_response_reports.len(), 1);
+    let envelope = &runtime.pending_response_reports[0].envelope;
+    assert_eq!(envelope.action_type, "restore_quarantine");
+    assert_eq!(envelope.file_path.as_deref(), Some("/tmp/restored.bin"));
+    assert_eq!(
+        envelope.quarantine_path.as_deref(),
+        Some("/var/lib/eguard-agent/quarantine/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+    );
+    assert_eq!(
+        envelope.sha256.as_deref(),
+        Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+    );
+}
+
+#[tokio::test]
 // AC-DET-160 AC-DET-161 AC-DET-163 AC-DET-183
 async fn emergency_command_is_applied_immediately_in_command_path() {
     let mut cfg = AgentConfig::default();

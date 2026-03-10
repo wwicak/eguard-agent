@@ -1,0 +1,22 @@
+title: windows_bits_notifycmdline_persistence
+id: windows_bits_notifycmdline_persistence
+status: experimental
+logsource:
+  product: windows
+  category: process_creation
+tags:
+  - attack.t1197
+mitre_techniques:
+  - T1197
+
+detection:
+  sequence:
+    - event_class: process_exec
+      process_any_of:
+        - bitsadmin.exe
+        - powershell.exe
+        - pwsh.exe
+      command_line_contains:
+        - "/setnotifycmdline"
+        - "notificationcmdline"
+      within_secs: 30

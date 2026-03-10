@@ -1,0 +1,23 @@
+title: windows_defender_disable
+id: windows_defender_disable
+status: experimental
+logsource:
+  product: windows
+  category: process_creation
+tags:
+  - attack.t1562
+mitre_techniques:
+  - T1562
+
+detection:
+  sequence:
+    - event_class: process_exec
+      process_any_of:
+        - powershell.exe
+        - pwsh.exe
+        - powershell_ise.exe
+      command_line_contains:
+        - "set-mppreference -disablerealtimemonitoring"
+        - "set-mppreference -disablebehaviormonitoring"
+        - "set-mppreference -disableioavprotection"
+      within_secs: 30

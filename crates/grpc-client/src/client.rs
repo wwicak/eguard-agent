@@ -294,7 +294,9 @@ impl Client {
         match self.mode {
             TransportMode::Http => self.send_response_http(response).await?,
             TransportMode::Grpc => {
-                if self.grpc_reporting_force_http.load(Ordering::Relaxed) {
+                if response_action_requires_http_fallback(&response.action_type) {
+                    self.send_response_http(response).await?;
+                } else if self.grpc_reporting_force_http.load(Ordering::Relaxed) {
                     match self.send_response_grpc(response).await {
                         Ok(()) => {
                             self.grpc_reporting_force_http
@@ -1222,15 +1224,19 @@ fn map_command_type(raw: i32) -> String {
 
 fn map_response_action(raw: &str) -> pb::ResponseAction {
     match raw.trim().to_ascii_lowercase().as_str() {
-        "kill_process" | "kill" => pb::ResponseAction::KillProcess,
+        "kill_process" | "kill" | "killonly" => pb::ResponseAction::KillProcess,
         "kill_tree" => pb::ResponseAction::KillTree,
-        "quarantine_file" | "quarantine" => pb::ResponseAction::QuarantineFile,
+        "quarantine_file" | "quarantine" | "quarantineonly" => pb::ResponseAction::QuarantineFile,
         "block_execution" => pb::ResponseAction::BlockExecution,
         "block_connection" => pb::ResponseAction::BlockConnection,
         "capture_script" => pb::ResponseAction::CaptureScript,
         "network_isolate" => pb::ResponseAction::NetworkIsolate,
         _ => pb::ResponseAction::KillProcess,
     }
+}
+
+fn response_action_requires_http_fallback(raw: &str) -> bool {
+    matches!(raw.trim().to_ascii_lowercase().as_str(), "restore_quarantine")
 }
 
 fn map_response_confidence(raw: &str) -> pb::ResponseConfidence {

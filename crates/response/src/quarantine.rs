@@ -137,6 +137,7 @@ pub fn restore_quarantined(
     }
     fs::copy(quarantine_path, restore_to)?;
     restore_permissions(restore_to, original_mode)?;
+    fs::remove_file(quarantine_path)?;
 
     Ok(RestoreReport {
         restored_path: restore_to.to_path_buf(),

@@ -151,6 +151,7 @@ impl AgentRuntime {
 
         self.apply_detection_allowlist_override(&raw);
         self.apply_baseline_policy_overrides(&raw);
+        self.apply_response_policy_overrides(&raw);
         self.apply_runtime_tuning_overrides(&raw);
         self.apply_bundle_key_override(&raw);
         self.apply_feature_policy_overrides(&raw);
@@ -248,6 +249,43 @@ impl AgentRuntime {
                 "updated fleet-seed canary percent from policy"
             );
         }
+    }
+
+    fn apply_response_policy_overrides(&mut self, raw: &serde_json::Value) {
+        if let Some(v) = raw.get("autonomous_response").and_then(|v| v.as_bool()) {
+            self.config.response.autonomous_response = v;
+            info!(autonomous_response = v, "updated autonomous response from policy");
+        }
+        if let Some(v) = raw.get("response_dry_run").and_then(|v| v.as_bool()) {
+            self.config.response.dry_run = v;
+            info!(response_dry_run = v, "updated response dry-run from policy");
+        }
+        if let Some(v) = raw.get("response_max_kills_per_minute").and_then(|v| v.as_u64()) {
+            self.config.response.max_kills_per_minute = (v as usize).max(1);
+            info!(response_max_kills_per_minute = self.config.response.max_kills_per_minute, "updated response kill rate limit from policy");
+        }
+
+        if let Some(v) = raw.get("response_auto_isolation_enabled").and_then(|v| v.as_bool()) {
+            self.config.response.auto_isolation.enabled = v;
+            info!(response_auto_isolation_enabled = v, "updated auto-isolation enabled from policy");
+        }
+        if let Some(v) = raw.get("response_auto_isolation_min_incidents_in_window").and_then(|v| v.as_u64()) {
+            self.config.response.auto_isolation.min_incidents_in_window = (v as usize).max(1);
+            info!(response_auto_isolation_min_incidents_in_window = self.config.response.auto_isolation.min_incidents_in_window, "updated auto-isolation incident threshold from policy");
+        }
+        if let Some(v) = raw.get("response_auto_isolation_window_secs").and_then(|v| v.as_u64()) {
+            self.config.response.auto_isolation.window_secs = v.max(30);
+            info!(response_auto_isolation_window_secs = self.config.response.auto_isolation.window_secs, "updated auto-isolation window from policy");
+        }
+        if let Some(v) = raw.get("response_auto_isolation_max_isolations_per_hour").and_then(|v| v.as_u64()) {
+            self.config.response.auto_isolation.max_isolations_per_hour = (v as usize).max(1);
+            info!(response_auto_isolation_max_isolations_per_hour = self.config.response.auto_isolation.max_isolations_per_hour, "updated auto-isolation hourly cap from policy");
+        }
+
+        apply_response_band_override(raw.get("response_definite"), &mut self.config.response.definite, "definite");
+        apply_response_band_override(raw.get("response_very_high"), &mut self.config.response.very_high, "very_high");
+        apply_response_band_override(raw.get("response_high"), &mut self.config.response.high, "high");
+        apply_response_band_override(raw.get("response_medium"), &mut self.config.response.medium, "medium");
     }
 
     fn apply_runtime_tuning_overrides(&mut self, raw: &serde_json::Value) {
@@ -538,6 +576,34 @@ impl AgentRuntime {
     }
 }
 
+fn apply_response_band_override(
+    value: Option<&serde_json::Value>,
+    target: &mut response::ResponsePolicy,
+    band: &str,
+) {
+    let Some(raw) = value else {
+        return;
+    };
+
+    if let Some(v) = raw.get("kill").and_then(|v| v.as_bool()) {
+        target.kill = v;
+    }
+    if let Some(v) = raw.get("quarantine").and_then(|v| v.as_bool()) {
+        target.quarantine = v;
+    }
+    if let Some(v) = raw.get("capture_script").and_then(|v| v.as_bool()) {
+        target.capture_script = v;
+    }
+
+    info!(
+        band,
+        kill = target.kill,
+        quarantine = target.quarantine,
+        capture_script = target.capture_script,
+        "updated response band from policy"
+    );
+}
+
 fn parse_string_vec_or_csv(value: &serde_json::Value) -> Option<Vec<String>> {
     if let Ok(values) = serde_json::from_value::<Vec<String>>(value.clone()) {
         return Some(values);
@@ -647,6 +713,36 @@ mod tests {
         );
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn policy_response_overrides_update_runtime_response_config() {
+        let mut runtime = new_runtime();
+        runtime.apply_response_policy_overrides(&json!({
+            "autonomous_response": true,
+            "response_dry_run": false,
+            "response_max_kills_per_minute": 17,
+            "response_auto_isolation_enabled": true,
+            "response_auto_isolation_min_incidents_in_window": 2,
+            "response_auto_isolation_window_secs": 90,
+            "response_auto_isolation_max_isolations_per_hour": 3,
+            "response_definite": {"kill": true, "quarantine": true, "capture_script": true},
+            "response_very_high": {"kill": true, "quarantine": true, "capture_script": true},
+            "response_high": {"kill": false, "quarantine": true, "capture_script": true},
+            "response_medium": {"kill": false, "quarantine": false, "capture_script": true}
+        }));
+
+        assert!(runtime.config.response.autonomous_response);
+        assert!(!runtime.config.response.dry_run);
+        assert_eq!(runtime.config.response.max_kills_per_minute, 17);
+        assert!(runtime.config.response.auto_isolation.enabled);
+        assert_eq!(runtime.config.response.auto_isolation.min_incidents_in_window, 2);
+        assert_eq!(runtime.config.response.auto_isolation.window_secs, 90);
+        assert_eq!(runtime.config.response.auto_isolation.max_isolations_per_hour, 3);
+        assert!(runtime.config.response.definite.kill);
+        assert!(runtime.config.response.definite.quarantine);
+        assert!(runtime.config.response.high.quarantine);
+        assert!(runtime.config.response.medium.capture_script);
     }
 
     #[test]

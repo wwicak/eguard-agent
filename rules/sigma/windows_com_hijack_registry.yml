@@ -1,0 +1,26 @@
+title: windows_com_hijack_registry
+id: windows_com_hijack_registry
+status: experimental
+logsource:
+  product: windows
+  category: process_creation
+tags:
+  - attack.t1546
+  - attack.t1112
+mitre_techniques:
+  - T1546
+  - T1112
+
+detection:
+  sequence:
+    - event_class: process_exec
+      process_any_of:
+        - reg.exe
+        - powershell.exe
+        - pwsh.exe
+      command_line_contains:
+        - "inprocserver32"
+        - "localserver32"
+        - "delegateexecute"
+        - "\\clsid\\"
+      within_secs: 30

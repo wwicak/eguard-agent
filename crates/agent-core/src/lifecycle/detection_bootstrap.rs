@@ -266,6 +266,8 @@ detection:
       process_any_of: [crontab, systemctl, at]
       within_secs: 120
     - event_class: file_open
+      file_path_contains: [/etc/cron, /etc/systemd/system/, /etc/init.d/, .bashrc, .profile, /etc/profile.d/]
+      require_file_write: true
       within_secs: 10
 "#;
 

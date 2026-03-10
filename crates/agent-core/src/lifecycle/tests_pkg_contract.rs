@@ -227,6 +227,10 @@ fn linux_update_packaging_recovers_service_after_upgrade() {
         service_unit.contains("TimeoutStopSec=15s"),
         "systemd unit should allow a longer graceful stop window during upgrades"
     );
+    assert!(
+        service_unit.contains("PrivateTmp=false"),
+        "systemd unit must share host /tmp so Linux quarantine can reach real endpoint artifacts"
+    );
 
     let postinstall = read("packaging/postinstall.sh");
     assert!(
@@ -857,4 +861,194 @@ fn repo_windows_certutil_rule_matches_live_urlcache_shape() {
             .any(|hit| hit == "windows_certutil_download"),
         "live certutil urlcache wrapper shape must match the repo sigma rule"
     );
+}
+
+fn repo_windows_event(process: &str, parent: &str, command_line: &str) -> TelemetryEvent {
+    TelemetryEvent {
+        ts_unix: 1_700_000_000,
+        event_class: EventClass::ProcessExec,
+        pid: 9001,
+        ppid: 1,
+        uid: 0,
+        process: process.to_string(),
+        parent_process: parent.to_string(),
+        session_id: 9001,
+        file_path: None,
+        file_write: false,
+        file_hash: None,
+        dst_port: None,
+        dst_ip: None,
+        dst_domain: None,
+        command_line: Some(command_line.to_string()),
+        event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
+    }
+}
+
+#[test]
+fn repo_windows_defender_disable_rule_matches_set_mppreference_shape() {
+    let mut engine = DetectionEngine::default_with_rules();
+    engine
+        .load_sigma_rule_yaml(&repo_rule("rules/sigma/windows_defender_disable.yml"))
+        .expect("compile repo windows defender disable rule");
+
+    let out = engine.process_event(&repo_windows_event(
+        "powershell.exe",
+        "cmd.exe",
+        "powershell.exe -nop -c Set-MpPreference -DisableRealtimeMonitoring $true",
+    ));
+    assert!(out.temporal_hits.iter().any(|hit| hit == "windows_defender_disable"));
+}
+
+#[test]
+fn repo_windows_amsi_bypass_rule_matches_amsiinitfailed_shape() {
+    let mut engine = DetectionEngine::default_with_rules();
+    engine
+        .load_sigma_rule_yaml(&repo_rule("rules/sigma/windows_amsi_bypass_reflection.yml"))
+        .expect("compile repo windows amsi bypass rule");
+
+    let out = engine.process_event(&repo_windows_event(
+        "powershell.exe",
+        "cmd.exe",
+        "powershell.exe -c [Ref].Assembly.GetType('System.Management.Automation.AmsiUtils').GetField('amsiInitFailed','NonPublic,Static').SetValue($null,$true)",
+    ));
+    assert!(out.temporal_hits.iter().any(|hit| hit == "windows_amsi_bypass_reflection"));
+}
+
+#[test]
+fn repo_windows_wmi_persistence_rule_matches_root_subscription_shape() {
+    let mut engine = DetectionEngine::default_with_rules();
+    engine
+        .load_sigma_rule_yaml(&repo_rule("rules/sigma/windows_wmi_event_subscription_persistence.yml"))
+        .expect("compile repo windows wmi persistence rule");
+
+    let out = engine.process_event(&repo_windows_event(
+        "powershell.exe",
+        "cmd.exe",
+        "powershell.exe New-CimInstance -Namespace root\\subscription -ClassName CommandLineEventConsumer",
+    ));
+    assert!(out.temporal_hits.iter().any(|hit| hit == "windows_wmi_event_subscription_persistence"));
+}
+
+#[test]
+fn repo_windows_ifeo_rule_matches_sethc_debugger_shape() {
+    let mut engine = DetectionEngine::default_with_rules();
+    engine
+        .load_sigma_rule_yaml(&repo_rule("rules/sigma/windows_ifeo_debugger_persistence.yml"))
+        .expect("compile repo windows ifeo rule");
+
+    let out = engine.process_event(&repo_windows_event(
+        "reg.exe",
+        "cmd.exe",
+        "reg.exe add HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\sethc.exe /v Debugger /d cmd.exe /f",
+    ));
+    assert!(out.temporal_hits.iter().any(|hit| hit == "windows_ifeo_debugger_persistence"));
+}
+
+#[test]
+fn repo_windows_bits_rule_matches_notifycmdline_shape() {
+    let mut engine = DetectionEngine::default_with_rules();
+    engine
+        .load_sigma_rule_yaml(&repo_rule("rules/sigma/windows_bits_notifycmdline_persistence.yml"))
+        .expect("compile repo windows bits rule");
+
+    let out = engine.process_event(&repo_windows_event(
+        "bitsadmin.exe",
+        "cmd.exe",
+        "bitsadmin.exe /SetNotifyCmdLine EguardJob C:\\Windows\\System32\\cmd.exe /c calc.exe",
+    ));
+    assert!(out.temporal_hits.iter().any(|hit| hit == "windows_bits_notifycmdline_persistence"));
+}
+
+#[test]
+fn repo_windows_certutil_encode_rule_matches_shape() {
+    let mut engine = DetectionEngine::default_with_rules();
+    engine
+        .load_sigma_rule_yaml(&repo_rule("rules/sigma/windows_certutil_encode.yml"))
+        .expect("compile repo windows certutil encode rule");
+
+    let out = engine.process_event(&repo_windows_event(
+        "certutil.exe",
+        "cmd.exe",
+        "certutil.exe -encode C:\\Temp\\input.bin C:\\Temp\\output.txt",
+    ));
+    assert!(out.temporal_hits.iter().any(|hit| hit == "windows_certutil_encode"));
+}
+
+#[test]
+fn repo_windows_taskkill_tamper_rule_matches_force_kill_shape() {
+    let mut engine = DetectionEngine::default_with_rules();
+    engine
+        .load_sigma_rule_yaml(&repo_rule("rules/sigma/windows_taskkill_eguard_tamper.yml"))
+        .expect("compile repo windows taskkill tamper rule");
+
+    let out = engine.process_event(&repo_windows_event(
+        "taskkill.exe",
+        "cmd.exe",
+        "taskkill.exe /f /im eguard-agent.exe",
+    ));
+    assert!(out.temporal_hits.iter().any(|hit| hit == "windows_taskkill_eguard_tamper"));
+}
+
+#[test]
+fn repo_windows_com_hijack_rule_matches_inprocserver32_shape() {
+    let mut engine = DetectionEngine::default_with_rules();
+    engine
+        .load_sigma_rule_yaml(&repo_rule("rules/sigma/windows_com_hijack_registry.yml"))
+        .expect("compile repo windows com hijack rule");
+
+    let out = engine.process_event(&repo_windows_event(
+        "reg.exe",
+        "cmd.exe",
+        "reg.exe add HKCU\\Software\\Classes\\CLSID\\{11111111-1111-1111-1111-111111111111}\\InprocServer32 /ve /d C:\\Temp\\evil.dll /f",
+    ));
+    assert!(out.temporal_hits.iter().any(|hit| hit == "windows_com_hijack_registry"));
+}
+
+#[test]
+fn repo_windows_msbuild_rule_matches_project_shape() {
+    let mut engine = DetectionEngine::default_with_rules();
+    engine
+        .load_sigma_rule_yaml(&repo_rule("rules/sigma/windows_msbuild_lolbin.yml"))
+        .expect("compile repo windows msbuild rule");
+
+    let out = engine.process_event(&repo_windows_event(
+        "msbuild.exe",
+        "cmd.exe",
+        "MSBuild.exe C:\\Users\\Public\\payload.csproj",
+    ));
+    assert!(out.temporal_hits.iter().any(|hit| hit == "windows_msbuild_lolbin"));
+}
+
+#[test]
+fn repo_windows_installutil_rule_matches_shape() {
+    let mut engine = DetectionEngine::default_with_rules();
+    engine
+        .load_sigma_rule_yaml(&repo_rule("rules/sigma/windows_installutil_lolbin.yml"))
+        .expect("compile repo windows installutil rule");
+
+    let out = engine.process_event(&repo_windows_event(
+        "installutil.exe",
+        "cmd.exe",
+        "InstallUtil.exe /logfile= /u C:\\Users\\Public\\payload.dll",
+    ));
+    assert!(out.temporal_hits.iter().any(|hit| hit == "windows_installutil_lolbin"));
+}
+
+#[test]
+fn repo_windows_csc_rule_matches_shape() {
+    let mut engine = DetectionEngine::default_with_rules();
+    engine
+        .load_sigma_rule_yaml(&repo_rule("rules/sigma/windows_csc_lolbin.yml"))
+        .expect("compile repo windows csc rule");
+
+    let out = engine.process_event(&repo_windows_event(
+        "csc.exe",
+        "cmd.exe",
+        "csc.exe /out:C:\\Users\\Public\\payload.exe C:\\Users\\Public\\payload.cs",
+    ));
+    assert!(out.temporal_hits.iter().any(|hit| hit == "windows_csc_lolbin"));
 }

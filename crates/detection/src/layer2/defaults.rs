@@ -56,7 +56,7 @@ pub(super) fn default_rules() -> Vec<TemporalRule> {
             TemporalStage {
                 predicate: TemporalPredicate {
                     event_class: EventClass::ProcessExec,
-                    process_any_of: None,
+                    process_any_of: Some(set_of(["sudo", "su", "pkexec"])),
                     process_starts_with: None,
                     parent_any_of: None,
                     uid_eq: None,
@@ -73,9 +73,9 @@ pub(super) fn default_rules() -> Vec<TemporalRule> {
             TemporalStage {
                 predicate: TemporalPredicate {
                     event_class: EventClass::ProcessExec,
-                    process_any_of: None,
+                    process_any_of: Some(set_of(["bash", "sh", "dash", "zsh", "ksh", "python", "python3", "perl", "ruby"])),
                     process_starts_with: None,
-                    parent_any_of: None,
+                    parent_any_of: Some(set_of(["sudo", "su", "pkexec"])),
                     uid_eq: Some(0),
                     uid_ne: None,
                     dst_port_not_in: None,

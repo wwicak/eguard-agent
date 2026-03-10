@@ -898,6 +898,19 @@ fn systemd_userwork_shadow_reads_are_filtered_before_backloging() {
 }
 
 #[test]
+fn benign_procfd_exec_runtime_artifacts_are_filtered_before_backloging() {
+    let raw = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::ProcessExec,
+        pid: 7006,
+        uid: 0,
+        ts_ns: 1,
+        payload: "path=/proc/self/fd/16;cmdline=16;ppid=1;cgroup_id=30;comm=16;parent_comm=systemd".to_string(),
+    };
+
+    assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
+}
+
+#[test]
 fn linux_console_device_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
         event_type: platform_linux::EventType::FileOpen,

@@ -1,0 +1,24 @@
+title: windows_ifeo_debugger_persistence
+id: windows_ifeo_debugger_persistence
+status: experimental
+logsource:
+  product: windows
+  category: process_creation
+tags:
+  - attack.t1546
+  - attack.t1112
+mitre_techniques:
+  - T1546
+  - T1112
+
+detection:
+  sequence:
+    - event_class: process_exec
+      process_any_of:
+        - reg.exe
+        - cmd.exe
+      command_line_contains:
+        - "image file execution options\\sethc.exe"
+        - "image file execution options\\utilman.exe"
+        - " /v debugger"
+      within_secs: 30

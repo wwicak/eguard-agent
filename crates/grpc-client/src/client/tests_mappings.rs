@@ -88,6 +88,14 @@ fn response_action_mapping_accepts_aliases_and_defaults_to_kill_process() {
         pb::ResponseAction::QuarantineFile
     );
     assert_eq!(
+        map_response_action("quarantineonly"),
+        pb::ResponseAction::QuarantineFile
+    );
+    assert_eq!(
+        map_response_action("killonly"),
+        pb::ResponseAction::KillProcess
+    );
+    assert_eq!(
         map_response_action("block_execution"),
         pb::ResponseAction::BlockExecution
     );
@@ -108,6 +116,12 @@ fn response_action_mapping_accepts_aliases_and_defaults_to_kill_process() {
         map_response_action("something-unknown"),
         pb::ResponseAction::KillProcess
     );
+}
+
+#[test]
+fn restore_quarantine_response_uses_http_fallback() {
+    assert!(response_action_requires_http_fallback("restore_quarantine"));
+    assert!(!response_action_requires_http_fallback("quarantine_file"));
 }
 
 #[test]

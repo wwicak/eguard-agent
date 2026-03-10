@@ -19,7 +19,11 @@ detection:
       process_any_of:
         - rundll32.exe
         - procdump.exe
+        - cmd.exe
+        - powershell.exe
+        - pwsh.exe
       command_line_contains:
-        - lsass
-        - MiniDump
+        - "comsvcs.dll, MiniDump"
+        - "procdump.exe -ma lsass"
+        - "procdump64.exe -ma lsass"
       within_secs: 30

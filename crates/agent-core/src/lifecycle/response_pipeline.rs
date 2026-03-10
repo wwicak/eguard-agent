@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use tracing::{info, warn};
 
 use super::{
@@ -99,19 +101,15 @@ impl AgentRuntime {
             return;
         };
 
-        if matches!(
+        let action = self.sanitize_planned_action_for_event(
             evaluation.action,
-            super::PlannedAction::AlertOnly | super::PlannedAction::None
-        ) {
+            &evaluation.detection_event,
+        );
+        if matches!(action, super::PlannedAction::AlertOnly | super::PlannedAction::None) {
             return;
         }
 
-        if !self.should_enqueue_response_action(
-            now_unix,
-            evaluation.action,
-            &evaluation.event_txn.key,
-            "primary",
-        ) {
+        if !self.should_enqueue_response_action(now_unix, action, &evaluation.event_txn.key, "primary") {
             return;
         }
 
@@ -132,7 +130,7 @@ impl AgentRuntime {
 
         self.pending_response_actions
             .push_back(PendingResponseAction {
-                action: evaluation.action,
+                action,
                 confidence: evaluation.confidence,
                 event: evaluation.detection_event.clone(),
                 txn_key: evaluation.event_txn.key.clone(),
@@ -232,6 +230,11 @@ impl AgentRuntime {
         rule_name: &str,
         threat_category: &str,
     ) {
+        let action = self.sanitize_planned_action_for_event(action, &evaluation.detection_event);
+        if matches!(action, super::PlannedAction::AlertOnly | super::PlannedAction::None) {
+            return;
+        }
+
         if !self.should_enqueue_response_action(
             now_unix,
             action,
@@ -261,6 +264,38 @@ impl AgentRuntime {
                 rule_name: rule_name.to_string(),
                 threat_category: threat_category.to_string(),
             });
+    }
+
+    fn sanitize_planned_action_for_event(
+        &self,
+        action: super::PlannedAction,
+        event: &detection::TelemetryEvent,
+    ) -> super::PlannedAction {
+        if self.event_supports_quarantine(event) {
+            return action;
+        }
+
+        match action {
+            super::PlannedAction::QuarantineOnly => super::PlannedAction::AlertOnly,
+            super::PlannedAction::KillAndQuarantine => super::PlannedAction::KillOnly,
+            other => other,
+        }
+    }
+
+    fn event_supports_quarantine(&self, event: &detection::TelemetryEvent) -> bool {
+        let Some(path) = event.file_path.as_deref() else {
+            return false;
+        };
+        if !event.file_write {
+            return false;
+        }
+
+        let path = Path::new(path);
+        if !path.is_absolute() || self.protected.is_protected_path(path) {
+            return false;
+        }
+
+        !is_linux_runtime_or_pseudo_path(path)
     }
 
     fn execute_playbook_isolate(&mut self, evaluation: &TickEvaluation, now_unix: i64) {
@@ -430,10 +465,24 @@ impl AgentRuntime {
     }
 }
 
+fn is_linux_runtime_or_pseudo_path(path: &Path) -> bool {
+    path == Path::new("/proc")
+        || path.starts_with("/proc/")
+        || path == Path::new("/sys")
+        || path.starts_with("/sys/")
+        || path == Path::new("/dev")
+        || path.starts_with("/dev/")
+        || path == Path::new("/run")
+        || path.starts_with("/run/")
+        || path == Path::new("/var/run")
+        || path.starts_with("/var/run/")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::AgentConfig;
+    use detection::{EventClass, TelemetryEvent};
 
     fn runtime() -> AgentRuntime {
         let mut cfg = AgentConfig::default();
@@ -553,5 +602,98 @@ mod tests {
             "primary"
         ));
         assert!(runtime.recent_response_action_keys.len() <= 2);
+    }
+
+    fn quarantine_event(path: &str, file_write: bool, event_class: EventClass) -> TelemetryEvent {
+        TelemetryEvent {
+            ts_unix: 1_700_000_000,
+            event_class,
+            pid: 4242,
+            ppid: 1,
+            uid: 1000,
+            process: "bash".to_string(),
+            parent_process: "sshd".to_string(),
+            session_id: 1,
+            file_path: Some(path.to_string()),
+            file_write,
+            file_hash: None,
+            dst_port: None,
+            dst_ip: None,
+            dst_domain: None,
+            command_line: Some("bash proof".to_string()),
+            event_size: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        }
+    }
+
+    #[test]
+    fn quarantine_only_is_downgraded_for_non_write_process_paths() {
+        let runtime = runtime();
+        let event = quarantine_event(
+            "/usr/libexec/openssh/sshd-session",
+            false,
+            EventClass::ProcessExec,
+        );
+
+        assert_eq!(
+            runtime.sanitize_planned_action_for_event(
+                super::super::PlannedAction::QuarantineOnly,
+                &event,
+            ),
+            super::super::PlannedAction::AlertOnly
+        );
+    }
+
+    #[test]
+    fn kill_and_quarantine_downgrades_to_kill_only_for_non_quarantinable_paths() {
+        let runtime = runtime();
+        let event = quarantine_event(
+            "/usr/lib/systemd/systemd-nsresourcework",
+            false,
+            EventClass::ProcessExec,
+        );
+
+        assert_eq!(
+            runtime.sanitize_planned_action_for_event(
+                super::super::PlannedAction::KillAndQuarantine,
+                &event,
+            ),
+            super::super::PlannedAction::KillOnly
+        );
+    }
+
+    #[test]
+    fn quarantine_only_is_retained_for_writable_tmp_file() {
+        let runtime = runtime();
+        let event = quarantine_event(
+            "/tmp/platinum_sigma_file_quarantine_test.txt",
+            true,
+            EventClass::FileOpen,
+        );
+
+        assert_eq!(
+            runtime.sanitize_planned_action_for_event(
+                super::super::PlannedAction::QuarantineOnly,
+                &event,
+            ),
+            super::super::PlannedAction::QuarantineOnly
+        );
+    }
+
+    #[test]
+    fn quarantine_only_is_downgraded_for_protected_write_path() {
+        let runtime = runtime();
+        let event = quarantine_event("/usr/bin/ls", true, EventClass::FileOpen);
+
+        assert_eq!(
+            runtime.sanitize_planned_action_for_event(
+                super::super::PlannedAction::QuarantineOnly,
+                &event,
+            ),
+            super::super::PlannedAction::AlertOnly
+        );
     }
 }

@@ -1,0 +1,23 @@
+title: windows_amsi_bypass_reflection
+id: windows_amsi_bypass_reflection
+status: experimental
+logsource:
+  product: windows
+  category: process_creation
+tags:
+  - attack.t1562
+  - attack.t1059
+mitre_techniques:
+  - T1562
+  - T1059
+
+detection:
+  sequence:
+    - event_class: process_exec
+      process_any_of:
+        - powershell.exe
+        - pwsh.exe
+      command_line_contains:
+        - "amsiinitfailed"
+        - "system.management.automation.amsiutils"
+      within_secs: 30

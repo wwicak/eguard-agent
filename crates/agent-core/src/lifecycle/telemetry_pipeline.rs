@@ -340,10 +340,6 @@ impl AgentRuntime {
 
         #[cfg(target_os = "linux")]
         {
-            if !matches!(event.event_type, crate::platform::EventType::FileOpen) {
-                return false;
-            }
-
             let path = parse_payload_field(&event.payload, "path").unwrap_or_default();
             let comm = parse_payload_field(&event.payload, "comm")
                 .map(|value| value.to_ascii_lowercase())
@@ -351,6 +347,20 @@ impl AgentRuntime {
             let parent_comm = parse_payload_field(&event.payload, "parent_comm")
                 .map(|value| value.to_ascii_lowercase())
                 .unwrap_or_default();
+            let command_line = parse_payload_field(&event.payload, "cmdline")
+                .or_else(|| parse_payload_field(&event.payload, "command_line"))
+                .map(|value| value.to_ascii_lowercase())
+                .unwrap_or_default();
+
+            if matches!(event.event_type, crate::platform::EventType::ProcessExec)
+                && is_expected_linux_procfd_runtime_artifact(&comm, &parent_comm, &path, &command_line)
+            {
+                return true;
+            }
+
+            if !matches!(event.event_type, crate::platform::EventType::FileOpen) {
+                return false;
+            }
 
             if path == "/dev/console"
                 || path == "/dev/tty"
@@ -771,6 +781,24 @@ impl AgentRuntime {
             .saturating_sub(self.last_ebpf_stats.events_dropped);
         self.last_ebpf_stats = stats;
     }
+}
+
+fn is_expected_linux_procfd_runtime_artifact(
+    comm: &str,
+    parent_comm: &str,
+    path: &str,
+    command_line: &str,
+) -> bool {
+    let lower = path.to_ascii_lowercase();
+    if !(lower.starts_with("/proc/self/fd/") || (lower.starts_with("/proc/") && lower.contains("/fd/"))) {
+        return false;
+    }
+
+    let comm_numeric = !comm.is_empty() && comm.chars().all(|ch| ch.is_ascii_digit());
+    let cmd_numeric = !command_line.is_empty() && command_line.chars().all(|ch| ch.is_ascii_digit());
+
+    (parent_comm == "systemd" || parent_comm == "sshd" || parent_comm == "sshd-session")
+        && (comm_numeric || cmd_numeric)
 }
 
 fn is_expected_linux_auth_stack_noise(comm: &str, parent_comm: &str, path: &str) -> bool {

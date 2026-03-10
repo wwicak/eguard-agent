@@ -460,16 +460,75 @@ fn temporal_engine_detects_webshell_pattern() {
 fn temporal_engine_detects_privilege_escalation_pattern() {
     let mut t = TemporalEngine::with_default_rules();
 
-    let mut e1 = event(10, EventClass::ProcessExec, "bash", "sshd", 1000);
+    let mut e1 = event(10, EventClass::ProcessExec, "sudo", "sshd", 1000);
     e1.pid = 220;
     e1.session_id = 220;
     assert!(t.observe(&e1).is_empty());
 
-    let mut e2 = event(20, EventClass::ProcessExec, "su", "bash", 0);
+    let mut e2 = event(20, EventClass::ProcessExec, "bash", "sudo", 0);
     e2.pid = 220;
     e2.session_id = 220;
     let hits = t.observe(&e2);
     assert!(hits.iter().any(|h| h == "phi_priv_esc"));
+}
+
+#[test]
+fn temporal_engine_ignores_unix_chkpwd_auth_stack_for_privilege_escalation_rule() {
+    let mut t = TemporalEngine::with_default_rules();
+
+    let mut e1 = event(15, EventClass::ProcessExec, "sudo", "sshd", 1000);
+    e1.pid = 221;
+    e1.session_id = 221;
+    assert!(t.observe(&e1).is_empty());
+
+    let mut e2 = event(20, EventClass::ProcessExec, "unix_chkpwd", "sudo", 0);
+    e2.pid = 221;
+    e2.session_id = 221;
+    let hits = t.observe(&e2);
+    assert!(!hits.iter().any(|h| h == "phi_priv_esc"));
+}
+
+#[test]
+fn builtin_persistence_rule_requires_real_persistence_path_write() {
+    let mut engine = DetectionEngine::default_with_rules();
+    engine
+        .load_sigma_rule_yaml(
+            r#"
+title: eguard_builtin_persistence
+detection:
+  sequence:
+    - event_class: process_exec
+      process_any_of: [crontab, systemctl, at]
+      within_secs: 120
+    - event_class: file_open
+      file_path_contains: [/etc/cron, /etc/systemd/system/, /etc/init.d/, .bashrc, .profile, /etc/profile.d/]
+      require_file_write: true
+      within_secs: 10
+"#,
+        )
+        .expect("load persistence sigma rule");
+
+    let mut e1 = event(25, EventClass::ProcessExec, "systemctl", "bash", 0);
+    e1.pid = 7400;
+    e1.session_id = 7400;
+    let out1 = engine.process_event(&e1);
+    assert!(!out1.temporal_hits.iter().any(|h| h == "eguard_builtin_persistence"));
+
+    let mut e2 = event(30, EventClass::FileOpen, "systemctl", "bash", 0);
+    e2.pid = 7400;
+    e2.session_id = 7400;
+    e2.file_path = Some("/usr/lib64/systemd/libsystemd-shared.so".to_string());
+    e2.file_write = false;
+    let out2 = engine.process_event(&e2);
+    assert!(!out2.temporal_hits.iter().any(|h| h == "eguard_builtin_persistence"));
+
+    let mut e3 = event(35, EventClass::FileOpen, "systemctl", "bash", 0);
+    e3.pid = 7400;
+    e3.session_id = 7400;
+    e3.file_path = Some("/etc/systemd/system/evil.service".to_string());
+    e3.file_write = true;
+    let out3 = engine.process_event(&e3);
+    assert!(out3.temporal_hits.iter().any(|h| h == "eguard_builtin_persistence"));
 }
 
 #[test]
@@ -1852,7 +1911,7 @@ fn exploit_indicator_procfd_triggers_high_confidence() {
     ev.pid = 7200;
     ev.ppid = 1;
     ev.session_id = ev.pid;
-    ev.file_path = Some("/proc/self/fd/3".to_string());
+    ev.file_path = Some("/proc/4242/fd/3".to_string());
 
     let out = engine.process_event(&ev);
     assert!(out.signals.exploit_indicator);
@@ -1861,6 +1920,22 @@ fn exploit_indicator_procfd_triggers_high_confidence() {
         .iter()
         .any(|v| v == "fileless_procfd"));
     assert_eq!(out.confidence, Confidence::High);
+}
+
+#[test]
+fn exploit_indicator_ignores_proc_self_fd_runtime_artifacts() {
+    let mut engine = DetectionEngine::default_with_rules();
+
+    let mut ev = event(22, EventClass::ProcessExec, "9", "systemd", 1000);
+    ev.pid = 7201;
+    ev.ppid = 1;
+    ev.session_id = 1;
+    ev.file_path = Some("/proc/self/fd/9".to_string());
+    ev.command_line = Some("9".to_string());
+
+    let out = engine.process_event(&ev);
+    assert!(!out.signals.exploit_indicator);
+    assert!(!out.exploit_indicators.iter().any(|v| v == "fileless_procfd"));
 }
 
 #[test]

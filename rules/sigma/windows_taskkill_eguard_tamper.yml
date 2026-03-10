@@ -1,0 +1,21 @@
+title: windows_taskkill_eguard_tamper
+id: windows_taskkill_eguard_tamper
+status: experimental
+logsource:
+  product: windows
+  category: process_creation
+tags:
+  - attack.t1562
+mitre_techniques:
+  - T1562
+
+detection:
+  sequence:
+    - event_class: process_exec
+      process_any_of:
+        - taskkill.exe
+        - powershell.exe
+      command_line_contains:
+        - "eguard-agent"
+        - "stop-process -name eguard-agent"
+      within_secs: 30

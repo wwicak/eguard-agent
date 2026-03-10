@@ -13,8 +13,10 @@ detection:
     - event_class: process_exec
       process_any_of:
         - certutil.exe
+        - cmd.exe
+        - powershell.exe
+        - pwsh.exe
       command_line_contains:
-        - -urlcache
-        - -split
-        - http
+        - "certutil.exe -urlcache"
+        - "certutil -urlcache"
       within_secs: 30

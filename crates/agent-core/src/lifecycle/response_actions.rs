@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::time::Instant;
 
+use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 
 use baseline::{BaselineStatus, BaselineTransition, ProcessKey};
@@ -260,6 +261,8 @@ impl AgentRuntime {
             return;
         }
 
+        result.action_type = Some("quarantine_file".to_string());
+
         let Some(path) = event.file_path.as_deref() else {
             *success = false;
             notes.push("quarantine_failed:missing_file_path".to_string());
@@ -331,7 +334,21 @@ fn is_script_interpreter(process: &str) -> bool {
 }
 
 fn synthetic_quarantine_id(event: &TelemetryEvent) -> String {
-    format!("pid:{}:{}", event.pid, event.ts_unix)
+    let seed = format!(
+        "{}|{}|{}|{}|{}",
+        event.file_path.as_deref().unwrap_or_default(),
+        event.process,
+        event.pid,
+        event.session_id,
+        event.ts_unix
+    );
+    let digest = Sha256::digest(seed.as_bytes());
+    let mut out = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(&mut out, "{byte:02x}");
+    }
+    out
 }
 
 fn normalize_quarantine_sha256(raw: &str) -> Option<String> {
@@ -340,4 +357,41 @@ fn normalize_quarantine_sha256(raw: &str) -> Option<String> {
         return None;
     }
     Some(trimmed.to_ascii_lowercase())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use detection::EventClass;
+
+    #[test]
+    fn synthetic_quarantine_id_is_valid_hex_identifier() {
+        let event = TelemetryEvent {
+            ts_unix: 1_700_000_000,
+            event_class: EventClass::FileOpen,
+            pid: 42,
+            ppid: 7,
+            uid: 1000,
+            process: "bash".to_string(),
+            parent_process: "sshd".to_string(),
+            session_id: 42,
+            file_path: Some("/tmp/proof.txt".to_string()),
+            file_write: false,
+            file_hash: None,
+            dst_port: None,
+            dst_ip: None,
+            dst_domain: None,
+            command_line: Some("bash /tmp/proof.txt".to_string()),
+            event_size: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        };
+
+        let synthetic = synthetic_quarantine_id(&event);
+        assert_eq!(synthetic.len(), 64);
+        assert!(synthetic.chars().all(|ch| ch.is_ascii_hexdigit()));
+        assert_eq!(normalize_quarantine_sha256(&synthetic).as_deref(), Some(synthetic.as_str()));
+    }
 }

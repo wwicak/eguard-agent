@@ -15,7 +15,7 @@ NoNewPrivileges=true
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
 ProtectSystem=full
 ProtectHome=true
-PrivateTmp=true
+PrivateTmp=false
 ReadWritePaths=/etc/eguard-agent /var/lib/eguard-agent
 TimeoutStopSec=15s
 

@@ -1,0 +1,26 @@
+title: windows_wmi_event_subscription_persistence
+id: windows_wmi_event_subscription_persistence
+status: experimental
+logsource:
+  product: windows
+  category: process_creation
+tags:
+  - attack.t1546
+  - attack.t1047
+mitre_techniques:
+  - T1546
+  - T1047
+
+detection:
+  sequence:
+    - event_class: process_exec
+      process_any_of:
+        - powershell.exe
+        - pwsh.exe
+        - wmic.exe
+      command_line_contains:
+        - "__eventfilter"
+        - "commandlineeventconsumer"
+        - "__filtertoconsumerbinding"
+        - "root\\subscription"
+      within_secs: 30

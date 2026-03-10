@@ -118,6 +118,7 @@ impl ProtectedList {
             PathBuf::from("/usr/sbin"),
             PathBuf::from("/lib"),
             PathBuf::from("/usr/lib"),
+            PathBuf::from("/usr/libexec"),
             PathBuf::from("/boot"),
             PathBuf::from("/usr/local/eg"),
         ];
