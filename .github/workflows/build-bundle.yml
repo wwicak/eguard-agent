@@ -1,6 +1,9 @@
 name: Build Threat Intel Bundle
 
 on:
+  push:
+    tags:
+      - 'v*'
   schedule:
     - cron: "30 4 * * *"  # Daily at 04:30 UTC (after all collectors finish)
   workflow_dispatch:
@@ -51,7 +54,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       EGUARD_ML_TREND_RETENTION_DAYS: "90"
-      EGUARD_PUBLISH_BUNDLE: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.promote_release)) && '1' || '0' }}
+      EGUARD_PUBLISH_BUNDLE: ${{ (github.event_name == 'schedule' || github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.promote_release)) && '1' || '0' }}
       EGUARD_ML_PUBLISH_MIN_PR_AUC: "0.70"
       EGUARD_ML_PUBLISH_MIN_ROC_AUC: "0.80"
       EGUARD_ML_PUBLISH_MAX_BRIER: "0.18"
@@ -81,9 +84,22 @@ jobs:
       - name: Install zstd
         run: sudo apt-get update && sudo apt-get install -y zstd
 
+      - name: Install Zig
+        run: |
+          ZIG_VER="0.14.0"
+          ZIG_TARBALL="zig-linux-x86_64-${ZIG_VER}.tar.xz"
+          curl -sSfL "https://ziglang.org/download/${ZIG_VER}/${ZIG_TARBALL}" | tar -xJ -C /usr/local
+          ln -sf /usr/local/zig-linux-x86_64-${ZIG_VER}/zig /usr/local/bin/zig
+          zig version
+
       - name: Set version
         id: version
-        run: echo "version=$(date -u +%Y.%m.%d.%H%M)" >> "$GITHUB_OUTPUT"
+        run: |
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ] && [ -n "${GITHUB_REF_NAME:-}" ]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$(date -u +%Y.%m.%d.%H%M)" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Validate collector artifact freshness
         env:
