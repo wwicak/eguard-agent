@@ -25,11 +25,12 @@ use crate::config::{AgentConfig, AgentMode};
 use crate::detection_state::SharedDetectionState;
 
 use super::{
-    build_ransomware_policy, derive_runtime_mode, init_ebpf_engine, load_baseline_store,
-    load_bundle_full, load_compliance_policy, resolve_detection_shard_count, runtime_mode_label,
-    seed_anomaly_baselines, AsyncWorkerResult, DegradedCause, PendingCommand,
-    PendingControlPlaneSend, PendingControlPlaneTask, PendingResponseAction, PendingResponseReport,
-    ReloadReport, RuntimeMetrics, RuntimeObservabilitySnapshot,
+    build_ransomware_policy, derive_runtime_mode, host_is_low_memory, init_ebpf_engine,
+    linux_host_mem_total_bytes, load_baseline_store, load_bundle_full, load_compliance_policy,
+    resolve_detection_shard_count, runtime_mode_label, seed_anomaly_baselines, AsyncWorkerResult,
+    DegradedCause, PendingCommand, PendingControlPlaneSend, PendingControlPlaneTask,
+    PendingResponseAction, PendingResponseReport, ReloadReport, RuntimeMetrics,
+    RuntimeObservabilitySnapshot,
 };
 
 pub struct AgentRuntime {
@@ -61,7 +62,7 @@ pub struct AgentRuntime {
     pub(super) file_event_coalesce_window_ns: u64,
     pub(super) event_txn_coalesce_window_ns: u64,
     pub(super) recent_event_txn_keys: HashMap<String, u64>,
-    pub(super) suppressed_windows_sensor_pids: HashMap<u32, u64>,
+    pub(super) suppressed_internal_process_pids: HashMap<u32, u64>,
     pub(super) file_event_coalesce_key_limit: usize,
     pub(super) event_txn_coalesce_key_limit: usize,
     pub(super) strict_budget_mode: bool,
@@ -130,6 +131,20 @@ pub struct AgentRuntime {
 
 impl AgentRuntime {
     pub fn new(config: AgentConfig) -> Result<Self> {
+        if let Some(bundle_public_key) = config
+            .detection_bundle_public_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|key| key.len() == 64)
+        {
+            #[allow(unused_unsafe)]
+            unsafe {
+                std::env::set_var("EGUARD_RULE_BUNDLE_PUBKEY", bundle_public_key);
+            }
+        }
+
+        let host_mem_total_bytes = linux_host_mem_total_bytes();
+        let low_memory_host = host_is_low_memory(host_mem_total_bytes);
         let detection_shards = resolve_detection_shard_count();
         let bundle_path = config.detection_bundle_path.clone();
         let ransomware_policy = build_ransomware_policy(&config);
@@ -198,7 +213,7 @@ impl AgentRuntime {
             .unwrap_or_default();
         let compliance_grace_state = HashMap::new();
         let ebpf_engine = init_ebpf_engine();
-        let mut enrichment_cache = EnrichmentCache::default();
+        let mut enrichment_cache = build_enrichment_cache(low_memory_host);
 
         let file_event_coalesce_window_ms = std::env::var("EGUARD_FILE_EVENT_COALESCE_WINDOW_MS")
             .ok()
@@ -208,38 +223,48 @@ impl AgentRuntime {
             .ok()
             .and_then(|raw| raw.trim().parse::<u64>().ok())
             .unwrap_or(0);
-        let file_event_coalesce_key_limit = std::env::var("EGUARD_FILE_EVENT_COALESCE_KEY_LIMIT")
+        let mut file_event_coalesce_key_limit =
+            std::env::var("EGUARD_FILE_EVENT_COALESCE_KEY_LIMIT")
+                .ok()
+                .and_then(|raw| raw.trim().parse::<usize>().ok())
+                .unwrap_or(16_384)
+                .max(512);
+        let mut event_txn_coalesce_key_limit = std::env::var("EGUARD_EVENT_TXN_COALESCE_KEY_LIMIT")
             .ok()
             .and_then(|raw| raw.trim().parse::<usize>().ok())
             .unwrap_or(16_384)
             .max(512);
-        let event_txn_coalesce_key_limit = std::env::var("EGUARD_EVENT_TXN_COALESCE_KEY_LIMIT")
-            .ok()
-            .and_then(|raw| raw.trim().parse::<usize>().ok())
-            .unwrap_or(16_384)
-            .max(512);
-        let strict_budget_pending_threshold =
+        let mut strict_budget_pending_threshold =
             std::env::var("EGUARD_STRICT_BUDGET_PENDING_THRESHOLD")
                 .ok()
                 .and_then(|raw| raw.trim().parse::<usize>().ok())
                 .unwrap_or(512)
                 .max(64);
-        let strict_budget_raw_backlog_threshold =
+        let mut strict_budget_raw_backlog_threshold =
             std::env::var("EGUARD_STRICT_BUDGET_RAW_BACKLOG_THRESHOLD")
                 .ok()
                 .and_then(|raw| raw.trim().parse::<usize>().ok())
                 .unwrap_or(128)
                 .max(32);
-        let raw_event_backlog_cap = std::env::var("EGUARD_RAW_EVENT_BACKLOG_CAP")
+        let mut raw_event_backlog_cap = std::env::var("EGUARD_RAW_EVENT_BACKLOG_CAP")
             .ok()
             .and_then(|raw| raw.trim().parse::<usize>().ok())
             .unwrap_or(4_096)
             .max(256);
-        let raw_event_ingest_cap = std::env::var("EGUARD_RAW_EVENT_INGEST_CAP")
+        let mut raw_event_ingest_cap = std::env::var("EGUARD_RAW_EVENT_INGEST_CAP")
             .ok()
             .and_then(|raw| raw.trim().parse::<usize>().ok())
             .unwrap_or(1_024)
             .clamp(128, raw_event_backlog_cap);
+        apply_low_memory_runtime_budget(
+            low_memory_host,
+            &mut file_event_coalesce_key_limit,
+            &mut event_txn_coalesce_key_limit,
+            &mut strict_budget_pending_threshold,
+            &mut strict_budget_raw_backlog_threshold,
+            &mut raw_event_backlog_cap,
+            &mut raw_event_ingest_cap,
+        );
         let response_action_dedupe_window_secs =
             std::env::var("EGUARD_RESPONSE_ACTION_DEDUPE_WINDOW_SECS")
                 .ok()
@@ -259,6 +284,19 @@ impl AgentRuntime {
             .ok()
             .and_then(|raw| raw.trim().parse::<u64>().ok())
             .unwrap_or(1_200);
+        if low_memory_host {
+            info!(
+                mem_total_bytes = host_mem_total_bytes.unwrap_or_default(),
+                detection_shards,
+                raw_event_backlog_cap,
+                raw_event_ingest_cap,
+                strict_budget_pending_threshold,
+                strict_budget_raw_backlog_threshold,
+                file_event_coalesce_key_limit,
+                event_txn_coalesce_key_limit,
+                "applying low-memory runtime budget profile"
+            );
+        }
         enrichment_cache.set_hash_finalize_delay_ms(hash_finalize_delay_ms);
         enrichment_cache.set_expensive_check_exclusions(
             expensive_check_excluded_paths.clone(),
@@ -417,7 +455,7 @@ impl AgentRuntime {
             file_event_coalesce_window_ns: file_event_coalesce_window_ms.saturating_mul(1_000_000),
             event_txn_coalesce_window_ns: event_txn_coalesce_window_ms.saturating_mul(1_000_000),
             recent_event_txn_keys: HashMap::new(),
-            suppressed_windows_sensor_pids: HashMap::new(),
+            suppressed_internal_process_pids: HashMap::new(),
             file_event_coalesce_key_limit,
             event_txn_coalesce_key_limit,
             strict_budget_mode: false,
@@ -660,4 +698,135 @@ fn parse_csv_env(name: &str) -> Vec<String> {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default()
+}
+
+const LOW_MEMORY_ENRICHMENT_PROCESS_CACHE_ENTRIES: usize = 256;
+const LOW_MEMORY_ENRICHMENT_FILE_HASH_ENTRIES: usize = 2_048;
+const LOW_MEMORY_FILE_EVENT_COALESCE_KEY_LIMIT: usize = 4_096;
+const LOW_MEMORY_EVENT_TXN_COALESCE_KEY_LIMIT: usize = 4_096;
+const LOW_MEMORY_STRICT_BUDGET_PENDING_THRESHOLD: usize = 256;
+const LOW_MEMORY_STRICT_BUDGET_RAW_BACKLOG_THRESHOLD: usize = 64;
+const LOW_MEMORY_RAW_EVENT_BACKLOG_CAP: usize = 1_024;
+const LOW_MEMORY_RAW_EVENT_INGEST_CAP: usize = 256;
+
+fn enrichment_cache_limits(low_memory_host: bool) -> (usize, usize) {
+    if low_memory_host {
+        (
+            LOW_MEMORY_ENRICHMENT_PROCESS_CACHE_ENTRIES,
+            LOW_MEMORY_ENRICHMENT_FILE_HASH_ENTRIES,
+        )
+    } else {
+        (500, 10_000)
+    }
+}
+
+fn build_enrichment_cache(low_memory_host: bool) -> EnrichmentCache {
+    let (process_entries, file_hash_entries) = enrichment_cache_limits(low_memory_host);
+    EnrichmentCache::new(process_entries, file_hash_entries)
+}
+
+fn apply_low_memory_runtime_budget(
+    low_memory_host: bool,
+    file_event_coalesce_key_limit: &mut usize,
+    event_txn_coalesce_key_limit: &mut usize,
+    strict_budget_pending_threshold: &mut usize,
+    strict_budget_raw_backlog_threshold: &mut usize,
+    raw_event_backlog_cap: &mut usize,
+    raw_event_ingest_cap: &mut usize,
+) {
+    if !low_memory_host {
+        *raw_event_ingest_cap = (*raw_event_ingest_cap).clamp(128, *raw_event_backlog_cap);
+        return;
+    }
+
+    *file_event_coalesce_key_limit = (*file_event_coalesce_key_limit)
+        .min(LOW_MEMORY_FILE_EVENT_COALESCE_KEY_LIMIT)
+        .max(512);
+    *event_txn_coalesce_key_limit = (*event_txn_coalesce_key_limit)
+        .min(LOW_MEMORY_EVENT_TXN_COALESCE_KEY_LIMIT)
+        .max(512);
+    *strict_budget_pending_threshold = (*strict_budget_pending_threshold)
+        .min(LOW_MEMORY_STRICT_BUDGET_PENDING_THRESHOLD)
+        .max(64);
+    *strict_budget_raw_backlog_threshold = (*strict_budget_raw_backlog_threshold)
+        .min(LOW_MEMORY_STRICT_BUDGET_RAW_BACKLOG_THRESHOLD)
+        .max(32);
+    *raw_event_backlog_cap = (*raw_event_backlog_cap)
+        .min(LOW_MEMORY_RAW_EVENT_BACKLOG_CAP)
+        .max(256);
+    *raw_event_ingest_cap = (*raw_event_ingest_cap)
+        .min(LOW_MEMORY_RAW_EVENT_INGEST_CAP)
+        .clamp(128, *raw_event_backlog_cap);
+}
+
+#[cfg(test)]
+mod runtime_budget_tests {
+    use super::{
+        apply_low_memory_runtime_budget, enrichment_cache_limits,
+        LOW_MEMORY_ENRICHMENT_FILE_HASH_ENTRIES, LOW_MEMORY_ENRICHMENT_PROCESS_CACHE_ENTRIES,
+    };
+
+    #[test]
+    fn low_memory_budget_clamps_runtime_caps() {
+        let mut file_keys = 16_384usize;
+        let mut txn_keys = 16_384usize;
+        let mut pending_threshold = 512usize;
+        let mut raw_threshold = 128usize;
+        let mut backlog_cap = 4_096usize;
+        let mut ingest_cap = 1_024usize;
+
+        apply_low_memory_runtime_budget(
+            true,
+            &mut file_keys,
+            &mut txn_keys,
+            &mut pending_threshold,
+            &mut raw_threshold,
+            &mut backlog_cap,
+            &mut ingest_cap,
+        );
+
+        assert_eq!(file_keys, 4_096);
+        assert_eq!(txn_keys, 4_096);
+        assert_eq!(pending_threshold, 256);
+        assert_eq!(raw_threshold, 64);
+        assert_eq!(backlog_cap, 1_024);
+        assert_eq!(ingest_cap, 256);
+    }
+
+    #[test]
+    fn low_memory_budget_preserves_existing_stricter_caps() {
+        let mut file_keys = 1_024usize;
+        let mut txn_keys = 2_048usize;
+        let mut pending_threshold = 128usize;
+        let mut raw_threshold = 48usize;
+        let mut backlog_cap = 512usize;
+        let mut ingest_cap = 192usize;
+
+        apply_low_memory_runtime_budget(
+            true,
+            &mut file_keys,
+            &mut txn_keys,
+            &mut pending_threshold,
+            &mut raw_threshold,
+            &mut backlog_cap,
+            &mut ingest_cap,
+        );
+
+        assert_eq!(file_keys, 1_024);
+        assert_eq!(txn_keys, 2_048);
+        assert_eq!(pending_threshold, 128);
+        assert_eq!(raw_threshold, 48);
+        assert_eq!(backlog_cap, 512);
+        assert_eq!(ingest_cap, 192);
+    }
+
+    #[test]
+    fn low_memory_hosts_use_smaller_enrichment_caches() {
+        let small = enrichment_cache_limits(true);
+        let full = enrichment_cache_limits(false);
+        assert_eq!(small.0, LOW_MEMORY_ENRICHMENT_PROCESS_CACHE_ENTRIES);
+        assert_eq!(small.1, LOW_MEMORY_ENRICHMENT_FILE_HASH_ENTRIES);
+        assert!(full.0 > small.0);
+        assert!(full.1 > small.1);
+    }
 }

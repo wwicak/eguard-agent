@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use detection::DetectionOutcome;
 use tracing::{info, warn};
 
 use super::{
@@ -104,12 +105,21 @@ impl AgentRuntime {
         let action = self.sanitize_planned_action_for_event(
             evaluation.action,
             &evaluation.detection_event,
+            &evaluation.detection_outcome,
         );
-        if matches!(action, super::PlannedAction::AlertOnly | super::PlannedAction::None) {
+        if matches!(
+            action,
+            super::PlannedAction::AlertOnly | super::PlannedAction::None
+        ) {
             return;
         }
 
-        if !self.should_enqueue_response_action(now_unix, action, &evaluation.event_txn.key, "primary") {
+        if !self.should_enqueue_response_action(
+            now_unix,
+            action,
+            &evaluation.event_txn.key,
+            "primary",
+        ) {
             return;
         }
 
@@ -230,8 +240,15 @@ impl AgentRuntime {
         rule_name: &str,
         threat_category: &str,
     ) {
-        let action = self.sanitize_planned_action_for_event(action, &evaluation.detection_event);
-        if matches!(action, super::PlannedAction::AlertOnly | super::PlannedAction::None) {
+        let action = self.sanitize_planned_action_for_event(
+            action,
+            &evaluation.detection_event,
+            &evaluation.detection_outcome,
+        );
+        if matches!(
+            action,
+            super::PlannedAction::AlertOnly | super::PlannedAction::None
+        ) {
             return;
         }
 
@@ -270,8 +287,9 @@ impl AgentRuntime {
         &self,
         action: super::PlannedAction,
         event: &detection::TelemetryEvent,
+        outcome: &DetectionOutcome,
     ) -> super::PlannedAction {
-        if self.event_supports_quarantine(event) {
+        if self.event_supports_quarantine(event, outcome) {
             return action;
         }
 
@@ -282,20 +300,25 @@ impl AgentRuntime {
         }
     }
 
-    fn event_supports_quarantine(&self, event: &detection::TelemetryEvent) -> bool {
+    fn event_supports_quarantine(
+        &self,
+        event: &detection::TelemetryEvent,
+        outcome: &DetectionOutcome,
+    ) -> bool {
         let Some(path) = event.file_path.as_deref() else {
             return false;
         };
-        if !event.file_write {
-            return false;
-        }
 
         let path = Path::new(path);
         if !path.is_absolute() || self.protected.is_protected_path(path) {
             return false;
         }
 
-        !is_linux_runtime_or_pseudo_path(path)
+        if is_linux_runtime_or_pseudo_path(path) {
+            return false;
+        }
+
+        event.file_write || outcome.signals.z1_exact_ioc
     }
 
     fn execute_playbook_isolate(&mut self, evaluation: &TickEvaluation, now_unix: i64) {
@@ -482,7 +505,7 @@ fn is_linux_runtime_or_pseudo_path(path: &Path) -> bool {
 mod tests {
     use super::*;
     use crate::config::AgentConfig;
-    use detection::{EventClass, TelemetryEvent};
+    use detection::{DetectionOutcome, EventClass, TelemetryEvent};
 
     fn runtime() -> AgentRuntime {
         let mut cfg = AgentConfig::default();
@@ -642,6 +665,7 @@ mod tests {
             runtime.sanitize_planned_action_for_event(
                 super::super::PlannedAction::QuarantineOnly,
                 &event,
+                &DetectionOutcome::default(),
             ),
             super::super::PlannedAction::AlertOnly
         );
@@ -660,6 +684,7 @@ mod tests {
             runtime.sanitize_planned_action_for_event(
                 super::super::PlannedAction::KillAndQuarantine,
                 &event,
+                &DetectionOutcome::default(),
             ),
             super::super::PlannedAction::KillOnly
         );
@@ -678,6 +703,7 @@ mod tests {
             runtime.sanitize_planned_action_for_event(
                 super::super::PlannedAction::QuarantineOnly,
                 &event,
+                &DetectionOutcome::default(),
             ),
             super::super::PlannedAction::QuarantineOnly
         );
@@ -692,8 +718,30 @@ mod tests {
             runtime.sanitize_planned_action_for_event(
                 super::super::PlannedAction::QuarantineOnly,
                 &event,
+                &DetectionOutcome::default(),
             ),
             super::super::PlannedAction::AlertOnly
+        );
+    }
+
+    #[test]
+    fn quarantine_only_is_retained_for_read_only_exact_ioc_file() {
+        let runtime = runtime();
+        let event = quarantine_event(
+            "/tmp/platinum_exact_ioc_read_quarantine_test.txt",
+            false,
+            EventClass::FileOpen,
+        );
+        let mut outcome = DetectionOutcome::default();
+        outcome.signals.z1_exact_ioc = true;
+
+        assert_eq!(
+            runtime.sanitize_planned_action_for_event(
+                super::super::PlannedAction::QuarantineOnly,
+                &event,
+                &outcome,
+            ),
+            super::super::PlannedAction::QuarantineOnly
         );
     }
 }

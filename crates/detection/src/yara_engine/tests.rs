@@ -142,9 +142,63 @@ fn yara_scanning_skips_pseudo_and_non_regular_paths() {
     assert!(is_scannable_regular_file(&regular));
     assert!(!is_scannable_regular_file(Path::new("/dev/null")));
     assert!(!is_scannable_regular_file(Path::new("/proc/self/stat")));
-    assert!(!is_scannable_regular_file(Path::new("/sys/kernel/uevent_seqnum")));
+    assert!(!is_scannable_regular_file(Path::new(
+        "/sys/kernel/uevent_seqnum"
+    )));
 
     let _ = std::fs::remove_dir_all(tmp_dir);
+}
+
+#[test]
+fn yara_process_exec_skips_system_binary_paths() {
+    let src = r#"
+rule elf_marker {
+  strings:
+    $a = "ELF"
+  condition:
+    $a
+}
+"#;
+
+    let mut engine = YaraEngine::new();
+    let loaded = engine.load_rules_str(src).expect("load rules");
+    assert_eq!(loaded, 1);
+
+    let event = TelemetryEvent {
+        ts_unix: 1,
+        event_class: crate::EventClass::ProcessExec,
+        pid: 1,
+        ppid: 0,
+        uid: 0,
+        process: "cat".to_string(),
+        parent_process: "bash".to_string(),
+        session_id: 0,
+        file_path: Some("/usr/bin/cat".to_string()),
+        file_write: false,
+        file_hash: None,
+        dst_port: None,
+        dst_ip: None,
+        dst_domain: None,
+        command_line: Some("cat /tmp/payload".to_string()),
+        event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
+    };
+
+    let hits = engine.scan_event(&event);
+    assert!(hits.is_empty());
+}
+
+#[test]
+fn yara_default_exclusions_cover_runtime_cache_and_journal_paths() {
+    let engine = YaraEngine::new();
+
+    assert!(engine.is_excluded_path("/etc/ld.so.cache"));
+    assert!(
+        engine.is_excluded_path("/var/log/journal/5d3dc8654c993f8c581dbff93588b35f/system.journal")
+    );
 }
 
 #[cfg(feature = "yara-rust")]

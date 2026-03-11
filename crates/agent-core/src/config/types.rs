@@ -44,6 +44,7 @@ pub struct AgentConfig {
     pub detection_yara_rules_dir: String,
     pub detection_ioc_dir: String,
     pub detection_bundle_path: String,
+    pub detection_bundle_public_key: Option<String>,
     pub detection_scan_on_create: bool,
     pub detection_max_file_scan_size_mb: usize,
     pub detection_memory_scan_enabled: bool,

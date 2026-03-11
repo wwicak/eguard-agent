@@ -45,6 +45,7 @@ fn clear_env() {
         "EGUARD_TLS_CA_PIN_PATH",
         "EGUARD_TLS_ROTATE_BEFORE_DAYS",
         "EGUARD_POLICY_REFRESH_INTERVAL_SECS",
+        "EGUARD_RULE_BUNDLE_PUBKEY",
         "EGUARD_MACHINE_ID_PATH",
         "EGUARD_CONFIG_TPM2_SEAL",
         "EGUARD_CONFIG_KEY_SEED_PATH",
@@ -80,7 +81,7 @@ fn file_config_is_loaded() {
     let mut f = std::fs::File::create(&path).expect("create file");
     writeln!(
             f,
-            "[agent]\nserver_addr=\"10.0.0.1:50052\"\nmode=\"active\"\n[transport]\nmode=\"grpc\"\n[response]\nautonomous_response=true\ndry_run=true\n[response.high]\nkill=true\nquarantine=false\ncapture_script=true\n[response.rate_limit]\nmax_kills_per_minute=21\n[response.auto_isolation]\nenabled=true\nmin_incidents_in_window=4\nwindow_secs=180\nmax_isolations_per_hour=6\n[storage]\nbackend=\"memory\"\ncap_mb=10"
+            "[agent]\nserver_addr=\"10.0.0.1:50052\"\nmode=\"active\"\n[transport]\nmode=\"grpc\"\n[response]\nautonomous_response=true\ndry_run=true\n[response.high]\nkill=true\nquarantine=false\ncapture_script=true\n[response.rate_limit]\nmax_kills_per_minute=21\n[response.auto_isolation]\nenabled=true\nmin_incidents_in_window=4\nwindow_secs=180\nmax_isolations_per_hour=6\n[storage]\nbackend=\"memory\"\ncap_mb=10\n[detection]\nbundle_public_key=\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\""
         )
         .expect("write file");
 
@@ -100,6 +101,10 @@ fn file_config_is_loaded() {
     assert_eq!(cfg.response.auto_isolation.window_secs, 180);
     assert_eq!(cfg.response.auto_isolation.max_isolations_per_hour, 6);
     assert_eq!(cfg.transport_mode, "grpc");
+    assert_eq!(
+        cfg.detection_bundle_public_key.as_deref(),
+        Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+    );
     assert_eq!(cfg.offline_buffer_backend, "memory");
     assert_eq!(cfg.offline_buffer_cap_bytes, 10 * 1024 * 1024);
 

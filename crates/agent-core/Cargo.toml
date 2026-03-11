@@ -29,7 +29,7 @@ arc-swap = "1"
 x509-parser = "0.16"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-platform-linux = { path = "../platform-linux" }
+platform-linux = { path = "../platform-linux", features = ["ebpf-libbpf"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 platform-windows = { path = "../platform-windows" }

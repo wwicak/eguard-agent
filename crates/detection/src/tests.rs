@@ -512,7 +512,10 @@ detection:
     e1.pid = 7400;
     e1.session_id = 7400;
     let out1 = engine.process_event(&e1);
-    assert!(!out1.temporal_hits.iter().any(|h| h == "eguard_builtin_persistence"));
+    assert!(!out1
+        .temporal_hits
+        .iter()
+        .any(|h| h == "eguard_builtin_persistence"));
 
     let mut e2 = event(30, EventClass::FileOpen, "systemctl", "bash", 0);
     e2.pid = 7400;
@@ -520,7 +523,10 @@ detection:
     e2.file_path = Some("/usr/lib64/systemd/libsystemd-shared.so".to_string());
     e2.file_write = false;
     let out2 = engine.process_event(&e2);
-    assert!(!out2.temporal_hits.iter().any(|h| h == "eguard_builtin_persistence"));
+    assert!(!out2
+        .temporal_hits
+        .iter()
+        .any(|h| h == "eguard_builtin_persistence"));
 
     let mut e3 = event(35, EventClass::FileOpen, "systemctl", "bash", 0);
     e3.pid = 7400;
@@ -528,7 +534,10 @@ detection:
     e3.file_path = Some("/etc/systemd/system/evil.service".to_string());
     e3.file_write = true;
     let out3 = engine.process_event(&e3);
-    assert!(out3.temporal_hits.iter().any(|h| h == "eguard_builtin_persistence"));
+    assert!(out3
+        .temporal_hits
+        .iter()
+        .any(|h| h == "eguard_builtin_persistence"));
 }
 
 #[test]
@@ -1935,7 +1944,10 @@ fn exploit_indicator_ignores_proc_self_fd_runtime_artifacts() {
 
     let out = engine.process_event(&ev);
     assert!(!out.signals.exploit_indicator);
-    assert!(!out.exploit_indicators.iter().any(|v| v == "fileless_procfd"));
+    assert!(!out
+        .exploit_indicators
+        .iter()
+        .any(|v| v == "fileless_procfd"));
 }
 
 #[test]
@@ -2246,6 +2258,37 @@ detection:
 }
 
 #[test]
+fn legacy_sigma_keyword_only_rule_without_extractable_constraints_is_rejected() {
+    let sigma_yaml = r#"
+title: Binary Padding - Linux
+logsource:
+  product: linux
+  service: auditd
+detection:
+  selection_execve:
+    type: 'EXECVE'
+  keywords_truncate:
+    '|all':
+      - 'truncate'
+      - '-s'
+  keywords_dd:
+    '|all':
+      - 'dd'
+      - 'if='
+  keywords_filter:
+    - 'of='
+  condition: selection_execve and (keywords_truncate or (keywords_dd and not keywords_filter))
+"#;
+
+    let err = compile_sigma_ast(sigma_yaml)
+        .expect_err("keyword-only legacy sigma without usable constraints must be rejected");
+    assert!(
+        matches!(err, SigmaCompileError::UnsupportedEventClass(ref reason) if reason == "legacy_sigma_unmappable"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
 fn yara_rule_match_escalates_to_definite() {
     let mut engine = DetectionEngine::default_with_rules();
     engine
@@ -2285,6 +2328,85 @@ rule suspicious_payload {
         .iter()
         .any(|hit| hit.rule_name == "suspicious_payload"));
     let _ = std::fs::remove_dir_all(tmp_dir);
+}
+
+#[test]
+fn exact_ioc_file_match_preserves_yara_hits_for_known_malware() {
+    let mut engine = DetectionEngine::default_with_rules();
+    engine.layer1.load_hashes([
+        "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f".to_string(),
+    ]);
+    engine
+        .load_yara_rules_str(
+            r#"
+rule eicar_signature {
+  strings:
+    $eicar = "X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
+  condition:
+    $eicar
+}
+"#,
+        )
+        .expect("load eicar yara rule");
+
+    let tmp_dir = std::env::temp_dir().join(format!(
+        "eguard-eicar-marker-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    std::fs::create_dir_all(&tmp_dir).unwrap();
+    let eicar_file = tmp_dir.join("eicar.com");
+    std::fs::write(
+        &eicar_file,
+        b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*",
+    )
+    .unwrap();
+
+    let mut ev = event(3, EventClass::FileOpen, "bash", "sshd", 1000);
+    ev.file_path = Some(eicar_file.display().to_string());
+    ev.file_hash =
+        Some("275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f".to_string());
+
+    let out = engine.process_event(&ev);
+
+    assert_eq!(out.confidence, Confidence::Definite);
+    assert!(out.signals.z1_exact_ioc);
+    assert!(out.signals.yara_hit);
+    assert!(out.temporal_hits.is_empty());
+    assert!(out
+        .yara_hits
+        .iter()
+        .any(|hit| hit.rule_name == "eicar_signature"));
+
+    let _ = std::fs::remove_dir_all(tmp_dir);
+}
+
+#[test]
+fn process_exec_system_binary_does_not_surface_yara_hits() {
+    let mut engine = DetectionEngine::default_with_rules();
+    engine
+        .load_yara_rules_str(
+            r#"
+rule elf_marker {
+  strings:
+    $a = "ELF"
+  condition:
+    $a
+}
+"#,
+        )
+        .expect("load yara rules");
+
+    let mut ev = event(4, EventClass::ProcessExec, "cat", "bash", 0);
+    ev.file_path = Some("/usr/bin/cat".to_string());
+    ev.command_line = Some("cat /home/agent/eicar_exact_quiet.com >/dev/null".to_string());
+
+    let out = engine.process_event(&ev);
+
+    assert!(out.yara_hits.is_empty());
+    assert!(!out.signals.yara_hit);
 }
 
 #[test]
@@ -3679,11 +3801,49 @@ fn confidence_policy_escalates_to_very_high_on_two_high_grade_signals() {
 #[cfg_attr(miri, ignore = "sqlite FFI is unsupported under miri")]
 fn layer1_prefilter_negative_short_circuits_to_clean() {
     let mut l1 = IocLayer1::new();
-    let store = IocExactStore::in_memory().expect("in-memory sqlite store");
+    let mut store = IocExactStore::in_memory().expect("in-memory sqlite store");
     store
         .load_hashes(["hash-only-in-store".to_string()])
         .expect("load sqlite hash");
     l1.set_exact_store(store);
 
     assert_eq!(l1.check_hash("hash-only-in-store"), Layer1Result::Clean);
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "sqlite FFI is unsupported under miri")]
+fn layer1_exact_store_only_matches_without_prefilter() {
+    let mut l1 = IocLayer1::new();
+    let store = IocExactStore::in_memory().expect("in-memory sqlite store");
+    l1.enable_exact_store_only(store);
+    l1.load_hashes(["hash-only-in-store".to_string()]);
+    l1.load_domains(["bad.example".to_string()]);
+    l1.load_ips(["2001:db8::1".to_string()]);
+
+    assert_eq!(
+        l1.check_hash("hash-only-in-store"),
+        Layer1Result::ExactMatch
+    );
+    assert_eq!(l1.check_domain("api.bad.example"), Layer1Result::ExactMatch);
+    assert_eq!(l1.check_ip("2001:db8::1"), Layer1Result::ExactMatch);
+    assert_eq!(l1.check_hash("missing"), Layer1Result::Clean);
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "sqlite FFI is unsupported under miri")]
+fn ephemeral_exact_store_file_is_removed_on_drop() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("ioc-exact-store.sqlite");
+    {
+        let mut store = IocExactStore::open_ephemeral(&path).expect("open ephemeral sqlite store");
+        store
+            .load_hashes(["deadbeef".to_string()])
+            .expect("load sqlite hash");
+        assert!(path.exists(), "ephemeral store should exist while open");
+    }
+
+    assert!(
+        !path.exists(),
+        "ephemeral store should be removed once the owning engine/store drops"
+    );
 }

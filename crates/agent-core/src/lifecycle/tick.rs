@@ -1,10 +1,11 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use tracing::{debug, info, warn};
 
 use nac::posture_from_compliance;
 use response::plan_action;
+use tokio::time::timeout;
 
 use crate::platform::enrich_event_with_cache;
 
@@ -16,6 +17,8 @@ use super::{
 };
 
 impl AgentRuntime {
+    const DEGRADED_RECOVERY_PROBE_TIMEOUT_MS: u64 = 750;
+
     pub async fn tick(&mut self, now_unix: i64) -> Result<()> {
         let tick_started = Instant::now();
         self.reset_tick_stage_metrics();
@@ -186,7 +189,11 @@ impl AgentRuntime {
         let degraded_started = Instant::now();
         self.client.set_online(false);
 
+        // Local containment must continue even when delivery to the server is degraded.
+        self.run_connected_response_stage(now_unix, evaluation)
+            .await;
         self.buffer_degraded_telemetry_if_present(evaluation)?;
+        self.drive_async_workers();
         self.run_degraded_control_plane_stage(now_unix, evaluation)
             .await;
         self.drive_async_workers();
@@ -224,7 +231,19 @@ impl AgentRuntime {
         let compliance_status = evaluation
             .map(|eval| eval.compliance.status.as_str())
             .unwrap_or("unknown");
-        self.probe_server_recovery(compliance_status).await;
+        if timeout(
+            Duration::from_millis(Self::DEGRADED_RECOVERY_PROBE_TIMEOUT_MS),
+            self.probe_server_recovery(compliance_status),
+        )
+        .await
+        .is_err()
+        {
+            self.client.set_online(false);
+            warn!(
+                timeout_ms = Self::DEGRADED_RECOVERY_PROBE_TIMEOUT_MS,
+                "degraded probe timed out"
+            );
+        }
     }
 
     fn should_probe_server_recovery(&self, now_unix: i64) -> bool {
@@ -328,5 +347,157 @@ impl AgentRuntime {
             return "ip";
         }
         "domain"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{AgentConfig, AgentMode};
+    use crate::lifecycle::shared_env_var_lock;
+    use compliance::ComplianceResult;
+    use detection::{Confidence, DetectionOutcome, DetectionSignals, EventClass, TelemetryEvent};
+    use grpc_client::EventEnvelope;
+    use response::PlannedAction;
+
+    fn new_runtime() -> AgentRuntime {
+        let mut cfg = AgentConfig::default();
+        cfg.offline_buffer_backend = "memory".to_string();
+        cfg.server_addr = "127.0.0.1:1".to_string();
+        cfg.self_protection_integrity_check_interval_secs = 0;
+        AgentRuntime::new(cfg).expect("runtime")
+    }
+
+    fn degraded_kill_evaluation(pid: u32, now_unix: i64) -> TickEvaluation {
+        let detection_event = TelemetryEvent {
+            ts_unix: now_unix,
+            event_class: EventClass::ProcessExec,
+            pid,
+            ppid: 42_000,
+            uid: 1000,
+            process: "sleep".to_string(),
+            parent_process: "bash".to_string(),
+            session_id: 42_000,
+            file_path: Some("/usr/bin/sleep".to_string()),
+            file_write: false,
+            file_hash: None,
+            dst_port: None,
+            dst_ip: None,
+            dst_domain: None,
+            command_line: Some("sleep 30".to_string()),
+            event_size: None,
+            container_runtime: Some("host".to_string()),
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        };
+        let mut detection_outcome = DetectionOutcome::default();
+        detection_outcome.confidence = Confidence::High;
+        detection_outcome.signals = DetectionSignals::default();
+        TickEvaluation {
+            detection_event: detection_event.clone(),
+            detection_outcome,
+            confidence: Confidence::High,
+            action: PlannedAction::KillOnly,
+            compliance: ComplianceResult {
+                status: "ok".to_string(),
+                detail: "ok".to_string(),
+                checks: Vec::new(),
+            },
+            event_txn: super::super::EventTxn {
+                event_class: detection_event.event_class.as_str().to_string(),
+                operation: "process_exec".to_string(),
+                subject: detection_event.file_path.clone(),
+                object: None,
+                pid: detection_event.pid,
+                uid: detection_event.uid,
+                session_id: detection_event.session_id,
+                ts_unix: now_unix,
+                key: format!(
+                    "process_exec|process_exec|{}|-|pid:{}|sid:{}",
+                    detection_event.file_path.as_deref().unwrap_or_default(),
+                    detection_event.pid,
+                    detection_event.session_id
+                ),
+            },
+            event_envelope: EventEnvelope {
+                agent_id: "agent-test".to_string(),
+                event_type: "process_exec".to_string(),
+                severity: "high".to_string(),
+                rule_name: "offline_kill_test".to_string(),
+                payload_json: "{}".to_string(),
+                created_at_unix: now_unix,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn degraded_tick_executes_local_response_and_preserves_response_report_queue() {
+        let _env_guard = shared_env_var_lock().lock().expect("env var lock");
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn disposable child");
+
+        let mut runtime = new_runtime();
+        let now_unix = 1_700_000_100;
+        runtime.runtime_mode = AgentMode::Degraded;
+        runtime.last_recovery_probe_unix = Some(now_unix);
+
+        let evaluation = degraded_kill_evaluation(child.id(), now_unix);
+        runtime
+            .handle_degraded_tick(now_unix, Some(&evaluation))
+            .await
+            .expect("degraded tick");
+
+        let exit_status = child.wait().expect("wait for child");
+        assert!(
+            !exit_status.success(),
+            "child should be terminated by local degraded response"
+        );
+        assert_eq!(
+            runtime.pending_response_reports.len(),
+            1,
+            "offline response report should stay queued until connectivity returns"
+        );
+        assert_eq!(runtime.buffer.pending_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn degraded_recovery_probe_timeout_does_not_wedge_tick_progress() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind hanging server");
+        let addr = listener.local_addr().expect("listener addr");
+        let server = tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.expect("accept client");
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+
+        let mut cfg = AgentConfig::default();
+        cfg.transport_mode = "http".to_string();
+        cfg.server_addr = addr.to_string();
+        cfg.offline_buffer_backend = "memory".to_string();
+        cfg.self_protection_integrity_check_interval_secs = 0;
+
+        let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+        let now_unix = 1_700_000_200;
+        runtime.runtime_mode = AgentMode::Degraded;
+
+        let started = Instant::now();
+        runtime
+            .handle_degraded_tick(now_unix, None)
+            .await
+            .expect("degraded tick");
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "degraded recovery probe should stay bounded, elapsed={elapsed:?}"
+        );
+        assert!(matches!(runtime.runtime_mode, AgentMode::Degraded));
+        assert_eq!(runtime.last_recovery_probe_unix, Some(now_unix));
+
+        server.abort();
     }
 }

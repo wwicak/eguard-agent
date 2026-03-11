@@ -1,5 +1,9 @@
 use std::collections::HashSet;
+use std::io::BufRead;
 use std::net::IpAddr;
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
+use std::path::{Path, PathBuf};
 
 use aho_corasick::AhoCorasick;
 use rusqlite::{params, Connection};
@@ -7,6 +11,7 @@ use rusqlite::{params, Connection};
 use crate::types::TelemetryEvent;
 
 pub(crate) const PREFILTER_MAX_LOAD_FACTOR: f64 = 0.95;
+const EXACT_STORE_INSERT_CHUNK_SIZE: usize = 50_000;
 
 #[cfg(all(test, not(miri)))]
 pub(crate) fn cuckoo_false_positive_rate(bucket_size: u32, fingerprint_bits: u32) -> f64 {
@@ -32,6 +37,20 @@ fn normalize_ip_for_matching(raw: &str) -> String {
     raw.parse::<IpAddr>()
         .map(|ip| ip.to_string())
         .unwrap_or_else(|_| raw.to_ascii_lowercase())
+}
+
+fn parse_ioc_line(line: &str) -> Option<&str> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        return None;
+    }
+
+    let indicator = trimmed.split('#').next().unwrap_or(trimmed).trim();
+    if indicator.is_empty() {
+        None
+    } else {
+        Some(indicator)
+    }
 }
 
 fn domain_suffix_candidates(domain: &str) -> Vec<&str> {
@@ -124,7 +143,9 @@ impl Default for Layer1EventHit {
 }
 
 pub struct IocExactStore {
-    conn: Connection,
+    conn: Option<Connection>,
+    path: Option<PathBuf>,
+    delete_on_drop: bool,
 }
 
 impl std::fmt::Debug for IocExactStore {
@@ -136,20 +157,36 @@ impl std::fmt::Debug for IocExactStore {
 impl IocExactStore {
     pub fn in_memory() -> rusqlite::Result<Self> {
         let conn = Connection::open_in_memory()?;
-        let store = Self { conn };
+        let store = Self {
+            conn: Some(conn),
+            path: None,
+            delete_on_drop: false,
+        };
         store.init_schema()?;
         Ok(store)
     }
 
     pub fn open(path: &str) -> rusqlite::Result<Self> {
+        Self::open_internal(Path::new(path), false)
+    }
+
+    pub fn open_ephemeral(path: &Path) -> rusqlite::Result<Self> {
+        Self::open_internal(path, true)
+    }
+
+    fn open_internal(path: &Path, delete_on_drop: bool) -> rusqlite::Result<Self> {
         let conn = Connection::open(path)?;
-        let store = Self { conn };
+        let store = Self {
+            conn: Some(conn),
+            path: Some(path.to_path_buf()),
+            delete_on_drop,
+        };
         store.init_schema()?;
         Ok(store)
     }
 
     fn init_schema(&self) -> rusqlite::Result<()> {
-        self.conn.execute_batch(
+        self.conn().execute_batch(
             "
             CREATE TABLE IF NOT EXISTS ioc_hashes(hash TEXT PRIMARY KEY);
             CREATE TABLE IF NOT EXISTS ioc_domains(domain TEXT PRIMARY KEY);
@@ -158,68 +195,139 @@ impl IocExactStore {
         )
     }
 
-    pub fn load_hashes<I>(&self, values: I) -> rusqlite::Result<()>
+    pub fn load_hashes<I>(&mut self, values: I) -> rusqlite::Result<()>
     where
         I: IntoIterator<Item = String>,
     {
-        let mut stmt = self
-            .conn
-            .prepare("INSERT OR IGNORE INTO ioc_hashes(hash) VALUES(?1)")?;
-        for v in values {
-            stmt.execute(params![v.to_ascii_lowercase()])?;
-        }
-        Ok(())
+        self.load_chunked(
+            "INSERT OR IGNORE INTO ioc_hashes(hash) VALUES(?1)",
+            values,
+            |v| v.to_ascii_lowercase(),
+        )
     }
 
-    pub fn load_domains<I>(&self, values: I) -> rusqlite::Result<()>
+    pub fn load_domains<I>(&mut self, values: I) -> rusqlite::Result<()>
     where
         I: IntoIterator<Item = String>,
     {
-        let mut stmt = self
-            .conn
-            .prepare("INSERT OR IGNORE INTO ioc_domains(domain) VALUES(?1)")?;
-        for v in values {
-            stmt.execute(params![v.trim_end_matches('.').to_ascii_lowercase()])?;
-        }
-        Ok(())
+        self.load_chunked(
+            "INSERT OR IGNORE INTO ioc_domains(domain) VALUES(?1)",
+            values,
+            |v| v.trim_end_matches('.').to_ascii_lowercase(),
+        )
     }
 
-    pub fn load_ips<I>(&self, values: I) -> rusqlite::Result<()>
+    pub fn load_ips<I>(&mut self, values: I) -> rusqlite::Result<()>
     where
         I: IntoIterator<Item = String>,
     {
-        let mut stmt = self
-            .conn
-            .prepare("INSERT OR IGNORE INTO ioc_ips(ip) VALUES(?1)")?;
-        for v in values {
-            stmt.execute(params![normalize_ip_for_matching(&v)])?;
-        }
-        Ok(())
+        self.load_chunked(
+            "INSERT OR IGNORE INTO ioc_ips(ip) VALUES(?1)",
+            values,
+            |v| normalize_ip_for_matching(&v),
+        )
     }
 
     pub fn contains_hash(&self, hash: &str) -> rusqlite::Result<bool> {
         let mut stmt = self
-            .conn
-            .prepare("SELECT 1 FROM ioc_hashes WHERE hash = ?1 LIMIT 1")?;
+            .conn()
+            .prepare_cached("SELECT 1 FROM ioc_hashes WHERE hash = ?1 LIMIT 1")?;
         let mut rows = stmt.query(params![hash.to_ascii_lowercase()])?;
         Ok(rows.next()?.is_some())
     }
 
     pub fn contains_domain(&self, domain: &str) -> rusqlite::Result<bool> {
         let mut stmt = self
-            .conn
-            .prepare("SELECT 1 FROM ioc_domains WHERE domain = ?1 LIMIT 1")?;
+            .conn()
+            .prepare_cached("SELECT 1 FROM ioc_domains WHERE domain = ?1 LIMIT 1")?;
         let mut rows = stmt.query(params![domain.trim_end_matches('.').to_ascii_lowercase()])?;
         Ok(rows.next()?.is_some())
     }
 
     pub fn contains_ip(&self, ip: &str) -> rusqlite::Result<bool> {
         let mut stmt = self
-            .conn
-            .prepare("SELECT 1 FROM ioc_ips WHERE ip = ?1 LIMIT 1")?;
+            .conn()
+            .prepare_cached("SELECT 1 FROM ioc_ips WHERE ip = ?1 LIMIT 1")?;
         let mut rows = stmt.query(params![normalize_ip_for_matching(ip)])?;
         Ok(rows.next()?.is_some())
     }
+
+    fn conn(&self) -> &Connection {
+        self.conn
+            .as_ref()
+            .expect("IOC exact-store connection is unavailable")
+    }
+
+    fn conn_mut(&mut self) -> &mut Connection {
+        self.conn
+            .as_mut()
+            .expect("IOC exact-store connection is unavailable")
+    }
+
+    fn load_chunked<I, F>(&mut self, sql: &str, values: I, mut normalize: F) -> rusqlite::Result<()>
+    where
+        I: IntoIterator<Item = String>,
+        F: FnMut(String) -> String,
+    {
+        let mut values = values.into_iter().peekable();
+        while values.peek().is_some() {
+            let tx = self.conn_mut().transaction()?;
+            {
+                let mut stmt = tx.prepare(sql)?;
+                for value in values.by_ref().take(EXACT_STORE_INSERT_CHUNK_SIZE) {
+                    stmt.execute(params![normalize(value)])?;
+                }
+            }
+            tx.commit()?;
+            self.release_page_cache();
+        }
+        Ok(())
+    }
+
+    fn release_page_cache(&self) {
+        #[cfg(unix)]
+        {
+            let Some(path) = self.path.as_ref() else {
+                return;
+            };
+            let Ok(file) = std::fs::File::open(path) else {
+                return;
+            };
+            let _ =
+                unsafe { libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED) };
+        }
+    }
+}
+
+impl Drop for IocExactStore {
+    fn drop(&mut self) {
+        if let Some(conn) = self.conn.take() {
+            let _ = conn.close();
+        }
+
+        if !self.delete_on_drop {
+            return;
+        }
+
+        let Some(path) = self.path.as_ref() else {
+            return;
+        };
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(sqlite_sidecar_path(path, "-wal"));
+        let _ = std::fs::remove_file(sqlite_sidecar_path(path, "-shm"));
+    }
+}
+
+fn sqlite_sidecar_path(path: &Path, suffix: &str) -> PathBuf {
+    let mut value = path.as_os_str().to_os_string();
+    value.push(suffix);
+    PathBuf::from(value)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IocLookupMode {
+    Prefiltered,
+    ExactStoreOnly,
 }
 
 #[derive(Debug)]
@@ -230,7 +338,9 @@ pub struct IocLayer1 {
     matcher_patterns: Vec<String>,
     matcher: Option<AhoCorasick>,
     exact_store: Option<IocExactStore>,
+    lookup_mode: IocLookupMode,
     prefilter_rebuilds: usize,
+    exact_store_only_entries: usize,
 }
 
 impl IocLayer1 {
@@ -242,7 +352,9 @@ impl IocLayer1 {
             matcher_patterns: Vec::new(),
             matcher: None,
             exact_store: None,
+            lookup_mode: IocLookupMode::Prefiltered,
             prefilter_rebuilds: 0,
+            exact_store_only_entries: 0,
         }
     }
 
@@ -256,52 +368,82 @@ impl IocLayer1 {
         self.exact_store = Some(store);
     }
 
+    pub fn enable_exact_store_only(&mut self, mut store: IocExactStore) {
+        let migrated_entries =
+            self.prefilter_hashes.len() + self.prefilter_domains.len() + self.prefilter_ips.len();
+        if !self.prefilter_hashes.is_empty() {
+            let _ = store.load_hashes(self.prefilter_hashes.iter().cloned());
+        }
+        if !self.prefilter_domains.is_empty() {
+            let _ = store.load_domains(self.prefilter_domains.iter().cloned());
+        }
+        if !self.prefilter_ips.is_empty() {
+            let _ = store.load_ips(self.prefilter_ips.iter().cloned());
+        }
+
+        self.prefilter_hashes.clear();
+        self.prefilter_domains.clear();
+        self.prefilter_ips.clear();
+        self.exact_store = Some(store);
+        self.lookup_mode = IocLookupMode::ExactStoreOnly;
+        self.exact_store_only_entries = migrated_entries;
+    }
+
     pub fn load_hashes<I>(&mut self, values: I)
     where
         I: IntoIterator<Item = String>,
     {
-        let mut copy = Vec::new();
-        for v in values {
-            let normalized = v.to_ascii_lowercase();
-            self.prefilter_hashes.insert(normalized.clone());
-            copy.push(normalized);
-        }
-        rebuild_prefilter_if_needed(&mut self.prefilter_hashes, &mut self.prefilter_rebuilds);
-        if let Some(store) = &self.exact_store {
-            let _ = store.load_hashes(copy);
-        }
+        let _ = self.load_hashes_internal(values);
     }
 
     pub fn load_domains<I>(&mut self, values: I)
     where
         I: IntoIterator<Item = String>,
     {
-        let mut copy = Vec::new();
-        for v in values {
-            let normalized = v.trim_end_matches('.').to_ascii_lowercase();
-            self.prefilter_domains.insert(normalized.clone());
-            copy.push(normalized);
-        }
-        rebuild_prefilter_if_needed(&mut self.prefilter_domains, &mut self.prefilter_rebuilds);
-        if let Some(store) = &self.exact_store {
-            let _ = store.load_domains(copy);
-        }
+        let _ = self.load_domains_internal(values);
     }
 
     pub fn load_ips<I>(&mut self, values: I)
     where
         I: IntoIterator<Item = String>,
     {
-        let mut copy = Vec::new();
-        for v in values {
-            let normalized = normalize_ip_for_matching(&v);
-            self.prefilter_ips.insert(normalized.clone());
-            copy.push(normalized);
-        }
-        rebuild_prefilter_if_needed(&mut self.prefilter_ips, &mut self.prefilter_rebuilds);
-        if let Some(store) = &self.exact_store {
-            let _ = store.load_ips(copy);
-        }
+        let _ = self.load_ips_internal(values);
+    }
+
+    pub fn load_hashes_from_reader<R>(&mut self, reader: R) -> usize
+    where
+        R: BufRead,
+    {
+        self.load_hashes_internal(
+            reader
+                .lines()
+                .filter_map(|line| line.ok())
+                .filter_map(|line| parse_ioc_line(&line).map(str::to_string)),
+        )
+    }
+
+    pub fn load_domains_from_reader<R>(&mut self, reader: R) -> usize
+    where
+        R: BufRead,
+    {
+        self.load_domains_internal(
+            reader
+                .lines()
+                .filter_map(|line| line.ok())
+                .filter_map(|line| parse_ioc_line(&line).map(str::to_string)),
+        )
+    }
+
+    pub fn load_ips_from_reader<R>(&mut self, reader: R) -> usize
+    where
+        R: BufRead,
+    {
+        self.load_ips_internal(
+            reader
+                .lines()
+                .filter_map(|line| line.ok())
+                .filter_map(|line| parse_ioc_line(&line).map(str::to_string)),
+        )
     }
 
     pub fn load_string_signatures<I>(&mut self, patterns: I)
@@ -342,6 +484,14 @@ impl IocLayer1 {
 
     pub fn check_hash(&self, hash: &str) -> Layer1Result {
         let normalized = hash.to_ascii_lowercase();
+        if matches!(self.lookup_mode, IocLookupMode::ExactStoreOnly) {
+            return match self.exact_store.as_ref() {
+                Some(store) if store.contains_hash(&normalized).unwrap_or(false) => {
+                    Layer1Result::ExactMatch
+                }
+                _ => Layer1Result::Clean,
+            };
+        }
         if !self.prefilter_hashes.contains(&normalized) {
             return Layer1Result::Clean;
         }
@@ -362,6 +512,18 @@ impl IocLayer1 {
             return Layer1Result::Clean;
         }
         let candidates = domain_suffix_candidates(&normalized);
+        if matches!(self.lookup_mode, IocLookupMode::ExactStoreOnly) {
+            return match self.exact_store.as_ref() {
+                Some(store)
+                    if candidates
+                        .iter()
+                        .any(|candidate| store.contains_domain(candidate).unwrap_or(false)) =>
+                {
+                    Layer1Result::ExactMatch
+                }
+                _ => Layer1Result::Clean,
+            };
+        }
         if !candidates
             .iter()
             .any(|candidate| self.prefilter_domains.contains(*candidate))
@@ -382,6 +544,14 @@ impl IocLayer1 {
 
     pub fn check_ip(&self, ip: &str) -> Layer1Result {
         let normalized = normalize_ip_for_matching(ip);
+        if matches!(self.lookup_mode, IocLookupMode::ExactStoreOnly) {
+            return match self.exact_store.as_ref() {
+                Some(store) if store.contains_ip(&normalized).unwrap_or(false) => {
+                    Layer1Result::ExactMatch
+                }
+                _ => Layer1Result::Clean,
+            };
+        }
         if !self.prefilter_ips.contains(&normalized) {
             return Layer1Result::Clean;
         }
@@ -491,7 +661,116 @@ impl IocLayer1 {
     }
 
     pub fn ioc_entry_count(&self) -> usize {
+        if matches!(self.lookup_mode, IocLookupMode::ExactStoreOnly) {
+            return self.exact_store_only_entries;
+        }
+
         self.prefilter_hashes.len() + self.prefilter_domains.len() + self.prefilter_ips.len()
+    }
+
+    fn load_hashes_internal<I>(&mut self, values: I) -> usize
+    where
+        I: IntoIterator<Item = String>,
+    {
+        if matches!(self.lookup_mode, IocLookupMode::ExactStoreOnly) {
+            let mut loaded = 0usize;
+            if let Some(store) = self.exact_store.as_mut() {
+                let _ = store.load_hashes(values.into_iter().inspect(|_| {
+                    loaded = loaded.saturating_add(1);
+                }));
+            }
+            self.exact_store_only_entries = self.exact_store_only_entries.saturating_add(loaded);
+            return loaded;
+        }
+
+        let mut loaded = 0usize;
+        let prefilter = &mut self.prefilter_hashes;
+        if let Some(store) = self.exact_store.as_mut() {
+            let _ = store.load_hashes(values.into_iter().map(|value| {
+                loaded = loaded.saturating_add(1);
+                let normalized = value.to_ascii_lowercase();
+                prefilter.insert(normalized.clone());
+                normalized
+            }));
+        } else {
+            for value in values {
+                loaded = loaded.saturating_add(1);
+                prefilter.insert(value.to_ascii_lowercase());
+            }
+        }
+
+        rebuild_prefilter_if_needed(prefilter, &mut self.prefilter_rebuilds);
+        loaded
+    }
+
+    fn load_domains_internal<I>(&mut self, values: I) -> usize
+    where
+        I: IntoIterator<Item = String>,
+    {
+        if matches!(self.lookup_mode, IocLookupMode::ExactStoreOnly) {
+            let mut loaded = 0usize;
+            if let Some(store) = self.exact_store.as_mut() {
+                let _ = store.load_domains(values.into_iter().inspect(|_| {
+                    loaded = loaded.saturating_add(1);
+                }));
+            }
+            self.exact_store_only_entries = self.exact_store_only_entries.saturating_add(loaded);
+            return loaded;
+        }
+
+        let mut loaded = 0usize;
+        let prefilter = &mut self.prefilter_domains;
+        if let Some(store) = self.exact_store.as_mut() {
+            let _ = store.load_domains(values.into_iter().map(|value| {
+                loaded = loaded.saturating_add(1);
+                let normalized = value.trim_end_matches('.').to_ascii_lowercase();
+                prefilter.insert(normalized.clone());
+                normalized
+            }));
+        } else {
+            for value in values {
+                loaded = loaded.saturating_add(1);
+                prefilter.insert(value.trim_end_matches('.').to_ascii_lowercase());
+            }
+        }
+
+        rebuild_prefilter_if_needed(prefilter, &mut self.prefilter_rebuilds);
+        loaded
+    }
+
+    fn load_ips_internal<I>(&mut self, values: I) -> usize
+    where
+        I: IntoIterator<Item = String>,
+    {
+        if matches!(self.lookup_mode, IocLookupMode::ExactStoreOnly) {
+            let mut loaded = 0usize;
+            if let Some(store) = self.exact_store.as_mut() {
+                let _ = store.load_ips(values.into_iter().inspect(|_| {
+                    loaded = loaded.saturating_add(1);
+                }));
+            }
+            self.exact_store_only_entries = self.exact_store_only_entries.saturating_add(loaded);
+            return loaded;
+        }
+
+        let mut loaded = 0usize;
+        let prefilter = &mut self.prefilter_ips;
+        if let Some(store) = self.exact_store.as_mut() {
+            let _ = store.load_ips(values.into_iter().map(|value| {
+                loaded = loaded.saturating_add(1);
+                let normalized = normalize_ip_for_matching(&value);
+                prefilter.insert(normalized.clone());
+                normalized
+            }));
+        } else {
+            for value in values {
+                loaded = loaded.saturating_add(1);
+                prefilter.insert(normalize_ip_for_matching(&value));
+            }
+        }
+
+        rebuild_prefilter_if_needed(prefilter, &mut self.prefilter_rebuilds);
+        loaded
     }
 
     fn apply_result(result: Layer1Result, field: &str, hit: &mut Layer1EventHit) {

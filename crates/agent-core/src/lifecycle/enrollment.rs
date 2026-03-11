@@ -128,7 +128,7 @@ fn resolve_agent_config_persist_path() -> PathBuf {
     PathBuf::from(DEFAULT_AGENT_CONFIG_PATH)
 }
 
-fn persist_runtime_config_snapshot(config: &AgentConfig) -> Result<PathBuf, String> {
+pub(crate) fn persist_runtime_config_snapshot(config: &AgentConfig) -> Result<PathBuf, String> {
     let path = resolve_agent_config_persist_path();
 
     let existing = match std::fs::read_to_string(&path) {
@@ -334,6 +334,19 @@ fn persist_runtime_config_snapshot(config: &AgentConfig) -> Result<PathBuf, Stri
         "bundle_path".to_string(),
         toml::Value::String(config.detection_bundle_path.clone()),
     );
+    if let Some(value) = config
+        .detection_bundle_public_key
+        .as_ref()
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+    {
+        detection_table.insert(
+            "bundle_public_key".to_string(),
+            toml::Value::String(value.to_string()),
+        );
+    } else {
+        detection_table.remove("bundle_public_key");
+    }
     detection_table.insert(
         "scan_on_create".to_string(),
         toml::Value::Boolean(config.detection_scan_on_create),
@@ -622,6 +635,7 @@ mod tests {
         std::env::remove_var("EGUARD_BOOTSTRAP_CONFIG");
         std::env::remove_var("EGUARD_SERVER_ADDR");
         std::env::remove_var("EGUARD_SERVER");
+        std::env::remove_var("EGUARD_RULE_BUNDLE_PUBKEY");
     }
 
     #[test]
@@ -653,6 +667,9 @@ mod tests {
             mode: crate::config::AgentMode::Active,
             detection_yara_rules_dir: "/opt/eguard/rules/yara".to_string(),
             detection_ioc_dir: "/opt/eguard/rules/ioc".to_string(),
+            detection_bundle_public_key: Some(
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
+            ),
             response: response::ResponseConfig {
                 autonomous_response: true,
                 ..response::ResponseConfig::default()
@@ -674,6 +691,10 @@ mod tests {
         assert!(loaded.response.autonomous_response);
         assert_eq!(loaded.detection_yara_rules_dir, "/opt/eguard/rules/yara");
         assert_eq!(loaded.detection_ioc_dir, "/opt/eguard/rules/ioc");
+        assert_eq!(
+            loaded.detection_bundle_public_key.as_deref(),
+            Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+        );
         assert_eq!(loaded.offline_buffer_backend, "memory");
 
         #[cfg(unix)]

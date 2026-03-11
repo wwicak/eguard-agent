@@ -298,6 +298,7 @@ fn zig_programs_apply_kernel_side_filters_for_new_connections_and_file_open_scop
 
     let file_open =
         std::fs::read_to_string(root.join("zig/ebpf/file_open.c")).expect("read file_open.c");
+    assert!(file_open.contains("tracepoint/syscalls/sys_enter_open"));
     assert!(file_open.contains("tracepoint/syscalls/sys_enter_openat"));
     assert!(file_open.contains("tracepoint/syscalls/sys_enter_openat2"));
     assert!(file_open.contains("FILE_PATH_SZ"));

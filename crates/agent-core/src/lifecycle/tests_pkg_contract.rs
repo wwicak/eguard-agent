@@ -205,6 +205,24 @@ fn package_manifests_define_agent_and_optional_rules_for_deb_and_rpm() {
             "missing rules payload: {required}"
         );
     }
+
+    for required in core_entries.iter().chain(rules_entries.iter()) {
+        assert!(
+            rpm_lines.iter().any(|entry| entry == required),
+            "rpm spec missing payload entry: {required}"
+        );
+    }
+}
+
+#[test]
+fn linux_agent_core_manifest_enables_ebpf_libbpf_for_platform_linux() {
+    let manifest = read("crates/agent-core/Cargo.toml");
+    assert!(
+        manifest.contains(
+            "platform-linux = { path = \"../platform-linux\", features = [\"ebpf-libbpf\"] }"
+        ),
+        "agent-core must enable platform-linux/ebpf-libbpf so plain Linux builds keep eBPF telemetry alive"
+    );
 }
 
 #[test]
@@ -251,6 +269,28 @@ fn linux_update_packaging_recovers_service_after_upgrade() {
         "postinstall should retry service recovery after upgrade"
     );
 
+    let install_script = read("scripts/install-eguard-agent.sh");
+    assert!(
+        install_script.contains("AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW"),
+        "installer fallback unit should preserve agent network capabilities"
+    );
+    assert!(
+        install_script.contains("PrivateTmp=false"),
+        "installer fallback unit must share host /tmp so fallback installs do not regress Linux quarantine visibility"
+    );
+    assert!(
+        install_script.contains("ReadWritePaths=/etc/eguard-agent /var/lib/eguard-agent"),
+        "installer fallback unit should keep the writable paths aligned with the packaged service"
+    );
+    assert!(
+        install_script.contains("TimeoutStopSec=15s"),
+        "installer fallback unit should keep the safer graceful-stop timeout"
+    );
+    assert!(
+        install_script.contains("$SUDO systemctl daemon-reload || true"),
+        "installer should reload systemd after package install so fresh package units are discovered before a fallback unit is created"
+    );
+
     let preremove = read("packaging/preremove.sh");
     assert!(
         preremove.contains("upgrade|failed-upgrade|1)"),
@@ -293,6 +333,21 @@ fn linux_update_packaging_recovers_service_after_upgrade() {
     assert!(
         worker_source.contains(".arg(\"/bin/bash\")"),
         "linux update worker systemd-run path should invoke /bin/bash explicitly"
+    );
+    assert!(
+        worker_source.contains("internal_process_systemd_run_env_arg()"),
+        "linux update worker should tag detached systemd-run workers so agent-owned maintenance does not recurse into telemetry"
+    );
+    assert!(
+        worker_source.contains("mark_internal_command("),
+        "linux update worker fallback should tag directly spawned maintenance workers as internal"
+    );
+
+    let config_change_source =
+        read("crates/agent-core/src/lifecycle/command_pipeline/config_change.rs");
+    assert!(
+        config_change_source.contains("internal_process_systemd_run_env_arg()"),
+        "linux self-restart scheduling should tag detached systemd-run work as internal telemetry noise"
     );
 
     let windows_worker_source =
@@ -523,7 +578,7 @@ fn install_script_executes_with_mocked_package_manager_and_systemd() {
             || log_lines.iter().any(|line| line.starts_with("rpm -i "))
     );
     assert!(has_line(&log_lines, "systemctl enable eguard-agent"));
-    assert!(has_line(&log_lines, "systemctl restart eguard-agent"));
+    assert!(has_line(&log_lines, "systemctl start eguard-agent"));
 
     let _ = std::fs::remove_dir_all(&sandbox);
 }
@@ -889,6 +944,79 @@ fn repo_windows_event(process: &str, parent: &str, command_line: &str) -> Teleme
 }
 
 #[test]
+fn repo_windows_lsass_rule_matches_comsvcs_minidump_shape() {
+    let mut engine = DetectionEngine::default_with_rules();
+    engine
+        .load_sigma_rule_yaml(&repo_rule("rules/sigma/windows_lsass_access_dump.yml"))
+        .expect("compile repo windows lsass dump rule");
+
+    let out = engine.process_event(&repo_windows_event(
+        "rundll32.exe",
+        "cmd.exe",
+        "rundll32.exe C:\\Windows\\System32\\comsvcs.dll, MiniDump 580 C:\\Windows\\Temp\\lsass.dmp full",
+    ));
+    assert!(out
+        .temporal_hits
+        .iter()
+        .any(|hit| hit == "windows_lsass_access_dump"));
+}
+
+#[test]
+fn repo_default_yara_bundle_keeps_eicar_yara_hits_on_exact_ioc() {
+    let mut engine = DetectionEngine::default_with_rules();
+    engine.layer1.load_hashes([
+        "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f".to_string(),
+    ]);
+    engine
+        .load_yara_rules_str(&repo_rule("rules/yara/default.yar"))
+        .expect("compile repo default yara bundle");
+
+    let dir = temp_dir("eguard-repo-eicar");
+    let file = dir.join("eicar.com");
+    std::fs::write(
+        &file,
+        b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*",
+    )
+    .expect("write eicar file");
+
+    let event = TelemetryEvent {
+        ts_unix: 1_700_000_001,
+        event_class: EventClass::FileOpen,
+        pid: 7331,
+        ppid: 1,
+        uid: 1000,
+        process: "bash".to_string(),
+        parent_process: "sshd".to_string(),
+        session_id: 7331,
+        file_path: Some(file.display().to_string()),
+        file_write: false,
+        file_hash: Some(
+            "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f".to_string(),
+        ),
+        dst_port: None,
+        dst_ip: None,
+        dst_domain: None,
+        command_line: None,
+        event_size: None,
+        container_runtime: None,
+        container_id: None,
+        container_escape: false,
+        container_privileged: false,
+    };
+
+    let out = engine.process_event(&event);
+    assert_eq!(out.confidence, detection::Confidence::Definite);
+    assert!(out.signals.z1_exact_ioc);
+    assert!(out.signals.yara_hit);
+    assert!(out
+        .yara_hits
+        .iter()
+        .any(|hit| hit.rule_name == "eguard_eicar_test_file"));
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn repo_windows_defender_disable_rule_matches_set_mppreference_shape() {
     let mut engine = DetectionEngine::default_with_rules();
     engine
@@ -900,7 +1028,10 @@ fn repo_windows_defender_disable_rule_matches_set_mppreference_shape() {
         "cmd.exe",
         "powershell.exe -nop -c Set-MpPreference -DisableRealtimeMonitoring $true",
     ));
-    assert!(out.temporal_hits.iter().any(|hit| hit == "windows_defender_disable"));
+    assert!(out
+        .temporal_hits
+        .iter()
+        .any(|hit| hit == "windows_defender_disable"));
 }
 
 #[test]
@@ -915,14 +1046,19 @@ fn repo_windows_amsi_bypass_rule_matches_amsiinitfailed_shape() {
         "cmd.exe",
         "powershell.exe -c [Ref].Assembly.GetType('System.Management.Automation.AmsiUtils').GetField('amsiInitFailed','NonPublic,Static').SetValue($null,$true)",
     ));
-    assert!(out.temporal_hits.iter().any(|hit| hit == "windows_amsi_bypass_reflection"));
+    assert!(out
+        .temporal_hits
+        .iter()
+        .any(|hit| hit == "windows_amsi_bypass_reflection"));
 }
 
 #[test]
 fn repo_windows_wmi_persistence_rule_matches_root_subscription_shape() {
     let mut engine = DetectionEngine::default_with_rules();
     engine
-        .load_sigma_rule_yaml(&repo_rule("rules/sigma/windows_wmi_event_subscription_persistence.yml"))
+        .load_sigma_rule_yaml(&repo_rule(
+            "rules/sigma/windows_wmi_event_subscription_persistence.yml",
+        ))
         .expect("compile repo windows wmi persistence rule");
 
     let out = engine.process_event(&repo_windows_event(
@@ -930,14 +1066,19 @@ fn repo_windows_wmi_persistence_rule_matches_root_subscription_shape() {
         "cmd.exe",
         "powershell.exe New-CimInstance -Namespace root\\subscription -ClassName CommandLineEventConsumer",
     ));
-    assert!(out.temporal_hits.iter().any(|hit| hit == "windows_wmi_event_subscription_persistence"));
+    assert!(out
+        .temporal_hits
+        .iter()
+        .any(|hit| hit == "windows_wmi_event_subscription_persistence"));
 }
 
 #[test]
 fn repo_windows_ifeo_rule_matches_sethc_debugger_shape() {
     let mut engine = DetectionEngine::default_with_rules();
     engine
-        .load_sigma_rule_yaml(&repo_rule("rules/sigma/windows_ifeo_debugger_persistence.yml"))
+        .load_sigma_rule_yaml(&repo_rule(
+            "rules/sigma/windows_ifeo_debugger_persistence.yml",
+        ))
         .expect("compile repo windows ifeo rule");
 
     let out = engine.process_event(&repo_windows_event(
@@ -945,14 +1086,19 @@ fn repo_windows_ifeo_rule_matches_sethc_debugger_shape() {
         "cmd.exe",
         "reg.exe add HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\sethc.exe /v Debugger /d cmd.exe /f",
     ));
-    assert!(out.temporal_hits.iter().any(|hit| hit == "windows_ifeo_debugger_persistence"));
+    assert!(out
+        .temporal_hits
+        .iter()
+        .any(|hit| hit == "windows_ifeo_debugger_persistence"));
 }
 
 #[test]
 fn repo_windows_bits_rule_matches_notifycmdline_shape() {
     let mut engine = DetectionEngine::default_with_rules();
     engine
-        .load_sigma_rule_yaml(&repo_rule("rules/sigma/windows_bits_notifycmdline_persistence.yml"))
+        .load_sigma_rule_yaml(&repo_rule(
+            "rules/sigma/windows_bits_notifycmdline_persistence.yml",
+        ))
         .expect("compile repo windows bits rule");
 
     let out = engine.process_event(&repo_windows_event(
@@ -960,7 +1106,10 @@ fn repo_windows_bits_rule_matches_notifycmdline_shape() {
         "cmd.exe",
         "bitsadmin.exe /SetNotifyCmdLine EguardJob C:\\Windows\\System32\\cmd.exe /c calc.exe",
     ));
-    assert!(out.temporal_hits.iter().any(|hit| hit == "windows_bits_notifycmdline_persistence"));
+    assert!(out
+        .temporal_hits
+        .iter()
+        .any(|hit| hit == "windows_bits_notifycmdline_persistence"));
 }
 
 #[test]
@@ -975,7 +1124,10 @@ fn repo_windows_certutil_encode_rule_matches_shape() {
         "cmd.exe",
         "certutil.exe -encode C:\\Temp\\input.bin C:\\Temp\\output.txt",
     ));
-    assert!(out.temporal_hits.iter().any(|hit| hit == "windows_certutil_encode"));
+    assert!(out
+        .temporal_hits
+        .iter()
+        .any(|hit| hit == "windows_certutil_encode"));
 }
 
 #[test]
@@ -990,7 +1142,10 @@ fn repo_windows_taskkill_tamper_rule_matches_force_kill_shape() {
         "cmd.exe",
         "taskkill.exe /f /im eguard-agent.exe",
     ));
-    assert!(out.temporal_hits.iter().any(|hit| hit == "windows_taskkill_eguard_tamper"));
+    assert!(out
+        .temporal_hits
+        .iter()
+        .any(|hit| hit == "windows_taskkill_eguard_tamper"));
 }
 
 #[test]
@@ -1005,7 +1160,10 @@ fn repo_windows_com_hijack_rule_matches_inprocserver32_shape() {
         "cmd.exe",
         "reg.exe add HKCU\\Software\\Classes\\CLSID\\{11111111-1111-1111-1111-111111111111}\\InprocServer32 /ve /d C:\\Temp\\evil.dll /f",
     ));
-    assert!(out.temporal_hits.iter().any(|hit| hit == "windows_com_hijack_registry"));
+    assert!(out
+        .temporal_hits
+        .iter()
+        .any(|hit| hit == "windows_com_hijack_registry"));
 }
 
 #[test]
@@ -1020,7 +1178,10 @@ fn repo_windows_msbuild_rule_matches_project_shape() {
         "cmd.exe",
         "MSBuild.exe C:\\Users\\Public\\payload.csproj",
     ));
-    assert!(out.temporal_hits.iter().any(|hit| hit == "windows_msbuild_lolbin"));
+    assert!(out
+        .temporal_hits
+        .iter()
+        .any(|hit| hit == "windows_msbuild_lolbin"));
 }
 
 #[test]
@@ -1035,7 +1196,10 @@ fn repo_windows_installutil_rule_matches_shape() {
         "cmd.exe",
         "InstallUtil.exe /logfile= /u C:\\Users\\Public\\payload.dll",
     ));
-    assert!(out.temporal_hits.iter().any(|hit| hit == "windows_installutil_lolbin"));
+    assert!(out
+        .temporal_hits
+        .iter()
+        .any(|hit| hit == "windows_installutil_lolbin"));
 }
 
 #[test]
@@ -1050,5 +1214,8 @@ fn repo_windows_csc_rule_matches_shape() {
         "cmd.exe",
         "csc.exe /out:C:\\Users\\Public\\payload.exe C:\\Users\\Public\\payload.cs",
     ));
-    assert!(out.temporal_hits.iter().any(|hit| hit == "windows_csc_lolbin"));
+    assert!(out
+        .temporal_hits
+        .iter()
+        .any(|hit| hit == "windows_csc_lolbin"));
 }

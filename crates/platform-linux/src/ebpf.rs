@@ -31,7 +31,7 @@ use replay_codec::encode_replay_event;
 use types::{PollBatch, EVENT_HEADER_SIZE};
 #[cfg(any(test, feature = "ebpf-libbpf"))]
 #[allow(unused_imports)]
-use types::{FALLBACK_DROPPED_OFFSET, FALLBACK_LAST_EVENT_DATA_SIZE};
+use types::{FALLBACK_DROPPED_OFFSET, FALLBACK_LAST_EVENT_DATA_SIZE, FALLBACK_RINGBUF_STATE_SIZE};
 
 #[cfg(test)]
 mod tests;

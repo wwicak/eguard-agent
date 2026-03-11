@@ -111,6 +111,10 @@ impl AgentRuntime {
     }
 
     fn dispatch_control_plane_send_tasks(&mut self) {
+        if !self.client.is_online() {
+            return;
+        }
+
         while self.control_plane_send_tasks.len() < CONTROL_PLANE_SEND_CONCURRENCY {
             let Some(send) = self.pending_control_plane_sends.pop_front() else {
                 break;
@@ -135,6 +139,10 @@ impl AgentRuntime {
     }
 
     fn dispatch_response_report_tasks(&mut self) {
+        if !self.client.is_online() {
+            return;
+        }
+
         while self.response_report_tasks.len() < RESPONSE_REPORT_CONCURRENCY {
             let Some(report) = self.pending_response_reports.pop_front() else {
                 break;

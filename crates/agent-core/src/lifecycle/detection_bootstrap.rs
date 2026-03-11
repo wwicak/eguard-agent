@@ -1,6 +1,11 @@
+use std::fs;
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use detection::{DetectionEngine, KillChainTemplate, RansomwarePolicy, TemplatePredicate};
+use detection::{
+    DetectionEngine, IocExactStore, KillChainTemplate, RansomwarePolicy, TemplatePredicate,
+};
 use tracing::{info, warn};
 
 use crate::config::AgentConfig;
@@ -27,6 +32,7 @@ pub(super) fn build_detection_engine_with_ransomware_policy(
     sources: &DetectionSourcePaths,
 ) -> DetectionEngine {
     let mut detection = DetectionEngine::default_with_rules();
+    configure_low_memory_ioc_exact_store(&mut detection, low_memory_ioc_exact_store_enabled());
     detection.layer4 =
         detection::Layer4Engine::with_capacity_and_policy(300, 8_192, 32_768, policy);
     seed_ioc_hashes(&mut detection);
@@ -39,6 +45,79 @@ pub(super) fn build_detection_engine_with_ransomware_policy(
     load_ioc_files(&mut detection, &sources.ioc_dir);
     seed_detection_allowlist(&mut detection);
     detection
+}
+
+static IOC_EXACT_STORE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+fn low_memory_ioc_exact_store_enabled() -> bool {
+    match std::env::var("EGUARD_FORCE_LOW_MEMORY_IOC_STORE") {
+        Ok(raw) => matches!(
+            raw.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => super::host_is_low_memory(super::linux_host_mem_total_bytes()),
+    }
+}
+
+fn configure_low_memory_ioc_exact_store(detection: &mut DetectionEngine, enabled: bool) {
+    if !enabled {
+        return;
+    }
+
+    let staging_root = super::resolve_rules_staging_root();
+    if let Err(err) = fs::create_dir_all(&staging_root) {
+        warn!(
+            error = %err,
+            path = %staging_root.display(),
+            "failed preparing low-memory IOC exact-store directory"
+        );
+        return;
+    }
+
+    cleanup_stale_ioc_exact_store_files(&staging_root);
+    let sequence = IOC_EXACT_STORE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let path = staging_root.join(format!(
+        "ioc-exact-store-{}-{}.sqlite",
+        std::process::id(),
+        sequence
+    ));
+
+    match IocExactStore::open_ephemeral(&path) {
+        Ok(store) => {
+            detection.layer1.enable_exact_store_only(store);
+            info!(
+                path = %path.display(),
+                "enabled low-memory Layer1 exact-store mode"
+            );
+        }
+        Err(err) => {
+            warn!(
+                error = %err,
+                path = %path.display(),
+                "failed enabling low-memory Layer1 exact-store mode; using in-memory prefilter"
+            );
+        }
+    }
+}
+
+fn cleanup_stale_ioc_exact_store_files(staging_root: &Path) {
+    let current_pid = std::process::id().to_string();
+    let entries = match fs::read_dir(staging_root) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if !name.starts_with("ioc-exact-store-") || name.contains(&format!("-{}-", current_pid)) {
+            continue;
+        }
+
+        let _ = fs::remove_file(&path);
+    }
 }
 
 fn seed_detection_allowlist(detection: &mut DetectionEngine) {
@@ -852,14 +931,10 @@ fn load_ioc_files(detection: &mut DetectionEngine, configured_dir: &Path) {
         // hashes.txt — one SHA-256 per line
         let hashes_path = ioc_dir.join("hashes.txt");
         if hashes_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&hashes_path) {
-                let hashes: Vec<String> = content
-                    .lines()
-                    .map(|l| l.trim().to_string())
-                    .filter(|l| !l.is_empty() && !l.starts_with('#'))
-                    .collect();
-                let count = hashes.len();
-                detection.layer1.load_hashes(hashes);
+            if let Ok(file) = fs::File::open(&hashes_path) {
+                let count = detection
+                    .layer1
+                    .load_hashes_from_reader(BufReader::new(file));
                 if count > 0 {
                     info!(count, path = %hashes_path.display(), "loaded IOC hashes from file");
                 }
@@ -869,14 +944,10 @@ fn load_ioc_files(detection: &mut DetectionEngine, configured_dir: &Path) {
         // domains.txt — one domain per line
         let domains_path = ioc_dir.join("domains.txt");
         if domains_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&domains_path) {
-                let domains: Vec<String> = content
-                    .lines()
-                    .map(|l| l.trim().to_string())
-                    .filter(|l| !l.is_empty() && !l.starts_with('#'))
-                    .collect();
-                let count = domains.len();
-                detection.layer1.load_domains(domains);
+            if let Ok(file) = fs::File::open(&domains_path) {
+                let count = detection
+                    .layer1
+                    .load_domains_from_reader(BufReader::new(file));
                 if count > 0 {
                     info!(count, path = %domains_path.display(), "loaded IOC domains from file");
                 }
@@ -886,14 +957,8 @@ fn load_ioc_files(detection: &mut DetectionEngine, configured_dir: &Path) {
         // ips.txt — one IP per line
         let ips_path = ioc_dir.join("ips.txt");
         if ips_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&ips_path) {
-                let ips: Vec<String> = content
-                    .lines()
-                    .map(|l| l.trim().to_string())
-                    .filter(|l| !l.is_empty() && !l.starts_with('#'))
-                    .collect();
-                let count = ips.len();
-                detection.layer1.load_ips(ips);
+            if let Ok(file) = fs::File::open(&ips_path) {
+                let count = detection.layer1.load_ips_from_reader(BufReader::new(file));
                 if count > 0 {
                     info!(count, path = %ips_path.display(), "loaded IOC IPs from file");
                 }
@@ -908,7 +973,7 @@ mod tests {
         build_detection_engine_with_ransomware_policy, configured_or_fallback_dirs,
         DetectionSourcePaths,
     };
-    use detection::{EventClass, RansomwarePolicy, TelemetryEvent};
+    use detection::{EventClass, Layer1Result, RansomwarePolicy, TelemetryEvent};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn unique_temp_dir(label: &str) -> std::path::PathBuf {
@@ -1086,6 +1151,45 @@ rule eguard_custom_dir_test {
             .iter()
             .any(|field| field == "file_hash"));
 
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn bootstrap_low_memory_path_uses_exact_store_only_for_iocs() {
+        let _env_guard = crate::lifecycle::shared_env_var_lock()
+            .lock()
+            .expect("env lock");
+        let base = unique_temp_dir("ioc-low-memory");
+        let staging_dir = base.join("staging");
+        let sigma_dir = base.join("sigma");
+        let yara_dir = base.join("yara");
+        let ioc_dir = base.join("ioc");
+        std::fs::create_dir_all(&sigma_dir).expect("create sigma dir");
+        std::fs::create_dir_all(&yara_dir).expect("create yara dir");
+        std::fs::create_dir_all(&ioc_dir).expect("create ioc dir");
+        std::fs::create_dir_all(&staging_dir).expect("create staging dir");
+        std::fs::write(
+            ioc_dir.join("hashes.txt"),
+            "abc123\n# ignore this line\ndef456  # inline comment\n",
+        )
+        .expect("write IOC file");
+        std::env::set_var("EGUARD_FORCE_LOW_MEMORY_IOC_STORE", "1");
+        std::env::set_var("EGUARD_RULES_STAGING_DIR", &staging_dir);
+
+        let sources = DetectionSourcePaths {
+            sigma_dir,
+            yara_dir,
+            ioc_dir,
+        };
+        let engine =
+            build_detection_engine_with_ransomware_policy(RansomwarePolicy::default(), &sources);
+
+        assert_eq!(engine.layer1.check_hash("abc123"), Layer1Result::ExactMatch);
+        assert_eq!(engine.layer1.check_hash("def456"), Layer1Result::ExactMatch);
+        assert_eq!(engine.layer1.check_hash("missing"), Layer1Result::Clean);
+
+        std::env::remove_var("EGUARD_FORCE_LOW_MEMORY_IOC_STORE");
+        std::env::remove_var("EGUARD_RULES_STAGING_DIR");
         let _ = std::fs::remove_dir_all(base);
     }
 

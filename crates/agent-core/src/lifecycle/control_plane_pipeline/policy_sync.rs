@@ -254,38 +254,90 @@ impl AgentRuntime {
     fn apply_response_policy_overrides(&mut self, raw: &serde_json::Value) {
         if let Some(v) = raw.get("autonomous_response").and_then(|v| v.as_bool()) {
             self.config.response.autonomous_response = v;
-            info!(autonomous_response = v, "updated autonomous response from policy");
+            info!(
+                autonomous_response = v,
+                "updated autonomous response from policy"
+            );
         }
         if let Some(v) = raw.get("response_dry_run").and_then(|v| v.as_bool()) {
             self.config.response.dry_run = v;
             info!(response_dry_run = v, "updated response dry-run from policy");
         }
-        if let Some(v) = raw.get("response_max_kills_per_minute").and_then(|v| v.as_u64()) {
+        if let Some(v) = raw
+            .get("response_max_kills_per_minute")
+            .and_then(|v| v.as_u64())
+        {
             self.config.response.max_kills_per_minute = (v as usize).max(1);
-            info!(response_max_kills_per_minute = self.config.response.max_kills_per_minute, "updated response kill rate limit from policy");
+            info!(
+                response_max_kills_per_minute = self.config.response.max_kills_per_minute,
+                "updated response kill rate limit from policy"
+            );
         }
 
-        if let Some(v) = raw.get("response_auto_isolation_enabled").and_then(|v| v.as_bool()) {
+        if let Some(v) = raw
+            .get("response_auto_isolation_enabled")
+            .and_then(|v| v.as_bool())
+        {
             self.config.response.auto_isolation.enabled = v;
-            info!(response_auto_isolation_enabled = v, "updated auto-isolation enabled from policy");
+            info!(
+                response_auto_isolation_enabled = v,
+                "updated auto-isolation enabled from policy"
+            );
         }
-        if let Some(v) = raw.get("response_auto_isolation_min_incidents_in_window").and_then(|v| v.as_u64()) {
+        if let Some(v) = raw
+            .get("response_auto_isolation_min_incidents_in_window")
+            .and_then(|v| v.as_u64())
+        {
             self.config.response.auto_isolation.min_incidents_in_window = (v as usize).max(1);
-            info!(response_auto_isolation_min_incidents_in_window = self.config.response.auto_isolation.min_incidents_in_window, "updated auto-isolation incident threshold from policy");
+            info!(
+                response_auto_isolation_min_incidents_in_window =
+                    self.config.response.auto_isolation.min_incidents_in_window,
+                "updated auto-isolation incident threshold from policy"
+            );
         }
-        if let Some(v) = raw.get("response_auto_isolation_window_secs").and_then(|v| v.as_u64()) {
+        if let Some(v) = raw
+            .get("response_auto_isolation_window_secs")
+            .and_then(|v| v.as_u64())
+        {
             self.config.response.auto_isolation.window_secs = v.max(30);
-            info!(response_auto_isolation_window_secs = self.config.response.auto_isolation.window_secs, "updated auto-isolation window from policy");
+            info!(
+                response_auto_isolation_window_secs =
+                    self.config.response.auto_isolation.window_secs,
+                "updated auto-isolation window from policy"
+            );
         }
-        if let Some(v) = raw.get("response_auto_isolation_max_isolations_per_hour").and_then(|v| v.as_u64()) {
+        if let Some(v) = raw
+            .get("response_auto_isolation_max_isolations_per_hour")
+            .and_then(|v| v.as_u64())
+        {
             self.config.response.auto_isolation.max_isolations_per_hour = (v as usize).max(1);
-            info!(response_auto_isolation_max_isolations_per_hour = self.config.response.auto_isolation.max_isolations_per_hour, "updated auto-isolation hourly cap from policy");
+            info!(
+                response_auto_isolation_max_isolations_per_hour =
+                    self.config.response.auto_isolation.max_isolations_per_hour,
+                "updated auto-isolation hourly cap from policy"
+            );
         }
 
-        apply_response_band_override(raw.get("response_definite"), &mut self.config.response.definite, "definite");
-        apply_response_band_override(raw.get("response_very_high"), &mut self.config.response.very_high, "very_high");
-        apply_response_band_override(raw.get("response_high"), &mut self.config.response.high, "high");
-        apply_response_band_override(raw.get("response_medium"), &mut self.config.response.medium, "medium");
+        apply_response_band_override(
+            raw.get("response_definite"),
+            &mut self.config.response.definite,
+            "definite",
+        );
+        apply_response_band_override(
+            raw.get("response_very_high"),
+            &mut self.config.response.very_high,
+            "very_high",
+        );
+        apply_response_band_override(
+            raw.get("response_high"),
+            &mut self.config.response.high,
+            "high",
+        );
+        apply_response_band_override(
+            raw.get("response_medium"),
+            &mut self.config.response.medium,
+            "medium",
+        );
     }
 
     fn apply_runtime_tuning_overrides(&mut self, raw: &serde_json::Value) {
@@ -442,13 +494,25 @@ impl AgentRuntime {
         if let Some(key_hex) = raw.get("bundle_public_key").and_then(|v| v.as_str()) {
             let key_hex = key_hex.trim();
             if !key_hex.is_empty() && key_hex.len() == 64 {
+                let changed = self.config.detection_bundle_public_key.as_deref() != Some(key_hex);
+                self.config.detection_bundle_public_key = Some(key_hex.to_string());
+
                 // SAFETY: set_var is acceptable here because this runs on the single
                 // runtime tick thread and the key is validated by the bundle verifier.
                 #[allow(unused_unsafe)]
                 unsafe {
                     std::env::set_var("EGUARD_RULE_BUNDLE_PUBKEY", key_hex);
                 }
-                info!("bundle public key updated from server policy");
+
+                if changed {
+                    if let Err(err) = super::super::persist_runtime_config_snapshot(&self.config) {
+                        warn!(error = %err, "failed persisting bundle public key from server policy");
+                    }
+                }
+                info!(
+                    persisted = changed,
+                    "bundle public key updated from server policy"
+                );
             }
         }
     }
@@ -625,6 +689,15 @@ mod tests {
     use serde_json::json;
     use std::fs;
 
+    fn env_lock() -> &'static std::sync::Mutex<()> {
+        crate::lifecycle::shared_env_var_lock()
+    }
+
+    fn clear_bundle_key_env() {
+        std::env::remove_var("EGUARD_AGENT_CONFIG");
+        std::env::remove_var("EGUARD_RULE_BUNDLE_PUBKEY");
+    }
+
     fn new_runtime() -> AgentRuntime {
         let mut cfg = AgentConfig::default();
         cfg.offline_buffer_backend = "memory".to_string();
@@ -736,13 +809,68 @@ mod tests {
         assert!(!runtime.config.response.dry_run);
         assert_eq!(runtime.config.response.max_kills_per_minute, 17);
         assert!(runtime.config.response.auto_isolation.enabled);
-        assert_eq!(runtime.config.response.auto_isolation.min_incidents_in_window, 2);
+        assert_eq!(
+            runtime
+                .config
+                .response
+                .auto_isolation
+                .min_incidents_in_window,
+            2
+        );
         assert_eq!(runtime.config.response.auto_isolation.window_secs, 90);
-        assert_eq!(runtime.config.response.auto_isolation.max_isolations_per_hour, 3);
+        assert_eq!(
+            runtime
+                .config
+                .response
+                .auto_isolation
+                .max_isolations_per_hour,
+            3
+        );
         assert!(runtime.config.response.definite.kill);
         assert!(runtime.config.response.definite.quarantine);
         assert!(runtime.config.response.high.quarantine);
         assert!(runtime.config.response.medium.capture_script);
+    }
+
+    #[test]
+    fn policy_bundle_public_key_persists_restart_safe_config() {
+        let _guard = env_lock().lock().expect("env lock");
+        clear_bundle_key_env();
+
+        let config_path = unique_temp_path("bundle-public-key");
+        std::env::set_var("EGUARD_AGENT_CONFIG", &config_path);
+        fs::write(
+            &config_path,
+            "[agent]\nid=\"agent-a\"\n[storage]\nbackend=\"memory\"\n",
+        )
+        .expect("write config");
+
+        let mut cfg = AgentConfig::default();
+        cfg.offline_buffer_backend = "memory".to_string();
+        cfg.server_addr = "127.0.0.1:1".to_string();
+        cfg.self_protection_integrity_check_interval_secs = 0;
+        let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+
+        let key_hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        runtime.apply_bundle_key_override(&json!({ "bundle_public_key": key_hex }));
+
+        assert_eq!(
+            runtime.config.detection_bundle_public_key.as_deref(),
+            Some(key_hex)
+        );
+        assert_eq!(
+            std::env::var("EGUARD_RULE_BUNDLE_PUBKEY").ok().as_deref(),
+            Some(key_hex)
+        );
+
+        let persisted = AgentConfig::load().expect("load persisted config");
+        assert_eq!(
+            persisted.detection_bundle_public_key.as_deref(),
+            Some(key_hex)
+        );
+
+        clear_bundle_key_env();
+        let _ = fs::remove_file(config_path);
     }
 
     #[test]

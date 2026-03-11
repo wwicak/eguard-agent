@@ -14,7 +14,7 @@ RestartSec=1s
 NoNewPrivileges=true
 ProtectSystem=full
 ProtectHome=true
-PrivateTmp=true
+PrivateTmp=false
 ReadWritePaths=/etc/eguard-agent /var/lib/eguard-agent
 TimeoutStopSec=15s
 

@@ -6,8 +6,20 @@ pub(super) const EVENT_HEADER_SIZE: usize = 1 + 4 + 4 + 4 + 8;
 pub(super) const FALLBACK_LAST_EVENT_DATA_SIZE: usize = 512;
 
 #[cfg(any(test, feature = "ebpf-libbpf"))]
-pub(super) const FALLBACK_DROPPED_OFFSET: usize =
-    std::mem::size_of::<u32>() + FALLBACK_LAST_EVENT_DATA_SIZE;
+const fn align_up(value: usize, align: usize) -> usize {
+    let mask = align - 1;
+    (value + mask) & !mask
+}
+
+#[cfg(any(test, feature = "ebpf-libbpf"))]
+pub(super) const FALLBACK_DROPPED_OFFSET: usize = align_up(
+    std::mem::size_of::<u32>() + FALLBACK_LAST_EVENT_DATA_SIZE,
+    std::mem::align_of::<u64>(),
+);
+
+#[cfg(any(test, feature = "ebpf-libbpf"))]
+pub(super) const FALLBACK_RINGBUF_STATE_SIZE: usize =
+    FALLBACK_DROPPED_OFFSET + std::mem::size_of::<u64>();
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EbpfStats {

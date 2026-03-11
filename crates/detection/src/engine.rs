@@ -114,6 +114,25 @@ pub struct DetectionOutcome {
     pub behavioral_alarms: Vec<BehavioralAlarm>,
 }
 
+impl Default for DetectionOutcome {
+    fn default() -> Self {
+        Self {
+            confidence: Confidence::None,
+            signals: DetectionSignals::default(),
+            temporal_hits: Vec::new(),
+            kill_chain_hits: Vec::new(),
+            exploit_indicators: Vec::new(),
+            kernel_integrity_indicators: Vec::new(),
+            tamper_indicators: Vec::new(),
+            yara_hits: Vec::new(),
+            anomaly: None,
+            layer1: Layer1EventHit::default(),
+            ml_score: None,
+            behavioral_alarms: Vec::new(),
+        }
+    }
+}
+
 pub struct DetectionEngine {
     pub layer1: IocLayer1,
     pub layer2: TemporalEngine,
@@ -255,10 +274,15 @@ impl DetectionEngine {
         // ── Early termination on Definite IOC match ─────────────
         if layer1.result == Layer1Result::ExactMatch {
             let network_ioc_hit = has_network_ioc_field(&layer1);
+            // Preserve file-backed YARA evidence for exact IOC hits so
+            // downstream telemetry and playbooks can still observe the
+            // matched content without running the rest of the pipeline.
+            let yara_hits = self.yara.scan_event(event);
             return DetectionOutcome {
                 confidence: Confidence::Definite,
                 signals: DetectionSignals {
                     z1_exact_ioc: true,
+                    yara_hit: !yara_hits.is_empty() && yara_hits.len() <= 50,
                     network_ioc_hit,
                     ..Default::default()
                 },
@@ -267,7 +291,7 @@ impl DetectionEngine {
                 exploit_indicators: Vec::new(),
                 kernel_integrity_indicators: Vec::new(),
                 tamper_indicators: Vec::new(),
-                yara_hits: Vec::new(),
+                yara_hits,
                 anomaly: None,
                 layer1,
                 ml_score: None,

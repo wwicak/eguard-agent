@@ -4,6 +4,16 @@ use std::process::Command;
 
 use anyhow::Result;
 
+pub(super) const INTERNAL_PROCESS_ENV_NAME: &str = "EGUARD_INTERNAL_SUBPROCESS";
+
+pub(super) fn mark_internal_command(command: &mut Command) -> &mut Command {
+    command.env(INTERNAL_PROCESS_ENV_NAME, "1")
+}
+
+pub(super) fn internal_process_systemd_run_env_arg() -> String {
+    format!("--setenv={}={}", INTERNAL_PROCESS_ENV_NAME, "1")
+}
+
 pub(super) fn resolve_allowed_server_ips(server_addr: &str, payload_ips: &[String]) -> Vec<String> {
     let mut ips = Vec::new();
 
@@ -117,8 +127,8 @@ pub(super) fn run_command_sequence(commands: &[(&str, &[&str])]) -> Result<(), S
 }
 
 pub(super) fn run_command(cmd: &str, args: &[String]) -> Result<(), String> {
-    let output = Command::new(cmd)
-        .args(args)
+    let mut command = Command::new(cmd);
+    let output = mark_internal_command(command.args(args))
         .output()
         .map_err(|err| format!("spawn failed: {err}"))?;
 

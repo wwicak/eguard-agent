@@ -68,8 +68,8 @@ use ::response::{
 
 #[allow(unused_imports)]
 use timing::{
-    compute_poll_timeout, compute_sampling_stride, elapsed_micros, interval_due, now_unix,
-    resolve_detection_shard_count,
+    compute_poll_timeout, compute_sampling_stride, elapsed_micros, host_is_low_memory,
+    interval_due, linux_host_mem_total_bytes, now_unix, resolve_detection_shard_count,
 };
 
 #[allow(unused_imports)]
@@ -83,6 +83,8 @@ use event_txn::{coalesce_file_event_key, EventTxn};
 
 #[allow(unused_imports)]
 use baseline::{apply_fleet_baseline_seeds, load_baseline_store, seed_anomaly_baselines};
+#[allow(unused_imports)]
+pub(crate) use enrollment::persist_runtime_config_snapshot;
 
 #[cfg(test)]
 #[allow(unused_imports)]

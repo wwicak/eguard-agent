@@ -180,6 +180,7 @@ impl Default for AgentConfig {
             detection_yara_rules_dir: default_detection_yara_dir(),
             detection_ioc_dir: default_detection_ioc_dir(),
             detection_bundle_path: String::new(),
+            detection_bundle_public_key: None,
             detection_scan_on_create: true,
             detection_max_file_scan_size_mb: 100,
             detection_memory_scan_enabled: false,

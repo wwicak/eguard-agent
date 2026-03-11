@@ -27,6 +27,9 @@ impl AgentConfig {
         if let Some(v) = env_non_empty("EGUARD_BUNDLE_PATH") {
             self.detection_bundle_path = v;
         }
+        if let Some(v) = env_non_empty("EGUARD_RULE_BUNDLE_PUBKEY") {
+            self.detection_bundle_public_key = Some(v);
+        }
         if let Some(v) = env_non_empty("EGUARD_MEMORY_SCAN_MODE") {
             self.detection_memory_scan_mode = v;
         }

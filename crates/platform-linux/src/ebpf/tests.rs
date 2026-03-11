@@ -327,14 +327,32 @@ fn parses_structured_dns_and_module_payloads() {
 #[test]
 // AC-EBP-015 AC-EBP-131
 fn parses_fallback_drop_counter_from_bss_buffer() {
-    let mut raw = vec![0u8; FALLBACK_DROPPED_OFFSET + std::mem::size_of::<u64>()];
-    raw[FALLBACK_DROPPED_OFFSET..FALLBACK_DROPPED_OFFSET + std::mem::size_of::<u64>()]
-        .copy_from_slice(&42u64.to_le_bytes());
+    let mut raw = vec![0u8; FALLBACK_RINGBUF_STATE_SIZE];
+    raw[FALLBACK_DROPPED_OFFSET..FALLBACK_RINGBUF_STATE_SIZE].copy_from_slice(&42u64.to_le_bytes());
 
     assert_eq!(parse_fallback_dropped_events(&raw), Some(42));
     assert_eq!(
         parse_fallback_dropped_events(&raw[..FALLBACK_DROPPED_OFFSET]),
         None
+    );
+}
+
+#[test]
+fn fallback_drop_counter_offset_matches_c_layout_alignment() {
+    #[repr(C)]
+    struct FallbackRingbufState {
+        last_event_len: u32,
+        last_event_data: [u8; FALLBACK_LAST_EVENT_DATA_SIZE],
+        dropped_events: u64,
+    }
+
+    assert_eq!(
+        FALLBACK_DROPPED_OFFSET,
+        std::mem::offset_of!(FallbackRingbufState, dropped_events)
+    );
+    assert_eq!(
+        FALLBACK_RINGBUF_STATE_SIZE,
+        std::mem::size_of::<FallbackRingbufState>()
     );
 }
 

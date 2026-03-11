@@ -3,6 +3,7 @@ use nac::apply_network_profile_config_change;
 use response::{CommandExecution, CommandOutcome};
 use serde_json::Value;
 
+use super::command_utils::internal_process_systemd_run_env_arg;
 use super::paths::resolve_network_profile_dir;
 #[cfg(target_os = "windows")]
 use super::windows_network_profile::apply_windows_network_profile_config_change;
@@ -239,6 +240,7 @@ fn schedule_agent_service_restart(reason: Option<&str>) -> Result<String, String
     let output = Command::new("systemd-run")
         .arg("--unit")
         .arg(&unit_name)
+        .arg(internal_process_systemd_run_env_arg())
         .arg("/bin/sh")
         .arg("-lc")
         .arg(restart_script)

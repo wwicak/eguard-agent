@@ -12,7 +12,7 @@ use tracing::{debug, info, warn};
 
 use super::backend::RingBufferBackend;
 use super::codec::parse_fallback_dropped_events;
-use super::types::{EbpfError, PollBatch, Result};
+use super::types::{EbpfError, PollBatch, Result, FALLBACK_RINGBUF_STATE_SIZE};
 
 pub(super) struct LibbpfRingBufferBackend {
     // Drop order matters: ring_buffer must drop FIRST (releases map fd
@@ -21,6 +21,7 @@ pub(super) struct LibbpfRingBufferBackend {
     ring_buffer: libbpf_rs::RingBuffer<'static>,
     records: RecordSink,
     record_pool: RecordPool,
+    record_budget: RecordBudget,
     drop_counter_sources: Vec<DropCounterSource>,
     failed_probes: Vec<String>,
     _loaded: Vec<LoadedObject>,
@@ -36,6 +37,7 @@ pub(super) struct LibbpfPerfBufferBackend {
     perf_lost_last_seen: u64,
     records: RecordSink,
     record_pool: RecordPool,
+    record_budget: RecordBudget,
     drop_counter_sources: Vec<DropCounterSource>,
     failed_probes: Vec<String>,
     _loaded: Vec<LoadedObject>,
@@ -44,7 +46,49 @@ pub(super) struct LibbpfPerfBufferBackend {
 type RecordSink = Arc<Mutex<Vec<Vec<u8>>>>;
 type RecordPool = Arc<Mutex<Vec<Vec<u8>>>>;
 
-const MAX_PENDING_RAW_RECORDS: usize = 8_192;
+const LOW_MEMORY_HOST_THRESHOLD_BYTES: u64 = 3 * 1024 * 1024 * 1024;
+const DEFAULT_MAX_PENDING_RAW_RECORDS: usize = 8_192;
+const LOW_MEMORY_MAX_PENDING_RAW_RECORDS: usize = 1_024;
+const DEFAULT_MAX_RECORD_POOL_ENTRIES: usize = 4_096;
+const LOW_MEMORY_MAX_RECORD_POOL_ENTRIES: usize = 512;
+
+#[derive(Clone, Copy)]
+struct RecordBudget {
+    max_pending_raw_records: usize,
+    max_record_pool_entries: usize,
+}
+
+impl RecordBudget {
+    fn for_host() -> Self {
+        let low_memory_host = linux_host_mem_total_bytes()
+            .map(|value| value > 0 && value <= LOW_MEMORY_HOST_THRESHOLD_BYTES)
+            .unwrap_or(false);
+
+        let pending_default = if low_memory_host {
+            LOW_MEMORY_MAX_PENDING_RAW_RECORDS
+        } else {
+            DEFAULT_MAX_PENDING_RAW_RECORDS
+        };
+        let pool_default = if low_memory_host {
+            LOW_MEMORY_MAX_RECORD_POOL_ENTRIES
+        } else {
+            DEFAULT_MAX_RECORD_POOL_ENTRIES
+        };
+
+        Self {
+            max_pending_raw_records: parse_budget_env(
+                "EGUARD_EBPF_PENDING_RAW_RECORDS_CAP",
+                pending_default,
+                128,
+            ),
+            max_record_pool_entries: parse_budget_env(
+                "EGUARD_EBPF_RECORD_POOL_CAP",
+                pool_default,
+                64,
+            ),
+        }
+    }
+}
 
 struct LoadedObject {
     path: PathBuf,
@@ -72,14 +116,17 @@ struct PerfBufferSlot {
 
 impl LibbpfRingBufferBackend {
     pub(super) fn new_many(elf_paths: &[PathBuf], event_map_name: &str) -> Result<Self> {
+        let record_budget = RecordBudget::for_host();
         let (mut loaded, failed_probes) = load_objects_with_degradation(elf_paths, event_map_name)?;
         let drop_counter_sources = collect_drop_counter_sources(&loaded)?;
-        let (ring_buffer, records, record_pool) = build_ring_buffer(&mut loaded, event_map_name)?;
+        let (ring_buffer, records, record_pool) =
+            build_ring_buffer(&mut loaded, event_map_name, record_budget)?;
 
         Ok(Self {
             ring_buffer,
             records,
             record_pool,
+            record_budget,
             drop_counter_sources,
             failed_probes,
             _loaded: loaded,
@@ -100,10 +147,11 @@ impl LibbpfRingBufferBackend {
 
 impl LibbpfPerfBufferBackend {
     pub(super) fn new_many(elf_paths: &[PathBuf], event_map_name: &str) -> Result<Self> {
+        let record_budget = RecordBudget::for_host();
         let (mut loaded, failed_probes) = load_objects_with_degradation(elf_paths, event_map_name)?;
         let drop_counter_sources = collect_drop_counter_sources(&loaded)?;
         let (perf_buffers, records, record_pool, perf_lost_records) =
-            build_perf_buffers(&mut loaded, event_map_name)?;
+            build_perf_buffers(&mut loaded, event_map_name, record_budget)?;
 
         Ok(Self {
             perf_buffers,
@@ -112,6 +160,7 @@ impl LibbpfPerfBufferBackend {
             perf_lost_last_seen: 0,
             records,
             record_pool,
+            record_budget,
             drop_counter_sources,
             failed_probes,
             _loaded: loaded,
@@ -292,7 +341,11 @@ impl RingBufferBackend for LibbpfRingBufferBackend {
     }
 
     fn reclaim_raw_records(&mut self, records: Vec<Vec<u8>>) {
-        reclaim_raw_records_to_pool(&self.record_pool, records);
+        reclaim_raw_records_to_pool(
+            &self.record_pool,
+            records,
+            self.record_budget.max_record_pool_entries,
+        );
     }
 
     fn failed_probes(&self) -> Vec<String> {
@@ -325,7 +378,11 @@ impl RingBufferBackend for LibbpfPerfBufferBackend {
     }
 
     fn reclaim_raw_records(&mut self, records: Vec<Vec<u8>>) {
-        reclaim_raw_records_to_pool(&self.record_pool, records);
+        reclaim_raw_records_to_pool(
+            &self.record_pool,
+            records,
+            self.record_budget.max_record_pool_entries,
+        );
     }
 
     fn failed_probes(&self) -> Vec<String> {
@@ -348,6 +405,9 @@ fn collect_drop_counter_sources(loaded: &[LoadedObject]) -> Result<Vec<DropCount
         for map in loaded_object.object.maps() {
             let map_name = map.name().to_string_lossy();
             if !is_bss_map_name(&map_name) {
+                continue;
+            }
+            if map.value_size() < FALLBACK_RINGBUF_STATE_SIZE as u32 {
                 continue;
             }
 
@@ -425,6 +485,7 @@ fn collect_event_map_sources(
 fn build_ring_buffer(
     loaded: &mut [LoadedObject],
     event_map_name: &str,
+    record_budget: RecordBudget,
 ) -> Result<(libbpf_rs::RingBuffer<'static>, RecordSink, RecordPool)> {
     let records = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
     let record_pool = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
@@ -446,7 +507,12 @@ fn build_ring_buffer(
         let pool_sink = Arc::clone(&record_pool);
         builder
             .add(&source.map_handle, move |raw| {
-                push_raw_record(raw, &records_sink, &pool_sink);
+                push_raw_record(
+                    raw,
+                    &records_sink,
+                    &pool_sink,
+                    record_budget.max_pending_raw_records,
+                );
                 0
             })
             .map_err(|err| {
@@ -469,6 +535,7 @@ fn build_ring_buffer(
 fn build_perf_buffers(
     loaded: &mut [LoadedObject],
     event_map_name: &str,
+    record_budget: RecordBudget,
 ) -> Result<(Vec<PerfBufferSlot>, RecordSink, RecordPool, Arc<AtomicU64>)> {
     let records = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
     let record_pool = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
@@ -491,7 +558,12 @@ fn build_perf_buffers(
         let lost_sink = Arc::clone(&perf_lost_records);
         let perf_buffer = libbpf_rs::PerfBufferBuilder::new(&source.map_handle)
             .sample_cb(move |_cpu, raw| {
-                push_raw_record(raw, &records_sink, &pool_sink);
+                push_raw_record(
+                    raw,
+                    &records_sink,
+                    &pool_sink,
+                    record_budget.max_pending_raw_records,
+                );
             })
             .lost_cb(move |_cpu, count| {
                 lost_sink.fetch_add(count, Ordering::Relaxed);
@@ -515,7 +587,12 @@ fn build_perf_buffers(
     Ok((perf_buffers, records, record_pool, perf_lost_records))
 }
 
-fn push_raw_record(raw: &[u8], records_sink: &RecordSink, pool_sink: &RecordPool) {
+fn push_raw_record(
+    raw: &[u8],
+    records_sink: &RecordSink,
+    pool_sink: &RecordPool,
+    max_pending_raw_records: usize,
+) {
     let mut record = if let Ok(mut pool) = pool_sink.lock() {
         pool.pop().unwrap_or_default()
     } else {
@@ -526,7 +603,7 @@ fn push_raw_record(raw: &[u8], records_sink: &RecordSink, pool_sink: &RecordPool
 
     let mut dropped_record = None;
     if let Ok(mut guard) = records_sink.lock() {
-        if guard.len() >= MAX_PENDING_RAW_RECORDS {
+        if guard.len() >= max_pending_raw_records {
             dropped_record = Some(guard.swap_remove(0));
         }
         guard.push(record);
@@ -535,7 +612,7 @@ fn push_raw_record(raw: &[u8], records_sink: &RecordSink, pool_sink: &RecordPool
     if let Some(mut dropped) = dropped_record {
         dropped.clear();
         if let Ok(mut pool) = pool_sink.lock() {
-            if pool.len() < MAX_PENDING_RAW_RECORDS {
+            if pool.len() < max_pending_raw_records {
                 pool.push(dropped);
             }
         }
@@ -598,13 +675,16 @@ fn poll_perf_buffers(
     Ok(())
 }
 
-fn reclaim_raw_records_to_pool(record_pool: &RecordPool, mut records: Vec<Vec<u8>>) {
-    const MAX_RECORD_POOL_ENTRIES: usize = 4_096;
+fn reclaim_raw_records_to_pool(
+    record_pool: &RecordPool,
+    mut records: Vec<Vec<u8>>,
+    max_record_pool_entries: usize,
+) {
     let Ok(mut pool) = record_pool.lock() else {
         return;
     };
 
-    let available = MAX_RECORD_POOL_ENTRIES.saturating_sub(pool.len());
+    let available = max_record_pool_entries.saturating_sub(pool.len());
     if available == 0 {
         return;
     }
@@ -656,6 +736,35 @@ fn sample_drop_counters(sources: &mut [DropCounterSource]) -> Result<u64> {
     }
 
     Ok(dropped)
+}
+
+fn parse_budget_env(name: &str, default: usize, min_value: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .map(|value| value.max(min_value))
+        .unwrap_or(default.max(min_value))
+}
+
+#[cfg(target_os = "linux")]
+fn linux_host_mem_total_bytes() -> Option<u64> {
+    let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
+    meminfo.lines().find_map(parse_memtotal_line_bytes)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn linux_host_mem_total_bytes() -> Option<u64> {
+    None
+}
+
+fn parse_memtotal_line_bytes(line: &str) -> Option<u64> {
+    let trimmed = line.trim();
+    let value = trimmed.strip_prefix("MemTotal:")?;
+    let kib = value
+        .split_whitespace()
+        .next()
+        .and_then(|raw| raw.parse::<u64>().ok())?;
+    Some(kib.saturating_mul(1024))
 }
 
 fn sample_perf_lost_records(counter: &Arc<AtomicU64>, last_seen: &mut u64) -> u64 {

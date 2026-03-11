@@ -160,6 +160,7 @@ impl AgentRuntime {
 
         #[cfg(not(any(target_os = "windows", target_os = "macos")))]
         {
+            let collector = platform_linux::response::ForensicsCollector::new();
             let output_path = if payload.output_path.trim().is_empty() || payload.memory_dump {
                 output_dir
                     .join(format!("snapshot-{}.txt", now))
@@ -169,38 +170,19 @@ impl AgentRuntime {
                 payload.output_path.trim().to_string()
             };
 
-            let process_text = if include_processes {
-                run_forensics_command_output("ps", &["aux"])
-            } else {
-                String::new()
-            };
-
-            let network_text = if include_network {
-                let primary = run_forensics_command_output("ss", &["-tunap"]);
-                if primary.starts_with("spawn failed") {
-                    run_forensics_command_output("netstat", &["-anp"])
-                } else {
-                    primary
-                }
-            } else {
-                String::new()
-            };
-
-            let open_files_text = if include_open_files {
-                run_forensics_command_output("lsof", &["-nP"])
-            } else {
-                String::new()
-            };
-
-            let loaded_modules_text = if include_loaded_modules {
-                run_forensics_command_output("lsmod", &[])
-            } else {
-                String::new()
-            };
+            let snapshot = collector.collect_full_snapshot(
+                include_processes,
+                include_network,
+                include_open_files,
+                include_loaded_modules,
+            );
 
             let body = format!(
                 "=== processes ===\n{}\n\n=== network ===\n{}\n\n=== open_files ===\n{}\n\n=== loaded_modules ===\n{}\n",
-                process_text, network_text, open_files_text, loaded_modules_text
+                snapshot.processes,
+                snapshot.network,
+                snapshot.open_files,
+                snapshot.loaded_modules
             );
 
             if let Err(err) = std::fs::write(&output_path, body.as_bytes()) {
@@ -227,24 +209,4 @@ fn forensics_now_secs() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or_default()
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
-fn run_forensics_command_output(command: &str, args: &[&str]) -> String {
-    use std::process::Command;
-
-    match Command::new(command).args(args).output() {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            if !stdout.trim().is_empty() {
-                stdout
-            } else if !stderr.trim().is_empty() {
-                stderr
-            } else {
-                format!("command `{}` returned empty output", command)
-            }
-        }
-        Err(err) => format!("spawn failed for `{}`: {}", command, err),
-    }
 }

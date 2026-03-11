@@ -138,6 +138,12 @@ impl LegacySigmaAccumulator {
     fn has_network_constraints(&self) -> bool {
         !self.dst_port_any_of.is_empty()
     }
+
+    fn has_any_constraints(&self) -> bool {
+        self.has_process_constraints()
+            || self.has_file_constraints()
+            || self.has_network_constraints()
+    }
 }
 
 pub fn compile_sigma_rule(yaml: &str) -> Result<TemporalRule> {
@@ -219,6 +225,12 @@ fn compile_legacy_sigma_ast(yaml: &str, doc: &SigmaRuleDoc) -> Result<BoundedTem
         if let Some(value) = mapping_get(detection, &selector) {
             accumulate_legacy_selector_value(value, &mut acc);
         }
+    }
+
+    if !acc.has_any_constraints() {
+        return Err(SigmaCompileError::UnsupportedEventClass(
+            "legacy_sigma_unmappable".to_string(),
+        ));
     }
 
     let event_class = infer_legacy_event_class(&acc, &doc.logsource).ok_or_else(|| {

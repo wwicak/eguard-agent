@@ -2,6 +2,7 @@ pub mod container;
 mod ebpf;
 pub mod inventory;
 mod kernel_integrity;
+pub mod response;
 
 use std::collections::HashMap;
 use std::ffi::CString;
@@ -24,6 +25,7 @@ pub use ebpf::{EbpfEngine, EbpfError, EbpfStats};
 pub use kernel_integrity::{
     scan_kernel_integrity, KernelIntegrityReport, KernelIntegrityScanOptions,
 };
+pub use response::{ForensicsCollector, ForensicsSnapshot};
 
 const MAX_PARENT_CHAIN_DEPTH: usize = 12;
 
@@ -359,6 +361,13 @@ pub fn enrich_event(raw: RawEvent) -> EnrichedEvent {
     enrich_event_with_cache(raw, &mut cache)
 }
 
+fn should_hash_file_in_strict_budget(event_type: &EventType, path: &str) -> bool {
+    matches!(event_type, EventType::FileOpen)
+        && (path.starts_with("/tmp/")
+            || path.starts_with("/var/tmp/")
+            || path.starts_with("/etc/eguard-agent/"))
+}
+
 pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> EnrichedEvent {
     let payload_meta = parse_payload_metadata(&raw.event_type, &raw.payload);
     if matches!(raw.event_type, EventType::ProcessExit) {
@@ -395,38 +404,31 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
         }
     });
 
-    let file_sha256 = if cache.strict_budget_mode {
-        None
+    let file_hash_mode = if matches!(raw.event_type, EventType::FileOpen) {
+        HashMode::Immediate
     } else {
-        let file_hash_mode = if matches!(raw.event_type, EventType::FileOpen) {
-            HashMode::Immediate
-        } else {
-            HashMode::ChurnAware
-        };
+        HashMode::ChurnAware
+    };
+    let mut hash_candidate = |path: &str| {
+        if cache.is_excluded_for_expensive_checks(Some(path), entry.process_exe.as_deref()) {
+            return None;
+        }
+        if cache.strict_budget_mode && !should_hash_file_in_strict_budget(&raw.event_type, path) {
+            return None;
+        }
+        cache.hash_for_path_mode(path, file_hash_mode)
+    };
 
-        let primary = payload_meta.file_path.as_deref().and_then(|path| {
-            if cache.is_excluded_for_expensive_checks(Some(path), entry.process_exe.as_deref()) {
-                None
-            } else {
-                cache.hash_for_path_mode(path, file_hash_mode)
-            }
-        });
-
-        primary.or_else(|| {
+    let file_sha256 = payload_meta
+        .file_path
+        .as_deref()
+        .and_then(&mut hash_candidate)
+        .or_else(|| {
             payload_meta
                 .file_path_secondary
                 .as_deref()
-                .and_then(|path| {
-                    if cache
-                        .is_excluded_for_expensive_checks(Some(path), entry.process_exe.as_deref())
-                    {
-                        None
-                    } else {
-                        cache.hash_for_path_mode(path, file_hash_mode)
-                    }
-                })
-        })
-    };
+                .and_then(&mut hash_candidate)
+        });
 
     let mut parent_chain = entry.parent_chain.clone();
     if parent_chain.is_empty() {

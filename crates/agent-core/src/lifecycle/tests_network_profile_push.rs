@@ -247,6 +247,10 @@ fn config_change_agent_control_restart_schedules_service_restart() {
         captured.contains("eguard-agent-self-restart-"),
         "captured={captured}"
     );
+    assert!(
+        captured.contains("--setenv=EGUARD_INTERNAL_SUBPROCESS=1"),
+        "captured={captured}"
+    );
     assert!(captured.contains("/bin/sh"), "captured={captured}");
     assert!(captured.contains("-lc"), "captured={captured}");
     assert!(

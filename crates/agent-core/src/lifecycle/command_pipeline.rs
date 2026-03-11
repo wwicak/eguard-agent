@@ -283,7 +283,10 @@ fn response_action_for_command(command_type: &str) -> Option<&'static str> {
 }
 
 fn populate_command_response_detail(command: &CommandEnvelope, response: &mut ResponseEnvelope) {
-    if !command.command_type.eq_ignore_ascii_case("restore_quarantine") {
+    if !command
+        .command_type
+        .eq_ignore_ascii_case("restore_quarantine")
+    {
         return;
     }
 

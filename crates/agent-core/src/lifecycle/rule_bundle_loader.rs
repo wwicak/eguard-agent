@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, Read};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Component, Path, PathBuf};
 
 use detection::DetectionEngine;
@@ -581,42 +581,29 @@ fn load_ioc_indicators(
         return (0, 0, 0);
     }
 
-    let hashes = load_ioc_list(&ioc_dir.join("hashes.txt"));
-    let domains = load_ioc_list(&ioc_dir.join("domains.txt"));
-    let ips = load_ioc_list(&ioc_dir.join("ips.txt"));
+    let hashes = load_ioc_file(&ioc_dir.join("hashes.txt"), |reader| {
+        detection.layer1.load_hashes_from_reader(reader)
+    });
+    let domains = load_ioc_file(&ioc_dir.join("domains.txt"), |reader| {
+        detection.layer1.load_domains_from_reader(reader)
+    });
+    let ips = load_ioc_file(&ioc_dir.join("ips.txt"), |reader| {
+        detection.layer1.load_ips_from_reader(reader)
+    });
 
-    // Feed into detection engine Layer 1 using bulk load
-    detection.layer1.load_hashes(hashes.iter().cloned());
-    detection.layer1.load_domains(domains.iter().cloned());
-    detection.layer1.load_ips(ips.iter().cloned());
-
-    (hashes.len(), domains.len(), ips.len())
+    (hashes, domains, ips)
 }
 
-/// Read a plain-text IOC list (one indicator per line, # comments, empty lines skipped).
-fn load_ioc_list(path: &Path) -> Vec<String> {
+fn load_ioc_file<F>(path: &Path, loader: F) -> usize
+where
+    F: FnOnce(BufReader<fs::File>) -> usize,
+{
     let file = match fs::File::open(path) {
-        Ok(f) => f,
-        Err(_) => return Vec::new(),
+        Ok(file) => file,
+        Err(_) => return 0,
     };
 
-    let reader = std::io::BufReader::new(file);
-    let mut indicators = Vec::new();
-
-    for line in reader.lines() {
-        let Ok(line) = line else { break };
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        // IOC lists may have "indicator  # comment" format
-        let indicator = trimmed.split('#').next().unwrap_or(trimmed).trim();
-        if !indicator.is_empty() {
-            indicators.push(indicator.to_lowercase());
-        }
-    }
-
-    indicators
+    loader(BufReader::new(file))
 }
 
 /// Load Suricata network IDS rules.

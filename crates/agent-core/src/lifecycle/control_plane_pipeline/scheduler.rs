@@ -38,12 +38,6 @@ impl AgentRuntime {
             );
         }
 
-        // PolicySync must run before Compliance so the first tick fetches
-        // the server policy before evaluating/sending compliance results.
-        if self.policy_refresh_due(now_unix) {
-            self.try_enqueue_control_plane_task(ControlPlaneTaskKind::PolicySync, now_unix);
-        }
-
         let compliance_due = interval_due(
             self.last_compliance_attempt_unix,
             now_unix,
@@ -74,24 +68,39 @@ impl AgentRuntime {
             );
         }
 
-        if self.threat_intel_refresh_due(now_unix) {
-            self.try_enqueue_control_plane_task(ControlPlaneTaskKind::ThreatIntelRefresh, now_unix);
-        }
+        if !self.should_defer_maintenance_control_plane_work() {
+            if self.policy_refresh_due(now_unix) {
+                self.try_enqueue_control_plane_task(ControlPlaneTaskKind::PolicySync, now_unix);
+            }
 
-        if self.baseline_upload_due(now_unix) {
-            self.try_enqueue_control_plane_task(ControlPlaneTaskKind::BaselineUpload, now_unix);
-        }
+            if self.threat_intel_refresh_due(now_unix) {
+                self.try_enqueue_control_plane_task(
+                    ControlPlaneTaskKind::ThreatIntelRefresh,
+                    now_unix,
+                );
+            }
 
-        if self.fleet_baseline_fetch_due(now_unix) {
-            self.try_enqueue_control_plane_task(ControlPlaneTaskKind::FleetBaselineFetch, now_unix);
-        }
+            if self.baseline_upload_due(now_unix) {
+                self.try_enqueue_control_plane_task(ControlPlaneTaskKind::BaselineUpload, now_unix);
+            }
 
-        if self.ioc_signal_upload_due(now_unix) {
-            self.try_enqueue_control_plane_task(ControlPlaneTaskKind::IocSignalUpload, now_unix);
-        }
+            if self.fleet_baseline_fetch_due(now_unix) {
+                self.try_enqueue_control_plane_task(
+                    ControlPlaneTaskKind::FleetBaselineFetch,
+                    now_unix,
+                );
+            }
 
-        if self.campaign_fetch_due(now_unix) {
-            self.try_enqueue_control_plane_task(ControlPlaneTaskKind::CampaignFetch, now_unix);
+            if self.ioc_signal_upload_due(now_unix) {
+                self.try_enqueue_control_plane_task(
+                    ControlPlaneTaskKind::IocSignalUpload,
+                    now_unix,
+                );
+            }
+
+            if self.campaign_fetch_due(now_unix) {
+                self.try_enqueue_control_plane_task(ControlPlaneTaskKind::CampaignFetch, now_unix);
+            }
         }
 
         self.try_enqueue_control_plane_task(ControlPlaneTaskKind::CommandSync, now_unix);
@@ -222,6 +231,13 @@ impl AgentRuntime {
         };
 
         interval_due(self.last_policy_fetch_unix, now_unix, interval_secs)
+    }
+
+    fn should_defer_maintenance_control_plane_work(&self) -> bool {
+        self.strict_budget_mode
+            || self.consecutive_send_failures > 0
+            || self.buffer.pending_count() > 0
+            || !self.raw_event_backlog.is_empty()
     }
 }
 
@@ -416,5 +432,50 @@ mod tests {
             .expect("queued command sync");
         assert_eq!(task.enqueued_at_unix, 1_700_000_000);
         assert!(matches!(task.kind, ControlPlaneTaskKind::CommandSync));
+    }
+
+    #[test]
+    fn enqueue_due_control_plane_tasks_defers_maintenance_work_when_telemetry_is_backed_up() {
+        let mut runtime = new_runtime();
+        let now_unix = 1_700_000_000;
+        runtime
+            .buffer
+            .enqueue(grpc_client::EventEnvelope {
+                agent_id: "agent-test".to_string(),
+                event_type: "alert".to_string(),
+                severity: "high".to_string(),
+                rule_name: "backpressure".to_string(),
+                payload_json: "{}".to_string(),
+                created_at_unix: now_unix,
+            })
+            .expect("enqueue pending event");
+        runtime.dirty_baseline_keys.insert("bash:sshd".to_string());
+        runtime.baseline_store.status = BaselineStatus::Learning;
+        runtime.ioc_signal_buffer.push(grpc_client::IocSignal {
+            ioc_value: "example.test".to_string(),
+            ioc_type: "domain".to_string(),
+            confidence: "high".to_string(),
+            first_seen_unix: now_unix,
+            event_count: 1,
+        });
+
+        runtime.enqueue_due_control_plane_tasks(now_unix, None);
+
+        let queued = runtime
+            .pending_control_plane_tasks
+            .iter()
+            .map(|task| task.kind.kind_name())
+            .collect::<Vec<_>>();
+
+        assert!(queued.contains(&"heartbeat"));
+        assert!(queued.contains(&"compliance"));
+        assert!(queued.contains(&"inventory"));
+        assert!(queued.contains(&"command_sync"));
+        assert!(!queued.contains(&"policy_sync"));
+        assert!(!queued.contains(&"threat_intel"));
+        assert!(!queued.contains(&"baseline_upload"));
+        assert!(!queued.contains(&"fleet_baseline_fetch"));
+        assert!(!queued.contains(&"ioc_signal_upload"));
+        assert!(!queued.contains(&"campaign_fetch"));
     }
 }

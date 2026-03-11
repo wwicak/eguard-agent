@@ -152,10 +152,18 @@ impl EventTxn {
 
 pub(super) fn coalesce_file_event_key(raw: &RawEvent) -> Option<String> {
     match raw.event_type {
-        EventType::FileOpen
-        | EventType::FileWrite
-        | EventType::FileRename
-        | EventType::FileUnlink => {
+        EventType::FileOpen => {
+            let txn = EventTxn::from_raw(raw);
+            txn.subject.as_deref().map(|subject| {
+                format!(
+                    "{}:{}:{}",
+                    txn.operation,
+                    file_open_access_intent(&raw.payload),
+                    normalize_value(subject)
+                )
+            })
+        }
+        EventType::FileWrite | EventType::FileRename | EventType::FileUnlink => {
             let txn = EventTxn::from_raw(raw);
             txn.subject
                 .as_deref()
@@ -255,6 +263,37 @@ fn parse_rename_paths(payload: &str) -> (Option<String>, Option<String>) {
     (src, dst)
 }
 
+fn file_open_access_intent(payload: &str) -> &'static str {
+    if parse_file_write_flags(
+        parse_payload_field(payload, "flags").as_deref(),
+        parse_payload_field(payload, "mode").as_deref(),
+    ) {
+        "write"
+    } else {
+        "read"
+    }
+}
+
+fn parse_file_write_flags(flags: Option<&str>, mode: Option<&str>) -> bool {
+    let flags_val = flags
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(0);
+    let mode_val = mode
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(0);
+
+    const O_WRONLY: u32 = 1;
+    const O_RDWR: u32 = 2;
+    const O_CREAT: u32 = 0x40;
+    const O_TRUNC: u32 = 0x200;
+
+    let write_intent = (flags_val & O_WRONLY) != 0 || (flags_val & O_RDWR) != 0;
+    let destructive = (flags_val & O_TRUNC) != 0 || (flags_val & O_CREAT) != 0;
+    let executable_bit = (mode_val & 0o111) != 0;
+
+    write_intent || destructive || executable_bit
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,6 +310,30 @@ mod tests {
 
         let key = coalesce_file_event_key(&raw).expect("file coalesce key");
         assert_eq!(key, "file_write:c:/windows/temp/artifact.bin");
+    }
+
+    #[test]
+    fn coalesce_file_event_key_distinguishes_read_and_write_file_open_modes() {
+        let write_raw = RawEvent {
+            event_type: EventType::FileOpen,
+            pid: 10,
+            uid: 0,
+            ts_ns: 1,
+            payload: "path=/tmp/eicar.com;flags=65;mode=420".to_string(),
+        };
+        let read_raw = RawEvent {
+            event_type: EventType::FileOpen,
+            pid: 10,
+            uid: 0,
+            ts_ns: 2,
+            payload: "path=/tmp/eicar.com;flags=0;mode=0".to_string(),
+        };
+
+        let write_key = coalesce_file_event_key(&write_raw).expect("write key");
+        let read_key = coalesce_file_event_key(&read_raw).expect("read key");
+
+        assert_eq!(write_key, "file_open:write:/tmp/eicar.com");
+        assert_eq!(read_key, "file_open:read:/tmp/eicar.com");
     }
 
     #[test]

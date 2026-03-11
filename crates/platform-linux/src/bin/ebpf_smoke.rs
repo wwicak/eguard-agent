@@ -21,10 +21,11 @@ fn collect_elf_paths(dir: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(out)
 }
 
-fn parse_args() -> (PathBuf, Duration, usize) {
+fn parse_args() -> (PathBuf, Duration, usize, bool) {
     let mut objects_dir: Option<PathBuf> = None;
     let mut duration = Duration::from_millis(2500);
     let mut min_exec = 1usize;
+    let mut print_events = false;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -48,6 +49,9 @@ fn parse_args() -> (PathBuf, Duration, usize) {
                     }
                 }
             }
+            "--print-events" => {
+                print_events = true;
+            }
             _ => {}
         }
     }
@@ -60,11 +64,11 @@ fn parse_args() -> (PathBuf, Duration, usize) {
         })
         .unwrap_or_else(|| PathBuf::from("zig-out/ebpf"));
 
-    (objects_dir, duration, min_exec)
+    (objects_dir, duration, min_exec, print_events)
 }
 
 fn main() -> Result<(), EbpfError> {
-    let (objects_dir, duration, min_exec) = parse_args();
+    let (objects_dir, duration, min_exec, print_events) = parse_args();
     let paths = collect_elf_paths(&objects_dir).map_err(EbpfError::Backend)?;
     let ring_map = std::env::var("EGUARD_EBPF_RING_MAP").unwrap_or_else(|_| "events".to_string());
 
@@ -92,10 +96,18 @@ fn main() -> Result<(), EbpfError> {
     let mut exec_count = 0usize;
     let mut open_count = 0usize;
     let mut tcp_count = 0usize;
+    let mut printed = 0usize;
     let start = Instant::now();
     while start.elapsed() < duration {
         let events = engine.poll_once(Duration::from_millis(200))?;
         for event in events {
+            if print_events && printed < 24 {
+                println!(
+                    "event type={:?} pid={} uid={} ts_ns={} payload={}",
+                    event.event_type, event.pid, event.uid, event.ts_ns, event.payload
+                );
+                printed += 1;
+            }
             match event.event_type {
                 EventType::ProcessExec => exec_count += 1,
                 EventType::FileOpen => open_count += 1,

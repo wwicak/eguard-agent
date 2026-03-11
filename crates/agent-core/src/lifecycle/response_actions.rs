@@ -392,6 +392,9 @@ mod tests {
         let synthetic = synthetic_quarantine_id(&event);
         assert_eq!(synthetic.len(), 64);
         assert!(synthetic.chars().all(|ch| ch.is_ascii_hexdigit()));
-        assert_eq!(normalize_quarantine_sha256(&synthetic).as_deref(), Some(synthetic.as_str()));
+        assert_eq!(
+            normalize_quarantine_sha256(&synthetic).as_deref(),
+            Some(synthetic.as_str())
+        );
     }
 }

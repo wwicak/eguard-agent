@@ -22,7 +22,11 @@ where
             warn!(task = task_name, error = %err, "control-plane task failed");
         }
         Err(_) => {
-            warn!(task = task_name, timeout_ms = CONTROL_PLANE_AWAIT_TIMEOUT_MS, "control-plane task timed out");
+            warn!(
+                task = task_name,
+                timeout_ms = CONTROL_PLANE_AWAIT_TIMEOUT_MS,
+                "control-plane task timed out"
+            );
         }
     }
 }

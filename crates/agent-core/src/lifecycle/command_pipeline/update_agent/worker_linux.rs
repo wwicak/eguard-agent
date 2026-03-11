@@ -4,6 +4,10 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use crate::lifecycle::command_pipeline::command_utils::{
+    internal_process_systemd_run_env_arg, mark_internal_command,
+};
+
 use super::request::NormalizedUpdateRequest;
 
 pub(super) fn spawn_update_worker(
@@ -48,13 +52,16 @@ pub(super) fn spawn_update_worker(
         .try_clone()
         .map_err(|err| format!("clone update log {}: {}", log_path.display(), err))?;
 
-    Command::new("/bin/bash")
-        .arg(&script_path)
-        .args(&script_args)
-        .stdout(Stdio::from(log_file))
-        .stderr(Stdio::from(stderr_file))
-        .spawn()
-        .map_err(|err| format!("spawn update worker: {}", err))?;
+    let mut command = Command::new("/bin/bash");
+    mark_internal_command(
+        command
+            .arg(&script_path)
+            .args(&script_args)
+            .stdout(Stdio::from(log_file))
+            .stderr(Stdio::from(stderr_file)),
+    )
+    .spawn()
+    .map_err(|err| format!("spawn update worker: {}", err))?;
 
     Ok(format!(
         "agent update worker started (url={}, format={})",
@@ -180,6 +187,7 @@ fn spawn_worker_via_systemd_run(
         .arg("--unit")
         .arg(&unit_name)
         .arg("--collect")
+        .arg(internal_process_systemd_run_env_arg())
         .arg("/bin/bash")
         .arg(script_path)
         .args(script_args)

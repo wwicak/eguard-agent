@@ -1,9 +1,16 @@
 /* eguard — file open probe
  *
  * Hooks:
+ *   - tracepoint/syscalls/sys_enter_open
  *   - tracepoint/syscalls/sys_enter_openat
  *   - tracepoint/syscalls/sys_enter_openat2
  * Payload: flags(4) + mode(4) + ppid(4) + cgroup_id(8) + comm(32) + parent_comm(32) + path(256)
+ *
+ * sys_enter_open tracepoint args (after 8-byte trace_entry):
+ *   +8   __syscall_nr  i32
+ *   +16  filename      ptr  (user-space const char *)
+ *   +24  flags         i64
+ *   +32  mode          i64
  *
  * sys_enter_openat tracepoint args (after 8-byte trace_entry):
  *   +8   __syscall_nr  i32
@@ -60,6 +67,30 @@ static inline __attribute__((always_inline)) void fill_file_open_metadata(struct
             bpf_probe_read_kernel_str(e->parent_comm, COMM_SZ, parent->comm);
         }
     }
+}
+
+SEC("tracepoint/syscalls/sys_enter_open")
+int eguard_sys_enter_open(void *ctx)
+{
+    EGUARD_ALLOC_EVENT(file_open_event, e);
+    fill_file_open_metadata(e);
+
+    __u64 filename_ptr = 0;
+    __s32 flags_val    = 0;
+    __s32 mode_val     = 0;
+
+    bpf_probe_read(&filename_ptr, sizeof(filename_ptr), (__u8 *)ctx + 16);
+    bpf_probe_read(&flags_val,    sizeof(flags_val),    (__u8 *)ctx + 24);
+    bpf_probe_read(&mode_val,     sizeof(mode_val),     (__u8 *)ctx + 32);
+
+    e->flags = (__u32)flags_val;
+    e->mode  = (__u32)mode_val;
+
+    if (filename_ptr)
+        bpf_probe_read_user_str(e->path, FILE_PATH_SZ,
+                                (const void *)filename_ptr);
+
+    EGUARD_SUBMIT_EVENT(ctx, e);
 }
 
 SEC("tracepoint/syscalls/sys_enter_openat")

@@ -25,7 +25,10 @@ fn restore_quarantined_file_writes_destination() {
         fs::read(&report.restored_path).expect("read restored"),
         b"payload"
     );
-    assert!(!src.exists(), "quarantine source should be removed after restore");
+    assert!(
+        !src.exists(),
+        "quarantine source should be removed after restore"
+    );
 
     let _ = fs::remove_file(report.restored_path);
     let _ = fs::remove_dir(base);

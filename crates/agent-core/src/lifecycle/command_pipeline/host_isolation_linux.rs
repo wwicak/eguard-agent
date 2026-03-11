@@ -1,4 +1,4 @@
-use super::command_utils::run_command;
+use super::command_utils::{mark_internal_command, run_command};
 use std::process::Command;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,7 +65,8 @@ fn build_ipv6_apply_commands(allowed_server_ips: &[String]) -> Vec<FirewallComma
 }
 
 fn firewall_filter_table_available(bin: &str) -> bool {
-    match Command::new(bin).arg("-S").output() {
+    let mut command = Command::new(bin);
+    match mark_internal_command(command.arg("-S")).output() {
         Ok(output) if output.status.success() => true,
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);

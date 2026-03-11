@@ -260,6 +260,9 @@ impl AgentConfig {
         if let Some(v) = non_empty(detection.bundle_path) {
             self.detection_bundle_path = v;
         }
+        if let Some(v) = non_empty(detection.bundle_public_key) {
+            self.detection_bundle_public_key = Some(v);
+        }
         if let Some(v) = detection.scan_on_create {
             self.detection_scan_on_create = v;
         }
@@ -561,6 +564,8 @@ struct FileDetectionConfig {
     ioc_dir: Option<String>,
     #[serde(default)]
     bundle_path: Option<String>,
+    #[serde(default)]
+    bundle_public_key: Option<String>,
     #[serde(default)]
     scan_on_create: Option<bool>,
     #[serde(default)]

@@ -1236,7 +1236,10 @@ fn map_response_action(raw: &str) -> pb::ResponseAction {
 }
 
 fn response_action_requires_http_fallback(raw: &str) -> bool {
-    matches!(raw.trim().to_ascii_lowercase().as_str(), "restore_quarantine")
+    matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "restore_quarantine"
+    )
 }
 
 fn map_response_confidence(raw: &str) -> pb::ResponseConfidence {

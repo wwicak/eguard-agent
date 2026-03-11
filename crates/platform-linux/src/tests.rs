@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::symlink;
 
 #[test]
 // AC-EBP-032 AC-EBP-062
@@ -264,6 +266,119 @@ fn process_exit_event_evicts_process_entry_from_cache() {
     assert_eq!(cache.process_cache_len(), 0);
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn native_forensics_collector_reads_procfs_fixture() {
+    let base = std::env::temp_dir().join(format!(
+        "eguard-platform-linux-forensics-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    let proc_root = base.join("proc");
+    let net_root = proc_root.join("net");
+    fs::create_dir_all(proc_root.join("1/fd")).expect("create fd dir");
+    fs::create_dir_all(&net_root).expect("create net dir");
+
+    fs::write(
+        proc_root.join("1/status"),
+        "Name:\tbash\nPPid:\t1\nUid:\t1000\t1000\t1000\t1000\n",
+    )
+    .expect("write status");
+    fs::write(proc_root.join("1/comm"), "bash\n").expect("write comm");
+    fs::write(proc_root.join("1/cmdline"), b"/usr/bin/bash\0-lc\0whoami\0").expect("write cmdline");
+    symlink("/usr/bin/bash", proc_root.join("1/exe")).expect("symlink exe");
+    symlink("/tmp/test.txt", proc_root.join("1/fd/3")).expect("symlink fd");
+
+    let header = "  sl  local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n";
+    fs::write(
+        net_root.join("tcp"),
+        format!(
+            "{header}   0: 0100007F:0016 00000000:0000 0A 00000000:00000000 00:00000000 00000000 1000 0 12345 1 0000000000000000 100 0 0 10 0\n"
+        ),
+    )
+    .expect("write tcp");
+    fs::write(net_root.join("tcp6"), header).expect("write tcp6");
+    fs::write(net_root.join("udp"), header).expect("write udp");
+    fs::write(net_root.join("udp6"), header).expect("write udp6");
+
+    let modules_path = base.join("modules");
+    fs::write(&modules_path, "dm_mod 123 0 - Live 0x0\n").expect("write modules");
+
+    let collector = ForensicsCollector::with_paths(proc_root.clone(), modules_path);
+    let snapshot = collector.collect_full_snapshot(true, true, true, true);
+
+    assert!(snapshot.processes.contains("pid=1"));
+    assert!(snapshot
+        .processes
+        .contains("cmdline=/usr/bin/bash -lc whoami"));
+    assert!(snapshot.network.contains("proto=tcp"));
+    assert!(snapshot.network.contains("local=127.0.0.1:22"));
+    assert!(snapshot.open_files.contains("target=/tmp/test.txt"));
+    assert!(snapshot.loaded_modules.contains("dm_mod"));
+
+    let _ = fs::remove_dir_all(base);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn native_forensics_collector_enforces_snapshot_limits() {
+    let base = std::env::temp_dir().join(format!(
+        "eguard-platform-linux-forensics-limits-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    let proc_root = base.join("proc");
+    let net_root = proc_root.join("net");
+    fs::create_dir_all(proc_root.join("1/fd")).expect("create fd dir 1");
+    fs::create_dir_all(proc_root.join("2/fd")).expect("create fd dir 2");
+    fs::create_dir_all(&net_root).expect("create net dir");
+
+    for pid in ["1", "2"] {
+        fs::write(
+            proc_root.join(pid).join("status"),
+            format!("Name:\tproc{pid}\nPPid:\t1\nUid:\t0\t0\t0\t0\n"),
+        )
+        .expect("write status");
+        fs::write(proc_root.join(pid).join("comm"), format!("proc{pid}\n")).expect("write comm");
+        fs::write(
+            proc_root.join(pid).join("cmdline"),
+            format!("proc{pid}\0").as_bytes(),
+        )
+        .expect("write cmdline");
+        symlink("/bin/true", proc_root.join(pid).join("exe")).expect("symlink exe");
+        symlink("/tmp/fixture", proc_root.join(pid).join("fd/0")).expect("symlink fd");
+    }
+
+    let header = "  sl  local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n";
+    fs::write(
+        net_root.join("tcp"),
+        format!(
+            "{header}   0: 0100007F:0016 00000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 111 1 0000000000000000 100 0 0 10 0\n   1: 0100007F:01BB 00000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 222 1 0000000000000000 100 0 0 10 0\n"
+        ),
+    )
+    .expect("write tcp");
+    fs::write(net_root.join("tcp6"), header).expect("write tcp6");
+    fs::write(net_root.join("udp"), header).expect("write udp");
+    fs::write(net_root.join("udp6"), header).expect("write udp6");
+
+    let modules_path = base.join("modules");
+    fs::write(&modules_path, "mod_a 1 0 - Live 0x0\n").expect("write modules");
+
+    let collector =
+        ForensicsCollector::with_paths(proc_root.clone(), modules_path).with_limits(1, 1, 1, 1);
+    let snapshot = collector.collect_full_snapshot(true, true, true, true);
+
+    assert!(snapshot.processes.contains("truncated"));
+    assert!(snapshot.network.contains("truncated"));
+    assert!(snapshot.open_files.contains("truncated"));
+
+    let _ = fs::remove_dir_all(base);
+}
+
 #[test]
 // AC-RES-025
 fn event_driven_runtime_primitives_include_inotify_watch_support() {
@@ -437,6 +552,40 @@ fn expensive_check_exclusions_skip_file_hash_on_noisy_paths() {
     };
     let enriched = enrich_event_with_cache(raw, &mut cache);
     assert!(enriched.file_sha256.is_none());
+
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+fn strict_budget_mode_keeps_hash_for_high_value_tmp_file_open() {
+    let base = std::env::temp_dir().join(format!(
+        "eguard-platform-linux-strict-budget-high-value-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    fs::create_dir_all(&base).expect("create temp dir");
+
+    let file = base.join("eicar-proof.bin");
+    fs::write(&file, b"payload").expect("write file");
+    let expected_hash = compute_sha256_file(file.to_string_lossy().as_ref()).expect("hash file");
+
+    let mut cache = EnrichmentCache::new(128, 128);
+    cache.set_budget_mode(true);
+
+    let raw = RawEvent {
+        event_type: EventType::FileOpen,
+        pid: std::process::id(),
+        uid: 0,
+        ts_ns: 1,
+        payload: format!("path={};fd=3;size=7", file.to_string_lossy()),
+    };
+    let enriched = enrich_event_with_cache(raw, &mut cache);
+    assert_eq!(
+        enriched.file_sha256.as_deref(),
+        Some(expected_hash.as_str())
+    );
 
     let _ = fs::remove_dir_all(base);
 }

@@ -273,18 +273,22 @@ StartLimitBurst=0
 Type=simple
 ExecStart=${binary_path}
 Restart=always
-RestartSec=1
+RestartSec=1s
 NoNewPrivileges=true
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
 ProtectSystem=full
 ProtectHome=true
-PrivateTmp=true
-TimeoutStopSec=5s
+PrivateTmp=false
+ReadWritePaths=/etc/eguard-agent /var/lib/eguard-agent
+TimeoutStopSec=15s
 
 [Install]
 WantedBy=multi-user.target
 UNIT
     $SUDO systemctl daemon-reload
 }
+
+$SUDO systemctl daemon-reload || true
 
 SYSTEMD_UNIT="${EGUARD_AGENT_SYSTEMD_UNIT:-eguard-agent}"
 if ! service_unit_exists "$SYSTEMD_UNIT"; then
@@ -302,6 +306,6 @@ if ! service_unit_exists "$SYSTEMD_UNIT"; then
 fi
 
 $SUDO systemctl enable "${SYSTEMD_UNIT}"
-$SUDO systemctl restart "${SYSTEMD_UNIT}"
+$SUDO systemctl start "${SYSTEMD_UNIT}"
 
 echo "eGuard Agent installed and enrolling with ${EGUARD_SERVER}"

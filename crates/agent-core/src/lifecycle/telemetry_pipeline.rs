@@ -9,42 +9,11 @@ use tracing::{info, warn};
 use super::{
     coalesce_file_event_key, compute_poll_timeout, compute_sampling_stride, elapsed_micros,
     AgentRuntime, DegradedCause, EventEnvelope, RawEvent, TickEvaluation,
-    DEGRADE_AFTER_SEND_FAILURES, EVENT_BATCH_SIZE,
+    DEGRADE_AFTER_SEND_FAILURES, EVENT_BATCH_SIZE, INTERNAL_SUBPROCESS_ENV_NAME,
 };
 
-const WINDOWS_SENSOR_CHILD_TTL_NS: u64 = 15 * 60 * 1_000_000_000;
-const WINDOWS_SENSOR_CHILD_PID_LIMIT: usize = 4_096;
-const WINDOWS_SENSOR_CHILD_PATTERNS_POWERSHELL: &[&str] = &[
-    "get-mpcomputerstatus",
-    "get-netfirewallprofile",
-    "get-bitlockervolume",
-    "get-ciminstance win32_computersystem",
-    "get-ciminstance win32_networkadapterconfiguration",
-    "get-ciminstance -classname win32_deviceguard",
-    "get-ciminstance win32_processor",
-    "get-ciminstance win32_operatingsystem",
-    "get-ciminstance win32_bios",
-    "get-ciminstance win32_physicalmemory",
-    "get-ciminstance win32_diskdrive",
-    "get-ciminstance win32_logicaldisk",
-    "get-ciminstance win32_videocontroller",
-    "get-netadapter",
-    "confirm-securebootuefi",
-    "get-tpm",
-    "get-itemproperty hklm:\\software\\microsoft\\windows\\currentversion\\uninstall",
-    "attacksurfacereductionrules_ids",
-    "get-mppreference",
-    "get-nettcpconnection -owningprocess",
-    "[system.security.principal.securityidentifier]::new",
-    "windowsupdate\\auto update\\rebootrequired",
-];
-const WINDOWS_SENSOR_CHILD_PATTERNS_REG: &[&str] = &[
-    "\\windows nt\\currentversion",
-    "\\control\\deviceguard",
-    "\\control\\lsa",
-    "\\policies\\system",
-];
-const WINDOWS_SENSOR_CHILD_PATTERNS_AUDITPOL: &[&str] = &["subcategory:\"process creation\""];
+const INTERNAL_PROCESS_TTL_NS: u64 = 15 * 60 * 1_000_000_000;
+const INTERNAL_PROCESS_PID_LIMIT: usize = 4_096;
 const TELEMETRY_SEND_TIMEOUT_MS: u64 = 5_000;
 
 impl AgentRuntime {
@@ -221,12 +190,11 @@ impl AgentRuntime {
 
     pub(super) fn next_raw_event(&mut self) -> Option<RawEvent> {
         self.refresh_strict_budget_mode();
-        let sampling_stride = self.sampling_stride();
-        if let Some(event) = self.dequeue_sampled_raw_event(sampling_stride) {
-            return Some(event);
-        }
-
-        let timeout = self.adaptive_poll_timeout();
+        let timeout = if self.raw_event_backlog.is_empty() {
+            self.adaptive_poll_timeout()
+        } else {
+            std::time::Duration::from_millis(0)
+        };
         let polled = self.ebpf_engine.poll_once(timeout);
         self.observe_ebpf_stats();
 
@@ -234,29 +202,35 @@ impl AgentRuntime {
             Ok(events) => self.ingest_polled_raw_events(events),
             Err(err) => {
                 warn!(error = %err, "eBPF poll failed; skipping telemetry event for this tick");
-                None
             }
         }
+
+        self.refresh_strict_budget_mode();
+        let sampling_stride = self.sampling_stride();
+        self.dequeue_sampled_raw_event(sampling_stride)
     }
 
     fn is_agent_self_event(event: &RawEvent) -> bool {
         event.pid == std::process::id()
     }
 
-    fn ingest_polled_raw_events(&mut self, events: Vec<RawEvent>) -> Option<RawEvent> {
+    fn ingest_polled_raw_events(&mut self, events: Vec<RawEvent>) {
         if events.is_empty() {
             self.refresh_strict_budget_mode();
-            return None;
+            return;
         }
 
+        debug_trace_matching_raw_events("polled", &events);
         let self_filtered = self.filter_agent_noise_events(events);
         if self_filtered.is_empty() {
             self.refresh_strict_budget_mode();
-            return None;
+            return;
         }
 
+        debug_trace_matching_raw_events("filtered", &self_filtered);
         let before = self_filtered.len();
         let file_coalesced = self.coalesce_file_event_burst(self_filtered);
+        debug_trace_matching_raw_events("file_coalesced", &file_coalesced);
         let file_dropped = before.saturating_sub(file_coalesced.len());
         if file_dropped > 0 {
             self.metrics.telemetry_coalesced_events_total = self
@@ -273,6 +247,7 @@ impl AgentRuntime {
         }
 
         let txn_coalesced = self.coalesce_event_txn_burst(file_coalesced);
+        debug_trace_matching_raw_events("txn_coalesced", &txn_coalesced);
         let txn_dropped = before
             .saturating_sub(file_dropped)
             .saturating_sub(txn_coalesced.len());
@@ -291,7 +266,9 @@ impl AgentRuntime {
         }
 
         let prioritized = Self::prioritize_raw_events(txn_coalesced);
+        debug_trace_matching_raw_events("prioritized", &prioritized);
         let retained = self.limit_raw_event_ingress(prioritized);
+        debug_trace_matching_raw_events("ingress_retained", &retained);
         self.enqueue_raw_events_with_priority(retained);
         self.enforce_raw_event_backlog_cap();
         self.refresh_strict_budget_mode();
@@ -306,8 +283,6 @@ impl AgentRuntime {
                 "applying statistical sampling due to telemetry backpressure"
             );
         }
-
-        self.dequeue_sampled_raw_event(stride)
     }
 
     fn filter_agent_noise_events(&mut self, events: Vec<RawEvent>) -> Vec<RawEvent> {
@@ -316,14 +291,20 @@ impl AgentRuntime {
             .map(|event| event.ts_ns)
             .filter(|value| *value > 0)
             .unwrap_or_else(unix_now_ns);
-        self.prune_suppressed_windows_sensor_pids(now_ns);
+        self.prune_suppressed_internal_process_pids(now_ns);
 
         let mut kept = Vec::with_capacity(events.len());
         for event in events {
-            if Self::is_agent_self_event(&event)
-                || self.should_suppress_sensor_child_event(&event)
-                || Self::should_drop_low_value_linux_raw_event(&event)
-            {
+            if Self::is_agent_self_event(&event) {
+                debug_trace_matching_raw_event("drop_self", &event);
+                continue;
+            }
+            if self.should_suppress_internal_process_event(&event) {
+                debug_trace_matching_raw_event("drop_internal", &event);
+                continue;
+            }
+            if Self::should_drop_low_value_linux_raw_event(&event) {
+                debug_trace_matching_raw_event("drop_low_value", &event);
                 continue;
             }
             kept.push(event);
@@ -353,31 +334,68 @@ impl AgentRuntime {
                 .unwrap_or_default();
 
             if matches!(event.event_type, crate::platform::EventType::ProcessExec)
-                && is_expected_linux_procfd_runtime_artifact(&comm, &parent_comm, &path, &command_line)
+                && is_expected_linux_procfd_runtime_artifact(
+                    &comm,
+                    &parent_comm,
+                    &path,
+                    &command_line,
+                )
+            {
+                return true;
+            }
+
+            if matches!(event.event_type, crate::platform::EventType::ProcessExec)
+                && is_expected_linux_auth_stack_process_noise(
+                    &comm,
+                    &parent_comm,
+                    &path,
+                    &command_line,
+                )
+            {
+                return true;
+            }
+
+            if matches!(event.event_type, crate::platform::EventType::ProcessExec)
+                && is_expected_linux_systemd_process_noise(
+                    &comm,
+                    &parent_comm,
+                    &path,
+                    &command_line,
+                )
+            {
+                return true;
+            }
+
+            if matches!(event.event_type, crate::platform::EventType::ProcessExec)
+                && is_expected_linux_shell_startup_process_noise(
+                    &comm,
+                    &parent_comm,
+                    &path,
+                    &command_line,
+                )
             {
                 return true;
             }
 
             if !matches!(event.event_type, crate::platform::EventType::FileOpen) {
+                if matches!(event.event_type, crate::platform::EventType::FileWrite)
+                    && path.is_empty()
+                {
+                    return true;
+                }
+
                 return false;
             }
 
-            if path == "/dev/console"
-                || path == "/dev/tty"
-                || path.starts_with("/dev/pts/")
-            {
+            if path == "/dev/console" || path == "/dev/tty" || path.starts_with("/dev/pts/") {
                 return true;
             }
 
-            if comm == "systemd" && is_low_value_linux_systemd_path(&path) {
+            if is_low_value_linux_systemd_noise(&comm, &parent_comm, &path) {
                 return true;
             }
 
-            if parent_comm == "systemd"
-                && (path.is_empty()
-                    || path.starts_with("/usr/lib/systemd/")
-                    || path.starts_with("/usr/lib64/systemd/"))
-            {
+            if is_expected_linux_agent_control_plane_noise(&comm, &parent_comm, &path) {
                 return true;
             }
 
@@ -385,101 +403,90 @@ impl AgentRuntime {
                 return true;
             }
 
+            if is_expected_linux_ssh_bootstrap_noise(&comm, &parent_comm, &path) {
+                return true;
+            }
+
             false
         }
     }
 
-    fn should_suppress_sensor_child_event(&mut self, event: &RawEvent) -> bool {
+    fn should_suppress_internal_process_event(&mut self, event: &RawEvent) -> bool {
         let event_ns = if event.ts_ns == 0 {
             unix_now_ns()
         } else {
             event.ts_ns
         };
-        self.prune_suppressed_windows_sensor_pids(event_ns);
+        self.prune_suppressed_internal_process_pids(event_ns);
 
         if matches!(event.event_type, crate::platform::EventType::ProcessExit) {
             return self
-                .suppressed_windows_sensor_pids
+                .suppressed_internal_process_pids
                 .remove(&event.pid)
                 .is_some();
         }
 
-        if let Some(expires_ns) = self.suppressed_windows_sensor_pids.get(&event.pid).copied() {
-            if event_ns <= expires_ns {
-                return true;
-            }
-            self.suppressed_windows_sensor_pids.remove(&event.pid);
-        }
-
-        if Self::is_known_windows_sensor_child_process(event, std::process::id()) {
-            self.suppressed_windows_sensor_pids.insert(
-                event.pid,
-                event_ns.saturating_add(WINDOWS_SENSOR_CHILD_TTL_NS),
-            );
-            self.prune_suppressed_windows_sensor_pids(event_ns);
+        if self.is_tracked_internal_process(event.pid, event_ns)
+            || self.should_track_internal_process_event(event, event_ns)
+        {
             return true;
         }
 
         false
     }
 
-    fn prune_suppressed_windows_sensor_pids(&mut self, now_ns: u64) {
-        self.suppressed_windows_sensor_pids
-            .retain(|_, expires_ns| now_ns <= *expires_ns);
-        if self.suppressed_windows_sensor_pids.len()
-            > WINDOWS_SENSOR_CHILD_PID_LIMIT.saturating_mul(2)
-        {
-            self.suppressed_windows_sensor_pids.clear();
+    fn should_track_internal_process_event(&mut self, event: &RawEvent, event_ns: u64) -> bool {
+        if let Some(parent_pid) = payload_parent_pid(&event.payload) {
+            if parent_pid == std::process::id()
+                || self.is_tracked_internal_process(parent_pid, event_ns)
+            {
+                self.track_internal_process_pid(event.pid, event_ns);
+                return true;
+            }
         }
+
+        if payload_parent_process_name(&event.payload)
+            .map(|value| is_eguard_agent_process(&value))
+            .unwrap_or(false)
+            || is_marked_internal_process(event.pid)
+        {
+            self.track_internal_process_pid(event.pid, event_ns);
+            return true;
+        }
+
+        false
     }
 
-    fn is_known_windows_sensor_child_process(event: &RawEvent, agent_pid: u32) -> bool {
-        if !matches!(event.event_type, crate::platform::EventType::ProcessExec) {
-            return false;
+    fn track_internal_process_pid(&mut self, pid: u32, event_ns: u64) {
+        if pid == 0 || pid == std::process::id() {
+            return;
         }
 
-        let process_name = payload_process_name(&event.payload)
-            .map(|value| value.to_ascii_lowercase())
-            .unwrap_or_default();
-        if process_name.is_empty() {
+        self.suppressed_internal_process_pids
+            .insert(pid, event_ns.saturating_add(INTERNAL_PROCESS_TTL_NS));
+        self.prune_suppressed_internal_process_pids(event_ns);
+    }
+
+    fn is_tracked_internal_process(&mut self, pid: u32, event_ns: u64) -> bool {
+        let Some(expires_ns) = self.suppressed_internal_process_pids.get(&pid).copied() else {
             return false;
+        };
+
+        if event_ns <= expires_ns {
+            return true;
         }
 
-        let parent_pid = parse_payload_u32_field(&event.payload, "ppid")
-            .or_else(|| parse_payload_u32_field(&event.payload, "parent_pid"));
-        let parent_process = parse_payload_field(&event.payload, "parent_process")
-            .or_else(|| parse_payload_field(&event.payload, "parent_process_name"))
-            .or_else(|| parse_payload_field(&event.payload, "parent_name"))
-            .map(|value| value.to_ascii_lowercase())
-            .unwrap_or_default();
-        let parent_name = process_basename(&parent_process).to_ascii_lowercase();
-        let parent_matches = parent_pid == Some(agent_pid) || parent_name == "eguard-agent.exe";
-        if !parent_matches {
-            return false;
-        }
+        self.suppressed_internal_process_pids.remove(&pid);
+        false
+    }
 
-        let command_line = parse_payload_field(&event.payload, "cmdline")
-            .or_else(|| parse_payload_field(&event.payload, "command_line"))
-            .map(|value| value.to_ascii_lowercase())
-            .unwrap_or_default();
-        if command_line.is_empty() {
-            return false;
-        }
-
-        match process_name.as_str() {
-            "powershell.exe" => WINDOWS_SENSOR_CHILD_PATTERNS_POWERSHELL
-                .iter()
-                .any(|pattern| command_line.contains(pattern)),
-            "reg.exe" => {
-                command_line.contains(" query")
-                    && WINDOWS_SENSOR_CHILD_PATTERNS_REG
-                        .iter()
-                        .any(|pattern| command_line.contains(pattern))
-            }
-            "auditpol.exe" => WINDOWS_SENSOR_CHILD_PATTERNS_AUDITPOL
-                .iter()
-                .any(|pattern| command_line.contains(pattern)),
-            _ => false,
+    fn prune_suppressed_internal_process_pids(&mut self, now_ns: u64) {
+        self.suppressed_internal_process_pids
+            .retain(|_, expires_ns| now_ns <= *expires_ns);
+        if self.suppressed_internal_process_pids.len()
+            > INTERNAL_PROCESS_PID_LIMIT.saturating_mul(2)
+        {
+            self.suppressed_internal_process_pids.clear();
         }
     }
 
@@ -506,7 +513,7 @@ impl AgentRuntime {
         compute_sampling_stride(self.telemetry_backlog_depth(), self.recent_ebpf_drops)
     }
 
-    fn dequeue_sampled_raw_event(&mut self, stride: usize) -> Option<RawEvent> {
+    pub(super) fn dequeue_sampled_raw_event(&mut self, stride: usize) -> Option<RawEvent> {
         let stride = stride.max(1);
 
         loop {
@@ -514,19 +521,51 @@ impl AgentRuntime {
                 return None;
             };
 
-            if Self::is_agent_self_event(&event) || self.should_suppress_sensor_child_event(&event)
-            {
+            if Self::is_agent_self_event(&event) {
+                debug_trace_matching_raw_event("dequeue_drop_self", &event);
+                continue;
+            }
+            if self.should_suppress_internal_process_event(&event) {
+                debug_trace_matching_raw_event("dequeue_drop_internal", &event);
+                continue;
+            }
+            if Self::should_drop_low_value_linux_raw_event(&event) {
+                debug_trace_matching_raw_event("dequeue_drop_low_value", &event);
                 continue;
             }
 
             if stride > 1 {
-                let skips = stride.saturating_sub(1).min(self.raw_event_backlog.len());
-                for _ in 0..skips {
-                    let _ = self.raw_event_backlog.pop_front();
-                }
+                self.sample_low_priority_backlog_events(stride.saturating_sub(1));
             }
 
+            debug_trace_matching_raw_event("dequeued", &event);
             return Some(event);
+        }
+    }
+
+    fn sample_low_priority_backlog_events(&mut self, max_skips: usize) {
+        if max_skips == 0 || self.raw_event_backlog.is_empty() {
+            return;
+        }
+
+        let mut preserved = Vec::new();
+        let mut skipped = 0usize;
+
+        while skipped < max_skips {
+            let Some(candidate) = self.raw_event_backlog.pop_front() else {
+                break;
+            };
+
+            if Self::raw_event_priority(&candidate) <= 1 {
+                preserved.push(candidate);
+                continue;
+            }
+
+            skipped = skipped.saturating_add(1);
+        }
+
+        for event in preserved.into_iter().rev() {
+            self.raw_event_backlog.push_front(event);
         }
     }
 
@@ -654,6 +693,16 @@ impl AgentRuntime {
             return events;
         }
 
+        // Within the same primary priority tier, keep high-value FileOpen events
+        // ahead of ProcessExec bursts so a same-session /tmp exact-IOC read is not
+        // dropped purely because many benign helper execs arrived in the same poll.
+        events.sort_by_key(|event| {
+            (
+                Self::raw_event_priority(event),
+                Self::raw_event_ingest_secondary_key(event),
+            )
+        });
+
         let dropped = events.len().saturating_sub(self.raw_event_ingest_cap);
         events.truncate(self.raw_event_ingest_cap);
         self.metrics.telemetry_raw_backlog_dropped_total = self
@@ -672,6 +721,22 @@ impl AgentRuntime {
         events
     }
 
+    fn raw_event_ingest_secondary_key(event: &RawEvent) -> u8 {
+        match event.event_type {
+            crate::platform::EventType::FileOpen => {
+                let path = parse_payload_field(&event.payload, "path").unwrap_or_default();
+                if path.starts_with("/tmp/") || path.starts_with("/var/tmp/") {
+                    0
+                } else if is_high_value_linux_file_path(&path) {
+                    1
+                } else {
+                    2
+                }
+            }
+            _ => 2,
+        }
+    }
+
     pub(super) fn enforce_raw_event_backlog_cap(&mut self) {
         if self.raw_event_backlog.len() <= self.raw_event_backlog_cap {
             return;
@@ -682,7 +747,9 @@ impl AgentRuntime {
             .len()
             .saturating_sub(self.raw_event_backlog_cap);
         for _ in 0..overflow {
-            let _ = self.raw_event_backlog.pop_front();
+            if let Some(event) = self.raw_event_backlog.pop_back() {
+                debug_trace_matching_raw_event("backlog_evicted", &event);
+            }
         }
 
         self.metrics.telemetry_raw_backlog_dropped_total = self
@@ -695,7 +762,7 @@ impl AgentRuntime {
             backlog_cap = self.raw_event_backlog_cap,
             backlog_after = self.raw_event_backlog.len(),
             backlog_dropped_total = self.metrics.telemetry_raw_backlog_dropped_total,
-            "raw event backlog exceeded cap; dropped oldest events"
+            "raw event backlog exceeded cap; dropped tail events to preserve frontloaded high-priority telemetry"
         );
     }
 
@@ -717,9 +784,13 @@ impl AgentRuntime {
         }
 
         for event in frontload.into_iter().rev() {
+            debug_trace_matching_raw_event("enqueue_front", &event);
             self.raw_event_backlog.push_front(event);
         }
-        self.raw_event_backlog.extend(normal);
+        for event in normal {
+            debug_trace_matching_raw_event("enqueue_back", &event);
+            self.raw_event_backlog.push_back(event);
+        }
     }
 
     pub(super) fn raw_event_priority(event: &RawEvent) -> u8 {
@@ -749,13 +820,31 @@ impl AgentRuntime {
     }
 
     fn file_event_burst_key(event: &RawEvent) -> Option<String> {
+        if is_high_value_linux_file_open_event(event) {
+            return None;
+        }
+
         coalesce_file_event_key(event)
     }
 
     fn event_txn_burst_key(event: &RawEvent) -> Option<String> {
+        if is_high_value_linux_file_open_event(event) {
+            return None;
+        }
+
         match event.event_type {
-            crate::platform::EventType::FileOpen
-            | crate::platform::EventType::FileWrite
+            crate::platform::EventType::FileOpen => {
+                let txn = super::EventTxn::from_raw(event);
+                if txn.subject.is_none() && txn.object.is_none() {
+                    return None;
+                }
+                Some(format!(
+                    "txn:{}|access:{}",
+                    txn.key,
+                    raw_file_open_access_intent(event)
+                ))
+            }
+            crate::platform::EventType::FileWrite
             | crate::platform::EventType::FileRename
             | crate::platform::EventType::FileUnlink
             | crate::platform::EventType::TcpConnect
@@ -783,6 +872,46 @@ impl AgentRuntime {
     }
 }
 
+fn raw_file_open_access_intent(event: &RawEvent) -> &'static str {
+    let payload = &event.payload;
+    let flags = parse_payload_field(payload, "flags");
+    let mode = parse_payload_field(payload, "mode");
+    if parse_file_write_flags(flags.as_deref(), mode.as_deref()) {
+        "write"
+    } else {
+        "read"
+    }
+}
+
+fn is_high_value_linux_file_open_event(event: &RawEvent) -> bool {
+    if !matches!(event.event_type, crate::platform::EventType::FileOpen) {
+        return false;
+    }
+
+    let path = parse_payload_field(&event.payload, "path").unwrap_or_default();
+    is_high_value_linux_file_path(&path)
+}
+
+fn parse_file_write_flags(flags: Option<&str>, mode: Option<&str>) -> bool {
+    let flags_val = flags
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(0);
+    let mode_val = mode
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(0);
+
+    const O_WRONLY: u32 = 1;
+    const O_RDWR: u32 = 2;
+    const O_CREAT: u32 = 0x40;
+    const O_TRUNC: u32 = 0x200;
+
+    let write_intent = (flags_val & O_WRONLY) != 0 || (flags_val & O_RDWR) != 0;
+    let destructive = (flags_val & O_TRUNC) != 0 || (flags_val & O_CREAT) != 0;
+    let executable_bit = (mode_val & 0o111) != 0;
+
+    write_intent || destructive || executable_bit
+}
+
 fn is_expected_linux_procfd_runtime_artifact(
     comm: &str,
     parent_comm: &str,
@@ -790,15 +919,44 @@ fn is_expected_linux_procfd_runtime_artifact(
     command_line: &str,
 ) -> bool {
     let lower = path.to_ascii_lowercase();
-    if !(lower.starts_with("/proc/self/fd/") || (lower.starts_with("/proc/") && lower.contains("/fd/"))) {
+    if !(lower.starts_with("/proc/self/fd/")
+        || (lower.starts_with("/proc/") && lower.contains("/fd/")))
+    {
         return false;
     }
 
     let comm_numeric = !comm.is_empty() && comm.chars().all(|ch| ch.is_ascii_digit());
-    let cmd_numeric = !command_line.is_empty() && command_line.chars().all(|ch| ch.is_ascii_digit());
+    let cmd_numeric =
+        !command_line.is_empty() && command_line.chars().all(|ch| ch.is_ascii_digit());
 
     (parent_comm == "systemd" || parent_comm == "sshd" || parent_comm == "sshd-session")
         && (comm_numeric || cmd_numeric)
+}
+
+fn is_expected_linux_auth_stack_process_noise(
+    comm: &str,
+    parent_comm: &str,
+    path: &str,
+    command_line: &str,
+) -> bool {
+    let process = normalize_linux_process_name(comm);
+    let parent = normalize_linux_process_name(parent_comm);
+    let lower = path.to_ascii_lowercase();
+    let cmd = command_line.to_ascii_lowercase();
+
+    if process == "sshd-session" && parent == "sshd" {
+        return lower.ends_with("/sshd-session") || cmd.contains("sshd-session: [accepted]");
+    }
+
+    if process == "unix_chkpwd" && parent == "sshd-session" {
+        return lower.ends_with("/unix_chkpwd") || cmd == "unix_chkpwd";
+    }
+
+    if process == "unix_chkpwd" && parent == "systemd" {
+        return lower.is_empty() || lower.ends_with("/unix_chkpwd");
+    }
+
+    false
 }
 
 fn is_expected_linux_auth_stack_noise(comm: &str, parent_comm: &str, path: &str) -> bool {
@@ -809,7 +967,9 @@ fn is_expected_linux_auth_stack_noise(comm: &str, parent_comm: &str, path: &str)
     if matches!(process.as_str(), "unix_chkpwd" | "chkpwd")
         && (lower.starts_with("/etc/shadow")
             || lower.starts_with("/etc/gshadow")
-            || lower.starts_with("/etc/master.passwd"))
+            || lower.starts_with("/etc/master.passwd")
+            || lower == "/etc/passwd"
+            || lower == "/etc/nsswitch.conf")
     {
         return true;
     }
@@ -842,13 +1002,239 @@ fn is_expected_linux_auth_stack_noise(comm: &str, parent_comm: &str, path: &str)
     false
 }
 
-fn is_low_value_linux_systemd_path(path: &str) -> bool {
+fn is_expected_linux_systemd_process_noise(
+    comm: &str,
+    parent_comm: &str,
+    path: &str,
+    command_line: &str,
+) -> bool {
+    let process = normalize_linux_process_name(comm);
+    let parent = normalize_linux_process_name(parent_comm);
+    let lower = path.to_ascii_lowercase();
+    let cmd = command_line.to_ascii_lowercase();
+
+    if !is_systemd_family_process(&process) && !is_systemd_family_process(&parent) {
+        return false;
+    }
+
+    if lower.is_empty() {
+        if process.ends_with("-generator")
+            && matches!(parent.as_str(), "sd-exec-strv" | "systemd")
+        {
+            return true;
+        }
+        if parent == "systemd"
+            && matches!(
+                process.as_str(),
+                "systemd" | "systemd-user-runtime-dir" | "systemd-tmpfiles" | "systemctl"
+            )
+        {
+            return true;
+        }
+        return false;
+    }
+
+    if process == "systemd"
+        && (lower.ends_with("/systemd") || lower.ends_with("/systemd/systemd"))
+        && cmd.ends_with("systemd --user")
+    {
+        return true;
+    }
+
+    if process == "systemd-user-runtime-dir"
+        && (lower.ends_with("/systemd-user-runtime-dir")
+            || lower.ends_with("/systemd/systemd-user-runtime-dir"))
+        && parent == "systemd"
+    {
+        return true;
+    }
+
+    if lower.starts_with("/usr/lib/systemd/user-generators/")
+        || lower.starts_with("/usr/lib64/systemd/user-generators/")
+        || lower.starts_with("/usr/lib/systemd/user-environment-generators/")
+        || lower.starts_with("/usr/lib64/systemd/user-environment-generators/")
+    {
+        return process.ends_with("-generator")
+            && matches!(parent.as_str(), "systemd" | "sd-exec-strv");
+    }
+
+    if process == "systemd-tmpfiles" && parent == "systemd" && cmd.contains("--user") {
+        return true;
+    }
+
+    false
+}
+
+fn is_expected_linux_shell_startup_process_noise(
+    comm: &str,
+    parent_comm: &str,
+    path: &str,
+    command_line: &str,
+) -> bool {
+    let process = normalize_linux_process_name(comm);
+    let parent = normalize_linux_process_name(parent_comm);
+    let lower = path.to_ascii_lowercase();
+    let cmd = command_line.to_ascii_lowercase();
+
+    if parent != "bash" {
+        return false;
+    }
+
+    (process == "grepconf.sh" && (lower == "/usr/libexec/grepconf.sh" || cmd == "grepconf.sh"))
+        || (process == "systemctl"
+            && cmd.contains("--user")
+            && cmd.contains("show-environment"))
+}
+
+fn is_expected_linux_ssh_bootstrap_noise(comm: &str, parent_comm: &str, path: &str) -> bool {
+    let process = normalize_linux_process_name(comm);
+    let parent = normalize_linux_process_name(parent_comm);
+    let lower = path.to_ascii_lowercase();
+
+    if process == "sshd-session" && matches!(parent.as_str(), "sshd" | "sshd-session") {
+        return is_low_value_linux_ssh_bootstrap_path(&lower);
+    }
+
+    if process == "bash" && parent == "sshd-session" {
+        return is_low_value_linux_shell_startup_path(&lower);
+    }
+
+    if process == "unix_chkpwd" && parent == "sshd-session" {
+        return lower.is_empty() || lower == "/etc/localtime";
+    }
+
+    false
+}
+
+fn is_low_value_linux_systemd_noise(comm: &str, parent_comm: &str, path: &str) -> bool {
+    (is_systemd_family_process(comm) || is_systemd_family_process(parent_comm))
+        && is_low_value_linux_systemd_path(path)
+}
+
+fn is_systemd_family_process(process: &str) -> bool {
+    let normalized = normalize_linux_process_name(process);
+    normalized == "systemd"
+        || normalized.starts_with("systemd-")
+        || matches!(normalized.as_str(), "sd-rmrf" | "sd-exec-strv")
+}
+
+fn is_eguard_agent_process(process: &str) -> bool {
+    matches!(
+        normalize_linux_process_name(process).as_str(),
+        "eguard-agent" | "eguard-agent.exe" | "agent-core" | "agent-core.exe"
+    )
+}
+
+fn normalize_linux_process_name(process: &str) -> String {
+    process_basename(process.trim().trim_start_matches('(').trim_end_matches(')'))
+        .to_ascii_lowercase()
+}
+
+fn is_low_value_linux_runtime_loader_path(path: &str) -> bool {
     path.is_empty()
+        || path == "/etc/ld.so.cache"
+        || path == "/dev/null"
+        || path.starts_with("/proc/self/")
+        || path.starts_with("/proc/thread-self/")
+        || path.starts_with("/lib/")
+        || path.starts_with("/lib64/")
+        || path.starts_with("/usr/lib64/")
+}
+
+fn is_low_value_linux_ssh_bootstrap_path(path: &str) -> bool {
+    is_low_value_linux_runtime_loader_path(path)
+        || path == "/proc/sys/crypto/fips_enabled"
+        || path.starts_with("/sys/fs/selinux/")
+        || path.starts_with("/etc/pam.d/")
+        || path.starts_with("/etc/pki/tls/")
+        || path.starts_with("/etc/crypto-policies/")
+        || path.starts_with("/etc/selinux/")
+        || path.starts_with("/etc/security/")
+        || path.starts_with("/etc/gss/")
+        || path.ends_with("/.ssh/authorized_keys")
+        || matches!(
+            path,
+            "/etc/login.defs"
+                | "/etc/environment"
+                | "/etc//environment"
+                | "/etc/passwd"
+                | "/etc/group"
+                | "/etc/nsswitch.conf"
+                | "/etc/gai.conf"
+                | "/var/run/nologin"
+                | "/var/log/btmp"
+        )
+}
+
+fn is_low_value_linux_shell_startup_path(path: &str) -> bool {
+    matches!(path, "/etc/profile" | "/etc/bashrc")
+        || path.starts_with("/etc/profile.d/")
+        || path.ends_with("/.bashrc")
+        || path.ends_with("/.bash_profile")
+        || path.ends_with("/.profile")
+        || path.ends_with("/.inputrc")
+}
+
+fn is_low_value_linux_systemd_path(path: &str) -> bool {
+    is_low_value_linux_runtime_loader_path(path)
+        || path.is_empty()
         || !path.starts_with('/')
-        || path.starts_with("/sys/fs/cgroup/")
+        || path.starts_with("/sys/")
         || path.starts_with("/proc/self/")
         || path.starts_with("/proc/")
+        || path.starts_with("/run/")
+        || path.starts_with("/var/run/")
+        || path.starts_with("/var/log/journal/")
+        || path.starts_with("/usr/lib/systemd/")
+        || path.starts_with("/usr/lib64/systemd/")
         || path.starts_with("/run/udev/data/")
+        || path.starts_with("/etc/pam.d/")
+        || path.starts_with("/etc/selinux/")
+        || path.ends_with("/.config/systemd/user.conf")
+        || path.contains("/.config/systemd/user.conf.d/")
+}
+
+fn is_low_value_linux_control_plane_runtime_path(path: &str) -> bool {
+    if path.starts_with("/usr/lib/systemd/system/")
+        || path.starts_with("/usr/lib64/systemd/system/")
+        || path.starts_with("/usr/lib/systemd/user/")
+        || path.starts_with("/usr/lib64/systemd/user/")
+    {
+        return false;
+    }
+
+    is_low_value_linux_runtime_loader_path(path)
+        || path.starts_with("/proc/")
+        || path.starts_with("/run/")
+        || path.starts_with("/var/run/")
+        || path.starts_with("/dev/")
+        || path.starts_with("/usr/lib/locale/")
+        || path.starts_with("/usr/lib/systemd/")
+        || path.starts_with("/usr/lib64/systemd/")
+}
+
+fn is_low_value_linux_rpm_metadata_path(path: &str) -> bool {
+    path.starts_with("/usr/lib/rpm/")
+        || path.starts_with("/usr/lib64/rpm/")
+        || path.starts_with("/usr/share/rpm/")
+        || path.starts_with("/var/lib/rpm/")
+}
+
+fn is_expected_linux_agent_control_plane_noise(comm: &str, parent_comm: &str, path: &str) -> bool {
+    if !is_eguard_agent_process(parent_comm) {
+        return false;
+    }
+
+    let process = normalize_linux_process_name(comm);
+    let lower = path.to_ascii_lowercase();
+    match process.as_str() {
+        "systemctl" => is_low_value_linux_control_plane_runtime_path(&lower),
+        "rpm" => {
+            is_low_value_linux_control_plane_runtime_path(&lower)
+                || is_low_value_linux_rpm_metadata_path(&lower)
+        }
+        _ => false,
+    }
 }
 
 fn is_high_value_linux_file_path(path: &str) -> bool {
@@ -860,6 +1246,40 @@ fn is_high_value_linux_file_path(path: &str) -> bool {
         || path.starts_with("/opt/")
         || path.starts_with("/srv/")
         || path.starts_with("/var/www/")
+}
+
+fn debug_trace_matching_raw_events(stage: &'static str, events: &[RawEvent]) {
+    for event in events {
+        debug_trace_matching_raw_event(stage, event);
+    }
+}
+
+fn debug_trace_matching_raw_event(stage: &'static str, event: &RawEvent) {
+    let Some(raw_filter) = std::env::var("EGUARD_DEBUG_TRACE_FILE_SUBSTRING")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    else {
+        return;
+    };
+
+    let path = parse_payload_field(&event.payload, "path").unwrap_or_default();
+    let payload_matches = event.payload.contains(&raw_filter);
+    let path_matches = !path.is_empty() && path.contains(&raw_filter);
+    if !payload_matches && !path_matches {
+        return;
+    }
+
+    info!(
+        stage,
+        event_type = ?event.event_type,
+        pid = event.pid,
+        uid = event.uid,
+        ts_ns = event.ts_ns,
+        path = %path,
+        payload = %event.payload,
+        "debug traced raw file event"
+    );
 }
 
 fn parse_payload_field(payload: &str, field: &str) -> Option<String> {
@@ -894,26 +1314,57 @@ fn parse_payload_u32_field(payload: &str, field: &str) -> Option<u32> {
     trimmed.parse::<u32>().ok()
 }
 
-fn payload_process_name(payload: &str) -> Option<String> {
-    parse_payload_field(payload, "path")
-        .or_else(|| parse_payload_field(payload, "exe"))
-        .or_else(|| parse_payload_field(payload, "process_path"))
-        .or_else(|| parse_payload_field(payload, "process_image"))
-        .map(|value| process_basename(&value).to_string())
-        .or_else(|| {
-            parse_payload_field(payload, "cmdline")
-                .or_else(|| parse_payload_field(payload, "command_line"))
-                .and_then(|value| {
-                    value
-                        .split(['\0', ' '])
-                        .find(|segment| !segment.trim().is_empty())
-                        .map(|segment| process_basename(segment).to_string())
-                })
-        })
+fn payload_parent_pid(payload: &str) -> Option<u32> {
+    parse_payload_u32_field(payload, "ppid")
+        .or_else(|| parse_payload_u32_field(payload, "parent_pid"))
+}
+
+fn payload_parent_process_name(payload: &str) -> Option<String> {
+    parse_payload_field(payload, "parent_process")
+        .or_else(|| parse_payload_field(payload, "parent_process_name"))
+        .or_else(|| parse_payload_field(payload, "parent_name"))
+        .or_else(|| parse_payload_field(payload, "parent_comm"))
 }
 
 fn process_basename(value: &str) -> &str {
     value.rsplit(['/', '\\']).next().unwrap_or(value)
+}
+
+fn is_marked_internal_process(pid: u32) -> bool {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        false
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if pid == 0 {
+            return false;
+        }
+
+        let Ok(raw) = std::fs::read(format!("/proc/{pid}/environ")) else {
+            return false;
+        };
+
+        raw.split(|byte| *byte == 0).any(|entry| {
+            let Ok(value) = std::str::from_utf8(entry) else {
+                return false;
+            };
+            let Some(marker) = value.strip_prefix(INTERNAL_SUBPROCESS_ENV_NAME) else {
+                return false;
+            };
+
+            if marker.is_empty() {
+                return true;
+            }
+
+            marker
+                .strip_prefix('=')
+                .map(|raw_value| matches!(raw_value.trim(), "1" | "true" | "TRUE" | "True"))
+                .unwrap_or(false)
+        })
+    }
 }
 
 fn decode_payload_value(raw: &str) -> String {

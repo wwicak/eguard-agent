@@ -4,7 +4,7 @@ use std::io::Read;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use crate::types::TelemetryEvent;
+use crate::types::{EventClass, TelemetryEvent};
 
 const DEFAULT_MAX_SCAN_BYTES: usize = 1024 * 1024;
 
@@ -58,12 +58,29 @@ pub struct YaraEngine {
 /// community YARA rule sets (e.g., CobaltStrike, Autumn_Backdoor matching
 /// benign shared objects like `libkrb5support.so`).
 const DEFAULT_EXCLUDED_PATH_PREFIXES: &[&str] = &[
+    "/etc/ld.so.cache",
     "/usr/lib/",
     "/usr/lib64/",
     "/usr/lib/x86_64-linux-gnu/",
     "/lib/",
     "/lib64/",
     "/lib/x86_64-linux-gnu/",
+    "/var/log/journal/",
+];
+
+/// System executable roots excluded from YARA file scans on process_exec.
+///
+/// Community YARA bundles frequently contain low-entropy literals that match
+/// common ELF binaries (`x86`, `linux`, `file`, `http`, etc.). Scanning every
+/// system executable launch causes alert storms on benign tools like `cat`,
+/// `bash`, `sudo`, `systemctl`, and `sshd-session`, which masks real
+/// user-space file evidence.
+const DEFAULT_PROCESS_EXEC_EXCLUDED_PATH_PREFIXES: &[&str] = &[
+    "/usr/bin/",
+    "/bin/",
+    "/usr/sbin/",
+    "/sbin/",
+    "/usr/libexec/",
 ];
 
 impl YaraEngine {
@@ -141,7 +158,10 @@ impl YaraEngine {
         if let Some(path) = event.file_path.as_deref() {
             // Skip system library directories to avoid false positives from
             // broad community rules matching benign shared objects.
-            if self.is_excluded_path(path) {
+            if self.is_excluded_path(path)
+                || (event.event_class == EventClass::ProcessExec
+                    && is_excluded_process_exec_path(path))
+            {
                 return hits;
             }
             let scan_path = Path::new(path);
@@ -423,7 +443,10 @@ fn is_yara_file(path: &Path) -> bool {
 }
 
 fn is_scannable_regular_file(path: &Path) -> bool {
-    let normalized = path.to_string_lossy().replace('\\', "/").to_ascii_lowercase();
+    let normalized = path
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_ascii_lowercase();
     if normalized.starts_with("/proc/")
         || normalized.starts_with("/sys/")
         || normalized.starts_with("/dev/")
@@ -457,6 +480,12 @@ fn load_excluded_path_prefixes() -> Vec<String> {
         .iter()
         .map(|s| (*s).to_string())
         .collect()
+}
+
+fn is_excluded_process_exec_path(path: &str) -> bool {
+    DEFAULT_PROCESS_EXEC_EXCLUDED_PATH_PREFIXES
+        .iter()
+        .any(|prefix| path.starts_with(prefix))
 }
 
 fn dedup_hits(hits: Vec<YaraHit>) -> Vec<YaraHit> {
