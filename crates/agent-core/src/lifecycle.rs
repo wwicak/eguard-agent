@@ -74,8 +74,8 @@ use timing::{
 
 #[allow(unused_imports)]
 use detection_event::{
-    confidence_label, confidence_to_severity, map_event_class, should_drop_low_value_windows_event,
-    to_detection_event,
+    confidence_label, confidence_to_severity, map_event_class, should_drop_low_value_linux_event,
+    should_drop_low_value_windows_event, to_detection_event,
 };
 
 #[allow(unused_imports)]

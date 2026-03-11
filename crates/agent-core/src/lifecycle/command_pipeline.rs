@@ -19,6 +19,7 @@ mod device_actions;
 mod forensics;
 mod handlers;
 mod host_actions;
+mod host_isolation_allowlist;
 mod host_isolation_linux;
 mod paths;
 mod payloads;

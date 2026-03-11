@@ -260,7 +260,13 @@ pub(super) struct RuntimeMetrics {
 pub(super) struct LocalActionResult {
     pub(super) success: bool,
     pub(super) detail: String,
-    pub(super) action_type: Option<String>,
+    pub(super) reports: Vec<LocalActionStepResult>,
+}
+
+pub(super) struct LocalActionStepResult {
+    pub(super) action_type: String,
+    pub(super) success: bool,
+    pub(super) detail: String,
     pub(super) file_path: Option<String>,
     pub(super) quarantine_path: Option<String>,
     pub(super) sha256: Option<String>,

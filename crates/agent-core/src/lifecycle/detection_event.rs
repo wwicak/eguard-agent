@@ -595,6 +595,88 @@ pub(super) fn should_drop_low_value_windows_event(
         && is_low_value_windows_pseudo_identity(&event.parent_process)
 }
 
+pub(super) fn should_drop_low_value_linux_event(
+    enriched: &crate::platform::EnrichedEvent,
+    event: &TelemetryEvent,
+) -> bool {
+    if !matches!(
+        enriched.event.event_type,
+        crate::platform::EventType::ProcessExec | crate::platform::EventType::ProcessExit
+    ) {
+        return false;
+    }
+
+    let process_exe = event
+        .file_path
+        .as_deref()
+        .or(enriched.process_exe.as_deref())
+        .unwrap_or_default();
+    if !is_low_value_linux_systemd_helper_exe(process_exe) {
+        return false;
+    }
+
+    if !is_low_value_linux_systemd_parent(&event.parent_process) {
+        return false;
+    }
+
+    if linux_cmdline_has_meaningful_args(event.command_line.as_deref(), Some(process_exe)) {
+        return false;
+    }
+
+    true
+}
+
+fn is_low_value_linux_systemd_helper_exe(process_exe: &str) -> bool {
+    let normalized = process_exe.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return false;
+    }
+
+    normalized.starts_with("/usr/lib/systemd/")
+        || normalized.starts_with("/usr/lib64/systemd/")
+        || normalized.starts_with("/lib/systemd/")
+        || normalized.starts_with("/usr/libexec/systemd/")
+        || matches!(
+            process_basename(&normalized),
+            "systemctl"
+                | "systemd-tmpfiles"
+                | "systemd-sysctl"
+                | "systemd-sysusers"
+                | "systemd-user-runtime-dir"
+                | "systemd-userwork"
+                | "systemd-nsresourcework"
+                | "unix_chkpwd"
+        )
+}
+
+fn is_low_value_linux_systemd_parent(parent: &str) -> bool {
+    let normalized = process_basename(parent.trim().trim_start_matches('(').trim_end_matches(')'))
+        .to_ascii_lowercase();
+    normalized == "systemd" || normalized == "sd-exec-strv" || normalized.starts_with("systemd-")
+}
+
+fn linux_cmdline_has_meaningful_args(cmdline: Option<&str>, process_exe: Option<&str>) -> bool {
+    let Some(trimmed) = cmdline.map(str::trim).filter(|value| !value.is_empty()) else {
+        return false;
+    };
+
+    let normalized_cmd = process_basename(trimmed).to_ascii_lowercase();
+    let normalized_exe = process_exe
+        .map(process_basename)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    if !normalized_exe.is_empty()
+        && !trimmed.contains(char::is_whitespace)
+        && (normalized_cmd == normalized_exe
+            || (normalized_cmd.len() <= 15 && normalized_exe.starts_with(&normalized_cmd)))
+    {
+        return false;
+    }
+
+    trimmed.contains(char::is_whitespace)
+}
+
 pub(super) fn map_event_class(event_type: &crate::platform::EventType) -> EventClass {
     match event_type {
         crate::platform::EventType::ProcessExec => EventClass::ProcessExec,
@@ -1658,6 +1740,189 @@ mod tests {
         assert!(!super::should_drop_low_value_windows_event(
             &enriched, &event
         ));
+    }
+
+    #[test]
+    fn should_drop_low_value_linux_event_for_systemd_env_generator_process_lifecycle() {
+        let enriched = EnrichedEvent {
+            event: RawEvent {
+                event_type: EventType::ProcessExec,
+                pid: 5510,
+                uid: 1000,
+                ts_ns: 1,
+                payload: "comm=30-systemd-environment-d-generator;cmdline=30-systemd-envi"
+                    .to_string(),
+            },
+            process_exe: Some(
+                "/usr/lib/systemd/user-environment-generators/30-systemd-environment-d-generator"
+                    .to_string(),
+            ),
+            process_exe_sha256: None,
+            process_cmdline: Some("30-systemd-envi".to_string()),
+            parent_process: Some("(sd-exec-strv)".to_string()),
+            parent_chain: vec![3154],
+            file_path: None,
+            file_path_secondary: None,
+            file_write: false,
+            file_sha256: None,
+            event_size: None,
+            dst_ip: None,
+            dst_port: None,
+            dst_domain: None,
+            container_runtime: Some("host".to_string()),
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        };
+
+        let event = super::to_detection_event(&enriched, 123);
+        assert_eq!(
+            event.file_path.as_deref(),
+            Some("/usr/lib/systemd/user-environment-generators/30-systemd-environment-d-generator")
+        );
+        assert!(super::should_drop_low_value_linux_event(&enriched, &event));
+    }
+
+    #[test]
+    fn should_drop_low_value_linux_event_for_systemd_tmpfiles_process_lifecycle() {
+        let enriched = EnrichedEvent {
+            event: RawEvent {
+                event_type: EventType::ProcessExec,
+                pid: 5511,
+                uid: 1000,
+                ts_ns: 1,
+                payload: "comm=systemd-tmpfiles;cmdline=systemd-tmpfile".to_string(),
+            },
+            process_exe: Some("/usr/bin/systemd-tmpfiles".to_string()),
+            process_exe_sha256: None,
+            process_cmdline: Some("systemd-tmpfile".to_string()),
+            parent_process: Some("systemd".to_string()),
+            parent_chain: vec![1],
+            file_path: None,
+            file_path_secondary: None,
+            file_write: false,
+            file_sha256: None,
+            event_size: None,
+            dst_ip: None,
+            dst_port: None,
+            dst_domain: None,
+            container_runtime: Some("host".to_string()),
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        };
+
+        let event = super::to_detection_event(&enriched, 123);
+        assert_eq!(
+            event.file_path.as_deref(),
+            Some("/usr/bin/systemd-tmpfiles")
+        );
+        assert!(super::should_drop_low_value_linux_event(&enriched, &event));
+    }
+
+    #[test]
+    fn should_drop_low_value_linux_event_for_systemd_systemctl_process_lifecycle() {
+        let enriched = EnrichedEvent {
+            event: RawEvent {
+                event_type: EventType::ProcessExec,
+                pid: 5512,
+                uid: 1000,
+                ts_ns: 1,
+                payload: "comm=systemctl;cmdline=systemctl".to_string(),
+            },
+            process_exe: Some("/usr/bin/systemctl".to_string()),
+            process_exe_sha256: None,
+            process_cmdline: Some("systemctl".to_string()),
+            parent_process: Some("systemd".to_string()),
+            parent_chain: vec![1],
+            file_path: None,
+            file_path_secondary: None,
+            file_write: false,
+            file_sha256: None,
+            event_size: None,
+            dst_ip: None,
+            dst_port: None,
+            dst_domain: None,
+            container_runtime: Some("host".to_string()),
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        };
+
+        let event = super::to_detection_event(&enriched, 123);
+        assert_eq!(event.file_path.as_deref(), Some("/usr/bin/systemctl"));
+        assert!(super::should_drop_low_value_linux_event(&enriched, &event));
+    }
+
+    #[test]
+    fn should_drop_low_value_linux_event_for_systemd_user_runtime_dir_process_lifecycle() {
+        let enriched = EnrichedEvent {
+            event: RawEvent {
+                event_type: EventType::ProcessExec,
+                pid: 5513,
+                uid: 1000,
+                ts_ns: 1,
+                payload: "comm=systemd-user-runtime-dir;cmdline=systemd-user-ru".to_string(),
+            },
+            process_exe: Some("/usr/lib/systemd/systemd-user-runtime-dir".to_string()),
+            process_exe_sha256: None,
+            process_cmdline: Some("systemd-user-ru".to_string()),
+            parent_process: Some("systemd".to_string()),
+            parent_chain: vec![1],
+            file_path: None,
+            file_path_secondary: None,
+            file_write: false,
+            file_sha256: None,
+            event_size: None,
+            dst_ip: None,
+            dst_port: None,
+            dst_domain: None,
+            container_runtime: Some("host".to_string()),
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        };
+
+        let event = super::to_detection_event(&enriched, 123);
+        assert_eq!(
+            event.file_path.as_deref(),
+            Some("/usr/lib/systemd/systemd-user-runtime-dir")
+        );
+        assert!(super::should_drop_low_value_linux_event(&enriched, &event));
+    }
+
+    #[test]
+    fn should_not_drop_low_value_linux_event_for_cat_tmp_exact_ioc_proof() {
+        let enriched = EnrichedEvent {
+            event: RawEvent {
+                event_type: EventType::ProcessExec,
+                pid: 5514,
+                uid: 1000,
+                ts_ns: 1,
+                payload: "comm=cat;cmdline=cat /tmp/eicar-proof.com >/dev/null".to_string(),
+            },
+            process_exe: Some("/usr/bin/cat".to_string()),
+            process_exe_sha256: None,
+            process_cmdline: Some("cat /tmp/eicar-proof.com >/dev/null".to_string()),
+            parent_process: Some("bash".to_string()),
+            parent_chain: vec![9500],
+            file_path: None,
+            file_path_secondary: None,
+            file_write: false,
+            file_sha256: None,
+            event_size: None,
+            dst_ip: None,
+            dst_port: None,
+            dst_domain: None,
+            container_runtime: Some("host".to_string()),
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        };
+
+        let event = super::to_detection_event(&enriched, 123);
+        assert_eq!(event.file_path.as_deref(), Some("/usr/bin/cat"));
+        assert!(!super::should_drop_low_value_linux_event(&enriched, &event));
     }
 
     #[test]

@@ -18,6 +18,8 @@ use crate::windows_cmd::POWERSHELL_EXE;
 const ISOLATION_RULE_GROUP: &str = "eGuard Host Isolation";
 #[cfg(any(test, target_os = "windows"))]
 const MAX_ALLOWED_SERVER_IPS: usize = 64;
+#[cfg(any(test, target_os = "windows"))]
+const MANAGEMENT_PORTS: &[u16] = &[22, 3389, 5985, 5986];
 #[cfg(target_os = "windows")]
 const ISOLATION_STATE_FILE: &str = "response/host-isolation-firewall-state.json";
 
@@ -57,6 +59,23 @@ pub fn isolate_host(allowed_server_ips: &[&str]) -> Result<(), super::process::R
         let _ = allowed_server_ips;
         tracing::warn!("isolate_host is a stub on non-Windows");
         Ok(())
+    }
+}
+
+pub fn collect_active_management_peer_ips() -> Vec<String> {
+    #[cfg(target_os = "windows")]
+    {
+        let raw = match run_powershell_script(
+            "Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue | Select-Object LocalAddress,LocalPort,RemoteAddress,RemotePort | ConvertTo-Json -Compress",
+        ) {
+            Ok(raw) => raw,
+            Err(_) => return Vec::new(),
+        };
+        parse_active_management_peer_ips_json(&raw)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Vec::new()
     }
 }
 
@@ -352,11 +371,64 @@ fn normalize_ip_or_cidr(raw: &str) -> Option<String> {
     Some(format!("{ip}/{prefix}"))
 }
 
+#[cfg(any(test, target_os = "windows"))]
+fn parse_active_management_peer_ips_json(raw: &str) -> Vec<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+
+    let value = match serde_json::from_str::<serde_json::Value>(trimmed) {
+        Ok(value) => value,
+        Err(_) => return Vec::new(),
+    };
+
+    let rows = match value {
+        serde_json::Value::Array(items) => items,
+        serde_json::Value::Object(_) => vec![value],
+        _ => return Vec::new(),
+    };
+
+    let mut peers = BTreeSet::new();
+    for row in rows {
+        let local_port = row
+            .get("LocalPort")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|port| u16::try_from(port).ok());
+        if !local_port
+            .map(|port| MANAGEMENT_PORTS.contains(&port))
+            .unwrap_or(false)
+        {
+            continue;
+        }
+
+        let peer = row
+            .get("RemoteAddress")
+            .and_then(serde_json::Value::as_str)
+            .and_then(normalize_active_peer_ip);
+        if let Some(peer) = peer {
+            peers.insert(peer);
+        }
+    }
+
+    peers.into_iter().collect()
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn normalize_active_peer_ip(raw: &str) -> Option<String> {
+    let ip = raw.trim().parse::<IpAddr>().ok()?;
+    if ip.is_loopback() || ip.is_unspecified() {
+        return None;
+    }
+    Some(ip.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         build_apply_isolation_script, build_restore_profiles_script, normalize_allowed_server_ips,
-        normalize_ip_or_cidr, parse_firewall_profile_defaults, FirewallProfileDefaults,
+        normalize_ip_or_cidr, parse_active_management_peer_ips_json,
+        parse_firewall_profile_defaults, FirewallProfileDefaults,
     };
 
     #[test]
@@ -462,5 +534,35 @@ mod tests {
         assert_eq!(parsed[0].allow_inbound_rules, "False");
         assert_eq!(parsed[1].name, "Public");
         assert_eq!(parsed[1].allow_inbound_rules, "True");
+    }
+
+    #[test]
+    fn parse_active_management_peer_ips_json_collects_management_sessions() {
+        let raw = r#"[
+            {"LocalAddress":"10.0.0.5","LocalPort":22,"RemoteAddress":"203.0.113.10","RemotePort":52341},
+            {"LocalAddress":"10.0.0.5","LocalPort":3389,"RemoteAddress":"198.51.100.44","RemotePort":60123},
+            {"LocalAddress":"10.0.0.5","LocalPort":5986,"RemoteAddress":"2001:db8::55","RemotePort":51234},
+            {"LocalAddress":"10.0.0.5","LocalPort":443,"RemoteAddress":"192.0.2.10","RemotePort":41234}
+        ]"#;
+
+        assert_eq!(
+            parse_active_management_peer_ips_json(raw),
+            vec![
+                "198.51.100.44".to_string(),
+                "2001:db8::55".to_string(),
+                "203.0.113.10".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_active_management_peer_ips_json_ignores_invalid_or_local_peers() {
+        let raw = r#"[
+            {"LocalAddress":"10.0.0.5","LocalPort":22,"RemoteAddress":"127.0.0.1","RemotePort":52341},
+            {"LocalAddress":"10.0.0.5","LocalPort":5985,"RemoteAddress":"::","RemotePort":52341},
+            {"LocalAddress":"10.0.0.5","LocalPort":5986,"RemoteAddress":"not-an-ip","RemotePort":52341}
+        ]"#;
+
+        assert!(parse_active_management_peer_ips_json(raw).is_empty());
     }
 }

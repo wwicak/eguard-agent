@@ -9,7 +9,7 @@ pub mod network_profile;
 pub mod quarantine;
 
 pub use forensics::ForensicsCollector;
-pub use isolation::{isolate_host, remove_isolation};
+pub use isolation::{collect_active_management_peer_ips, isolate_host, remove_isolation};
 pub use network_profile::apply_network_profile_config_change;
 pub use quarantine::quarantine_file;
 pub use quarantine::restore_file;

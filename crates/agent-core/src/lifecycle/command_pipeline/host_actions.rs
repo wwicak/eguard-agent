@@ -3,7 +3,7 @@ use std::path::Path;
 
 use response::{CommandExecution, CommandOutcome};
 
-use super::command_utils::resolve_allowed_server_ips;
+use super::host_isolation_allowlist::resolve_host_isolation_allowlist;
 use super::host_isolation_linux::{apply_linux_host_isolation, remove_linux_host_isolation};
 use super::payloads::RestoreQuarantinePayload;
 use super::AgentRuntime;
@@ -18,7 +18,7 @@ impl AgentRuntime {
 
         let payload: IsolatePayload = serde_json::from_str(payload_json).unwrap_or_default();
         let allowed =
-            resolve_allowed_server_ips(&self.config.server_addr, &payload.allow_server_ips);
+            resolve_host_isolation_allowlist(&self.config.server_addr, &payload.allow_server_ips);
 
         #[cfg(target_os = "windows")]
         {

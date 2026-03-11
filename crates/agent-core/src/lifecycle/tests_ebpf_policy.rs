@@ -1960,7 +1960,9 @@ fn systemd_tmpfiles_exec_noise_without_path_is_filtered_before_backloging() {
         pid: 3162,
         uid: 1000,
         ts_ns: 1,
-        payload: "cmdline=systemd-tmpfiles;ppid=1;cgroup_id=30;comm=systemd-tmpfiles;parent_comm=systemd".to_string(),
+        payload:
+            "cmdline=systemd-tmpfiles;ppid=1;cgroup_id=30;comm=systemd-tmpfiles;parent_comm=systemd"
+                .to_string(),
     };
 
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
@@ -2025,7 +2027,8 @@ fn systemd_systemctl_exec_noise_without_path_is_filtered_before_backloging() {
         pid: 3165,
         uid: 1000,
         ts_ns: 1,
-        payload: "cmdline=systemctl;ppid=1;cgroup_id=30;comm=systemctl;parent_comm=systemd".to_string(),
+        payload: "cmdline=systemctl;ppid=1;cgroup_id=30;comm=systemctl;parent_comm=systemd"
+            .to_string(),
     };
 
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
@@ -2038,7 +2041,8 @@ fn unix_chkpwd_systemd_exec_noise_without_path_is_filtered_before_backloging() {
         pid: 3166,
         uid: 0,
         ts_ns: 1,
-        payload: "cmdline=unix_chkpwd;ppid=1;cgroup_id=30;comm=unix_chkpwd;parent_comm=(systemd)".to_string(),
+        payload: "cmdline=unix_chkpwd;ppid=1;cgroup_id=30;comm=unix_chkpwd;parent_comm=(systemd)"
+            .to_string(),
     };
 
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));

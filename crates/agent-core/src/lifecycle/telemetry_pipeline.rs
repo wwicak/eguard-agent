@@ -1018,8 +1018,7 @@ fn is_expected_linux_systemd_process_noise(
     }
 
     if lower.is_empty() {
-        if process.ends_with("-generator")
-            && matches!(parent.as_str(), "sd-exec-strv" | "systemd")
+        if process.ends_with("-generator") && matches!(parent.as_str(), "sd-exec-strv" | "systemd")
         {
             return true;
         }
@@ -1081,9 +1080,7 @@ fn is_expected_linux_shell_startup_process_noise(
     }
 
     (process == "grepconf.sh" && (lower == "/usr/libexec/grepconf.sh" || cmd == "grepconf.sh"))
-        || (process == "systemctl"
-            && cmd.contains("--user")
-            && cmd.contains("show-environment"))
+        || (process == "systemctl" && cmd.contains("--user") && cmd.contains("show-environment"))
 }
 
 fn is_expected_linux_ssh_bootstrap_noise(comm: &str, parent_comm: &str, path: &str) -> bool {

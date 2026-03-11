@@ -11,6 +11,7 @@ const IPV4_INPUT_CHAIN: &str = "EGUARD-ISOLATE-IN";
 const IPV4_OUTPUT_CHAIN: &str = "EGUARD-ISOLATE-OUT";
 const IPV6_INPUT_CHAIN: &str = "EGUARD-ISOLATE6-IN";
 const IPV6_OUTPUT_CHAIN: &str = "EGUARD-ISOLATE6-OUT";
+const MANAGEMENT_PORTS: &[u16] = &[22];
 
 pub(super) fn apply_linux_host_isolation(allowed_server_ips: &[String]) -> Result<(), String> {
     if allowed_server_ips.is_empty() {
@@ -62,6 +63,63 @@ fn build_ipv6_apply_commands(allowed_server_ips: &[String]) -> Vec<FirewallComma
         .cloned()
         .collect::<Vec<_>>();
     build_apply_commands("ip6tables", IPV6_INPUT_CHAIN, IPV6_OUTPUT_CHAIN, &allowed)
+}
+
+pub(super) fn collect_active_management_peer_ips() -> Vec<String> {
+    let mut command = Command::new("ss");
+    let output =
+        match mark_internal_command(command.args(["-H", "-tn", "state", "established"])).output() {
+            Ok(output) if output.status.success() => output,
+            _ => return Vec::new(),
+        };
+
+    parse_established_management_peer_ips(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn parse_established_management_peer_ips(raw: &str) -> Vec<String> {
+    let mut peers = Vec::new();
+    for line in raw.lines() {
+        if let Some(peer_ip) = parse_established_management_peer_ip(line) {
+            if !peers.iter().any(|entry| entry == &peer_ip) {
+                peers.push(peer_ip);
+            }
+        }
+    }
+    peers
+}
+
+fn parse_established_management_peer_ip(line: &str) -> Option<String> {
+    let fields = line.split_whitespace().collect::<Vec<_>>();
+    if fields.len() < 2 {
+        return None;
+    }
+
+    let local = fields.get(fields.len().saturating_sub(2))?;
+    let peer = fields.last()?;
+    let (_, local_port) = parse_socket_endpoint(local)?;
+    if !MANAGEMENT_PORTS.contains(&local_port) {
+        return None;
+    }
+
+    let (peer_ip, _) = parse_socket_endpoint(peer)?;
+    Some(peer_ip)
+}
+
+fn parse_socket_endpoint(raw: &str) -> Option<(String, u16)> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Some(stripped) = trimmed.strip_prefix('[') {
+        let (host, rest) = stripped.split_once("]:")?;
+        let port = rest.parse::<u16>().ok()?;
+        return Some((host.to_string(), port));
+    }
+
+    let (host, port) = trimmed.rsplit_once(':')?;
+    let port = port.parse::<u16>().ok()?;
+    Some((host.to_string(), port))
 }
 
 fn firewall_filter_table_available(bin: &str) -> bool {
@@ -181,6 +239,19 @@ mod tests {
         assert!(commands
             .iter()
             .any(|cmd| cmd.args.ends_with(&["DROP".to_string()])));
+    }
+
+    #[test]
+    fn parse_established_management_peer_ips_collects_ipv4_and_ipv6_clients() {
+        let output = "\
+ESTAB 0 0 10.0.2.15:22 198.51.100.44:54422
+ESTAB 0 0 [2001:db8::10]:22 [2001:db8::55]:61234
+ESTAB 0 0 10.0.2.15:443 198.51.100.44:60000
+";
+        assert_eq!(
+            parse_established_management_peer_ips(output),
+            vec!["198.51.100.44".to_string(), "2001:db8::55".to_string()]
+        );
     }
 
     #[test]
