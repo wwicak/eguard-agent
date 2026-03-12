@@ -14,7 +14,8 @@ use crate::types::{
 
 use super::{
     from_pb_agent_command, from_pb_server_command, map_response_action, map_response_confidence,
-    now_unix, to_pb_telemetry_event, Client, MAX_GRPC_RECV_MSG_SIZE_BYTES,
+    normalize_response_action_label, now_unix, to_pb_telemetry_event, Client,
+    MAX_GRPC_RECV_MSG_SIZE_BYTES,
 };
 
 impl Client {
@@ -251,16 +252,17 @@ impl Client {
     pub(super) async fn send_response_grpc(&self, response: &ResponseEnvelope) -> Result<()> {
         self.with_retry("response_grpc", || async {
             let mut client = self.response_client().await?;
-            let action = map_response_action(&response.action_type);
-            let detail = match action {
-                pb::ResponseAction::KillProcess | pb::ResponseAction::KillTree => {
+            let action_label = normalize_response_action_label(&response.action_type);
+            let action = map_response_action(&action_label);
+            let detail = match action_label.as_str() {
+                "kill_process" | "kill_tree" => {
                     Some(pb::response_report::Detail::Kill(pb::KillReport {
                         target_pid: response.target_pid as i64,
                         target_exe: response.target_process.clone(),
                         killed_pids: response.killed_pids.iter().map(|pid| *pid as i64).collect(),
                     }))
                 }
-                pb::ResponseAction::QuarantineFile => Some(
+                "quarantine_file" | "restore_quarantine" => Some(
                     pb::response_report::Detail::Quarantine(pb::QuarantineReport {
                         original_path: response.file_path.clone().unwrap_or_default(),
                         quarantine_path: response.quarantine_path.clone().unwrap_or_default(),
@@ -286,6 +288,7 @@ impl Client {
                     detail,
                     detail_text: response.error_message.clone(),
                     created_at_unix: now_unix(),
+                    action_type_label: action_label,
                 })
                 .await
                 .context("report_response RPC failed")?;

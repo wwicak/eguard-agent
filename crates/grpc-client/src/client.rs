@@ -1084,9 +1084,11 @@ fn from_pb_agent_command(command: pb::AgentCommand) -> CommandEnvelope {
 
 fn from_pb_server_command(command: pb::ServerCommand) -> CommandEnvelope {
     let payload_json = match command.params {
-        Some(pb::server_command::Params::Isolate(params)) => {
-            json!({"allow_server_connection": params.allow_server_connection}).to_string()
-        }
+        Some(pb::server_command::Params::Isolate(params)) => json!({
+            "allow_server_connection": params.allow_server_connection,
+            "allow_server_ips": params.allow_server_ips,
+        })
+        .to_string(),
         Some(pb::server_command::Params::Scan(params)) => json!({
             "paths": params.paths,
             "yara_scan": params.yara_scan,
@@ -1222,11 +1224,26 @@ fn map_command_type(raw: i32) -> String {
     .to_string()
 }
 
-fn map_response_action(raw: &str) -> pb::ResponseAction {
+fn normalize_response_action_label(raw: &str) -> String {
     match raw.trim().to_ascii_lowercase().as_str() {
-        "kill_process" | "kill" | "killonly" => pb::ResponseAction::KillProcess,
+        "kill_process" | "kill" | "killonly" => "kill_process",
+        "kill_tree" => "kill_tree",
+        "quarantine_file" | "quarantine" | "quarantineonly" => "quarantine_file",
+        "restore_quarantine" => "restore_quarantine",
+        "block_execution" => "block_execution",
+        "block_connection" => "block_connection",
+        "capture_script" => "capture_script",
+        "network_isolate" | "auto_isolate" | "playbook_isolate" => "network_isolate",
+        other => other,
+    }
+    .to_string()
+}
+
+fn map_response_action(raw: &str) -> pb::ResponseAction {
+    match normalize_response_action_label(raw).as_str() {
+        "kill_process" => pb::ResponseAction::KillProcess,
         "kill_tree" => pb::ResponseAction::KillTree,
-        "quarantine_file" | "quarantine" | "quarantineonly" => pb::ResponseAction::QuarantineFile,
+        "quarantine_file" => pb::ResponseAction::QuarantineFile,
         "block_execution" => pb::ResponseAction::BlockExecution,
         "block_connection" => pb::ResponseAction::BlockConnection,
         "capture_script" => pb::ResponseAction::CaptureScript,
@@ -1237,7 +1254,7 @@ fn map_response_action(raw: &str) -> pb::ResponseAction {
 
 fn response_action_requires_http_fallback(raw: &str) -> bool {
     matches!(
-        raw.trim().to_ascii_lowercase().as_str(),
+        normalize_response_action_label(raw).as_str(),
         "restore_quarantine"
     )
 }

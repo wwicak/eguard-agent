@@ -14,7 +14,11 @@ pub(super) fn internal_process_systemd_run_env_arg() -> String {
     format!("--setenv={}={}", INTERNAL_PROCESS_ENV_NAME, "1")
 }
 
-pub(super) fn resolve_allowed_server_ips(server_addr: &str, payload_ips: &[String]) -> Vec<String> {
+pub(super) fn resolve_allowed_server_ips(
+    server_addr: &str,
+    payload_ips: &[String],
+    include_server_addr: bool,
+) -> Vec<String> {
     let mut ips = Vec::new();
 
     for raw in payload_ips {
@@ -27,11 +31,13 @@ pub(super) fn resolve_allowed_server_ips(server_addr: &str, payload_ips: &[Strin
         }
     }
 
-    let host = extract_server_host(server_addr);
-    if let Some(ip) = parse_ip_literal(&host) {
-        let value = ip.to_string();
-        if !ips.iter().any(|entry| entry == &value) {
-            ips.push(value);
+    if include_server_addr {
+        let host = extract_server_host(server_addr);
+        if let Some(ip) = parse_ip_literal(&host) {
+            let value = ip.to_string();
+            if !ips.iter().any(|entry| entry == &value) {
+                ips.push(value);
+            }
         }
     }
 

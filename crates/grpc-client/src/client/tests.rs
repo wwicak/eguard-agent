@@ -2042,6 +2042,7 @@ async fn send_response_grpc_reports_payload_to_server() {
         assert!(!report.success);
         assert_eq!(report.error_message, "access denied");
         assert_eq!(report.detection_layers, vec!["sigma".to_string()]);
+        assert_eq!(report.action_type_label, "kill_tree");
         match report.detail.as_ref().expect("response detail present") {
             pb::response_report::Detail::Kill(kill) => {
                 assert_eq!(kill.target_pid, 4242);
@@ -2051,6 +2052,46 @@ async fn send_response_grpc_reports_payload_to_server() {
             other => panic!("unexpected response detail: {other:?}"),
         }
         assert!(report.created_at_unix > 0);
+    }
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn send_response_grpc_preserves_canonical_action_label_for_isolation_aliases() {
+    let state = Arc::new(Mutex::new(ResponseMockState::default()));
+    let server = spawn_mock_response_service(state.clone()).await;
+    let mut client = Client::with_mode("inproc-response".to_string(), TransportMode::Grpc);
+    client.set_test_channel_override(server.channel());
+
+    client
+        .send_response(&ResponseEnvelope {
+            agent_id: "agent-2".to_string(),
+            action_type: "auto_isolate".to_string(),
+            confidence: "high".to_string(),
+            success: true,
+            error_message: String::new(),
+            detection_layers: vec!["playbook".to_string()],
+            target_process: String::new(),
+            target_pid: 0,
+            rule_name: String::new(),
+            threat_category: String::new(),
+            file_path: None,
+            quarantine_path: None,
+            sha256: None,
+            file_size: 0,
+            killed_pids: Vec::new(),
+        })
+        .await
+        .expect("send_response should succeed");
+
+    {
+        let guard = state.lock().expect("state lock");
+        assert_eq!(guard.reports.len(), 1);
+        let report = &guard.reports[0];
+        assert_eq!(report.action, pb::ResponseAction::NetworkIsolate as i32);
+        assert_eq!(report.action_type_label, "network_isolate");
+        assert!(report.detail.is_none());
     }
 
     server.shutdown().await;

@@ -111,10 +111,42 @@ fn response_action_mapping_accepts_aliases_and_defaults_to_kill_process() {
         map_response_action("network_isolate"),
         pb::ResponseAction::NetworkIsolate
     );
+    assert_eq!(
+        map_response_action("auto_isolate"),
+        pb::ResponseAction::NetworkIsolate
+    );
+    assert_eq!(
+        map_response_action("playbook_isolate"),
+        pb::ResponseAction::NetworkIsolate
+    );
 
     assert_eq!(
         map_response_action("something-unknown"),
         pb::ResponseAction::KillProcess
+    );
+}
+
+#[test]
+fn normalize_response_action_label_preserves_supported_canonical_names() {
+    assert_eq!(
+        normalize_response_action_label(" killonly "),
+        "kill_process"
+    );
+    assert_eq!(
+        normalize_response_action_label("quarantineonly"),
+        "quarantine_file"
+    );
+    assert_eq!(
+        normalize_response_action_label("auto_isolate"),
+        "network_isolate"
+    );
+    assert_eq!(
+        normalize_response_action_label("playbook_isolate"),
+        "network_isolate"
+    );
+    assert_eq!(
+        normalize_response_action_label("restore_quarantine"),
+        "restore_quarantine"
     );
 }
 
@@ -193,6 +225,38 @@ fn server_command_conversion_uses_command_type_mapping() {
     assert_eq!(out.command_id, "cmd-22");
     assert_eq!(out.command_type, "restore_quarantine");
     assert_eq!(out.payload_json, "");
+}
+
+#[test]
+fn server_command_conversion_preserves_isolation_allowlist_fields() {
+    let pb_command = pb::ServerCommand {
+        command_id: "cmd-isolate".to_string(),
+        command_type: pb::CommandType::IsolateHost as i32,
+        params: Some(pb::server_command::Params::Isolate(pb::IsolateParams {
+            allow_server_connection: true,
+            allow_server_ips: vec!["192.168.122.25".to_string(), "103.132.18.221".to_string()],
+        })),
+        ..pb::ServerCommand::default()
+    };
+
+    let out = from_pb_server_command(pb_command);
+    assert_eq!(out.command_type, "isolate_host");
+
+    let payload: serde_json::Value =
+        serde_json::from_str(&out.payload_json).expect("valid isolate payload json");
+    assert_eq!(
+        payload
+            .get("allow_server_connection")
+            .and_then(|v| v.as_bool()),
+        Some(true)
+    );
+    assert_eq!(
+        payload
+            .get("allow_server_ips")
+            .and_then(|v| v.as_array())
+            .map(|values| values.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>()),
+        Some(vec!["192.168.122.25", "103.132.18.221"])
+    );
 }
 
 #[test]

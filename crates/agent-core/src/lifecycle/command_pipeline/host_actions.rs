@@ -13,12 +13,17 @@ impl AgentRuntime {
         #[derive(Debug, serde::Deserialize, Default)]
         struct IsolatePayload {
             #[serde(default)]
+            allow_server_connection: bool,
+            #[serde(default)]
             allow_server_ips: Vec<String>,
         }
 
         let payload: IsolatePayload = serde_json::from_str(payload_json).unwrap_or_default();
-        let allowed =
-            resolve_host_isolation_allowlist(&self.config.server_addr, &payload.allow_server_ips);
+        let allowed = resolve_host_isolation_allowlist(
+            &self.config.server_addr,
+            payload.allow_server_connection,
+            &payload.allow_server_ips,
+        );
 
         #[cfg(target_os = "windows")]
         {

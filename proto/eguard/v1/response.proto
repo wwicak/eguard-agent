@@ -74,6 +74,10 @@ message ResponseReport {
   // Legacy fields retained for current client payload compatibility.
   string detail_text = 30;
   int64 created_at_unix = 31;
+
+  // Canonical raw action label from the agent; used to disambiguate proto3 zero-value enums
+  // and preserve alias actions that normalize into the persisted response_action taxonomy.
+  string action_type_label = 32;
 }
 
 message ResponseAck {

@@ -93,12 +93,24 @@ fn resolve_allowed_server_ips_merges_payload_and_server_literal_ip() {
     let allowed = resolve_allowed_server_ips(
         "[2001:db8::10]:50052",
         &["203.0.113.4".to_string(), "not-an-ip".to_string()],
+        true,
     );
 
     assert_eq!(
         allowed,
         vec!["203.0.113.4".to_string(), "2001:db8::10".to_string()]
     );
+}
+
+#[test]
+fn resolve_allowed_server_ips_respects_allow_server_connection_flag() {
+    let allowed = resolve_allowed_server_ips(
+        "103.132.18.221:50053",
+        &["192.168.122.25".to_string()],
+        false,
+    );
+
+    assert_eq!(allowed, vec!["192.168.122.25".to_string()]);
 }
 
 #[test]

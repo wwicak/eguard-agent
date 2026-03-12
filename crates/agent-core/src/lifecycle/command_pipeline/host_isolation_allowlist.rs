@@ -2,9 +2,11 @@ use super::command_utils::resolve_allowed_server_ips;
 
 pub(super) fn resolve_host_isolation_allowlist(
     server_addr: &str,
+    allow_server_connection: bool,
     payload_ips: &[String],
 ) -> Vec<String> {
-    let base_allowlist = resolve_allowed_server_ips(server_addr, payload_ips);
+    let base_allowlist =
+        resolve_allowed_server_ips(server_addr, payload_ips, allow_server_connection);
     merge_isolation_allowlist(&base_allowlist, &collect_active_management_peer_ips())
 }
 
