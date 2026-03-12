@@ -149,7 +149,18 @@ mv -f "$tmp_path" "$pkg_path"
 if [[ "$FORMAT" == "deb" ]]; then
   dpkg -i "$pkg_path" || fail_outcome "deb package install failed for $pkg_path"
 else
-  rpm -Uvh "$pkg_path" || fail_outcome "rpm package install failed for $pkg_path"
+  rpm_output=""
+  if ! rpm_output="$(rpm -Uvh "$pkg_path" 2>&1)"; then
+    case "$rpm_output" in
+      *"already installed"*|*"conflicts with file from package"*)
+        rpm_output="$(rpm -Uvh --replacepkgs --replacefiles "$pkg_path" 2>&1)" \
+          || fail_outcome "rpm package install failed for $pkg_path: $rpm_output"
+        ;;
+      *)
+        fail_outcome "rpm package install failed for $pkg_path: $rpm_output"
+        ;;
+    esac
+  fi
 fi
 
 systemctl daemon-reload || true

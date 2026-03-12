@@ -2068,7 +2068,37 @@ fn systemd_started_bash_login_shell_exec_noise_is_filtered_before_backloging() {
         pid: 45876,
         uid: 1000,
         ts_ns: 1,
-        payload: "path=/usr/bin/bash;cmdline=bash;ppid=1;cgroup_id=30;comm=bash;parent_comm=systemd"
+        payload:
+            "path=/usr/bin/bash;cmdline=bash;ppid=1;cgroup_id=30;comm=bash;parent_comm=systemd"
+                .to_string(),
+    };
+
+    assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
+}
+
+#[test]
+fn sshd_session_started_bash_login_shell_exec_noise_is_filtered_before_backloging() {
+    let raw = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::ProcessExec,
+        pid: 45877,
+        uid: 1000,
+        ts_ns: 1,
+        payload:
+            "path=/bin/bash;cmdline=bash;ppid=924;cgroup_id=30;comm=bash;parent_comm=sshd-session"
+                .to_string(),
+    };
+
+    assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
+}
+
+#[test]
+fn sshd_session_started_pathless_bash_login_shell_exec_noise_is_filtered_before_backloging() {
+    let raw = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::ProcessExec,
+        pid: 45878,
+        uid: 1000,
+        ts_ns: 1,
+        payload: "cmdline=bash;ppid=924;cgroup_id=30;comm=bash;parent_comm=sshd-session"
             .to_string(),
     };
 
@@ -2082,7 +2112,78 @@ fn bash_nohup_startup_exec_noise_is_filtered_before_backloging() {
         pid: 45889,
         uid: 1000,
         ts_ns: 1,
-        payload: "path=/usr/bin/nohup;cmdline=nohup;ppid=45876;cgroup_id=30;comm=nohup;parent_comm=bash"
+        payload:
+            "path=/usr/bin/nohup;cmdline=nohup;ppid=45876;cgroup_id=30;comm=nohup;parent_comm=bash"
+                .to_string(),
+    };
+
+    assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
+}
+
+#[test]
+fn bash_basename_startup_exec_noise_is_filtered_before_backloging() {
+    let raw = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::ProcessExec,
+        pid: 45890,
+        uid: 1000,
+        ts_ns: 1,
+        payload: "path=/usr/bin/basename;cmdline=basename;ppid=45876;cgroup_id=30;comm=basename;parent_comm=bash"
+            .to_string(),
+    };
+
+    assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
+}
+
+#[test]
+fn bash_cat_startup_exec_noise_is_filtered_before_backloging() {
+    let raw = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::ProcessExec,
+        pid: 45891,
+        uid: 1000,
+        ts_ns: 1,
+        payload: "path=/usr/bin/cat;cmdline=cat;ppid=45876;cgroup_id=30;comm=cat;parent_comm=bash"
+            .to_string(),
+    };
+
+    assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
+}
+
+#[test]
+fn bash_readlink_startup_exec_noise_is_filtered_before_backloging() {
+    let raw = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::ProcessExec,
+        pid: 45892,
+        uid: 1000,
+        ts_ns: 1,
+        payload: "path=/usr/bin/readlink;cmdline=readlink;ppid=45876;cgroup_id=30;comm=readlink;parent_comm=bash"
+            .to_string(),
+    };
+
+    assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
+}
+
+#[test]
+fn bash_locale_startup_exec_noise_is_filtered_before_backloging() {
+    let raw = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::ProcessExec,
+        pid: 45893,
+        uid: 1000,
+        ts_ns: 1,
+        payload: "path=/usr/bin/locale;cmdline=locale;ppid=45876;cgroup_id=30;comm=locale;parent_comm=bash"
+            .to_string(),
+    };
+
+    assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
+}
+
+#[test]
+fn bash_tr_startup_exec_noise_is_filtered_before_backloging() {
+    let raw = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::ProcessExec,
+        pid: 45894,
+        uid: 1000,
+        ts_ns: 1,
+        payload: "path=/usr/bin/tr;cmdline=tr;ppid=45876;cgroup_id=30;comm=tr;parent_comm=bash"
             .to_string(),
     };
 
@@ -2140,6 +2241,163 @@ fn bash_curlrc_read_noise_is_filtered_before_backloging() {
         ts_ns: 1,
         payload: "path=/home/agent/.curlrc;flags=0;mode=0;ppid=45876;cgroup_id=30;comm=curl;parent_comm=bash"
             .to_string(),
+    };
+
+    assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
+}
+
+#[test]
+fn sshd_session_motd_read_noise_is_filtered_before_backloging() {
+    let raw = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::FileOpen,
+        pid: 5900,
+        uid: 1000,
+        ts_ns: 1,
+        payload:
+            "path=/etc/motd;flags=0;mode=0;ppid=924;cgroup_id=30;comm=sshd-session;parent_comm=sshd"
+                .to_string(),
+    };
+
+    assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
+}
+
+#[test]
+fn sshd_session_nologin_read_noise_is_filtered_before_backloging() {
+    let raw = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::FileOpen,
+        pid: 5901,
+        uid: 1000,
+        ts_ns: 1,
+        payload: "path=/etc/nologin;flags=0;mode=0;ppid=924;cgroup_id=30;comm=sshd-session;parent_comm=sshd"
+            .to_string(),
+    };
+
+    assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
+}
+
+#[test]
+fn sshd_session_boot_id_read_noise_is_filtered_before_backloging() {
+    let raw = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::FileOpen,
+        pid: 5902,
+        uid: 1000,
+        ts_ns: 1,
+        payload: "path=/proc/sys/kernel/random/boot_id;flags=0;mode=0;ppid=924;cgroup_id=30;comm=sshd-session;parent_comm=sshd"
+            .to_string(),
+    };
+
+    assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
+}
+
+#[test]
+fn sshd_session_userdb_runtime_read_noise_is_filtered_before_backloging() {
+    let raw = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::FileOpen,
+        pid: 5903,
+        uid: 1000,
+        ts_ns: 1,
+        payload: "path=/run/systemd/userdb/;flags=0;mode=0;ppid=924;cgroup_id=30;comm=sshd-session;parent_comm=sshd"
+            .to_string(),
+    };
+
+    assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
+}
+
+#[test]
+fn sshd_session_unix_chkpwd_loader_noise_is_filtered_before_backloging() {
+    let raw = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::FileOpen,
+        pid: 5904,
+        uid: 0,
+        ts_ns: 1,
+        payload: "path=/lib64/libaudit.so.1;flags=0;mode=0;ppid=5900;cgroup_id=30;comm=unix_chkpwd;parent_comm=sshd-session"
+            .to_string(),
+    };
+
+    assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
+}
+
+#[test]
+fn systemd_userwork_root_probe_noise_is_filtered_before_backloging() {
+    let raw = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::FileOpen,
+        pid: 5905,
+        uid: 1000,
+        ts_ns: 1,
+        payload: "path=/;flags=0;mode=0;ppid=781;cgroup_id=30;comm=systemd-userwork;parent_comm=systemd-userdbd"
+            .to_string(),
+    };
+
+    assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
+}
+
+#[test]
+fn sshd_session_bash_locale_file_read_noise_is_filtered_before_backloging() {
+    let raw = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::FileOpen,
+        pid: 5906,
+        uid: 1000,
+        ts_ns: 1,
+        payload: "path=/usr/lib/locale/en_US.UTF-8/LC_CTYPE;flags=0;mode=0;ppid=924;cgroup_id=30;comm=bash;parent_comm=sshd-session"
+            .to_string(),
+    };
+
+    assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
+}
+
+#[test]
+fn sshd_session_bash_gconv_cache_read_noise_is_filtered_before_backloging() {
+    let raw = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::FileOpen,
+        pid: 5907,
+        uid: 1000,
+        ts_ns: 1,
+        payload: "path=/usr/lib64/gconv/gconv-modules.cache;flags=0;mode=0;ppid=924;cgroup_id=30;comm=bash;parent_comm=sshd-session"
+            .to_string(),
+    };
+
+    assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
+}
+
+#[test]
+fn sshd_session_oom_score_adj_read_noise_is_filtered_before_backloging() {
+    let raw = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::FileOpen,
+        pid: 5908,
+        uid: 1000,
+        ts_ns: 1,
+        payload: "path=/proc/self/oom_score_adj;flags=0;mode=0;ppid=924;cgroup_id=30;comm=sshd-session;parent_comm=sshd"
+            .to_string(),
+    };
+
+    assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
+}
+
+#[test]
+fn bash_basename_pathless_file_open_noise_is_filtered_before_backloging() {
+    let raw = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::FileOpen,
+        pid: 5909,
+        uid: 1000,
+        ts_ns: 1,
+        payload:
+            "flags=0;mode=0;ppid=45876;cgroup_id=30;comm=basename;parent_comm=bash;cmdline=basename"
+                .to_string(),
+    };
+
+    assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
+}
+
+#[test]
+fn bash_readlink_pathless_file_open_noise_is_filtered_before_backloging() {
+    let raw = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::FileOpen,
+        pid: 5910,
+        uid: 1000,
+        ts_ns: 1,
+        payload:
+            "flags=0;mode=0;ppid=45876;cgroup_id=30;comm=readlink;parent_comm=bash;cmdline=readlink"
+                .to_string(),
     };
 
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));

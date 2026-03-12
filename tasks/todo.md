@@ -2605,3 +2605,37 @@ Generalize performance optimizations into a shared internal architecture so endp
     - `agent-1736`
     - `agent-31bbb93f38b4`
     - `agent-5d3dc8654c99` ✅
+
+## Outstanding gap fix plan — 2026-03-12
+
+### Plan
+- [x] Inspect the agent/server code paths behind the five reported gaps.
+- [x] Create a compaction-safe task list for the full investigation.
+- [ ] Re-check current diffs in `/home/dimas/eguard-agent` and `/home/dimas/fe_eguard` before the next edit pass.
+- [ ] Fix Go response mapping so proto zero-values without label/detail persist as `unknown` instead of `kill_process`.
+- [ ] Extend the server-side response action enum migration to allow `unknown`.
+- [ ] Align the default policy JSON in the Go server with the documented response defaults.
+- [ ] Update Go tests covering response mapping and policy defaults.
+- [ ] Re-run `gofmt` and targeted Go tests from `/home/dimas/fe_eguard/go`.
+- [ ] Diagnose the failing Rust on-demand scan/EICAR test.
+- [ ] Refine the synthetic scan event so it is not suppressed by allowlists or learning-mode behavior.
+- [ ] Ensure synthetic scan remediation cannot attempt unsafe kill behavior.
+- [ ] Update Rust tests for the quick-scan command path.
+- [ ] Re-run `cargo fmt` and targeted Rust tests in `/home/dimas/eguard-agent`.
+- [ ] Run a wider adjacent verification pass for response/policy code in both repos.
+- [ ] Build the Go server binary from `/home/dimas/fe_eguard/go`.
+- [ ] Build the Rust agent binary/package from `/home/dimas/eguard-agent`.
+- [ ] If UI validation needs changes, build the frontend bundle from `/home/dimas/fe_eguard/html/egappserver/root`.
+- [ ] Copy the updated Go server binary to the eGuard server VM.
+- [ ] Apply any direct server-side config or policy edits required on the eGuard server VM.
+- [ ] Restart the eGuard server services and confirm healthy listeners/logs.
+- [ ] Copy the updated agent build to the Ubuntu disposable VM.
+- [ ] Restart the agent on Ubuntu and verify heartbeat recovery.
+- [ ] Validate live response mapping behavior against the server API/data path.
+- [ ] Validate live default policy payload via the policy endpoint/API.
+- [ ] Reproduce the restart + EICAR quick-scan workflow on Ubuntu.
+- [ ] If Ubuntu exposes platform-specific gaps, deploy/test the same agent fix on Fedora.
+- [ ] Inspect Ubuntu/Fedora/server logs for rollout edge cases and regressions.
+- [ ] Perform visual validation in the admin UI, preferably with browser automation.
+- [ ] Update `docs/operations-guide.md` with tested rollout steps, observed edge cases, and final behavior.
+- [ ] Add a short review/result note here before wrapping up.

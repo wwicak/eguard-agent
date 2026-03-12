@@ -47,7 +47,6 @@ pub fn quarantine_file(
 }
 
 fn resolve_default_quarantine_dir() -> PathBuf {
-    #[cfg(test)]
     if let Some(dir) = std::env::var_os("EGUARD_TEST_QUARANTINE_DIR") {
         if !dir.is_empty() {
             return PathBuf::from(dir);

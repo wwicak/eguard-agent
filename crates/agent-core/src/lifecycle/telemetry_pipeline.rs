@@ -407,6 +407,11 @@ impl AgentRuntime {
                 return true;
             }
 
+            if is_expected_linux_shell_startup_file_noise(&comm, &parent_comm, &path, &command_line)
+            {
+                return true;
+            }
+
             false
         }
     }
@@ -956,6 +961,10 @@ fn is_expected_linux_auth_stack_process_noise(
         return lower.is_empty() || lower.ends_with("/unix_chkpwd");
     }
 
+    if process == "unix_chkpwd" && parent == "sudo" {
+        return lower.is_empty() || lower.ends_with("/unix_chkpwd") || cmd == "unix_chkpwd";
+    }
+
     false
 }
 
@@ -991,7 +1000,7 @@ fn is_expected_linux_auth_stack_noise(comm: &str, parent_comm: &str, path: &str)
         }
     }
 
-    if process == "systemd-userwork" && lower.starts_with("/etc/shadow") {
+    if process == "systemd-userwork" && (lower.starts_with("/etc/shadow") || lower == "/") {
         return true;
     }
 
@@ -1076,8 +1085,13 @@ fn is_expected_linux_shell_startup_process_noise(
     let cmd = command_line.to_ascii_lowercase();
 
     if process == "bash"
-        && parent == "systemd"
-        && matches!(lower.as_str(), "/usr/bin/bash" | "/bin/bash")
+        && matches!(parent.as_str(), "systemd" | "sshd-session")
+        && (matches!(lower.as_str(), "/usr/bin/bash" | "/bin/bash")
+            || (lower.is_empty()
+                && (cmd.is_empty()
+                    || cmd == "bash"
+                    || cmd == "/usr/bin/bash"
+                    || cmd == "/bin/bash")))
         && (cmd.is_empty() || cmd == "bash" || cmd == "/usr/bin/bash" || cmd == "/bin/bash")
     {
         return true;
@@ -1099,6 +1113,23 @@ fn is_expected_linux_shell_startup_process_noise(
         || (process == "curl"
             && matches!(lower.as_str(), "/usr/bin/curl" | "/bin/curl")
             && cmd == "curl")
+        || (process == "basename"
+            && (matches!(lower.as_str(), "/usr/bin/basename" | "/bin/basename")
+                || lower.is_empty())
+            && cmd == "basename")
+        || (process == "readlink"
+            && (matches!(lower.as_str(), "/usr/bin/readlink" | "/bin/readlink")
+                || lower.is_empty())
+            && cmd == "readlink")
+        || (process == "locale"
+            && (matches!(lower.as_str(), "/usr/bin/locale" | "/bin/locale") || lower.is_empty())
+            && cmd == "locale")
+        || (process == "tr"
+            && (matches!(lower.as_str(), "/usr/bin/tr" | "/bin/tr") || lower.is_empty())
+            && cmd == "tr")
+        || (process == "cat"
+            && (matches!(lower.as_str(), "/usr/bin/cat" | "/bin/cat") || lower.is_empty())
+            && cmd == "cat")
 }
 
 fn is_expected_linux_ssh_bootstrap_noise(comm: &str, parent_comm: &str, path: &str) -> bool {
@@ -1119,7 +1150,41 @@ fn is_expected_linux_ssh_bootstrap_noise(comm: &str, parent_comm: &str, path: &s
     }
 
     if process == "unix_chkpwd" && parent == "sshd-session" {
-        return lower.is_empty() || lower == "/etc/localtime";
+        return lower.is_empty()
+            || lower == "/etc/localtime"
+            || is_low_value_linux_runtime_loader_path(&lower);
+    }
+
+    false
+}
+
+fn is_expected_linux_shell_startup_file_noise(
+    comm: &str,
+    parent_comm: &str,
+    path: &str,
+    command_line: &str,
+) -> bool {
+    let process = normalize_linux_process_name(comm);
+    let parent = normalize_linux_process_name(parent_comm);
+    let lower = path.to_ascii_lowercase();
+    let cmd = command_line.to_ascii_lowercase();
+
+    if !lower.is_empty() {
+        return false;
+    }
+
+    if parent == "bash"
+        && matches!(
+            process.as_str(),
+            "basename" | "readlink" | "locale" | "tr" | "cat" | "grep" | "rm"
+        )
+        && (cmd.is_empty() || cmd == process)
+    {
+        return true;
+    }
+
+    if process == "sshd-session" && parent == "sshd" && cmd.contains("sshd-session: [accepted]") {
+        return true;
     }
 
     false
@@ -1163,6 +1228,8 @@ fn is_low_value_linux_runtime_loader_path(path: &str) -> bool {
 fn is_low_value_linux_ssh_bootstrap_path(path: &str) -> bool {
     is_low_value_linux_runtime_loader_path(path)
         || path == "/proc/sys/crypto/fips_enabled"
+        || path == "/proc/sys/kernel/random/boot_id"
+        || path == "/proc/sys/kernel/ngroups_max"
         || path.starts_with("/sys/fs/selinux/")
         || path.starts_with("/etc/pam.d/")
         || path.starts_with("/etc/pki/tls/")
@@ -1170,6 +1237,7 @@ fn is_low_value_linux_ssh_bootstrap_path(path: &str) -> bool {
         || path.starts_with("/etc/selinux/")
         || path.starts_with("/etc/security/")
         || path.starts_with("/etc/gss/")
+        || path.starts_with("/run/systemd/userdb/")
         || path.ends_with("/.ssh/authorized_keys")
         || matches!(
             path,
@@ -1180,6 +1248,10 @@ fn is_low_value_linux_ssh_bootstrap_path(path: &str) -> bool {
                 | "/etc/group"
                 | "/etc/nsswitch.conf"
                 | "/etc/gai.conf"
+                | "/etc/motd"
+                | "/etc/nologin"
+                | "/etc/localtime"
+                | "/proc/self/oom_score_adj"
                 | "/var/run/nologin"
                 | "/var/log/btmp"
         )
@@ -1188,6 +1260,9 @@ fn is_low_value_linux_ssh_bootstrap_path(path: &str) -> bool {
 fn is_low_value_linux_shell_startup_path(path: &str) -> bool {
     matches!(path, "/etc/profile" | "/etc/bashrc")
         || path.starts_with("/etc/profile.d/")
+        || path.starts_with("/usr/lib/locale/")
+        || path.starts_with("/usr/lib64/gconv/")
+        || path.starts_with("/usr/lib/gconv/")
         || path.ends_with("/.bashrc")
         || path.ends_with("/.bash_profile")
         || path.ends_with("/.profile")

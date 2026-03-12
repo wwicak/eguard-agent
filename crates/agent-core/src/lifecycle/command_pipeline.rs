@@ -21,6 +21,7 @@ mod handlers;
 mod host_actions;
 mod host_isolation_allowlist;
 mod host_isolation_linux;
+mod on_demand_scan;
 mod paths;
 mod payloads;
 mod profile_apply;
@@ -80,6 +81,10 @@ impl AgentRuntime {
         match parsed {
             ServerCommand::Isolate => self.apply_host_isolate(&command.payload_json, &mut exec),
             ServerCommand::Unisolate => self.apply_host_unisolate(&mut exec),
+            ServerCommand::Scan => {
+                self.apply_on_demand_scan(&command.payload_json, now_unix, &mut exec)
+                    .await
+            }
             ServerCommand::RestoreQuarantine => {
                 self.apply_quarantine_restore(&command.payload_json, &mut exec)
             }

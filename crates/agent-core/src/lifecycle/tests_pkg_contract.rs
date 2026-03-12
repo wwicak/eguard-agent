@@ -308,6 +308,14 @@ fn linux_update_packaging_recovers_service_after_upgrade() {
         "linux update worker should clear failed service state after package install"
     );
     assert!(
+        worker_source.contains("rpm -Uvh --replacepkgs --replacefiles \"$pkg_path\""),
+        "linux rpm update worker should retry with replace flags for same-version/manual-hotfix installs"
+    );
+    assert!(
+        worker_source.contains("case \"$rpm_output\" in"),
+        "linux rpm update worker should inspect rpm stderr before deciding whether replace flags are safe"
+    );
+    assert!(
         worker_source.contains("if ! systemctl restart eguard-agent; then"),
         "linux update worker should prefer a full service restart after package install"
     );
