@@ -1075,12 +1075,30 @@ fn is_expected_linux_shell_startup_process_noise(
     let lower = path.to_ascii_lowercase();
     let cmd = command_line.to_ascii_lowercase();
 
+    if process == "bash"
+        && parent == "systemd"
+        && matches!(lower.as_str(), "/usr/bin/bash" | "/bin/bash")
+        && (cmd.is_empty() || cmd == "bash" || cmd == "/usr/bin/bash" || cmd == "/bin/bash")
+    {
+        return true;
+    }
+
     if parent != "bash" {
         return false;
     }
 
     (process == "grepconf.sh" && (lower == "/usr/libexec/grepconf.sh" || cmd == "grepconf.sh"))
         || (process == "systemctl" && cmd.contains("--user") && cmd.contains("show-environment"))
+        || (process == "nohup"
+            && matches!(lower.as_str(), "/usr/bin/nohup" | "/bin/nohup")
+            && cmd == "nohup")
+        || (process == "tty" && lower == "/usr/bin/tty" && cmd == "tty")
+        || (process == "sed"
+            && matches!(lower.as_str(), "/usr/bin/sed" | "/bin/sed")
+            && cmd == "sed")
+        || (process == "curl"
+            && matches!(lower.as_str(), "/usr/bin/curl" | "/bin/curl")
+            && cmd == "curl")
 }
 
 fn is_expected_linux_ssh_bootstrap_noise(comm: &str, parent_comm: &str, path: &str) -> bool {
@@ -1092,8 +1110,12 @@ fn is_expected_linux_ssh_bootstrap_noise(comm: &str, parent_comm: &str, path: &s
         return is_low_value_linux_ssh_bootstrap_path(&lower);
     }
 
-    if process == "bash" && parent == "sshd-session" {
+    if process == "bash" && matches!(parent.as_str(), "sshd-session" | "systemd") {
         return is_low_value_linux_shell_startup_path(&lower);
+    }
+
+    if process == "curl" && parent == "bash" && lower.ends_with("/.curlrc") {
+        return true;
     }
 
     if process == "unix_chkpwd" && parent == "sshd-session" {

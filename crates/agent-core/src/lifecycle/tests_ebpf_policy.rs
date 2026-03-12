@@ -2062,6 +2062,90 @@ fn bash_profile_helper_exec_noise_is_filtered_before_backloging() {
 }
 
 #[test]
+fn systemd_started_bash_login_shell_exec_noise_is_filtered_before_backloging() {
+    let raw = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::ProcessExec,
+        pid: 45876,
+        uid: 1000,
+        ts_ns: 1,
+        payload: "path=/usr/bin/bash;cmdline=bash;ppid=1;cgroup_id=30;comm=bash;parent_comm=systemd"
+            .to_string(),
+    };
+
+    assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
+}
+
+#[test]
+fn bash_nohup_startup_exec_noise_is_filtered_before_backloging() {
+    let raw = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::ProcessExec,
+        pid: 45889,
+        uid: 1000,
+        ts_ns: 1,
+        payload: "path=/usr/bin/nohup;cmdline=nohup;ppid=45876;cgroup_id=30;comm=nohup;parent_comm=bash"
+            .to_string(),
+    };
+
+    assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
+}
+
+#[test]
+fn bash_tty_startup_exec_noise_is_filtered_before_backloging() {
+    let raw = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::ProcessExec,
+        pid: 45891,
+        uid: 1000,
+        ts_ns: 1,
+        payload: "path=/usr/bin/tty;cmdline=tty;ppid=45876;cgroup_id=30;comm=tty;parent_comm=bash"
+            .to_string(),
+    };
+
+    assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
+}
+
+#[test]
+fn bash_sed_startup_exec_noise_is_filtered_before_backloging() {
+    let raw = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::ProcessExec,
+        pid: 45892,
+        uid: 1000,
+        ts_ns: 1,
+        payload: "path=/usr/bin/sed;cmdline=sed;ppid=45876;cgroup_id=30;comm=sed;parent_comm=bash"
+            .to_string(),
+    };
+
+    assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
+}
+
+#[test]
+fn bash_bashrc_read_noise_is_filtered_before_backloging() {
+    let raw = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::FileOpen,
+        pid: 45876,
+        uid: 1000,
+        ts_ns: 1,
+        payload: "path=/home/agent/.bashrc;flags=0;mode=0;ppid=1;cgroup_id=30;comm=bash;parent_comm=systemd"
+            .to_string(),
+    };
+
+    assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
+}
+
+#[test]
+fn bash_curlrc_read_noise_is_filtered_before_backloging() {
+    let raw = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::FileOpen,
+        pid: 45893,
+        uid: 1000,
+        ts_ns: 1,
+        payload: "path=/home/agent/.curlrc;flags=0;mode=0;ppid=45876;cgroup_id=30;comm=curl;parent_comm=bash"
+            .to_string(),
+    };
+
+    assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
+}
+
+#[test]
 fn linux_console_device_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
         event_type: platform_linux::EventType::FileOpen,
