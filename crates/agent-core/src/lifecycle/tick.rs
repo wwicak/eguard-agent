@@ -12,9 +12,9 @@ use crate::platform::enrich_event_with_cache;
 use crate::config::AgentMode;
 
 use super::{
-    confidence_to_severity, elapsed_micros, interval_due, should_drop_low_value_linux_event,
-    should_drop_low_value_windows_event, to_detection_event, AgentRuntime, TickEvaluation,
-    HEARTBEAT_INTERVAL_SECS,
+    confidence_to_severity, elapsed_micros, interval_due, run_periodic_storage_hygiene,
+    should_drop_low_value_linux_event, should_drop_low_value_windows_event, to_detection_event,
+    AgentRuntime, TickEvaluation, HEARTBEAT_INTERVAL_SECS, STORAGE_HYGIENE_INTERVAL_SECS,
 };
 
 impl AgentRuntime {
@@ -32,6 +32,7 @@ impl AgentRuntime {
             info!(tick = self.tick_count, "debug tick");
         }
         self.run_self_protection_if_due(now_unix).await?;
+        self.run_storage_hygiene_if_due(now_unix);
 
         let evaluate_started = Instant::now();
         let evaluation = self.evaluate_tick(now_unix)?;
@@ -72,6 +73,25 @@ impl AgentRuntime {
             .max(self.metrics.last_tick_total_micros);
         let _ = self.protected.is_protected_process("systemd");
         Ok(())
+    }
+
+    fn run_storage_hygiene_if_due(&mut self, now_unix: i64) {
+        if !interval_due(
+            self.last_storage_hygiene_unix,
+            now_unix,
+            STORAGE_HYGIENE_INTERVAL_SECS,
+        ) {
+            return;
+        }
+        self.last_storage_hygiene_unix = Some(now_unix);
+        self.run_storage_hygiene();
+    }
+
+    pub(super) fn run_storage_hygiene(&mut self) {
+        let _ = run_periodic_storage_hygiene();
+        if let Err(err) = self.buffer.run_maintenance() {
+            warn!(error = %err, "offline buffer maintenance failed");
+        }
     }
 
     pub(super) fn evaluate_tick(&mut self, now_unix: i64) -> Result<Option<TickEvaluation>> {

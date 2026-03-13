@@ -2735,4 +2735,35 @@ Generalize performance optimizations into a shared internal architecture so endp
   - startup no longer logs `signature-ml baseline reload failed ... magic number mismatch`
   - startup now logs successful baseline load from
     `/usr/local/eg/var/mlops/signature-ml-baseline/signature-ml-model.json`
-  - applied server VM drop-in `nac-timeouts.conf` with 20s/20s/30s bridge timeouts
+- applied server VM drop-in `nac-timeouts.conf` with 20s/20s/30s bridge timeouts
+
+## Storage hygiene follow-up — 2026-03-13
+
+### Review
+- Investigated why Ubuntu reached 100% disk usage and found the dominant growth
+  under `/var/lib/eguard-agent/rules-staging` from stale extracted bundle
+  directories.
+- Confirmed the command-path MySQL timeout issue was not mainly a query-plan
+  problem; the pending-command query used the expected `(agent_id, status,
+  issued_at)` index, but requests still lacked DB deadlines and could hang on
+  lock/socket/client write waits.
+- Freed ~18G on Ubuntu by removing stale extracted bundle directories and
+  restored normal free space.
+- Hardened client storage behavior in agent code:
+  - `crates/agent-core/src/lifecycle/bundle_path.rs`
+    - cross-platform rules-staging pruning for stale extracted dirs, stale
+      exact-store SQLite files, and superseded bundle archives/signatures
+  - `crates/agent-core/src/lifecycle/tick.rs`
+    - periodic storage hygiene hook
+  - `crates/agent-core/src/lifecycle/runtime.rs`
+    - startup storage hygiene run
+  - `crates/agent-core/src/lifecycle/constants.rs`
+    - corrected macOS staging path and added hygiene interval constant
+  - `crates/response/src/quarantine.rs`
+    - quarantine now prefers same-filesystem `rename()` before copy fallback
+- Remaining open item:
+  - resolved later the same night by also adding DB deadlines to event-batch
+    queries on the server; Ubuntu then completed manual scan command
+    `d0b12928-945a-4ed7-a214-9364d13e71c8` with
+    `quarantined_files=1`, removed `/var/lib/eguard-agent/scan-eicar-3.com`,
+    and persisted response row `id=992` as `quarantine_file`

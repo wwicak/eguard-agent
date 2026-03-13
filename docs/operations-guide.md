@@ -2499,6 +2499,55 @@ sudo systemctl restart eguard-agent
 | `C:\ProgramData\eGuard\quarantine\` | Quarantined files |
 | `C:\ProgramData\eGuard\rules-staging\` | Bundle staging directory |
 
+### Client Storage Hygiene Policy
+
+The agent now applies periodic storage hygiene at startup and during runtime so
+it does not silently consume endpoint disk space.
+
+Managed roots:
+
+| OS | Data Root | Notes |
+|----|-----------|-------|
+| Linux | `/var/lib/eguard-agent/` | Main agent data root |
+| Windows | `C:\ProgramData\eGuard\` | Main agent data root |
+| macOS | `/Library/Application Support/eGuard/` | Main agent data root |
+
+Current automatic hygiene behavior:
+
+- `rules-staging/`
+  - prunes stale extracted bundle directories
+  - prunes stale low-memory IOC exact-store SQLite files
+  - prunes superseded signed bundle archives and `.sig` sidecars while keeping
+    the active last-known-good bundle
+- `quarantine/`
+  - enforces retention and total-size pruning
+  - quarantine prefers same-filesystem `rename()` before copy fallback to reduce
+    disk amplification on low-free-space hosts
+- `update/`
+  - prunes stale worker logs, stale `.download` files, stale outcome files, old
+    package artifacts, and old Windows backup binaries
+- offline SQLite buffer
+  - runs `wal_checkpoint(TRUNCATE)` during hygiene
+  - vacuums the DB when on-disk footprint drifts far above logical buffered size
+- managed file logs
+  - Windows service log rotates at startup before the active log grows too large
+  - Linux still relies on journald/systemd for primary log retention
+
+Relevant environment overrides:
+
+| Variable | Purpose |
+|----------|---------|
+| `EGUARD_QUARANTINE_MAX_BYTES` | Quarantine size cap |
+| `EGUARD_QUARANTINE_RETENTION_SECS` | Quarantine retention |
+| `EGUARD_UPDATE_MAX_BYTES` | Update artifact size cap |
+| `EGUARD_UPDATE_RETENTION_SECS` | Update artifact retention |
+| `EGUARD_UPDATE_TEMP_RETENTION_SECS` | Stale temp worker/download retention |
+| `EGUARD_LOG_DIR` | Override managed log directory |
+| `EGUARD_LOG_DIR_MAX_BYTES` | Managed log directory size cap |
+| `EGUARD_LOG_RETENTION_SECS` | Managed log retention |
+| `EGUARD_ACTIVE_LOG_MAX_BYTES` | Active log rotation threshold |
+| `EGUARD_ROTATED_LOG_KEEP_COUNT` | Number of rotated logs to retain |
+
 ---
 
 ## Appendix A: E2E Testing Notes (Feb 2026)
@@ -3510,6 +3559,27 @@ curl -X POST http://SERVER:50053/api/v1/endpoint/command/enqueue \
     policy disables background autonomous response
   - this does not change background autonomous detections; it only affects the
     manual `scan` command path
+  - Ubuntu root-cause chain for the no-quarantine live case also included local
+    storage pressure:
+    - `/var/lib/eguard-agent/rules-staging` had accumulated many stale extracted
+      bundle directories and filled the root filesystem
+    - with the disk full, quarantine-by-copy could fail even when a manual scan
+      matched the EICAR file
+  - agent storage hygiene is now being hardened to avoid repeating that state:
+    - cross-platform periodic pruning of stale `rules-staging` extraction dirs,
+      stale exact-store SQLite files, and superseded bundle archives/signatures
+    - macOS default `rules-staging` path corrected to
+      `/Library/Application Support/eGuard/rules-staging`
+    - quarantine now prefers same-filesystem `rename()` before falling back to
+      copy+wipe, which is much friendlier on low-free-space hosts
+  - final live Ubuntu validation after the server/event-query timeout fix and
+    local storage cleanup:
+    - command `d0b12928-945a-4ed7-a214-9364d13e71c8` completed with
+      `roots=1; scanned_files=1; matched_files=1; quarantined_files=1; errors=0`
+    - `/var/lib/eguard-agent/scan-eicar-3.com` was removed
+    - quarantine artifact exists at
+      `/var/lib/eguard-agent/quarantine/275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f`
+    - server persisted response row `id=992` with `action_type=quarantine_file`
 
 **E2E results (2026-02-28):**
 

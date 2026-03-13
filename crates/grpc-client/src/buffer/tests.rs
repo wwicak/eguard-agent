@@ -265,3 +265,33 @@ fn event_buffer_sqlite_variant_reports_sizes() {
 
     let _ = std::fs::remove_file(path);
 }
+
+#[test]
+fn sqlite_buffer_maintenance_checkpoints_wal() {
+    let unique = format!(
+        "eguard-agent-buffer-maintenance-{}.db",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    );
+    let path = std::env::temp_dir().join(unique);
+    let path_str = path.to_string_lossy().into_owned();
+
+    let mut b = SqliteBuffer::new(&path_str, 1024).expect("sqlite open");
+    for i in 0..16 {
+        b.enqueue(sample_event(i)).expect("enqueue event");
+    }
+    b.run_maintenance().expect("run maintenance");
+
+    let wal = std::path::PathBuf::from(format!("{}-wal", path.to_string_lossy()));
+    let wal_len = std::fs::metadata(&wal).map(|meta| meta.len()).unwrap_or(0);
+    assert!(wal_len <= 1024 * 1024, "unexpected WAL growth: {wal_len}");
+
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&wal);
+    let _ = std::fs::remove_file(std::path::PathBuf::from(format!(
+        "{}-shm",
+        path.to_string_lossy()
+    )));
+}

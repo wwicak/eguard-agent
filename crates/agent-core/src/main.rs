@@ -16,6 +16,8 @@ use tracing::{info, warn};
 
 use config::AgentConfig;
 use lifecycle::AgentRuntime;
+#[cfg(target_os = "windows")]
+use lifecycle::{prepare_managed_log_file, resolve_logs_dir};
 
 type ShutdownFuture = Pin<Box<dyn Future<Output = ShutdownReason> + Send>>;
 
@@ -466,7 +468,8 @@ mod windows_service_entry {
 
         // Initialize file-based tracing before anything else logs. Windows SCM
         // does not capture stderr, so service mode must write to a log file.
-        let log_path = std::path::PathBuf::from(r"C:\ProgramData\eGuard\logs\agent.log");
+        let log_path = resolve_logs_dir().join("agent.log");
+        prepare_managed_log_file(&log_path);
         super::init_tracing_to_file(&log_path);
 
         set_service_status(

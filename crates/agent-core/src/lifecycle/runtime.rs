@@ -113,6 +113,7 @@ pub struct AgentRuntime {
     pub(super) ioc_signal_buffer: Vec<IocSignal>,
     pub(super) last_ioc_signal_upload_unix: Option<i64>,
     pub(super) last_campaign_fetch_unix: Option<i64>,
+    pub(super) last_storage_hygiene_unix: Option<i64>,
     pub(super) active_campaign_iocs: std::collections::HashSet<String>,
     pub(super) playbook_engine: PlaybookEngine,
     pub(super) dirty_baseline_keys: BTreeSet<String>,
@@ -503,6 +504,7 @@ impl AgentRuntime {
             ioc_signal_buffer: Vec::new(),
             last_ioc_signal_upload_unix: None,
             last_campaign_fetch_unix: None,
+            last_storage_hygiene_unix: None,
             active_campaign_iocs: std::collections::HashSet::new(),
             playbook_engine,
             dirty_baseline_keys,
@@ -520,6 +522,7 @@ impl AgentRuntime {
         };
         runtime.bootstrap_threat_intel_replay_floor();
         runtime.bootstrap_last_known_good_bundle();
+        runtime.run_storage_hygiene();
         Ok(runtime)
     }
 

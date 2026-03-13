@@ -20,6 +20,7 @@ mod response_playbook;
 mod runtime;
 mod runtime_mode;
 mod self_protect;
+mod storage_hygiene;
 mod telemetry;
 mod tick;
 mod timing;
@@ -40,6 +41,8 @@ mod threat_intel_pipeline;
 #[allow(unused_imports)]
 pub use response_playbook::PlaybookEngine;
 pub use runtime::AgentRuntime;
+#[allow(unused_imports)]
+pub(crate) use storage_hygiene::{prepare_managed_log_file, resolve_logs_dir};
 pub use types::RuntimeObservabilitySnapshot;
 
 #[allow(unused_imports)]
@@ -105,7 +108,7 @@ use ebpf_support::{
 };
 
 #[allow(unused_imports)]
-use bundle_path::resolve_rules_staging_root;
+use bundle_path::{prune_rules_staging_root, resolve_rules_staging_root};
 #[allow(unused_imports)]
 use bundle_support::{
     build_ransomware_policy, is_signed_bundle_archive, load_bundle_full, verify_bundle_signature,
@@ -115,6 +118,8 @@ use bundle_support::{
 use bundle_support::{
     load_bundle_rules, sanitize_archive_relative_path, verify_bundle_signature_with_material,
 };
+#[allow(unused_imports)]
+use storage_hygiene::run_periodic_storage_hygiene;
 
 #[allow(unused_imports)]
 use emergency_rule::parse_emergency_rule_type;

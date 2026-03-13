@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -76,6 +76,7 @@ pub fn estimate_event_size(event: &EventEnvelope) -> usize {
 pub struct SqliteBuffer {
     conn: Connection,
     cap_bytes: usize,
+    path: PathBuf,
 }
 
 impl SqliteBuffer {
@@ -127,7 +128,11 @@ impl SqliteBuffer {
         )
         .context("failed initializing sqlite schema")?;
 
-        Ok(Self { conn, cap_bytes })
+        Ok(Self {
+            conn,
+            cap_bytes,
+            path: PathBuf::from(path),
+        })
     }
 
     pub fn enqueue(&mut self, event: EventEnvelope) -> Result<()> {
@@ -265,6 +270,31 @@ impl SqliteBuffer {
         }
         Ok(())
     }
+
+    pub fn run_maintenance(&mut self) -> Result<()> {
+        self.conn
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .context("failed checkpointing sqlite WAL")?;
+
+        let on_disk_bytes = self.on_disk_bytes();
+        let pending_bytes = self.current_total_bytes()?.max(0) as u64;
+        let vacuum_threshold = (self.cap_bytes as u64).saturating_mul(2);
+        let pending_threshold = (self.cap_bytes as u64) / 2;
+        if on_disk_bytes > vacuum_threshold && pending_bytes < pending_threshold {
+            self.conn
+                .execute_batch("VACUUM;")
+                .context("failed vacuuming sqlite offline buffer")?;
+        }
+
+        Ok(())
+    }
+
+    fn on_disk_bytes(&self) -> u64 {
+        let base = file_len(&self.path);
+        let wal = file_len(&wal_path(&self.path));
+        let shm = file_len(&shm_path(&self.path));
+        base.saturating_add(wal).saturating_add(shm)
+    }
 }
 
 #[derive(Debug)]
@@ -324,6 +354,27 @@ impl EventBuffer {
             },
         }
     }
+
+    pub fn run_maintenance(&mut self) -> Result<()> {
+        match self {
+            Self::Memory(_) => Ok(()),
+            Self::Sqlite(buf) => buf.run_maintenance(),
+        }
+    }
+}
+
+fn wal_path(path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}-wal", path.to_string_lossy()))
+}
+
+fn shm_path(path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}-shm", path.to_string_lossy()))
+}
+
+fn file_len(path: &Path) -> u64 {
+    fs::metadata(path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
