@@ -33,7 +33,7 @@ mod update_agent;
 mod windows_network_profile;
 
 const COMPLETED_COMMAND_CURSOR_CAP: usize = 256;
-const COMMAND_ACK_TIMEOUT_MS: u64 = 250;
+const COMMAND_ACK_TIMEOUT_MS: u64 = 5_000;
 
 fn reconcile_isolation_state_after_command(
     parsed: ServerCommand,

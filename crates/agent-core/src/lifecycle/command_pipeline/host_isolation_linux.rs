@@ -12,6 +12,7 @@ const IPV4_OUTPUT_CHAIN: &str = "EGUARD-ISOLATE-OUT";
 const IPV6_INPUT_CHAIN: &str = "EGUARD-ISOLATE6-IN";
 const IPV6_OUTPUT_CHAIN: &str = "EGUARD-ISOLATE6-OUT";
 const MANAGEMENT_PORTS: &[u16] = &[22];
+const XTABLES_WAIT_SECS: &str = "5";
 
 pub(super) fn apply_linux_host_isolation(allowed_server_ips: &[String]) -> Result<(), String> {
     if allowed_server_ips.is_empty() {
@@ -158,6 +159,8 @@ fn build_apply_commands(
         commands.push(FirewallCommand {
             bin,
             args: vec![
+                "-w".into(),
+                XTABLES_WAIT_SECS.into(),
                 "-A".into(),
                 input_chain.into(),
                 "-s".into(),
@@ -169,6 +172,8 @@ fn build_apply_commands(
         commands.push(FirewallCommand {
             bin,
             args: vec![
+                "-w".into(),
+                XTABLES_WAIT_SECS.into(),
                 "-A".into(),
                 output_chain.into(),
                 "-d".into(),
@@ -206,9 +211,11 @@ fn build_remove_commands() -> Vec<FirewallCommand> {
 }
 
 fn fw<const N: usize>(bin: &'static str, args: [&str; N]) -> FirewallCommand {
+    let mut all_args = vec!["-w".to_string(), XTABLES_WAIT_SECS.to_string()];
+    all_args.extend(args.into_iter().map(|value| value.to_string()));
     FirewallCommand {
         bin,
-        args: args.into_iter().map(|value| value.to_string()).collect(),
+        args: all_args,
     }
 }
 
@@ -220,12 +227,23 @@ mod tests {
     fn build_ipv4_apply_commands_allows_management_server_and_drops_rest() {
         let commands = build_ipv4_apply_commands(&["203.0.113.10".to_string()]);
         assert!(commands.iter().any(|cmd| cmd.args
-            == vec!["-A", IPV4_INPUT_CHAIN, "-s", "203.0.113.10", "-j", "ACCEPT"]
-                .into_iter()
-                .map(str::to_string)
-                .collect::<Vec<_>>()));
+            == vec![
+                "-w",
+                XTABLES_WAIT_SECS,
+                "-A",
+                IPV4_INPUT_CHAIN,
+                "-s",
+                "203.0.113.10",
+                "-j",
+                "ACCEPT"
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()));
         assert!(commands.iter().any(|cmd| cmd.args
             == vec![
+                "-w",
+                XTABLES_WAIT_SECS,
                 "-A",
                 IPV4_OUTPUT_CHAIN,
                 "-d",
@@ -267,13 +285,13 @@ ESTAB 0 0 10.0.2.15:443 198.51.100.44:60000
         let commands = build_remove_commands();
         assert!(commands.iter().any(|cmd| cmd.bin == "iptables"
             && cmd.args
-                == vec!["-X", IPV4_INPUT_CHAIN]
+                == vec!["-w", XTABLES_WAIT_SECS, "-X", IPV4_INPUT_CHAIN]
                     .into_iter()
                     .map(str::to_string)
                     .collect::<Vec<_>>()));
         assert!(commands.iter().any(|cmd| cmd.bin == "ip6tables"
             && cmd.args
-                == vec!["-X", IPV6_OUTPUT_CHAIN]
+                == vec!["-w", XTABLES_WAIT_SECS, "-X", IPV6_OUTPUT_CHAIN]
                     .into_iter()
                     .map(str::to_string)
                     .collect::<Vec<_>>()));

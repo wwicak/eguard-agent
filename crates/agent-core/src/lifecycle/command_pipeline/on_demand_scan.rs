@@ -43,6 +43,7 @@ impl AgentRuntime {
         let mut matched_files = 0usize;
         let mut quarantined_files = 0usize;
         let mut scan_errors = 0usize;
+        let response_cfg = self.on_demand_scan_response_config();
 
         for path in files {
             scanned_files = scanned_files.saturating_add(1);
@@ -70,10 +71,8 @@ impl AgentRuntime {
             }
 
             matched_files = matched_files.saturating_add(1);
-            let action = normalize_scan_action(response::plan_action(
-                outcome.confidence,
-                &self.effective_response_config(),
-            ));
+            let action =
+                normalize_scan_action(response::plan_action(outcome.confidence, &response_cfg));
             let detection_layers = Self::detection_layers(&outcome);
             let rule_name =
                 Self::detection_rule_name(&outcome).unwrap_or_else(|| "manual_scan".to_string());
@@ -142,6 +141,12 @@ impl AgentRuntime {
             container_escape: false,
             container_privileged: false,
         }))
+    }
+
+    fn on_demand_scan_response_config(&self) -> response::ResponseConfig {
+        let mut cfg = self.config.response.clone();
+        cfg.autonomous_response = true;
+        cfg
     }
 }
 
@@ -295,6 +300,63 @@ mod tests {
         assert_eq!(
             report.file_path.as_deref(),
             Some(eicar_path.to_string_lossy().as_ref())
+        );
+
+        let _ = fs::remove_dir_all(&temp_root);
+        std::env::remove_var("EGUARD_TEST_QUARANTINE_DIR");
+    }
+
+    #[tokio::test]
+    async fn run_scan_command_bypasses_learning_mode_response_suppression() {
+        let mut cfg = AgentConfig::default();
+        cfg.offline_buffer_backend = "memory".to_string();
+        cfg.server_addr = "127.0.0.1:1".to_string();
+        cfg.response.autonomous_response = false;
+
+        let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+        runtime.client.set_online(false);
+        runtime.runtime_mode = AgentMode::Learning;
+        runtime.baseline_store.status = BaselineStatus::Learning;
+
+        let temp_root = std::env::temp_dir().join(format!(
+            "eguard-on-demand-learning-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("unix time")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&temp_root).expect("create temp root");
+        let quarantine_root = temp_root.join("quarantine");
+        std::env::set_var("EGUARD_TEST_QUARANTINE_DIR", &quarantine_root);
+        let eicar_path = temp_root.join("eicar.com");
+        fs::write(
+            &eicar_path,
+            b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*",
+        )
+        .expect("write eicar");
+
+        runtime
+            .handle_command(
+                grpc_client::CommandEnvelope {
+                    command_id: "cmd-scan-learning".to_string(),
+                    command_type: "scan".to_string(),
+                    payload_json: serde_json::json!({
+                        "paths": [eicar_path.display().to_string()]
+                    })
+                    .to_string(),
+                },
+                1_700_000_001,
+            )
+            .await;
+
+        assert!(
+            !eicar_path.exists(),
+            "manual scan should quarantine even in learning mode"
+        );
+        assert_eq!(runtime.pending_response_reports.len(), 1);
+        assert_eq!(
+            runtime.pending_response_reports[0].envelope.action_type,
+            "quarantine_file"
         );
 
         let _ = fs::remove_dir_all(&temp_root);

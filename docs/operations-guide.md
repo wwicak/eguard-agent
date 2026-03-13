@@ -3436,8 +3436,8 @@ curl -X POST http://SERVER:50053/api/v1/endpoint/command/enqueue \
 
 ### 16.4 scan
 
-Schedules a quick scan of the endpoint. Sets an internal state flag; the actual
-scan executes on the next tick cycle.
+Runs a one-shot quick scan of the endpoint against the requested paths. If no
+paths are provided, the agent scans its default temporary-file targets.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -3470,8 +3470,46 @@ curl -X POST http://SERVER:50053/api/v1/endpoint/command/enqueue \
 
 | Platform | Behavior |
 |----------|----------|
-| Linux | Sets scan flag; detection engine runs IOC + YARA on next cycle |
+| Linux | Executes an immediate one-shot file scan against the provided paths (or default temp-file targets) and reports any local response actions |
 | Windows | Sets scan flag; detection engine runs IOC + YARA on next cycle |
+
+**Live validation note (2026-03-12):**
+
+- Fedora agent `agent-fedsafe-27-112-79-208` quarantined a correctly formed
+  EICAR file via remote `scan` command after agent restart.
+- Command `e7c08515-972d-445c-80c8-f3797f6befe9` completed with:
+  `quick scan completed: roots=1; scanned_files=1; matched_files=1; quarantined_files=1; errors=0`
+- The test file was removed from `/tmp` and stored at:
+  `/var/lib/eguard-agent/quarantine/275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f`
+- Important operator pitfall: an incorrectly written pseudo-EICAR sample can
+  yield `matched_files=0`; verify the file SHA-256 is exactly
+  `275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f` before
+  treating it as a scan regression.
+- Ubuntu caveat observed in the same pass:
+  - after host reboot, SSH access recovered and the updated binary was deployed
+    to `/usr/bin/eguard-agent`
+  - process was healthy enough to keep an established outbound TCP connection to
+    `103.132.18.221:50053`, but the server-side `last_heartbeat` for
+    `agent-31bbb93f38b4` remained stale and a manually inserted pending `scan`
+    command was not consumed during the validation window
+  - this means the new quick-scan path is validated live on Fedora, while the
+    Ubuntu host still has a pre-existing control-plane/heartbeat gap unrelated
+    to the scan implementation itself
+- Same-day follow-up changed that assessment:
+  - after deploying server-side DB/query timeouts, Ubuntu heartbeats resumed and
+    pending commands were fetched again
+  - the remaining Ubuntu scan false-negative on `/tmp/...` was caused by the
+    host unit using `PrivateTmp=true`, so files created from the SSH session were
+    not visible to the service process
+  - scanning a shared path under `/var/lib/eguard-agent/scan-eicar-3.com`
+    produced `roots=1; scanned_files=1; matched_files=1`
+- Additional follow-up:
+  - explicit remote `scan` commands now bypass learning-mode suppression for
+    remediation planning, so an operator-requested quick scan is not silently
+    downgraded just because the host is still in baseline learning or the server
+    policy disables background autonomous response
+  - this does not change background autonomous detections; it only affects the
+    manual `scan` command path
 
 **E2E results (2026-02-28):**
 

@@ -1,4 +1,5 @@
 use std::fs::{self, OpenOptions};
+use std::io::ErrorKind;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
@@ -100,12 +101,21 @@ pub fn quarantine_file_with_dir(
     fs::create_dir_all(quarantine_dir)?;
     let quarantine_path = quarantine_dir.join(&normalized_sha256);
 
-    fs::copy(&effective_path, &quarantine_path)?;
+    match fs::rename(&effective_path, &quarantine_path) {
+        Ok(()) => {
+            apply_restrictive_permissions(&quarantine_path)?;
+        }
+        Err(err) if err.kind() == ErrorKind::CrossesDevices => {
+            fs::copy(&effective_path, &quarantine_path)?;
+            apply_restrictive_permissions(&quarantine_path)?;
 
-    let mut original = OpenOptions::new().write(true).open(&effective_path)?;
-    apply_restrictive_permissions(&effective_path)?;
-    overwrite_file_prefix_with_zeros_file(&mut original, metadata.len())?;
-    fs::remove_file(&effective_path)?;
+            let mut original = OpenOptions::new().write(true).open(&effective_path)?;
+            apply_restrictive_permissions(&effective_path)?;
+            overwrite_file_prefix_with_zeros_file(&mut original, metadata.len())?;
+            fs::remove_file(&effective_path)?;
+        }
+        Err(err) => return Err(err.into()),
+    }
 
     let (original_mode, owner_uid, owner_gid) = metadata_identity(&metadata);
 

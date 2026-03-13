@@ -141,6 +141,48 @@ fn quarantine_with_custom_dir_copies_metadata_and_removes_original() {
 }
 
 #[test]
+fn quarantine_prefers_rename_within_same_filesystem() {
+    let base = std::env::temp_dir().join(format!(
+        "eguard-quarantine-rename-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    let quarantine_dir = base.join("quarantine");
+    fs::create_dir_all(&base).expect("create base");
+
+    let original = base.join("sample.bin");
+    let original_bytes = b"rename quarantine".to_vec();
+    fs::write(&original, &original_bytes).expect("write original");
+
+    let protected = ProtectedList::default_linux();
+    let report = quarantine_file_with_dir(&original, "feedface", &protected, &quarantine_dir)
+        .expect("quarantine file");
+
+    assert!(!original.exists());
+    assert!(report.quarantine_path.exists());
+    #[cfg(unix)]
+    {
+        assert_eq!(
+            fs::metadata(&report.quarantine_path)
+                .expect("stat quarantined")
+                .mode()
+                & 0o777,
+            0
+        );
+        fs::set_permissions(&report.quarantine_path, fs::Permissions::from_mode(0o600))
+            .expect("restore perms for readback");
+    }
+    assert_eq!(
+        fs::read(&report.quarantine_path).expect("read quarantined"),
+        original_bytes
+    );
+
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
 // AC-RSP-028
 fn overwrite_prefix_zeroes_only_first_four_kilobytes() {
     let base = std::env::temp_dir().join(format!(

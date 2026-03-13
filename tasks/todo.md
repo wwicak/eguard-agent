@@ -2639,3 +2639,100 @@ Generalize performance optimizations into a shared internal architecture so endp
 - [ ] Perform visual validation in the admin UI, preferably with browser automation.
 - [ ] Update `docs/operations-guide.md` with tested rollout steps, observed edge cases, and final behavior.
 - [ ] Add a short review/result note here before wrapping up.
+
+### Review
+- Fixed and verified server-side response action mapping so proto zero-value
+  reports without labels/details persist as `unknown` instead of misclassifying
+  as `kill_process`.
+- Fixed the live schema gap by adding `unknown` to the response-action enum
+  migration and manually altering the live `endpoint_response_action` table on
+  the server VM.
+- Aligned default fallback policy payloads with the documented response policy
+  defaults and verified them through the live policy API.
+- Implemented an immediate one-shot Linux `scan` command path in the agent and
+  proved it live on Fedora with a correct EICAR sample:
+  - file removed from `/tmp`
+  - quarantined file present under
+    `/var/lib/eguard-agent/quarantine/275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f`
+  - command result recorded `matched_files=1; quarantined_files=1`
+  - Response Console UI showed the new `quarantine_file` row and the `unknown`
+    action row for the gRPC zero-value probe
+- Ubuntu access recovered after reboot and the new binary was deployed, but the
+  existing host still did not resume heartbeats or consume pending scan commands
+  during this pass despite keeping an established TCP session to the server.
+- Remaining live gaps observed but not fixed in this pass:
+  - server `command/enqueue` HTTP route intermittently hanging without response
+  - NAC perl bridge fallback noise in server logs
+  - signature-ml baseline `magic number mismatch` startup noise on the server
+
+## Command delivery follow-up — 2026-03-12
+
+### Review
+- Investigated the intermittent server-side `command/enqueue` hang and Ubuntu
+  command/heartbeat stall as one combined control-plane issue.
+- Root cause on the server side:
+  - command-path DB calls (`SaveCommand`, `FetchPending`, `MarkSent`, agent
+    lookups) had no context deadlines
+  - HTTP server also lacked full request/response timeouts
+- Fixes deployed in `/home/dimas/fe_eguard/go/agent/server`:
+  - `persistence.go`
+  - `persistence_commands.go`
+  - `persistence_agents_security.go`
+  - `server.go`
+  - updated test stubs in `compliance_test.go`, `grpc_server_test.go`, and
+    `persistence_endpoint_data_test.go`
+- Live proof after redeploy:
+  - `POST /api/v1/endpoint/command/enqueue` returned immediately again
+  - ad hoc gRPC `PollCommands(agent-31bbb93f38b4)` returned pending commands
+    immediately instead of hanging
+  - Ubuntu heartbeats resumed (`last_heartbeat` advanced again)
+  - pending Ubuntu commands moved from `pending` to `sent`, confirming fetch
+    recovery
+- Additional agent hardening deployed from `/home/dimas/eguard-agent`:
+  - `crates/agent-core/src/lifecycle/command_pipeline.rs`
+    - increased direct command ACK timeout from `250ms` to `5000ms`
+  - `crates/agent-core/src/lifecycle/command_pipeline/host_isolation_linux.rs`
+    - added `iptables/ip6tables -w 5` to avoid indefinite xtables lock waits
+- Ubuntu scan validation after the follow-up:
+  - `/tmp/eguard-scan-eicar-2.com` yielded `roots=0` because Ubuntu service uses
+    `PrivateTmp=true`; the service cannot see SSH-session files in `/tmp`
+  - shared-path scan at `/var/lib/eguard-agent/scan-eicar-3.com` completed with
+    `roots=1; scanned_files=1; matched_files=1`
+  - scan did not quarantine under the current effective policy, but the command
+    delivery path itself is now working again
+- Operational side effect caught and corrected:
+  - Ubuntu briefly became isolated while old queued isolation commands were
+    drained after command delivery recovered
+  - follow-up `unisolate` command `885bf062-929f-4fcf-b9d5-faf5ef9a2b9b`
+    completed successfully and SSH access recovered
+
+## Manual scan + runtime noise follow-up — 2026-03-13
+
+### Review
+- Investigated why Ubuntu still showed `matched_files=1` without quarantine after
+  command delivery recovered.
+- Confirmed multiple contributing factors:
+  - Ubuntu is assigned the fallback `default` policy, which sets
+    `autonomous_response=false`
+  - the host was also in baseline `learning`
+  - Ubuntu systemd unit uses `PrivateTmp=true`, so files written to `/tmp` over
+    SSH are invisible to the service process
+- Implemented an agent-side fix so explicit server-issued `scan` commands bypass
+  learning-mode/autonomous-response suppression when planning remediation, while
+  leaving background autonomous detections unchanged.
+- Unit validation for that behavior now passes in
+  `crates/agent-core/src/lifecycle/command_pipeline/on_demand_scan.rs`.
+- Live Ubuntu validation after that change still produced
+  `matched_files=1; quarantined_files=0` on `/var/lib/eguard-agent/scan-eicar-3.com`,
+  which indicates a remaining host-specific confidence/rule-state difference on
+  Ubuntu even though the command path itself is fixed.
+- Investigated and fixed two server runtime-noise issues:
+  - signature-ml baseline bootstrap now loads direct JSON model files instead of
+    incorrectly treating them as zstd/tar bundles
+  - NAC local Perl bridge timeouts are now configurable and timeout failures are
+    surfaced explicitly
+- Live proof after server redeploy:
+  - startup no longer logs `signature-ml baseline reload failed ... magic number mismatch`
+  - startup now logs successful baseline load from
+    `/usr/local/eg/var/mlops/signature-ml-baseline/signature-ml-model.json`
+  - applied server VM drop-in `nac-timeouts.conf` with 20s/20s/30s bridge timeouts

@@ -5,7 +5,8 @@ pub(super) const DEFAULT_RULES_STAGING_DIR: &str = "/var/lib/eguard-agent/rules-
 pub(super) const DEFAULT_RULES_STAGING_DIR: &str = r"C:\ProgramData\eGuard\rules-staging";
 
 #[cfg(target_os = "macos")]
-pub(super) const DEFAULT_RULES_STAGING_DIR: &str = "/var/lib/eguard-agent/rules-staging";
+pub(super) const DEFAULT_RULES_STAGING_DIR: &str =
+    "/Library/Application Support/eGuard/rules-staging";
 pub(super) const MAX_SIGNED_RULE_BUNDLE_BYTES: u64 = 256 * 1024 * 1024;
 pub(super) const HEARTBEAT_INTERVAL_SECS: i64 = 30;
 pub(super) const COMPLIANCE_INTERVAL_SECS: i64 = 60;
@@ -16,6 +17,7 @@ pub(super) const BASELINE_UPLOAD_INTERVAL_SECS: i64 = 900;
 pub(super) const FLEET_BASELINE_FETCH_INTERVAL_SECS: i64 = 900;
 pub(super) const BASELINE_UPLOAD_BATCH_SIZE: usize = 128;
 pub(super) const BASELINE_UPLOAD_MAX_BYTES: usize = 1_000_000;
+pub(super) const STORAGE_HYGIENE_INTERVAL_SECS: i64 = 3_600;
 #[cfg(test)]
 pub(super) const SECONDS_PER_DAY: i64 = 86_400;
 pub(super) const EVENT_BATCH_SIZE: usize = 256;
