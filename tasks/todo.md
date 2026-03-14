@@ -1,3 +1,36 @@
+## Public Windows install-flow recovery — 2026-03-14
+
+### Plan
+- [x] Verify the public install path from this host and the external Ubuntu/Fedora/Windows VMs.
+- [x] Capture whether the install requests die before host forwarding, inside the local eGuard VM, or during response delivery.
+- [x] Fix the public install path so Windows can install through the normal HTTPS/WebGUI flow even without a trusted public CA.
+- [x] Revalidate the public endpoints and complete a fresh Windows reinstall/enrollment.
+
+### Review
+- Topology correction: only the eGuard server is a local QEMU VM on this host; Ubuntu/Fedora/Windows are external cloud hosts.
+- Host-level packet capture showed public install traffic was reaching the local VM correctly:
+  - `ens192`: client `-> 172.16.1.16:{1443,50053}`
+  - `virbr0`: DNATed flow `client -> 192.168.122.25:{1443,50053}`
+- The critical install defect was the Go agent-server HTTP configuration using `WriteTimeout: 15 * time.Second`.
+  - This was enough for small JSON/script responses, but too short for slower public delivery of the ~10.5 MB Windows agent package.
+  - Symptom on Windows: `curl: (18) transfer closed with ... bytes remaining to read`.
+  - Fix: raise `fe_eguard/go/agent/server/server.go` `WriteTimeout` to `5 * time.Minute` and redeploy `eg-agent-server`.
+- Public HTTPS bootstrap/install path now works through `https://103.132.18.221:1443`, and bootstrap metadata exposes both `tls_pin_sha256` and `tls_pubkey_pin`.
+- Fresh validation after the fix:
+  - Ubuntu public install script fetch: `200`
+  - Fedora public install script fetch: `200`
+  - Windows fresh reinstall over public HTTPS succeeded; `eGuardAgent` is running and the agent log shows successful enrollment for `agent-6072`.
+- Follow-up decision on 2026-03-14: per product direction, Windows HTTPS bootstrap/package flow now intentionally skips certificate validation for public-IP installs where customers will not have FQDN/public CA material.
+- Revalidated after the change:
+  - live `/install.ps1` on `https://103.132.18.221:1443` now serves the curl-based `--insecure` bootstrap/download helpers again
+  - fresh Windows public HTTPS install with token `windows-pinned-bootstrap-20260314` succeeded
+  - `eGuardAgent` is `Running`
+  - Windows agent log shows enrollment succeeded for `agent-3824`
+  - persisted `C:\ProgramData\eGuard\agent.conf` contains `server_addr = "103.132.18.221:50053"`
+- Fixed WebGUI enrollment-token expiry formatting bug on 2026-03-14:
+  - `EnrollmentTokens.vue` now sends `expires_at` as RFC3339 via `Date.toISOString()` instead of `YYYY-MM-DD HH:MM:SS`
+  - validated with API create call using `2026-03-20T12:00:00.000Z`, which the server accepted and normalized to `2026-03-20T12:00:00Z`
+
 ## Windows host isolation command fix — 2026-03-09
 
 ### Plan
