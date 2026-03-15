@@ -135,6 +135,10 @@ if ($process.ExitCode -ne 0) {
     throw "msiexec failed with exit code $($process.ExitCode)"
 }
 
+Write-Step "Configuring eGuardAgent service recovery (auto-restart on failure)"
+& sc.exe failure eGuardAgent reset=0 actions=restart/1000/restart/5000/restart/30000 2>$null
+& sc.exe failureflag eGuardAgent 1 2>$null
+
 Write-Step "Starting eGuardAgent service"
 Start-Service -Name 'eGuardAgent' -ErrorAction SilentlyContinue
 $service = Get-Service -Name 'eGuardAgent' -ErrorAction Stop

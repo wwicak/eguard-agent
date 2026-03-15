@@ -1,5 +1,6 @@
 use super::command_utils::{mark_internal_command, run_command};
 use std::process::Command;
+use std::sync::OnceLock;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct FirewallCommand {
@@ -11,8 +12,46 @@ const IPV4_INPUT_CHAIN: &str = "EGUARD-ISOLATE-IN";
 const IPV4_OUTPUT_CHAIN: &str = "EGUARD-ISOLATE-OUT";
 const IPV6_INPUT_CHAIN: &str = "EGUARD-ISOLATE6-IN";
 const IPV6_OUTPUT_CHAIN: &str = "EGUARD-ISOLATE6-OUT";
+const NFT_TABLE_NAME: &str = "eguard_isolate";
 const MANAGEMENT_PORTS: &[u16] = &[22];
 const XTABLES_WAIT_SECS: &str = "5";
+
+/// Detected firewall backend: iptables (legacy) or nftables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FirewallBackend {
+    Iptables,
+    Nftables,
+}
+
+static DETECTED_BACKEND: OnceLock<FirewallBackend> = OnceLock::new();
+
+fn detect_firewall_backend() -> FirewallBackend {
+    *DETECTED_BACKEND.get_or_init(|| {
+        // Try iptables first — attempt to list filter rules. If iptables
+        // fails for ANY reason (SELinux, missing module, permission denied,
+        // missing binary), fall back to nftables.
+        if let Ok(output) = mark_internal_command(Command::new("iptables").args(["-w", "2", "-L", "-n"])).output() {
+            if output.status.success() {
+                return FirewallBackend::Iptables;
+            }
+        }
+
+        // Try to ensure nf_tables kernel module is loaded (required on some
+        // distros like Fedora where iptables-legacy fails under SELinux).
+        // This may fail if the process lacks CAP_SYS_MODULE — that's fine,
+        // the module might already be loaded.
+        let _ = mark_internal_command(Command::new("modprobe").arg("nf_tables")).output();
+
+        // Check if nft can list tables (requires root + nf_tables module).
+        if let Ok(output) = mark_internal_command(Command::new("nft").args(["list", "tables"])).output() {
+            if output.status.success() {
+                return FirewallBackend::Nftables;
+            }
+        }
+        // Default to iptables and let it fail with a clear error.
+        FirewallBackend::Iptables
+    })
+}
 
 pub(super) fn apply_linux_host_isolation(allowed_server_ips: &[String]) -> Result<(), String> {
     if allowed_server_ips.is_empty() {
@@ -21,12 +60,21 @@ pub(super) fn apply_linux_host_isolation(allowed_server_ips: &[String]) -> Resul
 
     remove_linux_host_isolation().ok();
 
-    for command in build_ipv4_apply_commands(allowed_server_ips) {
-        run_command(command.bin, &command.args)?;
-    }
-    if firewall_filter_table_available("ip6tables") {
-        for command in build_ipv6_apply_commands(allowed_server_ips) {
-            run_command(command.bin, &command.args)?;
+    match detect_firewall_backend() {
+        FirewallBackend::Iptables => {
+            for command in build_ipv4_apply_commands(allowed_server_ips) {
+                run_command(command.bin, &command.args)?;
+            }
+            if firewall_filter_table_available("ip6tables") {
+                for command in build_ipv6_apply_commands(allowed_server_ips) {
+                    run_command(command.bin, &command.args)?;
+                }
+            }
+        }
+        FirewallBackend::Nftables => {
+            for command in build_nft_apply_commands(allowed_server_ips) {
+                run_command(command.bin, &command.args)?;
+            }
         }
     }
     Ok(())
@@ -34,9 +82,21 @@ pub(super) fn apply_linux_host_isolation(allowed_server_ips: &[String]) -> Resul
 
 pub(super) fn remove_linux_host_isolation() -> Result<(), String> {
     let mut last_err = None;
+
+    // Always try both backends for cleanup — isolation may have been applied
+    // with either backend in a previous run.
     for command in build_remove_commands() {
         if let Err(err) = run_command(command.bin, &command.args) {
             if !is_nonfatal_firewall_cleanup_error(&err) {
+                last_err = Some(err);
+            }
+        }
+    }
+    for command in build_nft_remove_commands() {
+        if let Err(err) = run_command(command.bin, &command.args) {
+            if !is_nonfatal_firewall_cleanup_error(&err)
+                && !err.contains("No such file or directory")
+            {
                 last_err = Some(err);
             }
         }
@@ -217,6 +277,63 @@ fn fw<const N: usize>(bin: &'static str, args: [&str; N]) -> FirewallCommand {
         bin,
         args: all_args,
     }
+}
+
+// ── nftables backend ─────────────────────────────────────────────────────
+
+fn nft(args: &[&str]) -> FirewallCommand {
+    FirewallCommand {
+        bin: "nft",
+        args: args.iter().map(|s| s.to_string()).collect(),
+    }
+}
+
+fn build_nft_apply_commands(allowed_server_ips: &[String]) -> Vec<FirewallCommand> {
+    let mut commands = Vec::new();
+
+    // Create table (idempotent via "add" which is create-if-not-exists).
+    commands.push(nft(&["add", "table", "inet", NFT_TABLE_NAME]));
+
+    // Create chains with hook priority. The chain definition must be
+    // a single brace-enclosed argument for nft.
+    commands.push(nft(&[
+        "add", "chain", "inet", NFT_TABLE_NAME, "input",
+        "{ type filter hook input priority -200 ; }",
+    ]));
+    commands.push(nft(&[
+        "add", "chain", "inet", NFT_TABLE_NAME, "output",
+        "{ type filter hook output priority -200 ; }",
+    ]));
+
+    // Allow loopback
+    commands.push(nft(&["add", "rule", "inet", NFT_TABLE_NAME, "input", "iif", "lo", "accept"]));
+    commands.push(nft(&["add", "rule", "inet", NFT_TABLE_NAME, "output", "oif", "lo", "accept"]));
+
+    // Allow management server IPs
+    for ip in allowed_server_ips {
+        let family = if ip.contains(':') { "ip6" } else { "ip" };
+        commands.push(nft(&[
+            "add", "rule", "inet", NFT_TABLE_NAME, "input",
+            family, "saddr", ip, "accept",
+        ]));
+        commands.push(nft(&[
+            "add", "rule", "inet", NFT_TABLE_NAME, "output",
+            family, "daddr", ip, "accept",
+        ]));
+    }
+
+    // Drop everything else
+    commands.push(nft(&["add", "rule", "inet", NFT_TABLE_NAME, "input", "drop"]));
+    commands.push(nft(&["add", "rule", "inet", NFT_TABLE_NAME, "output", "drop"]));
+
+    commands
+}
+
+fn build_nft_remove_commands() -> Vec<FirewallCommand> {
+    vec![
+        // Deleting the table removes all its chains and rules atomically.
+        nft(&["delete", "table", "inet", NFT_TABLE_NAME]),
+    ]
 }
 
 #[cfg(test)]

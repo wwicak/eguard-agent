@@ -82,7 +82,7 @@ impl AgentRuntime {
             match apply_linux_host_isolation(&allowed) {
                 Ok(()) => {
                     exec.detail = format!(
-                        "host isolation enforced via iptables (allowing: {})",
+                        "host isolation enforced via iptables/nftables (allowing: {})",
                         allowed.join(",")
                     );
                 }
