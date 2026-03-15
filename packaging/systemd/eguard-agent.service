@@ -7,12 +7,13 @@ StartLimitIntervalSec=0
 StartLimitBurst=0
 
 [Service]
-Type=simple
+Type=notify
 ExecStart=/usr/bin/eguard-agent
 Restart=always
 RestartSec=1s
+WatchdogSec=60
 NoNewPrivileges=true
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_MODULE
 ProtectSystem=full
 ProtectHome=true
 PrivateTmp=false

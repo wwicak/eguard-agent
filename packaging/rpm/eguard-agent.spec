@@ -15,6 +15,25 @@ Requires: eguard-agent = %{version}-%{release}
 %description rules
 Optional initial SIGMA/YARA/IOC bundle package for eGuard endpoint agent.
 
+%post
+# Ensure nf_tables kernel module loads at boot (needed for nftables-based
+# network isolation on Fedora/RHEL 9+ where iptables-legacy is blocked by SELinux).
+install -d -m 0755 /etc/modules-load.d
+echo "nf_tables" > /etc/modules-load.d/eguard-agent.conf 2>/dev/null || true
+modprobe nf_tables 2>/dev/null || true
+
+# Protect config from deletion via immutable flag.
+chattr +i /etc/eguard-agent/agent.conf 2>/dev/null || true
+
+# Enable and start service.
+systemctl daemon-reload 2>/dev/null || true
+systemctl enable eguard-agent 2>/dev/null || true
+systemctl restart eguard-agent 2>/dev/null || true
+
+%preun
+# Remove immutable flag before uninstall so rpm can clean up.
+chattr -i /etc/eguard-agent/agent.conf 2>/dev/null || true
+
 %files
 /usr/bin/eguard-agent
 /usr/lib/eguard-agent/ebpf/process_exec_bpf.o
