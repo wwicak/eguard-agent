@@ -293,8 +293,11 @@ impl IocExactStore {
             let Ok(file) = std::fs::File::open(path) else {
                 return;
             };
-            let _ =
-                unsafe { libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED) };
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ =
+                    unsafe { libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED) };
+            }
         }
     }
 }
