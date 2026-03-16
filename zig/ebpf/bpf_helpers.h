@@ -44,7 +44,7 @@ struct task_struct {
 #define BPF_MAP_TYPE_RINGBUF 27
 
 /* ── Event transport sizing ────────────────────────────────── */
-#define DEFAULT_RINGBUF_CAPACITY (8 * 1024 * 1024)
+#define DEFAULT_RINGBUF_CAPACITY (2 * 1024 * 1024)
 #define PERF_EVENT_ARRAY_MAX_ENTRIES 1024
 #define BPF_F_CURRENT_CPU 0xffffffffULL
 
