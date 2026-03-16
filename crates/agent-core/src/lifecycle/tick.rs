@@ -14,7 +14,10 @@ use crate::config::AgentMode;
 use super::{
     confidence_to_severity, elapsed_micros, interval_due, run_periodic_storage_hygiene,
     should_drop_low_value_linux_event, should_drop_low_value_windows_event, to_detection_event,
-    AgentRuntime, TickEvaluation, HEARTBEAT_INTERVAL_SECS, STORAGE_HYGIENE_INTERVAL_SECS,
+    AgentRuntime, TickEvaluation, ACTIVE_CAMPAIGN_IOC_LIMIT, COMPLIANCE_ALERT_STATE_LIMIT,
+    COMPLIANCE_GRACE_STATE_LIMIT, DISK_CHECK_INTERVAL_SECS, HEARTBEAT_INTERVAL_SECS,
+    ISOLATION_FAILSAFE_CHECK_INTERVAL_SECS, MEMORY_PRESSURE_CHECK_INTERVAL_TICKS,
+    STORAGE_HYGIENE_INTERVAL_SECS,
 };
 
 impl AgentRuntime {
@@ -33,6 +36,9 @@ impl AgentRuntime {
         }
         self.run_self_protection_if_due(now_unix).await?;
         self.run_storage_hygiene_if_due(now_unix);
+        self.check_isolation_failsafe(now_unix);
+        self.check_memory_pressure();
+        self.check_disk_pressure(now_unix);
 
         let evaluate_started = Instant::now();
         let evaluation = self.evaluate_tick(now_unix)?;
@@ -354,6 +360,127 @@ impl AgentRuntime {
         Ok(())
     }
 
+    /// Periodically check whether the isolation failsafe timeout has expired.
+    /// If the host has been isolated longer than the configured timeout, force
+    /// unisolation to prevent permanent user lockout.
+    fn check_isolation_failsafe(&mut self, now_unix: i64) {
+        if !self.host_control.isolated {
+            return;
+        }
+        if let Some(last) = self.last_isolation_failsafe_check_unix {
+            if now_unix - last < ISOLATION_FAILSAFE_CHECK_INTERVAL_SECS {
+                return;
+            }
+        }
+        self.last_isolation_failsafe_check_unix = Some(now_unix);
+
+        if let Some(state) =
+            super::command_pipeline::isolation_state::read_isolation_state()
+        {
+            if super::command_pipeline::isolation_state::is_failsafe_expired(&state, now_unix) {
+                tracing::error!(
+                    elapsed_secs = now_unix - state.isolated_at_unix,
+                    "isolation failsafe expired - auto-unisolating host"
+                );
+                super::command_pipeline::isolation_state::force_remove_isolation();
+                super::command_pipeline::isolation_state::clear_isolation_state();
+                self.host_control.isolated = false;
+            }
+        }
+    }
+
+    /// Shed in-memory load when RSS exceeds the configured threshold.
+    fn check_memory_pressure(&mut self) {
+        if self.tick_count % MEMORY_PRESSURE_CHECK_INTERVAL_TICKS != 0 {
+            return;
+        }
+
+        let threshold = std::env::var("EGUARD_MEMORY_PRESSURE_THRESHOLD_BYTES")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(512 * 1024 * 1024); // 512MB default
+
+        let rss = read_process_rss_bytes();
+        if rss > threshold {
+            tracing::error!(
+                rss_mb = rss / (1024 * 1024),
+                threshold_mb = threshold / (1024 * 1024),
+                "memory pressure detected - shedding load"
+            );
+            self.recent_file_event_keys.clear();
+            self.recent_event_txn_keys.clear();
+            self.suppressed_internal_process_pids.clear();
+            self.compliance_alert_state.clear();
+            self.compliance_grace_state.clear();
+            self.active_campaign_iocs.clear();
+            self.recent_response_action_keys.clear();
+            if self.raw_event_backlog_cap > 256 {
+                self.raw_event_backlog_cap = 256;
+            }
+            self.strict_budget_mode = true;
+        }
+    }
+
+    /// Check disk free space and enable strict budget mode if disk space is low.
+    fn check_disk_pressure(&mut self, now_unix: i64) {
+        if let Some(last) = self.last_storage_hygiene_unix {
+            if now_unix - last < DISK_CHECK_INTERVAL_SECS {
+                return;
+            }
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            let data_dir = std::env::var("EGUARD_AGENT_DATA_DIR")
+                .unwrap_or_else(|_| "/var/lib/eguard-agent".to_string());
+            let min_free = std::env::var("EGUARD_MIN_FREE_DISK_BYTES")
+                .ok()
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .unwrap_or(100 * 1024 * 1024); // 100MB
+
+            if let Some(free) = get_free_disk_bytes_via_df(&data_dir) {
+                if free < min_free {
+                    tracing::error!(
+                        free_mb = free / (1024 * 1024),
+                        min_mb = min_free / (1024 * 1024),
+                        path = %data_dir,
+                        "disk pressure detected - disabling disk writes"
+                    );
+                    self.strict_budget_mode = true;
+                }
+            }
+        }
+    }
+
+    /// Cap compliance_alert_state, compliance_grace_state, and active_campaign_iocs
+    /// after insertion to prevent unbounded growth.
+    pub(super) fn enforce_collection_caps(&mut self) {
+        if self.compliance_alert_state.len() > COMPLIANCE_ALERT_STATE_LIMIT * 2 {
+            warn!(
+                entries = self.compliance_alert_state.len(),
+                limit = COMPLIANCE_ALERT_STATE_LIMIT,
+                "compliance_alert_state exceeded limit, clearing"
+            );
+            self.compliance_alert_state.clear();
+        }
+        if self.compliance_grace_state.len() > COMPLIANCE_GRACE_STATE_LIMIT * 2 {
+            warn!(
+                entries = self.compliance_grace_state.len(),
+                limit = COMPLIANCE_GRACE_STATE_LIMIT,
+                "compliance_grace_state exceeded limit, clearing"
+            );
+            self.compliance_grace_state.clear();
+        }
+        if self.active_campaign_iocs.len() > ACTIVE_CAMPAIGN_IOC_LIMIT * 2 {
+            warn!(
+                entries = self.active_campaign_iocs.len(),
+                limit = ACTIVE_CAMPAIGN_IOC_LIMIT,
+                "active_campaign_iocs exceeded limit, clearing"
+            );
+            self.active_campaign_iocs.clear();
+        }
+    }
+
     /// Classify an IOC value by its format (hash, ip, domain).
     fn classify_ioc_type(ioc: &str) -> &'static str {
         let trimmed = ioc.trim();
@@ -371,6 +498,52 @@ impl AgentRuntime {
         }
         "domain"
     }
+}
+
+#[cfg(target_os = "linux")]
+fn read_process_rss_bytes() -> u64 {
+    // Read from /proc/self/statm - second field is RSS in pages
+    std::fs::read_to_string("/proc/self/statm")
+        .ok()
+        .and_then(|content| {
+            content
+                .split_whitespace()
+                .nth(1)
+                .and_then(|rss_pages| rss_pages.parse::<u64>().ok())
+        })
+        .map(|pages| pages * 4096) // page size typically 4096
+        .unwrap_or(0)
+}
+
+#[cfg(target_os = "windows")]
+fn read_process_rss_bytes() -> u64 {
+    0
+}
+
+#[cfg(target_os = "macos")]
+fn read_process_rss_bytes() -> u64 {
+    0
+}
+
+/// Get free disk bytes by parsing `df` output.
+/// This avoids requiring a `libc` dependency in agent-core.
+#[cfg(target_os = "linux")]
+fn get_free_disk_bytes_via_df(path: &str) -> Option<u64> {
+    let output = std::process::Command::new("df")
+        .arg("-B1") // block size = 1 byte
+        .arg("--output=avail")
+        .arg(path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Output has a header line then the value
+    stdout
+        .lines()
+        .nth(1)
+        .and_then(|line| line.trim().parse::<u64>().ok())
 }
 
 #[cfg(test)]

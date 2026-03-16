@@ -130,6 +130,7 @@ impl AgentRuntime {
             }
         }
 
+        self.enforce_collection_caps();
         alerts
     }
 

@@ -21,6 +21,7 @@ mod handlers;
 mod host_actions;
 mod host_isolation_allowlist;
 mod host_isolation_linux;
+pub(super) mod isolation_state;
 mod on_demand_scan;
 mod paths;
 mod payloads;

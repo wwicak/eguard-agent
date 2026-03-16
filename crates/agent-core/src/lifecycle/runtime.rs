@@ -114,6 +114,7 @@ pub struct AgentRuntime {
     pub(super) last_ioc_signal_upload_unix: Option<i64>,
     pub(super) last_campaign_fetch_unix: Option<i64>,
     pub(super) last_storage_hygiene_unix: Option<i64>,
+    pub(super) last_isolation_failsafe_check_unix: Option<i64>,
     pub(super) active_campaign_iocs: std::collections::HashSet<String>,
     pub(super) playbook_engine: PlaybookEngine,
     pub(super) dirty_baseline_keys: BTreeSet<String>,
@@ -505,6 +506,7 @@ impl AgentRuntime {
             last_ioc_signal_upload_unix: None,
             last_campaign_fetch_unix: None,
             last_storage_hygiene_unix: None,
+            last_isolation_failsafe_check_unix: None,
             active_campaign_iocs: std::collections::HashSet::new(),
             playbook_engine,
             dirty_baseline_keys,
@@ -523,6 +525,30 @@ impl AgentRuntime {
         runtime.bootstrap_threat_intel_replay_floor();
         runtime.bootstrap_last_known_good_bundle();
         runtime.run_storage_hygiene();
+
+        // Recover from stale isolation on startup
+        if let Some(state) = super::command_pipeline::isolation_state::read_isolation_state() {
+            let now_unix = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            if super::command_pipeline::isolation_state::is_failsafe_expired(&state, now_unix) {
+                warn!(
+                    elapsed_secs = now_unix - state.isolated_at_unix,
+                    timeout_secs = state.failsafe_timeout_secs,
+                    "recovering from stale isolation after agent restart"
+                );
+                super::command_pipeline::isolation_state::force_remove_isolation();
+                super::command_pipeline::isolation_state::clear_isolation_state();
+            } else {
+                info!(
+                    remaining_secs = state.failsafe_timeout_secs - (now_unix - state.isolated_at_unix),
+                    "agent restarted while isolated; failsafe active"
+                );
+                runtime.host_control.isolated = true;
+            }
+        }
+
         Ok(runtime)
     }
 

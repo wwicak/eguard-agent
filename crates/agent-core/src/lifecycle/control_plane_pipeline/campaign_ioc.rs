@@ -85,6 +85,7 @@ impl AgentRuntime {
             "fetched active campaign alerts"
         );
         self.active_campaign_iocs = new_campaign_iocs;
+        self.enforce_collection_caps();
         Ok(())
     }
 

@@ -37,6 +37,7 @@ impl AgentRuntime {
             let refs: Vec<&str> = allowed.iter().map(|value| value.as_str()).collect();
             match platform_windows::response::isolate_host(&refs) {
                 Ok(()) => {
+                    super::isolation_state::save_isolation_state(&allowed);
                     exec.detail = format!(
                         "host isolation enforced via Windows Firewall (allowing: {})",
                         allowed.join(",")
@@ -63,6 +64,7 @@ impl AgentRuntime {
             let refs: Vec<&str> = allowed.iter().map(|value| value.as_str()).collect();
             match platform_macos::response::isolate_host(&refs) {
                 Ok(()) => {
+                    super::isolation_state::save_isolation_state(&allowed);
                     exec.detail = format!(
                         "host isolation enforced via pf (allowing: {})",
                         allowed.join(",")
@@ -81,6 +83,7 @@ impl AgentRuntime {
         {
             match apply_linux_host_isolation(&allowed) {
                 Ok(()) => {
+                    super::isolation_state::save_isolation_state(&allowed);
                     exec.detail = format!(
                         "host isolation enforced via iptables/nftables (allowing: {})",
                         allowed.join(",")
@@ -100,6 +103,7 @@ impl AgentRuntime {
         {
             match platform_windows::response::remove_isolation() {
                 Ok(()) => {
+                    super::isolation_state::clear_isolation_state();
                     exec.detail = "host isolation removed via Windows Firewall".to_string();
                 }
                 Err(err) => {
@@ -115,6 +119,7 @@ impl AgentRuntime {
         {
             match platform_macos::response::remove_isolation() {
                 Ok(()) => {
+                    super::isolation_state::clear_isolation_state();
                     exec.detail = "host isolation removed via pf".to_string();
                 }
                 Err(err) => {
@@ -130,6 +135,7 @@ impl AgentRuntime {
         {
             match remove_linux_host_isolation() {
                 Ok(()) => {
+                    super::isolation_state::clear_isolation_state();
                     exec.detail = "host isolation removed via iptables".to_string();
                 }
                 Err(err) => {

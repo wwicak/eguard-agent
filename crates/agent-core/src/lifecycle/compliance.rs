@@ -129,6 +129,7 @@ impl AgentRuntime {
             }
         }
 
+        self.enforce_collection_caps();
         update_overall_status(result);
     }
 
