@@ -78,11 +78,17 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: pip install yara-python pyyaml pytest
 
-      - name: Install zstd
-        run: sudo apt-get update && sudo apt-get install -y zstd
+      - name: Install native bundle build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            zstd \
+            pkg-config \
+            libelf-dev \
+            zlib1g-dev
 
       - name: Install Zig
         run: |
@@ -1427,6 +1433,7 @@ jobs:
       - name: Verify agent can ingest generated bundle output
         env:
           EGUARD_CI_ALLOW_COVERAGE_SHORTFALL: ${{ env.EGUARD_COVERAGE_FAIL_ON_THRESHOLD == '0' && '1' || '0' }}
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: cc
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           BUNDLE="eguard-rules-${VERSION}.bundle.tar.zst"
@@ -1446,6 +1453,7 @@ jobs:
       - name: Verify agent loads ML model from bundle (full 7-layer ingestion)
         env:
           EGUARD_CI_ALLOW_COVERAGE_SHORTFALL: ${{ env.EGUARD_COVERAGE_FAIL_ON_THRESHOLD == '0' && '1' || '0' }}
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: cc
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           BUNDLE="eguard-rules-${VERSION}.bundle.tar.zst"
