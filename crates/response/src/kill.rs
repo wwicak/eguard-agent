@@ -282,8 +282,17 @@ impl SignalSender for NixSignalSender {
             Signal::SIGKILL => NixSignal::SIGKILL,
         };
 
-        kill(Pid::from_raw(pid as i32), nix_signal)
-            .map_err(|err| ResponseError::Signal(format!("send {:?} to {}: {}", signal, pid, err)))
+        match kill(Pid::from_raw(pid as i32), nix_signal) {
+            Ok(()) => Ok(()),
+            Err(nix::errno::Errno::ESRCH) => {
+                // Process already dead — treat as success (goal achieved).
+                Ok(())
+            }
+            Err(err) => Err(ResponseError::Signal(format!(
+                "send {:?} to {}: {}",
+                signal, pid, err
+            ))),
+        }
     }
 }
 

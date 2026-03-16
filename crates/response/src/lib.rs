@@ -378,6 +378,7 @@ pub enum ServerCommand {
     Uninstall,
     RestoreQuarantine,
     EmergencyRulePush,
+    KillProcess,
     LockDevice,
     WipeDevice,
     RetireDevice,
@@ -431,6 +432,7 @@ pub fn parse_server_command(raw: &str) -> ServerCommand {
         "uninstall" => ServerCommand::Uninstall,
         "restore_quarantine" => ServerCommand::RestoreQuarantine,
         "emergency_rule_push" | "push_emergency_rule" => ServerCommand::EmergencyRulePush,
+        "kill_process" | "kill_tree" | "kill" => ServerCommand::KillProcess,
         "lock_device" | "lock" => ServerCommand::LockDevice,
         "wipe_device" | "wipe" => ServerCommand::WipeDevice,
         "retire_device" | "retire" => ServerCommand::RetireDevice,
@@ -515,6 +517,11 @@ pub fn execute_server_command_with_state(
             outcome: CommandOutcome::Applied,
             status: "completed",
             detail: "emergency rule push received".to_string(),
+        },
+        ServerCommand::KillProcess => CommandExecution {
+            outcome: CommandOutcome::Applied,
+            status: "completed",
+            detail: "kill process command received".to_string(),
         },
         ServerCommand::LockDevice => {
             state.last_lock_unix = Some(now_unix);
