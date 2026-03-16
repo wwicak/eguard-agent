@@ -9,6 +9,7 @@ serde.workspace = true
 serde_json.workspace = true
 lru.workspace = true
 tracing.workspace = true
+sha2.workspace = true
 crypto-accel = { path = "../crypto-accel" }
 
 [target.'cfg(target_os = "windows")'.dependencies]

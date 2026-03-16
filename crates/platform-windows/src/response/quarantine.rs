@@ -5,20 +5,33 @@ use std::path::Path;
 #[cfg(target_os = "windows")]
 use std::fs;
 #[cfg(target_os = "windows")]
+use std::io::Read as _;
+#[cfg(target_os = "windows")]
 use std::path::PathBuf;
 #[cfg(target_os = "windows")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(target_os = "windows")]
 use serde::{Deserialize, Serialize};
+#[cfg(target_os = "windows")]
+use sha2::{Digest, Sha256};
+
+/// Result of a successful quarantine operation.
+#[derive(Debug, Clone)]
+pub struct QuarantineResult {
+    pub quarantine_path: String,
+    pub sha256: String,
+    pub file_size: u64,
+}
 
 /// Quarantine a file by moving it to the quarantine directory.
 ///
-/// Returns the quarantined file path.
+/// Computes SHA256 before moving to ensure the hash is available for server
+/// correlation and IOC matching (fixes cross-platform quarantine inconsistency).
 pub fn quarantine_file(
     path: &str,
     quarantine_dir: &str,
-) -> Result<String, super::process::ResponseError> {
+) -> Result<QuarantineResult, super::process::ResponseError> {
     #[cfg(target_os = "windows")]
     {
         let source = Path::new(path);
@@ -51,6 +64,9 @@ pub fn quarantine_file(
                 canonical_effective.display()
             )));
         }
+
+        // Compute SHA256 and file size BEFORE moving the file.
+        let (sha256_hex, file_size) = compute_file_sha256(&effective_source)?;
 
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -98,21 +114,30 @@ pub fn quarantine_file(
         let metadata = QuarantineMetadata {
             original_path: effective_source.to_string_lossy().to_string(),
             quarantined_at_unix: stamp,
+            sha256: sha256_hex.clone(),
+            file_size,
         };
         write_quarantine_metadata(&target, &metadata)?;
 
-        Ok(target.to_string_lossy().to_string())
+        Ok(QuarantineResult {
+            quarantine_path: target.to_string_lossy().to_string(),
+            sha256: sha256_hex,
+            file_size,
+        })
     }
     #[cfg(not(target_os = "windows"))]
     {
         let _ = (path, quarantine_dir);
         tracing::warn!(path, "quarantine_file is a stub on non-Windows");
-        // Return the would-be quarantine path
         let file_name = Path::new(path)
             .file_name()
             .unwrap_or_default()
             .to_string_lossy();
-        Ok(format!("{quarantine_dir}/{file_name}"))
+        Ok(QuarantineResult {
+            quarantine_path: format!("{quarantine_dir}/{file_name}"),
+            sha256: String::new(),
+            file_size: 0,
+        })
     }
 }
 
@@ -184,6 +209,42 @@ fn is_protected_windows_path(path: &Path) -> bool {
 struct QuarantineMetadata {
     original_path: String,
     quarantined_at_unix: u64,
+    sha256: String,
+    file_size: u64,
+}
+
+/// Compute SHA256 of a file. Returns (hex_string, file_size).
+#[cfg(target_os = "windows")]
+fn compute_file_sha256(path: &Path) -> Result<(String, u64), super::process::ResponseError> {
+    let mut file = fs::File::open(path).map_err(|err| {
+        super::process::ResponseError::OperationFailed(format!(
+            "failed opening {} for SHA256: {err}",
+            path.display()
+        ))
+    })?;
+    let file_size = file.metadata().map(|m| m.len()).unwrap_or(0);
+
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = file.read(&mut buf).map_err(|err| {
+            super::process::ResponseError::OperationFailed(format!(
+                "failed reading {} for SHA256: {err}",
+                path.display()
+            ))
+        })?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+
+    let digest = hasher.finalize();
+    let hex = digest
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    Ok((hex, file_size))
 }
 
 #[cfg(target_os = "windows")]
