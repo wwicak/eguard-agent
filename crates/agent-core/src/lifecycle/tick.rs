@@ -35,6 +35,7 @@ impl AgentRuntime {
             info!(tick = self.tick_count, "debug tick");
         }
         self.run_self_protection_if_due(now_unix).await?;
+        self.enforce_config_permissions_if_due(now_unix);
         self.run_storage_hygiene_if_due(now_unix);
         self.check_isolation_failsafe(now_unix);
         self.check_memory_pressure();

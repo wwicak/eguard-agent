@@ -1,12 +1,15 @@
 use anyhow::Result;
 use serde_json::json;
 use tokio::time::{timeout, Duration};
-use tracing::warn;
+use tracing::{info, warn};
 
 use grpc_client::EventEnvelope;
 use self_protect::SelfProtectReport;
 
 use super::{AgentRuntime, DegradedCause};
+
+/// Interval between config file permission enforcement checks (seconds).
+const CONFIG_PERMISSION_CHECK_INTERVAL_SECS: i64 = 300;
 
 impl AgentRuntime {
     pub(crate) async fn run_self_protection_if_due(&mut self, now_unix: i64) -> Result<()> {
@@ -164,6 +167,66 @@ impl AgentRuntime {
         );
 
         Ok(())
+    }
+
+    /// Enforce restrictive permissions on sensitive config files.
+    /// Runs every 5 minutes to prevent permission drift.
+    #[cfg(unix)]
+    pub(super) fn enforce_config_permissions_if_due(&mut self, now_unix: i64) {
+        if let Some(last) = self.last_config_permission_check_unix {
+            if now_unix.saturating_sub(last) < CONFIG_PERMISSION_CHECK_INTERVAL_SECS {
+                return;
+            }
+        }
+        self.last_config_permission_check_unix = Some(now_unix);
+
+        use std::os::unix::fs::PermissionsExt;
+
+        let sensitive_paths = [
+            "/etc/eguard-agent/agent.conf",
+            "/etc/eguard-agent/bootstrap.conf",
+            "/etc/eguard-agent/certs/agent.crt",
+            "/etc/eguard-agent/certs/agent.key",
+            "/etc/eguard-agent/certs/ca.crt",
+        ];
+
+        for path in &sensitive_paths {
+            let p = std::path::Path::new(path);
+            if !p.exists() {
+                continue;
+            }
+            match std::fs::metadata(p) {
+                Ok(meta) => {
+                    let mode = meta.permissions().mode() & 0o777;
+                    if mode != 0o600 && mode != 0o400 {
+                        if let Err(err) = std::fs::set_permissions(
+                            p,
+                            std::fs::Permissions::from_mode(0o600),
+                        ) {
+                            warn!(
+                                path = path,
+                                error = %err,
+                                "failed enforcing 0600 permissions on config file"
+                            );
+                        } else {
+                            info!(
+                                path = path,
+                                old_mode = format!("{:o}", mode),
+                                "enforced 0600 permissions on config file"
+                            );
+                        }
+                    }
+                }
+                Err(err) => {
+                    warn!(path = path, error = %err, "failed reading config file metadata");
+                }
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    pub(super) fn enforce_config_permissions_if_due(&mut self, _now_unix: i64) {
+        // Windows ACLs are set by the installer (install.ps1).
     }
 
     pub(super) fn self_protect_alert_payload(
