@@ -8,7 +8,7 @@ use tracing::warn;
 
 use crate::types::EventEnvelope;
 
-pub const DEFAULT_BUFFER_CAP_BYTES: usize = 100 * 1024 * 1024;
+pub const DEFAULT_BUFFER_CAP_BYTES: usize = 50 * 1024 * 1024;
 const OFFLINE_META_ROW_ID: i64 = 1;
 
 #[derive(Debug)]
