@@ -10,6 +10,7 @@ VERSION="${VERSION:-0.1.0}"
 IDENTIFIER="com.eguard.agent"
 INSTALL_LOCATION="/usr/local/bin"
 ARTIFACTS_DIR="${REPO_ROOT}/artifacts/macos"
+BUILD_DMG="${BUILD_DMG:-1}"
 
 mkdir -p "$ARTIFACTS_DIR"
 
@@ -69,4 +70,12 @@ if [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ] && [ -n "${APPLE_APP_PA
 fi
 
 echo "Package built: $ARTIFACTS_DIR/eguard-agent-${VERSION}.pkg"
+
+if [[ "$BUILD_DMG" == "1" ]]; then
+    "$SCRIPT_DIR/scripts/build-dmg.sh" \
+        --pkg "$ARTIFACTS_DIR/eguard-agent-${VERSION}.pkg" \
+        --out "$ARTIFACTS_DIR/eguard-agent-${VERSION}.dmg"
+    echo "DMG built: $ARTIFACTS_DIR/eguard-agent-${VERSION}.dmg"
+fi
+
 # Cleanup handled by EXIT trap

@@ -4,6 +4,33 @@ set -euo pipefail
 BASE_DIR="/Library/Application Support/eGuard"
 LOG_DIR="${BASE_DIR}/logs"
 QUARANTINE_DIR="${BASE_DIR}/quarantine"
+PLIST_PATH="/Library/LaunchDaemons/com.eguard.agent.plist"
+
+bootstrap_agent() {
+    local plist_path="$1"
+
+    if [[ ! -f "$plist_path" ]]; then
+        echo "Warning: LaunchDaemon plist not found at ${plist_path}; skipping service bootstrap" >&2
+        return 0
+    fi
+
+    if ! /usr/bin/plutil -lint "$plist_path" >/dev/null; then
+        echo "Warning: LaunchDaemon plist validation failed; skipping service bootstrap" >&2
+        return 0
+    fi
+
+    launchctl bootout system/com.eguard.agent 2>/dev/null || true
+
+    if ! launchctl bootstrap system "$plist_path"; then
+        echo "Warning: launchctl bootstrap failed; package install completed without starting service" >&2
+        return 0
+    fi
+
+    if ! launchctl kickstart -k system/com.eguard.agent; then
+        echo "Warning: launchctl kickstart failed; package install completed without starting service" >&2
+        return 0
+    fi
+}
 
 # Create directories
 mkdir -p "$LOG_DIR"
@@ -17,12 +44,11 @@ chmod 700 "$QUARANTINE_DIR"
 
 # Set binary/plist permissions
 chmod 755 /usr/local/bin/eguard-agent
-chown root:wheel /Library/LaunchDaemons/com.eguard.agent.plist
-chmod 644 /Library/LaunchDaemons/com.eguard.agent.plist
+chown root:wheel "$PLIST_PATH"
+chmod 644 "$PLIST_PATH"
 
-# Load and start LaunchDaemon
-launchctl bootout system/com.eguard.agent 2>/dev/null || true
-launchctl bootstrap system /Library/LaunchDaemons/com.eguard.agent.plist
-launchctl kickstart -k system/com.eguard.agent
+# Try to load and start LaunchDaemon, but do not fail package install if
+# runtime configuration is not ready yet.
+bootstrap_agent "$PLIST_PATH"
 
 exit 0

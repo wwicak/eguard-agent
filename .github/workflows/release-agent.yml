@@ -305,7 +305,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: macos-packages
-          path: artifacts/macos/eguard-agent-*.pkg
+          path: |
+            artifacts/macos/eguard-agent-*.pkg
+            artifacts/macos/eguard-agent-*.dmg
 
   release:
     needs: [linux, windows, macos]
@@ -331,4 +333,4 @@ jobs:
             release-artifacts/windows-packages/**/*.msi
             release-artifacts/windows-packages/**/*.ps1
             release-artifacts/macos-packages/**/*.pkg
-
+            release-artifacts/macos-packages/**/*.dmg
