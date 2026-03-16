@@ -65,6 +65,19 @@ static void *(*bpf_get_current_task)(void) =
     (void *(*)(void))(long)35;
 static __u64 (*bpf_get_current_cgroup_id)(void) =
     (__u64 (*)(void))(long)80;
+#ifdef EGUARD_USE_PERFBUF
+/* Kernel 5.4 compat: bpf_probe_read_kernel (helper 113) was added in 5.5.
+ * Fall back to bpf_probe_read (helper 4) which reads both user and kernel
+ * memory on kernels < 5.5.  Same for the _str variants (45 vs 115). */
+static long (*bpf_probe_read_user)(void *, __u32, const void *) =
+    (long (*)(void *, __u32, const void *))(long)4;
+static long (*bpf_probe_read_kernel)(void *, __u32, const void *) =
+    (long (*)(void *, __u32, const void *))(long)4;
+static long (*bpf_probe_read_user_str)(void *, __u32, const void *) =
+    (long (*)(void *, __u32, const void *))(long)45;
+static long (*bpf_probe_read_kernel_str)(void *, __u32, const void *) =
+    (long (*)(void *, __u32, const void *))(long)45;
+#else
 static long (*bpf_probe_read_user)(void *, __u32, const void *) =
     (long (*)(void *, __u32, const void *))(long)112;
 static long (*bpf_probe_read_kernel)(void *, __u32, const void *) =
@@ -73,6 +86,7 @@ static long (*bpf_probe_read_user_str)(void *, __u32, const void *) =
     (long (*)(void *, __u32, const void *))(long)114;
 static long (*bpf_probe_read_kernel_str)(void *, __u32, const void *) =
     (long (*)(void *, __u32, const void *))(long)115;
+#endif
 static void *(*bpf_ringbuf_reserve)(void *, __u64, __u64) =
     (void *(*)(void *, __u64, __u64))(long)131;
 static void (*bpf_ringbuf_submit)(void *, __u64) =
