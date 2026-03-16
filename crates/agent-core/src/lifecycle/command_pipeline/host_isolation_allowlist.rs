@@ -1,4 +1,4 @@
-use super::command_utils::resolve_allowed_server_ips;
+use super::command_utils::{extract_server_host, resolve_allowed_server_ips};
 
 pub(super) fn resolve_host_isolation_allowlist(
     server_addr: &str,
@@ -7,7 +7,21 @@ pub(super) fn resolve_host_isolation_allowlist(
 ) -> Vec<String> {
     let base_allowlist =
         resolve_allowed_server_ips(server_addr, payload_ips, allow_server_connection);
-    merge_isolation_allowlist(&base_allowlist, &collect_active_management_peer_ips())
+    let mut effective = merge_isolation_allowlist(&base_allowlist, &collect_active_management_peer_ips());
+
+    // SAFETY: Always include the configured server_addr IP in the allow-list.
+    // Without this, the agent cannot receive unisolate commands and the user
+    // is permanently locked out.  This is the primary CrowdStrike prevention
+    // measure — the agent must ALWAYS be able to reach its server.
+    let host = extract_server_host(server_addr);
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        let value = ip.to_string();
+        if !effective.iter().any(|entry| entry == &value) {
+            effective.push(value);
+        }
+    }
+
+    effective
 }
 
 fn merge_isolation_allowlist(

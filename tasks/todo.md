@@ -1,4 +1,162 @@
+## build-bundle real release publish — 2026-03-16
+
+### Plan
+- [x] Assess whether the bundle workflow fix is ready to land on `wwicak/eguard-agent` `main`.
+- [x] Merge the workflow fix onto `main` without including local task artifacts.
+- [x] Trigger `build-bundle.yml` on `main` with `promote_release=true` and monitor the release-mode run.
+- [x] Record the created release/tag URL and outcome.
+
+### Review
+- Merged PR `#2` into `main` via GitHub CLI:
+  - merge commit: `078c30466dbef2433eb1b164316048e15dc6f3f4`
+  - PR: `https://github.com/wwicak/eguard-agent/pull/2`
+- Triggered a real release-mode bundle run on `main` with `promote_release=true`.
+- Verified successful workflow run:
+  - run: `23128280773`
+  - job: `67175908032`
+  - result: `success`
+- Confirmed the `Create GitHub Release` step ran successfully and printed the created release URL.
+- Published rule-bundle release:
+  - tag: `rules-2026.03.16.0443`
+  - title: `Rule Bundle 2026.03.16.0443`
+  - URL: `https://github.com/wwicak/eguard-agent/releases/tag/rules-2026.03.16.0443`
+- The workflow also showed `Release publish skipped (shadow mode)` as skipped, which is expected because that is the inverse/else step after a real publish succeeds.
+
+## build-bundle workflow libbpf-sys recovery — 2026-03-16
+
+### Plan
+- [x] Inspect the failing GitHub Actions run and identify the exact native dependency missing from `build-bundle.yml`.
+- [x] Patch `.github/workflows/build-bundle.yml` so the bundle-ingestion contract steps have the native libbpf/libelf prerequisites.
+- [x] Verify the workflow YAML and the relevant agent bundle-ingestion build path, then record the outcome.
+
+### Review
+- Reproduced the root cause from `gh run view 23103939773 --repo wwicak/eguard-agent --log-failed`:
+  - `libbpf-sys v1.6.4+v1.6.3` failed while compiling the bundle-ingestion contract test path
+  - stderr showed missing `libelf.pc`, `libelf.h`, and `gelf.h`
+- Compared `build-bundle.yml` with the known-good Linux packaging/release workflows; those already install `pkg-config`, `libelf-dev`, and `zlib1g-dev` before building `agent-core` with libbpf-backed Linux support.
+- First workflow fix added the missing native packages, which cleared the original `libbpf-sys` compile error.
+- The next workflow run then exposed a second CI-only linker problem in the bundle-ingestion verification step:
+  - `.cargo/config.toml` defaults Linux GNU builds to `scripts/zig-cc.sh`
+  - on the GitHub runner, static `libelf.a` pulled in `__isoc23_*` symbols that Zig's older glibc target could not satisfy
+- Updated `.github/workflows/build-bundle.yml`:
+  - kept Python package installation separate
+  - replaced the old `Install zstd` step with `Install native bundle build dependencies`
+  - native packages now include `zstd`, `pkg-config`, `libelf-dev`, and `zlib1g-dev`
+  - set `CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=cc` only on the two bundle-ingestion verification steps so they do not inherit the Zig/glibc-floor linker path
+- Verification on 2026-03-16:
+  - `yq '.' .github/workflows/build-bundle.yml` ✅
+  - `cargo test -p agent-core load_bundle_rules_reads_ci_generated_signed_bundle --no-run` ✅
+  - `CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=cc cargo test -p agent-core load_bundle_rules_reads_ci_generated_signed_bundle --no-run` ✅
+  - workflow run `23127892575` proved the missing-libelf failure is fixed and isolated the remaining Zig-linker issue, which the targeted `cc` override addresses.
+
 ## Public Windows install-flow recovery — 2026-03-14
+
+## eg-agent-server listener wedge RCA/stability fix — 2026-03-16
+
+### Plan
+- [ ] Audit the shared `:50053` h2c/gRPC listener lifecycle and confirm the highest-confidence leak/backlog amplifiers.
+- [ ] Add low-risk server hardening so stale gRPC/h2c connections are reaped instead of wedging the shared listener.
+- [ ] Reduce repeated threat-intel bundle SHA256 file scans/opens that amplify FD and memory pressure.
+- [ ] Run targeted `go test ./agent/server -count=1` verification and record the outcome.
+
+### Review
+- Highest-confidence wedge risk remains the shared `:50053` h2c listener lifecycle in `fe_eguard/go/agent/server/server.go`:
+  - long-lived gRPC/h2 streams had no explicit server keepalive/idle reaping
+  - shutdown waited on `grpcServer.GracefulStop()` without a timeout, so stale streams could block listener teardown indefinitely
+- Applied low-risk hardening in `fe_eguard/go/agent/server/server.go`:
+  - added gRPC keepalive / max-connection-idle / max-connection-age limits
+  - added HTTP/2 idle/read-idle/ping timeouts on the shared h2c server
+  - bounded graceful gRPC shutdown with timeout + forced `Stop()` fallback
+- Reduced repeated threat-intel bundle file scans in `fe_eguard/go/agent/server/threat_intel_bundle_assets.go` by caching SHA256 per path+size+mtime; this should lower repeated bundle open/read pressure seen during stuck-state investigation.
+- Added focused regressions in `fe_eguard/go/agent/server/grpc_server_test.go`:
+  - server shutdown completes even with an open gRPC telemetry stream
+  - threat-intel SHA256 cache invalidates correctly after file mutation
+- Verification on 2026-03-16:
+  - `go test ./agent/server -run 'TestServerStartStopsWithOpenGRPCTelemetryStream|TestThreatIntelFileSHA256CachesByFileState' -count=1` ✅
+  - `go test ./agent/server -run '^TestThreatIntelSourceAndVersionHandlers$' -count=1` ✅
+  - full `go test ./agent/server -count=1` still reports unrelated/pre-existing failures in other areas (`TestAgentInstallBootstrapMetadataHandlerDerivesPinWhenUnset`, several telemetry/response/signature-ml tests), so the listener hardening patch was verified with focused coverage rather than a clean full-package pass.
+
+## eg-agent-server transport plane split — 2026-03-16
+
+### Plan
+- [x] Split agent gRPC/transport traffic from admin/API HTTP onto separate listeners in `eg-agent-server`.
+- [x] Keep the external/public contract stable for agents (`50053` direct gRPC and `50052` Caddy gRPC proxy) while moving internal HTTP/admin traffic to loopback-only `127.0.0.1:50054`.
+- [x] Update runtime/config/proxy/test wiring so internal HTTP callers and health checks target the new HTTP listener.
+- [x] Verify focused server regressions and command build still pass.
+
+### Review
+- Permanent architecture change applied in `fe_eguard/go/agent/server/server.go`:
+  - `:50053` is now the agent transport listener (gRPC + agent/public transport HTTP only)
+  - `127.0.0.1:50054` is now the dedicated admin/API HTTP listener by default
+  - public/admin HTTP no longer shares the same accept queue with long-lived agent gRPC streams
+- Added `NewWithListeners(...)` and `--http-listen` support in `fe_eguard/go/cmd/eg-agent-server/main.go`.
+- Runtime/config wiring updated:
+  - `fe_eguard/conf/systemd/eguard-agent-server.service` now starts with `--http-listen 127.0.0.1:50054`
+  - `fe_eguard/conf/eg.conf.defaults` now advertises `PF_SERVICES_URL_PFAGENT_SERVER=http://127.0.0.1:50054` while keeping `PF_SERVICES_URL_PFAGENT_SERVER_GRPC=http://127.0.0.1:50053`
+  - `fe_eguard/conf/caddy-services/api.conf.example` now proxies gRPC through `{$PF_SERVICES_URL_PFAGENT_SERVER_GRPC}`
+  - `fe_eguard/go/apiserver/handler/threat_intel.go` now resolves the local agent-server HTTP base URL from config/env and defaults to `http://127.0.0.1:50054`
+  - `fe_eguard/Dockerfile.runtime`, `fe_eguard/tests/Dockerfile.eg-agent-server-test`, and `fe_eguard/tests/docker-compose.test.yml` were aligned with the split ports
+- Isolation allowlist inference now includes both transport and HTTP listener IPs in `fe_eguard/go/agent/server/command_enqueue_helpers.go` so host isolation will not cut off the new local plane.
+- Focused verification on 2026-03-16:
+  - `go test ./agent/server -run 'TestServerStartStopsWithOpenGRPCTelemetryStream|TestThreatIntelFileSHA256CachesByFileState|TestResolveAgentServerHTTPListenAddrDefaultsToLoopbackSiblingPort|TestThreatIntelSourceAndVersionHandlers|TestCaddyConfigIncludesEndpointRoutes' -count=1` ✅
+  - `go build ./cmd/eg-agent-server` ✅
+  - `go test ./apiserver/handler -count=1` could not be used as a clean verifier in this workspace because package init requires the missing `EG_SYSTEM_INIT_KEY`/`/usr/local/eg/conf/system_init_key` secret before tests even run.
+
+### Live deployment review
+- Deployed split-listener binaries to the live VM (`root@192.168.122.25`):
+  - `eg-agent-server` now listens on `*:50053` and `*:50054`
+  - `eg-api-server` remains on `127.0.0.1:22230`
+- Added host NAT/forward rules for `50054` on the hypervisor so direct host/public checks reach the VM:
+  - PREROUTING/OUTPUT DNAT to `192.168.122.25:50054`
+  - FORWARD ACCEPT for `50054`
+  - POSTROUTING MASQUERADE for `50054`
+- Fixed the live admin frontend wiring by overriding its runtime `ExecStart` env, because the generated `api-frontend.env` still resolved `PF_SERVICES_URL_PFAGENT_SERVER` to `50053` and a catch-all `/api/v1/* -> 22230` route otherwise shadowed endpoint routes.
+  - live persistent override: `/etc/systemd/system/eguard-api-frontend.service.d/agent-server-split.conf`
+  - override exports:
+    - `PF_SERVICES_URL_PFAGENT_SERVER=http://127.0.0.1:50054`
+    - `PF_SERVICES_URL_PFAGENT_SERVER_GRPC=h2c://127.0.0.1:50053`
+- Live validation on 2026-03-16 succeeded:
+  - `http://103.132.18.221:50054/healthz` ✅
+  - `http://103.132.18.221:50053/healthz` ✅
+  - `https://103.132.18.221:1443/api/v1/endpoint/ml-ops/summary?range=24h` with valid bearer token ✅
+  - visual browser validation on `https://103.132.18.221:1443/admin#/endpoint-ml-ops` ✅ page loaded with ML Ops controls and agent/platform filters visible
+- Important packaging follow-up:
+  - top-level repo copy fixed: `fe_eguard/Dockerfile.runtime` now sets `PF_SERVICES_URL_PFAGENT_SERVER=http://127.0.0.1:50054` and `PF_SERVICES_URL_PFAGENT_SERVER_GRPC=h2c://127.0.0.1:50053`
+  - packaged duplicate tree under `fe_eguard/debian/eguard/usr/local/eg/` was stale and still encoded the old `50053`-only behavior. Ownership was fixed in the workspace, then the duplicate packaging files were synchronized from the corrected top-level sources.
+
+## install/update workflow hardening — 2026-03-16
+
+### Review
+- User requirement: ensure fresh ISO install, existing Linux package install (`apt`/`dnf`/`yum`), and package upgrade workflows work without manual config edits or service fiddling.
+- Root issue found: package-style flows (`debian/eguard.postinst`, `rpm/eguard.spec`, ISO wrappers) call `egcmd configreload` and `egcmd service eg updatesystemd`, and the packaged duplicate source tree under `debian/eguard/usr/local/eg/` still contained old endpoint-routing defaults (`50053` for both HTTP and gRPC).
+- Additional reliability issue found on live VM: during package-like regeneration, `api-frontend.env` could temporarily regenerate stale endpoint values while `egconfig` was reconnecting. Relying only on generated env files was not robust enough for no-touch upgrade workflows.
+- Durable source-level fix applied:
+  - `fe_eguard/conf/systemd/eguard-api-frontend.service`
+  - `fe_eguard/debian/eguard/usr/local/eg/conf/systemd/eguard-api-frontend.service`
+  - both now export runtime-safe endpoint routing directly in the unit:
+    - `PF_SERVICES_URL_PFAGENT_SERVER=http://127.0.0.1:50054`
+    - `PF_SERVICES_URL_PFAGENT_SERVER_GRPC=h2c://127.0.0.1:50053`
+    - `HOME=/usr/local/eg`
+- Packaged duplicate tree synchronized to corrected top-level sources for install/update artifacts:
+  - `debian/eguard/usr/local/eg/conf/eg.conf.defaults`
+  - `debian/eguard/usr/local/eg/conf/systemd/eguard-agent-server.service`
+  - `debian/eguard/usr/local/eg/conf/systemd/eguard-api-frontend.service`
+  - `debian/eguard/usr/local/eg/conf/caddy-services/api.conf.example`
+  - `debian/eguard/usr/local/eg/go/apiserver/handler/threat_intel.go`
+  - `debian/eguard/usr/local/eg/go/cmd/eg-agent-server/main.go`
+  - `debian/eguard/usr/local/eg/go/agent/server/server.go`
+  - related packaged Go tests/helpers and runtime/test Dockerfiles
+  - `debian/eguard/usr/local/eg/Dockerfile.runtime`
+- Verification for package-like workflows:
+  - live VM exercise of `egcmd configreload` + `egcmd service eg updatesystemd` ✅
+  - after restarting `eguard-config` and regenerating frontend config, `/usr/local/eg/var/conf/api-frontend.env` resolved to `50054` / `h2c://50053` ✅
+  - public API remained healthy after the normal service wiring:
+    - `https://103.132.18.221:1443/api/v1/endpoint/ml-ops/summary?range=24h` ✅
+  - visual ML Ops page on `https://103.132.18.221:1443/admin#/endpoint-ml-ops` ✅
+- Source consistency verification:
+  - scripted checks confirmed top-level and packaged copies now contain the expected `50054`/`h2c://50053` wiring ✅
+- Note on packaged duplicate Go tree tests:
+  - direct `go test` in `debian/eguard/usr/local/eg/go` is not a reliable standalone verifier because that tree is a packaged mirror rather than an independently maintained development tree; verification relied on top-level builds/tests plus package-style live workflow checks instead.
 
 ### Plan
 - [x] Verify the public install path from this host and the external Ubuntu/Fedora/Windows VMs.
