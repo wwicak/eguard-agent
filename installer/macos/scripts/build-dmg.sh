@@ -62,6 +62,7 @@ fi
 
 STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/eguard-dmg.XXXXXX")"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+MACOS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cleanup() {
     rm -rf "$STAGING_DIR"
 }
@@ -69,19 +70,40 @@ trap cleanup EXIT
 
 cp "$PKG_PATH" "$STAGING_DIR/$PKG_BASENAME"
 cp "$SCRIPT_DIR/configure-from-env.sh" "$STAGING_DIR/configure-from-env.sh"
+cp "$MACOS_DIR/uninstall.sh" "$STAGING_DIR/uninstall.sh"
 chmod 755 "$STAGING_DIR/configure-from-env.sh"
+chmod 755 "$STAGING_DIR/uninstall.sh"
 
 cat > "$STAGING_DIR/Install eGuard.command" <<'EOF'
 #!/bin/bash
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PKG_PATH="$(find "$SCRIPT_DIR" -maxdepth 1 -name '*.pkg' -print -quit)"
+ENV_FILE="$(mktemp "${TMPDIR:-/tmp}/eguard-installer-env.XXXXXX")"
+cleanup() {
+    rm -f "$ENV_FILE"
+}
+trap cleanup EXIT
 if [[ -z "$PKG_PATH" ]]; then
     osascript -e 'display alert "eGuard Installer" message "Unable to find the .pkg on this disk image." as critical'
     exit 1
 fi
+
+cat <<'EOM'
+Paste your eGuard installer config block below, then press Ctrl-D.
+EOM
+cat > "$ENV_FILE"
+
+if [[ ! -s "$ENV_FILE" ]]; then
+    echo "No installer config was provided; aborting."
+    exit 1
+fi
+
+echo "Installing package..."
 sudo installer -pkg "$PKG_PATH" -target /
-sudo "$SCRIPT_DIR/configure-from-env.sh" --interactive
+echo "Applying installer config and starting agent..."
+sudo "$SCRIPT_DIR/configure-from-env.sh" --env-file "$ENV_FILE"
+echo "eGuard install and configuration completed."
 EOF
 
 chmod 755 "$STAGING_DIR/Install eGuard.command"
@@ -92,6 +114,7 @@ eGuard Agent macOS Installer
 1. Double-click Install eGuard.command
 2. Authenticate when prompted by macOS
 3. Paste the eGuard installer config block from the admin UI when prompted
+4. To remove the agent later, run uninstall.sh from this disk image
 
 Artifact: ${PKG_BASENAME}
 EOF

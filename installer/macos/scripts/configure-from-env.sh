@@ -41,11 +41,14 @@ is_truthy() {
 
 contains_unsafe_chars() {
     local value="$1"
-    [[ "$value" == *$'\n'* || "$value" == *$'\r'* || "$value" == *$'\0'* ]]
+    [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]
 }
 
 trim_quotes() {
     local value="$1"
+    value="${value%$'\r'}"
+    value="${value#${value%%[![:space:]]*}}"
+    value="${value%${value##*[![:space:]]}}"
     if [[ "$value" =~ ^\'.*\'$ || "$value" =~ ^\".*\"$ ]]; then
         value="${value:1:${#value}-2}"
     fi
@@ -118,6 +121,7 @@ load_env_file() {
     local line key value
 
     while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%$'\r'}"
         line="${line#${line%%[![:space:]]*}}"
         line="${line%${line##*[![:space:]]}}"
         [[ -z "$line" || "$line" == \#* ]] && continue
@@ -157,9 +161,32 @@ EOF
 }
 
 ensure_plist_env_dict() {
-    if ! /usr/bin/plutil -extract EnvironmentVariables xml1 -o /dev/null "$PLIST_PATH" >/dev/null 2>&1; then
-        /usr/bin/plutil -insert EnvironmentVariables -xml '<dict/>' "$PLIST_PATH"
-    fi
+    cat > "$PLIST_PATH" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.eguard.agent</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/eguard-agent</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/usr/local/bin</string>
+    <key>EnvironmentVariables</key>
+    <dict/>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/var/log/eguard-agent.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/eguard-agent.err.log</string>
+</dict>
+</plist>
+EOF
 }
 
 set_plist_env() {
