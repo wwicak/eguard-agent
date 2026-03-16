@@ -78,15 +78,23 @@ pub struct AutoIsolationState {
 
 impl Default for ResponseConfig {
     fn default() -> Self {
+        // Autonomous response is enabled by default. Operators can disable
+        // via agent.conf: {"response":{"autonomous_response":false}}.
+        // Env override: EGUARD_AUTONOMOUS_RESPONSE=false
+        let autonomous = std::env::var("EGUARD_AUTONOMOUS_RESPONSE")
+            .ok()
+            .map(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no"))
+            .unwrap_or(true);
         Self {
-            autonomous_response: false,
+            autonomous_response: autonomous,
             dry_run: false,
             max_kills_per_minute: 10,
             auto_isolation: AutoIsolationPolicy::default(),
-            definite: ResponsePolicy::new(true, true, true),
-            very_high: ResponsePolicy::new(true, true, true),
-            high: ResponsePolicy::new(false, false, true),
-            medium: ResponsePolicy::new(false, false, false),
+            //              kill  quarantine  capture_script
+            definite:  ResponsePolicy::new(true,  true,  true),
+            very_high: ResponsePolicy::new(true,  true,  true),
+            high:      ResponsePolicy::new(false, true,  true),  // was: (false, false, true) — quarantine enabled
+            medium:    ResponsePolicy::new(false, false, true),  // was: (false, false, false) — capture enabled
         }
     }
 }
