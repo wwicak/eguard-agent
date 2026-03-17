@@ -84,14 +84,14 @@ impl EsfEngine {
                         return Ok(());
                     }
                     Err(err) => {
-                        tracing::warn!(error = %err, "failed starting eslogger backend, falling back to process polling");
+                        tracing::warn!(error = %err, "failed starting eslogger — falling back to process polling (degraded: process events only, no file/network telemetry)");
                     }
                 }
             }
 
             self.backend = EsfBackend::ProcessPoll(ProcessPollBackend::new());
             self.enabled = true;
-            tracing::info!("ESF process-poll fallback started");
+            tracing::info!("ESF process-poll fallback started (degraded mode: process events only)");
             return Ok(());
         }
 
@@ -259,16 +259,72 @@ impl EsloggerBackend {
                     .map(|segment| segment.to_string())
                     .collect::<Vec<_>>()
             })
-            .unwrap_or_else(|| vec!["--json".to_string()]);
+            .unwrap_or_else(|| {
+                // eslogger requires explicit event type arguments; --json alone
+                // only sets the output format and produces no events.
+                vec![
+                    "--format".to_string(),
+                    "json".to_string(),
+                    // Process lifecycle
+                    "exec".to_string(),
+                    "fork".to_string(),
+                    "exit".to_string(),
+                    // File operations
+                    "open".to_string(),
+                    "write".to_string(),
+                    "rename".to_string(),
+                    "unlink".to_string(),
+                    "close".to_string(),
+                    "create".to_string(),
+                    "truncate".to_string(),
+                    "link".to_string(),
+                    // Memory-mapped code loading
+                    "mmap".to_string(),
+                    // Network
+                    "uipc_connect".to_string(),
+                ]
+            });
+
+        tracing::info!(binary = %binary, args = ?args, "starting eslogger subprocess");
 
         let mut child = Command::new(&binary)
             .args(&args)
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(|err| {
                 EsfError::NotAvailable(format!("spawn {binary} with args {:?}: {err}", args))
             })?;
+
+        // Give eslogger a moment to fail on TCC/entitlement errors.
+        std::thread::sleep(Duration::from_millis(500));
+        if let Ok(Some(exit_status)) = child.try_wait() {
+            let stderr_msg = child
+                .stderr
+                .take()
+                .and_then(|stderr| {
+                    let mut buf = String::new();
+                    std::io::BufReader::new(stderr).read_line(&mut buf).ok()?;
+                    Some(buf)
+                })
+                .unwrap_or_default();
+
+            let hint = if stderr_msg.contains("NOT_PERMITTED")
+                || stderr_msg.contains("Full Disk Access")
+            {
+                " — grant Full Disk Access to the agent binary in System Preferences → Privacy & Security → Full Disk Access"
+            } else {
+                ""
+            };
+
+            return Err(EsfError::NotAvailable(format!(
+                "eslogger exited immediately (status {exit_status}): {}{hint}",
+                stderr_msg.trim()
+            )));
+        }
+
+        // Detach stderr reader so it doesn't block (already checked for early exit)
+        drop(child.stderr.take());
 
         let stdout = child.stdout.take().ok_or_else(|| {
             EsfError::NotAvailable("eslogger stdout pipe unavailable".to_string())
