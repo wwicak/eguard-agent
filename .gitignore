@@ -55,3 +55,4 @@ tests/e2e-pipeline/results/overlay.qcow2
 .ant-colony/
 artifacts
 tasks
+eguard-agent

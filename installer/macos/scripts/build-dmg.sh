@@ -70,9 +70,9 @@ trap cleanup EXIT
 
 cp "$PKG_PATH" "$STAGING_DIR/$PKG_BASENAME"
 cp "$SCRIPT_DIR/configure-from-env.sh" "$STAGING_DIR/configure-from-env.sh"
-cp "$MACOS_DIR/uninstall.sh" "$STAGING_DIR/uninstall.sh"
+cp "$MACOS_DIR/uninstall.sh" "$STAGING_DIR/Uninstall eGuard.command"
 chmod 755 "$STAGING_DIR/configure-from-env.sh"
-chmod 755 "$STAGING_DIR/uninstall.sh"
+chmod 755 "$STAGING_DIR/Uninstall eGuard.command"
 
 cat > "$STAGING_DIR/Install eGuard.command" <<'EOF'
 #!/bin/bash
@@ -114,7 +114,7 @@ eGuard Agent macOS Installer
 1. Double-click Install eGuard.command
 2. Authenticate when prompted by macOS
 3. Paste the eGuard installer config block from the admin UI when prompted
-4. To remove the agent later, run uninstall.sh from this disk image
+4. To remove the agent later, run Uninstall eGuard.command from this disk image
 
 Artifact: ${PKG_BASENAME}
 EOF
