@@ -623,6 +623,7 @@ fn decode_event_value(value: &Value) -> Option<super::RawEvent> {
 }
 
 fn decode_event_type(value: &Value) -> Option<super::EventType> {
+    // Try string-based event type fields first.
     let candidates = [
         lookup_string_path(value, &["event_type"]),
         lookup_string_path(value, &["event", "event_type"]),
@@ -644,7 +645,72 @@ fn decode_event_type(value: &Value) -> Option<super::EventType> {
         }
     }
 
+    // eslogger on macOS Ventura+ uses integer `event_type` and nests the event
+    // data under a key that names the event (e.g., `event.exec`, `event.open`).
+    // Detect by inspecting the keys of the `event` object.
+    if let Some(event_obj) = value.get("event").and_then(|v| v.as_object()) {
+        for key in event_obj.keys() {
+            let mapped = match key.as_str() {
+                "exec" => Some(super::EventType::ProcessExec),
+                "exit" => Some(super::EventType::ProcessExit),
+                "fork" => Some(super::EventType::ProcessExec),
+                "open" => Some(super::EventType::FileOpen),
+                "write" | "truncate" | "create" => Some(super::EventType::FileWrite),
+                "rename" => Some(super::EventType::FileRename),
+                "unlink" | "deleteextattr" => Some(super::EventType::FileUnlink),
+                "close" => Some(super::EventType::FileWrite),
+                "link" => Some(super::EventType::FileWrite),
+                "mmap" | "kextload" => Some(super::EventType::ModuleLoad),
+                "uipc_connect" | "uipc_bind" => Some(super::EventType::TcpConnect),
+                _ => None,
+            };
+            if mapped.is_some() {
+                return mapped;
+            }
+        }
+    }
+
+    // Map ES integer event types (Apple Endpoint Security framework).
+    if let Some(raw_int) = value
+        .get("event_type")
+        .and_then(|v| v.as_u64().or_else(|| v.as_i64().map(|i| i as u64)))
+    {
+        return map_es_event_type_int(raw_int);
+    }
+
     None
+}
+
+/// Map Apple ES framework integer event types to our EventType.
+fn map_es_event_type_int(raw: u64) -> Option<super::EventType> {
+    // AUTH events (0-49) and NOTIFY events (50+).
+    // See: <EndpointSecurity/ESTypes.h>
+    match raw {
+        // AUTH_EXEC=0, NOTIFY_EXEC=42
+        0 | 42 => Some(super::EventType::ProcessExec),
+        // AUTH_OPEN=1, NOTIFY_OPEN=72
+        1 | 72 => Some(super::EventType::FileOpen),
+        // NOTIFY_FORK=8
+        8 => Some(super::EventType::ProcessExec),
+        // AUTH_RENAME=25, NOTIFY_RENAME=52
+        25 | 52 => Some(super::EventType::FileRename),
+        // AUTH_UNLINK=32, NOTIFY_UNLINK=54
+        32 | 54 => Some(super::EventType::FileUnlink),
+        // NOTIFY_WRITE=73, NOTIFY_TRUNCATE=75, NOTIFY_CREATE=60
+        60 | 73 | 75 => Some(super::EventType::FileWrite),
+        // NOTIFY_CLOSE=74
+        74 => Some(super::EventType::FileWrite),
+        // NOTIFY_EXIT=43
+        43 => Some(super::EventType::ProcessExit),
+        // AUTH_MMAP=35, NOTIFY_MMAP=71
+        35 | 71 => Some(super::EventType::ModuleLoad),
+        // NOTIFY_UIPC_CONNECT=83, NOTIFY_UIPC_BIND=82
+        82 | 83 => Some(super::EventType::TcpConnect),
+        // Newer Ventura+ event type numbering (schema_version=1):
+        // event_type=9 (exec in schema v1)
+        9 => Some(super::EventType::ProcessExec),
+        _ => None,
+    }
 }
 
 fn map_event_type(raw: &str) -> Option<super::EventType> {
@@ -706,9 +772,11 @@ fn map_event_type(raw: &str) -> Option<super::EventType> {
 }
 
 fn decode_pid(value: &Value) -> Option<u32> {
+    // For eslogger exec events, prefer the target PID (the new process).
     let raw = first_u64(
         value,
         &[
+            &["event", "exec", "target", "audit_token", "pid"],
             &["pid"],
             &["process", "pid"],
             &["process", "audit_token", "pid"],
@@ -726,6 +794,8 @@ fn decode_uid(value: &Value) -> Option<u32> {
     let raw = first_u64(
         value,
         &[
+            &["event", "exec", "target", "audit_token", "euid"],
+            &["process", "audit_token", "euid"],
             &["uid"],
             &["process", "uid"],
             &["process", "audit_token", "uid"],
@@ -740,20 +810,83 @@ fn decode_uid(value: &Value) -> Option<u32> {
 }
 
 fn decode_timestamp_ns(value: &Value) -> Option<u64> {
+    // eslogger uses ISO 8601 "time" field and "mach_time" (monotonic ticks).
+    // Try numeric timestamps first, then fall back to ISO parsing.
     let raw = first_u64(
         value,
         &[
             &["ts_ns"],
             &["timestamp_ns"],
             &["timestamp"],
+            &["mach_time"],
             &["event", "timestamp_ns"],
             &["event", "timestamp"],
-            &["time"],
         ],
     )
-    .or_else(|| find_u64_by_keys(value, &["timestamp", "ts", "time", "ts_ns"]));
+    .or_else(|| find_u64_by_keys(value, &["timestamp", "ts", "ts_ns"]));
 
-    raw.map(normalize_timestamp_ns)
+    if let Some(raw) = raw {
+        return Some(normalize_timestamp_ns(raw));
+    }
+
+    // Parse ISO 8601 "time" field from eslogger.
+    if let Some(time_str) = first_string(value, &[&["time"]]) {
+        return parse_iso_timestamp_ns(&time_str);
+    }
+
+    None
+}
+
+fn parse_iso_timestamp_ns(raw: &str) -> Option<u64> {
+    // Parse "2026-03-17T07:06:26.753412464Z" style timestamps.
+    let trimmed = raw.trim().trim_end_matches('Z');
+    let (date_time, frac) = if let Some(dot_pos) = trimmed.rfind('.') {
+        (&trimmed[..dot_pos], &trimmed[dot_pos + 1..])
+    } else {
+        (trimmed, "0")
+    };
+
+    // Parse date-time part: "2026-03-17T07:06:26"
+    let mut parts = date_time.split('T');
+    let date_part = parts.next()?;
+    let time_part = parts.next()?;
+
+    let date_fields: Vec<&str> = date_part.split('-').collect();
+    if date_fields.len() != 3 {
+        return None;
+    }
+
+    let year: u64 = date_fields[0].parse().ok()?;
+    let month: u64 = date_fields[1].parse().ok()?;
+    let day: u64 = date_fields[2].parse().ok()?;
+
+    let time_fields: Vec<&str> = time_part.split(':').collect();
+    if time_fields.len() != 3 {
+        return None;
+    }
+
+    let hour: u64 = time_fields[0].parse().ok()?;
+    let min: u64 = time_fields[1].parse().ok()?;
+    let sec: u64 = time_fields[2].parse().ok()?;
+
+    // Approximate days since epoch (good enough for ordering).
+    let days = (year - 1970) * 365 + (year - 1969) / 4 + month_days(month) + day - 1;
+    let secs = days * 86400 + hour * 3600 + min * 60 + sec;
+
+    // Parse fractional seconds as nanoseconds.
+    let frac_ns: u64 = if frac.len() >= 9 {
+        frac[..9].parse().unwrap_or(0)
+    } else {
+        let padded = format!("{:0<9}", frac);
+        padded.parse().unwrap_or(0)
+    };
+
+    Some(secs * 1_000_000_000 + frac_ns)
+}
+
+fn month_days(month: u64) -> u64 {
+    const CUMULATIVE: [u64; 13] = [0, 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+    CUMULATIVE.get(month as usize).copied().unwrap_or(0)
 }
 
 fn normalize_timestamp_ns(raw: u64) -> u64 {
@@ -809,6 +942,8 @@ fn decode_payload(event_type: &super::EventType, value: &Value) -> String {
                 first_string(
                     value,
                     &[
+                        &["event", "rename", "destination", "existing_file", "path"],
+                        &["event", "rename", "destination", "new_path", "dir", "path"],
                         &["dst"],
                         &["target", "path"],
                         &["new", "path"],
@@ -894,6 +1029,21 @@ fn extract_primary_path(value: &Value) -> Option<String> {
     first_string(
         value,
         &[
+            // eslogger exec: target executable path
+            &["event", "exec", "target", "executable", "path"],
+            // eslogger exec: dyld_exec_path (actual executed binary)
+            &["event", "exec", "dyld_exec_path"],
+            // eslogger open/write/rename/unlink: file path
+            &["event", "open", "file", "path"],
+            &["event", "write", "target", "path"],
+            &["event", "create", "destination", "existing_file", "path"],
+            &["event", "rename", "source", "path"],
+            &["event", "unlink", "target", "path"],
+            &["event", "close", "target", "path"],
+            &["event", "truncate", "target", "path"],
+            &["event", "link", "target", "path"],
+            &["event", "mmap", "source", "path"],
+            // Generic paths
             &["path"],
             &["file", "path"],
             &["target", "path"],
@@ -929,9 +1079,12 @@ fn extract_command_line(value: &Value) -> Option<String> {
         return direct;
     }
 
+    // eslogger puts args in `event.exec.args` (array of strings).
     let args = first_string_array(
         value,
         &[
+            &["event", "exec", "args"],
+            &["event", "exec", "env"],
             &["args"],
             &["argv"],
             &["process", "args"],
