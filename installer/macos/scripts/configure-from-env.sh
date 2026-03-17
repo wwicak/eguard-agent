@@ -173,13 +173,24 @@ ensure_plist_env_dict() {
         <string>/usr/local/bin/eguard-agent</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>/usr/local/bin</string>
+    <string>/Library/Application Support/eGuard</string>
     <key>EnvironmentVariables</key>
     <dict/>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>Nice</key>
+    <integer>5</integer>
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>8192</integer>
+    </dict>
     <key>StandardOutPath</key>
     <string>/var/log/eguard-agent.out.log</string>
     <key>StandardErrorPath</key>

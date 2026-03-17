@@ -80,8 +80,8 @@ impl Client {
                     // reject empty CSR while still allowing static fallback issuance.
                     csr: b"pkcs10-csr-placeholder".to_vec(),
                     capabilities: Some(pb::AgentCapabilities {
-                        ebpf_supported: true,
-                        lsm_supported: true,
+                        ebpf_supported: cfg!(target_os = "linux"),
+                        lsm_supported: cfg!(target_os = "linux"),
                         yara_supported: true,
                         ebpf_programs: Vec::new(),
                     }),

@@ -25,4 +25,30 @@ chmod 644 "$PLIST_PATH"
 # configurator or install.sh flow writes runtime config and then bootstraps
 # the service explicitly after enrollment settings are in place.
 
+# --- Full Disk Access (FDA) notice ---
+cat <<'FDA_NOTICE'
+
+================================================================================
+  eGuard Agent — Full Disk Access (FDA) Required
+================================================================================
+
+  The eGuard agent uses macOS Endpoint Security (eslogger) for file, network,
+  and process telemetry. This requires Full Disk Access permission.
+
+  OPTION 1 — Manual grant (standalone machines):
+    System Settings > Privacy & Security > Full Disk Access
+    Click "+", navigate to /usr/local/bin/eguard-agent, and enable it.
+
+  OPTION 2 — MDM TCC profile (enterprise deployment):
+    Deploy a Privacy Preferences Policy Control profile granting
+    SystemPolicyAllFiles to /usr/local/bin/eguard-agent
+    (bundle identifier: com.eguard.agent, code requirement: identifier "eguard-agent").
+
+  WITHOUT FDA:
+    The agent runs in degraded mode — process events only (via polling).
+    File and network telemetry will NOT be collected.
+
+================================================================================
+FDA_NOTICE
+
 exit 0

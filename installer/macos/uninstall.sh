@@ -30,6 +30,19 @@ remove_path_if_exists() {
     local path="$1"
     local description="$2"
 
+    if [[ -L "$path" ]]; then
+        local link_target
+        link_target="$(readlink "$path" 2>/dev/null || true)"
+        case "$link_target" in
+            /Library/Application\ Support/eGuard*|/usr/local/bin/eguard*)
+                ;;
+            *)
+                log "WARNING: refusing to remove symlink $path — points outside expected locations: $link_target"
+                return
+                ;;
+        esac
+    fi
+
     if [[ -e "$path" || -L "$path" ]]; then
         run_as_root rm -rf "$path"
         log "Removed ${description}: $path"

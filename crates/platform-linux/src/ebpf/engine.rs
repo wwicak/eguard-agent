@@ -171,6 +171,10 @@ impl EbpfEngine {
         self.stats.clone()
     }
 
+    pub fn backend_label(&self) -> &'static str {
+        "ebpf"
+    }
+
     pub fn capability_report(&self) -> std::collections::HashMap<String, String> {
         build_capability_report(&self.stats)
     }

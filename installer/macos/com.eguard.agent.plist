@@ -20,5 +20,16 @@
     <string>/var/log/eguard-agent.out.log</string>
     <key>StandardErrorPath</key>
     <string>/var/log/eguard-agent.err.log</string>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>Nice</key>
+    <integer>5</integer>
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>8192</integer>
+    </dict>
 </dict>
 </plist>

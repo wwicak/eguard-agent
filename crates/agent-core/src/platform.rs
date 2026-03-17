@@ -121,6 +121,10 @@ mod windows_engine {
         pub fn stats(&self) -> EbpfStats {
             self.stats.clone()
         }
+
+        pub fn backend_label(&self) -> &'static str {
+            if self.enabled { "etw" } else { "disabled" }
+        }
     }
 
     #[derive(Debug, Clone, Default)]
@@ -271,6 +275,10 @@ mod macos_engine {
 
         pub fn stats(&self) -> EbpfStats {
             self.stats.clone()
+        }
+
+        pub fn backend_label(&self) -> &'static str {
+            self.esf.backend_label()
         }
     }
 

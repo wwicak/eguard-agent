@@ -288,7 +288,7 @@ fi
 validate_url_scheme "server" "$SERVER_URL"
 
 if [[ -z "$EGUARD_GRPC_PORT" ]]; then
-    EGUARD_GRPC_PORT="50052"
+    EGUARD_GRPC_PORT="50053"
 fi
 if ! is_valid_port "$EGUARD_GRPC_PORT"; then
     echo "Error: invalid --grpc-port (must be 1-65535)" >&2
@@ -382,6 +382,13 @@ fi
 $SUDO mkdir -p "$BOOTSTRAP_DIR"
 $SUDO chmod 700 "$BOOTSTRAP_DIR"
 $SUDO install -m 600 "$BOOTSTRAP_TMP" "$BOOTSTRAP_FILE"
+
+# Verify bootstrap.conf permissions (protect against umask/FS quirks)
+BOOTSTRAP_PERMS="$(stat -f%OLp "$BOOTSTRAP_FILE" 2>/dev/null || stat -c%a "$BOOTSTRAP_FILE" 2>/dev/null || true)"
+if [[ "$BOOTSTRAP_PERMS" != "600" ]]; then
+    echo "Error: bootstrap.conf has unexpected permissions ${BOOTSTRAP_PERMS} (expected 600)" >&2
+    exit 1
+fi
 
 # Install package
 $SUDO installer -pkg "$PKG_PATH" -target /

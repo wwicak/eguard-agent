@@ -155,6 +155,18 @@ impl EsfEngine {
     pub fn stats(&self) -> EsfStats {
         self.stats.clone()
     }
+
+    /// Label identifying the active telemetry backend.
+    pub fn backend_label(&self) -> &'static str {
+        match &self.backend {
+            EsfBackend::Replay(_) => "replay",
+            #[cfg(target_os = "macos")]
+            EsfBackend::Eslogger(_) => "eslogger",
+            #[cfg(target_os = "macos")]
+            EsfBackend::ProcessPoll(_) => "process_poll",
+            EsfBackend::Disabled => "disabled",
+        }
+    }
 }
 
 impl Default for EsfEngine {
@@ -239,8 +251,10 @@ struct EsloggerBackend {
     child: Child,
     rx: Receiver<String>,
     reader_thread: Option<JoinHandle<()>>,
+    stderr_thread: Option<JoinHandle<()>>,
     dropped_lines: Arc<AtomicU64>,
     pending: VecDeque<super::RawEvent>,
+    crashed: bool,
 }
 
 #[cfg(target_os = "macos")]
@@ -289,6 +303,7 @@ impl EsloggerBackend {
 
         let mut child = Command::new(&binary)
             .args(&args)
+            .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -324,7 +339,7 @@ impl EsloggerBackend {
         }
 
         // Drain stderr in a background thread to prevent pipe buffer deadlock.
-        if let Some(stderr) = child.stderr.take() {
+        let stderr_thread = child.stderr.take().map(|stderr| {
             std::thread::spawn(move || {
                 let mut reader = std::io::BufReader::new(stderr);
                 loop {
@@ -340,8 +355,8 @@ impl EsloggerBackend {
                         Err(_) => break,
                     }
                 }
-            });
-        }
+            })
+        });
 
         let stdout = child.stdout.take().ok_or_else(|| {
             EsfError::NotAvailable("eslogger stdout pipe unavailable".to_string())
@@ -380,8 +395,10 @@ impl EsloggerBackend {
             child,
             rx,
             reader_thread: Some(reader_thread),
+            stderr_thread,
             dropped_lines,
             pending: VecDeque::new(),
+            crashed: false,
         })
     }
 
@@ -395,7 +412,31 @@ impl EsloggerBackend {
                     None => dropped = dropped.saturating_add(1),
                 },
                 Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => break,
+                Err(TryRecvError::Disconnected) => {
+                    if !self.crashed {
+                        self.crashed = true;
+                        match self.child.try_wait() {
+                            Ok(Some(status)) => {
+                                tracing::warn!(
+                                    exit_status = %status,
+                                    "eslogger subprocess has exited unexpectedly — telemetry collection stopped"
+                                );
+                            }
+                            Ok(None) => {
+                                tracing::warn!(
+                                    "eslogger stdout pipe disconnected but process still running"
+                                );
+                            }
+                            Err(err) => {
+                                tracing::warn!(
+                                    error = %err,
+                                    "eslogger subprocess status unknown — telemetry collection may have stopped"
+                                );
+                            }
+                        }
+                    }
+                    break;
+                }
             }
         }
 
@@ -412,17 +453,45 @@ impl EsloggerBackend {
 
     fn stop(&mut self) -> Result<(), EsfError> {
         if let Ok(None) = self.child.try_wait() {
-            let _ = self.child.kill();
+            // Try graceful SIGTERM first, fall back to SIGKILL after 2 seconds.
+            let pid = self.child.id() as libc::pid_t;
+            unsafe {
+                libc::kill(pid, libc::SIGTERM);
+            }
+
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                match self.child.try_wait() {
+                    Ok(Some(_)) => break,
+                    Ok(None) => {
+                        if Instant::now() >= deadline {
+                            tracing::debug!("eslogger did not exit after SIGTERM, sending SIGKILL");
+                            let _ = self.child.kill();
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    Err(_) => break,
+                }
+            }
         }
-        self.child
-            .wait()
-            .map_err(|err| EsfError::NotAvailable(format!("wait eslogger process: {err}")))?;
+        let _ = self.child.wait();
 
         if let Some(handle) = self.reader_thread.take() {
             let _ = handle.join();
         }
+        if let Some(handle) = self.stderr_thread.take() {
+            let _ = handle.join();
+        }
 
         Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for EsloggerBackend {
+    fn drop(&mut self) {
+        let _ = self.stop();
     }
 }
 
@@ -432,6 +501,9 @@ struct ProcessSnapshot {
     uid: u32,
     cmdline: String,
 }
+
+#[cfg(target_os = "macos")]
+const MAX_KNOWN_PROCESSES: usize = 10_000;
 
 #[cfg(target_os = "macos")]
 struct ProcessPollBackend {
@@ -479,6 +551,18 @@ impl ProcessPollBackend {
         if !self.seeded {
             self.known_processes = snapshot;
             self.seeded = true;
+            return Ok(PollOutcome::default());
+        }
+
+        // Guard against process-fork storms: if the snapshot exceeds the cap,
+        // skip the diff to avoid unbounded memory growth and just replace.
+        if snapshot.len() > MAX_KNOWN_PROCESSES {
+            tracing::warn!(
+                count = snapshot.len(),
+                cap = MAX_KNOWN_PROCESSES,
+                "process snapshot exceeds cap — skipping diff to bound memory"
+            );
+            self.known_processes = snapshot;
             return Ok(PollOutcome::default());
         }
 
