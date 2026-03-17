@@ -50,9 +50,19 @@
 
 ## Agent side
 
-- Linux host reachable via SSH
+**Linux:**
+- Host reachable via SSH
 - `systemd` available
 - outbound connectivity to eGuard API endpoint (or local bridge/proxy configured)
+
+**macOS (12+):**
+- Host reachable via SSH (enable Remote Login in System Settings)
+- outbound connectivity to eGuard API endpoint
+- Full Disk Access granted to `/usr/local/bin/eguard-agent` for full telemetry (optional — agent runs in degraded process-poll mode without FDA)
+
+**Windows (10/11/Server 2019+):**
+- Host reachable via WinRM or SSH
+- outbound connectivity to eGuard API endpoint
 
 ---
 
@@ -113,6 +123,29 @@ curl -fL -H "X-Enrollment-Token: $ENROLLMENT_TOKEN" \
   -o /tmp/eguard-agent.rpm
 sudo rpm -Uvh /tmp/eguard-agent.rpm
 sudo systemctl enable --now eguard-agent
+```
+
+### macOS
+
+```bash
+ENROLLMENT_TOKEN="<org-specific-enrollment-token>"
+EGUARD_SERVER="https://<eguard-server>"
+
+curl -fsSLk "$EGUARD_SERVER/install-macos.sh" | \
+  EGUARD_INSTALL_INSECURE_TLS=1 bash -s -- \
+  --server "$EGUARD_SERVER" --token "$ENROLLMENT_TOKEN"
+```
+
+Or manual `.pkg` install:
+
+```bash
+curl -fL -H "X-Enrollment-Token: $ENROLLMENT_TOKEN" \
+  "$EGUARD_SERVER/api/v1/agent-install/macos" \
+  -o /tmp/eguard-agent.pkg
+sudo installer -pkg /tmp/eguard-agent.pkg -target /
+# Then bootstrap the daemon:
+sudo launchctl bootstrap system /Library/LaunchDaemons/com.eguard.agent.plist
+sudo launchctl kickstart system/com.eguard.agent
 ```
 
 ## Method C: binary + systemd fallback (lab/emergency)
@@ -176,9 +209,18 @@ Target state (recommended):
 
 ## Agent host checks
 
+**Linux:**
 ```bash
 systemctl is-active eguard-agent
 journalctl -u eguard-agent -n 100 --no-pager
+```
+
+**macOS:**
+```bash
+sudo launchctl print system/com.eguard.agent   # daemon status
+sudo ps aux | grep eguard-agent                 # process check
+sudo tail -50 /var/log/eguard-agent.err.log     # stderr log
+sudo cat '/Library/Application Support/eGuard/agent.conf' | head -5  # enrollment check
 ```
 
 ## API checks (agent path)
@@ -300,3 +342,7 @@ When adding new features/tests, append with this format:
   - org-specific token handling guidance hardened (no hardcoded token flow)
   - enrollment edge updated to auto-node upsert behavior
   - Endpoint “Enrollment & Install” UI workflow documented
+- **2026-03-17**:
+  - macOS agent prerequisites and install methods added (pkg + install-macos.sh)
+  - macOS health verification commands added
+  - Windows agent prerequisites placeholder added

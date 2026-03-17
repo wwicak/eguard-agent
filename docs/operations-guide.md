@@ -79,12 +79,57 @@ UI.
 +---------------------+          +----------------------+
 ```
 
+### Telemetry Backends by Platform
+
+| Platform | Primary Backend | Fallback | Event Types |
+|----------|----------------|----------|-------------|
+| Linux (kernel 5.8+) | eBPF ring buffer probes (Zig) | procfs polling | Process, file, network, module, DNS |
+| Linux (kernel 5.4–5.7) | eBPF perf buffer probes | procfs polling | Process, file, network |
+| Windows | ETW (Event Tracing for Windows) + WFP | — | Process, file, network, registry |
+| macOS | ESF via `eslogger` subprocess | Process polling (`ps`) | Process, file, network, module (mmap) |
+
+#### macOS ESF Backend Details
+
+The ESF (Endpoint Security Framework) backend runs `eslogger --format json`
+as a child process and ingests NDJSON events from its stdout. Event types
+collected: `exec`, `fork`, `exit`, `open`, `write`, `rename`, `unlink`,
+`close`, `create`, `truncate`, `link`, `mmap`, `uipc_connect`.
+
+Lifecycle hardening (v0.2.94):
+
+- **stdin** is redirected to `/dev/null` to prevent the child from blocking
+- **stderr** is drained by a dedicated thread (prevents pipe buffer deadlock)
+  and the thread handle is joined on stop
+- **Graceful shutdown**: `SIGTERM` first, 2-second wait, then `SIGKILL` only
+  if the process didn't exit
+- **Drop guard**: a `Drop` impl ensures the eslogger child is always reaped
+  even if the backend is dropped without calling `stop()`
+- **Crash detection**: when the stdout channel disconnects, the backend checks
+  the child exit status and logs a `warn!` once (avoids spam on subsequent
+  polls)
+
+If `eslogger` fails to start (missing FDA / entitlement error), the agent
+automatically falls back to `ProcessPollBackend` which scans `ps -axo
+pid=,uid=,command=` every 1 second and reports process exec/exit events.
+The process poll backend caps its internal `known_processes` map at 10,000
+entries to bound memory under fork storms.
+
+Environment overrides for the ESF subsystem:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `EGUARD_ESLOGGER_BIN` | `eslogger` | Path to eslogger binary |
+| `EGUARD_ESLOGGER_ARGS` | (14 event types) | Space-separated eslogger arguments |
+| `EGUARD_ESLOGGER_DISABLE` | `false` | Skip eslogger, use process poll only |
+| `EGUARD_ESF_PROCESS_POLL_INTERVAL_MS` | `1000` | Poll interval for fallback backend |
+| `EGUARD_ESF_REPLAY_PATH` | (unset) | Path to NDJSON replay file (dev/test) |
+
 ### Event Pipeline
 
 Each 100 ms tick on the agent processes events through the following stages:
 
 ```
-Kernel (eBPF probes)
+Kernel (eBPF probes / ESF eslogger / ETW)
   |
   v
 RawEvent
@@ -178,11 +223,28 @@ fallback systemd unit if the package does not provide one.
 | Windows | `.exe` | `.\install.ps1 -Server HOST -Token TOKEN` (see [Section 15.5](#155-windows-agent--installation--operations)) |
 | macOS | `.pkg` | `sudo installer -pkg eguard-agent-<version>.pkg -target /` |
 
-After installation the agent binary is at `/usr/bin/eguard-agent` (Linux) or
-`C:\Program Files\eGuard\eguard-agent.exe` (Windows) and runs as a systemd
-service (Linux) or Windows Service.
+After installation the agent binary is at `/usr/bin/eguard-agent` (Linux),
+`C:\Program Files\eGuard\eguard-agent.exe` (Windows), or
+`/usr/local/bin/eguard-agent` (macOS) and runs as a systemd service (Linux),
+Windows Service, or LaunchDaemon (macOS).
 
-#### Systemd service hardening
+#### macOS one-liner install
+
+```bash
+curl -fsSLk https://SERVER:1443/install-macos.sh | \
+  EGUARD_INSTALL_INSECURE_TLS=1 bash -s -- \
+  --server https://SERVER:1443 --token ENROLLMENT_TOKEN
+```
+
+The script downloads the `.pkg`, verifies SHA-256, writes `bootstrap.conf`
+(mode `600`), and runs `installer -pkg`. The `postinstall` script inside the
+package installs the LaunchDaemon plist with hardening keys.
+
+> **Self-signed TLS**: For servers with self-signed certificates, add
+> `EGUARD_INSTALL_INSECURE_TLS=1`. For plain HTTP (dev only), also set
+> `EGUARD_ALLOW_INSECURE_HTTP_INSTALL=1`.
+
+#### Systemd service hardening (Linux)
 
 The shipped systemd unit includes self-protection and OS hardening:
 
@@ -208,6 +270,50 @@ TimeoutStopSec=5s             # Fast shutdown on legitimate stop
 > `NOTIFY_SOCKET` is not inherited by the tokio async runtime.
 > `Type=simple` works reliably on Debian 12, Ubuntu 24.04, RHEL 9, Rocky 9,
 > and Fedora 41. Changed in agent v0.2.15.
+
+#### LaunchDaemon hardening (macOS)
+
+The shipped `com.eguard.agent.plist` includes tamper-resistance and resource
+management keys:
+
+```xml
+<key>KeepAlive</key>         <!-- launchd auto-restarts on any exit -->
+<true/>
+<key>ThrottleInterval</key>  <!-- min 10s between restarts (crash loop guard) -->
+<integer>10</integer>
+<key>ProcessType</key>       <!-- background scheduling priority -->
+<string>Background</string>
+<key>Nice</key>              <!-- CPU nice level 5 (lower than user apps) -->
+<integer>5</integer>
+<key>SoftResourceLimits</key>
+<dict>
+    <key>NumberOfFiles</key> <!-- raise fd limit for eBPF/eslogger pipes -->
+    <integer>8192</integer>
+</dict>
+```
+
+The plist is installed to `/Library/LaunchDaemons/com.eguard.agent.plist`
+with ownership `root:wheel` and mode `644`.
+
+> **Full Disk Access (FDA) required**: The agent uses `eslogger` (macOS
+> Endpoint Security framework) for file, network, and process telemetry.
+> Without FDA, the agent falls back to degraded process-polling mode (process
+> events only — no file or network telemetry).
+>
+> - **Standalone**: System Settings > Privacy & Security > Full Disk Access >
+>   add `/usr/local/bin/eguard-agent`
+> - **Enterprise (MDM)**: Deploy a Privacy Preferences Policy Control profile
+>   granting `SystemPolicyAllFiles` to the agent binary
+
+#### macOS uninstall
+
+```bash
+sudo bash /Library/Application\ Support/eGuard/uninstall.sh
+```
+
+The uninstaller stops the LaunchDaemon, removes the binary, plist, support
+directory, and log files, and forgets the package receipt. A symlink guard
+prevents removal of paths that point outside expected eGuard directories.
 
 #### Enrollment via Web GUI
 
@@ -6404,3 +6510,64 @@ New focused regression:
 This test writes an EICAR-style sample file, forces a long churn-finalize
 window, proves `FileWrite` still emits no hash yet, and then proves the next
 `FileOpen` immediately produces the expected SHA-256.
+
+### N.13 macOS Agent Production Hardening (Mar 2026)
+
+**Agent version**: v0.2.94
+**Date**: 2026-03-17
+
+Two rounds of hardening applied to the macOS agent, covering the ESF
+eslogger subprocess lifecycle, LaunchDaemon plist, and installer scripts.
+
+#### Round 1 fixes (installer + plist)
+
+| Fix | File | Description |
+|-----|------|-------------|
+| Port mismatch | `install.sh` | Default gRPC port corrected from 50052 to 50053 |
+| FDA guidance | `postinstall` | Post-install notice explains FDA requirement and MDM profile option |
+| Plist hardening | `com.eguard.agent.plist` | Added `ThrottleInterval=10`, `ProcessType=Background`, `Nice=5`, `SoftResourceLimits/NumberOfFiles=8192` |
+| Backend label | `esf/mod.rs` | Added `backend_label()` for telemetry reporting |
+
+#### Round 2 fixes (ESF lifecycle + installer robustness)
+
+**Group A — ESF eslogger subprocess lifecycle** (`crates/platform-macos/src/esf/mod.rs`):
+
+| Fix | Description |
+|-----|-------------|
+| A1: stdin null | Redirect eslogger stdin to `/dev/null` to prevent child blocking |
+| A2: stderr thread | Store stderr drain `JoinHandle` and join on `stop()` |
+| A3: graceful stop | Send `SIGTERM` first, wait 2s, fall back to `SIGKILL` |
+| A4: Drop impl | `impl Drop for EsloggerBackend` calls `stop()` — prevents zombie processes |
+| A5: crash detect | On `TryRecvError::Disconnected`, check child exit status and log `warn!` once |
+| A6: process cap | `ProcessPollBackend` caps `known_processes` at 10,000 entries — bounds memory under fork storms |
+
+**Group B — Plist template unification** (`installer/macos/scripts/configure-from-env.sh`):
+
+- Synced `ensure_plist_env_dict()` template to include all hardening keys from `com.eguard.agent.plist`
+- Changed `WorkingDirectory` from `/usr/local/bin` to `/Library/Application Support/eGuard`
+
+**Group C — Installer robustness**:
+
+| Fix | File | Description |
+|-----|------|-------------|
+| C1: preinstall | `scripts/preinstall` | Use `launchctl print system/` (domain-aware) instead of `launchctl list` |
+| C2: symlink guard | `uninstall.sh` | Refuse removal if symlink target is outside expected eGuard directories |
+| C3: perms verify | `install.sh` | Verify `bootstrap.conf` is mode `600` after write (macOS `stat -f%OLp` + GNU fallback) |
+
+#### Validation
+
+Tested on macOS Ventura 13.7.8 (QEMU/KVM) — fresh snapshot restored, then
+install via webgui enrollment:
+
+```
+Binary:         /usr/local/bin/eguard-agent (v0.2.94)
+Plist keys:     ThrottleInterval=10, ProcessType=Background, Nice=5, NumberOfFiles=8192
+Bootstrap:      mode 600, correct server/port/token
+Daemon:         running as root (launchd), 92MB RSS
+gRPC:           port 50053 reachable
+Enrollment:     agent-1566, os_type=macos, lifecycle_state=active
+Heartbeat:      active (2026-03-17T09:52:15Z)
+Compliance:     8 checks ran (all expected failures for unconfigured KVM)
+```
+
+All 40 `cargo test -p platform-macos` tests pass.
