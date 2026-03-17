@@ -78,15 +78,23 @@ pub struct AutoIsolationState {
 
 impl Default for ResponseConfig {
     fn default() -> Self {
+        // Autonomous response is enabled by default. Operators can disable
+        // via agent.conf: {"response":{"autonomous_response":false}}.
+        // Env override: EGUARD_AUTONOMOUS_RESPONSE=false
+        let autonomous = std::env::var("EGUARD_AUTONOMOUS_RESPONSE")
+            .ok()
+            .map(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no"))
+            .unwrap_or(true);
         Self {
-            autonomous_response: false,
+            autonomous_response: autonomous,
             dry_run: false,
             max_kills_per_minute: 10,
             auto_isolation: AutoIsolationPolicy::default(),
-            definite: ResponsePolicy::new(true, true, true),
-            very_high: ResponsePolicy::new(true, true, true),
-            high: ResponsePolicy::new(false, false, true),
-            medium: ResponsePolicy::new(false, false, false),
+            //              kill  quarantine  capture_script
+            definite:  ResponsePolicy::new(true,  true,  true),
+            very_high: ResponsePolicy::new(true,  true,  true),
+            high:      ResponsePolicy::new(false, true,  true),  // was: (false, false, true) — quarantine enabled
+            medium:    ResponsePolicy::new(false, false, true),  // was: (false, false, false) — capture enabled
         }
     }
 }
@@ -378,6 +386,7 @@ pub enum ServerCommand {
     Uninstall,
     RestoreQuarantine,
     EmergencyRulePush,
+    KillProcess,
     LockDevice,
     WipeDevice,
     RetireDevice,
@@ -431,6 +440,7 @@ pub fn parse_server_command(raw: &str) -> ServerCommand {
         "uninstall" => ServerCommand::Uninstall,
         "restore_quarantine" => ServerCommand::RestoreQuarantine,
         "emergency_rule_push" | "push_emergency_rule" => ServerCommand::EmergencyRulePush,
+        "kill_process" | "kill_tree" | "kill" => ServerCommand::KillProcess,
         "lock_device" | "lock" => ServerCommand::LockDevice,
         "wipe_device" | "wipe" => ServerCommand::WipeDevice,
         "retire_device" | "retire" => ServerCommand::RetireDevice,
@@ -515,6 +525,11 @@ pub fn execute_server_command_with_state(
             outcome: CommandOutcome::Applied,
             status: "completed",
             detail: "emergency rule push received".to_string(),
+        },
+        ServerCommand::KillProcess => CommandExecution {
+            outcome: CommandOutcome::Applied,
+            status: "completed",
+            detail: "kill process command received".to_string(),
         },
         ServerCommand::LockDevice => {
             state.last_lock_unix = Some(now_unix);

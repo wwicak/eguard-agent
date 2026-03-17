@@ -92,6 +92,9 @@ impl AgentRuntime {
             ServerCommand::Forensics => {
                 self.apply_forensics_collection(&command.payload_json, &mut exec)
             }
+            ServerCommand::KillProcess => {
+                self.apply_kill_process(&command.payload_json, &mut exec)
+            }
             ServerCommand::Update => {
                 self.apply_agent_update(&command.command_id, &command.payload_json, &mut exec)
             }
@@ -285,6 +288,7 @@ fn response_action_for_command(command_type: &str) -> Option<&'static str> {
     match command_type.trim().to_ascii_lowercase().as_str() {
         "isolate" | "isolate_host" | "network_isolate" => Some("network_isolate"),
         "restore_quarantine" => Some("restore_quarantine"),
+        "kill_process" | "kill_tree" | "kill" => Some("kill_process"),
         _ => None,
     }
 }

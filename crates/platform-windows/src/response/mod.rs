@@ -11,4 +11,4 @@ pub mod quarantine;
 pub use forensics::ForensicsCollector;
 pub use isolation::{collect_active_management_peer_ips, isolate_host, remove_isolation};
 pub use process::terminate_process;
-pub use quarantine::quarantine_file;
+pub use quarantine::{quarantine_file, QuarantineResult};
