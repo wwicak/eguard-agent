@@ -323,8 +323,25 @@ impl EsloggerBackend {
             )));
         }
 
-        // Detach stderr reader so it doesn't block (already checked for early exit)
-        drop(child.stderr.take());
+        // Drain stderr in a background thread to prevent pipe buffer deadlock.
+        if let Some(stderr) = child.stderr.take() {
+            std::thread::spawn(move || {
+                let mut reader = std::io::BufReader::new(stderr);
+                loop {
+                    let mut line = String::new();
+                    match reader.read_line(&mut line) {
+                        Ok(0) => break,
+                        Ok(_) => {
+                            let trimmed = line.trim();
+                            if !trimmed.is_empty() {
+                                tracing::debug!(line = trimmed, "eslogger stderr");
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+        }
 
         let stdout = child.stdout.take().ok_or_else(|| {
             EsfError::NotAvailable("eslogger stdout pipe unavailable".to_string())
