@@ -8,6 +8,11 @@ BASE_DIR="/Library/Application Support/eGuard"
 LAUNCHD_PLIST="/Library/LaunchDaemons/com.eguard.agent.plist"
 BINARY_PATH="/usr/local/bin/eguard-agent"
 LAUNCHD_LABEL="system/com.eguard.agent"
+STDOUT_LOG="/var/log/eguard-agent.out.log"
+STDERR_LOG="/var/log/eguard-agent.err.log"
+PKG_RECEIPTS=(
+    "com.eguard.agent"
+)
 
 log() {
     printf '[eGuard-uninstall] %s\n' "$1"
@@ -35,6 +40,7 @@ remove_path_if_exists() {
 
 require_cmd launchctl
 require_cmd rm
+require_cmd pkgutil
 
 SUDO=""
 if [[ "$(id -u)" -ne 0 ]]; then
@@ -61,5 +67,14 @@ log "Removing installed files"
 remove_path_if_exists "$LAUNCHD_PLIST" "LaunchDaemon plist"
 remove_path_if_exists "$BINARY_PATH" "agent binary"
 remove_path_if_exists "$BASE_DIR" "application support directory"
+remove_path_if_exists "$STDOUT_LOG" "stdout log"
+remove_path_if_exists "$STDERR_LOG" "stderr log"
+
+for receipt in "${PKG_RECEIPTS[@]}"; do
+    if pkgutil --pkg-info "$receipt" >/dev/null 2>&1; then
+        run_as_root pkgutil --forget "$receipt" >/dev/null 2>&1 || true
+        log "Forgot package receipt: $receipt"
+    fi
+done
 
 log "eGuard Agent uninstall completed"
