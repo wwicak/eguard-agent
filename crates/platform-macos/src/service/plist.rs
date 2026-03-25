@@ -38,7 +38,7 @@ pub fn generate_plist(label: &str, binary_path: &str) -> String {
     <key>ProcessType</key>
     <string>Background</string>
     <key>ThrottleInterval</key>
-    <integer>5</integer>
+    <integer>1</integer>
 </dict>
 </plist>
 "#

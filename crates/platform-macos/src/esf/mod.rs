@@ -34,6 +34,10 @@ use serde_json::Value;
 const REPLAY_PATH_ENV: &str = "EGUARD_ESF_REPLAY_PATH";
 
 #[cfg(target_os = "macos")]
+const ESLOGGER_HIGH_PRIORITY_CAP: usize = 2_048;
+#[cfg(target_os = "macos")]
+const ESLOGGER_LOW_PRIORITY_CAP: usize = 2_048;
+#[cfg(target_os = "macos")]
 const ESLOGGER_BIN_ENV: &str = "EGUARD_ESLOGGER_BIN";
 #[cfg(target_os = "macos")]
 const ESLOGGER_ARGS_ENV: &str = "EGUARD_ESLOGGER_ARGS";
@@ -249,7 +253,8 @@ impl ReplayBackend {
 #[cfg(target_os = "macos")]
 struct EsloggerBackend {
     child: Child,
-    rx: Receiver<String>,
+    rx_high: Receiver<super::RawEvent>,
+    rx_low: Receiver<super::RawEvent>,
     reader_thread: Option<JoinHandle<()>>,
     stderr_thread: Option<JoinHandle<()>>,
     dropped_lines: Arc<AtomicU64>,
@@ -288,8 +293,11 @@ impl EsloggerBackend {
                     "--format".to_string(),
                     "json".to_string(),
                     // Process lifecycle (core EDR)
+                    // Intentionally exclude `fork`: it is high-volume on
+                    // macOS, lacks the full exec context we care about for
+                    // IOC matching, and currently maps into the same
+                    // high-priority lane as real execs.
                     "exec".to_string(),
-                    "fork".to_string(),
                     "exit".to_string(),
                     // File: open only (YARA scan trigger, credential access)
                     "open".to_string(),
@@ -298,10 +306,18 @@ impl EsloggerBackend {
                     "rename".to_string(),
                     // File: unlink (anti-forensics detection)
                     "unlink".to_string(),
-                    // Memory-mapped code loading (dylib injection)
-                    "mmap".to_string(),
-                    // Network (C2 / lateral movement)
-                    "uipc_connect".to_string(),
+                    // NOTE: `mmap` intentionally excluded.  While mmap maps
+                    // to ModuleLoad for dylib-injection detection, the main
+                    // DYLD injection attack (M15) is caught from exec
+                    // cmdline (DYLD_INSERT_LIBRARIES), not mmap events.
+                    // Excluding mmap removes a high-volume eslogger source
+                    // that contributes significant CPU on macOS VMs.
+                    //
+                    // NOTE: `uipc_connect` intentionally excluded.  All
+                    // current server-side IOC rules are cmdline/process/
+                    // filepath-based — none check dst_ip/dst_port/dst_domain.
+                    // uipc_connect is high-volume from normal macOS IPC and
+                    // contributes significant eslogger CPU overhead.
                 ]
             });
 
@@ -368,7 +384,8 @@ impl EsloggerBackend {
             EsfError::NotAvailable("eslogger stdout pipe unavailable".to_string())
         })?;
 
-        let (tx, rx) = sync_channel::<String>(4096);
+        let (tx_high, rx_high) = sync_channel::<super::RawEvent>(ESLOGGER_HIGH_PRIORITY_CAP);
+        let (tx_low, rx_low) = sync_channel::<super::RawEvent>(ESLOGGER_LOW_PRIORITY_CAP);
         let dropped_lines = Arc::new(AtomicU64::new(0));
         let dropped_lines_clone = dropped_lines.clone();
 
@@ -384,7 +401,21 @@ impl EsloggerBackend {
                             continue;
                         }
 
-                        match tx.try_send(trimmed.to_string()) {
+                        let Some(event) = parse_event_line(trimmed) else {
+                            dropped_lines_clone.fetch_add(1, Ordering::Relaxed);
+                            continue;
+                        };
+
+                        let send_result = if is_high_priority_eslogger_event(&event) {
+                            tx_high.try_send(event)
+                        } else if should_drop_low_priority_eslogger_noise(&event) {
+                            dropped_lines_clone.fetch_add(1, Ordering::Relaxed);
+                            continue;
+                        } else {
+                            tx_low.try_send(event)
+                        };
+
+                        match send_result {
                             Ok(()) => {}
                             Err(TrySendError::Full(_)) => {
                                 dropped_lines_clone.fetch_add(1, Ordering::Relaxed);
@@ -399,7 +430,8 @@ impl EsloggerBackend {
 
         Ok(Self {
             child,
-            rx,
+            rx_high,
+            rx_low,
             reader_thread: Some(reader_thread),
             stderr_thread,
             dropped_lines,
@@ -412,38 +444,65 @@ impl EsloggerBackend {
         let mut dropped = self.dropped_lines.swap(0, Ordering::Relaxed);
 
         while self.pending.len() < max_batch {
-            match self.rx.try_recv() {
-                Ok(line) => match parse_event_line(&line) {
-                    Some(event) => self.pending.push_back(event),
-                    None => dropped = dropped.saturating_add(1),
-                },
-                Err(TryRecvError::Empty) => break,
+            let mut progressed = false;
+            let mut high_disconnected = false;
+            let mut low_disconnected = false;
+
+            match self.rx_high.try_recv() {
+                Ok(event) => {
+                    self.pending.push_back(event);
+                    progressed = true;
+                }
+                Err(TryRecvError::Empty) => {}
                 Err(TryRecvError::Disconnected) => {
-                    if !self.crashed {
-                        self.crashed = true;
-                        match self.child.try_wait() {
-                            Ok(Some(status)) => {
-                                tracing::warn!(
-                                    exit_status = %status,
-                                    "eslogger subprocess has exited unexpectedly — telemetry collection stopped"
-                                );
-                            }
-                            Ok(None) => {
-                                tracing::warn!(
-                                    "eslogger stdout pipe disconnected but process still running"
-                                );
-                            }
-                            Err(err) => {
-                                tracing::warn!(
-                                    error = %err,
-                                    "eslogger subprocess status unknown — telemetry collection may have stopped"
-                                );
-                            }
-                        }
-                    }
-                    break;
+                    high_disconnected = true;
                 }
             }
+
+            if self.pending.len() >= max_batch {
+                break;
+            }
+
+            match self.rx_low.try_recv() {
+                Ok(event) => {
+                    self.pending.push_back(event);
+                    progressed = true;
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => {
+                    low_disconnected = true;
+                }
+            }
+
+            if progressed {
+                continue;
+            }
+
+            if high_disconnected && low_disconnected {
+                if !self.crashed {
+                    self.crashed = true;
+                    match self.child.try_wait() {
+                        Ok(Some(status)) => {
+                            tracing::warn!(
+                                exit_status = %status,
+                                "eslogger subprocess has exited unexpectedly — telemetry collection stopped"
+                            );
+                        }
+                        Ok(None) => {
+                            tracing::warn!(
+                                "eslogger stdout pipe disconnected but process still running"
+                            );
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                error = %err,
+                                "eslogger subprocess status unknown — telemetry collection may have stopped"
+                            );
+                        }
+                    }
+                }
+            }
+            break;
         }
 
         let mut events = Vec::with_capacity(max_batch.min(self.pending.len()));
@@ -499,6 +558,49 @@ impl Drop for EsloggerBackend {
     fn drop(&mut self) {
         let _ = self.stop();
     }
+}
+
+#[cfg(target_os = "macos")]
+fn is_high_priority_eslogger_event(event: &super::RawEvent) -> bool {
+    matches!(
+        event.event_type,
+        super::EventType::ProcessExec
+            | super::EventType::ProcessExit
+            | super::EventType::ModuleLoad
+            | super::EventType::TcpConnect
+            | super::EventType::DnsQuery
+            | super::EventType::LsmBlock
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn should_drop_low_priority_eslogger_noise(event: &super::RawEvent) -> bool {
+    if !matches!(
+        event.event_type,
+        super::EventType::FileOpen
+            | super::EventType::FileWrite
+            | super::EventType::FileRename
+            | super::EventType::FileUnlink
+    ) {
+        return false;
+    }
+
+    let payload = event.payload.to_ascii_lowercase();
+    if payload.is_empty() {
+        return false;
+    }
+
+    const NOISE_TOKENS: &[&str] = &[
+        "/.spotlight-v100/",
+        "/private/var/db/spotlight/",
+        "/library/metadata/corespotlight/",
+        "/corespotlight/",
+        "/private/var/db/uuidtext/",
+        "/private/var/db/diagnostics/",
+        ".ds_store",
+    ];
+
+    NOISE_TOKENS.iter().any(|token| payload.contains(token))
 }
 
 #[cfg(target_os = "macos")]
