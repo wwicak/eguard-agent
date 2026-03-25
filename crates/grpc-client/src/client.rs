@@ -620,8 +620,8 @@ impl Client {
             .context("invalid gRPC endpoint URL")?
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(15))
-            .http2_keep_alive_interval(Duration::from_secs(30))
-            .keep_alive_timeout(Duration::from_secs(10))
+            .http2_keep_alive_interval(Duration::from_secs(10))
+            .keep_alive_timeout(Duration::from_secs(5))
             .keep_alive_while_idle(true);
 
         if let Some(tls) = &self.tls {
@@ -852,7 +852,10 @@ impl Client {
 
                     // Invalidate cached channel on connection errors so retries
                     // create a fresh connection instead of reusing a dead one.
-                    if is_connection_error(&err) {
+                    // Also invalidate on ALL errors after the first attempt —
+                    // if the first retry still fails, the channel is likely dead
+                    // from a server restart and needs a fresh TCP connection.
+                    if is_connection_error(&err) || attempt > 1 {
                         self.invalidate_channel_cache();
                     }
 
@@ -933,6 +936,16 @@ fn is_connection_error(err: &anyhow::Error) -> bool {
         "hyper",
         "h2 protocol error",
         "stream_events rpc failed",
+        // Additional markers for server restart detection: tonic returns
+        // these when the server closes the HTTP/2 connection during restart.
+        "status: unavailable",
+        "status: unknown",
+        "status: internal",
+        "goaway",
+        "stream closed",
+        "eof",
+        "connection error",
+        "not connected",
     ];
     connection_markers
         .iter()

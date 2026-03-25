@@ -169,12 +169,31 @@ fn load_bundle_rules_from_dir(detection: &mut DetectionEngine, path: &Path) -> (
     (sigma_loaded, yara_loaded)
 }
 
+/// Yield interval during rule compilation to prevent starving the heartbeat
+/// and telemetry loops.  Every RULE_LOAD_YIELD_BATCH rules we yield the thread
+/// so other work (heartbeat, event flush) can make progress.
+/// How many rules to compile before yielding.  The bundle loading runs
+/// synchronously on a tokio worker thread; without yields, heartbeat and
+/// telemetry tasks are starved for the entire compilation duration.
+const RULE_LOAD_YIELD_BATCH: usize = 1;
+/// Sleep between every rule.  2 seconds gives the async heartbeat task
+/// time to complete a full gRPC round-trip (typically <1s).  This slows
+/// the total bundle load to ~30min for a 1000-rule bundle, which is
+/// acceptable because server-side IOC rules provide detection coverage
+/// immediately while the agent-side rules load incrementally.
+const RULE_LOAD_YIELD_SLEEP: std::time::Duration = std::time::Duration::from_secs(2);
+
 fn load_sigma_rules_recursive(detection: &mut DetectionEngine, dir: &Path) -> usize {
     let mut loaded = 0usize;
     let rule_files = collect_rule_files_recursive(dir, &["yml", "yaml"]);
 
-    for path in rule_files {
-        match fs::read_to_string(&path) {
+    for (idx, path) in rule_files.iter().enumerate() {
+        // Yield periodically so heartbeat/telemetry threads aren't starved
+        if idx > 0 && idx % RULE_LOAD_YIELD_BATCH == 0 {
+            std::thread::sleep(RULE_LOAD_YIELD_SLEEP);
+        }
+
+        match fs::read_to_string(path) {
             Ok(source) => match detection.load_sigma_rule_yaml(&source) {
                 Ok(_) => loaded += 1,
                 Err(err) => {
@@ -194,8 +213,12 @@ fn load_yara_rules_recursive(detection: &mut DetectionEngine, dir: &Path) -> usi
     let mut loaded = 0usize;
     let rule_files = collect_rule_files_recursive(dir, &["yar", "yara"]);
 
-    for path in rule_files {
-        match fs::read_to_string(&path) {
+    for (idx, path) in rule_files.iter().enumerate() {
+        if idx > 0 && idx % RULE_LOAD_YIELD_BATCH == 0 {
+            std::thread::sleep(RULE_LOAD_YIELD_SLEEP);
+        }
+
+        match fs::read_to_string(path) {
             Ok(source) => match detection.load_yara_rules_str(&source) {
                 Ok(count) => loaded += count,
                 Err(err) => {
@@ -305,6 +328,34 @@ fn load_signed_bundle_archive_full(
 
 /// Load all 6 detection layers from an extracted bundle directory.
 fn load_bundle_all_layers(detection: &mut DetectionEngine, path: &Path) -> BundleLoadSummary {
+    // On macOS (or when explicitly requested via env) switch the IOC layer
+    // to SQLite-backed exact-store mode *before* loading indicators.  This
+    // keeps RSS bounded at ~15–20 MB regardless of how many IOC entries the
+    // bundle ships (the default in-memory HashSet approach can consume
+    // 400+ MB for large IOC feeds).
+    if should_use_ioc_exact_store() {
+        let staging_root = super::resolve_rules_staging_root();
+        let store_path = staging_root.join(format!(
+            "ioc-exact-store-{}.sqlite",
+            std::process::id()
+        ));
+        match detection::IocExactStore::open_ephemeral(&store_path) {
+            Ok(store) => {
+                detection.layer1.enable_exact_store_only(store);
+                tracing::info!(
+                    path = %store_path.display(),
+                    "IOC layer switched to SQLite exact-store mode (low-memory/macOS)"
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "failed opening IOC exact-store — falling back to in-memory prefilter"
+                );
+            }
+        }
+    }
+
     let (sigma_loaded, yara_loaded) = load_bundle_rules_from_dir(detection, path);
 
     // Layer 1-3: IOC indicators (hashes, domains, IPs)
@@ -804,5 +855,31 @@ pub(super) fn sanitize_archive_relative_path(path: &Path) -> Option<PathBuf> {
 pub(super) fn push_unique_dir(out: &mut Vec<PathBuf>, path: PathBuf) {
     if !out.iter().any(|existing| existing == &path) {
         out.push(path);
+    }
+}
+
+/// Decide whether to use the disk-backed SQLite IOC store instead of
+/// in-memory HashSets.  Enabled automatically on macOS (resource-constrained
+/// KVM environments) and via the `EGUARD_IOC_EXACT_STORE=true` env var.
+fn should_use_ioc_exact_store() -> bool {
+    // Explicit env override
+    if let Ok(val) = std::env::var("EGUARD_IOC_EXACT_STORE") {
+        return matches!(
+            val.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes"
+        );
+    }
+
+    // Default to exact-store on macOS — ESF exec-only telemetry combined
+    // with server-side IOC matching means the agent doesn't need sub-ms
+    // hash lookups, so the SQLite overhead is acceptable.
+    #[cfg(target_os = "macos")]
+    {
+        return true;
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
     }
 }

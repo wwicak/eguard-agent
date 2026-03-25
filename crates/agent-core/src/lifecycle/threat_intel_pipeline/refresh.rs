@@ -33,7 +33,9 @@ impl AgentRuntime {
                     "new threat intel version available"
                 );
                 let local_bundle_path = self.prepare_bundle_for_reload(&intel).await?;
-                self.reload_detection_state(&intel.version, &local_bundle_path, Some(&intel))?;
+                // Use non-blocking background reload so that heartbeat and
+                // telemetry continue while sigma/YARA/IOC rules compile.
+                self.start_background_reload(&intel.version, &local_bundle_path);
             }
 
             self.update_threat_intel_freshness_state(&intel, latest_hash);

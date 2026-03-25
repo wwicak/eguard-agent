@@ -33,6 +33,14 @@ use super::{
     RuntimeObservabilitySnapshot,
 };
 
+/// Result of a background bundle reload thread.
+pub struct BackgroundReloadResult {
+    pub version: String,
+    pub bundle_path: String,
+    pub engines: Vec<detection::DetectionEngine>,
+    pub report: ReloadReport,
+}
+
 pub struct AgentRuntime {
     pub(super) config: AgentConfig,
     pub(super) buffer: EventBuffer,
@@ -130,6 +138,14 @@ pub struct AgentRuntime {
     pub(super) pending_response_reports: VecDeque<PendingResponseReport>,
     pub(super) control_plane_send_tasks: JoinSet<AsyncWorkerResult>,
     pub(super) response_report_tasks: JoinSet<AsyncWorkerResult>,
+    /// macOS: defer bundle bootstrap until after the first successful heartbeat
+    /// so that the heavy extraction + compilation doesn't starve connectivity.
+    pub(super) deferred_bundle_bootstrap_pending: bool,
+    /// Receiver for a background bundle reload.  When the heavy
+    /// `load_bundle_full` work finishes on a dedicated OS thread, the
+    /// result is sent here so the tick loop can apply the lightweight
+    /// engine swap without blocking heartbeat / telemetry.
+    pub(super) background_reload_rx: Option<std::sync::mpsc::Receiver<BackgroundReloadResult>>,
 }
 
 impl AgentRuntime {
@@ -523,9 +539,25 @@ impl AgentRuntime {
             pending_response_reports: VecDeque::new(),
             control_plane_send_tasks: JoinSet::new(),
             response_report_tasks: JoinSet::new(),
+            deferred_bundle_bootstrap_pending: false,
+            background_reload_rx: None,
         };
         runtime.bootstrap_threat_intel_replay_floor();
+
+        // On macOS, defer the heavy bundle loading until after the first
+        // heartbeat.  The bundle extraction + Sigma/YARA compilation blocks
+        // the tokio worker thread for minutes, which starves heartbeat and
+        // telemetry tasks.  Server-side IOC rules provide immediate coverage
+        // while agent-side rules load incrementally.
+        #[cfg(not(target_os = "macos"))]
         runtime.bootstrap_last_known_good_bundle();
+
+        #[cfg(target_os = "macos")]
+        {
+            runtime.deferred_bundle_bootstrap_pending = true;
+            info!("macOS: deferring bundle bootstrap until after first heartbeat");
+        }
+
         runtime.run_storage_hygiene();
 
         // Recover from stale isolation on startup
@@ -684,6 +716,17 @@ impl AgentRuntime {
             .metrics
             .max_response_queue_depth
             .max(self.pending_response_actions.len());
+    }
+
+    /// Run the deferred bundle bootstrap if pending.  Called from tick()
+    /// after the heartbeat loop has had time to establish connectivity.
+    pub(super) fn run_deferred_bundle_bootstrap(&mut self) {
+        if !self.deferred_bundle_bootstrap_pending {
+            return;
+        }
+        self.deferred_bundle_bootstrap_pending = false;
+        info!("running deferred bundle bootstrap now");
+        self.bootstrap_last_known_good_bundle();
     }
 
     pub(super) fn heartbeat_config_version(&self) -> String {

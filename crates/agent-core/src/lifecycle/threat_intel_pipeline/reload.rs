@@ -173,6 +173,162 @@ impl AgentRuntime {
     }
 }
 
+impl AgentRuntime {
+    /// Spawn a background OS thread for the heavy bundle loading work.
+    /// The tick loop calls `poll_background_reload` to check for completion
+    /// and apply the lightweight engine swap.  This keeps heartbeat and
+    /// telemetry running while sigma/YARA/IOC rules compile.
+    pub(crate) fn start_background_reload(
+        &mut self,
+        version: &str,
+        bundle_path: &str,
+    ) {
+        if self.background_reload_rx.is_some() {
+            warn!("background reload already in progress, skipping");
+            return;
+        }
+
+        let version = version.to_string();
+        let bundle_path_str = bundle_path.to_string();
+        let config = self.config.clone();
+        let shard_count = self.detection_state.shard_count();
+        let previous_layer5_model = self.capture_previous_layer5_model();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.background_reload_rx = Some(rx);
+
+        info!(
+            version = %version,
+            bundle_path = %bundle_path_str,
+            shard_count,
+            "starting background bundle reload (non-blocking)"
+        );
+
+        let spawn_result = std::thread::Builder::new()
+            .name("eguard-bundle-reload".to_string())
+            .spawn(move || {
+                // Lower thread priority so heartbeat/telemetry get CPU time.
+                // On Unix, set nice level to 19 (lowest priority).
+                #[cfg(unix)]
+                unsafe {
+                    // setpriority(PRIO_PROCESS=0, 0=self, 19=lowest priority)
+                    extern "C" { fn setpriority(which: i32, who: u32, prio: i32) -> i32; }
+                    let _ = setpriority(0, 0, 19);
+                }
+
+                let detection_sources =
+                    super::super::detection_bootstrap::DetectionSourcePaths::from_config(&config);
+
+                let build_engine = || {
+                    let mut engine =
+                        super::super::detection_bootstrap::build_detection_engine_with_ransomware_policy(
+                            super::super::build_ransomware_policy(&config),
+                            &detection_sources,
+                        );
+                    apply_previous_layer5_model_fallback(
+                        &mut engine,
+                        previous_layer5_model.as_ref(),
+                    );
+                    let summary = super::super::load_bundle_full(&mut engine, &bundle_path_str);
+                    (engine, summary)
+                };
+
+                let (primary_engine, primary_summary) = build_engine();
+                let report = super::super::ReloadReport {
+                    old_version: String::new(),
+                    new_version: version.clone(),
+                    sigma_rules: primary_summary.sigma_loaded,
+                    yara_rules: primary_summary.yara_loaded,
+                    ioc_entries: super::bundle_guard::bundle_ioc_total(&primary_summary),
+                };
+
+                let mut engines = Vec::with_capacity(shard_count);
+                engines.push(primary_engine);
+                for _ in 1..shard_count {
+                    let (engine, _) = build_engine();
+                    engines.push(engine);
+                }
+
+                info!(
+                    version = %version,
+                    sigma = report.sigma_rules,
+                    yara = report.yara_rules,
+                    ioc = report.ioc_entries,
+                    "background bundle reload complete, sending to main loop"
+                );
+
+                let _ = tx.send(super::super::BackgroundReloadResult {
+                    version,
+                    bundle_path: bundle_path_str,
+                    engines,
+                    report,
+                });
+            });
+
+        match spawn_result {
+            Ok(_handle) => { /* thread is detached — result arrives via channel */ }
+            Err(err) => {
+                warn!(error = %err, "failed to spawn background bundle reload thread");
+                self.background_reload_rx = None;
+            }
+        }
+    }
+
+    /// Check if a background bundle reload has completed.  Called from the
+    /// tick loop — returns immediately if nothing is ready.
+    pub(crate) fn poll_background_reload(&mut self) {
+        let Some(rx) = self.background_reload_rx.as_ref() else {
+            return;
+        };
+
+        let result = match rx.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                warn!("background reload thread terminated without sending result");
+                self.background_reload_rx = None;
+                return;
+            }
+        };
+
+        self.background_reload_rx = None;
+
+        let version = result.version;
+        let bundle_path = result.bundle_path;
+        info!(
+            version = %version,
+            sigma = result.report.sigma_rules,
+            yara = result.report.yara_rules,
+            ioc = result.report.ioc_entries,
+            "applying background-loaded detection engines"
+        );
+
+        if let Err(err) = self
+            .detection_state
+            .swap_prebuilt_engines(version.clone(), result.engines)
+        {
+            warn!(error = %err, "failed swapping background-loaded detection engines");
+            return;
+        }
+
+        self.last_reload_report = Some(result.report.clone());
+        self.latest_threat_version = Some(version.clone());
+        self.threat_intel_version_floor = Some(version.clone());
+
+        if let Err(err) = super::state::persist_threat_intel_last_known_good_state(
+            &version,
+            &bundle_path,
+        ) {
+            warn!(error = %err, "failed persisting last-known-good after background reload");
+        }
+
+        info!(
+            version = %version,
+            "detection state hot-reloaded from background thread"
+        );
+    }
+}
+
 fn apply_previous_layer5_model_fallback(
     engine: &mut detection::DetectionEngine,
     previous_model: Option<&detection::MlModel>,

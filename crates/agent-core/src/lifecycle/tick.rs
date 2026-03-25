@@ -34,6 +34,23 @@ impl AgentRuntime {
         {
             info!(tick = self.tick_count, "debug tick");
         }
+        // Delay bundle bootstrap much longer on startup so post-restart
+        // heartbeat + telemetry stay healthy before background rule/model
+        // loading begins.  This avoids a blind spot right after tamper/
+        // crash recovery, where the agent must prioritize connectivity.
+        #[cfg(target_os = "macos")]
+        let bundle_bootstrap_delay_ticks: u64 = 30;
+        #[cfg(not(target_os = "macos"))]
+        let bundle_bootstrap_delay_ticks: u64 = 5;
+
+        if self.deferred_bundle_bootstrap_pending && self.tick_count >= bundle_bootstrap_delay_ticks {
+            self.run_deferred_bundle_bootstrap();
+        }
+
+        // Check if a background bundle reload has completed and apply
+        // the engine swap.  This is a non-blocking poll.
+        self.poll_background_reload();
+
         self.run_self_protection_if_due(now_unix).await?;
         self.enforce_config_permissions_if_due(now_unix);
         self.run_storage_hygiene_if_due(now_unix);
@@ -312,6 +329,7 @@ impl AgentRuntime {
                         self.consecutive_send_failures = 0;
                         self.last_recovery_probe_unix = None;
                         info!(mode = ?self.runtime_mode, "server reachable again, leaving degraded mode");
+                        self.run_deferred_bundle_bootstrap();
                     }
                     Err(err) => {
                         self.client.set_online(false);

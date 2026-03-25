@@ -11,7 +11,11 @@ use super::DEFAULT_RULES_STAGING_DIR;
 
 const LAST_KNOWN_GOOD_STATE_FILE: &str = "threat-intel-last-known-good.v1.json";
 const REPLAY_FLOOR_STATE_FILE: &str = "threat-intel-replay-floor.v1.json";
-const EXTRACTED_BUNDLE_RETENTION: Duration = Duration::from_secs(6 * 60 * 60);
+// Reduced from 6h to 10 minutes — extracted directories are only needed during
+// the initial load.  The previous 6h retention caused multi-GB bloat on
+// resource-constrained VMs (especially macOS KVM with 4–8GB RAM) because
+// multiple copies accumulated before the window expired.
+const EXTRACTED_BUNDLE_RETENTION: Duration = Duration::from_secs(10 * 60);
 const IOC_EXACT_STORE_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
 const DOWNLOAD_BUNDLE_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const ACTIVE_BUNDLE_KEEP_COUNT: usize = 2;

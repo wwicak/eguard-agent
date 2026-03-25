@@ -53,31 +53,14 @@ impl AgentRuntime {
             return;
         }
 
-        if let Err(err) = self.reload_detection_state(version, bundle_path, None) {
-            warn!(
-                error = %err,
-                version = version,
-                bundle_path = bundle_path,
-                "failed loading persisted last-known-good threat-intel bundle"
-            );
-            return;
-        }
-
-        self.latest_threat_version = Some(version.to_string());
-        self.threat_intel_version_floor = Some(version.to_string());
-        if let Err(err) = persist_threat_intel_replay_floor_state(
-            self.threat_intel_version_floor
-                .as_deref()
-                .unwrap_or_default(),
-            self.latest_threat_published_at_unix.unwrap_or_default(),
-        ) {
-            warn!(error = %err, "failed persisting replay floor after last-known-good bootstrap");
-        }
+        // Use non-blocking background reload so that heartbeat and
+        // telemetry continue while sigma/YARA/IOC rules compile.
+        self.start_background_reload(version, bundle_path);
 
         info!(
             version = version,
             bundle_path = bundle_path,
-            "bootstrapped detection state from persisted last-known-good threat-intel bundle"
+            "scheduled background bootstrap of last-known-good bundle"
         );
     }
 }

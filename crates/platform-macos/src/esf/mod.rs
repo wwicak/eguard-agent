@@ -276,25 +276,31 @@ impl EsloggerBackend {
             .unwrap_or_else(|| {
                 // eslogger requires explicit event type arguments; --json alone
                 // only sets the output format and produces no events.
+                //
+                // We subscribe only to high-value security events to keep CPU
+                // and memory impact minimal.  High-volume file I/O events
+                // (write, close, truncate, link) are excluded because they
+                // generate 100+ eps of noise on a typical macOS desktop and
+                // overwhelm the agent on resource-constrained VMs.
+                //
+                // Override via EGUARD_ESLOGGER_ARGS for full file telemetry.
                 vec![
                     "--format".to_string(),
                     "json".to_string(),
-                    // Process lifecycle
+                    // Process lifecycle (core EDR)
                     "exec".to_string(),
                     "fork".to_string(),
                     "exit".to_string(),
-                    // File operations
+                    // File: open only (YARA scan trigger, credential access)
                     "open".to_string(),
-                    "write".to_string(),
-                    "rename".to_string(),
-                    "unlink".to_string(),
-                    "close".to_string(),
+                    // File: create + rename (persistence detection)
                     "create".to_string(),
-                    "truncate".to_string(),
-                    "link".to_string(),
-                    // Memory-mapped code loading
+                    "rename".to_string(),
+                    // File: unlink (anti-forensics detection)
+                    "unlink".to_string(),
+                    // Memory-mapped code loading (dylib injection)
                     "mmap".to_string(),
-                    // Network
+                    // Network (C2 / lateral movement)
                     "uipc_connect".to_string(),
                 ]
             });
