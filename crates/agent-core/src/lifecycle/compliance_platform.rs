@@ -8,6 +8,8 @@
 use platform_windows::inventory::hardware::HardwareInfo;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use std::collections::HashSet;
+#[cfg(target_os = "macos")]
+use std::process::Command;
 
 use anyhow::Result;
 use compliance::SystemSnapshot;
@@ -155,9 +157,9 @@ fn collect_macos_snapshot() -> Result<SystemSnapshot> {
         report.auto_updates.automatic_check_enabled && report.auto_updates.auto_install_os_updates,
     );
 
-    // Derive kernel version from platform_macos if available, else stub.
-    let kernel_version = platform_macos::platform_name().to_string();
-    let os_version = Some(kernel_version.clone());
+    let kernel_version = detect_macos_kernel_version()
+        .unwrap_or_else(|| platform_macos::platform_name().to_string());
+    let os_version = detect_macos_os_version_label();
 
     Ok(SystemSnapshot {
         firewall_enabled,
@@ -190,4 +192,84 @@ fn macos_capabilities() -> HashSet<String> {
     .iter()
     .map(|s| (*s).to_string())
     .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn detect_macos_kernel_version() -> Option<String> {
+    run_macos_command("/usr/sbin/sysctl", &["-n", "kern.osrelease"])
+        .or_else(|| run_macos_command("/usr/bin/uname", &["-r"]))
+}
+
+#[cfg(target_os = "macos")]
+fn detect_macos_os_version_label() -> Option<String> {
+    let version = run_macos_command("/usr/bin/sw_vers", &["-productVersion"])
+        .or_else(|| run_macos_command("/usr/sbin/sysctl", &["-n", "kern.osproductversion"]))?;
+
+    Some(format_macos_version_label(&version))
+}
+
+#[cfg(target_os = "macos")]
+fn run_macos_command(path: &str, args: &[&str]) -> Option<String> {
+    let output = Command::new(path).args(args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let value = String::from_utf8(output.stdout).ok()?;
+    let value = value.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn format_macos_version_label(version: &str) -> String {
+    let version = version.trim();
+    let base = marketing_name_for_macos_version(version)
+        .map(|name| format!("macOS {name} {version}"))
+        .unwrap_or_else(|| format!("macOS {version}"));
+
+    base
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn marketing_name_for_macos_version(version: &str) -> Option<&'static str> {
+    let major = version.trim().split('.').next()?.parse::<u32>().ok()?;
+
+    match major {
+        11 => Some("Big Sur"),
+        12 => Some("Monterey"),
+        13 => Some("Ventura"),
+        14 => Some("Sonoma"),
+        15 => Some("Sequoia"),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{format_macos_version_label, marketing_name_for_macos_version};
+
+    #[test]
+    fn macos_marketing_name_maps_supported_releases() {
+        assert_eq!(marketing_name_for_macos_version("13.6.7"), Some("Ventura"));
+        assert_eq!(marketing_name_for_macos_version("14.5"), Some("Sonoma"));
+        assert_eq!(marketing_name_for_macos_version("15.0"), Some("Sequoia"));
+        assert_eq!(marketing_name_for_macos_version("10.15.7"), None);
+        assert_eq!(marketing_name_for_macos_version("not-a-version"), None);
+    }
+
+    #[test]
+    fn macos_version_label_includes_marketing_name_when_known() {
+        assert_eq!(format_macos_version_label("14.6.1"), "macOS Sonoma 14.6.1");
+        assert_eq!(format_macos_version_label("13.7"), "macOS Ventura 13.7");
+    }
+
+    #[test]
+    fn macos_version_label_falls_back_to_numeric_version() {
+        assert_eq!(format_macos_version_label("10.15.7"), "macOS 10.15.7");
+        assert_eq!(format_macos_version_label(" 16.0 "), "macOS 16.0");
+    }
 }

@@ -2,6 +2,8 @@ use std::collections::HashMap;
 #[cfg(not(target_os = "windows"))]
 use std::fs;
 use std::net::UdpSocket;
+#[cfg(target_os = "macos")]
+use std::process::Command;
 
 use grpc_client::InventoryEnvelope;
 
@@ -174,16 +176,103 @@ fn collect_inventory_facts() -> InventoryFacts {
             None
         })
         .unwrap_or_default();
-    let user = std::env::var("USER").unwrap_or_default();
+    let user = std::env::var("SUDO_USER")
+        .ok()
+        .or_else(|| {
+            read_trimmed("/dev/console").filter(|value| !value.eq_ignore_ascii_case("root"))
+        })
+        .or_else(|| {
+            let output = Command::new("/usr/bin/stat")
+                .args(["-f", "%Su", "/dev/console"])
+                .output()
+                .ok()?;
+            if !output.status.success() {
+                return None;
+            }
+            let value = String::from_utf8(output.stdout).ok()?;
+            let value = value.trim();
+            if value.is_empty() || value.eq_ignore_ascii_case("root") {
+                None
+            } else {
+                Some(value.to_string())
+            }
+        })
+        .or_else(|| std::env::var("USER").ok())
+        .unwrap_or_default();
+
+    let device_model = read_macos_ioreg_field("model")
+        .or_else(|| read_macos_ioreg_field("product-name"))
+        .or_else(|| read_macos_system_profiler_value("Model Identifier"))
+        .unwrap_or_else(|| std::env::consts::ARCH.to_string());
+
+    let device_serial = read_macos_ioreg_field("IOPlatformSerialNumber")
+        .or_else(|| read_macos_system_profiler_value("Serial Number"))
+        .unwrap_or_default();
 
     InventoryFacts {
         hostname,
-        device_model: std::env::consts::ARCH.to_string(),
-        device_serial: read_trimmed("/etc/machine-id").unwrap_or_default(),
+        device_model,
+        device_serial,
         user: user.clone(),
         ip_address: None,
         root_detected: user.eq_ignore_ascii_case("root"),
     }
+}
+
+#[cfg(target_os = "macos")]
+fn read_macos_ioreg_field(field: &str) -> Option<String> {
+    let output = Command::new("/usr/sbin/ioreg")
+        .args(["-rd1", "-c", "IOPlatformExpertDevice"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        let prefix = format!("\"{}\" = ", field);
+        if let Some(rest) = trimmed.strip_prefix(&prefix) {
+            if let Some(value) = parse_macos_ioreg_value(rest) {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn parse_macos_ioreg_value(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if raw.starts_with('"') && raw.ends_with('"') && raw.len() >= 2 {
+        return Some(raw[1..raw.len() - 1].to_string());
+    }
+    if raw.starts_with("<\"") && raw.ends_with("\">") && raw.len() >= 4 {
+        return Some(raw[2..raw.len() - 2].to_string());
+    }
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn read_macos_system_profiler_value(field: &str) -> Option<String> {
+    let output = Command::new("/usr/sbin/system_profiler")
+        .arg("SPHardwareDataType")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        let prefix = format!("{}: ", field);
+        if let Some(value) = trimmed.strip_prefix(&prefix) {
+            if !value.trim().is_empty() {
+                return Some(value.trim().to_string());
+            }
+        }
+    }
+    None
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
