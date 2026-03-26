@@ -23,7 +23,9 @@ pub(super) fn split_csv(raw: &str) -> Vec<String> {
 }
 
 pub(crate) fn preferred_hostname_env() -> Option<String> {
-    env_non_empty("HOSTNAME").or_else(|| env_non_empty("COMPUTERNAME"))
+    env_non_empty("HOSTNAME")
+        .or_else(|| env_non_empty("COMPUTERNAME"))
+        .or_else(read_macos_hostname)
 }
 
 pub(super) fn default_agent_id() -> String {
@@ -64,6 +66,30 @@ fn read_machine_id_for_agent_id() -> Option<String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+#[cfg(target_os = "macos")]
+fn read_macos_hostname() -> Option<String> {
+    for key in ["HostName", "LocalHostName", "ComputerName"] {
+        let output = std::process::Command::new("/usr/sbin/scutil")
+            .args(["--get", key])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            continue;
+        }
+        let value = String::from_utf8(output.stdout).ok()?;
+        let value = value.trim();
+        if !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_macos_hostname() -> Option<String> {
+    None
 }
 
 pub(super) fn parse_mode(raw: &str) -> AgentMode {

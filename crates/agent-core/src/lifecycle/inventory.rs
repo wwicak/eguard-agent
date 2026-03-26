@@ -156,6 +156,23 @@ fn collect_inventory_facts() -> InventoryFacts {
     let hostname = std::env::var("HOSTNAME")
         .ok()
         .or_else(|| read_trimmed("/etc/hostname"))
+        .or_else(|| {
+            for key in ["HostName", "LocalHostName", "ComputerName"] {
+                let output = std::process::Command::new("/usr/sbin/scutil")
+                    .args(["--get", key])
+                    .output()
+                    .ok()?;
+                if !output.status.success() {
+                    continue;
+                }
+                let value = String::from_utf8(output.stdout).ok()?;
+                let value = value.trim();
+                if !value.is_empty() {
+                    return Some(value.to_string());
+                }
+            }
+            None
+        })
         .unwrap_or_default();
     let user = std::env::var("USER").unwrap_or_default();
 

@@ -4,6 +4,9 @@ use super::constants::DEFAULT_SERVER_ADDR;
 use super::types::{AgentConfig, AgentMode};
 use super::util::default_agent_id;
 
+#[cfg(any(test, target_os = "macos"))]
+const INVALID_MAC: &str = "00:00:00:00:00:00";
+
 /// Detect the MAC address of the primary physical network interface.
 ///
 /// Reads `/sys/class/net/*/address`, skipping loopback and common virtual
@@ -90,6 +93,137 @@ fn default_data_root() -> &'static str {
     r"C:\ProgramData\eGuard"
 }
 
+/// Detect the MAC address of the primary network interface on macOS.
+///
+/// Enumerates `getifaddrs(3)` link-layer entries, skips loopback and common
+/// virtual interfaces, and prefers active `en*` adapters such as `en0`.
+#[cfg(target_os = "macos")]
+fn detect_primary_mac() -> Option<String> {
+    use std::ffi::CStr;
+    use std::ptr;
+
+    let mut addrs: *mut libc::ifaddrs = ptr::null_mut();
+    if unsafe { libc::getifaddrs(&mut addrs) } != 0 || addrs.is_null() {
+        return None;
+    }
+
+    struct IfAddrsGuard(*mut libc::ifaddrs);
+
+    impl Drop for IfAddrsGuard {
+        fn drop(&mut self) {
+            unsafe { libc::freeifaddrs(self.0) };
+        }
+    }
+
+    let _guard = IfAddrsGuard(addrs);
+    let mut best: Option<(u8, String)> = None;
+    let mut current = addrs;
+
+    while !current.is_null() {
+        let ifa = unsafe { &*current };
+        current = ifa.ifa_next;
+
+        if ifa.ifa_name.is_null() || ifa.ifa_addr.is_null() {
+            continue;
+        }
+
+        let flags = ifa.ifa_flags as i32;
+        if flags & libc::IFF_UP == 0 || flags & libc::IFF_LOOPBACK != 0 {
+            continue;
+        }
+
+        let family = unsafe { (*ifa.ifa_addr).sa_family as i32 };
+        if family != libc::AF_LINK {
+            continue;
+        }
+
+        let name = unsafe { CStr::from_ptr(ifa.ifa_name) }
+            .to_string_lossy()
+            .into_owned();
+        if should_skip_macos_interface(&name) {
+            continue;
+        }
+
+        let mac = unsafe { macos_link_address_to_string(ifa.ifa_addr as *const libc::sockaddr_dl) };
+        let Some(mac) = mac else {
+            continue;
+        };
+
+        let score = score_macos_interface(&name, flags);
+        match &best {
+            Some((best_score, _)) if score >= *best_score => {}
+            _ => best = Some((score, mac)),
+        }
+    }
+
+    best.map(|(_, mac)| mac)
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn macos_link_address_to_string(addr: *const libc::sockaddr_dl) -> Option<String> {
+    if addr.is_null() {
+        return None;
+    }
+
+    let addr = &*addr;
+    let name_len = addr.sdl_nlen as usize;
+    let addr_len = addr.sdl_alen as usize;
+    if addr_len != 6 {
+        return None;
+    }
+
+    let data = addr.sdl_data.as_ptr() as *const u8;
+    let bytes = std::slice::from_raw_parts(data.add(name_len), addr_len);
+    normalize_mac_bytes(bytes)
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn normalize_mac_bytes(bytes: &[u8]) -> Option<String> {
+    if bytes.len() != 6 {
+        return None;
+    }
+
+    let mac = bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<Vec<_>>()
+        .join(":");
+
+    if mac == INVALID_MAC || mac == "ff:ff:ff:ff:ff:ff" {
+        return None;
+    }
+
+    Some(mac)
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn should_skip_macos_interface(name: &str) -> bool {
+    [
+        "lo", "awdl", "llw", "utun", "bridge", "p2p", "anpi", "stf", "gif",
+    ]
+    .iter()
+    .any(|prefix| name.starts_with(prefix))
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn score_macos_interface(name: &str, flags: i32) -> u8 {
+    let mut score = 200u8;
+
+    if name == "en0" {
+        score = 0;
+    } else if name.starts_with("en") {
+        score = 10;
+    } else if name.starts_with("eth") {
+        score = 20;
+    }
+
+    if flags & libc::IFF_RUNNING == 0 {
+        score = score.saturating_add(40);
+    }
+
+    score
+}
+
 #[cfg(target_os = "macos")]
 fn default_data_root() -> &'static str {
     "/Library/Application Support/eGuard"
@@ -142,10 +276,10 @@ fn default_detection_ioc_dir() -> String {
 
 impl Default for AgentConfig {
     fn default() -> Self {
-        #[cfg(any(target_os = "linux", target_os = "windows"))]
-        let mac = detect_primary_mac().unwrap_or_else(|| "00:00:00:00:00:00".to_string());
-        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
-        let mac = "00:00:00:00:00:00".to_string();
+        #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+        let mac = detect_primary_mac().unwrap_or_else(|| INVALID_MAC.to_string());
+        #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+        let mac = INVALID_MAC.to_string();
 
         Self {
             agent_id: default_agent_id(),
@@ -211,5 +345,40 @@ impl Default for AgentConfig {
             self_protection_prevent_uninstall: true,
             bootstrap_config_path: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_mac_bytes, score_macos_interface, should_skip_macos_interface};
+
+    #[test]
+    fn normalize_mac_bytes_rejects_invalid_values() {
+        assert_eq!(
+            normalize_mac_bytes(&[0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff]).as_deref(),
+            Some("aa:bb:cc:dd:ee:ff")
+        );
+        assert!(normalize_mac_bytes(&[0, 0, 0, 0, 0, 0]).is_none());
+        assert!(normalize_mac_bytes(&[0xff, 0xff, 0xff, 0xff, 0xff, 0xff]).is_none());
+        assert!(normalize_mac_bytes(&[0xaa, 0xbb, 0xcc]).is_none());
+    }
+
+    #[test]
+    fn macos_interface_filters_skip_virtual_adapters() {
+        assert!(should_skip_macos_interface("lo0"));
+        assert!(should_skip_macos_interface("utun4"));
+        assert!(should_skip_macos_interface("awdl0"));
+        assert!(!should_skip_macos_interface("en0"));
+        assert!(!should_skip_macos_interface("en7"));
+    }
+
+    #[test]
+    fn macos_interface_scoring_prefers_primary_running_en_devices() {
+        let running = libc::IFF_UP | libc::IFF_RUNNING;
+        let up_only = libc::IFF_UP;
+
+        assert!(score_macos_interface("en0", running) < score_macos_interface("en1", running));
+        assert!(score_macos_interface("en1", running) < score_macos_interface("bridge0", running));
+        assert!(score_macos_interface("en1", running) < score_macos_interface("en1", up_only));
     }
 }

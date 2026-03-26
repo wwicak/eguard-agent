@@ -49,6 +49,95 @@ require_cmd() {
     fi
 }
 
+have_cmd() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+run_as_root() {
+    if [[ -n "${SUDO:-}" ]]; then
+        "$SUDO" "$@"
+    else
+        "$@"
+    fi
+}
+
+open_fda_settings() {
+    if have_cmd open; then
+        /usr/bin/open "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles" >/dev/null 2>&1 || true
+    fi
+}
+
+show_fda_popup() {
+    local message="$1"
+
+    if ! have_cmd osascript; then
+        return 0
+    fi
+
+    osascript - "$message" <<'APPLESCRIPT' >/dev/null 2>&1 || true
+on run argv
+    set alertMessage to item 1 of argv
+    try
+        display dialog alertMessage with title "eGuard Installer" buttons {"Later", "Open Settings"} default button "Open Settings" with icon caution
+        if button returned of result is "Open Settings" then
+            do shell script "/usr/bin/open 'x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles'"
+        end if
+    end try
+end run
+APPLESCRIPT
+}
+
+check_full_disk_access() {
+    local out_file err_file rc stderr_text
+
+    if ! run_as_root /usr/bin/test -x /usr/bin/eslogger; then
+        return 2
+    fi
+
+    out_file="$(mktemp "${TMPDIR:-/tmp}/eguard-eslogger-out.XXXXXX")"
+    err_file="$(mktemp "${TMPDIR:-/tmp}/eguard-eslogger-err.XXXXXX")"
+
+    rc=0
+    if ! run_as_root /bin/bash -lc '
+        out_file="$1"
+        err_file="$2"
+        /usr/bin/eslogger --format json exec >"$out_file" 2>"$err_file" &
+        pid=$!
+        sleep 1
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            exit 0
+        fi
+        wait "$pid"
+    ' -- "$out_file" "$err_file"; then
+        rc=$?
+    fi
+
+    stderr_text="$(tr -d '\r' < "$err_file" 2>/dev/null || true)"
+    rm -f "$out_file" "$err_file"
+
+    if printf '%s' "$stderr_text" | grep -qiE 'NOT_PERMITTED|Full Disk Access'; then
+        return 1
+    fi
+
+    if [[ "$rc" -ne 0 ]]; then
+        return 2
+    fi
+
+    return 0
+}
+
+notify_fda_requirement() {
+    local message
+    message="Full Disk Access is not enabled for /usr/local/bin/eguard-agent. The agent will run in degraded process-only mode until you grant it in System Settings > Privacy & Security > Full Disk Access."
+
+    echo "Warning: $message" >&2
+    echo "Opening the Full Disk Access settings page..." >&2
+    open_fda_settings
+    show_fda_popup "$message"
+}
+
 validate_url_scheme() {
     local label="$1"
     local url="$2"
@@ -394,3 +483,12 @@ fi
 $SUDO installer -pkg "$PKG_PATH" -target /
 
 echo "eGuard Agent installed successfully."
+
+case "$(check_full_disk_access; printf '%s' "$?")" in
+    1)
+        notify_fda_requirement
+        ;;
+    2)
+        echo "Warning: unable to verify Full Disk Access automatically; check /usr/local/bin/eguard-agent in System Settings > Privacy & Security > Full Disk Access if telemetry looks degraded." >&2
+        ;;
+esac

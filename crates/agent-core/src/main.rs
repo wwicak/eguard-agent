@@ -6,8 +6,12 @@ mod platform;
 mod test_support;
 
 use anyhow::Result;
+use std::fs::OpenOptions;
 use std::future::Future;
 use std::pin::Pin;
+#[cfg(target_os = "windows")]
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Once;
 #[cfg(not(unix))]
 use tokio::signal;
@@ -172,34 +176,97 @@ async fn run_tick_loop(runtime: &mut AgentRuntime, shutdown: ShutdownFuture) -> 
 static TRACING_INIT: Once = Once::new();
 
 fn init_tracing() {
-    TRACING_INIT.call_once(tracing_subscriber::fmt::init);
+    TRACING_INIT.call_once(|| {
+        let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .or_else(|_| tracing_subscriber::EnvFilter::try_new("info"))
+            .expect("default tracing filter should be valid");
+
+        if let Some(log_path) = configured_log_path() {
+            if let Some(parent) = log_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+
+            match OpenOptions::new().create(true).append(true).open(&log_path) {
+                Ok(file) => {
+                    let writer = std::sync::Mutex::new(file);
+                    tracing_subscriber::fmt()
+                        .with_env_filter(env_filter)
+                        .with_ansi(false)
+                        .with_writer(writer)
+                        .init();
+                    return;
+                }
+                Err(_) => {
+                    // Fall back to stderr if the log file can't be opened.
+                }
+            }
+        }
+
+        tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .with_ansi(false)
+            .init();
+    });
+}
+
+fn configured_log_path() -> Option<PathBuf> {
+    if let Some(path) = env_path("EGUARD_LOG_PATH") {
+        return Some(path);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return Some(PathBuf::from(r"C:\ProgramData\eGuard\logs\agent.log"));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        return Some(PathBuf::from("/var/log/eguard-agent.log"));
+    }
+
+    #[allow(unreachable_code)]
+    None
+}
+
+fn env_path(name: &str) -> Option<PathBuf> {
+    std::env::var(name)
+        .ok()
+        .map(|raw| raw.trim().to_string())
+        .filter(|raw| !raw.is_empty())
+        .map(PathBuf::from)
 }
 
 /// Initialize tracing with output directed to a log file. Used by the Windows
 /// service path where stderr is not captured by SCM. Must be called before
 /// `init_tracing()` so the file subscriber wins the `Once` guard.
 #[cfg(target_os = "windows")]
-fn init_tracing_to_file(log_path: &std::path::Path) {
+fn init_tracing_to_file(log_path: &Path) {
     TRACING_INIT.call_once(|| {
         if let Some(parent) = log_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
 
-        match std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log_path)
-        {
+        match OpenOptions::new().create(true).append(true).open(log_path) {
             Ok(file) => {
                 let writer = std::sync::Mutex::new(file);
+                let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+                    .or_else(|_| tracing_subscriber::EnvFilter::try_new("info"))
+                    .expect("default tracing filter should be valid");
                 tracing_subscriber::fmt()
+                    .with_env_filter(env_filter)
                     .with_writer(writer)
                     .with_ansi(false)
                     .init();
             }
             Err(_) => {
                 // Fall back to stderr if the log file can't be opened.
-                tracing_subscriber::fmt::init();
+                let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+                    .or_else(|_| tracing_subscriber::EnvFilter::try_new("info"))
+                    .expect("default tracing filter should be valid");
+                tracing_subscriber::fmt()
+                    .with_env_filter(env_filter)
+                    .with_ansi(false)
+                    .init();
             }
         }
     });
