@@ -56,3 +56,4 @@ tests/e2e-pipeline/results/overlay.qcow2
 artifacts
 tasks
 eguard-agent
+.pi/plans

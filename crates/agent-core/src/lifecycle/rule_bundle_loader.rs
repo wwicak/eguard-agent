@@ -335,10 +335,8 @@ fn load_bundle_all_layers(detection: &mut DetectionEngine, path: &Path) -> Bundl
     // 400+ MB for large IOC feeds).
     if should_use_ioc_exact_store() {
         let staging_root = super::resolve_rules_staging_root();
-        let store_path = staging_root.join(format!(
-            "ioc-exact-store-{}.sqlite",
-            std::process::id()
-        ));
+        let store_path =
+            staging_root.join(format!("ioc-exact-store-{}.sqlite", std::process::id()));
         match detection::IocExactStore::open_ephemeral(&store_path) {
             Ok(store) => {
                 detection.layer1.enable_exact_store_only(store);

@@ -65,3 +65,21 @@ Restore as much post-restart macOS detection coverage as possible with the real 
 - That shifts the next likely product issue from queue topology alone toward either (a) LKG persistence/correctness or (b) eslogger event-volume/resource behavior while real bundle activity is present.
 - Tested a simpler normal-path change: removed `fork` from the default macOS eslogger subscription. That reproduced 25/25 on two consecutive standard non-seeded runs, making it the strongest current simplification on the normal path.
 - The next unresolved question is whether that same no-`fork` variant also holds up under the stricter seeded-LKG startup-bundle harness.
+
+---
+
+## Task Plan — Windows stable agent identity across restarts
+
+## Objective
+Fix the Windows root cause that creates multiple agent identities for the same host across service restarts, so the server/UI sees one stable endpoint identity instead of PID-based ghost rows.
+
+## Hypothesis
+- The Windows agent currently falls back to PID-based `agent-<pid>` identity when `HOSTNAME` and Linux machine-id sources are unavailable.
+- Enrollment currently also derives hostname from `HOSTNAME`, so Windows can enroll with an unstable hostname fallback as well.
+- Because server-side dedup keys off hostname + OS, missing/unstable Windows hostname at enrollment lets each restart create a new row.
+
+## Plan
+- [ ] Inspect Windows identity generation and enrollment hostname resolution paths.
+- [ ] Make Windows identity/hostname resolution use a stable Windows source (`COMPUTERNAME`) before PID fallback.
+- [ ] Add regression tests covering Windows-style env resolution.
+- [ ] Build and, if needed, deploy to the lab VM to verify repeated restarts keep one agent identity.

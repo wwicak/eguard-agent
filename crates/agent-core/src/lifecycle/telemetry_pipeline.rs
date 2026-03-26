@@ -807,8 +807,7 @@ impl AgentRuntime {
             crate::platform::EventType::FileWrite
             | crate::platform::EventType::FileRename
             | crate::platform::EventType::FileUnlink => 2,
-            crate::platform::EventType::TcpConnect
-            | crate::platform::EventType::DnsQuery => 3,
+            crate::platform::EventType::TcpConnect | crate::platform::EventType::DnsQuery => 3,
             crate::platform::EventType::FileOpen => {
                 if Self::should_drop_low_value_linux_raw_event(event) {
                     return 3;

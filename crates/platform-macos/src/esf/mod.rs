@@ -95,7 +95,9 @@ impl EsfEngine {
 
             self.backend = EsfBackend::ProcessPoll(ProcessPollBackend::new());
             self.enabled = true;
-            tracing::info!("ESF process-poll fallback started (degraded mode: process events only)");
+            tracing::info!(
+                "ESF process-poll fallback started (degraded mode: process events only)"
+            );
             return Ok(());
         }
 
@@ -312,12 +314,12 @@ impl EsloggerBackend {
                     // cmdline (DYLD_INSERT_LIBRARIES), not mmap events.
                     // Excluding mmap removes a high-volume eslogger source
                     // that contributes significant CPU on macOS VMs.
-                    //
-                    // NOTE: `uipc_connect` intentionally excluded.  All
-                    // current server-side IOC rules are cmdline/process/
-                    // filepath-based — none check dst_ip/dst_port/dst_domain.
-                    // uipc_connect is high-volume from normal macOS IPC and
-                    // contributes significant eslogger CPU overhead.
+                    // Network (C2 / lateral movement).  Although server-side
+                    // IOC rules are cmdline-based, the LOCAL detection
+                    // pipeline (L1-L5) uses TcpConnect events for behavioral
+                    // analysis — dropping this regresses both local detection
+                    // and server-side visibility.
+                    "uipc_connect".to_string(),
                 ]
             });
 

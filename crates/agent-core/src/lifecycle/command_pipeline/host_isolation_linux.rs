@@ -30,7 +30,9 @@ fn detect_firewall_backend() -> FirewallBackend {
         // Try iptables first — attempt to list filter rules. If iptables
         // fails for ANY reason (SELinux, missing module, permission denied,
         // missing binary), fall back to nftables.
-        if let Ok(output) = mark_internal_command(Command::new("iptables").args(["-w", "2", "-L", "-n"])).output() {
+        if let Ok(output) =
+            mark_internal_command(Command::new("iptables").args(["-w", "2", "-L", "-n"])).output()
+        {
             if output.status.success() {
                 return FirewallBackend::Iptables;
             }
@@ -43,7 +45,9 @@ fn detect_firewall_backend() -> FirewallBackend {
         let _ = mark_internal_command(Command::new("modprobe").arg("nf_tables")).output();
 
         // Check if nft can list tables (requires root + nf_tables module).
-        if let Ok(output) = mark_internal_command(Command::new("nft").args(["list", "tables"])).output() {
+        if let Ok(output) =
+            mark_internal_command(Command::new("nft").args(["list", "tables"])).output()
+        {
             if output.status.success() {
                 return FirewallBackend::Nftables;
             }
@@ -297,34 +301,88 @@ fn build_nft_apply_commands(allowed_server_ips: &[String]) -> Vec<FirewallComman
     // Create chains with hook priority. The chain definition must be
     // a single brace-enclosed argument for nft.
     commands.push(nft(&[
-        "add", "chain", "inet", NFT_TABLE_NAME, "input",
+        "add",
+        "chain",
+        "inet",
+        NFT_TABLE_NAME,
+        "input",
         "{ type filter hook input priority -200 ; }",
     ]));
     commands.push(nft(&[
-        "add", "chain", "inet", NFT_TABLE_NAME, "output",
+        "add",
+        "chain",
+        "inet",
+        NFT_TABLE_NAME,
+        "output",
         "{ type filter hook output priority -200 ; }",
     ]));
 
     // Allow loopback
-    commands.push(nft(&["add", "rule", "inet", NFT_TABLE_NAME, "input", "iif", "lo", "accept"]));
-    commands.push(nft(&["add", "rule", "inet", NFT_TABLE_NAME, "output", "oif", "lo", "accept"]));
+    commands.push(nft(&[
+        "add",
+        "rule",
+        "inet",
+        NFT_TABLE_NAME,
+        "input",
+        "iif",
+        "lo",
+        "accept",
+    ]));
+    commands.push(nft(&[
+        "add",
+        "rule",
+        "inet",
+        NFT_TABLE_NAME,
+        "output",
+        "oif",
+        "lo",
+        "accept",
+    ]));
 
     // Allow management server IPs
     for ip in allowed_server_ips {
         let family = if ip.contains(':') { "ip6" } else { "ip" };
         commands.push(nft(&[
-            "add", "rule", "inet", NFT_TABLE_NAME, "input",
-            family, "saddr", ip, "accept",
+            "add",
+            "rule",
+            "inet",
+            NFT_TABLE_NAME,
+            "input",
+            family,
+            "saddr",
+            ip,
+            "accept",
         ]));
         commands.push(nft(&[
-            "add", "rule", "inet", NFT_TABLE_NAME, "output",
-            family, "daddr", ip, "accept",
+            "add",
+            "rule",
+            "inet",
+            NFT_TABLE_NAME,
+            "output",
+            family,
+            "daddr",
+            ip,
+            "accept",
         ]));
     }
 
     // Drop everything else
-    commands.push(nft(&["add", "rule", "inet", NFT_TABLE_NAME, "input", "drop"]));
-    commands.push(nft(&["add", "rule", "inet", NFT_TABLE_NAME, "output", "drop"]));
+    commands.push(nft(&[
+        "add",
+        "rule",
+        "inet",
+        NFT_TABLE_NAME,
+        "input",
+        "drop",
+    ]));
+    commands.push(nft(&[
+        "add",
+        "rule",
+        "inet",
+        NFT_TABLE_NAME,
+        "output",
+        "drop",
+    ]));
 
     commands
 }

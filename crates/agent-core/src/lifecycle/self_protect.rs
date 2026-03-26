@@ -199,10 +199,9 @@ impl AgentRuntime {
                 Ok(meta) => {
                     let mode = meta.permissions().mode() & 0o777;
                     if mode != 0o600 && mode != 0o400 {
-                        if let Err(err) = std::fs::set_permissions(
-                            p,
-                            std::fs::Permissions::from_mode(0o600),
-                        ) {
+                        if let Err(err) =
+                            std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o600))
+                        {
                             warn!(
                                 path = path,
                                 error = %err,

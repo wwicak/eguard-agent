@@ -576,7 +576,8 @@ impl AgentRuntime {
                 super::command_pipeline::isolation_state::clear_isolation_state();
             } else {
                 info!(
-                    remaining_secs = state.failsafe_timeout_secs - (now_unix - state.isolated_at_unix),
+                    remaining_secs =
+                        state.failsafe_timeout_secs - (now_unix - state.isolated_at_unix),
                     "agent restarted while isolated; failsafe active"
                 );
                 runtime.host_control.isolated = true;

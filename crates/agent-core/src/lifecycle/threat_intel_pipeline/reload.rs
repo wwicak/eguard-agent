@@ -178,11 +178,7 @@ impl AgentRuntime {
     /// The tick loop calls `poll_background_reload` to check for completion
     /// and apply the lightweight engine swap.  This keeps heartbeat and
     /// telemetry running while sigma/YARA/IOC rules compile.
-    pub(crate) fn start_background_reload(
-        &mut self,
-        version: &str,
-        bundle_path: &str,
-    ) {
+    pub(crate) fn start_background_reload(&mut self, version: &str, bundle_path: &str) {
         if self.background_reload_rx.is_some() {
             warn!("background reload already in progress, skipping");
             return;
@@ -315,10 +311,9 @@ impl AgentRuntime {
         self.latest_threat_version = Some(version.clone());
         self.threat_intel_version_floor = Some(version.clone());
 
-        if let Err(err) = super::state::persist_threat_intel_last_known_good_state(
-            &version,
-            &bundle_path,
-        ) {
+        if let Err(err) =
+            super::state::persist_threat_intel_last_known_good_state(&version, &bundle_path)
+        {
             warn!(error = %err, "failed persisting last-known-good after background reload");
         }
 

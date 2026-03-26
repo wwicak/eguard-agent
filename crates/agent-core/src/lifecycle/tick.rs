@@ -43,7 +43,8 @@ impl AgentRuntime {
         #[cfg(not(target_os = "macos"))]
         let bundle_bootstrap_delay_ticks: u64 = 5;
 
-        if self.deferred_bundle_bootstrap_pending && self.tick_count >= bundle_bootstrap_delay_ticks {
+        if self.deferred_bundle_bootstrap_pending && self.tick_count >= bundle_bootstrap_delay_ticks
+        {
             self.run_deferred_bundle_bootstrap();
         }
 
@@ -393,9 +394,7 @@ impl AgentRuntime {
         }
         self.last_isolation_failsafe_check_unix = Some(now_unix);
 
-        if let Some(state) =
-            super::command_pipeline::isolation_state::read_isolation_state()
-        {
+        if let Some(state) = super::command_pipeline::isolation_state::read_isolation_state() {
             if super::command_pipeline::isolation_state::is_failsafe_expired(&state, now_unix) {
                 tracing::error!(
                     elapsed_secs = now_unix - state.isolated_at_unix,

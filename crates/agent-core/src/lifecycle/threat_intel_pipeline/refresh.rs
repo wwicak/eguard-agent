@@ -1,9 +1,9 @@
 use anyhow::Result;
 use grpc_client::ThreatIntelVersionEnvelope;
-use tracing::info;
+use tracing::{info, warn};
 
 use super::super::{interval_due, AgentRuntime, THREAT_INTEL_INTERVAL_SECS};
-use super::state::persist_threat_intel_replay_floor_state;
+use super::state::{persist_threat_intel_last_known_good_state, persist_threat_intel_replay_floor_state};
 use super::version::{ensure_publish_timestamp_floor, ensure_version_monotonicity};
 
 impl AgentRuntime {
@@ -33,6 +33,18 @@ impl AgentRuntime {
                     "new threat intel version available"
                 );
                 let local_bundle_path = self.prepare_bundle_for_reload(&intel).await?;
+
+                // Persist LKG state immediately after download/verification
+                // succeeds — before the potentially very long compilation
+                // step.  This ensures that the next startup can bootstrap
+                // from the local archive even if the current compilation
+                // is interrupted (e.g. agent restart, kill -9).
+                if let Err(err) =
+                    persist_threat_intel_last_known_good_state(&intel.version, &local_bundle_path)
+                {
+                    warn!(error = %err, "failed early-persisting LKG after bundle download");
+                }
+
                 // Use non-blocking background reload so that heartbeat and
                 // telemetry continue while sigma/YARA/IOC rules compile.
                 self.start_background_reload(&intel.version, &local_bundle_path);

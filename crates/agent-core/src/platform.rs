@@ -123,7 +123,11 @@ mod windows_engine {
         }
 
         pub fn backend_label(&self) -> &'static str {
-            if self.enabled { "etw" } else { "disabled" }
+            if self.enabled {
+                "etw"
+            } else {
+                "disabled"
+            }
         }
     }
 

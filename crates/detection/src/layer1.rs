@@ -295,8 +295,9 @@ impl IocExactStore {
             };
             #[cfg(not(target_os = "macos"))]
             {
-                let _ =
-                    unsafe { libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED) };
+                let _ = unsafe {
+                    libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED)
+                };
             }
         }
     }

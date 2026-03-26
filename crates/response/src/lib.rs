@@ -91,10 +91,10 @@ impl Default for ResponseConfig {
             max_kills_per_minute: 10,
             auto_isolation: AutoIsolationPolicy::default(),
             //              kill  quarantine  capture_script
-            definite:  ResponsePolicy::new(true,  true,  true),
-            very_high: ResponsePolicy::new(true,  true,  true),
-            high:      ResponsePolicy::new(false, true,  true),  // was: (false, false, true) — quarantine enabled
-            medium:    ResponsePolicy::new(false, false, true),  // was: (false, false, false) — capture enabled
+            definite: ResponsePolicy::new(true, true, true),
+            very_high: ResponsePolicy::new(true, true, true),
+            high: ResponsePolicy::new(false, true, true), // was: (false, false, true) — quarantine enabled
+            medium: ResponsePolicy::new(false, false, true), // was: (false, false, false) — capture enabled
         }
     }
 }

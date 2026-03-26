@@ -10,6 +10,7 @@ mod types;
 mod util;
 
 pub use types::{AgentConfig, AgentMode};
+pub(crate) use util::preferred_hostname_env;
 
 // Contract snapshot for acceptance checks that validate security defaults.
 // Keep these lines in sync with `defaults.rs` and `conf/self_protection.conf.example`.

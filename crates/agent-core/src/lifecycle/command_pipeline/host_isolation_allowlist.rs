@@ -7,7 +7,8 @@ pub(super) fn resolve_host_isolation_allowlist(
 ) -> Vec<String> {
     let base_allowlist =
         resolve_allowed_server_ips(server_addr, payload_ips, allow_server_connection);
-    let mut effective = merge_isolation_allowlist(&base_allowlist, &collect_active_management_peer_ips());
+    let mut effective =
+        merge_isolation_allowlist(&base_allowlist, &collect_active_management_peer_ips());
 
     // SAFETY: Always include the configured server_addr IP in the allow-list.
     // Without this, the agent cannot receive unisolate commands and the user

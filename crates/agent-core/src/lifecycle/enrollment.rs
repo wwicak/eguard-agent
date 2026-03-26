@@ -5,7 +5,7 @@ use tracing::warn;
 
 use grpc_client::EnrollmentEnvelope;
 
-use crate::config::AgentConfig;
+use crate::config::{preferred_hostname_env, AgentConfig};
 
 use super::AgentRuntime;
 
@@ -18,6 +18,10 @@ const DEFAULT_AGENT_CONFIG_PATH: &str = r"C:\ProgramData\eGuard\agent.conf";
 #[cfg(target_os = "macos")]
 const DEFAULT_AGENT_CONFIG_PATH: &str = "/Library/Application Support/eGuard/agent.conf";
 const ENCRYPTED_CONFIG_PREFIX: &str = "eguardcfg:v1:";
+
+fn resolve_enrollment_hostname(agent_id: &str) -> String {
+    preferred_hostname_env().unwrap_or_else(|| agent_id.to_string())
+}
 
 impl AgentRuntime {
     pub(super) async fn ensure_enrolled(&mut self) {
@@ -73,11 +77,10 @@ impl AgentRuntime {
     }
 
     fn build_enrollment_envelope(&self) -> EnrollmentEnvelope {
-        let hostname = std::env::var("HOSTNAME").unwrap_or_else(|_| self.config.agent_id.clone());
         EnrollmentEnvelope {
             agent_id: self.config.agent_id.clone(),
             mac: self.config.mac.clone(),
-            hostname,
+            hostname: resolve_enrollment_hostname(&self.config.agent_id),
             enrollment_token: self.config.enrollment_token.clone(),
             tenant_id: self.config.tenant_id.clone(),
         }
@@ -623,7 +626,7 @@ fn write_private_config_file(path: &Path, data: &[u8]) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::persist_runtime_config_snapshot;
+    use super::{persist_runtime_config_snapshot, resolve_enrollment_hostname};
     use crate::config::AgentConfig;
 
     fn env_lock() -> &'static std::sync::Mutex<()> {
@@ -636,6 +639,20 @@ mod tests {
         std::env::remove_var("EGUARD_SERVER_ADDR");
         std::env::remove_var("EGUARD_SERVER");
         std::env::remove_var("EGUARD_RULE_BUNDLE_PUBKEY");
+        std::env::remove_var("HOSTNAME");
+        std::env::remove_var("COMPUTERNAME");
+    }
+
+    #[test]
+    fn resolve_enrollment_hostname_uses_windows_computername_when_hostname_missing() {
+        let _guard = env_lock().lock().expect("env lock");
+        clear_env();
+        std::env::set_var("COMPUTERNAME", "WIN-4209A3FD-104E-4");
+
+        let hostname = resolve_enrollment_hostname("agent-1196");
+        assert_eq!(hostname, "WIN-4209A3FD-104E-4");
+
+        clear_env();
     }
 
     #[test]

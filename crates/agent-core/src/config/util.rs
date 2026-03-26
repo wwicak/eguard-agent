@@ -22,12 +22,12 @@ pub(super) fn split_csv(raw: &str) -> Vec<String> {
         .collect()
 }
 
+pub(crate) fn preferred_hostname_env() -> Option<String> {
+    env_non_empty("HOSTNAME").or_else(|| env_non_empty("COMPUTERNAME"))
+}
+
 pub(super) fn default_agent_id() -> String {
-    if let Some(hostname) = std::env::var("HOSTNAME")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-    {
+    if let Some(hostname) = preferred_hostname_env() {
         return hostname;
     }
 
@@ -129,15 +129,30 @@ mod tests {
     fn default_agent_id_prefers_hostname_env() {
         let _guard = env_lock().lock().expect("env lock");
         std::env::set_var("HOSTNAME", "agent-host-a");
+        std::env::set_var("COMPUTERNAME", "WIN-HOST-A");
         let id = default_agent_id();
         assert_eq!(id, "agent-host-a");
         std::env::remove_var("HOSTNAME");
+        std::env::remove_var("COMPUTERNAME");
+    }
+
+    #[test]
+    fn default_agent_id_uses_windows_computername_when_hostname_missing() {
+        let _guard = env_lock().lock().expect("env lock");
+        std::env::remove_var("HOSTNAME");
+        std::env::set_var("COMPUTERNAME", "WIN-4209A3FD-104E-4");
+
+        let id = default_agent_id();
+        assert_eq!(id, "WIN-4209A3FD-104E-4");
+
+        std::env::remove_var("COMPUTERNAME");
     }
 
     #[test]
     fn default_agent_id_uses_machine_id_when_hostname_missing() {
         let _guard = env_lock().lock().expect("env lock");
         std::env::remove_var("HOSTNAME");
+        std::env::remove_var("COMPUTERNAME");
 
         let path = std::env::temp_dir().join(format!(
             "eguard-default-agent-id-machine-{}",
