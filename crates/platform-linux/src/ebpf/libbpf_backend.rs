@@ -241,14 +241,60 @@ fn load_objects_with_degradation(
 /// (e.g., LSM hooks on kernels without BPF LSM enabled) are recorded in
 /// `failed_probes` but don't prevent the engine from working with the
 /// remaining probes.
+/// Ring buffer capacity for hosts with ≤ 3 GB RAM.
+/// Default is 2 MB; on constrained hosts we shrink to 256 KB per probe
+/// which cuts kernel+mmap peak materially across the loaded probe set.
+const LOW_MEMORY_RINGBUF_CAPACITY: u32 = 512 * 1024;
+
+/// Perf-buffer page count for hosts with ≤ 3 GB RAM.
+/// libbpf-rs defaults to 64 pages per CPU; we reduce to 32 pages on
+/// constrained hosts to keep userspace mmap + kernel perf pages modest
+/// without starving the attack battery under load.
+const LOW_MEMORY_PERF_BUFFER_PAGES: usize = 32;
+
+/// Threshold below which a host is considered memory-constrained for event
+/// transport sizing (matches `LOW_MEMORY_HOST_THRESHOLD_BYTES` used for
+/// record budget).
+const EVENT_TRANSPORT_LOW_MEM_THRESHOLD: u64 = LOW_MEMORY_HOST_THRESHOLD_BYTES;
+
 fn load_object_with_degradation(
     path: &Path,
     event_map_name: &str,
     failed_probes: &mut Vec<String>,
 ) -> Result<LoadedObject> {
-    let object = libbpf_rs::ObjectBuilder::default()
+    let mut open_obj = libbpf_rs::ObjectBuilder::default()
         .open_file(path)
-        .map_err(|err| EbpfError::Backend(format!("open ELF '{}': {}", path.display(), err)))?
+        .map_err(|err| EbpfError::Backend(format!("open ELF '{}': {}", path.display(), err)))?;
+
+    // On low-memory hosts, shrink only ring-buffer maps before load. Perf
+    // event arrays use `max_entries` for CPU slots, not bytes, so their memory
+    // is tuned later via `PerfBufferBuilder::pages(...)`.
+    let total_mem = linux_host_mem_total_bytes();
+    if let Some(capacity) = event_ringbuf_capacity_for_host(total_mem) {
+        for mut map in open_obj.maps_mut() {
+            let name = map.name().to_string_lossy().into_owned();
+            let ty = map.map_type();
+            if name == event_map_name && ty == MapType::RingBuf {
+                if let Err(e) = map.set_max_entries(capacity) {
+                    warn!(
+                        map = %name,
+                        capacity,
+                        error = %e,
+                        "failed to shrink ring buffer for low-memory host"
+                    );
+                } else {
+                    info!(
+                        map = %name,
+                        capacity_kb = capacity / 1024,
+                        elf = %path.display(),
+                        "shrunk ring buffer for low-memory host"
+                    );
+                }
+            }
+        }
+    }
+
+    let object = open_obj
         .load()
         .map_err(|err| EbpfError::Backend(format!("load ELF '{}': {}", path.display(), err)))?;
 
@@ -561,6 +607,7 @@ fn build_perf_buffers(
         let pool_sink = Arc::clone(&record_pool);
         let lost_sink = Arc::clone(&perf_lost_records);
         let perf_buffer = libbpf_rs::PerfBufferBuilder::new(&source.map_handle)
+            .pages(perf_buffer_pages_for_host(linux_host_mem_total_bytes()))
             .sample_cb(move |_cpu, raw| {
                 push_raw_record(
                     raw,
@@ -750,6 +797,28 @@ fn parse_budget_env(name: &str, default: usize, min_value: usize) -> usize {
         .unwrap_or(default.max(min_value))
 }
 
+fn is_low_memory_host(total_mem_bytes: Option<u64>) -> bool {
+    total_mem_bytes
+        .map(|total| total > 0 && total <= EVENT_TRANSPORT_LOW_MEM_THRESHOLD)
+        .unwrap_or(false)
+}
+
+fn event_ringbuf_capacity_for_host(total_mem_bytes: Option<u64>) -> Option<u32> {
+    if is_low_memory_host(total_mem_bytes) {
+        Some(LOW_MEMORY_RINGBUF_CAPACITY)
+    } else {
+        None
+    }
+}
+
+fn perf_buffer_pages_for_host(total_mem_bytes: Option<u64>) -> usize {
+    if is_low_memory_host(total_mem_bytes) {
+        LOW_MEMORY_PERF_BUFFER_PAGES
+    } else {
+        64
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn linux_host_mem_total_bytes() -> Option<u64> {
     let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
@@ -776,4 +845,37 @@ fn sample_perf_lost_records(counter: &Arc<AtomicU64>, last_seen: &mut u64) -> u6
     let delta = total.saturating_sub(*last_seen);
     *last_seen = total;
     delta
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_memtotal_line_reads_kib_value() {
+        assert_eq!(
+            parse_memtotal_line_bytes("MemTotal:       2006016 kB"),
+            Some(2006016 * 1024)
+        );
+    }
+
+    #[test]
+    fn low_memory_transport_tuning_applies_under_threshold() {
+        let low_mem = Some(2 * 1024 * 1024 * 1024);
+        assert_eq!(
+            event_ringbuf_capacity_for_host(low_mem),
+            Some(LOW_MEMORY_RINGBUF_CAPACITY)
+        );
+        assert_eq!(
+            perf_buffer_pages_for_host(low_mem),
+            LOW_MEMORY_PERF_BUFFER_PAGES
+        );
+    }
+
+    #[test]
+    fn default_transport_tuning_remains_for_large_hosts() {
+        let large_mem = Some(8 * 1024 * 1024 * 1024);
+        assert_eq!(event_ringbuf_capacity_for_host(large_mem), None);
+        assert_eq!(perf_buffer_pages_for_host(large_mem), 64);
+    }
 }
