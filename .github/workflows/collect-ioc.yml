@@ -404,6 +404,17 @@ jobs:
           print(f"Behavior IOC rules: {len(rules)}")
           PY
 
+      - name: IOC behavior quality gate (source)
+        run: |
+          python3 threat-intel/processing/ioc_behavior_quality_gate.py \
+            --input sources/ioc/consolidated/ioc_behavior_rules.json \
+            --output /tmp/ioc_behavior_quality_source.json \
+            --max-load-ms 1000 \
+            --min-rules 20 \
+            --min-tactics 6 \
+            --min-techniques 12 \
+            --min-matcher-types 3
+
       - name: Upload curated IOCs as artifact
         uses: actions/upload-artifact@v4
         with:
