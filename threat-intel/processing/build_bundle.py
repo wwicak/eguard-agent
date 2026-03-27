@@ -52,6 +52,45 @@ def count_lines(path: str) -> int:
         return sum(1 for line in f if line.strip())
 
 
+def count_ioc_behavior_rules(path: str) -> int:
+    """Count IOC behavior rules from JSON payload.
+
+    Accepted formats:
+    - {"rules": [...]} envelope
+    - [...] array of rule objects
+    - single object
+    - NDJSON (one object per line)
+    """
+    if not os.path.isfile(path):
+        return 0
+
+    raw = ""
+    with open(path, "r", encoding="utf-8") as f:
+        raw = f.read().strip()
+    if not raw:
+        return 0
+
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            rules = parsed.get("rules")
+            if isinstance(rules, list):
+                return len(rules)
+            return 1
+        if isinstance(parsed, list):
+            return len(parsed)
+        return 1
+    except json.JSONDecodeError:
+        count = 0
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            json.loads(line)
+            count += 1
+        return count
+
+
 def count_kev(path: str) -> int:
     """Count CVEs flagged as actively exploited."""
     if not os.path.isfile(path):
@@ -197,6 +236,7 @@ def main():
     ioc_hash_count = 0
     ioc_domain_count = 0
     ioc_ip_count = 0
+    ioc_behavior_count = 0
     if args.ioc:
         ioc_dir = os.path.abspath(args.ioc)
         for ioc_file in ("hashes.txt", "domains.txt", "ips.txt"):
@@ -209,7 +249,13 @@ def main():
                     ioc_domain_count = count
                 elif "ips" in ioc_file:
                     ioc_ip_count = count
+
+        behavior_src = os.path.join(ioc_dir, "ioc_behavior_rules.json")
+        behavior_dst = os.path.join(output_dir, "rules", "ioc_behavior_rules.json")
+        if copy_file(behavior_src, behavior_dst):
+            ioc_behavior_count = count_ioc_behavior_rules(behavior_dst)
     print(f"Bundle: {ioc_hash_count} hash IOCs, {ioc_domain_count} domain IOCs, {ioc_ip_count} IP IOCs")
+    print(f"Bundle: {ioc_behavior_count} IOC behavior rules")
 
     # Copy CVE data
     cve_count = 0
@@ -310,6 +356,7 @@ def main():
         "ioc_hash_count": ioc_hash_count,
         "ioc_domain_count": ioc_domain_count,
         "ioc_ip_count": ioc_ip_count,
+        "ioc_behavior_count": ioc_behavior_count,
         "cve_count": cve_count,
         "suricata_count": suricata_count,
         "elastic_count": elastic_count,

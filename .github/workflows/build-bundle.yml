@@ -337,6 +337,18 @@ jobs:
               if not path.is_file() or path.stat().st_size <= 0:
                   failures.append(f"missing or empty IOC file: {ioc_file}")
 
+          behavior_path = root / "ioc-curated" / "ioc_behavior_rules.json"
+          if not behavior_path.is_file() or behavior_path.stat().st_size <= 0:
+              failures.append("missing or empty IOC behavior file: ioc_behavior_rules.json")
+          else:
+              try:
+                  behavior_doc = json.loads(behavior_path.read_text(encoding="utf-8"))
+                  rules = behavior_doc.get("rules") if isinstance(behavior_doc, dict) else None
+                  if not isinstance(rules, list) or len(rules) == 0:
+                      failures.append("ioc_behavior_rules.json has no rules[] entries")
+              except Exception as exc:
+                  failures.append(f"ioc_behavior_rules.json parse failed: {exc}")
+
           cve_path = root / "cve-extracted" / "cves.jsonl"
           if not cve_path.is_file() or cve_path.stat().st_size <= 0:
               failures.append("cve-extracted/cves.jsonl is missing or empty")
@@ -480,6 +492,7 @@ jobs:
           IOC_DIR="/tmp/artifacts/ioc-curated"
           if [ -d "$IOC_DIR" ]; then
             cp "$IOC_DIR"/*.txt /tmp/ioc_ready/ 2>/dev/null || true
+            cp "$IOC_DIR"/ioc_behavior_rules.json /tmp/ioc_ready/ 2>/dev/null || true
           fi
 
       - name: Prepare JA3 and VT enrichment files
@@ -518,6 +531,28 @@ jobs:
             --vt-enriched /tmp/vt_ready \
             --output bundle \
             --version "${{ steps.version.outputs.version }}"
+
+      - name: Validate bundle IOC behavior payload
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("bundle/rules/ioc_behavior_rules.json")
+          if not path.is_file() or path.stat().st_size <= 0:
+              raise SystemExit("bundle is missing rules/ioc_behavior_rules.json")
+
+          doc = json.loads(path.read_text(encoding="utf-8"))
+          rules = doc.get("rules") if isinstance(doc, dict) else None
+          if not isinstance(rules, list) or not rules:
+              raise SystemExit("bundle rules/ioc_behavior_rules.json has no rules[]")
+
+          names = [str(r.get("name", "")).strip() for r in rules if isinstance(r, dict)]
+          if len([n for n in names if n]) != len(rules):
+              raise SystemExit("bundle ioc_behavior rules contain missing names")
+
+          print(f"bundle IOC behavior rules validated: {len(rules)}")
+          PY
 
       - name: Enforce signature database coverage gate
         env:

@@ -377,6 +377,33 @@ jobs:
 
           echo "IOC collector coverage gate passed"
 
+      - name: Attach behavioral IOC rules for bundle sync
+        run: |
+          SRC="threat-intel/rules/ioc_behavior_rules.json"
+          DST="sources/ioc/consolidated/ioc_behavior_rules.json"
+
+          if [ ! -s "$SRC" ]; then
+            echo "Missing behavioral IOC source file: $SRC"
+            exit 1
+          fi
+
+          cp "$SRC" "$DST"
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("sources/ioc/consolidated/ioc_behavior_rules.json")
+          data = json.loads(path.read_text(encoding="utf-8"))
+          rules = data.get("rules") if isinstance(data, dict) else None
+          if not isinstance(rules, list) or not rules:
+              raise SystemExit("ioc_behavior_rules.json must contain non-empty {\"rules\": [...]} payload")
+          names = [str(item.get("name", "")).strip() for item in rules if isinstance(item, dict)]
+          if len([n for n in names if n]) != len(rules):
+              raise SystemExit("every behavior rule must include a non-empty name")
+          print(f"Behavior IOC rules: {len(rules)}")
+          PY
+
       - name: Upload curated IOCs as artifact
         uses: actions/upload-artifact@v4
         with:

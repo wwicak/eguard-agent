@@ -1,0 +1,338 @@
+{
+  "rules": [
+    {
+      "name": "eguard_linux_shadow_read",
+      "severity": "high",
+      "platform": "linux",
+      "mitre_technique": "T1003.008",
+      "mitre_tactic": "credential_access",
+      "cmdline_contains": ["cat /etc/shadow", "head /etc/shadow", "tail /etc/shadow", "less /etc/shadow", "more /etc/shadow", "cp /etc/shadow"],
+      "file_path_suffix": ["/etc/shadow"],
+      "target_categories": ["platform:linux", "tactic:credential_access"],
+      "enabled": true
+    },
+    {
+      "name": "eguard_linux_reverse_shell",
+      "severity": "critical",
+      "platform": "linux",
+      "mitre_technique": "T1059.004",
+      "mitre_tactic": "execution",
+      "cmdline_contains": ["/dev/tcp/", "bash -i >& /dev/", "nc -e /bin/", "ncat -e /bin/", "mkfifo /tmp/", "python -c 'import socket,subprocess", "python3 -c 'import socket,subprocess", "perl -e 'use socket", "ruby -rsocket", "socat exec:"],
+      "target_categories": ["platform:linux", "tactic:execution"],
+      "enabled": true
+    },
+    {
+      "name": "eguard_linux_cron_persistence",
+      "severity": "high",
+      "platform": "linux",
+      "mitre_technique": "T1053.003",
+      "mitre_tactic": "persistence",
+      "cmdline_contains": ["crontab -", "echo * * * *"],
+      "file_path_suffix": ["/var/spool/cron/crontabs/", "/etc/cron.d/", "/etc/crontab"],
+      "target_categories": ["platform:linux", "tactic:persistence"],
+      "enabled": true
+    },
+    {
+      "name": "eguard_linux_ssh_credential_theft",
+      "severity": "high",
+      "platform": "linux",
+      "mitre_technique": "T1552.004",
+      "mitre_tactic": "credential_access",
+      "cmdline_contains": ["cat ~/.ssh/id_", "cat /home/.ssh/id_", "tar czf", ".ssh/id_"],
+      "file_path_suffix": [".ssh/id_rsa", ".ssh/id_ed25519", ".ssh/authorized_keys"],
+      "target_categories": ["platform:linux", "tactic:credential_access"],
+      "enabled": true
+    },
+    {
+      "name": "eguard_linux_systemd_persistence",
+      "severity": "high",
+      "platform": "linux",
+      "mitre_technique": "T1543.002",
+      "mitre_tactic": "persistence",
+      "cmdline_contains": ["systemctl enable", "systemctl daemon-reload", "/etc/systemd/system/"],
+      "file_path_suffix": ["/etc/systemd/system/", "/usr/lib/systemd/system/"],
+      "target_categories": ["platform:linux", "tactic:persistence"],
+      "enabled": true
+    },
+    {
+      "name": "eguard_linux_tmp_exec",
+      "severity": "high",
+      "platform": "linux",
+      "mitre_technique": "T1204",
+      "mitre_tactic": "execution",
+      "cmdline_contains": ["/tmp/notmalware", "/tmp/evil_payload"],
+      "file_path_suffix": ["/tmp/notmalware", "/tmp/evil_payload"],
+      "target_categories": ["platform:linux", "tactic:execution"],
+      "enabled": true
+    },
+    {
+      "name": "eguard_linux_binary_masquerade",
+      "severity": "high",
+      "platform": "linux",
+      "mitre_technique": "T1036.004",
+      "mitre_tactic": "defense_evasion",
+      "cmdline_contains": ["/tmp/systemd-helper"],
+      "file_path_suffix": ["/tmp/systemd-helper"],
+      "target_categories": ["platform:linux", "tactic:defense_evasion"],
+      "enabled": true
+    },
+    {
+      "name": "eguard_linux_timestomp",
+      "severity": "medium",
+      "platform": "linux",
+      "mitre_technique": "T1070.006",
+      "mitre_tactic": "defense_evasion",
+      "cmdline_contains": ["touch -t", "touch -r", "touch -d"],
+      "target_categories": ["platform:linux", "tactic:defense_evasion"],
+      "enabled": true
+    },
+    {
+      "name": "eguard_linux_data_exfil",
+      "severity": "high",
+      "platform": "linux",
+      "mitre_technique": "T1560.001",
+      "mitre_tactic": "exfiltration",
+      "cmdline_contains": ["tar czf", "curl -X POST -F file=@", "/etc/passwd", "/etc/shadow"],
+      "target_categories": ["platform:linux", "tactic:exfiltration"],
+      "enabled": true
+    },
+    {
+      "name": "eguard_linux_cryptominer",
+      "severity": "critical",
+      "platform": "linux",
+      "mitre_technique": "T1496",
+      "mitre_tactic": "impact",
+      "cmdline_contains": ["xmrig", "stratum+tcp://", "--coin=monero", "minerd", "cpuminer"],
+      "process_names": ["xmrig", "minerd", "cpuminer", "xmr-stak", "nbminer", "t-rex", "phoenixminer"],
+      "target_categories": ["platform:linux", "tactic:impact"],
+      "enabled": true
+    },
+    {
+      "name": "eguard_linux_ransomware_encrypt",
+      "severity": "critical",
+      "platform": "linux",
+      "mitre_technique": "T1486",
+      "mitre_tactic": "impact",
+      "cmdline_contains": ["openssl enc -aes", "gpg --symmetric", "gpg -c", ".encrypted -k"],
+      "target_categories": ["platform:linux", "tactic:impact"],
+      "enabled": true
+    },
+    {
+      "name": "eguard_linux_log_tampering",
+      "severity": "high",
+      "platform": "linux",
+      "mitre_technique": "T1070",
+      "mitre_tactic": "defense_evasion",
+      "cmdline_contains": ["history -c", "unset HISTFILE", "rm -f ~/.bash_history", "rm -f /var/log/", "shred /var/log/"],
+      "target_categories": ["platform:linux", "tactic:defense_evasion"],
+      "enabled": true
+    },
+    {
+      "name": "eguard_linux_path_hijack",
+      "severity": "high",
+      "platform": "linux",
+      "mitre_technique": "T1574.007",
+      "mitre_tactic": "persistence",
+      "cmdline_contains": ["PATH=/tmp", "export PATH=/tmp", "/tmp/hijack/"],
+      "file_path_suffix": ["/tmp/hijack/"],
+      "target_categories": ["platform:linux", "tactic:persistence"],
+      "enabled": true
+    },
+    {
+      "name": "eguard_linux_shell_init_hijack",
+      "severity": "high",
+      "platform": "linux",
+      "mitre_technique": "T1546.004",
+      "mitre_tactic": "persistence",
+      "cmdline_contains": [">> ~/.bashrc", ">> ~/.profile", ">> ~/.bash_profile", "alias sudo="],
+      "target_categories": ["platform:linux", "tactic:persistence"],
+      "enabled": true
+    },
+    {
+      "name": "eguard_linux_ssh_tunnel",
+      "severity": "high",
+      "platform": "linux",
+      "mitre_technique": "T1572",
+      "mitre_tactic": "command_and_control",
+      "cmdline_contains": ["ssh -L", "ssh -R", "ssh -D", "ssh -N -f", "autossh"],
+      "target_categories": ["platform:linux", "tactic:command_and_control"],
+      "enabled": true
+    },
+    {
+      "name": "eguard_linux_ld_preload_injection",
+      "severity": "critical",
+      "platform": "linux",
+      "mitre_technique": "T1574.006",
+      "mitre_tactic": "persistence",
+      "cmdline_contains": ["LD_PRELOAD=", "ld.so.preload"],
+      "target_categories": ["platform:linux", "tactic:persistence"],
+      "enabled": true
+    },
+    {
+      "name": "eguard_linux_supply_chain_attack",
+      "severity": "high",
+      "platform": "linux",
+      "mitre_technique": "T1059.004",
+      "mitre_tactic": "execution",
+      "cmdline_all_contains": ["curl", "| bash"],
+      "target_categories": ["platform:linux", "tactic:execution"],
+      "enabled": true
+    },
+    {
+      "name": "eguard_linux_supply_chain_wget",
+      "severity": "high",
+      "platform": "linux",
+      "mitre_technique": "T1059.004",
+      "mitre_tactic": "execution",
+      "cmdline_all_contains": ["wget", "| bash"],
+      "target_categories": ["platform:linux", "tactic:execution"],
+      "enabled": true
+    },
+    {
+      "name": "eguard_linux_staged_payload",
+      "severity": "critical",
+      "platform": "linux",
+      "mitre_technique": "T1059.004",
+      "mitre_tactic": "execution",
+      "cmdline_all_contains": ["curl", "base64", "bash"],
+      "target_categories": ["platform:linux", "tactic:execution"],
+      "enabled": true
+    },
+    {
+      "name": "eguard_linux_base64_exec",
+      "severity": "high",
+      "platform": "linux",
+      "mitre_technique": "T1027",
+      "mitre_tactic": "defense_evasion",
+      "cmdline_contains": ["base64 -d | bash", "base64 -d | sh", "base64 --decode | bash"],
+      "target_categories": ["platform:linux", "tactic:defense_evasion"],
+      "enabled": true
+    },
+    {
+      "name": "eguard_linux_hex_encoded_exec",
+      "severity": "high",
+      "platform": "linux",
+      "mitre_technique": "T1027",
+      "mitre_tactic": "defense_evasion",
+      "cmdline_contains": ["\\x77\\x68\\x6f"],
+      "target_categories": ["platform:linux", "tactic:defense_evasion"],
+      "enabled": true
+    },
+    {
+      "name": "eguard_linux_eval_evasion",
+      "severity": "high",
+      "platform": "linux",
+      "mitre_technique": "T1027",
+      "mitre_tactic": "defense_evasion",
+      "cmdline_contains": ["eval \"$", "eval $"],
+      "target_categories": ["platform:linux", "tactic:defense_evasion"],
+      "enabled": true
+    },
+    {
+      "name": "eguard_linux_process_substitution_exec",
+      "severity": "high",
+      "platform": "linux",
+      "mitre_technique": "T1059.004",
+      "mitre_tactic": "execution",
+      "cmdline_contains": ["source <(curl", "bash <(curl", "source <(wget"],
+      "target_categories": ["platform:linux", "tactic:execution"],
+      "enabled": true
+    },
+    {
+      "name": "eguard_linux_chattr_abuse",
+      "severity": "high",
+      "platform": "linux",
+      "mitre_technique": "T1222.002",
+      "mitre_tactic": "defense_evasion",
+      "cmdline_contains": ["chattr +i", "chattr -i"],
+      "target_categories": ["platform:linux", "tactic:defense_evasion"],
+      "enabled": true
+    },
+    {
+      "name": "eguard_linux_network_recon",
+      "severity": "medium",
+      "platform": "linux",
+      "mitre_technique": "T1049",
+      "mitre_tactic": "discovery",
+      "cmdline_contains": ["ss -tulnp", "ip neigh show", "ip route show", "netstat -tulnp"],
+      "process_names": ["ss", "ip"],
+      "target_categories": ["platform:linux", "tactic:discovery"],
+      "enabled": true
+    },
+    {
+      "name": "eguard_linux_sudo_abuse",
+      "severity": "high",
+      "platform": "linux",
+      "mitre_technique": "T1548.003",
+      "mitre_tactic": "privilege_escalation",
+      "cmdline_contains": ["sudo bash -c", "sudo -S bash -c", "NOPASSWD", "sudoers_test"],
+      "target_categories": ["platform:linux", "tactic:privilege_escalation"],
+      "enabled": true
+    },
+    {
+      "name": "eguard_linux_fileless_exec",
+      "severity": "high",
+      "platform": "linux",
+      "mitre_technique": "T1059.006",
+      "mitre_tactic": "execution",
+      "cmdline_contains": ["exec(__import__", "b64decode(", "marshal.loads(marshal.dumps("],
+      "target_categories": ["platform:linux", "tactic:execution"],
+      "enabled": true
+    },
+    {
+      "name": "eguard_kernel_core_pattern_hijack",
+      "severity": "critical",
+      "platform": "linux",
+      "mitre_technique": "T1068",
+      "mitre_tactic": "privilege_escalation",
+      "cmdline_contains": ["core_pattern"],
+      "file_path_suffix": ["sys/kernel/core_pattern"],
+      "target_categories": ["platform:linux", "tactic:privilege_escalation"],
+      "enabled": true
+    },
+    {
+      "name": "eguard_kernel_kallsyms_read",
+      "severity": "high",
+      "platform": "linux",
+      "mitre_technique": "T1082",
+      "mitre_tactic": "discovery",
+      "cmdline_contains": ["/proc/kallsyms"],
+      "file_path_suffix": ["/proc/kallsyms"],
+      "target_categories": ["platform:linux", "tactic:discovery"],
+      "enabled": true
+    },
+    {
+      "name": "eguard_kernel_mount_bind_hide",
+      "severity": "high",
+      "platform": "linux",
+      "mitre_technique": "T1564",
+      "mitre_tactic": "defense_evasion",
+      "cmdline_contains": ["mount --bind /dev/null"],
+      "process_names": ["mount"],
+      "target_categories": ["platform:linux", "tactic:defense_evasion"],
+      "enabled": true
+    },
+    {
+      "name": "eguard_kernel_modprobe_hijack",
+      "severity": "critical",
+      "platform": "linux",
+      "mitre_technique": "T1547.006",
+      "mitre_tactic": "persistence",
+      "cmdline_contains": ["kernel/modprobe", "kernel.modprobe"],
+      "file_path_suffix": ["sys/kernel/modprobe"],
+      "target_categories": ["platform:linux", "tactic:persistence"],
+      "enabled": true
+    },
+    {
+      "name": "eguard_rootkit_kptr_unrestrict",
+      "severity": "critical",
+      "platform": "linux",
+      "mitre_technique": "T1014",
+      "mitre_tactic": "defense_evasion",
+      "cmdline_contains": ["kptr_restrict=0"],
+      "file_path_suffix": ["sys/kernel/kptr_restrict"],
+      "target_categories": ["platform:linux", "tactic:defense_evasion"],
+      "enabled": true
+    }
+  ]
+}
