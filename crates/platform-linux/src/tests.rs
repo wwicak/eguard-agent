@@ -109,6 +109,19 @@ fn payload_parser_extracts_kv_network_fields() {
 }
 
 #[test]
+fn payload_parser_decodes_percent_escaped_process_cmdline() {
+    let metadata = parse_payload_metadata(
+        &EventType::ProcessExec,
+        "ppid=1;cgroup_id=7;comm=bash;parent_comm=sshd;path=/usr/bin/bash;cmdline=bash -c a%3D\"who\"%3B b%3D\"ami\"%3B eval \"$a$b\"",
+    );
+
+    assert_eq!(
+        metadata.command_line_hint.as_deref(),
+        Some("bash -c a=\"who\"; b=\"ami\"; eval \"$a$b\"")
+    );
+}
+
+#[test]
 fn process_exec_payload_parent_hint_backfills_parent_process_when_proc_lookup_fails() {
     let mut cache = EnrichmentCache::default();
     let raw = RawEvent {

@@ -1386,7 +1386,7 @@ fn parse_payload_field(payload: &str, field: &str) -> Option<String> {
         .filter_map(|segment| segment.split_once('='))
         .find_map(|(key, value)| {
             if key.trim().eq_ignore_ascii_case(field) {
-                let value = value.trim().trim_matches('"');
+                let value = trim_enclosing_quotes(value.trim());
                 if value.is_empty() {
                     None
                 } else {
@@ -1489,6 +1489,14 @@ fn decode_payload_value(raw: &str) -> String {
     }
 
     out
+}
+
+fn trim_enclosing_quotes(raw: &str) -> &str {
+    if raw.len() >= 2 && raw.starts_with('"') && raw.ends_with('"') {
+        &raw[1..raw.len() - 1]
+    } else {
+        raw
+    }
 }
 
 fn unix_now_ns() -> u64 {

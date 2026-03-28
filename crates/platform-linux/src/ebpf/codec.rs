@@ -115,7 +115,12 @@ fn parse_process_exec_payload(raw: &[u8]) -> String {
 
     format!(
         "ppid={};cgroup_id={};comm={};parent_comm={};path={};cmdline={}",
-        ppid, cgroup_id, comm, parent_comm, path, cmdline
+        ppid,
+        cgroup_id,
+        escape_payload_value(&comm),
+        escape_payload_value(&parent_comm),
+        escape_payload_value(&path),
+        escape_payload_value(&cmdline)
     )
 }
 
@@ -310,6 +315,19 @@ fn parse_cmdline_buffer(raw: &[u8]) -> String {
     }
 
     parts.join(" ")
+}
+
+fn escape_payload_value(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        match ch {
+            '%' => out.push_str("%25"),
+            ';' => out.push_str("%3B"),
+            ',' => out.push_str("%2C"),
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 fn slice_window(raw: &[u8], offset: usize, max_len: usize) -> &[u8] {

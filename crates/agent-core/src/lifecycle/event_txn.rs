@@ -241,16 +241,42 @@ fn parse_payload_field(payload: &str, field: &str) -> Option<String> {
         .filter_map(|segment| segment.split_once('='))
         .find_map(|(key, value)| {
             if key.trim().eq_ignore_ascii_case(field) {
-                let value = value.trim();
+                let value = decode_payload_value(value.trim());
                 if value.is_empty() {
                     None
                 } else {
-                    Some(value.to_string())
+                    Some(value)
                 }
             } else {
                 None
             }
         })
+}
+
+fn decode_payload_value(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out = String::with_capacity(raw.len());
+    let mut index = 0;
+
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            let hex = &raw[index + 1..index + 3];
+            if let Ok(value) = u8::from_str_radix(hex, 16) {
+                out.push(value as char);
+                index += 3;
+                continue;
+            }
+        }
+
+        if let Some(ch) = raw[index..].chars().next() {
+            out.push(ch);
+            index += ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+
+    out
 }
 
 fn parse_rename_paths(payload: &str) -> (Option<String>, Option<String>) {
