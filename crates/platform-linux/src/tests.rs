@@ -1,6 +1,8 @@
 use super::*;
 #[cfg(target_os = "linux")]
 use std::os::unix::fs::symlink;
+#[cfg(target_os = "linux")]
+use std::process::Command;
 
 #[test]
 // AC-EBP-032 AC-EBP-062
@@ -65,6 +67,32 @@ fn enrich_event_parent_chain_is_bounded_to_max_depth() {
     let enriched = enrich_event_with_cache(raw, &mut cache);
     assert!(enriched.parent_chain.len() <= super::MAX_PARENT_CHAIN_DEPTH);
     assert!(enriched.parent_chain.iter().all(|pid| *pid > 0));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn primed_process_exec_metadata_survives_short_lived_process_exit() {
+    let mut child = Command::new("/bin/sh")
+        .args(["-c", "sleep 0.2"])
+        .spawn()
+        .expect("spawn short-lived child");
+    let pid = child.id();
+
+    let mut cache = EnrichmentCache::default();
+    let raw = RawEvent {
+        event_type: EventType::ProcessExec,
+        pid,
+        uid: 0,
+        ts_ns: 1,
+        payload: "ppid=1;parent_comm=sh;comm=sh;path=/bin/sh;cmdline=sh".to_string(),
+    };
+
+    cache.prime_process_metadata(&raw);
+    child.wait().expect("wait for child exit");
+
+    let enriched = enrich_event_with_cache(raw, &mut cache);
+    let cmdline = enriched.process_cmdline.expect("cached cmdline");
+    assert!(cmdline.contains("sleep 0.2"), "cmdline was {cmdline:?}");
 }
 
 #[test]

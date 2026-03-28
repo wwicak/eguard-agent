@@ -107,7 +107,7 @@ fn parse_process_exec_payload(raw: &[u8]) -> String {
     let path_offset = if has_parent_comm { 76 } else { 44 };
     let cmdline_offset = if has_parent_comm { 236 } else { 204 };
     let path = parse_c_string(slice_window(raw, path_offset, 160));
-    let cmdline = parse_c_string(slice_window(raw, cmdline_offset, 160));
+    let cmdline = parse_cmdline_buffer(slice_window(raw, cmdline_offset, 160));
 
     if comm.is_empty() && parent_comm.is_empty() && path.is_empty() && cmdline.is_empty() {
         return parse_c_string(raw);
@@ -286,6 +286,30 @@ fn read_ipv6(raw: &[u8], offset: usize) -> Option<[u8; 16]> {
 fn parse_c_string(raw: &[u8]) -> String {
     let end = raw.iter().position(|b| *b == 0).unwrap_or(raw.len());
     String::from_utf8_lossy(&raw[..end]).into_owned()
+}
+
+fn parse_cmdline_buffer(raw: &[u8]) -> String {
+    if raw.is_empty() {
+        return String::new();
+    }
+
+    let has_nul = raw.iter().any(|b| *b == 0);
+    if !has_nul {
+        return String::from_utf8_lossy(raw).trim().to_string();
+    }
+
+    let mut parts = Vec::new();
+    for part in raw.split(|b| *b == 0) {
+        if part.is_empty() {
+            continue;
+        }
+        let text = String::from_utf8_lossy(part).trim().to_string();
+        if !text.is_empty() {
+            parts.push(text);
+        }
+    }
+
+    parts.join(" ")
 }
 
 fn slice_window(raw: &[u8], offset: usize, max_len: usize) -> &[u8] {

@@ -266,6 +266,10 @@ impl AgentRuntime {
             );
         }
 
+        for event in &txn_coalesced {
+            self.enrichment_cache.prime_process_metadata(event);
+        }
+
         let prioritized = Self::prioritize_raw_events(txn_coalesced);
         debug_trace_matching_raw_events("prioritized", &prioritized);
         let retained = self.limit_raw_event_ingress(prioritized);

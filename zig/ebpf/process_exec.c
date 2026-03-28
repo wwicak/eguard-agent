@@ -21,6 +21,30 @@ struct process_exec_event {
     char  cmdline[CMDLINE_SZ];
 } __attribute__((packed));
 
+static __attribute__((always_inline)) void
+fill_cmdline_from_mm(struct process_exec_event *e, struct task_struct *task)
+{
+    struct mm_struct *mm = 0;
+    unsigned long arg_start = 0;
+    unsigned long arg_end = 0;
+    unsigned long arg_len = 0;
+
+    if (bpf_probe_read_kernel(&mm, sizeof(mm), &task->mm) != 0 || !mm)
+        return;
+    if (bpf_probe_read_kernel(&arg_start, sizeof(arg_start), &mm->arg_start) != 0 || !arg_start)
+        return;
+    if (bpf_probe_read_kernel(&arg_end, sizeof(arg_end), &mm->arg_end) != 0 || arg_end <= arg_start)
+        return;
+
+    arg_len = arg_end - arg_start;
+    if (arg_len >= CMDLINE_SZ)
+        arg_len = CMDLINE_SZ - 1;
+    if (arg_len == 0)
+        return;
+
+    bpf_probe_read_user(e->cmdline, (__u32)arg_len, (const void *)arg_start);
+}
+
 SEC("tracepoint/sched/sched_process_exec")
 int eguard_sched_process_exec(void *ctx)
 {
@@ -39,13 +63,14 @@ int eguard_sched_process_exec(void *ctx)
             }
             bpf_probe_read_kernel_str(e->parent_comm, COMM_SZ, parent->comm);
         }
+        fill_cmdline_from_mm(e, task);
     }
 
     /* filename via __data_loc at tp offset 8 */
     read_tp_data_loc_str(e->path, PATH_SZ, ctx, 8);
 
-    /* cmdline: best-effort copy of comm */
-    bpf_get_current_comm(e->cmdline, CMDLINE_SZ);
+    if (!e->cmdline[0])
+        bpf_get_current_comm(e->cmdline, CMDLINE_SZ);
 
     EGUARD_SUBMIT_EVENT(ctx, e);
 }

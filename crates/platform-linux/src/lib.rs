@@ -179,11 +179,18 @@ impl EnrichmentCache {
         self.process_cache.pop(&pid).is_some()
     }
 
+    pub fn prime_process_metadata(&mut self, raw: &RawEvent) {
+        if matches!(raw.event_type, EventType::ProcessExec) {
+            let _ = self.process_entry(raw);
+        }
+    }
+
     fn process_entry(&mut self, raw: &RawEvent) -> ProcessCacheEntry {
         let current_start_time_ticks = read_process_start_time_ticks(raw.pid);
         if let Some(entry) = self.process_cache.get_mut(&raw.pid) {
             let same_process_instance = match (entry.start_time_ticks, current_start_time_ticks) {
                 (Some(cached), Some(current)) => cached == current,
+                (_, None) => true,
                 _ => false,
             };
             if same_process_instance {

@@ -28,9 +28,15 @@ typedef int                 __s32;
 #define __preserve_access_index
 #endif
 
+struct mm_struct {
+    unsigned long arg_start;
+    unsigned long arg_end;
+} __preserve_access_index;
+
 /* Minimal CO-RE-aware task struct subset used for parent process attribution. */
 struct task_struct {
     struct task_struct *real_parent;
+    struct mm_struct *mm;
     __u32 tgid;
     char comm[16];
 } __preserve_access_index;
