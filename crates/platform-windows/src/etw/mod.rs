@@ -145,9 +145,17 @@ impl EtwEngine {
         // batch gives it a better chance to survive frontloading and backlog
         // eviction when the runtime is under burst pressure.
         let mut events = if let Some(reader) = self.security_eventlog.as_mut() {
-            reader
-                .poll_events(security_reserve)
-                .map_err(EtwError::ConsumerStart)?
+            match reader.poll_events(security_reserve) {
+                Ok(events) => events,
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        reserve = security_reserve,
+                        "failed to read Security 4688 events this poll; continuing with kernel ETW events"
+                    );
+                    Vec::new()
+                }
+            }
         } else {
             Vec::new()
         };
