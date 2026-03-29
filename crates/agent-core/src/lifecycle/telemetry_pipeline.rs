@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use anyhow::Result;
@@ -699,6 +699,22 @@ impl AgentRuntime {
     }
 
     pub(super) fn limit_raw_event_ingress(&mut self, mut events: Vec<RawEvent>) -> Vec<RawEvent> {
+        let before_windows_exec_dedupe = events.len();
+        events = self.coalesce_windows_process_exec_duplicates(events);
+        let windows_exec_dropped = before_windows_exec_dedupe.saturating_sub(events.len());
+        if windows_exec_dropped > 0 {
+            self.metrics.telemetry_event_txn_coalesced_total = self
+                .metrics
+                .telemetry_event_txn_coalesced_total
+                .saturating_add(windows_exec_dropped as u64);
+            info!(
+                dropped = windows_exec_dropped,
+                retained = events.len(),
+                txn_coalesced_total = self.metrics.telemetry_event_txn_coalesced_total,
+                "coalesced duplicate Windows process exec bursts before ingress limiting"
+            );
+        }
+
         if events.len() <= self.raw_event_ingest_cap {
             return events;
         }
@@ -745,6 +761,113 @@ impl AgentRuntime {
             }
             _ => 2,
         }
+    }
+
+    fn coalesce_windows_process_exec_duplicates(&mut self, events: Vec<RawEvent>) -> Vec<RawEvent> {
+        let mut output = Vec::with_capacity(events.len());
+        let mut seen: HashMap<u32, (usize, u8)> = HashMap::new();
+
+        for event in events {
+            if !Self::is_windows_process_exec_duplicate_candidate(&event) {
+                output.push(event);
+                continue;
+            }
+
+            let strength = Self::windows_process_exec_payload_strength(&event);
+            if let Some((idx, previous_strength)) = seen.get(&event.pid).copied() {
+                if strength > previous_strength {
+                    output[idx] = event;
+                    seen.insert(output[idx].pid, (idx, strength));
+                }
+                continue;
+            }
+
+            let idx = output.len();
+            seen.insert(event.pid, (idx, strength));
+            output.push(event);
+        }
+
+        output
+    }
+
+    fn is_windows_process_exec_duplicate_candidate(event: &RawEvent) -> bool {
+        if !matches!(event.event_type, crate::platform::EventType::ProcessExec) {
+            return false;
+        }
+
+        if parse_payload_field(&event.payload, "audit_event_id").is_some() {
+            return true;
+        }
+
+        let path = parse_payload_field(&event.payload, "path")
+            .or_else(|| parse_payload_field(&event.payload, "exe"))
+            .unwrap_or_default();
+        if Self::looks_like_windows_identity(&path) {
+            return true;
+        }
+
+        let parent = parse_payload_field(&event.payload, "parent_process").unwrap_or_default();
+        if Self::looks_like_windows_identity(&parent) {
+            return true;
+        }
+
+        let cmdline = parse_payload_field(&event.payload, "cmdline")
+            .or_else(|| parse_payload_field(&event.payload, "command_line"))
+            .unwrap_or_default();
+        Self::looks_like_windows_identity(&cmdline)
+    }
+
+    fn windows_process_exec_payload_strength(event: &RawEvent) -> u8 {
+        let mut score = 0u8;
+
+        if parse_payload_field(&event.payload, "audit_event_id").as_deref() == Some("4688") {
+            score = score.saturating_add(8);
+        }
+        if parse_payload_field(&event.payload, "cmdline")
+            .or_else(|| parse_payload_field(&event.payload, "command_line"))
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+        {
+            score = score.saturating_add(4);
+        }
+        if parse_payload_field(&event.payload, "parent_process")
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+        {
+            score = score.saturating_add(2);
+        }
+        if parse_payload_field(&event.payload, "ppid")
+            .and_then(|value| value.parse::<u32>().ok())
+            .filter(|value| *value > 0)
+            .is_some()
+        {
+            score = score.saturating_add(1);
+        }
+        if parse_payload_field(&event.payload, "path")
+            .or_else(|| parse_payload_field(&event.payload, "exe"))
+            .map(|value| Self::looks_like_windows_identity(&value))
+            .unwrap_or(false)
+        {
+            score = score.saturating_add(1);
+        }
+
+        score
+    }
+
+    fn looks_like_windows_identity(value: &str) -> bool {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return false;
+        }
+
+        let lowered = trimmed.to_ascii_lowercase();
+        lowered.contains(":\\")
+            || lowered.contains("\\windows\\")
+            || lowered.contains("\\program files\\")
+            || lowered.ends_with(".exe")
+            || lowered.contains(".exe ")
+            || lowered.contains("powershell")
+            || lowered.contains("cmd.exe")
     }
 
     pub(super) fn enforce_raw_event_backlog_cap(&mut self) {

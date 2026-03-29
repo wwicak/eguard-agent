@@ -437,6 +437,64 @@ fn ingest_polled_events_caps_per_poll_burst_and_backlog_growth() {
 }
 
 #[test]
+fn windows_same_pid_process_exec_burst_prefers_richer_4688_payload_before_ingress_cap() {
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    cfg.server_addr = "127.0.0.1:1".to_string();
+
+    let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+    runtime.raw_event_ingest_cap = 2;
+    runtime.raw_event_backlog_cap = 2;
+
+    let mut burst = vec![
+        platform_linux::RawEvent {
+            event_type: platform_linux::EventType::ProcessExec,
+            pid: 8801,
+            uid: 0,
+            ts_ns: 1,
+            payload: r#"path=C:\Windows\System32\cmd.exe;ppid=1"#.to_string(),
+        },
+        platform_linux::RawEvent {
+            event_type: platform_linux::EventType::ProcessExec,
+            pid: 8801,
+            uid: 0,
+            ts_ns: 2,
+            payload: r#"path=C:\Windows\System32\cmd.exe;audit_event_id=4688;ppid=1;parent_process=powershell.exe;cmdline=C:\Windows\System32\cmd.exe /c whoami"#.to_string(),
+        },
+        platform_linux::RawEvent {
+            event_type: platform_linux::EventType::ProcessExec,
+            pid: 8802,
+            uid: 0,
+            ts_ns: 3,
+            payload: r#"path=C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe;audit_event_id=4688;ppid=1;parent_process=explorer.exe;cmdline=powershell.exe -nop -enc AAAA"#.to_string(),
+        },
+    ];
+    burst.sort_by_key(AgentRuntime::raw_event_priority);
+
+    let retained = runtime.limit_raw_event_ingress(burst);
+
+    assert_eq!(
+        retained.len(),
+        2,
+        "same-pid duplicate should be collapsed before the cap"
+    );
+    assert!(retained.iter().any(|event| event.pid == 8802));
+    let pid_8801 = retained
+        .iter()
+        .find(|event| event.pid == 8801)
+        .expect("pid 8801 retained");
+    assert!(pid_8801.payload.contains("audit_event_id=4688"));
+    assert!(pid_8801.payload.contains("cmdline="));
+    assert!(
+        runtime
+            .observability_snapshot()
+            .telemetry_event_txn_coalesced_total
+            >= 1,
+        "duplicate suppression should be counted"
+    );
+}
+
+#[test]
 fn backlog_cap_preserves_frontloaded_high_value_file_open_events() {
     let mut cfg = AgentConfig::default();
     cfg.offline_buffer_backend = "memory".to_string();
