@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 const DEFAULT_SESSION_NAME: &str = "eGuardEtwSession";
+const MAX_SECURITY_EVENTLOG_RESERVE: usize = 256;
 
 /// Core ETW telemetry engine, analogous to `EbpfEngine` on Linux.
 pub struct EtwEngine {
@@ -137,7 +138,12 @@ impl EtwEngine {
             return Ok(Vec::new());
         };
 
-        let security_reserve = max_batch.min(32);
+        // Keep explicit headroom for Security 4688 process-creation events.
+        // Under bursty batteries, those events can carry richer command-line
+        // truth than kernel ETW process-start records. Reserving too little
+        // headroom lets the noisier ETW stream crowd out that higher-value
+        // source before the runtime can prioritize `ProcessExec` events.
+        let security_reserve = max_batch.min(MAX_SECURITY_EVENTLOG_RESERVE);
         let etw_budget = max_batch.saturating_sub(security_reserve);
 
         let mut events = consumer.poll_events(etw_budget);

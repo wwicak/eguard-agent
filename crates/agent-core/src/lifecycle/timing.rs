@@ -2,6 +2,9 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tracing::warn;
 
+#[cfg(target_os = "windows")]
+use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+
 const LOW_MEMORY_HOST_THRESHOLD_BYTES: u64 = 3 * 1024 * 1024 * 1024;
 
 pub(super) fn compute_poll_timeout(
@@ -49,14 +52,30 @@ pub(super) fn host_is_low_memory(mem_total_bytes: Option<u64>) -> bool {
 }
 
 #[cfg(target_os = "linux")]
-pub(super) fn linux_host_mem_total_bytes() -> Option<u64> {
+fn platform_host_mem_total_bytes() -> Option<u64> {
     let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
     meminfo.lines().find_map(parse_memtotal_line_bytes)
 }
 
-#[cfg(not(target_os = "linux"))]
-pub(super) fn linux_host_mem_total_bytes() -> Option<u64> {
+#[cfg(target_os = "windows")]
+fn platform_host_mem_total_bytes() -> Option<u64> {
+    let mut status = MEMORYSTATUSEX {
+        dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
+        ..Default::default()
+    };
+    unsafe {
+        GlobalMemoryStatusEx(&mut status).ok()?;
+    }
+    Some(status.ullTotalPhys)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+fn platform_host_mem_total_bytes() -> Option<u64> {
     None
+}
+
+pub(super) fn host_mem_total_bytes() -> Option<u64> {
+    platform_host_mem_total_bytes()
 }
 
 fn parse_memtotal_line_bytes(line: &str) -> Option<u64> {
@@ -101,7 +120,7 @@ pub(super) fn resolve_detection_shard_count() -> usize {
         std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1),
-        linux_host_mem_total_bytes(),
+        host_mem_total_bytes(),
         std::env::var("EGUARD_DETECTION_SHARDS").ok().as_deref(),
     )
 }

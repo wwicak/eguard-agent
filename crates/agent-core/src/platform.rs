@@ -20,6 +20,8 @@ mod windows_engine {
 
     use super::RawEvent;
 
+    const WINDOWS_ETW_POLL_BATCH: usize = 1024;
+
     #[derive(Debug, Clone, Default, PartialEq, Eq)]
     pub struct EbpfStats {
         pub events_received: u64,
@@ -96,7 +98,7 @@ mod windows_engine {
 
             let events = self
                 .etw
-                .poll_events(256)
+                .poll_events(WINDOWS_ETW_POLL_BATCH)
                 .map_err(|err| EbpfError::Backend(err.to_string()))?;
 
             let etw_stats = self.etw.stats();
