@@ -401,6 +401,62 @@ fn evaluate_tick_drains_polled_replay_events_across_multiple_ticks() {
 }
 
 #[test]
+fn windows_rich_4688_execs_rank_ahead_of_low_value_wrappers_under_ingress_cap() {
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    cfg.server_addr = "127.0.0.1:1".to_string();
+
+    let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+    runtime.raw_event_ingest_cap = 2;
+
+    let burst = vec![
+        platform_linux::RawEvent {
+            event_type: platform_linux::EventType::ProcessExec,
+            pid: 8101,
+            uid: 0,
+            ts_ns: 1,
+            payload: r#"path=C:\Program Files\OpenSSH\sshd-session.exe;cmdline=c:\program files\openssh/sshd-session.exe\" -R;ppid=1;audit_event_id=4688"#.to_string(),
+        },
+        platform_linux::RawEvent {
+            event_type: platform_linux::EventType::ProcessExec,
+            pid: 8102,
+            uid: 0,
+            ts_ns: 2,
+            payload: r#"path=C:\Windows\System32\cmd.exe;cmdline=cmd /c powershell -NoProfile -Command -;ppid=8101;audit_event_id=4688"#.to_string(),
+        },
+        platform_linux::RawEvent {
+            event_type: platform_linux::EventType::ProcessExec,
+            pid: 8103,
+            uid: 0,
+            ts_ns: 3,
+            payload: r#"path=C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe;cmdline=powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -Command whoami > $env:TEMP\ai-hidden-2.txt;ppid=8102;parent_process=cmd.exe;audit_event_id=4688"#.to_string(),
+        },
+        platform_linux::RawEvent {
+            event_type: platform_linux::EventType::ProcessExec,
+            pid: 8104,
+            uid: 0,
+            ts_ns: 4,
+            payload: r#"path=C:\Windows\System32\cmd.exe;cmdline=cmd.exe /c certutil.exe -decode payload.b64 payload.bin;ppid=8102;audit_event_id=4688"#.to_string(),
+        },
+    ];
+
+    let retained = runtime.limit_raw_event_ingress(burst);
+    assert_eq!(retained.len(), 2);
+    assert!(retained
+        .iter()
+        .any(|event| event.payload.contains("ai-hidden-2.txt")));
+    assert!(retained
+        .iter()
+        .any(|event| event.payload.contains("certutil.exe -decode")));
+    assert!(!retained
+        .iter()
+        .any(|event| event.payload.contains("sshd-session.exe\" -R")));
+    assert!(!retained
+        .iter()
+        .any(|event| event.payload.contains("powershell -NoProfile -Command -")));
+}
+
+#[test]
 fn ingest_polled_events_caps_per_poll_burst_and_backlog_growth() {
     let mut cfg = AgentConfig::default();
     cfg.offline_buffer_backend = "memory".to_string();

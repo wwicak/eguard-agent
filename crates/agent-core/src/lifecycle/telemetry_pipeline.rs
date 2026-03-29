@@ -733,6 +733,9 @@ impl AgentRuntime {
 
     fn raw_event_ingest_secondary_key(event: &RawEvent) -> u8 {
         match event.event_type {
+            crate::platform::EventType::ProcessExec => {
+                windows_process_exec_ingest_secondary_key(event)
+            }
             crate::platform::EventType::FileOpen => {
                 let path = parse_payload_field(&event.payload, "path").unwrap_or_default();
                 if path.starts_with("/tmp/") || path.starts_with("/var/tmp/") {
@@ -777,7 +780,12 @@ impl AgentRuntime {
     }
 
     fn prioritize_raw_events(mut events: Vec<RawEvent>) -> Vec<RawEvent> {
-        events.sort_by_key(Self::raw_event_priority);
+        events.sort_by_key(|event| {
+            (
+                Self::raw_event_priority(event),
+                Self::raw_event_ingest_secondary_key(event),
+            )
+        });
         events
     }
 
@@ -1378,6 +1386,44 @@ fn debug_trace_matching_raw_event(stage: &'static str, event: &RawEvent) {
         payload = %event.payload,
         "debug traced raw file event"
     );
+}
+
+fn windows_process_exec_ingest_secondary_key(event: &RawEvent) -> u8 {
+    if !matches!(event.event_type, crate::platform::EventType::ProcessExec) {
+        return 2;
+    }
+
+    let process = parse_payload_field(&event.payload, "path")
+        .or_else(|| parse_payload_field(&event.payload, "process_path"))
+        .unwrap_or_default();
+    let process = process_basename(&process).to_ascii_lowercase();
+    let cmdline = parse_payload_field(&event.payload, "cmdline")
+        .or_else(|| parse_payload_field(&event.payload, "command_line"))
+        .unwrap_or_default();
+    let cmdline_lower = cmdline.to_ascii_lowercase();
+    let audit_id = parse_payload_field(&event.payload, "audit_event_id").unwrap_or_default();
+
+    let is_security_4688 = audit_id == "4688";
+    let has_cmdline = !cmdline.trim().is_empty();
+    let is_low_value_wrapper = matches!(
+        process.as_str(),
+        "sshd-session.exe"
+            | "sshd-session"
+            | "sshd-auth.exe"
+            | "sshd-auth"
+            | "conhost.exe"
+            | "conhost"
+    ) || (process == "powershell.exe"
+        && cmdline_lower.contains("-command -"))
+        || (process == "cmd.exe"
+            && (cmdline_lower.contains("powershell -noprofile -command -")
+                || cmdline_lower.contains("powershell  -noprofile -command -")));
+
+    match (is_security_4688, has_cmdline, is_low_value_wrapper) {
+        (true, true, false) => 0,
+        (_, true, false) => 1,
+        _ => 2,
+    }
 }
 
 fn parse_payload_field(payload: &str, field: &str) -> Option<String> {
