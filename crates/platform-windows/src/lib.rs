@@ -217,15 +217,9 @@ impl EnrichmentCache {
                 entry.parent_process = hinted_parent_name.clone().or(entry.parent_process);
             }
 
-            let needs_refresh = entry.process_exe.is_none()
-                || entry.process_cmdline.is_none()
-                || entry
-                    .parent_process
-                    .as_deref()
-                    .map(is_weak_windows_identity)
-                    .unwrap_or(true)
-                || entry.parent_chain.is_empty();
-            if needs_refresh {
+            if process_entry_needs_refresh(&entry)
+                && !should_skip_live_process_query(payload_meta, &entry)
+            {
                 let info = enrichment::process::query_process_info(raw.pid);
                 if entry.process_exe.is_none() {
                     entry.process_exe = info.exe_path;
@@ -259,38 +253,58 @@ impl EnrichmentCache {
             return entry;
         }
 
-        let info = enrichment::process::query_process_info(raw.pid);
-        let parent_chain = if info.parent_chain.is_empty() {
-            hinted_parent_chain
-        } else {
-            info.parent_chain
-        };
-        let parent_process = hinted_parent_name.clone().or_else(|| {
-            info.parent_name.or_else(|| {
-                parent_chain
-                    .first()
-                    .copied()
-                    .and_then(|pid| self.process_name_for_pid(pid))
-            })
-        });
-
         let mut entry = ProcessCacheEntry {
-            process_exe: if authoritative_process_exec {
-                payload_meta.process_path_hint.clone().or(info.exe_path)
-            } else {
-                info.exe_path
-                    .or_else(|| payload_meta.process_path_hint.clone())
-            },
+            process_exe: payload_meta.process_path_hint.clone(),
             process_cmdline: if authoritative_process_exec {
-                payload_meta.command_line_hint.clone().or(info.command_line)
+                payload_meta.command_line_hint.clone()
             } else {
-                info.command_line
-                    .or_else(|| payload_meta.command_line_hint.clone())
+                None
             },
-            parent_process,
-            parent_chain,
+            parent_process: hinted_parent_name.clone(),
+            parent_chain: hinted_parent_chain,
             last_seen_ns: raw.ts_ns,
         };
+
+        if process_entry_needs_refresh(&entry)
+            && !should_skip_live_process_query(payload_meta, &entry)
+        {
+            let info = enrichment::process::query_process_info(raw.pid);
+            if entry.process_exe.is_none() {
+                entry.process_exe = if authoritative_process_exec {
+                    payload_meta.process_path_hint.clone().or(info.exe_path)
+                } else {
+                    info.exe_path
+                        .or_else(|| payload_meta.process_path_hint.clone())
+                };
+            }
+            if entry.process_cmdline.is_none() {
+                entry.process_cmdline = if authoritative_process_exec {
+                    payload_meta.command_line_hint.clone().or(info.command_line)
+                } else {
+                    info.command_line
+                        .or_else(|| payload_meta.command_line_hint.clone())
+                };
+            }
+            if entry.parent_chain.is_empty() && !info.parent_chain.is_empty() {
+                entry.parent_chain = info.parent_chain;
+            }
+            if entry
+                .parent_process
+                .as_deref()
+                .map(is_weak_windows_identity)
+                .unwrap_or(true)
+            {
+                entry.parent_process = hinted_parent_name.clone().or_else(|| {
+                    info.parent_name.or_else(|| {
+                        entry
+                            .parent_chain
+                            .first()
+                            .copied()
+                            .and_then(|pid| self.process_name_for_pid(pid))
+                    })
+                });
+            }
+        }
 
         self.rewrite_proxy_process_context(&mut entry);
         self.process_cache.put(raw.pid, entry.clone());
@@ -403,8 +417,7 @@ impl EnrichmentCache {
         };
 
         let mut chain = vec![ppid];
-        let info = enrichment::process::query_process_info(ppid);
-        for ancestor in info.parent_chain {
+        for ancestor in enrichment::process::collect_parent_chain(ppid) {
             if ancestor == 0 || chain.contains(&ancestor) {
                 continue;
             }
@@ -593,6 +606,32 @@ impl EnrichmentCache {
     }
 }
 
+fn process_entry_needs_refresh(entry: &ProcessCacheEntry) -> bool {
+    entry.process_exe.is_none()
+        || entry.process_cmdline.is_none()
+        || entry
+            .parent_process
+            .as_deref()
+            .map(is_weak_windows_identity)
+            .unwrap_or(true)
+        || entry.parent_chain.is_empty()
+}
+
+fn should_skip_live_process_query(
+    payload_meta: &PayloadMetadata,
+    entry: &ProcessCacheEntry,
+) -> bool {
+    payload_meta.is_security_process_audit
+        && entry.process_exe.is_some()
+        && entry.process_cmdline.is_some()
+        && (!entry.parent_chain.is_empty()
+            || entry
+                .parent_process
+                .as_deref()
+                .map(|value| !is_weak_windows_identity(value))
+                .unwrap_or(false))
+}
+
 // ── Public API ─────────────────────────────────────────────────────────
 
 pub fn platform_name() -> &'static str {
@@ -761,6 +800,7 @@ struct PayloadMetadata {
     command_line_hint: Option<String>,
     parent_pid: Option<u32>,
     parent_process_hint: Option<String>,
+    is_security_process_audit: bool,
     file_object: Option<String>,
     file_object_secondary: Option<String>,
     dst_ip: Option<String>,
@@ -848,6 +888,8 @@ fn parse_payload_metadata(event_type: &EventType, payload: &str) -> PayloadMetad
             .or_else(|| fields.get("parent_process_name"))
             .or_else(|| fields.get("parent_name"))
             .map(|value| process_basenameish(value)),
+        is_security_process_audit: matches!(event_type, EventType::ProcessExec)
+            && fields.get("audit_event_id").map(|value| value.as_str()) == Some("4688"),
         file_object: primary_file_object,
         file_object_secondary: secondary_file_object,
         dst_ip: fields
@@ -1218,8 +1260,9 @@ fn capacity_from(raw: usize) -> NonZeroUsize {
 #[cfg(test)]
 mod tests {
     use super::{
-        enrich_event_with_cache, normalize_windows_path, parse_payload_metadata, EnrichmentCache,
-        EventType, RawEvent,
+        enrich_event_with_cache, normalize_windows_path, parse_payload_metadata,
+        process_entry_needs_refresh, should_skip_live_process_query, EnrichmentCache, EventType,
+        ProcessCacheEntry, RawEvent,
     };
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1266,6 +1309,33 @@ mod tests {
             metadata.command_line_hint.as_deref(),
             Some(r#"powershell.exe -Command "Get-Process; Get-Service""#)
         );
+    }
+
+    #[test]
+    fn process_exec_payload_marks_security_4688_provenance() {
+        let metadata = parse_payload_metadata(
+            &EventType::ProcessExec,
+            r#"path=C:\Windows\System32\cmd.exe;audit_event_id=4688;cmdline=cmd.exe /c whoami;ppid=0x3c8;parent_process=C:\Windows\System32\explorer.exe"#,
+        );
+        assert!(metadata.is_security_process_audit);
+    }
+
+    #[test]
+    fn rich_security_4688_exec_can_skip_live_process_query() {
+        let metadata = parse_payload_metadata(
+            &EventType::ProcessExec,
+            r#"path=C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe;audit_event_id=4688;cmdline=powershell.exe -enc AAA;ppid=0x3c8;parent_process=C:\Windows\System32\cmd.exe"#,
+        );
+        let entry = ProcessCacheEntry {
+            process_exe: metadata.process_path_hint.clone(),
+            process_cmdline: metadata.command_line_hint.clone(),
+            parent_process: metadata.parent_process_hint.clone(),
+            parent_chain: vec![968],
+            last_seen_ns: 1,
+        };
+
+        assert!(!process_entry_needs_refresh(&entry));
+        assert!(should_skip_live_process_query(&metadata, &entry));
     }
 
     #[test]
