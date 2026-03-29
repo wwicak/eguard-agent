@@ -310,7 +310,9 @@ fn parses_structured_process_exec_payload_escapes_semicolons() {
 
     let event = parse_raw_event(&encode_event(1, 900, 1000, 22, &payload)).expect("parse process");
     assert!(matches!(event.event_type, EventType::ProcessExec));
-    assert!(event.payload.contains("cmdline=bash -c a=\"who\"%3B b=\"ami\"%3B eval \"$a$b\""));
+    assert!(event
+        .payload
+        .contains("cmdline=bash -c a=\"who\"%3B b=\"ami\"%3B eval \"$a$b\""));
 }
 
 #[test]

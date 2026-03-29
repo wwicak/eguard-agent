@@ -298,8 +298,7 @@ fn load_object_with_degradation(
                 // kernels — record the failure but continue with remaining
                 // probes. openat2 was added in kernel 5.6; treat it as
                 // optional so that kernels 5.4.x still get openat coverage.
-                let is_optional =
-                    name.contains("lsm")
+                let is_optional = name.contains("lsm")
                     || name.contains("block")
                     || name.contains("module_load")
                     || name.contains("openat2");

@@ -3,7 +3,9 @@ use grpc_client::ThreatIntelVersionEnvelope;
 use tracing::{info, warn};
 
 use super::super::{interval_due, AgentRuntime, THREAT_INTEL_INTERVAL_SECS};
-use super::state::{persist_threat_intel_last_known_good_state, persist_threat_intel_replay_floor_state};
+use super::state::{
+    persist_threat_intel_last_known_good_state, persist_threat_intel_replay_floor_state,
+};
 use super::version::{ensure_publish_timestamp_floor, ensure_version_monotonicity};
 
 impl AgentRuntime {

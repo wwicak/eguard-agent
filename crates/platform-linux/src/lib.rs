@@ -181,11 +181,16 @@ impl EnrichmentCache {
 
     pub fn prime_process_metadata(&mut self, raw: &RawEvent) {
         if matches!(raw.event_type, EventType::ProcessExec) {
-            let _ = self.process_entry(raw);
+            let payload_meta = parse_payload_metadata(&raw.event_type, &raw.payload);
+            let _ = self.process_entry(raw, Some(&payload_meta));
         }
     }
 
-    fn process_entry(&mut self, raw: &RawEvent) -> ProcessCacheEntry {
+    fn process_entry(
+        &mut self,
+        raw: &RawEvent,
+        payload_meta: Option<&PayloadMetadata>,
+    ) -> ProcessCacheEntry {
         let current_start_time_ticks = read_process_start_time_ticks(raw.pid);
         if let Some(entry) = self.process_cache.get_mut(&raw.pid) {
             let same_process_instance = match (entry.start_time_ticks, current_start_time_ticks) {
@@ -201,7 +206,14 @@ impl EnrichmentCache {
 
         let process_exe = fs::read_link(format!("/proc/{}/exe", raw.pid))
             .ok()
-            .map(|p| p.to_string_lossy().into_owned());
+            .map(|p| p.to_string_lossy().into_owned())
+            .or_else(|| {
+                if matches!(raw.event_type, EventType::ProcessExec) {
+                    payload_meta.and_then(|meta| meta.file_path.clone())
+                } else {
+                    None
+                }
+            });
 
         let process_cmdline = fs::read(format!("/proc/{}/cmdline", raw.pid))
             .ok()
@@ -216,10 +228,19 @@ impl EnrichmentCache {
                 } else {
                     Some(parts.join(" "))
                 }
-            });
+            })
+            .or_else(|| payload_meta.and_then(|meta| meta.command_line_hint.clone()));
 
-        let parent_chain = collect_parent_chain(raw.pid, MAX_PARENT_CHAIN_DEPTH);
-        let parent_process = parent_chain.first().and_then(|pid| read_process_name(*pid));
+        let mut parent_chain = collect_parent_chain(raw.pid, MAX_PARENT_CHAIN_DEPTH);
+        if parent_chain.is_empty() {
+            if let Some(ppid) = payload_meta.and_then(|meta| meta.ppid) {
+                parent_chain = collect_parent_chain_from_ppid(ppid, MAX_PARENT_CHAIN_DEPTH);
+            }
+        }
+        let parent_process = parent_chain
+            .first()
+            .and_then(|pid| read_process_name(*pid))
+            .or_else(|| payload_meta.and_then(|meta| meta.parent_process_hint.clone()));
 
         let entry = ProcessCacheEntry {
             process_exe,
@@ -401,7 +422,7 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
         };
     }
 
-    let entry = cache.process_entry(&raw);
+    let entry = cache.process_entry(&raw, Some(&payload_meta));
 
     let process_exe_sha256 = entry.process_exe.as_deref().and_then(|path| {
         if cache.is_excluded_for_expensive_checks(None, Some(path)) {

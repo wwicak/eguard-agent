@@ -139,6 +139,40 @@ fn process_exec_payload_parent_hint_backfills_parent_process_when_proc_lookup_fa
 }
 
 #[test]
+fn process_exec_payload_cmdline_is_cached_for_later_file_open_when_proc_lookup_fails() {
+    let mut cache = EnrichmentCache::default();
+    let pid = 999_998;
+
+    let exec = RawEvent {
+        event_type: EventType::ProcessExec,
+        pid,
+        uid: 0,
+        ts_ns: 1,
+        payload: "ppid=1;parent_comm=sshd;comm=bash;path=/usr/bin/bash;cmdline=bash -c a%3D\"who\"%3B b%3D\"ami\"%3B eval \"$a$b\""
+            .to_string(),
+    };
+    let enriched_exec = enrich_event_with_cache(exec, &mut cache);
+    assert_eq!(
+        enriched_exec.process_cmdline.as_deref(),
+        Some("bash -c a=\"who\"; b=\"ami\"; eval \"$a$b\"")
+    );
+
+    let file_open = RawEvent {
+        event_type: EventType::FileOpen,
+        pid,
+        uid: 0,
+        ts_ns: 2,
+        payload: "path=/proc/self/status;ppid=1;comm=bash;parent_comm=sshd".to_string(),
+    };
+    let enriched_file = enrich_event_with_cache(file_open, &mut cache);
+    assert_eq!(
+        enriched_file.process_cmdline.as_deref(),
+        Some("bash -c a=\"who\"; b=\"ami\"; eval \"$a$b\"")
+    );
+    assert_eq!(enriched_file.process_exe.as_deref(), Some("/usr/bin/bash"));
+}
+
+#[test]
 // AC-EBP-030
 fn payload_parser_fallbacks_for_dns_and_file_open() {
     let dns = parse_payload_metadata(&EventType::DnsQuery, "malicious.example");
