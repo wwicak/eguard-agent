@@ -137,7 +137,7 @@ impl EtwEngine {
             return Ok(Vec::new());
         };
 
-        let security_reserve = max_batch.min(32);
+        let security_reserve = max_batch.min(64);
 
         // Prefer Security 4688 process-creation truth before draining the
         // noisier kernel ETW stream. Both sources become `ProcessExec` events
