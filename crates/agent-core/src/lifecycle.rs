@@ -73,7 +73,7 @@ use ::response::{
 #[allow(unused_imports)]
 use timing::{
     compute_poll_timeout, compute_sampling_stride, elapsed_micros, host_is_low_memory,
-    host_mem_total_bytes, interval_due, now_unix, resolve_detection_shard_count,
+    interval_due, linux_host_mem_total_bytes, now_unix, resolve_detection_shard_count,
 };
 
 #[allow(unused_imports)]

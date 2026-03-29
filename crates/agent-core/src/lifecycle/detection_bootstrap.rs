@@ -55,7 +55,7 @@ fn low_memory_ioc_exact_store_enabled() -> bool {
             raw.trim().to_ascii_lowercase().as_str(),
             "1" | "true" | "yes" | "on"
         ),
-        Err(_) => super::host_is_low_memory(super::host_mem_total_bytes()),
+        Err(_) => super::host_is_low_memory(super::linux_host_mem_total_bytes()),
     }
 }
 

@@ -34,7 +34,6 @@ platform-linux = { path = "../platform-linux", features = ["ebpf-libbpf"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 platform-windows = { path = "../platform-windows" }
-windows.workspace = true
 windows-service.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]

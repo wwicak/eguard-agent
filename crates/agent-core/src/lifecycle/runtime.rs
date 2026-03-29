@@ -25,8 +25,8 @@ use crate::config::{AgentConfig, AgentMode};
 use crate::detection_state::SharedDetectionState;
 
 use super::{
-    build_ransomware_policy, derive_runtime_mode, host_is_low_memory, host_mem_total_bytes,
-    init_ebpf_engine, load_baseline_store, load_bundle_full, load_compliance_policy,
+    build_ransomware_policy, derive_runtime_mode, host_is_low_memory, init_ebpf_engine,
+    linux_host_mem_total_bytes, load_baseline_store, load_bundle_full, load_compliance_policy,
     resolve_detection_shard_count, runtime_mode_label, seed_anomaly_baselines, AsyncWorkerResult,
     DegradedCause, PendingCommand, PendingControlPlaneSend, PendingControlPlaneTask,
     PendingResponseAction, PendingResponseReport, ReloadReport, RuntimeMetrics,
@@ -162,7 +162,7 @@ impl AgentRuntime {
             }
         }
 
-        let host_mem_total_bytes = host_mem_total_bytes();
+        let host_mem_total_bytes = linux_host_mem_total_bytes();
         let low_memory_host = host_is_low_memory(host_mem_total_bytes);
         let detection_shards = resolve_detection_shard_count();
         let bundle_path = config.detection_bundle_path.clone();
