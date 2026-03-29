@@ -201,8 +201,13 @@ impl EnrichmentCache {
             {
                 entry.process_exe = payload_meta.process_path_hint.clone().or(entry.process_exe);
             }
-            if entry.process_cmdline.is_none() {
-                entry.process_cmdline = payload_meta.command_line_hint.clone();
+            if let Some(candidate_cmdline) = payload_meta.command_line_hint.clone() {
+                if should_upgrade_windows_cmdline(
+                    entry.process_cmdline.as_deref(),
+                    &candidate_cmdline,
+                ) {
+                    entry.process_cmdline = Some(candidate_cmdline);
+                }
             }
             if entry.parent_chain.is_empty() {
                 entry.parent_chain = hinted_parent_chain.clone();
@@ -1112,6 +1117,48 @@ fn process_name_from_cmdline(cmdline: &str) -> Option<&str> {
     }
 }
 
+fn should_upgrade_windows_cmdline(existing: Option<&str>, candidate: &str) -> bool {
+    let candidate = candidate.trim();
+    if candidate.is_empty() {
+        return false;
+    }
+
+    let Some(existing) = existing.map(str::trim).filter(|value| !value.is_empty()) else {
+        return true;
+    };
+
+    if existing.eq_ignore_ascii_case(candidate) {
+        return false;
+    }
+
+    let existing_score = windows_cmdline_signal_score(existing);
+    let candidate_score = windows_cmdline_signal_score(candidate);
+    candidate_score > existing_score || candidate.len() > existing.len().saturating_add(16)
+}
+
+fn windows_cmdline_signal_score(cmdline: &str) -> usize {
+    let trimmed = cmdline.trim();
+    if trimmed.is_empty() {
+        return 0;
+    }
+
+    let token_count = trimmed.split_whitespace().take(6).count();
+    let mut score = 0;
+    if token_count > 1 {
+        score += 2;
+    }
+    if trimmed.contains('\\') || trimmed.contains('/') {
+        score += 1;
+    }
+    if trimmed.len() > 40 {
+        score += 1;
+    }
+    if trimmed.contains('"') || trimmed.contains('=') {
+        score += 1;
+    }
+    score
+}
+
 fn process_name_from_entry(entry: &ProcessCacheEntry) -> Option<String> {
     entry
         .process_exe
@@ -1312,6 +1359,36 @@ mod tests {
         let enriched = enrich_event_with_cache(raw, &mut cache);
 
         assert_eq!(enriched.parent_chain.first().copied(), Some(968));
+        assert_eq!(enriched.parent_process.as_deref(), Some("cmd.exe"));
+    }
+
+    #[test]
+    fn authoritative_process_exec_upgrades_weak_cached_cmdline() {
+        let mut cache = EnrichmentCache::default();
+
+        let weak = RawEvent {
+            event_type: EventType::ProcessExec,
+            pid: 4244,
+            uid: 0,
+            ts_ns: 1,
+            payload: "powershell.exe".to_string(),
+        };
+        let _ = enrich_event_with_cache(weak, &mut cache);
+
+        let richer = RawEvent {
+            event_type: EventType::ProcessExec,
+            pid: 4244,
+            uid: 0,
+            ts_ns: 2,
+            payload: r#"path=C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe;cmdline=powershell.exe -EncodedCommand AAA;ppid=0x3c8;parent_process=C:\Windows\System32\cmd.exe"#
+                .to_string(),
+        };
+        let enriched = enrich_event_with_cache(richer, &mut cache);
+
+        assert_eq!(
+            enriched.process_cmdline.as_deref(),
+            Some("powershell.exe -EncodedCommand AAA")
+        );
         assert_eq!(enriched.parent_process.as_deref(), Some("cmd.exe"));
     }
 
