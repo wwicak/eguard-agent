@@ -22,7 +22,7 @@ mod worker_macos;
 #[cfg(target_os = "windows")]
 mod worker_windows;
 
-const UPDATE_OUTCOME_ACK_TIMEOUT_MS: u64 = 1_000;
+const UPDATE_OUTCOME_ACK_TIMEOUT_MS: u64 = 5_000;
 
 impl AgentRuntime {
     pub(crate) async fn flush_update_outcome_reports(&self) {
@@ -40,7 +40,7 @@ impl AgentRuntime {
             let result_json = serde_json::json!({ "detail": report.detail }).to_string();
             match timeout(
                 Duration::from_millis(UPDATE_OUTCOME_ACK_TIMEOUT_MS),
-                self.client.ack_command_with_result(
+                self.client.ack_command_with_result_prefer_http(
                     &self.config.agent_id,
                     &report.command_id,
                     &report.status,
@@ -142,7 +142,7 @@ fn spawn_update_worker(
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -219,6 +219,76 @@ mod tests {
         assert!(request.contains("cmd-update-outcome-1"));
         assert!(request.contains("\"status\":\"failed\""));
         assert!(request.contains("package checksum verification failed"));
+        assert!(load_update_outcome_reports(&update_dir)
+            .expect("reload reports")
+            .is_empty());
+
+        server.await.expect("mock server join");
+        std::env::remove_var("EGUARD_AGENT_DATA_DIR");
+        let _ = std::fs::remove_dir_all(&data_dir);
+    }
+
+    #[tokio::test]
+    async fn flush_update_outcome_reports_prefers_http_when_transport_is_grpc() {
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let data_dir = unique_temp_dir("grpc-http-fallback");
+        let update_dir = data_dir.join("update");
+        std::env::set_var("EGUARD_AGENT_DATA_DIR", &data_dir);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock ack server");
+        let addr = listener.local_addr().expect("mock server addr");
+        let seen_request = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let seen_request_clone = seen_request.clone();
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept client");
+            let mut request_buf = vec![0u8; 64 * 1024];
+            let read_len = stream.read(&mut request_buf).await.expect("read request");
+            let request = std::str::from_utf8(&request_buf[..read_len]).expect("request utf8");
+            if let Ok(mut guard) = seen_request_clone.lock() {
+                *guard = request.to_string();
+            }
+            let response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 20\r\nConnection: close\r\n\r\n{\"status\":\"ok\"}";
+            stream
+                .write_all(response.as_bytes())
+                .await
+                .expect("write response");
+        });
+
+        write_update_outcome_report(
+            &update_dir,
+            "cmd-update-outcome-grpc",
+            "completed",
+            "agent update applied",
+        )
+        .expect("write outcome report");
+
+        let cfg = AgentConfig {
+            transport_mode: "grpc".to_string(),
+            server_addr: addr.to_string(),
+            agent_id: "agent-test-outcome-grpc".to_string(),
+            ..AgentConfig::default()
+        };
+        let runtime = AgentRuntime::new(cfg).expect("runtime");
+        let started = Instant::now();
+        runtime.flush_update_outcome_reports().await;
+        let elapsed = started.elapsed();
+
+        let request = seen_request
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        assert!(request.starts_with("POST /api/v1/endpoint/command/ack "));
+        assert!(request.contains("cmd-update-outcome-grpc"));
+        assert!(request.contains("\"status\":\"completed\""));
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "persisted outcome flush should prefer HTTP and finish promptly, elapsed={elapsed:?}"
+        );
         assert!(load_update_outcome_reports(&update_dir)
             .expect("reload reports")
             .is_empty());
