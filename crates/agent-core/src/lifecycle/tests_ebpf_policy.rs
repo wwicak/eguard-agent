@@ -469,6 +469,44 @@ fn ingest_polled_events_caps_per_poll_burst_and_backlog_growth() {
 }
 
 #[test]
+fn sensitive_windows_credential_path_exec_survives_process_burst_ingress_cap() {
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    cfg.server_addr = "127.0.0.1:1".to_string();
+
+    let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+    runtime.raw_event_ingest_cap = 4;
+
+    let mut burst = (0..6)
+        .map(|idx| platform_linux::RawEvent {
+            event_type: platform_linux::EventType::ProcessExec,
+            pid: 6100 + idx,
+            uid: 0,
+            ts_ns: 1_700_000_000_000_000_000 + idx as u64,
+            payload: format!(
+                "path=C:\\Windows\\system32\\cmd.exe;comm=cmd.exe;cmdline=cmd.exe /c echo benign-{};ppid=1",
+                idx
+            ),
+        })
+        .collect::<Vec<_>>();
+    burst.push(platform_linux::RawEvent {
+        event_type: platform_linux::EventType::ProcessExec,
+        pid: 6200,
+        uid: 0,
+        ts_ns: 1_700_000_000_100_000_000,
+        payload: "path=C:\\Windows\\system32\\cmd.exe;comm=cmd.exe;cmdline=cmd.exe /c dir %APPDATA%\\Microsoft\\Protect & dir %APPDATA%\\Microsoft\\Credentials;ppid=1".to_string(),
+    });
+
+    let retained = runtime.limit_raw_event_ingress(burst);
+
+    assert_eq!(retained.len(), 4);
+    assert!(retained.iter().any(|event| {
+        event.payload.contains("Microsoft\\Protect")
+            && event.payload.contains("Microsoft\\Credentials")
+    }));
+}
+
+#[test]
 fn backlog_cap_preserves_frontloaded_high_value_file_open_events() {
     let mut cfg = AgentConfig::default();
     cfg.offline_buffer_backend = "memory".to_string();

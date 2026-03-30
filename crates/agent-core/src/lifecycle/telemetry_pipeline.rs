@@ -743,8 +743,28 @@ impl AgentRuntime {
                     2
                 }
             }
+            crate::platform::EventType::ProcessExec => {
+                if Self::is_high_signal_windows_sensitive_process_exec(event) {
+                    0
+                } else {
+                    2
+                }
+            }
             _ => 2,
         }
+    }
+
+    fn is_high_signal_windows_sensitive_process_exec(event: &RawEvent) -> bool {
+        let command_line = parse_payload_field(&event.payload, "cmdline")
+            .or_else(|| parse_payload_field(&event.payload, "command_line"))
+            .map(|value| value.to_ascii_lowercase())
+            .unwrap_or_default();
+        if command_line.is_empty() {
+            return false;
+        }
+
+        command_line.contains("\\microsoft\\protect")
+            || command_line.contains("\\microsoft\\credentials")
     }
 
     pub(super) fn enforce_raw_event_backlog_cap(&mut self) {
