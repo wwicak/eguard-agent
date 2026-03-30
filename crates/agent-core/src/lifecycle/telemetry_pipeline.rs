@@ -500,7 +500,7 @@ impl AgentRuntime {
         }
     }
 
-    fn telemetry_backlog_depth(&self) -> usize {
+    pub(super) fn telemetry_backlog_depth(&self) -> usize {
         self.buffer
             .pending_count()
             .saturating_add(self.raw_event_backlog.len())
