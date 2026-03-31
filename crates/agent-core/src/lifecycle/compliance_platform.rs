@@ -54,6 +54,7 @@ fn collect_windows_snapshot() -> Result<SystemSnapshot> {
     // Windows Update: no direct auto-update bool in UpdateStatus.
     // Use "no reboot required + no pending" as a best-effort proxy.
     let auto_updates_enabled = Some(report.updates.pending_count == 0);
+    let screen_lock_enabled = Some(report.screen_lock.enabled);
 
     let kernel_version = hardware
         .os_version
@@ -71,7 +72,7 @@ fn collect_windows_snapshot() -> Result<SystemSnapshot> {
         installed_packages: None,
         running_services: None,
         password_policy_hardened: None,
-        screen_lock_enabled: None,
+        screen_lock_enabled,
         auto_updates_enabled,
         antivirus_running,
         agent_version: compliance::current_agent_version().to_string(),
@@ -134,6 +135,7 @@ fn windows_capabilities() -> HashSet<String> {
         "disk_encryption",
         "antivirus",
         "auto_updates",
+        "screen_lock",
         "agent_version",
         "os_version",
     ]

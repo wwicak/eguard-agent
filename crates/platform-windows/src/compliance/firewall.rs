@@ -44,7 +44,7 @@ fn parse_firewall_profiles_json(raw: &str) -> Option<FirewallStatus> {
 
     for record in records {
         let name = record.get("Name")?.as_str()?.to_ascii_lowercase();
-        let enabled = record.get("Enabled")?.as_bool().unwrap_or(false);
+        let enabled = parse_enabled_value(record.get("Enabled")?);
 
         match name.as_str() {
             "domain" => status.domain_profile_enabled = enabled,
@@ -55,6 +55,13 @@ fn parse_firewall_profiles_json(raw: &str) -> Option<FirewallStatus> {
     }
 
     Some(status)
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn parse_enabled_value(value: &Value) -> bool {
+    value
+        .as_bool()
+        .unwrap_or_else(|| value.as_i64().unwrap_or(0) != 0)
 }
 
 #[cfg(test)]
@@ -69,5 +76,15 @@ mod tests {
         assert!(parsed.domain_profile_enabled);
         assert!(!parsed.private_profile_enabled);
         assert!(parsed.public_profile_enabled);
+    }
+
+    #[test]
+    fn parses_firewall_profiles_with_numeric_enabled_values() {
+        let raw = r#"[{"Name":"Domain","Enabled":1},{"Name":"Private","Enabled":1},{"Name":"Public","Enabled":0}]"#;
+        let parsed = parse_firewall_profiles_json(raw).expect("parsed firewall json");
+
+        assert!(parsed.domain_profile_enabled);
+        assert!(parsed.private_profile_enabled);
+        assert!(!parsed.public_profile_enabled);
     }
 }

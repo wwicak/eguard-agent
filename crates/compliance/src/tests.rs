@@ -4,6 +4,35 @@ fn snapshot_base(firewall_enabled: bool, kernel_version: &str) -> SystemSnapshot
     SystemSnapshot::minimal(firewall_enabled, kernel_version)
 }
 
+fn windows_snapshot_base(firewall_enabled: bool, kernel_version: &str) -> SystemSnapshot {
+    SystemSnapshot {
+        firewall_enabled,
+        kernel_version: kernel_version.to_string(),
+        os_version: Some("Windows 11 24H2".to_string()),
+        root_fs_encrypted: None,
+        ssh_root_login_permitted: None,
+        installed_packages: None,
+        running_services: None,
+        password_policy_hardened: None,
+        screen_lock_enabled: None,
+        auto_updates_enabled: Some(true),
+        antivirus_running: Some(true),
+        agent_version: current_agent_version().to_string(),
+        os_type: "windows".to_string(),
+        capabilities: [
+            "firewall",
+            "disk_encryption",
+            "antivirus",
+            "auto_updates",
+            "agent_version",
+            "os_version",
+        ]
+        .into_iter()
+        .map(|cap| cap.to_string())
+        .collect(),
+    }
+}
+
 #[test]
 // AC-CMP-014 AC-CMP-015 AC-CMP-016
 fn parse_policy_json_handles_extended_fields() {
@@ -332,6 +361,64 @@ fn screen_lock_check_uses_probe_flag() {
         .checks
         .iter()
         .any(|c| c.check_type == "screen_lock" && c.status == "non_compliant"));
+}
+
+#[test]
+fn unsupported_windows_legacy_checks_are_not_applicable() {
+    let policy = CompliancePolicy {
+        min_kernel_prefix: Some("5.".to_string()),
+        require_ssh_root_login_disabled: true,
+        password_policy_required: true,
+        screen_lock_required: true,
+        ..CompliancePolicy::default()
+    };
+    let snapshot = windows_snapshot_base(false, "10.0.26100");
+
+    let result = evaluate_snapshot(&policy, &snapshot);
+    assert_eq!(result.status, "not_applicable");
+
+    assert!(result
+        .checks
+        .iter()
+        .any(|c| c.check_id == "kernel_prefix" && c.status == "not_applicable"));
+    assert!(result
+        .checks
+        .iter()
+        .any(|c| c.check_id == "ssh_root_login" && c.status == "not_applicable"));
+    assert!(result
+        .checks
+        .iter()
+        .any(|c| c.check_id == "password_policy" && c.status == "not_applicable"));
+    assert!(result
+        .checks
+        .iter()
+        .any(|c| c.check_id == "screen_lock_enabled" && c.status == "not_applicable"));
+}
+
+#[test]
+fn supported_windows_legacy_checks_still_evaluate_normally() {
+    let policy = CompliancePolicy {
+        firewall_required: true,
+        auto_updates_required: true,
+        antivirus_required: true,
+        ..CompliancePolicy::default()
+    };
+    let snapshot = windows_snapshot_base(true, "10.0.26100");
+
+    let result = evaluate_snapshot(&policy, &snapshot);
+    assert_eq!(result.status, "compliant");
+    assert!(result
+        .checks
+        .iter()
+        .any(|c| c.check_id == "firewall_required" && c.status == "compliant"));
+    assert!(result
+        .checks
+        .iter()
+        .any(|c| c.check_id == "auto_updates" && c.status == "compliant"));
+    assert!(result
+        .checks
+        .iter()
+        .any(|c| c.check_id == "antivirus_running" && c.status == "compliant"));
 }
 
 #[test]

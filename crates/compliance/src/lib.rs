@@ -269,22 +269,31 @@ pub fn evaluate_snapshot(policy: &CompliancePolicy, snapshot: &SystemSnapshot) -
     }
 
     if let Some(prefix) = &policy.min_kernel_prefix {
-        checks.push(check_result(
-            "kernel_prefix",
-            snapshot.kernel_version.starts_with(prefix),
-            format!(
-                "kernel {} {} required prefix {}",
-                snapshot.kernel_version,
-                if snapshot.kernel_version.starts_with(prefix) {
-                    "matches"
-                } else {
-                    "does not match"
-                },
-                prefix
-            ),
-            snapshot.kernel_version.clone(),
-            prefix.clone(),
-        ));
+        if has_capability(snapshot, "kernel_version") {
+            checks.push(check_result(
+                "kernel_prefix",
+                snapshot.kernel_version.starts_with(prefix),
+                format!(
+                    "kernel {} {} required prefix {}",
+                    snapshot.kernel_version,
+                    if snapshot.kernel_version.starts_with(prefix) {
+                        "matches"
+                    } else {
+                        "does not match"
+                    },
+                    prefix
+                ),
+                snapshot.kernel_version.clone(),
+                prefix.clone(),
+            ));
+        } else {
+            checks.push(not_applicable_check(
+                "kernel_prefix",
+                snapshot,
+                prefix.clone(),
+                snapshot.kernel_version.clone(),
+            ));
+        }
     }
 
     if let Some(prefix) = &policy.os_version_prefix {
@@ -353,25 +362,37 @@ pub fn evaluate_snapshot(policy: &CompliancePolicy, snapshot: &SystemSnapshot) -
     }
 
     if policy.require_ssh_root_login_disabled {
-        let passed = snapshot
-            .ssh_root_login_permitted
-            .map(|v| !v)
-            .unwrap_or(false);
-        let detail = match snapshot.ssh_root_login_permitted {
-            Some(true) => "PermitRootLogin allows root login".to_string(),
-            Some(false) => "PermitRootLogin does not allow root login".to_string(),
-            None => "unable to determine PermitRootLogin".to_string(),
-        };
-        checks.push(check_result(
-            "ssh_root_login",
-            passed,
-            detail,
-            snapshot
+        if has_capability(snapshot, "ssh_config") {
+            let passed = snapshot
                 .ssh_root_login_permitted
-                .map(|v| v.to_string())
-                .unwrap_or_else(|| "unknown".to_string()),
-            "disabled",
-        ));
+                .map(|v| !v)
+                .unwrap_or(false);
+            let detail = match snapshot.ssh_root_login_permitted {
+                Some(true) => "PermitRootLogin allows root login".to_string(),
+                Some(false) => "PermitRootLogin does not allow root login".to_string(),
+                None => "unable to determine PermitRootLogin".to_string(),
+            };
+            checks.push(check_result(
+                "ssh_root_login",
+                passed,
+                detail,
+                snapshot
+                    .ssh_root_login_permitted
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "unknown".to_string()),
+                "disabled",
+            ));
+        } else {
+            checks.push(not_applicable_check(
+                "ssh_root_login",
+                snapshot,
+                "disabled",
+                snapshot
+                    .ssh_root_login_permitted
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "unknown".to_string()),
+            ));
+        }
     }
 
     if !policy.required_packages.is_empty() {
@@ -438,33 +459,57 @@ pub fn evaluate_snapshot(policy: &CompliancePolicy, snapshot: &SystemSnapshot) -
     }
 
     if policy.password_policy_required {
-        let passed = snapshot.password_policy_hardened.unwrap_or(false);
-        checks.push(check_result(
-            "password_policy",
-            passed,
-            if passed {
-                "password policy appears hardened".to_string()
-            } else {
-                "password policy not hardened".to_string()
-            },
-            if passed { "hardened" } else { "not_hardened" },
-            "hardened",
-        ));
+        if has_capability(snapshot, "password_policy") {
+            let passed = snapshot.password_policy_hardened.unwrap_or(false);
+            checks.push(check_result(
+                "password_policy",
+                passed,
+                if passed {
+                    "password policy appears hardened".to_string()
+                } else {
+                    "password policy not hardened".to_string()
+                },
+                if passed { "hardened" } else { "not_hardened" },
+                "hardened",
+            ));
+        } else {
+            checks.push(not_applicable_check(
+                "password_policy",
+                snapshot,
+                "hardened",
+                snapshot
+                    .password_policy_hardened
+                    .map(|v| if v { "hardened" } else { "not_hardened" })
+                    .unwrap_or("unknown"),
+            ));
+        }
     }
 
     if policy.screen_lock_required {
-        let passed = snapshot.screen_lock_enabled.unwrap_or(false);
-        checks.push(check_result(
-            "screen_lock_enabled",
-            passed,
-            if passed {
-                "screen lock appears enabled".to_string()
-            } else {
-                "screen lock appears disabled".to_string()
-            },
-            if passed { "enabled" } else { "disabled" },
-            "enabled",
-        ));
+        if has_capability(snapshot, "screen_lock") {
+            let passed = snapshot.screen_lock_enabled.unwrap_or(false);
+            checks.push(check_result(
+                "screen_lock_enabled",
+                passed,
+                if passed {
+                    "screen lock appears enabled".to_string()
+                } else {
+                    "screen lock appears disabled".to_string()
+                },
+                if passed { "enabled" } else { "disabled" },
+                "enabled",
+            ));
+        } else {
+            checks.push(not_applicable_check(
+                "screen_lock_enabled",
+                snapshot,
+                "enabled",
+                snapshot
+                    .screen_lock_enabled
+                    .map(|v| if v { "enabled" } else { "disabled" })
+                    .unwrap_or("unknown"),
+            ));
+        }
     }
 
     if policy.auto_updates_required {
@@ -1128,6 +1173,45 @@ fn check_result(
         remediation_action_id: String::new(),
         remediation_detail: String::new(),
     }
+}
+
+fn not_applicable_check(
+    check: impl Into<String>,
+    snapshot: &SystemSnapshot,
+    expected: impl Into<String>,
+    actual: impl Into<String>,
+) -> ComplianceCheck {
+    let check_id = check.into();
+    let check_type = derive_legacy_check_type(&check_id);
+    let actual_value = actual.into();
+    let expected_value = expected.into();
+    let evidence_json = json!({
+        "actual": actual_value,
+        "expected": expected_value,
+    })
+    .to_string();
+
+    ComplianceCheck {
+        check_id,
+        check_type,
+        status: "not_applicable".to_string(),
+        detail: format!("unsupported on {}", snapshot.os_type),
+        severity: "medium".to_string(),
+        expected_value,
+        actual_value,
+        evidence_json,
+        evidence_source: "capability_gate".to_string(),
+        collected_at_unix: now_unix(),
+        grace_expires_at_unix: 0,
+        grace_period_secs: 0,
+        auto_remediated: false,
+        remediation_action_id: String::new(),
+        remediation_detail: String::new(),
+    }
+}
+
+fn has_capability(snapshot: &SystemSnapshot, capability: &str) -> bool {
+    snapshot.capabilities.contains(capability)
 }
 
 fn package_installed(snapshot: &SystemSnapshot, package: &str) -> bool {

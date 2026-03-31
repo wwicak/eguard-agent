@@ -4,7 +4,7 @@ use super::constants::DEFAULT_SERVER_ADDR;
 use super::types::{AgentConfig, AgentMode};
 use super::util::default_agent_id;
 
-#[cfg(any(test, target_os = "macos"))]
+#[cfg(any(test, target_os = "windows", target_os = "macos"))]
 const INVALID_MAC: &str = "00:00:00:00:00:00";
 
 /// Detect the MAC address of the primary physical network interface.
