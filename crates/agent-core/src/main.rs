@@ -8,10 +8,10 @@ mod test_support;
 use anyhow::Result;
 use std::fs::OpenOptions;
 use std::future::Future;
-use std::pin::Pin;
 #[cfg(target_os = "windows")]
 use std::path::Path;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Once;
 #[cfg(not(unix))]
 use tokio::signal;

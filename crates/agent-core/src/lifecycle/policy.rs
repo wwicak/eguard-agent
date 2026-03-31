@@ -43,16 +43,37 @@ pub(super) fn load_compliance_policy() -> CompliancePolicy {
         }
     }
 
-    CompliancePolicy {
-        firewall_required: true,
-        min_kernel_prefix: Some("5.".to_string()),
-        disk_encryption_required: true,
-        require_ssh_root_login_disabled: true,
-        password_policy_required: true,
-        screen_lock_required: true,
-        auto_updates_required: true,
-        antivirus_required: true,
-        ..CompliancePolicy::default()
+    default_compliance_policy()
+}
+
+fn default_compliance_policy() -> CompliancePolicy {
+    #[cfg(target_os = "macos")]
+    {
+        CompliancePolicy {
+            firewall_required: true,
+            disk_encryption_required: true,
+            require_ssh_root_login_disabled: true,
+            password_policy_required: true,
+            screen_lock_required: true,
+            auto_updates_required: true,
+            antivirus_required: false,
+            ..CompliancePolicy::default()
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        CompliancePolicy {
+            firewall_required: true,
+            min_kernel_prefix: Some("5.".to_string()),
+            disk_encryption_required: true,
+            require_ssh_root_login_disabled: true,
+            password_policy_required: true,
+            screen_lock_required: true,
+            auto_updates_required: true,
+            antivirus_required: true,
+            ..CompliancePolicy::default()
+        }
     }
 }
 
@@ -145,6 +166,35 @@ fn normalize_hash(raw: &str) -> Option<String> {
         return None;
     }
     Some(trimmed.to_ascii_lowercase())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::default_compliance_policy;
+
+    #[test]
+    fn default_policy_matches_current_platform_expectations() {
+        let policy = default_compliance_policy();
+
+        assert!(policy.firewall_required);
+        assert!(policy.disk_encryption_required);
+        assert!(policy.require_ssh_root_login_disabled);
+        assert!(policy.password_policy_required);
+        assert!(policy.screen_lock_required);
+        assert!(policy.auto_updates_required);
+
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(policy.min_kernel_prefix, None);
+            assert!(!policy.antivirus_required);
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert_eq!(policy.min_kernel_prefix.as_deref(), Some("5."));
+            assert!(policy.antivirus_required);
+        }
+    }
 }
 
 pub(super) fn update_tls_policy_from_server(

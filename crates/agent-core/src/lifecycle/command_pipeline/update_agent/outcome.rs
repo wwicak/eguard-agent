@@ -95,7 +95,12 @@ pub(super) fn load_update_outcome_reports(
         let raw = fs::read_to_string(&path)
             .map_err(|err| format!("read update outcome {}: {}", path.display(), err))?;
         let mut parts = raw.splitn(3, '\n');
-        let command_id = parts.next().unwrap_or_default().trim().to_string();
+        let command_id = parts
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .trim_start_matches('\u{feff}')
+            .to_string();
         let status = parts.next().unwrap_or_default().trim().to_string();
         let detail = parts.next().unwrap_or_default().trim().to_string();
         if command_id.is_empty() || status.is_empty() {
@@ -157,5 +162,24 @@ mod tests {
             .and_then(|value| value.to_str())
             .unwrap_or_default();
         assert!(name.contains("cmd_update_123"));
+    }
+
+    #[test]
+    fn load_update_outcome_reports_strips_utf8_bom_from_command_id() {
+        let dir = unique_temp_dir("bom");
+        let path = update_outcome_path(&dir, "cmd-update-bom");
+        std::fs::create_dir_all(&dir).expect("create temp outcome dir");
+        std::fs::write(
+            &path,
+            b"\xEF\xBB\xBFcmd-update-bom\ncompleted\nagent update applied",
+        )
+        .expect("write bom outcome");
+
+        let reports = load_update_outcome_reports(&dir).expect("load outcomes");
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].1.command_id, "cmd-update-bom");
+        assert_eq!(reports[0].1.status, "completed");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

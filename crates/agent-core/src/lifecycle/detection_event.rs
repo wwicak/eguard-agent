@@ -166,10 +166,43 @@ fn parse_payload_field(payload: &str, field: &str) -> Option<String> {
         .find_map(|(key, value)| {
             key.trim()
                 .eq_ignore_ascii_case(field)
-                .then(|| value.trim().trim_matches('"'))
+                .then(|| decode_payload_value(trim_enclosing_quotes(value.trim())))
                 .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned)
         })
+}
+
+fn decode_payload_value(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out = String::with_capacity(raw.len());
+    let mut index = 0;
+
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            let hex = &raw[index + 1..index + 3];
+            if let Ok(value) = u8::from_str_radix(hex, 16) {
+                out.push(value as char);
+                index += 3;
+                continue;
+            }
+        }
+
+        if let Some(ch) = raw[index..].chars().next() {
+            out.push(ch);
+            index += ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+
+    out
+}
+
+fn trim_enclosing_quotes(raw: &str) -> &str {
+    if raw.len() >= 2 && raw.starts_with('"') && raw.ends_with('"') {
+        &raw[1..raw.len() - 1]
+    } else {
+        raw
+    }
 }
 
 fn is_weak_windows_process_identity(process: &str) -> bool {

@@ -38,7 +38,8 @@ fn check_auto_updates_macos() -> AutoUpdateStatus {
         None => return AutoUpdateStatus::default(),
     };
 
-    let auto_check = plist_xml_bool_value(&xml, "AutomaticCheckEnabled");
+    let auto_check = plist_xml_bool_value(&xml, "AutomaticCheckEnabled")
+        || softwareupdate_schedule_enabled().unwrap_or(false);
     let auto_download = plist_xml_bool_value(&xml, "AutomaticDownload");
     let auto_install = plist_xml_bool_value(&xml, "AutomaticallyInstallMacOSUpdates");
 
@@ -48,6 +49,25 @@ fn check_auto_updates_macos() -> AutoUpdateStatus {
         auto_install_os_updates: auto_install,
         details: format!("check={auto_check},download={auto_download},install={auto_install}"),
     }
+}
+
+#[cfg(target_os = "macos")]
+fn softwareupdate_schedule_enabled() -> Option<bool> {
+    let output = Command::new("softwareupdate")
+        .arg("--schedule")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let combined = format!(
+        "{} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+    .to_ascii_lowercase();
+    Some(combined.contains("turned on"))
 }
 
 /// Export the entire SoftwareUpdate plist domain as XML via a single subprocess.
@@ -96,12 +116,23 @@ impl Default for AutoUpdateStatus {
 
 #[cfg(test)]
 mod tests {
-    use super::AutoUpdateStatus;
+    use super::{plist_xml_bool_value, AutoUpdateStatus};
 
     #[test]
     fn auto_updates_default_is_disabled() {
         let status = AutoUpdateStatus::default();
         assert!(!status.automatic_check_enabled);
         assert!(!status.automatic_download);
+    }
+
+    #[test]
+    fn plist_xml_bool_value_reads_present_keys() {
+        let xml = "<plist><dict><key>AutomaticDownload</key><true/><key>AutomaticallyInstallMacOSUpdates</key><false/></dict></plist>";
+        assert!(plist_xml_bool_value(xml, "AutomaticDownload"));
+        assert!(!plist_xml_bool_value(
+            xml,
+            "AutomaticallyInstallMacOSUpdates"
+        ));
+        assert!(!plist_xml_bool_value(xml, "AutomaticCheckEnabled"));
     }
 }

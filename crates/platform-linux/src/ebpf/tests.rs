@@ -258,6 +258,64 @@ fn parses_structured_process_exec_payload() {
 }
 
 #[test]
+fn parses_structured_process_exec_payload_with_nul_separated_argv() {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&321u32.to_le_bytes());
+    payload.extend_from_slice(&777u64.to_le_bytes());
+
+    let mut comm = [0u8; 32];
+    comm[..5].copy_from_slice(b"bash\0");
+    payload.extend_from_slice(&comm);
+
+    let mut parent_comm = [0u8; 32];
+    parent_comm[..8].copy_from_slice(b"systemd\0");
+    payload.extend_from_slice(&parent_comm);
+
+    let mut filename = [0u8; 160];
+    filename[..14].copy_from_slice(b"/usr/bin/bash\0");
+    payload.extend_from_slice(&filename);
+
+    let mut argv = [0u8; 160];
+    let raw_argv = b"/usr/bin/bash\0-lc\0whoami\0";
+    argv[..raw_argv.len()].copy_from_slice(raw_argv);
+    payload.extend_from_slice(&argv);
+
+    let event = parse_raw_event(&encode_event(1, 900, 1000, 22, &payload)).expect("parse process");
+    assert!(matches!(event.event_type, EventType::ProcessExec));
+    assert!(event.payload.contains("cmdline=/usr/bin/bash -lc whoami"));
+}
+
+#[test]
+fn parses_structured_process_exec_payload_escapes_semicolons() {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&321u32.to_le_bytes());
+    payload.extend_from_slice(&777u64.to_le_bytes());
+
+    let mut comm = [0u8; 32];
+    comm[..5].copy_from_slice(b"bash\0");
+    payload.extend_from_slice(&comm);
+
+    let mut parent_comm = [0u8; 32];
+    parent_comm[..8].copy_from_slice(b"systemd\0");
+    payload.extend_from_slice(&parent_comm);
+
+    let mut filename = [0u8; 160];
+    filename[..14].copy_from_slice(b"/usr/bin/bash\0");
+    payload.extend_from_slice(&filename);
+
+    let mut argv = [0u8; 160];
+    let raw_argv = b"bash\0-c\0a=\"who\"; b=\"ami\"; eval \"$a$b\"\0";
+    argv[..raw_argv.len()].copy_from_slice(raw_argv);
+    payload.extend_from_slice(&argv);
+
+    let event = parse_raw_event(&encode_event(1, 900, 1000, 22, &payload)).expect("parse process");
+    assert!(matches!(event.event_type, EventType::ProcessExec));
+    assert!(event
+        .payload
+        .contains("cmdline=bash -c a=\"who\"%3B b=\"ami\"%3B eval \"$a$b\""));
+}
+
+#[test]
 // AC-EBP-004 AC-EBP-030
 fn parses_structured_tcp_connect_payload() {
     let mut payload = Vec::new();

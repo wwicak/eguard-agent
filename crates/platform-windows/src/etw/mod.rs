@@ -138,17 +138,24 @@ impl EtwEngine {
         };
 
         let security_reserve = max_batch.min(32);
-        let etw_budget = max_batch.saturating_sub(security_reserve);
 
-        let mut events = consumer.poll_events(etw_budget);
-        if let Some(reader) = self.security_eventlog.as_mut() {
-            let remaining = max_batch.saturating_sub(events.len());
-            if remaining > 0 {
-                let mut security_events = reader
-                    .poll_events(remaining)
-                    .map_err(EtwError::ConsumerStart)?;
-                events.append(&mut security_events);
-            }
+        // Prefer Security 4688 process-creation truth before draining the
+        // noisier kernel ETW stream. Both sources become `ProcessExec` events
+        // later, so preserving the richer audit-log version earlier in the
+        // batch gives it a better chance to survive frontloading and backlog
+        // eviction when the runtime is under burst pressure.
+        let mut events = if let Some(reader) = self.security_eventlog.as_mut() {
+            reader
+                .poll_events(security_reserve)
+                .map_err(EtwError::ConsumerStart)?
+        } else {
+            Vec::new()
+        };
+
+        let etw_budget = max_batch.saturating_sub(events.len());
+        if etw_budget > 0 {
+            let mut etw_events = consumer.poll_events(etw_budget);
+            events.append(&mut etw_events);
         }
 
         self.stats.events_received = self

@@ -241,14 +241,28 @@ fn load_objects_with_degradation(
 /// (e.g., LSM hooks on kernels without BPF LSM enabled) are recorded in
 /// `failed_probes` but don't prevent the engine from working with the
 /// remaining probes.
+/// Perf-buffer page count for hosts with ≤ 3 GB RAM.
+/// libbpf-rs defaults to 64 pages per CPU; we reduce to 32 pages on
+/// constrained hosts to keep userspace mmap + kernel perf pages modest.
+/// Ring-buffer map downsizing was tested and rejected because it materially
+/// degraded Fedora battery coverage under load.
+const LOW_MEMORY_PERF_BUFFER_PAGES: usize = 32;
+
+/// Threshold below which a host is considered memory-constrained for event
+/// transport sizing (matches `LOW_MEMORY_HOST_THRESHOLD_BYTES` used for
+/// record budget).
+const EVENT_TRANSPORT_LOW_MEM_THRESHOLD: u64 = LOW_MEMORY_HOST_THRESHOLD_BYTES;
+
 fn load_object_with_degradation(
     path: &Path,
     event_map_name: &str,
     failed_probes: &mut Vec<String>,
 ) -> Result<LoadedObject> {
-    let object = libbpf_rs::ObjectBuilder::default()
+    let mut open_obj = libbpf_rs::ObjectBuilder::default()
         .open_file(path)
-        .map_err(|err| EbpfError::Backend(format!("open ELF '{}': {}", path.display(), err)))?
+        .map_err(|err| EbpfError::Backend(format!("open ELF '{}': {}", path.display(), err)))?;
+
+    let object = open_obj
         .load()
         .map_err(|err| EbpfError::Backend(format!("load ELF '{}': {}", path.display(), err)))?;
 
@@ -280,11 +294,14 @@ fn load_object_with_degradation(
                 attached_programs.push(name);
             }
             Err(err) => {
-                // LSM and some tracepoint hooks may fail on older kernels
-                // or kernels without specific features enabled — record
-                // the failure but continue with remaining probes.
-                let is_optional =
-                    name.contains("lsm") || name.contains("block") || name.contains("module_load");
+                // LSM, module-load, and newer syscall hooks may fail on older
+                // kernels — record the failure but continue with remaining
+                // probes. openat2 was added in kernel 5.6; treat it as
+                // optional so that kernels 5.4.x still get openat coverage.
+                let is_optional = name.contains("lsm")
+                    || name.contains("block")
+                    || name.contains("module_load")
+                    || name.contains("openat2");
 
                 if is_optional {
                     failed_probes.push(format!("{}:{}", name, err));
@@ -557,6 +574,7 @@ fn build_perf_buffers(
         let pool_sink = Arc::clone(&record_pool);
         let lost_sink = Arc::clone(&perf_lost_records);
         let perf_buffer = libbpf_rs::PerfBufferBuilder::new(&source.map_handle)
+            .pages(perf_buffer_pages_for_host(linux_host_mem_total_bytes()))
             .sample_cb(move |_cpu, raw| {
                 push_raw_record(
                     raw,
@@ -746,6 +764,20 @@ fn parse_budget_env(name: &str, default: usize, min_value: usize) -> usize {
         .unwrap_or(default.max(min_value))
 }
 
+fn is_low_memory_host(total_mem_bytes: Option<u64>) -> bool {
+    total_mem_bytes
+        .map(|total| total > 0 && total <= EVENT_TRANSPORT_LOW_MEM_THRESHOLD)
+        .unwrap_or(false)
+}
+
+fn perf_buffer_pages_for_host(total_mem_bytes: Option<u64>) -> usize {
+    if is_low_memory_host(total_mem_bytes) {
+        LOW_MEMORY_PERF_BUFFER_PAGES
+    } else {
+        64
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn linux_host_mem_total_bytes() -> Option<u64> {
     let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
@@ -772,4 +804,32 @@ fn sample_perf_lost_records(counter: &Arc<AtomicU64>, last_seen: &mut u64) -> u6
     let delta = total.saturating_sub(*last_seen);
     *last_seen = total;
     delta
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_memtotal_line_reads_kib_value() {
+        assert_eq!(
+            parse_memtotal_line_bytes("MemTotal:       2006016 kB"),
+            Some(2006016 * 1024)
+        );
+    }
+
+    #[test]
+    fn low_memory_transport_tuning_applies_under_threshold() {
+        let low_mem = Some(2 * 1024 * 1024 * 1024);
+        assert_eq!(
+            perf_buffer_pages_for_host(low_mem),
+            LOW_MEMORY_PERF_BUFFER_PAGES
+        );
+    }
+
+    #[test]
+    fn default_transport_tuning_remains_for_large_hosts() {
+        let large_mem = Some(8 * 1024 * 1024 * 1024);
+        assert_eq!(perf_buffer_pages_for_host(large_mem), 64);
+    }
 }

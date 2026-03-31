@@ -441,6 +441,33 @@ impl Client {
         Ok(())
     }
 
+    pub async fn ack_command_with_result_prefer_http(
+        &self,
+        agent_id: &str,
+        command_id: &str,
+        status: &str,
+        result_json: Option<&str>,
+    ) -> Result<()> {
+        self.ensure_online()?;
+        match self.mode {
+            TransportMode::Http => {
+                self.ack_command_http(agent_id, command_id, status, result_json)
+                    .await?
+            }
+            TransportMode::Grpc => {
+                if let Err(err) = self
+                    .ack_command_http(agent_id, command_id, status, result_json)
+                    .await
+                {
+                    warn!(error = %err, "HTTP command ack failed for persisted outcome, falling back to gRPC ack endpoint");
+                    self.ack_command_grpc(agent_id, command_id, status, result_json)
+                        .await?
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub async fn fetch_latest_threat_intel(&self) -> Result<Option<ThreatIntelVersionEnvelope>> {
         self.ensure_online()?;
         match self.mode {

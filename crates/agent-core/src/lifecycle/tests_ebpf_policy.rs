@@ -345,6 +345,38 @@ fn sampling_stride_scales_with_backlog_and_drop_backpressure() {
 }
 
 #[test]
+fn additional_telemetry_eval_budget_scales_with_backlog_pressure() {
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    cfg.server_addr = "127.0.0.1:1".to_string();
+    cfg.self_protection_integrity_check_interval_secs = 0;
+
+    let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+    let raw = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::ProcessExec,
+        pid: 4242,
+        uid: 0,
+        ts_ns: 1,
+        payload: "path=/usr/bin/cmd.exe;cmdline=cmd.exe /c whoami;ppid=1;cgroup_id=0;comm=cmd.exe;parent_comm=powershell.exe".to_string(),
+    };
+
+    assert_eq!(runtime.additional_telemetry_eval_budget(), 0);
+
+    runtime.strict_budget_mode = true;
+    runtime.raw_event_backlog = std::collections::VecDeque::from(vec![raw.clone(); 1024]);
+    assert_eq!(runtime.additional_telemetry_eval_budget(), 1);
+
+    runtime.raw_event_backlog = std::collections::VecDeque::from(vec![raw.clone(); 2048]);
+    assert_eq!(runtime.additional_telemetry_eval_budget(), 3);
+
+    runtime.raw_event_backlog = std::collections::VecDeque::from(vec![raw; 4096]);
+    assert_eq!(
+        runtime.additional_telemetry_eval_budget(),
+        AgentRuntime::MAX_EXTRA_TELEMETRY_EVALS_PER_TICK
+    );
+}
+
+#[test]
 // AC-EBP-035 AC-OPT-005
 fn evaluate_tick_returns_none_when_no_ebpf_events_are_available() {
     let mut cfg = AgentConfig::default();

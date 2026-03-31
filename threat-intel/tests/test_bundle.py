@@ -51,7 +51,7 @@ class TestBundleStructure(unittest.TestCase):
             manifest = json.load(f)
         required = [
             "version", "timestamp", "sigma_count", "yara_count",
-            "ioc_hash_count", "ioc_domain_count", "ioc_ip_count",
+            "ioc_hash_count", "ioc_domain_count", "ioc_ip_count", "ioc_behavior_count",
             "cve_count", "cve_kev_count", "cve_epss_count",
             "ja3_count", "vt_enriched_count",
             "sources", "files",
@@ -77,9 +77,28 @@ class TestBundleStructure(unittest.TestCase):
         with open(manifest_path) as f:
             manifest = json.load(f)
         for key in ("sigma_count", "yara_count", "ioc_hash_count",
-                     "ioc_domain_count", "ioc_ip_count", "cve_count",
+                     "ioc_domain_count", "ioc_ip_count", "ioc_behavior_count", "cve_count",
                      "cve_kev_count", "cve_epss_count"):
             self.assertGreaterEqual(manifest.get(key, 0), 0, f"{key} must be >= 0")
+
+    def test_ioc_behavior_payload_when_present(self):
+        manifest_path = os.path.join(self.BUNDLE_DIR, "manifest.json")
+        with open(manifest_path) as f:
+            manifest = json.load(f)
+
+        behavior_count = int(manifest.get("ioc_behavior_count", 0) or 0)
+        behavior_path = os.path.join(self.BUNDLE_DIR, "rules", "ioc_behavior_rules.json")
+
+        if behavior_count == 0:
+            self.assertFalse(os.path.isfile(behavior_path), "behavior file should not exist when count is zero")
+            return
+
+        self.assertTrue(os.path.isfile(behavior_path), "rules/ioc_behavior_rules.json must exist")
+        with open(behavior_path, "r", encoding="utf-8") as f:
+            doc = json.load(f)
+        self.assertIsInstance(doc, dict)
+        self.assertIsInstance(doc.get("rules"), list)
+        self.assertEqual(len(doc.get("rules", [])), behavior_count)
 
 
 class TestEd25519BundleArtifacts(unittest.TestCase):

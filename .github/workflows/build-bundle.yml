@@ -532,27 +532,16 @@ jobs:
             --output bundle \
             --version "${{ steps.version.outputs.version }}"
 
-      - name: Validate bundle IOC behavior payload
+      - name: IOC behavior quality gate (bundle)
         run: |
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-
-          path = Path("bundle/rules/ioc_behavior_rules.json")
-          if not path.is_file() or path.stat().st_size <= 0:
-              raise SystemExit("bundle is missing rules/ioc_behavior_rules.json")
-
-          doc = json.loads(path.read_text(encoding="utf-8"))
-          rules = doc.get("rules") if isinstance(doc, dict) else None
-          if not isinstance(rules, list) or not rules:
-              raise SystemExit("bundle rules/ioc_behavior_rules.json has no rules[]")
-
-          names = [str(r.get("name", "")).strip() for r in rules if isinstance(r, dict)]
-          if len([n for n in names if n]) != len(rules):
-              raise SystemExit("bundle ioc_behavior rules contain missing names")
-
-          print(f"bundle IOC behavior rules validated: {len(rules)}")
-          PY
+          python3 threat-intel/processing/ioc_behavior_quality_gate.py \
+            --input bundle/rules/ioc_behavior_rules.json \
+            --output /tmp/ioc_behavior_quality_bundle.json \
+            --max-load-ms 1000 \
+            --min-rules 20 \
+            --min-tactics 6 \
+            --min-techniques 12 \
+            --min-matcher-types 3
 
       - name: Enforce signature database coverage gate
         env:

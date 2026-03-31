@@ -1,6 +1,8 @@
 use super::*;
 #[cfg(target_os = "linux")]
 use std::os::unix::fs::symlink;
+#[cfg(target_os = "linux")]
+use std::process::Command;
 
 #[test]
 // AC-EBP-032 AC-EBP-062
@@ -67,6 +69,32 @@ fn enrich_event_parent_chain_is_bounded_to_max_depth() {
     assert!(enriched.parent_chain.iter().all(|pid| *pid > 0));
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn primed_process_exec_metadata_survives_short_lived_process_exit() {
+    let mut child = Command::new("/bin/sh")
+        .args(["-c", "sleep 0.2"])
+        .spawn()
+        .expect("spawn short-lived child");
+    let pid = child.id();
+
+    let mut cache = EnrichmentCache::default();
+    let raw = RawEvent {
+        event_type: EventType::ProcessExec,
+        pid,
+        uid: 0,
+        ts_ns: 1,
+        payload: "ppid=1;parent_comm=sh;comm=sh;path=/bin/sh;cmdline=sh".to_string(),
+    };
+
+    cache.prime_process_metadata(&raw);
+    child.wait().expect("wait for child exit");
+
+    let enriched = enrich_event_with_cache(raw, &mut cache);
+    let cmdline = enriched.process_cmdline.expect("cached cmdline");
+    assert!(cmdline.contains("sleep 0.2"), "cmdline was {cmdline:?}");
+}
+
 #[test]
 // AC-EBP-033
 fn payload_parser_extracts_kv_network_fields() {
@@ -78,6 +106,19 @@ fn payload_parser_extracts_kv_network_fields() {
     assert_eq!(metadata.dst_ip.as_deref(), Some("203.0.113.10"));
     assert_eq!(metadata.dst_port, Some(8443));
     assert_eq!(metadata.dst_domain.as_deref(), Some("c2.example"));
+}
+
+#[test]
+fn payload_parser_decodes_percent_escaped_process_cmdline() {
+    let metadata = parse_payload_metadata(
+        &EventType::ProcessExec,
+        "ppid=1;cgroup_id=7;comm=bash;parent_comm=sshd;path=/usr/bin/bash;cmdline=bash -c a%3D\"who\"%3B b%3D\"ami\"%3B eval \"$a$b\"",
+    );
+
+    assert_eq!(
+        metadata.command_line_hint.as_deref(),
+        Some("bash -c a=\"who\"; b=\"ami\"; eval \"$a$b\"")
+    );
 }
 
 #[test]
@@ -95,6 +136,40 @@ fn process_exec_payload_parent_hint_backfills_parent_process_when_proc_lookup_fa
     let enriched = enrich_event_with_cache(raw, &mut cache);
     assert_eq!(enriched.parent_process.as_deref(), Some("systemd"));
     assert_eq!(enriched.parent_chain.first().copied(), Some(1));
+}
+
+#[test]
+fn process_exec_payload_cmdline_is_cached_for_later_file_open_when_proc_lookup_fails() {
+    let mut cache = EnrichmentCache::default();
+    let pid = 999_998;
+
+    let exec = RawEvent {
+        event_type: EventType::ProcessExec,
+        pid,
+        uid: 0,
+        ts_ns: 1,
+        payload: "ppid=1;parent_comm=sshd;comm=bash;path=/usr/bin/bash;cmdline=bash -c a%3D\"who\"%3B b%3D\"ami\"%3B eval \"$a$b\""
+            .to_string(),
+    };
+    let enriched_exec = enrich_event_with_cache(exec, &mut cache);
+    assert_eq!(
+        enriched_exec.process_cmdline.as_deref(),
+        Some("bash -c a=\"who\"; b=\"ami\"; eval \"$a$b\"")
+    );
+
+    let file_open = RawEvent {
+        event_type: EventType::FileOpen,
+        pid,
+        uid: 0,
+        ts_ns: 2,
+        payload: "path=/proc/self/status;ppid=1;comm=bash;parent_comm=sshd".to_string(),
+    };
+    let enriched_file = enrich_event_with_cache(file_open, &mut cache);
+    assert_eq!(
+        enriched_file.process_cmdline.as_deref(),
+        Some("bash -c a=\"who\"; b=\"ami\"; eval \"$a$b\"")
+    );
+    assert_eq!(enriched_file.process_exe.as_deref(), Some("/usr/bin/bash"));
 }
 
 #[test]
