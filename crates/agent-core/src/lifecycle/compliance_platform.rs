@@ -160,16 +160,18 @@ fn collect_macos_snapshot() -> Result<SystemSnapshot> {
     let kernel_version = detect_macos_kernel_version()
         .unwrap_or_else(|| platform_macos::platform_name().to_string());
     let os_version = detect_macos_os_version_label();
+    let ssh_root_login_permitted = detect_macos_ssh_root_login_permitted();
+    let password_policy_hardened = detect_macos_password_policy_hardened();
 
     Ok(SystemSnapshot {
         firewall_enabled,
         kernel_version,
         os_version,
         root_fs_encrypted,
-        ssh_root_login_permitted: None,
+        ssh_root_login_permitted,
         installed_packages: None,
         running_services: None,
-        password_policy_hardened: None,
+        password_policy_hardened,
         screen_lock_enabled,
         auto_updates_enabled,
         antivirus_running: None,
@@ -224,6 +226,64 @@ fn run_macos_command(path: &str, args: &[&str]) -> Option<String> {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn detect_macos_ssh_root_login_permitted() -> Option<bool> {
+    let output = Command::new("/usr/sbin/sshd").arg("-T").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let raw = String::from_utf8(output.stdout).ok()?;
+    parse_macos_sshd_t_root_login(&raw)
+}
+
+#[cfg(target_os = "macos")]
+fn detect_macos_password_policy_hardened() -> Option<bool> {
+    let output = Command::new("/usr/bin/pwpolicy")
+        .arg("-getaccountpolicies")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let raw = String::from_utf8(output.stdout).ok()?;
+    Some(parse_macos_password_policy_hardened(&raw))
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn parse_macos_sshd_t_root_login(raw: &str) -> Option<bool> {
+    for line in raw.lines() {
+        let trimmed = line.trim().to_ascii_lowercase();
+        if let Some(value) = trimmed.strip_prefix("permitrootlogin ") {
+            return Some(matches!(
+                value.trim(),
+                "yes" | "without-password" | "prohibit-password"
+            ));
+        }
+    }
+    None
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn parse_macos_password_policy_hardened(raw: &str) -> bool {
+    let lower = raw.to_ascii_lowercase();
+    if lower.contains("policyattributepassword matches '^$|") {
+        return false;
+    }
+
+    extract_first_password_min_length(raw).unwrap_or(0) >= 8
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn extract_first_password_min_length(raw: &str) -> Option<u32> {
+    let marker = ".{";
+    let start = raw.find(marker)? + marker.len();
+    let rest = &raw[start..];
+    let end = rest.find(',')?;
+    rest[..end].trim().parse::<u32>().ok()
+}
+
 #[cfg(any(test, target_os = "macos"))]
 fn format_macos_version_label(version: &str) -> String {
     let version = version.trim();
@@ -250,7 +310,10 @@ fn marketing_name_for_macos_version(version: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_macos_version_label, marketing_name_for_macos_version};
+    use super::{
+        format_macos_version_label, marketing_name_for_macos_version,
+        parse_macos_password_policy_hardened, parse_macos_sshd_t_root_login,
+    };
 
     #[test]
     fn macos_marketing_name_maps_supported_releases() {
@@ -271,5 +334,27 @@ mod tests {
     fn macos_version_label_falls_back_to_numeric_version() {
         assert_eq!(format_macos_version_label("10.15.7"), "macOS 10.15.7");
         assert_eq!(format_macos_version_label(" 16.0 "), "macOS 16.0");
+    }
+
+    #[test]
+    fn macos_sshd_t_parser_handles_root_login_values() {
+        assert_eq!(
+            parse_macos_sshd_t_root_login("permitrootlogin no\n"),
+            Some(false)
+        );
+        assert_eq!(
+            parse_macos_sshd_t_root_login("port 22\npermitrootlogin without-password\n"),
+            Some(true)
+        );
+        assert_eq!(parse_macos_sshd_t_root_login("port 22\n"), None);
+    }
+
+    #[test]
+    fn macos_password_policy_parser_rejects_blank_or_short_passwords() {
+        let weak = "policyAttributePassword matches '^$|.{4,}+'";
+        assert!(!parse_macos_password_policy_hardened(weak));
+
+        let strong = "policyAttributePassword matches '.{12,}+'";
+        assert!(parse_macos_password_policy_hardened(strong));
     }
 }
