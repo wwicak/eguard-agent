@@ -343,14 +343,6 @@ impl Default for AgentConfig {
             baseline_stale_after_days: 30,
             self_protection_integrity_check_interval_secs: 60,
             self_protection_prevent_uninstall: true,
-            ztna_enabled: false,
-            ztna_controller_base_url: "http://127.0.0.1:50053".to_string(),
-            ztna_app_id: None,
-            ztna_agent_wg_public_key: None,
-            ztna_forward_host: None,
-            ztna_forward_port: None,
-            ztna_local_bind_addr: "127.0.0.1:0".to_string(),
-            ztna_request_interval_secs: 30,
             bootstrap_config_path: None,
         }
     }

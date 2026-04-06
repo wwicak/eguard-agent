@@ -108,8 +108,6 @@ async fn run_console_with_shutdown(shutdown: ShutdownFuture) -> Result<()> {
         }
     }
 
-    runtime.shutdown().await;
-
     #[cfg(target_os = "linux")]
     systemd_notifier.notify_stopping();
 

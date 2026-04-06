@@ -14,7 +14,6 @@ members = [
   "crates/crypto-accel",
   "crates/self-protect",
   "crates/agent-version",
-  "crates/ztna",
 ]
 exclude = ["fuzz"]
 resolver = "2"
@@ -40,7 +39,6 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde_json = "1"
 serde_yaml = "0.9"
-base64 = "0.22"
 tonic = { version = "0.14", features = ["transport", "tls-ring"] }
 tonic-prost = "0.14"
 prost = "0.14"

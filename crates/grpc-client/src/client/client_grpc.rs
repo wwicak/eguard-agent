@@ -146,8 +146,6 @@ impl Client {
                     }),
                     config_version: config_version.to_string(),
                     buffered_events: runtime.map(|r| r.buffered_events).unwrap_or(0),
-                    ztna_sessions: Vec::new(),
-                    last_bookmark_version: String::new(),
                     compliance_status: compliance_status.to_string(),
                     sent_at_unix: now_unix(),
                 })

@@ -20,7 +20,6 @@ use self_protect::SelfProtectEngine;
 #[cfg(target_os = "linux")]
 use self_protect::{apply_linux_hardening, LinuxHardeningConfig};
 use tokio::task::JoinSet;
-use ztna::{LocalForwardHandle, TunnelClient, TunnelClientConfig};
 
 use crate::config::{AgentConfig, AgentMode};
 use crate::detection_state::SharedDetectionState;
@@ -147,10 +146,6 @@ pub struct AgentRuntime {
     /// result is sent here so the tick loop can apply the lightweight
     /// engine swap without blocking heartbeat / telemetry.
     pub(super) background_reload_rx: Option<std::sync::mpsc::Receiver<BackgroundReloadResult>>,
-    pub(super) ztna_client: Option<TunnelClient>,
-    pub(super) ztna_forward: Option<LocalForwardHandle>,
-    pub(super) ztna_last_request_unix: Option<i64>,
-    pub(super) ztna_last_session_id: Option<String>,
 }
 
 impl AgentRuntime {
@@ -349,20 +344,6 @@ impl AgentRuntime {
             config.server_addr.clone(),
             TransportMode::parse(&config.transport_mode),
         );
-        let ztna_client = if config.ztna_enabled {
-            match TunnelClient::new(TunnelClientConfig {
-                base_url: config.ztna_controller_base_url.clone(),
-                request_timeout_secs: 10,
-            }) {
-                Ok(client) => Some(client),
-                Err(err) => {
-                    warn!(error = %err, "failed to initialize ztna tunnel client; disabling ztna runtime bootstrap");
-                    None
-                }
-            }
-        } else {
-            None
-        };
         let self_protect_engine = SelfProtectEngine::from_env();
         if let (Some(cert), Some(key), Some(ca)) = (
             config.tls_cert_path.clone(),
@@ -560,15 +541,7 @@ impl AgentRuntime {
             response_report_tasks: JoinSet::new(),
             deferred_bundle_bootstrap_pending: false,
             background_reload_rx: None,
-            ztna_client,
-            ztna_forward: None,
-            ztna_last_request_unix: None,
-            ztna_last_session_id: None,
         };
-
-        if let Err(err) = runtime.ensure_ztna_wireguard_identity() {
-            warn!(error = %err, "failed to resolve ztna wireguard identity");
-        }
         runtime.bootstrap_threat_intel_replay_floor();
 
         // On macOS, defer the heavy bundle loading until after the first
@@ -612,12 +585,6 @@ impl AgentRuntime {
         }
 
         Ok(runtime)
-    }
-
-    pub async fn shutdown(&mut self) {
-        if let Some(handle) = self.ztna_forward.take() {
-            handle.stop().await;
-        }
     }
 
     #[cfg_attr(not(test), allow(dead_code))]

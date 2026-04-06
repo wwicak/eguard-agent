@@ -73,14 +73,6 @@ pub struct AgentConfig {
     pub baseline_stale_after_days: u64,
     pub self_protection_integrity_check_interval_secs: u64,
     pub self_protection_prevent_uninstall: bool,
-    pub ztna_enabled: bool,
-    pub ztna_controller_base_url: String,
-    pub ztna_app_id: Option<String>,
-    pub ztna_agent_wg_public_key: Option<String>,
-    pub ztna_forward_host: Option<String>,
-    pub ztna_forward_port: Option<u16>,
-    pub ztna_local_bind_addr: String,
-    pub ztna_request_interval_secs: u64,
     #[serde(skip)]
     pub bootstrap_config_path: Option<PathBuf>,
 }
