@@ -1206,6 +1206,46 @@ fn from_pb_server_command(command: pb::ServerCommand) -> CommandEnvelope {
             "profile_json": params.profile_json
         })
         .to_string(),
+        Some(pb::server_command::Params::ApplyWifiProfile(params)) => json!({
+            "profile_id": params.profile_id,
+            "ssid": params.ssid,
+            "security_type": params.security_type,
+            "passphrase": params.passphrase,
+            "identity": params.identity,
+            "anonymous_identity": params.anonymous_identity,
+            "eap_method": params.eap_method,
+            "ca_certificate_pem": params.ca_certificate_pem,
+            "client_certificate_pem": params.client_certificate_pem,
+            "client_key_encrypted": params.client_key_encrypted,
+            "auto_join": params.auto_join,
+            "dns_servers": params.dns_servers,
+            "hidden": params.hidden,
+        })
+        .to_string(),
+        Some(pb::server_command::Params::ApplyVpnProfile(params)) => json!({
+            "profile_id": params.profile_id,
+            "provider": params.provider,
+            "server": params.server,
+            "username": params.username,
+            "password_encrypted": params.password_encrypted,
+            "shared_secret_encrypted": params.shared_secret_encrypted,
+            "ca_certificate_pem": params.ca_certificate_pem,
+            "client_certificate_pem": params.client_certificate_pem,
+            "client_key_encrypted": params.client_key_encrypted,
+            "routes": params.routes,
+            "dns_servers": params.dns_servers,
+            "always_on": params.always_on,
+        })
+        .to_string(),
+        Some(pb::server_command::Params::PushCertificate(params)) => json!({
+            "pem": params.pem,
+            "key_encrypted": params.key_encrypted,
+            "ca_chain": params.ca_chain,
+            "alias": params.alias,
+            "use_case": params.use_case,
+            "rotate_before_expiry_days": params.rotate_before_expiry_days,
+        })
+        .to_string(),
         None => String::new(),
     };
 
@@ -1260,6 +1300,11 @@ fn map_command_type(raw: i32) -> String {
         pb::CommandType::RemoveApp => "remove_app",
         pb::CommandType::UpdateApp => "update_app",
         pb::CommandType::ApplyProfile => "apply_profile",
+        pb::CommandType::ApplyWifiProfile => "apply_wifi_profile",
+        pb::CommandType::ApplyVpnProfile => "apply_vpn_profile",
+        pb::CommandType::PushCertificate => "push_certificate",
+        pb::CommandType::ZtnaTunnelRevoke => "ztna_tunnel_revoke",
+        pb::CommandType::ZtnaConfigUpdate => "ztna_config_update",
     }
     .to_string()
 }

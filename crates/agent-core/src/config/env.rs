@@ -20,7 +20,41 @@ impl AgentConfig {
         self.apply_env_control_plane();
         self.apply_env_inventory();
         self.apply_env_self_protection();
+        self.apply_env_ztna();
         self.ensure_valid_agent_id();
+    }
+
+    fn apply_env_ztna(&mut self) {
+        if let Some(v) = env_non_empty("EGUARD_ZTNA_ENABLED") {
+            if let Ok(parsed) = v.parse::<bool>() {
+                self.ztna_enabled = parsed;
+            }
+        }
+        if let Some(v) = env_non_empty("EGUARD_ZTNA_CONTROLLER_BASE_URL") {
+            self.ztna_controller_base_url = v;
+        }
+        if let Some(v) = env_non_empty("EGUARD_ZTNA_APP_ID") {
+            self.ztna_app_id = Some(v);
+        }
+        if let Some(v) = env_non_empty("EGUARD_ZTNA_AGENT_WG_PUBLIC_KEY") {
+            self.ztna_agent_wg_public_key = Some(v);
+        }
+        if let Some(v) = env_non_empty("EGUARD_ZTNA_FORWARD_HOST") {
+            self.ztna_forward_host = Some(v);
+        }
+        if let Some(v) = env_non_empty("EGUARD_ZTNA_FORWARD_PORT") {
+            if let Ok(parsed) = v.parse::<u16>() {
+                self.ztna_forward_port = Some(parsed);
+            }
+        }
+        if let Some(v) = env_non_empty("EGUARD_ZTNA_LOCAL_BIND_ADDR") {
+            self.ztna_local_bind_addr = v;
+        }
+        if let Some(v) = env_non_empty("EGUARD_ZTNA_REQUEST_INTERVAL_SECS") {
+            if let Ok(parsed) = v.parse::<u64>() {
+                self.ztna_request_interval_secs = parsed;
+            }
+        }
     }
 
     fn apply_env_detection(&mut self) {

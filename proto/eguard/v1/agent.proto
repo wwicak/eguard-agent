@@ -8,6 +8,7 @@ import "eguard/v1/telemetry.proto";
 import "eguard/v1/compliance.proto";
 import "eguard/v1/command.proto";
 import "eguard/v1/response.proto";
+import "eguard/v1/ztna.proto";
 
 service AgentControlService {
   rpc Ping(PingRequest) returns (PingResponse);
@@ -135,6 +136,8 @@ message HeartbeatRequest {
   BaselineReport baseline_report = 6;
   string config_version = 7;
   int64 buffered_events = 8;
+  repeated ActiveZtnaSession ztna_sessions = 9;
+  string last_bookmark_version = 10;
 
   // Legacy compatibility fields.
   string compliance_status = 20;
@@ -147,6 +150,8 @@ message HeartbeatResponse {
   RuleUpdate rule_update = 3;
   repeated ServerCommand pending_commands = 4;
   BaselineReport fleet_baseline = 5;
+  repeated TunnelRelease ztna_revocations = 6;
+  BookmarkList ztna_bookmarks = 7;
 
   // Legacy compatibility fields.
   string status = 20;
@@ -155,6 +160,23 @@ message HeartbeatResponse {
 
 message ThreatIntelRequest {
   string agent_id = 1;
+}
+
+enum ZtnaTransport {
+  ZTNA_TRANSPORT_WIREGUARD = 0;
+  ZTNA_TRANSPORT_TLS_FALLBACK = 1;
+}
+
+message ActiveZtnaSession {
+  string session_id = 1;
+  string app_id = 2;
+  string tunnel_ip = 3;
+  ZtnaTransport transport = 4;
+  int64 bytes_tx = 5;
+  int64 bytes_rx = 6;
+  int32 active_connections = 7;
+  int32 tunnel_latency_ms = 8;
+  int64 started_at_unix = 9;
 }
 
 message ThreatIntelVersion {

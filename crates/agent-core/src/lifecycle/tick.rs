@@ -92,6 +92,7 @@ impl AgentRuntime {
             self.handle_connected_tick(now_unix, evaluation.as_ref())
                 .await?;
         }
+        self.ensure_ztna_tunnel_if_due(now_unix).await?;
         self.run_additional_telemetry_evaluations(now_unix).await?;
 
         self.metrics.last_tick_total_micros = elapsed_micros(tick_started);

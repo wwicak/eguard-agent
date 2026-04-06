@@ -40,6 +40,7 @@ impl AgentConfig {
         self.apply_file_inventory(file_cfg.inventory);
         self.apply_file_baseline(file_cfg.baseline);
         self.apply_file_self_protection(file_cfg.self_protection);
+        self.apply_file_ztna(file_cfg.ztna);
 
         if let Err(err) = persist_last_known_good_agent_config(&raw) {
             warn!(error = %err, "failed persisting last-known-good agent config");
@@ -378,6 +379,37 @@ impl AgentConfig {
             self.self_protection_prevent_uninstall = v;
         }
     }
+
+    fn apply_file_ztna(&mut self, ztna: Option<FileZtnaConfig>) {
+        let Some(ztna) = ztna else {
+            return;
+        };
+
+        if let Some(v) = ztna.enabled {
+            self.ztna_enabled = v;
+        }
+        if let Some(v) = non_empty(ztna.controller_base_url) {
+            self.ztna_controller_base_url = v;
+        }
+        if let Some(v) = non_empty(ztna.app_id) {
+            self.ztna_app_id = Some(v);
+        }
+        if let Some(v) = non_empty(ztna.agent_wg_public_key) {
+            self.ztna_agent_wg_public_key = Some(v);
+        }
+        if let Some(v) = non_empty(ztna.forward_host) {
+            self.ztna_forward_host = Some(v);
+        }
+        if let Some(v) = ztna.forward_port {
+            self.ztna_forward_port = Some(v);
+        }
+        if let Some(v) = non_empty(ztna.local_bind_addr) {
+            self.ztna_local_bind_addr = v;
+        }
+        if let Some(v) = ztna.request_interval_secs {
+            self.ztna_request_interval_secs = v;
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -410,6 +442,8 @@ struct FileConfig {
     baseline: Option<FileBaselineConfig>,
     #[serde(default)]
     self_protection: Option<FileSelfProtectionConfig>,
+    #[serde(default)]
+    ztna: Option<FileZtnaConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -642,6 +676,26 @@ struct FileSelfProtectionConfig {
     integrity_check_interval_secs: Option<u64>,
     #[serde(default)]
     prevent_uninstall: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct FileZtnaConfig {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    controller_base_url: Option<String>,
+    #[serde(default)]
+    app_id: Option<String>,
+    #[serde(default)]
+    agent_wg_public_key: Option<String>,
+    #[serde(default)]
+    forward_host: Option<String>,
+    #[serde(default)]
+    forward_port: Option<u16>,
+    #[serde(default)]
+    local_bind_addr: Option<String>,
+    #[serde(default)]
+    request_interval_secs: Option<u64>,
 }
 
 pub(super) fn apply_response_policy(dst: &mut ResponsePolicy, src: Option<FileResponsePolicy>) {
