@@ -10,6 +10,8 @@ use crate::types::{
     CertificatePolicyEnvelope, CommandEnvelope, ComplianceEnvelope, EnrollmentEnvelope,
     EnrollmentResultEnvelope, EventEnvelope, FleetBaselineEnvelope, HeartbeatRuntimeEnvelope,
     InventoryEnvelope, PolicyEnvelope, ResponseEnvelope, ServerState, ThreatIntelVersionEnvelope,
+    ZtnaApplicationBookmarkEnvelope, ZtnaBookmarkEnvelope, ZtnaRevocationEnvelope,
+    ZtnaSessionEnvelope,
 };
 
 use super::{
@@ -109,6 +111,8 @@ impl Client {
         config_version: &str,
         baseline_status: &str,
         runtime: Option<&HeartbeatRuntimeEnvelope>,
+        ztna_sessions: &[ZtnaSessionEnvelope],
+        last_bookmark_version: &str,
     ) -> Result<()> {
         self.with_retry("heartbeat_grpc", || async {
             let mut client = self.agent_control_client().await?;
@@ -146,6 +150,24 @@ impl Client {
                     }),
                     config_version: config_version.to_string(),
                     buffered_events: runtime.map(|r| r.buffered_events).unwrap_or(0),
+                    ztna_sessions: ztna_sessions
+                        .iter()
+                        .map(|session| pb::ActiveZtnaSession {
+                            session_id: session.session_id.clone(),
+                            app_id: session.app_id.clone(),
+                            tunnel_ip: session.tunnel_ip.clone(),
+                            transport: match session.transport.trim().to_ascii_lowercase().as_str() {
+                                "tls_fallback" => pb::ZtnaTransport::TlsFallback as i32,
+                                _ => pb::ZtnaTransport::Wireguard as i32,
+                            },
+                            bytes_tx: session.bytes_tx,
+                            bytes_rx: session.bytes_rx,
+                            active_connections: session.active_connections,
+                            tunnel_latency_ms: session.tunnel_latency_ms,
+                            started_at_unix: session.started_at_unix,
+                        })
+                        .collect(),
+                    last_bookmark_version: last_bookmark_version.to_string(),
                     compliance_status: compliance_status.to_string(),
                     sent_at_unix: now_unix(),
                 })
@@ -160,6 +182,37 @@ impl Client {
                         *guard = fleet_rows;
                     }
                 }
+            }
+            if let Some(bookmarks) = response.ztna_bookmarks {
+                let envelope = ZtnaBookmarkEnvelope {
+                    version: bookmarks.version,
+                    bookmarks: bookmarks
+                        .bookmarks
+                        .into_iter()
+                        .map(|bookmark| ZtnaApplicationBookmarkEnvelope {
+                            app_id: bookmark.app_id,
+                            name: bookmark.name,
+                            icon: bookmark.icon,
+                            app_type: bookmark.r#type,
+                            description: bookmark.description,
+                            health_status: bookmark.health_status,
+                        })
+                        .collect(),
+                };
+                if let Ok(mut guard) = self.grpc_last_ztna_bookmarks.lock() {
+                    *guard = Some(envelope);
+                }
+            }
+            if let Ok(mut guard) = self.grpc_last_ztna_revocations.lock() {
+                *guard = response
+                    .ztna_revocations
+                    .into_iter()
+                    .map(|revoke| ZtnaRevocationEnvelope {
+                        session_id: revoke.session_id,
+                        reason: format!("{}", revoke.reason),
+                        detail: revoke.detail,
+                    })
+                    .collect();
             }
             Ok(())
         })
@@ -216,6 +269,34 @@ impl Client {
                 .await
                 .context("report_compliance RPC failed")?;
             Ok(())
+        })
+        .await
+    }
+
+    pub(super) async fn release_ztna_tunnel_grpc(
+        &self,
+        session_id: &str,
+        reason: &str,
+        detail: &str,
+    ) -> Result<bool> {
+        self.with_retry("ztna_release_tunnel_grpc", || async {
+            let mut client = self.ztna_client().await?;
+            let response = client
+                .release_tunnel(pb::TunnelRelease {
+                    session_id: session_id.to_string(),
+                    reason: match reason.trim().to_ascii_lowercase().as_str() {
+                        "idle_timeout" => pb::TunnelReleaseReason::IdleTimeout as i32,
+                        "posture_fail" => pb::TunnelReleaseReason::PostureFail as i32,
+                        "admin_revoke" => pb::TunnelReleaseReason::AdminRevoke as i32,
+                        "policy_change" => pb::TunnelReleaseReason::PolicyChange as i32,
+                        _ => pb::TunnelReleaseReason::UserDisconnect as i32,
+                    },
+                    detail: detail.to_string(),
+                })
+                .await
+                .context("ztna release_tunnel RPC failed")?
+                .into_inner();
+            Ok(response.success)
         })
         .await
     }
@@ -523,6 +604,12 @@ impl Client {
     ) -> Result<pb::agent_service_client::AgentServiceClient<Channel>> {
         let channel = self.connect_channel().await?;
         Ok(pb::agent_service_client::AgentServiceClient::new(channel)
+            .max_decoding_message_size(MAX_GRPC_RECV_MSG_SIZE_BYTES))
+    }
+
+    async fn ztna_client(&self) -> Result<pb::ztna_service_client::ZtnaServiceClient<Channel>> {
+        let channel = self.connect_channel().await?;
+        Ok(pb::ztna_service_client::ZtnaServiceClient::new(channel)
             .max_decoding_message_size(MAX_GRPC_RECV_MSG_SIZE_BYTES))
     }
 }

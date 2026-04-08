@@ -33,6 +33,8 @@ impl AgentRuntime {
 
         let config_version = self.heartbeat_config_version();
         let runtime = self.build_heartbeat_runtime_payload(baseline_status);
+        let ztna_sessions = self.current_ztna_sessions();
+        let last_bookmark_version = self.current_ztna_bookmark_version();
 
         self.enqueue_control_plane_send(PendingControlPlaneSend::Heartbeat {
             agent_id: self.config.agent_id.clone(),
@@ -40,6 +42,8 @@ impl AgentRuntime {
             config_version,
             baseline_status: baseline_status.to_string(),
             runtime,
+            ztna_sessions,
+            last_bookmark_version,
         });
     }
 

@@ -390,6 +390,8 @@ impl AgentRuntime {
                         &config_version,
                         &baseline_status,
                         Some(&runtime),
+                        &self.current_ztna_sessions(),
+                        &self.current_ztna_bookmark_version(),
                     )
                     .await
                 {

@@ -8,6 +8,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .compile_protos(
             &[
                 "../../proto/eguard/v1/agent.proto",
+                "../../proto/eguard/v1/ztna.proto",
                 "../../proto/eguard/v1/telemetry.proto",
                 "../../proto/eguard/v1/compliance.proto",
                 "../../proto/eguard/v1/command.proto",

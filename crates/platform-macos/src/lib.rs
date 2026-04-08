@@ -175,6 +175,12 @@ impl EnrichmentCache {
         self.process_cache.pop(&pid).is_some()
     }
 
+    pub fn prime_process_metadata(&mut self, raw: &RawEvent) {
+        if matches!(raw.event_type, EventType::ProcessExec) {
+            let _ = self.process_entry(raw);
+        }
+    }
+
     fn process_entry(&mut self, raw: &RawEvent) -> ProcessCacheEntry {
         if let Some(entry) = self.process_cache.get_mut(&raw.pid) {
             entry.last_seen_ns = raw.ts_ns;

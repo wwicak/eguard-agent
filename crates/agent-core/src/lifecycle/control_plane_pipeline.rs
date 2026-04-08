@@ -36,6 +36,16 @@ impl AgentRuntime {
             .max_control_plane_oldest_age_secs
             .max(oldest_age_secs);
 
+        if let Err(err) = self.sync_ztna_bookmarks() {
+            tracing::warn!(error = %err, "failed to sync ZTNA bookmarks to local state");
+        }
+        if let Err(err) = self.sync_ztna_sessions() {
+            tracing::warn!(error = %err, "failed to sync ZTNA sessions to local state");
+        }
+        if let Err(err) = self.process_ztna_commands().await {
+            tracing::warn!(error = %err, "failed to process ZTNA tray commands");
+        }
+
         Ok(())
     }
 }

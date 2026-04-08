@@ -260,6 +260,62 @@ pub struct ThreatIntelVersionEnvelope {
     pub bundle_sha256: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct ZtnaApplicationBookmarkEnvelope {
+    #[serde(default)]
+    pub app_id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub icon: String,
+    #[serde(default)]
+    pub app_type: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub health_status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct ZtnaBookmarkEnvelope {
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub bookmarks: Vec<ZtnaApplicationBookmarkEnvelope>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct ZtnaSessionEnvelope {
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub app_id: String,
+    #[serde(default)]
+    pub tunnel_ip: String,
+    #[serde(default)]
+    pub transport: String,
+    #[serde(default)]
+    pub bytes_tx: i64,
+    #[serde(default)]
+    pub bytes_rx: i64,
+    #[serde(default)]
+    pub active_connections: i32,
+    #[serde(default)]
+    pub tunnel_latency_ms: i32,
+    #[serde(default)]
+    pub started_at_unix: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct ZtnaRevocationEnvelope {
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default)]
+    pub detail: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CertificatePolicyEnvelope {
     #[serde(default)]

@@ -37,6 +37,9 @@ mod rule_bundle_loader;
 mod rule_bundle_verify;
 mod telemetry_pipeline;
 mod threat_intel_pipeline;
+mod ztna_bookmarks;
+mod ztna_commands;
+mod ztna_sessions;
 
 #[allow(unused_imports)]
 pub use response_playbook::PlaybookEngine;

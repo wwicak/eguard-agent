@@ -1,0 +1,59 @@
+syntax = "proto3";
+
+package eguard.v1;
+
+option go_package = "gitlab.com/devaistech77/fe_eguard/go/api/agent/v1;agentv1";
+
+service ZtnaService {
+  rpc ReleaseTunnel(TunnelRelease) returns (TunnelReleaseAck);
+}
+
+enum ZtnaTransport {
+  ZTNA_TRANSPORT_WIREGUARD = 0;
+  ZTNA_TRANSPORT_TLS_FALLBACK = 1;
+}
+
+enum TunnelReleaseReason {
+  TUNNEL_RELEASE_REASON_UNSPECIFIED = 0;
+  TUNNEL_RELEASE_REASON_USER_DISCONNECT = 1;
+  TUNNEL_RELEASE_REASON_IDLE_TIMEOUT = 2;
+  TUNNEL_RELEASE_REASON_POSTURE_FAIL = 3;
+  TUNNEL_RELEASE_REASON_ADMIN_REVOKE = 4;
+  TUNNEL_RELEASE_REASON_POLICY_CHANGE = 5;
+}
+
+message ActiveZtnaSession {
+  string session_id = 1;
+  string app_id = 2;
+  string tunnel_ip = 3;
+  ZtnaTransport transport = 4;
+  int64 bytes_tx = 5;
+  int64 bytes_rx = 6;
+  int32 active_connections = 7;
+  int32 tunnel_latency_ms = 8;
+  int64 started_at_unix = 9;
+}
+
+message TunnelRelease {
+  string session_id = 1;
+  TunnelReleaseReason reason = 2;
+  string detail = 3;
+}
+
+message TunnelReleaseAck {
+  bool success = 1;
+}
+
+message ApplicationBookmark {
+  string app_id = 1;
+  string name = 2;
+  string icon = 3;
+  string type = 4;
+  string description = 5;
+  string health_status = 6;
+}
+
+message BookmarkList {
+  string version = 1;
+  repeated ApplicationBookmark bookmarks = 2;
+}

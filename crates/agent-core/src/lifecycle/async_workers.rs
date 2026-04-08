@@ -191,6 +191,8 @@ async fn run_control_plane_send(
             config_version,
             baseline_status,
             runtime,
+            ztna_sessions,
+            last_bookmark_version,
         } => client
             .send_heartbeat_with_runtime_config(
                 &agent_id,
@@ -198,6 +200,8 @@ async fn run_control_plane_send(
                 &config_version,
                 &baseline_status,
                 Some(&runtime),
+                &ztna_sessions,
+                &last_bookmark_version,
             )
             .await
             .err()

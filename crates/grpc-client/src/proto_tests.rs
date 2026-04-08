@@ -164,6 +164,8 @@ fn heartbeat_contract_includes_status_usage_policy_rule_and_baselines() {
             "RuleUpdate rule_update",
             "repeated ServerCommand pending_commands",
             "BaselineReport fleet_baseline",
+            "repeated TunnelRelease ztna_revocations",
+            "BookmarkList ztna_bookmarks",
             "message PolicyUpdate",
             "string config_version",
             "string policy_json",

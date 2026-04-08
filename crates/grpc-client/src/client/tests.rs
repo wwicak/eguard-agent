@@ -691,6 +691,8 @@ async fn send_heartbeat_http_includes_runtime_status_and_resource_usage() {
                 },
                 buffered_events: 9,
             }),
+            &[],
+            "",
         )
         .await
         .expect("send heartbeat should succeed");
@@ -1234,6 +1236,8 @@ struct EnrollmentMockState {
     last_csr_len: Option<usize>,
     heartbeats: Vec<pb::HeartbeatRequest>,
     heartbeat_fleet_baseline: Option<pb::BaselineReport>,
+    heartbeat_ztna_bookmarks: Option<pb::BookmarkList>,
+    heartbeat_ztna_revocations: Vec<pb::TunnelRelease>,
     threat_intel_requests: Vec<pb::ThreatIntelRequest>,
     threat_intel_response: Option<pb::ThreatIntelVersion>,
 }
@@ -1348,12 +1352,16 @@ impl pb::agent_control_service_server::AgentControlService for MockAgentControlS
         let mut guard = self.state.lock().expect("state lock");
         guard.heartbeats.push(request.into_inner());
         let fleet_baseline = guard.heartbeat_fleet_baseline.clone();
+        let ztna_bookmarks = guard.heartbeat_ztna_bookmarks.clone();
+        let ztna_revocations = guard.heartbeat_ztna_revocations.clone();
         Ok(Response::new(pb::HeartbeatResponse {
             heartbeat_interval_secs: 30,
             policy_update: None,
             rule_update: None,
             pending_commands: Vec::new(),
             fleet_baseline,
+            ztna_revocations,
+            ztna_bookmarks,
             status: "ok".to_string(),
             server_time: String::new(),
         }))
@@ -2169,6 +2177,8 @@ async fn send_heartbeat_grpc_captures_agent_and_compliance_and_config_version() 
                 },
                 buffered_events: 7,
             }),
+            &[],
+            "",
         )
         .await
         .expect("send_heartbeat should succeed");
@@ -2272,6 +2282,49 @@ async fn fetch_fleet_baselines_grpc_uses_cached_heartbeat_fleet_report() {
     assert_eq!(fleet[0].source, "grpc_heartbeat");
     let total = fleet[0].median_distribution.values().copied().sum::<f64>();
     assert!((total - 1.0).abs() < 1e-6);
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn heartbeat_grpc_caches_ztna_bookmarks() {
+    let state = Arc::new(Mutex::new(EnrollmentMockState::default()));
+    {
+        let mut guard = state.lock().expect("state lock");
+        guard.heartbeat_ztna_bookmarks = Some(pb::BookmarkList {
+            version: "v1".to_string(),
+            bookmarks: vec![pb::ApplicationBookmark {
+                app_id: "app-1".to_string(),
+                name: "SSH Admin".to_string(),
+                icon: "terminal".to_string(),
+                r#type: "ssh".to_string(),
+                description: "Admin access".to_string(),
+                health_status: "healthy".to_string(),
+            }],
+        });
+    }
+    let server = spawn_mock_agent_control(state.clone()).await;
+    let mut client = Client::with_mode("inproc-agent-control".to_string(), TransportMode::Grpc);
+    client.set_test_channel_override(server.channel());
+
+    client
+        .send_heartbeat_with_runtime_config(
+            "agent-1",
+            "compliant",
+            "cfg-1",
+            "active",
+            None,
+            &[],
+            "",
+        )
+        .await
+        .expect("send heartbeat");
+    let bookmarks = client
+        .latest_ztna_bookmarks()
+        .expect("cached ztna bookmarks");
+    assert_eq!(bookmarks.version, "v1");
+    assert_eq!(bookmarks.bookmarks.len(), 1);
+    assert_eq!(bookmarks.bookmarks[0].app_id, "app-1");
 
     server.shutdown().await;
 }

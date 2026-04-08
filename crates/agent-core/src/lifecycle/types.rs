@@ -4,7 +4,7 @@ use compliance::ComplianceResult;
 use detection::{Confidence, DetectionOutcome, TelemetryEvent};
 use grpc_client::{
     CommandEnvelope, ComplianceEnvelope, EventEnvelope, HeartbeatRuntimeEnvelope,
-    InventoryEnvelope, ResponseEnvelope,
+    InventoryEnvelope, ResponseEnvelope, ZtnaSessionEnvelope,
 };
 use response::PlannedAction;
 
@@ -84,6 +84,8 @@ pub(super) enum PendingControlPlaneSend {
         config_version: String,
         baseline_status: String,
         runtime: HeartbeatRuntimeEnvelope,
+        ztna_sessions: Vec<ZtnaSessionEnvelope>,
+        last_bookmark_version: String,
     },
     Compliance {
         envelope: ComplianceEnvelope,

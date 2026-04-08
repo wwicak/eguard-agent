@@ -21,6 +21,31 @@ use tracing::{info, warn};
 use config::AgentConfig;
 use lifecycle::AgentRuntime;
 
+fn handle_ztna_cli() -> Result<bool> {
+    let mut args = std::env::args().skip(1);
+    let Some(first) = args.next() else {
+        return Ok(false);
+    };
+    if first == "--register-ztna-protocol" {
+        let exe = std::env::current_exe()?;
+        let written = ztna::register_protocol_handler_for_current_exe(&exe)?;
+        println!("ZTNA protocol handler registered using {}", written.display());
+        return Ok(true);
+    }
+    if first == "--ztna-open" {
+        let uri = args.next().ok_or_else(|| anyhow::anyhow!("ztna_uri_required"))?;
+        let outcome = ztna::launch_uri(&uri)?;
+        println!("Launched {} using {}", outcome.target, outcome.launcher);
+        return Ok(true);
+    }
+    if first.starts_with("eguard-ztna://") {
+        let outcome = ztna::launch_uri(&first)?;
+        println!("Launched {} using {}", outcome.target, outcome.launcher);
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 type ShutdownFuture = Pin<Box<dyn Future<Output = ShutdownReason> + Send>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,6 +67,9 @@ enum ShutdownReason {
 // and preventing SetServiceStatus(SERVICE_RUNNING) from being called
 // within the 30-second SCM timeout.
 fn main() -> Result<()> {
+    if handle_ztna_cli()? {
+        return Ok(());
+    }
     #[cfg(target_os = "windows")]
     {
         return windows_service_entry::run();

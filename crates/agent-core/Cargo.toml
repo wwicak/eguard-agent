@@ -18,8 +18,10 @@ compliance = { path = "../compliance" }
 baseline = { path = "../baseline" }
 nac = { path = "../nac" }
 self-protect = { path = "../self-protect" }
+ztna = { path = "../ztna" }
 toml.workspace = true
 sha2.workspace = true
+url.workspace = true
 aes-gcm = "0.10"
 base64 = "0.22"
 tar = "0.4"
