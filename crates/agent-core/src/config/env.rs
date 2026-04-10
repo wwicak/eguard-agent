@@ -55,6 +55,11 @@ impl AgentConfig {
                 self.ztna_request_interval_secs = parsed;
             }
         }
+        if let Some(v) = env_non_empty("EGUARD_ZTNA_IDLE_TIMEOUT_SECS") {
+            if let Ok(parsed) = v.parse::<u64>() {
+                self.ztna_idle_timeout_secs = parsed;
+            }
+        }
     }
 
     fn apply_env_detection(&mut self) {

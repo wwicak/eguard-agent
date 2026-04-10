@@ -31,6 +31,7 @@
 
     <Feature Id="MainFeature" Title="eGuard Agent" Level="1">
       <ComponentGroupRef Id="AgentComponents" />
+      <ComponentGroupRef Id="TrayComponents" />
       <ComponentGroupRef Id="DataFolders" />
     </Feature>
   </Package>
@@ -51,6 +52,14 @@
             Account="LocalSystem" />
 
         <ServiceControl Id="SvcStart" Name="eGuardAgent" Start="install" Stop="both" Remove="uninstall" Wait="yes" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+
+  <Fragment>
+    <ComponentGroup Id="TrayComponents" Directory="INSTALLFOLDER">
+      <Component Id="CmpTrayExe" Guid="*">
+        <File Id="FilTrayExe" Source="$(var.TrayExePath)" KeyPath="yes" />
       </Component>
     </ComponentGroup>
   </Fragment>

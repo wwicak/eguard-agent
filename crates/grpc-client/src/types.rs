@@ -260,6 +260,44 @@ pub struct ThreatIntelVersionEnvelope {
     pub bundle_sha256: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct ZtnaBookmarkEnvelope {
+    #[serde(default)]
+    pub app_id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub icon: String,
+    #[serde(default)]
+    pub app_type: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub health_status: String,
+    #[serde(default)]
+    pub launch_uri: String,
+    #[serde(default)]
+    pub launcher_supported: bool,
+    #[serde(default)]
+    pub target_host: String,
+    #[serde(default)]
+    pub target_port: u32,
+    #[serde(default)]
+    pub display_hint: String,
+    #[serde(default)]
+    pub user_hint: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct ZtnaBookmarkListEnvelope {
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub generated_at_unix: i64,
+    #[serde(default)]
+    pub bookmarks: Vec<ZtnaBookmarkEnvelope>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CertificatePolicyEnvelope {
     #[serde(default)]

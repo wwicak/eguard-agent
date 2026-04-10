@@ -6,6 +6,7 @@ Windows packaging and runtime are now integrated into the main release path.
 
 What exists now:
 - `agent-core` runs as a real Windows Service (`eGuardAgent`) via SCM dispatch, with optional console-mode fallback (`EGUARD_WINDOWS_CONSOLE=1`).
+- `eguard-tray.exe` is built and packaged as the bundled Windows ZTNA tray companion.
 - `platform-windows` telemetry/compliance/response modules are wired into the Windows runtime path.
 - WiX MSI definition: `installer/windows/eguard-agent.wxs` (version passed from CI via `AgentVersion`).
 - PowerShell bootstrap installer: `installer/windows/install.ps1`.
@@ -24,8 +25,11 @@ What is still open:
 The Windows installer packages the eGuard agent as an MSI using WiX Toolset.
 It supports:
 - installing `eguard-agent.exe`
+- installing `eguard-tray.exe`
 - registering service `eGuardAgent`
 - silent install properties (`ENROLLMENT_TOKEN`, `SERVER_URL`)
+- tray protocol registration through bundled post-install/bootstrap logic
+- tray startup registration for the current user session
 - upgrade/uninstall while preserving enrollment state
 
 ## Intended silent install command
@@ -66,6 +70,7 @@ Script behavior:
   - requires valid Authenticode signature unless `-AllowUnsignedMsi` is explicitly set
 - writes `C:\ProgramData\eGuard\bootstrap.conf` and hardens ACLs to SYSTEM/Administrators
 - installs MSI silently and starts `eGuardAgent`
+- registers bundled `eguard-tray.exe` protocol handling and startup integration for the current user
 - removes `bootstrap.conf` after successful start (unless `-KeepBootstrap`)
 
 ## Intended Windows layout
@@ -73,6 +78,7 @@ Script behavior:
 ```text
 C:\Program Files\eGuard\
   eguard-agent.exe
+  eguard-tray.exe
 
 C:\ProgramData\eGuard\
   bootstrap.conf

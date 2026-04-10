@@ -2,6 +2,7 @@
 members = [
   "crates/acceptance",
   "crates/agent-core",
+  "crates/eguard-tray",
   "crates/grpc-client",
   "crates/detection",
   "crates/response",
@@ -49,6 +50,11 @@ protoc-bin-vendored = "3"
 aho-corasick = "1.1"
 lru = "0.16.3"
 regex = "1"
+clap = { version = "4", features = ["derive"] }
+dirs = "6"
+url = "2.5"
+tao = "0.33"
+tray-icon = "0.22"
 
 # Windows platform dependencies
 [workspace.dependencies.windows]
@@ -70,6 +76,8 @@ features = [
   "Win32_Storage_FileSystem",
   "Win32_System_ProcessStatus",
   "Win32_System_Time",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
   "Wdk_System_Threading",
 ]
 

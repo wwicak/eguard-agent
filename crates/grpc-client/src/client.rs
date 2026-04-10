@@ -24,7 +24,7 @@ use crate::types::{
     BaselineProfileEnvelope, CampaignAlert, CommandEnvelope, ComplianceEnvelope,
     EnrollmentEnvelope, EnrollmentResultEnvelope, EventEnvelope, FleetBaselineEnvelope,
     HeartbeatRuntimeEnvelope, InventoryEnvelope, IocSignalBatch, PolicyEnvelope, ResponseEnvelope,
-    ServerState, ThreatIntelVersionEnvelope, TlsConfig, TransportMode,
+    ServerState, ThreatIntelVersionEnvelope, TlsConfig, TransportMode, ZtnaBookmarkListEnvelope,
 };
 
 #[path = "client/client_grpc.rs"]
@@ -51,6 +51,7 @@ pub struct Client {
     grpc_reporting_force_http: Arc<AtomicBool>,
     grpc_channel_cache: Arc<Mutex<Option<Channel>>>,
     grpc_last_fleet_baselines: Arc<Mutex<Vec<FleetBaselineEnvelope>>>,
+    grpc_last_ztna_bookmarks: Arc<Mutex<Option<ZtnaBookmarkListEnvelope>>>,
     #[cfg(test)]
     grpc_channel_override: Option<Channel>,
 }
@@ -74,6 +75,7 @@ impl Client {
             grpc_reporting_force_http: Arc::new(AtomicBool::new(false)),
             grpc_channel_cache: Arc::new(Mutex::new(None)),
             grpc_last_fleet_baselines: Arc::new(Mutex::new(Vec::new())),
+            grpc_last_ztna_bookmarks: Arc::new(Mutex::new(None)),
             #[cfg(test)]
             grpc_channel_override: None,
         }
@@ -492,6 +494,24 @@ impl Client {
                     Ok(cached.into_iter().take(limit.max(1)).collect())
                 }
             }
+        }
+    }
+
+    pub async fn fetch_ztna_bookmarks(&self) -> Result<Option<ZtnaBookmarkListEnvelope>> {
+        self.ensure_online()?;
+        match self.mode {
+            TransportMode::Http => Ok(None),
+            TransportMode::Grpc => Ok(self
+                .grpc_last_ztna_bookmarks
+                .lock()
+                .map(|payload| payload.clone())
+                .unwrap_or(None)),
+        }
+    }
+
+    pub fn set_cached_ztna_bookmarks(&self, payload: Option<ZtnaBookmarkListEnvelope>) {
+        if let Ok(mut guard) = self.grpc_last_ztna_bookmarks.lock() {
+            *guard = payload;
         }
     }
 

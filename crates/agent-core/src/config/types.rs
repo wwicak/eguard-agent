@@ -81,6 +81,7 @@ pub struct AgentConfig {
     pub ztna_forward_port: Option<u16>,
     pub ztna_local_bind_addr: String,
     pub ztna_request_interval_secs: u64,
+    pub ztna_idle_timeout_secs: u64,
     #[serde(skip)]
     pub bootstrap_config_path: Option<PathBuf>,
 }

@@ -24,6 +24,7 @@ mod storage_hygiene;
 mod telemetry;
 mod tick;
 mod timing;
+mod tray_integration;
 mod types;
 
 mod bundle_path;

@@ -8,6 +8,37 @@ use ztna::{resolve_or_create_wireguard_identity, LocalForwardManager, TunnelRequ
 use super::{interval_due, AgentRuntime};
 
 impl AgentRuntime {
+    pub(super) async fn release_ztna_session(&mut self, detail: &str) {
+        let session_id = self.ztna_last_session_id.clone();
+        if let (Some(client), Some(session_id)) = (self.ztna_client.as_ref(), session_id.as_ref()) {
+            if let Err(err) = client.release_tunnel(session_id).await {
+                warn!(session_id = %session_id, error = %err, "failed to release ztna session");
+            }
+        }
+        self.ztna_last_outcome = Some(detail.to_string());
+    }
+
+    pub(super) async fn teardown_idle_ztna_session_if_needed(&mut self, now_unix: i64) {
+        let Some(forward) = self.ztna_forward.as_ref() else {
+            return;
+        };
+        if self.config.ztna_idle_timeout_secs == 0 {
+            return;
+        }
+        if forward.active_connections() > 0 {
+            return;
+        }
+        let last_activity_unix = forward.last_activity_unix();
+        if last_activity_unix <= 0 {
+            return;
+        }
+        if now_unix.saturating_sub(last_activity_unix) < self.config.ztna_idle_timeout_secs as i64 {
+            return;
+        }
+
+        self.stop_ztna_session(Some("idle timeout reached")).await;
+    }
+
     pub(super) fn ensure_ztna_wireguard_identity(&mut self) -> Result<()> {
         if !self.config.ztna_enabled {
             return Ok(());
@@ -133,9 +164,11 @@ impl AgentRuntime {
                 );
                 self.ztna_forward = Some(handle);
                 self.ztna_last_session_id = Some(grant.session_id);
+                self.ztna_last_outcome = Some(format!("connected via {}", grant.transport));
             }
             Err(err) => {
                 warn!(error = %err, upstream = %upstream, "failed to start ztna local forward");
+                self.ztna_last_outcome = Some(format!("local forward failed: {err}"));
             }
         }
 

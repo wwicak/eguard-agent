@@ -93,6 +93,8 @@ impl AgentRuntime {
                 .await?;
         }
         self.ensure_ztna_tunnel_if_due(now_unix).await?;
+        self.teardown_idle_ztna_session_if_needed(now_unix).await;
+        self.sync_tray_state(now_unix).await?;
         self.run_additional_telemetry_evaluations(now_unix).await?;
 
         self.metrics.last_tick_total_micros = elapsed_micros(tick_started);

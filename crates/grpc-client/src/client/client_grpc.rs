@@ -10,6 +10,7 @@ use crate::types::{
     CertificatePolicyEnvelope, CommandEnvelope, ComplianceEnvelope, EnrollmentEnvelope,
     EnrollmentResultEnvelope, EventEnvelope, FleetBaselineEnvelope, HeartbeatRuntimeEnvelope,
     InventoryEnvelope, PolicyEnvelope, ResponseEnvelope, ServerState, ThreatIntelVersionEnvelope,
+    ZtnaBookmarkEnvelope, ZtnaBookmarkListEnvelope,
 };
 
 use super::{
@@ -112,6 +113,12 @@ impl Client {
     ) -> Result<()> {
         self.with_retry("heartbeat_grpc", || async {
             let mut client = self.agent_control_client().await?;
+            let last_bookmark_version = self
+                .grpc_last_ztna_bookmarks
+                .lock()
+                .ok()
+                .and_then(|payload| payload.as_ref().map(|bookmarks| bookmarks.version.clone()))
+                .unwrap_or_default();
             let response = client
                 .heartbeat(pb::HeartbeatRequest {
                     agent_id: agent_id.to_string(),
@@ -147,7 +154,7 @@ impl Client {
                     config_version: config_version.to_string(),
                     buffered_events: runtime.map(|r| r.buffered_events).unwrap_or(0),
                     ztna_sessions: Vec::new(),
-                    last_bookmark_version: String::new(),
+                    last_bookmark_version,
                     compliance_status: compliance_status.to_string(),
                     sent_at_unix: now_unix(),
                 })
@@ -161,6 +168,11 @@ impl Client {
                     if let Ok(mut guard) = self.grpc_last_fleet_baselines.lock() {
                         *guard = fleet_rows;
                     }
+                }
+            }
+            if let Some(bookmarks) = response.ztna_bookmarks {
+                if let Ok(mut guard) = self.grpc_last_ztna_bookmarks.lock() {
+                    *guard = Some(bookmarks_from_pb(&bookmarks));
                 }
             }
             Ok(())
@@ -563,6 +575,78 @@ fn fleet_baselines_from_report(report: &pb::BaselineReport) -> Vec<FleetBaseline
         });
     }
     rows
+}
+
+fn bookmarks_from_pb(list: &pb::BookmarkList) -> ZtnaBookmarkListEnvelope {
+    ZtnaBookmarkListEnvelope {
+        version: list.version.clone(),
+        #[allow(deprecated)]
+        generated_at_unix: list.generated_at_unix,
+        bookmarks: list
+            .bookmarks
+            .iter()
+            .map(|entry| ZtnaBookmarkEnvelope {
+                app_id: entry.app_id.clone(),
+                name: entry.name.clone(),
+                icon: entry.icon.clone(),
+                app_type: bookmark_app_type(entry),
+                description: entry.description.clone(),
+                health_status: entry.health_status.clone(),
+                launch_uri: bookmark_launch_uri(entry),
+                launcher_supported: bookmark_launcher_supported(entry),
+                target_host: bookmark_target_host(entry),
+                target_port: bookmark_target_port(entry),
+                display_hint: bookmark_display_hint(entry),
+                user_hint: bookmark_user_hint(entry),
+            })
+            .collect(),
+    }
+}
+
+fn bookmark_app_type(entry: &pb::ApplicationBookmark) -> String {
+    entry.app_type.clone()
+}
+
+fn bookmark_launch_uri(entry: &pb::ApplicationBookmark) -> String {
+    #[allow(deprecated)]
+    {
+        entry.launch_uri.clone()
+    }
+}
+
+fn bookmark_launcher_supported(entry: &pb::ApplicationBookmark) -> bool {
+    #[allow(deprecated)]
+    {
+        entry.launcher_supported
+    }
+}
+
+fn bookmark_target_host(entry: &pb::ApplicationBookmark) -> String {
+    #[allow(deprecated)]
+    {
+        entry.target_host.clone()
+    }
+}
+
+fn bookmark_target_port(entry: &pb::ApplicationBookmark) -> u32 {
+    #[allow(deprecated)]
+    {
+        entry.target_port
+    }
+}
+
+fn bookmark_display_hint(entry: &pb::ApplicationBookmark) -> String {
+    #[allow(deprecated)]
+    {
+        entry.display_hint.clone()
+    }
+}
+
+fn bookmark_user_hint(entry: &pb::ApplicationBookmark) -> String {
+    #[allow(deprecated)]
+    {
+        entry.user_hint.clone()
+    }
 }
 
 fn map_threat_intel_response(res: pb::ThreatIntelVersion) -> Option<ThreatIntelVersionEnvelope> {

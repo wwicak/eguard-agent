@@ -1234,6 +1234,7 @@ struct EnrollmentMockState {
     last_csr_len: Option<usize>,
     heartbeats: Vec<pb::HeartbeatRequest>,
     heartbeat_fleet_baseline: Option<pb::BaselineReport>,
+    heartbeat_ztna_bookmarks: Option<pb::BookmarkList>,
     threat_intel_requests: Vec<pb::ThreatIntelRequest>,
     threat_intel_response: Option<pb::ThreatIntelVersion>,
 }
@@ -1348,12 +1349,15 @@ impl pb::agent_control_service_server::AgentControlService for MockAgentControlS
         let mut guard = self.state.lock().expect("state lock");
         guard.heartbeats.push(request.into_inner());
         let fleet_baseline = guard.heartbeat_fleet_baseline.clone();
+        let ztna_bookmarks = guard.heartbeat_ztna_bookmarks.clone();
         Ok(Response::new(pb::HeartbeatResponse {
             heartbeat_interval_secs: 30,
             policy_update: None,
             rule_update: None,
             pending_commands: Vec::new(),
             fleet_baseline,
+            ztna_revocations: Vec::new(),
+            ztna_bookmarks,
             status: "ok".to_string(),
             server_time: String::new(),
         }))
@@ -2227,6 +2231,53 @@ async fn send_heartbeat_grpc_legacy_wrapper_remains_backward_compatible() {
         assert_eq!(heartbeat.config_version, "cfg-v9");
         assert!(heartbeat.status.is_none());
         assert!(heartbeat.resource_usage.is_none());
+    }
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn send_heartbeat_grpc_reuses_cached_bookmark_version() {
+    let state = Arc::new(Mutex::new(EnrollmentMockState::default()));
+    {
+        let mut guard = state.lock().expect("state lock");
+        guard.heartbeat_ztna_bookmarks = Some(pb::BookmarkList {
+            version: "bookmarks-v1".to_string(),
+            bookmarks: vec![pb::ApplicationBookmark {
+                app_id: "app-1".to_string(),
+                name: "Prod SSH".to_string(),
+                icon: "terminal".to_string(),
+                app_type: "ssh".to_string(),
+                description: "jump host".to_string(),
+                health_status: "healthy".to_string(),
+                launch_uri: "eguard-ztna://launch?app_id=app-1&app_type=ssh&target=host".to_string(),
+                launcher_supported: true,
+                target_host: "host".to_string(),
+                target_port: 22,
+                display_hint: String::new(),
+                user_hint: "admin".to_string(),
+            }],
+            generated_at_unix: 1_700_000_000,
+        });
+    }
+    let server = spawn_mock_agent_control(state.clone()).await;
+    let mut client = Client::with_mode("inproc-agent-control".to_string(), TransportMode::Grpc);
+    client.set_test_channel_override(server.channel());
+
+    client
+        .send_heartbeat("agent-bookmark-1", "compliant")
+        .await
+        .expect("first heartbeat should succeed");
+    client
+        .send_heartbeat("agent-bookmark-1", "compliant")
+        .await
+        .expect("second heartbeat should succeed");
+
+    {
+        let guard = state.lock().expect("state lock");
+        assert_eq!(guard.heartbeats.len(), 2);
+        assert_eq!(guard.heartbeats[0].last_bookmark_version, "");
+        assert_eq!(guard.heartbeats[1].last_bookmark_version, "bookmarks-v1");
     }
 
     server.shutdown().await;

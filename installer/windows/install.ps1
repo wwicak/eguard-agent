@@ -23,6 +23,42 @@ function Write-Step([string]$Message) {
     Write-Host "[eGuard-install] $Message"
 }
 
+function Get-TrayPath {
+    return Join-Path ${env:ProgramFiles} 'eGuard\eguard-tray.exe'
+}
+
+function Register-TrayProtocolAndStartup {
+    $trayPath = Get-TrayPath
+    if (-not (Test-Path $trayPath)) {
+        Write-Step "Bundled tray executable not found at $trayPath; skipping tray registration"
+        return
+    }
+
+    Write-Step "Registering bundled ZTNA tray protocol handler"
+    try {
+        & $trayPath register-protocol | Out-Null
+    } catch {
+        Write-Step "WARNING: tray protocol registration failed: $($_.Exception.Message)"
+    }
+
+    $runKeyPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+    $trayCommand = '"' + $trayPath + '" tray'
+    Write-Step "Configuring bundled tray startup entry for current user"
+    try {
+        New-Item -Path $runKeyPath -Force | Out-Null
+        Set-ItemProperty -Path $runKeyPath -Name 'eGuardTray' -Value $trayCommand -Type String
+    } catch {
+        Write-Step "WARNING: tray startup registration failed: $($_.Exception.Message)"
+    }
+
+    Write-Step "Starting bundled tray for the current session if needed"
+    try {
+        Start-Process -FilePath $trayPath -ArgumentList 'tray' -WindowStyle Hidden -ErrorAction SilentlyContinue | Out-Null
+    } catch {
+        Write-Step "WARNING: tray start attempt failed: $($_.Exception.Message)"
+    }
+}
+
 # W6: Input validation
 if ($ServerUrl -match '[\x00-\x1f]') {
     throw "ServerUrl contains control characters"
@@ -42,7 +78,7 @@ if ($EnrollmentToken.Length -lt 8) {
 }
 
 $normalizedServerUrl = $ServerUrl.TrimEnd('/')
-$installEndpoint = "$normalizedServerUrl/api/v1/agent-install/windows-exe"
+$installEndpoint = "$normalizedServerUrl/api/v1/agent-install/windows"
 $programDataRoot = 'C:\ProgramData\eGuard'
 $bootstrapPath = Join-Path $programDataRoot 'bootstrap.conf'
 
@@ -75,7 +111,7 @@ $headers = @{
 
 # W4: fail-closed MSI integrity policy
 if ([string]::IsNullOrWhiteSpace($ExpectedHash)) {
-    $hashEndpoint = "$normalizedServerUrl/api/v1/agent-install/windows-exe/sha256"
+    $hashEndpoint = "$normalizedServerUrl/api/v1/agent-install/windows/sha256"
     Write-Step "ExpectedHash not provided; fetching SHA-256 from $hashEndpoint"
     try {
         $hashResponse = Invoke-WebRequest -Uri $hashEndpoint -Headers $headers -UseBasicParsing
@@ -146,6 +182,8 @@ if ($service.Status -ne 'Running') {
     $service.WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
 }
 
+Register-TrayProtocolAndStartup
+
 if (-not $KeepBootstrap.IsPresent) {
     Write-Step "Enrollment bootstrap succeeded, removing bootstrap.conf"
     Remove-Item -Path $bootstrapPath -Force -ErrorAction SilentlyContinue
@@ -154,3 +192,4 @@ if (-not $KeepBootstrap.IsPresent) {
 Write-Step "Windows agent installation completed"
 Write-Host "MSI Path: $MsiPath"
 Write-Host "Service: eGuardAgent ($((Get-Service -Name 'eGuardAgent').Status))"
+Write-Host "Tray: $(if (Test-Path (Get-TrayPath)) { 'installed' } else { 'missing' })"

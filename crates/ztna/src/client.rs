@@ -55,4 +55,25 @@ impl TunnelClient {
             .await
             .context("decode ztna tunnel decision")
     }
+
+    pub async fn release_tunnel(&self, session_id: &str) -> Result<()> {
+        let url = format!(
+            "{}/api/v1/ztna/tunnel/release",
+            self.cfg.base_url.trim_end_matches('/')
+        );
+        let resp = self
+            .http
+            .post(&url)
+            .json(&serde_json::json!({ "session_id": session_id }))
+            .send()
+            .await
+            .context("send ztna release_tunnel")?;
+        if !resp.status().is_success() {
+            return Err(anyhow!(
+                "ztna release_tunnel failed: status={}",
+                resp.status()
+            ));
+        }
+        Ok(())
+    }
 }

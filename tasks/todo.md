@@ -17,6 +17,19 @@ Restore as much post-restart macOS detection coverage as possible with the real 
 - If reverting those files restores the expected benchmark behavior, the next loop can return to the real remaining issues: LKG persistence/correctness and eslogger CPU.
 
 ## Plan
+- [ ] Inspect the current Rust workspace and repo drift around `eguard-tray`.
+- [ ] Add a new Windows-focused `crates/eguard-tray` helper with protocol handling, bookmark/session state access, and native launches.
+- [ ] Add a Windows tray mode that exposes bookmarks, active sessions, session controls, refresh, protocol registration, and quit.
+- [ ] Run targeted `cargo check`/`cargo test` coverage for the new tray helper and document follow-up gaps.
+
+## Review Log
+- Re-read `fe_eguard/docs/ztna/eguard-tray-plan.md` and `fe_eguard/docs/ZTNA-IMPLEMENTATION-PLAN.md` for the intended Windows delivery slice.
+- Confirmed repo drift: the current `eguard-agent` workspace contains the `ztna` crate, but no existing `crates/eguard-tray` implementation despite the plan marking it as implemented.
+- Confirmed there is no current Rust tray/bookmark/session command-path implementation to extend, so the Windows tray helper needs to be created in this workspace from scratch.
+
+---
+
+## Plan
 - [x] Keep the current 25/25 source-ingest branch as the working baseline.
 - [x] Use the seeded local last-known-good archive harness when testing long-term real-bundle startup behavior.
 - [x] Investigate the prior forced-startup-bootstrap misses and confirm they were tied to a ~27s process-exec hole.

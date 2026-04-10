@@ -351,6 +351,7 @@ impl Default for AgentConfig {
             ztna_forward_port: None,
             ztna_local_bind_addr: "127.0.0.1:0".to_string(),
             ztna_request_interval_secs: 30,
+            ztna_idle_timeout_secs: 300,
             bootstrap_config_path: None,
         }
     }

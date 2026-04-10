@@ -1,0 +1,181 @@
+mod app;
+mod launcher;
+mod protocol;
+mod state;
+mod tray;
+
+use anyhow::{anyhow, Context, Result};
+use clap::{Parser, Subcommand};
+use tracing::{error, info};
+
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
+use app::open_admin_ui;
+use launcher::{launch_bookmark, launch_launch_request};
+use protocol::LaunchRequest;
+use state::{bookmark_cache_path, command_queue_path, session_state_path, BookmarkState, SessionState, TrayCommandQueue};
+
+#[derive(Parser, Debug)]
+#[command(name = "eguard-tray", about = "Windows ZTNA tray helper")]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    RegisterProtocol,
+    HandleUrl { url: String },
+    List,
+    Open { app_id: String },
+    ListSessions,
+    Disconnect { session_id: String },
+    DisconnectAll,
+    DisableTransport,
+    EnableTransport,
+    Refresh,
+    OpenAdminUi,
+    Paths,
+    Tray,
+}
+
+#[tokio::main]
+async fn main() {
+    if let Err(err) = real_main().await {
+        error!(error = %err, "eguard-tray failed");
+        eprintln!("eguard-tray: {err}");
+        std::process::exit(1);
+    }
+}
+
+async fn real_main() -> Result<()> {
+    init_logging();
+    let cli = Cli::parse();
+
+    match cli.command.unwrap_or(Command::Tray) {
+        Command::RegisterProtocol => protocol::register_protocol_handler(current_exe_string()?),
+        Command::HandleUrl { url } => {
+            ensure_background_tray()?;
+            let request = LaunchRequest::parse(&url)?;
+            launch_launch_request(&request)
+        }
+        Command::List => list_bookmarks(),
+        Command::Open { app_id } => open_bookmark(&app_id),
+        Command::ListSessions => list_sessions(),
+        Command::Disconnect { session_id } => enqueue_command(state::TrayCommand::Disconnect { session_id }),
+        Command::DisconnectAll => enqueue_command(state::TrayCommand::DisconnectAll),
+        Command::DisableTransport => enqueue_command(state::TrayCommand::DisableTransport),
+        Command::EnableTransport => enqueue_command(state::TrayCommand::EnableTransport),
+        Command::Refresh => refresh_state(),
+        Command::OpenAdminUi => open_admin_ui(),
+        Command::Paths => print_paths(),
+        Command::Tray => tray::run_windows_tray(),
+    }
+}
+
+fn init_logging() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_target(false)
+        .try_init();
+}
+
+fn list_bookmarks() -> Result<()> {
+    let state = BookmarkState::load_default()?;
+    for bookmark in state.bookmarks {
+        println!(
+            "{}\t{}\t{}\t{}\t{}",
+            bookmark.app_id,
+            bookmark.name,
+            bookmark.app_type,
+            bookmark.health_status,
+            if bookmark.launcher_supported { "supported" } else { "missing-launcher" }
+        );
+    }
+    Ok(())
+}
+
+fn open_bookmark(app_id: &str) -> Result<()> {
+    let state = BookmarkState::load_default()?;
+    let bookmark = state
+        .bookmarks
+        .iter()
+        .find(|bookmark| bookmark.app_id == app_id)
+        .cloned()
+        .ok_or_else(|| anyhow!("bookmark `{app_id}` not found"))?;
+    enqueue_command(state::TrayCommand::OpenApp {
+        app_id: app_id.to_string(),
+    })?;
+    launch_bookmark(&bookmark)
+}
+
+fn list_sessions() -> Result<()> {
+    let state = SessionState::load_default()?;
+    for session in state.sessions {
+        println!(
+            "{}\t{}\t{}\t{}\t{}",
+            session.session_id,
+            session.app_id,
+            session.transport,
+            session.status,
+            session.last_outcome.unwrap_or_default()
+        );
+    }
+    Ok(())
+}
+
+fn enqueue_command(command: state::TrayCommand) -> Result<()> {
+    let mut queue = TrayCommandQueue::load_default()?;
+    queue.push(command);
+    queue.save_default()?;
+    info!(path = %command_queue_path()?.display(), "queued tray command");
+    Ok(())
+}
+
+fn refresh_state() -> Result<()> {
+    enqueue_command(state::TrayCommand::Refresh)?;
+    let bookmarks = BookmarkState::load_default()?;
+    let sessions = SessionState::load_default()?;
+    println!(
+        "bookmarks={} sessions={} bookmark_cache={} session_state={}",
+        bookmarks.bookmarks.len(),
+        sessions.sessions.len(),
+        bookmark_cache_path()?.display(),
+        session_state_path()?.display()
+    );
+    Ok(())
+}
+
+fn print_paths() -> Result<()> {
+    println!("bookmark_cache={}", bookmark_cache_path()?.display());
+    println!("session_state={}", session_state_path()?.display());
+    println!("command_queue={}", command_queue_path()?.display());
+    Ok(())
+}
+
+fn current_exe_string() -> Result<String> {
+    let exe = std::env::current_exe().context("resolve current tray executable path")?;
+    Ok(exe.to_string_lossy().into_owned())
+}
+
+fn ensure_background_tray() -> Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        if tray::is_tray_running() {
+            return Ok(());
+        }
+
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+
+        let exe = std::env::current_exe().context("resolve current tray executable path")?;
+        std::process::Command::new(exe)
+            .arg("tray")
+            .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
+            .spawn()
+            .context("start tray background process")?;
+    }
+
+    Ok(())
+}

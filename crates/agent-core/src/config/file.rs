@@ -409,6 +409,9 @@ impl AgentConfig {
         if let Some(v) = ztna.request_interval_secs {
             self.ztna_request_interval_secs = v;
         }
+        if let Some(v) = ztna.idle_timeout_secs {
+            self.ztna_idle_timeout_secs = v;
+        }
     }
 }
 
@@ -696,6 +699,8 @@ struct FileZtnaConfig {
     local_bind_addr: Option<String>,
     #[serde(default)]
     request_interval_secs: Option<u64>,
+    #[serde(default)]
+    idle_timeout_secs: Option<u64>,
 }
 
 pub(super) fn apply_response_policy(dst: &mut ResponsePolicy, src: Option<FileResponsePolicy>) {

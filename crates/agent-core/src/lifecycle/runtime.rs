@@ -151,6 +151,7 @@ pub struct AgentRuntime {
     pub(super) ztna_forward: Option<LocalForwardHandle>,
     pub(super) ztna_last_request_unix: Option<i64>,
     pub(super) ztna_last_session_id: Option<String>,
+    pub(super) ztna_last_outcome: Option<String>,
 }
 
 impl AgentRuntime {
@@ -564,6 +565,7 @@ impl AgentRuntime {
             ztna_forward: None,
             ztna_last_request_unix: None,
             ztna_last_session_id: None,
+            ztna_last_outcome: None,
         };
 
         if let Err(err) = runtime.ensure_ztna_wireguard_identity() {
@@ -615,9 +617,7 @@ impl AgentRuntime {
     }
 
     pub async fn shutdown(&mut self) {
-        if let Some(handle) = self.ztna_forward.take() {
-            handle.stop().await;
-        }
+        self.stop_ztna_session(Some("agent shutdown")).await;
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
