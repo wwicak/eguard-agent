@@ -11,6 +11,9 @@ $displayName = 'eGuard Endpoint Security Agent'
 $publisher = 'eGuard'
 $programDataRoot = 'C:\ProgramData\eGuard'
 $installRoot = 'C:\Program Files\eGuard'
+$trayProcessName = 'eguard-tray'
+$trayRunKeyPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+$trayProtocolKeyPath = 'HKCU:\Software\Classes\eguard-ztna'
 
 function Write-Step([string]$Message) {
     Write-Host "[eGuard-uninstall] $Message"
@@ -19,10 +22,27 @@ function Write-Step([string]$Message) {
 function Remove-PathIfExists([string]$Path, [string]$Description) {
     if (Test-Path -LiteralPath $Path) {
         Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
-        Write-Step "Removed $Description: $Path"
+        Write-Step "Removed ${Description}: ${Path}"
     } else {
-        Write-Step "Already absent: $Path"
+        Write-Step "Already absent: ${Path}"
     }
+}
+
+function Remove-RegistryValueIfExists([string]$Path, [string]$Name, [string]$Description) {
+    if (Test-Path -LiteralPath $Path) {
+        try {
+            $existing = Get-ItemProperty -LiteralPath $Path -Name $Name -ErrorAction SilentlyContinue
+            if ($null -ne $existing) {
+                Remove-ItemProperty -LiteralPath $Path -Name $Name -ErrorAction Stop
+                Write-Step "Removed ${Description}: ${Path}\\${Name}"
+                return
+            }
+        } catch {
+            Write-Step "Failed to remove ${Description}: $($_.Exception.Message)"
+            return
+        }
+    }
+    Write-Step "Already absent: ${Path}\\${Name}"
 }
 
 function Get-AgentUninstallEntry {
@@ -37,8 +57,16 @@ function Get-AgentUninstallEntry {
 
     $entries |
         Where-Object {
-            $_.DisplayName -eq $displayName -or
-            ($_.Publisher -eq $publisher -and $_.InstallLocation -like "$installRoot*")
+            $displayProp = $_.PSObject.Properties['DisplayName']
+            $publisherProp = $_.PSObject.Properties['Publisher']
+            $installLocationProp = $_.PSObject.Properties['InstallLocation']
+
+            $entryDisplayName = if ($null -ne $displayProp) { [string]$displayProp.Value } else { '' }
+            $entryPublisher = if ($null -ne $publisherProp) { [string]$publisherProp.Value } else { '' }
+            $entryInstallLocation = if ($null -ne $installLocationProp) { [string]$installLocationProp.Value } else { '' }
+
+            $entryDisplayName -eq $displayName -or
+            ($entryPublisher -eq $publisher -and $entryInstallLocation -like "$installRoot*")
         } |
         Select-Object -First 1
 }
@@ -106,6 +134,20 @@ if ($null -ne $service) {
 } else {
     Write-Step "Already absent: service $serviceName"
 }
+
+Write-Step 'Stopping any bundled tray process'
+$trayProcesses = Get-Process -Name $trayProcessName -ErrorAction SilentlyContinue
+if ($trayProcesses) {
+    $trayProcesses | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
+    Write-Step "Stopped tray process: $trayProcessName"
+} else {
+    Write-Step "Already absent: process $trayProcessName"
+}
+
+Write-Step 'Removing bundled tray startup and protocol registration'
+Remove-RegistryValueIfExists -Path $trayRunKeyPath -Name 'eGuardTray' -Description 'tray startup entry'
+Remove-PathIfExists -Path $trayProtocolKeyPath -Description 'tray protocol registration'
 
 if (-not $KeepProgramFiles.IsPresent) {
     Remove-PathIfExists -Path $installRoot -Description 'program files directory'

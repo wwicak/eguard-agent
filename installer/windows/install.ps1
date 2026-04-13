@@ -27,6 +27,49 @@ function Get-TrayPath {
     return Join-Path ${env:ProgramFiles} 'eGuard\eguard-tray.exe'
 }
 
+function Prepare-AgentServiceForUpgrade {
+    $serviceName = 'eGuardAgent'
+    $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+    if (-not $service) {
+        Write-Step "No existing $serviceName service detected before MSI install"
+        return
+    }
+
+    Write-Step "Temporarily disabling $serviceName recovery actions for MSI upgrade"
+    & sc.exe failure $serviceName reset= 0 actions= ""/0 2>$null | Out-Null
+    & sc.exe failureflag $serviceName 0 2>$null | Out-Null
+    & sc.exe config $serviceName start= demand 2>$null | Out-Null
+
+    if ($service.Status -ne 'Stopped') {
+        Write-Step "Stopping existing $serviceName service before MSI install"
+        Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
+        $waited = 0
+        while ($waited -lt 30) {
+            $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+            if (-not $service -or $service.Status -eq 'Stopped') {
+                break
+            }
+            Start-Sleep -Seconds 1
+            $waited++
+        }
+    }
+
+    $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+    if ($service -and $service.Status -ne 'Stopped') {
+        Write-Step "Service still running, force-terminating eguard-agent.exe before MSI install"
+        taskkill /F /IM eguard-agent.exe /T 2>$null | Out-Null
+        Start-Sleep -Seconds 3
+    }
+}
+
+function Restore-AgentServiceAfterUpgrade {
+    $serviceName = 'eGuardAgent'
+    Write-Step "Restoring $serviceName startup and recovery policy"
+    & sc.exe config $serviceName start= auto 2>$null | Out-Null
+    & sc.exe failure $serviceName reset= 86400 actions= restart/5000/restart/10000/restart/30000 2>$null | Out-Null
+    & sc.exe failureflag $serviceName 1 2>$null | Out-Null
+}
+
 function Register-TrayProtocolAndStartup {
     $trayPath = Get-TrayPath
     if (-not (Test-Path $trayPath)) {
@@ -160,6 +203,7 @@ Write-Step "Hardening bootstrap.conf permissions"
 
 # W8: Do not pass enrollment token on MSI command line (bootstrap.conf already has it)
 Write-Step "Installing MSI silently"
+Prepare-AgentServiceForUpgrade
 $msiArgs = @(
     '/i', "`"$MsiPath`"",
     '/qn',
@@ -171,9 +215,7 @@ if ($process.ExitCode -ne 0) {
     throw "msiexec failed with exit code $($process.ExitCode)"
 }
 
-Write-Step "Configuring eGuardAgent service recovery (auto-restart on failure)"
-& sc.exe failure eGuardAgent reset=0 actions=restart/1000/restart/5000/restart/30000 2>$null
-& sc.exe failureflag eGuardAgent 1 2>$null
+Restore-AgentServiceAfterUpgrade
 
 Write-Step "Starting eGuardAgent service"
 Start-Service -Name 'eGuardAgent' -ErrorAction SilentlyContinue
