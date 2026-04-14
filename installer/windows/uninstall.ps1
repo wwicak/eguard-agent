@@ -21,8 +21,12 @@ function Write-Step([string]$Message) {
 
 function Remove-PathIfExists([string]$Path, [string]$Description) {
     if (Test-Path -LiteralPath $Path) {
-        Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
-        Write-Step "Removed ${Description}: ${Path}"
+        try {
+            Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+            Write-Step "Removed ${Description}: ${Path}"
+        } catch {
+            Write-Step "Failed to remove ${Description}: $($_.Exception.Message)"
+        }
     } else {
         Write-Step "Already absent: ${Path}"
     }
@@ -122,7 +126,13 @@ $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
 if ($null -ne $service) {
     if ($service.Status -ne 'Stopped') {
         Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
-        $service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+        try {
+            $service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+        } catch {
+            Write-Step "Service stop timed out; force-terminating eguard-agent.exe and continuing cleanup"
+            Get-Process -Name 'eguard-agent' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 2
+        }
     }
 
     $deleteProcess = Start-Process -FilePath 'sc.exe' -ArgumentList 'delete', $serviceName -Wait -PassThru -NoNewWindow

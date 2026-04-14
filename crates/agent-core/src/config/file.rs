@@ -72,6 +72,10 @@ impl AgentConfig {
             return;
         };
 
+        if let Some(v) = non_empty(agent.tray_data_dir) {
+            std::env::set_var("EGUARD_TRAY_DATA_DIR", v);
+        }
+
         if let Some(v) = non_empty(agent.id) {
             self.agent_id = v;
         }
@@ -467,6 +471,8 @@ struct FileAgentConfig {
     enrollment_token: Option<String>,
     #[serde(default)]
     tenant_id: Option<String>,
+    #[serde(default)]
+    tray_data_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

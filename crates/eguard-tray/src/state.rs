@@ -137,6 +137,14 @@ fn data_root() -> Result<PathBuf> {
         }
     }
 
+    #[cfg(target_os = "windows")]
+    {
+        let path = PathBuf::from(r"C:\ProgramData\eGuard\tray");
+        fs::create_dir_all(&path)
+            .with_context(|| format!("create tray data dir {}", path.display()))?;
+        return Ok(path);
+    }
+
     let base = dirs::data_local_dir().ok_or_else(|| anyhow!("resolve local data dir"))?;
     let path = base.join("eGuard").join("tray");
     fs::create_dir_all(&path)
