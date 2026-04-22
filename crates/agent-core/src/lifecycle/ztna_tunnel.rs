@@ -3,7 +3,9 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use tracing::{info, warn};
-use ztna::{resolve_or_create_wireguard_identity, LocalForwardManager, TunnelRequest};
+use ztna::{resolve_or_create_wireguard_identity, LocalForwardManager, TunnelGrant, TunnelRequest};
+#[cfg(target_os = "windows")]
+use ztna::{apply_windows_tunnel_grant, remove_windows_tunnel};
 
 use super::{interval_due, AgentRuntime};
 
@@ -75,6 +77,9 @@ impl AgentRuntime {
         if self.ztna_forward.is_some() {
             return Ok(());
         }
+        if self.ztna_last_session_id.is_some() {
+            return Ok(());
+        }
         if !interval_due(
             self.ztna_last_request_unix,
             now_unix,
@@ -89,6 +94,7 @@ impl AgentRuntime {
             .as_deref()
             .map(str::trim)
             .filter(|v| !v.is_empty())
+            .map(str::to_string)
         else {
             return Ok(());
         };
@@ -105,7 +111,7 @@ impl AgentRuntime {
         self.ztna_last_request_unix = Some(now_unix);
         let req = TunnelRequest {
             agent_id: self.config.agent_id.clone(),
-            app_id: app_id.to_string(),
+            app_id: app_id.clone(),
             agent_wg_public_key: agent_wg_public_key.to_string(),
             forward_host: self.config.ztna_forward_host.clone(),
             forward_port: self.config.ztna_forward_port,
@@ -130,6 +136,20 @@ impl AgentRuntime {
             return Ok(());
         };
 
+        if let Err(err) = self.apply_ztna_wireguard_grant(&grant) {
+            warn!(error = %err, session_id = %grant.session_id, "failed applying ztna wireguard grant");
+            self.ztna_last_outcome = Some(format!("wireguard apply failed: {err}"));
+            return Ok(());
+        }
+
+        if grant_uses_direct_route(&grant) {
+            info!(session_id = %grant.session_id, "ztna direct-route session activated");
+            self.ztna_last_app_id = Some(app_id.clone());
+            self.ztna_last_session_id = Some(grant.session_id);
+            self.ztna_last_outcome = Some(format!("connected via {}", grant.transport));
+            return Ok(());
+        }
+
         let Some(forward_host) = self
             .config
             .ztna_forward_host
@@ -152,7 +172,7 @@ impl AgentRuntime {
             .ztna_local_bind_addr
             .parse()
             .unwrap_or_else(|_| SocketAddr::from(([127, 0, 0, 1], 0)));
-        let upstream = format!("{}:{}", forward_host, forward_port);
+        let upstream = format!("{}:{}", self.ztna_upstream_host(&grant, forward_host), forward_port);
         let manager = LocalForwardManager;
         match manager.start(listen_addr, upstream.clone()).await {
             Ok(handle) => {
@@ -163,10 +183,14 @@ impl AgentRuntime {
                     "ztna local forward started"
                 );
                 self.ztna_forward = Some(handle);
+                self.ztna_last_app_id = Some(app_id.clone());
                 self.ztna_last_session_id = Some(grant.session_id);
                 self.ztna_last_outcome = Some(format!("connected via {}", grant.transport));
             }
             Err(err) => {
+                if let Err(remove_err) = self.remove_ztna_wireguard_tunnel() {
+                    warn!(error = %remove_err, "failed removing ztna wireguard tunnel after local forward failure");
+                }
                 warn!(error = %err, upstream = %upstream, "failed to start ztna local forward");
                 self.ztna_last_outcome = Some(format!("local forward failed: {err}"));
             }
@@ -174,6 +198,47 @@ impl AgentRuntime {
 
         Ok(())
     }
+
+    fn apply_ztna_wireguard_grant(&mut self, grant: &TunnelGrant) -> Result<()> {
+        #[cfg(target_os = "windows")]
+        {
+            let data_dir = resolve_agent_data_dir();
+            let identity = resolve_or_create_wireguard_identity(&self.config.agent_id, &data_dir)?;
+            apply_windows_tunnel_grant(&data_dir, &identity, grant)?;
+            return Ok(());
+        }
+
+        #[allow(unreachable_code)]
+        Ok(())
+    }
+
+    pub(super) fn remove_ztna_wireguard_tunnel(&mut self) -> Result<()> {
+        #[cfg(target_os = "windows")]
+        {
+            remove_windows_tunnel(&resolve_agent_data_dir())?;
+            return Ok(());
+        }
+
+        #[allow(unreachable_code)]
+        Ok(())
+    }
+
+    fn ztna_upstream_host(&self, grant: &TunnelGrant, _forward_host: &str) -> String {
+        #[cfg(target_os = "windows")]
+        {
+            if !grant.service_ip.trim().is_empty() {
+                return grant.service_ip.clone();
+            }
+            return _forward_host.to_string();
+        }
+
+        #[allow(unreachable_code)]
+        _forward_host.to_string()
+    }
+}
+
+fn grant_uses_direct_route(grant: &TunnelGrant) -> bool {
+    grant.service_ip.trim().is_empty()
 }
 
 fn resolve_agent_data_dir() -> PathBuf {

@@ -44,8 +44,7 @@ impl LocalForwardStats {
     }
 
     fn mark_activity(&self) {
-        self.last_activity_unix
-            .store(now_unix(), Ordering::Relaxed);
+        self.last_activity_unix.store(now_unix(), Ordering::Relaxed);
     }
 }
 

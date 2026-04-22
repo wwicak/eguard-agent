@@ -4,7 +4,10 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use grpc_client::ZtnaBookmarkListEnvelope;
 use serde::{Deserialize, Serialize};
+use chrono::{DateTime, Utc};
+use tokio::time::{timeout, Duration};
 use tracing::{info, warn};
+use ztna::TunnelClientConfig;
 
 use super::AgentRuntime;
 
@@ -24,12 +27,20 @@ struct QueuedTrayCommand {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum TrayCommand {
-    Disconnect { session_id: String },
+    Disconnect {
+        session_id: String,
+    },
     DisconnectAll,
     DisableTransport,
     EnableTransport,
     Refresh,
-    OpenApp { app_id: String },
+    OpenApp {
+        app_id: String,
+        #[serde(default)]
+        forward_host: Option<String>,
+        #[serde(default)]
+        forward_port: Option<u16>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -86,9 +97,23 @@ struct SessionEntry {
     last_activity_at: Option<i64>,
     #[serde(default)]
     last_outcome: Option<String>,
+    #[serde(default)]
+    local_url: Option<String>,
+    #[serde(default)]
+    bytes_tx: Option<i64>,
+    #[serde(default)]
+    bytes_rx: Option<i64>,
+    #[serde(default)]
+    active_connections: Option<i32>,
+    #[serde(default)]
+    tunnel_latency_ms: Option<i32>,
 }
 
 impl AgentRuntime {
+    pub(super) async fn apply_pending_tray_commands(&mut self) -> Result<()> {
+        self.apply_tray_commands().await
+    }
+
     pub(super) async fn sync_tray_state(&mut self, now_unix: i64) -> Result<()> {
         self.apply_tray_commands().await?;
         self.write_tray_bookmark_state().await?;
@@ -98,7 +123,21 @@ impl AgentRuntime {
 
     async fn apply_tray_commands(&mut self) -> Result<()> {
         let path = command_queue_path()?;
+        if std::env::var("EGUARD_DEBUG_TICK_LOG")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .is_some()
+        {
+            info!(path = %path.display(), "tray command queue load start");
+        }
         let mut queue = read_json_or_default::<TrayCommandQueue>(&path)?;
+        if std::env::var("EGUARD_DEBUG_TICK_LOG")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .is_some()
+        {
+            info!(path = %path.display(), command_count = queue.commands.len(), "tray command queue load complete");
+        }
         if queue.commands.is_empty() {
             return Ok(());
         }
@@ -112,17 +151,51 @@ impl AgentRuntime {
         }
 
         queue.commands = pending;
+        if std::env::var("EGUARD_DEBUG_TICK_LOG")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .is_some()
+        {
+            info!(path = %path.display(), pending_count = queue.commands.len(), "tray command queue write start");
+        }
         write_json(&path, &queue)?;
+        if std::env::var("EGUARD_DEBUG_TICK_LOG")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .is_some()
+        {
+            info!(path = %path.display(), pending_count = queue.commands.len(), "tray command queue write complete");
+        }
         Ok(())
     }
 
     async fn write_tray_bookmark_state(&self) -> Result<()> {
-        let payload = self.client.fetch_ztna_bookmarks().await?;
-        let state = payload
-            .as_ref()
-            .map(bookmark_state_from_envelope)
-            .unwrap_or_default();
-        write_json(&bookmark_state_path()?, &state)
+        let path = bookmark_state_path()?;
+        let payload = match timeout(Duration::from_secs(3), self.client.fetch_ztna_bookmarks()).await {
+            Ok(Ok(payload)) => payload,
+            Ok(Err(err)) => {
+                warn!(error = %err, "failed to fetch ztna bookmarks for tray cache");
+                if path.exists() {
+                    return Ok(());
+                }
+                None
+            }
+            Err(_) => {
+                warn!("timed out fetching ztna bookmarks for tray cache");
+                if path.exists() {
+                    return Ok(());
+                }
+                None
+            }
+        };
+        let Some(payload) = payload else {
+            if path.exists() {
+                return Ok(());
+            }
+            return write_json(&path, &BookmarkState::default());
+        };
+        let state = bookmark_state_from_envelope(&payload);
+        write_json(&path, &state)
     }
 
     async fn apply_tray_command(&mut self, command: &TrayCommand) -> Result<()> {
@@ -150,24 +223,61 @@ impl AgentRuntime {
                 info!(transport = %self.config.transport_mode, "applied tray transport enable");
             }
             TrayCommand::Refresh => {
-                info!("received tray refresh request");
+                self.client.set_cached_ztna_bookmarks(None);
+                self.last_heartbeat_attempt_unix = None;
+                info!("received tray refresh request and forced bookmark refresh");
             }
-            TrayCommand::OpenApp { app_id } => {
+            TrayCommand::OpenApp {
+                app_id,
+                forward_host,
+                forward_port,
+            } => {
                 let app_id = app_id.trim();
                 if !app_id.is_empty() {
+                    let requested_forward_host = forward_host
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string);
+                    let requested_forward_port = *forward_port;
+                    let same_app_active = self.ztna_last_session_id.is_some()
+                        && self.ztna_last_app_id.as_deref().map(str::trim) == Some(app_id)
+                        && self.config.ztna_forward_host == requested_forward_host
+                        && self.config.ztna_forward_port == requested_forward_port;
+                    if same_app_active {
+                        info!(app_id, forward_host = ?requested_forward_host, forward_port = ?requested_forward_port, "ignoring duplicate tray open app request for active session");
+                        return Ok(());
+                    }
+
                     self.config.ztna_app_id = Some(app_id.to_string());
-                    self.stop_ztna_session(Some("switching app from tray request"))
-                        .await;
-                    info!(app_id, "queued tray open app request into runtime");
+                    self.config.ztna_forward_host = requested_forward_host;
+                    self.config.ztna_forward_port = requested_forward_port;
+                    self.ztna_last_request_unix = None;
+                    if self.ztna_forward.is_some() || self.ztna_last_session_id.is_some() {
+                        self.stop_ztna_session(Some("switching app from tray request"))
+                            .await;
+                    }
+                    info!(app_id, forward_host = ?self.config.ztna_forward_host, forward_port = ?self.config.ztna_forward_port, "queued tray open app request into runtime");
                 }
             }
         }
         Ok(())
     }
 
-    fn write_tray_session_state(&self, now_unix: i64) -> Result<()> {
+    pub(super) fn write_tray_session_state(&self, now_unix: i64) -> Result<()> {
+        let sessions = self.collect_tray_sessions(now_unix);
+        write_json(&session_state_path()?, &SessionState { sessions })
+    }
+
+    fn collect_tray_sessions(&self, now_unix: i64) -> Vec<SessionEntry> {
+        if let Some(sessions) = self.active_ztna_sessions_from_controller(now_unix) {
+            if !sessions.is_empty() {
+                return sessions;
+            }
+        }
+
         let mut sessions = Vec::new();
-        if self.ztna_forward.is_some() {
+        if self.ztna_last_session_id.is_some() || self.ztna_forward.is_some() {
             let app_id = self
                 .config
                 .ztna_app_id
@@ -198,25 +308,89 @@ impl AgentRuntime {
                         .unwrap_or(now_unix),
                 ),
                 last_outcome: self.ztna_last_outcome.clone(),
+                local_url: self
+                    .ztna_forward
+                    .as_ref()
+                    .map(|forward| format!("http://{}", forward.listen_addr)),
+                bytes_tx: None,
+                bytes_rx: None,
+                active_connections: None,
+                tunnel_latency_ms: None,
             });
         }
+        sessions
+    }
 
-        write_json(
-            &session_state_path()?,
-            &SessionState { sessions },
-        )
+    fn active_ztna_sessions_from_controller(&self, now_unix: i64) -> Option<Vec<SessionEntry>> {
+        let config = TunnelClientConfig {
+            base_url: self.config.ztna_controller_base_url.clone(),
+            request_timeout_secs: 5,
+        };
+        let client = ztna::TunnelClient::new(config).ok()?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .ok()?;
+        let sessions = runtime.block_on(async { client.list_sessions().await.ok() })?;
+        let active = sessions
+            .into_iter()
+            .filter(|session| {
+                session.agent_id.trim() == self.config.agent_id.trim()
+                    && session.status.trim().eq_ignore_ascii_case("active")
+            })
+            .map(|session| SessionEntry {
+                session_id: session.session_id,
+                app_id: session.app_id.clone(),
+                app_name: session.app_id,
+                transport: session.transport,
+                status: if session.status.trim().is_empty() {
+                    "active".to_string()
+                } else {
+                    session.status
+                },
+                started_at: parse_unix_timestamp(&session.created_at),
+                last_activity_at: Some(
+                    parse_unix_timestamp(&session.last_activity_at).unwrap_or(now_unix),
+                ),
+                last_outcome: self.ztna_last_outcome.clone(),
+                local_url: self
+                    .ztna_forward
+                    .as_ref()
+                    .map(|forward| format!("http://{}", forward.listen_addr)),
+                bytes_tx: Some(session.bytes_tx),
+                bytes_rx: Some(session.bytes_rx),
+                active_connections: Some(session.active_connections),
+                tunnel_latency_ms: Some(session.tunnel_latency_ms),
+            })
+            .collect::<Vec<_>>();
+        Some(active)
     }
 
     pub(super) async fn stop_ztna_session(&mut self, reason: Option<&str>) {
         if let Some(handle) = self.ztna_forward.take() {
             handle.stop().await;
         }
-        self.release_ztna_session(reason.unwrap_or("session stopped")).await;
+        if let Err(err) = self.remove_ztna_wireguard_tunnel() {
+            warn!(error = %err, "failed removing ztna wireguard tunnel during session stop");
+        }
+        self.release_ztna_session(reason.unwrap_or("session stopped"))
+            .await;
         self.ztna_last_session_id = None;
+        self.ztna_last_app_id = None;
         if let Some(reason) = reason {
             info!(reason, "ztna session stopped");
         }
     }
+}
+
+fn parse_unix_timestamp(raw: &str) -> Option<i64> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    DateTime::parse_from_rfc3339(trimmed)
+        .ok()
+        .map(|ts| ts.with_timezone(&Utc).timestamp())
 }
 
 fn session_state_path() -> Result<PathBuf> {
@@ -244,13 +418,15 @@ fn tray_data_root() -> Result<PathBuf> {
     #[cfg(target_os = "windows")]
     {
         let path = PathBuf::from(r"C:\ProgramData\eGuard\tray");
-        fs::create_dir_all(&path).with_context(|| format!("create tray data dir {}", path.display()))?;
+        fs::create_dir_all(&path)
+            .with_context(|| format!("create tray data dir {}", path.display()))?;
         return Ok(path);
     }
 
     let base = dirs::data_local_dir().ok_or_else(|| anyhow::anyhow!("resolve local data dir"))?;
     let path = base.join("eGuard").join("tray");
-    fs::create_dir_all(&path).with_context(|| format!("create tray data dir {}", path.display()))?;
+    fs::create_dir_all(&path)
+        .with_context(|| format!("create tray data dir {}", path.display()))?;
     Ok(path)
 }
 
@@ -340,7 +516,10 @@ fn bookmark_state_from_envelope(payload: &ZtnaBookmarkListEnvelope) -> BookmarkS
 mod tests {
     use std::fs;
 
-    use super::{bookmark_state_path, command_queue_path, session_state_path, read_json_or_default, BookmarkState, SessionState, TrayCommand, TrayCommandQueue};
+    use super::{
+        bookmark_state_path, command_queue_path, read_json_or_default, session_state_path,
+        BookmarkState, SessionState, TrayCommand, TrayCommandQueue,
+    };
     use crate::config::AgentConfig;
     use crate::lifecycle::{shared_env_var_lock, AgentRuntime};
     use grpc_client::{ZtnaBookmarkEnvelope, ZtnaBookmarkListEnvelope};
@@ -361,10 +540,14 @@ mod tests {
         runtime.ztna_last_session_id = Some("session-123".to_string());
         runtime.ztna_forward = Some(start_test_forward().await);
 
-        runtime.sync_tray_state(1_700_000_100).await.expect("sync tray state");
+        runtime
+            .sync_tray_state(1_700_000_100)
+            .await
+            .expect("sync tray state");
 
         let state: SessionState =
-            read_json_or_default(&session_state_path().expect("session path")).expect("read session state");
+            read_json_or_default(&session_state_path().expect("session path"))
+                .expect("read session state");
         assert_eq!(state.sessions.len(), 1);
         assert_eq!(state.sessions[0].session_id, "session-123");
         assert_eq!(state.sessions[0].app_id, "rdp-prod");
@@ -379,29 +562,36 @@ mod tests {
 
         let cfg = AgentConfig::default();
         let mut runtime = AgentRuntime::new(cfg).expect("runtime");
-        runtime.client.set_cached_ztna_bookmarks(Some(ZtnaBookmarkListEnvelope {
-            version: "v1".to_string(),
-            generated_at_unix: 1_700_000_000,
-            bookmarks: vec![ZtnaBookmarkEnvelope {
-                app_id: "app-1".to_string(),
-                name: "Prod SSH".to_string(),
-                icon: "terminal".to_string(),
-                app_type: "ssh".to_string(),
-                description: "Production jump host".to_string(),
-                health_status: "healthy".to_string(),
-                launch_uri: "eguard-ztna://launch?app_id=app-1&app_type=ssh&target=host".to_string(),
-                launcher_supported: true,
-                target_host: "host".to_string(),
-                target_port: 22,
-                display_hint: String::new(),
-                user_hint: "admin".to_string(),
-            }],
-        }));
+        runtime
+            .client
+            .set_cached_ztna_bookmarks(Some(ZtnaBookmarkListEnvelope {
+                version: "v1".to_string(),
+                generated_at_unix: 1_700_000_000,
+                bookmarks: vec![ZtnaBookmarkEnvelope {
+                    app_id: "app-1".to_string(),
+                    name: "Prod SSH".to_string(),
+                    icon: "terminal".to_string(),
+                    app_type: "ssh".to_string(),
+                    description: "Production jump host".to_string(),
+                    health_status: "healthy".to_string(),
+                    launch_uri: "eguard-ztna://launch?app_id=app-1&app_type=ssh&target=host"
+                        .to_string(),
+                    launcher_supported: true,
+                    target_host: "host".to_string(),
+                    target_port: 22,
+                    display_hint: String::new(),
+                    user_hint: "admin".to_string(),
+                }],
+            }));
 
-        runtime.sync_tray_state(1_700_000_100).await.expect("sync tray state");
+        runtime
+            .sync_tray_state(1_700_000_100)
+            .await
+            .expect("sync tray state");
 
         let state: BookmarkState =
-            read_json_or_default(&bookmark_state_path().expect("bookmark path")).expect("read bookmark state");
+            read_json_or_default(&bookmark_state_path().expect("bookmark path"))
+                .expect("read bookmark state");
         assert_eq!(state.version, "v1");
         assert_eq!(state.bookmarks.len(), 1);
         assert_eq!(state.bookmarks[0].app_id, "app-1");
@@ -431,16 +621,157 @@ mod tests {
         };
         super::write_json(&command_queue_path().expect("queue path"), &queue).expect("write queue");
 
-        runtime.sync_tray_state(1_700_000_200).await.expect("sync tray state");
+        runtime
+            .sync_tray_state(1_700_000_200)
+            .await
+            .expect("sync tray state");
 
         let queue: TrayCommandQueue =
             read_json_or_default(&command_queue_path().expect("queue path")).expect("read queue");
         let state: SessionState =
-            read_json_or_default(&session_state_path().expect("session path")).expect("read session state");
+            read_json_or_default(&session_state_path().expect("session path"))
+                .expect("read session state");
         assert!(queue.commands.is_empty());
         assert!(state.sessions.is_empty());
         assert!(runtime.ztna_forward.is_none());
         assert!(runtime.ztna_last_session_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn sync_tray_state_writes_empty_bookmark_cache_when_offline() {
+        let _guard = shared_env_var_lock().lock().expect("env lock");
+        let tray_dir = std::env::temp_dir().join("eguard-agent-tray-sync-bookmarks-offline");
+        let _ = fs::remove_dir_all(&tray_dir);
+        std::env::set_var("EGUARD_TRAY_DATA_DIR", &tray_dir);
+
+        let cfg = AgentConfig::default();
+        let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+        runtime.client.set_online(false);
+
+        runtime
+            .sync_tray_state(1_700_000_300)
+            .await
+            .expect("sync tray state");
+
+        let state: BookmarkState =
+            read_json_or_default(&bookmark_state_path().expect("bookmark path"))
+                .expect("read bookmark state");
+        assert!(state.bookmarks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn refresh_command_clears_cached_bookmarks_and_forces_heartbeat_due() {
+        let _guard = shared_env_var_lock().lock().expect("env lock");
+
+        let mut runtime = AgentRuntime::new(AgentConfig::default()).expect("runtime");
+        runtime.last_heartbeat_attempt_unix = Some(1_700_000_000);
+        runtime
+            .client
+            .set_cached_ztna_bookmarks(Some(ZtnaBookmarkListEnvelope {
+                version: "v1".to_string(),
+                generated_at_unix: 1_700_000_000,
+                bookmarks: vec![ZtnaBookmarkEnvelope {
+                    app_id: "app-1".to_string(),
+                    name: "Prod SSH".to_string(),
+                    icon: "terminal".to_string(),
+                    app_type: "ssh".to_string(),
+                    description: "Production jump host".to_string(),
+                    health_status: "healthy".to_string(),
+                    launch_uri: "eguard-ztna://launch?app_id=app-1&app_type=ssh&target=host"
+                        .to_string(),
+                    launcher_supported: true,
+                    target_host: "host".to_string(),
+                    target_port: 22,
+                    display_hint: String::new(),
+                    user_hint: "admin".to_string(),
+                }],
+            }));
+
+        runtime
+            .apply_tray_command(&TrayCommand::Refresh)
+            .await
+            .expect("apply refresh command");
+
+        assert!(runtime.last_heartbeat_attempt_unix.is_none());
+        assert!(runtime
+            .client
+            .fetch_ztna_bookmarks()
+            .await
+            .expect("fetch cached bookmarks")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn write_tray_bookmark_state_preserves_existing_cache_when_payload_missing() {
+        let _guard = shared_env_var_lock().lock().expect("env lock");
+        let tray_dir = std::env::temp_dir().join("eguard-agent-tray-sync-bookmarks-preserve");
+        let _ = fs::remove_dir_all(&tray_dir);
+        std::env::set_var("EGUARD_TRAY_DATA_DIR", &tray_dir);
+
+        let cfg = AgentConfig::default();
+        let runtime = AgentRuntime::new(cfg).expect("runtime");
+        let initial = BookmarkState {
+            version: "v1".to_string(),
+            bookmarks: vec![super::BookmarkEntry {
+                app_id: "app-1".to_string(),
+                name: "Prod SSH".to_string(),
+                icon: Some("terminal".to_string()),
+                app_type: "ssh".to_string(),
+                description: Some("Production jump host".to_string()),
+                health_status: "healthy".to_string(),
+                launch_uri: "eguard-ztna://launch?app_id=app-1&app_type=ssh&target=host"
+                    .to_string(),
+                launcher_supported: true,
+                target_host: Some("host".to_string()),
+                target_port: Some(22),
+                display_hint: None,
+                user_hint: Some("admin".to_string()),
+            }],
+        };
+        super::write_json(&bookmark_state_path().expect("bookmark path"), &initial)
+            .expect("write initial state");
+
+        runtime
+            .write_tray_bookmark_state()
+            .await
+            .expect("write bookmark state");
+
+        let state: BookmarkState =
+            read_json_or_default(&bookmark_state_path().expect("bookmark path"))
+                .expect("read bookmark state");
+        assert_eq!(state.version, "v1");
+        assert_eq!(state.bookmarks.len(), 1);
+        assert_eq!(state.bookmarks[0].app_id, "app-1");
+    }
+
+    #[tokio::test]
+    async fn sync_tray_state_open_app_resets_tunnel_request_backoff() {
+        let _guard = shared_env_var_lock().lock().expect("env lock");
+        let tray_dir = std::env::temp_dir().join("eguard-agent-tray-sync-open-app");
+        let _ = fs::remove_dir_all(&tray_dir);
+        std::env::set_var("EGUARD_TRAY_DATA_DIR", &tray_dir);
+
+        let mut runtime = AgentRuntime::new(AgentConfig::default()).expect("runtime");
+        runtime.ztna_last_request_unix = Some(1_700_000_100);
+
+        let queue = TrayCommandQueue {
+            commands: vec![super::QueuedTrayCommand {
+                id: "cmd-open-app".to_string(),
+                created_at_unix: 1,
+                command: TrayCommand::OpenApp {
+                    app_id: "rdp-prod".to_string(),
+                },
+            }],
+        };
+        super::write_json(&command_queue_path().expect("queue path"), &queue).expect("write queue");
+
+        runtime
+            .sync_tray_state(1_700_000_200)
+            .await
+            .expect("sync tray state");
+
+        assert_eq!(runtime.config.ztna_app_id.as_deref(), Some("rdp-prod"));
+        assert!(runtime.ztna_last_request_unix.is_none());
     }
 
     async fn start_test_forward() -> ztna::LocalForwardHandle {

@@ -151,6 +151,7 @@ pub struct AgentRuntime {
     pub(super) ztna_forward: Option<LocalForwardHandle>,
     pub(super) ztna_last_request_unix: Option<i64>,
     pub(super) ztna_last_session_id: Option<String>,
+    pub(super) ztna_last_app_id: Option<String>,
     pub(super) ztna_last_outcome: Option<String>,
 }
 
@@ -565,6 +566,7 @@ impl AgentRuntime {
             ztna_forward: None,
             ztna_last_request_unix: None,
             ztna_last_session_id: None,
+            ztna_last_app_id: None,
             ztna_last_outcome: None,
         };
 

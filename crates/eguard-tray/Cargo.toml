@@ -20,3 +20,4 @@ ztna = { path = "../ztna" }
 tao.workspace = true
 tray-icon.workspace = true
 windows.workspace = true
+image = { version = "0.25", default-features = false, features = ["ico"] }

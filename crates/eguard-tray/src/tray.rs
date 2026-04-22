@@ -1,4 +1,11 @@
 use anyhow::{Context, Result};
+use std::time::Duration;
+
+#[cfg(target_os = "windows")]
+use std::process::Command;
+
+#[cfg(target_os = "windows")]
+use image::ImageReader;
 use tao::event::Event;
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
@@ -11,9 +18,11 @@ use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Threading::CreateMutexW;
 
-use crate::app::open_admin_ui;
 use crate::launcher::launch_bookmark;
-use crate::state::{BookmarkState, SessionState, TrayCommand, TrayCommandQueue};
+use crate::state::{
+    snapshot_bookmark_cache, snapshot_session_cache, wait_for_bookmark_cache_update,
+    wait_for_session_cache_update, BookmarkState, SessionState, TrayCommand, TrayCommandQueue,
+};
 
 pub fn run_windows_tray() -> Result<()> {
     let _guard = SingleInstanceGuard::acquire()?;
@@ -40,30 +49,28 @@ pub fn run_windows_tray() -> Result<()> {
             Event::NewEvents(tao::event::StartCause::Init) => {
                 if let Ok((menu, actions)) = build_menu() {
                     state.actions = actions;
-                    let icon = default_icon().expect("build tray icon");
-                    tray_icon = Some(
-                        TrayIconBuilder::new()
-                            .with_tooltip("eGuard ZTNA")
-                            .with_menu(Box::new(menu))
-                            .with_icon(icon)
-                            .with_title("eGuard")
-                            .build()
-                            .expect("create tray icon"),
-                    );
+                    let icon = state
+                        .status_icon_for_current_state()
+                        .unwrap_or_else(|| default_icon().expect("build tray icon"));
+                    let mut builder = TrayIconBuilder::new()
+                        .with_menu(Box::new(menu))
+                        .with_icon(icon)
+                        .with_title("eGuard");
+                    if let Some(tooltip) = current_tooltip() {
+                        builder = builder.with_tooltip(tooltip);
+                    }
+                    tray_icon = Some(builder.build().expect("create tray icon"));
                 }
             }
             Event::UserEvent(TrayUserEvent::Menu(event)) => {
                 if handle_menu_event(&mut state, event.id()).is_err() {
                     *control_flow = ControlFlow::Exit;
                 }
-                if let Ok((menu, actions)) = build_menu() {
-                    state.actions = actions;
-                    if let Some(icon) = tray_icon.as_mut() {
-                        let _ = icon.set_menu(Some(Box::new(menu)));
-                    }
-                }
+                refresh_menu(&mut state, tray_icon.as_mut());
             }
-            Event::UserEvent(TrayUserEvent::Tray) => {}
+            Event::UserEvent(TrayUserEvent::Tray) => {
+                refresh_tray_visuals(&state, tray_icon.as_mut());
+            }
             _ => {}
         }
     })
@@ -78,12 +85,16 @@ enum TrayUserEvent {
 #[derive(Default)]
 struct TrayUiState {
     actions: Vec<MenuAction>,
+    connected_icon: Option<Icon>,
+    disconnected_icon: Option<Icon>,
 }
 
 impl TrayUiState {
     fn new() -> Result<Self> {
         Ok(Self {
             actions: Vec::new(),
+            connected_icon: Some(build_status_icon(true)?),
+            disconnected_icon: Some(build_status_icon(false)?),
         })
     }
 }
@@ -93,22 +104,28 @@ enum MenuAction {
     LaunchBookmark(String),
     DisconnectSession(String),
     DisconnectAll,
-    DisableTransport,
-    EnableTransport,
     Refresh,
-    RegisterProtocol,
-    OpenAdminUi,
     Quit,
 }
 
 fn build_menu() -> Result<(Menu, Vec<MenuAction>)> {
     let bookmarks = BookmarkState::load_default().context("load bookmarks for tray")?;
-    let sessions = SessionState::load_default().context("load sessions for tray")?;
+    let sessions = effective_sessions(&bookmarks).context("load effective sessions for tray")?;
 
     let menu = Menu::new();
     let mut actions = Vec::new();
 
-    let bookmarks_menu = Submenu::new("Bookmarks", true);
+    let connection_label = if sessions.is_empty() {
+        "Status: Not connected".to_string()
+    } else if sessions.len() == 1 {
+        format!("Status: Connected · 1 active session")
+    } else {
+        format!("Status: Connected · {} active sessions", sessions.len())
+    };
+    menu.append(&MenuItem::new(&connection_label, false, None))?;
+    menu.append(&PredefinedMenuItem::separator())?;
+
+    let bookmarks_menu = Submenu::new("Applications", true);
     if bookmarks.bookmarks.is_empty() {
         bookmarks_menu.append(&MenuItem::new("No bookmarks", false, None))?;
     } else {
@@ -126,50 +143,44 @@ fn build_menu() -> Result<(Menu, Vec<MenuAction>)> {
     menu.append(&bookmarks_menu)?;
 
     let sessions_menu = Submenu::new("Active Sessions", true);
-    if sessions.sessions.is_empty() {
+    if sessions.is_empty() {
         sessions_menu.append(&MenuItem::new("No active sessions", false, None))?;
     } else {
-        for (index, session) in sessions.sessions.iter().enumerate() {
-            let item = MenuItem::with_id(
-                format!("session-{index}"),
-                format!("{} ({})", session.app_name_or_app_id(), session.session_id),
-                true,
+        for (index, session) in sessions.iter().enumerate() {
+            let stats = format_session_stats(session);
+            sessions_menu.append(&MenuItem::new(
+                format!("{}{}", session.app_name_or_app_id(), stats),
+                false,
                 None,
-            );
-            actions.push(MenuAction::DisconnectSession(session.session_id.clone()));
-            sessions_menu.append(&item)?;
+            ))?;
+            if !session.session_id.trim().is_empty() {
+                let item = MenuItem::with_id(
+                    format!("session-{index}"),
+                    format!("Disconnect {}", session.app_name_or_app_id()),
+                    true,
+                    None,
+                );
+                actions.push(MenuAction::DisconnectSession(session.session_id.clone()));
+                sessions_menu.append(&item)?;
+            }
         }
     }
     menu.append(&sessions_menu)?;
 
     menu.append(&PredefinedMenuItem::separator())?;
 
-    let disconnect_all = MenuItem::with_id("action-disconnect-all", "Disconnect All", true, None);
+    let disconnect_all = MenuItem::with_id(
+        "action-disconnect-all",
+        "Disconnect All Sessions",
+        !sessions.is_empty(),
+        None,
+    );
     actions.push(MenuAction::DisconnectAll);
     menu.append(&disconnect_all)?;
-
-    let disable_transport =
-        MenuItem::with_id("action-disable-transport", "Disable Transport", true, None);
-    actions.push(MenuAction::DisableTransport);
-    menu.append(&disable_transport)?;
-
-    let enable_transport =
-        MenuItem::with_id("action-enable-transport", "Enable Transport", true, None);
-    actions.push(MenuAction::EnableTransport);
-    menu.append(&enable_transport)?;
 
     let refresh = MenuItem::with_id("action-refresh", "Refresh", true, None);
     actions.push(MenuAction::Refresh);
     menu.append(&refresh)?;
-
-    let register_protocol =
-        MenuItem::with_id("action-register-protocol", "Register Protocol", true, None);
-    actions.push(MenuAction::RegisterProtocol);
-    menu.append(&register_protocol)?;
-
-    let open_admin = MenuItem::with_id("action-open-admin", "Open Admin UI", true, None);
-    actions.push(MenuAction::OpenAdminUi);
-    menu.append(&open_admin)?;
 
     menu.append(&PredefinedMenuItem::separator())?;
 
@@ -178,6 +189,27 @@ fn build_menu() -> Result<(Menu, Vec<MenuAction>)> {
     menu.append(&quit)?;
 
     Ok((menu, actions))
+}
+
+fn refresh_menu(state: &mut TrayUiState, tray_icon: Option<&mut tray_icon::TrayIcon>) {
+    if let Ok((menu, actions)) = build_menu() {
+        state.actions = actions;
+        if let Some(icon) = tray_icon {
+            let _ = icon.set_menu(Some(Box::new(menu)));
+            refresh_tray_visuals(state, Some(icon));
+        }
+    }
+}
+
+fn refresh_tray_visuals(state: &TrayUiState, tray_icon: Option<&mut tray_icon::TrayIcon>) {
+    if let Some(icon) = tray_icon {
+        let _ = icon.set_tooltip(current_tooltip().as_deref());
+        let _ = icon.set_icon(Some(
+            state
+                .status_icon_for_current_state()
+                .unwrap_or_else(|| default_icon().expect("build tray icon")),
+        ));
+    }
 }
 
 fn handle_menu_event(state: &mut TrayUiState, menu_id: &MenuId) -> Result<()> {
@@ -211,29 +243,39 @@ fn handle_menu_event(state: &mut TrayUiState, menu_id: &MenuId) -> Result<()> {
     };
     match action {
         MenuAction::LaunchBookmark(app_id) => {
-            queue_command(TrayCommand::OpenApp {
-                app_id: app_id.clone(),
-            })?;
             let bookmarks = BookmarkState::load_default()?;
             if let Some(bookmark) = bookmarks
                 .bookmarks
                 .into_iter()
                 .find(|entry| entry.app_id == app_id)
             {
+                let session_snapshot = snapshot_session_cache()?;
+                queue_command(TrayCommand::OpenApp {
+                    app_id: app_id.clone(),
+                    forward_host: bookmark.target_host.clone(),
+                    forward_port: bookmark.target_port.map(|port| port as u16),
+                })?;
+                let _ = wait_for_session_cache_update(&session_snapshot, Duration::from_secs(8));
                 launch_bookmark(&bookmark)?;
             }
         }
         MenuAction::DisconnectSession(session_id) => {
-            queue_command(TrayCommand::Disconnect { session_id })?
+            let session_snapshot = snapshot_session_cache()?;
+            queue_command(TrayCommand::Disconnect { session_id })?;
+            let _ = wait_for_session_cache_update(&session_snapshot, Duration::from_secs(8));
         }
-        MenuAction::DisconnectAll => queue_command(TrayCommand::DisconnectAll)?,
-        MenuAction::DisableTransport => queue_command(TrayCommand::DisableTransport)?,
-        MenuAction::EnableTransport => queue_command(TrayCommand::EnableTransport)?,
-        MenuAction::Refresh => queue_command(TrayCommand::Refresh)?,
-        MenuAction::RegisterProtocol => {
-            crate::protocol::register_protocol_handler(current_exe_string()?)?
+        MenuAction::DisconnectAll => {
+            let session_snapshot = snapshot_session_cache()?;
+            queue_command(TrayCommand::DisconnectAll)?;
+            let _ = wait_for_session_cache_update(&session_snapshot, Duration::from_secs(8));
         }
-        MenuAction::OpenAdminUi => open_admin_ui()?,
+        MenuAction::Refresh => {
+            let bookmark_snapshot = snapshot_bookmark_cache()?;
+            let session_snapshot = snapshot_session_cache()?;
+            queue_command(TrayCommand::Refresh)?;
+            wait_for_bookmark_cache_update(&bookmark_snapshot, Duration::from_secs(6))?;
+            let _ = wait_for_session_cache_update(&session_snapshot, Duration::from_secs(6));
+        }
         MenuAction::Quit => anyhow::bail!("quit requested"),
     }
     Ok(())
@@ -243,11 +285,7 @@ fn action_matches_id(action: &MenuAction, raw: &str) -> bool {
     matches!(
         (action, raw),
         (MenuAction::DisconnectAll, "action-disconnect-all")
-            | (MenuAction::DisableTransport, "action-disable-transport")
-            | (MenuAction::EnableTransport, "action-enable-transport")
             | (MenuAction::Refresh, "action-refresh")
-            | (MenuAction::RegisterProtocol, "action-register-protocol")
-            | (MenuAction::OpenAdminUi, "action-open-admin")
             | (MenuAction::Quit, "action-quit")
     )
 }
@@ -258,11 +296,127 @@ fn queue_command(command: TrayCommand) -> Result<()> {
     queue.save_default()
 }
 
-fn current_exe_string() -> Result<String> {
-    Ok(std::env::current_exe()?.to_string_lossy().into_owned())
+impl TrayUiState {
+    fn status_icon_for_current_state(&self) -> Option<Icon> {
+        let bookmarks = BookmarkState::load_default().ok()?;
+        let sessions = effective_sessions(&bookmarks).ok()?;
+        if sessions.is_empty() {
+            self.disconnected_icon.clone()
+        } else {
+            self.connected_icon.clone()
+        }
+    }
+}
+
+fn current_tooltip() -> Option<String> {
+    let bookmarks = BookmarkState::load_default().ok()?;
+    let sessions = effective_sessions(&bookmarks).ok()?;
+    if sessions.is_empty() {
+        return Some("eGuard ZTNA\nStatus: Not connected".to_string());
+    }
+
+    let total_rx: i64 = sessions
+        .iter()
+        .map(|session| session.bytes_rx.unwrap_or(0))
+        .sum();
+    let total_tx: i64 = sessions
+        .iter()
+        .map(|session| session.bytes_tx.unwrap_or(0))
+        .sum();
+    Some(format!(
+        "eGuard ZTNA\nStatus: Connected ({})\nIncoming: {}\nOutgoing: {}",
+        sessions.len(),
+        format_bytes(total_rx),
+        format_bytes(total_tx)
+    ))
+}
+
+fn format_bytes(bytes: i64) -> String {
+    let value = bytes.max(0) as f64;
+    let units = ["B", "KiB", "MiB", "GiB"];
+    let mut size = value;
+    let mut unit = 0usize;
+    while size >= 1024.0 && unit < units.len() - 1 {
+        size /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{} {}", size as i64, units[unit])
+    } else {
+        format!("{size:.2} {}", units[unit])
+    }
+}
+
+fn build_status_icon(connected: bool) -> Result<Icon> {
+    let mut rgba = load_base_icon_rgba()?;
+    let width = 16u32;
+    let height = 16u32;
+    let dot_color = if connected {
+        [34u8, 197u8, 94u8, 255u8]
+    } else {
+        [148u8, 163u8, 184u8, 255u8]
+    };
+    let outline_color = [255u8, 255u8, 255u8, 255u8];
+    let center_x = 11i32;
+    let center_y = 11i32;
+    let outer_radius_sq = 16i32;
+    let inner_radius_sq = 9i32;
+
+    for y in 7..16 {
+        for x in 7..16 {
+            let dx = x as i32 - center_x;
+            let dy = y as i32 - center_y;
+            let dist_sq = dx * dx + dy * dy;
+            let idx = ((y * width + x) * 4) as usize;
+            if dist_sq <= inner_radius_sq {
+                rgba[idx..idx + 4].copy_from_slice(&dot_color);
+            } else if dist_sq <= outer_radius_sq {
+                rgba[idx..idx + 4].copy_from_slice(&outline_color);
+            }
+        }
+    }
+    Icon::from_rgba(rgba, width, height).context("build tray status icon")
+}
+
+fn load_base_icon_rgba() -> Result<Vec<u8>> {
+    #[cfg(target_os = "windows")]
+    {
+        let icon_path = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/tray.ico");
+        let image = ImageReader::open(icon_path)
+            .with_context(|| format!("open tray icon {}", icon_path))?
+            .decode()
+            .with_context(|| format!("decode tray icon {}", icon_path))?
+            .into_rgba8();
+        let resized = image::imageops::resize(&image, 16, 16, image::imageops::FilterType::Lanczos3);
+        return Ok(resized.into_raw());
+    }
+
+    #[allow(unreachable_code)]
+    default_icon_rgba()
 }
 
 fn default_icon() -> Result<Icon> {
+    #[cfg(target_os = "windows")]
+    {
+        let icon_path = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/tray.ico");
+        let image = ImageReader::open(icon_path)
+            .with_context(|| format!("open tray icon {}", icon_path))?
+            .decode()
+            .with_context(|| format!("decode tray icon {}", icon_path))?
+            .into_rgba8();
+        let (width, height) = image.dimensions();
+        return Icon::from_rgba(image.into_raw(), width, height)
+            .context("build tray icon from ico");
+    }
+
+    #[allow(unreachable_code)]
+    {
+        let rgba = default_icon_rgba()?;
+        Icon::from_rgba(rgba, 32, 32).context("build tray icon rgba")
+    }
+}
+
+fn default_icon_rgba() -> Result<Vec<u8>> {
     let mut rgba = Vec::with_capacity(32 * 32 * 4);
     for y in 0..32 {
         for x in 0..32 {
@@ -281,7 +435,7 @@ fn default_icon() -> Result<Icon> {
             rgba.extend_from_slice(&[r, g, b, a]);
         }
     }
-    Icon::from_rgba(rgba, 32, 32).context("build tray icon rgba")
+    Ok(rgba)
 }
 
 pub fn is_tray_running() -> bool {
@@ -360,6 +514,131 @@ impl Drop for SingleInstanceGuard {
             let _ = CloseHandle(self.handle);
         }
     }
+}
+
+fn effective_sessions(bookmarks: &BookmarkState) -> Result<Vec<crate::state::SessionEntry>> {
+    let state = SessionState::load_default().unwrap_or_default();
+    if !state.sessions.is_empty() {
+        return Ok(state.sessions);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(session) = session_from_wireguard(bookmarks)? {
+            return Ok(vec![session]);
+        }
+    }
+
+    Ok(Vec::new())
+}
+
+#[cfg(target_os = "windows")]
+fn session_from_wireguard(bookmarks: &BookmarkState) -> Result<Option<crate::state::SessionEntry>> {
+    let output = Command::new(r"C:\Program Files\WireGuard\wg.exe")
+        .arg("show")
+        .output()
+        .context("run wg show for tray session detection")?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let raw = String::from_utf8_lossy(&output.stdout);
+    let Some(interface_name) = raw
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("interface: ").map(str::trim))
+        .filter(|name| name.eq_ignore_ascii_case("eguard-ztna"))
+        .map(str::to_string)
+    else {
+        return Ok(None);
+    };
+
+    let mut latest_handshake = None;
+    let mut bytes_rx = None;
+    let mut bytes_tx = None;
+    for line in raw.lines() {
+        let line = line.trim();
+        if let Some(value) = line.strip_prefix("latest handshake: ") {
+            latest_handshake = Some(value.trim().to_string());
+        }
+        if let Some(value) = line.strip_prefix("transfer: ") {
+            let parts: Vec<_> = value.split(',').map(str::trim).collect();
+            if parts.len() == 2 {
+                bytes_rx = parse_human_size(parts[0].trim_end_matches(" received"));
+                bytes_tx = parse_human_size(parts[1].trim_end_matches(" sent"));
+            }
+        }
+    }
+
+    let conf = std::fs::read_to_string(r"C:\ProgramData\eGuard\ztna\eguard-ztna.conf")
+        .context("read local eguard-ztna config")?;
+    let allowed_line = conf
+        .lines()
+        .find(|line| line.trim_start().starts_with("AllowedIPs = "))
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string();
+    let allowed_ips = allowed_line
+        .strip_prefix("AllowedIPs = ")
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+
+    let bookmark = bookmarks.bookmarks.iter().find(|bookmark| {
+        bookmark
+            .target_host
+            .as_deref()
+            .map(str::trim)
+            .map(|host| allowed_ips.iter().any(|cidr| cidr.starts_with(host)))
+            .unwrap_or(false)
+    });
+
+    let app_id = bookmark
+        .map(|bookmark| bookmark.app_id.clone())
+        .unwrap_or_else(|| interface_name.clone());
+    let app_name = bookmark
+        .map(|bookmark| bookmark.name.clone())
+        .unwrap_or_else(|| interface_name.clone());
+
+    Ok(Some(crate::state::SessionEntry {
+        session_id: String::new(),
+        app_id,
+        app_name,
+        transport: "wireguard".to_string(),
+        status: "active".to_string(),
+        started_at: None,
+        last_activity_at: None,
+        last_outcome: latest_handshake.map(|value| format!("handshake {}", value)),
+        local_url: None,
+        bytes_tx,
+        bytes_rx,
+        active_connections: Some(1),
+        tunnel_latency_ms: None,
+    }))
+}
+
+#[cfg(target_os = "windows")]
+fn parse_human_size(raw: &str) -> Option<i64> {
+    let parts = raw.split_whitespace().collect::<Vec<_>>();
+    if parts.len() != 2 {
+        return None;
+    }
+    let value = parts[0].parse::<f64>().ok()?;
+    let multiplier = match parts[1] {
+        "B" => 1.0,
+        "KiB" => 1024.0,
+        "MiB" => 1024.0 * 1024.0,
+        "GiB" => 1024.0 * 1024.0 * 1024.0,
+        _ => return None,
+    };
+    Some((value * multiplier) as i64)
+}
+
+fn format_session_stats(session: &crate::state::SessionEntry) -> String {
+    let incoming = format_bytes(session.bytes_rx.unwrap_or(0));
+    let outgoing = format_bytes(session.bytes_tx.unwrap_or(0));
+    let connections = session.active_connections.unwrap_or(0);
+    format!("  ↓{} ↑{} · conn {}", incoming, outgoing, connections)
 }
 
 trait SessionLabel {

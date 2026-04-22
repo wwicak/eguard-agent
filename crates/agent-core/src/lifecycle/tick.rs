@@ -36,6 +36,37 @@ impl AgentRuntime {
         {
             info!(tick = self.tick_count, "debug tick");
         }
+
+        // Prioritize tray/user-driven ZTNA work ahead of heavier maintenance,
+        // telemetry polling, and background control-plane activity so launches
+        // remain responsive even when the service is busy.
+        if std::env::var("EGUARD_DEBUG_TICK_LOG")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .is_some()
+        {
+            info!(tick = self.tick_count, "tick pre-tray command phase start");
+        }
+        self.apply_pending_tray_commands().await?;
+        if std::env::var("EGUARD_DEBUG_TICK_LOG")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .is_some()
+        {
+            info!(tick = self.tick_count, "tick pre-tray command phase complete");
+            info!(tick = self.tick_count, "tick pre-ztna ensure phase start");
+        }
+        self.ensure_ztna_tunnel_if_due(now_unix).await?;
+        if std::env::var("EGUARD_DEBUG_TICK_LOG")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .is_some()
+        {
+            info!(tick = self.tick_count, "tick pre-ztna ensure phase complete");
+        }
+        self.teardown_idle_ztna_session_if_needed(now_unix).await;
+        self.write_tray_session_state(now_unix)?;
+
         // Delay bundle bootstrap much longer on startup so post-restart
         // heartbeat + telemetry stay healthy before background rule/model
         // loading begins.  This avoids a blind spot right after tamper/
@@ -92,8 +123,6 @@ impl AgentRuntime {
             self.handle_connected_tick(now_unix, evaluation.as_ref())
                 .await?;
         }
-        self.ensure_ztna_tunnel_if_due(now_unix).await?;
-        self.teardown_idle_ztna_session_if_needed(now_unix).await;
         self.sync_tray_state(now_unix).await?;
         self.run_additional_telemetry_evaluations(now_unix).await?;
 

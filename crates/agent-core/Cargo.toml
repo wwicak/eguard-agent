@@ -30,6 +30,7 @@ ed25519-dalek = "2"
 arc-swap = "1"
 x509-parser = "0.16"
 libc.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 platform-linux = { path = "../platform-linux", features = ["ebpf-libbpf"] }

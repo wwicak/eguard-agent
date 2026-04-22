@@ -1,4 +1,5 @@
 param(
+    [string]$UninstallToken = '',
     [switch]$KeepData,
     [switch]$KeepProgramFiles
 )
@@ -14,6 +15,72 @@ $installRoot = 'C:\Program Files\eGuard'
 $trayProcessName = 'eguard-tray'
 $trayRunKeyPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $trayProtocolKeyPath = 'HKCU:\Software\Classes\eguard-ztna'
+$serverHost = [string]$env:EGUARD_SERVER_HOST
+
+function Invoke-WithInsecureHttps {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Uri,
+
+        [Parameter(Mandatory = $true)]
+        [scriptblock]$Operation
+    )
+
+    if ($PSVersionTable.PSVersion.Major -ge 6) {
+        return & $Operation
+    }
+
+    if ($Uri -notmatch '^https://') {
+        return & $Operation
+    }
+
+    $previousCallback = [System.Net.ServicePointManager]::ServerCertificateValidationCallback
+    $previousProtocol = [Net.ServicePointManager]::SecurityProtocol
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+
+    try {
+        return & $Operation
+    } finally {
+        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $previousCallback
+        [Net.ServicePointManager]::SecurityProtocol = $previousProtocol
+    }
+}
+
+function Invoke-UninstallTokenValidation {
+    if ([string]::IsNullOrWhiteSpace($UninstallToken)) {
+        throw 'UninstallToken is required. Request a server-issued uninstall token first.'
+    }
+    if ([string]::IsNullOrWhiteSpace($serverHost)) {
+        throw 'EGUARD_SERVER_HOST is required to validate the uninstall token.'
+    }
+
+    $uri = "https://${serverHost}:1443/api/v1/agent-install/uninstall-token/validate"
+    try {
+        $response = Invoke-WithInsecureHttps -Uri $uri -Operation {
+            $requestBody = @{ token = $UninstallToken } | ConvertTo-Json -Compress
+            $invokeParams = @{
+                Uri         = $uri
+                Method      = 'Post'
+                Headers     = @{ 'X-Uninstall-Token' = $UninstallToken; 'X-Enrollment-Token' = $UninstallToken }
+                ContentType = 'application/json'
+                Body        = $requestBody
+            }
+
+            if ($PSVersionTable.PSVersion.Major -ge 6) {
+                $invokeParams.SkipCertificateCheck = $true
+            }
+
+            Invoke-RestMethod @invokeParams
+        }
+    } catch {
+        throw "Failed to validate uninstall token: $($_.Exception.Message)"
+    }
+
+    if ($null -eq $response -or [string]$response.status -ne 'validated') {
+        throw 'Server rejected uninstall token.'
+    }
+}
 
 function Write-Step([string]$Message) {
     Write-Host "[eGuard-uninstall] $Message"
@@ -25,7 +92,30 @@ function Remove-PathIfExists([string]$Path, [string]$Description) {
             Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
             Write-Step "Removed ${Description}: ${Path}"
         } catch {
-            Write-Step "Failed to remove ${Description}: $($_.Exception.Message)"
+            Write-Step "Initial delete failed for ${Description}: $($_.Exception.Message)"
+            Get-Process -Name 'eguard-agent' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            Get-Process -Name 'eguard-tray' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            Get-Process -Name 'msiexec' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 2
+            try {
+                Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+                Write-Step "Removed ${Description} after retry: ${Path}"
+            } catch {
+                if (Test-Path -LiteralPath $Path) {
+                    $leaf = Split-Path -Path $Path -Leaf
+                    $parent = Split-Path -Path $Path -Parent
+                    if ([string]::IsNullOrWhiteSpace($parent)) {
+                        $parent = '.'
+                    }
+                    $renamed = Join-Path $parent ("{0}.leftover-{1}" -f $leaf, [DateTimeOffset]::UtcNow.ToUnixTimeSeconds())
+                    try {
+                        Rename-Item -LiteralPath $Path -NewName (Split-Path -Path $renamed -Leaf) -ErrorAction Stop
+                        Write-Step "Renamed locked ${Description} for later cleanup: ${renamed}"
+                    } catch {
+                        Write-Step "Failed to remove ${Description}: $($_.Exception.Message)"
+                    }
+                }
+            }
         }
     } else {
         Write-Step "Already absent: ${Path}"
@@ -99,6 +189,8 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 }
 
 Write-Step 'Discovering installed eGuard Agent package'
+Write-Step 'Validating server-issued uninstall token'
+Invoke-UninstallTokenValidation
 $uninstallEntry = Get-AgentUninstallEntry
 $productCode = Get-MsiProductCode -Entry $uninstallEntry
 

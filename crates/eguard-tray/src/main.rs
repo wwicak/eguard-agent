@@ -1,8 +1,12 @@
+#![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
+
 mod app;
 mod launcher;
 mod protocol;
 mod state;
 mod tray;
+
+use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
@@ -12,9 +16,13 @@ use tracing::{error, info};
 use std::os::windows::process::CommandExt;
 
 use app::open_admin_ui;
-use launcher::{launch_bookmark, launch_launch_request};
+use launcher::{launch_bookmark, launch_launch_request_with_session_fallback};
 use protocol::LaunchRequest;
-use state::{bookmark_cache_path, command_queue_path, session_state_path, BookmarkState, SessionState, TrayCommandQueue};
+use state::{
+    bookmark_cache_path, command_queue_path, session_state_path, snapshot_bookmark_cache,
+    snapshot_session_cache, wait_for_bookmark_cache_update, wait_for_session_cache_update,
+    BookmarkState, SessionState, TrayCommandQueue,
+};
 
 #[derive(Parser, Debug)]
 #[command(name = "eguard-tray", about = "Windows ZTNA tray helper")]
@@ -58,12 +66,19 @@ async fn real_main() -> Result<()> {
         Command::HandleUrl { url } => {
             ensure_background_tray()?;
             let request = LaunchRequest::parse(&url)?;
-            launch_launch_request(&request)
+            enqueue_command(state::TrayCommand::OpenApp {
+                app_id: request.app_id.clone(),
+                forward_host: Some(request.forward_host()),
+                forward_port: request.forward_port(),
+            })?;
+            launch_launch_request_with_session_fallback(&request)
         }
         Command::List => list_bookmarks(),
         Command::Open { app_id } => open_bookmark(&app_id),
         Command::ListSessions => list_sessions(),
-        Command::Disconnect { session_id } => enqueue_command(state::TrayCommand::Disconnect { session_id }),
+        Command::Disconnect { session_id } => {
+            enqueue_command(state::TrayCommand::Disconnect { session_id })
+        }
         Command::DisconnectAll => enqueue_command(state::TrayCommand::DisconnectAll),
         Command::DisableTransport => enqueue_command(state::TrayCommand::DisableTransport),
         Command::EnableTransport => enqueue_command(state::TrayCommand::EnableTransport),
@@ -90,7 +105,11 @@ fn list_bookmarks() -> Result<()> {
             bookmark.name,
             bookmark.app_type,
             bookmark.health_status,
-            if bookmark.launcher_supported { "supported" } else { "missing-launcher" }
+            if bookmark.launcher_supported {
+                "supported"
+            } else {
+                "missing-launcher"
+            }
         );
     }
     Ok(())
@@ -104,9 +123,13 @@ fn open_bookmark(app_id: &str) -> Result<()> {
         .find(|bookmark| bookmark.app_id == app_id)
         .cloned()
         .ok_or_else(|| anyhow!("bookmark `{app_id}` not found"))?;
+    let session_snapshot = snapshot_session_cache()?;
     enqueue_command(state::TrayCommand::OpenApp {
         app_id: app_id.to_string(),
+        forward_host: bookmark.target_host.clone(),
+        forward_port: bookmark.target_port.map(|port| port as u16),
     })?;
+    let _ = wait_for_session_cache_update(&session_snapshot, Duration::from_secs(8));
     launch_bookmark(&bookmark)
 }
 
@@ -134,7 +157,9 @@ fn enqueue_command(command: state::TrayCommand) -> Result<()> {
 }
 
 fn refresh_state() -> Result<()> {
+    let bookmark_snapshot = snapshot_bookmark_cache()?;
     enqueue_command(state::TrayCommand::Refresh)?;
+    wait_for_bookmark_cache_update(&bookmark_snapshot, Duration::from_secs(6))?;
     let bookmarks = BookmarkState::load_default()?;
     let sessions = SessionState::load_default()?;
     println!(

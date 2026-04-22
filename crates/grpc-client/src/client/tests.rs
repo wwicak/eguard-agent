@@ -2250,7 +2250,8 @@ async fn send_heartbeat_grpc_reuses_cached_bookmark_version() {
                 app_type: "ssh".to_string(),
                 description: "jump host".to_string(),
                 health_status: "healthy".to_string(),
-                launch_uri: "eguard-ztna://launch?app_id=app-1&app_type=ssh&target=host".to_string(),
+                launch_uri: "eguard-ztna://launch?app_id=app-1&app_type=ssh&target=host"
+                    .to_string(),
                 launcher_supported: true,
                 target_host: "host".to_string(),
                 target_port: 22,

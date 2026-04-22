@@ -68,6 +68,22 @@ impl LaunchRequest {
             display,
         })
     }
+
+    pub fn forward_host(&self) -> String {
+        Url::parse(&self.target)
+            .ok()
+            .and_then(|url| url.host_str().map(str::to_string))
+            .unwrap_or_else(|| self.target.clone())
+    }
+
+    pub fn forward_port(&self) -> Option<u16> {
+        if self.port.is_some() {
+            return self.port;
+        }
+        Url::parse(&self.target)
+            .ok()
+            .and_then(|url| url.port_or_known_default())
+    }
 }
 
 pub fn register_protocol_handler(exe_path: String) -> Result<()> {
@@ -172,5 +188,19 @@ mod tests {
         assert_eq!(request.target, "rdp.internal.example");
         assert_eq!(request.port, Some(3389));
         assert_eq!(request.user.as_deref(), Some("alice"));
+        assert_eq!(request.forward_host(), "rdp.internal.example");
+        assert_eq!(request.forward_port(), Some(3389));
+    }
+
+    #[test]
+    fn extracts_forward_target_from_url_parameter() {
+        let request = LaunchRequest::parse(
+            "eguard-ztna://launch?app=test-internal&type=http&url=http://172.16.10.11:18080/",
+        )
+        .expect("parse request");
+
+        assert_eq!(request.target, "http://172.16.10.11:18080/");
+        assert_eq!(request.forward_host(), "172.16.10.11");
+        assert_eq!(request.forward_port(), Some(18080));
     }
 }
