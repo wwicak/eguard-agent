@@ -329,72 +329,67 @@ jobs:
 
       - name: Generate release manifest
         shell: bash
+        env:
+          VERSION: ${{ needs.linux.outputs.semver }}
+          TAG_NAME: ${{ needs.linux.outputs.tag }}
+          INPUT_COMPAT: ${{ github.event.inputs.compatibility_line }}
         run: |
           set -euo pipefail
-          VERSION='${{ needs.linux.outputs.semver }}'
-          COMPAT='${{ github.event.inputs.compatibility_line }}'
+          COMPAT="$INPUT_COMPAT"
           if [ -z "$COMPAT" ]; then
-            COMPAT=$(python3 - <<'PY'
-import re
-v = "${{ needs.linux.outputs.semver }}"
-m = re.search(r'(\d+)\.(\d+)', v)
-print(f"{m.group(1)}.{m.group(2)}" if m else "")
-PY
-)
+            COMPAT=$(printf '%s' "$VERSION" | sed -E 's/^v?([0-9]+\.[0-9]+).*/\1/')
           fi
-          if [ -z "$COMPAT" ]; then
+          if [ -z "$COMPAT" ] || [ "$COMPAT" = "$VERSION" ]; then
             echo "Unable to derive compatibility line" >&2
             exit 1
           fi
+          export COMPAT
           python3 - <<'PY'
-import glob
-import hashlib
-import json
-import os
-from pathlib import Path
+          import glob
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
 
-version = os.environ['VERSION']
-tag = '${{ needs.linux.outputs.tag }}'
-compat = os.environ['COMPAT']
-root = Path('release-artifacts')
+          version = os.environ['VERSION']
+          tag = os.environ['TAG_NAME']
+          compat = os.environ['COMPAT']
+          root = Path('release-artifacts')
 
-def one(pattern):
-    matches = sorted(glob.glob(pattern, recursive=True))
-    return matches[0] if matches else ''
+          def one(pattern):
+              matches = sorted(glob.glob(pattern, recursive=True))
+              return matches[0] if matches else ''
 
-def sha256(path):
-    if not path:
-        return ''
-    h = hashlib.sha256()
-    with open(path, 'rb') as fh:
-        for chunk in iter(lambda: fh.read(1024 * 1024), b''):
-            h.update(chunk)
-    return h.hexdigest()
+          def sha256(path):
+              if not path:
+                  return ''
+              h = hashlib.sha256()
+              with open(path, 'rb') as fh:
+                  for chunk in iter(lambda: fh.read(1024 * 1024), b''):
+                      h.update(chunk)
+              return h.hexdigest()
 
-assets = {
-    'deb': one('release-artifacts/linux-packages/**/*.deb'),
-    'rpm': one('release-artifacts/linux-packages/**/*.rpm'),
-    'exe': one('release-artifacts/windows-packages/**/*.exe'),
-    'msi': one('release-artifacts/windows-packages/**/*.msi'),
-    'pkg': one('release-artifacts/macos-packages/**/*.pkg'),
-}
-manifest_assets = {k: Path(v).name for k, v in assets.items() if v}
-checksums = {k: sha256(v) for k, v in assets.items() if v}
-manifest = {
-    'schema_version': 1,
-    'agent_version': version,
-    'release_tag': tag,
-    'compatibility': {'server_minors': [compat]},
-    'assets': manifest_assets,
-    'checksums': checksums,
-}
-out = root / 'eguard-agent-release.json'
-out.write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
-print(out)
-PY
-        env:
-          VERSION: ${{ needs.linux.outputs.semver }}
-          COMPAT: ${{ github.event.inputs.compatibility_line }}
+          assets = {
+              'deb': one('release-artifacts/linux-packages/**/*.deb'),
+              'rpm': one('release-artifacts/linux-packages/**/*.rpm'),
+              'exe': one('release-artifacts/windows-packages/**/*.exe'),
+              'msi': one('release-artifacts/windows-packages/**/*.msi'),
+              'pkg': one('release-artifacts/macos-packages/**/*.pkg'),
+          }
+          manifest_assets = {k: Path(v).name for k, v in assets.items() if v}
+          checksums = {k: sha256(v) for k, v in assets.items() if v}
+          manifest = {
+              'schema_version': 1,
+              'agent_version': version,
+              'release_tag': tag,
+              'compatibility': {'server_minors': [compat]},
+              'assets': manifest_assets,
+              'checksums': checksums,
+          }
+          out = root / 'eguard-agent-release.json'
+          out.write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
+          print(out)
+          PY
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
