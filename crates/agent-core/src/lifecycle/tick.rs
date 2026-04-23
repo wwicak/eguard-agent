@@ -65,7 +65,7 @@ impl AgentRuntime {
             info!(tick = self.tick_count, "tick pre-ztna ensure phase complete");
         }
         self.teardown_idle_ztna_session_if_needed(now_unix).await;
-        self.write_tray_session_state(now_unix)?;
+        self.write_tray_session_state(now_unix).await?;
 
         // Delay bundle bootstrap much longer on startup so post-restart
         // heartbeat + telemetry stay healthy before background rule/model

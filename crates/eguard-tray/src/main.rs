@@ -1,4 +1,4 @@
-#![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod app;
 mod launcher;
@@ -7,6 +7,9 @@ mod state;
 mod tray;
 
 use std::time::Duration;
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
@@ -25,7 +28,7 @@ use state::{
 };
 
 #[derive(Parser, Debug)]
-#[command(name = "eguard-tray", about = "Windows ZTNA tray helper")]
+#[command(name = "Eguard ZTNA", about = "Eguard ZTNA tray helper")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
@@ -59,6 +62,8 @@ async fn main() {
 
 async fn real_main() -> Result<()> {
     init_logging();
+    #[cfg(target_os = "windows")]
+    let _ = ensure_start_menu_shortcut();
     let cli = Cli::parse();
 
     match cli.command.unwrap_or(Command::Tray) {
@@ -94,6 +99,55 @@ fn init_logging() {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_target(false)
         .try_init();
+}
+
+#[cfg(target_os = "windows")]
+fn ensure_start_menu_shortcut() -> Result<()> {
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    let exe = std::env::current_exe().context("resolve current tray executable path")?;
+    let programs_dir = PathBuf::from(r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs");
+    std::fs::create_dir_all(&programs_dir)
+        .with_context(|| format!("create start menu directory {}", programs_dir.display()))?;
+    let shortcut_path = programs_dir.join("Eguard ZTNA.lnk");
+    if shortcut_path.exists() {
+        return Ok(());
+    }
+
+    let ps_script = format!(
+        "$WshShell = New-Object -ComObject WScript.Shell; \
+         $Shortcut = $WshShell.CreateShortcut('{shortcut}'); \
+         $Shortcut.TargetPath = '{target}'; \
+         $Shortcut.Arguments = 'tray'; \
+         $Shortcut.WorkingDirectory = '{workdir}'; \
+         $Shortcut.IconLocation = '{target},0'; \
+         $Shortcut.Description = 'Eguard ZTNA'; \
+         $Shortcut.Save()",
+        shortcut = shortcut_path.display().to_string().replace('\\', "\\\\"),
+        target = exe.display().to_string().replace('\\', "\\\\"),
+        workdir = exe
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new(r"C:\Program Files\eGuard"))
+            .display()
+            .to_string()
+            .replace('\\', "\\\\"),
+    );
+
+    Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &ps_script,
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()
+        .context("create start menu shortcut")?;
+
+    Ok(())
 }
 
 fn list_bookmarks() -> Result<()> {

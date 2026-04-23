@@ -3,6 +3,7 @@ name = "eguard-tray"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+build = "build.rs"
 
 [dependencies]
 anyhow.workspace = true
@@ -21,3 +22,6 @@ tao.workspace = true
 tray-icon.workspace = true
 windows.workspace = true
 image = { version = "0.25", default-features = false, features = ["ico"] }
+
+[target.'cfg(target_os = "windows")'.build-dependencies]
+winres = "0.1"

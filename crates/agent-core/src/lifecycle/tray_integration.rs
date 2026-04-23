@@ -117,7 +117,7 @@ impl AgentRuntime {
     pub(super) async fn sync_tray_state(&mut self, now_unix: i64) -> Result<()> {
         self.apply_tray_commands().await?;
         self.write_tray_bookmark_state().await?;
-        self.write_tray_session_state(now_unix)?;
+        self.write_tray_session_state(now_unix).await?;
         Ok(())
     }
 
@@ -169,32 +169,33 @@ impl AgentRuntime {
         Ok(())
     }
 
-    async fn write_tray_bookmark_state(&self) -> Result<()> {
+    async fn write_tray_bookmark_state(&mut self) -> Result<()> {
         let path = bookmark_state_path()?;
         let payload = match timeout(Duration::from_secs(3), self.client.fetch_ztna_bookmarks()).await {
             Ok(Ok(payload)) => payload,
             Ok(Err(err)) => {
                 warn!(error = %err, "failed to fetch ztna bookmarks for tray cache");
-                if path.exists() {
+                if path.exists() && !self.tray_bookmark_refresh_pending {
                     return Ok(());
                 }
                 None
             }
             Err(_) => {
                 warn!("timed out fetching ztna bookmarks for tray cache");
-                if path.exists() {
+                if path.exists() && !self.tray_bookmark_refresh_pending {
                     return Ok(());
                 }
                 None
             }
         };
         let Some(payload) = payload else {
-            if path.exists() {
+            if path.exists() && !self.tray_bookmark_refresh_pending {
                 return Ok(());
             }
             return write_json(&path, &BookmarkState::default());
         };
         let state = bookmark_state_from_envelope(&payload);
+        self.tray_bookmark_refresh_pending = false;
         write_json(&path, &state)
     }
 
@@ -209,8 +210,13 @@ impl AgentRuntime {
                 }
             }
             TrayCommand::DisconnectAll => {
+                self.config.ztna_app_id = None;
+                self.config.ztna_forward_host = None;
+                self.config.ztna_forward_port = None;
+                self.ztna_last_request_unix = None;
                 self.stop_ztna_session(Some("all sessions disconnected from tray request"))
                     .await;
+                info!("cleared active ztna target from disconnect all request");
             }
             TrayCommand::DisableTransport => {
                 self.config.transport_mode = "http".to_string();
@@ -225,6 +231,7 @@ impl AgentRuntime {
             TrayCommand::Refresh => {
                 self.client.set_cached_ztna_bookmarks(None);
                 self.last_heartbeat_attempt_unix = None;
+                self.tray_bookmark_refresh_pending = true;
                 info!("received tray refresh request and forced bookmark refresh");
             }
             TrayCommand::OpenApp {
@@ -264,13 +271,13 @@ impl AgentRuntime {
         Ok(())
     }
 
-    pub(super) fn write_tray_session_state(&self, now_unix: i64) -> Result<()> {
-        let sessions = self.collect_tray_sessions(now_unix);
+    pub(super) async fn write_tray_session_state(&self, now_unix: i64) -> Result<()> {
+        let sessions = self.collect_tray_sessions(now_unix).await;
         write_json(&session_state_path()?, &SessionState { sessions })
     }
 
-    fn collect_tray_sessions(&self, now_unix: i64) -> Vec<SessionEntry> {
-        if let Some(sessions) = self.active_ztna_sessions_from_controller(now_unix) {
+    async fn collect_tray_sessions(&self, now_unix: i64) -> Vec<SessionEntry> {
+        if let Some(sessions) = self.active_ztna_sessions_from_controller(now_unix).await {
             if !sessions.is_empty() {
                 return sessions;
             }
@@ -321,17 +328,13 @@ impl AgentRuntime {
         sessions
     }
 
-    fn active_ztna_sessions_from_controller(&self, now_unix: i64) -> Option<Vec<SessionEntry>> {
+    async fn active_ztna_sessions_from_controller(&self, now_unix: i64) -> Option<Vec<SessionEntry>> {
         let config = TunnelClientConfig {
             base_url: self.config.ztna_controller_base_url.clone(),
             request_timeout_secs: 5,
         };
         let client = ztna::TunnelClient::new(config).ok()?;
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .ok()?;
-        let sessions = runtime.block_on(async { client.list_sessions().await.ok() })?;
+        let sessions = client.list_sessions().await.ok()?;
         let active = sessions
             .into_iter()
             .filter(|session| {

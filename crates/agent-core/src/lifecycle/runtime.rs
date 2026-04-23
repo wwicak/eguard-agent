@@ -153,6 +153,7 @@ pub struct AgentRuntime {
     pub(super) ztna_last_session_id: Option<String>,
     pub(super) ztna_last_app_id: Option<String>,
     pub(super) ztna_last_outcome: Option<String>,
+    pub(super) tray_bookmark_refresh_pending: bool,
 }
 
 impl AgentRuntime {
@@ -568,6 +569,7 @@ impl AgentRuntime {
             ztna_last_session_id: None,
             ztna_last_app_id: None,
             ztna_last_outcome: None,
+            tray_bookmark_refresh_pending: false,
         };
 
         if let Err(err) = runtime.ensure_ztna_wireguard_identity() {
