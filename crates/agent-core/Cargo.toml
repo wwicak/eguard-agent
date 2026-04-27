@@ -20,6 +20,7 @@ baseline = { path = "../baseline" }
 nac = { path = "../nac" }
 self-protect = { path = "../self-protect" }
 ztna = { path = "../ztna" }
+pam = { path = "../pam" }
 toml.workspace = true
 sha2.workspace = true
 aes-gcm = "0.10"

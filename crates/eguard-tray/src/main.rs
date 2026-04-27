@@ -19,12 +19,15 @@ use tracing::{error, info};
 use std::os::windows::process::CommandExt;
 
 use app::open_admin_ui;
-use launcher::{launch_bookmark, launch_launch_request_with_session_fallback};
+use launcher::{
+    cleanup_all_pam_launches, cleanup_pam_launch, launch_bookmark,
+    launch_launch_request_with_session_fallback, reconcile_pam_launches_on_startup,
+};
 use protocol::LaunchRequest;
 use state::{
-    bookmark_cache_path, command_queue_path, session_state_path, snapshot_bookmark_cache,
-    snapshot_session_cache, wait_for_bookmark_cache_update, wait_for_session_cache_update,
-    BookmarkState, SessionState, TrayCommandQueue,
+    bookmark_cache_path, command_queue_path, pam_launch_state_path, session_state_path,
+    snapshot_bookmark_cache, snapshot_session_cache, wait_for_bookmark_cache_update,
+    wait_for_session_cache_update, BookmarkState, SessionState, TrayCommandQueue,
 };
 
 #[derive(Parser, Debug)]
@@ -48,6 +51,8 @@ enum Command {
     Refresh,
     OpenAdminUi,
     Paths,
+    CleanupPamLaunch { checkout_id: i64 },
+    CleanupAllPamLaunches,
     Tray,
 }
 
@@ -90,7 +95,12 @@ async fn real_main() -> Result<()> {
         Command::Refresh => refresh_state(),
         Command::OpenAdminUi => open_admin_ui(),
         Command::Paths => print_paths(),
-        Command::Tray => tray::run_windows_tray(),
+        Command::CleanupPamLaunch { checkout_id } => cleanup_pam_launch(checkout_id),
+        Command::CleanupAllPamLaunches => cleanup_all_pam_launches(),
+        Command::Tray => {
+            reconcile_pam_launches_on_startup()?;
+            tray::run_windows_tray()
+        }
     }
 }
 
@@ -230,6 +240,7 @@ fn print_paths() -> Result<()> {
     println!("bookmark_cache={}", bookmark_cache_path()?.display());
     println!("session_state={}", session_state_path()?.display());
     println!("command_queue={}", command_queue_path()?.display());
+    println!("pam_launch_state={}", pam_launch_state_path()?.display());
     Ok(())
 }
 

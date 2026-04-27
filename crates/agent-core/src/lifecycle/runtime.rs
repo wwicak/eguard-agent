@@ -622,6 +622,9 @@ impl AgentRuntime {
 
     pub async fn shutdown(&mut self) {
         self.stop_ztna_session(Some("agent shutdown")).await;
+        if let Err(err) = self.queue_all_pam_launch_cleanup() {
+            warn!(error = %err, "failed to queue pam cleanup during agent shutdown");
+        }
     }
 
     #[cfg_attr(not(test), allow(dead_code))]

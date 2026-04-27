@@ -19,6 +19,8 @@ pub struct LaunchRequest {
     pub port: Option<u16>,
     pub user: Option<String>,
     pub display: Option<String>,
+    pub launcher: Option<String>,
+    pub credential_id: Option<i64>,
 }
 
 impl LaunchRequest {
@@ -38,6 +40,8 @@ impl LaunchRequest {
         let mut port = None;
         let mut user = None;
         let mut display = None;
+        let mut launcher = None;
+        let mut credential_id = None;
 
         for (key, value) in url.query_pairs() {
             match key.as_ref() {
@@ -54,6 +58,14 @@ impl LaunchRequest {
                 }
                 "user" | "username" => user = Some(value.into_owned()),
                 "display" => display = Some(value.into_owned()),
+                "launcher" | "client" | "terminal" => launcher = Some(value.into_owned()),
+                "credential_id" | "cred" => {
+                    credential_id = Some(
+                        value
+                            .parse::<i64>()
+                            .map_err(|_| anyhow!("invalid credential_id `{value}`"))?,
+                    )
+                }
                 _ => {}
             }
         }
@@ -66,6 +78,8 @@ impl LaunchRequest {
             port,
             user,
             display,
+            launcher,
+            credential_id,
         })
     }
 

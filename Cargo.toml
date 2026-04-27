@@ -16,6 +16,7 @@ members = [
   "crates/self-protect",
   "crates/agent-version",
   "crates/ztna",
+  "crates/pam",
 ]
 exclude = ["fuzz"]
 resolver = "2"

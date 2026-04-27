@@ -10,6 +10,9 @@ service ZtnaService {
   rpc ListBookmarks(BookmarkRequest) returns (BookmarkList);
   rpc SessionHeartbeat(SessionHeartbeatRequest) returns (SessionHeartbeatAck);
   rpc ReportTunnelStatus(TunnelStatusReport) returns (TunnelStatusAck);
+  rpc CheckoutCredential(CheckoutRequest) returns (CheckoutResponse);
+  rpc CheckinCredential(CheckinRequest) returns (CheckinResponse);
+  rpc GetApprovalStatus(ApprovalStatusRequest) returns (ApprovalStatusResponse);
 }
 
 enum PreferredTransport {
@@ -186,4 +189,67 @@ message BookmarkList {
   string version = 1;
   repeated ApplicationBookmark bookmarks = 2;
   int64 generated_at_unix = 3;
+}
+
+message PasswordCredential {
+  string username = 1;
+  string password = 2;
+  string domain = 3;
+}
+
+message SshKeyCredential {
+  string username = 1;
+  string private_key_pem = 2;
+  string passphrase = 3;
+}
+
+message RecordingPolicy {
+  string mode = 1;
+  int32 screenshot_interval_seconds = 2;
+}
+
+message CheckoutRequest {
+  string agent_id = 1;
+  string app_id = 2;
+  int64 credential_id = 3;
+  string reason = 4;
+  int32 requested_duration_min = 5;
+}
+
+message CheckoutResponse {
+  string checkout_id = 1;
+  string status = 2;
+  oneof credential {
+    PasswordCredential password = 3;
+    SshKeyCredential ssh_key = 4;
+  }
+  int64 expires_at_unix = 5;
+  RecordingPolicy recording_policy = 6;
+  string denial_reason = 7;
+}
+
+message SessionSummary {
+  int64 duration_seconds = 1;
+  int32 commands_count = 2;
+  int64 bytes_transferred = 3;
+}
+
+message CheckinRequest {
+  string checkout_id = 1;
+  SessionSummary session_summary = 2;
+}
+
+message CheckinResponse {
+  bool accepted = 1;
+}
+
+message ApprovalStatusRequest {
+  string checkout_id = 1;
+}
+
+message ApprovalStatusResponse {
+  string checkout_id = 1;
+  string status = 2;
+  string decision_reason = 3;
+  int64 expires_at_unix = 4;
 }

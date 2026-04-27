@@ -56,6 +56,54 @@ pub struct SessionState {
     pub sessions: Vec<SessionEntry>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PamLaunchState {
+    #[serde(default)]
+    pub entries: Vec<PamLaunchEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TrayPreferences {
+    #[serde(default)]
+    pub favorite_app_ids: Vec<String>,
+    #[serde(default)]
+    pub recent_launches: Vec<RecentLaunchEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecentLaunchEntry {
+    pub app_id: String,
+    #[serde(default)]
+    pub app_name: String,
+    #[serde(default)]
+    pub target: String,
+    #[serde(default)]
+    pub launcher: Option<String>,
+    #[serde(default)]
+    pub app_type: String,
+    #[serde(default)]
+    pub pam: bool,
+    #[serde(default)]
+    pub launched_at_unix: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PamLaunchEntry {
+    pub checkout_id: i64,
+    pub app_id: String,
+    pub launcher_kind: String,
+    #[serde(default)]
+    pub process_id: Option<u32>,
+    #[serde(default)]
+    pub target_host: String,
+    #[serde(default)]
+    pub cleanup_paths: Vec<String>,
+    #[serde(default)]
+    pub started_at_unix: i64,
+    #[serde(default)]
+    pub base_url: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionEntry {
     pub session_id: String,
@@ -112,6 +160,10 @@ pub enum TrayCommand {
         forward_host: Option<String>,
         forward_port: Option<u16>,
     },
+    CleanupPamLaunch {
+        checkout_id: i64,
+    },
+    CleanupAllPamLaunches,
 }
 
 impl BookmarkState {
@@ -150,6 +202,50 @@ pub fn wait_for_bookmark_cache_update(
 impl SessionState {
     pub fn load_default() -> Result<Self> {
         read_json_or_default(session_state_path()?)
+    }
+}
+
+impl PamLaunchState {
+    pub fn load_default() -> Result<Self> {
+        read_json_or_default(pam_launch_state_path()?)
+    }
+
+    pub fn save_default(&self) -> Result<()> {
+        write_json(pam_launch_state_path()?, self)
+    }
+}
+
+impl TrayPreferences {
+    pub fn load_default() -> Result<Self> {
+        read_json_or_default(tray_preferences_path()?)
+    }
+
+    pub fn save_default(&self) -> Result<()> {
+        write_json(tray_preferences_path()?, self)
+    }
+
+    pub fn is_favorite(&self, app_id: &str) -> bool {
+        self.favorite_app_ids.iter().any(|value| value == app_id)
+    }
+
+    pub fn toggle_favorite(&mut self, app_id: &str) {
+        if self.is_favorite(app_id) {
+            self.favorite_app_ids.retain(|value| value != app_id);
+        } else {
+            self.favorite_app_ids.push(app_id.to_string());
+            self.favorite_app_ids.sort();
+            self.favorite_app_ids.dedup();
+        }
+    }
+
+    pub fn record_recent_launch(&mut self, entry: RecentLaunchEntry) {
+        self.recent_launches.retain(|existing| {
+            !(existing.app_id == entry.app_id && existing.launcher == entry.launcher)
+        });
+        self.recent_launches.insert(0, entry);
+        if self.recent_launches.len() > 12 {
+            self.recent_launches.truncate(12);
+        }
     }
 }
 
@@ -208,6 +304,14 @@ pub fn session_state_path() -> Result<PathBuf> {
 
 pub fn command_queue_path() -> Result<PathBuf> {
     Ok(data_root()?.join("ztna-tray-commands.json"))
+}
+
+pub fn pam_launch_state_path() -> Result<PathBuf> {
+    Ok(data_root()?.join("ztna-pam-launches.json"))
+}
+
+pub fn tray_preferences_path() -> Result<PathBuf> {
+    Ok(data_root()?.join("ztna-tray-preferences.json"))
 }
 
 fn data_root() -> Result<PathBuf> {

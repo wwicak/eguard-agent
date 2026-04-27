@@ -2,9 +2,10 @@ use std::fs;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use grpc_client::ZtnaBookmarkListEnvelope;
-use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
+use grpc_client::ZtnaBookmarkListEnvelope;
+use pam::PamHttpClient;
+use serde::{Deserialize, Serialize};
 use tokio::time::{timeout, Duration};
 use tracing::{info, warn};
 use ztna::TunnelClientConfig;
@@ -41,6 +42,10 @@ enum TrayCommand {
         #[serde(default)]
         forward_port: Option<u16>,
     },
+    CleanupPamLaunch {
+        checkout_id: i64,
+    },
+    CleanupAllPamLaunches,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -81,6 +86,31 @@ struct SessionState {
     sessions: Vec<SessionEntry>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct PamLaunchState {
+    #[serde(default)]
+    entries: Vec<PamLaunchEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PamLaunchEntry {
+    checkout_id: i64,
+    #[serde(default)]
+    app_id: String,
+    #[serde(default)]
+    launcher_kind: String,
+    #[serde(default)]
+    process_id: Option<u32>,
+    #[serde(default)]
+    target_host: String,
+    #[serde(default)]
+    cleanup_paths: Vec<String>,
+    #[serde(default)]
+    started_at_unix: i64,
+    #[serde(default)]
+    base_url: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SessionEntry {
     session_id: String,
@@ -116,6 +146,7 @@ impl AgentRuntime {
 
     pub(super) async fn sync_tray_state(&mut self, now_unix: i64) -> Result<()> {
         self.apply_tray_commands().await?;
+        self.reconcile_pam_runtime_state().await?;
         self.write_tray_bookmark_state().await?;
         self.write_tray_session_state(now_unix).await?;
         Ok(())
@@ -267,6 +298,12 @@ impl AgentRuntime {
                     info!(app_id, forward_host = ?self.config.ztna_forward_host, forward_port = ?self.config.ztna_forward_port, "queued tray open app request into runtime");
                 }
             }
+            TrayCommand::CleanupPamLaunch { checkout_id } => {
+                self.cleanup_single_pam_launch(*checkout_id, Some("agent_core_cleanup_command"))?;
+            }
+            TrayCommand::CleanupAllPamLaunches => {
+                self.cleanup_all_pam_launches_now(Some("agent_core_cleanup_all"))?;
+            }
         }
         Ok(())
     }
@@ -274,6 +311,64 @@ impl AgentRuntime {
     pub(super) async fn write_tray_session_state(&self, now_unix: i64) -> Result<()> {
         let sessions = self.collect_tray_sessions(now_unix).await;
         write_json(&session_state_path()?, &SessionState { sessions })
+    }
+
+    async fn reconcile_pam_runtime_state(&mut self) -> Result<()> {
+        if self.tick_count % 50 != 0 {
+            return Ok(());
+        }
+
+        let path = pam_launch_state_path()?;
+        let launch_state = read_json_or_default::<PamLaunchState>(&path)?;
+        if launch_state.entries.is_empty() {
+            return Ok(());
+        }
+
+        let base_url = self
+            .config
+            .ztna_controller_base_url
+            .trim()
+            .trim_end_matches('/')
+            .to_string();
+        if base_url.is_empty() {
+            return Ok(());
+        }
+
+        let client = match PamHttpClient::new(base_url) {
+            Ok(client) => client,
+            Err(err) => {
+                warn!(error = %err, "failed to initialize pam runtime client for reconciliation");
+                return Ok(());
+            }
+        };
+        let response = match client.list_checkouts().await {
+            Ok(value) => value,
+            Err(err) => {
+                warn!(error = %err, "failed to fetch pam checkout list for reconciliation");
+                return Ok(());
+            }
+        };
+
+        let mut retained = Vec::new();
+        let mut cleaned = 0usize;
+        for entry in launch_state.entries {
+            let status = response
+                .checkouts
+                .iter()
+                .find(|checkout| checkout.id == entry.checkout_id)
+                .map(|checkout| checkout.status.trim().to_ascii_lowercase());
+            let requires_cleanup = !matches!(status.as_deref(), Some("active") | Some("pending_approval"));
+            if requires_cleanup {
+                cleanup_pam_launch_entry(&entry, Some("server_reconcile_cleanup"));
+                cleaned += 1;
+                continue;
+            }
+            retained.push(entry);
+        }
+        if cleaned > 0 {
+            write_json(&path, &PamLaunchState { entries: retained })?;
+        }
+        Ok(())
     }
 
     async fn collect_tray_sessions(&self, now_unix: i64) -> Vec<SessionEntry> {
@@ -384,6 +479,37 @@ impl AgentRuntime {
             info!(reason, "ztna session stopped");
         }
     }
+
+    pub(super) fn queue_all_pam_launch_cleanup(&self) -> Result<()> {
+        self.cleanup_all_pam_launches_now(Some("agent_shutdown_cleanup"))
+    }
+
+    fn cleanup_single_pam_launch(&self, checkout_id: i64, reason: Option<&str>) -> Result<()> {
+        let path = pam_launch_state_path()?;
+        let mut state = read_json_or_default::<PamLaunchState>(&path)?;
+        let before = state.entries.len();
+        let mut retained = Vec::new();
+        for entry in state.entries.drain(..) {
+            if entry.checkout_id == checkout_id {
+                cleanup_pam_launch_entry(&entry, reason);
+            } else {
+                retained.push(entry);
+            }
+        }
+        if retained.len() != before {
+            write_json(&path, &PamLaunchState { entries: retained })?;
+        }
+        Ok(())
+    }
+
+    fn cleanup_all_pam_launches_now(&self, reason: Option<&str>) -> Result<()> {
+        let path = pam_launch_state_path()?;
+        let state = read_json_or_default::<PamLaunchState>(&path)?;
+        for entry in &state.entries {
+            cleanup_pam_launch_entry(entry, reason);
+        }
+        write_json(&path, &PamLaunchState::default())
+    }
 }
 
 fn parse_unix_timestamp(raw: &str) -> Option<i64> {
@@ -406,6 +532,10 @@ fn bookmark_state_path() -> Result<PathBuf> {
 
 fn command_queue_path() -> Result<PathBuf> {
     Ok(tray_data_root()?.join("ztna-tray-commands.json"))
+}
+
+fn pam_launch_state_path() -> Result<PathBuf> {
+    Ok(tray_data_root()?.join("ztna-pam-launches.json"))
 }
 
 fn tray_data_root() -> Result<PathBuf> {
@@ -461,6 +591,43 @@ fn default_status() -> String {
 
 fn default_health() -> String {
     "unknown".to_string()
+}
+
+fn cleanup_pam_launch_entry(entry: &PamLaunchEntry, reason: Option<&str>) {
+    if let Some(pid) = entry.process_id {
+        terminate_process(pid);
+    }
+    for path in &entry.cleanup_paths {
+        let _ = fs::remove_file(path);
+    }
+    if entry.launcher_kind.trim().eq_ignore_ascii_case("rdp") {
+        delete_cmdkey_rdp_credential(&entry.target_host);
+    }
+    if let Some(base_url) = entry.base_url.as_deref() {
+        if let Ok(client) = PamHttpClient::new(base_url.to_string()) {
+            let _ = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(client.checkin(entry.checkout_id, reason))
+            });
+        }
+    }
+}
+
+fn terminate_process(pid: u32) {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .status();
+    }
+}
+
+fn delete_cmdkey_rdp_credential(target_host: &str) {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("cmdkey")
+            .arg(format!("/delete:TERMSRV/{target_host}"))
+            .status();
+    }
 }
 
 fn bookmark_state_from_envelope(payload: &ZtnaBookmarkListEnvelope) -> BookmarkState {

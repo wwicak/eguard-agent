@@ -16,6 +16,7 @@ clap.workspace = true
 dirs.workspace = true
 url.workspace = true
 ztna = { path = "../ztna" }
+pam = { path = "../pam" }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 tao.workspace = true
