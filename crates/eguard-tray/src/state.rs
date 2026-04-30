@@ -57,6 +57,31 @@ pub struct SessionState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LaunchRequestState {
+    #[serde(default)]
+    pub entries: Vec<LaunchRequestEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LaunchRequestEntry {
+    pub app_id: String,
+    #[serde(default)]
+    pub checkout_id: Option<i64>,
+    #[serde(default)]
+    pub target: String,
+    #[serde(default)]
+    pub launcher: Option<String>,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub message: String,
+    #[serde(default)]
+    pub created_at_unix: i64,
+    #[serde(default)]
+    pub updated_at_unix: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PamLaunchState {
     #[serde(default)]
     pub entries: Vec<PamLaunchEntry>,
@@ -205,6 +230,67 @@ impl SessionState {
     }
 }
 
+impl LaunchRequestState {
+    pub fn load_default() -> Result<Self> {
+        read_json_or_default(launch_request_state_path()?)
+    }
+
+    pub fn save_default(&self) -> Result<()> {
+        write_json(launch_request_state_path()?, self)
+    }
+
+    pub fn active_entries(&self) -> Vec<&LaunchRequestEntry> {
+        self.entries
+            .iter()
+            .filter(|entry| !entry.status.eq_ignore_ascii_case("connected"))
+            .collect()
+    }
+}
+
+impl LaunchRequestEntry {
+    pub fn connecting(app_id: &str, target: &str, launcher: Option<&str>) -> Self {
+        let now = now_unix();
+        Self {
+            app_id: app_id.trim().to_string(),
+            checkout_id: None,
+            target: target.trim().to_string(),
+            launcher: launcher.map(|value| value.trim().to_string()).filter(|value| !value.is_empty()),
+            status: "connecting".to_string(),
+            message: "Connecting".to_string(),
+            created_at_unix: now,
+            updated_at_unix: now,
+        }
+    }
+
+    pub fn waiting_for_approval(app_id: &str, checkout_id: i64, target: &str, launcher: Option<&str>, reason: Option<&str>) -> Self {
+        let now = now_unix();
+        Self {
+            app_id: app_id.trim().to_string(),
+            checkout_id: (checkout_id > 0).then_some(checkout_id),
+            target: target.trim().to_string(),
+            launcher: launcher.map(|value| value.trim().to_string()).filter(|value| !value.is_empty()),
+            status: "waiting_for_approval".to_string(),
+            message: first_non_empty(reason.unwrap_or_default().trim(), "Waiting for approval").to_string(),
+            created_at_unix: now,
+            updated_at_unix: now,
+        }
+    }
+
+    pub fn failed(app_id: &str, target: &str, launcher: Option<&str>, message: String) -> Self {
+        let now = now_unix();
+        Self {
+            app_id: app_id.trim().to_string(),
+            checkout_id: None,
+            target: target.trim().to_string(),
+            launcher: launcher.map(|value| value.trim().to_string()).filter(|value| !value.is_empty()),
+            status: "launch_failed".to_string(),
+            message,
+            created_at_unix: now,
+            updated_at_unix: now,
+        }
+    }
+}
+
 impl PamLaunchState {
     pub fn load_default() -> Result<Self> {
         read_json_or_default(pam_launch_state_path()?)
@@ -294,6 +380,28 @@ impl TrayCommandQueue {
     }
 }
 
+pub fn upsert_launch_request_entry(entry: LaunchRequestEntry) -> Result<()> {
+    let mut state = LaunchRequestState::load_default()?;
+    let created_at = state
+        .entries
+        .iter()
+        .find(|existing| existing.app_id == entry.app_id)
+        .map(|existing| existing.created_at_unix)
+        .unwrap_or(entry.created_at_unix);
+    state.entries.retain(|existing| existing.app_id != entry.app_id);
+    let mut updated = entry;
+    updated.created_at_unix = created_at;
+    updated.updated_at_unix = now_unix();
+    state.entries.push(updated);
+    state.save_default()
+}
+
+pub fn clear_launch_request_entry(app_id: &str) -> Result<()> {
+    let mut state = LaunchRequestState::load_default()?;
+    state.entries.retain(|entry| entry.app_id != app_id);
+    state.save_default()
+}
+
 pub fn bookmark_cache_path() -> Result<PathBuf> {
     Ok(data_root()?.join("ztna-bookmarks.json"))
 }
@@ -308,6 +416,10 @@ pub fn command_queue_path() -> Result<PathBuf> {
 
 pub fn pam_launch_state_path() -> Result<PathBuf> {
     Ok(data_root()?.join("ztna-pam-launches.json"))
+}
+
+pub fn launch_request_state_path() -> Result<PathBuf> {
+    Ok(data_root()?.join("ztna-launch-requests.json"))
 }
 
 pub fn tray_preferences_path() -> Result<PathBuf> {
@@ -367,6 +479,15 @@ fn default_health() -> String {
 
 fn default_status() -> String {
     "active".to_string()
+}
+
+fn first_non_empty<'a>(value: &'a str, fallback: &'a str) -> &'a str {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        fallback
+    } else {
+        trimmed
+    }
 }
 
 fn now_unix() -> i64 {

@@ -12,7 +12,10 @@ use tracing::warn;
 
 use crate::app::open_external_url;
 use crate::protocol::LaunchRequest;
-use crate::state::{BookmarkEntry, PamLaunchEntry, PamLaunchState, SessionState};
+use crate::state::{
+    clear_launch_request_entry, upsert_launch_request_entry, BookmarkEntry, BookmarkState,
+    LaunchRequestEntry, LaunchRequestState, PamLaunchEntry, PamLaunchState, SessionState,
+};
 
 pub fn launch_bookmark(bookmark: &BookmarkEntry) -> Result<()> {
     let request = LaunchRequest::parse(&bookmark.launch_uri)
@@ -32,6 +35,62 @@ pub fn launch_launch_request(request: &LaunchRequest) -> Result<()> {
         "web" | "https" | "http" => open_external_url(&request.target),
         other => Err(anyhow!("unsupported launch target `{other}`")),
     }
+}
+
+pub fn reconcile_pending_launch_requests() -> Result<()> {
+    let state = LaunchRequestState::load_default()?;
+    let waiting: Vec<_> = state
+        .entries
+        .into_iter()
+        .filter(|entry| entry.status.eq_ignore_ascii_case("waiting_for_approval") && entry.checkout_id.unwrap_or_default() > 0)
+        .collect();
+    if waiting.is_empty() {
+        return Ok(());
+    }
+    let base_url = match resolve_server_base_url() {
+        Some(value) => value,
+        None => return Ok(()),
+    };
+    let client = PamHttpClient::new(base_url)?;
+    let envelope = if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        tokio::task::block_in_place(|| handle.block_on(client.list_checkouts()))?
+    } else {
+        let runtime = tokio::runtime::Runtime::new()?;
+        runtime.block_on(client.list_checkouts())?
+    };
+    let bookmarks = BookmarkState::load_default()?;
+    for entry in waiting {
+        let Some(checkout_id) = entry.checkout_id else { continue };
+        let Some(checkout) = envelope.checkouts.iter().find(|item| item.id == checkout_id) else { continue };
+        match checkout.status.trim().to_ascii_lowercase().as_str() {
+            "active" => {
+                if let Some(bookmark) = bookmarks.bookmarks.iter().find(|bookmark| bookmark.app_id == entry.app_id).cloned() {
+                    let mut request = LaunchRequest::parse(&bookmark.launch_uri)
+                        .with_context(|| format!("parse launch uri for {}", bookmark.app_id))?;
+                    request.launcher = entry.launcher.clone();
+                    let _ = clear_launch_request_entry(&entry.app_id);
+                    if let Err(err) = launch_launch_request_with_session_fallback(&request) {
+                        let _ = upsert_launch_request_entry(LaunchRequestEntry::failed(
+                            &entry.app_id,
+                            &entry.target,
+                            entry.launcher.as_deref(),
+                            err.to_string(),
+                        ));
+                    }
+                }
+            }
+            "denied" | "expired" | "revoked" | "completed" => {
+                let _ = upsert_launch_request_entry(LaunchRequestEntry::failed(
+                    &entry.app_id,
+                    &entry.target,
+                    entry.launcher.as_deref(),
+                    format!("Request {}", checkout.status.trim()),
+                ));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 pub fn cleanup_pam_launch(checkout_id: i64) -> Result<()> {
@@ -189,15 +248,37 @@ fn maybe_checkout_password(request: &LaunchRequest) -> Result<Option<CheckedOutP
         reason: Some("tray_ssh_launch".to_string()),
         requested_duration_min: Some(60),
         source_ip: None,
+        temp_token: request
+            .temp_token
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
     };
     let envelope = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(client.checkout(&req))
     })?;
+    if envelope.status.eq_ignore_ascii_case("pending_approval") {
+        if let Some(checkout) = envelope.checkout.as_ref() {
+            let target = request.target.clone();
+            let _ = upsert_launch_request_entry(LaunchRequestEntry::waiting_for_approval(
+                &request.app_id,
+                checkout.id,
+                &target,
+                request.launcher.as_deref(),
+                envelope.reason.as_deref(),
+            ));
+        }
+        return Err(anyhow!("pam checkout pending approval"));
+    }
     if envelope.status.eq_ignore_ascii_case("deny") {
-        return Err(anyhow!(
-            "pam checkout denied: {}",
-            envelope.reason.unwrap_or_else(|| "access_denied".to_string())
+        let message = envelope.reason.unwrap_or_else(|| "access_denied".to_string());
+        let _ = upsert_launch_request_entry(LaunchRequestEntry::failed(
+            &request.app_id,
+            &request.target,
+            request.launcher.as_deref(),
+            format!("PAM denied: {message}"),
         ));
+        return Err(anyhow!("pam checkout denied: {}", message));
     }
     let credential = envelope
         .credential
@@ -210,6 +291,7 @@ fn maybe_checkout_password(request: &LaunchRequest) -> Result<Option<CheckedOutP
     if credential.password.trim().is_empty() && credential.private_key_pem.trim().is_empty() {
         return Ok(None);
     }
+    let _ = clear_launch_request_entry(&request.app_id);
     Ok(Some(CheckedOutPassword {
         base_url,
         checkout_id,

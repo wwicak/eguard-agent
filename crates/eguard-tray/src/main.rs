@@ -25,9 +25,10 @@ use launcher::{
 };
 use protocol::LaunchRequest;
 use state::{
-    bookmark_cache_path, command_queue_path, pam_launch_state_path, session_state_path,
-    snapshot_bookmark_cache, snapshot_session_cache, wait_for_bookmark_cache_update,
-    wait_for_session_cache_update, BookmarkState, SessionState, TrayCommandQueue,
+    bookmark_cache_path, command_queue_path, launch_request_state_path, pam_launch_state_path,
+    session_state_path, snapshot_bookmark_cache, snapshot_session_cache,
+    upsert_launch_request_entry, wait_for_bookmark_cache_update, wait_for_session_cache_update,
+    BookmarkState, LaunchRequestEntry, SessionState, TrayCommandQueue,
 };
 
 #[derive(Parser, Debug)]
@@ -187,6 +188,13 @@ fn open_bookmark(app_id: &str) -> Result<()> {
         .find(|bookmark| bookmark.app_id == app_id)
         .cloned()
         .ok_or_else(|| anyhow!("bookmark `{app_id}` not found"))?;
+    let parsed = protocol::LaunchRequest::parse(&bookmark.launch_uri)
+        .with_context(|| format!("parse launch uri for {}", bookmark.app_id))?;
+    upsert_launch_request_entry(LaunchRequestEntry::connecting(
+        app_id,
+        &parsed.target,
+        parsed.launcher.as_deref(),
+    ))?;
     let session_snapshot = snapshot_session_cache()?;
     enqueue_command(state::TrayCommand::OpenApp {
         app_id: app_id.to_string(),
@@ -194,7 +202,13 @@ fn open_bookmark(app_id: &str) -> Result<()> {
         forward_port: bookmark.target_port.map(|port| port as u16),
     })?;
     let _ = wait_for_session_cache_update(&session_snapshot, Duration::from_secs(8));
-    launch_bookmark(&bookmark)
+    let result = launch_bookmark(&bookmark);
+    if let Err(err) = &result {
+        if err.to_string().to_ascii_lowercase().contains("pending approval") {
+            return Ok(());
+        }
+    }
+    result
 }
 
 fn list_sessions() -> Result<()> {
@@ -223,7 +237,7 @@ fn enqueue_command(command: state::TrayCommand) -> Result<()> {
 fn refresh_state() -> Result<()> {
     let bookmark_snapshot = snapshot_bookmark_cache()?;
     enqueue_command(state::TrayCommand::Refresh)?;
-    wait_for_bookmark_cache_update(&bookmark_snapshot, Duration::from_secs(6))?;
+    wait_for_bookmark_cache_update(&bookmark_snapshot, Duration::from_secs(15))?;
     let bookmarks = BookmarkState::load_default()?;
     let sessions = SessionState::load_default()?;
     println!(
@@ -241,6 +255,7 @@ fn print_paths() -> Result<()> {
     println!("session_state={}", session_state_path()?.display());
     println!("command_queue={}", command_queue_path()?.display());
     println!("pam_launch_state={}", pam_launch_state_path()?.display());
+    println!("launch_request_state={}", launch_request_state_path()?.display());
     Ok(())
 }
 

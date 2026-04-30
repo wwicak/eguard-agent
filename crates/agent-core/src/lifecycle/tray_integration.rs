@@ -202,27 +202,24 @@ impl AgentRuntime {
 
     async fn write_tray_bookmark_state(&mut self) -> Result<()> {
         let path = bookmark_state_path()?;
-        let payload = match timeout(Duration::from_secs(3), self.client.fetch_ztna_bookmarks()).await {
+        let payload = match timeout(Duration::from_secs(10), self.client.fetch_ztna_bookmarks()).await {
             Ok(Ok(payload)) => payload,
             Ok(Err(err)) => {
-                warn!(error = %err, "failed to fetch ztna bookmarks for tray cache");
-                if path.exists() && !self.tray_bookmark_refresh_pending {
+                warn!(error = %err, refresh_pending = self.tray_bookmark_refresh_pending, "failed to fetch ztna bookmarks for tray cache");
+                if path.exists() {
                     return Ok(());
                 }
                 None
             }
             Err(_) => {
-                warn!("timed out fetching ztna bookmarks for tray cache");
-                if path.exists() && !self.tray_bookmark_refresh_pending {
+                warn!(refresh_pending = self.tray_bookmark_refresh_pending, "timed out fetching ztna bookmarks for tray cache");
+                if path.exists() {
                     return Ok(());
                 }
                 None
             }
         };
         let Some(payload) = payload else {
-            if path.exists() && !self.tray_bookmark_refresh_pending {
-                return Ok(());
-            }
             return write_json(&path, &BookmarkState::default());
         };
         let state = bookmark_state_from_envelope(&payload);
@@ -912,6 +909,51 @@ mod tests {
         assert_eq!(state.version, "v1");
         assert_eq!(state.bookmarks.len(), 1);
         assert_eq!(state.bookmarks[0].app_id, "app-1");
+    }
+
+    #[tokio::test]
+    async fn write_tray_bookmark_state_preserves_existing_cache_during_refresh_when_payload_missing() {
+        let _guard = shared_env_var_lock().lock().expect("env lock");
+        let tray_dir = std::env::temp_dir().join("eguard-agent-tray-sync-bookmarks-preserve-refresh");
+        let _ = fs::remove_dir_all(&tray_dir);
+        std::env::set_var("EGUARD_TRAY_DATA_DIR", &tray_dir);
+
+        let cfg = AgentConfig::default();
+        let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+        runtime.tray_bookmark_refresh_pending = true;
+        let initial = BookmarkState {
+            version: "v1".to_string(),
+            bookmarks: vec![super::BookmarkEntry {
+                app_id: "app-1".to_string(),
+                name: "Prod SSH".to_string(),
+                icon: Some("terminal".to_string()),
+                app_type: "ssh".to_string(),
+                description: Some("Production jump host".to_string()),
+                health_status: "healthy".to_string(),
+                launch_uri: "eguard-ztna://launch?app_id=app-1&app_type=ssh&target=host"
+                    .to_string(),
+                launcher_supported: true,
+                target_host: Some("host".to_string()),
+                target_port: Some(22),
+                display_hint: None,
+                user_hint: Some("admin".to_string()),
+            }],
+        };
+        super::write_json(&bookmark_state_path().expect("bookmark path"), &initial)
+            .expect("write initial state");
+
+        runtime
+            .write_tray_bookmark_state()
+            .await
+            .expect("write bookmark state");
+
+        let state: BookmarkState =
+            read_json_or_default(&bookmark_state_path().expect("bookmark path"))
+                .expect("read bookmark state");
+        assert_eq!(state.version, "v1");
+        assert_eq!(state.bookmarks.len(), 1);
+        assert_eq!(state.bookmarks[0].app_id, "app-1");
+        assert!(runtime.tray_bookmark_refresh_pending);
     }
 
     #[tokio::test]

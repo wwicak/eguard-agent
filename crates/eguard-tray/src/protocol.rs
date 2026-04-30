@@ -21,6 +21,8 @@ pub struct LaunchRequest {
     pub display: Option<String>,
     pub launcher: Option<String>,
     pub credential_id: Option<i64>,
+    #[serde(default)]
+    pub temp_token: Option<String>,
 }
 
 impl LaunchRequest {
@@ -80,6 +82,7 @@ impl LaunchRequest {
             display,
             launcher,
             credential_id,
+            temp_token: None,
         })
     }
 

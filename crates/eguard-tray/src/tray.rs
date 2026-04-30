@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::error;
 
 use crate::protocol::LaunchRequest;
@@ -14,22 +14,19 @@ use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIconBuilder, TrayIconEvent};
 
-#[cfg(target_os = "windows")]
-use windows::core::w;
-#[cfg(target_os = "windows")]
-use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE};
-#[cfg(target_os = "windows")]
-use windows::Win32::System::Threading::CreateMutexW;
 
-use crate::launcher::{launch_bookmark, launch_launch_request_with_session_fallback};
+use crate::launcher::{
+    launch_bookmark, launch_launch_request_with_session_fallback,
+    reconcile_pending_launch_requests,
+};
 use crate::state::{
-    snapshot_bookmark_cache, snapshot_session_cache, wait_for_bookmark_cache_update,
-    wait_for_session_cache_update, BookmarkEntry, BookmarkState, PamLaunchState,
+    clear_launch_request_entry, snapshot_bookmark_cache, snapshot_session_cache,
+    upsert_launch_request_entry, wait_for_bookmark_cache_update, wait_for_session_cache_update,
+    BookmarkEntry, BookmarkState, LaunchRequestEntry, LaunchRequestState, PamLaunchState,
     RecentLaunchEntry, SessionState, TrayCommand, TrayCommandQueue, TrayPreferences,
 };
 
 pub fn run_windows_tray() -> Result<()> {
-    let _guard = SingleInstanceGuard::acquire()?;
     let event_loop = EventLoopBuilder::<TrayUserEvent>::with_user_event().build();
 
     let proxy = event_loop.create_proxy();
@@ -50,26 +47,28 @@ pub fn run_windows_tray() -> Result<()> {
         *control_flow = ControlFlow::Wait;
 
         match event {
-            Event::NewEvents(tao::event::StartCause::Init) => {
-                if let Ok((menu, actions)) = build_menu() {
-                    state.actions = actions;
-                    let icon = state
-                        .status_icon_for_current_state()
-                        .unwrap_or_else(|| default_icon().expect("build tray icon"));
-                    let mut builder = TrayIconBuilder::new()
-                        .with_menu(Box::new(menu))
-                        .with_icon(icon)
-                        .with_title("eGuard");
-                    if let Some(tooltip) = current_tooltip() {
-                        builder = builder.with_tooltip(tooltip);
-                    }
-                    tray_icon = Some(builder.build().expect("create tray icon"));
+            Event::NewEvents(tao::event::StartCause::Init)
+            | Event::NewEvents(tao::event::StartCause::ResumeTimeReached { .. }) => {
+                if let Err(err) = reconcile_pending_launch_requests() {
+                    error!(error = %err, "pending launch reconciliation failed");
                 }
+                if tray_icon.is_none() {
+                    match initialize_tray_icon(&mut state) {
+                        Ok(icon) => {
+                            tray_icon = Some(icon);
+                        }
+                        Err(err) => {
+                            error!(error = %err, "tray initialization failed; will retry");
+                        }
+                    }
+                }
+                refresh_menu(&mut state, tray_icon.as_mut());
+                *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_secs(5));
             }
             Event::UserEvent(TrayUserEvent::Menu(event)) => {
                 if let Err(err) = handle_menu_event(&mut state, event.id()) {
                     if err.to_string().contains("quit requested") {
-                        *control_flow = ControlFlow::Exit;
+                        std::process::exit(0);
                     } else {
                         error!(error = %err, "tray menu action failed");
                     }
@@ -82,6 +81,23 @@ pub fn run_windows_tray() -> Result<()> {
             _ => {}
         }
     })
+}
+
+fn initialize_tray_icon(state: &mut TrayUiState) -> Result<tray_icon::TrayIcon> {
+    let (menu, actions) = build_menu().context("build tray menu")?;
+    state.actions = actions;
+    let icon = match state.status_icon_for_current_state() {
+        Some(icon) => icon,
+        None => default_icon().context("build fallback tray icon")?,
+    };
+    let mut builder = TrayIconBuilder::new()
+        .with_menu(Box::new(menu))
+        .with_icon(icon)
+        .with_title("eGuard");
+    if let Some(tooltip) = current_tooltip() {
+        builder = builder.with_tooltip(tooltip);
+    }
+    builder.build().context("create tray icon")
 }
 
 #[derive(Debug)]
@@ -111,6 +127,7 @@ impl TrayUiState {
 enum MenuAction {
     LaunchBookmarkDefault { app_id: String },
     LaunchBookmarkWithLauncher { app_id: String, launcher: String },
+    LaunchBookmarkWithTempToken { app_id: String },
     ToggleFavorite { app_id: String },
     DisconnectSession(String),
     CleanupPamLaunch(i64),
@@ -127,6 +144,9 @@ impl MenuAction {
             MenuAction::LaunchBookmarkWithLauncher { app_id, launcher } => {
                 format!("app-launch:{app_id}:{launcher}")
             }
+            MenuAction::LaunchBookmarkWithTempToken { app_id } => {
+                format!("app-launch-temp-token:{app_id}")
+            }
             MenuAction::ToggleFavorite { app_id } => format!("app-favorite:{app_id}"),
             MenuAction::DisconnectSession(session_id) => format!("session-disconnect:{session_id}"),
             MenuAction::CleanupPamLaunch(checkout_id) => format!("pam-cleanup:{checkout_id}"),
@@ -141,13 +161,25 @@ impl MenuAction {
 fn build_menu() -> Result<(Menu, Vec<MenuAction>)> {
     let bookmarks = BookmarkState::load_default().context("load bookmarks for tray")?;
     let sessions = effective_sessions(&bookmarks).context("load effective sessions for tray")?;
+    let launch_requests = LaunchRequestState::load_default().unwrap_or_default();
     let pam_launches = PamLaunchState::load_default().unwrap_or_default();
     let preferences = TrayPreferences::load_default().unwrap_or_default();
 
     let menu = Menu::new();
     let mut actions = Vec::new();
 
-    let connection_label = if sessions.is_empty() {
+    let pending_entries = launch_requests.active_entries();
+    let connection_label = if !pending_entries.is_empty() {
+        let waiting = pending_entries
+            .iter()
+            .filter(|entry| entry.status.eq_ignore_ascii_case("waiting_for_approval"))
+            .count();
+        if waiting > 0 {
+            format!("Status: Waiting for approval · {} pending", waiting)
+        } else {
+            format!("Status: Connecting · {} launch request(s)", pending_entries.len())
+        }
+    } else if sessions.is_empty() {
         "Status: Not connected".to_string()
     } else if sessions.len() == 1 {
         "Status: Connected · 1 active session".to_string()
@@ -225,6 +257,27 @@ fn build_menu() -> Result<(Menu, Vec<MenuAction>)> {
         }
     }
     menu.append(&apps_menu)?;
+
+    let requests_menu = Submenu::new("Pending / Recent Launch Requests", true);
+    if pending_entries.is_empty() {
+        requests_menu.append(&MenuItem::new("No pending launch requests", false, None))?;
+    } else {
+        for entry in pending_entries {
+            let entry_menu = Submenu::new(entry.app_name_or_fallback(&bookmarks), true);
+            entry_menu.append(&MenuItem::new(format!("State: {}", friendly_launch_status(&entry.status)), false, None))?;
+            entry_menu.append(&MenuItem::new(format!("Target: {}", blank_fallback(&entry.target, "unknown")), false, None))?;
+            entry_menu.append(&MenuItem::new(format!("Detail: {}", blank_fallback(&entry.message, "n/a")), false, None))?;
+            if entry.status.eq_ignore_ascii_case("waiting_for_approval") {
+                entry_menu.append(&PredefinedMenuItem::separator())?;
+                let action = MenuAction::LaunchBookmarkWithTempToken { app_id: entry.app_id.clone() };
+                let item = MenuItem::with_id(action.id(), "Paste Temporary Token...", true, None);
+                actions.push(action);
+                entry_menu.append(&item)?;
+            }
+            requests_menu.append(&entry_menu)?;
+        }
+    }
+    menu.append(&requests_menu)?;
 
     let sessions_menu = Submenu::new("Active Sessions", true);
     if sessions.is_empty() {
@@ -337,6 +390,9 @@ fn build_bookmark_submenu(
         .iter()
         .filter(|entry| entry.app_id == bookmark.app_id)
         .collect();
+    let pending_launch = LaunchRequestState::load_default()
+        .ok()
+        .and_then(|state| state.entries.into_iter().find(|entry| entry.app_id == bookmark.app_id));
 
     if let Some(request) = parsed.as_ref() {
         menu.append(&MenuItem::new(format!("Target: {}", request.target), false, None))?;
@@ -360,6 +416,13 @@ fn build_bookmark_submenu(
         false,
         None,
     ))?;
+    if let Some(pending) = pending_launch.as_ref() {
+        menu.append(&MenuItem::new(
+            format!("Launch: {}", friendly_launch_status(&pending.status)),
+            false,
+            None,
+        ))?;
+    }
     if active_pam_for_app.is_empty() {
         menu.append(&MenuItem::new("PAM: No active local launch", false, None))?;
     } else if active_pam_for_app.len() == 1 {
@@ -408,6 +471,15 @@ fn build_bookmark_submenu(
     let default_item = MenuItem::with_id(default_action.id(), default_label, true, None);
     actions.push(default_action);
     menu.append(&default_item)?;
+
+    if parsed.as_ref().and_then(|request| request.credential_id).is_some() {
+        let token_action = MenuAction::LaunchBookmarkWithTempToken {
+            app_id: bookmark.app_id.clone(),
+        };
+        let token_item = MenuItem::with_id(token_action.id(), "Connect with Temporary Token...", true, None);
+        actions.push(token_action);
+        menu.append(&token_item)?;
+    }
 
     if let Some(request) = parsed.as_ref() {
         append_launch_variants(bookmark, request, &menu, actions)?;
@@ -577,6 +649,31 @@ fn blank_fallback<'a>(value: &'a str, fallback: &'a str) -> &'a str {
     }
 }
 
+fn friendly_launch_status(status: &str) -> &'static str {
+    match status.trim().to_ascii_lowercase().as_str() {
+        "connecting" => "Connecting",
+        "waiting_for_approval" => "Waiting for approval",
+        "launch_failed" => "Launch failed",
+        _ => "Pending",
+    }
+}
+
+trait LaunchRequestEntryExt {
+    fn app_name_or_fallback(&self, bookmarks: &BookmarkState) -> String;
+}
+
+impl LaunchRequestEntryExt for LaunchRequestEntry {
+    fn app_name_or_fallback(&self, bookmarks: &BookmarkState) -> String {
+        bookmarks
+            .bookmarks
+            .iter()
+            .find(|bookmark| bookmark.app_id == self.app_id)
+            .map(|bookmark| bookmark.name.clone())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| self.app_id.clone())
+    }
+}
+
 fn refresh_menu(state: &mut TrayUiState, tray_icon: Option<&mut tray_icon::TrayIcon>) {
     if let Ok((menu, actions)) = build_menu() {
         state.actions = actions;
@@ -608,10 +705,15 @@ fn handle_menu_event(state: &mut TrayUiState, menu_id: &MenuId) -> Result<()> {
         .context("resolve tray action")?;
     match action {
         MenuAction::LaunchBookmarkDefault { app_id } => {
-            launch_bookmark_from_menu(&app_id, None)?;
+            launch_bookmark_from_menu(&app_id, None, None)?;
         }
         MenuAction::LaunchBookmarkWithLauncher { app_id, launcher } => {
-            launch_bookmark_from_menu(&app_id, Some(&launcher))?;
+            launch_bookmark_from_menu(&app_id, Some(&launcher), None)?;
+        }
+        MenuAction::LaunchBookmarkWithTempToken { app_id } => {
+            if let Some(token) = prompt_for_temp_token()? {
+                launch_bookmark_from_menu(&app_id, None, Some(token.as_str()))?;
+            }
         }
         MenuAction::ToggleFavorite { app_id } => {
             let mut preferences = TrayPreferences::load_default().unwrap_or_default();
@@ -638,15 +740,15 @@ fn handle_menu_event(state: &mut TrayUiState, menu_id: &MenuId) -> Result<()> {
             let bookmark_snapshot = snapshot_bookmark_cache()?;
             let session_snapshot = snapshot_session_cache()?;
             queue_command(TrayCommand::Refresh)?;
-            wait_for_bookmark_cache_update(&bookmark_snapshot, Duration::from_secs(6))?;
-            let _ = wait_for_session_cache_update(&session_snapshot, Duration::from_secs(6));
+            wait_for_bookmark_cache_update(&bookmark_snapshot, Duration::from_secs(15))?;
+            let _ = wait_for_session_cache_update(&session_snapshot, Duration::from_secs(15));
         }
         MenuAction::Quit => anyhow::bail!("quit requested"),
     }
     Ok(())
 }
 
-fn launch_bookmark_from_menu(app_id: &str, launcher_override: Option<&str>) -> Result<()> {
+fn launch_bookmark_from_menu(app_id: &str, launcher_override: Option<&str>, temp_token: Option<&str>) -> Result<()> {
     let bookmarks = BookmarkState::load_default()?;
     if let Some(bookmark) = bookmarks
         .bookmarks
@@ -656,24 +758,46 @@ fn launch_bookmark_from_menu(app_id: &str, launcher_override: Option<&str>) -> R
         let parsed = LaunchRequest::parse(&bookmark.launch_uri)
             .with_context(|| format!("parse launch uri for {}", bookmark.app_id))?;
         let session_snapshot = snapshot_session_cache()?;
+        let mut effective_request = parsed.clone();
+        if let Some(launcher) = launcher_override {
+            effective_request.launcher = Some(launcher.to_string());
+        }
+        if let Some(token) = temp_token.map(str::trim).filter(|value| !value.is_empty()) {
+            effective_request.temp_token = Some(token.to_string());
+        }
+        upsert_launch_request_entry(LaunchRequestEntry::connecting(
+            app_id,
+            &effective_request.target,
+            effective_request.launcher.as_deref(),
+        ))?;
         queue_command(TrayCommand::OpenApp {
             app_id: app_id.to_string(),
             forward_host: bookmark.target_host.clone(),
             forward_port: bookmark.target_port.map(|port| port as u16),
         })?;
         let _ = wait_for_session_cache_update(&session_snapshot, Duration::from_secs(8));
-
-        let mut effective_request = parsed.clone();
-        if let Some(launcher) = launcher_override {
-            effective_request.launcher = Some(launcher.to_string());
-        }
         record_recent_launch(&bookmark, &effective_request)?;
 
-        if launcher_override.is_some() {
+        let launch_result = if launcher_override.is_some() || effective_request.temp_token.is_some() {
             launch_launch_request_with_session_fallback(&effective_request)
         } else {
             launch_bookmark(&bookmark)
+        };
+        if let Err(err) = &launch_result {
+            if err.to_string().to_ascii_lowercase().contains("pending approval") {
+                return Ok(());
+            }
+            let _ = upsert_launch_request_entry(LaunchRequestEntry::failed(
+                app_id,
+                &effective_request.target,
+                effective_request.launcher.as_deref(),
+                err.to_string(),
+            ));
         }
+        if launch_result.is_ok() {
+            let _ = clear_launch_request_entry(app_id);
+        }
+        launch_result
     } else {
         Ok(())
     }
@@ -716,7 +840,19 @@ impl TrayUiState {
 
 fn current_tooltip() -> Option<String> {
     let bookmarks = BookmarkState::load_default().ok()?;
+    let launch_requests = LaunchRequestState::load_default().ok()?;
     let sessions = effective_sessions(&bookmarks).ok()?;
+    if !launch_requests.active_entries().is_empty() {
+        let waiting = launch_requests
+            .active_entries()
+            .iter()
+            .filter(|entry| entry.status.eq_ignore_ascii_case("waiting_for_approval"))
+            .count();
+        if waiting > 0 {
+            return Some(format!("eGuard ZTNA\nStatus: Waiting for approval\nPending requests: {}", waiting));
+        }
+        return Some(format!("eGuard ZTNA\nStatus: Connecting\nPending requests: {}", launch_requests.active_entries().len()));
+    }
     if sessions.is_empty() {
         return Some("eGuard ZTNA\nStatus: Not connected".to_string());
     }
@@ -751,6 +887,34 @@ fn format_bytes(bytes: i64) -> String {
     } else {
         format!("{size:.2} {}", units[unit])
     }
+}
+
+fn prompt_for_temp_token() -> Result<Option<String>> {
+    #[cfg(target_os = "windows")]
+    {
+        let output = Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                "Add-Type -AssemblyName Microsoft.VisualBasic; $value = [Microsoft.VisualBasic.Interaction]::InputBox('Paste a temporary launch token', 'eGuard ZTNA Temporary Token', ''); Write-Output $value",
+            ])
+            .output()
+            .context("open temporary token prompt")?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+        let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if token.is_empty() {
+            return Ok(None);
+        }
+        return Ok(Some(token));
+    }
+
+    #[allow(unreachable_code)]
+    Ok(None)
 }
 
 fn build_status_icon(connected: bool) -> Result<Icon> {
@@ -845,81 +1009,7 @@ fn default_icon_rgba() -> Result<Vec<u8>> {
 }
 
 pub fn is_tray_running() -> bool {
-    #[cfg(target_os = "windows")]
-    {
-        return SingleInstanceGuard::already_running();
-    }
-
-    #[allow(unreachable_code)]
     false
-}
-
-#[cfg(target_os = "windows")]
-struct SingleInstanceGuard {
-    handle: HANDLE,
-}
-
-#[cfg(not(target_os = "windows"))]
-struct SingleInstanceGuard;
-
-impl SingleInstanceGuard {
-    fn acquire() -> Result<Self> {
-        #[cfg(target_os = "windows")]
-        {
-            let handle = unsafe { CreateMutexW(None, false, w!("Local\\eGuardTraySingleton")) }
-                .context("create tray single-instance mutex")?;
-            if handle.is_invalid() {
-                return Err(anyhow::anyhow!("create tray single-instance mutex"));
-            }
-
-            let last_error = unsafe { GetLastError() };
-            if last_error == ERROR_ALREADY_EXISTS {
-                unsafe {
-                    let _ = CloseHandle(handle);
-                }
-                anyhow::bail!("eguard-tray is already running");
-            }
-
-            return Ok(Self { handle });
-        }
-
-        #[cfg(not(target_os = "windows"))]
-        {
-            Ok(Self)
-        }
-    }
-
-    fn already_running() -> bool {
-        #[cfg(target_os = "windows")]
-        {
-            let Ok(handle) =
-                (unsafe { CreateMutexW(None, false, w!("Local\\eGuardTraySingleton")) })
-            else {
-                return false;
-            };
-            if handle.is_invalid() {
-                return false;
-            }
-
-            let already_running = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
-            unsafe {
-                let _ = CloseHandle(handle);
-            }
-            return already_running;
-        }
-
-        #[allow(unreachable_code)]
-        false
-    }
-}
-
-impl Drop for SingleInstanceGuard {
-    fn drop(&mut self) {
-        #[cfg(target_os = "windows")]
-        unsafe {
-            let _ = CloseHandle(self.handle);
-        }
-    }
 }
 
 fn effective_sessions(bookmarks: &BookmarkState) -> Result<Vec<crate::state::SessionEntry>> {

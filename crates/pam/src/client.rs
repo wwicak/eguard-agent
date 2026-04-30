@@ -21,6 +21,8 @@ pub struct CheckoutRequest {
     pub requested_duration_min: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_ip: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temp_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -124,7 +126,7 @@ impl PamHttpClient {
             .send()
             .await
             .context("send pam checkout request")?;
-        if resp.status().as_u16() == 403 {
+        if matches!(resp.status().as_u16(), 202 | 403) {
             let deny = resp
                 .json::<CheckoutEnvelope>()
                 .await
