@@ -137,6 +137,18 @@ pub struct BastionSessionRecord {
     #[serde(default)]
     pub access_token: String,
     #[serde(default)]
+    pub proxy_host: String,
+    #[serde(default)]
+    pub proxy_port: i32,
+    #[serde(default)]
+    pub proxy_username: String,
+    #[serde(default)]
+    pub proxy_password: String,
+    #[serde(default)]
+    pub proxy_mode: String,
+    #[serde(default)]
+    pub proxy_host_key_hint: String,
+    #[serde(default)]
     pub expires_at: String,
 }
 

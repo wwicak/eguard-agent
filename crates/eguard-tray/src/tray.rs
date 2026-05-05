@@ -876,7 +876,7 @@ fn launch_bookmark_from_menu(
         let session_snapshot = snapshot_session_cache()?;
         let mut effective_request = parsed.clone();
         if let Some(launcher) = launcher_override {
-            effective_request.launcher = Some(launcher.to_string());
+            effective_request.launcher = Some(resolve_launcher_override(&parsed, launcher));
         }
         if let Some(token) = temp_token.map(str::trim).filter(|value| !value.is_empty()) {
             effective_request.temp_token = Some(token.to_string());
@@ -921,6 +921,36 @@ fn launch_bookmark_from_menu(
         launch_result
     } else {
         Ok(())
+    }
+}
+
+fn resolve_launcher_override(parsed: &LaunchRequest, launcher_override: &str) -> String {
+    let override_value = launcher_override.trim().to_ascii_lowercase();
+    let current = parsed
+        .launcher
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let is_bastion = current == "bastion"
+        || current == "bastion-browser"
+        || current == "bastion_web"
+        || current == "bastion_ssh"
+        || current == "bastion_rdp";
+    if !is_bastion {
+        return launcher_override.to_string();
+    }
+    match override_value.as_str() {
+        "putty" => {
+            if parsed.app_type.trim().eq_ignore_ascii_case("ssh") {
+                "bastion_ssh".to_string()
+            } else {
+                current
+            }
+        }
+        "html5" | "browser" => "bastion_web".to_string(),
+        "rdp" => "bastion_rdp".to_string(),
+        _ => current,
     }
 }
 

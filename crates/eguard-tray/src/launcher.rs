@@ -255,6 +255,32 @@ fn launch_bastion_session(request: &LaunchRequest) -> Result<()> {
             },
         ))
     })?;
+    if let Some(session) = envelope.session.as_ref() {
+        if !session.proxy_host.trim().is_empty()
+            && session.proxy_port > 0
+            && !session.proxy_username.trim().is_empty()
+        {
+            let outcome = launch_ssh_request(&SshLaunchRequest {
+                target: session.proxy_host.trim().to_string(),
+                port: Some(session.proxy_port as u16),
+                user: Some(session.proxy_username.trim().to_string()),
+                launcher: Some("putty".to_string()),
+                password: Some(
+                    if !session.proxy_password.trim().is_empty() {
+                        session.proxy_password.trim().to_string()
+                    } else {
+                        session.access_token.trim().to_string()
+                    },
+                ),
+                private_key_pem: None,
+                passphrase: None,
+            });
+            if outcome.is_ok() {
+                let _ = clear_launch_request_entry(&request.app_id);
+            }
+            return outcome.map(|_| ());
+        }
+    }
     let launch_url = envelope
         .session
         .as_ref()
