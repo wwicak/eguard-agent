@@ -4,9 +4,9 @@ pub mod secret;
 pub mod types;
 
 pub use client::{
+    BastionProfileRecord, BastionSessionEnvelope, BastionSessionRecord, BastionSessionRequest,
     BrowserTerminalSessionEnvelope, BrowserTerminalSessionRequest, CheckoutEnvelope,
-    CheckoutRequest, ListCheckoutsEnvelope, PamCheckoutRecord, PamHttpClient,
-    ResolvedCredential,
+    CheckoutRequest, ListCheckoutsEnvelope, PamCheckoutRecord, PamHttpClient, ResolvedCredential,
 };
 pub use launch::{launch_ssh_request, SshLaunchMode, SshLaunchOutcome};
 pub use secret::SecretString;

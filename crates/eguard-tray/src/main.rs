@@ -204,7 +204,11 @@ fn open_bookmark(app_id: &str) -> Result<()> {
     let _ = wait_for_session_cache_update(&session_snapshot, Duration::from_secs(8));
     let result = launch_bookmark(&bookmark);
     if let Err(err) = &result {
-        if err.to_string().to_ascii_lowercase().contains("pending approval") {
+        if err
+            .to_string()
+            .to_ascii_lowercase()
+            .contains("pending approval")
+        {
             return Ok(());
         }
     }
@@ -255,7 +259,10 @@ fn print_paths() -> Result<()> {
     println!("session_state={}", session_state_path()?.display());
     println!("command_queue={}", command_queue_path()?.display());
     println!("pam_launch_state={}", pam_launch_state_path()?.display());
-    println!("launch_request_state={}", launch_request_state_path()?.display());
+    println!(
+        "launch_request_state={}",
+        launch_request_state_path()?.display()
+    );
     Ok(())
 }
 

@@ -1,12 +1,12 @@
-use std::process::Command;
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
 use pam::{
-    launch_ssh_request, BrowserTerminalSessionRequest, CheckoutRequest, PamHttpClient,
-    SecretString, SshLaunchRequest,
+    launch_ssh_request, BastionSessionRequest, BrowserTerminalSessionRequest, CheckoutRequest,
+    PamHttpClient, SecretString, SshLaunchRequest,
 };
 use tracing::warn;
 
@@ -28,6 +28,9 @@ pub fn launch_launch_request_with_session_fallback(request: &LaunchRequest) -> R
 }
 
 pub fn launch_launch_request(request: &LaunchRequest) -> Result<()> {
+    if prefers_bastion_launcher(request) {
+        return launch_bastion_session(request);
+    }
     match normalized_app_type(&request.app_type).as_str() {
         "ssh" => launch_ssh(request),
         "rdp" => launch_rdp(request),
@@ -42,7 +45,10 @@ pub fn reconcile_pending_launch_requests() -> Result<()> {
     let waiting: Vec<_> = state
         .entries
         .into_iter()
-        .filter(|entry| entry.status.eq_ignore_ascii_case("waiting_for_approval") && entry.checkout_id.unwrap_or_default() > 0)
+        .filter(|entry| {
+            entry.status.eq_ignore_ascii_case("waiting_for_approval")
+                && entry.checkout_id.unwrap_or_default() > 0
+        })
         .collect();
     if waiting.is_empty() {
         return Ok(());
@@ -60,11 +66,24 @@ pub fn reconcile_pending_launch_requests() -> Result<()> {
     };
     let bookmarks = BookmarkState::load_default()?;
     for entry in waiting {
-        let Some(checkout_id) = entry.checkout_id else { continue };
-        let Some(checkout) = envelope.checkouts.iter().find(|item| item.id == checkout_id) else { continue };
+        let Some(checkout_id) = entry.checkout_id else {
+            continue;
+        };
+        let Some(checkout) = envelope
+            .checkouts
+            .iter()
+            .find(|item| item.id == checkout_id)
+        else {
+            continue;
+        };
         match checkout.status.trim().to_ascii_lowercase().as_str() {
             "active" => {
-                if let Some(bookmark) = bookmarks.bookmarks.iter().find(|bookmark| bookmark.app_id == entry.app_id).cloned() {
+                if let Some(bookmark) = bookmarks
+                    .bookmarks
+                    .iter()
+                    .find(|bookmark| bookmark.app_id == entry.app_id)
+                    .cloned()
+                {
                     let mut request = LaunchRequest::parse(&bookmark.launch_uri)
                         .with_context(|| format!("parse launch uri for {}", bookmark.app_id))?;
                     request.launcher = entry.launcher.clone();
@@ -114,7 +133,9 @@ fn cleanup_pam_launch_with_reason(checkout_id: i64, reason: Option<&str>) -> Res
         .cloned()
         .ok_or_else(|| anyhow!("pam launch `{checkout_id}` not found"))?;
     force_cleanup_entry(&entry, reason);
-    state.entries.retain(|existing| existing.checkout_id != checkout_id);
+    state
+        .entries
+        .retain(|existing| existing.checkout_id != checkout_id);
     state.save_default()
 }
 
@@ -169,15 +190,24 @@ fn launch_ssh(request: &LaunchRequest) -> Result<()> {
         port: request.port,
         user: effective_user,
         launcher: request.launcher.clone(),
-        password: checked_out
-            .as_ref()
-            .and_then(|value| value.password.as_ref().map(|secret| secret.expose().to_string())),
-        private_key_pem: checked_out
-            .as_ref()
-            .and_then(|value| value.private_key_pem.as_ref().map(|secret| secret.expose().to_string())),
-        passphrase: checked_out
-            .as_ref()
-            .and_then(|value| value.passphrase.as_ref().map(|secret| secret.expose().to_string())),
+        password: checked_out.as_ref().and_then(|value| {
+            value
+                .password
+                .as_ref()
+                .map(|secret| secret.expose().to_string())
+        }),
+        private_key_pem: checked_out.as_ref().and_then(|value| {
+            value
+                .private_key_pem
+                .as_ref()
+                .map(|secret| secret.expose().to_string())
+        }),
+        passphrase: checked_out.as_ref().and_then(|value| {
+            value
+                .passphrase
+                .as_ref()
+                .map(|secret| secret.expose().to_string())
+        }),
     })?;
     if let Some(state) = checked_out {
         if let Some(child) = outcome.child {
@@ -186,11 +216,70 @@ fn launch_ssh(request: &LaunchRequest) -> Result<()> {
                 .iter()
                 .map(|path| path.display().to_string())
                 .collect();
-            record_pam_launch(state.checkout_id, &request.app_id, "ssh", child.id(), &request.target, &cleanup_paths, Some(&state.base_url))?;
-            spawn_ssh_checkin_watcher(state.base_url, state.checkout_id, child, outcome.cleanup_paths);
+            record_pam_launch(
+                state.checkout_id,
+                &request.app_id,
+                "ssh",
+                child.id(),
+                &request.target,
+                &cleanup_paths,
+                Some(&state.base_url),
+            )?;
+            spawn_ssh_checkin_watcher(
+                state.base_url,
+                state.checkout_id,
+                child,
+                outcome.cleanup_paths,
+            );
         }
     }
     Ok(())
+}
+
+fn launch_bastion_session(request: &LaunchRequest) -> Result<()> {
+    let _ = upsert_launch_request_entry(LaunchRequestEntry::connecting_bastion(
+        &request.app_id,
+        &request.target,
+        request.launcher.as_deref(),
+    ));
+    let base_url = resolve_server_base_url()
+        .ok_or_else(|| anyhow!("resolve server base url for bastion session"))?;
+    let agent_id =
+        resolve_agent_id().ok_or_else(|| anyhow!("resolve agent id for bastion session"))?;
+    let client = PamHttpClient::new(base_url)?;
+    let envelope = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(client.create_bastion_session(
+            &BastionSessionRequest {
+                agent_id,
+                app_id: request.app_id.clone(),
+            },
+        ))
+    })?;
+    let launch_url = envelope
+        .session
+        .as_ref()
+        .map(|value| value.launch_url.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            envelope
+                .profile
+                .as_ref()
+                .map(|value| value.web_launch_url.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
+        .unwrap_or_else(|| request.target.clone());
+    let open_result = open_external_url(&launch_url);
+    if open_result.is_ok() {
+        let _ = clear_launch_request_entry(&request.app_id);
+    }
+    open_result
+}
+
+fn prefers_bastion_launcher(request: &LaunchRequest) -> bool {
+    matches!(
+        request.launcher.as_deref().map(|value| value.trim().to_ascii_lowercase()),
+        Some(value) if value == "bastion_web" || value == "bastion-browser" || value == "bastion" || value == "bastion_ssh" || value == "bastion_rdp"
+    )
 }
 
 fn prefers_browser_terminal(request: &LaunchRequest) -> bool {
@@ -204,17 +293,21 @@ fn launch_browser_terminal(request: &LaunchRequest) -> Result<()> {
     let credential_id = request
         .credential_id
         .ok_or_else(|| anyhow!("browser terminal requires credential_id"))?;
-    let base_url = resolve_server_base_url().ok_or_else(|| anyhow!("resolve server base url for browser terminal"))?;
-    let agent_id = resolve_agent_id().ok_or_else(|| anyhow!("resolve agent id for browser terminal"))?;
+    let base_url = resolve_server_base_url()
+        .ok_or_else(|| anyhow!("resolve server base url for browser terminal"))?;
+    let agent_id =
+        resolve_agent_id().ok_or_else(|| anyhow!("resolve agent id for browser terminal"))?;
     let client = PamHttpClient::new(base_url)?;
     let envelope = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(client.create_browser_terminal_session(&BrowserTerminalSessionRequest {
-            agent_id,
-            app_id: request.app_id.clone(),
-            credential_id,
-            user_id: request.user.clone(),
-            requested_duration_min: Some(60),
-        }))
+        tokio::runtime::Handle::current().block_on(client.create_browser_terminal_session(
+            &BrowserTerminalSessionRequest {
+                agent_id,
+                app_id: request.app_id.clone(),
+                credential_id,
+                user_id: request.user.clone(),
+                requested_duration_min: Some(60),
+            },
+        ))
     })?;
     let url = envelope.url.trim();
     if url.is_empty() {
@@ -236,8 +329,10 @@ fn maybe_checkout_password(request: &LaunchRequest) -> Result<Option<CheckedOutP
     let Some(credential_id) = request.credential_id else {
         return Ok(None);
     };
-    let base_url = resolve_server_base_url().ok_or_else(|| anyhow!("resolve server base url for PAM checkout"))?;
-    let agent_id = resolve_agent_id().ok_or_else(|| anyhow!("resolve agent id for PAM checkout"))?;
+    let base_url = resolve_server_base_url()
+        .ok_or_else(|| anyhow!("resolve server base url for PAM checkout"))?;
+    let agent_id =
+        resolve_agent_id().ok_or_else(|| anyhow!("resolve agent id for PAM checkout"))?;
     let client = PamHttpClient::new(base_url.clone())?;
     let user_id = request.user.clone();
     let req = CheckoutRequest {
@@ -271,7 +366,9 @@ fn maybe_checkout_password(request: &LaunchRequest) -> Result<Option<CheckedOutP
         return Err(anyhow!("pam checkout pending approval"));
     }
     if envelope.status.eq_ignore_ascii_case("deny") {
-        let message = envelope.reason.unwrap_or_else(|| "access_denied".to_string());
+        let message = envelope
+            .reason
+            .unwrap_or_else(|| "access_denied".to_string());
         let _ = upsert_launch_request_entry(LaunchRequestEntry::failed(
             &request.app_id,
             &request.target,
@@ -295,10 +392,16 @@ fn maybe_checkout_password(request: &LaunchRequest) -> Result<Option<CheckedOutP
     Ok(Some(CheckedOutPassword {
         base_url,
         checkout_id,
-        username: first_non_empty_string(&credential.username, request.user.as_deref().unwrap_or_default()),
-        password: (!credential.password.trim().is_empty()).then(|| SecretString::new(credential.password)),
-        private_key_pem: (!credential.private_key_pem.trim().is_empty()).then(|| SecretString::new(credential.private_key_pem)),
-        passphrase: (!credential.passphrase.trim().is_empty()).then(|| SecretString::new(credential.passphrase)),
+        username: first_non_empty_string(
+            &credential.username,
+            request.user.as_deref().unwrap_or_default(),
+        ),
+        password: (!credential.password.trim().is_empty())
+            .then(|| SecretString::new(credential.password)),
+        private_key_pem: (!credential.private_key_pem.trim().is_empty())
+            .then(|| SecretString::new(credential.private_key_pem)),
+        passphrase: (!credential.passphrase.trim().is_empty())
+            .then(|| SecretString::new(credential.passphrase)),
     }))
 }
 
@@ -306,7 +409,12 @@ fn maybe_checkout_rdp_password(request: &LaunchRequest) -> Result<Option<Checked
     maybe_checkout_password(request)
 }
 
-fn spawn_ssh_checkin_watcher(base_url: String, checkout_id: i64, mut child: std::process::Child, cleanup_paths: Vec<std::path::PathBuf>) {
+fn spawn_ssh_checkin_watcher(
+    base_url: String,
+    checkout_id: i64,
+    mut child: std::process::Child,
+    cleanup_paths: Vec<std::path::PathBuf>,
+) {
     std::thread::spawn(move || {
         let _ = child.wait();
         for path in cleanup_paths {
@@ -329,7 +437,9 @@ fn resolve_server_base_url() -> Option<String> {
             return Some(normalize_server_base_url(trimmed));
         }
     }
-    if let Some(value) = read_key_value_config_line(r"C:\ProgramData\eGuard\bootstrap.conf", "address") {
+    if let Some(value) =
+        read_key_value_config_line(r"C:\ProgramData\eGuard\bootstrap.conf", "address")
+    {
         return Some(normalize_server_base_url(&value));
     }
     if let Some(value) = read_agent_conf_string("controller_base_url") {
@@ -344,8 +454,7 @@ fn resolve_server_base_url() -> Option<String> {
 fn normalize_server_base_url(value: &str) -> String {
     let trimmed = value.trim().trim_matches('[').trim_matches(']');
     if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-        return trimmed
-            .replace(":50053", ":50054");
+        return trimmed.replace(":50053", ":50054");
     }
     if trimmed.ends_with(":50053") {
         return format!("https://{}", trimmed.replace(":50053", ":50054"));
@@ -430,8 +539,22 @@ fn launch_rdp(request: &LaunchRequest) -> Result<()> {
         if let Some(path) = temp_rdp_path.as_ref() {
             cleanup_paths.push(path.display().to_string());
         }
-        record_pam_launch(state.checkout_id, &request.app_id, "rdp", child.id(), &request.target, &cleanup_paths, Some(&state.base_url))?;
-        spawn_rdp_checkin_watcher(state.base_url, state.checkout_id, child, temp_rdp_path, request.target.clone());
+        record_pam_launch(
+            state.checkout_id,
+            &request.app_id,
+            "rdp",
+            child.id(),
+            &request.target,
+            &cleanup_paths,
+            Some(&state.base_url),
+        )?;
+        spawn_rdp_checkin_watcher(
+            state.base_url,
+            state.checkout_id,
+            child,
+            temp_rdp_path,
+            request.target.clone(),
+        );
     }
     Ok(())
 }
@@ -473,7 +596,11 @@ fn spawn_detached_child(mut cmd: Command, label: &str) -> Result<std::process::C
         .with_context(|| format!("launch {label} client"))
 }
 
-fn apply_cmdkey_rdp_credential(request: &LaunchRequest, username: &str, password: &str) -> Result<()> {
+fn apply_cmdkey_rdp_credential(
+    request: &LaunchRequest,
+    username: &str,
+    password: &str,
+) -> Result<()> {
     let target = format!("TERMSRV/{}", request.target);
     let full_user = first_non_empty_string(username, request.user.as_deref().unwrap_or_default());
     let status = Command::new("cmdkey")
@@ -506,11 +633,18 @@ fn write_temp_rdp_file(request: &LaunchRequest, username: &str) -> Result<std::p
         request.port.unwrap_or(3389),
         username
     );
-    std::fs::write(&path, content).with_context(|| format!("write temp rdp file {}", path.display()))?;
+    std::fs::write(&path, content)
+        .with_context(|| format!("write temp rdp file {}", path.display()))?;
     Ok(path)
 }
 
-fn spawn_rdp_checkin_watcher(base_url: String, checkout_id: i64, mut child: std::process::Child, temp_rdp_path: Option<std::path::PathBuf>, target_host: String) {
+fn spawn_rdp_checkin_watcher(
+    base_url: String,
+    checkout_id: i64,
+    mut child: std::process::Child,
+    temp_rdp_path: Option<std::path::PathBuf>,
+    target_host: String,
+) {
     std::thread::spawn(move || {
         let _ = child.wait();
         if let Some(path) = temp_rdp_path {
@@ -547,7 +681,8 @@ fn force_cleanup_entry(entry: &PamLaunchEntry, reason: Option<&str>) {
     if let Some(base_url) = entry.base_url.as_deref() {
         if let Ok(client) = PamHttpClient::new(base_url.to_string()) {
             let result = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(client.checkin(entry.checkout_id, reason))
+                tokio::runtime::Handle::current()
+                    .block_on(client.checkin(entry.checkout_id, reason))
             });
             if let Err(err) = result {
                 warn!(checkout_id = entry.checkout_id, error = %err, "pam cleanup checkin failed");
@@ -565,9 +700,19 @@ fn terminate_process(pid: u32) {
     }
 }
 
-fn record_pam_launch(checkout_id: i64, app_id: &str, launcher_kind: &str, process_id: u32, target_host: &str, cleanup_paths: &[String], base_url: Option<&str>) -> Result<()> {
+fn record_pam_launch(
+    checkout_id: i64,
+    app_id: &str,
+    launcher_kind: &str,
+    process_id: u32,
+    target_host: &str,
+    cleanup_paths: &[String],
+    base_url: Option<&str>,
+) -> Result<()> {
     let mut state = PamLaunchState::load_default()?;
-    state.entries.retain(|entry| entry.checkout_id != checkout_id);
+    state
+        .entries
+        .retain(|entry| entry.checkout_id != checkout_id);
     state.entries.push(PamLaunchEntry {
         checkout_id,
         app_id: app_id.to_string(),
@@ -589,7 +734,9 @@ fn clear_pam_launch(checkout_id: i64) {
         return;
     };
     let before = state.entries.len();
-    state.entries.retain(|entry| entry.checkout_id != checkout_id);
+    state
+        .entries
+        .retain(|entry| entry.checkout_id != checkout_id);
     if state.entries.len() != before {
         let _ = state.save_default();
     }
@@ -612,7 +759,10 @@ fn wait_for_web_launch_target(app_id: &str, direct_target: &str) -> String {
     direct_target.to_string()
 }
 
-fn wait_for_forwarded_launch_target(app_id: &str, request: &LaunchRequest) -> Option<(String, u16)> {
+fn wait_for_forwarded_launch_target(
+    app_id: &str,
+    request: &LaunchRequest,
+) -> Option<(String, u16)> {
     let deadline = Instant::now() + Duration::from_secs(45);
     let direct_socket = launch_request_socket_addr(request);
     while Instant::now() < deadline {
@@ -672,7 +822,10 @@ fn launch_target_socket_addr(target: &str) -> Option<SocketAddr> {
     let parsed = url::Url::parse(target).ok()?;
     let host = parsed.host_str()?;
     let port = parsed.port_or_known_default()?;
-    (host, port).to_socket_addrs().ok()?.find(|addr| addr.is_ipv4())
+    (host, port)
+        .to_socket_addrs()
+        .ok()?
+        .find(|addr| addr.is_ipv4())
 }
 
 #[cfg(test)]
@@ -797,7 +950,10 @@ mod tests {
         let resolved = resolve_request_via_local_forward("app-ssh", &request);
         assert_eq!(resolved.target, "127.0.0.1");
         assert_eq!(resolved.port, Some(41234));
-        assert_eq!(active_forwarded_launch_target("app-ssh"), Some(("127.0.0.1".to_string(), 41234)));
+        assert_eq!(
+            active_forwarded_launch_target("app-ssh"),
+            Some(("127.0.0.1".to_string(), 41234))
+        );
 
         unsafe {
             std::env::remove_var("EGUARD_TRAY_DATA_DIR");

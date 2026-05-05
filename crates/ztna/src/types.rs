@@ -11,6 +11,24 @@ pub struct TunnelRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BastionLaunchInfo {
+    #[serde(default)]
+    pub profile_id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub protocol: String,
+    #[serde(default)]
+    pub bastion_host: String,
+    #[serde(default)]
+    pub bastion_port: u16,
+    #[serde(default)]
+    pub jump_username: String,
+    #[serde(default)]
+    pub web_launch_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TunnelGrant {
     pub session_id: String,
     #[serde(default)]
@@ -23,6 +41,10 @@ pub struct TunnelGrant {
     pub allowed_ips: Vec<String>,
     pub ttl_seconds: i32,
     pub transport: String,
+    #[serde(default)]
+    pub connection_mode: String,
+    #[serde(default)]
+    pub bastion: Option<BastionLaunchInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,7 +97,8 @@ mod tests {
                 "service_ip": "100.64.0.14",
                 "allowed_ips": ["100.64.0.14/32"],
                 "ttl_seconds": 1800,
-                "transport": "wireguard"
+                "transport": "wireguard",
+                "connection_mode": "direct"
             }
         }"#;
 
@@ -84,5 +107,38 @@ mod tests {
         assert_eq!(grant.session_id, "abc123");
         assert!(grant.session_token.is_empty());
         assert_eq!(grant.service_ip, "100.64.0.14");
+        assert_eq!(grant.connection_mode, "direct");
+    }
+
+    #[test]
+    fn parses_bastion_metadata() {
+        let raw = r#"{
+            "status": "grant",
+            "grant": {
+                "session_id": "bastion-1",
+                "server_wg_public_key": "pubkey",
+                "server_endpoint": "138.252.193.169:51820",
+                "tunnel_ip": "100.64.0.13",
+                "service_ip": "",
+                "allowed_ips": [],
+                "ttl_seconds": 1800,
+                "transport": "wireguard",
+                "connection_mode": "bastion",
+                "bastion": {
+                    "profile_id": "jump-1",
+                    "protocol": "https",
+                    "bastion_host": "bastion.example.com",
+                    "bastion_port": 443,
+                    "web_launch_url": "https://bastion.example.com/launch"
+                }
+            }
+        }"#;
+
+        let parsed: TunnelDecision = serde_json::from_str(raw).expect("parse tunnel decision");
+        let grant = parsed.grant.expect("grant payload");
+        assert_eq!(grant.connection_mode, "bastion");
+        let bastion = grant.bastion.expect("bastion metadata");
+        assert_eq!(bastion.profile_id, "jump-1");
+        assert_eq!(bastion.web_launch_url, "https://bastion.example.com/launch");
     }
 }

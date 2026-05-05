@@ -105,6 +105,59 @@ pub struct BrowserTerminalSessionEnvelope {
     pub checkout_id: i64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct BastionSessionRequest {
+    pub agent_id: String,
+    pub app_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BastionSessionEnvelope {
+    pub status: String,
+    #[serde(default)]
+    pub session: Option<BastionSessionRecord>,
+    #[serde(default)]
+    pub profile: Option<BastionProfileRecord>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BastionSessionRecord {
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub app_id: String,
+    #[serde(default)]
+    pub agent_id: String,
+    #[serde(default)]
+    pub profile_id: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub launch_url: String,
+    #[serde(default)]
+    pub access_token: String,
+    #[serde(default)]
+    pub expires_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BastionProfileRecord {
+    #[serde(default)]
+    pub profile_id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub protocol: String,
+    #[serde(default)]
+    pub bastion_host: String,
+    #[serde(default)]
+    pub bastion_port: i32,
+    #[serde(default)]
+    pub jump_username: String,
+    #[serde(default)]
+    pub web_launch_url: String,
+}
+
 impl PamHttpClient {
     pub fn new(base_url: impl Into<String>) -> Result<Self> {
         let http = Client::builder().build().context("build pam http client")?;
@@ -153,7 +206,10 @@ impl PamHttpClient {
             .await
             .context("send pam list checkouts request")?;
         if !resp.status().is_success() {
-            return Err(anyhow!("pam list checkouts failed: status={}", resp.status()));
+            return Err(anyhow!(
+                "pam list checkouts failed: status={}",
+                resp.status()
+            ));
         }
         resp.json::<ListCheckoutsEnvelope>()
             .await
@@ -195,10 +251,36 @@ impl PamHttpClient {
             .await
             .context("send browser terminal session request")?;
         if !resp.status().is_success() {
-            return Err(anyhow!("browser terminal session failed: status={}", resp.status()));
+            return Err(anyhow!(
+                "browser terminal session failed: status={}",
+                resp.status()
+            ));
         }
         resp.json::<BrowserTerminalSessionEnvelope>()
             .await
             .context("decode browser terminal session response")
+    }
+
+    pub async fn create_bastion_session(
+        &self,
+        req: &BastionSessionRequest,
+    ) -> Result<BastionSessionEnvelope> {
+        let url = format!(
+            "{}/api/v1/ztna/bastion-sessions",
+            self.base_url.trim_end_matches('/'),
+        );
+        let resp = self
+            .http
+            .post(&url)
+            .json(req)
+            .send()
+            .await
+            .context("send bastion session request")?;
+        if !resp.status().is_success() {
+            return Err(anyhow!("bastion session failed: status={}", resp.status()));
+        }
+        resp.json::<BastionSessionEnvelope>()
+            .await
+            .context("decode bastion session response")
     }
 }

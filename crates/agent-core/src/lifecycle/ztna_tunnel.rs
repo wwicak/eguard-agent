@@ -3,9 +3,9 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use tracing::{info, warn};
-use ztna::{resolve_or_create_wireguard_identity, LocalForwardManager, TunnelGrant, TunnelRequest};
 #[cfg(target_os = "windows")]
 use ztna::{apply_windows_tunnel_grant, remove_windows_tunnel};
+use ztna::{resolve_or_create_wireguard_identity, LocalForwardManager, TunnelGrant, TunnelRequest};
 
 use super::{interval_due, AgentRuntime};
 
@@ -136,6 +136,25 @@ impl AgentRuntime {
             return Ok(());
         };
 
+        if grant.connection_mode.trim().eq_ignore_ascii_case("bastion") {
+            let bastion_target = grant
+                .bastion
+                .as_ref()
+                .and_then(|value| {
+                    if !value.web_launch_url.trim().is_empty() {
+                        Some(value.web_launch_url.clone())
+                    } else if !value.bastion_host.trim().is_empty() && value.bastion_port > 0 {
+                        Some(format!("{}:{}", value.bastion_host, value.bastion_port))
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| "bastion profile".to_string());
+            info!(session_id = %grant.session_id, bastion_target = %bastion_target, "ztna bastion-mode decision received");
+            self.ztna_last_outcome = Some(format!("bastion mode signaled: {bastion_target}"));
+            return Ok(());
+        }
+
         if let Err(err) = self.apply_ztna_wireguard_grant(&grant) {
             warn!(error = %err, session_id = %grant.session_id, "failed applying ztna wireguard grant");
             self.ztna_last_outcome = Some(format!("wireguard apply failed: {err}"));
@@ -172,7 +191,11 @@ impl AgentRuntime {
             .ztna_local_bind_addr
             .parse()
             .unwrap_or_else(|_| SocketAddr::from(([127, 0, 0, 1], 0)));
-        let upstream = format!("{}:{}", self.ztna_upstream_host(&grant, forward_host), forward_port);
+        let upstream = format!(
+            "{}:{}",
+            self.ztna_upstream_host(&grant, forward_host),
+            forward_port
+        );
         let manager = LocalForwardManager;
         match manager.start(listen_addr, upstream.clone()).await {
             Ok(handle) => {

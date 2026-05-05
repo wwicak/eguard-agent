@@ -14,10 +14,8 @@ use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIconBuilder, TrayIconEvent};
 
-
 use crate::launcher::{
-    launch_bookmark, launch_launch_request_with_session_fallback,
-    reconcile_pending_launch_requests,
+    launch_bookmark, launch_launch_request_with_session_fallback, reconcile_pending_launch_requests,
 };
 use crate::state::{
     clear_launch_request_entry, snapshot_bookmark_cache, snapshot_session_cache,
@@ -177,7 +175,10 @@ fn build_menu() -> Result<(Menu, Vec<MenuAction>)> {
         if waiting > 0 {
             format!("Status: Waiting for approval · {} pending", waiting)
         } else {
-            format!("Status: Connecting · {} launch request(s)", pending_entries.len())
+            format!(
+                "Status: Connecting · {} launch request(s)",
+                pending_entries.len()
+            )
         }
     } else if sessions.is_empty() {
         "Status: Not connected".to_string()
@@ -199,7 +200,8 @@ fn build_menu() -> Result<(Menu, Vec<MenuAction>)> {
         favorites_menu.append(&MenuItem::new("No pinned favorites", false, None))?;
     } else {
         for bookmark in favorite_bookmarks {
-            let app_menu = build_bookmark_submenu(bookmark, &pam_launches, &preferences, &mut actions)?;
+            let app_menu =
+                build_bookmark_submenu(bookmark, &pam_launches, &preferences, &mut actions)?;
             favorites_menu.append(&app_menu)?;
         }
     }
@@ -224,7 +226,11 @@ fn build_menu() -> Result<(Menu, Vec<MenuAction>)> {
             };
             let launcher = recent.launcher.as_deref();
             let action = match launcher {
-                Some(value) if !value.trim().is_empty() && !value.eq_ignore_ascii_case("ssh") && !value.eq_ignore_ascii_case("openssh") => {
+                Some(value)
+                    if !value.trim().is_empty()
+                        && !value.eq_ignore_ascii_case("ssh")
+                        && !value.eq_ignore_ascii_case("openssh") =>
+                {
                     MenuAction::LaunchBookmarkWithLauncher {
                         app_id: bookmark.app_id.clone(),
                         launcher: value.to_string(),
@@ -236,7 +242,10 @@ fn build_menu() -> Result<(Menu, Vec<MenuAction>)> {
             };
             let label = format!(
                 "{} -> {}{}",
-                app_label(bookmark, LaunchRequest::parse(&bookmark.launch_uri).ok().as_ref()),
+                app_label(
+                    bookmark,
+                    LaunchRequest::parse(&bookmark.launch_uri).ok().as_ref()
+                ),
                 blank_fallback(&recent.target, "unknown"),
                 recent_launcher_suffix(recent),
             );
@@ -252,7 +261,8 @@ fn build_menu() -> Result<(Menu, Vec<MenuAction>)> {
         apps_menu.append(&MenuItem::new("No applications", false, None))?;
     } else {
         for bookmark in &bookmarks.bookmarks {
-            let app_menu = build_bookmark_submenu(bookmark, &pam_launches, &preferences, &mut actions)?;
+            let app_menu =
+                build_bookmark_submenu(bookmark, &pam_launches, &preferences, &mut actions)?;
             apps_menu.append(&app_menu)?;
         }
     }
@@ -264,12 +274,26 @@ fn build_menu() -> Result<(Menu, Vec<MenuAction>)> {
     } else {
         for entry in pending_entries {
             let entry_menu = Submenu::new(entry.app_name_or_fallback(&bookmarks), true);
-            entry_menu.append(&MenuItem::new(format!("State: {}", friendly_launch_status(&entry.status)), false, None))?;
-            entry_menu.append(&MenuItem::new(format!("Target: {}", blank_fallback(&entry.target, "unknown")), false, None))?;
-            entry_menu.append(&MenuItem::new(format!("Detail: {}", blank_fallback(&entry.message, "n/a")), false, None))?;
+            entry_menu.append(&MenuItem::new(
+                format!("State: {}", friendly_launch_status(&entry.status)),
+                false,
+                None,
+            ))?;
+            entry_menu.append(&MenuItem::new(
+                format!("Target: {}", blank_fallback(&entry.target, "unknown")),
+                false,
+                None,
+            ))?;
+            entry_menu.append(&MenuItem::new(
+                format!("Detail: {}", blank_fallback(&entry.message, "n/a")),
+                false,
+                None,
+            ))?;
             if entry.status.eq_ignore_ascii_case("waiting_for_approval") {
                 entry_menu.append(&PredefinedMenuItem::separator())?;
-                let action = MenuAction::LaunchBookmarkWithTempToken { app_id: entry.app_id.clone() };
+                let action = MenuAction::LaunchBookmarkWithTempToken {
+                    app_id: entry.app_id.clone(),
+                };
                 let item = MenuItem::with_id(action.id(), "Paste Temporary Token...", true, None);
                 actions.push(action);
                 entry_menu.append(&item)?;
@@ -288,7 +312,10 @@ fn build_menu() -> Result<(Menu, Vec<MenuAction>)> {
             let stats = format_session_stats(session);
             session_menu.append(&MenuItem::new(&stats, false, None))?;
             session_menu.append(&MenuItem::new(
-                format!("Transport: {}", blank_fallback(&session.transport, "unknown")),
+                format!(
+                    "Transport: {}",
+                    blank_fallback(&session.transport, "unknown")
+                ),
                 false,
                 None,
             ))?;
@@ -320,7 +347,11 @@ fn build_menu() -> Result<(Menu, Vec<MenuAction>)> {
     } else {
         for entry in &pam_launches.entries {
             let entry_menu = Submenu::new(
-                format!("{} · {}", entry.app_id, entry.launcher_kind.to_ascii_uppercase()),
+                format!(
+                    "{} · {}",
+                    entry.app_id,
+                    entry.launcher_kind.to_ascii_uppercase()
+                ),
                 true,
             );
             entry_menu.append(&MenuItem::new(
@@ -390,29 +421,54 @@ fn build_bookmark_submenu(
         .iter()
         .filter(|entry| entry.app_id == bookmark.app_id)
         .collect();
-    let pending_launch = LaunchRequestState::load_default()
-        .ok()
-        .and_then(|state| state.entries.into_iter().find(|entry| entry.app_id == bookmark.app_id));
+    let pending_launch = LaunchRequestState::load_default().ok().and_then(|state| {
+        state
+            .entries
+            .into_iter()
+            .find(|entry| entry.app_id == bookmark.app_id)
+    });
 
     if let Some(request) = parsed.as_ref() {
-        menu.append(&MenuItem::new(format!("Target: {}", request.target), false, None))?;
-        if let Some(user) = request.user.as_deref().filter(|value| !value.trim().is_empty()) {
+        menu.append(&MenuItem::new(
+            format!("Target: {}", request.target),
+            false,
+            None,
+        ))?;
+        if let Some(user) = request
+            .user
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
             menu.append(&MenuItem::new(format!("User: {user}"), false, None))?;
         }
         if request.credential_id.is_some() {
             menu.append(&MenuItem::new("Auth: PAM credential bound", false, None))?;
         }
     } else if let Some(target_host) = bookmark.target_host.as_deref() {
-        menu.append(&MenuItem::new(format!("Target: {target_host}"), false, None))?;
+        menu.append(&MenuItem::new(
+            format!("Target: {target_host}"),
+            false,
+            None,
+        ))?;
     }
 
     menu.append(&MenuItem::new(
-        format!("Health: {}", blank_fallback(&bookmark.health_status, "unknown")),
+        format!(
+            "Health: {}",
+            blank_fallback(&bookmark.health_status, "unknown")
+        ),
         false,
         None,
     ))?;
     menu.append(&MenuItem::new(
-        format!("Pinned: {}", if preferences.is_favorite(&bookmark.app_id) { "Yes" } else { "No" }),
+        format!(
+            "Pinned: {}",
+            if preferences.is_favorite(&bookmark.app_id) {
+                "Yes"
+            } else {
+                "No"
+            }
+        ),
         false,
         None,
     ))?;
@@ -428,7 +484,10 @@ fn build_bookmark_submenu(
     } else if active_pam_for_app.len() == 1 {
         let entry = active_pam_for_app[0];
         menu.append(&MenuItem::new(
-            format!("PAM: Active via {} (checkout #{})", entry.launcher_kind, entry.checkout_id),
+            format!(
+                "PAM: Active via {} (checkout #{})",
+                entry.launcher_kind, entry.checkout_id
+            ),
             false,
             None,
         ))?;
@@ -458,7 +517,11 @@ fn build_bookmark_submenu(
     menu.append(&favorite_item)?;
 
     if !bookmark.launcher_supported {
-        menu.append(&MenuItem::new("Launcher not available on this endpoint", false, None))?;
+        menu.append(&MenuItem::new(
+            "Launcher not available on this endpoint",
+            false,
+            None,
+        ))?;
         return Ok(menu);
     }
 
@@ -472,11 +535,20 @@ fn build_bookmark_submenu(
     actions.push(default_action);
     menu.append(&default_item)?;
 
-    if parsed.as_ref().and_then(|request| request.credential_id).is_some() {
+    if parsed
+        .as_ref()
+        .and_then(|request| request.credential_id)
+        .is_some()
+    {
         let token_action = MenuAction::LaunchBookmarkWithTempToken {
             app_id: bookmark.app_id.clone(),
         };
-        let token_item = MenuItem::with_id(token_action.id(), "Connect with Temporary Token...", true, None);
+        let token_item = MenuItem::with_id(
+            token_action.id(),
+            "Connect with Temporary Token...",
+            true,
+            None,
+        );
         actions.push(token_action);
         menu.append(&token_item)?;
     }
@@ -496,17 +568,52 @@ fn append_launch_variants(
 ) -> Result<()> {
     match request.app_type.trim().to_ascii_lowercase().as_str() {
         "ssh" => {
-            append_variant_action(bookmark, menu, actions, "html5", ssh_variant_label("html5", request), ssh_variant_enabled("html5", request))?;
-            append_variant_action(bookmark, menu, actions, "putty", ssh_variant_label("putty", request), ssh_variant_enabled("putty", request))?;
+            append_variant_action(
+                bookmark,
+                menu,
+                actions,
+                "html5",
+                ssh_variant_label("html5", request),
+                ssh_variant_enabled("html5", request),
+            )?;
+            append_variant_action(
+                bookmark,
+                menu,
+                actions,
+                "putty",
+                ssh_variant_label("putty", request),
+                ssh_variant_enabled("putty", request),
+            )?;
         }
         "rdp" => {
-            append_variant_action(bookmark, menu, actions, "rdp", launch_label_with_pam("Launch in Remote Desktop", request), rdp_available())?;
+            append_variant_action(
+                bookmark,
+                menu,
+                actions,
+                "rdp",
+                launch_label_with_pam("Launch in Remote Desktop", request),
+                rdp_available(),
+            )?;
         }
         "web" | "http" | "https" => {
-            append_variant_action(bookmark, menu, actions, "browser", launch_label_with_pam("Open in Browser", request), true)?;
+            append_variant_action(
+                bookmark,
+                menu,
+                actions,
+                "browser",
+                launch_label_with_pam("Open in Browser", request),
+                true,
+            )?;
         }
         "vnc" => {
-            append_variant_action(bookmark, menu, actions, "vnc", launch_label_with_pam("Launch in VNC Viewer", request), vnc_available())?;
+            append_variant_action(
+                bookmark,
+                menu,
+                actions,
+                "vnc",
+                launch_label_with_pam("Launch in VNC Viewer", request),
+                vnc_available(),
+            )?;
         }
         _ => {}
     }
@@ -628,7 +735,11 @@ fn command_exists_in_path(candidates: &[&str]) -> bool {
     let Some(path) = std::env::var_os("PATH") else {
         return false;
     };
-    std::env::split_paths(&path).any(|dir| candidates.iter().any(|candidate| dir.join(candidate).is_file()))
+    std::env::split_paths(&path).any(|dir| {
+        candidates
+            .iter()
+            .any(|candidate| dir.join(candidate).is_file())
+    })
 }
 
 fn recent_launcher_suffix(entry: &RecentLaunchEntry) -> String {
@@ -652,6 +763,7 @@ fn blank_fallback<'a>(value: &'a str, fallback: &'a str) -> &'a str {
 fn friendly_launch_status(status: &str) -> &'static str {
     match status.trim().to_ascii_lowercase().as_str() {
         "connecting" => "Connecting",
+        "connecting_bastion" => "Creating bastion session",
         "waiting_for_approval" => "Waiting for approval",
         "launch_failed" => "Launch failed",
         _ => "Pending",
@@ -748,7 +860,11 @@ fn handle_menu_event(state: &mut TrayUiState, menu_id: &MenuId) -> Result<()> {
     Ok(())
 }
 
-fn launch_bookmark_from_menu(app_id: &str, launcher_override: Option<&str>, temp_token: Option<&str>) -> Result<()> {
+fn launch_bookmark_from_menu(
+    app_id: &str,
+    launcher_override: Option<&str>,
+    temp_token: Option<&str>,
+) -> Result<()> {
     let bookmarks = BookmarkState::load_default()?;
     if let Some(bookmark) = bookmarks
         .bookmarks
@@ -778,13 +894,18 @@ fn launch_bookmark_from_menu(app_id: &str, launcher_override: Option<&str>, temp
         let _ = wait_for_session_cache_update(&session_snapshot, Duration::from_secs(8));
         record_recent_launch(&bookmark, &effective_request)?;
 
-        let launch_result = if launcher_override.is_some() || effective_request.temp_token.is_some() {
+        let launch_result = if launcher_override.is_some() || effective_request.temp_token.is_some()
+        {
             launch_launch_request_with_session_fallback(&effective_request)
         } else {
             launch_bookmark(&bookmark)
         };
         if let Err(err) = &launch_result {
-            if err.to_string().to_ascii_lowercase().contains("pending approval") {
+            if err
+                .to_string()
+                .to_ascii_lowercase()
+                .contains("pending approval")
+            {
                 return Ok(());
             }
             let _ = upsert_launch_request_entry(LaunchRequestEntry::failed(
@@ -849,9 +970,15 @@ fn current_tooltip() -> Option<String> {
             .filter(|entry| entry.status.eq_ignore_ascii_case("waiting_for_approval"))
             .count();
         if waiting > 0 {
-            return Some(format!("eGuard ZTNA\nStatus: Waiting for approval\nPending requests: {}", waiting));
+            return Some(format!(
+                "eGuard ZTNA\nStatus: Waiting for approval\nPending requests: {}",
+                waiting
+            ));
         }
-        return Some(format!("eGuard ZTNA\nStatus: Connecting\nPending requests: {}", launch_requests.active_entries().len()));
+        return Some(format!(
+            "eGuard ZTNA\nStatus: Connecting\nPending requests: {}",
+            launch_requests.active_entries().len()
+        ));
     }
     if sessions.is_empty() {
         return Some("eGuard ZTNA\nStatus: Not connected".to_string());
@@ -957,7 +1084,8 @@ fn load_base_icon_rgba() -> Result<Vec<u8>> {
             .decode()
             .with_context(|| format!("decode tray icon {}", icon_path))?
             .into_rgba8();
-        let resized = image::imageops::resize(&image, 16, 16, image::imageops::FilterType::Lanczos3);
+        let resized =
+            image::imageops::resize(&image, 16, 16, image::imageops::FilterType::Lanczos3);
         return Ok(resized.into_raw());
     }
 

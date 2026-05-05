@@ -53,7 +53,10 @@ impl AgentRuntime {
             .filter(|v| !v.trim().is_empty())
             .is_some()
         {
-            info!(tick = self.tick_count, "tick pre-tray command phase complete");
+            info!(
+                tick = self.tick_count,
+                "tick pre-tray command phase complete"
+            );
             info!(tick = self.tick_count, "tick pre-ztna ensure phase start");
         }
         self.ensure_ztna_tunnel_if_due(now_unix).await?;
@@ -62,7 +65,10 @@ impl AgentRuntime {
             .filter(|v| !v.trim().is_empty())
             .is_some()
         {
-            info!(tick = self.tick_count, "tick pre-ztna ensure phase complete");
+            info!(
+                tick = self.tick_count,
+                "tick pre-ztna ensure phase complete"
+            );
         }
         self.teardown_idle_ztna_session_if_needed(now_unix).await;
         self.write_tray_session_state(now_unix).await?;

@@ -254,7 +254,9 @@ impl LaunchRequestEntry {
             app_id: app_id.trim().to_string(),
             checkout_id: None,
             target: target.trim().to_string(),
-            launcher: launcher.map(|value| value.trim().to_string()).filter(|value| !value.is_empty()),
+            launcher: launcher
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
             status: "connecting".to_string(),
             message: "Connecting".to_string(),
             created_at_unix: now,
@@ -262,15 +264,40 @@ impl LaunchRequestEntry {
         }
     }
 
-    pub fn waiting_for_approval(app_id: &str, checkout_id: i64, target: &str, launcher: Option<&str>, reason: Option<&str>) -> Self {
+    pub fn connecting_bastion(app_id: &str, target: &str, launcher: Option<&str>) -> Self {
+        let now = now_unix();
+        Self {
+            app_id: app_id.trim().to_string(),
+            checkout_id: None,
+            target: target.trim().to_string(),
+            launcher: launcher
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
+            status: "connecting_bastion".to_string(),
+            message: "Creating bastion session".to_string(),
+            created_at_unix: now,
+            updated_at_unix: now,
+        }
+    }
+
+    pub fn waiting_for_approval(
+        app_id: &str,
+        checkout_id: i64,
+        target: &str,
+        launcher: Option<&str>,
+        reason: Option<&str>,
+    ) -> Self {
         let now = now_unix();
         Self {
             app_id: app_id.trim().to_string(),
             checkout_id: (checkout_id > 0).then_some(checkout_id),
             target: target.trim().to_string(),
-            launcher: launcher.map(|value| value.trim().to_string()).filter(|value| !value.is_empty()),
+            launcher: launcher
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
             status: "waiting_for_approval".to_string(),
-            message: first_non_empty(reason.unwrap_or_default().trim(), "Waiting for approval").to_string(),
+            message: first_non_empty(reason.unwrap_or_default().trim(), "Waiting for approval")
+                .to_string(),
             created_at_unix: now,
             updated_at_unix: now,
         }
@@ -282,7 +309,9 @@ impl LaunchRequestEntry {
             app_id: app_id.trim().to_string(),
             checkout_id: None,
             target: target.trim().to_string(),
-            launcher: launcher.map(|value| value.trim().to_string()).filter(|value| !value.is_empty()),
+            launcher: launcher
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
             status: "launch_failed".to_string(),
             message,
             created_at_unix: now,
@@ -388,7 +417,9 @@ pub fn upsert_launch_request_entry(entry: LaunchRequestEntry) -> Result<()> {
         .find(|existing| existing.app_id == entry.app_id)
         .map(|existing| existing.created_at_unix)
         .unwrap_or(entry.created_at_unix);
-    state.entries.retain(|existing| existing.app_id != entry.app_id);
+    state
+        .entries
+        .retain(|existing| existing.app_id != entry.app_id);
     let mut updated = entry;
     updated.created_at_unix = created_at;
     updated.updated_at_unix = now_unix();

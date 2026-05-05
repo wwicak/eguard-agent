@@ -97,7 +97,10 @@ impl TunnelClient {
             .await
             .context("send ztna list_sessions")?;
         if !resp.status().is_success() {
-            return Err(anyhow!("ztna list_sessions failed: status={}", resp.status()));
+            return Err(anyhow!(
+                "ztna list_sessions failed: status={}",
+                resp.status()
+            ));
         }
         let value = resp
             .json::<serde_json::Value>()

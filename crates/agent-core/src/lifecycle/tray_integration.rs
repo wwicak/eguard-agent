@@ -202,7 +202,9 @@ impl AgentRuntime {
 
     async fn write_tray_bookmark_state(&mut self) -> Result<()> {
         let path = bookmark_state_path()?;
-        let payload = match timeout(Duration::from_secs(10), self.client.fetch_ztna_bookmarks()).await {
+        let payload = match timeout(Duration::from_secs(10), self.client.fetch_ztna_bookmarks())
+            .await
+        {
             Ok(Ok(payload)) => payload,
             Ok(Err(err)) => {
                 warn!(error = %err, refresh_pending = self.tray_bookmark_refresh_pending, "failed to fetch ztna bookmarks for tray cache");
@@ -212,7 +214,10 @@ impl AgentRuntime {
                 None
             }
             Err(_) => {
-                warn!(refresh_pending = self.tray_bookmark_refresh_pending, "timed out fetching ztna bookmarks for tray cache");
+                warn!(
+                    refresh_pending = self.tray_bookmark_refresh_pending,
+                    "timed out fetching ztna bookmarks for tray cache"
+                );
                 if path.exists() {
                     return Ok(());
                 }
@@ -354,7 +359,8 @@ impl AgentRuntime {
                 .iter()
                 .find(|checkout| checkout.id == entry.checkout_id)
                 .map(|checkout| checkout.status.trim().to_ascii_lowercase());
-            let requires_cleanup = !matches!(status.as_deref(), Some("active") | Some("pending_approval"));
+            let requires_cleanup =
+                !matches!(status.as_deref(), Some("active") | Some("pending_approval"));
             if requires_cleanup {
                 cleanup_pam_launch_entry(&entry, Some("server_reconcile_cleanup"));
                 cleaned += 1;
@@ -420,7 +426,10 @@ impl AgentRuntime {
         sessions
     }
 
-    async fn active_ztna_sessions_from_controller(&self, now_unix: i64) -> Option<Vec<SessionEntry>> {
+    async fn active_ztna_sessions_from_controller(
+        &self,
+        now_unix: i64,
+    ) -> Option<Vec<SessionEntry>> {
         let config = TunnelClientConfig {
             base_url: self.config.ztna_controller_base_url.clone(),
             request_timeout_secs: 5,
@@ -603,7 +612,8 @@ fn cleanup_pam_launch_entry(entry: &PamLaunchEntry, reason: Option<&str>) {
     if let Some(base_url) = entry.base_url.as_deref() {
         if let Ok(client) = PamHttpClient::new(base_url.to_string()) {
             let _ = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(client.checkin(entry.checkout_id, reason))
+                tokio::runtime::Handle::current()
+                    .block_on(client.checkin(entry.checkout_id, reason))
             });
         }
     }
@@ -912,9 +922,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn write_tray_bookmark_state_preserves_existing_cache_during_refresh_when_payload_missing() {
+    async fn write_tray_bookmark_state_preserves_existing_cache_during_refresh_when_payload_missing(
+    ) {
         let _guard = shared_env_var_lock().lock().expect("env lock");
-        let tray_dir = std::env::temp_dir().join("eguard-agent-tray-sync-bookmarks-preserve-refresh");
+        let tray_dir =
+            std::env::temp_dir().join("eguard-agent-tray-sync-bookmarks-preserve-refresh");
         let _ = fs::remove_dir_all(&tray_dir);
         std::env::set_var("EGUARD_TRAY_DATA_DIR", &tray_dir);
 

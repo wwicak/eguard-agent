@@ -70,7 +70,9 @@ pub fn remove_windows_tunnel(data_dir: &Path) -> Result<()> {
 
 #[cfg(target_os = "windows")]
 fn config_path(data_dir: &Path) -> PathBuf {
-    data_dir.join("ztna").join(format!("{}.conf", ZTNA_TUNNEL_NAME))
+    data_dir
+        .join("ztna")
+        .join(format!("{}.conf", ZTNA_TUNNEL_NAME))
 }
 
 #[cfg(target_os = "windows")]

@@ -26,15 +26,27 @@ pub fn launch_ssh_request(request: &SshLaunchRequest) -> Result<SshLaunchOutcome
     match mode {
         SshLaunchMode::BrowserHtml5 => {
             open_external_url(&request.target)?;
-            Ok(SshLaunchOutcome { mode: SshLaunchMode::BrowserHtml5, child: None, cleanup_paths: Vec::new() })
+            Ok(SshLaunchOutcome {
+                mode: SshLaunchMode::BrowserHtml5,
+                child: None,
+                cleanup_paths: Vec::new(),
+            })
         }
         SshLaunchMode::Putty => {
             let child = launch_putty(request)?;
-            Ok(SshLaunchOutcome { mode: SshLaunchMode::Putty, child: Some(child), cleanup_paths: Vec::new() })
+            Ok(SshLaunchOutcome {
+                mode: SshLaunchMode::Putty,
+                child: Some(child),
+                cleanup_paths: Vec::new(),
+            })
         }
         SshLaunchMode::NativeSsh => {
             let (child, cleanup_paths) = launch_native_ssh(request)?;
-            Ok(SshLaunchOutcome { mode: SshLaunchMode::NativeSsh, child: Some(child), cleanup_paths })
+            Ok(SshLaunchOutcome {
+                mode: SshLaunchMode::NativeSsh,
+                child: Some(child),
+                cleanup_paths,
+            })
         }
     }
 }
@@ -49,7 +61,11 @@ pub fn resolve_ssh_launch_mode(request: &SshLaunchRequest) -> SshLaunchMode {
     if preferred == "browser" || preferred == "html5" || preferred == "web" {
         return SshLaunchMode::BrowserHtml5;
     }
-    if request.private_key_pem.as_deref().is_some_and(|v| !v.trim().is_empty()) {
+    if request
+        .private_key_pem
+        .as_deref()
+        .is_some_and(|v| !v.trim().is_empty())
+    {
         return SshLaunchMode::NativeSsh;
     }
     if preferred == "putty" {
@@ -126,7 +142,8 @@ fn write_temp_key_file(private_key_pem: &str) -> Result<PathBuf> {
         .unwrap_or_default()
         .as_millis();
     let path = std::env::temp_dir().join(format!("eguard-pam-ssh-{stamp}.pem"));
-    fs::write(&path, private_key_pem).with_context(|| format!("write temp ssh key {}", path.display()))?;
+    fs::write(&path, private_key_pem)
+        .with_context(|| format!("write temp ssh key {}", path.display()))?;
     apply_restrictive_key_file_permissions(&path)
         .with_context(|| format!("restrict temp ssh key permissions {}", path.display()))?;
     Ok(path)
@@ -155,7 +172,9 @@ fn restrict_windows_file_acl(path: &PathBuf) -> Result<()> {
         .status()
         .context("apply restrictive ACL with icacls")?;
     if !status.success() {
-        return Err(anyhow!("icacls failed while restricting SSH key temp file ACL"));
+        return Err(anyhow!(
+            "icacls failed while restricting SSH key temp file ACL"
+        ));
     }
     Ok(())
 }
@@ -172,7 +191,9 @@ fn current_windows_account_name() -> Result<String> {
         .output()
         .context("resolve current Windows account with whoami")?;
     if !output.status.success() {
-        return Err(anyhow!("whoami failed while resolving current Windows account"));
+        return Err(anyhow!(
+            "whoami failed while resolving current Windows account"
+        ));
     }
     let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if value.is_empty() {
@@ -228,13 +249,17 @@ fn open_external_url(target: &str) -> Result<()> {
         };
         let code = result.0 as isize;
         if code <= 32 {
-            return Err(anyhow!("failed to open external URL (ShellExecuteW={code})"));
+            return Err(anyhow!(
+                "failed to open external URL (ShellExecuteW={code})"
+            ));
         }
         return Ok(());
     }
 
     #[allow(unreachable_code)]
-    Err(anyhow!("opening external URLs is only implemented for Windows"))
+    Err(anyhow!(
+        "opening external URLs is only implemented for Windows"
+    ))
 }
 
 #[cfg(test)]
