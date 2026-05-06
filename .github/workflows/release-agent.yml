@@ -49,6 +49,7 @@ jobs:
           fi
 
       - name: Install Zig
+        shell: bash
         run: |
           set -euo pipefail
           case "${ZIG_VERSION}" in
