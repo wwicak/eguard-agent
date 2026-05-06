@@ -350,7 +350,10 @@ jobs:
           root = Path('release-artifacts')
 
           def one(pattern):
-              matches = sorted(glob.glob(pattern, recursive=True))
+              matches = [
+                  candidate for candidate in sorted(glob.glob(pattern, recursive=True))
+                  if 'eguard-agent-rules' not in Path(candidate).name
+              ]
               return matches[0] if matches else ''
 
           def sha256(path):
