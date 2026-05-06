@@ -54,7 +54,10 @@ jobs:
           set -euo pipefail
           case "${ZIG_VERSION}" in
             0.14.1)
-              ZIG_URL="https://ziglang.org/download/0.14.1/zig-x86_64-linux-0.14.1.tar.xz"
+              ZIG_URLS=(
+                "https://ziglang.org/download/0.14.1/zig-x86_64-linux-0.14.1.tar.xz"
+                "https://mirrors.sdu.edu.cn/gentoo/distfiles/89/zig-x86_64-linux-0.14.1.tar.xz"
+              )
               ZIG_SHA256="24aeeec8af16c381934a6cd7d95c807a8cb2cf7df9fa40d359aa884195c4716c"
               ;;
             *)
@@ -62,7 +65,15 @@ jobs:
               exit 1
               ;;
           esac
-          curl --fail --location --retry 5 --retry-delay 3 --connect-timeout 20 "$ZIG_URL" -o /tmp/zig.tar.xz
+          rm -f /tmp/zig.tar.xz
+          for zig_url in "${ZIG_URLS[@]}"; do
+            echo "Downloading Zig from ${zig_url}"
+            if timeout 90s curl --fail --location --retry 2 --retry-delay 3 --connect-timeout 15 --speed-time 20 --speed-limit 1024 "$zig_url" -o /tmp/zig.tar.xz; then
+              break
+            fi
+            rm -f /tmp/zig.tar.xz
+          done
+          test -s /tmp/zig.tar.xz
           echo "${ZIG_SHA256}  /tmp/zig.tar.xz" | sha256sum -c -
           mkdir -p /opt/zig
           tar -xJf /tmp/zig.tar.xz --strip-components=1 -C /opt/zig
