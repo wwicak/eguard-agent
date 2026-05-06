@@ -49,8 +49,15 @@ jobs:
       - name: Install Zig
         run: |
           python3 -m pip install --user "ziglang==${ZIG_VERSION}"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/zig" version
+          ZIG_BIN="$(python3 - <<'PY'
+          import pathlib
+          import ziglang
+          print(pathlib.Path(ziglang.__file__).with_name('zig'))
+          PY
+          )"
+          chmod +x "$ZIG_BIN"
+          sudo ln -sf "$ZIG_BIN" /usr/local/bin/zig
+          zig version
 
       - name: Install Rust toolchain
         run: |
