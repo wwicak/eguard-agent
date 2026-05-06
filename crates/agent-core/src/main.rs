@@ -467,7 +467,7 @@ mod windows_service_entry {
 
     fn run_service_main() -> Result<()> {
         let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
-        let allow_stop_control = resolve_windows_service_stop_control_policy();
+        let allow_stop_control = resolve_windows_service_stop_control_policy_fast();
 
         // Share the status handle with the event handler closure so it can
         // immediately transition to StopPending when SCM sends Stop/Shutdown.
@@ -589,21 +589,18 @@ mod windows_service_entry {
         run_result
     }
 
-    fn resolve_windows_service_stop_control_policy() -> bool {
+    fn resolve_windows_service_stop_control_policy_fast() -> bool {
         if std::env::var_os("EGUARD_WINDOWS_ALLOW_STOP").is_some() {
             return super::env_flag_enabled("EGUARD_WINDOWS_ALLOW_STOP");
         }
 
-        match super::AgentConfig::load() {
-            Ok(config) => !config.self_protection_prevent_uninstall,
-            Err(err) => {
-                warn!(
-                    error = %err,
-                    "failed loading config for Windows stop-control policy; defaulting to deny stop"
-                );
-                false
-            }
-        }
+        // Do not load AgentConfig here. Windows SCM requires the service process
+        // to connect and report status promptly; first-enrollment bootstrap and
+        // config recovery can perform filesystem/network work and previously
+        // caused service start timeouts before SERVICE_RUNNING was reported.
+        // Once the runtime is online, self-protection still handles tamper and
+        // stop reporting through the normal tick loop.
+        true
     }
 
     async fn wait_for_service_shutdown(rx: mpsc::Receiver<()>) -> super::ShutdownReason {
