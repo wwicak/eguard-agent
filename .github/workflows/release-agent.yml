@@ -47,36 +47,10 @@ jobs:
           fi
 
       - name: Install Zig
-        shell: bash
         run: |
-          set -euo pipefail
-          case "${ZIG_VERSION}" in
-            0.14.1)
-              ZIG_URLS=(
-                "https://mirrors.sdu.edu.cn/gentoo/distfiles/24/zig-x86_64-linux-0.14.1.tar.xz"
-                "https://ziglang.org/download/0.14.1/zig-x86_64-linux-0.14.1.tar.xz"
-              )
-              ZIG_SHA256="24aeeec8af16c381934a6cd7d95c807a8cb2cf7df9fa40d359aa884195c4716c"
-              ;;
-            *)
-              echo "Unsupported pinned ZIG_VERSION=${ZIG_VERSION}; add checksum before using it" >&2
-              exit 1
-              ;;
-          esac
-          rm -f /tmp/zig.tar.xz
-          for zig_url in "${ZIG_URLS[@]}"; do
-            echo "Downloading Zig from ${zig_url}"
-            if timeout 90s curl --fail --location --retry 2 --retry-delay 3 --connect-timeout 15 --speed-time 20 --speed-limit 1024 "$zig_url" -o /tmp/zig.tar.xz; then
-              break
-            fi
-            rm -f /tmp/zig.tar.xz
-          done
-          test -s /tmp/zig.tar.xz
-          echo "${ZIG_SHA256}  /tmp/zig.tar.xz" | sha256sum -c -
-          sudo mkdir -p /opt/zig
-          sudo tar -xJf /tmp/zig.tar.xz --strip-components=1 -C /opt/zig
-          sudo ln -sf /opt/zig/zig /usr/local/bin/zig
-          zig version
+          python3 -m pip install --user "ziglang==${ZIG_VERSION}"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/zig" version
 
       - name: Install Rust toolchain
         run: |
