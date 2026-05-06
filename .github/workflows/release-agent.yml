@@ -23,16 +23,14 @@ env:
 jobs:
   linux:
     runs-on: ubuntu-latest
-    container:
-      image: debian:12
     outputs:
       tag: ${{ steps.version.outputs.tag }}
       semver: ${{ steps.semver.outputs.version }}
     steps:
       - name: Install base tools
         run: |
-          apt-get update
-          apt-get install -y curl git ca-certificates build-essential \
+          sudo apt-get update
+          sudo apt-get install -y curl git ca-certificates build-essential \
             dpkg-dev rpm gnupg pkg-config python3 xz-utils \
             libelf-dev zlib1g-dev
 
@@ -75,9 +73,9 @@ jobs:
           done
           test -s /tmp/zig.tar.xz
           echo "${ZIG_SHA256}  /tmp/zig.tar.xz" | sha256sum -c -
-          mkdir -p /opt/zig
-          tar -xJf /tmp/zig.tar.xz --strip-components=1 -C /opt/zig
-          ln -sf /opt/zig/zig /usr/local/bin/zig
+          sudo mkdir -p /opt/zig
+          sudo tar -xJf /tmp/zig.tar.xz --strip-components=1 -C /opt/zig
+          sudo ln -sf /opt/zig/zig /usr/local/bin/zig
           zig version
 
       - name: Install Rust toolchain
@@ -89,7 +87,7 @@ jobs:
         run: |
           NFPM_VERSION=2.45.0
           curl -sfL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz" | \
-            tar -xz -C /usr/local/bin nfpm
+            sudo tar -xz -C /usr/local/bin nfpm
 
       - name: Strip version prefix
         id: semver
