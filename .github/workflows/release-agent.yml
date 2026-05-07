@@ -7,8 +7,11 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version tag (e.g. v0.1.0)'
+        description: 'Version tag (e.g. v15.1.2)'
         required: true
+      compatibility_line:
+        description: 'Server compatibility line (e.g. 15.1). Defaults to major.minor from the version tag.'
+        required: false
 
 permissions:
   contents: write
@@ -19,17 +22,15 @@ env:
 
 jobs:
   linux:
-    runs-on: ubuntu-latest
-    container:
-      image: debian:12
+    runs-on: ubuntu-22.04
     outputs:
       tag: ${{ steps.version.outputs.tag }}
       semver: ${{ steps.semver.outputs.version }}
     steps:
       - name: Install base tools
         run: |
-          apt-get update
-          apt-get install -y curl git ca-certificates build-essential \
+          sudo apt-get update
+          sudo apt-get install -y curl git ca-certificates build-essential \
             dpkg-dev rpm gnupg pkg-config python3 xz-utils \
             libelf-dev zlib1g-dev
 
@@ -47,11 +48,15 @@ jobs:
 
       - name: Install Zig
         run: |
-          # Use 0.14.0 (latest stable release with download available)
-          ZIG_VER="0.14.0"
-          ZIG_TARBALL="zig-linux-x86_64-${ZIG_VER}.tar.xz"
-          curl -sSfL "https://ziglang.org/download/${ZIG_VER}/${ZIG_TARBALL}" | tar -xJ -C /usr/local
-          ln -sf /usr/local/zig-linux-x86_64-${ZIG_VER}/zig /usr/local/bin/zig
+          python3 -m pip install --user "ziglang==${ZIG_VERSION}"
+          ZIG_BIN="$(python3 - <<'PY'
+          import pathlib
+          import ziglang
+          print(pathlib.Path(ziglang.__file__).with_name('zig'))
+          PY
+          )"
+          chmod +x "$ZIG_BIN"
+          sudo ln -sf "$ZIG_BIN" /usr/local/bin/zig
           zig version
 
       - name: Install Rust toolchain
@@ -63,7 +68,7 @@ jobs:
         run: |
           NFPM_VERSION=2.45.0
           curl -sfL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz" | \
-            tar -xz -C /usr/local/bin nfpm
+            sudo tar -xz -C /usr/local/bin nfpm
 
       - name: Strip version prefix
         id: semver
@@ -319,6 +324,78 @@ jobs:
         with:
           path: release-artifacts
 
+      - name: Generate release manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION='${{ needs.linux.outputs.semver }}'
+          COMPAT='${{ github.event.inputs.compatibility_line }}'
+          if [ -z "$COMPAT" ]; then
+            COMPAT=$(python3 - <<'PY'
+          import re
+          v = "${{ needs.linux.outputs.semver }}"
+          m = re.search(r'(\d+)\.(\d+)', v)
+          print(f"{m.group(1)}.{m.group(2)}" if m else "")
+          PY
+          )
+          fi
+          if [ -z "$COMPAT" ]; then
+            echo "Unable to derive compatibility line" >&2
+            exit 1
+          fi
+          python3 - <<'PY'
+          import glob
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          version = os.environ['VERSION']
+          tag = '${{ needs.linux.outputs.tag }}'
+          compat = os.environ['COMPAT']
+          root = Path('release-artifacts')
+
+          def one(pattern):
+              matches = [
+                  candidate for candidate in sorted(glob.glob(pattern, recursive=True))
+                  if 'eguard-agent-rules' not in Path(candidate).name
+              ]
+              return matches[0] if matches else ''
+
+          def sha256(path):
+              if not path:
+                  return ''
+              h = hashlib.sha256()
+              with open(path, 'rb') as fh:
+                  for chunk in iter(lambda: fh.read(1024 * 1024), b''):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          assets = {
+              'deb': one('release-artifacts/linux-packages/**/*.deb'),
+              'rpm': one('release-artifacts/linux-packages/**/*.rpm'),
+              'exe': one('release-artifacts/windows-packages/**/*.exe'),
+              'msi': one('release-artifacts/windows-packages/**/*.msi'),
+              'pkg': one('release-artifacts/macos-packages/**/*.pkg'),
+          }
+          manifest_assets = {k: Path(v).name for k, v in assets.items() if v}
+          checksums = {k: sha256(v) for k, v in assets.items() if v}
+          manifest = {
+              'schema_version': 1,
+              'agent_version': version,
+              'release_tag': tag,
+              'compatibility': {'server_minors': [compat]},
+              'assets': manifest_assets,
+              'checksums': checksums,
+          }
+          out = root / 'eguard-agent-release.json'
+          out.write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
+          print(out)
+          PY
+        env:
+          VERSION: ${{ needs.linux.outputs.semver }}
+          COMPAT: ${{ github.event.inputs.compatibility_line }}
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -334,3 +411,4 @@ jobs:
             release-artifacts/windows-packages/**/*.ps1
             release-artifacts/macos-packages/**/*.pkg
             release-artifacts/macos-packages/**/*.dmg
+            release-artifacts/eguard-agent-release.json

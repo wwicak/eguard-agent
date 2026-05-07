@@ -41,10 +41,12 @@ Bootstrap helper script: `installer/windows/install.ps1`.
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\installer\windows\install.ps1 \
   -ServerUrl https://server.example.com \
-  -EnrollmentToken <token>
+  -EnrollmentToken <token> \
+  -PackageVersion <server-matched-version> \
+  -GrpcPort 50053
 ```
 
-Optional integrity/transport overrides:
+Optional integrity/transport/bootstrap overrides:
 ```powershell
 # Explicit hash pin (skip hash-metadata fetch path)
 powershell -ExecutionPolicy Bypass -File .\installer\windows\install.ps1 \
@@ -59,12 +61,12 @@ powershell -ExecutionPolicy Bypass -File .\installer\windows\install.ps1 \
 
 Script behavior:
 - enforces secure-by-default server URL policy (`https://`; `http://` requires `-AllowInsecureHttp`)
-- downloads MSI from `GET /api/v1/agent-install/windows-exe` using `X-Enrollment-Token`
+- downloads MSI from `GET /api/v1/agent-install/windows?version=<PackageVersion>` using `X-Enrollment-Token`
 - enforces fail-closed integrity:
-  - resolves expected SHA-256 from `-ExpectedHash` or `GET /api/v1/agent-install/windows-exe/sha256`
+  - resolves expected SHA-256 from `-ExpectedHash` or `GET /api/v1/agent-install/windows/sha256?version=<PackageVersion>`
   - verifies local MSI hash before install
   - requires valid Authenticode signature unless `-AllowUnsignedMsi` is explicitly set
-- writes `C:\ProgramData\eGuard\bootstrap.conf` and hardens ACLs to SYSTEM/Administrators
+- writes `C:\ProgramData\eGuard\bootstrap.conf` in the agent bootstrap INI format (`[server]`, `schema_version`, `address`, `grpc_port`, `enrollment_token`) and hardens ACLs to SYSTEM/Administrators
 - installs MSI silently and starts `eGuardAgent`
 - removes `bootstrap.conf` after successful start (unless `-KeepBootstrap`)
 
