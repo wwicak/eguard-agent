@@ -20,6 +20,5 @@ pub use types::{
     EnrollmentResultEnvelope, EventEnvelope, FleetBaselineEnvelope, HeartbeatAgentStatusEnvelope,
     HeartbeatResourceUsageEnvelope, HeartbeatRuntimeEnvelope, InventoryEnvelope, IocSignal,
     IocSignalBatch, PolicyEnvelope, ResponseEnvelope, ServerState, ThreatIntelVersionEnvelope,
-    TlsConfig, TransportMode, ZtnaApplicationBookmarkEnvelope, ZtnaBookmarkEnvelope,
-    ZtnaRevocationEnvelope, ZtnaSessionEnvelope,
+    TlsConfig, TransportMode,
 };

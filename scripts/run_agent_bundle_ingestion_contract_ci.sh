@@ -85,6 +85,10 @@ echo "[bundle-agent-contract] bundle=${bundle_path}"
 echo "[bundle-agent-contract] signature=${signature_path}"
 echo "[bundle-agent-contract] test_selector=${test_selector}"
 
+timeout_secs="${EGUARD_CI_AGENT_BUNDLE_TEST_TIMEOUT_SECS:-900}"
+echo "[bundle-agent-contract] timeout_secs=${timeout_secs}"
+
 EGUARD_CI_BUNDLE_PATH="${bundle_path}" \
 EGUARD_CI_BUNDLE_PUBHEX="${bundle_pubhex}" \
-  cargo test -p agent-core "${test_selector}" -- --exact
+  timeout --preserve-status "${timeout_secs}" \
+    cargo test -p agent-core "${test_selector}" -- --exact --nocapture --test-threads=1

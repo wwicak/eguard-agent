@@ -95,6 +95,14 @@ jobs:
         with:
           version: 0.14.0
 
+      - name: Verify Zig linker is on PATH
+        run: |
+          zig_path="$(command -v zig)"
+          echo "zig_path=${zig_path}"
+          echo "$(dirname "${zig_path}")" >> "${GITHUB_PATH}"
+          zig version
+          scripts/zig-cc.sh --version
+
       - name: Set version
         id: version
         run: |

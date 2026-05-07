@@ -1,15 +1,24 @@
 #!/bin/bash
-# Use zig as a C/C++ compiler with glibc version targeting.
-# This ensures the resulting binary is compatible with a minimum glibc version.
+# Use zig as a C/C++ compiler/linker.
 #
-# Default target: glibc 2.31 (Ubuntu 20.04+ / Debian 10+)
-# Override: EGUARD_GLIBC_TARGET=2.35 cargo build ...
+# Default target: x86_64-linux-gnu.
+# Override: EGUARD_ZIG_TARGET=x86_64-linux-gnu cargo build ...
+#
+# EGUARD_GLIBC_TARGET is kept for CI compatibility but Zig 0.14+ rejects
+# glibc-version suffixes in -target (for example, .2.31).
 #
 # For eBPF builds that link -lelf -lz, static versions of these libraries
 # are used so the binary doesn't inherit the build host's newer glibc
 # requirement from its shared libelf/libz.
 
 GLIBC_TARGET="${EGUARD_GLIBC_TARGET:-2.31}"
+ZIG_BIN="${ZIG:-zig}"
+ZIG_TARGET="${EGUARD_ZIG_TARGET:-x86_64-linux-gnu}"
+
+if ! command -v "${ZIG_BIN}" >/dev/null 2>&1; then
+    echo "zig-cc.sh: Zig compiler not found on PATH; install Zig or set ZIG=/path/to/zig" >&2
+    exit 127
+fi
 
 EXTRA_ARGS=()
 
@@ -30,4 +39,4 @@ for arg in "$@"; do
     esac
 done
 
-exec zig cc -target "x86_64-linux-gnu.${GLIBC_TARGET}" "${EXTRA_ARGS[@]}" "${REWRITTEN_ARGS[@]}"
+exec "${ZIG_BIN}" cc -target "${ZIG_TARGET}" "${EXTRA_ARGS[@]}" "${REWRITTEN_ARGS[@]}"

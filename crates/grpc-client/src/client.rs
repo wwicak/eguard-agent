@@ -24,8 +24,7 @@ use crate::types::{
     BaselineProfileEnvelope, CampaignAlert, CommandEnvelope, ComplianceEnvelope,
     EnrollmentEnvelope, EnrollmentResultEnvelope, EventEnvelope, FleetBaselineEnvelope,
     HeartbeatRuntimeEnvelope, InventoryEnvelope, IocSignalBatch, PolicyEnvelope, ResponseEnvelope,
-    ServerState, ThreatIntelVersionEnvelope, TlsConfig, TransportMode, ZtnaBookmarkEnvelope,
-    ZtnaRevocationEnvelope, ZtnaSessionEnvelope,
+    ServerState, ThreatIntelVersionEnvelope, TlsConfig, TransportMode,
 };
 
 #[path = "client/client_grpc.rs"]
@@ -52,8 +51,6 @@ pub struct Client {
     grpc_reporting_force_http: Arc<AtomicBool>,
     grpc_channel_cache: Arc<Mutex<Option<Channel>>>,
     grpc_last_fleet_baselines: Arc<Mutex<Vec<FleetBaselineEnvelope>>>,
-    grpc_last_ztna_bookmarks: Arc<Mutex<Option<ZtnaBookmarkEnvelope>>>,
-    grpc_last_ztna_revocations: Arc<Mutex<Vec<ZtnaRevocationEnvelope>>>,
     #[cfg(test)]
     grpc_channel_override: Option<Channel>,
 }
@@ -77,8 +74,6 @@ impl Client {
             grpc_reporting_force_http: Arc::new(AtomicBool::new(false)),
             grpc_channel_cache: Arc::new(Mutex::new(None)),
             grpc_last_fleet_baselines: Arc::new(Mutex::new(Vec::new())),
-            grpc_last_ztna_bookmarks: Arc::new(Mutex::new(None)),
-            grpc_last_ztna_revocations: Arc::new(Mutex::new(Vec::new())),
             #[cfg(test)]
             grpc_channel_override: None,
         }
@@ -192,16 +187,8 @@ impl Client {
     }
 
     pub async fn send_heartbeat(&self, agent_id: &str, compliance_status: &str) -> Result<()> {
-        self.send_heartbeat_with_runtime_config(
-            agent_id,
-            compliance_status,
-            "",
-            "",
-            None,
-            &[],
-            "",
-        )
-        .await
+        self.send_heartbeat_with_runtime_config(agent_id, compliance_status, "", "", None)
+            .await
     }
 
     pub async fn send_heartbeat_with_config(
@@ -217,8 +204,6 @@ impl Client {
             config_version,
             baseline_status,
             None,
-            &[],
-            "",
         )
         .await
     }
@@ -230,8 +215,6 @@ impl Client {
         config_version: &str,
         baseline_status: &str,
         runtime: Option<&HeartbeatRuntimeEnvelope>,
-        ztna_sessions: &[ZtnaSessionEnvelope],
-        last_bookmark_version: &str,
     ) -> Result<()> {
         self.ensure_online()?;
         match self.mode {
@@ -252,8 +235,6 @@ impl Client {
                     config_version,
                     baseline_status,
                     runtime,
-                    ztna_sessions,
-                    last_bookmark_version,
                 )
                 .await?
             }
@@ -511,33 +492,6 @@ impl Client {
                     Ok(cached.into_iter().take(limit.max(1)).collect())
                 }
             }
-        }
-    }
-
-    pub fn latest_ztna_bookmarks(&self) -> Option<ZtnaBookmarkEnvelope> {
-        self.grpc_last_ztna_bookmarks
-            .lock()
-            .ok()
-            .and_then(|bookmarks| bookmarks.clone())
-    }
-
-    pub fn latest_ztna_revocations(&self) -> Vec<ZtnaRevocationEnvelope> {
-        self.grpc_last_ztna_revocations
-            .lock()
-            .map(|revocations| revocations.clone())
-            .unwrap_or_default()
-    }
-
-    pub async fn release_ztna_tunnel(
-        &self,
-        session_id: &str,
-        reason: &str,
-        detail: &str,
-    ) -> Result<bool> {
-        self.ensure_online()?;
-        match self.mode {
-            TransportMode::Grpc => self.release_ztna_tunnel_grpc(session_id, reason, detail).await,
-            TransportMode::Http => Ok(false),
         }
     }
 

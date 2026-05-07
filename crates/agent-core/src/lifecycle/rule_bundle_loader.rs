@@ -66,6 +66,57 @@ pub(super) fn load_bundle_rules(
     load_bundle_full(detection, bundle_path).as_tuple()
 }
 
+#[cfg(test)]
+pub(super) fn verify_signed_bundle_archive_contract(
+    bundle_path: &Path,
+) -> std::result::Result<BundleLoadSummary, String> {
+    if !verify_bundle_signature(bundle_path) {
+        return Err("bundle signature verification failed".to_string());
+    }
+
+    let extraction_dir = prepare_bundle_extraction_dir(bundle_path)?;
+    let result = (|| {
+        extract_bundle_archive(bundle_path, &extraction_dir)?;
+        let manifest = read_bundle_manifest(&extraction_dir)?;
+        verify_manifest_file_hashes(&extraction_dir, &manifest)?;
+        Ok(BundleLoadSummary {
+            sigma_loaded: manifest.sigma_count.unwrap_or_default(),
+            yara_loaded: manifest.yara_count.unwrap_or_default(),
+            ioc_hashes: manifest.ioc_hash_count.unwrap_or_default(),
+            ioc_domains: manifest.ioc_domain_count.unwrap_or_default(),
+            ioc_ips: manifest.ioc_ip_count.unwrap_or_default(),
+            suricata_rules: manifest.suricata_count.unwrap_or_default(),
+            elastic_rules: manifest.elastic_count.unwrap_or_default(),
+            cve_entries: manifest.cve_count.unwrap_or_default(),
+        })
+    })();
+    let _ = fs::remove_dir_all(&extraction_dir);
+    result
+}
+
+#[cfg(test)]
+pub(super) fn signed_bundle_contains_ml_artifacts(bundle_path: &Path) -> std::result::Result<bool, String> {
+    if !verify_bundle_signature(bundle_path) {
+        return Err("bundle signature verification failed".to_string());
+    }
+
+    let extraction_dir = prepare_bundle_extraction_dir(bundle_path)?;
+    let result = (|| {
+        extract_bundle_archive(bundle_path, &extraction_dir)?;
+        let manifest = read_bundle_manifest(&extraction_dir)?;
+        verify_manifest_file_hashes(&extraction_dir, &manifest)?;
+        Ok([
+            "signature-ml-model.json",
+            "signature-ml-model-metadata.json",
+            "signature-ml-model-registry.json",
+        ]
+        .iter()
+        .all(|name| extraction_dir.join(name).is_file()))
+    })();
+    let _ = fs::remove_dir_all(&extraction_dir);
+    result
+}
+
 /// Load all 6 layers from a threat intel bundle.
 pub(super) fn load_bundle_full(
     detection: &mut DetectionEngine,

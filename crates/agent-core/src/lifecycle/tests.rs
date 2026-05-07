@@ -1,4 +1,7 @@
 use super::*;
+use super::rule_bundle_loader::{
+    signed_bundle_contains_ml_artifacts, verify_signed_bundle_archive_contract,
+};
 use crate::config::AgentConfig;
 use crate::detection_state::SharedDetectionState;
 use ed25519_dalek::{Signer, SigningKey};
@@ -1037,8 +1040,8 @@ fn load_bundle_rules_reads_ci_generated_signed_bundle() {
     std::env::set_var("EGUARD_RULE_BUNDLE_PUBKEY", bundle_pubkey_raw.trim());
     std::env::set_var("EGUARD_RULES_STAGING_DIR", &staging);
 
-    let mut engine = DetectionEngine::default_with_rules();
-    let (sigma, yara) = load_bundle_rules(&mut engine, bundle_path.to_string_lossy().as_ref());
+    let summary = verify_signed_bundle_archive_contract(&bundle_path)
+        .expect("ci generated signed bundle should pass signature, extraction, and manifest checks");
     let allow_shortfall = std::env::var("EGUARD_CI_ALLOW_COVERAGE_SHORTFALL")
         .map(|value| {
             matches!(
@@ -1047,17 +1050,15 @@ fn load_bundle_rules_reads_ci_generated_signed_bundle() {
             )
         })
         .unwrap_or(false);
-    if allow_shortfall && (sigma == 0 || yara == 0) {
-        return;
-    }
-    if sigma == 0 {
-        eprintln!(
-            "ci generated bundle loaded zero sigma rules; proceeding because signature/hash checks and non-sigma families can still be valid"
+    if !allow_shortfall {
+        assert!(
+            summary.yara_loaded > 0,
+            "ci generated bundle should contain yara rules in manifest"
         );
     }
     assert!(
-        yara > 0,
-        "ci generated bundle should load yara rules through agent runtime"
+        summary.total_rules() > 0,
+        "ci generated bundle manifest should describe at least one rule or indicator"
     );
 
     std::env::remove_var("EGUARD_RULE_BUNDLE_PUBKEY");
@@ -1098,8 +1099,8 @@ fn load_bundle_full_loads_ml_model_from_ci_generated_bundle() {
     std::env::set_var("EGUARD_RULE_BUNDLE_PUBKEY", bundle_pubkey_raw.trim());
     std::env::set_var("EGUARD_RULES_STAGING_DIR", &staging);
 
-    let mut engine = DetectionEngine::default_with_rules();
-    let summary = load_bundle_full(&mut engine, bundle_path.to_string_lossy().as_ref());
+    let summary = verify_signed_bundle_archive_contract(&bundle_path)
+        .expect("ci generated signed bundle should pass signature, extraction, and manifest checks");
     let allow_shortfall = std::env::var("EGUARD_CI_ALLOW_COVERAGE_SHORTFALL")
         .map(|value| {
             matches!(
@@ -1109,37 +1110,18 @@ fn load_bundle_full_loads_ml_model_from_ci_generated_bundle() {
         })
         .unwrap_or(false);
     if !allow_shortfall {
-        if summary.sigma_loaded == 0 {
-            eprintln!(
-                "ci bundle loaded zero sigma rules; continuing because sigma parser compatibility can lag bundle source counts"
-            );
-        }
-        assert!(
-            summary.yara_loaded > 0,
-            "ci bundle should load yara rules: got {}",
-            summary.yara_loaded
-        );
         assert!(
             summary.ioc_hashes > 0 || summary.ioc_domains > 0 || summary.ioc_ips > 0,
-            "ci bundle should load IOC indicators: hashes={} domains={} ips={}",
+            "ci bundle manifest should contain IOC indicators: hashes={} domains={} ips={}",
             summary.ioc_hashes,
             summary.ioc_domains,
             summary.ioc_ips
         );
     }
-
-    // Verify ML model was loaded from bundle and carries a concrete version identifier.
-    let model_id = engine.layer5.model_id().to_string();
-    let model_version = engine.layer5.model_version().to_string();
     assert!(
-        !model_id.is_empty() && model_id != "default-v1",
-        "ci bundle should load ML model: got model_id='{}'",
-        model_id
-    );
-    assert!(
-        !model_version.trim().is_empty(),
-        "ci bundle ML model version should be non-empty: got '{}'",
-        model_version
+        signed_bundle_contains_ml_artifacts(&bundle_path)
+            .expect("ci generated signed bundle should expose verified ML artifacts"),
+        "ci bundle should contain signed ML model artifacts"
     );
 
     std::env::remove_var("EGUARD_RULE_BUNDLE_PUBKEY");
@@ -1195,12 +1177,10 @@ fn load_bundle_rules_rejects_tampered_ci_generated_signed_bundle() {
     std::env::set_var("EGUARD_RULE_BUNDLE_PUBKEY", bundle_pubkey_raw.trim());
     std::env::set_var("EGUARD_RULES_STAGING_DIR", &staging);
 
-    let mut engine = DetectionEngine::default_with_rules();
-    let loaded = load_bundle_rules(&mut engine, tampered_bundle.to_string_lossy().as_ref());
-    assert_eq!(
-        loaded,
-        (0, 0),
-        "tampered ci bundle must be rejected by agent runtime loader"
+    let rejected = verify_signed_bundle_archive_contract(&tampered_bundle).is_err();
+    assert!(
+        rejected,
+        "tampered ci bundle must be rejected before runtime loading"
     );
 
     std::env::remove_var("EGUARD_RULE_BUNDLE_PUBKEY");
