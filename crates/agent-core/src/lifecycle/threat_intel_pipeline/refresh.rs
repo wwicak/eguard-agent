@@ -49,7 +49,11 @@ impl AgentRuntime {
 
                 // Use non-blocking background reload so that heartbeat and
                 // telemetry continue while sigma/YARA/IOC rules compile.
-                self.start_background_reload(&intel.version, &local_bundle_path);
+                self.start_background_reload(
+                    &intel.version,
+                    &local_bundle_path,
+                    Some(intel.clone()),
+                );
             }
 
             self.update_threat_intel_freshness_state(&intel, latest_hash);

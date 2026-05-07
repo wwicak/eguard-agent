@@ -34,11 +34,11 @@ use super::{
 };
 
 /// Result of a background bundle reload thread.
-pub struct BackgroundReloadResult {
-    pub version: String,
-    pub bundle_path: String,
-    pub engines: Vec<detection::DetectionEngine>,
-    pub report: ReloadReport,
+pub(crate) struct BackgroundReloadResult {
+    pub(super) version: String,
+    pub(super) bundle_path: String,
+    pub(super) engines: Vec<detection::DetectionEngine>,
+    pub(super) report: ReloadReport,
 }
 
 pub struct AgentRuntime {
@@ -741,7 +741,7 @@ impl AgentRuntime {
                     bundle_path = %configured_bundle,
                     "macOS: scheduling configured bundle bootstrap on background worker"
                 );
-                self.start_background_reload("configured-bundle", &configured_bundle);
+                self.start_background_reload("configured-bundle", &configured_bundle, None);
                 return;
             }
         }

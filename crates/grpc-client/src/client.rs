@@ -567,6 +567,7 @@ impl Client {
         Ok(())
     }
 
+    #[cfg(test)]
     fn grpc_base_url(&self) -> String {
         self.grpc_base_url_for(&self.server_addr)
     }
