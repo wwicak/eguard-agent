@@ -318,7 +318,7 @@ impl AgentRuntime {
             return false;
         }
 
-        event.file_write || outcome.signals.z1_exact_ioc
+        event.file_write || outcome.signals.z1_exact_ioc || outcome.signals.yara_hit
     }
 
     fn execute_playbook_isolate(&mut self, evaluation: &TickEvaluation, now_unix: i64) {
@@ -734,6 +734,27 @@ mod tests {
         );
         let mut outcome = DetectionOutcome::default();
         outcome.signals.z1_exact_ioc = true;
+
+        assert_eq!(
+            runtime.sanitize_planned_action_for_event(
+                super::super::PlannedAction::QuarantineOnly,
+                &event,
+                &outcome,
+            ),
+            super::super::PlannedAction::QuarantineOnly
+        );
+    }
+
+    #[test]
+    fn quarantine_only_is_retained_for_read_only_yara_file() {
+        let runtime = runtime();
+        let event = quarantine_event(
+            "/tmp/platinum_yara_read_quarantine_test.txt",
+            false,
+            EventClass::FileOpen,
+        );
+        let mut outcome = DetectionOutcome::default();
+        outcome.signals.yara_hit = true;
 
         assert_eq!(
             runtime.sanitize_planned_action_for_event(

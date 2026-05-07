@@ -443,7 +443,7 @@ impl EsloggerBackend {
     }
 
     fn poll(&mut self, max_batch: usize) -> Result<PollOutcome, EsfError> {
-        let mut dropped = self.dropped_lines.swap(0, Ordering::Relaxed);
+        let dropped = self.dropped_lines.swap(0, Ordering::Relaxed);
 
         while self.pending.len() < max_batch {
             let mut progressed = false;

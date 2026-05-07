@@ -34,11 +34,11 @@ use super::{
 };
 
 /// Result of a background bundle reload thread.
-pub struct BackgroundReloadResult {
-    pub version: String,
-    pub bundle_path: String,
-    pub engines: Vec<detection::DetectionEngine>,
-    pub report: ReloadReport,
+pub(crate) struct BackgroundReloadResult {
+    pub(super) version: String,
+    pub(super) bundle_path: String,
+    pub(super) engines: Vec<detection::DetectionEngine>,
+    pub(super) report: ReloadReport,
 }
 
 pub struct AgentRuntime {
@@ -165,7 +165,10 @@ impl AgentRuntime {
         let host_mem_total_bytes = linux_host_mem_total_bytes();
         let low_memory_host = host_is_low_memory(host_mem_total_bytes);
         let detection_shards = resolve_detection_shard_count();
-        let bundle_path = config.detection_bundle_path.clone();
+        #[cfg(target_os = "macos")]
+        let init_bundle_path = String::new();
+        #[cfg(not(target_os = "macos"))]
+        let init_bundle_path = config.detection_bundle_path.clone();
         let ransomware_policy = build_ransomware_policy(&config);
         let detection_sources =
             super::detection_bootstrap::DetectionSourcePaths::from_config(&config);
@@ -175,8 +178,8 @@ impl AgentRuntime {
                     ransomware_policy.clone(),
                     &detection_sources,
                 );
-            if !bundle_path.is_empty() {
-                load_bundle_full(&mut engine, &bundle_path);
+            if !init_bundle_path.is_empty() {
+                load_bundle_full(&mut engine, &init_bundle_path);
             }
             engine
         };
@@ -555,7 +558,10 @@ impl AgentRuntime {
         #[cfg(target_os = "macos")]
         {
             runtime.deferred_bundle_bootstrap_pending = true;
-            info!("macOS: deferring bundle bootstrap until after first heartbeat");
+            info!(
+                detection_bundle_path = %runtime.config.detection_bundle_path,
+                "macOS: deferring configured/last-known-good bundle bootstrap until after startup heartbeats"
+            );
         }
 
         runtime.run_storage_hygiene();
@@ -726,7 +732,21 @@ impl AgentRuntime {
             return;
         }
         self.deferred_bundle_bootstrap_pending = false;
-        info!("running deferred bundle bootstrap now");
+
+        #[cfg(target_os = "macos")]
+        {
+            let configured_bundle = self.config.detection_bundle_path.trim().to_string();
+            if !configured_bundle.is_empty() {
+                info!(
+                    bundle_path = %configured_bundle,
+                    "macOS: scheduling configured bundle bootstrap on background worker"
+                );
+                self.start_background_reload("configured-bundle", &configured_bundle, None);
+                return;
+            }
+        }
+
+        info!("running deferred last-known-good bundle bootstrap now");
         self.bootstrap_last_known_good_bundle();
     }
 

@@ -87,7 +87,7 @@ fn check_screen_lock_macos() -> ScreenLockStatus {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 #[derive(Debug, Clone, Default)]
 struct ScreenSaverSettings {
     idle_time_seconds: Option<u32>,
@@ -158,7 +158,7 @@ fn read_screensaver_authorizationdb() -> Option<String> {
     Some(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 fn parse_defaults_dictionary(raw: &str) -> ScreenSaverSettings {
     let mut settings = ScreenSaverSettings::default();
     for line in raw.lines() {
@@ -183,7 +183,7 @@ fn parse_defaults_dictionary(raw: &str) -> ScreenSaverSettings {
     settings
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 fn parse_defaults_bool(raw: &str) -> Option<bool> {
     match raw.trim().trim_matches('"') {
         "1" | "true" | "YES" => Some(true),
@@ -192,7 +192,7 @@ fn parse_defaults_bool(raw: &str) -> Option<bool> {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 fn screen_unlock_requires_authentication(raw: &str) -> bool {
     let lower = raw.to_ascii_lowercase();
     lower.contains("use-login-window-ui") || lower.contains("authenticate-session-owner-or-admin")

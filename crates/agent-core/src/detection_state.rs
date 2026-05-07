@@ -317,10 +317,12 @@ impl SharedDetectionState {
         self.inner.shards[idx].scan_process_memory(pid, mode)
     }
 
+    #[cfg(test)]
     pub fn swap_engine(&self, version: String, next: DetectionEngine) -> Result<()> {
         self.swap_engine_with_builder(version, next, DetectionEngine::default_with_rules)
     }
 
+    #[cfg(test)]
     pub fn swap_engine_with_builder<F>(
         &self,
         version: String,

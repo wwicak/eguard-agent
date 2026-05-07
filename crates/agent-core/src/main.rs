@@ -52,7 +52,9 @@ type ShutdownFuture = Pin<Box<dyn Future<Output = ShutdownReason> + Send>>;
 enum ShutdownReason {
     SigInt,
     SigTerm,
+    #[cfg(target_os = "windows")]
     ServiceStop,
+    #[cfg(not(unix))]
     CtrlC,
 }
 
