@@ -179,9 +179,11 @@ fn collect_inventory_facts() -> InventoryFacts {
     let user = std::env::var("SUDO_USER")
         .ok()
         .or_else(|| {
-            read_trimmed("/dev/console").filter(|value| !value.eq_ignore_ascii_case("root"))
-        })
-        .or_else(|| {
+            // /dev/console is a character device on macOS. Reading it as a
+            // regular file can block a launchd root agent before heartbeat and
+            // inventory uploads. Use the file owner metadata instead; `stat`
+            // returns immediately and is the canonical way to identify the
+            // active console user.
             let output = Command::new("/usr/bin/stat")
                 .args(["-f", "%Su", "/dev/console"])
                 .output()
@@ -345,4 +347,17 @@ fn collect_platform_hardware_inventory() -> HashMap<String, String> {
 #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
 fn collect_platform_hardware_inventory() -> HashMap<String, String> {
     HashMap::new()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn macos_inventory_must_not_read_dev_console_as_file_content() {
+        let source = include_str!("inventory.rs");
+        let forbidden = concat!("read_trimmed(\"", "/dev/console", "\")");
+        assert!(
+            !source.contains(forbidden),
+            "macOS inventory must use stat metadata for /dev/console; reading the character device can block launchd agents before heartbeat"
+        );
+    }
 }

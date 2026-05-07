@@ -11,6 +11,7 @@ pub mod inventory;
 pub mod response;
 pub mod self_protect;
 pub mod service;
+pub(crate) mod subprocess;
 
 use std::cell::RefCell;
 use std::collections::HashMap;

@@ -97,13 +97,27 @@ fn recommended_detection_shard_count(
 }
 
 pub(super) fn resolve_detection_shard_count() -> usize {
-    recommended_detection_shard_count(
-        std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1),
-        linux_host_mem_total_bytes(),
-        std::env::var("EGUARD_DETECTION_SHARDS").ok().as_deref(),
-    )
+    #[cfg(target_os = "macos")]
+    {
+        // macOS endpoints in the lab run large signed bundles on modest VM
+        // resources. Loading the same bundle once per detection shard can keep
+        // the process busy for hours and starve heartbeat/command polling.
+        // Keep macOS to one shard; server-side MLOps and endpoint bundle
+        // metadata still prove bundle freshness, while endpoint control-plane
+        // liveness remains prioritized.
+        return 1;
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        recommended_detection_shard_count(
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1),
+            linux_host_mem_total_bytes(),
+            std::env::var("EGUARD_DETECTION_SHARDS").ok().as_deref(),
+        )
+    }
 }
 
 pub(super) fn interval_due(last_run_unix: Option<i64>, now_unix: i64, interval_secs: i64) -> bool {
