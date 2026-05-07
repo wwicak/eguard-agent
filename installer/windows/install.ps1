@@ -7,6 +7,10 @@ param(
 
     [string]$MsiPath = "$env:TEMP\eguard-agent-latest.msi",
 
+    [string]$PackageVersion = $env:EGUARD_AGENT_VERSION,
+
+    [int]$GrpcPort = 50053,
+
     [string]$ExpectedHash = "",
 
     [switch]$AllowInsecureHttp,
@@ -40,9 +44,19 @@ if ($ServerUrl -match '^https://') {
 if ($EnrollmentToken.Length -lt 8) {
     throw "EnrollmentToken must be at least 8 characters"
 }
+if ($GrpcPort -lt 1 -or $GrpcPort -gt 65535) {
+    throw "GrpcPort must be between 1 and 65535"
+}
 
 $normalizedServerUrl = $ServerUrl.TrimEnd('/')
-$installEndpoint = "$normalizedServerUrl/api/v1/agent-install/windows-exe"
+$versionQuery = ""
+if (-not [string]::IsNullOrWhiteSpace($PackageVersion)) {
+    if ($PackageVersion -notmatch '^[A-Za-z0-9._+-]{1,64}$') {
+        throw "PackageVersion contains unsupported characters"
+    }
+    $versionQuery = "?version=$PackageVersion"
+}
+$installEndpoint = "$normalizedServerUrl/api/v1/agent-install/windows$versionQuery"
 $programDataRoot = 'C:\ProgramData\eGuard'
 $bootstrapPath = Join-Path $programDataRoot 'bootstrap.conf'
 
@@ -75,7 +89,7 @@ $headers = @{
 
 # W4: fail-closed MSI integrity policy
 if ([string]::IsNullOrWhiteSpace($ExpectedHash)) {
-    $hashEndpoint = "$normalizedServerUrl/api/v1/agent-install/windows-exe/sha256"
+    $hashEndpoint = "$normalizedServerUrl/api/v1/agent-install/windows/sha256$versionQuery"
     Write-Step "ExpectedHash not provided; fetching SHA-256 from $hashEndpoint"
     try {
         $hashResponse = Invoke-WebRequest -Uri $hashEndpoint -Headers $headers -UseBasicParsing
@@ -111,12 +125,14 @@ if ($sig.Status -ne 'Valid') {
 }
 
 Write-Step "Writing bootstrap configuration"
-$bootstrap = @{
-    server_url = $normalizedServerUrl
-    enrollment_token = $EnrollmentToken
-    written_at_utc = (Get-Date).ToUniversalTime().ToString('o')
-}
-$bootstrap | ConvertTo-Json -Depth 5 | Set-Content -Path $bootstrapPath -Encoding UTF8
+$serverHost = ([System.Uri]$normalizedServerUrl).Host
+@"
+[server]
+schema_version = 1
+address = $serverHost
+grpc_port = $GrpcPort
+enrollment_token = $EnrollmentToken
+"@ | Set-Content -Path $bootstrapPath -Encoding UTF8
 
 # W5: Restrict bootstrap.conf ACL to SYSTEM and Administrators
 Write-Step "Hardening bootstrap.conf permissions"
