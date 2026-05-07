@@ -29,6 +29,11 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.0
+
       - name: Seed benchmark baseline metrics (best effort)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

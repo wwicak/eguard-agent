@@ -14,6 +14,11 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.0
+
       - name: Run eBPF resource budget harness
         run: ./scripts/run_ebpf_resource_budget_ci.sh
 
