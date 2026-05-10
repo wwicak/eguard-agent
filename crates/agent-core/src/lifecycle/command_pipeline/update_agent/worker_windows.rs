@@ -95,14 +95,24 @@ function Restore-ServicePolicy {
 
 function Stop-AgentService {
     param([string]$ServiceName)
-    Write-Log "stopping service $ServiceName"
+    Write-Log "stopping service $ServiceName via SCM cooperative stop"
+
+    # Temporarily suppress auto-restart so SCM does not respawn the
+    # service while we are replacing binaries. The original failure
+    # policy is restored by Restore-ServicePolicy in all code paths.
     & sc.exe failure $ServiceName reset= 0 actions= "" 2>$null | Out-Null
     & sc.exe failureflag $ServiceName 0 2>$null | Out-Null
-    & sc.exe config $ServiceName start= demand 2>$null | Out-Null
+
+    # Use the normal SCM stop (the agent advertises SERVICE_ACCEPT_STOP
+    # and handles it with a clean StopPending → Stopped transition).
+    # Do NOT change start type — it stays automatic throughout.
     Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
 
+    # Wait up to 30 seconds for the clean stop.  The agent flushes
+    # telemetry buffers and closes gRPC channels during shutdown, which
+    # normally completes in <5 s but may take longer under load.
     $stopWait = 0
-    while ($stopWait -lt 15) {
+    while ($stopWait -lt 30) {
         $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
         if (-not $service -or $service.Status -eq 'Stopped') { break }
         Start-Sleep -Seconds 1
@@ -111,18 +121,26 @@ function Stop-AgentService {
 
     $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
     if ($service -and $service.Status -ne 'Stopped') {
-        $runningProc = Get-Process -Name 'eguard-agent' -ErrorAction SilentlyContinue | Select-Object -First 1
+        # Forced kill is a last resort for a wedged/unresponsive agent.
+        # Log prominently so operators can investigate the root cause.
+        $runningProc = Get-Process -Name 'agent-core' -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $runningProc) {
+            $runningProc = Get-Process -Name 'eguard-agent' -ErrorAction SilentlyContinue | Select-Object -First 1
+        }
         if ($runningProc) {
-            Write-Log "taskkill fallback for pid $($runningProc.Id)"
-            & taskkill /F /PID $runningProc.Id | Out-Null
+            Write-Log "WARNING: service did not stop within 30s; forced kill pid=$($runningProc.Id) as last resort"
+            & taskkill /F /PID $runningProc.Id 2>$null | Out-Null
             Start-Sleep -Seconds 3
         }
     }
 
     $remainingService = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-    $remainingProc = Get-Process -Name 'eguard-agent' -ErrorAction SilentlyContinue | Select-Object -First 1
+    $remainingProc = Get-Process -Name 'agent-core' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $remainingProc) {
+        $remainingProc = Get-Process -Name 'eguard-agent' -ErrorAction SilentlyContinue | Select-Object -First 1
+    }
     if (($remainingService -and $remainingService.Status -ne 'Stopped') -or $remainingProc) {
-        throw "service or eguard-agent.exe still running after stop attempt"
+        throw "service or agent process still running after stop attempt"
     }
 }
 
