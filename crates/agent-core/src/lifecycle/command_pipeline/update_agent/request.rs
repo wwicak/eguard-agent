@@ -32,6 +32,14 @@ impl UpdatePackageKind {
             _ => None,
         }
     }
+
+    #[cfg(target_os = "macos")]
+    pub(super) fn as_macos_format(self) -> Option<&'static str> {
+        match self {
+            Self::MacosPkg => Some("pkg"),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
