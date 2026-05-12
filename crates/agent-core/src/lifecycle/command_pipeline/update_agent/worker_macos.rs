@@ -50,10 +50,12 @@ pub(super) fn spawn_update_worker(
 
     // Detach the worker via nohup so a launchctl unload of the running
     // agent (triggered by the script itself near the end) does not kill
-    // the in-flight installer.
+    // the in-flight installer. Redirect stdin from /dev/null explicitly
+    // because macOS nohup fails with 'Inappropriate ioctl for device'
+    // when stdin is the agent's parent TTY/socket.
     let mut command = Command::new("/bin/bash");
     let nohup_cmd = format!(
-        "nohup '{}' {} > '{}' 2>&1 &",
+        "nohup '{}' {} < /dev/null > '{}' 2>&1 &",
         script_path.display(),
         script_args
             .iter()
