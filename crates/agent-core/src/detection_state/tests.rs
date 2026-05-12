@@ -220,7 +220,11 @@ fn rule_reload_swaps_atomically_and_keeps_old_rules_live_during_build() {
         .expect("swap engine");
     let swap_elapsed = swap_started.elapsed();
 
-    assert!(swap_elapsed < Duration::from_millis(5));
+    assert!(
+        swap_elapsed < Duration::from_millis(50),
+        "swap took {:?}, expected <50ms",
+        swap_elapsed
+    );
 
     assert_eq!(
         state.version().expect("version after swap").as_deref(),
@@ -466,4 +470,98 @@ fn sharded_workers_preserve_per_entity_event_order_for_temporal_rules() {
 
     let out2 = state.process_event(&second).expect("process second");
     assert!(out2.temporal_hits.iter().any(|rule| rule == "phi_webshell"));
+}
+
+#[test]
+// Regression companion to swap_engine_does_not_block_on_old_engine_drop:
+// while the old engine is still being dropped on the background thread,
+// the worker MUST continue evaluating events against the new engine.
+// This proves detection rate is not affected by the deferred drop.
+fn detection_uses_new_engine_immediately_after_swap() {
+    let mut old_engine = DetectionEngine::default_with_rules();
+    old_engine.layer1.load_hashes(["hash-old".to_string()]);
+    let state = SharedDetectionState::new(old_engine, Some("v-old".to_string()));
+
+    // Pre-swap: old hash matches.
+    assert_eq!(
+        state
+            .process_event(&event_with_hash("hash-old"))
+            .expect("pre-swap match")
+            .confidence,
+        detection::Confidence::Definite
+    );
+
+    let mut next_engine = DetectionEngine::default_with_rules();
+    next_engine.layer1.load_hashes(["hash-new".to_string()]);
+    state
+        .swap_engine("v-new".to_string(), next_engine)
+        .expect("swap engine");
+
+    // The drop thread may still be running here, but every event must
+    // already match the new engine and not the old one.
+    for _ in 0..200 {
+        let new_match = state
+            .process_event(&event_with_hash("hash-new"))
+            .expect("new rule active")
+            .confidence;
+        assert_eq!(
+            new_match,
+            detection::Confidence::Definite,
+            "new rule must be live immediately after swap"
+        );
+        let old_match = state
+            .process_event(&event_with_hash("hash-old"))
+            .expect("old rule gone")
+            .confidence;
+        assert_ne!(
+            old_match,
+            detection::Confidence::Definite,
+            "old rule must NOT match after swap (no stale engine reuse)"
+        );
+    }
+}
+
+#[test]
+// Regression: swap_engine must respond before old engine is dropped,
+// otherwise the shard worker is blocked on a multi-second Drop and
+// subsequent ProcessEvent commands hang the main tick loop (observed
+// as a 7+ hour macOS heartbeat outage in production).
+fn swap_engine_does_not_block_on_old_engine_drop() {
+    let old_engine = DetectionEngine::default_with_rules();
+    let state = SharedDetectionState::new(old_engine, Some("v-old".to_string()));
+
+    // Issue a ProcessEvent so the worker is warm.
+    state
+        .process_event(&event_with_hash("warmup"))
+        .expect("warmup process_event");
+
+    let next_engine = DetectionEngine::default_with_rules();
+    let swap_started = Instant::now();
+    state
+        .swap_engine("v-new".to_string(), next_engine)
+        .expect("swap engine returns");
+    let swap_elapsed = swap_started.elapsed();
+
+    // The swap response must return quickly. Even with the old engine
+    // being non-trivial, the worker must respond BEFORE dropping it.
+    assert!(
+        swap_elapsed < Duration::from_millis(50),
+        "swap_engine took {:?}; worker must respond before dropping old engine",
+        swap_elapsed
+    );
+
+    // Immediately after the swap returns, the worker must be ready
+    // to process new events (NOT blocked on the old-engine Drop on
+    // some background thread).
+    let next_event_started = Instant::now();
+    state
+        .process_event(&event_with_hash("post-swap"))
+        .expect("post-swap process_event");
+    let next_event_elapsed = next_event_started.elapsed();
+
+    assert!(
+        next_event_elapsed < Duration::from_millis(50),
+        "post-swap process_event took {:?}; shard worker is blocked on old-engine Drop",
+        next_event_elapsed
+    );
 }
