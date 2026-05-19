@@ -3,10 +3,16 @@ use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "windows")]
+use std::{os::windows::process::CommandExt, process::Stdio};
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 use anyhow::{anyhow, Context, Result};
 use pam::{
-    launch_ssh_request, BastionSessionRequest, BrowserTerminalSessionRequest, CheckoutRequest,
-    PamHttpClient, SecretString, SshLaunchRequest,
+    launch_ssh_request, BastionSessionRecord, BastionSessionRequest, BrowserTerminalSessionRequest,
+    CheckoutRequest, PamHttpClient, SecretString, SshLaunchRequest,
 };
 use tracing::warn;
 
@@ -16,6 +22,13 @@ use crate::state::{
     clear_launch_request_entry, upsert_launch_request_entry, BookmarkEntry, BookmarkState,
     LaunchRequestEntry, LaunchRequestState, PamLaunchEntry, PamLaunchState, SessionState,
 };
+
+#[cfg(target_os = "windows")]
+fn configure_hidden_console_command(cmd: &mut Command) {
+    cmd.creation_flags(CREATE_NO_WINDOW)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null());
+}
 
 pub fn launch_bookmark(bookmark: &BookmarkEntry) -> Result<()> {
     let request = LaunchRequest::parse(&bookmark.launch_uri)
@@ -256,49 +269,89 @@ fn launch_bastion_session(request: &LaunchRequest) -> Result<()> {
         ))
     })?;
     if let Some(session) = envelope.session.as_ref() {
-        if !session.proxy_host.trim().is_empty()
-            && session.proxy_port > 0
-            && !session.proxy_username.trim().is_empty()
-        {
-            let outcome = launch_ssh_request(&SshLaunchRequest {
-                target: session.proxy_host.trim().to_string(),
-                port: Some(session.proxy_port as u16),
-                user: Some(session.proxy_username.trim().to_string()),
-                launcher: Some("putty".to_string()),
-                password: Some(
-                    if !session.proxy_password.trim().is_empty() {
+        let mode = session.proxy_mode.trim().to_ascii_lowercase();
+        let has_proxy_fields = bastion_session_has_proxy_fields(session);
+        let assisted_direct = should_launch_rdp_assisted_direct(request, session);
+        if mode == "rdp_assisted_direct" || has_proxy_fields || assisted_direct {
+            let outcome = if assisted_direct {
+                launch_rdp_assisted_direct_bastion(request, session)
+            } else if mode == "rdp_proxy" || normalized_app_type(&request.app_type) == "rdp" {
+                launch_rdp_proxy_session(request, session)
+            } else {
+                launch_ssh_request(&SshLaunchRequest {
+                    target: session.proxy_host.trim().to_string(),
+                    port: Some(session.proxy_port as u16),
+                    user: Some(session.proxy_username.trim().to_string()),
+                    launcher: Some("putty".to_string()),
+                    password: Some(if !session.proxy_password.trim().is_empty() {
                         session.proxy_password.trim().to_string()
                     } else {
                         session.access_token.trim().to_string()
-                    },
-                ),
-                private_key_pem: None,
-                passphrase: None,
-            });
+                    }),
+                    private_key_pem: None,
+                    passphrase: None,
+                })
+                .map(|_| ())
+            };
             if outcome.is_ok() {
                 let _ = clear_launch_request_entry(&request.app_id);
             }
-            return outcome.map(|_| ());
+            return outcome;
         }
     }
-    let launch_url = envelope
-        .session
-        .as_ref()
-        .map(|value| value.launch_url.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .or_else(|| {
-            envelope
-                .profile
-                .as_ref()
-                .map(|value| value.web_launch_url.trim().to_string())
-                .filter(|value| !value.is_empty())
-        })
-        .unwrap_or_else(|| request.target.clone());
+    let launch_url = resolve_bastion_browser_launch_url(request, &envelope)
+        .ok_or_else(|| anyhow!("bastion session missing browser launch URL or proxy metadata"))?;
     let open_result = open_external_url(&launch_url);
     if open_result.is_ok() {
         let _ = clear_launch_request_entry(&request.app_id);
     }
     open_result
+}
+
+fn bastion_session_has_proxy_fields(session: &BastionSessionRecord) -> bool {
+    !session.proxy_host.trim().is_empty()
+        && session.proxy_port > 0
+        && !session.proxy_username.trim().is_empty()
+}
+
+fn should_launch_rdp_assisted_direct(
+    request: &LaunchRequest,
+    session: &BastionSessionRecord,
+) -> bool {
+    normalized_app_type(&request.app_type) == "rdp"
+        && !bastion_session_has_proxy_fields(session)
+        && session.launch_url.trim().is_empty()
+}
+
+fn resolve_bastion_browser_launch_url(
+    request: &LaunchRequest,
+    envelope: &pam::BastionSessionEnvelope,
+) -> Option<String> {
+    envelope
+        .session
+        .as_ref()
+        .map(|value| value.launch_url.trim().to_string())
+        .filter(|value| is_external_browser_url(value))
+        .or_else(|| {
+            envelope
+                .profile
+                .as_ref()
+                .map(|value| value.web_launch_url.trim().to_string())
+                .filter(|value| is_external_browser_url(value))
+        })
+        .or_else(|| {
+            let target = request.target.trim().to_string();
+            if is_external_browser_url(&target) {
+                Some(target)
+            } else {
+                None
+            }
+        })
+}
+
+fn is_external_browser_url(value: &str) -> bool {
+    let value = value.trim().to_ascii_lowercase();
+    value.starts_with("http://") || value.starts_with("https://")
 }
 
 fn prefers_bastion_launcher(request: &LaunchRequest) -> bool {
@@ -528,6 +581,175 @@ fn read_agent_conf_string(key: &str) -> Option<String> {
     None
 }
 
+fn bastion_proxy_session_uses_proxy_credentials(session: &BastionSessionRecord) -> bool {
+    session
+        .proxy_mode
+        .trim()
+        .eq_ignore_ascii_case("rdp_terminating_broker")
+}
+
+fn launch_rdp_proxy_session(request: &LaunchRequest, session: &BastionSessionRecord) -> Result<()> {
+    if session
+        .proxy_mode
+        .trim()
+        .eq_ignore_ascii_case("rdp_assisted_direct")
+    {
+        return launch_rdp_assisted_direct_bastion(request, session);
+    }
+    let proxy_target = session.proxy_host.trim();
+    if proxy_target.is_empty()
+        || session.proxy_port <= 0
+        || session.proxy_username.trim().is_empty()
+    {
+        return Err(anyhow!(
+            "rdp bastion proxy session missing connection metadata"
+        ));
+    }
+    let proxy_request = LaunchRequest {
+        app_id: request.app_id.clone(),
+        name: request.name.clone(),
+        app_type: request.app_type.clone(),
+        target: proxy_target.to_string(),
+        port: Some(session.proxy_port as u16),
+        user: Some(session.proxy_username.trim().to_string()),
+        display: request.display.clone(),
+        launcher: Some("rdp".to_string()),
+        credential_id: None,
+        temp_token: None,
+    };
+    let checked_out = if bastion_proxy_session_uses_proxy_credentials(session) {
+        None
+    } else {
+        maybe_checkout_rdp_password(request)?
+    };
+    let (rdp_username, rdp_password, checkout_base_url, checkout_id) =
+        if let Some(state) = checked_out.as_ref() {
+            if let Some(password) = state.password.as_ref() {
+                (
+                    state.username.clone(),
+                    password.expose().to_string(),
+                    Some(state.base_url.clone()),
+                    Some(state.checkout_id),
+                )
+            } else {
+                (
+                    session.proxy_username.trim().to_string(),
+                    if !session.proxy_password.trim().is_empty() {
+                        session.proxy_password.trim().to_string()
+                    } else {
+                        session.access_token.trim().to_string()
+                    },
+                    None,
+                    None,
+                )
+            }
+        } else {
+            (
+                session.proxy_username.trim().to_string(),
+                if !session.proxy_password.trim().is_empty() {
+                    session.proxy_password.trim().to_string()
+                } else {
+                    session.access_token.trim().to_string()
+                },
+                None,
+                None,
+            )
+        };
+    if rdp_username.trim().is_empty() || rdp_password.trim().is_empty() {
+        return Err(anyhow!(
+            "rdp bastion proxy session missing usable credentials"
+        ));
+    }
+    apply_cmdkey_rdp_credential(&proxy_request, &rdp_username, &rdp_password)?;
+    let temp_rdp_path = write_temp_rdp_file(&proxy_request, &rdp_username)?;
+    let mstsc = find_in_path(&["mstsc.exe"])
+        .or_else(|| Some(String::from(r"C:\Windows\System32\mstsc.exe")))
+        .ok_or_else(|| anyhow!("`mstsc.exe` not available"))?;
+    let mut cmd = Command::new(mstsc);
+    cmd.arg(&temp_rdp_path);
+    let child = spawn_detached_child(cmd, "rdp-bastion-proxy")?;
+    let target_host = proxy_request.target.clone();
+    let session_id = session.session_id.clone();
+    let base_url = resolve_server_base_url().ok_or_else(|| anyhow!("resolve server base url"))?;
+    mark_bastion_session_connected(&base_url, &session_id);
+    if let (Some(checkout_base_url), Some(checkout_id)) = (checkout_base_url, checkout_id) {
+        spawn_rdp_bastion_checkin_watcher(
+            base_url,
+            session_id,
+            checkout_base_url,
+            checkout_id,
+            child,
+            Some(temp_rdp_path),
+            target_host,
+        );
+        return Ok(());
+    }
+    thread::spawn(move || {
+        let mut child = child;
+        let _ = child.wait();
+        let _ = std::fs::remove_file(&temp_rdp_path);
+        delete_cmdkey_rdp_credential(&target_host);
+        close_bastion_session_async(base_url, session_id);
+    });
+    Ok(())
+}
+
+fn launch_rdp_assisted_direct_bastion(
+    request: &LaunchRequest,
+    session: &BastionSessionRecord,
+) -> Result<()> {
+    let mstsc = find_in_path(&["mstsc.exe"])
+        .or_else(|| Some(String::from(r"C:\Windows\System32\mstsc.exe")))
+        .ok_or_else(|| anyhow!("`mstsc.exe` not available"))?;
+    let checked_out = maybe_checkout_rdp_password(request)?;
+    let mut temp_rdp_path = None;
+    if let Some(state) = checked_out.as_ref() {
+        if let Some(password) = state.password.as_ref() {
+            apply_cmdkey_rdp_credential(request, &state.username, password.expose())?;
+            temp_rdp_path = Some(write_temp_rdp_file(request, &state.username)?);
+        }
+    }
+    let mut cmd = Command::new(mstsc);
+    if let Some(path) = temp_rdp_path.as_ref() {
+        cmd.arg(path);
+    } else {
+        cmd.arg(format!(
+            "/v:{}:{}",
+            request.target,
+            request.port.unwrap_or(3389)
+        ));
+        cmd.arg("/f");
+    }
+    let child = spawn_detached_child(cmd, "rdp-bastion-assisted-direct")?;
+    let base_url = resolve_server_base_url().ok_or_else(|| anyhow!("resolve server base url"))?;
+    mark_bastion_session_connected(&base_url, &session.session_id);
+    let target_host = request.target.clone();
+    if let Some(state) = checked_out {
+        let session_id = session.session_id.clone();
+        spawn_rdp_bastion_checkin_watcher(
+            base_url,
+            session_id,
+            state.base_url,
+            state.checkout_id,
+            child,
+            temp_rdp_path,
+            target_host,
+        );
+        return Ok(());
+    }
+    let session_id = session.session_id.clone();
+    thread::spawn(move || {
+        let mut child = child;
+        let _ = child.wait();
+        if let Some(path) = temp_rdp_path {
+            let _ = std::fs::remove_file(path);
+        }
+        delete_cmdkey_rdp_credential(&target_host);
+        close_bastion_session_async(base_url, session_id);
+    });
+    Ok(())
+}
+
 fn launch_rdp(request: &LaunchRequest) -> Result<()> {
     let mstsc = find_in_path(&["mstsc.exe"])
         .or_else(|| Some(String::from(r"C:\Windows\System32\mstsc.exe")))
@@ -557,6 +779,8 @@ fn launch_rdp(request: &LaunchRequest) -> Result<()> {
                 cmd.arg(format!("/w:{}", parts[0]));
                 cmd.arg(format!("/h:{}", parts[1]));
             }
+        } else {
+            cmd.arg("/f");
         }
     }
     let child = spawn_detached_child(cmd, "rdp")?;
@@ -629,12 +853,13 @@ fn apply_cmdkey_rdp_credential(
 ) -> Result<()> {
     let target = format!("TERMSRV/{}", request.target);
     let full_user = first_non_empty_string(username, request.user.as_deref().unwrap_or_default());
-    let status = Command::new("cmdkey")
-        .arg(format!("/generic:{target}"))
+    let mut cmd = Command::new("cmdkey");
+    cmd.arg(format!("/generic:{target}"))
         .arg(format!("/user:{full_user}"))
-        .arg(format!("/pass:{password}"))
-        .status()
-        .context("launch cmdkey for rdp credential")?;
+        .arg(format!("/pass:{password}"));
+    #[cfg(target_os = "windows")]
+    configure_hidden_console_command(&mut cmd);
+    let status = cmd.status().context("launch cmdkey for rdp credential")?;
     if !status.success() {
         return Err(anyhow!("cmdkey failed for rdp credential injection"));
     }
@@ -642,9 +867,11 @@ fn apply_cmdkey_rdp_credential(
 }
 
 fn delete_cmdkey_rdp_credential(target_host: &str) {
-    let _ = Command::new("cmdkey")
-        .arg(format!("/delete:TERMSRV/{target_host}"))
-        .status();
+    let mut cmd = Command::new("cmdkey");
+    cmd.arg(format!("/delete:TERMSRV/{target_host}"));
+    #[cfg(target_os = "windows")]
+    configure_hidden_console_command(&mut cmd);
+    let _ = cmd.status();
 }
 
 fn write_temp_rdp_file(request: &LaunchRequest, username: &str) -> Result<std::path::PathBuf> {
@@ -653,15 +880,31 @@ fn write_temp_rdp_file(request: &LaunchRequest, username: &str) -> Result<std::p
         .unwrap_or_default()
         .as_millis();
     let path = std::env::temp_dir().join(format!("eguard-pam-rdp-{stamp}.rdp"));
-    let content = format!(
-        "full address:s:{}:{}\nusername:s:{}\nauthentication level:i:0\nprompt for credentials:i:0\n",
+    std::fs::write(&path, rdp_file_content(request, username))
+        .with_context(|| format!("write temp rdp file {}", path.display()))?;
+    Ok(path)
+}
+
+fn rdp_file_content(request: &LaunchRequest, username: &str) -> String {
+    let mut content = format!(
+        "full address:s:{}:{}\nusername:s:{}\nauthentication level:i:0\nprompt for credentials:i:0\nuse multimon:i:0\nsmart sizing:i:1\n",
         request.target,
         request.port.unwrap_or(3389),
         username
     );
-    std::fs::write(&path, content)
-        .with_context(|| format!("write temp rdp file {}", path.display()))?;
-    Ok(path)
+    if let Some(display) = request.display.as_deref() {
+        let parts: Vec<_> = display.split('x').collect();
+        if parts.len() == 2 {
+            content.push_str("screen mode id:i:1\n");
+            content.push_str(&format!(
+                "desktopwidth:i:{}\ndesktopheight:i:{}\n",
+                parts[0], parts[1]
+            ));
+            return content;
+        }
+    }
+    content.push_str("screen mode id:i:2\n");
+    content
 }
 
 fn spawn_rdp_checkin_watcher(
@@ -683,6 +926,56 @@ fn spawn_rdp_checkin_watcher(
         };
         if let Ok(runtime) = tokio::runtime::Runtime::new() {
             let _ = runtime.block_on(client.checkin(checkout_id, Some("rdp_client_exit")));
+        }
+    });
+}
+
+fn spawn_rdp_bastion_checkin_watcher(
+    server_base_url: String,
+    bastion_session_id: String,
+    checkout_base_url: String,
+    checkout_id: i64,
+    mut child: std::process::Child,
+    temp_rdp_path: Option<std::path::PathBuf>,
+    target_host: String,
+) {
+    std::thread::spawn(move || {
+        let _ = child.wait();
+        if let Some(path) = temp_rdp_path {
+            let _ = std::fs::remove_file(path);
+        }
+        delete_cmdkey_rdp_credential(&target_host);
+        clear_pam_launch(checkout_id);
+        if let Ok(client) = PamHttpClient::new(checkout_base_url) {
+            if let Ok(runtime) = tokio::runtime::Runtime::new() {
+                let _ =
+                    runtime.block_on(client.checkin(checkout_id, Some("rdp_bastion_client_exit")));
+            }
+        }
+        close_bastion_session_async(server_base_url, bastion_session_id);
+    });
+}
+
+fn mark_bastion_session_connected(base_url: &str, session_id: &str) {
+    let base_url = base_url.to_string();
+    let session_id = session_id.to_string();
+    std::thread::spawn(move || {
+        let Ok(client) = PamHttpClient::new(base_url) else {
+            return;
+        };
+        if let Ok(runtime) = tokio::runtime::Runtime::new() {
+            let _ = runtime.block_on(client.touch_bastion_session_connected(&session_id));
+        }
+    });
+}
+
+fn close_bastion_session_async(base_url: String, session_id: String) {
+    std::thread::spawn(move || {
+        let Ok(client) = PamHttpClient::new(base_url) else {
+            return;
+        };
+        if let Ok(runtime) = tokio::runtime::Runtime::new() {
+            let _ = runtime.block_on(client.close_bastion_session(&session_id));
         }
     });
 }
@@ -720,9 +1013,10 @@ fn force_cleanup_entry(entry: &PamLaunchEntry, reason: Option<&str>) {
 fn terminate_process(pid: u32) {
     #[cfg(target_os = "windows")]
     {
-        let _ = Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .status();
+        let mut cmd = Command::new("taskkill");
+        cmd.args(["/PID", &pid.to_string(), "/T", "/F"]);
+        configure_hidden_console_command(&mut cmd);
+        let _ = cmd.status();
     }
 }
 
@@ -862,9 +1156,13 @@ mod tests {
     use std::sync::{Mutex, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    use pam::{BastionProfileRecord, BastionSessionEnvelope, BastionSessionRecord};
+
     use super::{
-        active_forwarded_launch_target, active_web_launch_target, normalized_app_type,
-        resolve_request_via_local_forward,
+        active_forwarded_launch_target, active_web_launch_target,
+        bastion_proxy_session_uses_proxy_credentials, normalized_app_type, rdp_file_content,
+        resolve_bastion_browser_launch_url, resolve_request_via_local_forward,
+        should_launch_rdp_assisted_direct,
     };
 
     static TEST_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -972,6 +1270,7 @@ mod tests {
             display: None,
             launcher: Some("ssh".to_string()),
             credential_id: None,
+            temp_token: None,
         };
         let resolved = resolve_request_via_local_forward("app-ssh", &request);
         assert_eq!(resolved.target, "127.0.0.1");
@@ -985,6 +1284,146 @@ mod tests {
             std::env::remove_var("EGUARD_TRAY_DATA_DIR");
         }
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rdp_file_defaults_to_full_screen() {
+        let request = crate::protocol::LaunchRequest {
+            app_id: "rdp-app".to_string(),
+            name: None,
+            app_type: "rdp".to_string(),
+            target: "10.10.10.10".to_string(),
+            port: Some(3390),
+            user: None,
+            display: None,
+            launcher: Some("rdp".to_string()),
+            credential_id: None,
+            temp_token: None,
+        };
+        let content = rdp_file_content(&request, "admin");
+        assert!(content.contains("full address:s:10.10.10.10:3390\n"));
+        assert!(content.contains("username:s:admin\n"));
+        assert!(content.contains("screen mode id:i:2\n"));
+        assert!(content.contains("smart sizing:i:1\n"));
+    }
+
+    #[test]
+    fn rdp_file_uses_explicit_display_when_requested() {
+        let request = crate::protocol::LaunchRequest {
+            app_id: "rdp-app".to_string(),
+            name: None,
+            app_type: "rdp".to_string(),
+            target: "10.10.10.10".to_string(),
+            port: Some(3389),
+            user: None,
+            display: Some("1280x720".to_string()),
+            launcher: Some("rdp".to_string()),
+            credential_id: None,
+            temp_token: None,
+        };
+        let content = rdp_file_content(&request, "admin");
+        assert!(content.contains("screen mode id:i:1\n"));
+        assert!(content.contains("desktopwidth:i:1280\n"));
+        assert!(content.contains("desktopheight:i:720\n"));
+        assert!(!content.contains("screen mode id:i:2\n"));
+    }
+
+    #[test]
+    fn rdp_terminating_broker_uses_proxy_credentials() {
+        let session = BastionSessionRecord {
+            session_id: "s-rdp".to_string(),
+            app_id: "rdp-app".to_string(),
+            agent_id: String::new(),
+            profile_id: String::new(),
+            status: String::new(),
+            launch_url: String::new(),
+            access_token: "token".to_string(),
+            proxy_host: "broker.internal".to_string(),
+            proxy_port: 53390,
+            proxy_username: "broker-user".to_string(),
+            proxy_password: "broker-pass".to_string(),
+            proxy_mode: "rdp_terminating_broker".to_string(),
+            proxy_host_key_hint: String::new(),
+            expires_at: String::new(),
+        };
+        assert!(bastion_proxy_session_uses_proxy_credentials(&session));
+    }
+
+    #[test]
+    fn rdp_bastion_without_proxy_metadata_uses_assisted_direct_not_browser_url() {
+        let request = crate::protocol::LaunchRequest {
+            app_id: "rdp-app".to_string(),
+            name: None,
+            app_type: "rdp".to_string(),
+            target: "10.10.10.10".to_string(),
+            port: Some(3389),
+            user: None,
+            display: None,
+            launcher: Some("bastion_rdp".to_string()),
+            credential_id: None,
+            temp_token: None,
+        };
+        let session = BastionSessionRecord {
+            session_id: "s-rdp".to_string(),
+            app_id: "rdp-app".to_string(),
+            agent_id: String::new(),
+            profile_id: String::new(),
+            status: String::new(),
+            launch_url: String::new(),
+            access_token: String::new(),
+            proxy_host: String::new(),
+            proxy_port: 0,
+            proxy_username: String::new(),
+            proxy_password: String::new(),
+            proxy_mode: String::new(),
+            proxy_host_key_hint: String::new(),
+            expires_at: String::new(),
+        };
+        let envelope = BastionSessionEnvelope {
+            status: "created".to_string(),
+            session: Some(session.clone()),
+            profile: None,
+        };
+
+        assert!(should_launch_rdp_assisted_direct(&request, &session));
+        assert_eq!(
+            resolve_bastion_browser_launch_url(&request, &envelope),
+            None
+        );
+    }
+
+    #[test]
+    fn web_bastion_can_still_fall_back_to_http_target() {
+        let request = crate::protocol::LaunchRequest {
+            app_id: "web-app".to_string(),
+            name: None,
+            app_type: "web".to_string(),
+            target: "https://example.internal/".to_string(),
+            port: None,
+            user: None,
+            display: None,
+            launcher: Some("bastion".to_string()),
+            credential_id: None,
+            temp_token: None,
+        };
+        let envelope = BastionSessionEnvelope {
+            status: "created".to_string(),
+            session: None,
+            profile: Some(BastionProfileRecord {
+                profile_id: String::new(),
+                name: String::new(),
+                protocol: "web".to_string(),
+                bastion_host: String::new(),
+                bastion_port: 0,
+                jump_username: String::new(),
+                web_launch_url: String::new(),
+            }),
+        };
+
+        assert_eq!(
+            resolve_bastion_browser_launch_url(&request, &envelope).as_deref(),
+            Some("https://example.internal/")
+        );
     }
 
     fn env_lock() -> &'static Mutex<()> {

@@ -6,6 +6,11 @@ use crate::protocol::LaunchRequest;
 
 #[cfg(target_os = "windows")]
 use std::process::Command;
+#[cfg(target_os = "windows")]
+use std::{os::windows::process::CommandExt, process::Stdio};
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[cfg(target_os = "windows")]
 use image::ImageReader;
@@ -1046,20 +1051,27 @@ fn format_bytes(bytes: i64) -> String {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn configure_hidden_console_command(cmd: &mut Command) {
+    cmd.creation_flags(CREATE_NO_WINDOW)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null());
+}
+
 fn prompt_for_temp_token() -> Result<Option<String>> {
     #[cfg(target_os = "windows")]
     {
-        let output = Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                "Add-Type -AssemblyName Microsoft.VisualBasic; $value = [Microsoft.VisualBasic.Interaction]::InputBox('Paste a temporary launch token', 'eGuard ZTNA Temporary Token', ''); Write-Output $value",
-            ])
-            .output()
-            .context("open temporary token prompt")?;
+        let mut cmd = Command::new("powershell");
+        cmd.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            "Add-Type -AssemblyName Microsoft.VisualBasic; $value = [Microsoft.VisualBasic.Interaction]::InputBox('Paste a temporary launch token', 'eGuard ZTNA Temporary Token', ''); Write-Output $value",
+        ]);
+        configure_hidden_console_command(&mut cmd);
+        let output = cmd.output().context("open temporary token prompt")?;
         if !output.status.success() {
             return Ok(None);
         }
@@ -1188,8 +1200,10 @@ fn effective_sessions(bookmarks: &BookmarkState) -> Result<Vec<crate::state::Ses
 
 #[cfg(target_os = "windows")]
 fn session_from_wireguard(bookmarks: &BookmarkState) -> Result<Option<crate::state::SessionEntry>> {
-    let output = Command::new(r"C:\Program Files\WireGuard\wg.exe")
-        .arg("show")
+    let mut cmd = Command::new(r"C:\Program Files\WireGuard\wg.exe");
+    cmd.arg("show");
+    configure_hidden_console_command(&mut cmd);
+    let output = cmd
         .output()
         .context("run wg show for tray session detection")?;
     if !output.status.success() {

@@ -295,4 +295,46 @@ impl PamHttpClient {
             .await
             .context("decode bastion session response")
     }
+
+    pub async fn touch_bastion_session_connected(&self, session_id: &str) -> Result<()> {
+        let url = format!(
+            "{}/api/v1/ztna/bastion-sessions/{}/connected",
+            self.base_url.trim_end_matches('/'),
+            session_id.trim()
+        );
+        let resp = self
+            .http
+            .post(&url)
+            .send()
+            .await
+            .context("send bastion session connected request")?;
+        if !resp.status().is_success() {
+            return Err(anyhow!(
+                "bastion session connected failed: status={}",
+                resp.status()
+            ));
+        }
+        Ok(())
+    }
+
+    pub async fn close_bastion_session(&self, session_id: &str) -> Result<()> {
+        let url = format!(
+            "{}/api/v1/ztna/bastion-sessions/{}",
+            self.base_url.trim_end_matches('/'),
+            session_id.trim()
+        );
+        let resp = self
+            .http
+            .delete(&url)
+            .send()
+            .await
+            .context("send bastion session close request")?;
+        if !resp.status().is_success() {
+            return Err(anyhow!(
+                "bastion session close failed: status={}",
+                resp.status()
+            ));
+        }
+        Ok(())
+    }
 }

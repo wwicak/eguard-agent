@@ -3,6 +3,12 @@ use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(target_os = "windows")]
+use std::{os::windows::process::CommandExt, process::Stdio};
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 use anyhow::{anyhow, Context, Result};
 
 use crate::types::SshLaunchRequest;
@@ -19,6 +25,13 @@ pub struct SshLaunchOutcome {
     pub mode: SshLaunchMode,
     pub child: Option<Child>,
     pub cleanup_paths: Vec<PathBuf>,
+}
+
+#[cfg(target_os = "windows")]
+fn configure_hidden_console_command(cmd: &mut Command) {
+    cmd.creation_flags(CREATE_NO_WINDOW)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null());
 }
 
 pub fn launch_ssh_request(request: &SshLaunchRequest) -> Result<SshLaunchOutcome> {
@@ -132,6 +145,10 @@ fn launch_native_ssh(request: &SshLaunchRequest) -> Result<(Child, Vec<PathBuf>)
 }
 
 fn spawn_detached(mut cmd: Command, label: &str) -> Result<Child> {
+    if label == "ssh" {
+        #[cfg(target_os = "windows")]
+        configure_hidden_console_command(&mut cmd);
+    }
     cmd.spawn()
         .with_context(|| format!("launch {label} client"))
 }
@@ -160,17 +177,17 @@ fn apply_restrictive_key_file_permissions(path: &PathBuf) -> Result<()> {
 #[cfg(target_os = "windows")]
 fn restrict_windows_file_acl(path: &PathBuf) -> Result<()> {
     let user = current_windows_account_name()?;
-    let status = Command::new("icacls")
-        .arg(path)
+    let mut cmd = Command::new("icacls");
+    cmd.arg(path)
         .arg("/inheritance:r")
         .arg("/grant:r")
         .arg(format!("{user}:R"))
         .arg("/grant:r")
         .arg("SYSTEM:F")
         .arg("/grant:r")
-        .arg("Administrators:F")
-        .status()
-        .context("apply restrictive ACL with icacls")?;
+        .arg("Administrators:F");
+    configure_hidden_console_command(&mut cmd);
+    let status = cmd.status().context("apply restrictive ACL with icacls")?;
     if !status.success() {
         return Err(anyhow!(
             "icacls failed while restricting SSH key temp file ACL"
@@ -187,7 +204,9 @@ fn current_windows_account_name() -> Result<String> {
             return Ok(trimmed.to_string());
         }
     }
-    let output = Command::new("whoami")
+    let mut cmd = Command::new("whoami");
+    configure_hidden_console_command(&mut cmd);
+    let output = cmd
         .output()
         .context("resolve current Windows account with whoami")?;
     if !output.status.success() {
