@@ -39,7 +39,7 @@
   <Fragment>
     <ComponentGroup Id="AgentComponents" Directory="INSTALLFOLDER">
       <Component Id="CmpAgentExe" Guid="*">
-        <File Id="FilAgentExe" Source="$(var.AgentExePath)" KeyPath="yes" />
+        <File Id="FilAgentExe" Source="$(var.AgentExePath)" Name="eguard-agent.exe" KeyPath="yes" />
 
         <ServiceInstall
             Id="SvcInstall"
