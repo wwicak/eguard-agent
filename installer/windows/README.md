@@ -10,9 +10,11 @@ What exists now:
 - `platform-windows` telemetry/compliance/response modules are wired into the Windows runtime path.
 - WiX MSI definition: `installer/windows/eguard-agent.wxs` (version passed from CI via `AgentVersion`).
 - PowerShell bootstrap installer: `installer/windows/install.ps1`.
+- Windows bootstrap setup launcher: `crates/windows-bootstrap` → `eguard-setup.exe`.
 - Release workflow builds and publishes Windows artifacts:
   - `eguard-agent.exe`
   - `eguard-agent-<version>-x64.msi`
+  - `eguard-setup.exe`
   - `install.ps1`
 
 What is still open:
@@ -37,6 +39,16 @@ It supports:
 ```powershell
 msiexec /i eguard-agent_<version>_x64.msi /qn ENROLLMENT_TOKEN=<token> SERVER_URL=<url>
 ```
+
+## Bootstrap setup launcher
+
+Recommended end-user flow:
+
+1. Download `eguard-setup.exe` from `/api/v1/agent-install/windows-setup`
+2. Run it and approve the Windows UAC / Administrator prompt
+3. Let the launcher fetch `install.ps1` and complete the MSI-based install automatically
+
+The setup launcher embeds bootstrap install metadata (server URL, enrollment token, expected MSI hash, optional profile id/name, and profile-derived `EGUARD_*` environment overrides) and is built with a `requireAdministrator` manifest.
 
 ## Bootstrap install script
 
@@ -63,7 +75,7 @@ powershell -ExecutionPolicy Bypass -File .\installer\windows\install.ps1 \
 
 Script behavior:
 - enforces secure-by-default server URL policy (`https://`; `http://` requires `-AllowInsecureHttp`)
-- downloads MSI from `GET /api/v1/agent-install/windows-exe` using `X-Enrollment-Token`
+- downloads MSI from `GET /api/v1/agent-install/windows` using `X-Enrollment-Token`
 - enforces fail-closed integrity:
   - resolves expected SHA-256 from `-ExpectedHash` or `GET /api/v1/agent-install/windows-exe/sha256`
   - verifies local MSI hash before install

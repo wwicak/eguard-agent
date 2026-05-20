@@ -17,6 +17,7 @@ members = [
   "crates/agent-version",
   "crates/ztna",
   "crates/pam",
+  "crates/windows-bootstrap",
 ]
 exclude = ["fuzz"]
 resolver = "2"

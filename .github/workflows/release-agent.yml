@@ -212,13 +212,14 @@ jobs:
         run: |
           cargo test -p platform-windows
 
-      - name: Build Windows agent binary
+      - name: Build Windows agent binaries
         shell: bash
         env:
           EGUARD_AGENT_VERSION: ${{ steps.semver.outputs.version }}
         run: |
           cargo build --release --target x86_64-pc-windows-msvc -p agent-core
           cargo build --release --target x86_64-pc-windows-msvc -p eguard-tray
+          cargo build --release --target x86_64-pc-windows-msvc -p windows-bootstrap
 
       - name: Build Windows MSI package
         shell: pwsh
@@ -236,6 +237,7 @@ jobs:
           mkdir -p artifacts/windows
           cp target/x86_64-pc-windows-msvc/release/agent-core.exe artifacts/windows/eguard-agent.exe
           cp target/x86_64-pc-windows-msvc/release/eguard-tray.exe artifacts/windows/eguard-tray.exe
+          cp target/x86_64-pc-windows-msvc/release/windows-bootstrap.exe artifacts/windows/eguard-setup.exe
           cp installer/windows/install.ps1 artifacts/windows/install.ps1
 
       - name: Upload Windows packages
@@ -245,6 +247,7 @@ jobs:
           path: |
             artifacts/windows/eguard-agent.exe
             artifacts/windows/eguard-tray.exe
+            artifacts/windows/eguard-setup.exe
             artifacts/windows/eguard-agent-*.msi
             artifacts/windows/install.ps1
 
