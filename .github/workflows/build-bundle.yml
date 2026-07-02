@@ -51,7 +51,7 @@ on:
       include_restricted_sources:
         description: "Restore restricted/non-redistributable feeds in this manually dispatched bundle"
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: write
@@ -525,7 +525,7 @@ jobs:
 
       - name: Build bundle
         env:
-          EGUARD_INCLUDE_RESTRICTED_SOURCES: ${{ inputs.include_restricted_sources && '1' || '0' }}
+          EGUARD_INCLUDE_RESTRICTED_SOURCES: ${{ (github.event_name == 'schedule' || inputs.include_restricted_sources) && '1' || '0' }}
         run: |
           python threat-intel/processing/build_bundle.py \
             --sigma /tmp/artifacts/sigma-filtered \

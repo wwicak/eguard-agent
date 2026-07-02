@@ -8,7 +8,7 @@ on:
       include_restricted_sources:
         description: "Restore restricted OpenPhish community feed"
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: read
@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      INCLUDE_RESTRICTED_SOURCES: ${{ inputs.include_restricted_sources }}
+      INCLUDE_RESTRICTED_SOURCES: ${{ github.event_name == 'schedule' || inputs.include_restricted_sources }}
     steps:
       - name: Collect Tor exit nodes
         run: |
