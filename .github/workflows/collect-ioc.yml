@@ -8,7 +8,7 @@ on:
       include_restricted_sources:
         description: "Restore restricted/non-redistributable IOC feeds (Spamhaus, FireHOL, DShield, AlienVault OTX)"
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: write
@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       MALWARE_BAZAAR_KEY: ${{ secrets.MALWARE_BAZAAR_KEY }}
-      INCLUDE_RESTRICTED_SOURCES: ${{ inputs.include_restricted_sources }}
+      INCLUDE_RESTRICTED_SOURCES: ${{ github.event_name == 'schedule' || inputs.include_restricted_sources }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
