@@ -48,6 +48,10 @@ on:
         description: "Reason for acknowledged regression baseline reset"
         type: string
         default: ""
+      include_restricted_sources:
+        description: "Restore restricted/non-redistributable feeds in this manually dispatched bundle"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -520,6 +524,8 @@ jobs:
           fi
 
       - name: Build bundle
+        env:
+          EGUARD_INCLUDE_RESTRICTED_SOURCES: ${{ inputs.include_restricted_sources && '1' || '0' }}
         run: |
           python threat-intel/processing/build_bundle.py \
             --sigma /tmp/artifacts/sigma-filtered \
