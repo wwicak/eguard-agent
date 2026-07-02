@@ -49,6 +49,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-drop-database-total-pct", type=float, default=20.0)
     parser.add_argument("--max-drop-yara-sources", type=int, default=1)
     parser.add_argument("--max-drop-sigma-sources", type=int, default=1)
+    parser.add_argument("--acknowledge-reset", action="store_true", help="Acknowledge failing regression checks as an intentional one-run baseline reset")
+    parser.add_argument("--acknowledge-reason", default="", help="Reason for an intentional regression baseline reset")
     return parser
 
 
@@ -170,6 +172,8 @@ def main() -> int:
         "thresholds": thresholds,
         "regressions": regressions,
     }
+    if regressions and args.acknowledge_reset:
+        report["acknowledged_reset"] = {"reason": args.acknowledge_reason, "failures": regressions}
     _write_report(args.output, report)
 
     print("Bundle coverage regression snapshot:")
@@ -191,6 +195,9 @@ def main() -> int:
         print("\nBundle coverage regression gate failed:")
         for item in regressions:
             print(f"- {item}")
+        if args.acknowledge_reset:
+            print(f"regression failures acknowledged as intentional baseline reset: {args.acknowledge_reason}")
+            return 0
         return 1
 
     print("\nBundle coverage regression gate passed")

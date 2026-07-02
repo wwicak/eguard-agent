@@ -90,6 +90,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-tactic-gap-increase", type=int, default=0)
     parser.add_argument("--max-new-missing-required-tactics", type=int, default=0)
     parser.add_argument("--require-gap-reduction-if-positive", action="store_true")
+    parser.add_argument("--acknowledge-reset", action="store_true", help="Acknowledge failing regression checks as an intentional one-run baseline reset")
+    parser.add_argument("--acknowledge-reason", default="", help="Reason for an intentional regression baseline reset")
     return parser
 
 
@@ -240,6 +242,8 @@ def main() -> int:
         "failures": failures,
     }
 
+    if failures and args.acknowledge_reset:
+        report["acknowledged_reset"] = {"reason": args.acknowledge_reason, "failures": failures}
     _write_report(output_path, report)
 
     print("ATT&CK gap burn-down snapshot:")
@@ -261,6 +265,9 @@ def main() -> int:
         print("\nATT&CK gap burn-down gate failed:")
         for failure in failures:
             print(f"- {failure}")
+        if args.acknowledge_reset:
+            print(f"regression failures acknowledged as intentional baseline reset: {args.acknowledge_reason}")
+            return 0
         return 1
 
     print("\nATT&CK gap burn-down gate passed")
