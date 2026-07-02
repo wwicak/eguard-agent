@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "0 */4 * * *"  # Every 4 hours
   workflow_dispatch:
+    inputs:
+      include_restricted_sources:
+        description: "Restore restricted/non-redistributable IOC feeds (Spamhaus, FireHOL, DShield, AlienVault OTX)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -17,6 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       MALWARE_BAZAAR_KEY: ${{ secrets.MALWARE_BAZAAR_KEY }}
+      INCLUDE_RESTRICTED_SOURCES: ${{ inputs.include_restricted_sources }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,6 +34,72 @@ jobs:
 
       - name: Create source directories
         run: mkdir -p sources/ioc/{hashes,domains,ips}
+
+      # ────────────────────────────────────────────────────────────────
+      # Restricted / license-sensitive sources (manual opt-in only)
+      # ────────────────────────────────────────────────────────────────
+
+      - name: "Fetch Spamhaus DROP + EDROP (restricted)"
+        if: ${{ env.INCLUDE_RESTRICTED_SOURCES == 'true' }}
+        run: |
+          curl -sSfL --retry 3 --max-time 60 \
+            "https://www.spamhaus.org/drop/drop.txt" \
+            -o /tmp/spamhaus_drop.txt 2>/dev/null || true
+          curl -sSfL --retry 3 --max-time 60 \
+            "https://www.spamhaus.org/drop/edrop.txt" \
+            -o /tmp/spamhaus_edrop.txt 2>/dev/null || true
+          {
+            grep -v '^;' /tmp/spamhaus_drop.txt 2>/dev/null | awk '{print $1}' | grep -E '^[0-9]'
+            grep -v '^;' /tmp/spamhaus_edrop.txt 2>/dev/null | awk '{print $1}' | grep -E '^[0-9]'
+          } | sort -u > sources/ioc/ips/spamhaus.txt
+          echo "Spamhaus DROP+EDROP: $(wc -l < sources/ioc/ips/spamhaus.txt) entries"
+
+      - name: "Fetch FireHOL Level 1 (restricted aggregator)"
+        if: ${{ env.INCLUDE_RESTRICTED_SOURCES == 'true' }}
+        run: |
+          curl -sSfL --retry 3 --max-time 120 \
+            "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level1.netset" \
+            -o /tmp/firehol.txt 2>/dev/null || true
+          if [ -s /tmp/firehol.txt ]; then
+            grep -v '^#' /tmp/firehol.txt | grep -v '^$' | sort -u > sources/ioc/ips/firehol_l1.txt
+            echo "FireHOL L1: $(wc -l < sources/ioc/ips/firehol_l1.txt) entries"
+          fi
+
+      - name: "Fetch DShield top attackers (restricted — SANS ISC)"
+        if: ${{ env.INCLUDE_RESTRICTED_SOURCES == 'true' }}
+        run: |
+          curl -sSfL --retry 3 --max-time 60 \
+            "https://www.dshield.org/block.txt" \
+            -o /tmp/dshield.txt 2>/dev/null || true
+          if [ -s /tmp/dshield.txt ]; then
+            awk '/^[0-9]/ {print $1}' /tmp/dshield.txt | sort -u > sources/ioc/ips/dshield.txt
+            echo "DShield IPs: $(wc -l < sources/ioc/ips/dshield.txt)"
+          fi
+
+      - name: "Fetch AlienVault OTX (restricted — optional)"
+        if: ${{ env.INCLUDE_RESTRICTED_SOURCES == 'true' && env.OTX_API_KEY != '' }}
+        env:
+          OTX_API_KEY: ${{ secrets.OTX_API_KEY }}
+        run: |
+          curl -sSfL --retry 3 --max-time 120 \
+            -H "X-OTX-API-KEY: ${OTX_API_KEY}" \
+            "https://otx.alienvault.com/api/v1/pulses/subscribed?modified_since=$(date -u -d '1 day ago' +%Y-%m-%dT%H:%M:%S)" \
+            -o /tmp/otx_pulses.json
+          python3 - <<'PYOTX'
+          import json
+          data = json.load(open('/tmp/otx_pulses.json'))
+          hashes, domains, ips = set(), set(), set()
+          for pulse in data.get('results', []):
+              for ind in pulse.get('indicators', []):
+                  t = ind.get('type', '')
+                  v = ind.get('indicator', '')
+                  if t in ('FileHash-SHA256',): hashes.add(v)
+                  elif t in ('domain', 'hostname'): domains.add(v)
+                  elif t in ('IPv4',): ips.add(v)
+          open('sources/ioc/hashes/otx.txt', 'w').write('\n'.join(sorted(hashes)))
+          open('sources/ioc/domains/otx.txt', 'w').write('\n'.join(sorted(domains)))
+          open('sources/ioc/ips/otx.txt', 'w').write('\n'.join(sorted(ips)))
+          PYOTX
 
       # ────────────────────────────────────────────────────────────────
       # Tier 1: Retained high-confidence sources pending permission
