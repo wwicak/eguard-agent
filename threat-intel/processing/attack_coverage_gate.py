@@ -20,6 +20,26 @@ def _slug(value: str) -> str:
     return cleaned.strip("_")
 
 
+# SigmaHQ renamed/split ATT&CK tactic tags (defense-evasion became
+# stealth + defense-impairment). Normalize to canonical ATT&CK tactic
+# slugs so required-tactic gates keep working across taxonomy renames.
+TACTIC_ALIASES = {
+    "stealth": "defense_evasion",
+    "defense_impairment": "defense_evasion",
+}
+
+# attack.g#### / attack.s#### tags reference ATT&CK groups/software,
+# not tactics; they must not inflate tactic coverage counts.
+ATTACK_NON_TACTIC_SUFFIX_RE = re.compile(r"^[gs]\d{4}$")
+
+
+def _normalize_tactic(value: str) -> str:
+    slug = _slug(value)
+    if not slug or ATTACK_NON_TACTIC_SUFFIX_RE.match(slug):
+        return ""
+    return TACTIC_ALIASES.get(slug, slug)
+
+
 def _load_sigma_attack_coverage(sigma_dir: Path) -> tuple[int, int, set[str], set[str]]:
     total_rules = 0
     rules_with_attack = 0
@@ -52,7 +72,7 @@ def _load_sigma_attack_coverage(sigma_dir: Path) -> tuple[int, int, set[str], se
                 if ATTACK_TECHNIQUE_SUFFIX_RE.match(suffix):
                     rule_techniques.add(suffix.upper())
                 else:
-                    tactic = _slug(suffix)
+                    tactic = _normalize_tactic(suffix)
                     if tactic:
                         rule_tactics.add(tactic)
 
@@ -94,7 +114,7 @@ def _load_elastic_attack_coverage(elastic_jsonl: Path) -> tuple[int, int, set[st
         for entry in record.get("mitre_tactics", []):
             if not isinstance(entry, dict):
                 continue
-            tactic_name = _slug(str(entry.get("name", "")))
+            tactic_name = _normalize_tactic(str(entry.get("name", "")))
             if tactic_name:
                 rule_tactics.add(tactic_name)
 
@@ -149,7 +169,7 @@ def main() -> int:
 
     total_techniques = sigma_techniques | elastic_techniques
     total_tactics = sigma_tactics | elastic_tactics
-    required_tactics = sorted({_slug(t) for t in args.require_tactic if _slug(t)})
+    required_tactics = sorted({_normalize_tactic(t) for t in args.require_tactic if _normalize_tactic(t)})
     missing_required_tactics = sorted([t for t in required_tactics if t not in total_tactics])
 
     measured = {
