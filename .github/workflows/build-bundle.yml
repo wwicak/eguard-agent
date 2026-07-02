@@ -448,32 +448,23 @@ jobs:
         run: |
           IOC_DIR="/tmp/artifacts/ioc-curated"
 
-          # Merge C2-Tracker IPs
+          # Merge supplemental plain-text feeds without destroying JSONL provenance.
           C2_DIR="/tmp/artifacts/c2-tracker-collected"
-          if [ -f "$C2_DIR/c2_ips.txt" ]; then
-            echo "Merging C2-Tracker IPs"
-            cat "$C2_DIR/c2_ips.txt" >> "$IOC_DIR/ips.txt" 2>/dev/null || true
-          fi
-
-          # Merge Tor exit IPs
           TOR_DIR="/tmp/artifacts/tor-phish-collected"
-          if [ -f "$TOR_DIR/tor_exit_ips.txt" ]; then
-            echo "Merging Tor exit IPs"
-            cat "$TOR_DIR/tor_exit_ips.txt" >> "$IOC_DIR/ips.txt" 2>/dev/null || true
-          fi
 
-          # Merge phishing domains
-          if [ -f "$TOR_DIR/phishing_domains.txt" ]; then
-            echo "Merging phishing domains"
-            cat "$TOR_DIR/phishing_domains.txt" >> "$IOC_DIR/domains.txt" 2>/dev/null || true
-          fi
+          python threat-intel/processing/merge_plain_iocs.py \
+            --target "$IOC_DIR/ips.txt" \
+            --merge "$C2_DIR/c2_ips.txt:c2_tracker:medium" \
+            --merge "$TOR_DIR/tor_exit_ips.txt:tor_exit_list:low"
 
-          # Deduplicate all merged IOC files
-          for f in "$IOC_DIR"/hashes.txt "$IOC_DIR"/domains.txt "$IOC_DIR"/ips.txt; do
-            if [ -f "$f" ]; then
-              sort -u "$f" -o "$f"
-            fi
-          done
+          python threat-intel/processing/merge_plain_iocs.py \
+            --target "$IOC_DIR/domains.txt" \
+            --merge "$TOR_DIR/phishing_domains.txt:phishing_database:medium"
+
+          # Hashes remain plain-line safe; domains/IPs are JSONL after merge.
+          if [ -f "$IOC_DIR/hashes.txt" ]; then
+            sort -u "$IOC_DIR/hashes.txt" -o "$IOC_DIR/hashes.txt"
+          fi
 
           echo "Post-merge IOC counts:"
           echo "  Hashes:  $(wc -l < "$IOC_DIR/hashes.txt" 2>/dev/null || echo 0)"
