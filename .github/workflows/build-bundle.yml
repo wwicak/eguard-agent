@@ -40,6 +40,14 @@ on:
         description: "Allow coverage gate shortfalls in workflow_dispatch (shadow mode)"
         type: boolean
         default: false
+      regression_ack:
+        description: "Acknowledge intentional regression baseline reset (for example license exclusions)"
+        type: boolean
+        default: false
+      regression_ack_reason:
+        description: "Reason for acknowledged regression baseline reset"
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -805,7 +813,14 @@ jobs:
           EGUARD_MAX_DROP_DATABASE_TOTAL_PCT: "15"
           EGUARD_MAX_DROP_YARA_SOURCES: "1"
           EGUARD_MAX_DROP_SIGMA_SOURCES: "1"
+          EGUARD_REGRESSION_ACK: ${{ inputs.regression_ack }}
+          EGUARD_REGRESSION_ACK_REASON: ${{ inputs.regression_ack_reason }}
         run: |
+          ACK_FLAGS=()
+          if [ "${EGUARD_REGRESSION_ACK}" = "true" ]; then
+            ACK_FLAGS=(--acknowledge-reset --acknowledge-reason "${EGUARD_REGRESSION_ACK_REASON}")
+          fi
+
           python threat-intel/processing/coverage_regression_gate.py \
             --current bundle/coverage-metrics.json \
             --previous /tmp/previous-coverage-metrics.json \
@@ -819,7 +834,8 @@ jobs:
             --max-drop-signature-total-pct "${EGUARD_MAX_DROP_SIGNATURE_TOTAL_PCT}" \
             --max-drop-database-total-pct "${EGUARD_MAX_DROP_DATABASE_TOTAL_PCT}" \
             --max-drop-yara-sources "${EGUARD_MAX_DROP_YARA_SOURCES}" \
-            --max-drop-sigma-sources "${EGUARD_MAX_DROP_SIGMA_SOURCES}"
+            --max-drop-sigma-sources "${EGUARD_MAX_DROP_SIGMA_SOURCES}" \
+            "${ACK_FLAGS[@]}"
 
       - name: Enforce ATT&CK coverage regression gate
         env:
@@ -829,7 +845,14 @@ jobs:
           EGUARD_MAX_DROP_ELASTIC_ATTACK_RULES_PCT: "25"
           EGUARD_MAX_DROP_SIGMA_ATTACK_TECHNIQUES_PCT: "25"
           EGUARD_MAX_DROP_ELASTIC_ATTACK_TECHNIQUES_PCT: "25"
+          EGUARD_REGRESSION_ACK: ${{ inputs.regression_ack }}
+          EGUARD_REGRESSION_ACK_REASON: ${{ inputs.regression_ack_reason }}
         run: |
+          ACK_FLAGS=()
+          if [ "${EGUARD_REGRESSION_ACK}" = "true" ]; then
+            ACK_FLAGS=(--acknowledge-reset --acknowledge-reason "${EGUARD_REGRESSION_ACK_REASON}")
+          fi
+
           python threat-intel/processing/attack_regression_gate.py \
             --current bundle/attack-coverage.json \
             --previous /tmp/previous-attack-coverage.json \
@@ -839,7 +862,8 @@ jobs:
             --max-drop-sigma-rules-with-attack-pct "${EGUARD_MAX_DROP_SIGMA_ATTACK_RULES_PCT}" \
             --max-drop-elastic-rules-with-attack-pct "${EGUARD_MAX_DROP_ELASTIC_ATTACK_RULES_PCT}" \
             --max-drop-sigma-techniques-pct "${EGUARD_MAX_DROP_SIGMA_ATTACK_TECHNIQUES_PCT}" \
-            --max-drop-elastic-techniques-pct "${EGUARD_MAX_DROP_ELASTIC_ATTACK_TECHNIQUES_PCT}"
+            --max-drop-elastic-techniques-pct "${EGUARD_MAX_DROP_ELASTIC_ATTACK_TECHNIQUES_PCT}" \
+            "${ACK_FLAGS[@]}"
 
       - name: Enforce ATT&CK gap burn-down gate
         env:
@@ -849,7 +873,13 @@ jobs:
           EGUARD_ATTACK_MAX_TECHNIQUE_GAP_INCREASE: "0"
           EGUARD_ATTACK_MAX_TACTIC_GAP_INCREASE: "0"
           EGUARD_ATTACK_MAX_NEW_MISSING_TACTICS: "0"
+          EGUARD_REGRESSION_ACK: ${{ inputs.regression_ack }}
+          EGUARD_REGRESSION_ACK_REASON: ${{ inputs.regression_ack_reason }}
         run: |
+          ACK_FLAGS=()
+          if [ "${EGUARD_REGRESSION_ACK}" = "true" ]; then
+            ACK_FLAGS=(--acknowledge-reset --acknowledge-reason "${EGUARD_REGRESSION_ACK_REASON}")
+          fi
           EXTRA_FLAGS=()
           for tactic in ${EGUARD_ATTACK_REQUIRED_TACTICS//,/ }; do
             if [ -n "${tactic}" ]; then
@@ -866,7 +896,8 @@ jobs:
             --max-technique-gap-increase "${EGUARD_ATTACK_MAX_TECHNIQUE_GAP_INCREASE}" \
             --max-tactic-gap-increase "${EGUARD_ATTACK_MAX_TACTIC_GAP_INCREASE}" \
             --max-new-missing-required-tactics "${EGUARD_ATTACK_MAX_NEW_MISSING_TACTICS}" \
-            "${EXTRA_FLAGS[@]}"
+            "${EXTRA_FLAGS[@]}" \
+            "${ACK_FLAGS[@]}"
 
       - name: Enforce critical ATT&CK technique floor gate
         env:
@@ -900,7 +931,14 @@ jobs:
           EGUARD_CRITICAL_MAX_MISSING_REQUIRED_INCREASE: "0"
           EGUARD_CRITICAL_MAX_P0_UNCOVERED_INCREASE: "0"
           EGUARD_CRITICAL_MAX_OWNER_P0_UNCOVERED_INCREASE: "1"
+          EGUARD_REGRESSION_ACK: ${{ inputs.regression_ack }}
+          EGUARD_REGRESSION_ACK_REASON: ${{ inputs.regression_ack_reason }}
         run: |
+          ACK_FLAGS=()
+          if [ "${EGUARD_REGRESSION_ACK}" = "true" ]; then
+            ACK_FLAGS=(--acknowledge-reset --acknowledge-reason "${EGUARD_REGRESSION_ACK_REASON}")
+          fi
+
           python threat-intel/processing/attack_critical_regression_gate.py \
             --current bundle/attack-critical-technique-gate.json \
             --previous /tmp/previous-attack-critical-technique-gate.json \
@@ -910,7 +948,8 @@ jobs:
             --max-missing-count-increase "${EGUARD_CRITICAL_MAX_MISSING_COUNT_INCREASE}" \
             --max-missing-required-increase "${EGUARD_CRITICAL_MAX_MISSING_REQUIRED_INCREASE}" \
             --max-p0-uncovered-increase "${EGUARD_CRITICAL_MAX_P0_UNCOVERED_INCREASE}" \
-            --max-owner-p0-uncovered-increase "${EGUARD_CRITICAL_MAX_OWNER_P0_UNCOVERED_INCREASE}"
+            --max-owner-p0-uncovered-increase "${EGUARD_CRITICAL_MAX_OWNER_P0_UNCOVERED_INCREASE}" \
+            "${ACK_FLAGS[@]}"
 
       - name: Update critical ATT&CK regression history
         env:
