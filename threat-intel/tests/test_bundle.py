@@ -101,6 +101,36 @@ class TestBundleStructure(unittest.TestCase):
         self.assertEqual(len(doc.get("rules", [])), behavior_count)
 
 
+class TestLicenseManifest(unittest.TestCase):
+    """Validate bundle LICENSES manifest generation."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir)
+
+    def test_license_manifest_includes_required_notices(self):
+        sys.path.insert(0, PROCESSING_DIR)
+        try:
+            from license_manifest import write_license_manifest
+        finally:
+            if sys.path[0] == PROCESSING_DIR:
+                sys.path.pop(0)
+
+        manifest = {
+            "version": "test",
+            "sources": {"cve": ["nvd", "cisa_kev", "first_epss"]},
+            "suricata_count": 0,
+            "elastic_count": 0,
+        }
+        write_license_manifest(self.tmpdir, manifest)
+        notice = open(os.path.join(self.tmpdir, "LICENSES", "NOTICE.txt"), encoding="utf-8").read()
+        self.assertIn("This product uses data from the NVD API but is not endorsed or certified by the NVD.", notice)
+        self.assertIn("CISA Known Exploited Vulnerabilities", notice)
+        self.assertIn("FIRST.org EPSS", notice)
+
+
 class TestEd25519BundleArtifacts(unittest.TestCase):
     """Validate expected Ed25519 signature artifacts for packed bundle."""
 
@@ -191,6 +221,22 @@ class TestBundleCoverageGate(unittest.TestCase):
         with open(self.metrics_path, "r", encoding="utf-8") as f:
             report = json.load(f)
         self.assertEqual(report.get("status"), "pass")
+
+    def test_coverage_gate_skips_restricted_suricata_and_elastic(self):
+        self._write_manifest(
+            suricata_count=0,
+            elastic_count=0,
+            restricted_sources={
+                "suricata": {"source_id": "suricata:et_open", "status": "restricted_excluded"},
+                "elastic": {"source_id": "elastic:detection-rules", "status": "restricted_excluded"},
+            },
+        )
+        result = self._run_gate("--require-suricata", "--require-elastic")
+        self.assertEqual(result.returncode, 0, msg=f"gate failed: {result.stdout}\n{result.stderr}")
+        with open(self.metrics_path, "r", encoding="utf-8") as f:
+            report = json.load(f)
+        self.assertTrue(report.get("restricted_excluded", {}).get("suricata"))
+        self.assertTrue(report.get("restricted_excluded", {}).get("elastic"))
 
     def test_coverage_gate_fails_on_low_sigma_count(self):
         self._write_manifest(sigma_count=5)

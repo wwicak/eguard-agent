@@ -31,21 +31,6 @@ jobs:
           touch tor_exit_ips.txt
           echo "Tor exit IPs collected: $(wc -l < tor_exit_ips.txt)"
 
-      - name: Collect OpenPhish domains
-        run: |
-          curl -fsSL --retry 3 --retry-delay 5 \
-            https://openphish.com/feed.txt \
-            -o openphish_raw.txt || true
-
-          if [ -f openphish_raw.txt ]; then
-            sed 's|https\?://||; s|/.*||; s|:.*||' openphish_raw.txt \
-              | grep -v '^$' \
-              | sort -u > openphish_domains.txt || true
-          fi
-
-          touch openphish_domains.txt
-          echo "OpenPhish domains collected: $(wc -l < openphish_domains.txt)"
-
       - name: Collect Phishing.Database domains
         run: |
           git clone --depth 1 \
@@ -70,8 +55,7 @@ jobs:
 
       - name: Merge and deduplicate phishing domains
         run: |
-          cat openphish_domains.txt phishing_database_domains.txt \
-            | grep -v '^$' \
+          grep -v '^$' phishing_database_domains.txt \
             | sort -u > phishing_domains.txt
 
           echo "Combined phishing domains: $(wc -l < phishing_domains.txt)"

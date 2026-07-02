@@ -550,8 +550,8 @@ jobs:
           EGUARD_MIN_SIGMA: "150"
           EGUARD_MIN_YARA: "600"
           EGUARD_MIN_IOC_HASH: "5000"
-          EGUARD_MIN_IOC_DOMAIN: "500"
-          EGUARD_MIN_IOC_IP: "5000"
+          EGUARD_MIN_IOC_DOMAIN: "300"
+          EGUARD_MIN_IOC_IP: "800"
           EGUARD_MIN_CVE: "1000"
           EGUARD_MIN_CVE_KEV: "50"
           EGUARD_MIN_SIGNATURE_TOTAL: "900"
@@ -635,6 +635,7 @@ jobs:
             --sigma-dir bundle/sigma \
             --elastic-jsonl bundle/elastic/elastic-rules.jsonl \
             --output bundle/attack-coverage.json \
+            --manifest bundle/manifest.json \
             --min-techniques "${EGUARD_MIN_ATTACK_TECHNIQUES}" \
             --min-tactics "${EGUARD_MIN_ATTACK_TACTICS}" \
             --min-sigma-rules-with-attack "${EGUARD_MIN_SIGMA_ATTACK_RULES}" \

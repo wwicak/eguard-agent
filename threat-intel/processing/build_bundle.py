@@ -9,6 +9,8 @@ import shutil
 import sys
 from datetime import datetime, timezone
 
+from license_manifest import write_license_manifest
+
 
 def sha256_file(path: str) -> str:
     """Compute SHA-256 hash of a file."""
@@ -156,6 +158,11 @@ def detect_sources(output_dir: str) -> dict[str, list[str]]:
     return sources
 
 
+def restricted_sources_enabled() -> bool:
+    """Return true only when restricted sources are explicitly allowed."""
+    return os.getenv("EGUARD_INCLUDE_RESTRICTED_SOURCES", "").strip() == "1"
+
+
 def count_files_by_ext(base_dir: str, extensions: tuple[str, ...]) -> int:
     """Count files recursively by extension under base_dir."""
     if not os.path.isdir(base_dir):
@@ -214,6 +221,8 @@ def main():
 
     output_dir = os.path.abspath(args.output)
     version = args.version or datetime.now(timezone.utc).strftime("%Y.%m.%d")
+    include_restricted = restricted_sources_enabled()
+    restricted_markers = {}
 
     # Clean and create output directory
     if os.path.exists(output_dir):
@@ -230,6 +239,14 @@ def main():
     yara_count = 0
     if args.yara:
         yara_count = copy_tree(args.yara, os.path.join(output_dir, "yara"))
+        elastic_yara_dir = os.path.join(output_dir, "yara", "elastic")
+        if not include_restricted and os.path.isdir(elastic_yara_dir):
+            shutil.rmtree(elastic_yara_dir)
+            restricted_markers["yara.elastic"] = {
+                "source_id": "yara:elastic",
+                "status": "restricted_excluded",
+            }
+            yara_count = count_files_by_ext(os.path.join(output_dir, "yara"), (".yar", ".yara"))
     print(f"Bundle: {yara_count} YARA rules")
 
     # Copy IOC files
@@ -272,7 +289,13 @@ def main():
 
     # Copy Suricata rules
     suricata_count = 0
-    if args.suricata:
+    if args.suricata and not include_restricted:
+        restricted_markers["suricata"] = {
+            "source_id": "suricata:et_open",
+            "status": "restricted_excluded",
+        }
+        print("Bundle: 0 Suricata rules (restricted_excluded)")
+    elif args.suricata:
         suricata_dir = os.path.abspath(args.suricata)
         if os.path.isdir(suricata_dir):
             suricata_out = os.path.join(output_dir, "suricata")
@@ -291,7 +314,13 @@ def main():
 
     # Copy Elastic detection rules
     elastic_count = 0
-    if args.elastic:
+    if args.elastic and not include_restricted:
+        restricted_markers["elastic"] = {
+            "source_id": "elastic:detection-rules",
+            "status": "restricted_excluded",
+        }
+        print("Bundle: 0 Elastic behavioral rules (restricted_excluded)")
+    elif args.elastic:
         elastic_dir = os.path.abspath(args.elastic)
         if os.path.isdir(elastic_dir):
             elastic_count = copy_tree(elastic_dir, os.path.join(output_dir, "elastic"))
@@ -337,15 +366,26 @@ def main():
 
     # Detect sources
     sources = detect_sources(output_dir)
+    if ioc_hash_count or ioc_domain_count or ioc_ip_count:
+        sources["ioc"] = [
+            "abusech",
+            "digitalside",
+            "botvrij",
+            "cins",
+            "blocklist_de",
+            "tor_exit_list",
+            "phishing_database",
+            "c2_tracker",
+        ]
+    if cve_count:
+        sources["cve"] = ["nvd"]
+        if cve_kev_count:
+            sources["cve"].append("cisa_kev")
+        if cve_epss_count:
+            sources["cve"].append("first_epss")
+    if ja3_count:
+        sources["ja3"] = ["abusech"]
     source_rule_counts = detect_source_rule_counts(output_dir)
-
-    # Build file hash index
-    file_hashes = {}
-    for root, _dirs, files in os.walk(output_dir):
-        for fname in files:
-            fpath = os.path.join(root, fname)
-            rel = os.path.relpath(fpath, output_dir)
-            file_hashes[rel] = f"sha256:{sha256_file(fpath)}"
 
     # Write manifest
     manifest = {
@@ -366,8 +406,21 @@ def main():
         "vt_enriched_count": vt_count,
         "sources": sources,
         "source_rule_counts": source_rule_counts,
-        "files": file_hashes,
+        "restricted_sources": restricted_markers,
+        "files": {},
     }
+
+    write_license_manifest(output_dir, manifest)
+
+    file_hashes = {}
+    for root, _dirs, files in os.walk(output_dir):
+        for fname in files:
+            fpath = os.path.join(root, fname)
+            rel = os.path.relpath(fpath, output_dir)
+            if rel == "manifest.json":
+                continue
+            file_hashes[rel] = f"sha256:{sha256_file(fpath)}"
+    manifest["files"] = file_hashes
 
     manifest_path = os.path.join(output_dir, "manifest.json")
     with open(manifest_path, "w", encoding="utf-8") as f:

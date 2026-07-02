@@ -111,6 +111,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--sigma-dir", required=True, help="Path to bundled sigma directory")
     parser.add_argument("--elastic-jsonl", required=True, help="Path to bundled elastic-rules.jsonl")
     parser.add_argument("--output", default="", help="Optional report output path")
+    parser.add_argument("--manifest", default="", help="Optional bundle manifest for restricted-source skips")
 
     parser.add_argument("--min-techniques", type=int, default=80)
     parser.add_argument("--min-tactics", type=int, default=10)
@@ -129,6 +130,15 @@ def _parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = _parser().parse_args()
+    elastic_restricted_excluded = False
+    if args.manifest:
+        manifest_path = Path(args.manifest)
+        if manifest_path.is_file():
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            marker = manifest.get("restricted_sources", {}).get("elastic", {})
+            elastic_restricted_excluded = (
+                isinstance(marker, dict) and marker.get("status") == "restricted_excluded"
+            )
 
     sigma_total, sigma_with_attack, sigma_techniques, sigma_tactics = _load_sigma_attack_coverage(
         Path(args.sigma_dir)
@@ -173,18 +183,21 @@ def main() -> int:
             measured["sigma_rules_with_attack"],
             args.min_sigma_rules_with_attack,
         ),
-        (
-            "elastic_rules_with_attack",
-            measured["elastic_rules_with_attack"],
-            args.min_elastic_rules_with_attack,
-        ),
         ("sigma_techniques_count", measured["sigma_techniques_count"], args.min_sigma_techniques),
-        (
-            "elastic_techniques_count",
-            measured["elastic_techniques_count"],
-            args.min_elastic_techniques,
-        ),
     ]
+    if not elastic_restricted_excluded:
+        checks.extend([
+            (
+                "elastic_rules_with_attack",
+                measured["elastic_rules_with_attack"],
+                args.min_elastic_rules_with_attack,
+            ),
+            (
+                "elastic_techniques_count",
+                measured["elastic_techniques_count"],
+                args.min_elastic_techniques,
+            ),
+        ])
 
     failures: list[str] = []
     for label, actual, minimum in checks:
@@ -199,6 +212,7 @@ def main() -> int:
         "thresholds": thresholds,
         "measured": measured,
         "failures": failures,
+        "restricted_excluded": {"elastic": elastic_restricted_excluded},
         "observed_tactics": sorted(total_tactics),
         "observed_techniques": sorted(total_techniques),
         "missing_required_tactics": missing_required_tactics,

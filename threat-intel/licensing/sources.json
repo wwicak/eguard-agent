@@ -1,0 +1,282 @@
+[
+  {
+    "id": "abusech",
+    "name": "abuse.ch datasets (MalwareBazaar, ThreatFox, Feodo, URLhaus, SSLBL, JA3)",
+    "url": "https://abuse.ch/",
+    "license": "Terms of Service / historically CC0 claims unresolved",
+    "spdx": "NOASSERTION",
+    "redistribution": "pending-permission",
+    "attribution": "Data sourced from abuse.ch.",
+    "evidence_url": "https://abuse.ch/terms/"
+  },
+  {
+    "id": "digitalside",
+    "name": "DigitalSide Threat-Intel",
+    "url": "https://osint.digitalside.it/",
+    "license": "MIT License",
+    "spdx": "MIT",
+    "redistribution": "ok-attr",
+    "attribution": "DigitalSide Threat-Intel, MIT License.",
+    "evidence_url": "https://github.com/davidonzo/Threat-Intel/blob/master/LICENSE"
+  },
+  {
+    "id": "botvrij",
+    "name": "Botvrij.eu OSINT feeds",
+    "url": "https://www.botvrij.eu/",
+    "license": "No explicit published license",
+    "spdx": "NOASSERTION",
+    "redistribution": "pending-permission",
+    "attribution": "Data sourced from Botvrij.eu.",
+    "evidence_url": "https://www.botvrij.eu/"
+  },
+  {
+    "id": "cins",
+    "name": "CINSscore ci-badguys",
+    "url": "https://cinsscore.com/#list",
+    "license": "No formal license text confirmed",
+    "spdx": "NOASSERTION",
+    "redistribution": "pending-permission",
+    "attribution": "Data sourced from CINSscore / CINS Army ci-badguys list.",
+    "evidence_url": "https://cinsscore.com/#list"
+  },
+  {
+    "id": "blocklist_de",
+    "name": "Blocklist.de",
+    "url": "https://www.blocklist.de/en/index.html",
+    "license": "No formal license text confirmed",
+    "spdx": "NOASSERTION",
+    "redistribution": "pending-permission",
+    "attribution": "Data sourced from Blocklist.de.",
+    "evidence_url": "https://www.blocklist.de/en/api.html"
+  },
+  {
+    "id": "tor_exit_list",
+    "name": "Tor Project bulk exit list",
+    "url": "https://check.torproject.org/torbulkexitlist",
+    "license": "Tor website CC BY 3.0 US / factual exit-list data",
+    "spdx": "CC-BY-3.0-US",
+    "redistribution": "ok-attr",
+    "attribution": "Tor exit relay data sourced from the Tor Project bulk exit list.",
+    "evidence_url": "https://check.torproject.org/torbulkexitlist"
+  },
+  {
+    "id": "phishing_database",
+    "name": "mitchellkrogza/Phishing.Database",
+    "url": "https://github.com/mitchellkrogza/Phishing.Database",
+    "license": "MIT License; upstream provenance unresolved",
+    "spdx": "MIT",
+    "redistribution": "pending-permission",
+    "attribution": "Phishing.Database by mitchellkrogza, MIT License where applicable.",
+    "evidence_url": "https://github.com/mitchellkrogza/Phishing.Database"
+  },
+  {
+    "id": "c2_tracker",
+    "name": "montysecurity/C2-Tracker",
+    "url": "https://github.com/montysecurity/C2-Tracker",
+    "license": "MIT License; Shodan-derived provenance unresolved",
+    "spdx": "MIT",
+    "redistribution": "pending-permission",
+    "attribution": "C2-Tracker by montysecurity, MIT License where applicable.",
+    "evidence_url": "https://github.com/montysecurity/C2-Tracker"
+  },
+  {
+    "id": "nvd",
+    "name": "NVD API",
+    "url": "https://nvd.nist.gov/",
+    "license": "NIST/NVD Terms of Use; US Government public data",
+    "spdx": "US-Gov-PD",
+    "redistribution": "ok-attr",
+    "attribution": "This product uses data from the NVD API but is not endorsed or certified by the NVD.",
+    "evidence_url": "https://nvd.nist.gov/developers/terms-of-use"
+  },
+  {
+    "id": "cisa_kev",
+    "name": "CISA Known Exploited Vulnerabilities Catalog",
+    "url": "https://www.cisa.gov/known-exploited-vulnerabilities",
+    "license": "CISA KEV license",
+    "spdx": "US-Gov-PD",
+    "redistribution": "ok-attr",
+    "attribution": "This product uses the CISA Known Exploited Vulnerabilities Catalog. CISA does not endorse this product; CISA names, seals, and logos are not used to imply endorsement.",
+    "evidence_url": "https://www.cisa.gov/sites/default/files/licenses/kev/license.txt"
+  },
+  {
+    "id": "first_epss",
+    "name": "FIRST EPSS scores",
+    "url": "https://www.first.org/epss/",
+    "license": "FIRST EPSS usage terms",
+    "spdx": "NOASSERTION",
+    "redistribution": "ok-attr",
+    "attribution": "EPSS scores are sourced from FIRST.org EPSS; cite EPSS as the source.",
+    "evidence_url": "https://www.first.org/epss/user-guide"
+  },
+  {
+    "id": "sigma:rules",
+    "name": "SigmaHQ/sigma",
+    "url": "https://github.com/SigmaHQ/sigma",
+    "license": "Detection Rule License 1.1",
+    "spdx": "DRL-1.1",
+    "redistribution": "ok-attr",
+    "attribution": "Sigma rules are distributed under the Detection Rule License 1.1 with author and reference metadata retained.",
+    "evidence_url": "https://github.com/SigmaHQ/sigma/blob/master/LICENSE"
+  },
+  {
+    "id": "sigma:rules-emerging-threats",
+    "name": "Sigma emerging-threats rules",
+    "url": "https://github.com/SigmaHQ/sigma",
+    "license": "Detection Rule License 1.1",
+    "spdx": "DRL-1.1",
+    "redistribution": "ok-attr",
+    "attribution": "Sigma rules are distributed under the Detection Rule License 1.1 with author and reference metadata retained.",
+    "evidence_url": "https://github.com/SigmaHQ/sigma/blob/master/LICENSE"
+  },
+  {
+    "id": "sigma:rules-threat-hunting",
+    "name": "Sigma threat-hunting rules",
+    "url": "https://github.com/SigmaHQ/sigma",
+    "license": "Detection Rule License 1.1",
+    "spdx": "DRL-1.1",
+    "redistribution": "ok-attr",
+    "attribution": "Sigma rules are distributed under the Detection Rule License 1.1 with author and reference metadata retained.",
+    "evidence_url": "https://github.com/SigmaHQ/sigma/blob/master/LICENSE"
+  },
+  {
+    "id": "sigma:mdecrevoisier",
+    "name": "mdecrevoisier/SIGMA-detection-rules",
+    "url": "https://github.com/mdecrevoisier/SIGMA-detection-rules",
+    "license": "License unresolved",
+    "spdx": "NOASSERTION",
+    "redistribution": "pending-permission",
+    "attribution": "Rules sourced from mdecrevoisier/SIGMA-detection-rules; terms pending verification.",
+    "evidence_url": "https://github.com/mdecrevoisier/SIGMA-detection-rules"
+  },
+  {
+    "id": "yara:yara-forge",
+    "name": "YARAHQ/yara-forge full package",
+    "url": "https://github.com/YARAHQ/yara-forge",
+    "license": "Mixed per-rule licenses",
+    "spdx": "NOASSERTION",
+    "redistribution": "pending-permission",
+    "attribution": "YARA Forge rule metadata and per-rule license headers are retained where present.",
+    "evidence_url": "https://github.com/YARAHQ/yara-forge"
+  },
+  {
+    "id": "yara:gcti",
+    "name": "Google Chronicle GCTI YARA",
+    "url": "https://github.com/chronicle/GCTI",
+    "license": "Apache License 2.0",
+    "spdx": "Apache-2.0",
+    "redistribution": "ok-attr",
+    "attribution": "Google Chronicle GCTI, Apache License 2.0.",
+    "evidence_url": "https://github.com/chronicle/GCTI/blob/main/LICENSE"
+  },
+  {
+    "id": "yara:reversinglabs",
+    "name": "ReversingLabs YARA rules",
+    "url": "https://github.com/reversinglabs/reversinglabs-yara-rules",
+    "license": "MIT License",
+    "spdx": "MIT",
+    "redistribution": "ok-attr",
+    "attribution": "ReversingLabs YARA rules, MIT License.",
+    "evidence_url": "https://github.com/reversinglabs/reversinglabs-yara-rules/blob/develop/LICENSE"
+  },
+  {
+    "id": "yara:malpedia",
+    "name": "Malpedia auto-YARA",
+    "url": "https://malpedia.caad.fkie.fraunhofer.de/",
+    "license": "Malpedia ToS plus per-rule author licenses unresolved",
+    "spdx": "NOASSERTION",
+    "redistribution": "pending-permission",
+    "attribution": "Rules sourced from Malpedia; redistribution terms pending written permission.",
+    "evidence_url": "https://malpedia.caad.fkie.fraunhofer.de/usage/tos"
+  },
+  {
+    "id": "yara:bartblaze",
+    "name": "bartblaze/Yara-rules",
+    "url": "https://github.com/bartblaze/Yara-rules",
+    "license": "MIT License pending verification",
+    "spdx": "MIT",
+    "redistribution": "ok-attr",
+    "attribution": "bartblaze/Yara-rules, MIT License where applicable.",
+    "evidence_url": "https://github.com/bartblaze/Yara-rules/blob/master/LICENSE"
+  },
+  {
+    "id": "yara:inquest",
+    "name": "InQuest YARA rules",
+    "url": "https://github.com/InQuest/yara-rules",
+    "license": "License unresolved",
+    "spdx": "NOASSERTION",
+    "redistribution": "pending-permission",
+    "attribution": "Rules sourced from InQuest/yara-rules; terms pending verification.",
+    "evidence_url": "https://github.com/InQuest/yara-rules"
+  },
+  {
+    "id": "yara:elastic",
+    "name": "Elastic protections-artifacts YARA",
+    "url": "https://github.com/elastic/protections-artifacts",
+    "license": "Elastic License 2.0",
+    "spdx": "Elastic-2.0",
+    "redistribution": "restricted",
+    "attribution": "Elastic protections-artifacts content is excluded from the default redistributed bundle pending permission.",
+    "evidence_url": "https://github.com/elastic/protections-artifacts/blob/main/LICENSE.txt"
+  },
+  {
+    "id": "suricata:et_open",
+    "name": "Emerging Threats Open Suricata rules",
+    "url": "https://rules.emergingthreats.net/",
+    "license": "Proofpoint ET Open license",
+    "spdx": "NOASSERTION",
+    "redistribution": "restricted",
+    "attribution": "Emerging Threats Open rules are excluded from the default redistributed bundle pending Proofpoint permission.",
+    "evidence_url": "https://rules.emergingthreats.net/"
+  },
+  {
+    "id": "elastic:detection-rules",
+    "name": "Elastic detection-rules",
+    "url": "https://github.com/elastic/detection-rules",
+    "license": "Elastic License 2.0",
+    "spdx": "Elastic-2.0",
+    "redistribution": "restricted",
+    "attribution": "Elastic detection-rules are excluded from the default redistributed bundle pending legal approval.",
+    "evidence_url": "https://github.com/elastic/detection-rules/blob/main/LICENSE.txt"
+  },
+  {
+    "id": "sigma:joesecurity",
+    "name": "joesecurity/sigma-rules",
+    "url": "https://github.com/joesecurity/sigma-rules",
+    "license": "License unresolved",
+    "spdx": "NOASSERTION",
+    "redistribution": "pending-permission",
+    "attribution": "Rules sourced from joesecurity/sigma-rules; terms pending verification.",
+    "evidence_url": "https://github.com/joesecurity/sigma-rules"
+  },
+  {
+    "id": "sigma:tsale",
+    "name": "tsale/Sigma_rules",
+    "url": "https://github.com/tsale/Sigma_rules",
+    "license": "License unresolved",
+    "spdx": "NOASSERTION",
+    "redistribution": "pending-permission",
+    "attribution": "Rules sourced from tsale/Sigma_rules; terms pending verification.",
+    "evidence_url": "https://github.com/tsale/Sigma_rules"
+  },
+  {
+    "id": "sigma:splunk",
+    "name": "Splunk Security Content",
+    "url": "https://github.com/splunk/security_content",
+    "license": "Apache License 2.0",
+    "spdx": "Apache-2.0",
+    "redistribution": "ok-attr",
+    "attribution": "Splunk Security Content, Apache License 2.0.",
+    "evidence_url": "https://github.com/splunk/security_content/blob/develop/LICENSE"
+  },
+  {
+    "id": "sigma:detections",
+    "name": "Splunk Security Content",
+    "url": "https://github.com/splunk/security_content",
+    "license": "Apache License 2.0",
+    "spdx": "Apache-2.0",
+    "redistribution": "ok-attr",
+    "attribution": "Splunk Security Content, Apache License 2.0.",
+    "evidence_url": "https://github.com/splunk/security_content/blob/develop/LICENSE"
+  }
+]
