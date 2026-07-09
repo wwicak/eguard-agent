@@ -95,6 +95,36 @@ fail_outcome() {
   exit 1
 }
 
+normalize_version() {
+  printf '%s' "${1:-}" | tr -d '\r' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s/^[vV]//'
+}
+
+verify_installed_version() {
+  if [[ ! -x /usr/bin/eguard-agent ]]; then
+    fail_outcome "agent binary missing after package install: /usr/bin/eguard-agent"
+  fi
+
+  local actual_version=""
+  actual_version="$(/usr/bin/eguard-agent --version 2>&1 | head -n 1)" \
+    || fail_outcome "agent binary version check failed after package install"
+
+  if [[ "$(normalize_version "$actual_version")" != "$(normalize_version "$VERSION")" ]]; then
+    fail_outcome "agent binary version mismatch after package install: expected $VERSION got $actual_version"
+  fi
+
+  printf '%s' "$actual_version"
+}
+
+wait_for_agent_service() {
+  for _ in {1..30}; do
+    if systemctl is-active --quiet eguard-agent; then
+      return 0
+    fi
+    sleep 1
+  done
+  fail_outcome "agent service did not become active after package install"
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --command-id)
@@ -163,14 +193,17 @@ else
   fi
 fi
 
+installed_version="$(verify_installed_version)"
+
 systemctl daemon-reload || true
 systemctl reset-failed eguard-agent || true
 if ! systemctl restart eguard-agent; then
   sleep 2
   systemctl start eguard-agent || fail_outcome "agent service restart failed after package install"
 fi
+wait_for_agent_service
 
-write_outcome "completed" "agent update applied (version=$VERSION, format=$FORMAT)"
+write_outcome "completed" "agent update applied (version=$VERSION, format=$FORMAT, observed_version=$installed_version)"
 "#;
 
     fs::write(path, SCRIPT)

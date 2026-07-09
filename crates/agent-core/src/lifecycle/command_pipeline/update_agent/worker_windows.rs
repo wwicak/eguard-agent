@@ -95,24 +95,14 @@ function Restore-ServicePolicy {
 
 function Stop-AgentService {
     param([string]$ServiceName)
-    Write-Log "stopping service $ServiceName via SCM cooperative stop"
-
-    # Temporarily suppress auto-restart so SCM does not respawn the
-    # service while we are replacing binaries. The original failure
-    # policy is restored by Restore-ServicePolicy in all code paths.
+    Write-Log "stopping service $ServiceName"
     & sc.exe failure $ServiceName reset= 0 actions= "" 2>$null | Out-Null
     & sc.exe failureflag $ServiceName 0 2>$null | Out-Null
-
-    # Use the normal SCM stop (the agent advertises SERVICE_ACCEPT_STOP
-    # and handles it with a clean StopPending → Stopped transition).
-    # Do NOT change start type — it stays automatic throughout.
+    & sc.exe config $ServiceName start= demand 2>$null | Out-Null
     Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
 
-    # Wait up to 30 seconds for the clean stop.  The agent flushes
-    # telemetry buffers and closes gRPC channels during shutdown, which
-    # normally completes in <5 s but may take longer under load.
     $stopWait = 0
-    while ($stopWait -lt 30) {
+    while ($stopWait -lt 15) {
         $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
         if (-not $service -or $service.Status -eq 'Stopped') { break }
         Start-Sleep -Seconds 1
@@ -121,26 +111,18 @@ function Stop-AgentService {
 
     $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
     if ($service -and $service.Status -ne 'Stopped') {
-        # Forced kill is a last resort for a wedged/unresponsive agent.
-        # Log prominently so operators can investigate the root cause.
-        $runningProc = Get-Process -Name 'agent-core' -ErrorAction SilentlyContinue | Select-Object -First 1
-        if (-not $runningProc) {
-            $runningProc = Get-Process -Name 'eguard-agent' -ErrorAction SilentlyContinue | Select-Object -First 1
-        }
+        $runningProc = Get-Process -Name 'eguard-agent' -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($runningProc) {
-            Write-Log "WARNING: service did not stop within 30s; forced kill pid=$($runningProc.Id) as last resort"
-            & taskkill /F /PID $runningProc.Id 2>$null | Out-Null
+            Write-Log "taskkill fallback for pid $($runningProc.Id)"
+            & taskkill /F /PID $runningProc.Id | Out-Null
             Start-Sleep -Seconds 3
         }
     }
 
     $remainingService = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-    $remainingProc = Get-Process -Name 'agent-core' -ErrorAction SilentlyContinue | Select-Object -First 1
-    if (-not $remainingProc) {
-        $remainingProc = Get-Process -Name 'eguard-agent' -ErrorAction SilentlyContinue | Select-Object -First 1
-    }
+    $remainingProc = Get-Process -Name 'eguard-agent' -ErrorAction SilentlyContinue | Select-Object -First 1
     if (($remainingService -and $remainingService.Status -ne 'Stopped') -or $remainingProc) {
-        throw "service or agent process still running after stop attempt"
+        throw "service or eguard-agent.exe still running after stop attempt"
     }
 }
 
@@ -152,6 +134,48 @@ function Verify-FileHash {
         throw "sha256 mismatch: expected $expected got $actual"
     }
     return $actual
+}
+
+function Normalize-Version {
+    param([string]$Value)
+    return ($Value.Trim() -replace '^[vV]', '')
+}
+
+function Verify-AgentVersion {
+    param([string]$BinaryPath, [string]$ExpectedVersion)
+    if (-not (Test-Path $BinaryPath)) {
+        throw "agent binary missing after package install: $BinaryPath"
+    }
+
+    $output = & $BinaryPath --version 2>&1
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0) {
+        throw "agent binary version check failed after package install (exit=$exitCode): $($output -join ' ')"
+    }
+
+    $actual = [string]($output | Select-Object -First 1)
+    if ((Normalize-Version $actual) -ne (Normalize-Version $ExpectedVersion)) {
+        throw "agent binary version mismatch after package install: expected $ExpectedVersion got $actual"
+    }
+    return $actual.Trim()
+}
+
+function Start-AgentServiceAndWait {
+    param([string]$ServiceName)
+    Start-Service -Name $ServiceName
+
+    $startWait = 0
+    while ($startWait -lt 30) {
+        $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+        $serviceProcessId = Get-ServiceProcessId -ServiceName $ServiceName
+        if ($service -and $service.Status -eq 'Running' -and $serviceProcessId -gt 0) {
+            return $serviceProcessId
+        }
+        Start-Sleep -Seconds 1
+        $startWait++
+    }
+
+    throw "agent service did not reach Running after package install"
 }
 
 try {
@@ -173,11 +197,15 @@ try {
     if ($PackageKind -eq 'msi') {
         Stop-AgentService -ServiceName $serviceName
         Write-Log "installing MSI package"
-        Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/i', $pkgPath, '/qn', '/norestart') -Wait -NoNewWindow
+        $msiProcess = Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/i', $pkgPath, '/qn', '/norestart') -Wait -NoNewWindow -PassThru
+        if ($msiProcess.ExitCode -ne 0 -and $msiProcess.ExitCode -ne 3010) {
+            throw "msi package install failed with exit code $($msiProcess.ExitCode)"
+        }
         Restore-ServicePolicy -ServiceName $serviceName -BinaryPath $agentPath
-        Start-Service -Name $serviceName -ErrorAction SilentlyContinue
-        Write-Log "MSI update finished"
-        Write-Outcome -Status 'completed' -Detail ("agent update applied (version=" + $TargetVersion + ", kind=msi)")
+        $installedVersion = Verify-AgentVersion -BinaryPath $agentPath -ExpectedVersion $TargetVersion
+        $servicePid = Start-AgentServiceAndWait -ServiceName $serviceName
+        Write-Log "MSI update finished (observed_version=$installedVersion, pid=$servicePid)"
+        Write-Outcome -Status 'completed' -Detail ("agent update applied (version=" + $TargetVersion + ", kind=msi, observed_version=" + $installedVersion + ")")
         exit 0
     }
 
@@ -189,10 +217,11 @@ try {
 
     Copy-Item -Path $pkgPath -Destination $agentPath -Force
     $installedHash = Verify-FileHash -Path $agentPath -ExpectedSha256 $ExpectedSha256
+    $installedVersion = Verify-AgentVersion -BinaryPath $agentPath -ExpectedVersion $TargetVersion
     Restore-ServicePolicy -ServiceName $serviceName -BinaryPath $agentPath
-    Start-Service -Name $serviceName
-    Write-Log "EXE update finished (installed_sha256=$installedHash)"
-    Write-Outcome -Status 'completed' -Detail ("agent update applied (version=" + $TargetVersion + ", kind=exe, sha256=" + $installedHash + ")")
+    $servicePid = Start-AgentServiceAndWait -ServiceName $serviceName
+    Write-Log "EXE update finished (installed_sha256=$installedHash, observed_version=$installedVersion, pid=$servicePid)"
+    Write-Outcome -Status 'completed' -Detail ("agent update applied (version=" + $TargetVersion + ", kind=exe, sha256=" + $installedHash + ", observed_version=" + $installedVersion + ")")
 }
 catch {
     try {
