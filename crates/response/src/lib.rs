@@ -128,6 +128,7 @@ impl ProtectedList {
             PathBuf::from("/usr/lib"),
             PathBuf::from("/usr/libexec"),
             PathBuf::from("/boot"),
+            PathBuf::from("/etc"),
             PathBuf::from("/usr/local/eg"),
         ];
 
@@ -155,6 +156,7 @@ impl ProtectedList {
 
         let protected_paths = vec![
             PathBuf::from(r"C:\Windows\System32"),
+            PathBuf::from(r"C:\Windows\System32\config"),
             PathBuf::from(r"C:\Windows\SysWOW64"),
             PathBuf::from(r"C:\ProgramData\eGuard"),
         ];
@@ -184,6 +186,13 @@ impl ProtectedList {
             PathBuf::from("/usr/bin"),
             PathBuf::from("/usr/sbin"),
             PathBuf::from("/usr/lib"),
+            PathBuf::from("/etc"),
+            PathBuf::from("/private/etc"),
+            PathBuf::from("/var/db/dslocal"),
+            PathBuf::from("/private/var/db/dslocal"),
+            PathBuf::from("/var/db/opendirectory"),
+            PathBuf::from("/private/var/db/opendirectory"),
+            PathBuf::from("/Library/Keychains"),
             PathBuf::from("/System"),
             PathBuf::from("/Library/Application Support/eGuard"),
         ];
@@ -202,10 +211,32 @@ impl ProtectedList {
 
     pub fn is_protected_path(&self, path: &Path) -> bool {
         let normalized = normalize_path(path);
-        self.protected_paths
-            .iter()
-            .any(|p| normalized.starts_with(normalize_path(p)))
+        let macos_variant = macos_private_path_variant(&normalized);
+        self.protected_paths.iter().any(|p| {
+            let protected = normalize_path(p);
+            normalized.starts_with(&protected)
+                || macos_variant
+                    .as_ref()
+                    .is_some_and(|variant| variant.starts_with(&protected))
+        })
     }
+}
+
+fn macos_private_path_variant(path: &Path) -> Option<PathBuf> {
+    let path = path.to_str()?;
+    for (private, public) in [("/private/var", "/var"), ("/private/etc", "/etc")] {
+        if let Some(rest) = path.strip_prefix(private) {
+            if rest.is_empty() || rest.starts_with('/') {
+                return Some(PathBuf::from(format!("{public}{rest}")));
+            }
+        }
+        if let Some(rest) = path.strip_prefix(public) {
+            if rest.is_empty() || rest.starts_with('/') {
+                return Some(PathBuf::from(format!("{private}{rest}")));
+            }
+        }
+    }
+    None
 }
 
 fn normalize_path(path: &Path) -> PathBuf {

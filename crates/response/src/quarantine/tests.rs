@@ -46,6 +46,15 @@ fn protected_path_is_rejected_before_quarantine() {
 }
 
 #[test]
+fn macos_directory_services_record_is_rejected_before_quarantine() {
+    let protected = ProtectedList::default_macos();
+    let path = Path::new("/var/db/dslocal/nodes/Default/users/root.plist");
+    let err = quarantine_file(path, "deadbeef", &protected).expect_err("protected path rejected");
+
+    assert!(matches!(err, ResponseError::ProtectedPath(p) if p == path));
+}
+
+#[test]
 fn quarantine_runtime_entrypoint_moves_file_and_reports_fields() {
     static ENV_LOCK: Mutex<()> = Mutex::new(());
     let _env_guard = ENV_LOCK.lock().expect("lock env");

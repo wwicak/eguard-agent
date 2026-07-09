@@ -1,5 +1,5 @@
 use super::*;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[test]
 // AC-RSP-117
@@ -98,6 +98,7 @@ fn default_linux_protected_paths_match_acceptance_baseline() {
     assert!(protected.is_protected_path(Path::new("/usr/libexec/openssh/sshd-session")));
     assert!(protected.is_protected_path(Path::new("/lib/modules")));
     assert!(protected.is_protected_path(Path::new("/boot/vmlinuz")));
+    assert!(protected.is_protected_path(Path::new("/etc/shadow")));
     assert!(protected.is_protected_path(Path::new("/usr/local/eg/agent")));
     assert!(!protected.is_protected_path(Path::new("/tmp/sample.bin")));
 }
@@ -324,7 +325,31 @@ fn default_macos_protected_paths_match_baseline() {
     assert!(protected.is_protected_path(Path::new("/usr/bin/ssh")));
     assert!(protected.is_protected_path(Path::new("/usr/sbin/sysctl")));
     assert!(protected.is_protected_path(Path::new("/usr/lib/dyld")));
+    assert!(
+        protected.is_protected_path(Path::new("/var/db/dslocal/nodes/Default/users/root.plist"))
+    );
+    assert!(protected.is_protected_path(Path::new(
+        "/private/var/db/dslocal/nodes/Default/groups/admin.plist"
+    )));
+    assert!(protected.is_protected_path(Path::new("/etc/passwd")));
+    assert!(protected.is_protected_path(Path::new("/Library/Keychains/System.keychain")));
     assert!(!protected.is_protected_path(Path::new("/tmp/sample.bin")));
+}
+
+#[test]
+fn macos_private_path_spellings_match_protected_roots() {
+    let protected = ProtectedList {
+        process_patterns: Vec::new(),
+        protected_paths: vec![
+            PathBuf::from("/var/db/dslocal"),
+            PathBuf::from("/private/etc"),
+        ],
+    };
+
+    assert!(protected.is_protected_path(Path::new(
+        "/private/var/db/dslocal/nodes/Default/users/root.plist"
+    )));
+    assert!(protected.is_protected_path(Path::new("/etc/passwd")));
 }
 
 #[test]
@@ -344,6 +369,7 @@ fn default_windows_protected_paths_match_baseline() {
     let protected = ProtectedList::default_windows();
 
     assert!(protected.is_protected_path(Path::new(r"C:\Windows\System32\kernel32.dll")));
+    assert!(protected.is_protected_path(Path::new(r"C:\Windows\System32\config\SAM")));
     assert!(protected.is_protected_path(Path::new(r"C:\Windows\SysWOW64\ntdll.dll")));
     assert!(protected.is_protected_path(Path::new(r"C:\ProgramData\eGuard\agent.conf")));
     assert!(!protected.is_protected_path(Path::new(r"C:\Users\Public\malware.exe")));
