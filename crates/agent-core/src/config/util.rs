@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use super::types::AgentMode;
 
 pub(super) fn non_empty(v: Option<String>) -> Option<String> {
@@ -29,30 +31,126 @@ pub(crate) fn preferred_hostname_env() -> Option<String> {
 }
 
 pub(super) fn default_agent_id() -> String {
-    if let Some(hostname) = preferred_hostname_env() {
-        return hostname;
+    default_agent_id_with_sources(preferred_hostname_env, Path::new("/etc/hostname"))
+}
+
+fn default_agent_id_with_sources(
+    preferred_hostname: impl FnOnce() -> Option<String>,
+    hostname_path: &Path,
+) -> String {
+    let identity_path = resolve_agent_id_path();
+    if let Some(agent_id) = read_non_empty_file(&identity_path) {
+        return agent_id;
     }
 
-    if let Some(machine_id) = read_machine_id_for_agent_id() {
+    let agent_id = if let Some(hostname) = preferred_hostname() {
+        hostname
+    } else if let Some(machine_id) = read_machine_id_for_agent_id() {
         let suffix = machine_id
             .chars()
             .filter(|ch| ch.is_ascii_hexdigit())
             .take(12)
             .collect::<String>();
-        if !suffix.is_empty() {
-            return format!("agent-{}", suffix.to_ascii_lowercase());
+        if suffix.is_empty() {
+            read_non_empty_file(hostname_path).unwrap_or_else(generate_agent_id)
+        } else {
+            format!("agent-{}", suffix.to_ascii_lowercase())
         }
+    } else {
+        read_non_empty_file(hostname_path).unwrap_or_else(generate_agent_id)
+    };
+
+    if let Err(error) = persist_agent_id(&identity_path, &agent_id) {
+        tracing::warn!(
+            path = %identity_path.display(),
+            error = %error,
+            "failed persisting agent identity"
+        );
+    }
+    agent_id
+}
+
+fn resolve_agent_id_path() -> PathBuf {
+    if let Some(path) = env_non_empty("EGUARD_AGENT_ID_PATH") {
+        return PathBuf::from(path.trim());
     }
 
-    if let Some(hostname) = std::fs::read_to_string("/etc/hostname")
+    resolve_agent_data_dir().join("agent-id")
+}
+
+fn resolve_agent_data_dir() -> PathBuf {
+    if let Some(path) = env_non_empty("EGUARD_AGENT_DATA_DIR") {
+        return PathBuf::from(path.trim());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return PathBuf::from(r"C:\ProgramData\eGuard");
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        return PathBuf::from("/Library/Application Support/eGuard");
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        PathBuf::from("/var/lib/eguard-agent")
+    }
+}
+
+fn read_non_empty_file(path: &Path) -> Option<String> {
+    std::fs::read_to_string(path)
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn persist_agent_id(path: &Path, agent_id: &str) -> std::io::Result<()> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
     {
-        return hostname;
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, agent_id)
+}
+
+fn generate_agent_id() -> String {
+    let mut bytes = [0u8; 6];
+
+    #[cfg(unix)]
+    {
+        use std::io::Read;
+
+        if std::fs::File::open("/dev/urandom")
+            .and_then(|mut file| file.read_exact(&mut bytes))
+            .is_ok()
+        {
+            let value = u64::from_le_bytes([
+                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], 0, 0,
+            ]);
+            return format!("agent-{value:012x}");
+        }
     }
 
-    format!("agent-{}", std::process::id())
+    use sha2::{Digest, Sha256};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let mut hasher = Sha256::new();
+    hasher.update(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos().to_le_bytes())
+            .unwrap_or_default(),
+    );
+    hasher.update(COUNTER.fetch_add(1, Ordering::Relaxed).to_le_bytes());
+    bytes.copy_from_slice(&hasher.finalize()[..6]);
+    let value = u64::from_le_bytes([
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], 0, 0,
+    ]);
+    format!("agent-{value:012x}")
 }
 
 fn read_machine_id_for_agent_id() -> Option<String> {
@@ -145,55 +243,138 @@ pub(super) fn has_explicit_port(address: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::default_agent_id;
+    use super::{default_agent_id, default_agent_id_with_sources};
 
     fn env_lock() -> &'static std::sync::Mutex<()> {
         crate::test_support::env_lock()
     }
 
+    fn temp_dir(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "eguard-agent-id-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+        ))
+    }
+
+    fn set_agent_id_path(root: &std::path::Path) -> std::path::PathBuf {
+        let path = root.join("agent-id");
+        std::env::set_var("EGUARD_AGENT_ID_PATH", &path);
+        path
+    }
+
+    fn clear_identity_env() {
+        for name in [
+            "EGUARD_AGENT_ID_PATH",
+            "EGUARD_MACHINE_ID_PATH",
+            "HOSTNAME",
+            "COMPUTERNAME",
+        ] {
+            std::env::remove_var(name);
+        }
+    }
+
     #[test]
-    fn default_agent_id_prefers_hostname_env() {
+    fn default_agent_id_uses_hostname_env_and_persists_it() {
         let _guard = env_lock().lock().expect("env lock");
+        clear_identity_env();
+        let root = temp_dir("hostname");
+        let identity_path = set_agent_id_path(&root);
         std::env::set_var("HOSTNAME", "agent-host-a");
         std::env::set_var("COMPUTERNAME", "WIN-HOST-A");
+
         let id = default_agent_id();
+
         assert_eq!(id, "agent-host-a");
-        std::env::remove_var("HOSTNAME");
-        std::env::remove_var("COMPUTERNAME");
+        assert_eq!(
+            std::fs::read_to_string(&identity_path).expect("read persisted agent id"),
+            "agent-host-a"
+        );
+        clear_identity_env();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn default_agent_id_prefers_persisted_id_over_hostname_env() {
+        let _guard = env_lock().lock().expect("env lock");
+        clear_identity_env();
+        let root = temp_dir("persisted");
+        let identity_path = set_agent_id_path(&root);
+        std::fs::create_dir_all(&root).expect("create identity dir");
+        std::fs::write(&identity_path, "persisted-agent\n").expect("write persisted agent id");
+        std::env::set_var("HOSTNAME", "different-hostname");
+
+        assert_eq!(default_agent_id(), "persisted-agent");
+
+        clear_identity_env();
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
     fn default_agent_id_uses_windows_computername_when_hostname_missing() {
         let _guard = env_lock().lock().expect("env lock");
-        std::env::remove_var("HOSTNAME");
+        clear_identity_env();
+        let root = temp_dir("computername");
+        set_agent_id_path(&root);
         std::env::set_var("COMPUTERNAME", "WIN-4209A3FD-104E-4");
 
         let id = default_agent_id();
         assert_eq!(id, "WIN-4209A3FD-104E-4");
 
-        std::env::remove_var("COMPUTERNAME");
+        clear_identity_env();
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
     fn default_agent_id_uses_machine_id_when_hostname_missing() {
         let _guard = env_lock().lock().expect("env lock");
-        std::env::remove_var("HOSTNAME");
-        std::env::remove_var("COMPUTERNAME");
-
-        let path = std::env::temp_dir().join(format!(
-            "eguard-default-agent-id-machine-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or_default()
-        ));
-        std::fs::write(&path, "AABBCCDDEEFF00112233\n").expect("write machine id");
-        std::env::set_var("EGUARD_MACHINE_ID_PATH", &path);
+        clear_identity_env();
+        let root = temp_dir("machine-id");
+        set_agent_id_path(&root);
+        std::fs::create_dir_all(&root).expect("create identity dir");
+        let machine_id_path = root.join("machine-id");
+        std::fs::write(&machine_id_path, "AABBCCDDEEFF00112233\n").expect("write machine id");
+        std::env::set_var("EGUARD_MACHINE_ID_PATH", &machine_id_path);
 
         let id = default_agent_id();
         assert_eq!(id, "agent-aabbccddeeff");
 
-        std::env::remove_var("EGUARD_MACHINE_ID_PATH");
-        let _ = std::fs::remove_file(path);
+        clear_identity_env();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn generated_agent_id_is_random_format_and_persists() {
+        let _guard = env_lock().lock().expect("env lock");
+        clear_identity_env();
+        let root = temp_dir("generated");
+        let identity_path = set_agent_id_path(&root);
+        std::env::set_var("EGUARD_MACHINE_ID_PATH", root.join("missing-machine-id"));
+        let missing_hostname = root.join("missing-hostname");
+
+        let id = default_agent_id_with_sources(|| None, &missing_hostname);
+        let suffix = id.strip_prefix("agent-").expect("agent id prefix");
+        assert_eq!(suffix.len(), 12);
+        assert!(
+            suffix
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+            "generated agent id must contain only lowercase hexadecimal characters"
+        );
+        assert_ne!(id, format!("agent-{}", std::process::id()));
+        assert_eq!(
+            default_agent_id_with_sources(|| None, &missing_hostname),
+            id
+        );
+        assert_eq!(
+            std::fs::read_to_string(&identity_path).expect("read persisted agent id"),
+            id
+        );
+
+        clear_identity_env();
+        let _ = std::fs::remove_dir_all(root);
     }
 }
