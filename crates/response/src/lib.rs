@@ -25,7 +25,8 @@ pub use kill::{
     ProcfsIntrospector, Signal, SignalSender,
 };
 pub use quarantine::{
-    quarantine_file, quarantine_file_with_dir, restore_quarantined, QuarantineReport, RestoreReport,
+    quarantine_file, quarantine_file_with_dir, restore_quarantined, restore_quarantined_with_dir,
+    QuarantineReport, RestoreReport,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

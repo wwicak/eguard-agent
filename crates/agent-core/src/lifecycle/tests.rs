@@ -1649,6 +1649,8 @@ async fn restore_quarantine_command_enqueues_response_report_when_delivery_fails
     assert_eq!(runtime.pending_response_reports.len(), 1);
     let envelope = &runtime.pending_response_reports[0].envelope;
     assert_eq!(envelope.action_type, "restore_quarantine");
+    assert!(!envelope.success);
+    assert!(envelope.error_message.contains("restore_quarantine failed"));
     assert_eq!(envelope.file_path.as_deref(), Some("/tmp/restored.bin"));
     assert_eq!(
         envelope.quarantine_path.as_deref(),

@@ -4,35 +4,319 @@ use crate::ResponseError;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::sync::Mutex;
 
+fn test_base(label: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "eguard-{label}-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default()
+    ))
+}
+
+fn digest(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
+}
+
+fn quarantine_fixture(label: &str) -> (PathBuf, PathBuf, QuarantineReport, Vec<u8>) {
+    let base = test_base(label);
+    let original_dir = base.join("original");
+    let quarantine_dir = base.join("quarantine");
+    fs::create_dir_all(&original_dir).expect("create original parent");
+    let original = original_dir.join("payload.bin");
+    let payload = b"provenance-bound payload".to_vec();
+    fs::write(&original, &payload).expect("write original");
+    #[cfg(unix)]
+    fs::set_permissions(&original, fs::Permissions::from_mode(0o640)).expect("set original mode");
+    let protected = ProtectedList {
+        process_patterns: Vec::new(),
+        protected_paths: Vec::new(),
+    };
+    let report =
+        quarantine_file_with_dir(&original, &digest(&payload), &protected, &quarantine_dir)
+            .expect("quarantine fixture");
+    (base, quarantine_dir, report, payload)
+}
+
+fn assert_quarantine_retained(report: &QuarantineReport, quarantine_dir: &Path) {
+    assert!(report.quarantine_path.exists(), "payload must be retained");
+    assert!(
+        quarantine_manifest_path(quarantine_dir, &report.sha256).exists(),
+        "manifest must be retained"
+    );
+}
+
 #[test]
 // AC-RSP-032
-fn restore_quarantined_file_writes_destination() {
-    let base = std::env::temp_dir().join(format!(
-        "eguard-restore-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or_default()
-    ));
-    fs::create_dir_all(&base).expect("create base");
+fn restore_quarantined_round_trip_uses_manifest_and_removes_artifacts() {
+    let (base, quarantine_dir, report, payload) = quarantine_fixture("restore-round-trip");
+    let manifest_path = quarantine_manifest_path(&quarantine_dir, &report.sha256);
 
-    let src = base.join("quarantine.bin");
-    let dst = base.join("restored.bin");
-    fs::write(&src, b"payload").expect("write src");
+    let restored = restore_quarantined_with_dir(
+        &report.sha256,
+        Some(&report.quarantine_path),
+        None,
+        &quarantine_dir,
+    )
+    .expect("restore from local provenance");
 
-    let report = restore_quarantined(&src, &dst, 0o600).expect("restore file");
-    assert_eq!(report.restored_path, dst);
+    assert_eq!(restored.restored_path, report.original_path);
     assert_eq!(
-        fs::read(&report.restored_path).expect("read restored"),
-        b"payload"
+        fs::read(&restored.restored_path).expect("read restored"),
+        payload
     );
-    assert!(
-        !src.exists(),
-        "quarantine source should be removed after restore"
-    );
+    #[cfg(unix)]
+    {
+        let metadata = fs::metadata(&restored.restored_path).expect("stat restored");
+        assert_eq!(metadata.mode() & 0o7777, report.original_mode & 0o7777);
+        assert_eq!(metadata.uid(), report.owner_uid);
+        assert_eq!(metadata.gid(), report.owner_gid);
+    }
+    assert!(!report.quarantine_path.exists());
+    assert!(!manifest_path.exists());
+    let _ = fs::remove_dir_all(base);
+}
 
-    let _ = fs::remove_file(report.restored_path);
-    let _ = fs::remove_dir(base);
+#[test]
+fn restore_rejects_server_controlled_source_path() {
+    let (base, quarantine_dir, report, _) = quarantine_fixture("restore-source-reject");
+    let arbitrary = base.join("arbitrary-source");
+    fs::write(&arbitrary, b"attacker bytes").expect("write arbitrary source");
+
+    let err = restore_quarantined_with_dir(&report.sha256, Some(&arbitrary), None, &quarantine_dir)
+        .expect_err("arbitrary source rejected");
+
+    assert!(
+        matches!(err, ResponseError::InvalidInput(message) if message.contains("quarantine_path"))
+    );
+    assert_quarantine_retained(&report, &quarantine_dir);
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+fn restore_rejects_server_controlled_destination_path() {
+    let (base, quarantine_dir, report, _) = quarantine_fixture("restore-destination-reject");
+    let arbitrary = base.join("arbitrary-destination");
+
+    let err = restore_quarantined_with_dir(&report.sha256, None, Some(&arbitrary), &quarantine_dir)
+        .expect_err("arbitrary destination rejected");
+
+    assert!(
+        matches!(err, ResponseError::InvalidInput(message) if message.contains("original_path"))
+    );
+    assert!(!arbitrary.exists());
+    assert_quarantine_retained(&report, &quarantine_dir);
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+fn restore_to_protected_style_path_requires_only_local_manifest_authority() {
+    let base = test_base("restore-protected-provenance");
+    let protected_dir = base.join("etc");
+    let quarantine_dir = base.join("quarantine");
+    fs::create_dir_all(&protected_dir).expect("create protected-style parent");
+    let original = protected_dir.join("critical.conf");
+    let payload = b"locally proven bytes";
+    fs::write(&original, payload).expect("write original");
+    let unprotected_for_quarantine = ProtectedList {
+        process_patterns: Vec::new(),
+        protected_paths: Vec::new(),
+    };
+    let report = quarantine_file_with_dir(
+        &original,
+        &digest(payload),
+        &unprotected_for_quarantine,
+        &quarantine_dir,
+    )
+    .expect("quarantine locally proven protected-style path");
+
+    let restored = restore_quarantined_with_dir(&report.sha256, None, None, &quarantine_dir)
+        .expect("manifest-authorized restore");
+    assert_eq!(restored.restored_path, original);
+    assert_eq!(fs::read(original).expect("read restored"), payload);
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+fn restore_rejects_hash_mismatch_and_retains_artifacts() {
+    let (base, quarantine_dir, report, payload) = quarantine_fixture("restore-hash-mismatch");
+    fs::write(&report.quarantine_path, vec![b'X'; payload.len()]).expect("tamper payload");
+
+    let err = restore_quarantined_with_dir(&report.sha256, None, None, &quarantine_dir)
+        .expect_err("hash mismatch rejected");
+
+    assert!(matches!(err, ResponseError::InvalidInput(message) if message.contains("hash")));
+    assert!(!report.original_path.exists());
+    assert_quarantine_retained(&report, &quarantine_dir);
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+fn restore_rejects_manifest_mismatch_and_retains_artifacts() {
+    let (base, quarantine_dir, report, _) = quarantine_fixture("restore-manifest-mismatch");
+    let manifest_path = quarantine_manifest_path(&quarantine_dir, &report.sha256);
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&manifest_path).expect("read manifest"))
+            .expect("parse manifest");
+    manifest["file_size"] = serde_json::json!(report.file_size + 1);
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec(&manifest).expect("serialize manifest"),
+    )
+    .expect("tamper manifest");
+
+    let err = restore_quarantined_with_dir(&report.sha256, None, None, &quarantine_dir)
+        .expect_err("manifest mismatch rejected");
+
+    assert!(matches!(err, ResponseError::InvalidInput(message) if message.contains("size")));
+    assert_quarantine_retained(&report, &quarantine_dir);
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+fn restore_refuses_existing_destination_and_retains_artifacts() {
+    let (base, quarantine_dir, report, _) = quarantine_fixture("restore-existing-destination");
+    fs::write(&report.original_path, b"existing bytes").expect("create existing destination");
+
+    restore_quarantined_with_dir(&report.sha256, None, None, &quarantine_dir)
+        .expect_err("existing destination rejected");
+
+    assert_eq!(
+        fs::read(&report.original_path).expect("existing retained"),
+        b"existing bytes"
+    );
+    assert_quarantine_retained(&report, &quarantine_dir);
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+#[cfg(unix)]
+fn restore_refuses_symlink_destination_and_retains_artifacts() {
+    let (base, quarantine_dir, report, _) = quarantine_fixture("restore-symlink-destination");
+    let symlink_target = base.join("symlink-target");
+    fs::write(&symlink_target, b"do not overwrite").expect("write symlink target");
+    std::os::unix::fs::symlink(&symlink_target, &report.original_path)
+        .expect("create destination symlink");
+
+    restore_quarantined_with_dir(&report.sha256, None, None, &quarantine_dir)
+        .expect_err("symlink destination rejected");
+
+    assert_eq!(
+        fs::read(&symlink_target).expect("target retained"),
+        b"do not overwrite"
+    );
+    assert_quarantine_retained(&report, &quarantine_dir);
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+fn restore_refuses_missing_parent_and_retains_artifacts() {
+    let (base, quarantine_dir, report, _) = quarantine_fixture("restore-missing-parent");
+    fs::remove_dir(report.original_path.parent().expect("original parent"))
+        .expect("remove original parent");
+
+    restore_quarantined_with_dir(&report.sha256, None, None, &quarantine_dir)
+        .expect_err("missing parent rejected");
+
+    assert_quarantine_retained(&report, &quarantine_dir);
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+fn restore_legacy_payload_without_manifest_fails_closed() {
+    let base = test_base("restore-legacy");
+    let quarantine_dir = base.join("quarantine");
+    fs::create_dir_all(&quarantine_dir).expect("create quarantine dir");
+    let sha256 = digest(b"legacy payload");
+    fs::write(quarantine_dir.join(&sha256), b"legacy payload").expect("write legacy payload");
+
+    let err = restore_quarantined_with_dir(&sha256, None, None, &quarantine_dir)
+        .expect_err("legacy restore rejected");
+
+    assert!(
+        matches!(err, ResponseError::InvalidInput(message) if message.contains("legacy_quarantine_requires_manual_restore"))
+    );
+    assert!(quarantine_dir.join(sha256).exists());
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+#[cfg(unix)]
+fn restore_refuses_symlink_quarantine_payload() {
+    let (base, quarantine_dir, report, _) = quarantine_fixture("restore-symlink-source");
+    fs::remove_file(&report.quarantine_path).expect("remove payload");
+    let attacker_source = base.join("attacker-source");
+    fs::write(&attacker_source, b"attacker bytes").expect("write attacker source");
+    std::os::unix::fs::symlink(&attacker_source, &report.quarantine_path)
+        .expect("create payload symlink");
+
+    restore_quarantined_with_dir(&report.sha256, None, None, &quarantine_dir)
+        .expect_err("symlink source rejected");
+
+    assert!(quarantine_manifest_path(&quarantine_dir, &report.sha256).exists());
+    assert_eq!(
+        fs::read(attacker_source).expect("attacker source retained"),
+        b"attacker bytes"
+    );
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+fn quarantine_writes_complete_restrictive_manifest_atomically() {
+    let (base, quarantine_dir, report, _) = quarantine_fixture("manifest-atomic");
+    let manifest_path = quarantine_manifest_path(&quarantine_dir, &report.sha256);
+    let manifest: QuarantineManifest =
+        serde_json::from_slice(&fs::read(&manifest_path).expect("read manifest"))
+            .expect("parse manifest");
+
+    assert_eq!(manifest.version, MANIFEST_VERSION);
+    assert_eq!(manifest.sha256, report.sha256);
+    assert_eq!(manifest.original_path, report.original_path);
+    assert_eq!(manifest.file_size, report.file_size);
+    assert_eq!(manifest.original_mode, report.original_mode);
+    assert_eq!(manifest.owner_uid, report.owner_uid);
+    assert_eq!(manifest.owner_gid, report.owner_gid);
+    assert!(manifest.quarantined_at > 0);
+    assert!(!manifest_path
+        .with_extension(format!("json.tmp-{}", std::process::id()))
+        .exists());
+    #[cfg(unix)]
+    assert_eq!(
+        fs::metadata(manifest_path).expect("stat manifest").mode() & 0o777,
+        0o600
+    );
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+#[cfg(windows)]
+fn restore_path_compatibility_is_case_insensitive_and_verbatim_aware_on_windows() {
+    assert!(paths_equal(
+        Path::new(r"C:\Temp\Payload.bin"),
+        Path::new(r"\\?\c:\temp\payload.bin")
+    ));
+}
+
+#[test]
+#[cfg(windows)]
+fn restore_refuses_windows_symlink_destination_and_retains_artifacts() {
+    let (base, quarantine_dir, report, _) = quarantine_fixture("restore-windows-reparse");
+    let target = base.join("reparse-target");
+    fs::write(&target, b"do not overwrite").expect("write target");
+    std::os::windows::fs::symlink_file(&target, &report.original_path)
+        .expect("create destination file symlink");
+
+    restore_quarantined_with_dir(&report.sha256, None, None, &quarantine_dir)
+        .expect_err("reparse destination rejected");
+
+    assert_eq!(
+        fs::read(target).expect("target retained"),
+        b"do not overwrite"
+    );
+    assert_quarantine_retained(&report, &quarantine_dir);
+    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -72,12 +356,12 @@ fn quarantine_rejects_intermediate_symlink_into_protected_root() {
         protected_paths: vec![protected_dir.clone()],
     };
 
-    let err = quarantine_file_with_dir(&alias_path, "deadbeef", &protected, &quarantine_dir)
+    let err = quarantine_file_with_dir(&alias_path, &digest(payload), &protected, &quarantine_dir)
         .expect_err("canonical protected path rejected");
 
     assert!(matches!(err, ResponseError::ProtectedPath(p) if p == target));
     assert_eq!(fs::read(&target).expect("target remains"), payload);
-    assert!(!quarantine_dir.join("deadbeef").exists());
+    assert!(!quarantine_dir.join(digest(payload)).exists());
 
     let _ = fs::remove_dir_all(base);
 }
@@ -119,7 +403,7 @@ fn quarantine_rejects_junction_into_protected_root() {
 
     let err = quarantine_file_with_dir(
         &alias_dir.join("payload.bin"),
-        "deadbeef",
+        &digest(payload),
         &protected,
         &quarantine_dir,
     )
@@ -127,7 +411,7 @@ fn quarantine_rejects_junction_into_protected_root() {
 
     assert!(matches!(err, ResponseError::ProtectedPath(p) if p == expected_path));
     assert_eq!(fs::read(&target).expect("target remains"), payload);
-    assert!(!quarantine_dir.join("deadbeef").exists());
+    assert!(!quarantine_dir.join(digest(payload)).exists());
 
     let _ = fs::remove_dir(&alias_dir);
     let _ = fs::remove_dir_all(base);
@@ -153,8 +437,9 @@ fn quarantine_report_uses_deverbatimized_canonical_original_path() {
         protected_paths: vec![base.join("different-protected-root")],
     };
 
-    let report = quarantine_file_with_dir(&original, "deadbeef", &protected, &quarantine_dir)
-        .expect("quarantine unprotected file");
+    let report =
+        quarantine_file_with_dir(&original, &digest(b"payload"), &protected, &quarantine_dir)
+            .expect("quarantine unprotected file");
 
     assert_eq!(report.original_path, expected_path);
     assert!(!report.original_path.to_string_lossy().starts_with(r"\\?\"));
@@ -193,11 +478,12 @@ fn quarantine_allows_intermediate_symlink_to_unprotected_target_and_reports_cano
         protected_paths: vec![base.join("different-protected-root")],
     };
 
-    let report = quarantine_file_with_dir(&alias_path, "cafebabe", &protected, &quarantine_dir)
-        .expect("unprotected canonical target quarantined");
+    let report =
+        quarantine_file_with_dir(&alias_path, &digest(payload), &protected, &quarantine_dir)
+            .expect("unprotected canonical target quarantined");
 
     assert_eq!(report.original_path, target);
-    assert_eq!(report.quarantine_path, quarantine_dir.join("cafebabe"));
+    assert_eq!(report.quarantine_path, quarantine_dir.join(digest(payload)));
     assert!(!target.exists());
     assert!(!alias_path.exists());
     #[cfg(unix)]
@@ -256,10 +542,10 @@ fn quarantine_runtime_entrypoint_moves_file_and_reports_fields() {
         "test source must be outside protected paths"
     );
 
-    let hash = "abcdef0123456789abcdef0123456789";
+    let hash = digest(&original_bytes);
     std::env::set_var("EGUARD_TEST_QUARANTINE_DIR", &quarantine_dir);
     let _env_reset = EnvVarReset;
-    let report = quarantine_file(&original, hash, &protected).expect("quarantine file");
+    let report = quarantine_file(&original, &hash, &protected).expect("quarantine file");
 
     assert_eq!(report.original_path, original);
     assert!(!report.sha256.is_empty());
@@ -271,7 +557,7 @@ fn quarantine_runtime_entrypoint_moves_file_and_reports_fields() {
         assert_eq!(report.owner_uid, metadata.uid());
         assert_eq!(report.owner_gid, metadata.gid());
     }
-    assert_eq!(report.quarantine_path, quarantine_dir.join(hash));
+    assert_eq!(report.quarantine_path, quarantine_dir.join(&hash));
     assert!(report.quarantine_path.exists());
     #[cfg(unix)]
     fs::set_permissions(&report.quarantine_path, fs::Permissions::from_mode(0o600))
@@ -306,11 +592,16 @@ fn quarantine_with_custom_dir_copies_metadata_and_removes_original() {
         .expect("chmod original");
 
     let protected = ProtectedList::default_linux();
-    let report = quarantine_file_with_dir(&original, "deadbeef", &protected, &quarantine_dir)
-        .expect("quarantine file");
+    let report = quarantine_file_with_dir(
+        &original,
+        &digest(&original_bytes),
+        &protected,
+        &quarantine_dir,
+    )
+    .expect("quarantine file");
 
     assert_eq!(report.original_path, original);
-    assert_eq!(report.sha256, "deadbeef");
+    assert_eq!(report.sha256, digest(&original_bytes));
     assert_eq!(report.file_size, original_bytes.len() as u64);
     #[cfg(unix)]
     assert!(report.original_mode & 0o777 != 0);
@@ -345,8 +636,13 @@ fn quarantine_prefers_rename_within_same_filesystem() {
     fs::write(&original, &original_bytes).expect("write original");
 
     let protected = ProtectedList::default_linux();
-    let report = quarantine_file_with_dir(&original, "feedface", &protected, &quarantine_dir)
-        .expect("quarantine file");
+    let report = quarantine_file_with_dir(
+        &original,
+        &digest(&original_bytes),
+        &protected,
+        &quarantine_dir,
+    )
+    .expect("quarantine file");
 
     assert!(!original.exists());
     assert!(report.quarantine_path.exists());
@@ -357,7 +653,7 @@ fn quarantine_prefers_rename_within_same_filesystem() {
                 .expect("stat quarantined")
                 .mode()
                 & 0o777,
-            0
+            0o600
         );
         fs::set_permissions(&report.quarantine_path, fs::Permissions::from_mode(0o600))
             .expect("restore perms for readback");
@@ -397,7 +693,7 @@ fn overwrite_prefix_zeroes_only_first_four_kilobytes() {
 
 #[test]
 // AC-RSP-027
-fn empty_sha256_is_rejected() {
+fn missing_sha256_is_computed_locally() {
     let base = std::env::temp_dir().join(format!(
         "eguard-quarantine-invalid-{}",
         std::time::SystemTime::now()
@@ -410,11 +706,39 @@ fn empty_sha256_is_rejected() {
     fs::write(&original, b"x").expect("write file");
 
     let protected = ProtectedList::default_linux();
-    let err = quarantine_file_with_dir(&original, "  ", &protected, &base)
-        .expect_err("empty hash should fail");
-    assert!(matches!(err, ResponseError::InvalidInput(_)));
+    let report = quarantine_file_with_dir(&original, "  ", &protected, &base)
+        .expect("missing hash should be computed");
+    assert_eq!(report.sha256, digest(b"x"));
 
-    let _ = fs::remove_file(original);
+    let _ = fs::remove_file(report.quarantine_path);
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+fn quarantine_rejects_mismatched_content_hash_without_moving_source() {
+    let base = test_base("quarantine-hash-mismatch");
+    let quarantine_dir = base.join("quarantine");
+    fs::create_dir_all(&base).expect("create base");
+    let original = base.join("sample.bin");
+    fs::write(&original, b"actual content").expect("write original");
+    let protected = ProtectedList::default_linux();
+
+    let err = quarantine_file_with_dir(
+        &original,
+        &digest(b"different content"),
+        &protected,
+        &quarantine_dir,
+    )
+    .expect_err("mismatched hash rejected");
+
+    assert!(
+        matches!(err, ResponseError::InvalidInput(message) if message.contains("does not match"))
+    );
+    assert_eq!(
+        fs::read(&original).expect("source retained"),
+        b"actual content"
+    );
+    assert!(!quarantine_dir.exists());
     let _ = fs::remove_dir_all(base);
 }
 
@@ -434,18 +758,13 @@ fn quarantine_normalizes_uppercase_sha256_ids() {
     fs::write(&original, b"normalize me").expect("write original");
 
     let protected = ProtectedList::default_linux();
-    let uppercase = "ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789";
-    let report = quarantine_file_with_dir(&original, uppercase, &protected, &quarantine_dir)
+    let expected = digest(b"normalize me");
+    let uppercase = expected.to_ascii_uppercase();
+    let report = quarantine_file_with_dir(&original, &uppercase, &protected, &quarantine_dir)
         .expect("quarantine file with uppercase sha");
 
-    assert_eq!(
-        report.sha256,
-        "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
-    );
-    assert_eq!(
-        report.quarantine_path,
-        quarantine_dir.join("abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")
-    );
+    assert_eq!(report.sha256, expected);
+    assert_eq!(report.quarantine_path, quarantine_dir.join(&report.sha256));
 
     let _ = fs::remove_dir_all(base);
 }

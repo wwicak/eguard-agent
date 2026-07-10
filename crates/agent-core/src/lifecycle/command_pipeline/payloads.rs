@@ -37,6 +37,8 @@ pub(super) struct UpdatePayload {
 #[derive(Debug, Deserialize, Default)]
 pub(super) struct RestoreQuarantinePayload {
     #[serde(default)]
+    pub(super) sha256: String,
+    #[serde(default)]
     pub(super) quarantine_path: String,
     #[serde(default)]
     pub(super) original_path: String,
