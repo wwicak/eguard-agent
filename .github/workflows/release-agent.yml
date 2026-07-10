@@ -283,6 +283,9 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
 
+      - name: Run response tests (macOS)
+        run: cargo test -p response --lib
+
       - name: Build ARM64
         env:
           EGUARD_AGENT_VERSION: ${{ steps.semver.outputs.version }}
