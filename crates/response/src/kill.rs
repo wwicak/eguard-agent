@@ -11,15 +11,15 @@ use std::mem::size_of;
 use windows::{
     core::{HRESULT, PWSTR},
     Win32::{
-        Foundation::{CloseHandle, ERROR_NO_MORE_FILES, HANDLE},
+        Foundation::{CloseHandle, ERROR_NO_MORE_FILES, FILETIME, HANDLE},
         System::{
             Diagnostics::ToolHelp::{
                 CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
                 TH32CS_SNAPPROCESS,
             },
             Threading::{
-                OpenProcess, QueryFullProcessImageNameW, TerminateProcess, PROCESS_NAME_FORMAT,
-                PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+                GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, TerminateProcess,
+                PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
             },
         },
     },
@@ -296,36 +296,53 @@ impl ProcessIntrospector for ProcfsIntrospector {
 }
 
 #[cfg(any(test, target_os = "windows"))]
-fn snapshot_parent_map(entries: &[(u32, u32)]) -> ResponseResult<HashMap<u32, u32>> {
-    let mut parents = HashMap::new();
-    for &(pid, parent_pid) in entries {
-        if pid == 0 {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WindowsProcessEntry {
+    pid: u32,
+    parent_pid: u32,
+    creation_time: Option<u64>,
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn snapshot_entry_map(
+    entries: &[WindowsProcessEntry],
+) -> ResponseResult<HashMap<u32, WindowsProcessEntry>> {
+    let mut process_entries = HashMap::new();
+    for &entry in entries {
+        if entry.pid == 0 {
             continue;
         }
-        match parents.insert(pid, parent_pid) {
-            Some(existing) if existing != parent_pid => {
+        match process_entries.insert(entry.pid, entry) {
+            Some(existing) if existing != entry => {
                 return Err(ResponseError::Signal(format!(
-                    "process snapshot contains conflicting parents for pid {pid}"
+                    "process snapshot contains conflicting identity or parent for pid {}",
+                    entry.pid
                 )))
             }
             _ => {}
         }
     }
-    Ok(parents)
+    Ok(process_entries)
 }
 
 #[cfg(any(test, target_os = "windows"))]
 fn descendants_from_snapshot(
     root_pid: u32,
-    entries: &[(u32, u32)],
+    entries: &[WindowsProcessEntry],
     max_descendants: usize,
 ) -> ResponseResult<Vec<(u32, u32)>> {
-    let parents = snapshot_parent_map(entries)?;
+    let process_entries = snapshot_entry_map(entries)?;
     let mut children = HashMap::<u32, Vec<u32>>::new();
     let mut edges = HashSet::new();
-    for &(pid, parent_pid) in entries {
-        if pid != 0 && parents.get(&pid) == Some(&parent_pid) && edges.insert((pid, parent_pid)) {
-            children.entry(parent_pid).or_default().push(pid);
+    for entry in entries {
+        if entry.pid != 0
+            && process_entries.get(&entry.pid) == Some(entry)
+            && edges.insert((entry.pid, entry.parent_pid))
+        {
+            children
+                .entry(entry.parent_pid)
+                .or_default()
+                .push(entry.pid);
         }
     }
 
@@ -370,8 +387,9 @@ impl Drop for OwnedWindowsHandle {
 trait WindowsProcessApi {
     type Handle;
 
-    fn process_snapshot(&self) -> ResponseResult<Vec<(u32, u32)>>;
+    fn process_snapshot(&self) -> ResponseResult<Vec<WindowsProcessEntry>>;
     fn open_process(&self, pid: u32) -> ResponseResult<Self::Handle>;
+    fn process_creation_time(&self, handle: &Self::Handle) -> ResponseResult<u64>;
     fn process_name(&self, handle: &Self::Handle) -> ResponseResult<String>;
     fn terminate_process(&self, handle: &Self::Handle) -> ResponseResult<()>;
 }
@@ -383,7 +401,7 @@ struct NativeWindowsProcessApi;
 impl WindowsProcessApi for NativeWindowsProcessApi {
     type Handle = OwnedWindowsHandle;
 
-    fn process_snapshot(&self) -> ResponseResult<Vec<(u32, u32)>> {
+    fn process_snapshot(&self) -> ResponseResult<Vec<WindowsProcessEntry>> {
         let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }
             .map(OwnedWindowsHandle)
             .map_err(|err| {
@@ -411,7 +429,21 @@ impl WindowsProcessApi for NativeWindowsProcessApi {
                     "Windows process snapshot exceeds {MAX_WINDOWS_SNAPSHOT_PROCESSES} entries"
                 )));
             }
-            entries.push((entry.th32ProcessID, entry.th32ParentProcessID));
+            let creation_time = unsafe {
+                OpenProcess(
+                    PROCESS_QUERY_LIMITED_INFORMATION,
+                    false,
+                    entry.th32ProcessID,
+                )
+            }
+            .map(OwnedWindowsHandle)
+            .ok()
+            .and_then(|handle| self.process_creation_time(&handle).ok());
+            entries.push(WindowsProcessEntry {
+                pid: entry.th32ProcessID,
+                parent_pid: entry.th32ParentProcessID,
+                creation_time,
+            });
 
             match unsafe { Process32NextW(snapshot.0, &mut entry) } {
                 Ok(()) => {}
@@ -436,6 +468,16 @@ impl WindowsProcessApi for NativeWindowsProcessApi {
         }
         .map(OwnedWindowsHandle)
         .map_err(|err| ResponseError::Signal(format!("open Windows process {pid}: {err}")))
+    }
+
+    fn process_creation_time(&self, handle: &Self::Handle) -> ResponseResult<u64> {
+        let mut creation = FILETIME::default();
+        let mut exit = FILETIME::default();
+        let mut kernel = FILETIME::default();
+        let mut user = FILETIME::default();
+        unsafe { GetProcessTimes(handle.0, &mut creation, &mut exit, &mut kernel, &mut user) }
+            .map_err(|err| ResponseError::Signal(format!("query Windows process times: {err}")))?;
+        Ok(((creation.dwHighDateTime as u64) << 32) | creation.dwLowDateTime as u64)
     }
 
     fn process_name(&self, handle: &Self::Handle) -> ResponseResult<String> {
@@ -482,7 +524,7 @@ impl ProcessIntrospector for ProcfsIntrospector {
             .map(|entries| {
                 entries
                     .into_iter()
-                    .filter_map(|(child_pid, parent_pid)| (parent_pid == pid).then_some(child_pid))
+                    .filter_map(|entry| (entry.parent_pid == pid).then_some(entry.pid))
                     .collect()
             })
             .unwrap_or_default()
@@ -515,19 +557,28 @@ fn kill_process_tree_windows_with<A: WindowsProcessApi>(
         return Err(ResponseError::ProtectedProcess(pid));
     }
 
-    // The root is opened before topology capture and every accepted child remains open
-    // from image-name validation through termination. Windows cannot reuse those PIDs
-    // while these handles keep the process objects alive.
     let root_handle = api.open_process(pid)?;
+    let root_creation_time = api.process_creation_time(&root_handle)?;
     let root_name = api.process_name(&root_handle)?;
     if protected.is_protected_process(&root_name) {
         return Err(ResponseError::ProtectedProcess(pid));
     }
 
     let snapshot = api.process_snapshot()?;
+    let snapshot_entries = snapshot_entry_map(&snapshot)?;
+    if snapshot_entries
+        .get(&pid)
+        .and_then(|entry| entry.creation_time)
+        != Some(root_creation_time)
+    {
+        return Err(ResponseError::Signal(format!(
+            "Windows process {pid} identity does not match the first snapshot"
+        )));
+    }
     let descendants = descendants_from_snapshot(pid, &snapshot, MAX_WINDOWS_TREE_DESCENDANTS)?;
     let mut protected_pids = Vec::new();
     let mut failed_pids = Vec::new();
+    let mut accepted_identities = HashMap::from([(pid, root_creation_time)]);
     let mut child_handles = Vec::new();
 
     for (child_pid, parent_pid) in descendants {
@@ -535,9 +586,32 @@ fn kill_process_tree_windows_with<A: WindowsProcessApi>(
             protected_pids.push(child_pid);
             continue;
         }
+        let Some(&parent_creation_time) = accepted_identities.get(&parent_pid) else {
+            failed_pids.push(child_pid);
+            continue;
+        };
+        let Some(snapshot_creation_time) = snapshot_entries
+            .get(&child_pid)
+            .and_then(|entry| entry.creation_time)
+        else {
+            failed_pids.push(child_pid);
+            continue;
+        };
         let handle = match api.open_process(child_pid) {
             Ok(handle) => handle,
             Err(_) => {
+                failed_pids.push(child_pid);
+                continue;
+            }
+        };
+        let creation_time = match api.process_creation_time(&handle) {
+            Ok(creation_time)
+                if creation_time == snapshot_creation_time
+                    && creation_time >= parent_creation_time =>
+            {
+                creation_time
+            }
+            _ => {
                 failed_pids.push(child_pid);
                 continue;
             }
@@ -549,22 +623,36 @@ fn kill_process_tree_windows_with<A: WindowsProcessApi>(
                 continue;
             }
         };
-        if protected.is_protected_process(&name) {
+        let is_protected = protected.is_protected_process(&name);
+        if is_protected {
             protected_pids.push(child_pid);
-        } else {
-            child_handles.push((child_pid, parent_pid, handle));
         }
+        accepted_identities.insert(child_pid, creation_time);
+        child_handles.push((child_pid, parent_pid, creation_time, is_protected, handle));
     }
 
-    // A second bounded snapshot closes the snapshot-to-OpenProcess PID-reuse gap:
-    // while each handle is held, its PID cannot be reassigned, so a changed parent
-    // relationship identifies a stale first-snapshot entry and is failed closed.
+    // Revalidate identity and parent edges while every accepted process handle is held.
+    // Termination then uses only those same verified handles, never a PID lookup.
     let validation_snapshot = api.process_snapshot()?;
-    let validation_parents = snapshot_parent_map(&validation_snapshot)?;
+    let validation_entries = snapshot_entry_map(&validation_snapshot)?;
+    let root_identity_valid = validation_entries
+        .get(&pid)
+        .and_then(|entry| entry.creation_time)
+        == Some(root_creation_time);
+    let mut validated_identities = HashSet::new();
+    if root_identity_valid {
+        validated_identities.insert(pid);
+    }
     let mut validated_handles = Vec::new();
-    for (child_pid, parent_pid, handle) in child_handles {
-        if validation_parents.get(&child_pid) == Some(&parent_pid) {
-            validated_handles.push((child_pid, handle));
+    for (child_pid, parent_pid, creation_time, is_protected, handle) in child_handles {
+        let entry_matches = validation_entries.get(&child_pid).is_some_and(|entry| {
+            entry.parent_pid == parent_pid && entry.creation_time == Some(creation_time)
+        });
+        if validated_identities.contains(&parent_pid) && entry_matches {
+            validated_identities.insert(child_pid);
+            if !is_protected {
+                validated_handles.push((child_pid, handle));
+            }
         } else {
             failed_pids.push(child_pid);
         }
@@ -577,9 +665,13 @@ fn kill_process_tree_windows_with<A: WindowsProcessApi>(
             Err(_) => failed_pids.push(*child_pid),
         }
     }
-    match api.terminate_process(&root_handle) {
-        Ok(()) => killed_pids.push(pid),
-        Err(_) => failed_pids.push(pid),
+    if root_identity_valid {
+        match api.terminate_process(&root_handle) {
+            Ok(()) => killed_pids.push(pid),
+            Err(_) => failed_pids.push(pid),
+        }
+    } else {
+        failed_pids.push(pid);
     }
 
     Ok(KillReport {

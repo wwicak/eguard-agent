@@ -214,6 +214,10 @@ jobs:
         run: |
           cargo test -p platform-windows
 
+      - name: Run response Windows unit tests
+        shell: bash
+        run: cargo test -p response --lib
+
       - name: Run response Windows kill safety test
         shell: bash
         run: |
