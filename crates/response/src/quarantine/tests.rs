@@ -247,6 +247,32 @@ fn open_restore_parent_refuses_intermediate_symlink_swap() {
 }
 
 #[test]
+#[cfg(windows)]
+fn open_restore_parent_refuses_intermediate_junction_swap() {
+    let base = test_base("restore-parent-junction-swap");
+    let original_ancestor = base.join("original");
+    let original_parent = original_ancestor.join("nested");
+    let moved_ancestor = base.join("original-moved");
+    let attacker_ancestor = base.join("attacker");
+    fs::create_dir_all(&original_parent).expect("create original parent");
+    fs::create_dir_all(attacker_ancestor.join("nested")).expect("create attacker parent");
+    let canonical_parent = fs::canonicalize(&original_parent).expect("canonicalize parent");
+
+    fs::rename(&original_ancestor, &moved_ancestor).expect("swap original ancestor");
+    let status = std::process::Command::new("cmd")
+        .args(["/c", "mklink", "/J"])
+        .arg(&original_ancestor)
+        .arg(&attacker_ancestor)
+        .status()
+        .expect("create intermediate junction");
+    assert!(status.success(), "mklink /J must succeed");
+
+    open_restore_parent(&canonical_parent).expect_err("parent-component junction swap refused");
+    assert!(!attacker_ancestor.join("nested/payload.bin").exists());
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
 #[cfg(unix)]
 fn restore_refuses_symlink_destination_and_retains_artifacts() {
     let (base, quarantine_dir, report, _) = quarantine_fixture("restore-symlink-destination");

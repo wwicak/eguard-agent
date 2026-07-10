@@ -26,8 +26,44 @@ use windows::Win32::Foundation::{
 use windows::Win32::Storage::FileSystem::{
     FileDispositionInfo, SetFileInformationByHandle, DELETE, FILE_ATTRIBUTE_REPARSE_POINT,
     FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-    FILE_GENERIC_WRITE, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
 };
+
+#[cfg(windows)]
+#[repr(C)]
+struct ObjectAttributes {
+    length: u32,
+    root_directory: HANDLE,
+    object_name: *const UNICODE_STRING,
+    attributes: u32,
+    security_descriptor: *const std::ffi::c_void,
+    security_quality_of_service: *const std::ffi::c_void,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct IoStatusBlock {
+    status_or_pointer: *mut std::ffi::c_void,
+    information: usize,
+}
+
+#[cfg(windows)]
+#[link(name = "ntdll")]
+extern "system" {
+    fn NtCreateFile(
+        file_handle: *mut HANDLE,
+        desired_access: u32,
+        object_attributes: *const ObjectAttributes,
+        io_status_block: *mut IoStatusBlock,
+        allocation_size: *const i64,
+        file_attributes: u32,
+        share_access: u32,
+        create_disposition: u32,
+        create_options: u32,
+        ea_buffer: *const std::ffi::c_void,
+        ea_length: u32,
+    ) -> i32;
+}
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -540,19 +576,103 @@ fn unix_name(name: &OsStr) -> ResponseResult<CString> {
 
 #[cfg(windows)]
 fn open_restore_parent(path: &Path) -> ResponseResult<File> {
+    use std::path::Component;
+
+    let mut components = path.components();
+    let Some(Component::Prefix(prefix)) = components.next() else {
+        return Err(ResponseError::InvalidInput(
+            "restore parent must be a canonical absolute Windows path".to_string(),
+        ));
+    };
+    if !matches!(components.next(), Some(Component::RootDir)) {
+        return Err(ResponseError::InvalidInput(
+            "restore parent must be a canonical absolute Windows path".to_string(),
+        ));
+    }
+
+    let mut root = PathBuf::from(prefix.as_os_str());
+    root.push(Path::new(r"\"));
     let mut options = OpenOptions::new();
     options
         .read(true)
         .share_mode(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0 | FILE_SHARE_DELETE.0)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0 | FILE_FLAG_OPEN_REPARSE_POINT.0);
-    let parent = options.open(path)?;
-    let metadata = parent.metadata()?;
-    if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 {
+    let mut directory = options.open(root)?;
+    validate_windows_restore_directory(&directory)?;
+
+    for component in components {
+        let Component::Normal(name) = component else {
+            return Err(ResponseError::InvalidInput(
+                "restore parent must be a canonical absolute Windows path".to_string(),
+            ));
+        };
+        directory = open_windows_restore_directory(&directory, name)?;
+    }
+    Ok(directory)
+}
+
+#[cfg(windows)]
+fn open_windows_restore_directory(parent: &File, name: &std::ffi::OsStr) -> ResponseResult<File> {
+    let mut name: Vec<u16> = name.encode_wide().collect();
+    if name.is_empty()
+        || name.iter().any(|character| *character == 0)
+        || name.len() > (u16::MAX as usize / 2)
+    {
         return Err(ResponseError::InvalidInput(
-            "restore parent is not a non-reparse directory".to_string(),
+            "restore directory name is invalid for Windows".to_string(),
         ));
     }
-    Ok(parent)
+    let object_name = UNICODE_STRING {
+        Length: (name.len() * 2) as u16,
+        MaximumLength: (name.len() * 2) as u16,
+        Buffer: windows::core::PWSTR(name.as_mut_ptr()),
+    };
+    let object_attributes = ObjectAttributes {
+        length: std::mem::size_of::<ObjectAttributes>() as u32,
+        root_directory: HANDLE(parent.as_raw_handle()),
+        object_name: &object_name,
+        attributes: 0x40 | 0x1000, // OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE
+        security_descriptor: std::ptr::null(),
+        security_quality_of_service: std::ptr::null(),
+    };
+    let mut io_status = IoStatusBlock {
+        status_or_pointer: std::ptr::null_mut(),
+        information: 0,
+    };
+    let mut handle = HANDLE::default();
+    let status = unsafe {
+        NtCreateFile(
+            &mut handle,
+            FILE_GENERIC_READ.0,
+            &object_attributes,
+            &mut io_status,
+            std::ptr::null(),
+            0,
+            FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0 | FILE_SHARE_DELETE.0,
+            1,                     // FILE_OPEN
+            0x1 | 0x20 | 0x200000, // directory, synchronous, open reparse point
+            std::ptr::null(),
+            0,
+        )
+    };
+    if status < 0 {
+        let error = unsafe { RtlNtStatusToDosError(NTSTATUS(status)) };
+        return Err(std::io::Error::from_raw_os_error(error as i32).into());
+    }
+    let directory = unsafe { File::from_raw_handle(handle.0) };
+    validate_windows_restore_directory(&directory)?;
+    Ok(directory)
+}
+
+#[cfg(windows)]
+fn validate_windows_restore_directory(directory: &File) -> ResponseResult<()> {
+    let metadata = directory.metadata()?;
+    if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 {
+        return Err(ResponseError::InvalidInput(
+            "restore parent component is not a non-reparse directory".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -587,39 +707,6 @@ fn create_destination_exclusive(
     file_name: &std::ffi::OsStr,
     _path: &Path,
 ) -> ResponseResult<File> {
-    #[repr(C)]
-    struct ObjectAttributes {
-        length: u32,
-        root_directory: HANDLE,
-        object_name: *const UNICODE_STRING,
-        attributes: u32,
-        security_descriptor: *const std::ffi::c_void,
-        security_quality_of_service: *const std::ffi::c_void,
-    }
-
-    #[repr(C)]
-    struct IoStatusBlock {
-        status_or_pointer: *mut std::ffi::c_void,
-        information: usize,
-    }
-
-    #[link(name = "ntdll")]
-    extern "system" {
-        fn NtCreateFile(
-            file_handle: *mut HANDLE,
-            desired_access: u32,
-            object_attributes: *const ObjectAttributes,
-            io_status_block: *mut IoStatusBlock,
-            allocation_size: *const i64,
-            file_attributes: u32,
-            share_access: u32,
-            create_disposition: u32,
-            create_options: u32,
-            ea_buffer: *const std::ffi::c_void,
-            ea_length: u32,
-        ) -> i32;
-    }
-
     let mut name: Vec<u16> = file_name.encode_wide().collect();
     if name.iter().any(|character| *character == 0) || name.len() > (u16::MAX as usize / 2) {
         return Err(ResponseError::InvalidInput(
