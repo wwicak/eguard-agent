@@ -176,18 +176,39 @@ fn restore_rejects_manifest_mismatch_and_retains_artifacts() {
 }
 
 #[test]
-fn restore_refuses_existing_destination_and_retains_artifacts() {
+fn restore_create_failure_never_deletes_preexisting_destination() {
     let (base, quarantine_dir, report, _) = quarantine_fixture("restore-existing-destination");
     fs::write(&report.original_path, b"existing bytes").expect("create existing destination");
 
     restore_quarantined_with_dir(&report.sha256, None, None, &quarantine_dir)
-        .expect_err("existing destination rejected");
+        .expect_err("exclusive create rejects existing destination");
 
     assert_eq!(
         fs::read(&report.original_path).expect("existing retained"),
         b"existing bytes"
     );
     assert_quarantine_retained(&report, &quarantine_dir);
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+#[cfg(unix)]
+fn open_restore_parent_refuses_intermediate_symlink_swap() {
+    let base = test_base("restore-parent-swap");
+    let original_ancestor = base.join("original");
+    let original_parent = original_ancestor.join("nested");
+    let moved_ancestor = base.join("original-moved");
+    let attacker_ancestor = base.join("attacker");
+    fs::create_dir_all(&original_parent).expect("create original parent");
+    fs::create_dir_all(attacker_ancestor.join("nested")).expect("create attacker parent");
+    let canonical_parent = fs::canonicalize(&original_parent).expect("canonicalize parent");
+
+    fs::rename(&original_ancestor, &moved_ancestor).expect("swap original ancestor");
+    std::os::unix::fs::symlink(&attacker_ancestor, &original_ancestor)
+        .expect("replace ancestor with symlink");
+
+    open_restore_parent(&canonical_parent).expect_err("parent-component symlink swap refused");
+    assert!(!attacker_ancestor.join("nested/payload.bin").exists());
     let _ = fs::remove_dir_all(base);
 }
 

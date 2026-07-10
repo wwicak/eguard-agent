@@ -5,9 +5,24 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(unix)]
+use std::ffi::{CString, OsStr};
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
+#[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 #[cfg(unix)]
-use std::os::unix::io::AsRawFd;
+use std::os::unix::io::{AsRawFd, FromRawFd};
+#[cfg(windows)]
+use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+#[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
+#[cfg(windows)]
+use windows::Win32::Foundation::{BOOLEAN, HANDLE};
+#[cfg(windows)]
+use windows::Win32::Storage::FileSystem::{
+    FileDispositionInfo, SetFileInformationByHandle, DELETE, FILE_ATTRIBUTE_REPARSE_POINT,
+    FILE_DISPOSITION_INFO, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_WRITE,
+};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -259,7 +274,7 @@ pub fn restore_quarantined_with_dir(
         ));
     }
     let destination = canonical_parent.join(file_name);
-    ensure_artifact_absent(&destination)?;
+    let destination_parent = open_restore_parent(&canonical_parent)?;
 
     let mut source_file = open_regular_no_follow(&source, "quarantine payload")?;
     let source_metadata = source_file.metadata()?;
@@ -275,21 +290,38 @@ pub fn restore_quarantined_with_dir(
     }
     source_file.seek(SeekFrom::Start(0))?;
 
+    let mut destination_file = None;
     let restore_result = (|| -> ResponseResult<()> {
-        let mut destination_file = create_destination_exclusive(&destination)?;
-        std::io::copy(&mut source_file, &mut destination_file)?;
+        destination_file = Some(create_destination_exclusive(
+            &destination_parent,
+            file_name,
+            &destination,
+        )?);
+        let destination_file = destination_file
+            .as_mut()
+            .expect("destination file was just created");
+        validate_destination_handle(destination_file)?;
+        std::io::copy(&mut source_file, destination_file)?;
         destination_file.sync_all()?;
-        restore_identity(&destination_file, &manifest)?;
+        restore_identity(destination_file, &manifest)?;
         destination_file.sync_all()?;
-        sync_directory(&canonical_parent)?;
+        sync_restore_parent(&destination_parent, &canonical_parent)?;
         Ok(())
     })();
 
     if let Err(err) = restore_result {
-        let _ = fs::remove_file(&destination);
+        if let Some(destination_file) = destination_file.as_ref() {
+            let _ = remove_created_destination(
+                &destination_parent,
+                file_name,
+                &destination,
+                destination_file,
+            );
+        }
         return Err(err);
     }
 
+    drop(destination_file);
     drop(source_file);
     fs::remove_file(&source)?;
     fs::remove_file(&manifest_path)?;
@@ -406,12 +438,221 @@ fn open_regular_no_follow(path: &Path, label: &str) -> ResponseResult<File> {
     Ok(file)
 }
 
-fn create_destination_exclusive(path: &Path) -> ResponseResult<File> {
+#[cfg(target_os = "linux")]
+fn open_restore_parent(path: &Path) -> ResponseResult<File> {
+    #[repr(C)]
+    struct OpenHow {
+        flags: u64,
+        mode: u64,
+        resolve: u64,
+    }
+
+    let root = open_restore_root()?;
+    let relative = path.strip_prefix(Path::new("/")).map_err(|_| {
+        ResponseError::InvalidInput("restore parent must be an absolute path".to_string())
+    })?;
+    let relative = if relative.as_os_str().is_empty() {
+        OsStr::new(".")
+    } else {
+        relative.as_os_str()
+    };
+    let relative = unix_name(relative)?;
+    let how = OpenHow {
+        flags: (libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC) as u64,
+        mode: 0,
+        resolve: libc::RESOLVE_NO_SYMLINKS | libc::RESOLVE_BENEATH,
+    };
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            root.as_raw_fd(),
+            relative.as_ptr(),
+            &how,
+            std::mem::size_of::<OpenHow>(),
+        ) as libc::c_int
+    };
+    if fd >= 0 {
+        return Ok(unsafe { File::from_raw_fd(fd) });
+    }
+
+    let err = std::io::Error::last_os_error();
+    if !matches!(err.raw_os_error(), Some(libc::ENOSYS) | Some(libc::E2BIG)) {
+        return Err(err.into());
+    }
+    open_restore_parent_fallback(path)
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn open_restore_parent(path: &Path) -> ResponseResult<File> {
+    open_restore_parent_fallback(path)
+}
+
+#[cfg(unix)]
+fn open_restore_root() -> ResponseResult<File> {
     let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    options
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    Ok(options.open("/")?)
+}
+
+#[cfg(unix)]
+fn open_restore_parent_fallback(path: &Path) -> ResponseResult<File> {
+    use std::path::Component;
+
+    let mut directory = open_restore_root()?;
+    for component in path.components() {
+        let Component::Normal(name) = component else {
+            if matches!(component, Component::RootDir) {
+                continue;
+            }
+            return Err(ResponseError::InvalidInput(
+                "restore parent must be a canonical absolute path".to_string(),
+            ));
+        };
+        let name = unix_name(name)?;
+        let fd = unsafe {
+            libc::openat(
+                directory.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        directory = unsafe { File::from_raw_fd(fd) };
+    }
+    Ok(directory)
+}
+
+#[cfg(unix)]
+fn unix_name(name: &OsStr) -> ResponseResult<CString> {
+    CString::new(name.as_bytes()).map_err(|_| {
+        ResponseError::InvalidInput("restore path contains an embedded NUL".to_string())
+    })
+}
+
+#[cfg(not(unix))]
+fn open_restore_parent(_path: &Path) -> ResponseResult<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn create_destination_exclusive(
+    parent: &File,
+    file_name: &OsStr,
+    _path: &Path,
+) -> ResponseResult<File> {
+    let file_name = unix_name(file_name)?;
+    let fd = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            file_name.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o600,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(unsafe { File::from_raw_fd(fd) })
+}
+
+#[cfg(windows)]
+fn create_destination_exclusive(
+    _parent: &(),
+    _file_name: &std::ffi::OsStr,
+    path: &Path,
+) -> ResponseResult<File> {
+    let mut options = OpenOptions::new();
+    options
+        .write(true)
+        .create_new(true)
+        .access_mode(FILE_GENERIC_WRITE.0 | DELETE.0)
+        .share_mode(0)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0);
     Ok(options.open(path)?)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn create_destination_exclusive(
+    _parent: &(),
+    _file_name: &std::ffi::OsStr,
+    path: &Path,
+) -> ResponseResult<File> {
+    Ok(OpenOptions::new().write(true).create_new(true).open(path)?)
+}
+
+#[cfg(windows)]
+fn validate_destination_handle(file: &File) -> ResponseResult<()> {
+    if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 {
+        return Err(ResponseError::InvalidInput(
+            "refusing to restore to a Windows reparse point".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn validate_destination_handle(_file: &File) -> ResponseResult<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn remove_created_destination(
+    parent: &File,
+    file_name: &OsStr,
+    _path: &Path,
+    _file: &File,
+) -> ResponseResult<()> {
+    let file_name = unix_name(file_name)?;
+    if unsafe { libc::unlinkat(parent.as_raw_fd(), file_name.as_ptr(), 0) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn remove_created_destination(
+    _parent: &(),
+    _file_name: &std::ffi::OsStr,
+    _path: &Path,
+    file: &File,
+) -> ResponseResult<()> {
+    let disposition = FILE_DISPOSITION_INFO {
+        DeleteFile: BOOLEAN(1),
+    };
+    unsafe {
+        SetFileInformationByHandle(
+            HANDLE(file.as_raw_handle()),
+            FileDispositionInfo,
+            &disposition as *const FILE_DISPOSITION_INFO as *const std::ffi::c_void,
+            std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32,
+        )
+    }
+    .map_err(|err| ResponseError::InvalidInput(format!("failed removing partial restore: {err}")))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn remove_created_destination(
+    _parent: &(),
+    _file_name: &std::ffi::OsStr,
+    path: &Path,
+    _file: &File,
+) -> ResponseResult<()> {
+    Ok(fs::remove_file(path)?)
+}
+
+#[cfg(unix)]
+fn sync_restore_parent(parent: &File, _path: &Path) -> ResponseResult<()> {
+    parent.sync_all()?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn sync_restore_parent(_parent: &(), path: &Path) -> ResponseResult<()> {
+    sync_directory(path)
 }
 
 fn paths_equal(left: &Path, right: &Path) -> bool {
@@ -513,7 +754,13 @@ fn restore_identity(file: &File, manifest: &QuarantineManifest) -> ResponseResul
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn restore_identity(_file: &File, _manifest: &QuarantineManifest) -> ResponseResult<()> {
+    // Manifest v1 records Unix mode/uid/gid only; it contains no Windows owner or ACL to apply.
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
 fn restore_identity(_file: &File, _manifest: &QuarantineManifest) -> ResponseResult<()> {
     Ok(())
 }
