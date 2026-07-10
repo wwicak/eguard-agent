@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::ErrorKind;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -13,7 +14,7 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 #[cfg(unix)]
 use std::os::unix::io::{AsRawFd, FromRawFd};
 #[cfg(windows)]
-use std::os::windows::ffi::OsStrExt;
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
 #[cfg(windows)]
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 #[cfg(windows)]
@@ -24,9 +25,11 @@ use windows::Win32::Foundation::{
 };
 #[cfg(windows)]
 use windows::Win32::Storage::FileSystem::{
-    FileDispositionInfo, SetFileInformationByHandle, DELETE, FILE_ATTRIBUTE_REPARSE_POINT,
+    FileDispositionInfo, FileRenameInfo, GetFileInformationByHandle, GetFinalPathNameByHandleW,
+    SetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ATTRIBUTE_REPARSE_POINT,
     FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-    FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_RENAME_INFO, FILE_RENAME_INFO_0, FILE_SHARE_DELETE,
+    FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES,
 };
 
 #[cfg(windows)]
@@ -151,30 +154,23 @@ pub fn quarantine_file_with_dir(
         ));
     }
 
-    let canonical_path = fs::canonicalize(path)?;
-    let effective_path = normalize_path(&canonical_path);
-    if protected.is_protected_path(&effective_path) {
-        return Err(ResponseError::ProtectedPath(effective_path));
+    let mut source = open_quarantine_source(path)?;
+    if protected.is_protected_path(&source.path) {
+        return Err(ResponseError::ProtectedPath(source.path));
     }
-    let metadata = fs::metadata(&canonical_path)?;
-
-    if !metadata.is_file() {
-        return Err(ResponseError::InvalidInput(format!(
-            "{} is not a regular file",
-            path.display()
-        )));
-    }
-
-    let actual_sha256 = hash_path(&canonical_path)?;
+    let metadata = source.file.metadata()?;
+    let actual_sha256 = hash_file(&mut source.file)?;
     if !requested_sha256.is_empty() && !actual_sha256.eq_ignore_ascii_case(requested_sha256) {
         return Err(ResponseError::InvalidInput(
             "sha256 does not match quarantine source content".to_string(),
         ));
     }
+    source.file.seek(SeekFrom::Start(0))?;
 
     fs::create_dir_all(quarantine_dir)?;
     apply_quarantine_dir_permissions(quarantine_dir)?;
     let quarantine_dir = fs::canonicalize(quarantine_dir)?;
+    let quarantine_parent = open_restore_parent(&quarantine_dir)?;
     let quarantine_path = quarantine_dir.join(&actual_sha256);
     let manifest_path = quarantine_manifest_path(&quarantine_dir, &actual_sha256);
     ensure_artifact_absent(&quarantine_path)?;
@@ -184,7 +180,7 @@ pub fn quarantine_file_with_dir(
     let manifest = QuarantineManifest {
         version: MANIFEST_VERSION,
         sha256: actual_sha256.clone(),
-        original_path: effective_path.clone(),
+        original_path: source.path.clone(),
         file_size: metadata.len(),
         original_mode,
         owner_uid,
@@ -195,42 +191,48 @@ pub fn quarantine_file_with_dir(
             .unwrap_or_default(),
     };
 
-    let moved = match fs::rename(&canonical_path, &quarantine_path) {
-        Ok(()) => true,
-        Err(err) if err.kind() == ErrorKind::CrossesDevices => {
-            fs::copy(&canonical_path, &quarantine_path)?;
-            false
-        }
-        Err(err) => return Err(err.into()),
+    let moved = move_quarantine_source(
+        &mut source,
+        &quarantine_parent,
+        actual_sha256.as_ref(),
+        &quarantine_path,
+    )?;
+    let mut payload = if moved {
+        source.file.try_clone()?
+    } else {
+        open_quarantine_leaf(&quarantine_parent, actual_sha256.as_ref())?
     };
 
-    if let Err(err) = durable_restrict_payload(&quarantine_path)
-        .and_then(|_| verify_quarantine_payload(&quarantine_path, &actual_sha256, metadata.len()))
+    if let Err(err) = restrict_payload_handle(&payload)
+        .and_then(|_| {
+            verify_quarantine_payload_handle(&mut payload, &actual_sha256, metadata.len())
+        })
         .and_then(|_| write_manifest_atomic(&manifest_path, &manifest))
     {
         let _ = fs::remove_file(&manifest_path);
-        if moved {
-            let _ = fs::rename(&quarantine_path, &canonical_path);
-        } else {
-            let _ = fs::remove_file(&quarantine_path);
-        }
+        let _ = rollback_quarantine_move(
+            moved,
+            &source,
+            &quarantine_parent,
+            actual_sha256.as_ref(),
+            &quarantine_path,
+            &payload,
+        );
         return Err(err);
     }
 
     if !moved {
-        let mut original = OpenOptions::new().write(true).open(&canonical_path)?;
-        apply_restrictive_permissions(&canonical_path)?;
-        overwrite_file_prefix_with_zeros_file(&mut original, metadata.len())?;
-        fs::remove_file(&canonical_path)?;
+        zero_and_remove_source(&source, metadata.len())?;
     }
 
-    sync_directory(&quarantine_dir)?;
-    if let Some(parent) = canonical_path.parent() {
-        sync_directory(parent)?;
-    }
+    sync_restore_parent(&quarantine_parent, &quarantine_dir)?;
+    sync_restore_parent(
+        &source.parent,
+        source.path.parent().unwrap_or_else(|| Path::new("/")),
+    )?;
 
     Ok(QuarantineReport {
-        original_path: effective_path,
+        original_path: source.path,
         quarantine_path,
         sha256: actual_sha256,
         file_size: metadata.len(),
@@ -238,6 +240,418 @@ pub fn quarantine_file_with_dir(
         owner_uid,
         owner_gid,
     })
+}
+
+#[cfg(any(unix, windows))]
+type SecureParent = File;
+#[cfg(not(any(unix, windows)))]
+type SecureParent = ();
+
+struct QuarantineSource {
+    parent: SecureParent,
+    file: File,
+    file_name: OsString,
+    path: PathBuf,
+}
+
+fn open_quarantine_source(path: &Path) -> ResponseResult<QuarantineSource> {
+    let canonical_path = fs::canonicalize(path)?;
+    let parent_path = canonical_path.parent().ok_or_else(|| {
+        ResponseError::InvalidInput("quarantine source has no parent".to_string())
+    })?;
+    let file_name = canonical_path.file_name().ok_or_else(|| {
+        ResponseError::InvalidInput("quarantine source has no file name".to_string())
+    })?;
+    let parent = open_restore_parent(parent_path)?;
+    let file = open_quarantine_leaf(&parent, file_name)?;
+    if !file.metadata()?.is_file() {
+        return Err(ResponseError::InvalidInput(format!(
+            "{} is not a regular file",
+            path.display()
+        )));
+    }
+    let path = normalize_path(&quarantine_handle_path(&file, &canonical_path)?);
+    Ok(QuarantineSource {
+        parent,
+        file,
+        file_name: file_name.to_os_string(),
+        path,
+    })
+}
+
+#[cfg(unix)]
+fn open_quarantine_leaf(parent: &File, file_name: &OsStr) -> ResponseResult<File> {
+    let file_name = unix_name(file_name)?;
+    let fd = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            file_name.as_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let file = unsafe { File::from_raw_fd(fd) };
+    if !file.metadata()?.is_file() {
+        return Err(ResponseError::InvalidInput(
+            "quarantine source is not a regular file".to_string(),
+        ));
+    }
+    Ok(file)
+}
+
+#[cfg(windows)]
+fn open_quarantine_leaf(parent: &File, file_name: &std::ffi::OsStr) -> ResponseResult<File> {
+    open_windows_relative(
+        parent,
+        file_name,
+        FILE_GENERIC_READ.0 | FILE_WRITE_ATTRIBUTES.0 | DELETE.0,
+        0x20 | 0x40 | 0x200000,
+    )
+}
+
+#[cfg(not(any(unix, windows)))]
+fn open_quarantine_leaf(_parent: &(), file_name: &std::ffi::OsStr) -> ResponseResult<File> {
+    Ok(File::open(file_name)?)
+}
+
+#[cfg(target_os = "linux")]
+fn quarantine_handle_path(file: &File, _fallback: &Path) -> ResponseResult<PathBuf> {
+    Ok(fs::read_link(format!(
+        "/proc/self/fd/{}",
+        file.as_raw_fd()
+    ))?)
+}
+
+#[cfg(target_os = "macos")]
+fn quarantine_handle_path(file: &File, _fallback: &Path) -> ResponseResult<PathBuf> {
+    let mut buffer = vec![0_u8; libc::PATH_MAX as usize];
+    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETPATH, buffer.as_mut_ptr()) } < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let length = buffer.iter().position(|byte| *byte == 0).ok_or_else(|| {
+        ResponseError::InvalidInput("quarantine source path is too long".to_string())
+    })?;
+    Ok(PathBuf::from(std::ffi::OsStr::from_bytes(
+        &buffer[..length],
+    )))
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+fn quarantine_handle_path(_file: &File, fallback: &Path) -> ResponseResult<PathBuf> {
+    Ok(fallback.to_path_buf())
+}
+
+#[cfg(windows)]
+fn quarantine_handle_path(file: &File, _fallback: &Path) -> ResponseResult<PathBuf> {
+    let mut buffer = vec![0_u16; 512];
+    loop {
+        let length = unsafe {
+            GetFinalPathNameByHandleW(
+                HANDLE(file.as_raw_handle()),
+                &mut buffer,
+                Default::default(),
+            )
+        } as usize;
+        if length == 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        if length < buffer.len() {
+            return Ok(PathBuf::from(OsString::from_wide(&buffer[..length])));
+        }
+        buffer.resize(length + 1, 0);
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn quarantine_handle_path(_file: &File, fallback: &Path) -> ResponseResult<PathBuf> {
+    Ok(fallback.to_path_buf())
+}
+
+#[cfg(unix)]
+fn same_file(left: &File, right: &File) -> ResponseResult<bool> {
+    let left = left.metadata()?;
+    let right = right.metadata()?;
+    Ok(left.dev() == right.dev() && left.ino() == right.ino())
+}
+
+#[cfg(windows)]
+fn same_file(left: &File, right: &File) -> ResponseResult<bool> {
+    fn identity(file: &File) -> ResponseResult<(u32, u32, u32)> {
+        let mut info = BY_HANDLE_FILE_INFORMATION::default();
+        unsafe { GetFileInformationByHandle(HANDLE(file.as_raw_handle()), &mut info) }
+            .map_err(|error| ResponseError::InvalidInput(format!("get file identity: {error}")))?;
+        Ok((
+            info.dwVolumeSerialNumber,
+            info.nFileIndexHigh,
+            info.nFileIndexLow,
+        ))
+    }
+    Ok(identity(left)? == identity(right)?)
+}
+
+#[cfg(unix)]
+fn verify_source_entry(source: &QuarantineSource) -> ResponseResult<()> {
+    let current = open_quarantine_leaf(&source.parent, &source.file_name)?;
+    if !same_file(&source.file, &current)? {
+        return Err(ResponseError::InvalidInput(
+            "quarantine source path no longer refers to the opened file".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn move_quarantine_source(
+    source: &mut QuarantineSource,
+    quarantine_parent: &File,
+    quarantine_name: &OsStr,
+    quarantine_path: &Path,
+) -> ResponseResult<bool> {
+    verify_source_entry(source)?;
+    let source_name = unix_name(&source.file_name)?;
+    let quarantine_name_c = unix_name(quarantine_name)?;
+    if unsafe {
+        libc::renameat(
+            source.parent.as_raw_fd(),
+            source_name.as_ptr(),
+            quarantine_parent.as_raw_fd(),
+            quarantine_name_c.as_ptr(),
+        )
+    } == 0
+    {
+        return Ok(true);
+    }
+    let err = std::io::Error::last_os_error();
+    if err.kind() != ErrorKind::CrossesDevices {
+        return Err(err.into());
+    }
+    let mut destination =
+        create_destination_exclusive(quarantine_parent, quarantine_name, quarantine_path)?;
+    source.file.seek(SeekFrom::Start(0))?;
+    std::io::copy(&mut source.file, &mut destination)?;
+    destination.sync_all()?;
+    Ok(false)
+}
+
+#[cfg(windows)]
+fn move_quarantine_source(
+    source: &mut QuarantineSource,
+    quarantine_parent: &File,
+    quarantine_name: &std::ffi::OsStr,
+    quarantine_path: &Path,
+) -> ResponseResult<bool> {
+    match rename_windows_handle(&source.file, quarantine_parent, quarantine_name) {
+        Ok(()) => Ok(true),
+        Err(err) if err.kind() == ErrorKind::CrossesDevices || err.raw_os_error() == Some(17) => {
+            let mut destination =
+                create_destination_exclusive(quarantine_parent, quarantine_name, quarantine_path)?;
+            source.file.seek(SeekFrom::Start(0))?;
+            std::io::copy(&mut source.file, &mut destination)?;
+            destination.sync_all()?;
+            Ok(false)
+        }
+        Err(err) => Err(err.into()),
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn move_quarantine_source(
+    source: &mut QuarantineSource,
+    _quarantine_parent: &(),
+    _quarantine_name: &std::ffi::OsStr,
+    quarantine_path: &Path,
+) -> ResponseResult<bool> {
+    fs::rename(&source.path, quarantine_path)?;
+    Ok(true)
+}
+
+#[cfg(windows)]
+fn rename_windows_handle(
+    file: &File,
+    parent: &File,
+    name: &std::ffi::OsStr,
+) -> std::io::Result<()> {
+    let name: Vec<u16> = name.encode_wide().collect();
+    let byte_len = std::mem::size_of::<FILE_RENAME_INFO>() + name.len().saturating_sub(1) * 2;
+    let mut buffer = vec![0_usize; byte_len.div_ceil(std::mem::size_of::<usize>())];
+    let info = buffer.as_mut_ptr() as *mut FILE_RENAME_INFO;
+    unsafe {
+        (*info).Anonymous = FILE_RENAME_INFO_0 {
+            ReplaceIfExists: BOOLEAN(0),
+        };
+        (*info).RootDirectory = HANDLE(parent.as_raw_handle());
+        (*info).FileNameLength = (name.len() * 2) as u32;
+        std::ptr::copy_nonoverlapping(name.as_ptr(), (*info).FileName.as_mut_ptr(), name.len());
+        SetFileInformationByHandle(
+            HANDLE(file.as_raw_handle()),
+            FileRenameInfo,
+            buffer.as_ptr() as *const std::ffi::c_void,
+            byte_len as u32,
+        )
+        .map_err(|error| {
+            let hresult = error.code().0;
+            let raw = if (hresult as u32 & 0xffff_0000) == 0x8007_0000 {
+                hresult & 0xffff
+            } else {
+                hresult
+            };
+            std::io::Error::from_raw_os_error(raw)
+        })
+    }
+}
+
+fn verify_quarantine_payload_handle(
+    file: &mut File,
+    sha256: &str,
+    file_size: u64,
+) -> ResponseResult<()> {
+    if file.metadata()?.len() != file_size {
+        return Err(ResponseError::InvalidInput(
+            "quarantine payload changed before provenance was recorded".to_string(),
+        ));
+    }
+    file.seek(SeekFrom::Start(0))?;
+    if hash_file(file)? != sha256 {
+        return Err(ResponseError::InvalidInput(
+            "quarantine payload changed before provenance was recorded".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn restrict_payload_handle(file: &File) -> ResponseResult<()> {
+    #[cfg(unix)]
+    file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    #[cfg(not(unix))]
+    {
+        let mut permissions = file.metadata()?.permissions();
+        permissions.set_readonly(true);
+        file.set_permissions(permissions)?;
+    }
+    file.sync_all()?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn rollback_quarantine_move(
+    moved: bool,
+    source: &QuarantineSource,
+    quarantine_parent: &File,
+    quarantine_name: &OsStr,
+    quarantine_path: &Path,
+    payload: &File,
+) -> ResponseResult<()> {
+    if moved {
+        let quarantine_name = unix_name(quarantine_name)?;
+        let source_name = unix_name(&source.file_name)?;
+        if unsafe {
+            libc::renameat(
+                quarantine_parent.as_raw_fd(),
+                quarantine_name.as_ptr(),
+                source.parent.as_raw_fd(),
+                source_name.as_ptr(),
+            )
+        } != 0
+        {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(())
+    } else {
+        remove_created_destination(quarantine_parent, quarantine_name, quarantine_path, payload)
+    }
+}
+
+#[cfg(windows)]
+fn rollback_quarantine_move(
+    moved: bool,
+    source: &QuarantineSource,
+    quarantine_parent: &File,
+    quarantine_name: &std::ffi::OsStr,
+    quarantine_path: &Path,
+    payload: &File,
+) -> ResponseResult<()> {
+    if moved {
+        rename_windows_handle(payload, &source.parent, &source.file_name)?;
+        Ok(())
+    } else {
+        remove_created_destination(quarantine_parent, quarantine_name, quarantine_path, payload)
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn rollback_quarantine_move(
+    moved: bool,
+    source: &QuarantineSource,
+    _quarantine_parent: &(),
+    _quarantine_name: &std::ffi::OsStr,
+    quarantine_path: &Path,
+    _payload: &File,
+) -> ResponseResult<()> {
+    if moved {
+        fs::rename(quarantine_path, &source.path)?;
+    } else {
+        fs::remove_file(quarantine_path)?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn zero_and_remove_source(source: &QuarantineSource, file_size: u64) -> ResponseResult<()> {
+    verify_source_entry(source)?;
+    let source_name = unix_name(&source.file_name)?;
+    let fd = unsafe {
+        libc::openat(
+            source.parent.as_raw_fd(),
+            source_name.as_ptr(),
+            libc::O_WRONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let mut writable = unsafe { File::from_raw_fd(fd) };
+    if !same_file(&source.file, &writable)? {
+        return Err(ResponseError::InvalidInput(
+            "quarantine source changed before cross-device cleanup".to_string(),
+        ));
+    }
+    writable.set_permissions(fs::Permissions::from_mode(0o600))?;
+    overwrite_file_prefix_with_zeros_file(&mut writable, file_size)?;
+    writable.sync_all()?;
+    verify_source_entry(source)?;
+    if unsafe { libc::unlinkat(source.parent.as_raw_fd(), source_name.as_ptr(), 0) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn zero_and_remove_source(source: &QuarantineSource, file_size: u64) -> ResponseResult<()> {
+    let mut writable = open_windows_relative(
+        &source.parent,
+        &source.file_name,
+        FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0 | DELETE.0,
+        0x20 | 0x40 | 0x200000,
+    )?;
+    if !same_file(&source.file, &writable)? {
+        return Err(ResponseError::InvalidInput(
+            "quarantine source changed before cross-device cleanup".to_string(),
+        ));
+    }
+    restrict_payload_handle(&writable)?;
+    overwrite_file_prefix_with_zeros_file(&mut writable, file_size)?;
+    writable.sync_all()?;
+    remove_windows_file_by_handle(&writable, "quarantine source")
+}
+
+#[cfg(not(any(unix, windows)))]
+fn zero_and_remove_source(source: &QuarantineSource, file_size: u64) -> ResponseResult<()> {
+    let mut file = OpenOptions::new().write(true).open(&source.path)?;
+    overwrite_file_prefix_with_zeros_file(&mut file, file_size)?;
+    fs::remove_file(&source.path)?;
+    Ok(())
 }
 
 pub fn restore_quarantined(
@@ -414,21 +828,6 @@ fn write_manifest_atomic(path: &Path, manifest: &QuarantineManifest) -> Response
         let _ = fs::remove_file(&temp_path);
     }
     result
-}
-
-fn hash_path(path: &Path) -> ResponseResult<String> {
-    let mut file = File::open(path)?;
-    hash_file(&mut file)
-}
-
-fn verify_quarantine_payload(path: &Path, sha256: &str, file_size: u64) -> ResponseResult<()> {
-    let mut file = open_regular_no_follow(path, "quarantine payload")?;
-    if file.metadata()?.len() != file_size || hash_file(&mut file)? != sha256 {
-        return Err(ResponseError::InvalidInput(
-            "quarantine payload changed before provenance was recorded".to_string(),
-        ));
-    }
-    Ok(())
 }
 
 fn hash_file(file: &mut File) -> ResponseResult<String> {
@@ -612,14 +1011,19 @@ fn open_restore_parent(path: &Path) -> ResponseResult<File> {
 }
 
 #[cfg(windows)]
-fn open_windows_restore_directory(parent: &File, name: &std::ffi::OsStr) -> ResponseResult<File> {
+fn open_windows_relative(
+    parent: &File,
+    name: &std::ffi::OsStr,
+    desired_access: u32,
+    create_options: u32,
+) -> ResponseResult<File> {
     let mut name: Vec<u16> = name.encode_wide().collect();
     if name.is_empty()
         || name.iter().any(|character| *character == 0)
         || name.len() > (u16::MAX as usize / 2)
     {
         return Err(ResponseError::InvalidInput(
-            "restore directory name is invalid for Windows".to_string(),
+            "relative Windows file name is invalid".to_string(),
         ));
     }
     let object_name = UNICODE_STRING {
@@ -643,14 +1047,14 @@ fn open_windows_restore_directory(parent: &File, name: &std::ffi::OsStr) -> Resp
     let status = unsafe {
         NtCreateFile(
             &mut handle,
-            FILE_GENERIC_READ.0,
+            desired_access,
             &object_attributes,
             &mut io_status,
             std::ptr::null(),
             0,
             FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0 | FILE_SHARE_DELETE.0,
-            1,                     // FILE_OPEN
-            0x1 | 0x20 | 0x200000, // directory, synchronous, open reparse point
+            1, // FILE_OPEN
+            create_options,
             std::ptr::null(),
             0,
         )
@@ -659,7 +1063,22 @@ fn open_windows_restore_directory(parent: &File, name: &std::ffi::OsStr) -> Resp
         let error = unsafe { RtlNtStatusToDosError(NTSTATUS(status)) };
         return Err(std::io::Error::from_raw_os_error(error as i32).into());
     }
-    let directory = unsafe { File::from_raw_handle(handle.0) };
+    Ok(unsafe { File::from_raw_handle(handle.0) })
+}
+
+#[cfg(windows)]
+fn open_windows_restore_directory(parent: &File, name: &std::ffi::OsStr) -> ResponseResult<File> {
+    let encoded: Vec<u16> = name.encode_wide().collect();
+    if encoded.is_empty()
+        || encoded.iter().any(|character| *character == 0)
+        || encoded.len() > (u16::MAX as usize / 2)
+    {
+        return Err(ResponseError::InvalidInput(
+            "restore directory name is invalid for Windows".to_string(),
+        ));
+    }
+    let directory =
+        open_windows_relative(parent, name, FILE_GENERIC_READ.0, 0x1 | 0x20 | 0x200000)?;
     validate_windows_restore_directory(&directory)?;
     Ok(directory)
 }
@@ -817,12 +1236,7 @@ fn remove_created_destination(
 }
 
 #[cfg(windows)]
-fn remove_created_destination(
-    _parent: &File,
-    _file_name: &std::ffi::OsStr,
-    _path: &Path,
-    file: &File,
-) -> ResponseResult<()> {
+fn remove_windows_file_by_handle(file: &File, label: &str) -> ResponseResult<()> {
     let disposition = FILE_DISPOSITION_INFO {
         DeleteFile: BOOLEAN(1),
     };
@@ -834,7 +1248,17 @@ fn remove_created_destination(
             std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32,
         )
     }
-    .map_err(|err| ResponseError::InvalidInput(format!("failed removing partial restore: {err}")))
+    .map_err(|err| ResponseError::InvalidInput(format!("failed removing {label}: {err}")))
+}
+
+#[cfg(windows)]
+fn remove_created_destination(
+    _parent: &File,
+    _file_name: &std::ffi::OsStr,
+    _path: &Path,
+    file: &File,
+) -> ResponseResult<()> {
+    remove_windows_file_by_handle(file, "partial restore")
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -901,13 +1325,6 @@ fn overwrite_file_prefix_with_zeros_file(file: &mut File, file_size: u64) -> Res
     Ok(())
 }
 
-fn durable_restrict_payload(path: &Path) -> ResponseResult<()> {
-    let file = File::open(path)?;
-    apply_restrictive_permissions(path)?;
-    file.sync_all()?;
-    Ok(())
-}
-
 #[cfg(unix)]
 fn apply_quarantine_dir_permissions(path: &Path) -> ResponseResult<()> {
     fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
@@ -916,20 +1333,6 @@ fn apply_quarantine_dir_permissions(path: &Path) -> ResponseResult<()> {
 
 #[cfg(not(unix))]
 fn apply_quarantine_dir_permissions(_path: &Path) -> ResponseResult<()> {
-    Ok(())
-}
-
-#[cfg(unix)]
-fn apply_restrictive_permissions(path: &Path) -> ResponseResult<()> {
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn apply_restrictive_permissions(path: &Path) -> ResponseResult<()> {
-    let mut perms = fs::metadata(path)?.permissions();
-    perms.set_readonly(true);
-    fs::set_permissions(path, perms)?;
     Ok(())
 }
 

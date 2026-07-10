@@ -247,6 +247,134 @@ fn open_restore_parent_refuses_intermediate_symlink_swap() {
 }
 
 #[test]
+#[cfg(unix)]
+fn quarantine_move_cannot_be_redirected_by_intermediate_parent_symlink_swap() {
+    let base = test_base("quarantine-parent-swap");
+    let original_ancestor = base.join("original");
+    let original_parent = original_ancestor.join("nested");
+    let moved_ancestor = base.join("moved-original");
+    let protected_ancestor = base.join("protected");
+    let protected_parent = protected_ancestor.join("nested");
+    let quarantine_dir = base.join("quarantine");
+    fs::create_dir_all(&original_parent).expect("create original parent");
+    fs::create_dir_all(&protected_parent).expect("create protected parent");
+    fs::create_dir_all(&quarantine_dir).expect("create quarantine parent");
+    let source_path = original_parent.join("payload.bin");
+    let protected_path = protected_parent.join("payload.bin");
+    fs::write(&source_path, b"opened source").expect("write source");
+    fs::write(&protected_path, b"protected bytes").expect("write protected source");
+
+    let mut source = open_quarantine_source(&source_path).expect("open source securely");
+    let quarantine_parent = open_restore_parent(
+        &fs::canonicalize(&quarantine_dir).expect("canonical quarantine parent"),
+    )
+    .expect("open quarantine parent");
+    fs::rename(&original_ancestor, &moved_ancestor).expect("move original ancestor");
+    std::os::unix::fs::symlink(&protected_ancestor, &original_ancestor)
+        .expect("replace ancestor with protected symlink");
+
+    let moved = move_quarantine_source(
+        &mut source,
+        &quarantine_parent,
+        OsStr::new("payload"),
+        &quarantine_dir.join("payload"),
+    )
+    .expect("move remains bound to opened parent");
+
+    assert!(moved);
+    assert_eq!(
+        fs::read(quarantine_dir.join("payload")).unwrap(),
+        b"opened source"
+    );
+    assert_eq!(fs::read(&protected_path).unwrap(), b"protected bytes");
+    let _ = fs::remove_file(&original_ancestor);
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+#[cfg(unix)]
+fn quarantine_move_refuses_replaced_source_leaf() {
+    let base = test_base("quarantine-leaf-swap");
+    let source_parent = base.join("source");
+    let quarantine_dir = base.join("quarantine");
+    fs::create_dir_all(&source_parent).expect("create source parent");
+    fs::create_dir_all(&quarantine_dir).expect("create quarantine parent");
+    let source_path = source_parent.join("payload.bin");
+    let original_path = source_parent.join("opened.bin");
+    fs::write(&source_path, b"opened source").expect("write source");
+    let mut source = open_quarantine_source(&source_path).expect("open source securely");
+    let quarantine_parent = open_restore_parent(
+        &fs::canonicalize(&quarantine_dir).expect("canonical quarantine parent"),
+    )
+    .expect("open quarantine parent");
+    fs::rename(&source_path, &original_path).expect("replace source leaf");
+    fs::write(&source_path, b"replacement bytes").expect("write replacement");
+
+    move_quarantine_source(
+        &mut source,
+        &quarantine_parent,
+        OsStr::new("payload"),
+        &quarantine_dir.join("payload"),
+    )
+    .expect_err("replaced source leaf refused");
+
+    assert_eq!(fs::read(&source_path).unwrap(), b"replacement bytes");
+    assert_eq!(fs::read(&original_path).unwrap(), b"opened source");
+    assert!(!quarantine_dir.join("payload").exists());
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+#[cfg(windows)]
+fn quarantine_move_cannot_be_redirected_by_intermediate_parent_junction_swap() {
+    let base = test_base("quarantine-parent-junction-swap");
+    let original_ancestor = base.join("original");
+    let original_parent = original_ancestor.join("nested");
+    let moved_ancestor = base.join("moved-original");
+    let protected_ancestor = base.join("protected");
+    let protected_parent = protected_ancestor.join("nested");
+    let quarantine_dir = base.join("quarantine");
+    fs::create_dir_all(&original_parent).expect("create original parent");
+    fs::create_dir_all(&protected_parent).expect("create protected parent");
+    fs::create_dir_all(&quarantine_dir).expect("create quarantine parent");
+    let source_path = original_parent.join("payload.bin");
+    let protected_path = protected_parent.join("payload.bin");
+    fs::write(&source_path, b"opened source").expect("write source");
+    fs::write(&protected_path, b"protected bytes").expect("write protected source");
+
+    let mut source = open_quarantine_source(&source_path).expect("open source securely");
+    let quarantine_parent = open_restore_parent(
+        &fs::canonicalize(&quarantine_dir).expect("canonical quarantine parent"),
+    )
+    .expect("open quarantine parent");
+    fs::rename(&original_ancestor, &moved_ancestor).expect("move original ancestor");
+    let output = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(&original_ancestor)
+        .arg(&protected_ancestor)
+        .output()
+        .expect("create replacement junction");
+    assert!(output.status.success(), "mklink failed: {output:?}");
+
+    let moved = move_quarantine_source(
+        &mut source,
+        &quarantine_parent,
+        std::ffi::OsStr::new("payload"),
+        &quarantine_dir.join("payload"),
+    )
+    .expect("move remains bound to opened handle");
+
+    assert!(moved);
+    assert_eq!(
+        fs::read(quarantine_dir.join("payload")).unwrap(),
+        b"opened source"
+    );
+    assert_eq!(fs::read(&protected_path).unwrap(), b"protected bytes");
+    let _ = fs::remove_dir(&original_ancestor);
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
 #[cfg(windows)]
 fn open_restore_parent_refuses_intermediate_junction_swap() {
     let base = test_base("restore-parent-junction-swap");
@@ -745,6 +873,50 @@ fn quarantine_prefers_rename_within_same_filesystem() {
     );
 
     let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn quarantine_cross_device_zeroes_and_unlinks_the_opened_source_inode() {
+    let base = test_base("quarantine-cross-device");
+    fs::create_dir_all(&base).expect("create source parent");
+    let quarantine_dir = PathBuf::from("/dev/shm").join(format!(
+        "eguard-quarantine-cross-device-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&quarantine_dir).expect("create cross-device quarantine parent");
+    assert_ne!(
+        fs::metadata(&base).unwrap().dev(),
+        fs::metadata(&quarantine_dir).unwrap().dev(),
+        "test requires /dev/shm on a different filesystem"
+    );
+    let original = base.join("source.bin");
+    let witness = base.join("source-witness.bin");
+    let payload = vec![0x5a; 5000];
+    fs::write(&original, &payload).expect("write source");
+    fs::hard_link(&original, &witness).expect("retain inode witness");
+
+    let report = quarantine_file_with_dir(
+        &original,
+        &digest(&payload),
+        &ProtectedList {
+            process_patterns: Vec::new(),
+            protected_paths: Vec::new(),
+        },
+        &quarantine_dir,
+    )
+    .expect("cross-device quarantine");
+
+    assert!(!original.exists());
+    let witnessed = fs::read(&witness).expect("read retained source inode");
+    assert!(witnessed[..4096].iter().all(|byte| *byte == 0));
+    assert_eq!(&witnessed[4096..], &payload[4096..]);
+    assert_eq!(fs::read(&report.quarantine_path).unwrap(), payload);
+    let _ = fs::remove_dir_all(&base);
+    let _ = fs::remove_dir_all(&quarantine_dir);
 }
 
 #[test]
