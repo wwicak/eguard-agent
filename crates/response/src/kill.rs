@@ -56,6 +56,7 @@ pub trait SignalSender {
     fn send(&self, pid: u32, signal: Signal) -> ResponseResult<()>;
 }
 
+#[cfg(not(target_os = "windows"))]
 pub struct ProcfsIntrospector;
 
 #[cfg(target_os = "linux")]
@@ -517,27 +518,6 @@ impl WindowsProcessApi for NativeWindowsProcessApi {
 }
 
 #[cfg(target_os = "windows")]
-impl ProcessIntrospector for ProcfsIntrospector {
-    fn children_of(&self, pid: u32) -> Vec<u32> {
-        NativeWindowsProcessApi
-            .process_snapshot()
-            .map(|entries| {
-                entries
-                    .into_iter()
-                    .filter_map(|entry| (entry.parent_pid == pid).then_some(entry.pid))
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    fn process_name(&self, pid: u32) -> Option<String> {
-        let api = NativeWindowsProcessApi;
-        let handle = api.open_process(pid).ok()?;
-        api.process_name(&handle).ok()
-    }
-}
-
-#[cfg(target_os = "windows")]
 fn windows_pid_is_always_protected(pid: u32) -> bool {
     pid <= 2 || pid == std::process::id()
 }
@@ -682,6 +662,7 @@ fn kill_process_tree_windows_with<A: WindowsProcessApi>(
     })
 }
 
+#[cfg(not(target_os = "windows"))]
 pub struct NixSignalSender;
 
 #[cfg(unix)]
@@ -703,19 +684,6 @@ impl SignalSender for NixSignalSender {
                 signal, pid, err
             ))),
         }
-    }
-}
-
-#[cfg(target_os = "windows")]
-impl SignalSender for NixSignalSender {
-    fn send(&self, pid: u32, signal: Signal) -> ResponseResult<()> {
-        if matches!(signal, Signal::SIGSTOP) {
-            return Ok(());
-        }
-
-        let api = NativeWindowsProcessApi;
-        let handle = api.open_process(pid)?;
-        api.terminate_process(&handle)
     }
 }
 
@@ -746,6 +714,7 @@ pub fn kill_process_tree(pid: u32, protected: &ProtectedList) -> ResponseResult<
     }
 }
 
+#[cfg(any(not(target_os = "windows"), test))]
 pub fn kill_process_tree_with(
     pid: u32,
     protected: &ProtectedList,
@@ -792,6 +761,7 @@ pub fn kill_process_tree_with(
     })
 }
 
+#[cfg(any(not(target_os = "windows"), test))]
 fn collect_descendants(
     pid: u32,
     introspector: &dyn ProcessIntrospector,
@@ -810,6 +780,7 @@ fn collect_descendants(
     }
 }
 
+#[cfg(any(not(target_os = "windows"), test))]
 fn is_pid_protected(
     pid: u32,
     protected: &ProtectedList,

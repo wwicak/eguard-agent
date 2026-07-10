@@ -193,6 +193,40 @@ fn restore_create_failure_never_deletes_preexisting_destination() {
 
 #[test]
 #[cfg(unix)]
+fn failed_restore_cleanup_only_unlinks_the_created_inode() {
+    let base = test_base("restore-cleanup-identity");
+    fs::create_dir_all(&base).expect("create restore parent");
+    let parent = open_restore_parent(&fs::canonicalize(&base).expect("canonicalize parent"))
+        .expect("open restore parent");
+
+    let replaced_name = OsStr::new("replaced.bin");
+    let replaced_path = base.join(replaced_name);
+    let created = create_destination_exclusive(&parent, replaced_name, &replaced_path)
+        .expect("create destination");
+    let moved_path = base.join("created-moved.bin");
+    fs::rename(&replaced_path, &moved_path).expect("move created inode");
+    fs::write(&replaced_path, b"racer replacement").expect("replace path entry");
+
+    remove_created_destination(&parent, replaced_name, &replaced_path, &created)
+        .expect_err("inode mismatch must refuse cleanup");
+    assert_eq!(
+        fs::read(&replaced_path).expect("replacement retained"),
+        b"racer replacement"
+    );
+
+    let matching_name = OsStr::new("matching.bin");
+    let matching_path = base.join(matching_name);
+    let matching = create_destination_exclusive(&parent, matching_name, &matching_path)
+        .expect("create matching destination");
+    remove_created_destination(&parent, matching_name, &matching_path, &matching)
+        .expect("matching created inode cleaned");
+    assert!(!matching_path.exists());
+
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+#[cfg(unix)]
 fn open_restore_parent_refuses_intermediate_symlink_swap() {
     let base = test_base("restore-parent-swap");
     let original_ancestor = base.join("original");

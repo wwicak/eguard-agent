@@ -13,15 +13,20 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 #[cfg(unix)]
 use std::os::unix::io::{AsRawFd, FromRawFd};
 #[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
+#[cfg(windows)]
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 #[cfg(windows)]
-use std::os::windows::io::AsRawHandle;
+use std::os::windows::io::{AsRawHandle, FromRawHandle};
 #[cfg(windows)]
-use windows::Win32::Foundation::{BOOLEAN, HANDLE};
+use windows::Win32::Foundation::{
+    RtlNtStatusToDosError, BOOLEAN, HANDLE, NTSTATUS, UNICODE_STRING,
+};
 #[cfg(windows)]
 use windows::Win32::Storage::FileSystem::{
     FileDispositionInfo, SetFileInformationByHandle, DELETE, FILE_ATTRIBUTE_REPARSE_POINT,
-    FILE_DISPOSITION_INFO, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_WRITE,
+    FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    FILE_GENERIC_WRITE, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
 };
 
 use serde::{Deserialize, Serialize};
@@ -533,7 +538,24 @@ fn unix_name(name: &OsStr) -> ResponseResult<CString> {
     })
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn open_restore_parent(path: &Path) -> ResponseResult<File> {
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .share_mode(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0 | FILE_SHARE_DELETE.0)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0 | FILE_FLAG_OPEN_REPARSE_POINT.0);
+    let parent = options.open(path)?;
+    let metadata = parent.metadata()?;
+    if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 {
+        return Err(ResponseError::InvalidInput(
+            "restore parent is not a non-reparse directory".to_string(),
+        ));
+    }
+    Ok(parent)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn open_restore_parent(_path: &Path) -> ResponseResult<()> {
     Ok(())
 }
@@ -561,18 +583,87 @@ fn create_destination_exclusive(
 
 #[cfg(windows)]
 fn create_destination_exclusive(
-    _parent: &(),
-    _file_name: &std::ffi::OsStr,
-    path: &Path,
+    parent: &File,
+    file_name: &std::ffi::OsStr,
+    _path: &Path,
 ) -> ResponseResult<File> {
-    let mut options = OpenOptions::new();
-    options
-        .write(true)
-        .create_new(true)
-        .access_mode(FILE_GENERIC_WRITE.0 | DELETE.0)
-        .share_mode(0)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0);
-    Ok(options.open(path)?)
+    #[repr(C)]
+    struct ObjectAttributes {
+        length: u32,
+        root_directory: HANDLE,
+        object_name: *const UNICODE_STRING,
+        attributes: u32,
+        security_descriptor: *const std::ffi::c_void,
+        security_quality_of_service: *const std::ffi::c_void,
+    }
+
+    #[repr(C)]
+    struct IoStatusBlock {
+        status_or_pointer: *mut std::ffi::c_void,
+        information: usize,
+    }
+
+    #[link(name = "ntdll")]
+    extern "system" {
+        fn NtCreateFile(
+            file_handle: *mut HANDLE,
+            desired_access: u32,
+            object_attributes: *const ObjectAttributes,
+            io_status_block: *mut IoStatusBlock,
+            allocation_size: *const i64,
+            file_attributes: u32,
+            share_access: u32,
+            create_disposition: u32,
+            create_options: u32,
+            ea_buffer: *const std::ffi::c_void,
+            ea_length: u32,
+        ) -> i32;
+    }
+
+    let mut name: Vec<u16> = file_name.encode_wide().collect();
+    if name.iter().any(|character| *character == 0) || name.len() > (u16::MAX as usize / 2) {
+        return Err(ResponseError::InvalidInput(
+            "restore file name is invalid for Windows".to_string(),
+        ));
+    }
+    let object_name = UNICODE_STRING {
+        Length: (name.len() * 2) as u16,
+        MaximumLength: (name.len() * 2) as u16,
+        Buffer: windows::core::PWSTR(name.as_mut_ptr()),
+    };
+    let object_attributes = ObjectAttributes {
+        length: std::mem::size_of::<ObjectAttributes>() as u32,
+        root_directory: HANDLE(parent.as_raw_handle()),
+        object_name: &object_name,
+        attributes: 0x40, // OBJ_CASE_INSENSITIVE
+        security_descriptor: std::ptr::null(),
+        security_quality_of_service: std::ptr::null(),
+    };
+    let mut io_status = IoStatusBlock {
+        status_or_pointer: std::ptr::null_mut(),
+        information: 0,
+    };
+    let mut handle = HANDLE::default();
+    let status = unsafe {
+        NtCreateFile(
+            &mut handle,
+            FILE_GENERIC_WRITE.0 | DELETE.0,
+            &object_attributes,
+            &mut io_status,
+            std::ptr::null(),
+            0,
+            0,
+            2,                      // FILE_CREATE (CREATE_NEW)
+            0x20 | 0x40 | 0x200000, // synchronous, non-directory, open reparse point
+            std::ptr::null(),
+            0,
+        )
+    };
+    if status < 0 {
+        let error = unsafe { RtlNtStatusToDosError(NTSTATUS(status)) };
+        return Err(std::io::Error::from_raw_os_error(error as i32).into());
+    }
+    Ok(unsafe { File::from_raw_handle(handle.0) })
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -604,9 +695,34 @@ fn remove_created_destination(
     parent: &File,
     file_name: &OsStr,
     _path: &Path,
-    _file: &File,
+    file: &File,
 ) -> ResponseResult<()> {
     let file_name = unix_name(file_name)?;
+    let mut created = std::mem::MaybeUninit::<libc::stat>::uninit();
+    if unsafe { libc::fstat(file.as_raw_fd(), created.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let created = unsafe { created.assume_init() };
+    let mut current = std::mem::MaybeUninit::<libc::stat>::uninit();
+    if unsafe {
+        libc::fstatat(
+            parent.as_raw_fd(),
+            file_name.as_ptr(),
+            current.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let current = unsafe { current.assume_init() };
+    if created.st_dev != current.st_dev || created.st_ino != current.st_ino {
+        return Err(ResponseError::InvalidInput(
+            "partial restore path no longer refers to the created file".to_string(),
+        ));
+    }
+    // A same-name replacement remains theoretically possible between fstatat and unlinkat;
+    // Unix has no portable unlink-by-handle operation, so keep this window minimal.
     if unsafe { libc::unlinkat(parent.as_raw_fd(), file_name.as_ptr(), 0) } != 0 {
         return Err(std::io::Error::last_os_error().into());
     }
@@ -615,7 +731,7 @@ fn remove_created_destination(
 
 #[cfg(windows)]
 fn remove_created_destination(
-    _parent: &(),
+    _parent: &File,
     _file_name: &std::ffi::OsStr,
     _path: &Path,
     file: &File,
@@ -650,7 +766,12 @@ fn sync_restore_parent(parent: &File, _path: &Path) -> ResponseResult<()> {
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn sync_restore_parent(_parent: &File, _path: &Path) -> ResponseResult<()> {
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
 fn sync_restore_parent(_parent: &(), path: &Path) -> ResponseResult<()> {
     sync_directory(path)
 }
