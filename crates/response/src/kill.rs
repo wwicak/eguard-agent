@@ -1,7 +1,29 @@
+#[cfg(any(test, target_os = "windows"))]
+use std::collections::HashMap;
 use std::collections::{HashSet, VecDeque};
 
 #[cfg(target_os = "linux")]
 use std::fs;
+
+#[cfg(target_os = "windows")]
+use std::mem::size_of;
+#[cfg(target_os = "windows")]
+use windows::{
+    core::{HRESULT, PWSTR},
+    Win32::{
+        Foundation::{CloseHandle, ERROR_NO_MORE_FILES, HANDLE},
+        System::{
+            Diagnostics::ToolHelp::{
+                CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+                TH32CS_SNAPPROCESS,
+            },
+            Threading::{
+                OpenProcess, QueryFullProcessImageNameW, TerminateProcess, PROCESS_NAME_FORMAT,
+                PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+            },
+        },
+    },
+};
 
 #[cfg(unix)]
 use nix::sys::signal::{kill, Signal as NixSignal};
@@ -22,6 +44,7 @@ pub struct KillReport {
     pub target_pid: u32,
     pub killed_pids: Vec<u32>,
     pub skipped_protected_pids: Vec<u32>,
+    pub failed_pids: Vec<u32>,
 }
 
 pub trait ProcessIntrospector {
@@ -261,7 +284,7 @@ fn process_name_macos(pid: u32) -> Option<String> {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, target_os = "windows")))]
 impl ProcessIntrospector for ProcfsIntrospector {
     fn children_of(&self, _pid: u32) -> Vec<u32> {
         Vec::new()
@@ -270,6 +293,301 @@ impl ProcessIntrospector for ProcfsIntrospector {
     fn process_name(&self, _pid: u32) -> Option<String> {
         None
     }
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn snapshot_parent_map(entries: &[(u32, u32)]) -> ResponseResult<HashMap<u32, u32>> {
+    let mut parents = HashMap::new();
+    for &(pid, parent_pid) in entries {
+        if pid == 0 {
+            continue;
+        }
+        match parents.insert(pid, parent_pid) {
+            Some(existing) if existing != parent_pid => {
+                return Err(ResponseError::Signal(format!(
+                    "process snapshot contains conflicting parents for pid {pid}"
+                )))
+            }
+            _ => {}
+        }
+    }
+    Ok(parents)
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn descendants_from_snapshot(
+    root_pid: u32,
+    entries: &[(u32, u32)],
+    max_descendants: usize,
+) -> ResponseResult<Vec<(u32, u32)>> {
+    let parents = snapshot_parent_map(entries)?;
+    let mut children = HashMap::<u32, Vec<u32>>::new();
+    let mut edges = HashSet::new();
+    for &(pid, parent_pid) in entries {
+        if pid != 0 && parents.get(&pid) == Some(&parent_pid) && edges.insert((pid, parent_pid)) {
+            children.entry(parent_pid).or_default().push(pid);
+        }
+    }
+
+    let mut descendants = Vec::new();
+    let mut seen = HashSet::from([root_pid]);
+    let mut queue = VecDeque::from([root_pid]);
+    while let Some(parent_pid) = queue.pop_front() {
+        for &pid in children.get(&parent_pid).into_iter().flatten() {
+            if !seen.insert(pid) {
+                return Err(ResponseError::Signal(format!(
+                    "cycle detected in process snapshot at pid {pid}"
+                )));
+            }
+            if descendants.len() >= max_descendants {
+                return Err(ResponseError::Signal(format!(
+                    "process tree rooted at {root_pid} exceeds {max_descendants} descendants"
+                )));
+            }
+            descendants.push((pid, parent_pid));
+            queue.push_back(pid);
+        }
+    }
+    Ok(descendants)
+}
+
+#[cfg(target_os = "windows")]
+const MAX_WINDOWS_SNAPSHOT_PROCESSES: usize = 32_768;
+#[cfg(target_os = "windows")]
+const MAX_WINDOWS_TREE_DESCENDANTS: usize = 4_096;
+
+#[cfg(target_os = "windows")]
+struct OwnedWindowsHandle(HANDLE);
+
+#[cfg(target_os = "windows")]
+impl Drop for OwnedWindowsHandle {
+    fn drop(&mut self) {
+        let _ = unsafe { CloseHandle(self.0) };
+    }
+}
+
+#[cfg(target_os = "windows")]
+trait WindowsProcessApi {
+    type Handle;
+
+    fn process_snapshot(&self) -> ResponseResult<Vec<(u32, u32)>>;
+    fn open_process(&self, pid: u32) -> ResponseResult<Self::Handle>;
+    fn process_name(&self, handle: &Self::Handle) -> ResponseResult<String>;
+    fn terminate_process(&self, handle: &Self::Handle) -> ResponseResult<()>;
+}
+
+#[cfg(target_os = "windows")]
+struct NativeWindowsProcessApi;
+
+#[cfg(target_os = "windows")]
+impl WindowsProcessApi for NativeWindowsProcessApi {
+    type Handle = OwnedWindowsHandle;
+
+    fn process_snapshot(&self) -> ResponseResult<Vec<(u32, u32)>> {
+        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }
+            .map(OwnedWindowsHandle)
+            .map_err(|err| {
+                ResponseError::Signal(format!("create Windows process snapshot: {err}"))
+            })?;
+        let mut entry = PROCESSENTRY32W::default();
+        entry.dwSize = size_of::<PROCESSENTRY32W>() as u32;
+
+        match unsafe { Process32FirstW(snapshot.0, &mut entry) } {
+            Ok(()) => {}
+            Err(err) if err.code() == HRESULT::from_win32(ERROR_NO_MORE_FILES.0) => {
+                return Ok(Vec::new())
+            }
+            Err(err) => {
+                return Err(ResponseError::Signal(format!(
+                    "read first Windows process snapshot entry: {err}"
+                )))
+            }
+        }
+
+        let mut entries = Vec::new();
+        loop {
+            if entries.len() >= MAX_WINDOWS_SNAPSHOT_PROCESSES {
+                return Err(ResponseError::Signal(format!(
+                    "Windows process snapshot exceeds {MAX_WINDOWS_SNAPSHOT_PROCESSES} entries"
+                )));
+            }
+            entries.push((entry.th32ProcessID, entry.th32ParentProcessID));
+
+            match unsafe { Process32NextW(snapshot.0, &mut entry) } {
+                Ok(()) => {}
+                Err(err) if err.code() == HRESULT::from_win32(ERROR_NO_MORE_FILES.0) => break,
+                Err(err) => {
+                    return Err(ResponseError::Signal(format!(
+                        "read Windows process snapshot entry: {err}"
+                    )))
+                }
+            }
+        }
+        Ok(entries)
+    }
+
+    fn open_process(&self, pid: u32) -> ResponseResult<Self::Handle> {
+        unsafe {
+            OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE,
+                false,
+                pid,
+            )
+        }
+        .map(OwnedWindowsHandle)
+        .map_err(|err| ResponseError::Signal(format!("open Windows process {pid}: {err}")))
+    }
+
+    fn process_name(&self, handle: &Self::Handle) -> ResponseResult<String> {
+        let mut path = vec![0u16; 32_768];
+        let mut len = path.len() as u32;
+        unsafe {
+            QueryFullProcessImageNameW(
+                handle.0,
+                PROCESS_NAME_FORMAT(0),
+                PWSTR(path.as_mut_ptr()),
+                &mut len,
+            )
+        }
+        .map_err(|err| ResponseError::Signal(format!("query Windows process image name: {err}")))?;
+        if len == 0 {
+            return Err(ResponseError::Signal(
+                "query Windows process image name returned an empty path".to_string(),
+            ));
+        }
+
+        let path = String::from_utf16(&path[..len as usize]).map_err(|_| {
+            ResponseError::Signal("Windows process image name is not valid UTF-16".to_string())
+        })?;
+        let name = path.rsplit(['\\', '/']).next().unwrap_or_default();
+        if name.is_empty() {
+            return Err(ResponseError::Signal(
+                "Windows process image path has no basename".to_string(),
+            ));
+        }
+        Ok(name.to_string())
+    }
+
+    fn terminate_process(&self, handle: &Self::Handle) -> ResponseResult<()> {
+        unsafe { TerminateProcess(handle.0, 1) }
+            .map_err(|err| ResponseError::Signal(format!("terminate Windows process: {err}")))
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl ProcessIntrospector for ProcfsIntrospector {
+    fn children_of(&self, pid: u32) -> Vec<u32> {
+        NativeWindowsProcessApi
+            .process_snapshot()
+            .map(|entries| {
+                entries
+                    .into_iter()
+                    .filter_map(|(child_pid, parent_pid)| (parent_pid == pid).then_some(child_pid))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn process_name(&self, pid: u32) -> Option<String> {
+        let api = NativeWindowsProcessApi;
+        let handle = api.open_process(pid).ok()?;
+        api.process_name(&handle).ok()
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_pid_is_always_protected(pid: u32) -> bool {
+    pid <= 2 || pid == std::process::id()
+}
+
+#[cfg(target_os = "windows")]
+fn kill_process_tree_windows_with<A: WindowsProcessApi>(
+    pid: u32,
+    protected: &ProtectedList,
+    api: &A,
+) -> ResponseResult<KillReport> {
+    if pid == 0 {
+        return Err(ResponseError::InvalidInput(
+            "pid must be greater than zero".to_string(),
+        ));
+    }
+    if windows_pid_is_always_protected(pid) {
+        return Err(ResponseError::ProtectedProcess(pid));
+    }
+
+    // The root is opened before topology capture and every accepted child remains open
+    // from image-name validation through termination. Windows cannot reuse those PIDs
+    // while these handles keep the process objects alive.
+    let root_handle = api.open_process(pid)?;
+    let root_name = api.process_name(&root_handle)?;
+    if protected.is_protected_process(&root_name) {
+        return Err(ResponseError::ProtectedProcess(pid));
+    }
+
+    let snapshot = api.process_snapshot()?;
+    let descendants = descendants_from_snapshot(pid, &snapshot, MAX_WINDOWS_TREE_DESCENDANTS)?;
+    let mut protected_pids = Vec::new();
+    let mut failed_pids = Vec::new();
+    let mut child_handles = Vec::new();
+
+    for (child_pid, parent_pid) in descendants {
+        if windows_pid_is_always_protected(child_pid) {
+            protected_pids.push(child_pid);
+            continue;
+        }
+        let handle = match api.open_process(child_pid) {
+            Ok(handle) => handle,
+            Err(_) => {
+                failed_pids.push(child_pid);
+                continue;
+            }
+        };
+        let name = match api.process_name(&handle) {
+            Ok(name) => name,
+            Err(_) => {
+                failed_pids.push(child_pid);
+                continue;
+            }
+        };
+        if protected.is_protected_process(&name) {
+            protected_pids.push(child_pid);
+        } else {
+            child_handles.push((child_pid, parent_pid, handle));
+        }
+    }
+
+    // A second bounded snapshot closes the snapshot-to-OpenProcess PID-reuse gap:
+    // while each handle is held, its PID cannot be reassigned, so a changed parent
+    // relationship identifies a stale first-snapshot entry and is failed closed.
+    let validation_snapshot = api.process_snapshot()?;
+    let validation_parents = snapshot_parent_map(&validation_snapshot)?;
+    let mut validated_handles = Vec::new();
+    for (child_pid, parent_pid, handle) in child_handles {
+        if validation_parents.get(&child_pid) == Some(&parent_pid) {
+            validated_handles.push((child_pid, handle));
+        } else {
+            failed_pids.push(child_pid);
+        }
+    }
+
+    let mut killed_pids = Vec::new();
+    for (child_pid, handle) in validated_handles.iter().rev() {
+        match api.terminate_process(handle) {
+            Ok(()) => killed_pids.push(*child_pid),
+            Err(_) => failed_pids.push(*child_pid),
+        }
+    }
+    match api.terminate_process(&root_handle) {
+        Ok(()) => killed_pids.push(pid),
+        Err(_) => failed_pids.push(pid),
+    }
+
+    Ok(KillReport {
+        target_pid: pid,
+        killed_pids,
+        skipped_protected_pids: protected_pids,
+        failed_pids,
+    })
 }
 
 pub struct NixSignalSender;
@@ -296,48 +614,41 @@ impl SignalSender for NixSignalSender {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(target_os = "windows")]
 impl SignalSender for NixSignalSender {
     fn send(&self, pid: u32, signal: Signal) -> ResponseResult<()> {
         if matches!(signal, Signal::SIGSTOP) {
-            // No portable suspend primitive in this fallback path on Windows.
             return Ok(());
         }
 
-        let output = std::process::Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/F"])
-            .output()
-            .map_err(ResponseError::Io)?;
+        let api = NativeWindowsProcessApi;
+        let handle = api.open_process(pid)?;
+        api.terminate_process(&handle)
+    }
+}
 
-        if output.status.success() {
-            return Ok(());
-        }
-
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let detail = if !stderr.is_empty() {
-            stderr
-        } else if !stdout.is_empty() {
-            stdout
-        } else {
-            format!("taskkill failed with status {}", output.status)
-        };
-
+#[cfg(not(any(unix, target_os = "windows")))]
+impl SignalSender for NixSignalSender {
+    fn send(&self, pid: u32, signal: Signal) -> ResponseResult<()> {
         Err(ResponseError::Signal(format!(
-            "send {:?} to {}: {}",
-            signal, pid, detail
+            "send {:?} to {} is unsupported on this platform",
+            signal, pid
         )))
     }
 }
 
 pub fn kill_process_tree(pid: u32, protected: &ProtectedList) -> ResponseResult<KillReport> {
+    #[cfg(target_os = "windows")]
+    {
+        kill_process_tree_windows_with(pid, protected, &NativeWindowsProcessApi)
+    }
     #[cfg(target_os = "macos")]
     {
         // Use snapshot-based introspector to avoid O(n*d) sysctl calls.
         let introspector = MacosProcessIntrospector::snapshot();
         kill_process_tree_with(pid, protected, &introspector, &NixSignalSender)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         kill_process_tree_with(pid, protected, &ProcfsIntrospector, &NixSignalSender)
     }
@@ -385,6 +696,7 @@ pub fn kill_process_tree_with(
         target_pid: pid,
         killed_pids: killed,
         skipped_protected_pids: skipped,
+        failed_pids: Vec::new(),
     })
 }
 

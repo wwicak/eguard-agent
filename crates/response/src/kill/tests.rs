@@ -164,6 +164,161 @@ fn descendant_cycle_does_not_rekill_target_pid() {
     );
 }
 
+#[test]
+fn snapshot_topology_deduplicates_entries_and_orders_descendants() {
+    let entries = vec![(800, 1), (801, 800), (801, 800), (802, 800), (803, 801)];
+    let descendants = descendants_from_snapshot(800, &entries, 10).expect("valid topology");
+    assert_eq!(descendants, vec![(801, 800), (802, 800), (803, 801)]);
+}
+
+#[test]
+fn snapshot_topology_fails_closed_on_cycles_and_caps() {
+    let cycle = vec![(900, 901), (901, 900)];
+    assert!(descendants_from_snapshot(900, &cycle, 10).is_err());
+
+    let over_cap = vec![(910, 1), (911, 910), (912, 910), (913, 910)];
+    assert!(descendants_from_snapshot(910, &over_cap, 2).is_err());
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Default)]
+struct MockWindowsApi {
+    snapshot: Vec<(u32, u32)>,
+    validation_snapshot: Option<Vec<(u32, u32)>>,
+    snapshot_calls: std::cell::Cell<usize>,
+    handles: HashMap<u32, u64>,
+    names: HashMap<u64, String>,
+    denied_pids: std::collections::HashSet<u32>,
+    name_denied_handles: std::collections::HashSet<u64>,
+    opened_pids: RefCell<Vec<u32>>,
+    terminated_handles: RefCell<Vec<u64>>,
+}
+
+#[cfg(target_os = "windows")]
+impl WindowsProcessApi for MockWindowsApi {
+    type Handle = u64;
+
+    fn process_snapshot(&self) -> ResponseResult<Vec<(u32, u32)>> {
+        let call = self.snapshot_calls.get();
+        self.snapshot_calls.set(call + 1);
+        Ok(if call > 0 {
+            self.validation_snapshot
+                .as_ref()
+                .unwrap_or(&self.snapshot)
+                .clone()
+        } else {
+            self.snapshot.clone()
+        })
+    }
+
+    fn open_process(&self, pid: u32) -> ResponseResult<Self::Handle> {
+        self.opened_pids.borrow_mut().push(pid);
+        if self.denied_pids.contains(&pid) {
+            return Err(ResponseError::Signal(format!("access denied for {pid}")));
+        }
+        self.handles
+            .get(&pid)
+            .copied()
+            .ok_or_else(|| ResponseError::Signal(format!("unknown pid {pid}")))
+    }
+
+    fn process_name(&self, handle: &Self::Handle) -> ResponseResult<String> {
+        if self.name_denied_handles.contains(handle) {
+            return Err(ResponseError::Signal("image query denied".to_string()));
+        }
+        self.names
+            .get(handle)
+            .cloned()
+            .ok_or_else(|| ResponseError::Signal("unknown image name".to_string()))
+    }
+
+    fn terminate_process(&self, handle: &Self::Handle) -> ResponseResult<()> {
+        self.terminated_handles.borrow_mut().push(*handle);
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_mixed_case_protected_target_is_never_terminated() {
+    let api = MockWindowsApi {
+        handles: HashMap::from([(1000, 5000)]),
+        names: HashMap::from([(5000, "CSRSS.EXE".to_string())]),
+        ..MockWindowsApi::default()
+    };
+
+    let err = kill_process_tree_windows_with(1000, &ProtectedList::default_windows(), &api)
+        .expect_err("mixed-case protected image must fail closed");
+    assert!(matches!(err, ResponseError::ProtectedProcess(1000)));
+    assert!(api.terminated_handles.borrow().is_empty());
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_access_denied_and_unknown_identity_fail_closed() {
+    let root_denied = MockWindowsApi {
+        denied_pids: std::collections::HashSet::from([1100]),
+        ..MockWindowsApi::default()
+    };
+    assert!(
+        kill_process_tree_windows_with(1100, &ProtectedList::default_windows(), &root_denied)
+            .is_err()
+    );
+    assert!(root_denied.terminated_handles.borrow().is_empty());
+
+    let child_unknown = MockWindowsApi {
+        snapshot: vec![(1200, 1), (1201, 1200)],
+        handles: HashMap::from([(1200, 5200), (1201, 5201)]),
+        names: HashMap::from([(5200, "malware.exe".to_string())]),
+        ..MockWindowsApi::default()
+    };
+    let report =
+        kill_process_tree_windows_with(1200, &ProtectedList::default_windows(), &child_unknown)
+            .expect("unknown child is skipped while identified root is terminated");
+    assert_eq!(report.killed_pids, vec![1200]);
+    assert_eq!(report.failed_pids, vec![1201]);
+    assert_eq!(*child_unknown.terminated_handles.borrow(), vec![5200]);
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_no_child_termination_uses_the_identified_handle() {
+    let api = MockWindowsApi {
+        snapshot: vec![(1300, 1)],
+        handles: HashMap::from([(1300, 0xfeed)]),
+        names: HashMap::from([(0xfeed, "payload.exe".to_string())]),
+        ..MockWindowsApi::default()
+    };
+    let report = kill_process_tree_windows_with(1300, &ProtectedList::default_windows(), &api)
+        .expect("terminate root-only tree");
+
+    assert_eq!(report.killed_pids, vec![1300]);
+    assert!(report.failed_pids.is_empty());
+    assert_eq!(*api.opened_pids.borrow(), vec![1300]);
+    assert_eq!(*api.terminated_handles.borrow(), vec![0xfeed]);
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_changed_parent_snapshot_is_not_terminated() {
+    let api = MockWindowsApi {
+        snapshot: vec![(1400, 1), (1401, 1400)],
+        validation_snapshot: Some(vec![(1400, 1), (1401, 9999)]),
+        handles: HashMap::from([(1400, 5400), (1401, 5401)]),
+        names: HashMap::from([
+            (5400, "payload.exe".to_string()),
+            (5401, "reused.exe".to_string()),
+        ]),
+        ..MockWindowsApi::default()
+    };
+    let report = kill_process_tree_windows_with(1400, &ProtectedList::default_windows(), &api)
+        .expect("stale child snapshot should be skipped");
+
+    assert_eq!(report.killed_pids, vec![1400]);
+    assert_eq!(report.failed_pids, vec![1401]);
+    assert_eq!(*api.terminated_handles.borrow(), vec![5400]);
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn procfs_introspector_prefers_proc_exe_basename_when_available() {

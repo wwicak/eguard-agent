@@ -465,6 +465,10 @@ fn default_windows_protected_processes_match_baseline() {
     assert!(protected.is_protected_process("lsass.exe"));
     assert!(protected.is_protected_process("svchost.exe"));
     assert!(protected.is_protected_process("eguard-agent.exe"));
+    // Windows image names are case-insensitive.
+    assert!(protected.is_protected_process("CSRSS.EXE"));
+    assert!(protected.is_protected_process("Csrss.Exe"));
+    assert!(protected.is_protected_process("SYSTEM"));
     // Negatives
     assert!(!protected.is_protected_process("notepad"));
     assert!(!protected.is_protected_process("notepad.exe"));

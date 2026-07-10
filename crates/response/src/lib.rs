@@ -175,7 +175,7 @@ impl ProtectedList {
             "^eguard-agent(\\.exe)?$",
         ]
         .into_iter()
-        .map(compile_process_pattern)
+        .map(compile_windows_process_pattern)
         .collect();
 
         let protected_paths = vec![
@@ -336,6 +336,23 @@ fn compile_process_pattern(raw: &str) -> Regex {
     Regex::new(&pattern).unwrap_or_else(|_| {
         Regex::new(&format!("^{}$", regex::escape(raw))).expect("fallback regex should compile")
     })
+}
+
+fn compile_windows_process_pattern(raw: &str) -> Regex {
+    let pattern = if looks_like_regex(raw) {
+        raw.to_string()
+    } else {
+        format!("^{}$", regex::escape(raw))
+    };
+    regex::RegexBuilder::new(&pattern)
+        .case_insensitive(true)
+        .build()
+        .unwrap_or_else(|_| {
+            regex::RegexBuilder::new(&format!("^{}$", regex::escape(raw)))
+                .case_insensitive(true)
+                .build()
+                .expect("fallback regex should compile")
+        })
 }
 
 fn looks_like_regex(raw: &str) -> bool {
