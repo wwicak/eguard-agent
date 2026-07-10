@@ -45,6 +45,9 @@ impl AgentRuntime {
         for (key, value) in collect_platform_hardware_inventory() {
             attributes.insert(key, value);
         }
+        for (key, value) in collect_configured_gps_attributes(now_unix) {
+            attributes.insert(key, value);
+        }
 
         InventoryEnvelope {
             agent_id: self.config.agent_id.clone(),
@@ -325,6 +328,57 @@ pub(super) fn resolve_primary_ip() -> Option<String> {
     socket.local_addr().ok().map(|addr| addr.ip().to_string())
 }
 
+fn collect_configured_gps_attributes(now_unix: i64) -> HashMap<String, String> {
+    let Some(latitude) = read_coordinate_env("EGUARD_GPS_LATITUDE", -90.0, 90.0) else {
+        return HashMap::new();
+    };
+    let Some(longitude) = read_coordinate_env("EGUARD_GPS_LONGITUDE", -180.0, 180.0) else {
+        return HashMap::new();
+    };
+
+    let mut attrs = HashMap::new();
+    attrs.insert("gps.latitude".to_string(), latitude);
+    attrs.insert("gps.longitude".to_string(), longitude);
+    attrs.insert("gps.collected_at_unix".to_string(), now_unix.to_string());
+    if let Some(accuracy) = read_non_negative_number_env("EGUARD_GPS_ACCURACY_METERS") {
+        attrs.insert("gps.accuracy_meters".to_string(), accuracy);
+    }
+    if let Some(provider) = env_trimmed("EGUARD_GPS_PROVIDER") {
+        attrs.insert("gps.provider".to_string(), provider);
+    }
+    attrs
+}
+
+fn read_coordinate_env(key: &str, min: f64, max: f64) -> Option<String> {
+    let value = env_trimmed(key)?;
+    let parsed = value.parse::<f64>().ok()?;
+    if parsed.is_finite() && parsed >= min && parsed <= max {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+fn read_non_negative_number_env(key: &str) -> Option<String> {
+    let value = env_trimmed(key)?;
+    let parsed = value.parse::<f64>().ok()?;
+    if parsed.is_finite() && parsed >= 0.0 {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+fn env_trimmed(key: &str) -> Option<String> {
+    let value = std::env::var(key).ok()?;
+    let value = value.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Platform-dispatched hardware inventory collection
 // ---------------------------------------------------------------------------
@@ -351,6 +405,72 @@ fn collect_platform_hardware_inventory() -> HashMap<String, String> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn gps_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    fn clear_gps_env() {
+        for key in [
+            "EGUARD_GPS_LATITUDE",
+            "EGUARD_GPS_LONGITUDE",
+            "EGUARD_GPS_ACCURACY_METERS",
+            "EGUARD_GPS_PROVIDER",
+        ] {
+            std::env::remove_var(key);
+        }
+    }
+
+    #[test]
+    fn configured_gps_env_adds_inventory_attributes() {
+        let _guard = gps_env_lock();
+        clear_gps_env();
+        std::env::set_var("EGUARD_GPS_LATITUDE", "-6.200000");
+        std::env::set_var("EGUARD_GPS_LONGITUDE", "106.816666");
+        std::env::set_var("EGUARD_GPS_ACCURACY_METERS", "25");
+        std::env::set_var("EGUARD_GPS_PROVIDER", "manual");
+
+        let attrs = collect_configured_gps_attributes(1_783_513_600);
+        clear_gps_env();
+
+        assert_eq!(
+            attrs.get("gps.latitude").map(String::as_str),
+            Some("-6.200000")
+        );
+        assert_eq!(
+            attrs.get("gps.longitude").map(String::as_str),
+            Some("106.816666")
+        );
+        assert_eq!(
+            attrs.get("gps.accuracy_meters").map(String::as_str),
+            Some("25")
+        );
+        assert_eq!(
+            attrs.get("gps.provider").map(String::as_str),
+            Some("manual")
+        );
+        assert_eq!(
+            attrs.get("gps.collected_at_unix").map(String::as_str),
+            Some("1783513600")
+        );
+    }
+
+    #[test]
+    fn configured_gps_env_requires_valid_latitude_and_longitude() {
+        let _guard = gps_env_lock();
+        clear_gps_env();
+        std::env::set_var("EGUARD_GPS_LATITUDE", "999");
+        std::env::set_var("EGUARD_GPS_LONGITUDE", "106.816666");
+
+        let attrs = collect_configured_gps_attributes(1_783_513_600);
+        clear_gps_env();
+
+        assert!(attrs.is_empty());
+    }
+
     #[test]
     fn macos_inventory_must_not_read_dev_console_as_file_content() {
         let source = include_str!("inventory.rs");

@@ -6,6 +6,7 @@ mod platform;
 mod test_support;
 
 use anyhow::Result;
+use std::ffi::OsStr;
 use std::fs::OpenOptions;
 use std::future::Future;
 #[cfg(target_os = "windows")]
@@ -44,6 +45,14 @@ enum ShutdownReason {
 // and preventing SetServiceStatus(SERVICE_RUNNING) from being called
 // within the 30-second SCM timeout.
 fn main() -> Result<()> {
+    if std::env::args_os()
+        .skip(1)
+        .any(|arg| is_version_flag(arg.as_os_str()))
+    {
+        println!("{}", effective_agent_version());
+        return Ok(());
+    }
+
     #[cfg(target_os = "windows")]
     {
         return windows_service_entry::run();
@@ -56,6 +65,15 @@ fn main() -> Result<()> {
             .build()?;
         runtime.block_on(run_console())
     }
+}
+
+fn is_version_flag(arg: &OsStr) -> bool {
+    arg == OsStr::new("--version") || arg == OsStr::new("-V")
+}
+
+fn effective_agent_version() -> String {
+    std::env::var(agent_version::BUILD_VERSION_ENV)
+        .unwrap_or_else(|_| agent_version::current_agent_version().to_string())
 }
 
 async fn run_console() -> Result<()> {
@@ -628,5 +646,17 @@ mod windows_service_entry {
             wait_hint: Duration::from_millis(wait_hint_ms as u64),
             process_id: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsStr;
+
+    #[test]
+    fn version_flag_accepts_long_and_short_forms() {
+        assert!(super::is_version_flag(OsStr::new("--version")));
+        assert!(super::is_version_flag(OsStr::new("-V")));
+        assert!(!super::is_version_flag(OsStr::new("--verbose")));
     }
 }

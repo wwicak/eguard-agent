@@ -1,4 +1,4 @@
-use crate::debugger::{detect_debugger, DebuggerCheckConfig, DebuggerObservation};
+use crate::debugger::{detect_debugger, DebuggerCheckConfig, DebuggerObservation, DebuggerSignal};
 use crate::integrity::{hash_file_sha256, measure_self_integrity, IntegrityMeasurement};
 use std::path::Path;
 use std::sync::OnceLock;
@@ -223,16 +223,22 @@ impl SelfProtectEngine {
 
         let debugger_observation = detect_debugger(&self.config.debugger);
         for signal in &debugger_observation.signals {
-            report
-                .violations
-                .push(SelfProtectViolation::DebuggerSignal {
-                    code: signal.code().to_string(),
-                    detail: signal.to_string(),
-                });
+            if is_hard_debugger_signal(signal) {
+                report
+                    .violations
+                    .push(SelfProtectViolation::DebuggerSignal {
+                        code: signal.code().to_string(),
+                        detail: signal.to_string(),
+                    });
+            }
         }
         report.debugger_observation = debugger_observation;
         report
     }
+}
+
+fn is_hard_debugger_signal(signal: &DebuggerSignal) -> bool {
+    matches!(signal, DebuggerSignal::TracerPidDetected { .. })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -441,4 +447,62 @@ fn env_flag_enabled(name: &str) -> bool {
             )
         })
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config_without_runtime_paths() -> SelfProtectConfig {
+        SelfProtectConfig {
+            expected_integrity_sha256_hex: None,
+            debugger: DebuggerCheckConfig {
+                timing_threshold_cycles: u64::MAX,
+                timing_probe_iterations: 1,
+                enable_tracer_pid_probe: false,
+                enable_timing_probe: false,
+            },
+            runtime_integrity_paths: Vec::new(),
+            runtime_config_paths: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn timing_anomaly_is_observable_but_not_a_hard_violation() {
+        let mut config = config_without_runtime_paths();
+        config.debugger.enable_timing_probe = true;
+        config.debugger.timing_threshold_cycles = 0;
+
+        let report = SelfProtectEngine::new(config).evaluate();
+
+        assert!(report
+            .debugger_observation
+            .signal_codes()
+            .contains(&"timing_anomaly"));
+        assert!(report.is_clean());
+        assert!(report.violation_codes().is_empty());
+    }
+
+    #[test]
+    fn hard_debugger_signal_still_counts_as_violation() {
+        let violation = SelfProtectViolation::DebuggerSignal {
+            code: DebuggerSignal::TracerPidDetected { tracer_pid: 123 }
+                .code()
+                .to_string(),
+            detail: DebuggerSignal::TracerPidDetected { tracer_pid: 123 }.to_string(),
+        };
+        let report = SelfProtectReport {
+            integrity_measurement: None,
+            debugger_observation: DebuggerObservation {
+                signals: vec![DebuggerSignal::TracerPidDetected { tracer_pid: 123 }],
+            },
+            violations: vec![violation],
+        };
+
+        assert!(!report.is_clean());
+        assert_eq!(
+            report.violation_codes(),
+            vec!["debugger_detected:tracer_pid_detected".to_string()]
+        );
+    }
 }

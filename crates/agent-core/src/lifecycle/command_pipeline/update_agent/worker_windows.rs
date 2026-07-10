@@ -136,6 +136,48 @@ function Verify-FileHash {
     return $actual
 }
 
+function Normalize-Version {
+    param([string]$Value)
+    return ($Value.Trim() -replace '^[vV]', '')
+}
+
+function Verify-AgentVersion {
+    param([string]$BinaryPath, [string]$ExpectedVersion)
+    if (-not (Test-Path $BinaryPath)) {
+        throw "agent binary missing after package install: $BinaryPath"
+    }
+
+    $output = & $BinaryPath --version 2>&1
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0) {
+        throw "agent binary version check failed after package install (exit=$exitCode): $($output -join ' ')"
+    }
+
+    $actual = [string]($output | Select-Object -First 1)
+    if ((Normalize-Version $actual) -ne (Normalize-Version $ExpectedVersion)) {
+        throw "agent binary version mismatch after package install: expected $ExpectedVersion got $actual"
+    }
+    return $actual.Trim()
+}
+
+function Start-AgentServiceAndWait {
+    param([string]$ServiceName)
+    Start-Service -Name $ServiceName
+
+    $startWait = 0
+    while ($startWait -lt 30) {
+        $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+        $serviceProcessId = Get-ServiceProcessId -ServiceName $ServiceName
+        if ($service -and $service.Status -eq 'Running' -and $serviceProcessId -gt 0) {
+            return $serviceProcessId
+        }
+        Start-Sleep -Seconds 1
+        $startWait++
+    }
+
+    throw "agent service did not reach Running after package install"
+}
+
 try {
     New-Item -ItemType Directory -Path $WorkingDir -Force | Out-Null
     $ext = if ($PackageKind -eq 'msi') { 'msi' } else { 'exe' }
@@ -155,11 +197,15 @@ try {
     if ($PackageKind -eq 'msi') {
         Stop-AgentService -ServiceName $serviceName
         Write-Log "installing MSI package"
-        Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/i', $pkgPath, '/qn', '/norestart') -Wait -NoNewWindow
+        $msiProcess = Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/i', $pkgPath, '/qn', '/norestart') -Wait -NoNewWindow -PassThru
+        if ($msiProcess.ExitCode -ne 0 -and $msiProcess.ExitCode -ne 3010) {
+            throw "msi package install failed with exit code $($msiProcess.ExitCode)"
+        }
         Restore-ServicePolicy -ServiceName $serviceName -BinaryPath $agentPath
-        Start-Service -Name $serviceName -ErrorAction SilentlyContinue
-        Write-Log "MSI update finished"
-        Write-Outcome -Status 'completed' -Detail ("agent update applied (version=" + $TargetVersion + ", kind=msi)")
+        $installedVersion = Verify-AgentVersion -BinaryPath $agentPath -ExpectedVersion $TargetVersion
+        $servicePid = Start-AgentServiceAndWait -ServiceName $serviceName
+        Write-Log "MSI update finished (observed_version=$installedVersion, pid=$servicePid)"
+        Write-Outcome -Status 'completed' -Detail ("agent update applied (version=" + $TargetVersion + ", kind=msi, observed_version=" + $installedVersion + ")")
         exit 0
     }
 
@@ -171,10 +217,11 @@ try {
 
     Copy-Item -Path $pkgPath -Destination $agentPath -Force
     $installedHash = Verify-FileHash -Path $agentPath -ExpectedSha256 $ExpectedSha256
+    $installedVersion = Verify-AgentVersion -BinaryPath $agentPath -ExpectedVersion $TargetVersion
     Restore-ServicePolicy -ServiceName $serviceName -BinaryPath $agentPath
-    Start-Service -Name $serviceName
-    Write-Log "EXE update finished (installed_sha256=$installedHash)"
-    Write-Outcome -Status 'completed' -Detail ("agent update applied (version=" + $TargetVersion + ", kind=exe, sha256=" + $installedHash + ")")
+    $servicePid = Start-AgentServiceAndWait -ServiceName $serviceName
+    Write-Log "EXE update finished (installed_sha256=$installedHash, observed_version=$installedVersion, pid=$servicePid)"
+    Write-Outcome -Status 'completed' -Detail ("agent update applied (version=" + $TargetVersion + ", kind=exe, sha256=" + $installedHash + ", observed_version=" + $installedVersion + ")")
 }
 catch {
     try {

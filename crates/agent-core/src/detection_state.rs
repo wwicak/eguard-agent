@@ -4,7 +4,7 @@ use std::sync::{mpsc, Arc};
 use anyhow::{anyhow, Result};
 use arc_swap::ArcSwap;
 use detection::{DetectionEngine, DetectionOutcome, EventClass, TelemetryEvent};
-use tracing::info;
+use tracing::{info, warn};
 
 enum ShardCommand {
     ProcessEvent {
@@ -207,8 +207,26 @@ fn shard_worker_loop(mut engine: DetectionEngine, rx: mpsc::Receiver<ShardComman
                 engine: replacement,
                 response,
             } => {
-                engine = *replacement;
+                // Swap the engine in immediately so subsequent ProcessEvent
+                // commands run against the new rules.
+                let old_engine = std::mem::replace(&mut engine, *replacement);
+                // Respond before dropping the old engine.  Detection engines
+                // carry millions of YARA/Sigma/IOC structures and the Drop
+                // implementation can take many seconds; the caller is a
+                // tokio task blocking on this response, so a slow Drop here
+                // stalls heartbeat/telemetry/command pipelines.
                 let _ = response.send(Ok(()));
+                // Drop the old engine on a dedicated background thread so
+                // the shard worker is free to handle the next command
+                // (typically a flood of queued ProcessEvent calls).
+                if let Err(err) = std::thread::Builder::new()
+                    .name("eguard-detection-engine-drop".to_string())
+                    .spawn(move || drop(old_engine))
+                {
+                    // Falling back to inline drop keeps correctness; we
+                    // simply accept the latency on this rare failure path.
+                    warn!(error = %err, "failed to spawn detection-engine drop thread; dropping inline");
+                }
             }
             ShardCommand::UpdateAllowlist {
                 processes,
