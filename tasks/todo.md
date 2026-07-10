@@ -145,3 +145,61 @@ Allow trusted Windows MSI/installer upgrades to stop and replace `eGuardAgent` w
   - avoid temporary SCM failure-action/start-mode mutation during updater flow where possible.
   - add tests/docs for Windows service stop policy and supported MSI maintenance workflow.
   - add fe_eguard server tests/docs for package alias precedence or migrate to a single package layout.
+
+---
+
+## Task Plan — Protected-path hardening for autonomous quarantine
+
+## Objective
+Prevent autonomous quarantine from damaging core Linux OS files through direct paths, usr-merge aliases, intermediate symlinks, or runtime/state roots.
+
+## Plan
+- [x] Read the hardening spec and relevant response/quarantine code before editing.
+- [x] Review prior protected-path commit `ece5d48` before editing.
+- [x] Extend Linux protected paths for usr-merge aliases, pseudo/runtime roots, eGuard state, and critical `/var/lib` state without protecting all `/var` or `/home`.
+- [x] Canonicalize existing quarantine source paths at the destructive primitive and re-check protection before move/copy.
+- [x] Add regression coverage for `/etc/fstab`, alias roots, protected state roots, intermediate symlink bypass, and ordinary quarantine behavior.
+- [x] Apply security-review additions for lib variants, `/root`, Debian package state roots, canonical report path, and unprotected intermediate-symlink happy path.
+
+## Checks
+- [x] `cargo test -p response default_linux_protected_paths_match_acceptance_baseline` — passed.
+- [x] `cargo test -p response quarantine_rejects_intermediate_symlink_into_protected_root` — passed.
+- [x] `cargo test -p response quarantine_allows_intermediate_symlink_to_unprotected_target_and_reports_canonical_path` — passed.
+- [x] `rustfmt --edition 2021 --check crates/response/src/lib.rs crates/response/src/quarantine.rs crates/response/src/tests.rs crates/response/src/quarantine/tests.rs` — passed.
+- [x] `cargo test -p agent-core response_pipeline::tests` — passed.
+- [x] `cargo fmt --all -- --check` — failed on unrelated pre-existing formatting in `crates/agent-core/src/lifecycle/command_pipeline/update_agent/worker_macos.rs` and `crates/platform-windows/src/compliance/screen_lock.rs`; not changed for this task.
+- [x] `cargo test -p response` — failed on unrelated pre-existing expectations/permissions tests; targeted hardening tests passed.
+
+## Review Result
+- Minimal response-only hardening implemented; security-review protected-root and canonical-report fixes applied.
+- No deployment or commit performed.
+
+
+---
+
+## Task Plan — Quarantine rate limit circuit breaker
+
+## Objective
+Enforce the configured per-minute quarantine limit before destructive quarantine filesystem mutation.
+
+## Plan
+- [x] Add `max_quarantines_per_minute` to response config with default `5`.
+- [x] Parse/persist the limit from TOML, environment, enrollment snapshots, and policy sync.
+- [x] Reuse the existing rolling one-minute limiter for an independent quarantine quota.
+- [x] Reject rate-limited quarantine attempts before mutation with `quarantine_skipped:rate_limited`.
+- [x] Add focused config, persistence, policy, and action tests.
+
+## Checks
+- [x] `rustfmt --edition 2021 --check` on changed Rust files — passed.
+- [x] `cargo test -p agent-core file_config_is_loaded` — passed.
+- [x] `cargo test -p agent-core env_overrides_file_config` — passed.
+- [x] `cargo test -p agent-core persist_runtime_config_snapshot_writes_restart_safe_values` — passed.
+- [x] `cargo test -p agent-core policy_response_overrides_update_runtime_response_config` — passed.
+- [x] `cargo test -p agent-core quarantine_rate_limiter_skips_second_file_without_consuming_kill_quota` — passed.
+- [x] `cargo test -p agent-core response_pipeline::tests` — passed.
+- [x] `git diff --check` — passed.
+
+## Review Result
+- Minimal quarantine circuit breaker implemented; existing protected-path hardening diff preserved.
+- Broader pre-existing failures from prior report were not rerun: `cargo fmt --all -- --check` had unrelated formatting failures in `crates/agent-core/src/lifecycle/command_pipeline/update_agent/worker_macos.rs` and `crates/platform-windows/src/compliance/screen_lock.rs`; `cargo test -p response` had unrelated pre-existing response expectation/permission failures.
+- No deployment or commit performed.

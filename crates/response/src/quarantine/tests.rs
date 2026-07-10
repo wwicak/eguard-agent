@@ -46,6 +46,86 @@ fn protected_path_is_rejected_before_quarantine() {
 }
 
 #[test]
+#[cfg(unix)]
+fn quarantine_rejects_intermediate_symlink_into_protected_root() {
+    let base = std::env::temp_dir().join(format!(
+        "eguard-quarantine-symlink-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    let protected_dir = base.join("protected");
+    let alias_dir = base.join("alias");
+    let quarantine_dir = base.join("quarantine");
+    fs::create_dir_all(&protected_dir).expect("create protected dir");
+    let protected_dir = fs::canonicalize(&protected_dir).expect("canonical protected dir");
+    std::os::unix::fs::symlink(&protected_dir, &alias_dir).expect("create symlink dir");
+
+    let target = protected_dir.join("payload.bin");
+    let payload = b"protected payload";
+    fs::write(&target, payload).expect("write protected target");
+    let alias_path = alias_dir.join("payload.bin");
+    let protected = ProtectedList {
+        process_patterns: Vec::new(),
+        protected_paths: vec![protected_dir.clone()],
+    };
+
+    let err = quarantine_file_with_dir(&alias_path, "deadbeef", &protected, &quarantine_dir)
+        .expect_err("canonical protected path rejected");
+
+    assert!(matches!(err, ResponseError::ProtectedPath(p) if p == target));
+    assert_eq!(fs::read(&target).expect("target remains"), payload);
+    assert!(!quarantine_dir.join("deadbeef").exists());
+
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+#[cfg(unix)]
+fn quarantine_allows_intermediate_symlink_to_unprotected_target_and_reports_canonical_path() {
+    let base = std::env::temp_dir().join(format!(
+        "eguard-quarantine-symlink-happy-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    let target_dir = base.join("target");
+    let alias_dir = base.join("alias");
+    let quarantine_dir = base.join("quarantine");
+    fs::create_dir_all(&target_dir).expect("create target dir");
+    let target_dir = fs::canonicalize(&target_dir).expect("canonical target dir");
+    std::os::unix::fs::symlink(&target_dir, &alias_dir).expect("create symlink dir");
+
+    let target = target_dir.join("payload.bin");
+    let payload = b"unprotected payload";
+    fs::write(&target, payload).expect("write target");
+    let alias_path = alias_dir.join("payload.bin");
+    let protected = ProtectedList {
+        process_patterns: Vec::new(),
+        protected_paths: vec![base.join("different-protected-root")],
+    };
+
+    let report = quarantine_file_with_dir(&alias_path, "cafebabe", &protected, &quarantine_dir)
+        .expect("unprotected canonical target quarantined");
+
+    assert_eq!(report.original_path, target);
+    assert_eq!(report.quarantine_path, quarantine_dir.join("cafebabe"));
+    assert!(!target.exists());
+    assert!(!alias_path.exists());
+    #[cfg(unix)]
+    fs::set_permissions(&report.quarantine_path, fs::Permissions::from_mode(0o600))
+        .expect("restore perms for readback");
+    assert_eq!(
+        fs::read(&report.quarantine_path).expect("read quarantined"),
+        payload
+    );
+
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
 fn macos_directory_services_record_is_rejected_before_quarantine() {
     let protected = ProtectedList::default_macos();
     let path = Path::new("/var/db/dslocal/nodes/Default/users/root.plist");

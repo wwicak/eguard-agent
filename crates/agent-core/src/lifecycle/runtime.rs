@@ -47,6 +47,7 @@ pub struct AgentRuntime {
     pub(super) detection_state: SharedDetectionState,
     pub(super) protected: ProtectedList,
     pub(super) limiter: KillRateLimiter,
+    pub(super) quarantine_limiter: KillRateLimiter,
     pub(super) compliance_policy: CompliancePolicy,
     pub(super) compliance_policy_id: String,
     pub(super) compliance_policy_version: String,
@@ -434,6 +435,7 @@ impl AgentRuntime {
 
         let mut runtime = Self {
             limiter: KillRateLimiter::new(config.response.max_kills_per_minute),
+            quarantine_limiter: KillRateLimiter::new(config.response.max_quarantines_per_minute),
             protected: {
                 #[cfg(target_os = "linux")]
                 {

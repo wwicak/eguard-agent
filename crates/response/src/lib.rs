@@ -44,6 +44,7 @@ pub struct ResponseConfig {
     pub autonomous_response: bool,
     pub dry_run: bool,
     pub max_kills_per_minute: usize,
+    pub max_quarantines_per_minute: usize,
     pub auto_isolation: AutoIsolationPolicy,
     pub definite: ResponsePolicy,
     pub very_high: ResponsePolicy,
@@ -89,6 +90,7 @@ impl Default for ResponseConfig {
             autonomous_response: autonomous,
             dry_run: false,
             max_kills_per_minute: 10,
+            max_quarantines_per_minute: 5,
             auto_isolation: AutoIsolationPolicy::default(),
             //              kill  quarantine  capture_script
             definite: ResponsePolicy::new(true, true, true),
@@ -122,14 +124,34 @@ impl ProtectedList {
         .collect();
 
         let protected_paths = vec![
+            PathBuf::from("/bin"),
+            PathBuf::from("/sbin"),
             PathBuf::from("/usr/bin"),
             PathBuf::from("/usr/sbin"),
             PathBuf::from("/lib"),
+            PathBuf::from("/lib64"),
             PathBuf::from("/usr/lib"),
+            PathBuf::from("/usr/lib64"),
+            PathBuf::from("/usr/lib32"),
+            PathBuf::from("/usr/libx32"),
             PathBuf::from("/usr/libexec"),
             PathBuf::from("/boot"),
             PathBuf::from("/etc"),
+            PathBuf::from("/root"),
+            PathBuf::from("/proc"),
+            PathBuf::from("/sys"),
+            PathBuf::from("/dev"),
+            PathBuf::from("/run"),
+            PathBuf::from("/var/run"),
             PathBuf::from("/usr/local/eg"),
+            PathBuf::from("/var/lib/eguard-agent"),
+            PathBuf::from("/var/lib/rpm"),
+            PathBuf::from("/var/lib/dnf"),
+            PathBuf::from("/var/lib/dpkg"),
+            PathBuf::from("/var/lib/apt"),
+            PathBuf::from("/var/lib/systemd"),
+            PathBuf::from("/var/lib/NetworkManager"),
+            PathBuf::from("/var/lib/dbus"),
         ];
 
         Self {
@@ -287,6 +309,10 @@ impl KillRateLimiter {
             max_kills_per_minute,
             kill_timestamps: VecDeque::new(),
         }
+    }
+
+    pub fn set_max_per_minute(&mut self, max_per_minute: usize) {
+        self.max_kills_per_minute = max_per_minute;
     }
 
     pub fn allow(&mut self, now: Instant) -> bool {

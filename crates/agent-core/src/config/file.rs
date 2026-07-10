@@ -118,6 +118,9 @@ impl AgentConfig {
             if let Some(v) = rate_limit.max_kills_per_minute {
                 self.response.max_kills_per_minute = v;
             }
+            if let Some(v) = rate_limit.max_quarantines_per_minute {
+                self.response.max_quarantines_per_minute = v;
+            }
         }
         if let Some(auto_isolation) = response.auto_isolation {
             if let Some(v) = auto_isolation.enabled {
@@ -492,6 +495,8 @@ pub struct FileResponsePolicy {
 struct FileResponseRateLimitConfig {
     #[serde(default)]
     max_kills_per_minute: Option<usize>,
+    #[serde(default)]
+    max_quarantines_per_minute: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

@@ -74,22 +74,11 @@ pub fn quarantine_file_with_dir(
     }
     let normalized_sha256 = normalize_quarantine_id(sha256);
 
-    // Use symlink_metadata to detect symlinks without following them.
-    let sym_meta = fs::symlink_metadata(path)?;
-    let effective_path;
-    let metadata;
-    if sym_meta.file_type().is_symlink() {
-        // Resolve the real path and re-check protection on the canonical target.
-        let canonical = fs::canonicalize(path)?;
-        if protected.is_protected_path(&canonical) {
-            return Err(ResponseError::ProtectedPath(canonical));
-        }
-        metadata = fs::metadata(&canonical)?;
-        effective_path = canonical;
-    } else {
-        metadata = fs::metadata(path)?;
-        effective_path = path.to_path_buf();
+    let effective_path = fs::canonicalize(path)?;
+    if protected.is_protected_path(&effective_path) {
+        return Err(ResponseError::ProtectedPath(effective_path));
     }
+    let metadata = fs::metadata(&effective_path)?;
 
     if !metadata.is_file() {
         return Err(ResponseError::InvalidInput(format!(
@@ -120,7 +109,7 @@ pub fn quarantine_file_with_dir(
     let (original_mode, owner_uid, owner_gid) = metadata_identity(&metadata);
 
     Ok(QuarantineReport {
-        original_path: path.to_path_buf(),
+        original_path: effective_path,
         quarantine_path,
         sha256: normalized_sha256,
         file_size: metadata.len(),

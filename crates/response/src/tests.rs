@@ -92,15 +92,46 @@ fn dry_run_forces_alert_only() {
 fn default_linux_protected_paths_match_acceptance_baseline() {
     let protected = ProtectedList::default_linux();
 
-    assert!(protected.is_protected_path(Path::new("/usr/bin/ls")));
-    assert!(protected.is_protected_path(Path::new("/usr/sbin/sshd")));
-    assert!(protected.is_protected_path(Path::new("/usr/lib/libc.so")));
-    assert!(protected.is_protected_path(Path::new("/usr/libexec/openssh/sshd-session")));
-    assert!(protected.is_protected_path(Path::new("/lib/modules")));
-    assert!(protected.is_protected_path(Path::new("/boot/vmlinuz")));
-    assert!(protected.is_protected_path(Path::new("/etc/shadow")));
-    assert!(protected.is_protected_path(Path::new("/usr/local/eg/agent")));
+    for path in [
+        "/usr/bin/ls",
+        "/usr/sbin/sshd",
+        "/usr/lib/libc.so",
+        "/usr/libexec/openssh/sshd-session",
+        "/lib/modules",
+        "/boot/vmlinuz",
+        "/etc/shadow",
+        "/etc/fstab",
+        "/usr/local/eg/agent",
+        "/bin/systemctl",
+        "/sbin/reboot",
+        "/lib64/ld-linux-x86-64.so.2",
+        "/usr/lib64/ld-linux-x86-64.so.2",
+        "/usr/lib32/libc.so.6",
+        "/usr/libx32/libc.so.6",
+        "/root/.ssh/authorized_keys",
+        "/var/lib/eguard-agent/quarantine/sample",
+        "/var/lib/rpm/rpmdb.sqlite",
+        "/var/lib/dnf/history.sqlite",
+        "/var/lib/dpkg/status",
+        "/var/lib/apt/lists/lock",
+        "/var/lib/systemd/random-seed",
+        "/var/lib/NetworkManager/NetworkManager.state",
+        "/var/lib/dbus/machine-id",
+        "/proc/1/exe",
+        "/sys/kernel",
+        "/dev/null",
+        "/run/systemd/private",
+        "/var/run/dbus/system_bus_socket",
+    ] {
+        assert!(
+            protected.is_protected_path(Path::new(path)),
+            "{path} should be protected"
+        );
+    }
+
     assert!(!protected.is_protected_path(Path::new("/tmp/sample.bin")));
+    assert!(!protected.is_protected_path(Path::new("/var/tmp/sample.bin")));
+    assert!(!protected.is_protected_path(Path::new("/home/user/sample.bin")));
 }
 
 #[test]
