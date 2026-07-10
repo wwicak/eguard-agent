@@ -4,7 +4,13 @@ mod kill;
 mod quarantine;
 
 use std::collections::VecDeque;
+#[cfg(windows)]
+use std::ffi::OsString;
+#[cfg(windows)]
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Component, Path, PathBuf};
+#[cfg(windows)]
+use std::path::{Prefix, PrefixComponent};
 use std::time::{Duration, Instant};
 
 use regex::Regex;
@@ -79,15 +85,10 @@ pub struct AutoIsolationState {
 
 impl Default for ResponseConfig {
     fn default() -> Self {
-        // Autonomous response is enabled by default. Operators can disable
-        // via agent.conf: {"response":{"autonomous_response":false}}.
-        // Env override: EGUARD_AUTONOMOUS_RESPONSE=false
-        let autonomous = std::env::var("EGUARD_AUTONOMOUS_RESPONSE")
-            .ok()
-            .map(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no"))
-            .unwrap_or(true);
+        // Destructive autonomy must be explicitly enabled by config or server policy,
+        // never by the compiled fallback.
         Self {
-            autonomous_response: autonomous,
+            autonomous_response: false,
             dry_run: false,
             max_kills_per_minute: 10,
             max_quarantines_per_minute: 5,
@@ -95,8 +96,8 @@ impl Default for ResponseConfig {
             //              kill  quarantine  capture_script
             definite: ResponsePolicy::new(true, true, true),
             very_high: ResponsePolicy::new(true, true, true),
-            high: ResponsePolicy::new(false, true, true), // was: (false, false, true) — quarantine enabled
-            medium: ResponsePolicy::new(false, false, true), // was: (false, false, false) — capture enabled
+            high: ResponsePolicy::new(false, false, true),
+            medium: ResponsePolicy::new(false, false, false),
         }
     }
 }
@@ -181,6 +182,11 @@ impl ProtectedList {
             PathBuf::from(r"C:\Windows\System32\config"),
             PathBuf::from(r"C:\Windows\SysWOW64"),
             PathBuf::from(r"C:\ProgramData\eGuard"),
+            PathBuf::from(r"C:\Windows"),
+            PathBuf::from(r"C:\Program Files"),
+            PathBuf::from(r"C:\Program Files (x86)"),
+            PathBuf::from(r"C:\ProgramData\Microsoft"),
+            PathBuf::from(r"C:\Boot"),
         ];
 
         Self {
@@ -205,17 +211,22 @@ impl ProtectedList {
         .collect();
 
         let protected_paths = vec![
+            PathBuf::from("/bin"),
+            PathBuf::from("/sbin"),
             PathBuf::from("/usr/bin"),
             PathBuf::from("/usr/sbin"),
             PathBuf::from("/usr/lib"),
             PathBuf::from("/etc"),
             PathBuf::from("/private/etc"),
+            PathBuf::from("/var/run"),
+            PathBuf::from("/private/var/run"),
             PathBuf::from("/var/db/dslocal"),
             PathBuf::from("/private/var/db/dslocal"),
             PathBuf::from("/var/db/opendirectory"),
             PathBuf::from("/private/var/db/opendirectory"),
             PathBuf::from("/Library/Keychains"),
             PathBuf::from("/System"),
+            // Do not protect /Library/LaunchDaemons: malicious launch daemons must stay quarantinable.
             PathBuf::from("/Library/Application Support/eGuard"),
         ];
 
@@ -236,10 +247,10 @@ impl ProtectedList {
         let macos_variant = macos_private_path_variant(&normalized);
         self.protected_paths.iter().any(|p| {
             let protected = normalize_path(p);
-            normalized.starts_with(&protected)
+            path_starts_with(&normalized, &protected)
                 || macos_variant
                     .as_ref()
-                    .is_some_and(|variant| variant.starts_with(&protected))
+                    .is_some_and(|variant| path_starts_with(variant, &protected))
         })
     }
 }
@@ -265,7 +276,12 @@ fn normalize_path(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {
         match component {
-            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::Prefix(prefix) => {
+                #[cfg(windows)]
+                normalized.push(normalize_windows_prefix(prefix));
+                #[cfg(not(windows))]
+                normalized.push(prefix.as_os_str());
+            }
             Component::RootDir => normalized.push(Path::new("/")),
             Component::CurDir => {}
             Component::ParentDir => {
@@ -275,6 +291,39 @@ fn normalize_path(path: &Path) -> PathBuf {
         }
     }
     normalized
+}
+
+#[cfg(windows)]
+fn normalize_windows_prefix(prefix: PrefixComponent<'_>) -> OsString {
+    match prefix.kind() {
+        Prefix::VerbatimDisk(drive) => OsString::from_wide(&[drive as u16, b':' as u16]),
+        Prefix::VerbatimUNC(server, share) => {
+            let mut normalized = vec![b'\\' as u16, b'\\' as u16];
+            normalized.extend(server.encode_wide());
+            normalized.push(b'\\' as u16);
+            normalized.extend(share.encode_wide());
+            OsString::from_wide(&normalized)
+        }
+        _ => prefix.as_os_str().to_os_string(),
+    }
+}
+
+#[cfg(windows)]
+fn path_starts_with(path: &Path, base: &Path) -> bool {
+    let mut path_components = path.components();
+    base.components().all(|base_component| {
+        path_components.next().is_some_and(|path_component| {
+            path_component
+                .as_os_str()
+                .to_string_lossy()
+                .eq_ignore_ascii_case(&base_component.as_os_str().to_string_lossy())
+        })
+    })
+}
+
+#[cfg(not(windows))]
+fn path_starts_with(path: &Path, base: &Path) -> bool {
+    path.starts_with(base)
 }
 
 fn compile_process_pattern(raw: &str) -> Regex {

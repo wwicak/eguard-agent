@@ -1,5 +1,6 @@
 use super::*;
 use crate::ResponseError;
+#[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::sync::Mutex;
 
@@ -82,6 +83,91 @@ fn quarantine_rejects_intermediate_symlink_into_protected_root() {
 }
 
 #[test]
+#[cfg(windows)]
+fn quarantine_rejects_junction_into_protected_root() {
+    let base = std::env::temp_dir().join(format!(
+        "eguard-quarantine-junction-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    let protected_dir = base.join("protected");
+    let alias_dir = base.join("alias");
+    let quarantine_dir = base.join("quarantine");
+    fs::create_dir_all(&protected_dir).expect("create protected dir");
+    let output = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(&alias_dir)
+        .arg(&protected_dir)
+        .output()
+        .expect("run mklink");
+    assert!(
+        output.status.success(),
+        "mklink failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let target = protected_dir.join("payload.bin");
+    let payload = b"protected payload";
+    fs::write(&target, payload).expect("write protected target");
+    let expected_path = normalize_path(&fs::canonicalize(&target).expect("canonical target"));
+    let protected = ProtectedList {
+        process_patterns: Vec::new(),
+        protected_paths: vec![protected_dir.clone()],
+    };
+
+    let err = quarantine_file_with_dir(
+        &alias_dir.join("payload.bin"),
+        "deadbeef",
+        &protected,
+        &quarantine_dir,
+    )
+    .expect_err("junction target inside protected root rejected");
+
+    assert!(matches!(err, ResponseError::ProtectedPath(p) if p == expected_path));
+    assert_eq!(fs::read(&target).expect("target remains"), payload);
+    assert!(!quarantine_dir.join("deadbeef").exists());
+
+    let _ = fs::remove_dir(&alias_dir);
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+#[cfg(windows)]
+fn quarantine_report_uses_deverbatimized_canonical_original_path() {
+    let base = std::env::temp_dir().join(format!(
+        "eguard-quarantine-windows-report-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    let quarantine_dir = base.join("quarantine");
+    fs::create_dir_all(&base).expect("create base");
+    let original = base.join("payload.bin");
+    fs::write(&original, b"payload").expect("write original");
+    let expected_path = normalize_path(&fs::canonicalize(&original).expect("canonical original"));
+    let protected = ProtectedList {
+        process_patterns: Vec::new(),
+        protected_paths: vec![base.join("different-protected-root")],
+    };
+
+    let report = quarantine_file_with_dir(&original, "deadbeef", &protected, &quarantine_dir)
+        .expect("quarantine unprotected file");
+
+    assert_eq!(report.original_path, expected_path);
+    assert!(!report.original_path.to_string_lossy().starts_with(r"\\?\"));
+
+    let mut permissions = fs::metadata(&report.quarantine_path)
+        .expect("stat quarantined file")
+        .permissions();
+    permissions.set_readonly(false);
+    fs::set_permissions(&report.quarantine_path, permissions).expect("restore permissions");
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
 #[cfg(unix)]
 fn quarantine_allows_intermediate_symlink_to_unprotected_target_and_reports_canonical_path() {
     let base = std::env::temp_dir().join(format!(
@@ -158,8 +244,10 @@ fn quarantine_runtime_entrypoint_moves_file_and_reports_fields() {
     let original = base.join("runtime.bin");
     let original_bytes = b"runtime quarantine payload".to_vec();
     fs::write(&original, &original_bytes).expect("write original");
+    #[cfg(unix)]
     std::fs::set_permissions(&original, std::fs::Permissions::from_mode(0o640))
         .expect("chmod original");
+    #[cfg(unix)]
     let metadata = fs::metadata(&original).expect("stat original");
 
     let protected = ProtectedList::default_linux();
@@ -177,11 +265,17 @@ fn quarantine_runtime_entrypoint_moves_file_and_reports_fields() {
     assert!(!report.sha256.is_empty());
     assert_eq!(report.sha256, hash);
     assert_eq!(report.file_size, original_bytes.len() as u64);
-    assert_eq!(report.original_mode, metadata.mode());
-    assert_eq!(report.owner_uid, metadata.uid());
-    assert_eq!(report.owner_gid, metadata.gid());
+    #[cfg(unix)]
+    {
+        assert_eq!(report.original_mode, metadata.mode());
+        assert_eq!(report.owner_uid, metadata.uid());
+        assert_eq!(report.owner_gid, metadata.gid());
+    }
     assert_eq!(report.quarantine_path, quarantine_dir.join(hash));
     assert!(report.quarantine_path.exists());
+    #[cfg(unix)]
+    fs::set_permissions(&report.quarantine_path, fs::Permissions::from_mode(0o600))
+        .expect("restore perms for readback");
     assert_eq!(
         fs::read(&report.quarantine_path).expect("read quarantined file"),
         original_bytes
@@ -207,6 +301,7 @@ fn quarantine_with_custom_dir_copies_metadata_and_removes_original() {
     let original = base.join("sample.bin");
     let original_bytes = b"hello quarantine".to_vec();
     fs::write(&original, &original_bytes).expect("write original");
+    #[cfg(unix)]
     std::fs::set_permissions(&original, std::fs::Permissions::from_mode(0o640))
         .expect("chmod original");
 
@@ -217,9 +312,13 @@ fn quarantine_with_custom_dir_copies_metadata_and_removes_original() {
     assert_eq!(report.original_path, original);
     assert_eq!(report.sha256, "deadbeef");
     assert_eq!(report.file_size, original_bytes.len() as u64);
+    #[cfg(unix)]
     assert!(report.original_mode & 0o777 != 0);
     assert!(!report.quarantine_path.as_os_str().is_empty());
     assert!(!original.exists());
+    #[cfg(unix)]
+    fs::set_permissions(&report.quarantine_path, fs::Permissions::from_mode(0o600))
+        .expect("restore perms for readback");
     assert_eq!(
         fs::read(&report.quarantine_path).expect("read quarantined copy"),
         original_bytes
@@ -352,6 +451,7 @@ fn quarantine_normalizes_uppercase_sha256_ids() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 // AC-RSP-031
 fn default_quarantine_dir_matches_contract() {
     assert_eq!(DEFAULT_QUARANTINE_DIR, "/var/lib/eguard-agent/quarantine");

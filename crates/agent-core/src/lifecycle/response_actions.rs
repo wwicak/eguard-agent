@@ -274,6 +274,7 @@ impl AgentRuntime {
             return;
         };
 
+        // Consume quota before the attempt: failures count intentionally to cap incident blast radius.
         if !self.quarantine_limiter.allow(Instant::now()) {
             *success = false;
             step.success = false;

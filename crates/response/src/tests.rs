@@ -38,11 +38,17 @@ fn emergency_rule_push_is_recognized() {
 #[test]
 // AC-RSP-001 AC-RSP-002 AC-RSP-003 AC-RSP-004 AC-RSP-049 AC-RSP-050 AC-RSP-101 AC-DET-066 AC-DET-067 AC-DET-068 AC-DET-069 AC-DET-070 AC-DET-071 AC-DET-092
 fn default_policy_gates_autonomous_actions_by_confidence() {
-    let mut cfg = ResponseConfig {
-        autonomous_response: true,
-        ..ResponseConfig::default()
-    };
+    let defaults = ResponseConfig::default();
+    assert!(!defaults.autonomous_response);
+    assert_eq!(
+        plan_action(Confidence::Definite, &defaults),
+        PlannedAction::AlertOnly
+    );
 
+    let cfg = ResponseConfig {
+        autonomous_response: true,
+        ..defaults
+    };
     assert_eq!(
         plan_action(Confidence::Definite, &cfg),
         PlannedAction::KillAndQuarantine
@@ -60,10 +66,8 @@ fn default_policy_gates_autonomous_actions_by_confidence() {
         PlannedAction::AlertOnly
     );
     assert_eq!(plan_action(Confidence::Low, &cfg), PlannedAction::AlertOnly);
-
-    cfg.autonomous_response = false;
     assert_eq!(
-        plan_action(Confidence::Definite, &cfg),
+        plan_action(Confidence::None, &cfg),
         PlannedAction::AlertOnly
     );
 }
@@ -151,6 +155,15 @@ fn protected_paths_accept_normalized_equivalents_inside_roots() {
     assert!(protected.is_protected_path(Path::new("/usr/local/eg/./agent")));
     assert!(protected.is_protected_path(Path::new("/usr/local/eg/runtime/../agentd")));
     assert!(protected.is_protected_path(Path::new("/usr/bin/./sh")));
+}
+
+#[test]
+#[cfg(unix)]
+fn unix_protected_path_matching_remains_case_sensitive() {
+    let protected = ProtectedList::default_linux();
+
+    assert!(protected.is_protected_path(Path::new("/usr/bin/sh")));
+    assert!(!protected.is_protected_path(Path::new("/USR/BIN/sh")));
 }
 
 #[test]
@@ -353,9 +366,13 @@ fn default_macos_protected_paths_match_baseline() {
 
     assert!(protected.is_protected_path(Path::new("/System/Library/Frameworks")));
     assert!(protected.is_protected_path(Path::new("/Library/Application Support/eGuard")));
+    assert!(protected.is_protected_path(Path::new("/bin/sh")));
+    assert!(protected.is_protected_path(Path::new("/sbin/mount")));
     assert!(protected.is_protected_path(Path::new("/usr/bin/ssh")));
     assert!(protected.is_protected_path(Path::new("/usr/sbin/sysctl")));
     assert!(protected.is_protected_path(Path::new("/usr/lib/dyld")));
+    assert!(protected.is_protected_path(Path::new("/var/run/syslog")));
+    assert!(protected.is_protected_path(Path::new("/private/var/run/syslog")));
     assert!(
         protected.is_protected_path(Path::new("/var/db/dslocal/nodes/Default/users/root.plist"))
     );
@@ -364,6 +381,9 @@ fn default_macos_protected_paths_match_baseline() {
     )));
     assert!(protected.is_protected_path(Path::new("/etc/passwd")));
     assert!(protected.is_protected_path(Path::new("/Library/Keychains/System.keychain")));
+    assert!(!protected.is_protected_path(Path::new(
+        "/Library/LaunchDaemons/com.example.malware.plist"
+    )));
     assert!(!protected.is_protected_path(Path::new("/tmp/sample.bin")));
 }
 
@@ -399,11 +419,36 @@ fn default_macos_protected_processes_match_baseline() {
 fn default_windows_protected_paths_match_baseline() {
     let protected = ProtectedList::default_windows();
 
-    assert!(protected.is_protected_path(Path::new(r"C:\Windows\System32\kernel32.dll")));
-    assert!(protected.is_protected_path(Path::new(r"C:\Windows\System32\config\SAM")));
-    assert!(protected.is_protected_path(Path::new(r"C:\Windows\SysWOW64\ntdll.dll")));
-    assert!(protected.is_protected_path(Path::new(r"C:\ProgramData\eGuard\agent.conf")));
+    for path in [
+        r"C:\Windows\explorer.exe",
+        r"C:\Windows\System32\kernel32.dll",
+        r"C:\Windows\System32\config\SAM",
+        r"C:\Windows\SysWOW64\ntdll.dll",
+        r"C:\Program Files\Common Files\system.dll",
+        r"C:\Program Files (x86)\Common Files\system.dll",
+        r"C:\ProgramData\Microsoft\Crypto\RSA\MachineKeys\key",
+        r"C:\ProgramData\eGuard\agent.conf",
+        r"C:\Boot\BCD",
+    ] {
+        assert!(
+            protected.is_protected_path(Path::new(path)),
+            "{path} should be protected"
+        );
+    }
     assert!(!protected.is_protected_path(Path::new(r"C:\Users\Public\malware.exe")));
+}
+
+#[test]
+#[cfg(target_os = "windows")]
+fn windows_protected_path_matching_is_case_insensitive_and_deverbatimized() {
+    let protected = ProtectedList::default_windows();
+
+    assert!(protected.is_protected_path(Path::new(r"\\?\c:\windows\system32\kernel32.dll")));
+    assert!(protected.is_protected_path(Path::new(r"c:\program files\Common Files\system.dll")));
+    assert_eq!(
+        normalize_path(Path::new(r"\\?\UNC\server\share\folder\file.bin")),
+        PathBuf::from(r"\\server\share\folder\file.bin")
+    );
 }
 
 #[test]

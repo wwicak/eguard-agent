@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
 use crate::errors::{ResponseError, ResponseResult};
-use crate::ProtectedList;
+use crate::{normalize_path, ProtectedList};
 
 #[cfg(target_os = "linux")]
 const DEFAULT_QUARANTINE_DIR: &str = "/var/lib/eguard-agent/quarantine";
@@ -74,11 +74,12 @@ pub fn quarantine_file_with_dir(
     }
     let normalized_sha256 = normalize_quarantine_id(sha256);
 
-    let effective_path = fs::canonicalize(path)?;
+    let canonical_path = fs::canonicalize(path)?;
+    let effective_path = normalize_path(&canonical_path);
     if protected.is_protected_path(&effective_path) {
         return Err(ResponseError::ProtectedPath(effective_path));
     }
-    let metadata = fs::metadata(&effective_path)?;
+    let metadata = fs::metadata(&canonical_path)?;
 
     if !metadata.is_file() {
         return Err(ResponseError::InvalidInput(format!(
@@ -90,18 +91,18 @@ pub fn quarantine_file_with_dir(
     fs::create_dir_all(quarantine_dir)?;
     let quarantine_path = quarantine_dir.join(&normalized_sha256);
 
-    match fs::rename(&effective_path, &quarantine_path) {
+    match fs::rename(&canonical_path, &quarantine_path) {
         Ok(()) => {
             apply_restrictive_permissions(&quarantine_path)?;
         }
         Err(err) if err.kind() == ErrorKind::CrossesDevices => {
-            fs::copy(&effective_path, &quarantine_path)?;
+            fs::copy(&canonical_path, &quarantine_path)?;
             apply_restrictive_permissions(&quarantine_path)?;
 
-            let mut original = OpenOptions::new().write(true).open(&effective_path)?;
-            apply_restrictive_permissions(&effective_path)?;
+            let mut original = OpenOptions::new().write(true).open(&canonical_path)?;
+            apply_restrictive_permissions(&canonical_path)?;
             overwrite_file_prefix_with_zeros_file(&mut original, metadata.len())?;
-            fs::remove_file(&effective_path)?;
+            fs::remove_file(&canonical_path)?;
         }
         Err(err) => return Err(err.into()),
     }
