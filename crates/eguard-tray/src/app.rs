@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[cfg(target_os = "windows")]
 use windows::core::PCWSTR;
@@ -40,7 +40,15 @@ fn resolve_admin_ui_url_from_config() -> Option<String> {
     Some(format!("https://{}:1443/admin", address))
 }
 
+pub fn open_local_path(path: &Path) -> Result<()> {
+    open_shell_target(path.to_string_lossy().as_ref())
+}
+
 pub fn open_external_url(target: &str) -> Result<()> {
+    open_shell_target(target)
+}
+
+fn open_shell_target(target: &str) -> Result<()> {
     #[cfg(target_os = "windows")]
     {
         let operation = wide("open");
@@ -66,7 +74,7 @@ pub fn open_external_url(target: &str) -> Result<()> {
 
     #[allow(unreachable_code)]
     Err(anyhow!(
-        "opening external URLs is only implemented for Windows in this crate"
+        "opening shell targets is only implemented for Windows in this crate"
     ))
 }
 

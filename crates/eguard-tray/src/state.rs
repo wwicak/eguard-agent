@@ -68,6 +68,8 @@ pub struct LaunchRequestEntry {
     #[serde(default)]
     pub checkout_id: Option<i64>,
     #[serde(default)]
+    pub challenge_id: Option<String>,
+    #[serde(default)]
     pub target: String,
     #[serde(default)]
     pub launcher: Option<String>,
@@ -253,6 +255,7 @@ impl LaunchRequestEntry {
         Self {
             app_id: app_id.trim().to_string(),
             checkout_id: None,
+            challenge_id: None,
             target: target.trim().to_string(),
             launcher: launcher
                 .map(|value| value.trim().to_string())
@@ -269,6 +272,7 @@ impl LaunchRequestEntry {
         Self {
             app_id: app_id.trim().to_string(),
             checkout_id: None,
+            challenge_id: None,
             target: target.trim().to_string(),
             launcher: launcher
                 .map(|value| value.trim().to_string())
@@ -282,7 +286,8 @@ impl LaunchRequestEntry {
 
     pub fn waiting_for_approval(
         app_id: &str,
-        checkout_id: i64,
+        checkout_id: Option<i64>,
+        challenge_id: Option<&str>,
         target: &str,
         launcher: Option<&str>,
         reason: Option<&str>,
@@ -290,7 +295,11 @@ impl LaunchRequestEntry {
         let now = now_unix();
         Self {
             app_id: app_id.trim().to_string(),
-            checkout_id: (checkout_id > 0).then_some(checkout_id),
+            checkout_id: checkout_id.filter(|value| *value > 0),
+            challenge_id: challenge_id
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string),
             target: target.trim().to_string(),
             launcher: launcher
                 .map(|value| value.trim().to_string())
@@ -308,6 +317,7 @@ impl LaunchRequestEntry {
         Self {
             app_id: app_id.trim().to_string(),
             checkout_id: None,
+            challenge_id: None,
             target: target.trim().to_string(),
             launcher: launcher
                 .map(|value| value.trim().to_string())
@@ -455,6 +465,14 @@ pub fn launch_request_state_path() -> Result<PathBuf> {
 
 pub fn tray_preferences_path() -> Result<PathBuf> {
     Ok(data_root()?.join("ztna-tray-preferences.json"))
+}
+
+pub fn tray_heartbeat_path() -> Result<PathBuf> {
+    Ok(data_root()?.join("ztna-tray-heartbeat"))
+}
+
+pub fn tray_shutdown_marker_path() -> Result<PathBuf> {
+    Ok(data_root()?.join("ztna-tray-shutdown"))
 }
 
 fn data_root() -> Result<PathBuf> {

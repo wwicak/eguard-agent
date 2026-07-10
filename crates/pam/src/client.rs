@@ -29,11 +29,15 @@ pub struct CheckoutRequest {
 pub struct CheckoutEnvelope {
     pub status: String,
     #[serde(default)]
+    pub challenge_id: Option<String>,
+    #[serde(default)]
     pub checkout: Option<CheckoutRecord>,
     #[serde(default)]
     pub credential: Option<ResolvedCredential>,
     #[serde(default)]
     pub reason: Option<String>,
+    #[serde(default)]
+    pub mfa_status: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -90,6 +94,21 @@ pub struct BrowserTerminalSessionRequest {
     pub user_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub requested_duration_min: Option<i32>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ApprovalStatusEnvelope {
+    pub status: String,
+    #[serde(default)]
+    pub mfa_status: Option<String>,
+    #[serde(default)]
+    pub challenge_id: Option<String>,
+    #[serde(default)]
+    pub checkout: Option<CheckoutRecord>,
+    #[serde(default)]
+    pub credential: Option<ResolvedCredential>,
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -191,11 +210,11 @@ impl PamHttpClient {
             .send()
             .await
             .context("send pam checkout request")?;
-        if matches!(resp.status().as_u16(), 202 | 403) {
+        if matches!(resp.status().as_u16(), 202 | 403 | 409) {
             let deny = resp
                 .json::<CheckoutEnvelope>()
                 .await
-                .context("decode pam deny response")?;
+                .context("decode pam pending/deny response")?;
             return Ok(deny);
         }
         if !resp.status().is_success() {
@@ -226,6 +245,27 @@ impl PamHttpClient {
         resp.json::<ListCheckoutsEnvelope>()
             .await
             .context("decode pam list checkouts response")
+    }
+
+    pub async fn approval_status(&self, challenge_id: &str) -> Result<ApprovalStatusEnvelope> {
+        let url = format!(
+            "{}/api/v1/ztna/tunnel/approval-status",
+            self.base_url.trim_end_matches('/')
+        );
+        let resp = self
+            .http
+            .get(&url)
+            .query(&[("challenge_id", challenge_id)])
+            .send()
+            .await
+            .context("send pam approval status request")?;
+        if matches!(resp.status().as_u16(), 200 | 409) {
+            return resp
+                .json::<ApprovalStatusEnvelope>()
+                .await
+                .context("decode pam approval status response");
+        }
+        Err(anyhow!("pam approval status failed: status={}", resp.status()))
     }
 
     pub async fn checkin(&self, checkout_id: i64, reason: Option<&str>) -> Result<()> {

@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
+use std::fs;
 use std::time::{Duration, Instant};
-use tracing::error;
+use tracing::{error, info};
 
 use crate::protocol::LaunchRequest;
 
@@ -19,14 +20,17 @@ use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIconBuilder, TrayIconEvent};
 
+use crate::app::open_local_path;
 use crate::launcher::{
     launch_bookmark, launch_launch_request_with_session_fallback, reconcile_pending_launch_requests,
 };
 use crate::state::{
-    clear_launch_request_entry, snapshot_bookmark_cache, snapshot_session_cache,
-    upsert_launch_request_entry, wait_for_bookmark_cache_update, wait_for_session_cache_update,
-    BookmarkEntry, BookmarkState, LaunchRequestEntry, LaunchRequestState, PamLaunchState,
-    RecentLaunchEntry, SessionState, TrayCommand, TrayCommandQueue, TrayPreferences,
+    bookmark_cache_path, clear_launch_request_entry, launch_request_state_path,
+    pam_launch_state_path, session_state_path, snapshot_session_cache, tray_heartbeat_path,
+    tray_preferences_path, tray_shutdown_marker_path, upsert_launch_request_entry,
+    wait_for_session_cache_update, BookmarkEntry, BookmarkState, LaunchRequestEntry,
+    LaunchRequestState, PamLaunchState, RecentLaunchEntry, SessionState, TrayCommand,
+    TrayCommandQueue, TrayPreferences,
 };
 
 pub fn run_windows_tray() -> Result<()> {
@@ -47,11 +51,14 @@ pub fn run_windows_tray() -> Result<()> {
     let mut state = TrayUiState::new()?;
 
     event_loop.run(move |event, _, control_flow| {
-        *control_flow = ControlFlow::Wait;
+        *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_secs(5));
 
         match event {
             Event::NewEvents(tao::event::StartCause::Init)
             | Event::NewEvents(tao::event::StartCause::ResumeTimeReached { .. }) => {
+                if let Err(err) = write_tray_heartbeat() {
+                    error!(error = %err, "tray heartbeat update failed");
+                }
                 if let Err(err) = reconcile_pending_launch_requests() {
                     error!(error = %err, "pending launch reconciliation failed");
                 }
@@ -65,7 +72,7 @@ pub fn run_windows_tray() -> Result<()> {
                         }
                     }
                 }
-                refresh_menu(&mut state, tray_icon.as_mut());
+                refresh_menu(&mut state, tray_icon.as_mut(), false);
                 *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_secs(5));
             }
             Event::UserEvent(TrayUserEvent::Menu(event)) => {
@@ -76,7 +83,7 @@ pub fn run_windows_tray() -> Result<()> {
                         error!(error = %err, "tray menu action failed");
                     }
                 }
-                refresh_menu(&mut state, tray_icon.as_mut());
+                refresh_menu(&mut state, tray_icon.as_mut(), true);
             }
             Event::UserEvent(TrayUserEvent::Tray) => {
                 refresh_tray_visuals(&state, tray_icon.as_mut());
@@ -114,6 +121,7 @@ struct TrayUiState {
     actions: Vec<MenuAction>,
     connected_icon: Option<Icon>,
     disconnected_icon: Option<Icon>,
+    last_menu_fingerprint: Option<String>,
 }
 
 impl TrayUiState {
@@ -122,11 +130,12 @@ impl TrayUiState {
             actions: Vec::new(),
             connected_icon: Some(build_status_icon(true)?),
             disconnected_icon: Some(build_status_icon(false)?),
+            last_menu_fingerprint: None,
         })
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum MenuAction {
     LaunchBookmarkDefault { app_id: String },
     LaunchBookmarkWithLauncher { app_id: String, launcher: String },
@@ -137,6 +146,10 @@ enum MenuAction {
     CleanupAllPamLaunches,
     DisconnectAll,
     Refresh,
+    OpenManager,
+    OpenTrayLog,
+    OpenAgentLog,
+    OpenLogFolder,
     Quit,
 }
 
@@ -156,6 +169,10 @@ impl MenuAction {
             MenuAction::CleanupAllPamLaunches => "action-cleanup-all-pam".to_string(),
             MenuAction::DisconnectAll => "action-disconnect-all".to_string(),
             MenuAction::Refresh => "action-refresh".to_string(),
+            MenuAction::OpenManager => "action-open-manager".to_string(),
+            MenuAction::OpenTrayLog => "action-open-tray-log".to_string(),
+            MenuAction::OpenAgentLog => "action-open-agent-log".to_string(),
+            MenuAction::OpenLogFolder => "action-open-log-folder".to_string(),
             MenuAction::Quit => "action-quit".to_string(),
         }
     }
@@ -272,6 +289,37 @@ fn build_menu() -> Result<(Menu, Vec<MenuAction>)> {
         }
     }
     menu.append(&apps_menu)?;
+
+    let token_menu = Submenu::new("Paste Temporary Token", true);
+    let pam_bookmarks: Vec<_> = bookmarks
+        .bookmarks
+        .iter()
+        .filter(|bookmark| {
+            LaunchRequest::parse(&bookmark.launch_uri)
+                .ok()
+                .and_then(|request| request.credential_id)
+                .is_some()
+        })
+        .collect();
+    if pam_bookmarks.is_empty() {
+        token_menu.append(&MenuItem::new("No PAM-enabled applications", false, None))?;
+    } else {
+        for bookmark in pam_bookmarks {
+            let action = MenuAction::LaunchBookmarkWithTempToken {
+                app_id: bookmark.app_id.clone(),
+            };
+            let parsed = LaunchRequest::parse(&bookmark.launch_uri).ok();
+            let item = MenuItem::with_id(
+                action.id(),
+                format!("{}", app_label(bookmark, parsed.as_ref())),
+                bookmark.launcher_supported,
+                None,
+            );
+            actions.push(action);
+            token_menu.append(&item)?;
+        }
+    }
+    menu.append(&token_menu)?;
 
     let requests_menu = Submenu::new("Pending / Recent Launch Requests", true);
     if pending_entries.is_empty() {
@@ -402,6 +450,26 @@ fn build_menu() -> Result<(Menu, Vec<MenuAction>)> {
     let refresh = MenuItem::with_id(refresh_action.id(), "Refresh", true, None);
     actions.push(refresh_action);
     menu.append(&refresh)?;
+
+    let manager_action = MenuAction::OpenManager;
+    let manager_item = MenuItem::with_id(manager_action.id(), "Manage ZTNA...", true, None);
+    actions.push(manager_action);
+    menu.append(&manager_item)?;
+
+    let logs_menu = Submenu::new("Logs", true);
+    let open_tray_log = MenuAction::OpenTrayLog;
+    let open_tray_log_item = MenuItem::with_id(open_tray_log.id(), "Open Tray Log", true, None);
+    actions.push(open_tray_log);
+    logs_menu.append(&open_tray_log_item)?;
+    let open_agent_log = MenuAction::OpenAgentLog;
+    let open_agent_log_item = MenuItem::with_id(open_agent_log.id(), "Open Agent Log", true, None);
+    actions.push(open_agent_log);
+    logs_menu.append(&open_agent_log_item)?;
+    let open_log_folder = MenuAction::OpenLogFolder;
+    let open_log_folder_item = MenuItem::with_id(open_log_folder.id(), "Open Log Folder", true, None);
+    actions.push(open_log_folder);
+    logs_menu.append(&open_log_folder_item)?;
+    menu.append(&logs_menu)?;
 
     menu.append(&PredefinedMenuItem::separator())?;
 
@@ -791,14 +859,48 @@ impl LaunchRequestEntryExt for LaunchRequestEntry {
     }
 }
 
-fn refresh_menu(state: &mut TrayUiState, tray_icon: Option<&mut tray_icon::TrayIcon>) {
+fn refresh_menu(
+    state: &mut TrayUiState,
+    tray_icon: Option<&mut tray_icon::TrayIcon>,
+    force: bool,
+) {
+    let fingerprint = current_menu_fingerprint();
+    if !force && state.last_menu_fingerprint.as_deref() == Some(fingerprint.as_str()) {
+        refresh_tray_visuals(state, tray_icon);
+        return;
+    }
     if let Ok((menu, actions)) = build_menu() {
         state.actions = actions;
+        state.last_menu_fingerprint = Some(fingerprint);
         if let Some(icon) = tray_icon {
             let _ = icon.set_menu(Some(Box::new(menu)));
             refresh_tray_visuals(state, Some(icon));
         }
     }
+}
+
+fn current_menu_fingerprint() -> String {
+    [
+        bookmark_cache_path().ok(),
+        session_state_path().ok(),
+        launch_request_state_path().ok(),
+        pam_launch_state_path().ok(),
+        tray_preferences_path().ok(),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|path| {
+        let meta = fs::metadata(&path).ok();
+        let len = meta.as_ref().map(|value| value.len()).unwrap_or_default();
+        let modified = meta
+            .and_then(|value| value.modified().ok())
+            .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|value| value.as_millis())
+            .unwrap_or_default();
+        format!("{}:{}:{}", path.display(), len, modified)
+    })
+    .collect::<Vec<_>>()
+    .join("|")
 }
 
 fn refresh_tray_visuals(state: &TrayUiState, tray_icon: Option<&mut tray_icon::TrayIcon>) {
@@ -820,6 +922,7 @@ fn handle_menu_event(state: &mut TrayUiState, menu_id: &MenuId) -> Result<()> {
         .find(|action| action.id() == raw)
         .cloned()
         .context("resolve tray action")?;
+    info!(menu_id = raw, action = ?action, "tray menu action selected");
     match action {
         MenuAction::LaunchBookmarkDefault { app_id } => {
             launch_bookmark_from_menu(&app_id, None, None)?;
@@ -854,13 +957,24 @@ fn handle_menu_event(state: &mut TrayUiState, menu_id: &MenuId) -> Result<()> {
             let _ = wait_for_session_cache_update(&session_snapshot, Duration::from_secs(8));
         }
         MenuAction::Refresh => {
-            let bookmark_snapshot = snapshot_bookmark_cache()?;
-            let session_snapshot = snapshot_session_cache()?;
             queue_command(TrayCommand::Refresh)?;
-            wait_for_bookmark_cache_update(&bookmark_snapshot, Duration::from_secs(15))?;
-            let _ = wait_for_session_cache_update(&session_snapshot, Duration::from_secs(15));
         }
-        MenuAction::Quit => anyhow::bail!("quit requested"),
+        MenuAction::OpenManager => {
+            open_manager_window()?;
+        }
+        MenuAction::OpenTrayLog => {
+            open_local_path(&tray_log_path())?;
+        }
+        MenuAction::OpenAgentLog => {
+            open_local_path(&agent_log_path())?;
+        }
+        MenuAction::OpenLogFolder => {
+            open_local_path(&log_dir_path())?;
+        }
+        MenuAction::Quit => {
+            let _ = write_tray_shutdown_marker();
+            std::process::exit(0);
+        }
     }
     Ok(())
 }
@@ -977,9 +1091,47 @@ fn record_recent_launch(bookmark: &BookmarkEntry, request: &LaunchRequest) -> Re
 }
 
 fn queue_command(command: TrayCommand) -> Result<()> {
+    info!(command = ?command, "queueing tray command");
     let mut queue = TrayCommandQueue::load_default()?;
     queue.push(command);
     queue.save_default()
+}
+
+fn write_tray_heartbeat() -> Result<()> {
+    let path = tray_heartbeat_path()?;
+    fs::write(path, std::process::id().to_string()).context("write tray heartbeat")
+}
+
+fn write_tray_shutdown_marker() -> Result<()> {
+    let path = tray_shutdown_marker_path()?;
+    fs::write(path, std::process::id().to_string()).context("write tray shutdown marker")
+}
+
+fn open_manager_window() -> Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        Command::new(std::env::current_exe().context("resolve tray executable")?)
+            .arg("manage")
+            .creation_flags(CREATE_NO_WINDOW | 0x0000_0008)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .context("open ZTNA manager window")?;
+    }
+    Ok(())
+}
+
+fn log_dir_path() -> std::path::PathBuf {
+    std::path::PathBuf::from(r"C:\ProgramData\eGuard\logs")
+}
+
+fn tray_log_path() -> std::path::PathBuf {
+    log_dir_path().join("tray.log")
+}
+
+fn agent_log_path() -> std::path::PathBuf {
+    log_dir_path().join("agent.log")
 }
 
 impl TrayUiState {
@@ -1183,19 +1335,66 @@ pub fn is_tray_running() -> bool {
 }
 
 fn effective_sessions(bookmarks: &BookmarkState) -> Result<Vec<crate::state::SessionEntry>> {
-    let state = SessionState::load_default().unwrap_or_default();
-    if !state.sessions.is_empty() {
-        return Ok(state.sessions);
-    }
+    let mut sessions = SessionState::load_default().unwrap_or_default().sessions;
+    let pam_sessions = sessions_from_pam_launches(bookmarks).unwrap_or_default();
 
     #[cfg(target_os = "windows")]
-    {
+    if sessions.is_empty() {
         if let Some(session) = session_from_wireguard(bookmarks)? {
-            return Ok(vec![session]);
+            sessions.push(session);
         }
     }
 
-    Ok(Vec::new())
+    for pam_session in pam_sessions {
+        let duplicate = sessions.iter().any(|session| {
+            session.app_id == pam_session.app_id
+                && session.transport.eq_ignore_ascii_case(&pam_session.transport)
+                && session.status.eq_ignore_ascii_case(&pam_session.status)
+        });
+        if !duplicate {
+            sessions.push(pam_session);
+        }
+    }
+
+    Ok(sessions)
+}
+
+fn sessions_from_pam_launches(
+    bookmarks: &BookmarkState,
+) -> Result<Vec<crate::state::SessionEntry>> {
+    let state = PamLaunchState::load_default().unwrap_or_default();
+    let sessions = state
+        .entries
+        .into_iter()
+        .map(|entry| {
+            let bookmark = bookmarks
+                .bookmarks
+                .iter()
+                .find(|bookmark| bookmark.app_id == entry.app_id);
+            crate::state::SessionEntry {
+                session_id: String::new(),
+                app_id: entry.app_id.clone(),
+                app_name: bookmark
+                    .map(|bookmark| bookmark.name.clone())
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| entry.app_id.clone()),
+                transport: format!("pam-{}", entry.launcher_kind.trim().to_ascii_lowercase()),
+                status: "active".to_string(),
+                started_at: Some(entry.started_at_unix),
+                last_activity_at: Some(entry.started_at_unix),
+                last_outcome: Some(match entry.process_id {
+                    Some(pid) => format!("PAM launch active (PID {pid})"),
+                    None => "PAM launch active".to_string(),
+                }),
+                local_url: None,
+                bytes_tx: None,
+                bytes_rx: None,
+                active_connections: Some(1),
+                tunnel_latency_ms: None,
+            }
+        })
+        .collect();
+    Ok(sessions)
 }
 
 #[cfg(target_os = "windows")]

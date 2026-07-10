@@ -11,10 +11,11 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 use anyhow::{anyhow, Context, Result};
 use pam::{
-    launch_ssh_request, BastionSessionRecord, BastionSessionRequest, BrowserTerminalSessionRequest,
-    CheckoutRequest, PamHttpClient, SecretString, SshLaunchRequest,
+    launch_ssh_request, ApprovalStatusEnvelope, BastionSessionRecord, BastionSessionRequest,
+    BrowserTerminalSessionRequest, CheckoutRequest, PamHttpClient, SecretString,
+    SshLaunchRequest,
 };
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::app::open_external_url;
 use crate::protocol::LaunchRequest;
@@ -33,10 +34,12 @@ fn configure_hidden_console_command(cmd: &mut Command) {
 pub fn launch_bookmark(bookmark: &BookmarkEntry) -> Result<()> {
     let request = LaunchRequest::parse(&bookmark.launch_uri)
         .with_context(|| format!("parse launch uri for {}", bookmark.app_id))?;
+    info!(app_id = %bookmark.app_id, app_type = %request.app_type, target = %request.target, launcher = ?request.launcher, credential_id = ?request.credential_id, "launch bookmark requested");
     launch_with_session_fallback(&bookmark.app_id, &request)
 }
 
 pub fn launch_launch_request_with_session_fallback(request: &LaunchRequest) -> Result<()> {
+    info!(app_id = %request.app_id, app_type = %request.app_type, target = %request.target, launcher = ?request.launcher, credential_id = ?request.credential_id, "launch request requested");
     launch_with_session_fallback(&request.app_id, request)
 }
 
@@ -60,7 +63,13 @@ pub fn reconcile_pending_launch_requests() -> Result<()> {
         .into_iter()
         .filter(|entry| {
             entry.status.eq_ignore_ascii_case("waiting_for_approval")
-                && entry.checkout_id.unwrap_or_default() > 0
+                && (entry.checkout_id.unwrap_or_default() > 0
+                    || entry
+                        .challenge_id
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .is_some())
         })
         .collect();
     if waiting.is_empty() {
@@ -79,18 +88,43 @@ pub fn reconcile_pending_launch_requests() -> Result<()> {
     };
     let bookmarks = BookmarkState::load_default()?;
     for entry in waiting {
-        let Some(checkout_id) = entry.checkout_id else {
-            continue;
+        let checkout_status = if let Some(challenge_id) = entry
+            .challenge_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            match if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                tokio::task::block_in_place(|| handle.block_on(client.approval_status(challenge_id)))
+            } else {
+                let runtime = tokio::runtime::Runtime::new()?;
+                runtime.block_on(client.approval_status(challenge_id))
+            } {
+                Ok(status) => status,
+                Err(_) => continue,
+            }
+        } else {
+            let Some(checkout_id) = entry.checkout_id else {
+                continue;
+            };
+            let Some(checkout) = envelope
+                .checkouts
+                .iter()
+                .find(|item| item.id == checkout_id)
+            else {
+                continue;
+            };
+            ApprovalStatusEnvelope {
+                status: checkout.status.clone(),
+                mfa_status: None,
+                challenge_id: None,
+                checkout: None,
+                credential: None,
+                reason: None,
+            }
         };
-        let Some(checkout) = envelope
-            .checkouts
-            .iter()
-            .find(|item| item.id == checkout_id)
-        else {
-            continue;
-        };
-        match checkout.status.trim().to_ascii_lowercase().as_str() {
-            "active" => {
+        match checkout_status.status.trim().to_ascii_lowercase().as_str() {
+            "active" | "granted" | "approved" | "consumed" => {
                 if let Some(bookmark) = bookmarks
                     .bookmarks
                     .iter()
@@ -111,12 +145,19 @@ pub fn reconcile_pending_launch_requests() -> Result<()> {
                     }
                 }
             }
-            "denied" | "expired" | "revoked" | "completed" => {
+            "denied" | "deny" | "expired" | "revoked" | "completed" => {
+                let label = checkout_status
+                    .mfa_status
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or(checkout_status.status.as_str())
+                    .trim()
+                    .to_string();
                 let _ = upsert_launch_request_entry(LaunchRequestEntry::failed(
                     &entry.app_id,
                     &entry.target,
                     entry.launcher.as_deref(),
-                    format!("Request {}", checkout.status.trim()),
+                    format!("Request {}", label),
                 ));
             }
             _ => {}
@@ -193,6 +234,7 @@ fn launch_ssh(request: &LaunchRequest) -> Result<()> {
     if prefers_browser_terminal(request) {
         return launch_browser_terminal(request);
     }
+    info!(app_id = %request.app_id, target = %request.target, launcher = ?request.launcher, credential_id = ?request.credential_id, "starting SSH launch");
     let checked_out = maybe_checkout_password(request)?;
     let effective_user = checked_out
         .as_ref()
@@ -222,6 +264,7 @@ fn launch_ssh(request: &LaunchRequest) -> Result<()> {
                 .map(|secret| secret.expose().to_string())
         }),
     })?;
+    info!(app_id = %request.app_id, target = %request.target, launched_child = outcome.child.as_ref().map(|child| child.id()), "SSH launch completed locally");
     if let Some(state) = checked_out {
         if let Some(child) = outcome.child {
             let cleanup_paths: Vec<String> = outcome
@@ -428,20 +471,31 @@ fn maybe_checkout_password(request: &LaunchRequest) -> Result<Option<CheckedOutP
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty()),
     };
+    info!(app_id = %request.app_id, target = %request.target, credential_id, launcher = ?request.launcher, temp_token = req.temp_token.is_some(), "requesting PAM checkout");
     let envelope = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(client.checkout(&req))
     })?;
+    info!(app_id = %request.app_id, status = %envelope.status, checkout_id = envelope.checkout.as_ref().map(|value| value.id), reason = ?envelope.reason, mfa_status = ?envelope.mfa_status, "received PAM checkout response");
     if envelope.status.eq_ignore_ascii_case("pending_approval") {
-        if let Some(checkout) = envelope.checkout.as_ref() {
-            let target = request.target.clone();
-            let _ = upsert_launch_request_entry(LaunchRequestEntry::waiting_for_approval(
-                &request.app_id,
-                checkout.id,
-                &target,
-                request.launcher.as_deref(),
-                envelope.reason.as_deref(),
-            ));
-        }
+        let target = request.target.clone();
+        let checkout_id = envelope.checkout.as_ref().map(|value| value.id);
+        let challenge_id = envelope.challenge_id.as_deref();
+        let pending_message = match (envelope.reason.as_deref(), envelope.mfa_status.as_deref()) {
+            (Some(reason), Some(mfa_status)) if !mfa_status.trim().is_empty() => {
+                format!("{reason}; MFA: {mfa_status}")
+            }
+            (Some(reason), _) => reason.to_string(),
+            (_, Some(mfa_status)) if !mfa_status.trim().is_empty() => format!("MFA: {mfa_status}"),
+            _ => "pending_approval".to_string(),
+        };
+        let _ = upsert_launch_request_entry(LaunchRequestEntry::waiting_for_approval(
+            &request.app_id,
+            checkout_id,
+            challenge_id,
+            &target,
+            request.launcher.as_deref(),
+            Some(pending_message.as_str()),
+        ));
         return Err(anyhow!("pam checkout pending approval"));
     }
     if envelope.status.eq_ignore_ascii_case("deny") {

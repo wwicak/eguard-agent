@@ -5,7 +5,12 @@ mod launcher;
 mod protocol;
 mod state;
 mod tray;
+#[cfg(target_os = "windows")]
+mod ui;
 
+use std::fs::OpenOptions;
+use std::path::PathBuf;
+use std::sync::Once;
 use std::time::Duration;
 
 #[cfg(target_os = "windows")]
@@ -26,9 +31,10 @@ use launcher::{
 use protocol::LaunchRequest;
 use state::{
     bookmark_cache_path, command_queue_path, launch_request_state_path, pam_launch_state_path,
-    session_state_path, snapshot_bookmark_cache, snapshot_session_cache,
-    upsert_launch_request_entry, wait_for_bookmark_cache_update, wait_for_session_cache_update,
-    BookmarkState, LaunchRequestEntry, SessionState, TrayCommandQueue,
+    session_state_path, snapshot_bookmark_cache, snapshot_session_cache, tray_heartbeat_path,
+    tray_shutdown_marker_path, upsert_launch_request_entry, wait_for_bookmark_cache_update,
+    wait_for_session_cache_update, BookmarkState, LaunchRequestEntry, SessionState,
+    TrayCommandQueue,
 };
 
 #[derive(Parser, Debug)]
@@ -51,10 +57,12 @@ enum Command {
     EnableTransport,
     Refresh,
     OpenAdminUi,
+    Manage,
     Paths,
     CleanupPamLaunch { checkout_id: i64 },
     CleanupAllPamLaunches,
     Tray,
+    Watchdog { parent_pid: u32 },
 }
 
 #[tokio::main]
@@ -95,21 +103,78 @@ async fn real_main() -> Result<()> {
         Command::EnableTransport => enqueue_command(state::TrayCommand::EnableTransport),
         Command::Refresh => refresh_state(),
         Command::OpenAdminUi => open_admin_ui(),
+        Command::Manage => open_management_ui(),
         Command::Paths => print_paths(),
         Command::CleanupPamLaunch { checkout_id } => cleanup_pam_launch(checkout_id),
         Command::CleanupAllPamLaunches => cleanup_all_pam_launches(),
         Command::Tray => {
+            start_tray_watchdog_if_needed()?;
+            let _ = std::fs::remove_file(tray_shutdown_marker_path()?);
             reconcile_pam_launches_on_startup()?;
             tray::run_windows_tray()
         }
+        Command::Watchdog { parent_pid } => run_tray_watchdog(parent_pid),
     }
 }
 
+static TRACING_INIT: Once = Once::new();
+
 fn init_logging() {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .with_target(false)
-        .try_init();
+    TRACING_INIT.call_once(|| {
+        let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .or_else(|_| tracing_subscriber::EnvFilter::try_new("info"))
+            .expect("default tracing filter should be valid");
+
+        if let Some(log_path) = configured_log_path() {
+            if let Some(parent) = log_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+
+            match OpenOptions::new().create(true).append(true).open(&log_path) {
+                Ok(file) => {
+                    let writer = std::sync::Mutex::new(file);
+                    tracing_subscriber::fmt()
+                        .with_env_filter(env_filter)
+                        .with_ansi(false)
+                        .with_target(false)
+                        .with_writer(writer)
+                        .init();
+                    return;
+                }
+                Err(_) => {
+                    // Fall back to stderr if the log file can't be opened.
+                }
+            }
+        }
+
+        tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .with_ansi(false)
+            .with_target(false)
+            .init();
+    });
+}
+
+fn configured_log_path() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("EGUARD_TRAY_LOG_PATH") {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            return Some(PathBuf::from(trimmed));
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return Some(PathBuf::from(r"C:\ProgramData\eGuard\logs\tray.log"));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        return Some(PathBuf::from("/var/log/eguard-tray.log"));
+    }
+
+    #[allow(unreachable_code)]
+    None
 }
 
 #[cfg(target_os = "windows")]
@@ -122,9 +187,6 @@ fn ensure_start_menu_shortcut() -> Result<()> {
     std::fs::create_dir_all(&programs_dir)
         .with_context(|| format!("create start menu directory {}", programs_dir.display()))?;
     let shortcut_path = programs_dir.join("Eguard ZTNA.lnk");
-    if shortcut_path.exists() {
-        return Ok(());
-    }
 
     let ps_script = format!(
         "$WshShell = New-Object -ComObject WScript.Shell; \
@@ -254,6 +316,17 @@ fn refresh_state() -> Result<()> {
     Ok(())
 }
 
+fn open_management_ui() -> Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        return ui::open_management_window();
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        open_admin_ui()
+    }
+}
+
 fn print_paths() -> Result<()> {
     println!("bookmark_cache={}", bookmark_cache_path()?.display());
     println!("session_state={}", session_state_path()?.display());
@@ -269,6 +342,113 @@ fn print_paths() -> Result<()> {
 fn current_exe_string() -> Result<String> {
     let exe = std::env::current_exe().context("resolve current tray executable path")?;
     Ok(exe.to_string_lossy().into_owned())
+}
+
+#[cfg(target_os = "windows")]
+fn start_tray_watchdog_if_needed() -> Result<()> {
+    if std::env::var("EGUARD_TRAY_WATCHDOG_CHILD").ok().as_deref() == Some("1") {
+        return Ok(());
+    }
+    if std::env::var("EGUARD_TRAY_DISABLE_WATCHDOG")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .is_some()
+    {
+        return Ok(());
+    }
+
+    let exe = std::env::current_exe().context("resolve current tray executable path")?;
+    std::process::Command::new(exe)
+        .args(["watchdog", &std::process::id().to_string()])
+        .env("EGUARD_TRAY_WATCHDOG_CHILD", "1")
+        .creation_flags(CREATE_NO_WINDOW | 0x0000_0008)
+        .spawn()
+        .context("start tray watchdog process")?;
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn start_tray_watchdog_if_needed() -> Result<()> {
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn run_tray_watchdog(parent_pid: u32) -> Result<()> {
+    use std::time::{Duration, SystemTime};
+
+    let heartbeat_path = tray_heartbeat_path()?;
+    let shutdown_marker = tray_shutdown_marker_path()?;
+    let stale_after = Duration::from_secs(
+        std::env::var("EGUARD_TRAY_WATCHDOG_STALE_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value >= 10)
+            .unwrap_or(20),
+    );
+
+    loop {
+        std::thread::sleep(Duration::from_secs(5));
+        if shutdown_marker.exists() {
+            return Ok(());
+        }
+        if !windows_process_alive(parent_pid) {
+            return Ok(());
+        }
+
+        let stale = std::fs::metadata(&heartbeat_path)
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+            .map(|age| age > stale_after)
+            .unwrap_or(false);
+        if !stale {
+            continue;
+        }
+
+        let _ = windows_kill_process(parent_pid);
+        std::thread::sleep(Duration::from_secs(1));
+        let exe = std::env::current_exe().context("resolve current tray executable path")?;
+        std::process::Command::new(exe)
+            .arg("tray")
+            .creation_flags(CREATE_NO_WINDOW | 0x0000_0008)
+            .spawn()
+            .context("restart stale tray process")?;
+        return Ok(());
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn run_tray_watchdog(_parent_pid: u32) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn windows_process_alive(pid: u32) -> bool {
+    use windows::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    let Ok(handle) = (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }) else {
+        return false;
+    };
+    let mut exit_code = 0u32;
+    let alive = unsafe { GetExitCodeProcess(handle, &mut exit_code).is_ok() }
+        && exit_code == STILL_ACTIVE.0 as u32;
+    let _ = unsafe { CloseHandle(handle) };
+    alive
+}
+
+#[cfg(target_os = "windows")]
+fn windows_kill_process(pid: u32) -> Result<()> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+
+    let handle = unsafe { OpenProcess(PROCESS_TERMINATE, false, pid) }
+        .context("open stale tray process for termination")?;
+    unsafe { TerminateProcess(handle, 1) }.context("terminate stale tray process")?;
+    let _ = unsafe { CloseHandle(handle) };
+    Ok(())
 }
 
 fn ensure_background_tray() -> Result<()> {
