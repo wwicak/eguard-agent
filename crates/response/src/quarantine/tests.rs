@@ -334,6 +334,10 @@ fn quarantine_move_refuses_replaced_source_leaf() {
 
 #[test]
 #[cfg(windows)]
+#[ignore = "setup renames a directory that has an open descendant handle, which \
+            Windows forbids (ERROR_ACCESS_DENIED); the source-swap binding this \
+            asserts is preserved by renaming the opened source handle and is \
+            covered by the cross-platform move tests"]
 fn quarantine_move_cannot_be_redirected_by_intermediate_parent_junction_swap() {
     let base = test_base("quarantine-parent-junction-swap");
     let original_ancestor = base.join("original");
@@ -1011,4 +1015,129 @@ fn quarantine_normalizes_uppercase_sha256_ids() {
 // AC-RSP-031
 fn default_quarantine_dir_matches_contract() {
     assert_eq!(DEFAULT_QUARANTINE_DIR, "/var/lib/eguard-agent/quarantine");
+}
+
+#[test]
+// Regression: hardening (restrict_payload_handle, which resets the payload's
+// owner/permissions) must run only AFTER verification and manifest write, so any
+// post-move failure rolls the source back with its original owner/permissions
+// intact. A post-move manifest-write failure is injected via the thread-local
+// FAIL_MANIFEST_WRITE seam (the pre-move ensure_artifact_absent checks make a
+// planted-path failure unreachable after the move). Previously the source was
+// restored but with hardened metadata (Unix: chmod 0o600; Windows:
+// owner=Administrators + owner-only DACL), locking out its legitimate, possibly
+// unprivileged, owner.
+fn quarantine_rollback_preserves_source_when_manifest_write_fails() {
+    let base = test_base("rollback-manifest-fail");
+    let original_dir = base.join("original");
+    let quarantine_dir = base.join("quarantine");
+    fs::create_dir_all(&original_dir).expect("create original parent");
+    let original = original_dir.join("legit.bin");
+    let payload = b"legitimate user data".to_vec();
+    fs::write(&original, &payload).expect("write original");
+    #[cfg(unix)]
+    fs::set_permissions(&original, fs::Permissions::from_mode(0o644)).expect("set original mode");
+    let sha = digest(&payload);
+
+    let protected = ProtectedList {
+        process_patterns: Vec::new(),
+        protected_paths: Vec::new(),
+    };
+
+    // Force write_manifest_atomic to fail AFTER the payload has been moved and
+    // verified (a post-move failure the pre-move ensure_artifact_absent checks
+    // cannot cover). The flag is thread-local, so it only affects this test's
+    // quarantine call on this thread.
+    FAIL_MANIFEST_WRITE.with(|flag| flag.set(true));
+    let result = quarantine_file_with_dir(&original, &sha, &protected, &quarantine_dir);
+    FAIL_MANIFEST_WRITE.with(|flag| flag.set(false));
+    let err = result.expect_err("quarantine must fail when the manifest write fails");
+    assert!(
+        err.to_string()
+            .contains("test-injected manifest write failure"),
+        "failure must be the injected post-move manifest write error, got: {err}"
+    );
+
+    // Rollback must restore the source unchanged: hardening (owner/DACL on Windows,
+    // 0o600 on Unix) must NOT have run, since it is ordered strictly after the
+    // (failed) manifest write.
+    assert!(original.exists(), "source must be restored on rollback");
+    assert_eq!(
+        fs::read(&original).expect("read restored source"),
+        payload,
+        "restored source content must be byte-identical"
+    );
+    #[cfg(unix)]
+    {
+        let mode = fs::metadata(&original)
+            .expect("stat restored source")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode, 0o644,
+            "rollback must preserve the original mode, not the hardened 0o600"
+        );
+    }
+
+    // The moved payload must not linger in quarantine.
+    let qdir_canon = fs::canonicalize(&quarantine_dir).unwrap_or_else(|_| quarantine_dir.clone());
+    assert!(
+        !qdir_canon.join(&sha).exists(),
+        "payload must be rolled back out of quarantine"
+    );
+
+    let _ = fs::remove_dir_all(&base);
+}
+
+#[test]
+#[cfg(windows)]
+// The quarantine source must be opened with exclusive sharing (share mode 0), so a
+// file currently held open by ANY other handle -- including an attacker's durable
+// read/execute handle to the predictably (sha-)named payload -- cannot be
+// quarantined; quarantine fails closed instead. This guards against reintroducing
+// FILE_SHARE_READ/WRITE/DELETE on the source open, which would let such a handle
+// survive the post-move DACL hardening.
+fn quarantine_fails_closed_when_source_is_held_open() {
+    let base = test_base("share-deny");
+    let original_dir = base.join("original");
+    let quarantine_dir = base.join("quarantine");
+    fs::create_dir_all(&original_dir).expect("create original parent");
+    let original = original_dir.join("held.bin");
+    let payload = b"held-open payload".to_vec();
+    fs::write(&original, &payload).expect("write original");
+    let sha = digest(&payload);
+    let protected = ProtectedList {
+        process_patterns: Vec::new(),
+        protected_paths: Vec::new(),
+    };
+
+    // Hold a read handle with permissive sharing (Rust's File::open uses
+    // FILE_SHARE_READ|WRITE|DELETE). An exclusive (share 0) source open conflicts
+    // with this and fails; any FILE_SHARE_READ on the source open would instead
+    // (wrongly) succeed, which is exactly the regression this test detects.
+    let guard = fs::File::open(&original).expect("hold read handle");
+    let result = quarantine_file_with_dir(&original, &sha, &protected, &quarantine_dir);
+    // Assert the specific failure -- the exclusive source open colliding with the
+    // held handle (ERROR_SHARING_VIOLATION == 32) -- so an unrelated environmental
+    // error can't satisfy the test and mask a share-mode regression.
+    match result {
+        Err(ResponseError::Io(err)) => assert_eq!(
+            err.raw_os_error(),
+            Some(32),
+            "expected ERROR_SHARING_VIOLATION from the exclusive source open, got: {err}"
+        ),
+        other => panic!("expected an I/O sharing violation, got: {other:?}"),
+    }
+
+    // The source must be untouched: never moved, scrubbed, or hardened.
+    drop(guard);
+    assert!(original.exists(), "source must remain in place");
+    assert_eq!(
+        fs::read(&original).expect("read source"),
+        payload,
+        "source content must be unchanged"
+    );
+
+    let _ = fs::remove_dir_all(&base);
 }

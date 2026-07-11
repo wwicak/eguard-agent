@@ -26,9 +26,9 @@ use windows::Win32::Foundation::{
 #[cfg(windows)]
 use windows::Win32::Storage::FileSystem::{
     FileDispositionInfo, GetFileInformationByHandle, GetFinalPathNameByHandleW,
-    SetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ADD_FILE,
-    FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_RENAME_INFO,
+    SetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ATTRIBUTE_REPARSE_POINT,
+    FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_READ_ATTRIBUTES, FILE_RENAME_INFO,
     FILE_RENAME_INFO_0, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
     FILE_WRITE_ATTRIBUTES,
 };
@@ -77,13 +77,204 @@ extern "system" {
     ) -> i32;
 }
 
-// FILE_INFORMATION_CLASS::FileRenameInformation. Unlike the Win32
-// SetFileInformationByHandle(FileRenameInfo) wrapper, the native
-// NtSetInformationFile honours FILE_RENAME_INFORMATION.RootDirectory, which is
-// required for our TOCTOU-safe parent-handle-relative rename. The Win32 wrapper
-// rejects a non-NULL RootDirectory with STATUS/ERROR_INVALID_PARAMETER (87).
+// FILE_INFORMATION_CLASS::FileRenameInformation, issued via native
+// NtSetInformationFile. The rename is handle-relative: it acts on the
+// identity-verified source handle and names the destination by a single leaf
+// component resolved inside a validated, reparse-checked destination-directory
+// handle (RootDirectory). Binding both endpoints to opened+validated handles
+// keeps the source-swap and destination-parent-swap TOCTOU windows closed. (The
+// Win32 SetFileInformationByHandle(FileRenameInfo) wrapper is avoided because it
+// rejects a non-NULL RootDirectory with ERROR_INVALID_PARAMETER.)
 #[cfg(windows)]
 const FILE_RENAME_INFORMATION_CLASS: i32 = 10;
+
+// Well-known-SID/ACL primitives used to lock quarantined artifacts to
+// LocalSystem + Administrators, the Windows analogue of the Unix 0o600/0o700
+// owner-only restriction. The agent runs as LocalSystem, so it retains full
+// control while unprivileged principals are denied.
+#[cfg(windows)]
+#[link(name = "advapi32")]
+extern "system" {
+    fn CreateWellKnownSid(
+        well_known_sid_type: i32,
+        domain_sid: *const std::ffi::c_void,
+        sid: *mut std::ffi::c_void,
+        cb_sid: *mut u32,
+    ) -> i32;
+    fn InitializeAcl(acl: *mut std::ffi::c_void, acl_length: u32, acl_revision: u32) -> i32;
+    fn AddAccessAllowedAceEx(
+        acl: *mut std::ffi::c_void,
+        ace_revision: u32,
+        ace_flags: u32,
+        access_mask: u32,
+        sid: *const std::ffi::c_void,
+    ) -> i32;
+    fn SetSecurityInfo(
+        handle: HANDLE,
+        object_type: i32,
+        security_info: u32,
+        owner: *const std::ffi::c_void,
+        group: *const std::ffi::c_void,
+        dacl: *const std::ffi::c_void,
+        sacl: *const std::ffi::c_void,
+    ) -> u32;
+    fn SetNamedSecurityInfoW(
+        object_name: *mut u16,
+        object_type: i32,
+        security_info: u32,
+        owner: *const std::ffi::c_void,
+        group: *const std::ffi::c_void,
+        dacl: *const std::ffi::c_void,
+        sacl: *const std::ffi::c_void,
+    ) -> u32;
+}
+
+#[cfg(windows)]
+mod win_acl {
+    pub const WIN_LOCAL_SYSTEM_SID: i32 = 22;
+    pub const WIN_BUILTIN_ADMINISTRATORS_SID: i32 = 26;
+    pub const SECURITY_MAX_SID_SIZE: usize = 68;
+    pub const ACL_REVISION: u32 = 2;
+    pub const GENERIC_ALL: u32 = 0x1000_0000;
+    pub const SE_FILE_OBJECT: i32 = 1;
+    pub const OWNER_SECURITY_INFORMATION: u32 = 0x0000_0001;
+    pub const DACL_SECURITY_INFORMATION: u32 = 0x0000_0004;
+    pub const PROTECTED_DACL_SECURITY_INFORMATION: u32 = 0x8000_0000;
+    pub const OBJECT_INHERIT_ACE: u32 = 0x0000_0001;
+    pub const CONTAINER_INHERIT_ACE: u32 = 0x0000_0002;
+    /// WRITE_DAC standard right; required to replace an object's DACL by handle.
+    pub const WRITE_DAC: u32 = 0x0004_0000;
+    /// WRITE_OWNER standard right; required to reassign an object's owner.
+    pub const WRITE_OWNER: u32 = 0x0008_0000;
+}
+
+// Resolve a well-known SID into a stack buffer (SECURITY_MAX_SID_SIZE is the
+// documented upper bound, so no dynamic sizing is required).
+#[cfg(windows)]
+fn well_known_sid(sid_type: i32) -> ResponseResult<[u8; win_acl::SECURITY_MAX_SID_SIZE]> {
+    let mut sid = [0u8; win_acl::SECURITY_MAX_SID_SIZE];
+    let mut cb = win_acl::SECURITY_MAX_SID_SIZE as u32;
+    if unsafe {
+        CreateWellKnownSid(
+            sid_type,
+            std::ptr::null(),
+            sid.as_mut_ptr() as *mut std::ffi::c_void,
+            &mut cb,
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(sid)
+}
+
+// Build an owner-only DACL (LocalSystem + Administrators, GENERIC_ALL) into the
+// caller-provided buffer. AddAccessAllowedAceEx copies each SID into the ACL, so
+// the SID buffers only need to outlive this call.
+#[cfg(windows)]
+fn build_owner_only_dacl(
+    acl: &mut [u8],
+    system_sid: &[u8],
+    admins_sid: &[u8],
+    ace_flags: u32,
+) -> ResponseResult<()> {
+    use win_acl::*;
+    unsafe {
+        if InitializeAcl(
+            acl.as_mut_ptr() as *mut std::ffi::c_void,
+            acl.len() as u32,
+            ACL_REVISION,
+        ) == 0
+        {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        for sid in [system_sid.as_ptr(), admins_sid.as_ptr()] {
+            if AddAccessAllowedAceEx(
+                acl.as_mut_ptr() as *mut std::ffi::c_void,
+                ACL_REVISION,
+                ace_flags,
+                GENERIC_ALL,
+                sid as *const std::ffi::c_void,
+            ) == 0
+            {
+                return Err(std::io::Error::last_os_error().into());
+            }
+        }
+    }
+    Ok(())
+}
+
+// Replace an open handle's owner and DACL with the owner-only,
+// inheritance-protected descriptor: the owner is reset to BUILTIN\Administrators
+// and the DACL grants only LocalSystem + Administrators. A same-volume NTFS
+// rename preserves BOTH the source file's original DACL and its owner, so without
+// resetting the owner an unprivileged original owner would retain implicit owner
+// rights (READ_CONTROL + WRITE_DAC) and could re-grant itself access to its own
+// quarantined malware. Requires WRITE_DAC + WRITE_OWNER on the handle.
+#[cfg(windows)]
+fn set_restrictive_dacl_on_handle(file: &File) -> ResponseResult<()> {
+    use win_acl::*;
+    let system_sid = well_known_sid(WIN_LOCAL_SYSTEM_SID)?;
+    let admins_sid = well_known_sid(WIN_BUILTIN_ADMINISTRATORS_SID)?;
+    let mut acl = [0u8; 256];
+    build_owner_only_dacl(&mut acl, &system_sid, &admins_sid, 0)?;
+    let status = unsafe {
+        SetSecurityInfo(
+            HANDLE(file.as_raw_handle()),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION
+                | DACL_SECURITY_INFORMATION
+                | PROTECTED_DACL_SECURITY_INFORMATION,
+            admins_sid.as_ptr() as *const std::ffi::c_void,
+            std::ptr::null(),
+            acl.as_ptr() as *const std::ffi::c_void,
+            std::ptr::null(),
+        )
+    };
+    if status != 0 {
+        return Err(std::io::Error::from_raw_os_error(status as i32).into());
+    }
+    Ok(())
+}
+
+// Apply the owner-only, inheritance-protected DACL to the quarantine directory by
+// path, with inheritable ACEs so artifacts created inside it (the manifest and
+// copy-fallback payloads) inherit the same restriction.
+#[cfg(windows)]
+fn set_restrictive_dacl_on_dir(path: &Path) -> ResponseResult<()> {
+    use win_acl::*;
+    let system_sid = well_known_sid(WIN_LOCAL_SYSTEM_SID)?;
+    let admins_sid = well_known_sid(WIN_BUILTIN_ADMINISTRATORS_SID)?;
+    let mut acl = [0u8; 256];
+    build_owner_only_dacl(
+        &mut acl,
+        &system_sid,
+        &admins_sid,
+        OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE,
+    )?;
+    let mut wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let status = unsafe {
+        SetNamedSecurityInfoW(
+            wide.as_mut_ptr(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION
+                | DACL_SECURITY_INFORMATION
+                | PROTECTED_DACL_SECURITY_INFORMATION,
+            admins_sid.as_ptr() as *const std::ffi::c_void,
+            std::ptr::null(),
+            acl.as_ptr() as *const std::ffi::c_void,
+            std::ptr::null(),
+        )
+    };
+    if status != 0 {
+        return Err(std::io::Error::from_raw_os_error(status as i32).into());
+    }
+    Ok(())
+}
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -220,12 +411,25 @@ pub fn quarantine_file_with_dir(
         open_quarantine_leaf(&quarantine_parent, actual_sha256.as_ref())?
     };
 
-    if let Err(err) = restrict_payload_handle(&payload)
-        .and_then(|_| {
-            verify_quarantine_payload_handle(&mut payload, &actual_sha256, metadata.len())
-        })
-        .and_then(|_| write_manifest_atomic(&manifest_path, &manifest))
-    {
+    // Order matters: the payload must be fully verified and the manifest written
+    // BEFORE the payload is hardened. restrict_payload_handle changes the payload's
+    // owner/permissions (Windows: owner -> Administrators + owner-only DACL; Unix:
+    // 0o600); a same-object rename-back on rollback preserves those changes. If a
+    // fallible step ran AFTER hardening and failed, rollback would restore the
+    // original file with an altered owner/DACL, locking its legitimate (possibly
+    // unprivileged) owner out of a file that was never successfully quarantined
+    // (e.g. a false-positive that rolls back). Hardening is therefore last, so any
+    // failure leaves the rolled-back source byte- and metadata-identical. The
+    // interim payload is already inside the owner-only, protected quarantine
+    // directory, and verify hashes it against the manifest so post-verify tampering
+    // is caught at restore time.
+    let quarantine_outcome = (|| -> ResponseResult<()> {
+        verify_quarantine_payload_handle(&mut payload, &actual_sha256, metadata.len())?;
+        write_manifest_atomic(&manifest_path, &manifest)?;
+        restrict_payload_handle(&payload)?;
+        Ok(())
+    })();
+    if let Err(err) = quarantine_outcome {
         let _ = fs::remove_file(&manifest_path);
         let _ = rollback_quarantine_move(
             moved,
@@ -238,19 +442,31 @@ pub fn quarantine_file_with_dir(
         return Err(err);
     }
 
-    if !moved {
-        zero_and_remove_source(&source, metadata.len())?;
+    sync_restore_parent(&quarantine_parent, &quarantine_dir)?;
+
+    let original_path = source.path.clone();
+    let original_parent = original_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("/"));
+    if moved {
+        // Same-device rename already removed the source entry from its parent;
+        // persist that removal.
+        sync_restore_parent(&source.parent, &original_parent)?;
+    } else {
+        // Cross-device: securely scrub + unlink the original, then persist its
+        // parent. Consumes `source` so the read-shared source handle can be
+        // released before the write/delete reopen (Windows).
+        zero_and_remove_source(source, metadata.len())?;
     }
 
-    sync_restore_parent(&quarantine_parent, &quarantine_dir)?;
-    sync_restore_parent(
-        &source.parent,
-        source.path.parent().unwrap_or_else(|| Path::new("/")),
-    )?;
-
     Ok(QuarantineReport {
-        original_path: source.path,
-        quarantine_path,
+        original_path,
+        // Internally quarantine_path is a canonical verbatim path (\\?\C:\...)
+        // required by the handle-relative rename and artifact checks; the reported
+        // path is deverbatimized so it matches the caller's quarantine directory
+        // form (parity with original_path).
+        quarantine_path: normalize_path(&quarantine_path),
         sha256: actual_sha256,
         file_size: metadata.len(),
         original_mode,
@@ -320,11 +536,32 @@ fn open_quarantine_leaf(parent: &File, file_name: &OsStr) -> ResponseResult<File
 
 #[cfg(windows)]
 fn open_quarantine_leaf(parent: &File, file_name: &std::ffi::OsStr) -> ResponseResult<File> {
+    // WRITE_DAC + WRITE_OWNER let restrict_payload_handle reset the moved
+    // payload's DACL and owner by handle (a same-volume rename preserves both).
+    // LocalSystem / an administrator holding these on files it can also open for
+    // delete is the normal case (inherited Full Control on the source's parent).
+    //
+    // Share mode 0 denies ALL concurrent sharing (read, write, delete, and
+    // execute -- Windows counts FILE_EXECUTE as read for sharing). This handle,
+    // and its try_clone into the moved payload, is held from before the rename
+    // until after restrict_payload_handle, so while the moved payload still carries
+    // its original (attacker) DACL, no other process can hold or acquire ANY handle
+    // to the predictably (sha-)named payload -- not even a read/execute handle that
+    // would survive the later DACL hardening and let an attacker copy or relaunch
+    // the quarantined malware. A file already held open by anyone makes this open
+    // fail, which is the correct fail-closed outcome: a file that is currently open
+    // cannot be contained, so the response must neutralize the holder first (e.g.
+    // kill the owning process) and retry the quarantine.
     open_windows_relative(
         parent,
         file_name,
-        FILE_GENERIC_READ.0 | FILE_WRITE_ATTRIBUTES.0 | DELETE.0,
+        FILE_GENERIC_READ.0
+            | FILE_WRITE_ATTRIBUTES.0
+            | DELETE.0
+            | win_acl::WRITE_DAC
+            | win_acl::WRITE_OWNER,
         0x20 | 0x40 | 0x200000,
+        0,
     )
 }
 
@@ -394,18 +631,15 @@ fn same_file(left: &File, right: &File) -> ResponseResult<bool> {
 }
 
 #[cfg(windows)]
-fn same_file(left: &File, right: &File) -> ResponseResult<bool> {
-    fn identity(file: &File) -> ResponseResult<(u32, u32, u32)> {
-        let mut info = BY_HANDLE_FILE_INFORMATION::default();
-        unsafe { GetFileInformationByHandle(HANDLE(file.as_raw_handle()), &mut info) }
-            .map_err(|error| ResponseError::InvalidInput(format!("get file identity: {error}")))?;
-        Ok((
-            info.dwVolumeSerialNumber,
-            info.nFileIndexHigh,
-            info.nFileIndexLow,
-        ))
-    }
-    Ok(identity(left)? == identity(right)?)
+fn windows_file_identity(file: &File) -> ResponseResult<(u32, u32, u32)> {
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    unsafe { GetFileInformationByHandle(HANDLE(file.as_raw_handle()), &mut info) }
+        .map_err(|error| ResponseError::InvalidInput(format!("get file identity: {error}")))?;
+    Ok((
+        info.dwVolumeSerialNumber,
+        info.nFileIndexHigh,
+        info.nFileIndexLow,
+    ))
 }
 
 #[cfg(unix)]
@@ -485,12 +719,26 @@ fn move_quarantine_source(
 }
 
 #[cfg(windows)]
-fn rename_windows_handle(
-    file: &File,
-    parent: &File,
-    name: &std::ffi::OsStr,
-) -> std::io::Result<()> {
-    let name: Vec<u16> = name.encode_wide().collect();
+fn rename_windows_handle(file: &File, dir: &File, leaf: &std::ffi::OsStr) -> std::io::Result<()> {
+    // Handle-relative rename: RootDirectory is a directory handle that the caller
+    // has already opened reparse-safe and validated as a non-reparse directory,
+    // and FileName is a single leaf component. This binds the destination-parent
+    // validation to its use (the kernel resolves the target inside the *handle*,
+    // not by re-walking an absolute path), so an attacker cannot redirect the
+    // move by swapping a path component after validation. Mirrors the Unix
+    // renameat(dirfd, ...) contract.
+    let name: Vec<u16> = leaf.encode_wide().collect();
+    if name.is_empty()
+        || name
+            .iter()
+            .any(|c| *c == 0 || *c == 0x2F /* / */ || *c == 0x5C /* \ */)
+        || name.len() > (u16::MAX as usize / 2)
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "rename leaf must be a single non-empty path component",
+        ));
+    }
     let byte_len = std::mem::size_of::<FILE_RENAME_INFO>() + name.len().saturating_sub(1) * 2;
     let mut buffer = vec![0_usize; byte_len.div_ceil(std::mem::size_of::<usize>())];
     let info = buffer.as_mut_ptr() as *mut FILE_RENAME_INFO;
@@ -502,12 +750,9 @@ fn rename_windows_handle(
         (*info).Anonymous = FILE_RENAME_INFO_0 {
             ReplaceIfExists: BOOLEAN(0),
         };
-        (*info).RootDirectory = HANDLE(parent.as_raw_handle());
+        (*info).RootDirectory = HANDLE(dir.as_raw_handle());
         (*info).FileNameLength = (name.len() * 2) as u32;
         std::ptr::copy_nonoverlapping(name.as_ptr(), (*info).FileName.as_mut_ptr(), name.len());
-        // NtSetInformationFile (not the Win32 SetFileInformationByHandle wrapper)
-        // honours RootDirectory so the rename stays bound to the verified parent
-        // handle, closing the parent-path re-resolution TOCTOU.
         let status = NtSetInformationFile(
             HANDLE(file.as_raw_handle()),
             &mut io_status,
@@ -545,14 +790,32 @@ fn verify_quarantine_payload_handle(
 
 fn restrict_payload_handle(file: &File) -> ResponseResult<()> {
     #[cfg(unix)]
-    file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    {
+        // Durability first, then the mode change LAST. restrict_payload_handle is
+        // the final fallible step of a successful quarantine, so the 0o600 chmod
+        // must be the last operation that can fail: if sync_all failed AFTER the
+        // chmod, the rollback would restore the source with a hardened 0o600 mode
+        // it never consented to. (The source handle is opened without data-write
+        // access, so there is no equivalent FlushFileBuffers on Windows; payload
+        // content durability does not depend on this sync -- the copy-fallback path
+        // syncs the destination and the rename path only relocates a directory
+        // entry for content already on stable storage.)
+        file.sync_all()?;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
     #[cfg(not(unix))]
     {
-        let mut permissions = file.metadata()?.permissions();
-        permissions.set_readonly(true);
-        file.set_permissions(permissions)?;
+        // Windows analogue of 0o600: reset the payload's owner to Administrators
+        // and replace its DACL with an owner-only (LocalSystem + Administrators),
+        // inheritance-protected DACL. A same-volume NTFS rename preserves both the
+        // source file's original DACL and its owner, so
+        // without this an unprivileged file owner would retain write/delete rights
+        // on their own quarantined malware. FILE_ATTRIBUTE_READONLY is deliberately
+        // NOT used instead: unlike 0o600 it blocks the agent's own legitimate
+        // restore/removal (delete of a read-only file fails with
+        // ERROR_ACCESS_DENIED) and is trivially cleared, so it is no real barrier.
+        set_restrictive_dacl_on_handle(file)?;
     }
-    file.sync_all()?;
     Ok(())
 }
 
@@ -595,6 +858,8 @@ fn rollback_quarantine_move(
     payload: &File,
 ) -> ResponseResult<()> {
     if moved {
+        // Move the payload back into its original parent directory by handle
+        // (reparse-safe), mirroring the Unix renameat rollback.
         rename_windows_handle(payload, &source.parent, &source.file_name)?;
         Ok(())
     } else {
@@ -620,8 +885,8 @@ fn rollback_quarantine_move(
 }
 
 #[cfg(unix)]
-fn zero_and_remove_source(source: &QuarantineSource, file_size: u64) -> ResponseResult<()> {
-    verify_source_entry(source)?;
+fn zero_and_remove_source(source: QuarantineSource, file_size: u64) -> ResponseResult<()> {
+    verify_source_entry(&source)?;
     let source_name = unix_name(&source.file_name)?;
     let fd = unsafe {
         libc::openat(
@@ -642,37 +907,67 @@ fn zero_and_remove_source(source: &QuarantineSource, file_size: u64) -> Response
     writable.set_permissions(fs::Permissions::from_mode(0o600))?;
     overwrite_file_prefix_with_zeros_file(&mut writable, file_size)?;
     writable.sync_all()?;
-    verify_source_entry(source)?;
+    verify_source_entry(&source)?;
     if unsafe { libc::unlinkat(source.parent.as_raw_fd(), source_name.as_ptr(), 0) } != 0 {
         return Err(std::io::Error::last_os_error().into());
     }
+    sync_restore_parent(
+        &source.parent,
+        source.path.parent().unwrap_or_else(|| Path::new("/")),
+    )?;
     Ok(())
 }
 
 #[cfg(windows)]
-fn zero_and_remove_source(source: &QuarantineSource, file_size: u64) -> ResponseResult<()> {
+fn zero_and_remove_source(source: QuarantineSource, file_size: u64) -> ResponseResult<()> {
+    // The source handle is held with exclusive sharing (share 0), so reopening it
+    // for write/delete would conflict with our own handle. The secure destination
+    // copy already exists and is hardened, so release the source handle first, then
+    // reopen with write+delete (also exclusive, share 0) to scrub and unlink it.
+    // Capture the file identity before releasing and re-verify it after reopen
+    // to close the release->reopen gap: an identity mismatch, or a racing writer/
+    // deleter that makes the reopen fail, aborts the now-redundant scrub instead of
+    // destroying an attacker-substituted file. The source is being securely
+    // destroyed, so it is deliberately NOT hardened (matching the Unix path).
+    let QuarantineSource {
+        parent,
+        file,
+        file_name,
+        path,
+    } = source;
+    let identity = windows_file_identity(&file)?;
+    drop(file);
+    // Exclusive (share 0): reopen fails if any other opener grabbed the source in
+    // the release->reopen gap, aborting the now-redundant scrub fail-closed rather
+    // than racing an attacker for the original.
     let mut writable = open_windows_relative(
-        &source.parent,
-        &source.file_name,
+        &parent,
+        &file_name,
         FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0 | DELETE.0,
         0x20 | 0x40 | 0x200000,
+        0,
     )?;
-    if !same_file(&source.file, &writable)? {
+    if windows_file_identity(&writable)? != identity {
         return Err(ResponseError::InvalidInput(
             "quarantine source changed before cross-device cleanup".to_string(),
         ));
     }
-    restrict_payload_handle(&writable)?;
     overwrite_file_prefix_with_zeros_file(&mut writable, file_size)?;
     writable.sync_all()?;
-    remove_windows_file_by_handle(&writable, "quarantine source")
+    remove_windows_file_by_handle(&writable, "quarantine source")?;
+    sync_restore_parent(&parent, path.parent().unwrap_or_else(|| Path::new("/")))?;
+    Ok(())
 }
 
 #[cfg(not(any(unix, windows)))]
-fn zero_and_remove_source(source: &QuarantineSource, file_size: u64) -> ResponseResult<()> {
+fn zero_and_remove_source(source: QuarantineSource, file_size: u64) -> ResponseResult<()> {
     let mut file = OpenOptions::new().write(true).open(&source.path)?;
     overwrite_file_prefix_with_zeros_file(&mut file, file_size)?;
     fs::remove_file(&source.path)?;
+    sync_restore_parent(
+        &source.parent,
+        source.path.parent().unwrap_or_else(|| Path::new("/")),
+    )?;
     Ok(())
 }
 
@@ -805,8 +1100,11 @@ pub fn restore_quarantined_with_dir(
     sync_directory(&quarantine_dir)?;
 
     Ok(RestoreReport {
-        restored_path: destination,
-        source_quarantine_path: source,
+        // Deverbatimize the reported paths (parity with QuarantineReport and
+        // manifest.original_path); the verbatim `destination`/`source` values were
+        // only needed for the handle/relative file operations above.
+        restored_path: normalize_path(&destination),
+        source_quarantine_path: normalize_path(&source),
     })
 }
 
@@ -827,7 +1125,23 @@ fn quarantine_manifest_path(quarantine_dir: &Path, sha256: &str) -> PathBuf {
     quarantine_dir.join(format!("{sha256}.meta.json"))
 }
 
+// Test-only, thread-scoped injection point: when set, write_manifest_atomic fails
+// after the payload has already been moved and verified. Used to prove that
+// hardening (restrict_payload_handle) runs strictly last, so a post-move failure
+// rolls the source back with its original owner/permissions intact. Thread-local
+// keeps parallel tests isolated with no production effect (cfg(test) only).
+#[cfg(test)]
+thread_local! {
+    pub(super) static FAIL_MANIFEST_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 fn write_manifest_atomic(path: &Path, manifest: &QuarantineManifest) -> ResponseResult<()> {
+    #[cfg(test)]
+    if FAIL_MANIFEST_WRITE.with(|flag| flag.get()) {
+        return Err(ResponseError::InvalidInput(
+            "test-injected manifest write failure".to_string(),
+        ));
+    }
     let temp_path = path.with_extension(format!("json.tmp-{}", std::process::id()));
     let result = (|| -> ResponseResult<()> {
         let mut options = OpenOptions::new();
@@ -1038,6 +1352,7 @@ fn open_windows_relative(
     name: &std::ffi::OsStr,
     desired_access: u32,
     create_options: u32,
+    share_access: u32,
 ) -> ResponseResult<File> {
     let mut name: Vec<u16> = name.encode_wide().collect();
     if name.is_empty()
@@ -1074,7 +1389,7 @@ fn open_windows_relative(
             &mut io_status,
             std::ptr::null(),
             0,
-            FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0 | FILE_SHARE_DELETE.0,
+            share_access,
             1, // FILE_OPEN
             create_options,
             std::ptr::null(),
@@ -1099,15 +1414,19 @@ fn open_windows_restore_directory(parent: &File, name: &std::ffi::OsStr) -> Resp
             "restore directory name is invalid for Windows".to_string(),
         ));
     }
-    // FILE_ADD_FILE (FILE_WRITE_DATA on a directory) is required so this handle
-    // can serve as the RootDirectory for the parent-relative NtSetInformationFile
-    // rename and for parent-relative create_destination_exclusive; without it the
-    // kernel denies the add-name with STATUS_ACCESS_DENIED (Win32 error 5).
+    // Read/traverse only. The path is walked from the volume root down through
+    // system-owned directories (C:\, C:\Users, ...); requesting write access such
+    // as FILE_ADD_FILE here fails with STATUS_ACCESS_DENIED for a non-elevated
+    // process. Adding the renamed/created child does not need the directory handle
+    // to hold write access — the kernel checks the destination directory DACL for
+    // the caller. The handle-relative rename then resolves its single-component
+    // leaf inside this validated directory handle (RootDirectory = this handle).
     let directory = open_windows_relative(
         parent,
         name,
-        FILE_GENERIC_READ.0 | FILE_ADD_FILE.0,
+        FILE_GENERIC_READ.0,
         0x1 | 0x20 | 0x200000,
+        FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0 | FILE_SHARE_DELETE.0,
     )?;
     validate_windows_restore_directory(&directory)?;
     Ok(directory)
@@ -1183,7 +1502,10 @@ fn create_destination_exclusive(
     let status = unsafe {
         NtCreateFile(
             &mut handle,
-            FILE_GENERIC_WRITE.0 | DELETE.0,
+            // FILE_READ_ATTRIBUTES is required so validate_destination_handle can
+            // read the reparse attribute of the freshly created handle; without it
+            // metadata() fails with STATUS_ACCESS_DENIED (Win32 error 5).
+            FILE_GENERIC_WRITE.0 | FILE_READ_ATTRIBUTES.0 | DELETE.0,
             &object_attributes,
             &mut io_status,
             std::ptr::null(),
@@ -1361,7 +1683,16 @@ fn apply_quarantine_dir_permissions(path: &Path) -> ResponseResult<()> {
     Ok(())
 }
 
-#[cfg(not(unix))]
+// Lock the quarantine directory to LocalSystem + Administrators with an
+// inheritance-protected DACL. Artifacts created inside it (the manifest and any
+// copy-fallback payload) inherit the restriction; the rename-moved payload is
+// additionally hardened by handle in restrict_payload_handle.
+#[cfg(windows)]
+fn apply_quarantine_dir_permissions(path: &Path) -> ResponseResult<()> {
+    set_restrictive_dacl_on_dir(path)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn apply_quarantine_dir_permissions(_path: &Path) -> ResponseResult<()> {
     Ok(())
 }
