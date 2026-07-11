@@ -1089,3 +1089,48 @@ fn quarantine_rollback_preserves_source_when_manifest_write_fails() {
 
     let _ = fs::remove_dir_all(&base);
 }
+
+#[test]
+#[cfg(windows)]
+// The quarantine source must be opened with exclusive sharing (share mode 0), so a
+// file currently held open by ANY other handle -- including an attacker's durable
+// read/execute handle to the predictably (sha-)named payload -- cannot be
+// quarantined; quarantine fails closed instead. This guards against reintroducing
+// FILE_SHARE_READ/WRITE/DELETE on the source open, which would let such a handle
+// survive the post-move DACL hardening.
+fn quarantine_fails_closed_when_source_is_held_open() {
+    let base = test_base("share-deny");
+    let original_dir = base.join("original");
+    let quarantine_dir = base.join("quarantine");
+    fs::create_dir_all(&original_dir).expect("create original parent");
+    let original = original_dir.join("held.bin");
+    let payload = b"held-open payload".to_vec();
+    fs::write(&original, &payload).expect("write original");
+    let sha = digest(&payload);
+    let protected = ProtectedList {
+        process_patterns: Vec::new(),
+        protected_paths: Vec::new(),
+    };
+
+    // Hold a read handle with permissive sharing (Rust's File::open uses
+    // FILE_SHARE_READ|WRITE|DELETE). An exclusive (share 0) source open conflicts
+    // with this and fails; any FILE_SHARE_READ on the source open would instead
+    // (wrongly) succeed, which is exactly the regression this test detects.
+    let guard = fs::File::open(&original).expect("hold read handle");
+    let result = quarantine_file_with_dir(&original, &sha, &protected, &quarantine_dir);
+    assert!(
+        result.is_err(),
+        "quarantine must fail closed while the source is held open by another handle"
+    );
+
+    // The source must be untouched: never moved, scrubbed, or hardened.
+    drop(guard);
+    assert!(original.exists(), "source must remain in place");
+    assert_eq!(
+        fs::read(&original).expect("read source"),
+        payload,
+        "source content must be unchanged"
+    );
+
+    let _ = fs::remove_dir_all(&base);
+}

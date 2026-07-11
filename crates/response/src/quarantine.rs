@@ -541,14 +541,17 @@ fn open_quarantine_leaf(parent: &File, file_name: &std::ffi::OsStr) -> ResponseR
     // LocalSystem / an administrator holding these on files it can also open for
     // delete is the normal case (inherited Full Control on the source's parent).
     //
-    // Share mode denies FILE_SHARE_WRITE and FILE_SHARE_DELETE (only
-    // FILE_SHARE_READ): this handle is held from before the rename until after
-    // restrict_payload_handle, so while the moved payload still carries its
-    // original (attacker) DACL, no other opener can acquire a write- or
-    // delete-capable handle to the predictably (sha-)named quarantine payload and
-    // tamper with it before the restrictive DACL lands (a later DACL change does
-    // not revoke an already-open handle). A pre-existing conflicting writer/
-    // deleter makes this open fail, which is the correct fail-closed outcome.
+    // Share mode 0 denies ALL concurrent sharing (read, write, delete, and
+    // execute -- Windows counts FILE_EXECUTE as read for sharing). This handle,
+    // and its try_clone into the moved payload, is held from before the rename
+    // until after restrict_payload_handle, so while the moved payload still carries
+    // its original (attacker) DACL, no other process can hold or acquire ANY handle
+    // to the predictably (sha-)named payload -- not even a read/execute handle that
+    // would survive the later DACL hardening and let an attacker copy or relaunch
+    // the quarantined malware. A file already held open by anyone makes this open
+    // fail, which is the correct fail-closed outcome: a file that is currently open
+    // cannot be contained, so the response must neutralize the holder first (e.g.
+    // kill the owning process) and retry the quarantine.
     open_windows_relative(
         parent,
         file_name,
@@ -558,7 +561,7 @@ fn open_quarantine_leaf(parent: &File, file_name: &std::ffi::OsStr) -> ResponseR
             | win_acl::WRITE_DAC
             | win_acl::WRITE_OWNER,
         0x20 | 0x40 | 0x200000,
-        FILE_SHARE_READ.0,
+        0,
     )
 }
 
@@ -637,11 +640,6 @@ fn windows_file_identity(file: &File) -> ResponseResult<(u32, u32, u32)> {
         info.nFileIndexHigh,
         info.nFileIndexLow,
     ))
-}
-
-#[cfg(windows)]
-fn same_file(left: &File, right: &File) -> ResponseResult<bool> {
-    Ok(windows_file_identity(left)? == windows_file_identity(right)?)
 }
 
 #[cfg(unix)]
@@ -939,12 +937,15 @@ fn zero_and_remove_source(source: QuarantineSource, file_size: u64) -> ResponseR
     } = source;
     let identity = windows_file_identity(&file)?;
     drop(file);
+    // Exclusive (share 0): reopen fails if any other opener grabbed the source in
+    // the release->reopen gap, aborting the now-redundant scrub fail-closed rather
+    // than racing an attacker for the original.
     let mut writable = open_windows_relative(
         &parent,
         &file_name,
         FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0 | DELETE.0,
         0x20 | 0x40 | 0x200000,
-        FILE_SHARE_READ.0,
+        0,
     )?;
     if windows_file_identity(&writable)? != identity {
         return Err(ResponseError::InvalidInput(
