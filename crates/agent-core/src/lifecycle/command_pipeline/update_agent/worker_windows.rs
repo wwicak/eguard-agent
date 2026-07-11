@@ -61,6 +61,10 @@ fn write_windows_update_worker_script(path: &Path) -> Result<(), String> {
 )
 
 $ErrorActionPreference = 'Stop'
+# Invoke-WebRequest renders a progress bar by default, which slows the package
+# download to a crawl (and can appear to hang) in non-interactive/service
+# contexts. Suppress it so the download runs at full speed.
+$ProgressPreference = 'SilentlyContinue'
 $outcomePath = Join-Path $WorkingDir ("update-outcome-" + $CommandId + ".txt")
 
 function Write-Log {
@@ -80,50 +84,136 @@ function Get-ServiceProcessId {
     }
 }
 
+function Get-ServiceBinaryPath {
+    param([string]$ServiceName)
+    # Let CIM query failures propagate: a transient failure must not be mistaken
+    # for "service absent" and cause a silent fall back to a default path (which
+    # could update/verify the wrong binary). Only a genuinely missing service
+    # yields an empty result.
+    $service = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
+    if (-not $service) { return '' }
+    $raw = [string]$service.PathName
+    if (-not $raw) { return '' }
+    $raw = $raw.Trim()
+    if ($raw.StartsWith('"')) {
+        $end = $raw.IndexOf('"', 1)
+        if ($end -gt 1) { return $raw.Substring(1, $end - 1) }
+        return $raw.Trim('"')
+    }
+    $match = [regex]::Match($raw, '^(?<p>.*\.exe)(?=(\s|$))', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    if ($match.Success) { return $match.Groups['p'].Value }
+    return $raw
+}
+
+function Test-TrackedProcessAlive {
+    # True only if the pid is alive AND resolves to the same process instance we
+    # captured (verified by start time). Without a captured start time we cannot
+    # prove identity, so the pid is treated as NOT tracked -- a reused pid is never
+    # mistaken for, or force-killed as, the original agent process.
+    param([int]$ProcessId, $StartTime)
+    if ($ProcessId -le 0) { return $false }
+    if ($null -eq $StartTime) { return $false }
+    $proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    if (-not $proc) { return $false }
+    try { if ($proc.StartTime -ne $StartTime) { return $false } } catch { return $false }
+    return $true
+}
+
+function Invoke-Sc {
+    # Run sc.exe and THROW on any nonzero exit. Native nonzero exits do not throw
+    # under Windows PowerShell 5.1 even with $ErrorActionPreference='Stop', so
+    # critical service-policy operations (suppressing/restoring auto-restart) would
+    # otherwise fail silently -- e.g. an unsuppressed failure action could respawn
+    # the service mid-update, or a completed outcome could hide a lost start type.
+    param([string[]]$Arguments)
+    $output = & sc.exe @Arguments 2>&1
+    $code = $LASTEXITCODE
+    if ($code -ne 0) {
+        $detail = "sc.exe " + ($Arguments -join ' ') + " exited " + $code + ": " + ($output -join ' ')
+        Write-Log $detail
+        throw $detail
+    }
+}
+
 function Write-Outcome {
     param([string]$Status, [string]$Detail)
     @($CommandId, $Status, $Detail) | Set-Content -Path $outcomePath -Encoding UTF8
 }
 
-function Restore-ServicePolicy {
-    param([string]$ServiceName, [string]$BinaryPath)
-    & sc.exe config $ServiceName binPath= "\"$BinaryPath\"" 2>$null | Out-Null
-    & sc.exe config $ServiceName start= auto 2>$null | Out-Null
-    & sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/10000/restart/30000 2>$null | Out-Null
-    & sc.exe failureflag $ServiceName 1 2>$null | Out-Null
+function Restore-ServiceStartPolicy {
+    # Restore auto-start and failure/restart actions after a stop. Deliberately does
+    # NOT touch binPath: the MSI owns the service registration and the EXE path
+    # replaces the binary in place, so rewriting binPath here can only point the
+    # service at the wrong lineage or drop legitimate service arguments.
+    param([string]$ServiceName)
+    Invoke-Sc @('config', $ServiceName, 'start=', 'auto') | Out-Null
+    Invoke-Sc @('failure', $ServiceName, 'reset=', '86400', 'actions=', 'restart/5000/restart/10000/restart/30000') | Out-Null
+    Invoke-Sc @('failureflag', $ServiceName, '1') | Out-Null
 }
 
 function Stop-AgentService {
     param([string]$ServiceName)
     Write-Log "stopping service $ServiceName"
-    & sc.exe failure $ServiceName reset= 0 actions= "" 2>$null | Out-Null
-    & sc.exe failureflag $ServiceName 0 2>$null | Out-Null
-    & sc.exe config $ServiceName start= demand 2>$null | Out-Null
-    Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+    # Capture the service's real PID and start time up front. Identity is keyed on
+    # (pid, start time) so a reused pid is never force-killed as if it were the
+    # agent. The image name is not assumed (installs may run eguard-agent.exe or
+    # agent-core.exe); the force-kill targets the actual service process id.
+    $targetPid = Get-ServiceProcessId -ServiceName $ServiceName
+    $targetStart = $null
+    if ($targetPid -gt 0) {
+        $tp = Get-Process -Id $targetPid -ErrorAction SilentlyContinue
+        if ($tp) { $targetStart = $tp.StartTime }
+    }
 
-    $stopWait = 0
-    while ($stopWait -lt 15) {
+    # Suspend auto-restart so a force-killed service does not respawn mid-update.
+    # The empty actions value must be the literal string '""' -- PowerShell drops a
+    # bare empty-string native arg, which makes sc.exe reject the command (1639).
+    Invoke-Sc @('failure', $ServiceName, 'reset=', '0', 'actions=', '""') | Out-Null
+    Invoke-Sc @('failureflag', $ServiceName, '0') | Out-Null
+    Invoke-Sc @('config', $ServiceName, 'start=', 'demand') | Out-Null
+
+    $maxAttempts = 4
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+
+        $waited = 0
+        while ($waited -lt 15) {
+            $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+            $currentPid = Get-ServiceProcessId -ServiceName $ServiceName
+            $stopped = (-not $service) -or ($service.Status -eq 'Stopped')
+            if ($stopped -and $currentPid -le 0 -and -not (Test-TrackedProcessAlive -ProcessId $targetPid -StartTime $targetStart)) { break }
+            Start-Sleep -Seconds 1
+            $waited++
+        }
+
         $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-        if (-not $service -or $service.Status -eq 'Stopped') { break }
-        Start-Sleep -Seconds 1
-        $stopWait++
+        $currentPid = Get-ServiceProcessId -ServiceName $ServiceName
+        $stopped = (-not $service) -or ($service.Status -eq 'Stopped')
+        if ($stopped -and $currentPid -le 0 -and -not (Test-TrackedProcessAlive -ProcessId $targetPid -StartTime $targetStart)) {
+            Write-Log "service $ServiceName stopped on attempt $attempt"
+            return
+        }
+
+        # Force-kill only pids proven to belong to this service right now: the PID
+        # SCM currently reports, and the tracked start PID iff its start time still
+        # matches. No /T: the update worker is a child of the agent and must survive.
+        $killPids = New-Object System.Collections.Generic.List[int]
+        if ($currentPid -gt 0) { [void]$killPids.Add($currentPid) }
+        if (($targetPid -ne $currentPid) -and (Test-TrackedProcessAlive -ProcessId $targetPid -StartTime $targetStart)) { [void]$killPids.Add($targetPid) }
+        foreach ($killPid in $killPids) {
+            Write-Log "force killing agent pid $killPid (attempt $attempt)"
+            & taskkill /F /PID $killPid 2>$null | Out-Null
+        }
+        Start-Sleep -Seconds 2
     }
 
     $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-    if ($service -and $service.Status -ne 'Stopped') {
-        $runningProc = Get-Process -Name 'eguard-agent' -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($runningProc) {
-            Write-Log "taskkill fallback for pid $($runningProc.Id)"
-            & taskkill /F /PID $runningProc.Id | Out-Null
-            Start-Sleep -Seconds 3
-        }
+    $currentPid = Get-ServiceProcessId -ServiceName $ServiceName
+    $serviceState = if ($service) { [string]$service.Status } else { 'Absent' }
+    if (($service -and $service.Status -ne 'Stopped') -or $currentPid -gt 0 -or (Test-TrackedProcessAlive -ProcessId $targetPid -StartTime $targetStart)) {
+        throw "agent service did not stop after $maxAttempts attempts (service=$serviceState, targetPid=$targetPid, currentPid=$currentPid)"
     }
-
-    $remainingService = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-    $remainingProc = Get-Process -Name 'eguard-agent' -ErrorAction SilentlyContinue | Select-Object -First 1
-    if (($remainingService -and $remainingService.Status -ne 'Stopped') -or $remainingProc) {
-        throw "service or eguard-agent.exe still running after stop attempt"
-    }
+    Write-Log "service $ServiceName confirmed stopped (targetPid=$targetPid)"
 }
 
 function Verify-FileHash {
@@ -178,14 +268,55 @@ function Start-AgentServiceAndWait {
     throw "agent service did not reach Running after package install"
 }
 
+function Restore-AgentBinaryIfAbsent {
+    param([string]$AgentPath, [string]$BackupPath, [string]$ScratchPath, [string]$StagedPath)
+    # Idempotent, filesystem-state-driven recovery: if the live binary slot is
+    # empty (a partial ReplaceFile can leave it so, even during a rollback), move
+    # the best available source into it. Each move is a plain rename into an ABSENT
+    # destination (no -Force, so a raced re-creation of the target is never
+    # clobbered by a delete-then-move) and the target is re-checked after every
+    # attempt, so this is safe to call repeatedly. Preference order, best first:
+    # the pre-update backup (the last-known-good binary); then the rollback scratch
+    # (which may hold the binary that just failed verification -- a signed,
+    # hash-correct executable, promoted only as a last-resort availability
+    # fallback); then the hash-verified staged binary. Restoring EDR availability
+    # takes priority over restoring the exact prior version, and the update outcome
+    # is still reported 'failed' regardless of which source is used.
+    foreach ($src in @($BackupPath, $ScratchPath, $StagedPath)) {
+        if (Test-Path $AgentPath) { return }
+        if ($src -and (Test-Path $src)) {
+            try {
+                Move-Item -Path $src -Destination $AgentPath
+                Write-Log "recovered agent binary into absent target from $src"
+            }
+            catch {
+                Write-Log "recovery move from $src failed: $($_.Exception.Message)"
+            }
+        }
+    }
+}
+
 try {
     New-Item -ItemType Directory -Path $WorkingDir -Force | Out-Null
     $ext = if ($PackageKind -eq 'msi') { 'msi' } else { 'exe' }
     $pkgPath = Join-Path $WorkingDir ("eguard-agent-$TargetVersion.$ext")
     $tmpPath = "$pkgPath.download"
     $serviceName = 'eGuardAgent'
-    $agentPath = 'C:\Program Files\eGuard\eguard-agent.exe'
+    # Resolve the binary the service actually runs instead of assuming a fixed
+    # location. Installs can land under Program Files or Program Files (x86) and
+    # use different executable names; a hardcoded path silently verifies/updates
+    # the wrong binary. Fall back to the historical default only when the service
+    # is absent (e.g. a first-time install creating it).
+    $defaultAgentPath = 'C:\Program Files\eGuard\eguard-agent.exe'
+    $serviceBinaryPath = Get-ServiceBinaryPath -ServiceName $serviceName
+    $agentPath = if ($serviceBinaryPath) { $serviceBinaryPath } else { $defaultAgentPath }
+    Write-Log "resolved agent binary path: $agentPath"
     $backupPath = "${agentPath}.backup-$(Get-Date -Format yyyyMMddHHmmss)"
+    # Rollback tracking for the in-place EXE path: once we begin overwriting the
+    # live binary, a failure must restore the backup before any restart attempt.
+    $exeBackupCreated = $false
+    $exeReplaced = $false
+    $stagedPath = $null
 
     Write-Log "downloading update from $PackageUrl"
     Invoke-WebRequest -Uri $PackageUrl -OutFile $tmpPath -UseBasicParsing
@@ -201,36 +332,105 @@ try {
         if ($msiProcess.ExitCode -ne 0 -and $msiProcess.ExitCode -ne 3010) {
             throw "msi package install failed with exit code $($msiProcess.ExitCode)"
         }
-        Restore-ServicePolicy -ServiceName $serviceName -BinaryPath $agentPath
-        $installedVersion = Verify-AgentVersion -BinaryPath $agentPath -ExpectedVersion $TargetVersion
+        # The MSI owns its install location and rewrites the service binPath, so
+        # re-read it and verify against the binary the MSI actually registered. An
+        # empty post-install path is fatal: never fall back to the pre-MSI lineage.
+        $installedBinaryPath = Get-ServiceBinaryPath -ServiceName $serviceName
+        if (-not $installedBinaryPath) { throw "service binary path empty after msi install" }
+        Write-Log "post-install agent binary path: $installedBinaryPath"
+        $installedVersion = Verify-AgentVersion -BinaryPath $installedBinaryPath -ExpectedVersion $TargetVersion
+        Restore-ServiceStartPolicy -ServiceName $serviceName
         $servicePid = Start-AgentServiceAndWait -ServiceName $serviceName
-        Write-Log "MSI update finished (observed_version=$installedVersion, pid=$servicePid)"
-        Write-Outcome -Status 'completed' -Detail ("agent update applied (version=" + $TargetVersion + ", kind=msi, observed_version=" + $installedVersion + ")")
+        Write-Log "MSI update finished (observed_version=$installedVersion, pid=$servicePid, binary=$installedBinaryPath)"
+        Write-Outcome -Status 'completed' -Detail ("agent update applied (version=" + $TargetVersion + ", kind=msi, observed_version=" + $installedVersion + ", binary=" + $installedBinaryPath + ")")
         exit 0
     }
 
+    # Stage the new binary beside the target and verify its hash BEFORE stopping
+    # the service, so a corrupt package never takes the agent offline.
+    $stagedPath = "$agentPath.new-$CommandId"
+    Copy-Item -Path $pkgPath -Destination $stagedPath -Force
+    $stagedHash = Verify-FileHash -Path $stagedPath -ExpectedSha256 $ExpectedSha256
+    Write-Log "staged EXE verified sha256=$stagedHash"
+
     Stop-AgentService -ServiceName $serviceName
 
+    # Atomic replace via the Win32 ReplaceFile primitive ([IO.File]::Replace): it
+    # swaps the staged binary into place and moves the previous binary to the
+    # backup in a single atomic step, so a crash/power loss can never leave the
+    # target absent or partial. (Move-Item -Force is NOT atomic -- PowerShell
+    # implements forced overwrite as delete-then-move.) A first install has no
+    # existing binary to replace/back up, so a plain move is correct there.
+    $exeReplaced = $true
     if (Test-Path $agentPath) {
-        Copy-Item -Path $agentPath -Destination $backupPath -Force
+        [System.IO.File]::Replace($stagedPath, $agentPath, $backupPath, $true)
+        $exeBackupCreated = $true
     }
-
-    Copy-Item -Path $pkgPath -Destination $agentPath -Force
+    else {
+        # First install: the target slot is absent, so a plain rename is atomic
+        # (no -Force, so a raced creation is never clobbered by delete-then-move).
+        Move-Item -Path $stagedPath -Destination $agentPath
+    }
     $installedHash = Verify-FileHash -Path $agentPath -ExpectedSha256 $ExpectedSha256
     $installedVersion = Verify-AgentVersion -BinaryPath $agentPath -ExpectedVersion $TargetVersion
-    Restore-ServicePolicy -ServiceName $serviceName -BinaryPath $agentPath
+    Restore-ServiceStartPolicy -ServiceName $serviceName
     $servicePid = Start-AgentServiceAndWait -ServiceName $serviceName
+    $exeReplaced = $false
     Write-Log "EXE update finished (installed_sha256=$installedHash, observed_version=$installedVersion, pid=$servicePid)"
     Write-Outcome -Status 'completed' -Detail ("agent update applied (version=" + $TargetVersion + ", kind=exe, sha256=" + $installedHash + ", observed_version=" + $installedVersion + ")")
 }
 catch {
+    $updateError = $_
+    # Ensure a known-good agent binary is on disk BEFORE any restart. ReplaceFile
+    # can fail with ERROR_UNABLE_TO_MOVE_REPLACEMENT_2 (the original was already
+    # moved to the backup but the staged replacement was not moved in), which
+    # leaves the target absent -- so recovery must inspect the REAL filesystem
+    # state rather than trust the in-memory flags. (MSI manages its own rollback.)
+    $scratch = "$agentPath.bad-$CommandId"
+    if ($exeReplaced) {
+        # Case 1: the replace fully succeeded but a later verification failed, so
+        # the new (bad) binary is in place; atomically roll the known-good backup
+        # back over it. This ReplaceFile can ITSELF fail partway (the current
+        # target moved to $scratch but the backup not moved in), so it is only the
+        # first attempt -- the filesystem-driven pass below is the real guarantee.
+        if ((Test-Path $agentPath) -and $exeBackupCreated -and (Test-Path $backupPath)) {
+            try {
+                [System.IO.File]::Replace($backupPath, $agentPath, $scratch, $true)
+                Write-Log "rolled back to pre-update binary after post-replace verification failure"
+            }
+            catch {
+                Write-Log "rollback replace failed, deferring to filesystem recovery: $($_.Exception.Message)"
+            }
+        }
+        # Case 2 (the real guarantee): if the target slot is empty for ANY reason
+        # -- a partial forward replace or a partial rollback replace -- restore a
+        # binary into it, preferring the known-good backup and falling back to the
+        # rollback scratch or staged file only to keep the EDR service runnable.
+        Restore-AgentBinaryIfAbsent -AgentPath $agentPath -BackupPath $backupPath -ScratchPath $scratch -StagedPath $stagedPath
+    }
+    # Discard the rollback scratch copy (the displaced bad binary) now that the
+    # target is settled; never touch it while the target might still need it.
+    if ((Test-Path $agentPath) -and (Test-Path $scratch)) {
+        Remove-Item -Path $scratch -Force -ErrorAction SilentlyContinue
+    }
+    # Clean up any leftover staged binary ONLY when the target actually exists, so
+    # cleanup can never discard the sole remaining valid binary if recovery failed.
+    if ((Test-Path $agentPath) -and $stagedPath -and (Test-Path $stagedPath)) {
+        Remove-Item -Path $stagedPath -Force -ErrorAction SilentlyContinue
+    }
+    # Restore start policy and bring the service back up as INDEPENDENT best-effort
+    # steps: a failure in one must not prevent the other. Restarting the EDR agent
+    # takes priority so a failed update never leaves the endpoint unprotected.
+    try { Restore-ServiceStartPolicy -ServiceName $serviceName }
+    catch { Write-Log "failed to restore service start policy after error: $($_.Exception.Message)" }
     try {
-        Restore-ServicePolicy -ServiceName $serviceName -BinaryPath $agentPath
+        $recoveredPid = Start-AgentServiceAndWait -ServiceName $serviceName
+        Write-Log "service recovered after failed update (pid=$recoveredPid)"
     }
     catch {
-        Write-Log "failed to restore service policy after error: $($_.Exception.Message)"
+        Write-Log "service restart after failed update did not complete: $($_.Exception.Message)"
     }
-    $detail = "update failed: $($_.Exception.Message)"
+    $detail = "update failed: $($updateError.Exception.Message)"
     Write-Log $detail
     Write-Outcome -Status 'failed' -Detail $detail
     exit 1
