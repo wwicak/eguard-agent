@@ -1118,10 +1118,17 @@ fn quarantine_fails_closed_when_source_is_held_open() {
     // (wrongly) succeed, which is exactly the regression this test detects.
     let guard = fs::File::open(&original).expect("hold read handle");
     let result = quarantine_file_with_dir(&original, &sha, &protected, &quarantine_dir);
-    assert!(
-        result.is_err(),
-        "quarantine must fail closed while the source is held open by another handle"
-    );
+    // Assert the specific failure -- the exclusive source open colliding with the
+    // held handle (ERROR_SHARING_VIOLATION == 32) -- so an unrelated environmental
+    // error can't satisfy the test and mask a share-mode regression.
+    match result {
+        Err(ResponseError::Io(err)) => assert_eq!(
+            err.raw_os_error(),
+            Some(32),
+            "expected ERROR_SHARING_VIOLATION from the exclusive source open, got: {err}"
+        ),
+        other => panic!("expected an I/O sharing violation, got: {other:?}"),
+    }
 
     // The source must be untouched: never moved, scrubbed, or hardened.
     drop(guard);

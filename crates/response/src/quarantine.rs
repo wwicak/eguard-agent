@@ -920,11 +920,11 @@ fn zero_and_remove_source(source: QuarantineSource, file_size: u64) -> ResponseR
 
 #[cfg(windows)]
 fn zero_and_remove_source(source: QuarantineSource, file_size: u64) -> ResponseResult<()> {
-    // The source handle is held share-deny-write/delete, so reopening it for
-    // write/delete would conflict with our own handle. The secure destination copy
-    // already exists and is hardened, so release the source handle first, then
-    // reopen with write+delete (also share-deny-write/delete) to scrub and unlink
-    // it. Capture the file identity before releasing and re-verify it after reopen
+    // The source handle is held with exclusive sharing (share 0), so reopening it
+    // for write/delete would conflict with our own handle. The secure destination
+    // copy already exists and is hardened, so release the source handle first, then
+    // reopen with write+delete (also exclusive, share 0) to scrub and unlink it.
+    // Capture the file identity before releasing and re-verify it after reopen
     // to close the release->reopen gap: an identity mismatch, or a racing writer/
     // deleter that makes the reopen fail, aborts the now-redundant scrub instead of
     // destroying an attacker-substituted file. The source is being securely
