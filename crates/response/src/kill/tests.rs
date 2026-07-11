@@ -297,20 +297,31 @@ fn windows_access_denied_and_unknown_identity_fail_closed() {
     );
     assert!(root_denied.terminated_handles.borrow().is_empty());
 
+    // The root PID must not equal this test process's own id:
+    // windows_pid_is_always_protected() treats pid == std::process::id() as protected,
+    // and a hardcoded 1200 collides with the test-runner PID on some CI hosts (the
+    // child PID never reaches that self-guard). The two branches are mutually
+    // exclusive, so root_pid != std::process::id() deterministically.
+    let root_pid = if std::process::id() == 1200 {
+        1216
+    } else {
+        1200
+    };
+    let child_pid = root_pid + 1;
     let child_unknown = MockWindowsApi {
         snapshot: vec![
-            process_entry(1200, 1, 5200),
-            process_entry(1201, 1200, 5201),
+            process_entry(root_pid, 1, 5200),
+            process_entry(child_pid, root_pid, 5201),
         ],
-        handles: HashMap::from([(1200, 5200), (1201, 5201)]),
+        handles: HashMap::from([(root_pid, 5200), (child_pid, 5201)]),
         names: HashMap::from([(5200, "malware.exe".to_string())]),
         ..MockWindowsApi::default()
     };
     let report =
-        kill_process_tree_windows_with(1200, &ProtectedList::default_windows(), &child_unknown)
+        kill_process_tree_windows_with(root_pid, &ProtectedList::default_windows(), &child_unknown)
             .expect("unknown child is skipped while identified root is terminated");
-    assert_eq!(report.killed_pids, vec![1200]);
-    assert_eq!(report.failed_pids, vec![1201]);
+    assert_eq!(report.killed_pids, vec![root_pid]);
+    assert_eq!(report.failed_pids, vec![child_pid]);
     assert_eq!(*child_unknown.terminated_handles.borrow(), vec![5200]);
 }
 
