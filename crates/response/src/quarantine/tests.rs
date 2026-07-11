@@ -1021,10 +1021,12 @@ fn default_quarantine_dir_matches_contract() {
 // Regression: hardening (restrict_payload_handle, which resets the payload's
 // owner/permissions) must run only AFTER verification and manifest write, so any
 // post-move failure rolls the source back with its original owner/permissions
-// intact. Forcing the manifest rename to fail (by planting a directory where the
-// manifest file must be written) previously left the source restored but with the
-// hardened metadata (Unix: chmod 0o600; Windows: owner=Administrators + owner-only
-// DACL), locking out its legitimate, possibly unprivileged, owner.
+// intact. A post-move manifest-write failure is injected via the thread-local
+// FAIL_MANIFEST_WRITE seam (the pre-move ensure_artifact_absent checks make a
+// planted-path failure unreachable after the move). Previously the source was
+// restored but with hardened metadata (Unix: chmod 0o600; Windows:
+// owner=Administrators + owner-only DACL), locking out its legitimate, possibly
+// unprivileged, owner.
 fn quarantine_rollback_preserves_source_when_manifest_write_fails() {
     let base = test_base("rollback-manifest-fail");
     let original_dir = base.join("original");
@@ -1049,9 +1051,11 @@ fn quarantine_rollback_preserves_source_when_manifest_write_fails() {
     FAIL_MANIFEST_WRITE.with(|flag| flag.set(true));
     let result = quarantine_file_with_dir(&original, &sha, &protected, &quarantine_dir);
     FAIL_MANIFEST_WRITE.with(|flag| flag.set(false));
+    let err = result.expect_err("quarantine must fail when the manifest write fails");
     assert!(
-        result.is_err(),
-        "quarantine must fail when the manifest write fails"
+        err.to_string()
+            .contains("test-injected manifest write failure"),
+        "failure must be the injected post-move manifest write error, got: {err}"
     );
 
     // Rollback must restore the source unchanged: hardening (owner/DACL on Windows,

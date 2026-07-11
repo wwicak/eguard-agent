@@ -442,18 +442,26 @@ pub fn quarantine_file_with_dir(
         return Err(err);
     }
 
-    if !moved {
-        zero_and_remove_source(&source, metadata.len())?;
+    sync_restore_parent(&quarantine_parent, &quarantine_dir)?;
+
+    let original_path = source.path.clone();
+    let original_parent = original_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("/"));
+    if moved {
+        // Same-device rename already removed the source entry from its parent;
+        // persist that removal.
+        sync_restore_parent(&source.parent, &original_parent)?;
+    } else {
+        // Cross-device: securely scrub + unlink the original, then persist its
+        // parent. Consumes `source` so the read-shared source handle can be
+        // released before the write/delete reopen (Windows).
+        zero_and_remove_source(source, metadata.len())?;
     }
 
-    sync_restore_parent(&quarantine_parent, &quarantine_dir)?;
-    sync_restore_parent(
-        &source.parent,
-        source.path.parent().unwrap_or_else(|| Path::new("/")),
-    )?;
-
     Ok(QuarantineReport {
-        original_path: source.path,
+        original_path,
         // Internally quarantine_path is a canonical verbatim path (\\?\C:\...)
         // required by the handle-relative rename and artifact checks; the reported
         // path is deverbatimized so it matches the caller's quarantine directory
@@ -532,6 +540,15 @@ fn open_quarantine_leaf(parent: &File, file_name: &std::ffi::OsStr) -> ResponseR
     // payload's DACL and owner by handle (a same-volume rename preserves both).
     // LocalSystem / an administrator holding these on files it can also open for
     // delete is the normal case (inherited Full Control on the source's parent).
+    //
+    // Share mode denies FILE_SHARE_WRITE and FILE_SHARE_DELETE (only
+    // FILE_SHARE_READ): this handle is held from before the rename until after
+    // restrict_payload_handle, so while the moved payload still carries its
+    // original (attacker) DACL, no other opener can acquire a write- or
+    // delete-capable handle to the predictably (sha-)named quarantine payload and
+    // tamper with it before the restrictive DACL lands (a later DACL change does
+    // not revoke an already-open handle). A pre-existing conflicting writer/
+    // deleter makes this open fail, which is the correct fail-closed outcome.
     open_windows_relative(
         parent,
         file_name,
@@ -541,6 +558,7 @@ fn open_quarantine_leaf(parent: &File, file_name: &std::ffi::OsStr) -> ResponseR
             | win_acl::WRITE_DAC
             | win_acl::WRITE_OWNER,
         0x20 | 0x40 | 0x200000,
+        FILE_SHARE_READ.0,
     )
 }
 
@@ -610,18 +628,20 @@ fn same_file(left: &File, right: &File) -> ResponseResult<bool> {
 }
 
 #[cfg(windows)]
+fn windows_file_identity(file: &File) -> ResponseResult<(u32, u32, u32)> {
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    unsafe { GetFileInformationByHandle(HANDLE(file.as_raw_handle()), &mut info) }
+        .map_err(|error| ResponseError::InvalidInput(format!("get file identity: {error}")))?;
+    Ok((
+        info.dwVolumeSerialNumber,
+        info.nFileIndexHigh,
+        info.nFileIndexLow,
+    ))
+}
+
+#[cfg(windows)]
 fn same_file(left: &File, right: &File) -> ResponseResult<bool> {
-    fn identity(file: &File) -> ResponseResult<(u32, u32, u32)> {
-        let mut info = BY_HANDLE_FILE_INFORMATION::default();
-        unsafe { GetFileInformationByHandle(HANDLE(file.as_raw_handle()), &mut info) }
-            .map_err(|error| ResponseError::InvalidInput(format!("get file identity: {error}")))?;
-        Ok((
-            info.dwVolumeSerialNumber,
-            info.nFileIndexHigh,
-            info.nFileIndexLow,
-        ))
-    }
-    Ok(identity(left)? == identity(right)?)
+    Ok(windows_file_identity(left)? == windows_file_identity(right)?)
 }
 
 #[cfg(unix)]
@@ -772,7 +792,19 @@ fn verify_quarantine_payload_handle(
 
 fn restrict_payload_handle(file: &File) -> ResponseResult<()> {
     #[cfg(unix)]
-    file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    {
+        // Durability first, then the mode change LAST. restrict_payload_handle is
+        // the final fallible step of a successful quarantine, so the 0o600 chmod
+        // must be the last operation that can fail: if sync_all failed AFTER the
+        // chmod, the rollback would restore the source with a hardened 0o600 mode
+        // it never consented to. (The source handle is opened without data-write
+        // access, so there is no equivalent FlushFileBuffers on Windows; payload
+        // content durability does not depend on this sync -- the copy-fallback path
+        // syncs the destination and the rename path only relocates a directory
+        // entry for content already on stable storage.)
+        file.sync_all()?;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
     #[cfg(not(unix))]
     {
         // Windows analogue of 0o600: reset the payload's owner to Administrators
@@ -786,14 +818,6 @@ fn restrict_payload_handle(file: &File) -> ResponseResult<()> {
         // ERROR_ACCESS_DENIED) and is trivially cleared, so it is no real barrier.
         set_restrictive_dacl_on_handle(file)?;
     }
-    // The source handle is opened without data-write access, so FlushFileBuffers
-    // through it is denied on Windows; sync_all is therefore Unix-only. Payload
-    // content durability does not depend on it: the copy-fallback path syncs the
-    // freshly written destination, and the rename path only relocates a directory
-    // entry for content already on stable storage. Explicit rename-metadata
-    // flushing is best-effort on Windows (there is no cheap directory fsync).
-    #[cfg(unix)]
-    file.sync_all()?;
     Ok(())
 }
 
@@ -863,8 +887,8 @@ fn rollback_quarantine_move(
 }
 
 #[cfg(unix)]
-fn zero_and_remove_source(source: &QuarantineSource, file_size: u64) -> ResponseResult<()> {
-    verify_source_entry(source)?;
+fn zero_and_remove_source(source: QuarantineSource, file_size: u64) -> ResponseResult<()> {
+    verify_source_entry(&source)?;
     let source_name = unix_name(&source.file_name)?;
     let fd = unsafe {
         libc::openat(
@@ -885,41 +909,64 @@ fn zero_and_remove_source(source: &QuarantineSource, file_size: u64) -> Response
     writable.set_permissions(fs::Permissions::from_mode(0o600))?;
     overwrite_file_prefix_with_zeros_file(&mut writable, file_size)?;
     writable.sync_all()?;
-    verify_source_entry(source)?;
+    verify_source_entry(&source)?;
     if unsafe { libc::unlinkat(source.parent.as_raw_fd(), source_name.as_ptr(), 0) } != 0 {
         return Err(std::io::Error::last_os_error().into());
     }
+    sync_restore_parent(
+        &source.parent,
+        source.path.parent().unwrap_or_else(|| Path::new("/")),
+    )?;
     Ok(())
 }
 
 #[cfg(windows)]
-fn zero_and_remove_source(source: &QuarantineSource, file_size: u64) -> ResponseResult<()> {
+fn zero_and_remove_source(source: QuarantineSource, file_size: u64) -> ResponseResult<()> {
+    // The source handle is held share-deny-write/delete, so reopening it for
+    // write/delete would conflict with our own handle. The secure destination copy
+    // already exists and is hardened, so release the source handle first, then
+    // reopen with write+delete (also share-deny-write/delete) to scrub and unlink
+    // it. Capture the file identity before releasing and re-verify it after reopen
+    // to close the release->reopen gap: an identity mismatch, or a racing writer/
+    // deleter that makes the reopen fail, aborts the now-redundant scrub instead of
+    // destroying an attacker-substituted file. The source is being securely
+    // destroyed, so it is deliberately NOT hardened (matching the Unix path).
+    let QuarantineSource {
+        parent,
+        file,
+        file_name,
+        path,
+    } = source;
+    let identity = windows_file_identity(&file)?;
+    drop(file);
     let mut writable = open_windows_relative(
-        &source.parent,
-        &source.file_name,
+        &parent,
+        &file_name,
         FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0 | DELETE.0,
         0x20 | 0x40 | 0x200000,
+        FILE_SHARE_READ.0,
     )?;
-    if !same_file(&source.file, &writable)? {
+    if windows_file_identity(&writable)? != identity {
         return Err(ResponseError::InvalidInput(
             "quarantine source changed before cross-device cleanup".to_string(),
         ));
     }
-    // The source is being securely destroyed (zeroed then deleted); do NOT apply
-    // the restrictive quarantine DACL to it. Beyond being pointless on a file
-    // about to be removed, that handle intentionally lacks WRITE_DAC/WRITE_OWNER,
-    // so attempting it would fail and abort the source's neutralization. This
-    // matches the Unix cross-device path, which also does not harden the source.
     overwrite_file_prefix_with_zeros_file(&mut writable, file_size)?;
     writable.sync_all()?;
-    remove_windows_file_by_handle(&writable, "quarantine source")
+    remove_windows_file_by_handle(&writable, "quarantine source")?;
+    sync_restore_parent(&parent, path.parent().unwrap_or_else(|| Path::new("/")))?;
+    Ok(())
 }
 
 #[cfg(not(any(unix, windows)))]
-fn zero_and_remove_source(source: &QuarantineSource, file_size: u64) -> ResponseResult<()> {
+fn zero_and_remove_source(source: QuarantineSource, file_size: u64) -> ResponseResult<()> {
     let mut file = OpenOptions::new().write(true).open(&source.path)?;
     overwrite_file_prefix_with_zeros_file(&mut file, file_size)?;
     fs::remove_file(&source.path)?;
+    sync_restore_parent(
+        &source.parent,
+        source.path.parent().unwrap_or_else(|| Path::new("/")),
+    )?;
     Ok(())
 }
 
@@ -1304,6 +1351,7 @@ fn open_windows_relative(
     name: &std::ffi::OsStr,
     desired_access: u32,
     create_options: u32,
+    share_access: u32,
 ) -> ResponseResult<File> {
     let mut name: Vec<u16> = name.encode_wide().collect();
     if name.is_empty()
@@ -1340,7 +1388,7 @@ fn open_windows_relative(
             &mut io_status,
             std::ptr::null(),
             0,
-            FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0 | FILE_SHARE_DELETE.0,
+            share_access,
             1, // FILE_OPEN
             create_options,
             std::ptr::null(),
@@ -1372,8 +1420,13 @@ fn open_windows_restore_directory(parent: &File, name: &std::ffi::OsStr) -> Resp
     // to hold write access — the kernel checks the destination directory DACL for
     // the caller. The handle-relative rename then resolves its single-component
     // leaf inside this validated directory handle (RootDirectory = this handle).
-    let directory =
-        open_windows_relative(parent, name, FILE_GENERIC_READ.0, 0x1 | 0x20 | 0x200000)?;
+    let directory = open_windows_relative(
+        parent,
+        name,
+        FILE_GENERIC_READ.0,
+        0x1 | 0x20 | 0x200000,
+        FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0 | FILE_SHARE_DELETE.0,
+    )?;
     validate_windows_restore_directory(&directory)?;
     Ok(directory)
 }
