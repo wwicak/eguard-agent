@@ -25,11 +25,12 @@ use windows::Win32::Foundation::{
 };
 #[cfg(windows)]
 use windows::Win32::Storage::FileSystem::{
-    FileDispositionInfo, FileRenameInfo, GetFileInformationByHandle, GetFinalPathNameByHandleW,
-    SetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ATTRIBUTE_REPARSE_POINT,
-    FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-    FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_RENAME_INFO, FILE_RENAME_INFO_0, FILE_SHARE_DELETE,
-    FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES,
+    FileDispositionInfo, GetFileInformationByHandle, GetFinalPathNameByHandleW,
+    SetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ADD_FILE,
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_RENAME_INFO,
+    FILE_RENAME_INFO_0, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    FILE_WRITE_ATTRIBUTES,
 };
 
 #[cfg(windows)]
@@ -66,7 +67,23 @@ extern "system" {
         ea_buffer: *const std::ffi::c_void,
         ea_length: u32,
     ) -> i32;
+
+    fn NtSetInformationFile(
+        file_handle: HANDLE,
+        io_status_block: *mut IoStatusBlock,
+        file_information: *const std::ffi::c_void,
+        length: u32,
+        file_information_class: i32,
+    ) -> i32;
 }
+
+// FILE_INFORMATION_CLASS::FileRenameInformation. Unlike the Win32
+// SetFileInformationByHandle(FileRenameInfo) wrapper, the native
+// NtSetInformationFile honours FILE_RENAME_INFORMATION.RootDirectory, which is
+// required for our TOCTOU-safe parent-handle-relative rename. The Win32 wrapper
+// rejects a non-NULL RootDirectory with STATUS/ERROR_INVALID_PARAMETER (87).
+#[cfg(windows)]
+const FILE_RENAME_INFORMATION_CLASS: i32 = 10;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -477,6 +494,10 @@ fn rename_windows_handle(
     let byte_len = std::mem::size_of::<FILE_RENAME_INFO>() + name.len().saturating_sub(1) * 2;
     let mut buffer = vec![0_usize; byte_len.div_ceil(std::mem::size_of::<usize>())];
     let info = buffer.as_mut_ptr() as *mut FILE_RENAME_INFO;
+    let mut io_status = IoStatusBlock {
+        status_or_pointer: std::ptr::null_mut(),
+        information: 0,
+    };
     unsafe {
         (*info).Anonymous = FILE_RENAME_INFO_0 {
             ReplaceIfExists: BOOLEAN(0),
@@ -484,21 +505,22 @@ fn rename_windows_handle(
         (*info).RootDirectory = HANDLE(parent.as_raw_handle());
         (*info).FileNameLength = (name.len() * 2) as u32;
         std::ptr::copy_nonoverlapping(name.as_ptr(), (*info).FileName.as_mut_ptr(), name.len());
-        SetFileInformationByHandle(
+        // NtSetInformationFile (not the Win32 SetFileInformationByHandle wrapper)
+        // honours RootDirectory so the rename stays bound to the verified parent
+        // handle, closing the parent-path re-resolution TOCTOU.
+        let status = NtSetInformationFile(
             HANDLE(file.as_raw_handle()),
-            FileRenameInfo,
+            &mut io_status,
             buffer.as_ptr() as *const std::ffi::c_void,
             byte_len as u32,
-        )
-        .map_err(|error| {
-            let hresult = error.code().0;
-            let raw = if (hresult as u32 & 0xffff_0000) == 0x8007_0000 {
-                hresult & 0xffff
-            } else {
-                hresult
-            };
-            std::io::Error::from_raw_os_error(raw)
-        })
+            FILE_RENAME_INFORMATION_CLASS,
+        );
+        if status == 0 {
+            Ok(())
+        } else {
+            let dos = RtlNtStatusToDosError(NTSTATUS(status));
+            Err(std::io::Error::from_raw_os_error(dos as i32))
+        }
     }
 }
 
@@ -1077,8 +1099,16 @@ fn open_windows_restore_directory(parent: &File, name: &std::ffi::OsStr) -> Resp
             "restore directory name is invalid for Windows".to_string(),
         ));
     }
-    let directory =
-        open_windows_relative(parent, name, FILE_GENERIC_READ.0, 0x1 | 0x20 | 0x200000)?;
+    // FILE_ADD_FILE (FILE_WRITE_DATA on a directory) is required so this handle
+    // can serve as the RootDirectory for the parent-relative NtSetInformationFile
+    // rename and for parent-relative create_destination_exclusive; without it the
+    // kernel denies the add-name with STATUS_ACCESS_DENIED (Win32 error 5).
+    let directory = open_windows_relative(
+        parent,
+        name,
+        FILE_GENERIC_READ.0 | FILE_ADD_FILE.0,
+        0x1 | 0x20 | 0x200000,
+    )?;
     validate_windows_restore_directory(&directory)?;
     Ok(directory)
 }

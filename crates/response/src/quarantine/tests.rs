@@ -5,7 +5,15 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::sync::Mutex;
 
 fn test_base(label: &str) -> PathBuf {
-    std::env::temp_dir().join(format!(
+    // The quarantine primitive reports fs::canonicalize()d paths. On macOS the
+    // per-user temp dir lives under /var/folders, and /var is a symlink to
+    // /private/var, so the canonical form differs from the raw temp path. Anchor
+    // the fixture on the canonical temp root so expected==reported on every
+    // platform. On Linux this is a no-op (/tmp is not a symlink).
+    let root = std::env::temp_dir();
+    #[cfg(unix)]
+    let root = std::fs::canonicalize(&root).unwrap_or(root);
+    root.join(format!(
         "eguard-{label}-{}",
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -664,13 +672,7 @@ fn quarantine_report_uses_deverbatimized_canonical_original_path() {
 #[test]
 #[cfg(unix)]
 fn quarantine_allows_intermediate_symlink_to_unprotected_target_and_reports_canonical_path() {
-    let base = std::env::temp_dir().join(format!(
-        "eguard-quarantine-symlink-happy-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or_default()
-    ));
+    let base = test_base("quarantine-symlink-happy");
     let target_dir = base.join("target");
     let alias_dir = base.join("alias");
     let quarantine_dir = base.join("quarantine");
@@ -726,13 +728,7 @@ fn quarantine_runtime_entrypoint_moves_file_and_reports_fields() {
         }
     }
 
-    let base = std::env::temp_dir().join(format!(
-        "eguard-quarantine-runtime-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or_default()
-    ));
+    let base = test_base("quarantine-runtime");
     let quarantine_dir = base.join("quarantine");
     fs::create_dir_all(&base).expect("create base");
 
@@ -783,13 +779,7 @@ fn quarantine_runtime_entrypoint_moves_file_and_reports_fields() {
 #[test]
 // AC-RSP-025 AC-RSP-026 AC-RSP-029 AC-RSP-030
 fn quarantine_with_custom_dir_copies_metadata_and_removes_original() {
-    let base = std::env::temp_dir().join(format!(
-        "eguard-quarantine-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or_default()
-    ));
+    let base = test_base("quarantine");
     let quarantine_dir = base.join("quarantine");
     fs::create_dir_all(&base).expect("create base");
 
@@ -997,13 +987,7 @@ fn quarantine_rejects_mismatched_content_hash_without_moving_source() {
 
 #[test]
 fn quarantine_normalizes_uppercase_sha256_ids() {
-    let base = std::env::temp_dir().join(format!(
-        "eguard-quarantine-normalize-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or_default()
-    ));
+    let base = test_base("quarantine-normalize");
     let quarantine_dir = base.join("quarantine");
     fs::create_dir_all(&base).expect("create base");
 
