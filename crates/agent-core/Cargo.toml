@@ -40,3 +40,6 @@ windows-service.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 platform-macos = { path = "../platform-macos" }
 libc.workspace = true
+
+[dev-dependencies]
+response = { path = "../response", features = ["test-quarantine-dir"] }

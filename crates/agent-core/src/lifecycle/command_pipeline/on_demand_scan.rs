@@ -251,6 +251,9 @@ mod tests {
 
     #[tokio::test]
     async fn run_scan_command_quarantines_detected_file() {
+        // Serialize with other tests that mutate the shared EGUARD_TEST_QUARANTINE_DIR
+        // env var so a concurrent test cannot unset it and force the default vault path.
+        let _env_guard = crate::test_support::env_lock().lock().expect("env lock");
         let mut cfg = AgentConfig::default();
         cfg.offline_buffer_backend = "memory".to_string();
         cfg.server_addr = "127.0.0.1:1".to_string();
@@ -308,6 +311,8 @@ mod tests {
 
     #[tokio::test]
     async fn run_scan_command_bypasses_learning_mode_response_suppression() {
+        // Serialize with other tests that mutate the shared EGUARD_TEST_QUARANTINE_DIR env var.
+        let _env_guard = crate::test_support::env_lock().lock().expect("env lock");
         let mut cfg = AgentConfig::default();
         cfg.offline_buffer_backend = "memory".to_string();
         cfg.server_addr = "127.0.0.1:1".to_string();

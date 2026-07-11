@@ -267,10 +267,25 @@ impl AgentRuntime {
             .get("response_max_kills_per_minute")
             .and_then(|v| v.as_u64())
         {
-            self.config.response.max_kills_per_minute = (v as usize).max(1);
+            let limit = (v as usize).max(1);
+            self.config.response.max_kills_per_minute = limit;
+            self.limiter.set_max_per_minute(limit);
             info!(
                 response_max_kills_per_minute = self.config.response.max_kills_per_minute,
                 "updated response kill rate limit from policy"
+            );
+        }
+        if let Some(v) = raw
+            .get("response_max_quarantines_per_minute")
+            .and_then(|v| v.as_u64())
+        {
+            let limit = (v as usize).max(1);
+            self.config.response.max_quarantines_per_minute = limit;
+            self.quarantine_limiter.set_max_per_minute(limit);
+            info!(
+                response_max_quarantines_per_minute =
+                    self.config.response.max_quarantines_per_minute,
+                "updated response quarantine rate limit from policy"
             );
         }
 
@@ -687,7 +702,7 @@ mod tests {
     use crate::config::AgentConfig;
     use crate::platform::{enrich_event_with_cache, EventType, RawEvent};
     use serde_json::json;
-    use std::fs;
+    use std::{fs, time::Instant};
 
     fn env_lock() -> &'static std::sync::Mutex<()> {
         crate::lifecycle::shared_env_var_lock()
@@ -795,6 +810,7 @@ mod tests {
             "autonomous_response": true,
             "response_dry_run": false,
             "response_max_kills_per_minute": 17,
+            "response_max_quarantines_per_minute": 11,
             "response_auto_isolation_enabled": true,
             "response_auto_isolation_min_incidents_in_window": 2,
             "response_auto_isolation_window_secs": 90,
@@ -808,6 +824,16 @@ mod tests {
         assert!(runtime.config.response.autonomous_response);
         assert!(!runtime.config.response.dry_run);
         assert_eq!(runtime.config.response.max_kills_per_minute, 17);
+        assert_eq!(runtime.config.response.max_quarantines_per_minute, 11);
+        let now = Instant::now();
+        for _ in 0..17 {
+            assert!(runtime.limiter.allow(now));
+        }
+        assert!(!runtime.limiter.allow(now));
+        for _ in 0..11 {
+            assert!(runtime.quarantine_limiter.allow(now));
+        }
+        assert!(!runtime.quarantine_limiter.allow(now));
         assert!(runtime.config.response.auto_isolation.enabled);
         assert_eq!(
             runtime

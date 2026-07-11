@@ -1,7 +1,6 @@
 use std::path::Path;
 use std::time::Instant;
 
-use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 
 use baseline::{BaselineStatus, BaselineTransition, ProcessKey};
@@ -252,7 +251,7 @@ impl AgentRuntime {
     }
 
     fn execute_quarantine_step(
-        &self,
+        &mut self,
         action: PlannedAction,
         event: &TelemetryEvent,
         success: &mut bool,
@@ -274,11 +273,21 @@ impl AgentRuntime {
             return;
         };
 
+        // Consume quota before the attempt: failures count intentionally to cap incident blast radius.
+        if !self.quarantine_limiter.allow(Instant::now()) {
+            *success = false;
+            step.success = false;
+            step.detail = "quarantine_skipped:rate_limited".to_string();
+            notes.push(step.detail.clone());
+            result.reports.push(step);
+            return;
+        }
+
         let sha = event
             .file_hash
             .as_deref()
             .and_then(normalize_quarantine_sha256)
-            .unwrap_or_else(|| synthetic_quarantine_id(event));
+            .unwrap_or_default();
         match quarantine_file(Path::new(path), &sha, &self.protected) {
             Ok(quarantine_report) => {
                 step.file_path = Some(quarantine_report.original_path.display().to_string());
@@ -394,24 +403,6 @@ fn is_script_interpreter(process: &str) -> bool {
     )
 }
 
-fn synthetic_quarantine_id(event: &TelemetryEvent) -> String {
-    let seed = format!(
-        "{}|{}|{}|{}|{}",
-        event.file_path.as_deref().unwrap_or_default(),
-        event.process,
-        event.pid,
-        event.session_id,
-        event.ts_unix
-    );
-    let digest = Sha256::digest(seed.as_bytes());
-    let mut out = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        use std::fmt::Write as _;
-        let _ = write!(&mut out, "{byte:02x}");
-    }
-    out
-}
-
 fn normalize_quarantine_sha256(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.len() != 64 || !trimmed.chars().all(|ch| ch.is_ascii_hexdigit()) {
@@ -423,7 +414,9 @@ fn normalize_quarantine_sha256(raw: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::AgentConfig;
     use detection::EventClass;
+    use std::fs;
 
     fn sample_event() -> TelemetryEvent {
         TelemetryEvent {
@@ -450,6 +443,70 @@ mod tests {
             container_escape: false,
             container_privileged: false,
         }
+    }
+
+    fn runtime_with_response_limits(
+        max_kills_per_minute: usize,
+        max_quarantines_per_minute: usize,
+    ) -> AgentRuntime {
+        let mut cfg = AgentConfig::default();
+        cfg.offline_buffer_backend = "memory".to_string();
+        cfg.server_addr = "127.0.0.1:1".to_string();
+        cfg.self_protection_integrity_check_interval_secs = 0;
+        cfg.response.max_kills_per_minute = max_kills_per_minute;
+        cfg.response.max_quarantines_per_minute = max_quarantines_per_minute;
+        AgentRuntime::new(cfg).expect("runtime")
+    }
+
+    fn unique_temp_dir(label: &str) -> std::path::PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock before unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("eguard-{label}-{}-{nonce}", std::process::id()))
+    }
+
+    #[test]
+    fn quarantine_rate_limiter_skips_second_file_without_consuming_kill_quota() {
+        let _guard = crate::test_support::env_lock().lock().expect("env lock");
+        let base = unique_temp_dir("quarantine-rate-limit");
+        let quarantine_dir = base.join("quarantine");
+        fs::create_dir_all(&quarantine_dir).expect("create quarantine dir");
+        std::env::set_var("EGUARD_TEST_QUARANTINE_DIR", &quarantine_dir);
+
+        let mut runtime = runtime_with_response_limits(2, 1);
+        let first_path = base.join("first.bin");
+        let second_path = base.join("second.bin");
+        fs::write(&first_path, b"first").expect("write first file");
+        fs::write(&second_path, b"second").expect("write second file");
+
+        let mut first_event = sample_event();
+        first_event.file_path = Some(first_path.display().to_string());
+        first_event.file_hash = None;
+        let first = runtime.execute_planned_action(PlannedAction::QuarantineOnly, &first_event, 1);
+        assert!(first.success, "{}", first.detail);
+        assert_eq!(first.reports.len(), 1);
+        assert_eq!(first.reports[0].action_type, "quarantine_file");
+        assert!(first.reports[0].success);
+
+        let mut second_event = sample_event();
+        second_event.file_path = Some(second_path.display().to_string());
+        second_event.file_hash = None;
+        let second =
+            runtime.execute_planned_action(PlannedAction::QuarantineOnly, &second_event, 2);
+        assert!(!second.success);
+        assert_eq!(second.reports.len(), 1);
+        assert_eq!(second.reports[0].action_type, "quarantine_file");
+        assert_eq!(second.reports[0].detail, "quarantine_skipped:rate_limited");
+        assert!(second_path.exists(), "rate-limited file remains untouched");
+
+        let now = Instant::now();
+        assert!(runtime.limiter.allow(now));
+        assert!(runtime.limiter.allow(now));
+        assert!(!runtime.limiter.allow(now));
+
+        std::env::remove_var("EGUARD_TEST_QUARANTINE_DIR");
+        let _ = fs::remove_dir_all(base);
     }
 
     #[test]
@@ -541,39 +598,5 @@ mod tests {
         assert_eq!(reports.len(), 1);
         assert_eq!(reports[0].action_type, "capture_script");
         assert!(reports[0].success);
-    }
-
-    #[test]
-    fn synthetic_quarantine_id_is_valid_hex_identifier() {
-        let event = TelemetryEvent {
-            ts_unix: 1_700_000_000,
-            event_class: EventClass::FileOpen,
-            pid: 42,
-            ppid: 7,
-            uid: 1000,
-            process: "bash".to_string(),
-            parent_process: "sshd".to_string(),
-            session_id: 42,
-            file_path: Some("/tmp/proof.txt".to_string()),
-            file_write: false,
-            file_hash: None,
-            dst_port: None,
-            dst_ip: None,
-            dst_domain: None,
-            command_line: Some("bash /tmp/proof.txt".to_string()),
-            event_size: None,
-            container_runtime: None,
-            container_id: None,
-            container_escape: false,
-            container_privileged: false,
-        };
-
-        let synthetic = synthetic_quarantine_id(&event);
-        assert_eq!(synthetic.len(), 64);
-        assert!(synthetic.chars().all(|ch| ch.is_ascii_hexdigit()));
-        assert_eq!(
-            normalize_quarantine_sha256(&synthetic).as_deref(),
-            Some(synthetic.as_str())
-        );
     }
 }

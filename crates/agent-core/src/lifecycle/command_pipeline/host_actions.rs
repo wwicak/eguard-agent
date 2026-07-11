@@ -1,6 +1,3 @@
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
-use std::path::Path;
-
 use response::{CommandExecution, CommandOutcome};
 
 use super::host_isolation_allowlist::resolve_host_isolation_allowlist;
@@ -158,75 +155,26 @@ impl AgentRuntime {
             }
         };
 
-        if payload.quarantine_path.trim().is_empty() || payload.original_path.trim().is_empty() {
+        if payload.sha256.trim().is_empty() {
             exec.outcome = CommandOutcome::Ignored;
             exec.status = "failed";
-            exec.detail =
-                "invalid restore_quarantine payload: quarantine_path and original_path are required"
-                    .to_string();
+            exec.detail = "restore_quarantine failed: legacy_quarantine_requires_manual_restore: sha256 is required".to_string();
             return;
         }
 
-        #[cfg(target_os = "windows")]
-        {
-            match platform_windows::response::quarantine::restore_file(
-                payload.quarantine_path.trim(),
-                payload.original_path.trim(),
-            ) {
-                Ok(()) => {
-                    exec.detail = format!(
-                        "quarantine restored: {} -> {}",
-                        payload.quarantine_path.trim(),
-                        payload.original_path.trim()
-                    );
-                }
-                Err(err) => {
-                    exec.outcome = CommandOutcome::Ignored;
-                    exec.status = "failed";
-                    exec.detail = format!("restore_quarantine failed: {}", err);
-                }
+        let quarantine_path = (!payload.quarantine_path.trim().is_empty())
+            .then(|| std::path::Path::new(payload.quarantine_path.trim()));
+        let original_path = (!payload.original_path.trim().is_empty())
+            .then(|| std::path::Path::new(payload.original_path.trim()));
+
+        match response::restore_quarantined(payload.sha256.trim(), quarantine_path, original_path) {
+            Ok(report) => {
+                exec.detail = format!("quarantine restored: {}", report.restored_path.display());
             }
-            return;
-        }
-
-        #[cfg(target_os = "macos")]
-        {
-            match platform_macos::response::restore_file(
-                payload.quarantine_path.trim(),
-                payload.original_path.trim(),
-            ) {
-                Ok(()) => {
-                    exec.detail = format!(
-                        "quarantine restored: {} -> {}",
-                        payload.quarantine_path.trim(),
-                        payload.original_path.trim()
-                    );
-                }
-                Err(err) => {
-                    exec.outcome = CommandOutcome::Ignored;
-                    exec.status = "failed";
-                    exec.detail = format!("restore_quarantine failed: {}", err);
-                }
-            }
-            return;
-        }
-
-        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-        {
-            match response::restore_quarantined(
-                Path::new(payload.quarantine_path.trim()),
-                Path::new(payload.original_path.trim()),
-                0o600,
-            ) {
-                Ok(report) => {
-                    exec.detail =
-                        format!("quarantine restored: {}", report.restored_path.display());
-                }
-                Err(err) => {
-                    exec.outcome = CommandOutcome::Ignored;
-                    exec.status = "failed";
-                    exec.detail = format!("restore_quarantine failed: {}", err);
-                }
+            Err(err) => {
+                exec.outcome = CommandOutcome::Ignored;
+                exec.status = "failed";
+                exec.detail = format!("restore_quarantine failed: {}", err);
             }
         }
     }

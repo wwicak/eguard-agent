@@ -214,6 +214,15 @@ jobs:
         run: |
           cargo test -p platform-windows
 
+      - name: Run response Windows unit tests
+        shell: bash
+        run: cargo test -p response --lib
+
+      - name: Run response Windows kill safety test
+        shell: bash
+        run: |
+          cargo test -p response --test windows_kill
+
       - name: Build Windows agent binary
         shell: bash
         env:
@@ -273,6 +282,9 @@ jobs:
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
+
+      - name: Run response tests (macOS)
+        run: cargo test -p response --lib
 
       - name: Build ARM64
         env:
