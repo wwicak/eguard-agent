@@ -5,7 +5,15 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::sync::Mutex;
 
 fn test_base(label: &str) -> PathBuf {
-    std::env::temp_dir().join(format!(
+    // The quarantine primitive reports fs::canonicalize()d paths. On macOS the
+    // per-user temp dir lives under /var/folders, and /var is a symlink to
+    // /private/var, so the canonical form differs from the raw temp path. Anchor
+    // the fixture on the canonical temp root so expected==reported on every
+    // platform. On Linux this is a no-op (/tmp is not a symlink).
+    let root = std::env::temp_dir();
+    #[cfg(unix)]
+    let root = std::fs::canonicalize(&root).unwrap_or(root);
+    root.join(format!(
         "eguard-{label}-{}",
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
