@@ -5,14 +5,20 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::sync::Mutex;
 
 fn test_base(label: &str) -> PathBuf {
-    // The quarantine primitive reports fs::canonicalize()d paths. On macOS the
-    // per-user temp dir lives under /var/folders, and /var is a symlink to
-    // /private/var, so the canonical form differs from the raw temp path. Anchor
-    // the fixture on the canonical temp root so expected==reported on every
-    // platform. On Linux this is a no-op (/tmp is not a symlink).
+    // The quarantine primitive reports normalize_path(fs::canonicalize())d paths, so
+    // anchor the fixture on that same canonical temp root to keep expected==reported
+    // on every platform:
+    //  - macOS: the per-user temp dir is under /var/folders and /var is a symlink to
+    //    /private/var, so the canonical form differs from the raw temp path.
+    //  - Windows CI: TEMP is an 8.3 short name (e.g. C:\Users\RUNNER~1\...) that
+    //    canonicalize resolves to the long name, and normalize_path deverbatimizes the
+    //    \\?\ prefix (yielding C:/...); without this the reported long/deverbatim path
+    //    never equals the raw short path.
+    //  - Linux: effectively a no-op (/tmp is not a symlink).
     let root = std::env::temp_dir();
-    #[cfg(unix)]
     let root = std::fs::canonicalize(&root).unwrap_or(root);
+    #[cfg(windows)]
+    let root = normalize_path(&root);
     root.join(format!(
         "eguard-{label}-{}",
         SystemTime::now()
@@ -26,6 +32,16 @@ fn digest(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     format!("{:x}", hasher.finalize())
+}
+
+#[cfg(windows)]
+fn cmd_path(path: &std::path::Path) -> String {
+    // test_base anchors fixtures on normalize_path(canonicalize(..)), whose Windows
+    // form uses the drive's forward-slash prefix (C:/...). cmd.exe parses a leading
+    // "C:/" as a switch ("Invalid switch - ..."), so hand mklink a plain-backslash
+    // path. Rust's own fs APIs accept either separator, so only cmd shell-outs need
+    // this.
+    path.to_string_lossy().replace('/', "\\")
 }
 
 fn quarantine_fixture(label: &str) -> (PathBuf, PathBuf, QuarantineReport, Vec<u8>) {
@@ -362,8 +378,8 @@ fn quarantine_move_cannot_be_redirected_by_intermediate_parent_junction_swap() {
     fs::rename(&original_ancestor, &moved_ancestor).expect("move original ancestor");
     let output = std::process::Command::new("cmd")
         .args(["/C", "mklink", "/J"])
-        .arg(&original_ancestor)
-        .arg(&protected_ancestor)
+        .arg(cmd_path(&original_ancestor))
+        .arg(cmd_path(&protected_ancestor))
         .output()
         .expect("create replacement junction");
     assert!(output.status.success(), "mklink failed: {output:?}");
@@ -401,8 +417,8 @@ fn open_restore_parent_refuses_intermediate_junction_swap() {
     fs::rename(&original_ancestor, &moved_ancestor).expect("swap original ancestor");
     let status = std::process::Command::new("cmd")
         .args(["/c", "mklink", "/J"])
-        .arg(&original_ancestor)
-        .arg(&attacker_ancestor)
+        .arg(cmd_path(&original_ancestor))
+        .arg(cmd_path(&attacker_ancestor))
         .status()
         .expect("create intermediate junction");
     assert!(status.success(), "mklink /J must succeed");
@@ -617,9 +633,15 @@ fn quarantine_rejects_junction_into_protected_root() {
     let payload = b"protected payload";
     fs::write(&target, payload).expect("write protected target");
     let expected_path = normalize_path(&fs::canonicalize(&target).expect("canonical target"));
+    // Use the canonicalized protected root: on the Windows CI runner the raw base is
+    // an 8.3 short-name path, but the quarantine primitive canonicalizes the target to
+    // its long name before matching, so a raw short-name protected entry would never
+    // match and the junction would (wrongly) be quarantined instead of rejected.
+    let protected_root =
+        normalize_path(&fs::canonicalize(&protected_dir).expect("canonical protected dir"));
     let protected = ProtectedList {
         process_patterns: Vec::new(),
-        protected_paths: vec![protected_dir.clone()],
+        protected_paths: vec![protected_root],
     };
 
     let err = quarantine_file_with_dir(
