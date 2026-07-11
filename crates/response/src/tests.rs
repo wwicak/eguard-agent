@@ -387,6 +387,10 @@ fn default_macos_protected_paths_match_baseline() {
     assert!(!protected.is_protected_path(Path::new("/tmp/sample.bin")));
 }
 
+// The /private<->/etc and /private/var<->/var firmlink aliasing is Unix
+// path-grammar semantics (macOS/Linux). On Windows these POSIX-absolute paths
+// are not valid protected roots, so this equivalence only applies on unix.
+#[cfg(unix)]
 #[test]
 fn macos_private_path_spellings_match_protected_roots() {
     let protected = ProtectedList {

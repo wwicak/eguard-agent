@@ -26,9 +26,9 @@ use windows::Win32::Foundation::{
 #[cfg(windows)]
 use windows::Win32::Storage::FileSystem::{
     FileDispositionInfo, GetFileInformationByHandle, GetFinalPathNameByHandleW,
-    SetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ADD_FILE,
-    FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_RENAME_INFO,
+    SetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ATTRIBUTE_REPARSE_POINT,
+    FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_READ_ATTRIBUTES, FILE_RENAME_INFO,
     FILE_RENAME_INFO_0, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
     FILE_WRITE_ATTRIBUTES,
 };
@@ -253,7 +253,11 @@ pub fn quarantine_file_with_dir(
 
     Ok(QuarantineReport {
         original_path: source.path,
-        quarantine_path,
+        // Internally quarantine_path is a canonical verbatim path (\\?\C:\...)
+        // required by the handle-relative rename and artifact checks; the reported
+        // path is deverbatimized so it matches the caller's quarantine directory
+        // form (parity with original_path).
+        quarantine_path: normalize_path(&quarantine_path),
         sha256: actual_sha256,
         file_size: metadata.len(),
         original_mode,
@@ -550,10 +554,22 @@ fn restrict_payload_handle(file: &File) -> ResponseResult<()> {
     file.set_permissions(fs::Permissions::from_mode(0o600))?;
     #[cfg(not(unix))]
     {
-        let mut permissions = file.metadata()?.permissions();
-        permissions.set_readonly(true);
-        file.set_permissions(permissions)?;
+        // On Windows the quarantined payload inherits the quarantine directory's
+        // ACL (agent owner + SYSTEM/Administrators, other principals excluded),
+        // which is the correct analogue of the Unix 0o600 restriction: the agent
+        // retains full control while others are denied. FILE_ATTRIBUTE_READONLY is
+        // deliberately NOT set here — unlike 0o600 it also blocks the agent's own
+        // legitimate restore and removal of the artifact (delete of a read-only
+        // file fails with ERROR_ACCESS_DENIED) and, being trivially cleared by any
+        // writer, provides no real tamper protection.
+        let _ = file;
     }
+    // Data-write durability is covered elsewhere: the copy path syncs the freshly
+    // written destination and sync_restore_parent flushes the parent directory;
+    // the rename path preserves content already on stable storage. The source
+    // handle is opened without data-write access, so FlushFileBuffers through it
+    // would be denied on Windows, hence sync_all is Unix-only.
+    #[cfg(unix)]
     file.sync_all()?;
     Ok(())
 }
@@ -807,8 +823,11 @@ pub fn restore_quarantined_with_dir(
     sync_directory(&quarantine_dir)?;
 
     Ok(RestoreReport {
-        restored_path: destination,
-        source_quarantine_path: source,
+        // Deverbatimize the reported paths (parity with QuarantineReport and
+        // manifest.original_path); the verbatim `destination`/`source` values were
+        // only needed for the handle/relative file operations above.
+        restored_path: normalize_path(&destination),
+        source_quarantine_path: normalize_path(&source),
     })
 }
 
@@ -1101,16 +1120,14 @@ fn open_windows_restore_directory(parent: &File, name: &std::ffi::OsStr) -> Resp
             "restore directory name is invalid for Windows".to_string(),
         ));
     }
-    // FILE_ADD_FILE (FILE_WRITE_DATA on a directory) is required so this handle
-    // can serve as the RootDirectory for the parent-relative NtSetInformationFile
-    // rename and for parent-relative create_destination_exclusive; without it the
-    // kernel denies the add-name with STATUS_ACCESS_DENIED (Win32 error 5).
-    let directory = open_windows_relative(
-        parent,
-        name,
-        FILE_GENERIC_READ.0 | FILE_ADD_FILE.0,
-        0x1 | 0x20 | 0x200000,
-    )?;
+    // Read/traverse only. The path is walked from the volume root down through
+    // system-owned directories (C:\, C:\Users, ...); requesting write access such
+    // as FILE_ADD_FILE here fails with STATUS_ACCESS_DENIED for a non-elevated
+    // process. Adding the renamed/created child does not need the directory handle
+    // to hold write access — the kernel checks the destination directory DACL for
+    // the caller, and the rename targets an absolute NT path (RootDirectory=NULL).
+    let directory =
+        open_windows_relative(parent, name, FILE_GENERIC_READ.0, 0x1 | 0x20 | 0x200000)?;
     validate_windows_restore_directory(&directory)?;
     Ok(directory)
 }
@@ -1185,7 +1202,10 @@ fn create_destination_exclusive(
     let status = unsafe {
         NtCreateFile(
             &mut handle,
-            FILE_GENERIC_WRITE.0 | DELETE.0,
+            // FILE_READ_ATTRIBUTES is required so validate_destination_handle can
+            // read the reparse attribute of the freshly created handle; without it
+            // metadata() fails with STATUS_ACCESS_DENIED (Win32 error 5).
+            FILE_GENERIC_WRITE.0 | FILE_READ_ATTRIBUTES.0 | DELETE.0,
             &object_attributes,
             &mut io_status,
             std::ptr::null(),
