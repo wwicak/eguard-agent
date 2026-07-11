@@ -26,10 +26,11 @@ use windows::Win32::Foundation::{
 #[cfg(windows)]
 use windows::Win32::Storage::FileSystem::{
     FileDispositionInfo, GetFileInformationByHandle, GetFinalPathNameByHandleW,
-    SetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ATTRIBUTE_REPARSE_POINT,
-    FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-    FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_RENAME_INFO, FILE_RENAME_INFO_0, FILE_SHARE_DELETE,
-    FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES,
+    SetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ADD_FILE,
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_RENAME_INFO,
+    FILE_RENAME_INFO_0, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    FILE_WRITE_ATTRIBUTES,
 };
 
 #[cfg(windows)]
@@ -1098,8 +1099,16 @@ fn open_windows_restore_directory(parent: &File, name: &std::ffi::OsStr) -> Resp
             "restore directory name is invalid for Windows".to_string(),
         ));
     }
-    let directory =
-        open_windows_relative(parent, name, FILE_GENERIC_READ.0, 0x1 | 0x20 | 0x200000)?;
+    // FILE_ADD_FILE (FILE_WRITE_DATA on a directory) is required so this handle
+    // can serve as the RootDirectory for the parent-relative NtSetInformationFile
+    // rename and for parent-relative create_destination_exclusive; without it the
+    // kernel denies the add-name with STATUS_ACCESS_DENIED (Win32 error 5).
+    let directory = open_windows_relative(
+        parent,
+        name,
+        FILE_GENERIC_READ.0 | FILE_ADD_FILE.0,
+        0x1 | 0x20 | 0x200000,
+    )?;
     validate_windows_restore_directory(&directory)?;
     Ok(directory)
 }
