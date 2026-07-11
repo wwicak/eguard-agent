@@ -361,24 +361,67 @@ fn linux_update_packaging_recovers_service_after_upgrade() {
     let windows_worker_source =
         read("crates/agent-core/src/lifecycle/command_pipeline/update_agent/worker_windows.rs");
     assert!(
-        windows_worker_source.contains("taskkill /F /PID $runningProc.Id"),
-        "windows update worker should force-kill a lingering service process before replacing the binary without killing the detached updater itself"
+        windows_worker_source.contains("taskkill /F /PID $killPid"),
+        "windows update worker should force-kill the actual service process id (not a fixed image name), without /T so the detached updater survives"
     );
     assert!(
-        windows_worker_source.contains("failureflag $ServiceName 0"),
+        windows_worker_source.contains("Test-TrackedProcessAlive"),
+        "windows update worker should key process identity on (pid, start time) so a reused pid is never force-killed as the agent"
+    );
+    assert!(
+        windows_worker_source.contains("@('failureflag', $ServiceName, '0')"),
         "windows update worker should disable non-crash failure recovery before killing the service"
     );
     assert!(
-        windows_worker_source.contains("sc.exe config $ServiceName binPath="),
-        "windows update worker should re-assert the canonical service binary path after update"
+        !windows_worker_source.contains("config $ServiceName binPath="),
+        "windows update worker must NOT rewrite the service binPath (the installer owns it; rewriting risks the wrong lineage or dropped service args)"
+    );
+    assert!(
+        windows_worker_source.contains("service binary path empty after msi install"),
+        "windows MSI update worker should treat an empty post-install service path as fatal, never fall back to a guessed path"
     );
     assert!(
         windows_worker_source
             .contains("Verify-FileHash -Path $agentPath -ExpectedSha256 $ExpectedSha256"),
-        "windows EXE update worker should verify the installed binary hash after copy"
+        "windows EXE update worker should verify the installed binary hash after the atomic swap"
     );
     assert!(
-        windows_worker_source.contains("failureflag $ServiceName 1"),
+        windows_worker_source
+            .contains("[System.IO.File]::Replace($stagedPath, $agentPath, $backupPath"),
+        "windows EXE update worker must swap the binary via the atomic ReplaceFile primitive (Move-Item -Force is delete-then-move, not atomic, and can leave the EDR binary absent on power loss)"
+    );
+    assert!(
+        windows_worker_source.contains("if ($null -eq $StartTime) { return $false }"),
+        "windows update worker must reject a pid with no captured start time as untracked so a reused pid is never force-killed as the agent"
+    );
+    assert!(
+        windows_worker_source.contains("throw $detail"),
+        "windows update worker must fail closed on a nonzero sc.exe exit (Invoke-Sc throws, so unsuppressed auto-restart cannot pass silently)"
+    );
+    assert!(
+        windows_worker_source.contains("Remove-Item -Path $stagedPath -Force"),
+        "windows update worker must clean up a staged binary after a failed update so leftovers cannot accumulate"
+    );
+    assert!(
+        windows_worker_source.contains("service restart after failed update did not complete"),
+        "windows update worker recovery must attempt the service restart independently of (and after) service-policy restore so a policy-restore failure never leaves the agent stopped"
+    );
+    assert!(
+        windows_worker_source.contains("function Restore-AgentBinaryIfAbsent")
+            && windows_worker_source.contains("Restore-AgentBinaryIfAbsent -AgentPath $agentPath"),
+        "windows update worker recovery must run a filesystem-state-driven restore (ReplaceFile -- even during rollback -- can leave the target absent) rather than trust in-memory flags"
+    );
+    assert!(
+        windows_worker_source.contains("recovered agent binary into absent target from"),
+        "windows update worker recovery must restore a known-good binary (backup, rollback scratch, or hash-verified staged) whenever the target slot is left absent"
+    );
+    assert!(
+        windows_worker_source
+            .contains("if ((Test-Path $agentPath) -and $stagedPath -and (Test-Path $stagedPath))"),
+        "windows update worker must only delete the staged binary when the target binary actually exists, so a failed recovery never discards the last valid binary"
+    );
+    assert!(
+        windows_worker_source.contains("@('failureflag', $ServiceName, '1')"),
         "windows update worker should restore non-crash failure recovery after update"
     );
     assert!(
