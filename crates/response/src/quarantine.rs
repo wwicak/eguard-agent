@@ -77,11 +77,14 @@ extern "system" {
     ) -> i32;
 }
 
-// FILE_INFORMATION_CLASS::FileRenameInformation. Unlike the Win32
-// SetFileInformationByHandle(FileRenameInfo) wrapper, the native
-// NtSetInformationFile honours FILE_RENAME_INFORMATION.RootDirectory, which is
-// required for our TOCTOU-safe parent-handle-relative rename. The Win32 wrapper
-// rejects a non-NULL RootDirectory with STATUS/ERROR_INVALID_PARAMETER (87).
+// FILE_INFORMATION_CLASS::FileRenameInformation. We issue the rename with the
+// native NtSetInformationFile: the Win32 SetFileInformationByHandle(FileRenameInfo)
+// wrapper rejects a non-NULL RootDirectory with ERROR_INVALID_PARAMETER (87), and
+// a RootDirectory-relative rename returns STATUS_ACCESS_DENIED. Instead the rename
+// is issued on the identity-verified source handle against an absolute NT target
+// path (RootDirectory = NULL). This keeps the source-swap TOCTOU closed (the move
+// still acts on the opened, verified handle); the target parent is validated
+// junction-free by open_restore_parent immediately beforehand.
 #[cfg(windows)]
 const FILE_RENAME_INFORMATION_CLASS: i32 = 10;
 
@@ -459,7 +462,7 @@ fn move_quarantine_source(
     quarantine_name: &std::ffi::OsStr,
     quarantine_path: &Path,
 ) -> ResponseResult<bool> {
-    match rename_windows_handle(&source.file, quarantine_parent, quarantine_name) {
+    match rename_windows_handle(&source.file, quarantine_path) {
         Ok(()) => Ok(true),
         Err(err) if err.kind() == ErrorKind::CrossesDevices || err.raw_os_error() == Some(17) => {
             let mut destination =
@@ -485,12 +488,14 @@ fn move_quarantine_source(
 }
 
 #[cfg(windows)]
-fn rename_windows_handle(
-    file: &File,
-    parent: &File,
-    name: &std::ffi::OsStr,
-) -> std::io::Result<()> {
-    let name: Vec<u16> = name.encode_wide().collect();
+fn rename_windows_handle(file: &File, target: &Path) -> std::io::Result<()> {
+    // NtSetInformationFile(FileRenameInformation) with RootDirectory = NULL takes
+    // an absolute NT path. fs::canonicalize yields a Win32 verbatim path
+    // (\\?\C:\...); rewrite that prefix to the NT object form (\??\C:\...).
+    let mut name: Vec<u16> = target.as_os_str().encode_wide().collect();
+    if name.len() >= 4 && name[0] == 0x5C && name[1] == 0x5C && name[2] == 0x3F && name[3] == 0x5C {
+        name[1] = 0x3F;
+    }
     let byte_len = std::mem::size_of::<FILE_RENAME_INFO>() + name.len().saturating_sub(1) * 2;
     let mut buffer = vec![0_usize; byte_len.div_ceil(std::mem::size_of::<usize>())];
     let info = buffer.as_mut_ptr() as *mut FILE_RENAME_INFO;
@@ -502,12 +507,9 @@ fn rename_windows_handle(
         (*info).Anonymous = FILE_RENAME_INFO_0 {
             ReplaceIfExists: BOOLEAN(0),
         };
-        (*info).RootDirectory = HANDLE(parent.as_raw_handle());
+        (*info).RootDirectory = HANDLE(std::ptr::null_mut());
         (*info).FileNameLength = (name.len() * 2) as u32;
         std::ptr::copy_nonoverlapping(name.as_ptr(), (*info).FileName.as_mut_ptr(), name.len());
-        // NtSetInformationFile (not the Win32 SetFileInformationByHandle wrapper)
-        // honours RootDirectory so the rename stays bound to the verified parent
-        // handle, closing the parent-path re-resolution TOCTOU.
         let status = NtSetInformationFile(
             HANDLE(file.as_raw_handle()),
             &mut io_status,
@@ -595,7 +597,7 @@ fn rollback_quarantine_move(
     payload: &File,
 ) -> ResponseResult<()> {
     if moved {
-        rename_windows_handle(payload, &source.parent, &source.file_name)?;
+        rename_windows_handle(payload, &source.path)?;
         Ok(())
     } else {
         remove_created_destination(quarantine_parent, quarantine_name, quarantine_path, payload)
