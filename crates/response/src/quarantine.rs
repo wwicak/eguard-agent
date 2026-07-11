@@ -411,12 +411,25 @@ pub fn quarantine_file_with_dir(
         open_quarantine_leaf(&quarantine_parent, actual_sha256.as_ref())?
     };
 
-    if let Err(err) = restrict_payload_handle(&payload)
-        .and_then(|_| {
-            verify_quarantine_payload_handle(&mut payload, &actual_sha256, metadata.len())
-        })
-        .and_then(|_| write_manifest_atomic(&manifest_path, &manifest))
-    {
+    // Order matters: the payload must be fully verified and the manifest written
+    // BEFORE the payload is hardened. restrict_payload_handle changes the payload's
+    // owner/permissions (Windows: owner -> Administrators + owner-only DACL; Unix:
+    // 0o600); a same-object rename-back on rollback preserves those changes. If a
+    // fallible step ran AFTER hardening and failed, rollback would restore the
+    // original file with an altered owner/DACL, locking its legitimate (possibly
+    // unprivileged) owner out of a file that was never successfully quarantined
+    // (e.g. a false-positive that rolls back). Hardening is therefore last, so any
+    // failure leaves the rolled-back source byte- and metadata-identical. The
+    // interim payload is already inside the owner-only, protected quarantine
+    // directory, and verify hashes it against the manifest so post-verify tampering
+    // is caught at restore time.
+    let quarantine_outcome = (|| -> ResponseResult<()> {
+        verify_quarantine_payload_handle(&mut payload, &actual_sha256, metadata.len())?;
+        write_manifest_atomic(&manifest_path, &manifest)?;
+        restrict_payload_handle(&payload)?;
+        Ok(())
+    })();
+    if let Err(err) = quarantine_outcome {
         let _ = fs::remove_file(&manifest_path);
         let _ = rollback_quarantine_move(
             moved,
@@ -1064,7 +1077,23 @@ fn quarantine_manifest_path(quarantine_dir: &Path, sha256: &str) -> PathBuf {
     quarantine_dir.join(format!("{sha256}.meta.json"))
 }
 
+// Test-only, thread-scoped injection point: when set, write_manifest_atomic fails
+// after the payload has already been moved and verified. Used to prove that
+// hardening (restrict_payload_handle) runs strictly last, so a post-move failure
+// rolls the source back with its original owner/permissions intact. Thread-local
+// keeps parallel tests isolated with no production effect (cfg(test) only).
+#[cfg(test)]
+thread_local! {
+    pub(super) static FAIL_MANIFEST_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 fn write_manifest_atomic(path: &Path, manifest: &QuarantineManifest) -> ResponseResult<()> {
+    #[cfg(test)]
+    if FAIL_MANIFEST_WRITE.with(|flag| flag.get()) {
+        return Err(ResponseError::InvalidInput(
+            "test-injected manifest write failure".to_string(),
+        ));
+    }
     let temp_path = path.with_extension(format!("json.tmp-{}", std::process::id()));
     let result = (|| -> ResponseResult<()> {
         let mut options = OpenOptions::new();

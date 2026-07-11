@@ -1016,3 +1016,72 @@ fn quarantine_normalizes_uppercase_sha256_ids() {
 fn default_quarantine_dir_matches_contract() {
     assert_eq!(DEFAULT_QUARANTINE_DIR, "/var/lib/eguard-agent/quarantine");
 }
+
+#[test]
+// Regression: hardening (restrict_payload_handle, which resets the payload's
+// owner/permissions) must run only AFTER verification and manifest write, so any
+// post-move failure rolls the source back with its original owner/permissions
+// intact. Forcing the manifest rename to fail (by planting a directory where the
+// manifest file must be written) previously left the source restored but with the
+// hardened metadata (Unix: chmod 0o600; Windows: owner=Administrators + owner-only
+// DACL), locking out its legitimate, possibly unprivileged, owner.
+fn quarantine_rollback_preserves_source_when_manifest_write_fails() {
+    let base = test_base("rollback-manifest-fail");
+    let original_dir = base.join("original");
+    let quarantine_dir = base.join("quarantine");
+    fs::create_dir_all(&original_dir).expect("create original parent");
+    let original = original_dir.join("legit.bin");
+    let payload = b"legitimate user data".to_vec();
+    fs::write(&original, &payload).expect("write original");
+    #[cfg(unix)]
+    fs::set_permissions(&original, fs::Permissions::from_mode(0o644)).expect("set original mode");
+    let sha = digest(&payload);
+
+    let protected = ProtectedList {
+        process_patterns: Vec::new(),
+        protected_paths: Vec::new(),
+    };
+
+    // Force write_manifest_atomic to fail AFTER the payload has been moved and
+    // verified (a post-move failure the pre-move ensure_artifact_absent checks
+    // cannot cover). The flag is thread-local, so it only affects this test's
+    // quarantine call on this thread.
+    FAIL_MANIFEST_WRITE.with(|flag| flag.set(true));
+    let result = quarantine_file_with_dir(&original, &sha, &protected, &quarantine_dir);
+    FAIL_MANIFEST_WRITE.with(|flag| flag.set(false));
+    assert!(
+        result.is_err(),
+        "quarantine must fail when the manifest write fails"
+    );
+
+    // Rollback must restore the source unchanged: hardening (owner/DACL on Windows,
+    // 0o600 on Unix) must NOT have run, since it is ordered strictly after the
+    // (failed) manifest write.
+    assert!(original.exists(), "source must be restored on rollback");
+    assert_eq!(
+        fs::read(&original).expect("read restored source"),
+        payload,
+        "restored source content must be byte-identical"
+    );
+    #[cfg(unix)]
+    {
+        let mode = fs::metadata(&original)
+            .expect("stat restored source")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode, 0o644,
+            "rollback must preserve the original mode, not the hardened 0o600"
+        );
+    }
+
+    // The moved payload must not linger in quarantine.
+    let qdir_canon = fs::canonicalize(&quarantine_dir).unwrap_or_else(|_| quarantine_dir.clone());
+    assert!(
+        !qdir_canon.join(&sha).exists(),
+        "payload must be rolled back out of quarantine"
+    );
+
+    let _ = fs::remove_dir_all(&base);
+}
