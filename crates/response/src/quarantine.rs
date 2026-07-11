@@ -137,43 +137,49 @@ mod win_acl {
     pub const ACL_REVISION: u32 = 2;
     pub const GENERIC_ALL: u32 = 0x1000_0000;
     pub const SE_FILE_OBJECT: i32 = 1;
+    pub const OWNER_SECURITY_INFORMATION: u32 = 0x0000_0001;
     pub const DACL_SECURITY_INFORMATION: u32 = 0x0000_0004;
     pub const PROTECTED_DACL_SECURITY_INFORMATION: u32 = 0x8000_0000;
     pub const OBJECT_INHERIT_ACE: u32 = 0x0000_0001;
     pub const CONTAINER_INHERIT_ACE: u32 = 0x0000_0002;
     /// WRITE_DAC standard right; required to replace an object's DACL by handle.
     pub const WRITE_DAC: u32 = 0x0004_0000;
+    /// WRITE_OWNER standard right; required to reassign an object's owner.
+    pub const WRITE_OWNER: u32 = 0x0008_0000;
+}
+
+// Resolve a well-known SID into a stack buffer (SECURITY_MAX_SID_SIZE is the
+// documented upper bound, so no dynamic sizing is required).
+#[cfg(windows)]
+fn well_known_sid(sid_type: i32) -> ResponseResult<[u8; win_acl::SECURITY_MAX_SID_SIZE]> {
+    let mut sid = [0u8; win_acl::SECURITY_MAX_SID_SIZE];
+    let mut cb = win_acl::SECURITY_MAX_SID_SIZE as u32;
+    if unsafe {
+        CreateWellKnownSid(
+            sid_type,
+            std::ptr::null(),
+            sid.as_mut_ptr() as *mut std::ffi::c_void,
+            &mut cb,
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(sid)
 }
 
 // Build an owner-only DACL (LocalSystem + Administrators, GENERIC_ALL) into the
 // caller-provided buffer. AddAccessAllowedAceEx copies each SID into the ACL, so
-// the transient SID buffers may be dropped afterwards.
+// the SID buffers only need to outlive this call.
 #[cfg(windows)]
-fn build_owner_only_dacl(acl: &mut [u8], ace_flags: u32) -> ResponseResult<()> {
+fn build_owner_only_dacl(
+    acl: &mut [u8],
+    system_sid: &[u8],
+    admins_sid: &[u8],
+    ace_flags: u32,
+) -> ResponseResult<()> {
     use win_acl::*;
-    let mut system_sid = [0u8; SECURITY_MAX_SID_SIZE];
-    let mut admins_sid = [0u8; SECURITY_MAX_SID_SIZE];
     unsafe {
-        let mut cb = SECURITY_MAX_SID_SIZE as u32;
-        if CreateWellKnownSid(
-            WIN_LOCAL_SYSTEM_SID,
-            std::ptr::null(),
-            system_sid.as_mut_ptr() as *mut std::ffi::c_void,
-            &mut cb,
-        ) == 0
-        {
-            return Err(std::io::Error::last_os_error().into());
-        }
-        let mut cb_admins = SECURITY_MAX_SID_SIZE as u32;
-        if CreateWellKnownSid(
-            WIN_BUILTIN_ADMINISTRATORS_SID,
-            std::ptr::null(),
-            admins_sid.as_mut_ptr() as *mut std::ffi::c_void,
-            &mut cb_admins,
-        ) == 0
-        {
-            return Err(std::io::Error::last_os_error().into());
-        }
         if InitializeAcl(
             acl.as_mut_ptr() as *mut std::ffi::c_void,
             acl.len() as u32,
@@ -198,22 +204,28 @@ fn build_owner_only_dacl(acl: &mut [u8], ace_flags: u32) -> ResponseResult<()> {
     Ok(())
 }
 
-// Replace an open handle's DACL with the owner-only, inheritance-protected DACL.
-// Requires WRITE_DAC on the handle. Used for the moved payload, whose original
-// DACL is preserved by a same-volume NTFS rename and would otherwise leave the
-// quarantined file writable/deletable by its original (possibly unprivileged)
-// owner.
+// Replace an open handle's owner and DACL with the owner-only,
+// inheritance-protected descriptor: the owner is reset to BUILTIN\Administrators
+// and the DACL grants only LocalSystem + Administrators. A same-volume NTFS
+// rename preserves BOTH the source file's original DACL and its owner, so without
+// resetting the owner an unprivileged original owner would retain implicit owner
+// rights (READ_CONTROL + WRITE_DAC) and could re-grant itself access to its own
+// quarantined malware. Requires WRITE_DAC + WRITE_OWNER on the handle.
 #[cfg(windows)]
 fn set_restrictive_dacl_on_handle(file: &File) -> ResponseResult<()> {
     use win_acl::*;
+    let system_sid = well_known_sid(WIN_LOCAL_SYSTEM_SID)?;
+    let admins_sid = well_known_sid(WIN_BUILTIN_ADMINISTRATORS_SID)?;
     let mut acl = [0u8; 256];
-    build_owner_only_dacl(&mut acl, 0)?;
+    build_owner_only_dacl(&mut acl, &system_sid, &admins_sid, 0)?;
     let status = unsafe {
         SetSecurityInfo(
             HANDLE(file.as_raw_handle()),
             SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-            std::ptr::null(),
+            OWNER_SECURITY_INFORMATION
+                | DACL_SECURITY_INFORMATION
+                | PROTECTED_DACL_SECURITY_INFORMATION,
+            admins_sid.as_ptr() as *const std::ffi::c_void,
             std::ptr::null(),
             acl.as_ptr() as *const std::ffi::c_void,
             std::ptr::null(),
@@ -231,8 +243,15 @@ fn set_restrictive_dacl_on_handle(file: &File) -> ResponseResult<()> {
 #[cfg(windows)]
 fn set_restrictive_dacl_on_dir(path: &Path) -> ResponseResult<()> {
     use win_acl::*;
+    let system_sid = well_known_sid(WIN_LOCAL_SYSTEM_SID)?;
+    let admins_sid = well_known_sid(WIN_BUILTIN_ADMINISTRATORS_SID)?;
     let mut acl = [0u8; 256];
-    build_owner_only_dacl(&mut acl, OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE)?;
+    build_owner_only_dacl(
+        &mut acl,
+        &system_sid,
+        &admins_sid,
+        OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE,
+    )?;
     let mut wide: Vec<u16> = path
         .as_os_str()
         .encode_wide()
@@ -242,8 +261,10 @@ fn set_restrictive_dacl_on_dir(path: &Path) -> ResponseResult<()> {
         SetNamedSecurityInfoW(
             wide.as_mut_ptr(),
             SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-            std::ptr::null(),
+            OWNER_SECURITY_INFORMATION
+                | DACL_SECURITY_INFORMATION
+                | PROTECTED_DACL_SECURITY_INFORMATION,
+            admins_sid.as_ptr() as *const std::ffi::c_void,
             std::ptr::null(),
             acl.as_ptr() as *const std::ffi::c_void,
             std::ptr::null(),
@@ -494,13 +515,18 @@ fn open_quarantine_leaf(parent: &File, file_name: &OsStr) -> ResponseResult<File
 
 #[cfg(windows)]
 fn open_quarantine_leaf(parent: &File, file_name: &std::ffi::OsStr) -> ResponseResult<File> {
-    // WRITE_DAC lets restrict_payload_handle replace the moved payload's DACL by
-    // handle (the same-volume rename preserves the source DACL). LocalSystem/an
-    // administrator can obtain WRITE_DAC on files it can also open for delete.
+    // WRITE_DAC + WRITE_OWNER let restrict_payload_handle reset the moved
+    // payload's DACL and owner by handle (a same-volume rename preserves both).
+    // LocalSystem / an administrator holding these on files it can also open for
+    // delete is the normal case (inherited Full Control on the source's parent).
     open_windows_relative(
         parent,
         file_name,
-        FILE_GENERIC_READ.0 | FILE_WRITE_ATTRIBUTES.0 | DELETE.0 | win_acl::WRITE_DAC,
+        FILE_GENERIC_READ.0
+            | FILE_WRITE_ATTRIBUTES.0
+            | DELETE.0
+            | win_acl::WRITE_DAC
+            | win_acl::WRITE_OWNER,
         0x20 | 0x40 | 0x200000,
     )
 }
@@ -736,9 +762,10 @@ fn restrict_payload_handle(file: &File) -> ResponseResult<()> {
     file.set_permissions(fs::Permissions::from_mode(0o600))?;
     #[cfg(not(unix))]
     {
-        // Windows analogue of 0o600: replace the payload's DACL with an
-        // owner-only (LocalSystem + Administrators), inheritance-protected DACL.
-        // A same-volume NTFS rename preserves the source file's original DACL, so
+        // Windows analogue of 0o600: reset the payload's owner to Administrators
+        // and replace its DACL with an owner-only (LocalSystem + Administrators),
+        // inheritance-protected DACL. A same-volume NTFS rename preserves both the
+        // source file's original DACL and its owner, so
         // without this an unprivileged file owner would retain write/delete rights
         // on their own quarantined malware. FILE_ATTRIBUTE_READONLY is deliberately
         // NOT used instead: unlike 0o600 it blocks the agent's own legitimate
@@ -865,7 +892,11 @@ fn zero_and_remove_source(source: &QuarantineSource, file_size: u64) -> Response
             "quarantine source changed before cross-device cleanup".to_string(),
         ));
     }
-    restrict_payload_handle(&writable)?;
+    // The source is being securely destroyed (zeroed then deleted); do NOT apply
+    // the restrictive quarantine DACL to it. Beyond being pointless on a file
+    // about to be removed, that handle intentionally lacks WRITE_DAC/WRITE_OWNER,
+    // so attempting it would fail and abort the source's neutralization. This
+    // matches the Unix cross-device path, which also does not harden the source.
     overwrite_file_prefix_with_zeros_file(&mut writable, file_size)?;
     writable.sync_all()?;
     remove_windows_file_by_handle(&writable, "quarantine source")
@@ -1310,7 +1341,8 @@ fn open_windows_restore_directory(parent: &File, name: &std::ffi::OsStr) -> Resp
     // as FILE_ADD_FILE here fails with STATUS_ACCESS_DENIED for a non-elevated
     // process. Adding the renamed/created child does not need the directory handle
     // to hold write access — the kernel checks the destination directory DACL for
-    // the caller, and the rename targets an absolute NT path (RootDirectory=NULL).
+    // the caller. The handle-relative rename then resolves its single-component
+    // leaf inside this validated directory handle (RootDirectory = this handle).
     let directory =
         open_windows_relative(parent, name, FILE_GENERIC_READ.0, 0x1 | 0x20 | 0x200000)?;
     validate_windows_restore_directory(&directory)?;
