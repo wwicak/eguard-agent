@@ -536,11 +536,26 @@ fn windows_pid_is_always_protected(pid: u32) -> bool {
     pid <= 2 || pid == std::process::id()
 }
 
-#[cfg(target_os = "windows")]
+// Test-only always-allow wrapper preserving the pre-budget injection API. The
+// Windows kill-safety unit tests exercise protected/critical-process behavior and
+// do not test the budget ceiling (covered by dedicated budget tests), so they pass
+// an unconditional budget, keeping their code path byte-identical to before the
+// budget parameter was introduced.
+#[cfg(all(target_os = "windows", test))]
 fn kill_process_tree_windows_with<A: WindowsProcessApi>(
     pid: u32,
     protected: &ProtectedList,
     api: &A,
+) -> ResponseResult<KillReport> {
+    kill_process_tree_windows_with_budget(pid, protected, api, |_| true)
+}
+
+#[cfg(target_os = "windows")]
+fn kill_process_tree_windows_with_budget<A: WindowsProcessApi>(
+    pid: u32,
+    protected: &ProtectedList,
+    api: &A,
+    budget: impl FnOnce(usize) -> bool,
 ) -> ResponseResult<KillReport> {
     if pid == 0 {
         return Err(ResponseError::InvalidInput(
@@ -575,6 +590,7 @@ fn kill_process_tree_windows_with<A: WindowsProcessApi>(
         )));
     }
     let descendants = descendants_from_snapshot(pid, &snapshot, MAX_WINDOWS_TREE_DESCENDANTS)?;
+    let tree_size = 1 + descendants.len();
     let mut protected_pids = Vec::new();
     let mut failed_pids = Vec::new();
     let mut accepted_identities = HashMap::from([(pid, root_creation_time)]);
@@ -660,6 +676,12 @@ fn kill_process_tree_windows_with<A: WindowsProcessApi>(
         }
     }
 
+    if !budget(tree_size) {
+        return Err(ResponseError::Signal(
+            "kill aborted: circuit breaker budget exceeded".to_string(),
+        ));
+    }
+
     let mut killed_pids = Vec::new();
     for (child_pid, handle) in validated_handles.iter().rev() {
         match api.terminate_process(handle) {
@@ -733,29 +755,57 @@ impl SignalSender for NixSignalSender {
     }
 }
 
-pub fn kill_process_tree(pid: u32, protected: &ProtectedList) -> ResponseResult<KillReport> {
-    #[cfg(target_os = "windows")]
-    {
-        kill_process_tree_windows_with(pid, protected, &NativeWindowsProcessApi)
-    }
-    #[cfg(target_os = "macos")]
-    {
-        // Use snapshot-based introspector to avoid O(n*d) sysctl calls.
-        let introspector = MacosProcessIntrospector::snapshot();
-        kill_process_tree_with(pid, protected, &introspector, &NixSignalSender)
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        kill_process_tree_with(pid, protected, &ProcfsIntrospector, &NixSignalSender)
+impl KillReport {
+    pub fn kill_process_tree_budgeted(
+        pid: u32,
+        protected: &ProtectedList,
+        budget: impl FnOnce(usize) -> bool,
+    ) -> ResponseResult<Self> {
+        #[cfg(target_os = "windows")]
+        {
+            kill_process_tree_windows_with_budget(pid, protected, &NativeWindowsProcessApi, budget)
+        }
+        #[cfg(target_os = "macos")]
+        {
+            // Use snapshot-based introspector to avoid O(n*d) sysctl calls.
+            let introspector = MacosProcessIntrospector::snapshot();
+            kill_process_tree_with_budget(pid, protected, &introspector, &NixSignalSender, budget)
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        {
+            kill_process_tree_with_budget(
+                pid,
+                protected,
+                &ProcfsIntrospector,
+                &NixSignalSender,
+                budget,
+            )
+        }
     }
 }
 
+pub fn kill_process_tree(pid: u32, protected: &ProtectedList) -> ResponseResult<KillReport> {
+    KillReport::kill_process_tree_budgeted(pid, protected, |_| true)
+}
+
 #[cfg(any(not(target_os = "windows"), test))]
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn kill_process_tree_with(
     pid: u32,
     protected: &ProtectedList,
     introspector: &dyn ProcessIntrospector,
     sender: &dyn SignalSender,
+) -> ResponseResult<KillReport> {
+    kill_process_tree_with_budget(pid, protected, introspector, sender, |_| true)
+}
+
+#[cfg(any(not(target_os = "windows"), test))]
+pub fn kill_process_tree_with_budget(
+    pid: u32,
+    protected: &ProtectedList,
+    introspector: &dyn ProcessIntrospector,
+    sender: &dyn SignalSender,
+    budget: impl FnOnce(usize) -> bool,
 ) -> ResponseResult<KillReport> {
     // Reject any value that cannot name a single, live process BEFORE it can be
     // cast to a signed pid_t downstream. On Unix, kill(2) treats 0 as the
@@ -814,6 +864,12 @@ pub fn kill_process_tree_with(
     }
     if is_pid_protected(pid, protected, introspector) {
         return Err(ResponseError::ProtectedProcess(pid));
+    }
+
+    if !budget(1 + descendants.len()) {
+        return Err(ResponseError::Signal(
+            "kill aborted: circuit breaker budget exceeded".to_string(),
+        ));
     }
 
     let _ = sender.send(pid, Signal::SIGSTOP);
@@ -887,6 +943,53 @@ fn is_pid_protected(
         .process_name(pid)
         .map(|name| protected.is_protected_process(&name))
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+#[test]
+fn tree_size_budget_crossing_is_denied_before_any_signal() {
+    use std::cell::RefCell;
+
+    struct Tree;
+    impl ProcessIntrospector for Tree {
+        fn children_of(&self, pid: u32) -> Vec<u32> {
+            if pid == 10 {
+                vec![11, 12]
+            } else {
+                Vec::new()
+            }
+        }
+
+        fn process_name(&self, _pid: u32) -> Option<String> {
+            Some("malware".to_string())
+        }
+    }
+
+    #[derive(Default)]
+    struct Signals(RefCell<Vec<(u32, Signal)>>);
+    impl SignalSender for Signals {
+        fn send(&self, pid: u32, signal: Signal) -> ResponseResult<()> {
+            self.0.borrow_mut().push((pid, signal));
+            Ok(())
+        }
+    }
+
+    let signals = Signals::default();
+    let result = kill_process_tree_with_budget(
+        10,
+        &ProtectedList::default_linux(),
+        &Tree,
+        &signals,
+        |tree_size| {
+            assert_eq!(tree_size, 3);
+            126 + tree_size <= 128
+        },
+    );
+
+    assert!(
+        matches!(result, Err(ResponseError::Signal(message)) if message.contains("budget exceeded"))
+    );
+    assert!(signals.0.borrow().is_empty());
 }
 
 #[cfg(test)]

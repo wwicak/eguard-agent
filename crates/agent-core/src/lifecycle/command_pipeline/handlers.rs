@@ -1,10 +1,14 @@
 use std::time::Instant;
 
-use response::{kill_process_tree, CommandExecution, CommandOutcome};
+use response::{CommandExecution, CommandOutcome, KillReport, ResponseError};
 use tracing::{info, warn};
 
 use super::app_management::apply_app_command;
 use super::AgentRuntime;
+use crate::lifecycle::circuit_breaker::{
+    BreakerDecision, DestructiveKind, BREAKER_MAX_BLAST_UNITS,
+};
+use crate::lifecycle::now_unix;
 
 /// Hard compiled ceiling on how many target PIDs a single server-issued
 /// `kill_process` command may carry. A legitimate kill command targets a
@@ -97,6 +101,11 @@ impl AgentRuntime {
 
         for pid in &pids {
             if *pid <= 2 {
+                self.breaker.record_units(
+                    DestructiveKind::ProtectedGuardViolation,
+                    16,
+                    now_unix().max(0) as u64,
+                );
                 details.push(format!("pid={}: rejected (protected system process)", pid));
                 failed_total += 1;
                 continue;
@@ -106,22 +115,55 @@ impl AgentRuntime {
             // kill primitive also enforces this, but reject here for a clear
             // per-PID outcome and to avoid consuming rate-limiter quota on it.
             if *pid == self_pid {
+                self.breaker.record_units(
+                    DestructiveKind::ProtectedGuardViolation,
+                    16,
+                    now_unix().max(0) as u64,
+                );
                 details.push(format!("pid={}: rejected (agent self pid)", pid));
                 failed_total += 1;
                 continue;
             }
 
-            // Route command kills through the SAME rolling rate limiter as local
-            // detections (`execute_kill_step`) so a burst of server commands
-            // cannot mass-kill the host. Consuming quota on the attempt caps the
-            // blast radius under a command storm.
-            if !self.limiter.allow(Instant::now()) {
+            let mut circuit_open = false;
+            let mut rate_limited = false;
+            let kill_result = {
+                let breaker = &mut self.breaker;
+                let limiter = &mut self.limiter;
+                let protected = &self.protected;
+                KillReport::kill_process_tree_budgeted(*pid, protected, |tree_size| {
+                    if matches!(
+                        breaker.check_and_charge(
+                            DestructiveKind::Kill,
+                            tree_size as u64,
+                            now_unix().max(0) as u64,
+                        ),
+                        BreakerDecision::Deny { .. }
+                    ) {
+                        circuit_open = true;
+                        return false;
+                    }
+                    // Command and local kills share this limiter. The breaker is
+                    // charged first, and an open circuit never consumes quota.
+                    if !limiter.allow(Instant::now()) {
+                        rate_limited = true;
+                        return false;
+                    }
+                    true
+                })
+            };
+            if circuit_open {
+                details.push(format!("pid={}: rejected (circuit_open)", pid));
+                failed_total += 1;
+                continue;
+            }
+            if rate_limited {
                 details.push(format!("pid={}: rejected (rate limited)", pid));
                 failed_total += 1;
                 continue;
             }
 
-            match kill_process_tree(*pid, &self.protected) {
+            match kill_result {
                 Ok(report) => {
                     let count = report.killed_pids.len() as u32;
                     killed_total += count;
@@ -133,6 +175,23 @@ impl AgentRuntime {
                     details.push(format!("pid={}: killed {} processes", pid, count));
                 }
                 Err(err) => {
+                    match &err {
+                        ResponseError::ProtectedProcess(_) => self.breaker.record_units(
+                            DestructiveKind::ProtectedGuardViolation,
+                            16,
+                            now_unix().max(0) as u64,
+                        ),
+                        ResponseError::Signal(message)
+                            if message.contains("exceeds") && message.contains("descendants") =>
+                        {
+                            self.breaker.record_units(
+                                DestructiveKind::Kill,
+                                BREAKER_MAX_BLAST_UNITS,
+                                now_unix().max(0) as u64,
+                            )
+                        }
+                        _ => {}
+                    }
                     let err_str = format!("{}", err);
                     // Treat ESRCH (no such process) as success — goal achieved.
                     if err_str.contains("No such process") || err_str.contains("ESRCH") {

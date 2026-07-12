@@ -10,7 +10,10 @@ use tracing::{info, warn};
 
 use crate::detection_state::EmergencyRule;
 
-use super::{parse_emergency_rule_type, AgentRuntime, EmergencyRulePayload};
+use super::{
+    circuit_breaker::{BreakerDecision, DestructiveKind},
+    parse_emergency_rule_type, AgentRuntime, EmergencyRulePayload,
+};
 
 mod app_management;
 mod command_utils;
@@ -50,6 +53,27 @@ fn reconcile_isolation_state_after_command(
 }
 
 impl AgentRuntime {
+    fn allow_destructive_command(
+        &mut self,
+        kind: DestructiveKind,
+        units: u64,
+        now_unix: i64,
+        denied_detail: &str,
+        exec: &mut response::CommandExecution,
+    ) -> bool {
+        if matches!(
+            self.breaker
+                .check_and_charge(kind, units, now_unix.max(0) as u64),
+            BreakerDecision::Deny { .. }
+        ) {
+            exec.outcome = CommandOutcome::Ignored;
+            exec.status = "failed";
+            exec.detail = denied_detail.to_string();
+            return false;
+        }
+        true
+    }
+
     pub(super) fn completed_command_cursor(&self) -> Vec<String> {
         self.completed_command_ids.iter().cloned().collect()
     }
@@ -97,7 +121,17 @@ impl AgentRuntime {
                 self.apply_agent_update(&command.command_id, &command.payload_json, &mut exec)
             }
             ServerCommand::LockDevice => self.apply_device_lock(&command.payload_json, &mut exec),
-            ServerCommand::WipeDevice => self.apply_device_wipe(&command.payload_json, &mut exec),
+            ServerCommand::WipeDevice => {
+                if self.allow_destructive_command(
+                    DestructiveKind::DeviceWipe,
+                    32,
+                    now_unix,
+                    "wipe_device_skipped:circuit_open",
+                    &mut exec,
+                ) {
+                    self.apply_device_wipe(&command.payload_json, &mut exec);
+                }
+            }
             ServerCommand::RetireDevice => {
                 self.apply_device_retire(&command.payload_json, &mut exec)
             }
@@ -109,7 +143,17 @@ impl AgentRuntime {
                 self.apply_device_locate(&command.payload_json, &mut exec)
             }
             ServerCommand::InstallApp => self.apply_app_install(&command.payload_json, &mut exec),
-            ServerCommand::RemoveApp => self.apply_app_remove(&command.payload_json, &mut exec),
+            ServerCommand::RemoveApp => {
+                if self.allow_destructive_command(
+                    DestructiveKind::AppRemove,
+                    8,
+                    now_unix,
+                    "remove_app_skipped:circuit_open",
+                    &mut exec,
+                ) {
+                    self.apply_app_remove(&command.payload_json, &mut exec);
+                }
+            }
             ServerCommand::UpdateApp => self.apply_app_update(&command.payload_json, &mut exec),
             ServerCommand::ApplyProfile => {
                 self.apply_config_profile(&command.payload_json, &mut exec)

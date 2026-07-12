@@ -241,7 +241,20 @@ fn kill_command_runtime(max_kills_per_minute: usize) -> super::AgentRuntime {
     cfg.self_protection_integrity_check_interval_secs = 0;
     cfg.response.max_kills_per_minute = max_kills_per_minute;
     cfg.response.max_quarantines_per_minute = 1;
-    super::AgentRuntime::new(cfg).expect("runtime")
+    let mut runtime = super::AgentRuntime::new(cfg).expect("runtime");
+    let path = std::env::temp_dir().join(format!(
+        "eguard-command-breaker-{}-{}.json",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    runtime.breaker = crate::lifecycle::circuit_breaker::CircuitBreaker::load_from_path(
+        path,
+        crate::lifecycle::circuit_breaker::BREAKER_MAX_BLAST_UNITS,
+    );
+    runtime
 }
 
 fn fresh_kill_exec() -> response::CommandExecution {
@@ -249,6 +262,41 @@ fn fresh_kill_exec() -> response::CommandExecution {
         outcome: response::CommandOutcome::Applied,
         status: "completed",
         detail: String::new(),
+    }
+}
+
+#[test]
+fn command_pipeline_circuit_breaker_denies_wipe_and_remove_app() {
+    let mut runtime = kill_command_runtime(1);
+    let now = crate::lifecycle::now_unix().max(0) as u64;
+    runtime.breaker.check_and_charge(
+        crate::lifecycle::circuit_breaker::DestructiveKind::Kill,
+        crate::lifecycle::circuit_breaker::BREAKER_MAX_BLAST_UNITS,
+        now,
+    );
+    runtime.breaker.check_and_charge(
+        crate::lifecycle::circuit_breaker::DestructiveKind::Kill,
+        1,
+        now,
+    );
+
+    for (kind, units, expected) in [
+        (
+            crate::lifecycle::circuit_breaker::DestructiveKind::DeviceWipe,
+            32,
+            "wipe_device_skipped:circuit_open",
+        ),
+        (
+            crate::lifecycle::circuit_breaker::DestructiveKind::AppRemove,
+            8,
+            "remove_app_skipped:circuit_open",
+        ),
+    ] {
+        let mut exec = fresh_kill_exec();
+        assert!(!runtime.allow_destructive_command(kind, units, now as i64, expected, &mut exec,));
+        assert_eq!(exec.outcome, response::CommandOutcome::Ignored);
+        assert_eq!(exec.status, "failed");
+        assert_eq!(exec.detail, expected);
     }
 }
 
@@ -315,4 +363,58 @@ fn command_kill_consumes_shared_rate_limiter() {
         !runtime.limiter.allow(std::time::Instant::now()),
         "command kills must consume the shared kill limiter"
     );
+}
+
+#[test]
+fn command_pipeline_circuit_breaker_denies_kill_without_consuming_limiter() {
+    let _guard = crate::test_support::env_lock().lock().expect("env lock");
+    let dir = std::env::temp_dir().join(format!(
+        "eguard-command-circuit-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("create breaker state dir");
+    std::env::set_var("EGUARD_AGENT_DATA_DIR", &dir);
+
+    let mut cfg = crate::config::AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    cfg.server_addr = "127.0.0.1:1".to_string();
+    cfg.self_protection_integrity_check_interval_secs = 0;
+    cfg.response.max_kills_per_minute = 1;
+    cfg.response.max_quarantines_per_minute = 1;
+    let mut runtime = super::AgentRuntime::new(cfg).expect("runtime");
+    let now = crate::lifecycle::now_unix().max(0) as u64;
+    assert!(matches!(
+        runtime.breaker.check_and_charge(
+            crate::lifecycle::circuit_breaker::DestructiveKind::Kill,
+            crate::lifecycle::circuit_breaker::BREAKER_MAX_BLAST_UNITS,
+            now,
+        ),
+        crate::lifecycle::circuit_breaker::BreakerDecision::Allow
+    ));
+    assert!(matches!(
+        runtime.breaker.check_and_charge(
+            crate::lifecycle::circuit_breaker::DestructiveKind::Kill,
+            1,
+            now,
+        ),
+        crate::lifecycle::circuit_breaker::BreakerDecision::Deny { .. }
+    ));
+
+    let payload = serde_json::json!({ "pid": 999_003u32 }).to_string();
+    let mut exec = fresh_kill_exec();
+    runtime.apply_kill_process(&payload, &mut exec);
+
+    assert_eq!(exec.status, "partial");
+    assert!(exec.detail.contains("circuit_open"), "{}", exec.detail);
+    assert!(
+        runtime.limiter.allow(std::time::Instant::now()),
+        "circuit-open kill must not consume limiter quota"
+    );
+
+    std::env::remove_var("EGUARD_AGENT_DATA_DIR");
+    let _ = std::fs::remove_dir_all(dir);
 }

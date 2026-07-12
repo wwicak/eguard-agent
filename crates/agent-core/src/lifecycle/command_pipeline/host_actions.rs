@@ -4,9 +4,11 @@ use super::host_isolation_allowlist::resolve_host_isolation_allowlist;
 use super::host_isolation_linux::{apply_linux_host_isolation, remove_linux_host_isolation};
 use super::payloads::RestoreQuarantinePayload;
 use super::AgentRuntime;
+use crate::lifecycle::circuit_breaker::{BreakerDecision, DestructiveKind};
+use crate::lifecycle::now_unix;
 
 impl AgentRuntime {
-    pub(super) fn apply_host_isolate(&self, payload_json: &str, exec: &mut CommandExecution) {
+    pub(super) fn apply_host_isolate(&mut self, payload_json: &str, exec: &mut CommandExecution) {
         #[derive(Debug, serde::Deserialize, Default)]
         struct IsolatePayload {
             #[serde(default)]
@@ -22,15 +24,30 @@ impl AgentRuntime {
             &payload.allow_server_ips,
         );
 
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
+        if allowed.is_empty() {
+            exec.outcome = CommandOutcome::Ignored;
+            exec.status = "failed";
+            exec.detail = "isolation rejected: no routable server IPs provided".to_string();
+            return;
+        }
+
+        if matches!(
+            self.breaker.check_and_charge(
+                DestructiveKind::IsolationApply,
+                8,
+                now_unix().max(0) as u64,
+            ),
+            BreakerDecision::Deny { .. }
+        ) {
+            exec.outcome = CommandOutcome::Ignored;
+            exec.status = "failed";
+            exec.detail = "isolation_skipped:circuit_open".to_string();
+            return;
+        }
+
         #[cfg(target_os = "windows")]
         {
-            if allowed.is_empty() {
-                exec.outcome = CommandOutcome::Ignored;
-                exec.status = "failed";
-                exec.detail = "isolation rejected: no routable server IPs provided".to_string();
-                return;
-            }
-
             if let Err(err) = super::isolation_state::save_isolation_state(&allowed) {
                 exec.outcome = CommandOutcome::Ignored;
                 exec.status = "failed";
@@ -66,13 +83,6 @@ impl AgentRuntime {
 
         #[cfg(target_os = "macos")]
         {
-            if allowed.is_empty() {
-                exec.outcome = CommandOutcome::Ignored;
-                exec.status = "failed";
-                exec.detail = "isolation rejected: no routable server IPs provided".to_string();
-                return;
-            }
-
             if let Err(err) = super::isolation_state::save_isolation_state(&allowed) {
                 exec.outcome = CommandOutcome::Ignored;
                 exec.status = "failed";
@@ -141,6 +151,7 @@ impl AgentRuntime {
     }
 
     pub(super) fn apply_host_unisolate(&self, exec: &mut CommandExecution) {
+        let _ = self.breaker.allow_recovery();
         #[cfg(target_os = "windows")]
         {
             match platform_windows::response::remove_isolation() {
@@ -190,6 +201,7 @@ impl AgentRuntime {
     }
 
     pub(super) fn apply_quarantine_restore(&self, payload_json: &str, exec: &mut CommandExecution) {
+        let _ = self.breaker.allow_recovery();
         let payload: RestoreQuarantinePayload = match serde_json::from_str(payload_json) {
             Ok(payload) => payload,
             Err(err) => {
