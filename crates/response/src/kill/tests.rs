@@ -142,6 +142,84 @@ fn invalid_zero_pid_is_rejected() {
 }
 
 #[test]
+// A u32 above i32::MAX would wrap to a negative pid_t and become kill(-1, ...),
+// a host-wide broadcast. It must be rejected before any signal is attempted.
+fn out_of_range_pid_is_rejected_without_signals() {
+    let introspector = MockIntrospector {
+        children: HashMap::new(),
+        names: HashMap::new(),
+    };
+    let sender = MockSignalSender::default();
+    let protected = ProtectedList::default_linux();
+
+    for pid in [u32::MAX, (i32::MAX as u32) + 1, 0x8000_0000] {
+        let err = kill_process_tree_with(pid, &protected, &introspector, &sender)
+            .expect_err("out-of-range pid must be rejected");
+        assert!(matches!(err, ResponseError::InvalidInput(_)), "pid {pid}");
+    }
+    assert!(
+        sender.sent.borrow().is_empty(),
+        "no signal may be sent for an out-of-range pid"
+    );
+}
+
+#[test]
+// The agent must never be steered into killing itself, even when process-name
+// resolution fails open (introspector returns no name for this pid).
+fn self_pid_is_protected_without_signals() {
+    let introspector = MockIntrospector {
+        children: HashMap::new(),
+        names: HashMap::new(),
+    };
+    let sender = MockSignalSender::default();
+    let protected = ProtectedList::default_linux();
+
+    let self_pid = std::process::id();
+    let err = kill_process_tree_with(self_pid, &protected, &introspector, &sender)
+        .expect_err("self pid must be protected");
+    assert!(matches!(err, ResponseError::ProtectedProcess(pid) if pid == self_pid));
+    assert!(sender.sent.borrow().is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+// After the fix, the real Unix sender must refuse an out-of-range pid BEFORE it
+// reaches kill(2) (proving no kill(-1) broadcast is ever issued).
+fn nix_signal_sender_refuses_out_of_range_pid() {
+    let sender = NixSignalSender;
+    for pid in [0u32, u32::MAX, (i32::MAX as u32) + 1] {
+        assert!(
+            sender.send(pid, Signal::SIGSTOP).is_err(),
+            "sender must refuse pid {pid} before the syscall"
+        );
+    }
+}
+
+#[test]
+// One accepted root must not be able to signal an unbounded tree: exceeding the
+// descendant cap fails closed with no signal emitted at all.
+fn unix_tree_exceeding_descendant_cap_is_refused_without_signals() {
+    let big: Vec<u32> = (10_000u32..15_001).collect(); // 5001 direct children > cap
+    let mut children = HashMap::new();
+    let _ = children.insert(50u32, big.clone());
+    let mut names = HashMap::from([(50u32, "malware".to_string())]);
+    for child in &big {
+        let _ = names.insert(*child, "child".to_string());
+    }
+    let introspector = MockIntrospector { children, names };
+    let sender = MockSignalSender::default();
+    let protected = ProtectedList::default_linux();
+
+    let err = kill_process_tree_with(50, &protected, &introspector, &sender)
+        .expect_err("oversized tree must be refused");
+    assert!(matches!(err, ResponseError::Signal(_)));
+    assert!(
+        sender.sent.borrow().is_empty(),
+        "no signal may be emitted when the tree exceeds the descendant cap"
+    );
+}
+
+#[test]
 fn descendant_cycle_does_not_rekill_target_pid() {
     let introspector = MockIntrospector {
         children: HashMap::from([(700, vec![701]), (701, vec![700])]),
@@ -214,6 +292,8 @@ struct MockWindowsApi {
     denied_pids: std::collections::HashSet<u32>,
     time_denied_handles: std::collections::HashSet<u64>,
     name_denied_handles: std::collections::HashSet<u64>,
+    critical_handles: std::collections::HashSet<u64>,
+    critical_denied_handles: std::collections::HashSet<u64>,
     opened_pids: RefCell<Vec<u32>>,
     terminated_handles: RefCell<Vec<u64>>,
 }
@@ -263,10 +343,60 @@ impl WindowsProcessApi for MockWindowsApi {
             .ok_or_else(|| ResponseError::Signal("unknown image name".to_string()))
     }
 
+    fn is_process_critical(&self, handle: &Self::Handle) -> ResponseResult<bool> {
+        if self.critical_denied_handles.contains(handle) {
+            return Err(ResponseError::Signal("critical query denied".to_string()));
+        }
+        Ok(self.critical_handles.contains(handle))
+    }
+
     fn terminate_process(&self, handle: &Self::Handle) -> ResponseResult<()> {
         self.terminated_handles.borrow_mut().push(*handle);
         Ok(())
     }
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_os_critical_descendant_is_never_terminated() {
+    // A descendant whose image name is NOT on the static list but which the OS
+    // reports as critical must be skipped, while the non-critical root dies.
+    let api = MockWindowsApi {
+        snapshot: vec![
+            process_entry(1700, 1, 5700),
+            process_entry(1701, 1700, 5701),
+        ],
+        handles: HashMap::from([(1700, 5700), (1701, 5701)]),
+        names: HashMap::from([
+            (5700, "malware.exe".to_string()),
+            (5701, "totally-not-critical.exe".to_string()),
+        ]),
+        critical_handles: std::collections::HashSet::from([5701]),
+        ..MockWindowsApi::default()
+    };
+
+    let report = kill_process_tree_windows_with(1700, &ProtectedList::default_windows(), &api)
+        .expect("root terminates while OS-critical child is skipped");
+    assert_eq!(report.killed_pids, vec![1700]);
+    assert_eq!(report.skipped_protected_pids, vec![1701]);
+    assert_eq!(*api.terminated_handles.borrow(), vec![5700]);
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_failed_critical_query_on_root_fails_closed() {
+    // If the OS critical query errors on the root, treat it as critical.
+    let api = MockWindowsApi {
+        handles: HashMap::from([(1800, 5800)]),
+        names: HashMap::from([(5800, "malware.exe".to_string())]),
+        critical_denied_handles: std::collections::HashSet::from([5800]),
+        ..MockWindowsApi::default()
+    };
+
+    let err = kill_process_tree_windows_with(1800, &ProtectedList::default_windows(), &api)
+        .expect_err("a failed critical query must fail closed");
+    assert!(matches!(err, ResponseError::ProtectedProcess(1800)));
+    assert!(api.terminated_handles.borrow().is_empty());
 }
 
 #[cfg(target_os = "windows")]

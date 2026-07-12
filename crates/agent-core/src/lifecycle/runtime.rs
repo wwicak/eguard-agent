@@ -580,8 +580,18 @@ impl AgentRuntime {
                     timeout_secs = state.failsafe_timeout_secs,
                     "recovering from stale isolation after agent restart"
                 );
-                super::command_pipeline::isolation_state::force_remove_isolation();
-                super::command_pipeline::isolation_state::clear_isolation_state();
+                // Only clear the durable record if removal succeeded. If it
+                // failed, keep the record AND mark the host isolated so the
+                // periodic tick failsafe keeps retrying removal (its guard
+                // returns early unless host_control.isolated is true).
+                if super::command_pipeline::isolation_state::force_remove_isolation() {
+                    super::command_pipeline::isolation_state::clear_isolation_state();
+                } else {
+                    warn!(
+                        "stale isolation removal FAILED at startup - retaining state; failsafe will retry"
+                    );
+                    runtime.host_control.isolated = true;
+                }
             } else {
                 info!(
                     remaining_secs =

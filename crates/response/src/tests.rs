@@ -464,6 +464,11 @@ fn default_windows_protected_processes_match_baseline() {
     assert!(protected.is_protected_process("svchost"));
     assert!(protected.is_protected_process("eguard-agent"));
     assert!(protected.is_protected_process("System"));
+    // Microsoft-documented critical processes (bugcheck 0xEF if terminated).
+    assert!(protected.is_protected_process("conhost"));
+    assert!(protected.is_protected_process("conhost.exe"));
+    assert!(protected.is_protected_process("logonui"));
+    assert!(protected.is_protected_process("LogonUI.exe"));
     // .exe variants
     assert!(protected.is_protected_process("csrss.exe"));
     assert!(protected.is_protected_process("lsass.exe"));

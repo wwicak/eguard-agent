@@ -79,10 +79,18 @@ pub fn collect_active_management_peer_ips() -> Vec<String> {
 pub fn remove_isolation() -> Result<(), super::ResponseError> {
     #[cfg(target_os = "macos")]
     {
-        // Flush the anchor rules.
-        let _ = run_pfctl(&["-a", PF_ANCHOR_NAME, "-F", "all"]);
-        // Remove anchor file.
-        let _ = fs::remove_file(PF_ANCHOR_PATH);
+        // Flush the anchor rules. This is the security-critical operation: if it
+        // fails, the host is still isolated, so the error MUST be propagated so
+        // the failsafe retains its recovery record and retries removal rather
+        // than clearing state and stranding the host cut off.
+        run_pfctl(&["-a", PF_ANCHOR_NAME, "-F", "all"])?;
+        // Removing the anchor file is bookkeeping only — a stale file is
+        // harmless because isolate_host rewrites it. Keep it best-effort but log.
+        if let Err(err) = fs::remove_file(PF_ANCHOR_PATH) {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(path = PF_ANCHOR_PATH, error = %err, "failed removing pf anchor file after flush");
+            }
+        }
         Ok(())
     }
     #[cfg(not(target_os = "macos"))]

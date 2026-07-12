@@ -11,15 +11,16 @@ use std::mem::size_of;
 use windows::{
     core::{HRESULT, PWSTR},
     Win32::{
-        Foundation::{CloseHandle, ERROR_NO_MORE_FILES, FILETIME, HANDLE},
+        Foundation::{CloseHandle, BOOL, ERROR_NO_MORE_FILES, FILETIME, HANDLE},
         System::{
             Diagnostics::ToolHelp::{
                 CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
                 TH32CS_SNAPPROCESS,
             },
             Threading::{
-                GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, TerminateProcess,
-                PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+                GetProcessTimes, IsProcessCritical, OpenProcess, QueryFullProcessImageNameW,
+                TerminateProcess, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION,
+                PROCESS_TERMINATE,
             },
         },
     },
@@ -392,6 +393,11 @@ trait WindowsProcessApi {
     fn open_process(&self, pid: u32) -> ResponseResult<Self::Handle>;
     fn process_creation_time(&self, handle: &Self::Handle) -> ResponseResult<u64>;
     fn process_name(&self, handle: &Self::Handle) -> ResponseResult<String>;
+    /// Report whether the OS marks the process as critical (terminating a
+    /// critical process triggers bugcheck 0xEF / CRITICAL_PROCESS_DIED). This
+    /// is the authoritative availability guard; the static protected-name list
+    /// is only a backstop.
+    fn is_process_critical(&self, handle: &Self::Handle) -> ResponseResult<bool>;
     fn terminate_process(&self, handle: &Self::Handle) -> ResponseResult<()>;
 }
 
@@ -511,6 +517,14 @@ impl WindowsProcessApi for NativeWindowsProcessApi {
         Ok(name.to_string())
     }
 
+    fn is_process_critical(&self, handle: &Self::Handle) -> ResponseResult<bool> {
+        let mut critical = BOOL(0);
+        unsafe { IsProcessCritical(handle.0, &mut critical) }.map_err(|err| {
+            ResponseError::Signal(format!("query Windows process critical flag: {err}"))
+        })?;
+        Ok(critical.as_bool())
+    }
+
     fn terminate_process(&self, handle: &Self::Handle) -> ResponseResult<()> {
         unsafe { TerminateProcess(handle.0, 1) }
             .map_err(|err| ResponseError::Signal(format!("terminate Windows process: {err}")))
@@ -540,7 +554,12 @@ fn kill_process_tree_windows_with<A: WindowsProcessApi>(
     let root_handle = api.open_process(pid)?;
     let root_creation_time = api.process_creation_time(&root_handle)?;
     let root_name = api.process_name(&root_handle)?;
-    if protected.is_protected_process(&root_name) {
+    // Protect the target if either the static list matches OR the OS marks it
+    // critical. A failed critical query is treated as critical (fail-closed):
+    // missing a kill is an availability-safe outcome; a bugcheck is not.
+    if protected.is_protected_process(&root_name)
+        || api.is_process_critical(&root_handle).unwrap_or(true)
+    {
         return Err(ResponseError::ProtectedProcess(pid));
     }
 
@@ -603,7 +622,10 @@ fn kill_process_tree_windows_with<A: WindowsProcessApi>(
                 continue;
             }
         };
-        let is_protected = protected.is_protected_process(&name);
+        // Fold the OS critical flag into the per-descendant protection decision,
+        // fail-closed on a query error (same rationale as the root).
+        let is_protected = protected.is_protected_process(&name)
+            || api.is_process_critical(&handle).unwrap_or(true);
         if is_protected {
             protected_pids.push(child_pid);
         }
@@ -668,6 +690,20 @@ pub struct NixSignalSender;
 #[cfg(unix)]
 impl SignalSender for NixSignalSender {
     fn send(&self, pid: u32, signal: Signal) -> ResponseResult<()> {
+        // Defense in depth: never cast an out-of-range PID to a signed pid_t.
+        // kill(2) interprets 0 as the caller's own process group and any
+        // negative value as a process-group broadcast (pid -1 targets every
+        // process the caller may signal). A u32 above i32::MAX (e.g.
+        // 4_294_967_295) would wrap to a negative pid_t and become a host-wide
+        // kill(-1, ...). Only 1..=i32::MAX can name a single process; refuse the
+        // rest before the cast reaches the syscall.
+        if pid == 0 || pid > i32::MAX as u32 {
+            return Err(ResponseError::Signal(format!(
+                "refusing to signal invalid pid {pid} (must be 1..={})",
+                i32::MAX
+            )));
+        }
+
         let nix_signal = match signal {
             Signal::SIGSTOP => NixSignal::SIGSTOP,
             Signal::SIGKILL => NixSignal::SIGKILL,
@@ -721,22 +757,66 @@ pub fn kill_process_tree_with(
     introspector: &dyn ProcessIntrospector,
     sender: &dyn SignalSender,
 ) -> ResponseResult<KillReport> {
-    if pid == 0 {
-        return Err(ResponseError::InvalidInput(
-            "pid must be greater than zero".to_string(),
-        ));
+    // Reject any value that cannot name a single, live process BEFORE it can be
+    // cast to a signed pid_t downstream. On Unix, kill(2) treats 0 as the
+    // caller's process group and negatives as process-group broadcasts; because
+    // the signal primitive casts u32 -> i32, an out-of-range PID such as
+    // 4_294_967_295 would otherwise become kill(-1, ...) and stop/kill almost
+    // every process on the host. Legitimate PIDs are 1..=i32::MAX.
+    if pid == 0 || pid > i32::MAX as u32 {
+        return Err(ResponseError::InvalidInput(format!(
+            "pid {pid} is not a valid process id (must be 1..={})",
+            i32::MAX
+        )));
+    }
+
+    // Never let the agent be steered into terminating itself, even if
+    // process-name resolution fails open. The local detection path guards this
+    // at its caller; enforce it inside the primitive so command-driven kills
+    // (which do not run that check) are covered too.
+    if pid == std::process::id() {
+        return Err(ResponseError::ProtectedProcess(pid));
     }
 
     if is_pid_protected(pid, protected, introspector) {
         return Err(ResponseError::ProtectedProcess(pid));
     }
 
-    let _ = sender.send(pid, Signal::SIGSTOP);
-
+    // Bound the blast radius BEFORE emitting any signal: enumerate the tree with
+    // a hard descendant cap and fail closed if it is exceeded. This is done
+    // before the SIGSTOP so an oversized tree leaves nothing frozen; for any
+    // tree within the cap the emitted signal sequence is unchanged
+    // (SIGSTOP root, SIGKILL children reversed, SIGKILL root). The Windows path
+    // already enforces the equivalent MAX_WINDOWS_TREE_DESCENDANTS bound.
     let mut descendants = Vec::new();
     let mut seen = HashSet::new();
     let _ = seen.insert(pid);
-    collect_descendants(pid, introspector, &mut descendants, &mut seen);
+    if !collect_descendants(
+        pid,
+        introspector,
+        &mut descendants,
+        &mut seen,
+        MAX_UNIX_TREE_DESCENDANTS,
+    ) {
+        return Err(ResponseError::Signal(format!(
+            "process tree rooted at {pid} exceeds {MAX_UNIX_TREE_DESCENDANTS} descendants; refusing mass kill"
+        )));
+    }
+
+    // Re-validate the root immediately before signalling. Enumeration above can
+    // issue many introspection calls on a large tree, during which the root may
+    // have exited and its PID been reused (possibly by the agent itself or a
+    // protected process). Re-checking self and protection here keeps the
+    // check->signal window as tight as it was before enumeration was hoisted.
+    // (Full start-time/pidfd identity binding is the tracked P1 follow-up.)
+    if pid == std::process::id() {
+        return Err(ResponseError::ProtectedProcess(pid));
+    }
+    if is_pid_protected(pid, protected, introspector) {
+        return Err(ResponseError::ProtectedProcess(pid));
+    }
+
+    let _ = sender.send(pid, Signal::SIGSTOP);
 
     let mut killed = Vec::new();
     let mut skipped = Vec::new();
@@ -761,23 +841,37 @@ pub fn kill_process_tree_with(
     })
 }
 
+/// Hard cap on the number of descendants a single Unix kill may enumerate,
+/// mirroring the Windows `MAX_WINDOWS_TREE_DESCENDANTS` bound. Prevents one
+/// accepted root from walking (and signalling) an unbounded process tree.
+#[cfg(any(not(target_os = "windows"), test))]
+const MAX_UNIX_TREE_DESCENDANTS: usize = 4_096;
+
+/// Breadth-first enumerate descendants of `pid` into `out`, deduplicated via
+/// `seen`. Returns `false` if the `max` cap was reached (the tree is larger
+/// than we are willing to signal); returns `true` when the full tree fit.
 #[cfg(any(not(target_os = "windows"), test))]
 fn collect_descendants(
     pid: u32,
     introspector: &dyn ProcessIntrospector,
     out: &mut Vec<u32>,
     seen: &mut HashSet<u32>,
-) {
+    max: usize,
+) -> bool {
     let mut queue = VecDeque::new();
     queue.push_back(pid);
     while let Some(current) = queue.pop_front() {
         for child in introspector.children_of(current) {
             if seen.insert(child) {
+                if out.len() >= max {
+                    return false;
+                }
                 out.push(child);
                 queue.push_back(child);
             }
         }
     }
+    true
 }
 
 #[cfg(any(not(target_os = "windows"), test))]

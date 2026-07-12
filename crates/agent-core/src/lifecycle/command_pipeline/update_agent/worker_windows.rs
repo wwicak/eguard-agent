@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::request::NormalizedUpdateRequest;
 
@@ -437,6 +438,35 @@ catch {
 }
 "#;
 
-    fs::write(path, SCRIPT)
-        .map_err(|err| format!("write update worker script {}: {}", path.display(), err))
+    // Write-then-rename onto a UNIQUE per-invocation temp so a later update
+    // command rewriting this script cannot truncate or torn-activate it while an
+    // earlier worker's PowerShell may still be reading the previous script. A
+    // shared temp could be reopened/truncated by a second writer in the window
+    // between this writer's write and its rename; a private (pid + atomic seq)
+    // temp cannot be touched by another writer, and fs::rename is atomic (Windows
+    // MoveFileEx replace-existing) once the complete temp exists, leaving the old
+    // file intact for a worker still reading it.
+    static SCRIPT_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+    let tmp_path = path.with_extension(format!(
+        "ps1.tmp.{}.{}",
+        std::process::id(),
+        SCRIPT_TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    if let Err(err) = fs::write(&tmp_path, SCRIPT) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(format!(
+            "write update worker script {}: {}",
+            tmp_path.display(),
+            err
+        ));
+    }
+    if let Err(err) = fs::rename(&tmp_path, path) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(format!(
+            "activate update worker script {}: {}",
+            path.display(),
+            err
+        ));
+    }
+    Ok(())
 }

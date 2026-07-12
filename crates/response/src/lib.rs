@@ -169,6 +169,13 @@ impl ProtectedList {
             "^lsass(\\.exe)?$",
             "^svchost(\\.exe)?$",
             "^smss(\\.exe)?$",
+            // conhost/logonui are Microsoft-documented built-in critical
+            // processes: terminating either can trigger bugcheck 0xEF
+            // (CRITICAL_PROCESS_DIED). The OS-level IsProcessCritical query in
+            // the Windows kill path is the authoritative guard; these names are
+            // a defense-in-depth backstop for when that query is unavailable.
+            "^conhost(\\.exe)?$",
+            "^logonui(\\.exe)?$",
             "^eguard-agent(\\.exe)?$",
         ]
         .into_iter()
@@ -361,6 +368,13 @@ fn looks_like_regex(raw: &str) -> bool {
     })
 }
 
+/// Hard compiled ceiling on the per-minute rate of any response limiter (kills
+/// or quarantines). This is the single, authoritative upper bound: because it
+/// is enforced inside the limiter constructor/setter, NO configuration source
+/// — file, environment, or remote policy — can raise the effective rate above
+/// it, only lower it. Bounds the blast radius of a storm regardless of config.
+pub const MAX_RESPONSE_RATE_PER_MINUTE: usize = 120;
+
 #[derive(Debug)]
 pub struct KillRateLimiter {
     max_kills_per_minute: usize,
@@ -370,13 +384,13 @@ pub struct KillRateLimiter {
 impl KillRateLimiter {
     pub fn new(max_kills_per_minute: usize) -> Self {
         Self {
-            max_kills_per_minute,
+            max_kills_per_minute: max_kills_per_minute.min(MAX_RESPONSE_RATE_PER_MINUTE),
             kill_timestamps: VecDeque::new(),
         }
     }
 
     pub fn set_max_per_minute(&mut self, max_per_minute: usize) {
-        self.max_kills_per_minute = max_per_minute;
+        self.max_kills_per_minute = max_per_minute.min(MAX_RESPONSE_RATE_PER_MINUTE);
     }
 
     pub fn allow(&mut self, now: Instant) -> bool {

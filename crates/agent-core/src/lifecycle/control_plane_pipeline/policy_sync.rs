@@ -8,6 +8,12 @@ use crate::config::AgentMode;
 
 use super::super::{update_tls_policy_from_server, AgentRuntime};
 
+/// Compiled ceilings on remotely-configurable response rates. Policy can lower
+/// these but never raise them, so a hostile or misconfigured policy cannot turn
+/// the kill/quarantine limiter into an effectively-unbounded throttle.
+const HARD_MAX_KILLS_PER_MINUTE: usize = 120;
+const HARD_MAX_QUARANTINES_PER_MINUTE: usize = 120;
+
 impl AgentRuntime {
     pub(super) async fn refresh_policy_if_due(&mut self, now_unix: i64) -> Result<()> {
         if !self.policy_refresh_due(now_unix) {
@@ -267,7 +273,10 @@ impl AgentRuntime {
             .get("response_max_kills_per_minute")
             .and_then(|v| v.as_u64())
         {
-            let limit = (v as usize).max(1);
+            // Remote policy may LOWER the rate but must never raise it past the
+            // compiled ceiling: a hostile/misconfigured policy cannot turn the
+            // limiter into an effectively-unbounded mass-kill throttle.
+            let limit = (v as usize).clamp(1, HARD_MAX_KILLS_PER_MINUTE);
             self.config.response.max_kills_per_minute = limit;
             self.limiter.set_max_per_minute(limit);
             info!(
@@ -279,7 +288,7 @@ impl AgentRuntime {
             .get("response_max_quarantines_per_minute")
             .and_then(|v| v.as_u64())
         {
-            let limit = (v as usize).max(1);
+            let limit = (v as usize).clamp(1, HARD_MAX_QUARANTINES_PER_MINUTE);
             self.config.response.max_quarantines_per_minute = limit;
             self.quarantine_limiter.set_max_per_minute(limit);
             info!(

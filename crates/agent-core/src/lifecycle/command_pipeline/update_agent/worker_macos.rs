@@ -4,6 +4,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::lifecycle::command_pipeline::command_utils::mark_internal_command;
 
@@ -178,14 +179,54 @@ fi
 write_outcome "completed" "agent update applied (version=$VERSION, format=pkg)"
 "#;
 
-    fs::write(path, SCRIPT)
-        .map_err(|err| format!("write update worker script {}: {}", path.display(), err))?;
-    let mut perms = fs::metadata(path)
-        .map_err(|err| format!("read script metadata {}: {}", path.display(), err))?
-        .permissions();
-    perms.set_mode(0o700);
-    fs::set_permissions(path, perms)
-        .map_err(|err| format!("chmod script {}: {}", path.display(), err))?;
+    // Write-then-rename onto a UNIQUE per-invocation temp: a later update command
+    // rewrites this script while an earlier worker's bash may still be lazily
+    // reading it. A shared temp could be O_TRUNC-reopened by a second writer in
+    // the window between this writer's write and its rename, activating a torn or
+    // empty script (identical bytes do not cure truncation timing). A private
+    // (pid + atomic seq) temp cannot be touched by another writer; fs::rename is
+    // atomic once the complete temp exists and leaves the old inode intact for a
+    // worker still reading the previous script.
+    static SCRIPT_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+    let tmp_path = path.with_extension(format!(
+        "sh.tmp.{}.{}",
+        std::process::id(),
+        SCRIPT_TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    if let Err(err) = fs::write(&tmp_path, SCRIPT) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(format!(
+            "write update worker script {}: {}",
+            tmp_path.display(),
+            err
+        ));
+    }
+    match fs::metadata(&tmp_path) {
+        Ok(md) => {
+            let mut perms = md.permissions();
+            perms.set_mode(0o700);
+            if let Err(err) = fs::set_permissions(&tmp_path, perms) {
+                let _ = fs::remove_file(&tmp_path);
+                return Err(format!("chmod script {}: {}", tmp_path.display(), err));
+            }
+        }
+        Err(err) => {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(format!(
+                "read script metadata {}: {}",
+                tmp_path.display(),
+                err
+            ));
+        }
+    }
+    if let Err(err) = fs::rename(&tmp_path, path) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(format!(
+            "activate update worker script {}: {}",
+            path.display(),
+            err
+        ));
+    }
     Ok(())
 }
 
@@ -201,8 +242,8 @@ mod tests {
         // through normalize_update_request — to keep this test honest about
         // the data shape. We use a known-good payload that the validator
         // accepts.
-        use crate::lifecycle::command_pipeline::payloads::parse_update_payload;
         use super::super::request::normalize_update_request;
+        use crate::lifecycle::command_pipeline::payloads::parse_update_payload;
         let payload = parse_update_payload(
             r#"{
               "version": "15.0.99",
@@ -243,8 +284,8 @@ mod tests {
         // The macOS worker must reject anything other than .pkg up front so
         // the agent reports a clear failure instead of attempting to dpkg/rpm
         // on macOS.
-        use crate::lifecycle::command_pipeline::payloads::parse_update_payload;
         use super::super::request::normalize_update_request;
+        use crate::lifecycle::command_pipeline::payloads::parse_update_payload;
         let payload = parse_update_payload(
             r#"{
               "version": "15.0.99",
@@ -277,9 +318,7 @@ mod tests {
             "#!/bin/sh\nps -p $$ -o sess= > \"$2/session-id.txt\"\n",
         )
         .expect("write probe");
-        let mut perms = std::fs::metadata(&probe)
-            .expect("probe meta")
-            .permissions();
+        let mut perms = std::fs::metadata(&probe).expect("probe meta").permissions();
         std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o700);
         std::fs::set_permissions(&probe, perms).expect("chmod probe");
 

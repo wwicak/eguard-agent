@@ -229,3 +229,90 @@ fn update_payload_parser_supports_rest_fields() {
     );
     assert_eq!(payload.package_format, "exe");
 }
+
+// --- P0-2: server kill_process command must honor the same safety boundary as
+// local detections (self-guard + shared rate limiter) and bound its blast
+// radius (target-vector ceiling). ---
+
+fn kill_command_runtime(max_kills_per_minute: usize) -> super::AgentRuntime {
+    let mut cfg = crate::config::AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    cfg.server_addr = "127.0.0.1:1".to_string();
+    cfg.self_protection_integrity_check_interval_secs = 0;
+    cfg.response.max_kills_per_minute = max_kills_per_minute;
+    cfg.response.max_quarantines_per_minute = 1;
+    super::AgentRuntime::new(cfg).expect("runtime")
+}
+
+fn fresh_kill_exec() -> response::CommandExecution {
+    response::CommandExecution {
+        outcome: response::CommandOutcome::Applied,
+        status: "completed",
+        detail: String::new(),
+    }
+}
+
+#[test]
+fn command_kill_rejects_oversized_target_vector() {
+    let mut runtime = kill_command_runtime(1000);
+    // 65 targets exceeds MAX_KILL_COMMAND_TARGETS (64): reject the whole command.
+    let pids: Vec<u32> = (100_000u32..100_065).collect();
+    assert_eq!(pids.len(), 65);
+    let payload = serde_json::json!({ "target_pids": pids }).to_string();
+    let mut exec = fresh_kill_exec();
+
+    runtime.apply_kill_process(&payload, &mut exec);
+
+    assert_eq!(exec.status, "failed");
+    assert!(exec.detail.contains("too many targets"), "{}", exec.detail);
+    // Rejected before the loop, so no rate-limiter quota was consumed.
+    assert!(
+        runtime.limiter.allow(std::time::Instant::now()),
+        "limiter must be untouched after an oversized-vector rejection"
+    );
+}
+
+#[test]
+fn command_kill_rejects_self_pid() {
+    let mut runtime = kill_command_runtime(1000);
+    let payload = serde_json::json!({ "pid": std::process::id() }).to_string();
+    let mut exec = fresh_kill_exec();
+
+    runtime.apply_kill_process(&payload, &mut exec);
+
+    assert_eq!(exec.status, "partial");
+    assert!(exec.detail.contains("agent self pid"), "{}", exec.detail);
+}
+
+#[test]
+fn command_kill_rejects_oversized_payload_before_parsing() {
+    let mut runtime = kill_command_runtime(1000);
+    // ~80 KiB payload, larger than MAX_KILL_PAYLOAD_BYTES (64 KiB): rejected
+    // before JSON deserialization so it cannot force a large allocation.
+    let payload = format!("{{\"target_pids\":[{}]}}", "1,".repeat(40_000));
+    assert!(payload.len() > 64 * 1024);
+    let mut exec = fresh_kill_exec();
+
+    runtime.apply_kill_process(&payload, &mut exec);
+
+    assert_eq!(exec.status, "failed");
+    assert!(exec.detail.contains("payload too large"), "{}", exec.detail);
+}
+
+#[test]
+fn command_kill_consumes_shared_rate_limiter() {
+    // Only one kill per minute is allowed; two distinct (non-existent) targets
+    // means the second must be refused by the SAME limiter local detections use.
+    let mut runtime = kill_command_runtime(1);
+    let payload = serde_json::json!({ "target_pids": [999_001u32, 999_002u32] }).to_string();
+    let mut exec = fresh_kill_exec();
+
+    runtime.apply_kill_process(&payload, &mut exec);
+
+    assert!(exec.detail.contains("rate limited"), "{}", exec.detail);
+    // The single token was spent by the command path.
+    assert!(
+        !runtime.limiter.allow(std::time::Instant::now()),
+        "command kills must consume the shared kill limiter"
+    );
+}
