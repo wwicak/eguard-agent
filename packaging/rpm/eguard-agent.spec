@@ -22,17 +22,91 @@ install -d -m 0755 /etc/modules-load.d
 echo "nf_tables" > /etc/modules-load.d/eguard-agent.conf 2>/dev/null || true
 modprobe nf_tables 2>/dev/null || true
 
-# Protect config from deletion via immutable flag.
-chattr +i /etc/eguard-agent/agent.conf 2>/dev/null || true
+# Clear legacy immutability before ownership changes or enrollment's atomic rename.
+if [ -f /etc/eguard-agent/agent.conf ]; then
+    chattr -i /etc/eguard-agent/agent.conf 2>/dev/null || true
+    chown root:root /etc/eguard-agent/agent.conf
+    chmod 0600 /etc/eguard-agent/agent.conf
+fi
 
-# Enable and start service.
-systemctl daemon-reload 2>/dev/null || true
-systemctl enable eguard-agent 2>/dev/null || true
-systemctl restart eguard-agent 2>/dev/null || true
+# Enable and cycle the MainPID; RefuseManualStop rejects systemctl restart.
+systemctl daemon-reload 2>/dev/null || echo "eguard-agent: daemon-reload failed" >&2
+systemctl enable eguard-agent 2>/dev/null || echo "eguard-agent: enable failed" >&2
+old_pid=$(systemctl show -p MainPID --value eguard-agent 2>/dev/null || true)
+target_version=$( (unset EGUARD_AGENT_VERSION; timeout 10 /usr/bin/eguard-agent --version 2>/dev/null | head -n 1) || true)
+if systemctl is-active --quiet eguard-agent; then
+    systemctl kill --kill-who=main -s TERM eguard-agent 2>/dev/null || echo "eguard-agent: TERM signal failed" >&2
+else
+    systemctl start eguard-agent 2>/dev/null || echo "eguard-agent: start failed" >&2
+fi
+verified=false
+i=0
+while [ "$i" -lt 30 ]; do
+    pid=$(systemctl show -p MainPID --value eguard-agent 2>/dev/null || true)
+    if [ -n "$pid" ] && [ "$pid" != 0 ] && [ "$pid" != "$old_pid" ] \
+        && systemctl is-active --quiet eguard-agent \
+        && [ "/proc/$pid/exe" -ef /usr/bin/eguard-agent ]; then
+        live_version=$( (unset EGUARD_AGENT_VERSION; timeout 10 "/proc/$pid/exe" --version 2>/dev/null | head -n 1) || true)
+        if [ -z "$target_version" ] || [ -z "$live_version" ] || [ "$live_version" = "$target_version" ]; then
+            verified=true
+            break
+        fi
+    fi
+    i=$((i + 1))
+    sleep 1
+done
+[ "$verified" = true ] || echo "eguard-agent: restart could not be verified on the installed binary" >&2
+exit 0
 
 %preun
-# Remove immutable flag before uninstall so rpm can clean up.
-chattr -i /etc/eguard-agent/agent.conf 2>/dev/null || true
+# Immutable config protection was removed because it breaks replacement and enrollment rename.
+if [ "$1" -eq 0 ] && [ -d /run/systemd/system ]; then
+    dropin_dir=/run/systemd/system/eguard-agent.service.d
+    dropin="$dropin_dir/zz-package-uninstall.conf"
+    stopped_service=0
+    preremove_ok=0
+    cleanup() {
+        rm -f "$dropin"
+        rmdir "$dropin_dir" 2>/dev/null || true
+        systemctl daemon-reload 2>/dev/null || true
+        # If we took the agent down but removal did NOT complete (interrupted or
+        # fail-closed abort), the package stays installed while the explicit stop
+        # suppressed Restart=. Bring the agent back so the host is never left
+        # installed-but-unprotected. start is a no-op if it is already running.
+        if [ "$stopped_service" = 1 ] && [ "$preremove_ok" != 1 ]; then
+            systemctl start eguard-agent.service 2>/dev/null || true
+        fi
+    }
+    # Arm cleanup traps BEFORE the weakening drop-in exists on disk so a signal in the
+    # setup window cannot leave the RefuseManualStop=no override without a handler that
+    # removes it. IGNORE further signals during teardown so a storm cannot terminate the
+    # shell before cleanup completes.
+    trap 'cleanup' EXIT
+    trap 'trap "" HUP INT TERM EXIT; cleanup; exit 1' HUP INT TERM
+    mkdir -p "$dropin_dir"
+    printf '[Unit]\nRefuseManualStop=no\n\n[Service]\nRestart=no\n' > "$dropin"
+    systemctl daemon-reload
+    stopped_service=1
+    systemctl stop eguard-agent.service || { echo "refusing to remove while agent is still running: systemd stop failed" >&2; exit 1; }
+    stopped=false
+    i=0
+    while [ "$i" -lt 10 ]; do
+        if ! pid=$(systemctl show -p MainPID --value eguard-agent.service 2>/dev/null); then
+            echo "refusing to remove while agent state is unknown" >&2
+            exit 1
+        fi
+        if [ "$pid" = 0 ]; then stopped=true; break; fi
+        i=$((i + 1)); sleep 1
+    done
+    [ "$stopped" = true ] || { echo "refusing to remove while agent is still running (MainPID=$pid)" >&2; exit 1; }
+    # All pre-removal steps completed. Commit to a NON-INTERRUPTIBLE success boundary:
+    # ignore signals before the success flag so an interrupt during the final EXIT
+    # cleanup cannot flip this authorized removal into a nonzero (aborted) exit while
+    # the restart-on-abort restore is suppressed. EXIT cleanup still runs; the agent
+    # stays down for erasure and %preun exits 0 so removal proceeds.
+    trap '' HUP INT TERM
+    preremove_ok=1
+fi
 
 %files
 /usr/bin/eguard-agent

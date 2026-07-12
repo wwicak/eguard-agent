@@ -257,16 +257,20 @@ fn linux_update_packaging_recovers_service_after_upgrade() {
         "postinstall should patch legacy /etc unit files to the safer stop timeout"
     );
     assert!(
-        postinstall.contains("systemd-run --unit \"eguard-agent-postinstall-$(date +%s)\" --collect /bin/sh -c \"$recover_cmd\""),
-        "postinstall should prefer delayed systemd-run recovery so upgrade cleanup cannot immediately undo it"
+        postinstall.contains("chattr -i /etc/eguard-agent/agent.conf 2>/dev/null || true"),
+        "postinstall must clear legacy immutable config protection before chown/chmod"
     );
     assert!(
-        postinstall.contains("systemctl reset-failed eguard-agent.service || true"),
-        "postinstall should clear failed state before restart"
+        postinstall.contains("systemctl kill --kill-who=main -s TERM eguard-agent.service")
+            && postinstall.contains("systemctl show -p MainPID --value eguard-agent.service")
+            && postinstall.contains("[ \"/proc/$pid/exe\" -ef /usr/bin/eguard-agent ]"),
+        "postinstall should signal MainPID and verify the replacement live inode"
     );
     assert!(
-        postinstall.contains("systemctl restart eguard-agent.service || systemctl start eguard-agent.service || true"),
-        "postinstall should retry service recovery after upgrade"
+        postinstall.contains("if ! restart_agent; then")
+            && postinstall.contains("restart could not be verified")
+            && postinstall.ends_with("exit 0\n"),
+        "shared nFPM postinstall must report restart verification failure without failing the package transaction"
     );
 
     let install_script = read("scripts/install-eguard-agent.sh");
@@ -297,9 +301,81 @@ fn linux_update_packaging_recovers_service_after_upgrade() {
         "preremove should skip stop/disable work during package upgrades"
     );
     assert!(
-        preremove.contains("systemctl stop eguard-agent.service || true"),
-        "preremove should still stop the service on real removals"
+        preremove.contains("RefuseManualStop=no")
+            && preremove.contains("Restart=no")
+            && preremove.contains("trap 'cleanup' EXIT")
+            && preremove.contains("trap 'trap \"\" HUP INT TERM EXIT; cleanup; exit 1' HUP INT TERM")
+            && preremove.contains("if ! pid=$(systemctl show -p MainPID --value")
+            && preremove.contains("refusing to remove while agent state is unknown")
+            && !preremove.contains("systemctl stop eguard-agent.service || true"),
+        "preremove must authorize stop transiently, clean up on every exit, and abort on unknown MainPID state"
     );
+    // The signal traps MUST be armed before the weakening drop-in is written to disk,
+    // otherwise a signal in the setup window leaves RefuseManualStop=no on disk with no
+    // handler to remove it. Enforce ordering, not just presence.
+    {
+        let sig_trap = preremove
+            .find("trap 'trap \"\" HUP INT TERM EXIT; cleanup; exit 1' HUP INT TERM")
+            .expect("preremove must arm the signal trap");
+        let dropin_write = preremove
+            .find("RefuseManualStop=no\\n\\n[Service]\\nRestart=no\\n' > \"$dropin\"")
+            .expect("preremove must write the transient drop-in");
+        assert!(
+            sig_trap < dropin_write,
+            "preremove must arm the HUP/INT/TERM cleanup trap BEFORE writing the RefuseManualStop=no drop-in (no unguarded setup window)"
+        );
+    }
+    // An interrupted/aborted removal must never leave the host installed-but-
+    // unprotected: if we stopped the agent but removal did not complete, cleanup must
+    // restart it (an explicit stop suppresses Restart=, and daemon-reload does not
+    // start the unit). Only a fully authorized removal sets preremove_ok=1.
+    assert!(
+        preremove.contains("stopped_service=1")
+            && preremove.contains("preremove_ok=1")
+            && preremove
+                .contains("[ \"$stopped_service\" = 1 ] && [ \"$preremove_ok\" != 1 ]")
+            && preremove.contains("systemctl start eguard-agent.service"),
+        "preremove must restart the agent when it was stopped but removal did not complete, so an interrupted uninstall never leaves the host unprotected"
+    );
+    // The success boundary must be non-interruptible: signals are ignored BEFORE
+    // preremove_ok=1 so an interrupt during the final EXIT cleanup cannot flip an
+    // authorized removal into a nonzero abort while the restart restore is suppressed.
+    {
+        let ignore_boundary = preremove
+            .find("trap '' HUP INT TERM")
+            .expect("preremove must ignore signals at the success boundary");
+        let ok_flag = preremove
+            .find("preremove_ok=1")
+            .expect("preremove must set the success flag");
+        assert!(
+            ignore_boundary < ok_flag,
+            "preremove must ignore HUP/INT/TERM BEFORE setting preremove_ok=1 (non-interruptible success boundary)"
+        );
+    }
+    // The RPM %preun mirror must carry the identical fail-closed + restart-on-abort +
+    // non-interruptible-success-boundary + signal-safe-drop-in lifecycle.
+    {
+        let spec = read("packaging/rpm/eguard-agent.spec");
+        assert!(
+            spec.contains("stopped_service=1")
+                && spec.contains("systemctl start eguard-agent.service")
+                && spec.contains("[ \"$stopped_service\" = 1 ] && [ \"$preremove_ok\" != 1 ]")
+                && spec.contains(
+                    "trap 'trap \"\" HUP INT TERM EXIT; cleanup; exit 1' HUP INT TERM"
+                ),
+            "rpm %preun must mirror the deb removal lifecycle (fail-closed, restart-on-abort, signal-safe drop-in)"
+        );
+        let spec_ignore = spec
+            .find("trap '' HUP INT TERM")
+            .expect("rpm %preun must ignore signals at the success boundary");
+        let spec_ok = spec
+            .find("preremove_ok=1")
+            .expect("rpm %preun must set the success flag");
+        assert!(
+            spec_ignore < spec_ok,
+            "rpm %preun must ignore signals before preremove_ok=1 (non-interruptible success boundary)"
+        );
+    }
 
     let worker_source =
         read("crates/agent-core/src/lifecycle/command_pipeline/update_agent/worker_linux.rs");
@@ -1433,4 +1509,95 @@ fn repo_windows_csc_rule_matches_shape() {
         .temporal_hits
         .iter()
         .any(|hit| hit == "windows_csc_lolbin"));
+}
+
+// Behavioral: execute preremove.sh with a mocked systemctl and assert that every
+// deterministic nonzero exit after the agent is stopped restarts it (host never left
+// installed-but-unprotected), while a fully authorized removal leaves it down.
+#[test]
+fn preremove_restarts_agent_on_failed_removal_but_not_on_success() {
+    let _guard = script_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let root = workspace_root();
+    let src = std::fs::read_to_string(root.join("packaging/preremove.sh")).expect("read preremove.sh");
+
+    // Run preremove.sh (arg "remove") in a sandbox with a mocked systemctl/sleep/chattr,
+    // redirecting the absolute /run path into the sandbox. Returns (success, mock log).
+    fn run_preremove(src: &str, main_pid: &str, stop_rc: i32, show_rc: i32) -> (bool, String) {
+        let sandbox = temp_dir("eguard-preremove-test");
+        let bin_dir = sandbox.join("bin");
+        std::fs::create_dir_all(&bin_dir).expect("mkdir bin");
+        std::fs::create_dir_all(sandbox.join("run/systemd/system")).expect("mkdir run");
+        let log_path = sandbox.join("mock.log");
+        let script_path = sandbox.join("preremove.sh");
+        let redirected = src.replace(
+            "/run/systemd/system",
+            &format!("{}/run/systemd/system", sandbox.display()),
+        );
+        std::fs::write(&script_path, redirected).expect("write script");
+
+        let systemctl = format!(
+            "#!/bin/bash\n\
+echo \"systemctl $*\" >> \"{log}\"\n\
+case \"$*\" in\n\
+  *\"daemon-reload\"*) exit 0 ;;\n\
+  *\"stop eguard-agent\"*) exit {stop_rc} ;;\n\
+  *\"start eguard-agent\"*) exit 0 ;;\n\
+  *\"disable eguard-agent\"*) exit 0 ;;\n\
+  *\"show -p MainPID\"*) if [ {show_rc} -ne 0 ]; then exit {show_rc}; fi; echo \"{main_pid}\" ;;\n\
+  *) exit 0 ;;\n\
+esac\n",
+            log = log_path.display(),
+            stop_rc = stop_rc,
+            show_rc = show_rc,
+            main_pid = main_pid,
+        );
+        write_exec(&bin_dir.join("systemctl"), &systemctl);
+        write_exec(&bin_dir.join("sleep"), "#!/bin/bash\nexit 0\n");
+        write_exec(&bin_dir.join("chattr"), "#!/bin/bash\nexit 0\n");
+
+        let path = format!("{}:/usr/bin:/bin", bin_dir.display());
+        let out = std::process::Command::new("bash")
+            .arg(&script_path)
+            .arg("remove")
+            .env("PATH", path)
+            .current_dir(&sandbox)
+            .output()
+            .expect("run preremove");
+        let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&sandbox);
+        (out.status.success(), log)
+    }
+
+    // Normal removal: agent reports stopped (MainPID=0) -> success, STOP+DISABLE, no START.
+    let (ok, log) = run_preremove(&src, "0", 0, 0);
+    assert!(ok, "normal removal should succeed: log={log}");
+    assert!(log.contains("stop eguard-agent"), "normal removal must stop the agent: log={log}");
+    assert!(
+        !log.contains("start eguard-agent"),
+        "normal removal must NOT restart the agent (it stays down for erasure): log={log}"
+    );
+
+    // Stop attempt fails -> fail closed and restore the agent.
+    let (ok, log) = run_preremove(&src, "0", 1, 0);
+    assert!(!ok, "stop failure must fail closed: log={log}");
+    assert!(
+        log.contains("start eguard-agent"),
+        "a failed removal after the stop attempt must restart the agent: log={log}"
+    );
+
+    // Unknown MainPID (systemctl show fails) -> fail closed and restore.
+    let (ok, log) = run_preremove(&src, "0", 0, 1);
+    assert!(!ok, "unknown MainPID must fail closed: log={log}");
+    assert!(
+        log.contains("start eguard-agent"),
+        "unknown-state removal must restart the agent: log={log}"
+    );
+
+    // Agent never reports stopped (MainPID stays nonzero) -> poll timeout, fail closed, restore.
+    let (ok, log) = run_preremove(&src, "123", 0, 0);
+    assert!(!ok, "stop timeout must fail closed: log={log}");
+    assert!(
+        log.contains("start eguard-agent"),
+        "timed-out removal must restart the agent: log={log}"
+    );
 }
