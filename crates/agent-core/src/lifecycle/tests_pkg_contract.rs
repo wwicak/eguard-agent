@@ -304,8 +304,8 @@ fn linux_update_packaging_recovers_service_after_upgrade() {
     let worker_source =
         read("crates/agent-core/src/lifecycle/command_pipeline/update_agent/worker_linux.rs");
     assert!(
-        worker_source.contains("systemctl reset-failed eguard-agent || true"),
-        "linux update worker should clear failed service state after package install"
+        worker_source.contains("systemctl reset-failed eguard-agent 2>/dev/null || true"),
+        "linux update worker should clear failed service state when nudging a down unit back up"
     );
     assert!(
         worker_source.contains("rpm -Uvh --replacepkgs --replacefiles \"$pkg_path\""),
@@ -315,16 +315,25 @@ fn linux_update_packaging_recovers_service_after_upgrade() {
         worker_source.contains("case \"$rpm_output\" in"),
         "linux rpm update worker should inspect rpm stderr before deciding whether replace flags are safe"
     );
+    // RefuseManualStop=yes makes `systemctl stop`/`restart` refused (rc=4) and
+    // never cycle the tamper-resistant service, so the worker must NOT rely on
+    // them; the sanctioned cycle is to signal the main process and let
+    // Restart=always relaunch the new binary.
     assert!(
-        worker_source.contains("if ! systemctl restart eguard-agent; then"),
-        "linux update worker should prefer a full service restart after package install"
+        !worker_source.contains("systemctl restart eguard-agent"),
+        "linux update worker must not use `systemctl restart` (refused by RefuseManualStop=yes)"
     );
     assert!(
-        worker_source.contains(
-            "systemctl start eguard-agent || fail_outcome \"agent service restart failed after package install\""
-        ),
-        "linux update worker should still fall back to start and report failure if recovery cannot bring the service back"
+        worker_source
+            .contains("systemctl kill --kill-who=main -s TERM eguard-agent 2>/dev/null || true"),
+        "linux update worker should cycle the service via a guarded SIGTERM to the main process"
     );
+    assert!(
+        worker_source
+            .contains("systemctl kill --kill-who=main -s KILL eguard-agent 2>/dev/null || true"),
+        "linux update worker should escalate to SIGKILL if the old process ignores SIGTERM"
+    );
+    // start safety-net is asserted (with --no-block) in the bounded-loop block below.
     assert!(
         worker_source.contains("Command::new(\"/bin/bash\")"),
         "linux update worker fallback should launch via /bin/bash so noexec update dirs do not block self-update"
@@ -349,6 +358,161 @@ fn linux_update_packaging_recovers_service_after_upgrade() {
     assert!(
         worker_source.contains("mark_internal_command("),
         "linux update worker fallback should tag directly spawned maintenance workers as internal"
+    );
+    // Path-mismatch + un-restarted-process hardening: the worker must gate success
+    // on the LIVE process's own version, probed by executing the /proc/<pid>/exe
+    // magic symlink directly (so an in-place replace of a still-running old inode
+    // cannot masquerade as success), never a resolved on-disk path.
+    assert!(
+        worker_source.contains("env -u EGUARD_AGENT_VERSION timeout 10 \"/proc/$pid/exe\" --version"),
+        "linux update worker must probe the LIVE inode's version directly, with a bounded timeout and no inherited version env"
+    );
+    assert!(
+        worker_source
+            .contains("env -u EGUARD_AGENT_VERSION timeout 10 \"$INSTALLED_BIN\" --version"),
+        "linux update worker post-install version check must clear the runtime version override and be bounded so a hanging binary cannot hold the update lock forever"
+    );
+    assert!(
+        worker_source.contains("running_version=\"$(restart_and_confirm_update)\""),
+        "linux update worker should confirm the running service version before writing the completed outcome"
+    );
+    assert!(
+        worker_source.contains("recheck_pid=\"$(service_main_pid)\"")
+            && worker_source.contains("systemctl is-active --quiet eguard-agent"),
+        "linux update worker should re-read MainPID after probing to close a PID-recycle/flap race"
+    );
+    // Same-version hotfix guard: success must require a genuinely NEW process
+    // instance, not just a version-string match on the still-running old process.
+    assert!(
+        worker_source.contains("proc_identity()")
+            && worker_source.contains("\"$cur_ident\" != \"$before_ident\""),
+        "linux update worker must require a process-identity change (actual restart), not only a version match"
+    );
+    // Attached fallback worker must fail safe (never kill the agent from inside
+    // its own cgroup, which control-group teardown would kill mid-restart).
+    assert!(
+        worker_source.contains("if [[ \"$RESTART_MODE\" != \"detached\" ]]; then")
+            && worker_source.contains("a safe self-restart needs the detached update worker"),
+        "linux update worker must fail safe (no kill) when spawned attached (systemd-run unavailable)"
+    );
+    // Fail-closed default: a missing/unset restart-mode must NOT enable the kill.
+    assert!(
+        worker_source.contains("RESTART_MODE=\"attached\""),
+        "linux update worker must default RESTART_MODE to attached (fail closed: never kill unless explicitly detached)"
+    );
+    assert!(
+        worker_source.contains("detached_args.push(\"--restart-mode\".to_string());")
+            && worker_source.contains("detached_args.push(\"detached\".to_string());")
+            && worker_source.contains("script_args.push(\"attached\".to_string());"),
+        "spawn should pass restart-mode=detached to the transient worker and attached to the direct fallback"
+    );
+    // Installed-inode gate: success must require the LIVE process to be executing
+    // the freshly installed package file, not merely the target version on a
+    // cycled but non-package (alternate ExecStart) or deleted inode.
+    assert!(
+        worker_source.contains("INSTALLED_BIN=\"/usr/bin/eguard-agent\"")
+            && worker_source.contains("\"/proc/$cur_pid/exe\" -ef \"$INSTALLED_BIN\"")
+            && worker_source.contains("\"/proc/$recheck_pid/exe\" -ef \"$INSTALLED_BIN\""),
+        "linux update worker must require the live inode to be the package-installed binary before success"
+    );
+    // Startup-failure recovery: snapshot the running binary before the kill and
+    // roll it back if the new payload cannot stay up, so a bad-but-version-valid
+    // package cannot brick the endpoint.
+    assert!(
+        worker_source.contains("cp -f \"/proc/$before_pid/exe\" \"$rollback_bin\"")
+            && worker_source.contains("rolled back to the previous binary"),
+        "linux update worker must snapshot + roll back the previous binary if the update cannot stay running"
+    );
+    // Snapshot must be bound to the captured process identity (guard PID reuse),
+    // and only armed with a nonempty prior identity.
+    assert!(
+        worker_source.contains("\"$(proc_identity \"$before_pid\")\" == \"$before_ident\""),
+        "linux update worker must bind the rollback snapshot to the captured pid:starttime identity"
+    );
+    // Restore must be a CHECKED chain: only claim rollback after verifying the
+    // target holds the snapshot bytes; a swallowed cp/mv error must report an
+    // honest restore failure, never a false recovery.
+    assert!(
+        worker_source.contains("cmp -s \"$rollback_bin\" \"$rollback_path\"")
+            && worker_source.contains("rollback restore FAILED"),
+        "linux update worker must verify restored bytes and report honestly when the restore fails"
+    );
+    // Post-rollback recovery must confirm a STABLE process on the restored inode,
+    // not a single is-active sample.
+    assert!(
+        worker_source.contains("\"/proc/$r2/exe\" -ef \"$rollback_path\""),
+        "linux update worker must confirm the recovered process is executing the restored inode"
+    );
+    // Single-flight lock: overlapping update workers would race the install,
+    // service cycle, and rollback target, invalidating the byte/inode gates.
+    assert!(
+        worker_source.contains("flock -n 9")
+            && worker_source.contains("another agent update is already in progress"),
+        "linux update worker must hold an exclusive lock so concurrent updates cannot interleave"
+    );
+    // Per-command staging paths (defense in depth on top of the lock).
+    assert!(
+        worker_source.contains("eguard-agent-${VERSION}-${COMMAND_ID}.${FORMAT}"),
+        "linux update worker should stage the package under a command-specific path"
+    );
+    // Per-command staging must not grow without bound: age-sweep staged packages
+    // and orphaned downloads alongside stale rollback snapshots.
+    assert!(
+        worker_source.contains("-name 'eguard-agent-*.deb'")
+            && worker_source.contains("-name 'eguard-agent-*.rpm'")
+            && worker_source.contains("-name '*.download'"),
+        "linux update worker must age-sweep staged packages and partial downloads so per-command staging cannot grow without bound"
+    );
+    // Script rewrites must be atomic (write temp + rename): a later command's
+    // rewrite must never truncate the script a running worker is still reading.
+    assert!(
+        worker_source.contains("fs::rename(&tmp_path, path)")
+            && worker_source.contains("SCRIPT_TMP_SEQ.fetch_add")
+            && worker_source.contains("std::process::id()"),
+        "linux update worker script must be activated via atomic rename from a UNIQUE per-invocation temp (pid+seq) so a concurrent rewrite cannot truncate/torn-activate a running worker's script"
+    );
+    // Final target-admission check before rollback (a healthy target that appears
+    // at the deadline boundary must not be rolled back over a good install), and
+    // the success gate is factored into a single helper used by loop + admission.
+    assert!(
+        worker_source.contains("try_confirm_target()")
+            && worker_source.contains("# Final admission"),
+        "linux update worker must re-run the full success gate immediately before rollback"
+    );
+    // Stability dwell: a target that passes --version then crashes must not be
+    // reported completed.
+    assert!(
+        worker_source.contains("# Stability dwell"),
+        "linux update worker must require a post-readiness stability dwell before success"
+    );
+    // Real bound + non-blocking recovery start (no waiting out TimeoutStartSec).
+    assert!(
+        worker_source.contains("local deadline=$((start_ts + deadline_secs))"),
+        "linux update worker confirm loop must use a wall-clock loop-admission deadline"
+    );
+    assert!(
+        worker_source.contains("systemctl start --no-block eguard-agent 2>/dev/null || true"),
+        "linux update worker recovery start must be non-blocking so it cannot wait out TimeoutStartSec"
+    );
+    // Rollback routing must sample MainPID stability (a crash-looping unit
+    // flickers active), not a single is-active.
+    assert!(
+        worker_source.contains("s1=\"$(service_main_pid)\"")
+            && worker_source.contains("\"$s1\" == \"$s2\""),
+        "linux update worker must sample MainPID stability before choosing honest-failure vs rollback"
+    );
+    assert!(
+        worker_source
+            .contains("running agent service did not reach the updated version after restart"),
+        "linux update worker must fail (not silently succeed) when the live service is not on the target version"
+    );
+    assert!(
+        worker_source.contains("node may use a non-package install layout and require manual reinstall"),
+        "linux update worker failure diagnostic should name the non-package-layout cause for the operator"
+    );
+    assert!(
+        worker_source.contains(", running=$running_version)"),
+        "linux update worker completed outcome should report the confirmed running binary/version"
     );
 
     let config_change_source =
