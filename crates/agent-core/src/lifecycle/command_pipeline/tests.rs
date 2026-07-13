@@ -495,10 +495,21 @@ fn command_kill_rejects_oversized_payload_before_parsing() {
 
 #[test]
 fn command_kill_consumes_shared_rate_limiter() {
-    // Only one kill per minute is allowed; two distinct (non-existent) targets
-    // means the second must be refused by the SAME limiter local detections use.
+    // Only one kill per minute is allowed; two distinct REAL targets means the
+    // first consumes the single token and the second must be refused by the SAME
+    // limiter local detections use. Real children are required because a
+    // non-existent PID now fail-closes as protected (P1-1 identity binding)
+    // before the limiter is ever consulted.
     let mut runtime = kill_command_runtime(1);
-    let payload = serde_json::json!({ "target_pids": [999_001u32, 999_002u32] }).to_string();
+    let mut child_a = std::process::Command::new("sleep")
+        .arg("300")
+        .spawn()
+        .expect("spawn child_a");
+    let mut child_b = std::process::Command::new("sleep")
+        .arg("300")
+        .spawn()
+        .expect("spawn child_b");
+    let payload = serde_json::json!({ "target_pids": [child_a.id(), child_b.id()] }).to_string();
     let mut exec = fresh_kill_exec();
 
     runtime.apply_kill_process(&payload, &mut exec);
@@ -509,6 +520,11 @@ fn command_kill_consumes_shared_rate_limiter() {
         !runtime.limiter.allow(std::time::Instant::now()),
         "command kills must consume the shared kill limiter"
     );
+
+    let _ = child_a.kill();
+    let _ = child_a.wait();
+    let _ = child_b.kill();
+    let _ = child_b.wait();
 }
 
 #[test]
@@ -550,17 +566,31 @@ fn command_pipeline_circuit_breaker_denies_kill_without_consuming_limiter() {
         crate::lifecycle::circuit_breaker::BreakerDecision::Deny { .. }
     ));
 
-    let payload = serde_json::json!({ "pid": 999_003u32 }).to_string();
+    // Target a REAL, non-protected child so the kill reaches the breaker budget
+    // gate. A non-existent PID now fail-closes as "protected" before the gate
+    // (P1-1 identity binding), which would never exercise the circuit-open path.
+    let mut child = std::process::Command::new("sleep")
+        .arg("300")
+        .spawn()
+        .expect("spawn sleep child");
+    let payload = serde_json::json!({ "pid": child.id() }).to_string();
     let mut exec = fresh_kill_exec();
     runtime.apply_kill_process(&payload, &mut exec);
 
-    assert_eq!(exec.status, "partial");
+    assert_eq!(exec.status, "partial", "{}", exec.detail);
     assert!(exec.detail.contains("circuit_open"), "{}", exec.detail);
     assert!(
         runtime.limiter.allow(std::time::Instant::now()),
         "circuit-open kill must not consume limiter quota"
     );
+    // The tripped breaker must abort BEFORE any signal: the child is untouched.
+    assert!(
+        matches!(child.try_wait(), Ok(None)),
+        "circuit-open kill must not signal the target process"
+    );
 
+    let _ = child.kill();
+    let _ = child.wait();
     std::env::remove_var("EGUARD_AGENT_DATA_DIR");
     let _ = std::fs::remove_dir_all(dir);
 }
