@@ -272,10 +272,6 @@ ensure_plist_env_dict() {
         <key>NumberOfFiles</key>
         <integer>8192</integer>
     </dict>
-    <key>StandardOutPath</key>
-    <string>/var/log/eguard-agent.out.log</string>
-    <key>StandardErrorPath</key>
-    <string>/var/log/eguard-agent.err.log</string>
 </dict>
 </plist>
 EOF

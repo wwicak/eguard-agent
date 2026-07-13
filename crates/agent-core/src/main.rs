@@ -7,7 +7,6 @@ mod test_support;
 
 use anyhow::Result;
 use std::ffi::OsStr;
-use std::fs::OpenOptions;
 use std::future::Future;
 #[cfg(target_os = "windows")]
 use std::path::Path;
@@ -206,9 +205,9 @@ fn init_tracing() {
                 let _ = std::fs::create_dir_all(parent);
             }
 
-            match OpenOptions::new().create(true).append(true).open(&log_path) {
-                Ok(file) => {
-                    let writer = std::sync::Mutex::new(file);
+            match lifecycle::ManagedLogWriter::open(&log_path) {
+                Ok(writer) => {
+                    let writer = std::sync::Mutex::new(writer);
                     tracing_subscriber::fmt()
                         .with_env_filter(env_filter)
                         .with_ansi(false)
@@ -216,8 +215,11 @@ fn init_tracing() {
                         .init();
                     return;
                 }
-                Err(_) => {
-                    // Fall back to stderr if the log file can't be opened.
+                Err(err) => {
+                    eprintln!(
+                        "eguard-agent: cannot open persistent log {}: {err}; falling back to stderr",
+                        log_path.display()
+                    );
                 }
             }
         }
@@ -266,9 +268,9 @@ fn init_tracing_to_file(log_path: &Path) {
             let _ = std::fs::create_dir_all(parent);
         }
 
-        match OpenOptions::new().create(true).append(true).open(log_path) {
-            Ok(file) => {
-                let writer = std::sync::Mutex::new(file);
+        match lifecycle::ManagedLogWriter::open(log_path) {
+            Ok(writer) => {
+                let writer = std::sync::Mutex::new(writer);
                 let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
                     .or_else(|_| tracing_subscriber::EnvFilter::try_new("info"))
                     .expect("default tracing filter should be valid");
@@ -278,8 +280,12 @@ fn init_tracing_to_file(log_path: &Path) {
                     .with_ansi(false)
                     .init();
             }
-            Err(_) => {
-                // Fall back to stderr if the log file can't be opened.
+            Err(err) => {
+                eprintln!(
+                    "eguard-agent: cannot open persistent log {}: {err}; falling back to stderr",
+                    log_path.display()
+                );
+                // Windows SCM does not capture stderr, but retain a subscriber for console mode.
                 let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
                     .or_else(|_| tracing_subscriber::EnvFilter::try_new("info"))
                     .expect("default tracing filter should be valid");
@@ -554,7 +560,6 @@ mod windows_service_entry {
         // Initialize file-based tracing before anything else logs. Windows SCM
         // does not capture stderr, so service mode must write to a log file.
         let log_path = crate::lifecycle::resolve_logs_dir().join("agent.log");
-        crate::lifecycle::prepare_managed_log_file(&log_path);
         super::init_tracing_to_file(&log_path);
 
         set_service_status(
