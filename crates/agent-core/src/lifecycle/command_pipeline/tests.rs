@@ -594,3 +594,219 @@ fn command_pipeline_circuit_breaker_denies_kill_without_consuming_limiter() {
     std::env::remove_var("EGUARD_AGENT_DATA_DIR");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+// --- Phase C: adversarial storm fault-injection (director §5). Drives the REAL
+// integrated AgentRuntime through a destructive command storm and proves the
+// host cannot be bricked: hostile kills against protected identities do nothing,
+// the circuit breaker trips BEFORE crossing its ceiling, every destructive
+// command is then denied, recovery stays available, the trip survives a full
+// process restart, and the canary process tree survives untouched. ---
+#[tokio::test]
+#[ignore = "Phase C storm fault-injection: spawns real canary processes and reloads the runtime; run explicitly with --ignored"]
+async fn storm_fault_injection_no_brick_under_destructive_command_storm() {
+    let _guard = crate::test_support::env_lock().lock().expect("env lock");
+    let dir = std::env::temp_dir().join(format!(
+        "eguard-storm-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("create storm data dir");
+    std::env::set_var("EGUARD_AGENT_DATA_DIR", &dir);
+
+    let build_runtime = || {
+        let mut cfg = crate::config::AgentConfig::default();
+        cfg.offline_buffer_backend = "memory".to_string();
+        cfg.server_addr = "127.0.0.1:1".to_string();
+        cfg.self_protection_integrity_check_interval_secs = 0;
+        // Large rate limits so the shared limiter never masks the breaker: the
+        // breaker (attempted-blast-unit accounting) must be the thing that stops
+        // the storm, not the per-minute limiter.
+        cfg.response.max_kills_per_minute = 100_000;
+        cfg.response.max_quarantines_per_minute = 100_000;
+        let mut rt = super::AgentRuntime::new(cfg).expect("runtime");
+        rt.client.set_online(false);
+        rt
+    };
+    let mut runtime = build_runtime();
+    let now = crate::lifecycle::now_unix().max(0) as i64;
+
+    // A real canary process tree we will PROVE survives the entire storm.
+    let mut canaries: Vec<std::process::Child> = (0..4)
+        .map(|_| {
+            std::process::Command::new("sleep")
+                .arg("300")
+                .spawn()
+                .expect("spawn canary")
+        })
+        .collect();
+    let self_pid = std::process::id();
+
+    // ---- Phase 1: hostile kill flood against protected / critical / fake
+    // identities. Every one must be refused with NOTHING signalled (fail-closed
+    // identity binding); the agent itself and the canaries are untouched. ----
+    let hostile: Vec<u32> = vec![
+        self_pid,
+        1,
+        2,
+        u32::MAX,
+        u32::MAX - 1,
+        999_001,
+        999_002,
+        999_003,
+        4_000_000,
+        4_000_001,
+        4_000_002,
+        4_000_003,
+        4_000_004,
+        4_000_005,
+    ];
+    for pid in &hostile {
+        let payload = serde_json::json!({ "pid": pid }).to_string();
+        let mut exec = fresh_kill_exec();
+        runtime.apply_kill_process(&payload, &mut exec);
+        assert!(
+            !exec.detail.contains("killed=1")
+                && !exec.detail.contains("killed=2")
+                && exec.status != "completed",
+            "hostile kill against protected/fake pid {pid} must not report a real kill: {}",
+            exec.detail
+        );
+    }
+    assert!(
+        matches!(canaries[0].try_wait(), Ok(None)),
+        "canary must survive the hostile-identity kill flood"
+    );
+    // The hostile-identity kill storm itself charges attempted blast units
+    // (protected-guard violations) and may already have tripped the breaker -
+    // that is a correct defensive outcome. Reset to a healthy breaker so the
+    // next phase can prove the trip-before-crossing boundary deterministically.
+    let state_path = dir.join("breaker_state.json");
+    let _ = std::fs::remove_file(&state_path);
+    runtime.breaker = crate::lifecycle::circuit_breaker::CircuitBreaker::load_from_path(
+        state_path.clone(),
+        crate::lifecycle::circuit_breaker::BREAKER_MAX_BLAST_UNITS,
+    );
+
+    // ---- Phase 2: destructive command storm that trips the breaker. Each
+    // `update` attempt charges 4 attempted blast units before its payload is even
+    // validated; the storm must trip BEFORE crossing the 128u ceiling. ----
+    let mut tripped_at = None;
+    for i in 0..64u32 {
+        let exec = runtime
+            .handle_command(
+                grpc_client::CommandEnvelope {
+                    command_id: format!("storm-update-{i}"),
+                    command_type: "update".to_string(),
+                    payload_json: "{}".to_string(),
+                },
+                now,
+            )
+            .await;
+        if exec.detail == "update_skipped:circuit_open" {
+            tripped_at = Some(i);
+            break;
+        }
+    }
+    let tripped_at = tripped_at.expect("destructive command storm must trip the breaker");
+    // 128u ceiling / 4u per update => trips on the ~33rd attempt, never unbounded.
+    assert!(
+        (30..=34).contains(&tripped_at),
+        "breaker must trip BEFORE crossing the ceiling (attempt {tripped_at})"
+    );
+
+    // Breaker state must be persisted as tripped at exactly the ceiling.
+    let persisted: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&state_path).expect("read persisted breaker"))
+            .expect("parse persisted breaker");
+    assert_eq!(persisted["tripped"], true);
+    assert_eq!(
+        persisted["blast_units"],
+        crate::lifecycle::circuit_breaker::BREAKER_MAX_BLAST_UNITS
+    );
+
+    // ---- Phase 3: with the breaker tripped, EVERY destructive command is denied
+    // and the host survives. A real canary targeted by a kill command is not
+    // signalled. ----
+    for (ct, expected) in [
+        ("update", "update_skipped:circuit_open"),
+        ("restart_device", "restart_device_skipped:circuit_open"),
+    ] {
+        let exec = runtime
+            .handle_command(
+                grpc_client::CommandEnvelope {
+                    command_id: format!("storm-post-{ct}"),
+                    command_type: ct.to_string(),
+                    payload_json: "{}".to_string(),
+                },
+                now,
+            )
+            .await;
+        assert_eq!(exec.detail, expected, "post-trip {ct} must be denied");
+    }
+    let payload = serde_json::json!({ "pid": canaries[1].id() }).to_string();
+    let mut exec = fresh_kill_exec();
+    runtime.apply_kill_process(&payload, &mut exec);
+    assert!(
+        exec.detail.contains("circuit_open"),
+        "post-trip kill must be denied: {}",
+        exec.detail
+    );
+    assert!(
+        matches!(canaries[1].try_wait(), Ok(None)),
+        "tripped-breaker kill must not signal the real canary target"
+    );
+
+    // ---- Phase 4: recovery must stay available while the breaker is tripped. A
+    // restore_quarantine command is routed to its handler, never breaker-denied. ----
+    let exec = runtime
+        .handle_command(
+            grpc_client::CommandEnvelope {
+                command_id: "storm-recovery".to_string(),
+                command_type: "restore_quarantine".to_string(),
+                payload_json: "{}".to_string(),
+            },
+            now,
+        )
+        .await;
+    assert!(
+        !exec.detail.contains("circuit_open"),
+        "recovery (restore_quarantine) must never be gated by the breaker: {}",
+        exec.detail
+    );
+
+    // ---- Phase 5: the trip must survive a full agent restart (crash aftermath). ----
+    drop(runtime);
+    let mut reloaded = build_runtime();
+    let exec = reloaded
+        .handle_command(
+            grpc_client::CommandEnvelope {
+                command_id: "storm-reload-update".to_string(),
+                command_type: "update".to_string(),
+                payload_json: "{}".to_string(),
+            },
+            now,
+        )
+        .await;
+    assert_eq!(
+        exec.detail, "update_skipped:circuit_open",
+        "breaker trip must persist across a full runtime restart"
+    );
+
+    // ---- No brick: the agent itself and every canary are still alive. ----
+    for (i, c) in canaries.iter_mut().enumerate() {
+        assert!(
+            matches!(c.try_wait(), Ok(None)),
+            "canary {i} was killed by the storm -> host damage"
+        );
+    }
+
+    for mut c in canaries {
+        let _ = c.kill();
+        let _ = c.wait();
+    }
+    std::env::remove_var("EGUARD_AGENT_DATA_DIR");
+    let _ = std::fs::remove_dir_all(dir);
+}
