@@ -1,5 +1,6 @@
 use std::fs;
 use std::fs::OpenOptions;
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
@@ -47,6 +48,8 @@ pub(super) fn spawn_update_worker(
     let script_path = update_dir.join("apply-agent-update-worker.sh");
     write_macos_update_worker_script(&script_path)?;
 
+    let update_lock = acquire_update_lock(update_dir)?;
+    let update_lock_fd = update_lock.as_raw_fd();
     let log_path = update_dir.join("apply-agent-update-worker.log");
     let log_file = OpenOptions::new()
         .create(true)
@@ -80,8 +83,14 @@ pub(super) fn spawn_update_worker(
     // installer. `setsid(2)` is called between fork(2) and execve(2) in
     // the child via `pre_exec`.
     unsafe {
-        command.pre_exec(|| {
+        command.pre_exec(move || {
             if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // Keep the already-held flock alive in the detached worker. The
+            // parent drops its copy after spawn; the lock is then released by
+            // the kernel on every worker exit path.
+            if libc::fcntl(update_lock_fd, libc::F_SETFD, 0) == -1 {
                 return Err(std::io::Error::last_os_error());
             }
             Ok(())
@@ -95,11 +104,40 @@ pub(super) fn spawn_update_worker(
     // Detach: the agent must not block on (or reap) the installer.
     // Outcome is reported via update-outcome-<command_id>.txt.
     std::mem::forget(child);
+    drop(update_lock);
 
     Ok(format!(
         "macOS agent update worker started (url={}, kind=pkg)",
         request.package_url(),
     ))
+}
+
+fn acquire_update_lock(update_dir: &Path) -> Result<fs::File, String> {
+    fs::create_dir_all(update_dir)
+        .map_err(|err| format!("create update directory {}: {}", update_dir.display(), err))?;
+    let lock_path = update_dir.join("agent-update.lock");
+    let lock = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|err| format!("open update lock {}: {}", lock_path.display(), err))?;
+    let result = unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if result == -1 {
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() == Some(libc::EWOULDBLOCK) {
+            return Err(
+                "another agent update is already in progress on this host; refusing to run concurrently"
+                    .to_string(),
+            );
+        }
+        return Err(format!(
+            "acquire update lock {}: {}",
+            lock_path.display(),
+            err
+        ));
+    }
+    Ok(lock)
 }
 
 fn write_macos_update_worker_script(path: &Path) -> Result<(), String> {
@@ -145,38 +183,181 @@ fi
 
 mkdir -p "$UPDATE_DIR"
 chmod 0755 "$UPDATE_DIR"
-pkg_path="$UPDATE_DIR/eguard-agent-${VERSION}.pkg"
+AGENT_PATH="/usr/local/bin/eguard-agent"
+pkg_path="$UPDATE_DIR/eguard-agent-${VERSION}-${COMMAND_ID}.pkg"
 tmp_path="${pkg_path}.download"
-trap 'rm -f "$tmp_path"' EXIT
+rollback_path="$UPDATE_DIR/rollback-agent-${COMMAND_ID}.bin"
+rollback_plist_path="$UPDATE_DIR/rollback-plist-${COMMAND_ID}.plist"
+rollback_tmp="${AGENT_PATH}.rollback-${COMMAND_ID}"
+rollback_plist_tmp="${PLIST_PATH}.rollback-${COMMAND_ID}"
+rollback_version=""
+had_plist="no"
+retain_rollback="no"
+cleanup_artifacts() {
+  rm -f "$tmp_path" "$pkg_path" "$rollback_tmp" "$rollback_plist_tmp" 2>/dev/null || true
+  if [[ "$retain_rollback" != "yes" ]]; then
+    rm -f "$rollback_path" "$rollback_plist_path" 2>/dev/null || true
+  fi
+}
+trap cleanup_artifacts EXIT
 
-# Download with curl (bundled on every macOS).
+# The Rust parent holds the host-wide flock before this worker is spawned.
+# Sweep only stale command-specific artifacts while that lock is held.
+find "$UPDATE_DIR" -maxdepth 1 -type f \( -name 'eguard-agent-*.pkg' -o -name '*.download' -o -name 'rollback-agent-*.bin' -o -name 'rollback-plist-*.plist' \) -mmin +1440 -delete 2>/dev/null || true
+
+normalize_version() {
+  local value="$1"
+  value="${value#v}"
+  value="${value#V}"
+  printf '%s' "$value"
+}
+
+binary_version() {
+  local path="$1" output
+  output="$(env -u EGUARD_AGENT_VERSION "$path" --version 2>&1)" || return 1
+  printf '%s' "${output%%$'\n'*}"
+}
+
+service_pid() {
+  /bin/launchctl print system/com.eguard.agent 2>/dev/null \
+    | /usr/bin/awk '/^[[:space:]]*pid = [0-9]+/ { print $3; exit }'
+}
+
+process_image_identity() {
+  local pid="$1" fields device inode name
+  fields="$(/usr/sbin/lsof -a -p "$pid" -d txt -FnDi 2>/dev/null)" || return 1
+  device="$(printf '%s\n' "$fields" | /usr/bin/awk '/^D/ { print substr($0, 2); exit }')"
+  device="$(printf '%d' "$device" 2>/dev/null)" || return 1
+  inode="$(printf '%s\n' "$fields" | /usr/bin/awk '/^i/ { print substr($0, 2); exit }')"
+  name="$(printf '%s\n' "$fields" | /usr/bin/awk '/^n/ { print substr($0, 2); exit }')"
+  [[ -n "$device" && -n "$inode" && -n "$name" ]] || return 1
+  printf '%s:%s:%s' "$device" "$inode" "$name"
+}
+
+installed_image_identity() {
+  local identity
+  identity="$(/usr/bin/stat -f '%d:%i' "$AGENT_PATH" 2>/dev/null)" || return 1
+  printf '%s:%s' "$identity" "$AGENT_PATH"
+}
+
+verify_live_version() {
+  local expected pid1 pid2 image1 image2 installed1 installed2 reported attempt
+  expected="$(normalize_version "$1")"
+  for attempt in {1..30}; do
+    pid1="$(service_pid)"
+    if [[ -n "$pid1" ]]; then
+      image1="$(process_image_identity "$pid1")" || image1=""
+      installed1="$(installed_image_identity)" || installed1=""
+      if [[ -n "$image1" && "$image1" == "$installed1" ]]; then
+        reported="$(binary_version "$AGENT_PATH")" || reported=""
+        sleep 1
+        pid2="$(service_pid)"
+        image2="$(process_image_identity "$pid2")" || image2=""
+        installed2="$(installed_image_identity)" || installed2=""
+        if [[ "$pid1" == "$pid2" && "$image1" == "$image2" && "$image2" == "$installed2" && "$(normalize_version "$reported")" == "$expected" ]]; then
+          printf '%s:%s' "$pid1" "$reported"
+          return 0
+        fi
+      fi
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+load_and_verify_installed() {
+  local installed_version
+  /bin/launchctl load "$PLIST_PATH" 2>/dev/null || true
+  installed_version="$(binary_version "$AGENT_PATH")" || return 1
+  verify_live_version "$installed_version"
+}
+
+rollback_and_fail() {
+  local reason="$1" restored_tmp restored_plist_tmp live plist_restored="yes"
+  if [[ -s "$rollback_path" && ( "$had_plist" != "yes" || -s "$rollback_plist_path" ) ]]; then
+    restored_tmp="${rollback_tmp}.tmp"
+    restored_plist_tmp="${rollback_plist_tmp}.tmp"
+    if cp -f "$rollback_path" "$restored_tmp" \
+      && cmp -s "$rollback_path" "$restored_tmp" \
+      && chmod 0755 "$restored_tmp"; then
+      if [[ "$had_plist" != "yes" ]] \
+        || { cp -f "$rollback_plist_path" "$restored_plist_tmp" \
+          && cmp -s "$rollback_plist_path" "$restored_plist_tmp" \
+          && chmod 0644 "$restored_plist_tmp"; }; then
+        /bin/launchctl unload "$PLIST_PATH" 2>/dev/null || true
+        if mv -f "$restored_tmp" "$rollback_tmp" \
+          && mv -f "$rollback_tmp" "$AGENT_PATH" \
+          && cmp -s "$rollback_path" "$AGENT_PATH"; then
+          if [[ "$had_plist" == "yes" ]]; then
+            mv -f "$restored_plist_tmp" "$rollback_plist_tmp" \
+              && mv -f "$rollback_plist_tmp" "$PLIST_PATH" \
+              && cmp -s "$rollback_plist_path" "$PLIST_PATH" \
+              || { plist_restored="no"; retain_rollback="yes"; }
+          fi
+          if live="$(load_and_verify_installed)"; then
+            if [[ "$plist_restored" == "yes" ]]; then
+              rm -f "$rollback_path" "$rollback_plist_path"
+              fail_outcome "$reason; rolled back the previous binary and plist and verified it running ($live)"
+            fi
+            fail_outcome "$reason; plist restoration comparison failed, but the restored agent was verified running ($live); rollback artifacts retained in $UPDATE_DIR"
+          fi
+          retain_rollback="yes"
+          fail_outcome "$reason; rollback restoration failed and the agent was not verified running; manual intervention required"
+        fi
+      fi
+    fi
+    rm -f "$restored_tmp" "$restored_plist_tmp"
+    retain_rollback="yes"
+    if live="$(load_and_verify_installed)"; then
+      fail_outcome "$reason; rollback failed and prior artifacts were retained in $UPDATE_DIR, but the installed agent was verified running ($live); manual intervention required"
+    fi
+    fail_outcome "$reason; rollback failed, prior artifacts were retained in $UPDATE_DIR, and the agent was not verified running; manual intervention required"
+  fi
+  if live="$(load_and_verify_installed)"; then
+    fail_outcome "$reason; complete prior rollback artifacts were unavailable, but the installed agent was verified running ($live); manual intervention required"
+  fi
+  fail_outcome "$reason; complete prior rollback artifacts were unavailable and the agent was not verified running; manual intervention required"
+}
+
+if [[ -x "$AGENT_PATH" ]]; then
+  rollback_version="$(binary_version "$AGENT_PATH")" \
+    || fail_outcome "cannot read the currently installed agent version before update"
+  cp -f "$AGENT_PATH" "$rollback_path" \
+    || fail_outcome "cannot create rollback binary at $rollback_path"
+  chmod 0600 "$rollback_path"
+  if [[ -f "$PLIST_PATH" ]]; then
+    had_plist="yes"
+    cp -f "$PLIST_PATH" "$rollback_plist_path" \
+      || fail_outcome "cannot create rollback plist at $rollback_plist_path"
+    chmod 0600 "$rollback_plist_path"
+  fi
+fi
+
 /usr/bin/curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 10 --max-time 900 \
   "$PACKAGE_URL" -o "$tmp_path" \
   || fail_outcome "package download failed from $PACKAGE_URL"
 
-# Verify sha256 using shasum (macOS does not ship sha256sum by default).
 actual="$(/usr/bin/shasum -a 256 "$tmp_path" | /usr/bin/awk '{print $1}')"
 if [[ "$actual" != "$CHECKSUM" ]]; then
   fail_outcome "package checksum verification failed for $PACKAGE_URL (expected $CHECKSUM, got $actual)"
 fi
 mv -f "$tmp_path" "$pkg_path"
 
-# installer(8) replaces the existing /usr/local/bin/eguard-agent and assets.
-# It does NOT restart the LaunchDaemon, so we do that ourselves below.
 if ! installer_output="$(/usr/sbin/installer -pkg "$pkg_path" -target / 2>&1)"; then
-  fail_outcome "installer failed for $pkg_path: $installer_output"
+  rollback_and_fail "installer failed for $pkg_path: $installer_output"
 fi
 
-# Reload the LaunchDaemon to pick up the new binary. The worker is detached
-# via setsid(2) by the Rust spawn site, so unloading the running agent does
-# not kill this process.
 /bin/launchctl unload "$PLIST_PATH" 2>/dev/null || true
 sleep 1
 if ! /bin/launchctl load "$PLIST_PATH" 2>/dev/null; then
-  fail_outcome "launchctl load failed for $PLIST_PATH"
+  rollback_and_fail "launchctl load failed for $PLIST_PATH"
+fi
+if ! live="$(verify_live_version "$VERSION")"; then
+  rollback_and_fail "running agent service did not reach target version $VERSION after install"
 fi
 
-write_outcome "completed" "agent update applied (version=$VERSION, format=pkg)"
+rm -f "$rollback_path" "$rollback_plist_path"
+write_outcome "completed" "agent update applied and verified running (version=$VERSION, format=pkg, live=$live)"
 "#;
 
     // Write-then-rename onto a UNIQUE per-invocation temp: a later update command
@@ -253,6 +434,210 @@ mod tests {
             }"#,
         );
         normalize_update_request(payload, "127.0.0.1:0").expect("valid update payload")
+    }
+
+    #[test]
+    fn update_lock_rejects_overlap_and_releases() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let first = acquire_update_lock(dir.path()).expect("first lock");
+        let err = acquire_update_lock(dir.path()).expect_err("overlap must be rejected");
+        assert_eq!(
+            err,
+            "another agent update is already in progress on this host; refusing to run concurrently"
+        );
+        drop(first);
+        acquire_update_lock(dir.path()).expect("lock released after holder drop");
+    }
+
+    #[test]
+    fn generated_worker_rolls_back_binary_and_plist_and_uses_unique_packages() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script_path = dir.path().join("worker.sh");
+        write_macos_update_worker_script(&script_path).expect("write worker");
+        assert!(
+            Command::new("/bin/bash")
+                .arg("-n")
+                .arg(&script_path)
+                .status()
+                .expect("bash -n")
+                .success(),
+            "generated worker must be valid bash"
+        );
+
+        let old_source = dir.path().join("old.c");
+        let new_source = dir.path().join("new.c");
+        let old_binary = dir.path().join("old-agent");
+        let new_binary = dir.path().join("new-agent");
+        let agent_path = dir.path().join("eguard-agent");
+        let plist_path = dir.path().join("com.eguard.agent.plist");
+        let old_plist = b"old plist\n";
+        fs::write(
+            &old_source,
+            "#include <stdio.h>\n#include <unistd.h>\nint main(int c,char**v){if(c>1){puts(\"1.0\");return 0;}for(;;)sleep(60);}\n",
+        )
+        .expect("old source");
+        fs::write(
+            &new_source,
+            "#include <stdio.h>\n#include <unistd.h>\nint main(int c,char**v){if(c>1){puts(\"2.0\");return 0;}for(;;)sleep(60);}\n",
+        )
+        .expect("new source");
+        for (source, output) in [(&old_source, &old_binary), (&new_source, &new_binary)] {
+            assert!(Command::new("cc")
+                .args(["-o"])
+                .arg(output)
+                .arg(source)
+                .status()
+                .expect("compile mock agent")
+                .success());
+        }
+        fs::copy(&old_binary, &agent_path).expect("install old agent");
+        fs::write(&plist_path, old_plist).expect("install old plist");
+
+        let launchctl = dir.path().join("launchctl");
+        let installer = dir.path().join("installer");
+        let curl = dir.path().join("curl");
+        let cmp = dir.path().join("cmp");
+        fs::write(
+            &launchctl,
+            r#"#!/bin/bash
+printf '%s\n' "$1" >> "$MOCK_LAUNCH_LOG"
+case "$1" in
+  print) [[ -s "$MOCK_PID" ]] && printf '    pid = %s\n' "$(cat "$MOCK_PID")" ;;
+  unload) if [[ -s "$MOCK_PID" ]]; then kill "$(cat "$MOCK_PID")" 2>/dev/null || true; rm -f "$MOCK_PID"; fi ;;
+  load) if [[ -s "$MOCK_PID" ]] && kill -0 "$(cat "$MOCK_PID")" 2>/dev/null; then exit 1; fi; nohup "$MOCK_AGENT" >/dev/null 2>&1 & echo $! > "$MOCK_PID"; /bin/sleep 0.1 ;;
+esac
+"#,
+        )
+        .expect("launchctl mock");
+        fs::write(
+            &installer,
+            "#!/bin/bash\ncp \"$MOCK_NEW_AGENT\" \"${MOCK_AGENT}.new\"\nmv -f \"${MOCK_AGENT}.new\" \"$MOCK_AGENT\"\nprintf 'new plist\\n' > \"$MOCK_PLIST\"\n",
+        )
+        .expect("installer mock");
+        fs::write(
+            &curl,
+            "#!/bin/bash\nout=\"${@: -1}\"\nprintf '%s\\n' \"$out\" >> \"$MOCK_CURL_LOG\"\n: > \"$out\"\n",
+        )
+        .expect("curl mock");
+        fs::write(
+            &cmp,
+            "#!/bin/bash\nif [[ \"$MOCK_CMP_FAILURE\" == final && \"$1\" == *rollback-plist-* && \"$2\" == \"$MOCK_PLIST\" ]]; then exit 1; fi\nif [[ \"$MOCK_CMP_FAILURE\" == staging && \"$1\" == *rollback-plist-* && \"$2\" == *.tmp ]]; then exit 1; fi\nexec /usr/bin/cmp \"$@\"\n",
+        )
+        .expect("cmp mock");
+        for mock in [&launchctl, &installer, &curl, &cmp] {
+            let mut permissions = fs::metadata(mock).expect("mock metadata").permissions();
+            permissions.set_mode(0o700);
+            fs::set_permissions(mock, permissions).expect("chmod mock");
+        }
+
+        let script = fs::read_to_string(&script_path)
+            .expect("read worker")
+            .replace("/usr/local/bin/eguard-agent", agent_path.to_str().unwrap())
+            .replace(
+                "/Library/LaunchDaemons/com.eguard.agent.plist",
+                plist_path.to_str().unwrap(),
+            )
+            .replace("/bin/launchctl", launchctl.to_str().unwrap())
+            .replace("/usr/sbin/installer", installer.to_str().unwrap())
+            .replace("/usr/bin/curl", curl.to_str().unwrap())
+            .replace("for attempt in {1..30}", "for attempt in {1..2}")
+            .replace("sleep 1", "true");
+        fs::write(&script_path, script).expect("write test worker");
+
+        let curl_log = dir.path().join("curl.log");
+        let launch_log = dir.path().join("launch.log");
+        let pid_file = dir.path().join("service.pid");
+        let path = format!(
+            "{}:{}",
+            dir.path().display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        for (command_id, cmp_failure) in
+            [("final-compare", "final"), ("staging-compare", "staging")]
+        {
+            let status = Command::new("/bin/bash")
+                .arg(&script_path)
+                .args(["--command-id", command_id])
+                .arg("--update-dir")
+                .arg(dir.path())
+                .args([
+                    "--version",
+                    "9.9",
+                    "--checksum",
+                    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                    "--url",
+                    "https://example.invalid/agent.pkg",
+                ])
+                .env("MOCK_PID", &pid_file)
+                .env("MOCK_AGENT", &agent_path)
+                .env("MOCK_NEW_AGENT", &new_binary)
+                .env("MOCK_PLIST", &plist_path)
+                .env("MOCK_CURL_LOG", &curl_log)
+                .env("MOCK_LAUNCH_LOG", &launch_log)
+                .env("MOCK_CMP_FAILURE", cmp_failure)
+                .env("PATH", &path)
+                .status()
+                .expect("run generated worker");
+            assert!(!status.success(), "version mismatch must fail honestly");
+            if cmp_failure == "final" {
+                assert_eq!(
+                    fs::read(&agent_path).expect("restored binary"),
+                    fs::read(&old_binary).expect("old binary")
+                );
+                assert_eq!(fs::read(&plist_path).expect("restored plist"), old_plist);
+            } else {
+                assert_eq!(
+                    fs::read(&agent_path).expect("installed binary"),
+                    fs::read(&new_binary).expect("new binary")
+                );
+                assert_eq!(
+                    fs::read(&plist_path).expect("installed plist"),
+                    b"new plist\n"
+                );
+            }
+            let pid: u32 = fs::read_to_string(&pid_file)
+                .expect("restored service pid")
+                .trim()
+                .parse()
+                .expect("numeric restored service pid");
+            assert!(
+                unsafe { libc::kill(pid as i32, 0) } == 0,
+                "restored service must still be running"
+            );
+            let outcome =
+                fs::read_to_string(dir.path().join(format!("update-outcome-{command_id}.txt")))
+                    .expect("rollback outcome");
+            let expected = if cmp_failure == "final" {
+                "plist restoration comparison failed, but the restored agent was verified running"
+            } else {
+                "rollback failed and prior artifacts were retained in"
+            };
+            assert!(
+                outcome.contains(expected) && outcome.contains("agent was verified running"),
+                "rollback failure must report verified availability: {outcome}"
+            );
+        }
+        assert_eq!(
+            fs::read_to_string(&launch_log)
+                .expect("launchctl log")
+                .lines()
+                .filter(|action| *action == "load")
+                .count(),
+            4,
+            "each failed update must attempt the new load and the rollback load"
+        );
+        let packages: Vec<_> = fs::read_to_string(&curl_log)
+            .expect("curl destinations")
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(packages.len(), 2);
+        assert_ne!(packages[0], packages[1]);
+        let _ = Command::new(&launchctl)
+            .arg("unload")
+            .env("MOCK_PID", &pid_file)
+            .env("MOCK_AGENT", &agent_path)
+            .status();
     }
 
     #[test]
