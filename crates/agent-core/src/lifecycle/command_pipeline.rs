@@ -89,7 +89,11 @@ impl AgentRuntime {
         }
     }
 
-    pub(super) async fn handle_command(&mut self, command: CommandEnvelope, now_unix: i64) {
+    pub(super) async fn handle_command(
+        &mut self,
+        command: CommandEnvelope,
+        now_unix: i64,
+    ) -> response::CommandExecution {
         let command_id = command.command_id.clone();
         let parsed = parse_server_command(&command.command_type);
         let isolated_before = self.host_control.isolated;
@@ -118,7 +122,15 @@ impl AgentRuntime {
             }
             ServerCommand::KillProcess => self.apply_kill_process(&command.payload_json, &mut exec),
             ServerCommand::Update => {
-                self.apply_agent_update(&command.command_id, &command.payload_json, &mut exec)
+                if self.allow_destructive_command(
+                    DestructiveKind::RestartOrUpdate,
+                    4,
+                    now_unix,
+                    "update_skipped:circuit_open",
+                    &mut exec,
+                ) {
+                    self.apply_agent_update(&command.command_id, &command.payload_json, &mut exec)
+                }
             }
             ServerCommand::LockDevice => self.apply_device_lock(&command.payload_json, &mut exec),
             ServerCommand::WipeDevice => {
@@ -136,7 +148,15 @@ impl AgentRuntime {
                 self.apply_device_retire(&command.payload_json, &mut exec)
             }
             ServerCommand::RestartDevice => {
-                self.apply_device_restart(&command.payload_json, &mut exec)
+                if self.allow_destructive_command(
+                    DestructiveKind::RestartOrUpdate,
+                    4,
+                    now_unix,
+                    "restart_device_skipped:circuit_open",
+                    &mut exec,
+                ) {
+                    self.apply_device_restart(&command.payload_json, &mut exec)
+                }
             }
             ServerCommand::LostMode => self.apply_lost_mode(&command.payload_json, &mut exec),
             ServerCommand::LocateDevice => {
@@ -184,6 +204,7 @@ impl AgentRuntime {
             .await;
 
         self.track_completed_command(&command_id);
+        exec
     }
 
     pub(super) fn apply_emergency_rule_from_payload(&self, payload_json: &str) -> Result<String> {

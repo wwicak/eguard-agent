@@ -301,6 +301,152 @@ fn command_pipeline_circuit_breaker_denies_wipe_and_remove_app() {
 }
 
 #[test]
+fn command_pipeline_circuit_breaker_denies_update_and_restart_device() {
+    let mut runtime = kill_command_runtime(1);
+    let now = crate::lifecycle::now_unix().max(0) as u64;
+    runtime.breaker.check_and_charge(
+        crate::lifecycle::circuit_breaker::DestructiveKind::Kill,
+        crate::lifecycle::circuit_breaker::BREAKER_MAX_BLAST_UNITS,
+        now,
+    );
+    runtime.breaker.check_and_charge(
+        crate::lifecycle::circuit_breaker::DestructiveKind::Kill,
+        1,
+        now,
+    );
+
+    for expected in [
+        "update_skipped:circuit_open",
+        "restart_device_skipped:circuit_open",
+    ] {
+        let mut exec = fresh_kill_exec();
+        assert!(!runtime.allow_destructive_command(
+            crate::lifecycle::circuit_breaker::DestructiveKind::RestartOrUpdate,
+            4,
+            now as i64,
+            expected,
+            &mut exec,
+        ));
+        assert_eq!(exec.outcome, response::CommandOutcome::Ignored);
+        assert_eq!(exec.status, "failed");
+        assert_eq!(exec.detail, expected);
+    }
+}
+
+#[tokio::test]
+async fn command_pipeline_dispatch_denies_update_and_restart_on_tripped_breaker() {
+    let mut runtime = kill_command_runtime(1);
+    runtime.client.set_online(false);
+    let path = std::env::temp_dir().join(format!(
+        "eguard-command-dispatch-breaker-{}-{}.json",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    runtime.breaker = crate::lifecycle::circuit_breaker::CircuitBreaker::load_from_path(
+        path.clone(),
+        crate::lifecycle::circuit_breaker::BREAKER_MAX_BLAST_UNITS,
+    );
+    let now = crate::lifecycle::now_unix().max(0) as u64;
+    assert!(matches!(
+        runtime.breaker.check_and_charge(
+            crate::lifecycle::circuit_breaker::DestructiveKind::Kill,
+            crate::lifecycle::circuit_breaker::BREAKER_MAX_BLAST_UNITS,
+            now,
+        ),
+        crate::lifecycle::circuit_breaker::BreakerDecision::Allow
+    ));
+    assert!(matches!(
+        runtime.breaker.check_and_charge(
+            crate::lifecycle::circuit_breaker::DestructiveKind::Kill,
+            1,
+            now,
+        ),
+        crate::lifecycle::circuit_breaker::BreakerDecision::Deny { .. }
+    ));
+
+    for (command_type, expected) in [
+        ("update", "update_skipped:circuit_open"),
+        ("restart_device", "restart_device_skipped:circuit_open"),
+    ] {
+        let exec = runtime
+            .handle_command(
+                grpc_client::CommandEnvelope {
+                    command_id: format!("cmd-{command_type}"),
+                    command_type: command_type.to_string(),
+                    payload_json: "{}".to_string(),
+                },
+                now as i64,
+            )
+            .await;
+        assert_eq!(exec.outcome, response::CommandOutcome::Ignored);
+        assert_eq!(exec.status, "failed");
+        assert_eq!(exec.detail, expected);
+
+        let persisted: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&path).expect("read persisted breaker accounting"),
+        )
+        .expect("parse persisted breaker accounting");
+        assert_eq!(persisted["tripped"], true);
+        assert_eq!(
+            persisted["blast_units"],
+            crate::lifecycle::circuit_breaker::BREAKER_MAX_BLAST_UNITS
+        );
+        assert_eq!(persisted["alerted"], true);
+    }
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn command_pipeline_circuit_breaker_allows_single_update_on_healthy_breaker() {
+    let mut runtime = kill_command_runtime(1);
+    runtime.client.set_online(false);
+    let path = std::env::temp_dir().join(format!(
+        "eguard-command-healthy-breaker-{}-{}.json",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    runtime.breaker = crate::lifecycle::circuit_breaker::CircuitBreaker::load_from_path(
+        path.clone(),
+        crate::lifecycle::circuit_breaker::BREAKER_MAX_BLAST_UNITS,
+    );
+    let now = crate::lifecycle::now_unix().max(0) as i64;
+
+    let exec = runtime
+        .handle_command(
+            grpc_client::CommandEnvelope {
+                command_id: "cmd-healthy-update".to_string(),
+                command_type: "update".to_string(),
+                payload_json: "{}".to_string(),
+            },
+            now,
+        )
+        .await;
+
+    assert_eq!(exec.outcome, response::CommandOutcome::Ignored);
+    assert_eq!(exec.status, "failed");
+    assert_eq!(
+        exec.detail,
+        "invalid update payload: version is required and must be a safe token"
+    );
+    assert_ne!(exec.detail, "update_skipped:circuit_open");
+
+    let persisted: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).expect("read persisted breaker accounting"))
+            .expect("parse persisted breaker accounting");
+    assert_eq!(persisted["tripped"], false);
+    assert_eq!(persisted["blast_units"], 4);
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn command_kill_rejects_oversized_target_vector() {
     let mut runtime = kill_command_runtime(1000);
     // 65 targets exceeds MAX_KILL_COMMAND_TARGETS (64): reject the whole command.

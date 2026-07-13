@@ -16,7 +16,6 @@ pub(super) enum DestructiveKind {
     IsolationApply,
     DeviceWipe,
     AppRemove,
-    #[allow(dead_code)]
     RestartOrUpdate,
     ProtectedGuardViolation,
 }
@@ -232,8 +231,10 @@ impl CircuitBreaker {
             error!(
                 target: "eguard::circuit_breaker",
                 destructive_kind = kind.label(),
+                trip_reason = %self.state.trip_reason,
                 blast_units = self.state.blast_units,
-                reason = %self.state.trip_reason,
+                window = BREAKER_WINDOW_SECS,
+                ceiling = self.max_blast_units,
                 "global destructive-action circuit breaker tripped; entering detect/report-only mode"
             );
             self.state.alerted = true;
@@ -309,7 +310,41 @@ fn breaker_state_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
+    use tracing::field::{Field, Visit};
+    use tracing::subscriber::Interest;
+    use tracing_subscriber::layer::{Context, SubscriberExt};
+    use tracing_subscriber::{Layer, Registry};
+
+    #[derive(Clone, Default)]
+    struct CapturedEvents(Arc<Mutex<Vec<BTreeMap<String, String>>>>);
+
+    struct FieldVisitor(BTreeMap<String, String>);
+
+    impl Visit for FieldVisitor {
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            self.0
+                .insert(field.name().to_string(), format!("{value:?}"));
+        }
+
+        fn record_u64(&mut self, field: &Field, value: u64) {
+            self.0.insert(field.name().to_string(), value.to_string());
+        }
+    }
+
+    impl Layer<Registry> for CapturedEvents {
+        fn register_callsite(&self, _metadata: &'static tracing::Metadata<'static>) -> Interest {
+            Interest::always()
+        }
+
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, Registry>) {
+            let mut visitor = FieldVisitor(BTreeMap::new());
+            event.record(&mut visitor);
+            self.0.lock().expect("capture lock").push(visitor.0);
+        }
+    }
 
     fn temp_path(label: &str) -> PathBuf {
         std::env::temp_dir()
@@ -430,6 +465,59 @@ mod tests {
         breaker.reset();
         assert!(!breaker.state.tripped);
         assert_eq!(breaker.state.blast_units, 0);
+    }
+
+    #[test]
+    fn circuit_breaker_trip_audit_fires_once_across_persisted_reloads() {
+        const AUDIT_MESSAGE: &str =
+            "global destructive-action circuit breaker tripped; entering detect/report-only mode";
+        let path = temp_path("alert-one-shot");
+        let captured = CapturedEvents::default();
+        let subscriber = tracing_subscriber::registry().with(captured.clone());
+        tracing::subscriber::set_global_default(subscriber).expect("install tracing capture");
+        let is_test_audit = |fields: &&BTreeMap<String, String>| {
+            fields
+                .get("message")
+                .is_some_and(|message| message.contains(AUDIT_MESSAGE))
+                && fields
+                    .get("destructive_kind")
+                    .is_some_and(|kind| kind.contains("restart_or_update"))
+        };
+
+        let mut breaker = CircuitBreaker::load_from_path(path.clone(), 128);
+        breaker.check_and_charge(DestructiveKind::RestartOrUpdate, 128, 7_000);
+        breaker.check_and_charge(DestructiveKind::RestartOrUpdate, 4, 7_001);
+        assert!(breaker.state.tripped);
+        assert!(breaker.state.alerted);
+
+        let events = captured.0.lock().expect("capture lock");
+        let audits: Vec<_> = events.iter().filter(is_test_audit).collect();
+        assert_eq!(audits.len(), 1);
+        let audit = audits[0];
+        assert!(audit.contains_key("trip_reason"), "{audit:?}");
+        assert_eq!(audit.get("blast_units").map(String::as_str), Some("128"));
+        assert_eq!(audit.get("window").map(String::as_str), Some("60"));
+        assert_eq!(audit.get("ceiling").map(String::as_str), Some("128"));
+        drop(events);
+
+        let mut reloaded = CircuitBreaker::load_from_path(path.clone(), 128);
+        assert!(reloaded.state.alerted);
+        for _ in 0..5 {
+            assert!(matches!(
+                reloaded.check_and_charge(DestructiveKind::RestartOrUpdate, 1, 7_002),
+                BreakerDecision::Deny { .. }
+            ));
+        }
+
+        let final_audit_count = captured
+            .0
+            .lock()
+            .expect("capture lock")
+            .iter()
+            .filter(is_test_audit)
+            .count();
+        assert_eq!(final_audit_count, 1);
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }
 
     #[test]
