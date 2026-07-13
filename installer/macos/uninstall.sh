@@ -8,6 +8,7 @@ BASE_DIR="/Library/Application Support/eGuard"
 LAUNCHD_PLIST="/Library/LaunchDaemons/com.eguard.agent.plist"
 BINARY_PATH="/usr/local/bin/eguard-agent"
 LAUNCHD_LABEL="system/com.eguard.agent"
+AGENT_LOG="/var/log/eguard-agent.log"
 STDOUT_LOG="/var/log/eguard-agent.out.log"
 STDERR_LOG="/var/log/eguard-agent.err.log"
 PKG_RECEIPTS=(
@@ -51,6 +52,20 @@ remove_path_if_exists() {
     fi
 }
 
+remove_agent_log_archives() {
+    local archive
+    shopt -s nullglob
+    for archive in /var/log/eguard-agent-*.log; do
+        if [[ -L "$archive" ]]; then
+            log "WARNING: refusing to remove archive symlink: $archive"
+        elif [[ -f "$archive" ]]; then
+            run_as_root rm -f -- "$archive"
+            log "Removed agent log archive: $archive"
+        fi
+    done
+    shopt -u nullglob
+}
+
 require_cmd launchctl
 require_cmd rm
 require_cmd pkgutil
@@ -80,6 +95,8 @@ log "Removing installed files"
 remove_path_if_exists "$LAUNCHD_PLIST" "LaunchDaemon plist"
 remove_path_if_exists "$BINARY_PATH" "agent binary"
 remove_path_if_exists "$BASE_DIR" "application support directory"
+remove_path_if_exists "$AGENT_LOG" "agent log"
+remove_agent_log_archives
 remove_path_if_exists "$STDOUT_LOG" "stdout log"
 remove_path_if_exists "$STDERR_LOG" "stderr log"
 

@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use serde_json::json;
-use tracing::info;
+use tracing::{debug, info};
 
 use detection::{Confidence, DetectionOutcome, TelemetryEvent};
 use grpc_client::EventEnvelope;
@@ -438,7 +438,7 @@ impl AgentRuntime {
     }
 
     pub(super) fn log_detection_evaluation(&self, evaluation: &TickEvaluation) {
-        info!(
+        debug!(
             action = ?evaluation.action,
             confidence = ?evaluation.confidence,
             mode = ?self.runtime_mode,

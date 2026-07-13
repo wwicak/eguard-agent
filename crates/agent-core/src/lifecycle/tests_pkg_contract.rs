@@ -239,6 +239,36 @@ fn repo_sigma_rules_compile_from_rules_directory() {
 }
 
 #[test]
+fn endpoint_logs_are_bounded_and_event_evaluations_are_diagnostic() {
+    let telemetry = read("crates/agent-core/src/lifecycle/telemetry.rs");
+    let evaluation = telemetry
+        .split("pub(super) fn log_detection_evaluation")
+        .nth(1)
+        .expect("evaluation logger");
+    assert!(evaluation.contains("debug!("));
+    assert!(!evaluation.contains("info!("));
+
+    let main = read("crates/agent-core/src/main.rs");
+    assert_eq!(main.matches("ManagedLogWriter::open").count(), 2);
+
+    for plist_source in [
+        "installer/macos/com.eguard.agent.plist",
+        "installer/macos/scripts/configure-from-env.sh",
+        "crates/platform-macos/src/service/plist.rs",
+    ] {
+        let plist = read(plist_source);
+        assert!(!plist.contains("StandardOutPath"), "{plist_source}");
+        assert!(!plist.contains("StandardErrorPath"), "{plist_source}");
+    }
+
+    let mac_uninstall = read("installer/macos/uninstall.sh");
+    assert!(mac_uninstall.contains("for archive in /var/log/eguard-agent-*.log; do"));
+    assert!(mac_uninstall.contains("if [[ -L \"$archive\" ]]"));
+    assert!(mac_uninstall.contains("remove_path_if_exists \"$AGENT_LOG\""));
+    assert!(!mac_uninstall.contains("newsyslog"));
+}
+
+#[test]
 fn linux_update_packaging_recovers_service_after_upgrade() {
     let service_unit = read("packaging/systemd/eguard-agent.service");
     assert!(
@@ -1518,7 +1548,8 @@ fn repo_windows_csc_rule_matches_shape() {
 fn preremove_restarts_agent_on_failed_removal_but_not_on_success() {
     let _guard = script_lock().lock().unwrap_or_else(|e| e.into_inner());
     let root = workspace_root();
-    let src = std::fs::read_to_string(root.join("packaging/preremove.sh")).expect("read preremove.sh");
+    let src =
+        std::fs::read_to_string(root.join("packaging/preremove.sh")).expect("read preremove.sh");
 
     // Run preremove.sh (arg "remove") in a sandbox with a mocked systemctl/sleep/chattr,
     // redirecting the absolute /run path into the sandbox. Returns (success, mock log).
@@ -1571,7 +1602,10 @@ esac\n",
     // Normal removal: agent reports stopped (MainPID=0) -> success, STOP+DISABLE, no START.
     let (ok, log) = run_preremove(&src, "0", 0, 0);
     assert!(ok, "normal removal should succeed: log={log}");
-    assert!(log.contains("stop eguard-agent"), "normal removal must stop the agent: log={log}");
+    assert!(
+        log.contains("stop eguard-agent"),
+        "normal removal must stop the agent: log={log}"
+    );
     assert!(
         !log.contains("start eguard-agent"),
         "normal removal must NOT restart the agent (it stays down for erasure): log={log}"

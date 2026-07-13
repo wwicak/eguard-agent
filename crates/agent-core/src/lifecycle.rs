@@ -44,7 +44,7 @@ pub use response_playbook::PlaybookEngine;
 pub use runtime::AgentRuntime;
 pub(super) use runtime::BackgroundReloadResult;
 #[allow(unused_imports)]
-pub(crate) use storage_hygiene::{prepare_managed_log_file, resolve_logs_dir};
+pub(crate) use storage_hygiene::{resolve_logs_dir, ManagedLogWriter};
 pub use types::RuntimeObservabilitySnapshot;
 
 #[allow(unused_imports)]
