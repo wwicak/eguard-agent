@@ -1,5 +1,11 @@
 use super::*;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+// Shared across every test that mutates process-global %SystemDrive%/%SystemRoot%,
+// so those tests serialize against EACH OTHER (per-fn statics would not) and the
+// env is never observed half-set by a concurrently running sibling.
+static SYSTEM_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 // AC-RSP-117
@@ -421,30 +427,36 @@ fn default_macos_protected_processes_match_baseline() {
 #[test]
 #[cfg(target_os = "windows")]
 fn default_windows_protected_paths_match_baseline() {
+    let _guard = SYSTEM_ENV_LOCK.lock().expect("lock env");
+    let system_root = windows_directory().unwrap_or_else(|| r"C:\Windows".to_string());
+    let system_drive = windows_drive_from_root(&system_root).unwrap_or_else(|| "C:".to_string());
     let protected = ProtectedList::default_windows();
 
     for path in [
-        r"C:\Windows\explorer.exe",
-        r"C:\Windows\System32\kernel32.dll",
-        r"C:\Windows\System32\config\SAM",
-        r"C:\Windows\SysWOW64\ntdll.dll",
-        r"C:\Program Files\Common Files\system.dll",
-        r"C:\Program Files (x86)\Common Files\system.dll",
-        r"C:\ProgramData\Microsoft\Crypto\RSA\MachineKeys\key",
-        r"C:\ProgramData\eGuard\agent.conf",
-        r"C:\Boot\BCD",
+        format!(r"{system_root}\explorer.exe"),
+        format!(r"{system_root}\System32\kernel32.dll"),
+        format!(r"{system_root}\System32\config\SAM"),
+        format!(r"{system_root}\SysWOW64\ntdll.dll"),
+        format!(r"{system_drive}\Program Files\Common Files\system.dll"),
+        format!(r"{system_drive}\Program Files (x86)\Common Files\system.dll"),
+        format!(r"{system_drive}\ProgramData\Microsoft\Crypto\RSA\MachineKeys\key"),
+        format!(r"{system_drive}\ProgramData\eGuard\agent.conf"),
+        format!(r"{system_drive}\Boot\BCD"),
     ] {
         assert!(
-            protected.is_protected_path(Path::new(path)),
+            protected.is_protected_path(Path::new(&path)),
             "{path} should be protected"
         );
     }
-    assert!(!protected.is_protected_path(Path::new(r"C:\Users\Public\malware.exe")));
+    assert!(!protected.is_protected_path(Path::new(&format!(
+        r"{system_drive}\Users\Public\malware.exe"
+    ))));
 }
 
 #[test]
 #[cfg(target_os = "windows")]
 fn windows_protected_path_matching_is_case_insensitive_and_deverbatimized() {
+    let _guard = SYSTEM_ENV_LOCK.lock().expect("lock env");
     let protected = ProtectedList::default_windows();
 
     assert!(protected.is_protected_path(Path::new(r"\\?\c:\windows\system32\kernel32.dll")));
@@ -481,4 +493,139 @@ fn default_windows_protected_processes_match_baseline() {
     // Negatives
     assert!(!protected.is_protected_process("notepad"));
     assert!(!protected.is_protected_process("notepad.exe"));
+}
+
+// P1-SELFPROT / FIX A: macOS must protect its own installed binary and
+// LaunchDaemon plist (see installer/macos/scripts/postinstall), without
+// opening up all of /Library/LaunchDaemons.
+#[test]
+fn default_macos_protected_paths_include_agent_binary_and_launch_daemon() {
+    let protected = ProtectedList::default_macos();
+
+    assert!(protected.is_protected_path(Path::new("/usr/local/bin/eguard-agent")));
+    assert!(protected.is_protected_path(Path::new("/Library/LaunchDaemons/com.eguard.agent.plist")));
+    // Only the agent's own plist is protected; other LaunchDaemons must stay
+    // quarantinable so malicious persistence can still be removed.
+    assert!(!protected.is_protected_path(Path::new(
+        "/Library/LaunchDaemons/com.example.malware.plist"
+    )));
+}
+
+#[test]
+fn quarantine_of_macos_agent_binary_and_launch_daemon_is_denied() {
+    let protected = ProtectedList::default_macos();
+
+    let binary = Path::new("/usr/local/bin/eguard-agent");
+    let err = quarantine_file(binary, "deadbeef", &protected).expect_err("binary is protected");
+    assert!(matches!(err, ResponseError::ProtectedPath(p) if p == binary));
+
+    let plist = Path::new("/Library/LaunchDaemons/com.eguard.agent.plist");
+    let err = quarantine_file(plist, "deadbeef", &protected).expect_err("plist is protected");
+    assert!(matches!(err, ResponseError::ProtectedPath(p) if p == plist));
+}
+
+// P1-SELFPROT / FIX B: Windows protected roots follow roots discovered through
+// the Windows API and cover boot/ESP artifacts. These assert directly on the
+// pure construction seam because backslash is not a path separator on Unix.
+#[test]
+fn default_windows_protected_roots_include_boot_and_efi_artifacts_on_system_drive() {
+    let protected = ProtectedList::default_windows_with_roots("C:", r"C:\Windows");
+    for expected in [
+        r"C:\Windows\System32",
+        r"C:\Windows\System32\config",
+        r"C:\Windows\SysWOW64",
+        r"C:\ProgramData\eGuard",
+        r"C:\Windows",
+        r"C:\Program Files",
+        r"C:\Program Files (x86)",
+        r"C:\ProgramData\Microsoft",
+        r"C:\Boot",
+        r"C:\bootmgr",
+        r"C:\BOOTNXT",
+        r"C:\EFI\Microsoft",
+    ] {
+        assert!(
+            protected.protected_paths.contains(&PathBuf::from(expected)),
+            "{expected} should be a protected root"
+        );
+    }
+}
+
+#[test]
+fn default_windows_protected_roots_follow_discovered_system_drive() {
+    let protected = ProtectedList::default_windows_with_roots("D:", r"D:\Windows");
+    for expected in [
+        r"D:\Windows\System32",
+        r"D:\Windows\System32\config",
+        r"D:\Windows\SysWOW64",
+        r"D:\ProgramData\eGuard",
+        r"D:\Windows",
+        r"D:\Program Files",
+        r"D:\Program Files (x86)",
+        r"D:\ProgramData\Microsoft",
+        r"D:\Boot",
+        r"D:\bootmgr",
+        r"D:\BOOTNXT",
+        r"D:\EFI\Microsoft",
+    ] {
+        assert!(
+            protected.protected_paths.contains(&PathBuf::from(expected)),
+            "{expected} should be a protected root when the system drive is D:"
+        );
+    }
+    // Proves the pure constructor is not hard-coded to C:.
+    assert!(!protected
+        .protected_paths
+        .iter()
+        .any(|p| p.to_string_lossy().starts_with("C:")));
+}
+
+#[test]
+fn invalid_discovered_windows_root_fails_closed_without_env_override() {
+    let _guard = SYSTEM_ENV_LOCK.lock().expect("lock env");
+    let _reset = SystemEnvReset::capture();
+    std::env::set_var("SystemDrive", "Z:");
+    std::env::set_var("SystemRoot", r"Z:\Injected");
+
+    let protected = ProtectedList::default_windows_with_roots("Z:", "");
+    assert!(protected
+        .protected_paths
+        .contains(&PathBuf::from(r"C:\Windows")));
+    assert!(protected
+        .protected_paths
+        .contains(&PathBuf::from(r"C:\bootmgr")));
+    assert!(!protected
+        .protected_paths
+        .iter()
+        .any(|p| p.to_string_lossy().starts_with("Z:")));
+}
+
+/// Saves SystemDrive/SystemRoot on construction and restores the original
+/// values (present or absent) on drop, so env-override tests can't leak
+/// state into other tests sharing the process environment.
+struct SystemEnvReset {
+    drive: Option<std::ffi::OsString>,
+    root: Option<std::ffi::OsString>,
+}
+
+impl SystemEnvReset {
+    fn capture() -> Self {
+        Self {
+            drive: std::env::var_os("SystemDrive"),
+            root: std::env::var_os("SystemRoot"),
+        }
+    }
+}
+
+impl Drop for SystemEnvReset {
+    fn drop(&mut self) {
+        match &self.drive {
+            Some(value) => std::env::set_var("SystemDrive", value),
+            None => std::env::remove_var("SystemDrive"),
+        }
+        match &self.root {
+            Some(value) => std::env::set_var("SystemRoot", value),
+            None => std::env::remove_var("SystemRoot"),
+        }
+    }
 }
