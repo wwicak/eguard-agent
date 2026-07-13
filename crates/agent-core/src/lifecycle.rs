@@ -1,6 +1,7 @@
 mod async_workers;
 mod baseline;
 mod bundle_support;
+mod circuit_breaker;
 mod compliance;
 mod compliance_platform;
 mod constants;

@@ -160,6 +160,22 @@ impl ProtectedList {
     }
 
     pub fn default_windows() -> Self {
+        #[cfg(target_os = "windows")]
+        let system_root = windows_directory().unwrap_or_else(|| r"C:\Windows".to_string());
+        #[cfg(target_os = "windows")]
+        let system_drive =
+            windows_drive_from_root(&system_root).unwrap_or_else(|| "C:".to_string());
+
+        #[cfg(not(target_os = "windows"))]
+        let (system_drive, system_root) = ("C:".to_string(), r"C:\Windows".to_string());
+
+        Self::default_windows_with_roots(&system_drive, &system_root)
+    }
+
+    fn default_windows_with_roots(system_drive: &str, system_root: &str) -> Self {
+        let (system_drive, system_root) =
+            valid_windows_roots(system_drive, system_root).unwrap_or(("C:", r"C:\Windows"));
+
         let process_patterns = [
             "^System$",
             "^csrss(\\.exe)?$",
@@ -169,6 +185,13 @@ impl ProtectedList {
             "^lsass(\\.exe)?$",
             "^svchost(\\.exe)?$",
             "^smss(\\.exe)?$",
+            // conhost/logonui are Microsoft-documented built-in critical
+            // processes: terminating either can trigger bugcheck 0xEF
+            // (CRITICAL_PROCESS_DIED). The OS-level IsProcessCritical query in
+            // the Windows kill path is the authoritative guard; these names are
+            // a defense-in-depth backstop for when that query is unavailable.
+            "^conhost(\\.exe)?$",
+            "^logonui(\\.exe)?$",
             "^eguard-agent(\\.exe)?$",
         ]
         .into_iter()
@@ -176,15 +199,21 @@ impl ProtectedList {
         .collect();
 
         let protected_paths = vec![
-            PathBuf::from(r"C:\Windows\System32"),
-            PathBuf::from(r"C:\Windows\System32\config"),
-            PathBuf::from(r"C:\Windows\SysWOW64"),
-            PathBuf::from(r"C:\ProgramData\eGuard"),
-            PathBuf::from(r"C:\Windows"),
-            PathBuf::from(r"C:\Program Files"),
-            PathBuf::from(r"C:\Program Files (x86)"),
-            PathBuf::from(r"C:\ProgramData\Microsoft"),
-            PathBuf::from(r"C:\Boot"),
+            PathBuf::from(format!(r"{system_root}\System32")),
+            PathBuf::from(format!(r"{system_root}\System32\config")),
+            PathBuf::from(format!(r"{system_root}\SysWOW64")),
+            PathBuf::from(format!(r"{system_drive}\ProgramData\eGuard")),
+            PathBuf::from(system_root),
+            PathBuf::from(format!(r"{system_drive}\Program Files")),
+            PathBuf::from(format!(r"{system_drive}\Program Files (x86)")),
+            PathBuf::from(format!(r"{system_drive}\ProgramData\Microsoft")),
+            PathBuf::from(format!(r"{system_drive}\Boot")),
+            // Boot/ESP artifacts (P1-3): quarantining any of these can leave the
+            // machine unbootable, so they must be protected alongside the rest
+            // of the boot volume regardless of which drive letter it is.
+            PathBuf::from(format!(r"{system_drive}\bootmgr")),
+            PathBuf::from(format!(r"{system_drive}\BOOTNXT")),
+            PathBuf::from(format!(r"{system_drive}\EFI\Microsoft")),
         ];
 
         Self {
@@ -224,7 +253,12 @@ impl ProtectedList {
             PathBuf::from("/private/var/db/opendirectory"),
             PathBuf::from("/Library/Keychains"),
             PathBuf::from("/System"),
-            // Do not protect /Library/LaunchDaemons: malicious launch daemons must stay quarantinable.
+            // Do not protect all of /Library/LaunchDaemons: malicious launch
+            // daemons must stay quarantinable. Only the agent's own binary and
+            // its LaunchDaemon plist are protected, matching the paths the
+            // installer writes (installer/macos/scripts/postinstall).
+            PathBuf::from("/usr/local/bin/eguard-agent"),
+            PathBuf::from("/Library/LaunchDaemons/com.eguard.agent.plist"),
             PathBuf::from("/Library/Application Support/eGuard"),
         ];
 
@@ -250,6 +284,49 @@ impl ProtectedList {
                     .as_ref()
                     .is_some_and(|variant| path_starts_with(variant, &protected))
         })
+    }
+}
+
+fn valid_windows_roots<'a>(
+    system_drive: &'a str,
+    system_root: &'a str,
+) -> Option<(&'a str, &'a str)> {
+    let drive = system_drive.as_bytes();
+    let root = system_root.as_bytes();
+    (drive.len() == 2
+        && drive[0].is_ascii_alphabetic()
+        && drive[1] == b':'
+        && root.len() > 3
+        && root[0].eq_ignore_ascii_case(&drive[0])
+        && root[1] == b':'
+        && matches!(root[2], b'\\' | b'/'))
+    .then_some((system_drive, system_root))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_drive_from_root(system_root: &str) -> Option<String> {
+    let root = system_root.as_bytes();
+    (root.len() > 3
+        && root[0].is_ascii_alphabetic()
+        && root[1] == b':'
+        && matches!(root[2], b'\\' | b'/'))
+    .then(|| system_root[..2].to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn windows_directory() -> Option<String> {
+    use windows::Win32::System::SystemInformation::GetSystemWindowsDirectoryW;
+
+    let mut buffer = vec![0u16; 260];
+    loop {
+        let len = unsafe { GetSystemWindowsDirectoryW(Some(&mut buffer)) } as usize;
+        if len == 0 {
+            return None;
+        }
+        if len < buffer.len() {
+            return String::from_utf16(&buffer[..len]).ok();
+        }
+        buffer.resize(len + 1, 0);
     }
 }
 
@@ -361,6 +438,13 @@ fn looks_like_regex(raw: &str) -> bool {
     })
 }
 
+/// Hard compiled ceiling on the per-minute rate of any response limiter (kills
+/// or quarantines). This is the single, authoritative upper bound: because it
+/// is enforced inside the limiter constructor/setter, NO configuration source
+/// — file, environment, or remote policy — can raise the effective rate above
+/// it, only lower it. Bounds the blast radius of a storm regardless of config.
+pub const MAX_RESPONSE_RATE_PER_MINUTE: usize = 120;
+
 #[derive(Debug)]
 pub struct KillRateLimiter {
     max_kills_per_minute: usize,
@@ -370,13 +454,13 @@ pub struct KillRateLimiter {
 impl KillRateLimiter {
     pub fn new(max_kills_per_minute: usize) -> Self {
         Self {
-            max_kills_per_minute,
+            max_kills_per_minute: max_kills_per_minute.min(MAX_RESPONSE_RATE_PER_MINUTE),
             kill_timestamps: VecDeque::new(),
         }
     }
 
     pub fn set_max_per_minute(&mut self, max_per_minute: usize) {
-        self.max_kills_per_minute = max_per_minute;
+        self.max_kills_per_minute = max_per_minute.min(MAX_RESPONSE_RATE_PER_MINUTE);
     }
 
     pub fn allow(&mut self, now: Instant) -> bool {

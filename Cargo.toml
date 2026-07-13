@@ -67,6 +67,7 @@ features = [
   "Win32_System_Wmi",
   "Win32_Storage_FileSystem",
   "Win32_System_ProcessStatus",
+  "Win32_System_SystemInformation",
   "Win32_System_Time",
   "Wdk_System_Threading",
 ]

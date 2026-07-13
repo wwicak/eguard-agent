@@ -9,23 +9,48 @@ if [ -f "$legacy_unit" ] && [ ! -L "$legacy_unit" ]; then
     fi
 fi
 
-# Ensure nf_tables kernel module loads at boot (needed for nftables-based
-# network isolation on Fedora/RHEL 9+ where iptables-legacy may be blocked).
 if [ -d /etc/modules-load.d ]; then
     echo "nf_tables" > /etc/modules-load.d/eguard-agent.conf 2>/dev/null || true
 fi
 modprobe nf_tables 2>/dev/null || true
 
-# Protect agent config from tampering via immutable flag.
+# Clear legacy immutability before ownership changes or enrollment's atomic rename.
 if [ -f /etc/eguard-agent/agent.conf ]; then
-    chattr +i /etc/eguard-agent/agent.conf 2>/dev/null || true
+    chattr -i /etc/eguard-agent/agent.conf 2>/dev/null || true
+    chown root:root /etc/eguard-agent/agent.conf
+    chmod 0600 /etc/eguard-agent/agent.conf
 fi
 
-if [ -d /run/systemd/system ]; then
-    recover_cmd='sleep 2; systemctl daemon-reload || true; systemctl enable eguard-agent.service || true; systemctl reset-failed eguard-agent.service || true; systemctl restart eguard-agent.service || systemctl start eguard-agent.service || true'
-    if command -v systemd-run >/dev/null 2>&1; then
-        systemd-run --unit "eguard-agent-postinstall-$(date +%s)" --collect /bin/sh -c "$recover_cmd" >/dev/null 2>&1 || /bin/sh -c "$recover_cmd"
+restart_agent() {
+    old_pid=$(systemctl show -p MainPID --value eguard-agent.service 2>/dev/null || true)
+    target_version=$( (unset EGUARD_AGENT_VERSION; timeout 10 /usr/bin/eguard-agent --version 2>/dev/null | head -n 1) || true)
+    if systemctl is-active --quiet eguard-agent.service; then
+        systemctl kill --kill-who=main -s TERM eguard-agent.service
     else
-        /bin/sh -c "$recover_cmd"
+        systemctl start eguard-agent.service
+    fi
+    i=0
+    while [ "$i" -lt 30 ]; do
+        pid=$(systemctl show -p MainPID --value eguard-agent.service 2>/dev/null || true)
+        if [ -n "$pid" ] && [ "$pid" != 0 ] && [ "$pid" != "$old_pid" ] \
+            && systemctl is-active --quiet eguard-agent.service \
+            && [ "/proc/$pid/exe" -ef /usr/bin/eguard-agent ]; then
+            live_version=$( (unset EGUARD_AGENT_VERSION; timeout 10 "/proc/$pid/exe" --version 2>/dev/null | head -n 1) || true)
+            if [ -z "$target_version" ] || [ -z "$live_version" ] || [ "$live_version" = "$target_version" ]; then
+                return 0
+            fi
+        fi
+        i=$((i + 1))
+        sleep 1
+    done
+    return 1
+}
+
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload || echo "agent postinstall: daemon-reload failed" >&2
+    systemctl enable eguard-agent.service || echo "agent postinstall: enable failed" >&2
+    if ! restart_agent; then
+        echo "agent postinstall: restart could not be verified on the installed binary" >&2
     fi
 fi
+exit 0

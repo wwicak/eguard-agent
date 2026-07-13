@@ -10,7 +10,10 @@ use tracing::{info, warn};
 
 use crate::detection_state::EmergencyRule;
 
-use super::{parse_emergency_rule_type, AgentRuntime, EmergencyRulePayload};
+use super::{
+    circuit_breaker::{BreakerDecision, DestructiveKind},
+    parse_emergency_rule_type, AgentRuntime, EmergencyRulePayload,
+};
 
 mod app_management;
 mod command_utils;
@@ -50,6 +53,27 @@ fn reconcile_isolation_state_after_command(
 }
 
 impl AgentRuntime {
+    fn allow_destructive_command(
+        &mut self,
+        kind: DestructiveKind,
+        units: u64,
+        now_unix: i64,
+        denied_detail: &str,
+        exec: &mut response::CommandExecution,
+    ) -> bool {
+        if matches!(
+            self.breaker
+                .check_and_charge(kind, units, now_unix.max(0) as u64),
+            BreakerDecision::Deny { .. }
+        ) {
+            exec.outcome = CommandOutcome::Ignored;
+            exec.status = "failed";
+            exec.detail = denied_detail.to_string();
+            return false;
+        }
+        true
+    }
+
     pub(super) fn completed_command_cursor(&self) -> Vec<String> {
         self.completed_command_ids.iter().cloned().collect()
     }
@@ -65,7 +89,11 @@ impl AgentRuntime {
         }
     }
 
-    pub(super) async fn handle_command(&mut self, command: CommandEnvelope, now_unix: i64) {
+    pub(super) async fn handle_command(
+        &mut self,
+        command: CommandEnvelope,
+        now_unix: i64,
+    ) -> response::CommandExecution {
         let command_id = command.command_id.clone();
         let parsed = parse_server_command(&command.command_type);
         let isolated_before = self.host_control.isolated;
@@ -94,22 +122,58 @@ impl AgentRuntime {
             }
             ServerCommand::KillProcess => self.apply_kill_process(&command.payload_json, &mut exec),
             ServerCommand::Update => {
-                self.apply_agent_update(&command.command_id, &command.payload_json, &mut exec)
+                if self.allow_destructive_command(
+                    DestructiveKind::RestartOrUpdate,
+                    4,
+                    now_unix,
+                    "update_skipped:circuit_open",
+                    &mut exec,
+                ) {
+                    self.apply_agent_update(&command.command_id, &command.payload_json, &mut exec)
+                }
             }
             ServerCommand::LockDevice => self.apply_device_lock(&command.payload_json, &mut exec),
-            ServerCommand::WipeDevice => self.apply_device_wipe(&command.payload_json, &mut exec),
+            ServerCommand::WipeDevice => {
+                if self.allow_destructive_command(
+                    DestructiveKind::DeviceWipe,
+                    32,
+                    now_unix,
+                    "wipe_device_skipped:circuit_open",
+                    &mut exec,
+                ) {
+                    self.apply_device_wipe(&command.payload_json, &mut exec);
+                }
+            }
             ServerCommand::RetireDevice => {
                 self.apply_device_retire(&command.payload_json, &mut exec)
             }
             ServerCommand::RestartDevice => {
-                self.apply_device_restart(&command.payload_json, &mut exec)
+                if self.allow_destructive_command(
+                    DestructiveKind::RestartOrUpdate,
+                    4,
+                    now_unix,
+                    "restart_device_skipped:circuit_open",
+                    &mut exec,
+                ) {
+                    self.apply_device_restart(&command.payload_json, &mut exec)
+                }
             }
             ServerCommand::LostMode => self.apply_lost_mode(&command.payload_json, &mut exec),
             ServerCommand::LocateDevice => {
                 self.apply_device_locate(&command.payload_json, &mut exec)
             }
             ServerCommand::InstallApp => self.apply_app_install(&command.payload_json, &mut exec),
-            ServerCommand::RemoveApp => self.apply_app_remove(&command.payload_json, &mut exec),
+            ServerCommand::RemoveApp => {
+                if self.allow_destructive_command(
+                    DestructiveKind::AppRemove,
+                    8,
+                    now_unix,
+                    "remove_app_skipped:circuit_open",
+                    &mut exec,
+                ) {
+                    self.apply_app_remove(&command.payload_json, &mut exec);
+                }
+            }
             ServerCommand::UpdateApp => self.apply_app_update(&command.payload_json, &mut exec),
             ServerCommand::ApplyProfile => {
                 self.apply_config_profile(&command.payload_json, &mut exec)
@@ -140,6 +204,7 @@ impl AgentRuntime {
             .await;
 
         self.track_completed_command(&command_id);
+        exec
     }
 
     pub(super) fn apply_emergency_rule_from_payload(&self, payload_json: &str) -> Result<String> {

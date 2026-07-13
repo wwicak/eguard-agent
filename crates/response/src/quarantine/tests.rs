@@ -845,6 +845,36 @@ fn quarantine_with_custom_dir_copies_metadata_and_removes_original() {
 }
 
 #[test]
+fn quarantine_refuses_oversized_source_without_output() {
+    let base = test_base("quarantine-oversized");
+    let quarantine_dir = base.join("quarantine");
+    fs::create_dir_all(&base).expect("create base");
+    let original = base.join("oversized.bin");
+    let file = File::create(&original).expect("create sparse source");
+    file.set_len(MAX_QUARANTINE_FILE_BYTES + 1)
+        .expect("size sparse source above ceiling");
+    drop(file);
+
+    let err = quarantine_file_with_dir(
+        &original,
+        "",
+        &ProtectedList {
+            process_patterns: Vec::new(),
+            protected_paths: Vec::new(),
+        },
+        &quarantine_dir,
+    )
+    .expect_err("oversized source refused");
+
+    assert!(
+        matches!(err, ResponseError::InvalidInput(message) if message.contains("exceeds maximum size"))
+    );
+    assert!(original.exists(), "source must remain untouched");
+    assert!(!quarantine_dir.exists(), "refusal must not create output");
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
 fn quarantine_prefers_rename_within_same_filesystem() {
     let base = std::env::temp_dir().join(format!(
         "eguard-quarantine-rename-{}",
@@ -915,7 +945,8 @@ fn quarantine_cross_device_zeroes_and_unlinks_the_opened_source_inode() {
     fs::write(&original, &payload).expect("write source");
     fs::hard_link(&original, &witness).expect("retain inode witness");
 
-    let report = quarantine_file_with_dir(
+    TEST_DESTINATION_AVAILABLE_BYTES.with(|value| value.set(Some(u64::MAX)));
+    let result = quarantine_file_with_dir(
         &original,
         &digest(&payload),
         &ProtectedList {
@@ -923,8 +954,9 @@ fn quarantine_cross_device_zeroes_and_unlinks_the_opened_source_inode() {
             protected_paths: Vec::new(),
         },
         &quarantine_dir,
-    )
-    .expect("cross-device quarantine");
+    );
+    TEST_DESTINATION_AVAILABLE_BYTES.with(|value| value.set(None));
+    let report = result.expect("cross-device quarantine");
 
     assert!(!original.exists());
     let witnessed = fs::read(&witness).expect("read retained source inode");
@@ -933,6 +965,53 @@ fn quarantine_cross_device_zeroes_and_unlinks_the_opened_source_inode() {
     assert_eq!(fs::read(&report.quarantine_path).unwrap(), payload);
     let _ = fs::remove_dir_all(&base);
     let _ = fs::remove_dir_all(&quarantine_dir);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn quarantine_cross_device_refuses_low_free_space_without_payload() {
+    let base = test_base("quarantine-low-space");
+    fs::create_dir_all(&base).expect("create source parent");
+    let quarantine_dir = PathBuf::from("/dev/shm").join(format!(
+        "eguard-quarantine-low-space-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&quarantine_dir).expect("create cross-device quarantine parent");
+    assert_ne!(
+        fs::metadata(&base).unwrap().dev(),
+        fs::metadata(&quarantine_dir).unwrap().dev(),
+        "test requires /dev/shm on a different filesystem"
+    );
+    let original = base.join("source.bin");
+    let payload = b"low-space admission";
+    fs::write(&original, payload).expect("write source");
+    let sha256 = digest(payload);
+
+    TEST_DESTINATION_AVAILABLE_BYTES
+        .with(|value| value.set(Some(QUARANTINE_FREE_SPACE_RESERVE_BYTES)));
+    let result = quarantine_file_with_dir(
+        &original,
+        &sha256,
+        &ProtectedList {
+            process_patterns: Vec::new(),
+            protected_paths: Vec::new(),
+        },
+        &quarantine_dir,
+    );
+    TEST_DESTINATION_AVAILABLE_BYTES.with(|value| value.set(None));
+    let err = result.expect_err("low-space destination refused");
+
+    assert!(
+        matches!(err, ResponseError::InvalidInput(message) if message.contains("insufficient quarantine destination free space"))
+    );
+    assert_eq!(fs::read(&original).expect("source retained"), payload);
+    assert!(!quarantine_dir.join(&sha256).exists());
+    assert!(!quarantine_manifest_path(&quarantine_dir, &sha256).exists());
+    let _ = fs::remove_dir_all(base);
+    let _ = fs::remove_dir_all(quarantine_dir);
 }
 
 #[test]

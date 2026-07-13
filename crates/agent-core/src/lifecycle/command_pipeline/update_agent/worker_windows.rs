@@ -1,6 +1,17 @@
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+#[link(name = "bcrypt")]
+extern "system" {
+    fn BCryptGenRandom(
+        algorithm: *mut std::ffi::c_void,
+        buffer: *mut u8,
+        buffer_len: u32,
+        flags: u32,
+    ) -> i32;
+}
 
 use super::request::NormalizedUpdateRequest;
 
@@ -17,8 +28,20 @@ pub(super) fn spawn_update_worker(
     let worker_path = update_dir.join("apply-agent-update-worker.ps1");
     write_windows_update_worker_script(&worker_path)?;
 
+    let artifact_id = durable_artifact_id()?;
+    let startup_path = update_dir.join(format!("update-startup-{}.txt", artifact_id));
+    let _ = fs::remove_file(&startup_path);
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&startup_path)
+        .and_then(|mut file| {
+            use std::io::Write;
+            write!(file, "{}:pending", artifact_id)
+        })
+        .map_err(|err| format!("reserve update worker startup path: {}", err))?;
     let log_path = update_dir.join("apply-agent-update-worker.log");
-    Command::new("powershell")
+    let child = Command::new("powershell")
         .arg("-NoProfile")
         .arg("-NonInteractive")
         .arg("-ExecutionPolicy")
@@ -27,6 +50,12 @@ pub(super) fn spawn_update_worker(
         .arg(&worker_path)
         .arg("-CommandId")
         .arg(command_id)
+        .arg("-ArtifactId")
+        .arg(&artifact_id)
+        .arg("-StartupPath")
+        .arg(&startup_path)
+        .arg("-StartupToken")
+        .arg(&artifact_id)
         .arg("-PackageUrl")
         .arg(request.package_url())
         .arg("-ExpectedSha256")
@@ -40,7 +69,12 @@ pub(super) fn spawn_update_worker(
         .arg("-LogPath")
         .arg(log_path.to_string_lossy().to_string())
         .spawn()
-        .map_err(|err| format!("spawn powershell update worker: {}", err))?;
+        .map_err(|err| {
+            let _ = fs::remove_file(&startup_path);
+            format!("spawn powershell update worker: {}", err)
+        })?;
+
+    wait_for_worker_startup(child, &startup_path, &artifact_id)?;
 
     Ok(format!(
         "agent update worker started (url={}, kind={})",
@@ -49,9 +83,74 @@ pub(super) fn spawn_update_worker(
     ))
 }
 
+fn wait_for_worker_startup(
+    mut child: std::process::Child,
+    startup_path: &Path,
+    startup_token: &str,
+) -> Result<std::process::Child, String> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if let Ok(status) = fs::read_to_string(startup_path) {
+            match status.trim().strip_prefix(&format!("{}:", startup_token)) {
+                Some("ready") => {
+                    let _ = fs::remove_file(startup_path);
+                    return Ok(child);
+                }
+                Some("busy") => {
+                    let _ = fs::remove_file(startup_path);
+                    return Err(
+                        "another agent update is already in progress on this host; refusing to run concurrently"
+                            .to_string(),
+                    );
+                }
+                _ => {}
+            }
+        }
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|err| format!("wait for powershell update worker startup: {}", err))?
+        {
+            return Err(format!(
+                "powershell update worker exited before acquiring the update lock: {}",
+                status
+            ));
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            return Err(
+                "timed out waiting for update worker to acquire the host-wide lock".to_string(),
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+fn durable_artifact_id() -> Result<String, String> {
+    const BCRYPT_USE_SYSTEM_PREFERRED_RNG: u32 = 0x0000_0002;
+    let mut bytes = [0u8; 16];
+    let status = unsafe {
+        BCryptGenRandom(
+            std::ptr::null_mut(),
+            bytes.as_mut_ptr(),
+            bytes.len() as u32,
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+        )
+    };
+    if status < 0 {
+        return Err(format!(
+            "generate durable update worker token: BCryptGenRandom status 0x{:08x}",
+            status as u32
+        ));
+    }
+    Ok(bytes.iter().map(|byte| format!("{:02x}", byte)).collect())
+}
+
 fn write_windows_update_worker_script(path: &Path) -> Result<(), String> {
     const SCRIPT: &str = r#"param(
     [Parameter(Mandatory=$true)] [string]$CommandId,
+    [Parameter(Mandatory=$true)] [string]$ArtifactId,
+    [Parameter(Mandatory=$true)] [string]$StartupPath,
+    [Parameter(Mandatory=$true)] [string]$StartupToken,
     [Parameter(Mandatory=$true)] [string]$PackageUrl,
     [Parameter(Mandatory=$true)] [string]$ExpectedSha256,
     [Parameter(Mandatory=$true)] [string]$TargetVersion,
@@ -138,6 +237,13 @@ function Invoke-Sc {
 function Write-Outcome {
     param([string]$Status, [string]$Detail)
     @($CommandId, $Status, $Detail) | Set-Content -Path $outcomePath -Encoding UTF8
+}
+
+function Write-Startup {
+    param([string]$Status)
+    $startupTmp = "$StartupPath.tmp"
+    Set-Content -Path $startupTmp -Value ("$StartupToken`:$Status") -Encoding ASCII
+    Move-Item -Path $startupTmp -Destination $StartupPath -Force
 }
 
 function Restore-ServiceStartPolicy {
@@ -237,8 +343,16 @@ function Verify-AgentVersion {
         throw "agent binary missing after package install: $BinaryPath"
     }
 
-    $output = & $BinaryPath --version 2>&1
-    $exitCode = $LASTEXITCODE
+    $hadVersionOverride = Test-Path Env:EGUARD_AGENT_VERSION
+    $savedVersionOverride = $env:EGUARD_AGENT_VERSION
+    Remove-Item Env:EGUARD_AGENT_VERSION -ErrorAction SilentlyContinue
+    try {
+        $output = & $BinaryPath --version 2>&1
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        if ($hadVersionOverride) { $env:EGUARD_AGENT_VERSION = $savedVersionOverride }
+    }
     if ($exitCode -ne 0) {
         throw "agent binary version check failed after package install (exit=$exitCode): $($output -join ' ')"
     }
@@ -264,8 +378,29 @@ function Start-AgentServiceAndWait {
         Start-Sleep -Seconds 1
         $startWait++
     }
-
     throw "agent service did not reach Running after package install"
+}
+
+function Start-AgentServiceAndVerifyVersion {
+    param([string]$ServiceName, [string]$ExpectedVersion)
+    Start-Service -Name $ServiceName
+
+    $startWait = 0
+    while ($startWait -lt 30) {
+        $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+        $serviceProcessId = Get-ServiceProcessId -ServiceName $ServiceName
+        if ($service -and $service.Status -eq 'Running' -and $serviceProcessId -gt 0) {
+            $proc = Get-Process -Id $serviceProcessId -ErrorAction SilentlyContinue
+            if ($proc -and $proc.Path) {
+                $runningVersion = Verify-AgentVersion -BinaryPath $proc.Path -ExpectedVersion $ExpectedVersion
+                return @($serviceProcessId, $runningVersion)
+            }
+        }
+        Start-Sleep -Seconds 1
+        $startWait++
+    }
+
+    throw "agent service did not reach Running on target version $ExpectedVersion after package install"
 }
 
 function Restore-AgentBinaryIfAbsent {
@@ -296,10 +431,31 @@ function Restore-AgentBinaryIfAbsent {
     }
 }
 
+New-Item -ItemType Directory -Path $WorkingDir -Force | Out-Null
+$lockPath = Join-Path $WorkingDir 'agent-update.lock'
+$lockStream = $null
 try {
-    New-Item -ItemType Directory -Path $WorkingDir -Force | Out-Null
+    $lockStream = [System.IO.File]::Open($lockPath, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+}
+catch [System.IO.IOException] {
+    $detail = "another agent update is already in progress on this host; refusing to run concurrently"
+    Write-Log $detail
+    Write-Outcome -Status 'failed' -Detail $detail
+    Write-Startup -Status 'busy'
+    exit 1
+}
+Write-Startup -Status 'ready'
+
+$pkgPath = $null
+$tmpPath = $null
+try {
+    # Bound stale command-specific download artifacts after taking the lock.
+    Get-ChildItem -Path $WorkingDir -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTimeUtc -lt (Get-Date).ToUniversalTime().AddDays(-1) -and $_.Name -match '^eguard-agent-.*\.(msi|exe)(\.download)?$' } |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+
     $ext = if ($PackageKind -eq 'msi') { 'msi' } else { 'exe' }
-    $pkgPath = Join-Path $WorkingDir ("eguard-agent-$TargetVersion.$ext")
+    $pkgPath = Join-Path $WorkingDir ("eguard-agent-$TargetVersion-$ArtifactId.$ext")
     $tmpPath = "$pkgPath.download"
     $serviceName = 'eGuardAgent'
     # Resolve the binary the service actually runs instead of assuming a fixed
@@ -311,7 +467,13 @@ try {
     $serviceBinaryPath = Get-ServiceBinaryPath -ServiceName $serviceName
     $agentPath = if ($serviceBinaryPath) { $serviceBinaryPath } else { $defaultAgentPath }
     Write-Log "resolved agent binary path: $agentPath"
-    $backupPath = "${agentPath}.backup-$(Get-Date -Format yyyyMMddHHmmss)"
+    $agentDir = Split-Path -Parent $agentPath
+    Get-ChildItem -Path $agentDir -Directory -Filter '.eguard-update-*' -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTimeUtc -lt (Get-Date).ToUniversalTime().AddDays(-1) } |
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    $artifactDir = Join-Path $agentDir ('.eguard-update-' + $ArtifactId)
+    New-Item -ItemType Directory -Path $artifactDir -Force | Out-Null
+    $backupPath = Join-Path $artifactDir 'agent.backup'
     # Rollback tracking for the in-place EXE path: once we begin overwriting the
     # live binary, a failure must restore the backup before any restart attempt.
     $exeBackupCreated = $false
@@ -340,15 +502,17 @@ try {
         Write-Log "post-install agent binary path: $installedBinaryPath"
         $installedVersion = Verify-AgentVersion -BinaryPath $installedBinaryPath -ExpectedVersion $TargetVersion
         Restore-ServiceStartPolicy -ServiceName $serviceName
-        $servicePid = Start-AgentServiceAndWait -ServiceName $serviceName
-        Write-Log "MSI update finished (observed_version=$installedVersion, pid=$servicePid, binary=$installedBinaryPath)"
-        Write-Outcome -Status 'completed' -Detail ("agent update applied (version=" + $TargetVersion + ", kind=msi, observed_version=" + $installedVersion + ", binary=" + $installedBinaryPath + ")")
+        $running = Start-AgentServiceAndVerifyVersion -ServiceName $serviceName -ExpectedVersion $TargetVersion
+        $servicePid = $running[0]
+        $runningVersion = $running[1]
+        Write-Log "MSI update finished (observed_version=$installedVersion, running_version=$runningVersion, pid=$servicePid, binary=$installedBinaryPath)"
+        Write-Outcome -Status 'completed' -Detail ("agent update applied (version=" + $TargetVersion + ", kind=msi, observed_version=" + $installedVersion + ", running_version=" + $runningVersion + ", binary=" + $installedBinaryPath + ")")
         exit 0
     }
 
     # Stage the new binary beside the target and verify its hash BEFORE stopping
     # the service, so a corrupt package never takes the agent offline.
-    $stagedPath = "$agentPath.new-$CommandId"
+    $stagedPath = Join-Path $artifactDir 'agent.new'
     Copy-Item -Path $pkgPath -Destination $stagedPath -Force
     $stagedHash = Verify-FileHash -Path $stagedPath -ExpectedSha256 $ExpectedSha256
     Write-Log "staged EXE verified sha256=$stagedHash"
@@ -374,10 +538,15 @@ try {
     $installedHash = Verify-FileHash -Path $agentPath -ExpectedSha256 $ExpectedSha256
     $installedVersion = Verify-AgentVersion -BinaryPath $agentPath -ExpectedVersion $TargetVersion
     Restore-ServiceStartPolicy -ServiceName $serviceName
-    $servicePid = Start-AgentServiceAndWait -ServiceName $serviceName
+    $running = Start-AgentServiceAndVerifyVersion -ServiceName $serviceName -ExpectedVersion $TargetVersion
+    $servicePid = $running[0]
+    $runningVersion = $running[1]
     $exeReplaced = $false
-    Write-Log "EXE update finished (installed_sha256=$installedHash, observed_version=$installedVersion, pid=$servicePid)"
-    Write-Outcome -Status 'completed' -Detail ("agent update applied (version=" + $TargetVersion + ", kind=exe, sha256=" + $installedHash + ", observed_version=" + $installedVersion + ")")
+    if ($exeBackupCreated -and (Test-Path $backupPath)) {
+        Remove-Item -Path $backupPath -Force -ErrorAction SilentlyContinue
+    }
+    Write-Log "EXE update finished (installed_sha256=$installedHash, observed_version=$installedVersion, running_version=$runningVersion, pid=$servicePid)"
+    Write-Outcome -Status 'completed' -Detail ("agent update applied (version=" + $TargetVersion + ", kind=exe, sha256=" + $installedHash + ", observed_version=" + $installedVersion + ", running_version=" + $runningVersion + ")")
 }
 catch {
     $updateError = $_
@@ -386,7 +555,7 @@ catch {
     # moved to the backup but the staged replacement was not moved in), which
     # leaves the target absent -- so recovery must inspect the REAL filesystem
     # state rather than trust the in-memory flags. (MSI manages its own rollback.)
-    $scratch = "$agentPath.bad-$CommandId"
+    $scratch = Join-Path $artifactDir 'agent.bad'
     if ($exeReplaced) {
         # Case 1: the replace fully succeeded but a later verification failed, so
         # the new (bad) binary is in place; atomically roll the known-good backup
@@ -435,8 +604,109 @@ catch {
     Write-Outcome -Status 'failed' -Detail $detail
     exit 1
 }
+finally {
+    if ($tmpPath -and (Test-Path $tmpPath)) { Remove-Item -Path $tmpPath -Force -ErrorAction SilentlyContinue }
+    if ($pkgPath -and (Test-Path $pkgPath)) { Remove-Item -Path $pkgPath -Force -ErrorAction SilentlyContinue }
+    if ($artifactDir -and (Test-Path $agentPath) -and (Test-Path $artifactDir)) { Remove-Item -Path $artifactDir -Recurse -Force -ErrorAction SilentlyContinue }
+    if ($lockStream) { $lockStream.Dispose() }
+}
 "#;
 
-    fs::write(path, SCRIPT)
-        .map_err(|err| format!("write update worker script {}: {}", path.display(), err))
+    // Write-then-rename onto a UNIQUE per-invocation temp so a later update
+    // command rewriting this script cannot truncate or torn-activate it while an
+    // earlier worker's PowerShell may still be reading the previous script. A
+    // shared temp could be reopened/truncated by a second writer in the window
+    // between this writer's write and its rename; a private (pid + atomic seq)
+    // temp cannot be touched by another writer, and fs::rename is atomic (Windows
+    // MoveFileEx replace-existing) once the complete temp exists, leaving the old
+    // file intact for a worker still reading it.
+    static SCRIPT_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+    let tmp_path = path.with_extension(format!(
+        "ps1.tmp.{}.{}",
+        std::process::id(),
+        SCRIPT_TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    if let Err(err) = fs::write(&tmp_path, SCRIPT) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(format!(
+            "write update worker script {}: {}",
+            tmp_path.display(),
+            err
+        ));
+    }
+    if let Err(err) = fs::rename(&tmp_path, path) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(format!(
+            "activate update worker script {}: {}",
+            path.display(),
+            err
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[cfg(target_os = "windows")]
+mod tests {
+    use super::*;
+
+    fn spawn_lock_probe(lock_path: &Path, startup_path: &Path, token: &str) -> std::process::Child {
+        let probe = r#"
+param([string]$LockPath, [string]$StartupPath, [string]$Token)
+try {
+  $lock = [System.IO.File]::Open($LockPath, 'OpenOrCreate', 'ReadWrite', 'None')
+} catch [System.IO.IOException] {
+  Set-Content -Path $StartupPath -Value ("$Token`:busy") -Encoding ASCII
+  exit 1
+}
+Set-Content -Path $StartupPath -Value ("$Token`:ready") -Encoding ASCII
+Start-Sleep -Seconds 30
+$lock.Dispose()
+"#;
+        Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", probe])
+            .arg(lock_path)
+            .arg(startup_path)
+            .arg(token)
+            .spawn()
+            .expect("spawn lock probe")
+    }
+
+    #[test]
+    fn second_worker_reports_busy_through_startup_handshake() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let lock_path = dir.path().join("agent-update.lock");
+        let first_token = durable_artifact_id().expect("first token");
+        let first_startup = dir.path().join(format!("startup-{first_token}"));
+        let first = spawn_lock_probe(&lock_path, &first_startup, &first_token);
+        let mut first = wait_for_worker_startup(first, &first_startup, &first_token)
+            .expect("first worker acquires lock");
+
+        let second_token = durable_artifact_id().expect("second token");
+        let second_startup = dir.path().join(format!("startup-{second_token}"));
+        let second = spawn_lock_probe(&lock_path, &second_startup, &second_token);
+        let err = wait_for_worker_startup(second, &second_startup, &second_token)
+            .expect_err("second worker must report busy");
+        assert_eq!(
+            err,
+            "another agent update is already in progress on this host; refusing to run concurrently"
+        );
+        first.kill().expect("stop first probe");
+        first.wait().expect("reap first probe");
+    }
+
+    #[test]
+    fn artifact_ids_are_unique_per_invocation() {
+        let first = durable_artifact_id().expect("first random token");
+        let second = durable_artifact_id().expect("second random token");
+        assert_ne!(first, second);
+        assert_ne!(
+            Path::new("C:\\update").join(format!("eguard-agent-1.2.3-{}.exe", first)),
+            Path::new("C:\\update").join(format!("eguard-agent-1.2.3-{}.exe", second))
+        );
+        assert_ne!(
+            Path::new("C:\\Program Files\\eGuard").join(format!(".eguard-update-{}", first)),
+            Path::new("C:\\Program Files\\eGuard").join(format!(".eguard-update-{}", second))
+        );
+    }
 }

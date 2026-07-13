@@ -452,9 +452,6 @@ impl AgentRuntime {
     /// If the host has been isolated longer than the configured timeout, force
     /// unisolation to prevent permanent user lockout.
     fn check_isolation_failsafe(&mut self, now_unix: i64) {
-        if !self.host_control.isolated {
-            return;
-        }
         if let Some(last) = self.last_isolation_failsafe_check_unix {
             if now_unix - last < ISOLATION_FAILSAFE_CHECK_INTERVAL_SECS {
                 return;
@@ -462,15 +459,31 @@ impl AgentRuntime {
         }
         self.last_isolation_failsafe_check_unix = Some(now_unix);
 
-        if let Some(state) = super::command_pipeline::isolation_state::read_isolation_state() {
-            if super::command_pipeline::isolation_state::is_failsafe_expired(&state, now_unix) {
-                tracing::error!(
-                    elapsed_secs = now_unix - state.isolated_at_unix,
-                    "isolation failsafe expired - auto-unisolating host"
-                );
-                super::command_pipeline::isolation_state::force_remove_isolation();
+        // The durable on-disk record is the source of truth for "is the host
+        // isolated", not the in-memory flag. Reading it every interval means a
+        // retained record from a FAILED isolate/removal still drives recovery
+        // even if host_control.isolated drifted to false.
+        let Some(state) = super::command_pipeline::isolation_state::read_isolation_state() else {
+            self.host_control.isolated = false;
+            return;
+        };
+        self.host_control.isolated = true;
+        if super::command_pipeline::isolation_state::is_failsafe_expired(&state, now_unix) {
+            tracing::error!(
+                elapsed_secs = now_unix - state.isolated_at_unix,
+                "isolation failsafe expired - auto-unisolating host"
+            );
+            // Only clear the durable record and mark the host unisolated if
+            // removal actually succeeded. On failure, keep the state and the
+            // isolated flag so the next failsafe check retries removal rather
+            // than stranding the host cut off with no recovery record.
+            if super::command_pipeline::isolation_state::force_remove_isolation() {
                 super::command_pipeline::isolation_state::clear_isolation_state();
                 self.host_control.isolated = false;
+            } else {
+                tracing::error!(
+                    "isolation failsafe removal FAILED - retaining durable state; will retry"
+                );
             }
         }
     }

@@ -16,17 +16,32 @@ impl ProcessIntrospector for MockIntrospector {
     fn process_name(&self, pid: u32) -> Option<String> {
         self.names.get(&pid).cloned()
     }
+
+    fn process_start_time(&self, pid: u32) -> Option<u64> {
+        Some(pid as u64)
+    }
 }
 
 #[derive(Default)]
 struct MockSignalSender {
     sent: RefCell<Vec<(u32, Signal)>>,
+    failures: Vec<(u32, Signal)>,
+    esrch: Vec<(u32, Signal)>,
 }
 
 impl SignalSender for MockSignalSender {
     fn send(&self, pid: u32, signal: Signal) -> ResponseResult<()> {
         self.sent.borrow_mut().push((pid, signal));
-        Ok(())
+        if self.failures.contains(&(pid, signal)) {
+            Err(ResponseError::Signal(
+                "programmed signal failure".to_string(),
+            ))
+        } else if self.esrch.contains(&(pid, signal)) {
+            // Match NixSignalSender's ESRCH normalization.
+            Ok(())
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -50,9 +65,203 @@ fn kill_process_tree_orders_children_before_parent() {
     assert_eq!(report.target_pid, 100);
     assert_eq!(report.killed_pids, vec![103, 102, 101, 100]);
 
-    let sent = sender.sent.borrow();
-    assert_eq!(sent.first(), Some(&(100, Signal::SIGSTOP)));
-    assert_eq!(sent.last(), Some(&(100, Signal::SIGKILL)));
+    assert_eq!(
+        *sender.sent.borrow(),
+        vec![
+            (100, Signal::SIGSTOP),
+            (103, Signal::SIGKILL),
+            (102, Signal::SIGKILL),
+            (101, Signal::SIGKILL),
+            (100, Signal::SIGKILL),
+        ]
+    );
+}
+
+#[test]
+fn unknown_name_is_skipped_as_protected_without_signalling() {
+    let introspector = MockIntrospector {
+        children: HashMap::from([(400, vec![401])]),
+        names: HashMap::from([(400, "malware".to_string())]),
+    };
+    let sender = MockSignalSender::default();
+
+    let report =
+        kill_process_tree_with(400, &ProtectedList::default_linux(), &introspector, &sender)
+            .expect("identified root remains killable");
+
+    assert_eq!(report.killed_pids, vec![400]);
+    assert_eq!(report.skipped_protected_pids, vec![401]);
+    assert!(report.failed_pids.is_empty());
+    assert!(!sender.sent.borrow().iter().any(|(pid, _)| *pid == 401));
+}
+
+#[test]
+fn changed_start_time_is_failed_without_signalling_reused_pid() {
+    struct ReusedChild {
+        child_start_reads: std::cell::Cell<usize>,
+    }
+
+    impl ProcessIntrospector for ReusedChild {
+        fn children_of(&self, pid: u32) -> Vec<u32> {
+            if pid == 410 {
+                vec![411]
+            } else {
+                Vec::new()
+            }
+        }
+
+        fn process_name(&self, _pid: u32) -> Option<String> {
+            Some("malware".to_string())
+        }
+
+        fn process_start_time(&self, pid: u32) -> Option<u64> {
+            if pid == 411 {
+                let reads = self.child_start_reads.get();
+                self.child_start_reads.set(reads + 1);
+                Some(if reads == 0 { 1 } else { 2 })
+            } else {
+                Some(1)
+            }
+        }
+    }
+
+    let introspector = ReusedChild {
+        child_start_reads: std::cell::Cell::new(0),
+    };
+    let sender = MockSignalSender::default();
+    let report =
+        kill_process_tree_with(410, &ProtectedList::default_linux(), &introspector, &sender)
+            .expect("reused child is isolated to the failure report");
+
+    assert_eq!(report.killed_pids, vec![410]);
+    assert_eq!(report.failed_pids, vec![411]);
+    assert!(!sender.sent.borrow().iter().any(|(pid, _)| *pid == 411));
+}
+
+#[test]
+fn failed_sigkill_is_reported_and_stopped_root_is_continued() {
+    let introspector = MockIntrospector {
+        children: HashMap::new(),
+        names: HashMap::from([(420, "malware".to_string())]),
+    };
+    let sender = MockSignalSender {
+        failures: vec![(420, Signal::SIGKILL)],
+        ..MockSignalSender::default()
+    };
+
+    let report =
+        kill_process_tree_with(420, &ProtectedList::default_linux(), &introspector, &sender)
+            .expect("signal failure is represented in the report");
+
+    assert!(report.killed_pids.is_empty());
+    assert_eq!(report.failed_pids, vec![420]);
+    assert_eq!(
+        *sender.sent.borrow(),
+        vec![
+            (420, Signal::SIGSTOP),
+            (420, Signal::SIGKILL),
+            (420, Signal::SIGCONT),
+        ]
+    );
+}
+
+#[test]
+fn successful_esrch_normalization_counts_as_terminated() {
+    let introspector = MockIntrospector {
+        children: HashMap::new(),
+        names: HashMap::from([(430, "malware".to_string())]),
+    };
+    let sender = MockSignalSender {
+        esrch: vec![(430, Signal::SIGKILL)],
+        ..MockSignalSender::default()
+    };
+
+    let report =
+        kill_process_tree_with(430, &ProtectedList::default_linux(), &introspector, &sender)
+            .expect("normalized ESRCH is effectively terminated");
+
+    assert_eq!(report.killed_pids, vec![430]);
+    assert!(report.failed_pids.is_empty());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_start_time_parser_handles_spaces_and_parentheses_and_fails_closed() {
+    let stat = "123 (name with ) parens) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 4242 20";
+    assert_eq!(parse_linux_start_time(stat), Some(4242));
+
+    let malformed =
+        "123 (name with ) parens) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 invalid 20";
+    assert_eq!(parse_linux_start_time(malformed), None);
+}
+
+#[test]
+fn macos_pre_signal_name_check_uses_fresh_name_after_snapshot() {
+    struct SnapshotThenFreshNames {
+        children: HashMap<u32, Vec<u32>>,
+        snapshot_names: HashMap<u32, String>,
+        fresh_names: HashMap<u32, String>,
+    }
+
+    impl ProcessIntrospector for SnapshotThenFreshNames {
+        fn children_of(&self, pid: u32) -> Vec<u32> {
+            self.children.get(&pid).cloned().unwrap_or_default()
+        }
+
+        fn process_name(&self, pid: u32) -> Option<String> {
+            self.snapshot_names.get(&pid).cloned()
+        }
+
+        fn process_name_before_signal(&self, pid: u32) -> Option<String> {
+            self.fresh_names.get(&pid).cloned()
+        }
+
+        fn process_start_time(&self, pid: u32) -> Option<u64> {
+            Some(pid as u64)
+        }
+    }
+
+    let root = if matches!(std::process::id(), 440 | 441) {
+        442
+    } else {
+        440
+    };
+    let protected = ProtectedList::default_linux();
+    let protected_root = SnapshotThenFreshNames {
+        children: HashMap::new(),
+        snapshot_names: HashMap::from([(root, "malware".to_string())]),
+        fresh_names: HashMap::from([(root, "systemd".to_string())]),
+    };
+    let root_sender = MockSignalSender::default();
+
+    let err = kill_process_tree_with(root, &protected, &protected_root, &root_sender)
+        .expect_err("root that execs into a protected name must not be signalled");
+    assert!(matches!(err, ResponseError::ProtectedProcess(pid) if pid == root));
+    assert!(root_sender.sent.borrow().is_empty());
+
+    let child = root + 1;
+    let protected_child = SnapshotThenFreshNames {
+        children: HashMap::from([(root, vec![child])]),
+        snapshot_names: HashMap::from([
+            (root, "malware".to_string()),
+            (child, "malware".to_string()),
+        ]),
+        fresh_names: HashMap::from([
+            (root, "malware".to_string()),
+            (child, "systemd".to_string()),
+        ]),
+    };
+    let child_sender = MockSignalSender::default();
+
+    let report = kill_process_tree_with(root, &protected, &protected_child, &child_sender)
+        .expect("descendant that execs into a protected name is skipped");
+    assert_eq!(report.killed_pids, vec![root]);
+    assert_eq!(report.skipped_protected_pids, vec![child]);
+    assert!(!child_sender
+        .sent
+        .borrow()
+        .iter()
+        .any(|(pid, _)| *pid == child));
 }
 
 #[test]
@@ -111,6 +320,141 @@ fn kill_path_latency_stays_within_fallback_budget() {
 }
 
 #[test]
+fn pid_two_is_always_protected_before_identity_resolution() {
+    struct PidTwoDescendant {
+        root: u32,
+    }
+
+    impl ProcessIntrospector for PidTwoDescendant {
+        fn children_of(&self, pid: u32) -> Vec<u32> {
+            if pid == self.root {
+                vec![2]
+            } else {
+                Vec::new()
+            }
+        }
+
+        fn process_name(&self, pid: u32) -> Option<String> {
+            assert_ne!(pid, 2, "pid 2 must be protected before name lookup");
+            Some("malware".to_string())
+        }
+
+        fn process_start_time(&self, pid: u32) -> Option<u64> {
+            assert_ne!(pid, 2, "pid 2 must be protected before identity lookup");
+            Some(pid as u64)
+        }
+    }
+
+    let root = if std::process::id() == 600 { 601 } else { 600 };
+    let introspector = PidTwoDescendant { root };
+    let sender = MockSignalSender::default();
+    let protected = ProtectedList::default_linux();
+
+    let err = kill_process_tree_with(2, &protected, &introspector, &sender)
+        .expect_err("pid 2 root must never be killed");
+    assert!(matches!(err, ResponseError::ProtectedProcess(2)));
+
+    let report = kill_process_tree_with(root, &protected, &introspector, &sender)
+        .expect("pid 2 descendant is skipped");
+    assert_eq!(report.skipped_protected_pids, vec![2]);
+    assert_eq!(report.killed_pids, vec![root]);
+    assert!(!sender.sent.borrow().iter().any(|(pid, _)| *pid == 2));
+}
+
+#[test]
+fn stopped_root_is_continued_when_post_stop_identity_read_fails() {
+    struct FailingRevalidation {
+        start_reads: std::cell::Cell<usize>,
+    }
+
+    impl ProcessIntrospector for FailingRevalidation {
+        fn children_of(&self, _pid: u32) -> Vec<u32> {
+            Vec::new()
+        }
+
+        fn process_name(&self, _pid: u32) -> Option<String> {
+            Some("malware".to_string())
+        }
+
+        fn process_start_time(&self, _pid: u32) -> Option<u64> {
+            let reads = self.start_reads.get();
+            self.start_reads.set(reads + 1);
+            (reads < 2).then_some(1)
+        }
+    }
+
+    let root = if std::process::id() == 620 { 621 } else { 620 };
+    let introspector = FailingRevalidation {
+        start_reads: std::cell::Cell::new(0),
+    };
+    let sender = MockSignalSender::default();
+    let report = kill_process_tree_with(
+        root,
+        &ProtectedList::default_linux(),
+        &introspector,
+        &sender,
+    )
+    .expect("failed revalidation is reported without leaving the root stopped");
+
+    assert!(report.killed_pids.is_empty());
+    assert_eq!(report.failed_pids, vec![root]);
+    assert_eq!(
+        *sender.sent.borrow(),
+        vec![(root, Signal::SIGSTOP), (root, Signal::SIGCONT)]
+    );
+}
+
+#[test]
+fn descendant_self_pid_is_skipped_before_identity_resolution() {
+    struct SelfDescendant {
+        root: u32,
+        self_pid: u32,
+    }
+
+    impl ProcessIntrospector for SelfDescendant {
+        fn children_of(&self, pid: u32) -> Vec<u32> {
+            if pid == self.root {
+                vec![self.self_pid]
+            } else {
+                Vec::new()
+            }
+        }
+
+        fn process_name(&self, pid: u32) -> Option<String> {
+            assert_ne!(
+                pid, self.self_pid,
+                "self must be skipped before name lookup"
+            );
+            Some("malware".to_string())
+        }
+
+        fn process_start_time(&self, pid: u32) -> Option<u64> {
+            assert_ne!(
+                pid, self.self_pid,
+                "self must be skipped before identity lookup"
+            );
+            Some(pid as u64)
+        }
+    }
+
+    let self_pid = std::process::id();
+    let root = if self_pid == 640 { 641 } else { 640 };
+    let introspector = SelfDescendant { root, self_pid };
+    let sender = MockSignalSender::default();
+    let report = kill_process_tree_with(
+        root,
+        &ProtectedList::default_linux(),
+        &introspector,
+        &sender,
+    )
+    .expect("self descendant is skipped");
+
+    assert_eq!(report.skipped_protected_pids, vec![self_pid]);
+    assert_eq!(report.killed_pids, vec![root]);
+    assert!(!sender.sent.borrow().iter().any(|(pid, _)| *pid == self_pid));
+}
+
+#[test]
 // AC-RSP-084
 fn pid_one_is_always_protected_even_without_process_name() {
     let introspector = MockIntrospector {
@@ -139,6 +483,105 @@ fn invalid_zero_pid_is_rejected() {
         .expect_err("zero pid should be rejected");
     assert!(matches!(err, ResponseError::InvalidInput(_)));
     assert!(sender.sent.borrow().is_empty());
+}
+
+#[test]
+// A u32 above i32::MAX would wrap to a negative pid_t and become kill(-1, ...),
+// a host-wide broadcast. It must be rejected before any signal is attempted.
+fn out_of_range_pid_is_rejected_without_signals() {
+    let introspector = MockIntrospector {
+        children: HashMap::new(),
+        names: HashMap::new(),
+    };
+    let sender = MockSignalSender::default();
+    let protected = ProtectedList::default_linux();
+
+    for pid in [u32::MAX, (i32::MAX as u32) + 1, 0x8000_0000] {
+        let err = kill_process_tree_with(pid, &protected, &introspector, &sender)
+            .expect_err("out-of-range pid must be rejected");
+        assert!(matches!(err, ResponseError::InvalidInput(_)), "pid {pid}");
+    }
+    assert!(
+        sender.sent.borrow().is_empty(),
+        "no signal may be sent for an out-of-range pid"
+    );
+}
+
+#[test]
+// The agent must never be steered into killing itself, even when process-name
+// resolution is unavailable (introspector returns no name for this pid).
+fn self_pid_is_protected_without_signals() {
+    let introspector = MockIntrospector {
+        children: HashMap::new(),
+        names: HashMap::new(),
+    };
+    let sender = MockSignalSender::default();
+    let protected = ProtectedList::default_linux();
+
+    let self_pid = std::process::id();
+    let err = kill_process_tree_with(self_pid, &protected, &introspector, &sender)
+        .expect_err("self pid must be protected");
+    assert!(matches!(err, ResponseError::ProtectedProcess(pid) if pid == self_pid));
+    assert!(sender.sent.borrow().is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn real_esrch_is_counted_as_gone_not_failed() {
+    let pid = i32::MAX as u32;
+    let introspector = MockIntrospector {
+        children: HashMap::new(),
+        names: HashMap::from([(pid, "malware".to_string())]),
+    };
+
+    let report = kill_process_tree_with(
+        pid,
+        &ProtectedList::default_linux(),
+        &introspector,
+        &NixSignalSender,
+    )
+    .expect("ESRCH for a nonexistent valid pid is effectively terminated");
+
+    assert_eq!(report.killed_pids, vec![pid]);
+    assert!(report.failed_pids.is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+// After the fix, the real Unix sender must refuse an out-of-range pid BEFORE it
+// reaches kill(2) (proving no kill(-1) broadcast is ever issued).
+fn nix_signal_sender_refuses_out_of_range_pid() {
+    let sender = NixSignalSender;
+    for pid in [0u32, u32::MAX, (i32::MAX as u32) + 1] {
+        assert!(
+            sender.send(pid, Signal::SIGSTOP).is_err(),
+            "sender must refuse pid {pid} before the syscall"
+        );
+    }
+}
+
+#[test]
+// One accepted root must not be able to signal an unbounded tree: exceeding the
+// descendant cap fails closed with no signal emitted at all.
+fn unix_tree_exceeding_descendant_cap_is_refused_without_signals() {
+    let big: Vec<u32> = (10_000u32..15_001).collect(); // 5001 direct children > cap
+    let mut children = HashMap::new();
+    let _ = children.insert(50u32, big.clone());
+    let mut names = HashMap::from([(50u32, "malware".to_string())]);
+    for child in &big {
+        let _ = names.insert(*child, "child".to_string());
+    }
+    let introspector = MockIntrospector { children, names };
+    let sender = MockSignalSender::default();
+    let protected = ProtectedList::default_linux();
+
+    let err = kill_process_tree_with(50, &protected, &introspector, &sender)
+        .expect_err("oversized tree must be refused");
+    assert!(matches!(err, ResponseError::Signal(_)));
+    assert!(
+        sender.sent.borrow().is_empty(),
+        "no signal may be emitted when the tree exceeds the descendant cap"
+    );
 }
 
 #[test]
@@ -214,6 +657,8 @@ struct MockWindowsApi {
     denied_pids: std::collections::HashSet<u32>,
     time_denied_handles: std::collections::HashSet<u64>,
     name_denied_handles: std::collections::HashSet<u64>,
+    critical_handles: std::collections::HashSet<u64>,
+    critical_denied_handles: std::collections::HashSet<u64>,
     opened_pids: RefCell<Vec<u32>>,
     terminated_handles: RefCell<Vec<u64>>,
 }
@@ -263,10 +708,60 @@ impl WindowsProcessApi for MockWindowsApi {
             .ok_or_else(|| ResponseError::Signal("unknown image name".to_string()))
     }
 
+    fn is_process_critical(&self, handle: &Self::Handle) -> ResponseResult<bool> {
+        if self.critical_denied_handles.contains(handle) {
+            return Err(ResponseError::Signal("critical query denied".to_string()));
+        }
+        Ok(self.critical_handles.contains(handle))
+    }
+
     fn terminate_process(&self, handle: &Self::Handle) -> ResponseResult<()> {
         self.terminated_handles.borrow_mut().push(*handle);
         Ok(())
     }
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_os_critical_descendant_is_never_terminated() {
+    // A descendant whose image name is NOT on the static list but which the OS
+    // reports as critical must be skipped, while the non-critical root dies.
+    let api = MockWindowsApi {
+        snapshot: vec![
+            process_entry(1700, 1, 5700),
+            process_entry(1701, 1700, 5701),
+        ],
+        handles: HashMap::from([(1700, 5700), (1701, 5701)]),
+        names: HashMap::from([
+            (5700, "malware.exe".to_string()),
+            (5701, "totally-not-critical.exe".to_string()),
+        ]),
+        critical_handles: std::collections::HashSet::from([5701]),
+        ..MockWindowsApi::default()
+    };
+
+    let report = kill_process_tree_windows_with(1700, &ProtectedList::default_windows(), &api)
+        .expect("root terminates while OS-critical child is skipped");
+    assert_eq!(report.killed_pids, vec![1700]);
+    assert_eq!(report.skipped_protected_pids, vec![1701]);
+    assert_eq!(*api.terminated_handles.borrow(), vec![5700]);
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_failed_critical_query_on_root_fails_closed() {
+    // If the OS critical query errors on the root, treat it as critical.
+    let api = MockWindowsApi {
+        handles: HashMap::from([(1800, 5800)]),
+        names: HashMap::from([(5800, "malware.exe".to_string())]),
+        critical_denied_handles: std::collections::HashSet::from([5800]),
+        ..MockWindowsApi::default()
+    };
+
+    let err = kill_process_tree_windows_with(1800, &ProtectedList::default_windows(), &api)
+        .expect_err("a failed critical query must fail closed");
+    assert!(matches!(err, ResponseError::ProtectedProcess(1800)));
+    assert!(api.terminated_handles.borrow().is_empty());
 }
 
 #[cfg(target_os = "windows")]

@@ -11,6 +11,7 @@ use grpc_client::{
 };
 use response::{AutoIsolationState, HostControlState, KillRateLimiter, ProtectedList};
 
+use super::circuit_breaker::{CircuitBreaker, BREAKER_MAX_BLAST_UNITS};
 use super::feature_policy::{
     DeceptionPolicyConfig, FimPolicyConfig, HuntingPolicyConfig, UsbPolicyConfig,
     ZeroTrustPolicyConfig,
@@ -48,6 +49,7 @@ pub struct AgentRuntime {
     pub(super) protected: ProtectedList,
     pub(super) limiter: KillRateLimiter,
     pub(super) quarantine_limiter: KillRateLimiter,
+    pub(super) breaker: CircuitBreaker,
     pub(super) compliance_policy: CompliancePolicy,
     pub(super) compliance_policy_id: String,
     pub(super) compliance_policy_version: String,
@@ -433,9 +435,15 @@ impl AgentRuntime {
         let mut playbook_engine = PlaybookEngine::new();
         playbook_engine.load_default_playbooks();
 
+        let breaker_max_blast_units = std::env::var("EGUARD_BREAKER_MAX_BLAST_UNITS")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u64>().ok())
+            .unwrap_or(BREAKER_MAX_BLAST_UNITS)
+            .min(BREAKER_MAX_BLAST_UNITS);
         let mut runtime = Self {
             limiter: KillRateLimiter::new(config.response.max_kills_per_minute),
             quarantine_limiter: KillRateLimiter::new(config.response.max_quarantines_per_minute),
+            breaker: CircuitBreaker::load(breaker_max_blast_units),
             protected: {
                 #[cfg(target_os = "linux")]
                 {
@@ -580,8 +588,18 @@ impl AgentRuntime {
                     timeout_secs = state.failsafe_timeout_secs,
                     "recovering from stale isolation after agent restart"
                 );
-                super::command_pipeline::isolation_state::force_remove_isolation();
-                super::command_pipeline::isolation_state::clear_isolation_state();
+                // Only clear the durable record if removal succeeded. If it
+                // failed, keep the record AND mark the host isolated so the
+                // periodic tick failsafe keeps retrying removal (its guard
+                // returns early unless host_control.isolated is true).
+                if super::command_pipeline::isolation_state::force_remove_isolation() {
+                    super::command_pipeline::isolation_state::clear_isolation_state();
+                } else {
+                    warn!(
+                        "stale isolation removal FAILED at startup - retaining state; failsafe will retry"
+                    );
+                    runtime.host_control.isolated = true;
+                }
             } else {
                 info!(
                     remaining_secs =
