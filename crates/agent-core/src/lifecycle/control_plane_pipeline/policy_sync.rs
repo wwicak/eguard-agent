@@ -8,11 +8,60 @@ use crate::config::AgentMode;
 
 use super::super::{update_tls_policy_from_server, AgentRuntime};
 
-/// Compiled ceilings on remotely-configurable response rates. Policy can lower
-/// these but never raise them, so a hostile or misconfigured policy cannot turn
-/// the kill/quarantine limiter into an effectively-unbounded throttle.
-const HARD_MAX_KILLS_PER_MINUTE: usize = 120;
-const HARD_MAX_QUARANTINES_PER_MINUTE: usize = 120;
+// Response ceilings match the compiled kill limiter and prevent effectively
+// unthrottled quarantine/isolation policy while remaining above normal defaults.
+// The quarantine ceiling is the single authoritative response-rate constant
+// (response::MAX_RESPONSE_RATE_PER_MINUTE), shared with the kill limiter, so the
+// two ceilings for the same quantity cannot diverge.
+const MAX_AUTO_ISOLATION_INCIDENTS: usize = 10_000;
+const MAX_AUTO_ISOLATION_WINDOW_SECS: u64 = 86_400;
+const MAX_AUTO_ISOLATIONS_PER_HOUR: usize = 120;
+// Coalescing can be tuned up to one minute, but not raised until events are
+// suppressed indefinitely or key state grows without a practical bound.
+const MAX_FILE_EVENT_COALESCE_WINDOW_MS: u64 = 60_000;
+const MAX_EVENT_TXN_COALESCE_WINDOW_MS: u64 = 60_000;
+const MAX_EVENT_TXN_COALESCE_KEYS: usize = 65_536;
+// Backpressure thresholds are capped at 64K, above their 128-4096 defaults but
+// small enough to remain bounded relative to the runtime's in-memory channels.
+const MAX_STRICT_BUDGET_PENDING_THRESHOLD: usize = 65_536;
+const MAX_STRICT_BUDGET_RAW_BACKLOG_THRESHOLD: usize = 65_536;
+const MAX_RAW_EVENT_BACKLOG: usize = 65_536;
+// Dedupe cannot be disabled remotely: one second is the minimum useful
+// anti-storm window. The one-day maximum bounds stale suppression.
+const MIN_RESPONSE_ACTION_DEDUPE_WINDOW_SECS: i64 = 1;
+const MAX_RESPONSE_ACTION_DEDUPE_WINDOW_SECS: i64 = 86_400;
+const MAX_RESPONSE_ACTION_DEDUPE_KEYS: usize = 131_072;
+// Detection work may be delayed by policy for at most one minute per hash and
+// one day per periodic scan, preventing a remote value from disabling it.
+const MAX_FILE_HASH_FINALIZE_DELAY_MS: u64 = 60_000;
+const MAX_FIM_SCAN_INTERVAL_SECS: u64 = 86_400;
+const MAX_HUNTING_INTERVAL_SECS: u64 = 86_400;
+// Compliance must run at least once per hour, and policy grace cannot defer a
+// failed check for more than one day.
+const MIN_COMPLIANCE_CHECK_INTERVAL_SECS: u64 = 60;
+const MAX_COMPLIANCE_CHECK_INTERVAL_SECS: u64 = 3_600;
+const MAX_COMPLIANCE_GRACE_PERIOD_SECS: u64 = 86_400;
+
+fn clamp_u64_to_usize(value: u64, min: usize, max: usize) -> usize {
+    value.min(max as u64).max(min as u64) as usize
+}
+
+fn clamp_compliance_policy_timing(policy: &mut compliance::CompliancePolicy) {
+    policy.check_interval_secs = policy.check_interval_secs.map(|value| {
+        value.clamp(
+            MIN_COMPLIANCE_CHECK_INTERVAL_SECS,
+            MAX_COMPLIANCE_CHECK_INTERVAL_SECS,
+        )
+    });
+    policy.grace_period_secs = policy
+        .grace_period_secs
+        .map(|value| value.min(MAX_COMPLIANCE_GRACE_PERIOD_SECS));
+    for check in &mut policy.checks {
+        check.grace_period_secs = check
+            .grace_period_secs
+            .map(|value| value.min(MAX_COMPLIANCE_GRACE_PERIOD_SECS));
+    }
+}
 
 impl AgentRuntime {
     pub(super) async fn refresh_policy_if_due(&mut self, now_unix: i64) -> Result<()> {
@@ -125,7 +174,8 @@ impl AgentRuntime {
         }
 
         match parse_policy_json(&policy.policy_json) {
-            Ok(parsed) => {
+            Ok(mut parsed) => {
+                clamp_compliance_policy_timing(&mut parsed);
                 info!(
                     firewall = parsed.firewall_required,
                     kernel_prefix = ?parsed.min_kernel_prefix,
@@ -273,10 +323,7 @@ impl AgentRuntime {
             .get("response_max_kills_per_minute")
             .and_then(|v| v.as_u64())
         {
-            // Remote policy may LOWER the rate but must never raise it past the
-            // compiled ceiling: a hostile/misconfigured policy cannot turn the
-            // limiter into an effectively-unbounded mass-kill throttle.
-            let limit = (v as usize).clamp(1, HARD_MAX_KILLS_PER_MINUTE);
+            let limit = usize::try_from(v).unwrap_or(usize::MAX);
             self.config.response.max_kills_per_minute = limit;
             self.limiter.set_max_per_minute(limit);
             info!(
@@ -288,7 +335,7 @@ impl AgentRuntime {
             .get("response_max_quarantines_per_minute")
             .and_then(|v| v.as_u64())
         {
-            let limit = (v as usize).clamp(1, HARD_MAX_QUARANTINES_PER_MINUTE);
+            let limit = clamp_u64_to_usize(v, 1, response::MAX_RESPONSE_RATE_PER_MINUTE);
             self.config.response.max_quarantines_per_minute = limit;
             self.quarantine_limiter.set_max_per_minute(limit);
             info!(
@@ -312,7 +359,8 @@ impl AgentRuntime {
             .get("response_auto_isolation_min_incidents_in_window")
             .and_then(|v| v.as_u64())
         {
-            self.config.response.auto_isolation.min_incidents_in_window = (v as usize).max(1);
+            self.config.response.auto_isolation.min_incidents_in_window =
+                clamp_u64_to_usize(v, 1, MAX_AUTO_ISOLATION_INCIDENTS);
             info!(
                 response_auto_isolation_min_incidents_in_window =
                     self.config.response.auto_isolation.min_incidents_in_window,
@@ -323,7 +371,8 @@ impl AgentRuntime {
             .get("response_auto_isolation_window_secs")
             .and_then(|v| v.as_u64())
         {
-            self.config.response.auto_isolation.window_secs = v.max(30);
+            self.config.response.auto_isolation.window_secs =
+                v.clamp(30, MAX_AUTO_ISOLATION_WINDOW_SECS);
             info!(
                 response_auto_isolation_window_secs =
                     self.config.response.auto_isolation.window_secs,
@@ -334,7 +383,8 @@ impl AgentRuntime {
             .get("response_auto_isolation_max_isolations_per_hour")
             .and_then(|v| v.as_u64())
         {
-            self.config.response.auto_isolation.max_isolations_per_hour = (v as usize).max(1);
+            self.config.response.auto_isolation.max_isolations_per_hour =
+                clamp_u64_to_usize(v, 1, MAX_AUTO_ISOLATIONS_PER_HOUR);
             info!(
                 response_auto_isolation_max_isolations_per_hour =
                     self.config.response.auto_isolation.max_isolations_per_hour,
@@ -403,9 +453,10 @@ impl AgentRuntime {
             .get("file_event_coalesce_window_ms")
             .and_then(|v| v.as_u64())
         {
-            self.file_event_coalesce_window_ns = ms.max(50).saturating_mul(1_000_000);
+            let ms = ms.clamp(50, MAX_FILE_EVENT_COALESCE_WINDOW_MS);
+            self.file_event_coalesce_window_ns = ms * 1_000_000;
             info!(
-                file_event_coalesce_window_ms = ms.max(50),
+                file_event_coalesce_window_ms = ms,
                 "updated file-event coalesce window from policy"
             );
         }
@@ -415,7 +466,8 @@ impl AgentRuntime {
             .or_else(|| raw.get("detection_event_txn_coalesce_window_ms"))
             .and_then(|v| v.as_u64())
         {
-            self.event_txn_coalesce_window_ns = ms.saturating_mul(1_000_000);
+            let ms = ms.min(MAX_EVENT_TXN_COALESCE_WINDOW_MS);
+            self.event_txn_coalesce_window_ns = ms * 1_000_000;
             if self.event_txn_coalesce_window_ns == 0 {
                 self.recent_event_txn_keys.clear();
             }
@@ -431,7 +483,8 @@ impl AgentRuntime {
             .or_else(|| raw.get("detection_event_txn_coalesce_key_limit"))
             .and_then(|v| v.as_u64())
         {
-            self.event_txn_coalesce_key_limit = (value as usize).max(512);
+            self.event_txn_coalesce_key_limit =
+                clamp_u64_to_usize(value, 512, MAX_EVENT_TXN_COALESCE_KEYS);
             info!(
                 event_txn_coalesce_key_limit = self.event_txn_coalesce_key_limit,
                 "updated event-transaction coalesce key limit from policy"
@@ -442,7 +495,8 @@ impl AgentRuntime {
             .get("strict_budget_pending_threshold")
             .and_then(|v| v.as_u64())
         {
-            self.strict_budget_pending_threshold = (value as usize).max(64);
+            self.strict_budget_pending_threshold =
+                clamp_u64_to_usize(value, 64, MAX_STRICT_BUDGET_PENDING_THRESHOLD);
             info!(
                 strict_budget_pending_threshold = self.strict_budget_pending_threshold,
                 "updated strict-budget pending threshold from policy"
@@ -453,7 +507,8 @@ impl AgentRuntime {
             .get("strict_budget_raw_backlog_threshold")
             .and_then(|v| v.as_u64())
         {
-            self.strict_budget_raw_backlog_threshold = (value as usize).max(32);
+            self.strict_budget_raw_backlog_threshold =
+                clamp_u64_to_usize(value, 32, MAX_STRICT_BUDGET_RAW_BACKLOG_THRESHOLD);
             info!(
                 strict_budget_raw_backlog_threshold = self.strict_budget_raw_backlog_threshold,
                 "updated strict-budget raw backlog threshold from policy"
@@ -465,7 +520,7 @@ impl AgentRuntime {
             .or_else(|| raw.get("detection_raw_event_backlog_cap"))
             .and_then(|v| v.as_u64())
         {
-            self.raw_event_backlog_cap = (value as usize).max(256);
+            self.raw_event_backlog_cap = clamp_u64_to_usize(value, 256, MAX_RAW_EVENT_BACKLOG);
             info!(
                 raw_event_backlog_cap = self.raw_event_backlog_cap,
                 "updated raw-event backlog cap from policy"
@@ -477,10 +532,10 @@ impl AgentRuntime {
             .or_else(|| raw.get("detection_response_action_dedupe_window_secs"))
             .and_then(|v| v.as_i64())
         {
-            self.response_action_dedupe_window_secs = value.max(0);
-            if self.response_action_dedupe_window_secs == 0 {
-                self.recent_response_action_keys.clear();
-            }
+            self.response_action_dedupe_window_secs = value.clamp(
+                MIN_RESPONSE_ACTION_DEDUPE_WINDOW_SECS,
+                MAX_RESPONSE_ACTION_DEDUPE_WINDOW_SECS,
+            );
             info!(
                 response_action_dedupe_window_secs = self.response_action_dedupe_window_secs,
                 dedupe_key_count = self.recent_response_action_keys.len(),
@@ -493,7 +548,8 @@ impl AgentRuntime {
             .or_else(|| raw.get("detection_response_action_dedupe_key_limit"))
             .and_then(|v| v.as_u64())
         {
-            self.response_action_dedupe_key_limit = (value as usize).max(1_024);
+            self.response_action_dedupe_key_limit =
+                clamp_u64_to_usize(value, 1_024, MAX_RESPONSE_ACTION_DEDUPE_KEYS);
             info!(
                 response_action_dedupe_key_limit = self.response_action_dedupe_key_limit,
                 "updated response-action dedupe key limit from policy"
@@ -505,6 +561,7 @@ impl AgentRuntime {
             .or_else(|| raw.get("detection_file_hash_finalize_delay_ms"))
             .and_then(|v| v.as_u64())
         {
+            let delay_ms = delay_ms.min(MAX_FILE_HASH_FINALIZE_DELAY_MS);
             self.enrichment_cache.set_hash_finalize_delay_ms(delay_ms);
             info!(
                 file_hash_finalize_delay_ms = delay_ms,
@@ -566,7 +623,7 @@ impl AgentRuntime {
             );
         }
         if let Some(v) = raw.get("fim_scan_interval_secs").and_then(|v| v.as_u64()) {
-            self.fim_policy.scan_interval_secs = v.max(60);
+            self.fim_policy.scan_interval_secs = v.clamp(60, MAX_FIM_SCAN_INTERVAL_SECS);
             info!(
                 fim_scan_interval_secs = self.fim_policy.scan_interval_secs,
                 "updated FIM scan interval from policy"
@@ -626,7 +683,7 @@ impl AgentRuntime {
             info!(hunting_enabled = v, "updated hunting enabled from policy");
         }
         if let Some(v) = raw.get("hunting_interval_secs").and_then(|v| v.as_u64()) {
-            self.hunting_policy.interval_secs = v.max(300);
+            self.hunting_policy.interval_secs = v.clamp(300, MAX_HUNTING_INTERVAL_SECS);
             info!(
                 hunting_interval_secs = self.hunting_policy.interval_secs,
                 "updated hunting interval from policy"
@@ -920,10 +977,10 @@ mod tests {
             .recent_response_action_keys
             .insert("k".to_string(), 1_700_000_000);
         runtime.apply_runtime_tuning_overrides(&json!({
-            "detection_response_action_dedupe_window_secs": -10
+            "detection_response_action_dedupe_window_secs": 0
         }));
-        assert_eq!(runtime.response_action_dedupe_window_secs, 0);
-        assert!(runtime.recent_response_action_keys.is_empty());
+        assert_eq!(runtime.response_action_dedupe_window_secs, 1);
+        assert!(runtime.recent_response_action_keys.contains_key("k"));
     }
 
     #[test]
@@ -970,6 +1027,201 @@ mod tests {
             "detection_event_txn_coalesce_key_limit": 128
         }));
         assert_eq!(runtime.event_txn_coalesce_key_limit, 512);
+    }
+
+    #[test]
+    fn remote_numeric_limits_are_clamped_to_compiled_ceilings() {
+        let mut runtime = new_runtime();
+        runtime.apply_response_policy_overrides(&json!({
+            "response_max_kills_per_minute": u64::MAX,
+            "response_max_quarantines_per_minute": u64::MAX,
+            "response_auto_isolation_min_incidents_in_window": u64::MAX,
+            "response_auto_isolation_window_secs": u64::MAX,
+            "response_auto_isolation_max_isolations_per_hour": u64::MAX
+        }));
+        runtime.apply_runtime_tuning_overrides(&json!({
+            "file_event_coalesce_window_ms": u64::MAX,
+            "event_txn_coalesce_window_ms": u64::MAX,
+            "event_txn_coalesce_key_limit": u64::MAX,
+            "strict_budget_pending_threshold": u64::MAX,
+            "strict_budget_raw_backlog_threshold": u64::MAX,
+            "raw_event_backlog_cap": u64::MAX,
+            "response_action_dedupe_window_secs": i64::MAX,
+            "response_action_dedupe_key_limit": u64::MAX,
+            "file_hash_finalize_delay_ms": u64::MAX
+        }));
+        runtime.apply_feature_policy_overrides(&json!({
+            "fim_scan_interval_secs": u64::MAX,
+            "hunting_interval_secs": u64::MAX
+        }));
+
+        assert_eq!(
+            runtime.config.response.max_kills_per_minute,
+            usize::try_from(u64::MAX).unwrap_or(usize::MAX)
+        );
+        let now = Instant::now();
+        for _ in 0..response::MAX_RESPONSE_RATE_PER_MINUTE {
+            assert!(runtime.limiter.allow(now));
+        }
+        assert!(!runtime.limiter.allow(now));
+        assert_eq!(
+            runtime.config.response.max_quarantines_per_minute,
+            response::MAX_RESPONSE_RATE_PER_MINUTE
+        );
+        assert_eq!(
+            runtime
+                .config
+                .response
+                .auto_isolation
+                .min_incidents_in_window,
+            MAX_AUTO_ISOLATION_INCIDENTS
+        );
+        assert_eq!(
+            runtime.config.response.auto_isolation.window_secs,
+            MAX_AUTO_ISOLATION_WINDOW_SECS
+        );
+        assert_eq!(
+            runtime
+                .config
+                .response
+                .auto_isolation
+                .max_isolations_per_hour,
+            MAX_AUTO_ISOLATIONS_PER_HOUR
+        );
+        assert_eq!(
+            runtime.file_event_coalesce_window_ns,
+            MAX_FILE_EVENT_COALESCE_WINDOW_MS * 1_000_000
+        );
+        assert_eq!(
+            runtime.event_txn_coalesce_window_ns,
+            MAX_EVENT_TXN_COALESCE_WINDOW_MS * 1_000_000
+        );
+        assert_eq!(
+            runtime.event_txn_coalesce_key_limit,
+            MAX_EVENT_TXN_COALESCE_KEYS
+        );
+        assert_eq!(
+            runtime.strict_budget_pending_threshold,
+            MAX_STRICT_BUDGET_PENDING_THRESHOLD
+        );
+        assert_eq!(
+            runtime.strict_budget_raw_backlog_threshold,
+            MAX_STRICT_BUDGET_RAW_BACKLOG_THRESHOLD
+        );
+        assert_eq!(runtime.raw_event_backlog_cap, MAX_RAW_EVENT_BACKLOG);
+        assert_eq!(
+            runtime.response_action_dedupe_window_secs,
+            MAX_RESPONSE_ACTION_DEDUPE_WINDOW_SECS
+        );
+        assert_eq!(
+            runtime.response_action_dedupe_key_limit,
+            MAX_RESPONSE_ACTION_DEDUPE_KEYS
+        );
+        assert!(format!("{:?}", runtime.enrichment_cache).contains(&format!(
+            "hash_finalize_delay_ns: {}",
+            MAX_FILE_HASH_FINALIZE_DELAY_MS * 1_000_000
+        )));
+        assert_eq!(
+            runtime.fim_policy.scan_interval_secs,
+            MAX_FIM_SCAN_INTERVAL_SECS
+        );
+        assert_eq!(
+            runtime.hunting_policy.interval_secs,
+            MAX_HUNTING_INTERVAL_SECS
+        );
+
+        runtime.apply_response_policy_overrides(&json!({
+            "response_max_kills_per_minute": 17,
+            "response_max_quarantines_per_minute": 11,
+            "response_auto_isolation_min_incidents_in_window": 3,
+            "response_auto_isolation_window_secs": 90,
+            "response_auto_isolation_max_isolations_per_hour": 4
+        }));
+        runtime.apply_runtime_tuning_overrides(&json!({
+            "file_event_coalesce_window_ms": 250,
+            "event_txn_coalesce_window_ms": 125,
+            "event_txn_coalesce_key_limit": 2048,
+            "strict_budget_pending_threshold": 256,
+            "strict_budget_raw_backlog_threshold": 64,
+            "raw_event_backlog_cap": 4096,
+            "response_action_dedupe_window_secs": 120,
+            "response_action_dedupe_key_limit": 8192
+        }));
+        runtime.apply_feature_policy_overrides(&json!({
+            "fim_scan_interval_secs": 600,
+            "hunting_interval_secs": 900
+        }));
+
+        assert_eq!(runtime.config.response.max_kills_per_minute, 17);
+        assert_eq!(runtime.config.response.max_quarantines_per_minute, 11);
+        assert_eq!(
+            runtime
+                .config
+                .response
+                .auto_isolation
+                .min_incidents_in_window,
+            3
+        );
+        assert_eq!(runtime.config.response.auto_isolation.window_secs, 90);
+        assert_eq!(
+            runtime
+                .config
+                .response
+                .auto_isolation
+                .max_isolations_per_hour,
+            4
+        );
+        assert_eq!(runtime.file_event_coalesce_window_ns, 250_000_000);
+        assert_eq!(runtime.event_txn_coalesce_window_ns, 125_000_000);
+        assert_eq!(runtime.event_txn_coalesce_key_limit, 2048);
+        assert_eq!(runtime.strict_budget_pending_threshold, 256);
+        assert_eq!(runtime.strict_budget_raw_backlog_threshold, 64);
+        assert_eq!(runtime.raw_event_backlog_cap, 4096);
+        assert_eq!(runtime.response_action_dedupe_window_secs, 120);
+        assert_eq!(runtime.response_action_dedupe_key_limit, 8192);
+        assert_eq!(runtime.fim_policy.scan_interval_secs, 600);
+        assert_eq!(runtime.hunting_policy.interval_secs, 900);
+    }
+
+    #[test]
+    fn compliance_policy_timing_is_clamped_to_compiled_bounds() {
+        let mut policy = parse_policy_json(
+            &json!({
+                "check_interval_secs": u64::MAX,
+                "grace_period_secs": u64::MAX,
+                "checks": [{
+                    "id": "timing",
+                    "type": "custom",
+                    "grace_period_secs": u64::MAX
+                }]
+            })
+            .to_string(),
+        )
+        .expect("parse compliance policy");
+
+        clamp_compliance_policy_timing(&mut policy);
+
+        assert_eq!(
+            policy.check_interval_secs,
+            Some(MAX_COMPLIANCE_CHECK_INTERVAL_SECS)
+        );
+        assert_eq!(
+            policy.grace_period_secs,
+            Some(MAX_COMPLIANCE_GRACE_PERIOD_SECS)
+        );
+        assert_eq!(
+            policy.checks[0].grace_period_secs,
+            Some(MAX_COMPLIANCE_GRACE_PERIOD_SECS)
+        );
+
+        policy.check_interval_secs = Some(1);
+        policy.grace_period_secs = Some(0);
+        clamp_compliance_policy_timing(&mut policy);
+        assert_eq!(
+            policy.check_interval_secs,
+            Some(MIN_COMPLIANCE_CHECK_INTERVAL_SECS)
+        );
+        assert_eq!(policy.grace_period_secs, Some(0));
     }
 
     #[test]

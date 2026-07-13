@@ -25,12 +25,12 @@ use windows::Win32::Foundation::{
 };
 #[cfg(windows)]
 use windows::Win32::Storage::FileSystem::{
-    FileDispositionInfo, GetFileInformationByHandle, GetFinalPathNameByHandleW,
-    SetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ATTRIBUTE_REPARSE_POINT,
-    FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-    FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_READ_ATTRIBUTES, FILE_RENAME_INFO,
-    FILE_RENAME_INFO_0, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    FILE_WRITE_ATTRIBUTES,
+    FileDispositionInfo, GetDiskFreeSpaceExW, GetFileInformationByHandle,
+    GetFinalPathNameByHandleW, SetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, DELETE,
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_NAME_NORMALIZED,
+    FILE_READ_ATTRIBUTES, FILE_RENAME_INFO, FILE_RENAME_INFO_0, FILE_SHARE_DELETE, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES, GETFINALPATHNAMEBYHANDLE_FLAGS, VOLUME_NAME_GUID,
 };
 
 #[cfg(windows)]
@@ -296,6 +296,18 @@ const DEFAULT_QUARANTINE_DIR: &str = "/var/lib/eguard-agent/quarantine";
 
 const MANIFEST_VERSION: u32 = 1;
 
+/// A single quarantine operation is bounded to 4 GiB to limit the work spent
+/// hashing and copying one hostile sparse or oversized file.
+pub(crate) const MAX_QUARANTINE_FILE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+/// Cross-device copies must leave 2 GiB available for the agent and host. The
+/// check runs after exclusive destination creation; refusal removes that file.
+pub(crate) const QUARANTINE_FREE_SPACE_RESERVE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+#[cfg(test)]
+thread_local! {
+    static TEST_DESTINATION_AVAILABLE_BYTES: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
 #[derive(Debug, Clone)]
 pub struct QuarantineReport {
     pub original_path: PathBuf,
@@ -367,7 +379,12 @@ pub fn quarantine_file_with_dir(
         return Err(ResponseError::ProtectedPath(source.path));
     }
     let metadata = source.file.metadata()?;
-    let actual_sha256 = hash_file(&mut source.file)?;
+    if metadata.len() > MAX_QUARANTINE_FILE_BYTES {
+        return Err(ResponseError::InvalidInput(format!(
+            "quarantine source exceeds maximum size of {MAX_QUARANTINE_FILE_BYTES} bytes"
+        )));
+    }
+    let actual_sha256 = hash_file_bounded(&mut source.file, MAX_QUARANTINE_FILE_BYTES)?;
     if !requested_sha256.is_empty() && !actual_sha256.eq_ignore_ascii_case(requested_sha256) {
         return Err(ResponseError::InvalidInput(
             "sha256 does not match quarantine source content".to_string(),
@@ -678,11 +695,15 @@ fn move_quarantine_source(
     if err.kind() != ErrorKind::CrossesDevices {
         return Err(err.into());
     }
-    let mut destination =
-        create_destination_exclusive(quarantine_parent, quarantine_name, quarantine_path)?;
-    source.file.seek(SeekFrom::Start(0))?;
-    std::io::copy(&mut source.file, &mut destination)?;
-    destination.sync_all()?;
+    let file_size = source.file.metadata()?.len();
+    ensure_quarantine_size(file_size)?;
+    copy_quarantine_source(
+        &mut source.file,
+        quarantine_parent,
+        quarantine_name,
+        quarantine_path,
+        file_size,
+    )?;
     Ok(false)
 }
 
@@ -696,11 +717,15 @@ fn move_quarantine_source(
     match rename_windows_handle(&source.file, quarantine_parent, quarantine_name) {
         Ok(()) => Ok(true),
         Err(err) if err.kind() == ErrorKind::CrossesDevices || err.raw_os_error() == Some(17) => {
-            let mut destination =
-                create_destination_exclusive(quarantine_parent, quarantine_name, quarantine_path)?;
-            source.file.seek(SeekFrom::Start(0))?;
-            std::io::copy(&mut source.file, &mut destination)?;
-            destination.sync_all()?;
+            let file_size = source.file.metadata()?.len();
+            ensure_quarantine_size(file_size)?;
+            copy_quarantine_source(
+                &mut source.file,
+                quarantine_parent,
+                quarantine_name,
+                quarantine_path,
+                file_size,
+            )?;
             Ok(false)
         }
         Err(err) => Err(err.into()),
@@ -716,6 +741,139 @@ fn move_quarantine_source(
 ) -> ResponseResult<bool> {
     fs::rename(&source.path, quarantine_path)?;
     Ok(true)
+}
+
+fn ensure_quarantine_size(file_size: u64) -> ResponseResult<()> {
+    if file_size > MAX_QUARANTINE_FILE_BYTES {
+        return Err(ResponseError::InvalidInput(format!(
+            "quarantine source exceeds maximum size of {MAX_QUARANTINE_FILE_BYTES} bytes"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(any(unix, windows))]
+fn copy_quarantine_source(
+    source: &mut File,
+    quarantine_parent: &SecureParent,
+    quarantine_name: &std::ffi::OsStr,
+    quarantine_path: &Path,
+    file_size: u64,
+) -> ResponseResult<()> {
+    let mut destination =
+        create_destination_exclusive(quarantine_parent, quarantine_name, quarantine_path)?;
+    let result = (|| -> ResponseResult<()> {
+        ensure_cross_device_capacity(&destination, quarantine_parent, quarantine_path, file_size)?;
+        source.seek(SeekFrom::Start(0))?;
+        let copied = std::io::copy(
+            &mut source.take(file_size.saturating_add(1)),
+            &mut destination,
+        )?;
+        if copied != file_size {
+            return Err(ResponseError::InvalidInput(
+                "quarantine source size changed during cross-device copy".to_string(),
+            ));
+        }
+        destination.sync_all()?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = remove_created_destination(
+            quarantine_parent,
+            quarantine_name,
+            quarantine_path,
+            &destination,
+        );
+    }
+    result
+}
+
+#[cfg(any(unix, windows))]
+fn ensure_cross_device_capacity(
+    destination: &File,
+    destination_parent: &SecureParent,
+    destination_path: &Path,
+    file_size: u64,
+) -> ResponseResult<()> {
+    #[cfg(test)]
+    let available = TEST_DESTINATION_AVAILABLE_BYTES.with(|value| value.get());
+    #[cfg(not(test))]
+    let available: Option<u64> = None;
+
+    let available = match available {
+        Some(value) => value,
+        None => destination_available_bytes(destination, destination_parent, destination_path)?,
+    };
+    let required = file_size.saturating_add(QUARANTINE_FREE_SPACE_RESERVE_BYTES);
+    if available < required {
+        return Err(ResponseError::InvalidInput(format!(
+            "insufficient quarantine destination free space: {available} bytes available, {required} required"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn destination_available_bytes(file: &File, _parent: &File, _path: &Path) -> ResponseResult<u64> {
+    let mut stats = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    if unsafe { libc::fstatvfs(file.as_raw_fd(), stats.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let stats = unsafe { stats.assume_init() };
+    Ok((stats.f_bavail as u64).saturating_mul(stats.f_frsize as u64))
+}
+
+#[cfg(windows)]
+fn destination_available_bytes(file: &File, _parent: &File, _path: &Path) -> ResponseResult<u64> {
+    // Query the volume-GUID root resolved from the secured destination handle;
+    // unlike a DOS path, this cannot be redirected by an ancestor junction swap.
+    let mut buffer = vec![0_u16; 512];
+    let length = loop {
+        let length = unsafe {
+            GetFinalPathNameByHandleW(
+                HANDLE(file.as_raw_handle()),
+                &mut buffer,
+                GETFINALPATHNAMEBYHANDLE_FLAGS(FILE_NAME_NORMALIZED.0 | VOLUME_NAME_GUID.0),
+            )
+        } as usize;
+        if length == 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        if length < buffer.len() {
+            break length;
+        }
+        buffer.resize(length + 1, 0);
+    };
+
+    const VOLUME_GUID_PREFIX: &[u16] = &[92, 92, 63, 92, 86, 111, 108, 117, 109, 101, 123];
+    let path = &buffer[..length];
+    let close_brace = path
+        .iter()
+        .position(|character| *character == b'}' as u16)
+        .filter(|index| path.starts_with(VOLUME_GUID_PREFIX) && path.get(index + 1) == Some(&92))
+        .ok_or_else(|| {
+            ResponseError::InvalidInput(
+                "failed to resolve quarantine destination volume GUID root".to_string(),
+            )
+        })?;
+    let mut volume_root = path[..=close_brace + 1].to_vec();
+    volume_root.push(0);
+
+    let mut available = 0_u64;
+    unsafe {
+        GetDiskFreeSpaceExW(
+            windows::core::PCWSTR(volume_root.as_ptr()),
+            Some(&mut available),
+            None,
+            None,
+        )
+    }
+    .map_err(|err| {
+        ResponseError::InvalidInput(format!(
+            "failed to query quarantine destination space: {err}"
+        ))
+    })?;
+    Ok(available)
 }
 
 #[cfg(windows)]
@@ -780,7 +938,7 @@ fn verify_quarantine_payload_handle(
         ));
     }
     file.seek(SeekFrom::Start(0))?;
-    if hash_file(file)? != sha256 {
+    if hash_file_bounded(file, MAX_QUARANTINE_FILE_BYTES)? != sha256 {
         return Err(ResponseError::InvalidInput(
             "quarantine payload changed before provenance was recorded".to_string(),
         ));
@@ -1167,12 +1325,23 @@ fn write_manifest_atomic(path: &Path, manifest: &QuarantineManifest) -> Response
 }
 
 fn hash_file(file: &mut File) -> ResponseResult<String> {
+    hash_file_bounded(file, u64::MAX)
+}
+
+fn hash_file_bounded(file: &mut File, max_bytes: u64) -> ResponseResult<String> {
     let mut hasher = Sha256::new();
     let mut buffer = [0_u8; 8192];
+    let mut total = 0_u64;
     loop {
         let read = file.read(&mut buffer)?;
         if read == 0 {
             break;
+        }
+        total = total.saturating_add(read as u64);
+        if total > max_bytes {
+            return Err(ResponseError::InvalidInput(format!(
+                "quarantine source exceeds maximum size of {max_bytes} bytes"
+            )));
         }
         hasher.update(&buffer[..read]);
     }
