@@ -38,6 +38,7 @@ use crate::ProtectedList;
 pub enum Signal {
     SIGSTOP,
     SIGKILL,
+    SIGCONT,
 }
 
 #[derive(Debug, Clone)]
@@ -51,6 +52,12 @@ pub struct KillReport {
 pub trait ProcessIntrospector {
     fn children_of(&self, pid: u32) -> Vec<u32>;
     fn process_name(&self, pid: u32) -> Option<String>;
+    fn process_name_before_signal(&self, pid: u32) -> Option<String> {
+        self.process_name(pid)
+    }
+    fn process_start_time(&self, _pid: u32) -> Option<u64> {
+        None
+    }
 }
 
 pub trait SignalSender {
@@ -91,6 +98,21 @@ impl ProcessIntrospector for ProcfsIntrospector {
             Some(name.to_string())
         }
     }
+
+    fn process_start_time(&self, pid: u32) -> Option<u64> {
+        let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        parse_linux_start_time(&stat)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn parse_linux_start_time(stat: &str) -> Option<u64> {
+    stat.rsplit_once(')')?
+        .1
+        .split_whitespace()
+        .nth(19)?
+        .parse()
+        .ok()
 }
 
 // ---- macOS kinfo_proc byte offsets (arm64/x86_64) ----
@@ -159,6 +181,14 @@ impl ProcessIntrospector for MacosProcessIntrospector {
 
     fn process_name(&self, pid: u32) -> Option<String> {
         self.name_map.get(&pid).cloned()
+    }
+
+    fn process_name_before_signal(&self, pid: u32) -> Option<String> {
+        process_name_macos(pid)
+    }
+
+    fn process_start_time(&self, pid: u32) -> Option<u64> {
+        process_start_time_macos(pid)
     }
 }
 
@@ -248,6 +278,32 @@ impl ProcessIntrospector for ProcfsIntrospector {
     fn process_name(&self, pid: u32) -> Option<String> {
         process_name_macos(pid)
     }
+
+    fn process_start_time(&self, pid: u32) -> Option<u64> {
+        process_start_time_macos(pid)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn process_start_time_macos(pid: u32) -> Option<u64> {
+    let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::uninit();
+    let size = std::mem::size_of::<libc::proc_bsdinfo>();
+    let read = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            info.as_mut_ptr().cast(),
+            size as libc::c_int,
+        )
+    };
+    if read != size as libc::c_int {
+        return None;
+    }
+    let info = unsafe { info.assume_init() };
+    info.pbi_start_tvsec
+        .checked_mul(1_000_000)?
+        .checked_add(info.pbi_start_tvusec)
 }
 
 #[cfg(target_os = "macos")]
@@ -293,6 +349,10 @@ impl ProcessIntrospector for ProcfsIntrospector {
     }
 
     fn process_name(&self, _pid: u32) -> Option<String> {
+        None
+    }
+
+    fn process_start_time(&self, _pid: u32) -> Option<u64> {
         None
     }
 }
@@ -729,6 +789,7 @@ impl SignalSender for NixSignalSender {
         let nix_signal = match signal {
             Signal::SIGSTOP => NixSignal::SIGSTOP,
             Signal::SIGKILL => NixSignal::SIGKILL,
+            Signal::SIGCONT => NixSignal::SIGCONT,
         };
 
         match kill(Pid::from_raw(pid as i32), nix_signal) {
@@ -820,17 +881,14 @@ pub fn kill_process_tree_with_budget(
         )));
     }
 
-    // Never let the agent be steered into terminating itself, even if
-    // process-name resolution fails open. The local detection path guards this
-    // at its caller; enforce it inside the primitive so command-driven kills
-    // (which do not run that check) are covered too.
-    if pid == std::process::id() {
+    if unix_pid_is_always_protected(pid) {
         return Err(ResponseError::ProtectedProcess(pid));
     }
 
     if is_pid_protected(pid, protected, introspector) {
         return Err(ResponseError::ProtectedProcess(pid));
     }
+    let root_identity = process_identity(pid, introspector);
 
     // Bound the blast radius BEFORE emitting any signal: enumerate the tree with
     // a hard descendant cap and fail closed if it is exceeded. This is done
@@ -858,11 +916,10 @@ pub fn kill_process_tree_with_budget(
     // have exited and its PID been reused (possibly by the agent itself or a
     // protected process). Re-checking self and protection here keeps the
     // check->signal window as tight as it was before enumeration was hoisted.
-    // (Full start-time/pidfd identity binding is the tracked P1 follow-up.)
-    if pid == std::process::id() {
+    if unix_pid_is_always_protected(pid) {
         return Err(ResponseError::ProtectedProcess(pid));
     }
-    if is_pid_protected(pid, protected, introspector) {
+    if is_pid_protected_before_signal(pid, protected, introspector) {
         return Err(ResponseError::ProtectedProcess(pid));
     }
 
@@ -872,28 +929,65 @@ pub fn kill_process_tree_with_budget(
         ));
     }
 
-    let _ = sender.send(pid, Signal::SIGSTOP);
-
     let mut killed = Vec::new();
     let mut skipped = Vec::new();
+    let mut failed = Vec::new();
+    let mut root_identity_failed = false;
+    let mut root_stopped = false;
 
-    for child in descendants.iter().rev() {
-        if is_pid_protected(*child, protected, introspector) {
+    if identity_matches(pid, &root_identity, introspector) {
+        root_stopped = sender.send(pid, Signal::SIGSTOP).is_ok();
+    } else {
+        failed.push(pid);
+        root_identity_failed = true;
+    }
+
+    for (child, identity) in descendants.iter().rev() {
+        if unix_pid_is_always_protected(*child)
+            || identity.name.is_none()
+            || identity
+                .name
+                .as_deref()
+                .is_some_and(|name| protected.is_protected_process(name))
+            || is_pid_protected_before_signal(*child, protected, introspector)
+        {
             skipped.push(*child);
             continue;
         }
-        let _ = sender.send(*child, Signal::SIGKILL);
-        killed.push(*child);
+        if !identity_matches(*child, identity, introspector) {
+            failed.push(*child);
+            continue;
+        }
+        match sender.send(*child, Signal::SIGKILL) {
+            Ok(()) => killed.push(*child),
+            Err(_) => failed.push(*child),
+        }
     }
 
-    let _ = sender.send(pid, Signal::SIGKILL);
-    killed.push(pid);
+    if !root_identity_failed {
+        if identity_matches(pid, &root_identity, introspector) {
+            match sender.send(pid, Signal::SIGKILL) {
+                Ok(()) => killed.push(pid),
+                Err(_) => {
+                    failed.push(pid);
+                    if root_stopped {
+                        let _ = sender.send(pid, Signal::SIGCONT);
+                    }
+                }
+            }
+        } else {
+            failed.push(pid);
+            if root_stopped {
+                let _ = sender.send(pid, Signal::SIGCONT);
+            }
+        }
+    }
 
     Ok(KillReport {
         target_pid: pid,
         killed_pids: killed,
         skipped_protected_pids: skipped,
-        failed_pids: Vec::new(),
+        failed_pids: failed,
     })
 }
 
@@ -903,6 +997,11 @@ pub fn kill_process_tree_with_budget(
 #[cfg(any(not(target_os = "windows"), test))]
 const MAX_UNIX_TREE_DESCENDANTS: usize = 4_096;
 
+#[cfg(any(not(target_os = "windows"), test))]
+fn unix_pid_is_always_protected(pid: u32) -> bool {
+    pid <= 2 || pid == std::process::id()
+}
+
 /// Breadth-first enumerate descendants of `pid` into `out`, deduplicated via
 /// `seen`. Returns `false` if the `max` cap was reached (the tree is larger
 /// than we are willing to signal); returns `true` when the full tree fit.
@@ -910,7 +1009,7 @@ const MAX_UNIX_TREE_DESCENDANTS: usize = 4_096;
 fn collect_descendants(
     pid: u32,
     introspector: &dyn ProcessIntrospector,
-    out: &mut Vec<u32>,
+    out: &mut Vec<(u32, UnixProcessIdentity)>,
     seen: &mut HashSet<u32>,
     max: usize,
 ) -> bool {
@@ -922,7 +1021,15 @@ fn collect_descendants(
                 if out.len() >= max {
                     return false;
                 }
-                out.push(child);
+                let identity = if unix_pid_is_always_protected(child) {
+                    UnixProcessIdentity {
+                        start_time: None,
+                        name: None,
+                    }
+                } else {
+                    process_identity(child, introspector)
+                };
+                out.push((child, identity));
                 queue.push_back(child);
             }
         }
@@ -931,18 +1038,56 @@ fn collect_descendants(
 }
 
 #[cfg(any(not(target_os = "windows"), test))]
+struct UnixProcessIdentity {
+    start_time: Option<u64>,
+    name: Option<String>,
+}
+
+#[cfg(any(not(target_os = "windows"), test))]
+fn process_identity(pid: u32, introspector: &dyn ProcessIntrospector) -> UnixProcessIdentity {
+    UnixProcessIdentity {
+        start_time: introspector.process_start_time(pid),
+        name: introspector.process_name(pid),
+    }
+}
+
+#[cfg(any(not(target_os = "windows"), test))]
+fn identity_matches(
+    pid: u32,
+    expected: &UnixProcessIdentity,
+    introspector: &dyn ProcessIntrospector,
+) -> bool {
+    expected.start_time.is_some() && introspector.process_start_time(pid) == expected.start_time
+}
+
+#[cfg(any(not(target_os = "windows"), test))]
 fn is_pid_protected(
     pid: u32,
     protected: &ProtectedList,
     introspector: &dyn ProcessIntrospector,
 ) -> bool {
-    if pid == 1 {
+    if unix_pid_is_always_protected(pid) {
         return true;
     }
     introspector
         .process_name(pid)
         .map(|name| protected.is_protected_process(&name))
-        .unwrap_or(false)
+        .unwrap_or(true)
+}
+
+#[cfg(any(not(target_os = "windows"), test))]
+fn is_pid_protected_before_signal(
+    pid: u32,
+    protected: &ProtectedList,
+    introspector: &dyn ProcessIntrospector,
+) -> bool {
+    if unix_pid_is_always_protected(pid) {
+        return true;
+    }
+    introspector
+        .process_name_before_signal(pid)
+        .map(|name| protected.is_protected_process(&name))
+        .unwrap_or(true)
 }
 
 #[cfg(test)]
@@ -962,6 +1107,10 @@ fn tree_size_budget_crossing_is_denied_before_any_signal() {
 
         fn process_name(&self, _pid: u32) -> Option<String> {
             Some("malware".to_string())
+        }
+
+        fn process_start_time(&self, pid: u32) -> Option<u64> {
+            Some(pid as u64)
         }
     }
 
