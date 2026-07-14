@@ -1,7 +1,18 @@
 /* eguard — TCP connect probe
  *
  * Hook:    tracepoint/sock/inet_sock_set_state
- * Fires:   only on SYN_SENT → ESTABLISHED (outbound connect success)
+ * Fires:   when a socket LEAVES SYN_SENT — i.e. on the resolution of an
+ *          outbound connect attempt, whether it established
+ *          (SYN_SENT -> ESTABLISHED) or failed (SYN_SENT -> CLOSE via RST or
+ *          connect timeout).
+ *
+ * The old probe fired only on SYN_SENT -> ESTABLISHED, so it silently dropped
+ * every beacon to an endpoint that never completed the handshake — exactly the
+ * common IOC case (sinkholed, firewalled, offline, or RST'd C2). Widening the
+ * trigger to "left SYN_SENT" records the failed attempt too, while the socket's
+ * inet_daddr/inet_dport are still populated (they are set before SYN_SENT is
+ * entered and are not cleared until the socket is destroyed). Each outbound
+ * connect therefore emits exactly one event, at the point its outcome is known.
  *
  * Payload: family(2) + sport(2) + dport(2) + proto(1) + pad(1)
  *        + saddr_v4(4) + daddr_v4(4) + saddr_v6(16) + daddr_v6(16)
@@ -18,6 +29,10 @@
  *   +36  daddr[4]
  *   +40  saddr_v6[16]
  *   +56  daddr_v6[16]
+ *
+ * The destination address/port are populated on the socket before the state is
+ * moved to SYN_SENT (tcp_v4_connect/tcp_v6_connect set inet_daddr/inet_dport
+ * prior to tcp_connect()->tcp_set_state()), so daddr/dport are valid here.
  */
 #include "bpf_helpers.h"
 
@@ -46,7 +61,8 @@ int eguard_inet_sock_set_state(void *ctx)
     bpf_probe_read(&oldstate, sizeof(oldstate), (__u8 *)ctx + 16);
     bpf_probe_read(&newstate, sizeof(newstate), (__u8 *)ctx + 20);
 
-    if (oldstate != TCP_SYN_SENT || newstate != TCP_ESTABLISHED)
+    /* Resolution of an outbound connect attempt (success or failure). */
+    if (oldstate != TCP_SYN_SENT)
         return 0;
 
     EGUARD_ALLOC_EVENT(tcp_connect_event, e);
@@ -59,9 +75,15 @@ int eguard_inet_sock_set_state(void *ctx)
     bpf_probe_read(&proto,       2,  (__u8 *)ctx + 30);
     e->protocol = (__u8)proto;
 
-    /* Tracepoint ports are host-order; convert to network order for parser. */
-    e->sport = bpf_ntohs(e->sport);
-    e->dport = bpf_ntohs(e->dport);
+    /* Record the outcome in the otherwise-spare pad byte (wire layout is
+     * unchanged; the userspace codec ignores it): 1 = established,
+     * 0 = failed/never-established (dead/sinkholed/firewalled C2 beacon). */
+    e->_pad = (newstate == TCP_ESTABLISHED) ? 1 : 0;
+
+    /* Tracepoint sport/dport are already host-order u16; the userspace codec
+     * reads them as plain little-endian values, so pass them through unchanged.
+     * (The previous bpf_ntohs() here byte-swapped them, turning e.g. dport 443
+     * into 47873.) */
 
     bpf_probe_read(&e->saddr_v4, 4,  (__u8 *)ctx + 32);
     bpf_probe_read(&e->daddr_v4, 4,  (__u8 *)ctx + 36);
