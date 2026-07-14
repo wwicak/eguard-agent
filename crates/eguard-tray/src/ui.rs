@@ -172,14 +172,13 @@ fn load_ui_state() -> UiState {
         .len();
     let diagnostics = build_diagnostics();
     let stale = diagnostics.iter().any(|diag| {
-        matches!(diag.name.as_str(), "Bookmarks" | "Sessions")
-            && diag.age_seconds.map(|age| age > 300).unwrap_or(false)
+        diag.name == "Sessions" && diag.age_seconds.map(|age| age > 300).unwrap_or(false)
     });
     let tray_heartbeat_stale = diagnostics.iter().any(|diag| {
         diag.name == "Tray heartbeat" && diag.age_seconds.map(|age| age > 20).unwrap_or(true)
     });
     if stale {
-        errors.push("Agent ZTNA state looks stale: bookmarks/sessions have not updated for more than 5 minutes".to_string());
+        errors.push("Agent ZTNA session state looks stale: sessions have not updated for more than 5 minutes".to_string());
     }
     if tray_heartbeat_stale {
         errors.push("Tray heartbeat looks stale; tray watchdog may restart it soon".to_string());
@@ -390,16 +389,16 @@ fn manager_html() -> String {
 <style>
 :root { font-family: Segoe UI, Arial, sans-serif; font-size:12px; color:#172033; background:#f5f7fb; }
 html, body { margin:0; height:100%; overflow:hidden; }
-body { display:flex; flex-direction:column; }
+body { display:flex; flex-direction:column; min-height:0; }
 header { display:none; }
 h1 { font-size:14px; margin:0; }
-main { padding:10px 12px 18px; flex:1; overflow:hidden; }
+main { padding:10px 12px 18px; flex:1; min-height:0; overflow:hidden; display:flex; flex-direction:column; }
 .tabs { display:flex; align-items:center; gap:6px; margin-bottom:10px; }
 .tab-spacer { flex:1; }
 .tabbtn { border:1px solid #c9d3e2; background:white; padding:6px 10px; border-radius:6px; cursor:pointer; font-size:11px; }
 .tabbtn.active { background:#1769e0; border-color:#1769e0; color:white; }
 .tab { display:none; }
-.tab.active { display:block; height:100%; overflow:hidden; }
+.tab.active { display:flex; flex-direction:column; flex:1; min-height:0; overflow:hidden; }
 .card { background:white; border:1px solid #dfe5ef; border-radius:8px; box-shadow:0 1px 2px rgba(16,33,63,.06); margin-bottom:8px; overflow:hidden; }
 .card h2 { font-size:12px; margin:0; padding:7px 10px; border-bottom:1px solid #edf1f7; background:#fbfcff; }
 .content { padding:8px 10px; }
@@ -429,8 +428,9 @@ button:disabled { opacity:.55; cursor:not-allowed; }
 pre { white-space:pre-wrap; word-break:break-word; background:#0f172a; color:#dbeafe; border-radius:8px; padding:10px; max-height:220px; overflow:auto; font-size:11px; margin:0 0 14px 0; }
 .log-title { margin:12px 0 6px; font-weight:700; }
 #logbox { padding-bottom:28px; }
-.app-manager { display:grid; grid-template-columns:300px 1fr; height:calc(100vh - 178px); min-height:360px; overflow:hidden; }
-.app-list { border-right:1px solid #dfe5ef; overflow-y:auto; overflow-x:hidden; background:#f8fafc; }
+#applications .card:last-child { flex:1; min-height:0; display:flex; flex-direction:column; margin-bottom:0; }
+.app-manager { display:grid; grid-template-columns:300px 1fr; flex:1; min-height:0; overflow:hidden; }
+.app-list { border-right:1px solid #dfe5ef; overflow-y:auto; overflow-x:hidden; background:#f8fafc; min-height:0; max-height:100%; overscroll-behavior:contain; padding-bottom:16px; }
 .app-list-item { padding:8px 10px; border-bottom:1px solid #e8eef6; cursor:pointer; }
 .app-list-item:hover { background:#eef5ff; }
 .app-list-item.selected { background:#dbeafe; box-shadow:inset 4px 0 #1769e0; }
@@ -442,7 +442,7 @@ pre { white-space:pre-wrap; word-break:break-word; background:#0f172a; color:#db
 .detail-title h2 { padding:0; border:0; background:transparent; font-size:17px; }
 .detail-grid { display:grid; grid-template-columns:130px 1fr; gap:6px 10px; margin-top:10px; }
 .detail-key { color:#687588; }
-@media(max-width: 850px) { .app-manager { grid-template-columns:1fr; max-height:none; } .app-list { max-height:300px; border-right:0; border-bottom:1px solid #dfe5ef; } }
+@media(max-width: 850px) { .app-manager { grid-template-columns:1fr; grid-template-rows:minmax(120px, min(42vh, 280px)) minmax(120px, 1fr); } .app-list { max-height:none; border-right:0; border-bottom:1px solid #dfe5ef; } }
 </style>
 </head>
 <body>
@@ -466,7 +466,7 @@ pre { white-space:pre-wrap; word-break:break-word; background:#0f172a; color:#db
   </section>
 
   <section id="logs" class="tab">
-    <section class="card"><h2>Logs</h2><div class="content" id="logbox">Loading...</div></section>
+    <section class="card"><h2>Logs</h2><div class="content"><label><input id="logAutoRefresh" type="checkbox" checked> Auto refresh</label> <button onclick="copyLogs()">Copy logs</button></div><div class="content" id="logbox">Loading...</div></section>
     <div style="height:24px"></div>
   </section>
   <div style="height:16px"></div>
@@ -477,6 +477,7 @@ const retryUntil = new Map();
 function esc(v){ return String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function send(msg){ if(msg.type==='open_app') optimistic.set(msg.app_id, Date.now()); window.ipc.postMessage(JSON.stringify(msg)); }
 function connectApp(id){ send({type:'open_app', app_id:id}); }
+function copyLogs(){ const text = Array.from(document.querySelectorAll('#logbox pre')).map(p => p.innerText).join('\n\n'); navigator.clipboard.writeText(text).catch(() => {}); }
 function retryApp(id){ const now=Date.now(); const until=retryUntil.get(id)||0; if(now < until) return; optimistic.delete(id); retryUntil.set(id, now + 10000); send({type:'retry_app', app_id:id}); }
 function disconnectSession(id){ send({type:'disconnect', session_id:id}); }
 function age(s){ return s == null ? 'n/a' : (s < 60 ? s + 's ago' : Math.round(s/60) + 'm ago'); }
@@ -538,7 +539,7 @@ window.__EGUARD_SET_STATE = function(s){
   Array.from(document.querySelectorAll('#logbox pre')).forEach((p,i) => { if(oldLogScroll[i] != null) p.scrollTop = oldLogScroll[i]; });
 }
 window.__EGUARD_SET_STATE(null);
-setInterval(() => send({type:'refresh'}), 3000);
+setInterval(() => { const auto = document.getElementById('logAutoRefresh'); if(!auto || auto.checked || document.getElementById('logs').classList.contains('active') === false) send({type:'refresh'}); }, 3000);
 setInterval(() => { if(window.__lastState) window.__EGUARD_SET_STATE(window.__lastState); }, 1000);
 send({type:'refresh'});
 </script>

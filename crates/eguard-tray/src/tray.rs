@@ -212,239 +212,34 @@ fn build_menu() -> Result<(Menu, Vec<MenuAction>)> {
     menu.append(&MenuItem::new(&connection_label, false, None))?;
     menu.append(&PredefinedMenuItem::separator())?;
 
-    let favorites_menu = Submenu::new("Favorites", true);
-    let favorite_bookmarks: Vec<_> = bookmarks
-        .bookmarks
-        .iter()
-        .filter(|bookmark| preferences.is_favorite(&bookmark.app_id))
-        .collect();
-    if favorite_bookmarks.is_empty() {
-        favorites_menu.append(&MenuItem::new("No pinned favorites", false, None))?;
-    } else {
-        for bookmark in favorite_bookmarks {
-            let app_menu =
-                build_bookmark_submenu(bookmark, &pam_launches, &preferences, &mut actions)?;
-            favorites_menu.append(&app_menu)?;
-        }
-    }
-    menu.append(&favorites_menu)?;
-
-    let recent_menu = Submenu::new("Recent PAM Targets", true);
-    let recent_entries: Vec<_> = preferences
-        .recent_launches
-        .iter()
-        .filter(|entry| entry.pam)
-        .collect();
-    if recent_entries.is_empty() {
-        recent_menu.append(&MenuItem::new("No recent PAM launches", false, None))?;
-    } else {
-        for recent in recent_entries {
-            let Some(bookmark) = bookmarks
-                .bookmarks
-                .iter()
-                .find(|bookmark| bookmark.app_id == recent.app_id)
-            else {
-                continue;
-            };
-            let launcher = recent.launcher.as_deref();
-            let action = match launcher {
-                Some(value)
-                    if !value.trim().is_empty()
-                        && !value.eq_ignore_ascii_case("ssh")
-                        && !value.eq_ignore_ascii_case("openssh") =>
-                {
-                    MenuAction::LaunchBookmarkWithLauncher {
-                        app_id: bookmark.app_id.clone(),
-                        launcher: value.to_string(),
-                    }
-                }
-                _ => MenuAction::LaunchBookmarkDefault {
-                    app_id: bookmark.app_id.clone(),
-                },
-            };
-            let label = format!(
-                "{} -> {}{}",
-                app_label(
-                    bookmark,
-                    LaunchRequest::parse(&bookmark.launch_uri).ok().as_ref()
-                ),
-                blank_fallback(&recent.target, "unknown"),
-                recent_launcher_suffix(recent),
-            );
-            let item = MenuItem::with_id(action.id(), label, bookmark.launcher_supported, None);
-            actions.push(action);
-            recent_menu.append(&item)?;
-        }
-    }
-    menu.append(&recent_menu)?;
-
-    let apps_menu = Submenu::new("Applications", true);
     if bookmarks.bookmarks.is_empty() {
-        apps_menu.append(&MenuItem::new("No applications", false, None))?;
+        menu.append(&MenuItem::new("No applications", false, None))?;
     } else {
+        menu.append(&MenuItem::new("Applications", false, None))?;
         for bookmark in &bookmarks.bookmarks {
-            let app_menu =
-                build_bookmark_submenu(bookmark, &pam_launches, &preferences, &mut actions)?;
-            apps_menu.append(&app_menu)?;
-        }
-    }
-    menu.append(&apps_menu)?;
-
-    let token_menu = Submenu::new("Paste Temporary Token", true);
-    let pam_bookmarks: Vec<_> = bookmarks
-        .bookmarks
-        .iter()
-        .filter(|bookmark| {
-            LaunchRequest::parse(&bookmark.launch_uri)
-                .ok()
-                .and_then(|request| request.credential_id)
-                .is_some()
-        })
-        .collect();
-    if pam_bookmarks.is_empty() {
-        token_menu.append(&MenuItem::new("No PAM-enabled applications", false, None))?;
-    } else {
-        for bookmark in pam_bookmarks {
-            let action = MenuAction::LaunchBookmarkWithTempToken {
+            let parsed = LaunchRequest::parse(&bookmark.launch_uri).ok();
+            let action = MenuAction::LaunchBookmarkDefault {
                 app_id: bookmark.app_id.clone(),
             };
-            let parsed = LaunchRequest::parse(&bookmark.launch_uri).ok();
-            let item = MenuItem::with_id(
-                action.id(),
-                format!("{}", app_label(bookmark, parsed.as_ref())),
-                bookmark.launcher_supported,
-                None,
-            );
+            let label = app_label(bookmark, parsed.as_ref());
+            let item = MenuItem::with_id(action.id(), label, bookmark.launcher_supported, None);
             actions.push(action);
-            token_menu.append(&item)?;
+            menu.append(&item)?;
         }
     }
-    menu.append(&token_menu)?;
-
-    let requests_menu = Submenu::new("Pending / Recent Launch Requests", true);
-    if pending_entries.is_empty() {
-        requests_menu.append(&MenuItem::new("No pending launch requests", false, None))?;
-    } else {
-        for entry in pending_entries {
-            let entry_menu = Submenu::new(entry.app_name_or_fallback(&bookmarks), true);
-            entry_menu.append(&MenuItem::new(
-                format!("State: {}", friendly_launch_status(&entry.status)),
-                false,
-                None,
-            ))?;
-            entry_menu.append(&MenuItem::new(
-                format!("Target: {}", blank_fallback(&entry.target, "unknown")),
-                false,
-                None,
-            ))?;
-            entry_menu.append(&MenuItem::new(
-                format!("Detail: {}", blank_fallback(&entry.message, "n/a")),
-                false,
-                None,
-            ))?;
-            if entry.status.eq_ignore_ascii_case("waiting_for_approval") {
-                entry_menu.append(&PredefinedMenuItem::separator())?;
-                let action = MenuAction::LaunchBookmarkWithTempToken {
-                    app_id: entry.app_id.clone(),
-                };
-                let item = MenuItem::with_id(action.id(), "Paste Temporary Token...", true, None);
-                actions.push(action);
-                entry_menu.append(&item)?;
-            }
-            requests_menu.append(&entry_menu)?;
-        }
-    }
-    menu.append(&requests_menu)?;
-
-    let sessions_menu = Submenu::new("Active Sessions", true);
-    if sessions.is_empty() {
-        sessions_menu.append(&MenuItem::new("No active sessions", false, None))?;
-    } else {
-        for session in &sessions {
-            let session_menu = Submenu::new(session.app_name_or_app_id(), true);
-            let stats = format_session_stats(session);
-            session_menu.append(&MenuItem::new(&stats, false, None))?;
-            session_menu.append(&MenuItem::new(
-                format!(
-                    "Transport: {}",
-                    blank_fallback(&session.transport, "unknown")
-                ),
-                false,
-                None,
-            ))?;
-            session_menu.append(&MenuItem::new(
-                format!("Status: {}", blank_fallback(&session.status, "unknown")),
-                false,
-                None,
-            ))?;
-            if !session.session_id.trim().is_empty() {
-                session_menu.append(&PredefinedMenuItem::separator())?;
-                let action = MenuAction::DisconnectSession(session.session_id.clone());
-                let item = MenuItem::with_id(
-                    action.id(),
-                    format!("Disconnect {}", session.app_name_or_app_id()),
-                    true,
-                    None,
-                );
-                actions.push(action);
-                session_menu.append(&item)?;
-            }
-            sessions_menu.append(&session_menu)?;
-        }
-    }
-    menu.append(&sessions_menu)?;
-
-    let pam_menu = Submenu::new("PAM Launches", true);
-    if pam_launches.entries.is_empty() {
-        pam_menu.append(&MenuItem::new("No tracked PAM launches", false, None))?;
-    } else {
-        for entry in &pam_launches.entries {
-            let entry_menu = Submenu::new(
-                format!(
-                    "{} · {}",
-                    entry.app_id,
-                    entry.launcher_kind.to_ascii_uppercase()
-                ),
-                true,
-            );
-            entry_menu.append(&MenuItem::new(
-                format!("Target: {}", blank_fallback(&entry.target_host, "unknown")),
-                false,
-                None,
-            ))?;
-            if let Some(pid) = entry.process_id {
-                entry_menu.append(&MenuItem::new(format!("PID: {pid}"), false, None))?;
-            }
-            entry_menu.append(&PredefinedMenuItem::separator())?;
-            let action = MenuAction::CleanupPamLaunch(entry.checkout_id);
-            let item = MenuItem::with_id(
-                action.id(),
-                format!("Force Check-in / Cleanup #{}", entry.checkout_id),
-                true,
-                None,
-            );
-            actions.push(action);
-            entry_menu.append(&item)?;
-            pam_menu.append(&entry_menu)?;
-        }
-        pam_menu.append(&PredefinedMenuItem::separator())?;
-        let action = MenuAction::CleanupAllPamLaunches;
-        let item = MenuItem::with_id(action.id(), "Cleanup All PAM Launches", true, None);
-        actions.push(action);
-        pam_menu.append(&item)?;
-    }
-    menu.append(&pam_menu)?;
 
     menu.append(&PredefinedMenuItem::separator())?;
 
-    let disconnect_all = MenuItem::with_id(
-        MenuAction::DisconnectAll.id(),
-        "Disconnect All Sessions",
-        !sessions.is_empty(),
-        None,
-    );
-    actions.push(MenuAction::DisconnectAll);
-    menu.append(&disconnect_all)?;
+    if !sessions.is_empty() {
+        let disconnect_all = MenuItem::with_id(
+            MenuAction::DisconnectAll.id(),
+            "Disconnect All",
+            true,
+            None,
+        );
+        actions.push(MenuAction::DisconnectAll);
+        menu.append(&disconnect_all)?;
+    }
 
     let refresh_action = MenuAction::Refresh;
     let refresh = MenuItem::with_id(refresh_action.id(), "Refresh", true, None);
@@ -455,21 +250,6 @@ fn build_menu() -> Result<(Menu, Vec<MenuAction>)> {
     let manager_item = MenuItem::with_id(manager_action.id(), "Manage ZTNA...", true, None);
     actions.push(manager_action);
     menu.append(&manager_item)?;
-
-    let logs_menu = Submenu::new("Logs", true);
-    let open_tray_log = MenuAction::OpenTrayLog;
-    let open_tray_log_item = MenuItem::with_id(open_tray_log.id(), "Open Tray Log", true, None);
-    actions.push(open_tray_log);
-    logs_menu.append(&open_tray_log_item)?;
-    let open_agent_log = MenuAction::OpenAgentLog;
-    let open_agent_log_item = MenuItem::with_id(open_agent_log.id(), "Open Agent Log", true, None);
-    actions.push(open_agent_log);
-    logs_menu.append(&open_agent_log_item)?;
-    let open_log_folder = MenuAction::OpenLogFolder;
-    let open_log_folder_item = MenuItem::with_id(open_log_folder.id(), "Open Log Folder", true, None);
-    actions.push(open_log_folder);
-    logs_menu.append(&open_log_folder_item)?;
-    menu.append(&logs_menu)?;
 
     menu.append(&PredefinedMenuItem::separator())?;
 
