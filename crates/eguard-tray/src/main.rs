@@ -108,8 +108,11 @@ async fn real_main() -> Result<()> {
         Command::CleanupPamLaunch { checkout_id } => cleanup_pam_launch(checkout_id),
         Command::CleanupAllPamLaunches => cleanup_all_pam_launches(),
         Command::Tray => {
-            start_tray_watchdog_if_needed()?;
+            // Clear a marker left by an earlier intentional shutdown before the
+            // watchdog starts. Otherwise the new watchdog can race this process,
+            // observe the old marker, and exit immediately.
             let _ = std::fs::remove_file(tray_shutdown_marker_path()?);
+            start_tray_watchdog_if_needed()?;
             reconcile_pam_launches_on_startup()?;
             tray::run_windows_tray()
         }
@@ -374,7 +377,7 @@ fn start_tray_watchdog_if_needed() -> Result<()> {
 
 #[cfg(target_os = "windows")]
 fn run_tray_watchdog(parent_pid: u32) -> Result<()> {
-    use std::time::{Duration, SystemTime};
+    use std::time::{Duration, Instant, SystemTime};
 
     let heartbeat_path = tray_heartbeat_path()?;
     let shutdown_marker = tray_shutdown_marker_path()?;
@@ -385,34 +388,52 @@ fn run_tray_watchdog(parent_pid: u32) -> Result<()> {
             .filter(|value| *value >= 10)
             .unwrap_or(20),
     );
+    let startup_grace = Duration::from_secs(30);
+    let started_at = Instant::now();
 
     loop {
         std::thread::sleep(Duration::from_secs(5));
         if shutdown_marker.exists() {
-            return Ok(());
-        }
-        if !windows_process_alive(parent_pid) {
+            info!(parent_pid, "tray watchdog exiting after intentional shutdown");
             return Ok(());
         }
 
-        let stale = std::fs::metadata(&heartbeat_path)
+        let parent_alive = windows_process_alive(parent_pid);
+        let heartbeat_matches_parent = std::fs::read_to_string(&heartbeat_path)
+            .ok()
+            .map(|value| value.trim() == parent_pid.to_string())
+            .unwrap_or(false);
+        let heartbeat_age = std::fs::metadata(&heartbeat_path)
             .and_then(|metadata| metadata.modified())
             .ok()
-            .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+            .and_then(|modified| SystemTime::now().duration_since(modified).ok());
+        let heartbeat_stale = heartbeat_age
             .map(|age| age > stale_after)
-            .unwrap_or(false);
-        if !stale {
+            .unwrap_or(true);
+        let unresponsive = started_at.elapsed() > startup_grace
+            && (!heartbeat_matches_parent || heartbeat_stale);
+
+        if parent_alive && !unresponsive {
             continue;
         }
 
-        let _ = windows_kill_process(parent_pid);
-        std::thread::sleep(Duration::from_secs(1));
+        if parent_alive {
+            info!(parent_pid, ?heartbeat_age, heartbeat_matches_parent, "watchdog restarting unresponsive tray");
+            let _ = windows_kill_process(parent_pid);
+            std::thread::sleep(Duration::from_secs(1));
+        } else {
+            info!(parent_pid, "watchdog restarting exited tray");
+        }
+
         let exe = std::env::current_exe().context("resolve current tray executable path")?;
         std::process::Command::new(exe)
             .arg("tray")
+            // The watchdog itself carries this marker. Do not propagate it to
+            // the replacement tray, which must create its own watchdog.
+            .env_remove("EGUARD_TRAY_WATCHDOG_CHILD")
             .creation_flags(CREATE_NO_WINDOW | 0x0000_0008)
             .spawn()
-            .context("restart stale tray process")?;
+            .context("restart unhealthy tray process")?;
         return Ok(());
     }
 }

@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
+use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
@@ -135,6 +136,7 @@ struct UiState {
     pending_requests: Vec<LaunchRequestEntry>,
     command_queue_depth: usize,
     logs: Vec<LogFile>,
+    device: DeviceInfo,
 }
 
 #[derive(Debug, Serialize)]
@@ -152,6 +154,40 @@ struct LogFile {
     path: String,
     ok: bool,
     content: String,
+}
+
+#[derive(Debug, Serialize)]
+struct DeviceInfo {
+    hostname: String,
+    signed_in_user: String,
+    operating_system: String,
+    architecture: String,
+    agent_id: String,
+    agent_mode: String,
+    server_address: String,
+    agent_service: String,
+    agent_config_path: String,
+    agent_binary_path: String,
+    agent_binary_modified: String,
+    tray_version: String,
+    tray_process_id: u32,
+    posture_summary: String,
+    posture_checks: Vec<DevicePostureCheck>,
+    applied_policy: Vec<DevicePolicySetting>,
+}
+
+#[derive(Debug, Serialize)]
+struct DevicePostureCheck {
+    name: String,
+    status: String,
+    detail: String,
+}
+
+#[derive(Debug, Serialize)]
+struct DevicePolicySetting {
+    name: String,
+    value: String,
+    source: String,
 }
 
 fn load_ui_state() -> UiState {
@@ -190,7 +226,7 @@ fn load_ui_state() -> UiState {
     let connecting = pending_requests.iter().any(|entry| {
         entry.status.eq_ignore_ascii_case("connecting")
             || entry.status.eq_ignore_ascii_case("connecting_bastion")
-    }) || command_queue_depth > 0;
+    });
     let (status, status_label) = if !errors.is_empty() && bookmarks.is_empty() && sessions.is_empty() {
         ("error", "State load failed")
     } else if !errors.is_empty() || stale {
@@ -217,6 +253,7 @@ fn load_ui_state() -> UiState {
         pending_requests,
         command_queue_depth,
         logs: load_logs(),
+        device: load_device_info(),
     }
 }
 
@@ -328,6 +365,145 @@ fn build_diagnostics() -> Vec<DiagnosticRow> {
     .collect()
 }
 
+fn load_device_info() -> DeviceInfo {
+    let config_path = Path::new(r"C:\ProgramData\eGuard\agent.conf");
+    let agent_binary = Path::new(r"C:\Program Files\eGuard\eguard-agent.exe");
+    let agent_binary_modified = fs::metadata(agent_binary)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|value| value.as_secs().to_string())
+        .unwrap_or_default();
+    let agent_service = windows_service_state("eGuardAgent");
+    let wireguard_service = windows_service_state("WireGuardTunnel$wg-pnup");
+    let heartbeat_age = file_age_seconds(&tray_heartbeat_path().ok());
+    let session_age = file_age_seconds(&session_state_path().ok());
+    let ztna_enabled = read_agent_config_value(config_path, "ztna", "enabled").unwrap_or_default();
+    let mut posture_checks = vec![
+        posture_check("Agent service", agent_service == "RUNNING", &agent_service),
+        posture_check("Tray responsiveness", heartbeat_age.map(|age| age <= 20).unwrap_or(false), &heartbeat_age.map(|age| format!("Heartbeat {age}s ago")).unwrap_or_else(|| "Heartbeat missing".to_string())),
+        posture_check("Agent configuration", config_path.exists(), if config_path.exists() { "Configuration present" } else { "Configuration missing" }),
+        posture_check("ZTNA policy", ztna_enabled.eq_ignore_ascii_case("true"), if ztna_enabled.eq_ignore_ascii_case("true") { "ZTNA enabled" } else { "ZTNA disabled" }),
+        posture_check("ZTNA state sync", session_age.map(|age| age <= 300).unwrap_or(false), &session_age.map(|age| format!("Session state updated {age}s ago")).unwrap_or_else(|| "Session state missing".to_string())),
+        posture_check("WireGuard tunnel", wireguard_service == "RUNNING", &wireguard_service),
+    ];
+    let posture_summary = if posture_checks.iter().all(|check| check.status == "pass") {
+        "All local posture checks passed"
+    } else {
+        "One or more local posture checks require attention"
+    }.to_string();
+    let policy = |name: &str, section: &str, key: &str| DevicePolicySetting {
+        name: name.to_string(),
+        value: read_agent_config_value(config_path, section, key).unwrap_or_else(|| "Not configured".to_string()),
+        source: "Local applied agent.conf".to_string(),
+    };
+    let applied_policy = vec![
+        policy("Agent mode", "agent", "mode"),
+        policy("Device ownership", "inventory", "ownership"),
+        policy("ZTNA enabled", "ztna", "enabled"),
+        policy("ZTNA idle timeout", "ztna", "idle_timeout_secs"),
+        policy("Policy refresh interval", "control_plane", "policy_refresh_interval_secs"),
+        policy("Compliance check interval", "compliance", "check_interval_secs"),
+        policy("Compliance auto-remediation", "compliance", "auto_remediate"),
+        policy("Autonomous response", "response", "autonomous_response"),
+        policy("Self-protection uninstall prevention", "self_protection", "prevent_uninstall"),
+        policy("Scan files on create", "detection", "scan_on_create"),
+        policy("Memory scanning", "detection", "memory_scan_enabled"),
+        policy("Kernel integrity checks", "detection", "kernel_integrity_enabled"),
+    ];
+    DeviceInfo {
+        hostname: std::env::var("COMPUTERNAME").unwrap_or_else(|_| "Unknown".to_string()),
+        signed_in_user: std::env::var("USERNAME").unwrap_or_else(|_| "Unknown".to_string()),
+        operating_system: windows_version(),
+        architecture: std::env::consts::ARCH.to_string(),
+        agent_id: read_agent_config_value(config_path, "agent", "id").unwrap_or_default(),
+        agent_mode: read_agent_config_value(config_path, "agent", "mode").unwrap_or_default(),
+        server_address: read_agent_config_value(config_path, "agent", "server_addr").unwrap_or_default(),
+        agent_service,
+        agent_config_path: config_path.display().to_string(),
+        agent_binary_path: agent_binary.display().to_string(),
+        agent_binary_modified,
+        tray_version: env!("CARGO_PKG_VERSION").to_string(),
+        tray_process_id: std::process::id(),
+        posture_summary,
+        posture_checks: std::mem::take(&mut posture_checks),
+        applied_policy,
+    }
+}
+
+fn posture_check(name: &str, passed: bool, detail: &str) -> DevicePostureCheck {
+    DevicePostureCheck {
+        name: name.to_string(),
+        status: if passed { "pass" } else { "attention" }.to_string(),
+        detail: detail.to_string(),
+    }
+}
+
+fn file_age_seconds(path: &Option<std::path::PathBuf>) -> Option<u64> {
+    path.as_ref()
+        .and_then(|path| fs::metadata(path).ok())
+        .and_then(|metadata| metadata.modified().ok())
+        .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+        .map(|age| age.as_secs())
+}
+
+fn read_agent_config_value(path: &Path, section: &str, key: &str) -> Option<String> {
+    let raw = fs::read_to_string(path).ok()?;
+    let mut in_section = false;
+    for raw_line in raw.lines() {
+        let line = raw_line.trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            in_section = line[1..line.len() - 1].trim().eq_ignore_ascii_case(section);
+            continue;
+        }
+        if !in_section {
+            continue;
+        }
+        let Some((candidate, value)) = line.split_once('=') else {
+            continue;
+        };
+        if candidate.trim().eq_ignore_ascii_case(key) {
+            return Some(value.trim().trim_matches(['"', '\'']).to_string());
+        }
+    }
+    None
+}
+
+fn windows_version() -> String {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    std::process::Command::new("cmd.exe")
+        .args(["/c", "ver"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "Microsoft Windows".to_string())
+}
+
+fn windows_service_state(service_name: &str) -> String {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    std::process::Command::new("sc.exe")
+        .args(["query", service_name])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|output| {
+            output.lines().find_map(|line| {
+                let line = line.trim();
+                if !line.starts_with("STATE") {
+                    return None;
+                }
+                line.split_whitespace().last().map(str::to_string)
+            })
+        })
+        .unwrap_or_else(|| "Unknown".to_string())
+}
+
 fn load_logs() -> Vec<LogFile> {
     [
         ("Tray Log", std::path::PathBuf::from(r"C:\ProgramData\eGuard\logs\tray.log")),
@@ -418,6 +594,7 @@ tr.app-down { opacity:.62; }
 .badge.active { background:#d9f3e3; color:#08713b; }
 .badge.pending { background:#fff0bd; color:#946100; }
 .badge.down { background:#eef2f7; color:#526070; }
+.badge.failed { background:#fdecec; color:#b42318; }
 button { border:1px solid #b9c6d8; background:#fff; color:#172033; border-radius:6px; padding:5px 9px; cursor:pointer; font-size:12px; }
 button:hover { background:#f2f6fb; }
 button.primary { background:#1769e0; color:white; border-color:#1769e0; }
@@ -436,12 +613,22 @@ pre { white-space:pre-wrap; word-break:break-word; background:#0f172a; color:#db
 .app-list-item.selected { background:#dbeafe; box-shadow:inset 4px 0 #1769e0; }
 .app-list-item.active { background:#ecfdf3; }
 .app-list-item.pending { background:#fff8df; }
+.app-list-item.failed { background:#fff1f0; }
 .app-list-item.down { opacity:.62; }
 .app-detail { padding:12px; overflow:hidden; background:white; }
 .detail-title { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; }
 .detail-title h2 { padding:0; border:0; background:transparent; font-size:17px; }
 .detail-grid { display:grid; grid-template-columns:130px 1fr; gap:6px 10px; margin-top:10px; }
 .detail-key { color:#687588; }
+.device-card { overflow:auto; }
+.device-grid { display:grid; grid-template-columns:180px minmax(0,1fr); gap:0; }
+.device-grid > div { padding:8px 10px; border-bottom:1px solid #eef2f7; }
+.device-grid .detail-key { background:#fbfcff; font-weight:600; }
+.device-section { padding:10px; border-top:1px solid #e6ebf3; }
+.device-section h3 { margin:0 0 8px; font-size:12px; }
+.posture-summary { padding:8px 10px; border-radius:6px; margin-bottom:8px; background:#eef2f7; }
+.check-pass { color:#08713b; font-weight:700; }
+.check-attention { color:#b42318; font-weight:700; }
 @media(max-width: 850px) { .app-manager { grid-template-columns:1fr; grid-template-rows:minmax(120px, min(42vh, 280px)) minmax(120px, 1fr); } .app-list { max-height:none; border-right:0; border-bottom:1px solid #dfe5ef; } }
 </style>
 </head>
@@ -450,6 +637,7 @@ pre { white-space:pre-wrap; word-break:break-word; background:#0f172a; color:#db
 <main>
   <div class="tabs">
     <button class="tabbtn active" onclick="showTab('applications', this)">Applications</button>
+    <button class="tabbtn" onclick="showTab('device', this)">This Device</button>
     <button class="tabbtn" onclick="showTab('diagnostic', this)">Diagnostic</button>
     <button class="tabbtn" onclick="showTab('logs', this)">Logs</button>
     <span class="tab-spacer"></span>
@@ -459,6 +647,10 @@ pre { white-space:pre-wrap; word-break:break-word; background:#0f172a; color:#db
   <section id="applications" class="tab active">
     <section class="card"><h2>Status</h2><div class="content" id="status">Loading ZTNA state...</div></section>
     <section class="card"><h2>Applications</h2><div class="app-manager"><div class="app-list" id="apps">Loading...</div><div class="app-detail" id="appdetail">Select an application...</div></div></section>
+  </section>
+
+  <section id="device" class="tab">
+    <section class="card device-card"><h2>This Device</h2><div id="deviceinfo">Loading...</div></section>
   </section>
 
   <section id="diagnostic" class="tab">
@@ -487,7 +679,12 @@ function selectApp(id){ window.__selectedAppId=id; window.__EGUARD_SET_STATE(win
 function statusTextFor(b, sess, pending){
   const opt = optimistic.get(b.app_id);
   if(sess){ optimistic.delete(b.app_id); return ['active','Active']; }
-  if(pending){ return ['pending', pending.status === 'waiting_for_approval' ? 'Pending approval' : 'Connecting']; }
+  if(pending){
+    const ps = String(pending.status||'').toLowerCase();
+    if(ps === 'waiting_for_approval') return ['pending','Pending approval'];
+    if(ps === 'connecting' || ps === 'connecting_bastion') return ['pending','Connecting'];
+    return ['failed', pending.message || 'Failed'];
+  }
   if(opt && Date.now() - opt < 15000){ return ['pending','Queued']; }
   if(opt) optimistic.delete(b.app_id);
   if(String(b.health_status||'').toLowerCase()==='down') return ['down','Down'];
@@ -505,7 +702,7 @@ function renderDetail(b, sess, pending, st){
     '<div class="detail-key">Health</div><div>'+esc(b.health_status)+'</div>'+
     '<div class="detail-key">Target</div><div>'+esc(b.target_host||'')+':'+esc(b.target_port||'')+'</div>'+
     '<div class="detail-key">Description</div><div>'+esc(b.description||'-')+'</div>'+
-    (pending?'<div class="detail-key">Pending</div><div>'+esc(pending.status)+' · '+esc(pending.message)+'<br><span class="muted">Use Retry if backend approval is stuck.</span></div>':'')+
+    (pending?'<div class="detail-key">Last request</div><div><span class="badge '+(st[0]==='failed'?'failed':'pending')+'">'+esc(pending.status)+'</span> · '+esc(pending.message)+'<br><span class="muted">'+(st[0]==='failed'?'The request ended. Retry starts a new request.':'Use Retry if backend approval is stuck.')+'</span></div>':'')+
     (sess?'<div class="detail-key">Session</div><div>'+esc(sess.session_id)+'<br>'+esc(sess.transport)+' · '+esc(sess.status)+'<br>RX '+esc(sess.bytes_rx||0)+' / TX '+esc(sess.bytes_tx||0)+'</div>':'')+
     '</div>';
 }
@@ -533,7 +730,12 @@ window.__EGUARD_SET_STATE = function(s){
     document.getElementById('appdetail').innerHTML = renderDetail(b, sess, pending, st);
   }
 
-  document.getElementById('diag').innerHTML = '<h3>Pending Requests</h3>' + table((s.pending_requests||[]).map(r => '<tr class="app-pending"><td><b>'+esc(r.app_id)+'</b><div class="muted">'+esc(r.target)+'</div></td><td>'+esc(r.status)+'</td><td>'+esc(r.message)+'</td></tr>'), 'No pending launch requests.') + '<h3>State Files</h3>' + table((s.diagnostics||[]).map(d => '<tr><td><b>'+esc(d.name)+'</b><div class="muted">'+esc(d.path)+'</div></td><td>'+ (d.ok ? 'OK' : 'Missing/Error') +'</td><td>'+age(d.age_seconds)+'</td><td>'+esc(d.detail)+'</td></tr>'), 'No diagnostics.');
+  const d=s.device||{};
+  const deviceRows=[['Computer name',d.hostname],['Signed-in user',d.signed_in_user],['Operating system',d.operating_system],['Architecture',d.architecture],['Agent ID',d.agent_id],['Agent mode',d.agent_mode],['Agent service',d.agent_service],['Management server',d.server_address],['Agent binary',d.agent_binary_path],['Agent binary modified',d.agent_binary_modified ? new Date(Number(d.agent_binary_modified)*1000).toLocaleString() : 'Unknown'],['Agent configuration',d.agent_config_path],['ZTNA Manager version',d.tray_version],['Tray process ID',d.tray_process_id]];
+  const postureRows=(d.posture_checks||[]).map(c=>'<tr><td><b>'+esc(c.name)+'</b></td><td class="check-'+esc(c.status)+'">'+(c.status==='pass'?'PASS':'ATTENTION')+'</td><td>'+esc(c.detail)+'</td></tr>');
+  const policyRows=(d.applied_policy||[]).map(p=>'<tr><td><b>'+esc(p.name)+'</b></td><td>'+esc(p.value)+'</td><td class="muted">'+esc(p.source)+'</td></tr>');
+  document.getElementById('deviceinfo').innerHTML='<div class="device-grid">'+deviceRows.map(r=>'<div class="detail-key">'+esc(r[0])+'</div><div>'+esc(r[1]||'Unknown')+'</div>').join('')+'</div><div class="device-section"><h3>Agent Posture</h3><div class="posture-summary">'+esc(d.posture_summary||'Local posture unavailable')+'</div>'+table(postureRows,'No local posture checks available.')+'<div class="muted" style="margin-top:8px">These are local health checks, not a server compliance attestation.</div></div><div class="device-section"><h3>Applied Policy</h3>'+table(policyRows,'No applied policy settings available.')+'</div>';
+  document.getElementById('diag').innerHTML = '<h3>Launch Requests</h3>' + table((s.pending_requests||[]).map(r => '<tr class="'+((String(r.status).toLowerCase()==='launch_failed')?'':'app-pending')+'"><td><b>'+esc(r.app_id)+'</b><div class="muted">'+esc(r.target)+'</div></td><td>'+esc(r.status)+'</td><td>'+esc(r.message)+'</td></tr>'), 'No launch requests.') + '<h3>State Files</h3>' + table((s.diagnostics||[]).map(d => '<tr><td><b>'+esc(d.name)+'</b><div class="muted">'+esc(d.path)+'</div></td><td>'+ (d.ok ? 'OK' : 'Missing/Error') +'</td><td>'+age(d.age_seconds)+'</td><td>'+esc(d.detail)+'</td></tr>'), 'No diagnostics.');
   const oldLogScroll = Array.from(document.querySelectorAll('#logbox pre')).map(p => p.scrollTop);
   document.getElementById('logbox').innerHTML = (s.logs||[]).map((l,i) => '<div class="log-title">'+esc(l.name)+' <span class="muted">'+esc(l.path)+'</span></div><pre data-logidx="'+i+'">'+esc(l.content)+'</pre>').join('');
   Array.from(document.querySelectorAll('#logbox pre')).forEach((p,i) => { if(oldLogScroll[i] != null) p.scrollTop = oldLogScroll[i]; });
