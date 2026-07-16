@@ -722,10 +722,30 @@ pub fn execute_server_command_with_state(
             // (MITRE ATT&CK T1562.001). Record the request but report honestly that
             // nothing was executed; an explicit agent-side opt-in may override this.
             state.uninstall_requested = true;
+            // OS-appropriate decommission hint (matches the compiled target, so a
+            // Fedora/RHEL agent no longer suggests apt, macOS/Windows get native steps).
+            let hint = match std::env::consts::OS {
+                "linux" => {
+                    "decommission locally with your package manager \
+                     (e.g. `apt purge eguard-agent` on Debian/Ubuntu or \
+                     `dnf remove eguard-agent` on Fedora/RHEL)"
+                }
+                "macos" => {
+                    "decommission locally (run the eGuard uninstaller or remove the \
+                     LaunchDaemon and app bundle)"
+                }
+                "windows" => {
+                    "decommission locally (uninstall via the eGuard installer or \
+                     `sc.exe delete eGuardAgent` and remove the program files)"
+                }
+                _ => "decommission locally using your platform's standard uninstall procedure",
+            };
             CommandExecution {
                 outcome: CommandOutcome::Ignored,
                 status: "failed",
-                detail: "remote uninstall not executed: agent does not self-remove; decommission locally (e.g. apt purge eguard-agent)".to_string(),
+                detail: format!(
+                    "remote uninstall not executed: agent does not self-remove; {hint}"
+                ),
             }
         }
         ServerCommand::RestoreQuarantine => CommandExecution {
