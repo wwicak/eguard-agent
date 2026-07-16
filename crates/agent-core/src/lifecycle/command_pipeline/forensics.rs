@@ -1,15 +1,63 @@
 use response::{CommandExecution, CommandOutcome};
+use sha2::{Digest, Sha256};
 
 use super::paths::resolve_agent_data_dir;
 use super::payloads::ForensicsPayload;
 use super::AgentRuntime;
+
+/// An evidence file captured locally that should also be uploaded to the
+/// server for tamper-resistant, isolation-proof storage. The local copy is
+/// always kept (dual custody); upload is best-effort and reported in the
+/// command detail.
+pub(super) struct PendingForensicsArtifact {
+    pub path: String,
+    pub artifact_type: &'static str,
+}
+
+fn forensics_hostname() -> String {
+    if let Ok(value) = std::env::var("HOSTNAME") {
+        let trimmed = value.trim().to_string();
+        if !trimmed.is_empty() {
+            return trimmed;
+        }
+    }
+    if let Ok(value) = std::env::var("COMPUTERNAME") {
+        let trimmed = value.trim().to_string();
+        if !trimmed.is_empty() {
+            return trimmed;
+        }
+    }
+    if let Ok(value) = std::fs::read_to_string("/etc/hostname") {
+        let trimmed = value.trim().to_string();
+        if !trimmed.is_empty() {
+            return trimmed;
+        }
+    }
+    "unknown-host".to_string()
+}
+
+pub(super) fn sha256_hex(data: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(data))
+}
+
+/// Restrict evidence to root: 0700 on the forensics directory, 0600 on the
+/// files. A full process/network/open-files listing is valuable recon for a
+/// local attacker, so it must not stay world-readable.
+#[cfg(unix)]
+fn harden_evidence_permissions(path: &std::path::Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
+}
+
+#[cfg(not(unix))]
+fn harden_evidence_permissions(_path: &std::path::Path, _mode: u32) {}
 
 impl AgentRuntime {
     pub(super) fn apply_forensics_collection(
         &self,
         payload_json: &str,
         exec: &mut CommandExecution,
-    ) {
+    ) -> Vec<PendingForensicsArtifact> {
         let payload: ForensicsPayload = serde_json::from_str(payload_json).unwrap_or_default();
         let now = forensics_now_secs();
         let output_dir = resolve_agent_data_dir().join("forensics");
@@ -18,8 +66,9 @@ impl AgentRuntime {
             exec.outcome = CommandOutcome::Ignored;
             exec.status = "failed";
             exec.detail = format!("forensics output directory failed: {}", err);
-            return;
+            return Vec::new();
         }
+        harden_evidence_permissions(&output_dir, 0o700);
 
         let include_any_snapshot = payload.wants_snapshot();
         let include_processes = payload.process_list || !include_any_snapshot;
@@ -31,6 +80,7 @@ impl AgentRuntime {
         {
             let collector = platform_windows::response::ForensicsCollector::new();
             let mut detail_parts: Vec<String> = Vec::new();
+            let mut artifacts: Vec<PendingForensicsArtifact> = Vec::new();
 
             let snapshot_path = if payload.output_path.trim().is_empty() || payload.memory_dump {
                 output_dir
@@ -55,9 +105,19 @@ impl AgentRuntime {
                 exec.outcome = CommandOutcome::Ignored;
                 exec.status = "failed";
                 exec.detail = format!("forensics capture failed: {}", err);
-                return;
+                return Vec::new();
             }
-            detail_parts.push(format!("snapshot={}", snapshot_path));
+            detail_parts.push(format!(
+                "snapshot={} (sha256={}, {} bytes, host={})",
+                snapshot_path,
+                sha256_hex(body.as_bytes()),
+                body.len(),
+                forensics_hostname()
+            ));
+            artifacts.push(PendingForensicsArtifact {
+                path: snapshot_path.clone(),
+                artifact_type: "forensics_snapshot",
+            });
 
             if payload.memory_dump {
                 let target_pids = payload.effective_target_pids();
@@ -66,7 +126,7 @@ impl AgentRuntime {
                     exec.status = "failed";
                     exec.detail =
                         "forensics memory_dump requested but no target pid provided".to_string();
-                    return;
+                    return Vec::new();
                 }
 
                 let mut success_count = 0usize;
@@ -85,6 +145,10 @@ impl AgentRuntime {
                     match collector.create_minidump(*pid, &dump_path) {
                         Ok(()) => {
                             success_count += 1;
+                            artifacts.push(PendingForensicsArtifact {
+                                path: dump_path,
+                                artifact_type: "memory_dump",
+                            });
                         }
                         Err(err) => {
                             dump_errors.push(format!("pid {}: {}", pid, err));
@@ -97,7 +161,7 @@ impl AgentRuntime {
                     exec.status = "failed";
                     exec.detail =
                         format!("forensics memory dump failed: {}", dump_errors.join("; "));
-                    return;
+                    return Vec::new();
                 }
 
                 detail_parts.push(format!(
@@ -111,7 +175,7 @@ impl AgentRuntime {
             }
 
             exec.detail = format!("forensics capture completed ({})", detail_parts.join(", "));
-            return;
+            return artifacts;
         }
 
         #[cfg(target_os = "macos")]
@@ -144,18 +208,27 @@ impl AgentRuntime {
                 exec.outcome = CommandOutcome::Ignored;
                 exec.status = "failed";
                 exec.detail = format!("forensics capture failed: {}", err);
-                return;
+                return Vec::new();
             }
+            harden_evidence_permissions(std::path::Path::new(&output_path), 0o600);
 
+            let summary = format!(
+                "forensics snapshot captured on {} ({}): {} (sha256={}, {} bytes)",
+                forensics_hostname(),
+                self.config.agent_id,
+                output_path,
+                sha256_hex(body.as_bytes()),
+                body.len()
+            );
             if payload.memory_dump {
-                exec.detail = format!(
-                    "forensics snapshot captured: {} (memory_dump unsupported on macOS)",
-                    output_path
-                );
+                exec.detail = format!("{} (memory_dump unsupported on macOS)", summary);
             } else {
-                exec.detail = format!("forensics snapshot captured: {}", output_path);
+                exec.detail = summary;
             }
-            return;
+            return vec![PendingForensicsArtifact {
+                path: output_path,
+                artifact_type: "forensics_snapshot",
+            }];
         }
 
         #[cfg(not(any(target_os = "windows", target_os = "macos")))]
@@ -189,17 +262,27 @@ impl AgentRuntime {
                 exec.outcome = CommandOutcome::Ignored;
                 exec.status = "failed";
                 exec.detail = format!("forensics capture failed: {}", err);
-                return;
+                return Vec::new();
             }
+            harden_evidence_permissions(std::path::Path::new(&output_path), 0o600);
 
+            let summary = format!(
+                "forensics snapshot captured on {} ({}): {} (sha256={}, {} bytes)",
+                forensics_hostname(),
+                self.config.agent_id,
+                output_path,
+                sha256_hex(body.as_bytes()),
+                body.len()
+            );
             if payload.memory_dump {
-                exec.detail = format!(
-                    "forensics snapshot captured: {} (memory_dump unsupported on linux)",
-                    output_path
-                );
+                exec.detail = format!("{} (memory_dump unsupported on linux)", summary);
             } else {
-                exec.detail = format!("forensics snapshot captured: {}", output_path);
+                exec.detail = summary;
             }
+            vec![PendingForensicsArtifact {
+                path: output_path,
+                artifact_type: "forensics_snapshot",
+            }]
         }
     }
 }

@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
-use grpc_client::{CommandEnvelope, ResponseEnvelope};
+use grpc_client::{ArtifactUploadEnvelope, CommandEnvelope, ResponseEnvelope};
 use response::{
     execute_server_command_with_state, parse_server_command, CommandOutcome, ServerCommand,
 };
@@ -38,6 +38,17 @@ mod windows_network_profile;
 
 const COMPLETED_COMMAND_CURSOR_CAP: usize = 256;
 const COMMAND_ACK_TIMEOUT_MS: u64 = 5_000;
+const ARTIFACT_UPLOAD_TIMEOUT_MS: u64 = 30_000;
+const ARTIFACT_UPLOAD_MAX_BYTES_ENV: &str = "EGUARD_ARTIFACT_UPLOAD_MAX_BYTES";
+const DEFAULT_ARTIFACT_UPLOAD_MAX_BYTES: u64 = 32 << 20; // 32 MiB
+
+fn artifact_upload_max_bytes() -> u64 {
+    std::env::var(ARTIFACT_UPLOAD_MAX_BYTES_ENV)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_ARTIFACT_UPLOAD_MAX_BYTES)
+}
 
 fn reconcile_isolation_state_after_command(
     parsed: ServerCommand,
@@ -118,7 +129,11 @@ impl AgentRuntime {
                 self.apply_quarantine_restore(&command.payload_json, &mut exec)
             }
             ServerCommand::Forensics => {
-                self.apply_forensics_collection(&command.payload_json, &mut exec)
+                let artifacts = self.apply_forensics_collection(&command.payload_json, &mut exec);
+                if exec.status == "completed" && !artifacts.is_empty() {
+                    self.upload_forensics_artifacts(&command_id, artifacts, &mut exec)
+                        .await;
+                }
             }
             ServerCommand::KillProcess => self.apply_kill_process(&command.payload_json, &mut exec),
             ServerCommand::Update => {
@@ -264,6 +279,85 @@ impl AgentRuntime {
                 exec.outcome = CommandOutcome::Ignored;
                 exec.status = "failed";
                 exec.detail = format!("emergency rule push rejected: {}", err);
+            }
+        }
+    }
+
+    /// Best-effort upload of captured evidence to the server so it survives
+    /// endpoint tampering and NAC isolation. The local copy is always kept;
+    /// every outcome is appended to the command detail for the operator.
+    async fn upload_forensics_artifacts(
+        &self,
+        command_id: &str,
+        artifacts: Vec<forensics::PendingForensicsArtifact>,
+        exec: &mut response::CommandExecution,
+    ) {
+        let max_bytes = artifact_upload_max_bytes();
+
+        for artifact in artifacts {
+            let filename = std::path::Path::new(&artifact.path)
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_else(|| "artifact.bin".to_string());
+
+            let data = match std::fs::read(&artifact.path) {
+                Ok(data) => data,
+                Err(err) => {
+                    exec.detail
+                        .push_str(&format!("; artifact read failed ({}): {}", filename, err));
+                    continue;
+                }
+            };
+
+            if data.len() as u64 > max_bytes {
+                exec.detail.push_str(&format!(
+                    "; artifact {} kept local only: {} bytes exceeds upload cap {}",
+                    filename,
+                    data.len(),
+                    max_bytes
+                ));
+                continue;
+            }
+
+            let envelope = ArtifactUploadEnvelope {
+                agent_id: self.config.agent_id.clone(),
+                command_id: command_id.to_string(),
+                artifact_type: artifact.artifact_type.to_string(),
+                filename: filename.clone(),
+                sha256_hex: forensics::sha256_hex(&data),
+                data,
+            };
+
+            match timeout(
+                Duration::from_millis(ARTIFACT_UPLOAD_TIMEOUT_MS),
+                self.client.upload_artifact(&envelope),
+            )
+            .await
+            {
+                Ok(Ok(result)) if result.accepted => {
+                    exec.detail.push_str(&format!(
+                        "; uploaded to server as artifact {}",
+                        result.artifact_id
+                    ));
+                }
+                Ok(Ok(result)) => {
+                    exec.detail.push_str(&format!(
+                        "; server rejected artifact {}: {}",
+                        filename, result.detail
+                    ));
+                }
+                Ok(Err(err)) => {
+                    warn!(error = %err, filename = %filename, "artifact upload failed");
+                    exec.detail
+                        .push_str(&format!("; artifact upload failed ({}): {}", filename, err));
+                }
+                Err(_) => {
+                    warn!(filename = %filename, timeout_ms = ARTIFACT_UPLOAD_TIMEOUT_MS, "artifact upload timed out");
+                    exec.detail.push_str(&format!(
+                        "; artifact upload timed out ({}); evidence kept local",
+                        filename
+                    ));
+                }
             }
         }
     }

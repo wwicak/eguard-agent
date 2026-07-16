@@ -177,6 +177,81 @@ fn sanitize_windows_package_fields_reject_injection_and_accept_safe_values() {
 }
 
 #[test]
+fn forensics_collection_hardens_permissions_and_reports_upload_ready_artifacts() {
+    let _guard = crate::test_support::env_lock().lock().expect("env lock");
+    let dir = std::env::temp_dir().join(format!(
+        "eguard-forensics-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("create data dir");
+    std::env::set_var("EGUARD_AGENT_DATA_DIR", &dir);
+
+    let mut cfg = crate::config::AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    cfg.server_addr = "127.0.0.1:1".to_string();
+    cfg.self_protection_integrity_check_interval_secs = 0;
+    let runtime = super::AgentRuntime::new(cfg).expect("runtime");
+
+    let mut exec = response::CommandExecution {
+        outcome: response::CommandOutcome::Applied,
+        status: "completed",
+        detail: String::new(),
+    };
+
+    let artifacts = runtime.apply_forensics_collection("{}", &mut exec);
+
+    assert_eq!(exec.status, "completed", "{}", exec.detail);
+    assert_eq!(artifacts.len(), 1, "{}", exec.detail);
+    assert_eq!(artifacts[0].artifact_type, "forensics_snapshot");
+    assert!(
+        exec.detail.contains("forensics snapshot captured on"),
+        "detail must name the capture host: {}",
+        exec.detail
+    );
+    assert!(
+        exec.detail.contains("sha256="),
+        "detail must carry tamper-evidence hash: {}",
+        exec.detail
+    );
+
+    let path = std::path::Path::new(&artifacts[0].path);
+    assert!(path.exists(), "snapshot file must exist at {:?}", path);
+
+    // The hash in the detail must match the bytes on disk (chain of custody).
+    let body = std::fs::read(path).expect("read snapshot");
+    let sha = super::forensics::sha256_hex(&body);
+    assert!(
+        exec.detail.contains(&sha),
+        "detail sha must match stored file: {}",
+        exec.detail
+    );
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let file_mode = std::fs::metadata(path)
+            .expect("snapshot metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(file_mode, 0o600, "snapshot must not be world-readable");
+        let dir_mode = std::fs::metadata(path.parent().expect("forensics dir"))
+            .expect("forensics dir metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(dir_mode, 0o700, "forensics dir must be root-only");
+    }
+
+    std::env::remove_var("EGUARD_AGENT_DATA_DIR");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn forensics_payload_merges_legacy_pid_and_target_pids() {
     let payload: ForensicsPayload =
         serde_json::from_str(r#"{"pid":123,"target_pids":[456,123,0],"memory_dump":true}"#)

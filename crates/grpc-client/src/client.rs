@@ -21,10 +21,11 @@ use tracing::{info, warn};
 use crate::pb;
 use crate::retry::RetryPolicy;
 use crate::types::{
-    BaselineProfileEnvelope, CampaignAlert, CommandEnvelope, ComplianceEnvelope,
-    EnrollmentEnvelope, EnrollmentResultEnvelope, EventEnvelope, FleetBaselineEnvelope,
-    HeartbeatRuntimeEnvelope, InventoryEnvelope, IocSignalBatch, PolicyEnvelope, ResponseEnvelope,
-    ServerState, ThreatIntelVersionEnvelope, TlsConfig, TransportMode,
+    ArtifactUploadEnvelope, ArtifactUploadResult, BaselineProfileEnvelope, CampaignAlert,
+    CommandEnvelope, ComplianceEnvelope, EnrollmentEnvelope, EnrollmentResultEnvelope,
+    EventEnvelope, FleetBaselineEnvelope, HeartbeatRuntimeEnvelope, InventoryEnvelope,
+    IocSignalBatch, PolicyEnvelope, ResponseEnvelope, ServerState, ThreatIntelVersionEnvelope,
+    TlsConfig, TransportMode,
 };
 
 #[path = "client/client_grpc.rs"]
@@ -322,6 +323,22 @@ impl Client {
             }
         }
         Ok(())
+    }
+
+    /// Upload an evidence artifact (forensics snapshot, memory dump) to the
+    /// server. Artifact upload is gRPC-only: the HTTP transport has no
+    /// artifact endpoint, so HTTP-mode agents keep evidence local.
+    pub async fn upload_artifact(
+        &self,
+        envelope: &ArtifactUploadEnvelope,
+    ) -> Result<ArtifactUploadResult> {
+        self.ensure_online()?;
+        match self.mode {
+            TransportMode::Http => {
+                anyhow::bail!("artifact upload requires grpc transport mode")
+            }
+            TransportMode::Grpc => self.upload_artifact_grpc(envelope).await,
+        }
     }
 
     pub async fn stream_command_channel(

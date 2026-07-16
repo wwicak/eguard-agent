@@ -2494,6 +2494,178 @@ async fn ack_command_grpc_captures_command_id_and_status() {
     server.shutdown().await;
 }
 
+#[derive(Default)]
+struct ArtifactMockState {
+    chunks: Vec<pb::ArtifactChunk>,
+}
+
+struct MockAgentEvidenceService {
+    state: Arc<Mutex<ArtifactMockState>>,
+}
+
+#[tonic::async_trait]
+impl pb::agent_service_server::AgentService for MockAgentEvidenceService {
+    type StreamEventsStream = ReceiverStream<Result<pb::EventAck, Status>>;
+    type CommandChannelStream = ReceiverStream<Result<pb::ServerCommand, Status>>;
+    type DownloadRuleBundleStream = ReceiverStream<Result<pb::RuleBundleChunk, Status>>;
+
+    async fn enroll(
+        &self,
+        _request: Request<pb::EnrollRequest>,
+    ) -> Result<Response<pb::EnrollResponse>, Status> {
+        Err(Status::unimplemented("not used in artifact tests"))
+    }
+
+    async fn heartbeat(
+        &self,
+        _request: Request<pb::HeartbeatRequest>,
+    ) -> Result<Response<pb::HeartbeatResponse>, Status> {
+        Err(Status::unimplemented("not used in artifact tests"))
+    }
+
+    async fn stream_events(
+        &self,
+        _request: Request<tonic::Streaming<pb::TelemetryBatch>>,
+    ) -> Result<Response<Self::StreamEventsStream>, Status> {
+        Err(Status::unimplemented("not used in artifact tests"))
+    }
+
+    async fn report_compliance(
+        &self,
+        _request: Request<pb::ComplianceReport>,
+    ) -> Result<Response<pb::ComplianceAck>, Status> {
+        Err(Status::unimplemented("not used in artifact tests"))
+    }
+
+    async fn command_channel(
+        &self,
+        _request: Request<pb::CommandPollRequest>,
+    ) -> Result<Response<Self::CommandChannelStream>, Status> {
+        Err(Status::unimplemented("not used in artifact tests"))
+    }
+
+    async fn report_response(
+        &self,
+        _request: Request<pb::ResponseReport>,
+    ) -> Result<Response<pb::ResponseAck>, Status> {
+        Err(Status::unimplemented("not used in artifact tests"))
+    }
+
+    async fn get_policy(
+        &self,
+        _request: Request<pb::PolicyRequest>,
+    ) -> Result<Response<pb::PolicyResponse>, Status> {
+        Err(Status::unimplemented("not used in artifact tests"))
+    }
+
+    async fn download_rule_bundle(
+        &self,
+        _request: Request<pb::RuleBundleRequest>,
+    ) -> Result<Response<Self::DownloadRuleBundleStream>, Status> {
+        Err(Status::unimplemented("not used in artifact tests"))
+    }
+
+    async fn upload_artifact(
+        &self,
+        request: Request<tonic::Streaming<pb::ArtifactChunk>>,
+    ) -> Result<Response<pb::ArtifactAck>, Status> {
+        let mut stream = request.into_inner();
+        let mut collected = Vec::new();
+        while let Some(chunk) = stream.message().await? {
+            collected.push(chunk);
+        }
+        self.state
+            .lock()
+            .expect("state lock")
+            .chunks
+            .extend(collected);
+        Ok(Response::new(pb::ArtifactAck {
+            accepted: true,
+            artifact_id: "artifact-inproc-1".to_string(),
+            detail: "stored".to_string(),
+        }))
+    }
+}
+
+async fn spawn_mock_agent_evidence_service(
+    state: Arc<Mutex<ArtifactMockState>>,
+) -> MockServerHandle {
+    let (incoming_tx, incoming_rx) = tokio::sync::mpsc::channel::<InMemoryIo>(8);
+    let incoming = ReceiverStream::new(incoming_rx).map(Ok::<InMemoryIo, std::io::Error>);
+    let svc = MockAgentEvidenceService { state };
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    tokio::spawn(async move {
+        tonic::transport::Server::builder()
+            .add_service(pb::agent_service_server::AgentServiceServer::new(svc))
+            .serve_with_incoming_shutdown(incoming, async move {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .expect("serve mock agent evidence");
+    });
+    let channel = connect_in_memory_channel(incoming_tx).await;
+    MockServerHandle {
+        channel,
+        shutdown_tx,
+    }
+}
+
+#[tokio::test]
+async fn upload_artifact_grpc_streams_metadata_and_chunked_payload() {
+    let state = Arc::new(Mutex::new(ArtifactMockState::default()));
+    let server = spawn_mock_agent_evidence_service(state.clone()).await;
+    let mut client = Client::with_mode("inproc-artifact".to_string(), TransportMode::Grpc);
+    client.set_test_channel_override(server.channel());
+
+    // Payload larger than one chunk (1 MiB) to force multi-chunk streaming.
+    let mut payload = vec![0u8; (1 << 20) + 4096];
+    for (idx, byte) in payload.iter_mut().enumerate() {
+        *byte = (idx % 251) as u8;
+    }
+
+    let envelope = crate::types::ArtifactUploadEnvelope {
+        agent_id: "agent-fx-9".to_string(),
+        command_id: "cmd-fx-9".to_string(),
+        artifact_type: "forensics_snapshot".to_string(),
+        filename: "snapshot-99.txt".to_string(),
+        sha256_hex: "ab".repeat(32),
+        data: payload.clone(),
+    };
+
+    let result = client
+        .upload_artifact(&envelope)
+        .await
+        .expect("upload_artifact should succeed");
+    assert!(result.accepted);
+    assert_eq!(result.artifact_id, "artifact-inproc-1");
+
+    {
+        let guard = state.lock().expect("state lock");
+        assert_eq!(guard.chunks.len(), 2, "expected two streamed chunks");
+
+        let first = &guard.chunks[0];
+        assert_eq!(first.agent_id, "agent-fx-9");
+        assert_eq!(first.command_id, "cmd-fx-9");
+        assert_eq!(first.artifact_type, "forensics_snapshot");
+        assert_eq!(first.filename, "snapshot-99.txt");
+        assert_eq!(first.sha256, "ab".repeat(32));
+        assert_eq!(first.total_size_bytes, payload.len() as u64);
+        assert_eq!(first.sequence, 0);
+        assert!(!first.last);
+
+        let second = &guard.chunks[1];
+        assert!(second.agent_id.is_empty(), "metadata only on first chunk");
+        assert_eq!(second.sequence, 1);
+        assert!(second.last);
+
+        let mut reassembled = first.data.clone();
+        reassembled.extend_from_slice(&second.data);
+        assert_eq!(reassembled, payload, "payload must reassemble exactly");
+    }
+
+    server.shutdown().await;
+}
+
 #[tokio::test]
 // AC-GRP-060
 async fn fetch_latest_threat_intel_grpc_returns_some_with_expected_fields() {

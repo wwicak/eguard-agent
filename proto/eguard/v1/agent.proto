@@ -25,6 +25,7 @@ service AgentService {
   rpc ReportResponse(ResponseReport) returns (ResponseAck);
   rpc GetPolicy(PolicyRequest) returns (PolicyResponse);
   rpc DownloadRuleBundle(RuleBundleRequest) returns (stream RuleBundleChunk);
+  rpc UploadArtifact(stream ArtifactChunk) returns (ArtifactAck);
 }
 
 message PingRequest {
@@ -213,4 +214,26 @@ message RuleBundleChunk {
   int32 chunk_size_bytes = 6;
   bool verified = 7;
   int32 reload_deadline_secs = 8;
+}
+
+// ArtifactChunk streams an evidence artifact (forensics snapshot, memory
+// dump) from the agent to the server. Metadata fields (agent_id, command_id,
+// artifact_type, filename, sha256, total_size_bytes) must be set on the
+// first chunk; subsequent chunks only need data/sequence/last.
+message ArtifactChunk {
+  string agent_id = 1;
+  string command_id = 2;
+  string artifact_type = 3;
+  string filename = 4;
+  string sha256 = 5;
+  uint64 total_size_bytes = 6;
+  bytes data = 7;
+  int32 sequence = 8;
+  bool last = 9;
+}
+
+message ArtifactAck {
+  bool accepted = 1;
+  string artifact_id = 2;
+  string detail = 3;
 }
