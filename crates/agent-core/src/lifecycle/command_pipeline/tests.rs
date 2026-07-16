@@ -372,12 +372,15 @@ fn remote_uninstall_dry_run_marks_completion_without_teardown() {
     std::env::set_var("EGUARD_AGENT_DATA_DIR", &dir);
     std::env::set_var("PATH", &bin_dir);
     std::env::set_var("EGUARD_UNINSTALL_DRY_RUN", "1");
+    // Phase-2: provision the enrollment-bound uninstall hash into the temp data
+    // dir and supply the matching token so authorization passes.
+    crate::lifecycle::uninstall_auth::provision_from_enrollment_token("test-token");
     let mut runtime = uninstall_command_runtime(true);
     let mut state = response::HostControlState::default();
     let mut exec =
         response::execute_server_command_with_state(ServerCommand::Uninstall, 1, &mut state);
 
-    runtime.apply_uninstall("{}", &mut exec);
+    runtime.apply_uninstall(r#"{"auth_token":"test-token"}"#, &mut exec);
 
     assert_eq!(exec.status, "completed", "{}", exec.detail);
     assert_eq!(exec.outcome, response::CommandOutcome::Applied);
@@ -436,12 +439,15 @@ fn remote_uninstall_schedules_transient_purge_unit() {
     std::env::set_var("HOME", &dir);
     std::env::set_var("EGUARD_AGENT_DATA_DIR", &dir);
     std::env::remove_var("EGUARD_UNINSTALL_DRY_RUN");
+    // Phase-2: provision the enrollment-bound uninstall hash and supply the
+    // matching token so authorization passes.
+    crate::lifecycle::uninstall_auth::provision_from_enrollment_token("test-token");
     let mut runtime = uninstall_command_runtime(true);
     let mut state = response::HostControlState::default();
     let mut exec =
         response::execute_server_command_with_state(ServerCommand::Uninstall, 1, &mut state);
 
-    runtime.apply_uninstall("{}", &mut exec);
+    runtime.apply_uninstall(r#"{"auth_token":"test-token"}"#, &mut exec);
 
     assert_eq!(exec.status, "completed", "{}", exec.detail);
     assert_eq!(exec.outcome, response::CommandOutcome::Applied);
@@ -466,6 +472,54 @@ fn remote_uninstall_schedules_transient_purge_unit() {
         ("HOME", original_home),
         ("EGUARD_AGENT_DATA_DIR", original_data_dir),
         ("EGUARD_UNINSTALL_DRY_RUN", original_dry_run),
+    ] {
+        if let Some(value) = original {
+            std::env::set_var(name, value);
+        } else {
+            std::env::remove_var(name);
+        }
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn remote_uninstall_rejects_invalid_auth_token() {
+    let _guard = crate::test_support::env_lock().lock().expect("env lock");
+    let dir = std::env::temp_dir().join(format!(
+        "eguard-uninstall-badtok-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("create data dir");
+    let original_data_dir = std::env::var_os("EGUARD_AGENT_DATA_DIR");
+    let original_override = std::env::var_os("EGUARD_RESPONSE_UNINSTALL_TOKEN_SHA256");
+    std::env::remove_var("EGUARD_RESPONSE_UNINSTALL_TOKEN_SHA256");
+    std::env::set_var("EGUARD_AGENT_DATA_DIR", &dir);
+    // Provision a known good token, then supply the wrong one.
+    crate::lifecycle::uninstall_auth::provision_from_enrollment_token("good-token");
+
+    let mut runtime = uninstall_command_runtime(true);
+    let mut state = response::HostControlState::default();
+    let mut exec =
+        response::execute_server_command_with_state(ServerCommand::Uninstall, 1, &mut state);
+
+    runtime.apply_uninstall(r#"{"auth_token":"wrong-token"}"#, &mut exec);
+
+    assert_eq!(exec.status, "failed", "{}", exec.detail);
+    assert_eq!(exec.outcome, response::CommandOutcome::Ignored);
+    assert!(
+        exec.detail.contains("invalid uninstall auth token"),
+        "{}",
+        exec.detail
+    );
+    assert!(!exec.detail.contains("systemd-run"), "{}", exec.detail);
+
+    for (name, original) in [
+        ("EGUARD_AGENT_DATA_DIR", original_data_dir),
+        ("EGUARD_RESPONSE_UNINSTALL_TOKEN_SHA256", original_override),
     ] {
         if let Some(value) = original {
             std::env::set_var(name, value);

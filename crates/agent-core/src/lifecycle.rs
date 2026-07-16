@@ -26,6 +26,7 @@ mod telemetry;
 mod tick;
 mod timing;
 mod types;
+mod uninstall_auth;
 
 mod bundle_path;
 mod command_control_pipeline;

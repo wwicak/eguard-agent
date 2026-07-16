@@ -188,6 +188,12 @@ pub(crate) fn persist_runtime_config_snapshot(config: &AgentConfig) -> Result<Pa
             toml::Value::String(config.agent_id.clone()),
         );
     }
+    // Phase-2 (MITRE T1562.001): bind remote-uninstall authorization to the
+    // enrollment token by persisting only its SHA-256 (never the raw secret)
+    // before we drop the bootstrap credential from the on-disk snapshot.
+    if let Some(token) = config.enrollment_token.as_deref() {
+        super::uninstall_auth::provision_from_enrollment_token(token);
+    }
     // Enrollment token is bootstrap-only credential material. Do not persist it
     // into restart config snapshots written to disk.
     agent_table.remove("enrollment_token");

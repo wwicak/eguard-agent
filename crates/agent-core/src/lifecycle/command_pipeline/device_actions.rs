@@ -57,16 +57,24 @@ impl AgentRuntime {
             return;
         }
 
+        // Phase-2 (MITRE T1562.001): enforce enrollment-bound uninstall
+        // authorization before any destructive action. The operator must supply
+        // the enrollment token this agent was provisioned with as
+        // command_data.auth_token; the agent validates it against the persisted
+        // SHA-256. Fail closed on any mismatch/absence.
+        if let Err(detail) = crate::lifecycle::uninstall_auth::verify(payload_json) {
+            exec.outcome = CommandOutcome::Ignored;
+            exec.status = "failed";
+            exec.detail = detail;
+            return;
+        }
+
         static WARNING: std::sync::Once = std::sync::Once::new();
         WARNING.call_once(|| {
             tracing::warn!(
-                "SECURITY: remote uninstall is ENABLED without enrollment auth_token validation; phase-2 precondition missing (MITRE T1562.001 risk)"
+                "SECURITY: remote uninstall ENABLED and authorized (enrollment-bound auth token validated); destructive self-removal permitted (MITRE T1562.001)"
             );
         });
-
-        // TODO(phase 2): Validate payload_json auth_token against an enrollment-derived
-        // secret before enabling remote uninstall in production.
-        let _ = payload_json;
 
         #[cfg(not(target_os = "linux"))]
         {
