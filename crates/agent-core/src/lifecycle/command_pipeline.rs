@@ -193,6 +193,7 @@ impl AgentRuntime {
             ServerCommand::ApplyProfile => {
                 self.apply_config_profile(&command.payload_json, &mut exec)
             }
+            ServerCommand::Uninstall => self.apply_uninstall(&command.payload_json, &mut exec),
             _ => {}
         }
 

@@ -114,6 +114,9 @@ impl AgentConfig {
         if let Some(v) = response.dry_run {
             self.response.dry_run = v;
         }
+        if let Some(v) = response.allow_remote_uninstall {
+            self.response.allow_remote_uninstall = v;
+        }
         if let Some(rate_limit) = response.rate_limit {
             if let Some(v) = rate_limit.max_kills_per_minute {
                 self.response.max_kills_per_minute = v;
@@ -441,6 +444,8 @@ struct FileResponseConfig {
     autonomous_response: Option<bool>,
     #[serde(default)]
     dry_run: Option<bool>,
+    #[serde(default)]
+    allow_remote_uninstall: Option<bool>,
     #[serde(default)]
     definite: Option<FileResponsePolicy>,
     #[serde(default)]

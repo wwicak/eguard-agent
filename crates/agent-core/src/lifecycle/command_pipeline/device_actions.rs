@@ -1,4 +1,6 @@
 use std::path::PathBuf;
+#[cfg(target_os = "linux")]
+use std::process::{Command, Stdio};
 
 use response::{CommandExecution, CommandOutcome};
 
@@ -47,6 +49,138 @@ impl AgentRuntime {
             exec.detail = format!("device lock failed ({}): {}", context, err);
         } else {
             exec.detail = format!("device lock command issued ({})", context);
+        }
+    }
+
+    pub(super) fn apply_uninstall(&mut self, payload_json: &str, exec: &mut CommandExecution) {
+        if !self.config.response.allow_remote_uninstall {
+            return;
+        }
+
+        static WARNING: std::sync::Once = std::sync::Once::new();
+        WARNING.call_once(|| {
+            tracing::warn!(
+                "SECURITY: remote uninstall is ENABLED without enrollment auth_token validation; phase-2 precondition missing (MITRE T1562.001 risk)"
+            );
+        });
+
+        // TODO(phase 2): Validate payload_json auth_token against an enrollment-derived
+        // secret before enabling remote uninstall in production.
+        let _ = payload_json;
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            exec.outcome = CommandOutcome::Ignored;
+            exec.status = "failed";
+            exec.detail =
+                "remote uninstall not supported on this platform (linux/deb only)".to_string();
+            return;
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            let marker = resolve_agent_data_dir().join("uninstalling");
+            if marker.exists() {
+                exec.outcome = CommandOutcome::Applied;
+                exec.status = "completed";
+                exec.detail = "remote uninstall already in progress".to_string();
+                return;
+            }
+
+            let command_succeeds = |program: &str, args: &[&str]| {
+                Command::new(program)
+                    .args(args)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .map(|status| status.success())
+                    .unwrap_or(false)
+            };
+            let dpkg_managed = command_succeeds("dpkg", &["-s", "eguard-agent"]);
+            let package_tools_present = command_succeeds("dpkg", &["--version"])
+                && command_succeeds("apt-get", &["--version"]);
+            if !dpkg_managed || !package_tools_present {
+                exec.outcome = CommandOutcome::Ignored;
+                exec.status = "failed";
+                exec.detail =
+                    "remote uninstall requires a dpkg-managed install; manual removal required"
+                        .to_string();
+                return;
+            }
+
+            let unit_suffix = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_millis())
+                .unwrap_or_default();
+            let unit_name = format!(
+                "eguard-agent-uninstall-{}-{unit_suffix}",
+                std::process::id()
+            );
+            let shell_quote = |raw: &str| format!("'{}'", raw.replace('\'', "'\"'\"'"));
+            let marker_path = marker.to_string_lossy();
+            let trap_action = format!("rm -f -- {}", shell_quote(&marker_path));
+            let teardown = format!(
+                "trap {} EXIT; sleep 15; apt-get -y purge eguard-agent",
+                shell_quote(&trap_action)
+            );
+            let command_display = format!(
+                "systemd-run --system --unit={unit_name} --collect --service-type=exec --setenv=DEBIAN_FRONTEND=noninteractive /bin/sh -c {}",
+                shell_quote(&teardown)
+            );
+
+            let dry_run = std::env::var("EGUARD_UNINSTALL_DRY_RUN")
+                .ok()
+                .map(|raw| {
+                    matches!(
+                        raw.trim().to_ascii_lowercase().as_str(),
+                        "1" | "true" | "yes" | "enabled" | "on"
+                    )
+                })
+                .unwrap_or(false);
+            if dry_run {
+                exec.outcome = CommandOutcome::Applied;
+                exec.status = "completed";
+                exec.detail = format!("remote uninstall dry-run: would run `{command_display}`");
+                return;
+            }
+
+            if let Err(err) = write_marker(marker.to_string_lossy().as_ref()) {
+                exec.outcome = CommandOutcome::Ignored;
+                exec.status = "failed";
+                exec.detail = format!("remote uninstall marker failed: {err}");
+                return;
+            }
+
+            let scheduled = Command::new("systemd-run")
+                .args([
+                    "--system",
+                    &format!("--unit={unit_name}"),
+                    "--collect",
+                    "--service-type=exec",
+                    "--setenv=DEBIAN_FRONTEND=noninteractive",
+                    "/bin/sh",
+                    "-c",
+                    &teardown,
+                ])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map(|status| status.success())
+                .unwrap_or(false);
+
+            if scheduled {
+                exec.outcome = CommandOutcome::Applied;
+                exec.status = "completed";
+                exec.detail =
+                    "remote uninstall initiated: transient purge unit scheduled (~15s)".to_string();
+            } else {
+                let _ = std::fs::remove_file(&marker);
+                exec.outcome = CommandOutcome::Ignored;
+                exec.status = "failed";
+                exec.detail = "remote uninstall requires systemd-run transient unit (unavailable); manual removal required".to_string();
+            }
         }
     }
 

@@ -102,7 +102,8 @@ fn execute_server_commands_update_state_and_return_completed_status() {
     assert!(restore.detail.contains("quarantine restore"));
 
     let uninstall = execute_server_command_with_state(ServerCommand::Uninstall, 107, &mut state);
-    assert_eq!(uninstall.status, "completed");
+    assert_eq!(uninstall.status, "failed");
+    assert_eq!(uninstall.outcome, CommandOutcome::Ignored);
     assert!(state.uninstall_requested);
 }
 
@@ -197,9 +198,9 @@ fn command_alias_table_maps_parse_and_execution_state_effects() {
             initial_state: state(false, Some(1), Some(2), false),
             expected_command: ServerCommand::Uninstall,
             expected_state: state(false, Some(1), Some(2), true),
-            expected_outcome: CommandOutcome::Applied,
-            expected_status: "completed",
-            expected_detail_contains: "uninstall request",
+            expected_outcome: CommandOutcome::Ignored,
+            expected_status: "failed",
+            expected_detail_contains: "not executed",
         },
         Case {
             raw: "emergency_rule_push",

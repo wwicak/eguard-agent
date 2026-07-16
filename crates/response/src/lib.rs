@@ -47,6 +47,8 @@ impl ResponsePolicy {
 pub struct ResponseConfig {
     pub autonomous_response: bool,
     pub dry_run: bool,
+    #[serde(default)]
+    pub allow_remote_uninstall: bool,
     pub max_kills_per_minute: usize,
     pub max_quarantines_per_minute: usize,
     pub auto_isolation: AutoIsolationPolicy,
@@ -88,6 +90,7 @@ impl Default for ResponseConfig {
         Self {
             autonomous_response: false,
             dry_run: false,
+            allow_remote_uninstall: false,
             max_kills_per_minute: 10,
             max_quarantines_per_minute: 5,
             auto_isolation: AutoIsolationPolicy::default(),
@@ -714,11 +717,15 @@ pub fn execute_server_command_with_state(
             detail: "configuration change accepted".to_string(),
         },
         ServerCommand::Uninstall => {
+            // The default behavior does not self-remove: a remotely triggered
+            // uninstall of the security agent can be a fleet-wide EDR kill switch
+            // (MITRE ATT&CK T1562.001). Record the request but report honestly that
+            // nothing was executed; an explicit agent-side opt-in may override this.
             state.uninstall_requested = true;
             CommandExecution {
-                outcome: CommandOutcome::Applied,
-                status: "completed",
-                detail: "uninstall request flagged".to_string(),
+                outcome: CommandOutcome::Ignored,
+                status: "failed",
+                detail: "remote uninstall not executed: agent does not self-remove; decommission locally (e.g. apt purge eguard-agent)".to_string(),
             }
         }
         ServerCommand::RestoreQuarantine => CommandExecution {

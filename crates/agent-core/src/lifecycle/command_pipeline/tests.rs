@@ -305,6 +305,177 @@ fn update_payload_parser_supports_rest_fields() {
     assert_eq!(payload.package_format, "exe");
 }
 
+fn uninstall_command_runtime(allow_remote_uninstall: bool) -> super::AgentRuntime {
+    let mut cfg = crate::config::AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    cfg.server_addr = "127.0.0.1:1".to_string();
+    cfg.self_protection_integrity_check_interval_secs = 0;
+    cfg.response.allow_remote_uninstall = allow_remote_uninstall;
+    super::AgentRuntime::new(cfg).expect("runtime")
+}
+
+#[test]
+fn remote_uninstall_flag_off_preserves_honest_ack() {
+    let _guard = crate::test_support::env_lock().lock().expect("env lock");
+    let mut runtime = uninstall_command_runtime(false);
+    let mut state = response::HostControlState::default();
+    let mut exec =
+        response::execute_server_command_with_state(ServerCommand::Uninstall, 1, &mut state);
+    let before = (exec.outcome, exec.status, exec.detail.clone());
+
+    runtime.apply_uninstall("{}", &mut exec);
+
+    assert_eq!(exec.outcome, before.0);
+    assert_eq!(exec.status, before.1);
+    assert_eq!(exec.detail, before.2);
+    assert!(exec.detail.contains("not executed"));
+}
+
+#[cfg(target_os = "linux")]
+fn uninstall_test_dir(label: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "eguard-uninstall-{label}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn write_uninstall_test_tool(path: &std::path::Path, contents: &str) {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::write(path, contents).expect("write fake uninstall tool");
+    let mut permissions = std::fs::metadata(path)
+        .expect("fake uninstall tool metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(path, permissions).expect("make fake uninstall tool executable");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn remote_uninstall_dry_run_marks_completion_without_teardown() {
+    let _guard = crate::test_support::env_lock().lock().expect("env lock");
+    let dir = uninstall_test_dir("dry-run");
+    let bin_dir = dir.join("bin");
+    std::fs::create_dir_all(&bin_dir).expect("create fake package tools dir");
+    for tool in ["dpkg", "apt-get"] {
+        write_uninstall_test_tool(&bin_dir.join(tool), "#!/bin/sh\nexit 0\n");
+    }
+
+    let original_path = std::env::var_os("PATH");
+    let original_data_dir = std::env::var_os("EGUARD_AGENT_DATA_DIR");
+    let original_dry_run = std::env::var_os("EGUARD_UNINSTALL_DRY_RUN");
+    std::env::set_var("EGUARD_AGENT_DATA_DIR", &dir);
+    std::env::set_var("PATH", &bin_dir);
+    std::env::set_var("EGUARD_UNINSTALL_DRY_RUN", "1");
+    let mut runtime = uninstall_command_runtime(true);
+    let mut state = response::HostControlState::default();
+    let mut exec =
+        response::execute_server_command_with_state(ServerCommand::Uninstall, 1, &mut state);
+
+    runtime.apply_uninstall("{}", &mut exec);
+
+    assert_eq!(exec.status, "completed", "{}", exec.detail);
+    assert_eq!(exec.outcome, response::CommandOutcome::Applied);
+    assert!(exec.detail.contains("systemd-run"), "{}", exec.detail);
+    assert!(exec.detail.contains("--collect"), "{}", exec.detail);
+    assert!(
+        exec.detail.contains("apt-get -y purge eguard-agent"),
+        "{}",
+        exec.detail
+    );
+    assert!(
+        !exec.detail.contains("systemctl disable"),
+        "{}",
+        exec.detail
+    );
+    assert!(!dir.join("uninstalling").exists());
+
+    for (name, original) in [
+        ("PATH", original_path),
+        ("EGUARD_AGENT_DATA_DIR", original_data_dir),
+        ("EGUARD_UNINSTALL_DRY_RUN", original_dry_run),
+    ] {
+        if let Some(value) = original {
+            std::env::set_var(name, value);
+        } else {
+            std::env::remove_var(name);
+        }
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn remote_uninstall_schedules_transient_purge_unit() {
+    let _guard = crate::test_support::env_lock().lock().expect("env lock");
+    let dir = uninstall_test_dir("systemd-run");
+    let bin_dir = dir.join("bin");
+    let capture = dir.join("systemd-run.argv");
+    std::fs::create_dir_all(&bin_dir).expect("create fake package tools dir");
+    for tool in ["dpkg", "apt-get"] {
+        write_uninstall_test_tool(&bin_dir.join(tool), "#!/bin/sh\nexit 0\n");
+    }
+    write_uninstall_test_tool(
+        &bin_dir.join("systemd-run"),
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{}'\nexit 0\n",
+            capture.display()
+        ),
+    );
+
+    let original_path = std::env::var_os("PATH");
+    let original_home = std::env::var_os("HOME");
+    let original_data_dir = std::env::var_os("EGUARD_AGENT_DATA_DIR");
+    let original_dry_run = std::env::var_os("EGUARD_UNINSTALL_DRY_RUN");
+    std::env::set_var("PATH", &bin_dir);
+    std::env::set_var("HOME", &dir);
+    std::env::set_var("EGUARD_AGENT_DATA_DIR", &dir);
+    std::env::remove_var("EGUARD_UNINSTALL_DRY_RUN");
+    let mut runtime = uninstall_command_runtime(true);
+    let mut state = response::HostControlState::default();
+    let mut exec =
+        response::execute_server_command_with_state(ServerCommand::Uninstall, 1, &mut state);
+
+    runtime.apply_uninstall("{}", &mut exec);
+
+    assert_eq!(exec.status, "completed", "{}", exec.detail);
+    assert_eq!(exec.outcome, response::CommandOutcome::Applied);
+    let captured = std::fs::read_to_string(&capture).expect("read captured systemd-run argv");
+    assert!(captured.lines().any(|arg| arg == "--collect"), "{captured}");
+    assert!(
+        captured.lines().any(|arg| arg == "--service-type=exec"),
+        "{captured}"
+    );
+    assert!(
+        captured.contains("--unit=eguard-agent-uninstall-"),
+        "{captured}"
+    );
+    assert!(
+        captured.contains("apt-get -y purge eguard-agent"),
+        "{captured}"
+    );
+    assert!(!captured.contains("systemctl disable"), "{captured}");
+
+    for (name, original) in [
+        ("PATH", original_path),
+        ("HOME", original_home),
+        ("EGUARD_AGENT_DATA_DIR", original_data_dir),
+        ("EGUARD_UNINSTALL_DRY_RUN", original_dry_run),
+    ] {
+        if let Some(value) = original {
+            std::env::set_var(name, value);
+        } else {
+            std::env::remove_var(name);
+        }
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 // --- P0-2: server kill_process command must honor the same safety boundary as
 // local detections (self-guard + shared rate limiter) and bound its blast
 // radius (target-vector ceiling). ---

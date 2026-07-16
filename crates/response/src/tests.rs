@@ -226,7 +226,8 @@ fn scan_update_and_uninstall_commands_update_state() {
     assert_eq!(state.last_update_unix, Some(456));
 
     let uninstall = execute_server_command_with_state(ServerCommand::Uninstall, 789, &mut state);
-    assert_eq!(uninstall.outcome, CommandOutcome::Applied);
+    assert_eq!(uninstall.outcome, CommandOutcome::Ignored);
+    assert_eq!(uninstall.status, "failed");
     assert!(state.uninstall_requested);
 }
 
