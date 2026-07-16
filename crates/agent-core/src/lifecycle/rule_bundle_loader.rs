@@ -95,7 +95,9 @@ pub(super) fn verify_signed_bundle_archive_contract(
 }
 
 #[cfg(test)]
-pub(super) fn signed_bundle_contains_ml_artifacts(bundle_path: &Path) -> std::result::Result<bool, String> {
+pub(super) fn signed_bundle_contains_ml_artifacts(
+    bundle_path: &Path,
+) -> std::result::Result<bool, String> {
     if !verify_bundle_signature(bundle_path) {
         return Err("bundle signature verification failed".to_string());
     }

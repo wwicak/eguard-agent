@@ -1,7 +1,7 @@
-use super::*;
 use super::rule_bundle_loader::{
     signed_bundle_contains_ml_artifacts, verify_signed_bundle_archive_contract,
 };
+use super::*;
 use crate::config::AgentConfig;
 use crate::detection_state::SharedDetectionState;
 use ed25519_dalek::{Signer, SigningKey};
@@ -1040,8 +1040,9 @@ fn load_bundle_rules_reads_ci_generated_signed_bundle() {
     std::env::set_var("EGUARD_RULE_BUNDLE_PUBKEY", bundle_pubkey_raw.trim());
     std::env::set_var("EGUARD_RULES_STAGING_DIR", &staging);
 
-    let summary = verify_signed_bundle_archive_contract(&bundle_path)
-        .expect("ci generated signed bundle should pass signature, extraction, and manifest checks");
+    let summary = verify_signed_bundle_archive_contract(&bundle_path).expect(
+        "ci generated signed bundle should pass signature, extraction, and manifest checks",
+    );
     let allow_shortfall = std::env::var("EGUARD_CI_ALLOW_COVERAGE_SHORTFALL")
         .map(|value| {
             matches!(
@@ -1099,8 +1100,9 @@ fn load_bundle_full_loads_ml_model_from_ci_generated_bundle() {
     std::env::set_var("EGUARD_RULE_BUNDLE_PUBKEY", bundle_pubkey_raw.trim());
     std::env::set_var("EGUARD_RULES_STAGING_DIR", &staging);
 
-    let summary = verify_signed_bundle_archive_contract(&bundle_path)
-        .expect("ci generated signed bundle should pass signature, extraction, and manifest checks");
+    let summary = verify_signed_bundle_archive_contract(&bundle_path).expect(
+        "ci generated signed bundle should pass signature, extraction, and manifest checks",
+    );
     let allow_shortfall = std::env::var("EGUARD_CI_ALLOW_COVERAGE_SHORTFALL")
         .map(|value| {
             matches!(
