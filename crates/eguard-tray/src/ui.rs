@@ -13,7 +13,7 @@ use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tao::window::WindowBuilder;
 use wry::{WebView, WebViewBuilder};
 
-use crate::launcher::launch_bookmark;
+use crate::launcher::{cleanup_pam_launch, launch_bookmark};
 use crate::state::{
     bookmark_cache_path, clear_launch_request_entry, command_queue_path, launch_request_state_path,
     pam_launch_state_path, session_state_path, tray_heartbeat_path, upsert_launch_request_entry,
@@ -64,8 +64,8 @@ fn handle_ipc(message: String) -> Result<()> {
         UiRequest::Refresh => {}
         UiRequest::OpenApp { app_id } => queue_open_app(&app_id)?,
         UiRequest::RetryApp { app_id } => retry_open_app(&app_id)?,
-        UiRequest::Disconnect { session_id } => queue_command(TrayCommand::Disconnect { session_id })?,
-        UiRequest::DisconnectAll => queue_command(TrayCommand::DisconnectAll)?,
+        UiRequest::Disconnect { session_id } => disconnect_session(&session_id)?,
+        UiRequest::DisconnectAll => disconnect_all_sessions()?,
     }
     Ok(())
 }
@@ -105,6 +105,31 @@ fn queue_open_app(app_id: &str) -> Result<()> {
 fn retry_open_app(app_id: &str) -> Result<()> {
     let _ = clear_launch_request_entry(app_id);
     queue_open_app(app_id)
+}
+
+fn disconnect_session(session_id: &str) -> Result<()> {
+    if let Some(checkout_id) = session_id
+        .strip_prefix("pam-")
+        .and_then(|value| value.parse::<i64>().ok())
+        .filter(|value| *value > 0)
+    {
+        info!(checkout_id, "disconnecting PAM application session from manager");
+        return cleanup_pam_launch(checkout_id);
+    }
+    queue_command(TrayCommand::Disconnect {
+        session_id: session_id.to_string(),
+    })
+}
+
+fn disconnect_all_sessions() -> Result<()> {
+    // PAM launches are local processes and are not part of the agent's tunnel
+    // session list, so clean them up separately from DisconnectAll.
+    for entry in PamLaunchState::load_default().unwrap_or_default().entries {
+        if let Err(err) = cleanup_pam_launch(entry.checkout_id) {
+            error!(checkout_id = entry.checkout_id, error = %err, "disconnect all PAM cleanup failed");
+        }
+    }
+    queue_command(TrayCommand::DisconnectAll)
 }
 
 fn queue_command(command: TrayCommand) -> Result<()> {
@@ -375,7 +400,6 @@ fn load_device_info() -> DeviceInfo {
         .map(|value| value.as_secs().to_string())
         .unwrap_or_default();
     let agent_service = windows_service_state("eGuardAgent");
-    let wireguard_service = windows_service_state("WireGuardTunnel$wg-pnup");
     let heartbeat_age = file_age_seconds(&tray_heartbeat_path().ok());
     let session_age = file_age_seconds(&session_state_path().ok());
     let ztna_enabled = read_agent_config_value(config_path, "ztna", "enabled").unwrap_or_default();
@@ -385,7 +409,6 @@ fn load_device_info() -> DeviceInfo {
         posture_check("Agent configuration", config_path.exists(), if config_path.exists() { "Configuration present" } else { "Configuration missing" }),
         posture_check("ZTNA policy", ztna_enabled.eq_ignore_ascii_case("true"), if ztna_enabled.eq_ignore_ascii_case("true") { "ZTNA enabled" } else { "ZTNA disabled" }),
         posture_check("ZTNA state sync", session_age.map(|age| age <= 300).unwrap_or(false), &session_age.map(|age| format!("Session state updated {age}s ago")).unwrap_or_else(|| "Session state missing".to_string())),
-        posture_check("WireGuard tunnel", wireguard_service == "RUNNING", &wireguard_service),
     ];
     let posture_summary = if posture_checks.iter().all(|check| check.status == "pass") {
         "All local posture checks passed"
@@ -733,8 +756,7 @@ window.__EGUARD_SET_STATE = function(s){
   const d=s.device||{};
   const deviceRows=[['Computer name',d.hostname],['Signed-in user',d.signed_in_user],['Operating system',d.operating_system],['Architecture',d.architecture],['Agent ID',d.agent_id],['Agent mode',d.agent_mode],['Agent service',d.agent_service],['Management server',d.server_address],['Agent binary',d.agent_binary_path],['Agent binary modified',d.agent_binary_modified ? new Date(Number(d.agent_binary_modified)*1000).toLocaleString() : 'Unknown'],['Agent configuration',d.agent_config_path],['ZTNA Manager version',d.tray_version],['Tray process ID',d.tray_process_id]];
   const postureRows=(d.posture_checks||[]).map(c=>'<tr><td><b>'+esc(c.name)+'</b></td><td class="check-'+esc(c.status)+'">'+(c.status==='pass'?'PASS':'ATTENTION')+'</td><td>'+esc(c.detail)+'</td></tr>');
-  const policyRows=(d.applied_policy||[]).map(p=>'<tr><td><b>'+esc(p.name)+'</b></td><td>'+esc(p.value)+'</td><td class="muted">'+esc(p.source)+'</td></tr>');
-  document.getElementById('deviceinfo').innerHTML='<div class="device-grid">'+deviceRows.map(r=>'<div class="detail-key">'+esc(r[0])+'</div><div>'+esc(r[1]||'Unknown')+'</div>').join('')+'</div><div class="device-section"><h3>Agent Posture</h3><div class="posture-summary">'+esc(d.posture_summary||'Local posture unavailable')+'</div>'+table(postureRows,'No local posture checks available.')+'<div class="muted" style="margin-top:8px">These are local health checks, not a server compliance attestation.</div></div><div class="device-section"><h3>Applied Policy</h3>'+table(policyRows,'No applied policy settings available.')+'</div>';
+  document.getElementById('deviceinfo').innerHTML='<div class="device-grid">'+deviceRows.map(r=>'<div class="detail-key">'+esc(r[0])+'</div><div>'+esc(r[1]||'Unknown')+'</div>').join('')+'</div><div class="device-section"><h3>Agent Posture</h3><div class="posture-summary">'+esc(d.posture_summary||'Local posture unavailable')+'</div>'+table(postureRows,'No local posture checks available.')+'<div class="muted" style="margin-top:8px">These are local health checks, not a server compliance attestation.</div></div>';
   document.getElementById('diag').innerHTML = '<h3>Launch Requests</h3>' + table((s.pending_requests||[]).map(r => '<tr class="'+((String(r.status).toLowerCase()==='launch_failed')?'':'app-pending')+'"><td><b>'+esc(r.app_id)+'</b><div class="muted">'+esc(r.target)+'</div></td><td>'+esc(r.status)+'</td><td>'+esc(r.message)+'</td></tr>'), 'No launch requests.') + '<h3>State Files</h3>' + table((s.diagnostics||[]).map(d => '<tr><td><b>'+esc(d.name)+'</b><div class="muted">'+esc(d.path)+'</div></td><td>'+ (d.ok ? 'OK' : 'Missing/Error') +'</td><td>'+age(d.age_seconds)+'</td><td>'+esc(d.detail)+'</td></tr>'), 'No diagnostics.');
   const oldLogScroll = Array.from(document.querySelectorAll('#logbox pre')).map(p => p.scrollTop);
   document.getElementById('logbox').innerHTML = (s.logs||[]).map((l,i) => '<div class="log-title">'+esc(l.name)+' <span class="muted">'+esc(l.path)+'</span></div><pre data-logidx="'+i+'">'+esc(l.content)+'</pre>').join('');
