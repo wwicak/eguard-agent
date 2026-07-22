@@ -10,12 +10,87 @@ use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
 pub fn open_admin_ui() -> Result<()> {
-    let target = std::env::var("EGUARD_ADMIN_UI_URL")
+    open_external_url(&admin_ui_url())
+}
+
+pub fn uninstall_agent_with_token(token: &str) -> Result<()> {
+    let token = token.trim();
+    if token.is_empty() {
+        return Err(anyhow!("uninstall token is required"));
+    }
+    if token.contains('\0') || token.contains('\r') || token.contains('\n') {
+        return Err(anyhow!("uninstall token contains invalid characters"));
+    }
+
+    let script = Path::new(r"C:\Program Files\eGuard\uninstall.ps1");
+    if !script.is_file() {
+        return Err(anyhow!("installed uninstall script not found: {}", script.display()));
+    }
+    let server_host = resolve_server_host()
+        .ok_or_else(|| anyhow!("agent server address is not configured"))?;
+    let parameters = format!(
+        "-NoProfile -ExecutionPolicy Bypass -Command \"$env:EGUARD_SERVER_HOST='{}'; & '{}' -UninstallToken '{}'\"",
+        powershell_quote(&server_host),
+        powershell_quote(&script.display().to_string()),
+        powershell_quote(token),
+    );
+    launch_elevated("powershell.exe", &parameters)
+}
+
+fn resolve_server_host() -> Option<String> {
+    let value = std::env::var("EGUARD_SERVER_HOST")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| read_agent_config_value("server_addr"))?;
+    let value = value.trim().trim_start_matches("https://").trim_start_matches("http://");
+    let value = value.trim_matches('[').trim_matches(']');
+    let host = value.rsplit_once(':').map(|(host, _)| host).unwrap_or(value).trim();
+    (!host.is_empty()).then(|| host.to_string())
+}
+
+fn read_agent_config_value(key: &str) -> Option<String> {
+    let raw = fs::read_to_string(r"C:\ProgramData\eGuard\agent.conf").ok()?;
+    raw.lines().find_map(|line| {
+        let (candidate, value) = line.trim().split_once('=')?;
+        candidate.trim().eq_ignore_ascii_case(key).then(|| value.trim().trim_matches(['\"', '\'']).to_string())
+    })
+}
+
+fn powershell_quote(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
+fn launch_elevated(executable: &str, parameters: &str) -> Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        let operation = wide("runas");
+        let executable = wide(executable);
+        let parameters = wide(parameters);
+        let result = unsafe {
+            ShellExecuteW(
+                None,
+                PCWSTR(operation.as_ptr()),
+                PCWSTR(executable.as_ptr()),
+                PCWSTR(parameters.as_ptr()),
+                PCWSTR::null(),
+                SW_SHOWNORMAL,
+            )
+        };
+        if result.0 as isize <= 32 {
+            return Err(anyhow!("uninstall elevation was cancelled or could not start"));
+        }
+        return Ok(());
+    }
+    #[allow(unreachable_code)]
+    Err(anyhow!("elevated uninstall is only implemented for Windows"))
+}
+
+fn admin_ui_url() -> String {
+    std::env::var("EGUARD_ADMIN_UI_URL")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .or_else(resolve_admin_ui_url_from_config)
-        .unwrap_or_else(|| "https://127.0.0.1:1443/".to_string());
-    open_external_url(&target)
+        .unwrap_or_else(|| "https://127.0.0.1:1443/admin".to_string())
 }
 
 fn resolve_admin_ui_url_from_config() -> Option<String> {

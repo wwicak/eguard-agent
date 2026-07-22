@@ -13,6 +13,7 @@ use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tao::window::WindowBuilder;
 use wry::{WebView, WebViewBuilder};
 
+use crate::app::uninstall_agent_with_token;
 use crate::launcher::{cleanup_pam_launch, launch_bookmark};
 use crate::state::{
     bookmark_cache_path, clear_launch_request_entry, command_queue_path, launch_request_state_path,
@@ -66,6 +67,7 @@ fn handle_ipc(message: String) -> Result<()> {
         UiRequest::RetryApp { app_id } => retry_open_app(&app_id)?,
         UiRequest::Disconnect { session_id } => disconnect_session(&session_id)?,
         UiRequest::DisconnectAll => disconnect_all_sessions()?,
+        UiRequest::UninstallWithToken { token } => uninstall_agent_with_token(&token)?,
     }
     Ok(())
 }
@@ -146,6 +148,7 @@ enum UiRequest {
     RetryApp { app_id: String },
     Disconnect { session_id: String },
     DisconnectAll,
+    UninstallWithToken { token: String },
 }
 
 #[derive(Debug, Serialize)]
@@ -652,6 +655,8 @@ pre { white-space:pre-wrap; word-break:break-word; background:#0f172a; color:#db
 .posture-summary { padding:8px 10px; border-radius:6px; margin-bottom:8px; background:#eef2f7; }
 .check-pass { color:#08713b; font-weight:700; }
 .check-attention { color:#b42318; font-weight:700; }
+.uninstall-warning { background:#fff2f2; border:1px solid #ffcaca; border-radius:8px; padding:12px; color:#7f1d1d; }
+.uninstall-warning h3 { margin:0 0 7px; font-size:13px; }
 @media(max-width: 850px) { .app-manager { grid-template-columns:1fr; grid-template-rows:minmax(120px, min(42vh, 280px)) minmax(120px, 1fr); } .app-list { max-height:none; border-right:0; border-bottom:1px solid #dfe5ef; } }
 </style>
 </head>
@@ -663,6 +668,7 @@ pre { white-space:pre-wrap; word-break:break-word; background:#0f172a; color:#db
     <button class="tabbtn" onclick="showTab('device', this)">This Device</button>
     <button class="tabbtn" onclick="showTab('diagnostic', this)">Diagnostic</button>
     <button class="tabbtn" onclick="showTab('logs', this)">Logs</button>
+    <button class="tabbtn" onclick="showTab('uninstall', this)">Uninstall</button>
     <span class="tab-spacer"></span>
     <button class="tabbtn" onclick="send({type:'refresh'})">Refresh</button>
   </div>
@@ -684,6 +690,10 @@ pre { white-space:pre-wrap; word-break:break-word; background:#0f172a; color:#db
     <section class="card"><h2>Logs</h2><div class="content"><label><input id="logAutoRefresh" type="checkbox" checked> Auto refresh</label> <button onclick="copyLogs()">Copy logs</button></div><div class="content" id="logbox">Loading...</div></section>
     <div style="height:24px"></div>
   </section>
+
+  <section id="uninstall" class="tab">
+    <section class="card"><h2>Uninstall eGuard Agent</h2><div class="content"><div class="uninstall-warning"><h3>Protected removal</h3><div>Uninstalling removes eGuard protection from this device. Continue only if you are authorized to remove the endpoint agent.</div></div><p>Paste the one-time uninstall token sent by your administrator. It is validated and consumed by eGuard before removal begins.</p><label for="uninstallToken">One-time uninstall token</label><div style="display:flex;gap:8px;margin-top:5px"><input id="uninstallToken" type="password" autocomplete="off" placeholder="Paste token" style="flex:1;min-width:0"><button class="danger" onclick="uninstallWithToken()">Uninstall Agent</button></div><div id="uninstallMessage" class="muted" style="margin-top:8px"></div></div></section>
+  </section>
   <div style="height:16px"></div>
 </main>
 <script>
@@ -695,6 +705,7 @@ function connectApp(id){ send({type:'open_app', app_id:id}); }
 function copyLogs(){ const text = Array.from(document.querySelectorAll('#logbox pre')).map(p => p.innerText).join('\n\n'); navigator.clipboard.writeText(text).catch(() => {}); }
 function retryApp(id){ const now=Date.now(); const until=retryUntil.get(id)||0; if(now < until) return; optimistic.delete(id); retryUntil.set(id, now + 10000); send({type:'retry_app', app_id:id}); }
 function disconnectSession(id){ send({type:'disconnect', session_id:id}); }
+function uninstallWithToken(){ const token=document.getElementById('uninstallToken').value.trim(); if(!token){ document.getElementById('uninstallMessage').textContent='Enter the one-time token from your administrator.'; return; } if(!confirm('Uninstall eGuard Agent from this device? The token will be consumed and this cannot be undone.')) return; document.getElementById('uninstallMessage').textContent='Requesting Administrator approval…'; send({type:'uninstall_with_token', token}); }
 function age(s){ return s == null ? 'n/a' : (s < 60 ? s + 's ago' : Math.round(s/60) + 'm ago'); }
 function table(rows, empty){ return rows.length ? '<table>'+rows.join('')+'</table>' : '<div class="muted">'+empty+'</div>'; }
 function showTab(id, btn){ document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active')); document.querySelectorAll('.tabbtn').forEach(x=>x.classList.remove('active')); document.getElementById(id).classList.add('active'); btn.classList.add('active'); }
