@@ -886,7 +886,7 @@ mod tests {
         std::env::set_var("EGUARD_TRAY_DATA_DIR", &tray_dir);
 
         let cfg = AgentConfig::default();
-        let runtime = AgentRuntime::new(cfg).expect("runtime");
+        let mut runtime = AgentRuntime::new(cfg).expect("runtime");
         let initial = BookmarkState {
             version: "v1".to_string(),
             bookmarks: vec![super::BookmarkEntry {
@@ -984,6 +984,8 @@ mod tests {
                 created_at_unix: 1,
                 command: TrayCommand::OpenApp {
                     app_id: "rdp-prod".to_string(),
+                    forward_host: None,
+                    forward_port: None,
                 },
             }],
         };
