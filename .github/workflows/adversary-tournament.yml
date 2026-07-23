@@ -31,6 +31,11 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install eBPF build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libelf-dev zlib1g-dev
+
       - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:
