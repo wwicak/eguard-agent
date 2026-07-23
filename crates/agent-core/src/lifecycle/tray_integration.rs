@@ -146,6 +146,12 @@ impl AgentRuntime {
 
     pub(super) async fn sync_tray_state(&mut self, now_unix: i64) -> Result<()> {
         self.apply_tray_commands().await?;
+        // Avoid control-plane I/O on every agent tick when ZTNA is disabled.
+        // Besides being unnecessary, probing the controller here makes the
+        // runtime tick latency depend on network connection failure/timeout.
+        if !self.config.ztna_enabled {
+            return Ok(());
+        }
         self.reconcile_pam_runtime_state().await?;
         self.write_tray_bookmark_state().await?;
         self.write_tray_session_state(now_unix).await?;
@@ -430,6 +436,9 @@ impl AgentRuntime {
         &self,
         now_unix: i64,
     ) -> Option<Vec<SessionEntry>> {
+        if !self.config.ztna_enabled {
+            return None;
+        }
         let config = TunnelClientConfig {
             base_url: self.config.ztna_controller_base_url.clone(),
             request_timeout_secs: 5,
