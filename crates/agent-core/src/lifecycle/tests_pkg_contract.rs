@@ -704,7 +704,7 @@ fn update_script_executes_deb_and_rpm_paths_with_mocked_installers() {
             })),
         }],
         fleet_baseline: None,
-        ztna_bookmarks: Vec::new(),
+        ztna_bookmarks: None,
         ztna_revocations: Vec::new(),
         status: "ok".to_string(),
         server_time: String::new(),
