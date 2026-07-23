@@ -24,6 +24,10 @@ concurrency:
 jobs:
   tournament:
     runs-on: ubuntu-latest
+    env:
+      # Use the native runner linker for this native test; Zig's older glibc
+      # target cannot link Ubuntu 24.04's libelf static objects.
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: gcc
     steps:
       - name: Checkout
         uses: actions/checkout@v4

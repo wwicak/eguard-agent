@@ -7,6 +7,11 @@ on:
 jobs:
   benchmark:
     runs-on: ubuntu-latest
+    env:
+      # This benchmark runs natively on the Ubuntu runner. The repository
+      # default linker targets an older glibc with Zig, which is incompatible
+      # with Ubuntu 24.04's libelf (__isoc23_* symbols).
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: gcc
     steps:
       - name: Checkout
         uses: actions/checkout@v4
