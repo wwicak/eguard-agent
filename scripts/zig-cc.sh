@@ -1,15 +1,14 @@
 #!/bin/bash
-# Use zig as a C/C++ compiler with glibc version targeting.
+# Use zig as a C/C++ compiler/linker.
 # This ensures the resulting binary is compatible with a minimum glibc version.
 #
-# Default target: glibc 2.31 (Ubuntu 20.04+ / Debian 10+)
-# Override: EGUARD_GLIBC_TARGET=2.35 cargo build ...
+# Default target: the host Linux ABI. Override with EGUARD_ZIG_TARGET when
+# producing a deliberately cross-targeted build.
 #
-# For eBPF builds that link -lelf -lz, static versions of these libraries
-# are used so the binary doesn't inherit the build host's newer glibc
-# requirement from its shared libelf/libz.
+# eBPF builds use the runner's dynamic libelf/libz so the linker and glibc
+# ABI remain consistent with the Ubuntu runner image.
 
-GLIBC_TARGET="${EGUARD_GLIBC_TARGET:-2.31}"
+ZIG_TARGET="${EGUARD_ZIG_TARGET:-x86_64-linux-gnu}"
 
 EXTRA_ARGS=()
 
@@ -19,15 +18,8 @@ for dir in /usr/lib/x86_64-linux-gnu /usr/lib64 /lib/x86_64-linux-gnu /lib64; do
 done
 
 # Force static linking of libelf and libz to avoid inheriting their
-# glibc floor from the build host's shared libraries.
-# Pass-through: convert -lelf → -Bstatic -lelf -Bdynamic (and same for -lz)
-REWRITTEN_ARGS=()
-for arg in "$@"; do
-    case "$arg" in
-        -lelf) REWRITTEN_ARGS+=("-Wl,-Bstatic" "-lelf" "-Wl,-Bdynamic") ;;
-        -lz)   REWRITTEN_ARGS+=("-Wl,-Bstatic" "-lz" "-Wl,-Bdynamic") ;;
-        *)     REWRITTEN_ARGS+=("$arg") ;;
-    esac
-done
-
-exec zig cc -target "x86_64-linux-gnu.${GLIBC_TARGET}" "${EXTRA_ARGS[@]}" "${REWRITTEN_ARGS[@]}"
+# Do not force libelf/libz static. Ubuntu's static libelf is compiled against
+# the runner's newer glibc and can reference __isoc23_* symbols that are not
+# available when linking against Zig's older glibc target. Dynamic linking is
+# correct for this CI benchmark, which runs on the same Ubuntu image.
+exec "${ZIG:-zig}" cc -target "${ZIG_TARGET}" "${EXTRA_ARGS[@]}" "$@"
