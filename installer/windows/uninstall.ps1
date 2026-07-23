@@ -15,6 +15,7 @@ $installRoot = 'C:\Program Files\eGuard'
 $trayProcessName = 'eguard-tray'
 $trayRunKeyPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $trayProtocolKeyPath = 'HKCU:\Software\Classes\eguard-ztna'
+$trayShortcutPath = 'C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Eguard ZTNA.lnk'
 $serverHost = [string]$env:EGUARD_SERVER_HOST
 
 function Invoke-WithInsecureHttps {
@@ -247,8 +248,9 @@ if ($trayProcesses) {
     Write-Step "Already absent: process $trayProcessName"
 }
 
-Write-Step 'Removing bundled tray startup and protocol registration'
+Write-Step 'Removing bundled tray startup, shortcut, and protocol registration'
 Remove-RegistryValueIfExists -Path $trayRunKeyPath -Name 'eGuardTray' -Description 'tray startup entry'
+Remove-PathIfExists -Path $trayShortcutPath -Description 'eGuard ZTNA Start Menu shortcut'
 Remove-PathIfExists -Path $trayProtocolKeyPath -Description 'tray protocol registration'
 
 if (-not $KeepProgramFiles.IsPresent) {
