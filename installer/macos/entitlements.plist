@@ -2,6 +2,14 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <!-- Must be a subset of the entitlements authorized by the Developer ID
+         provisioning profile (eGuard ESF ID, App ID 4F682M96C5.id.eguard.agent.sysext).
+         application-identifier + team-identifier are required for AMFI to match
+         the binary against the installed profile. -->
+    <key>com.apple.application-identifier</key>
+    <string>4F682M96C5.id.eguard.agent.sysext</string>
+    <key>com.apple.developer.team-identifier</key>
+    <string>4F682M96C5</string>
     <key>com.apple.developer.endpoint-security.client</key>
     <true/>
 </dict>

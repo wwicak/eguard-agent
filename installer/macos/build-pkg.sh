@@ -15,12 +15,16 @@ set -euo pipefail
 # Endpoint Security entitlement:
 #   The agent collects telemetry via Apple's /usr/bin/eslogger, so the binary
 #   does NOT need com.apple.developer.endpoint-security.client to function.
-#   A bare Mach-O cannot embed a provisioning profile, and a Developer ID binary
-#   that claims that restricted entitlement WITHOUT an authorizing profile is
-#   killed by AMFI at launch on a normal (SIP-on) Mac. Therefore the entitlement
-#   is applied ONLY when SIGN_ES_ENTITLEMENT=1 (used for SIP/AMFI-disabled test
-#   VMs, or once the agent ships as a .systemextension bundle with a granted
-#   provisioning profile). Default: OFF => safe, launches everywhere.
+#   A bare Mach-O cannot embed a provisioning profile, so the restricted
+#   entitlement is authorized via a SYSTEM-INSTALLED profile instead:
+#     SIGN_ES_ENTITLEMENT=1   sign with installer/macos/entitlements.plist
+#     PROVISION_PROFILE=path  Developer ID .provisionprofile (ProvisionsAllDevices)
+#                             shipped in the pkg payload at
+#                             /Library/Application Support/ProvisioningProfiles/,
+#                             where AMFI honors it for any matching signed binary.
+#   Signing the entitlement WITHOUT shipping/installing the profile still produces
+#   a binary that AMFI kills on a normal (SIP-on) Mac — only do that for
+#   SIP/AMFI-disabled test VMs. Default: OFF => safe, launches everywhere.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -50,6 +54,20 @@ chmod 755 "$PKG_ROOT/usr/local/bin/eguard-agent"
 # Copy LaunchDaemon plist
 cp "$SCRIPT_DIR/com.eguard.agent.plist" "$PKG_ROOT/Library/LaunchDaemons/"
 
+# Ship the ES provisioning profile so AMFI authorizes the restricted
+# entitlement for the bare-daemon binary on SIP-enabled Macs.
+if [ -n "${PROVISION_PROFILE:-}" ]; then
+    if [ ! -f "$PROVISION_PROFILE" ]; then
+        echo "ERROR: PROVISION_PROFILE=$PROVISION_PROFILE not found" >&2
+        exit 1
+    fi
+    mkdir -p "$PKG_ROOT/Library/Application Support/ProvisioningProfiles"
+    cp "$PROVISION_PROFILE" \
+       "$PKG_ROOT/Library/Application Support/ProvisioningProfiles/eGuard_ESF_ID.provisionprofile"
+    chmod 644 "$PKG_ROOT/Library/Application Support/ProvisioningProfiles/eGuard_ESF_ID.provisionprofile"
+    echo "Provisioning profile staged into pkg payload."
+fi
+
 # ---------------------------------------------------------------------------
 # Code-sign the agent binary (Developer ID Application + hardened runtime).
 # Notarization requires a hardened-runtime, Developer ID signature.
@@ -61,9 +79,13 @@ if [ -n "${DEVELOPER_ID_APPLICATION:-}" ]; then
         --sign "$DEVELOPER_ID_APPLICATION"
     )
     if [ "${SIGN_ES_ENTITLEMENT:-0}" = "1" ]; then
-        echo "WARNING: signing with endpoint-security entitlement (SIGN_ES_ENTITLEMENT=1)."
-        echo "         This binary will be killed by AMFI on a normal SIP-enabled Mac"
-        echo "         unless it is a .systemextension bundle with a granted profile."
+        if [ -n "${PROVISION_PROFILE:-}" ]; then
+            echo "Signing with endpoint-security entitlement, authorized by shipped profile."
+        else
+            echo "WARNING: signing with endpoint-security entitlement but NO provisioning"
+            echo "         profile (PROVISION_PROFILE unset). AMFI will kill this binary on a"
+            echo "         normal SIP-enabled Mac. Only valid for SIP/AMFI-disabled test VMs."
+        fi
         CODESIGN_ARGS+=(--entitlements "$SCRIPT_DIR/entitlements.plist")
     fi
     codesign "${CODESIGN_ARGS[@]}" "$PKG_ROOT/usr/local/bin/eguard-agent"

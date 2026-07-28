@@ -29,6 +29,8 @@ jobs:
       MACOS_NOTARY_KEY_P8_BASE64: ${{ secrets.MACOS_NOTARY_KEY_P8_BASE64 }}
       NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
       NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+      # Developer ID provisioning profile carrying the ES entitlement grant.
+      MACOS_PROVISION_PROFILE_BASE64: ${{ secrets.MACOS_PROVISION_PROFILE_BASE64 }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -90,12 +92,25 @@ jobs:
           echo "$MACOS_NOTARY_KEY_P8_BASE64" | base64 --decode > "$RUNNER_TEMP/notary.p8"
           echo "path=$RUNNER_TEMP/notary.p8" >> "$GITHUB_OUTPUT"
 
+      - name: Prepare ES provisioning profile
+        id: profile
+        if: env.MACOS_PROVISION_PROFILE_BASE64 != ''
+        run: |
+          echo "$MACOS_PROVISION_PROFILE_BASE64" | base64 --decode > "$RUNNER_TEMP/eGuard_ESF_ID.provisionprofile"
+          # sanity: decode CMS and confirm the ES entitlement is present
+          security cms -D -i "$RUNNER_TEMP/eGuard_ESF_ID.provisionprofile" | \
+            grep -q 'com.apple.developer.endpoint-security.client' \
+            || { echo 'profile missing ES entitlement'; exit 1; }
+          echo "path=$RUNNER_TEMP/eGuard_ESF_ID.provisionprofile" >> "$GITHUB_OUTPUT"
+
       - name: Build, sign & notarize .pkg
         run: ./installer/macos/build-pkg.sh
         env:
           VERSION: ${{ steps.semver.outputs.version }}
           BUILD_DMG: '0'
           NOTARY_KEY_P8: ${{ steps.notary.outputs.path }}
+          SIGN_ES_ENTITLEMENT: ${{ steps.profile.outputs.path != '' && '1' || '0' }}
+          PROVISION_PROFILE: ${{ steps.profile.outputs.path }}
 
       - name: Verify signature, notarization & Gatekeeper
         run: |
