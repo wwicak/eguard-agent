@@ -691,7 +691,6 @@ fn update_script_executes_deb_and_rpm_paths_with_mocked_installers() {
     let heartbeat = pb::HeartbeatResponse {
         heartbeat_interval_secs: 30,
         policy_update: None,
-        dlp_policy: None,
         rule_update: None,
         pending_commands: vec![pb::ServerCommand {
             command_id: "cmd-update-1".to_string(),

@@ -7,20 +7,19 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use serde::Serialize;
+use tracing::{error, info};
 use tao::event::{Event, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tao::window::WindowBuilder;
-use tracing::{error, info};
 use wry::{WebView, WebViewBuilder};
 
 use crate::app::uninstall_agent_with_token;
 use crate::launcher::{cleanup_pam_launch, launch_bookmark};
 use crate::state::{
-    bookmark_cache_path, clear_launch_request_entry, command_queue_path, dlp_state_path,
-    launch_request_state_path, pam_launch_state_path, session_state_path, tray_heartbeat_path,
-    upsert_launch_request_entry, BookmarkEntry, BookmarkState, DlpState, LaunchRequestEntry,
-    LaunchRequestState, PamLaunchState, SessionEntry, SessionState, TrayCommand, TrayCommandQueue,
-    TrayPreferences,
+    bookmark_cache_path, clear_launch_request_entry, command_queue_path, launch_request_state_path,
+    pam_launch_state_path, session_state_path, tray_heartbeat_path, upsert_launch_request_entry,
+    BookmarkEntry, BookmarkState, LaunchRequestEntry, LaunchRequestState, PamLaunchState,
+    SessionEntry, SessionState, TrayCommand, TrayCommandQueue,
 };
 
 pub fn open_management_window() -> Result<()> {
@@ -45,19 +44,14 @@ pub fn open_management_window() -> Result<()> {
         *control_flow = ControlFlow::WaitUntil(std::time::Instant::now() + Duration::from_secs(3));
         match event {
             Event::NewEvents(StartCause::Init)
-            | Event::NewEvents(StartCause::ResumeTimeReached { .. }) => {
-                push_state_to_webview(&webview)
-            }
+            | Event::NewEvents(StartCause::ResumeTimeReached { .. }) => push_state_to_webview(&webview),
             Event::UserEvent(message) => {
                 if let Err(err) = handle_ipc(message) {
                     error!(error = %err, "ZTNA manager IPC failed");
                 }
                 push_state_to_webview(&webview);
             }
-            Event::WindowEvent {
-                event: WindowEvent::CloseRequested,
-                ..
-            } => {
+            Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
                 *control_flow = ControlFlow::Exit;
             }
             _ => {}
@@ -73,17 +67,13 @@ fn handle_ipc(message: String) -> Result<()> {
         UiRequest::RetryApp { app_id } => retry_open_app(&app_id)?,
         UiRequest::Disconnect { session_id } => disconnect_session(&session_id)?,
         UiRequest::DisconnectAll => disconnect_all_sessions()?,
-        UiRequest::AcknowledgeDlp { detected_at_unix } => acknowledge_dlp(detected_at_unix)?,
         UiRequest::UninstallWithToken { token } => uninstall_agent_with_token(&token)?,
     }
     Ok(())
 }
 
 fn push_state_to_webview(webview: &WebView) {
-    let js = format!(
-        "window.__EGUARD_SET_STATE({});",
-        json_for_script(&load_ui_state())
-    );
+    let js = format!("window.__EGUARD_SET_STATE({});", json_for_script(&load_ui_state()));
     if let Err(err) = webview.evaluate_script(&js) {
         error!(error = %err, "refresh ZTNA manager state failed");
     }
@@ -109,14 +99,7 @@ fn queue_open_app(app_id: &str) -> Result<()> {
     })?;
     match launch_bookmark(bookmark) {
         Ok(()) => Ok(()),
-        Err(err)
-            if err
-                .to_string()
-                .to_ascii_lowercase()
-                .contains("pending approval") =>
-        {
-            Ok(())
-        }
+        Err(err) if err.to_string().to_ascii_lowercase().contains("pending approval") => Ok(()),
         Err(err) => Err(err),
     }
 }
@@ -132,21 +115,12 @@ fn disconnect_session(session_id: &str) -> Result<()> {
         .and_then(|value| value.parse::<i64>().ok())
         .filter(|value| *value > 0)
     {
-        info!(
-            checkout_id,
-            "disconnecting PAM application session from manager"
-        );
+        info!(checkout_id, "disconnecting PAM application session from manager");
         return cleanup_pam_launch(checkout_id);
     }
     queue_command(TrayCommand::Disconnect {
         session_id: session_id.to_string(),
     })
-}
-
-fn acknowledge_dlp(detected_at_unix: i64) -> Result<()> {
-    let mut preferences = TrayPreferences::load_default()?;
-    preferences.acknowledge_dlp_detection(detected_at_unix);
-    preferences.save_default()
 }
 
 fn disconnect_all_sessions() -> Result<()> {
@@ -174,7 +148,6 @@ enum UiRequest {
     RetryApp { app_id: String },
     Disconnect { session_id: String },
     DisconnectAll,
-    AcknowledgeDlp { detected_at_unix: i64 },
     UninstallWithToken { token: String },
 }
 
@@ -190,8 +163,6 @@ struct UiState {
     sessions: Vec<SessionEntry>,
     pending_requests: Vec<LaunchRequestEntry>,
     command_queue_depth: usize,
-    dlp: DlpState,
-    dlp_acknowledged: bool,
     logs: Vec<LogFile>,
     device: DeviceInfo,
 }
@@ -256,23 +227,13 @@ fn load_ui_state() -> UiState {
     let pending_requests = load_or_default::<LaunchRequestState>("launch requests", &mut errors)
         .active_entries()
         .into_iter()
-        .filter(|entry| {
-            !sessions
-                .iter()
-                .any(|session| session.app_id == entry.app_id)
-        })
+        .filter(|entry| !sessions.iter().any(|session| session.app_id == entry.app_id))
         .filter(|entry| !is_stale_connecting_request(entry, now))
         .cloned()
         .collect::<Vec<_>>();
     let command_queue_depth = load_or_default::<TrayCommandQueue>("command queue", &mut errors)
         .commands
         .len();
-    let dlp = load_or_default::<DlpState>("DLP state", &mut errors);
-    let dlp_acknowledged = TrayPreferences::load_default()
-        .ok()
-        .and_then(|preferences| preferences.acknowledged_dlp_detection_unix)
-        .zip(dlp.last_detection_unix)
-        .is_some_and(|(acknowledged, detected)| acknowledged >= detected);
     let diagnostics = build_diagnostics();
     let stale = diagnostics.iter().any(|diag| {
         diag.name == "Sessions" && diag.age_seconds.map(|age| age > 300).unwrap_or(false)
@@ -294,20 +255,19 @@ fn load_ui_state() -> UiState {
         entry.status.eq_ignore_ascii_case("connecting")
             || entry.status.eq_ignore_ascii_case("connecting_bastion")
     });
-    let (status, status_label) =
-        if !errors.is_empty() && bookmarks.is_empty() && sessions.is_empty() {
-            ("error", "State load failed")
-        } else if !errors.is_empty() || stale {
-            ("degraded", "Degraded / stale state")
-        } else if waiting {
-            ("waiting", "Waiting for approval")
-        } else if connecting {
-            ("connecting", "Connecting")
-        } else if !sessions.is_empty() {
-            ("connected", "Connected")
-        } else {
-            ("not_connected", "Not connected")
-        };
+    let (status, status_label) = if !errors.is_empty() && bookmarks.is_empty() && sessions.is_empty() {
+        ("error", "State load failed")
+    } else if !errors.is_empty() || stale {
+        ("degraded", "Degraded / stale state")
+    } else if waiting {
+        ("waiting", "Waiting for approval")
+    } else if connecting {
+        ("connecting", "Connecting")
+    } else if !sessions.is_empty() {
+        ("connected", "Connected")
+    } else {
+        ("not_connected", "Not connected")
+    };
 
     UiState {
         status: status.to_string(),
@@ -320,8 +280,6 @@ fn load_ui_state() -> UiState {
         sessions,
         pending_requests,
         command_queue_depth,
-        dlp,
-        dlp_acknowledged,
         logs: load_logs(),
         device: load_device_info(),
     }
@@ -334,15 +292,10 @@ fn add_pam_launch_sessions(
 ) {
     let pam_launches = load_or_default::<PamLaunchState>("PAM launches", errors).entries;
     for entry in pam_launches {
-        if sessions
-            .iter()
-            .any(|session| session.app_id == entry.app_id)
-        {
+        if sessions.iter().any(|session| session.app_id == entry.app_id) {
             continue;
         }
-        let bookmark = bookmarks
-            .iter()
-            .find(|bookmark| bookmark.app_id == entry.app_id);
+        let bookmark = bookmarks.iter().find(|bookmark| bookmark.app_id == entry.app_id);
         sessions.push(SessionEntry {
             session_id: format!("pam-{}", entry.checkout_id),
             app_id: entry.app_id.clone(),
@@ -386,7 +339,6 @@ where
         "launch requests" => launch_request_state_path(),
         "PAM launches" => pam_launch_state_path(),
         "command queue" => command_queue_path(),
-        "DLP state" => dlp_state_path(),
         _ => unreachable!(),
     };
     match path.and_then(|path| {
@@ -411,7 +363,6 @@ fn build_diagnostics() -> Vec<DiagnosticRow> {
         ("Launch requests", launch_request_state_path()),
         ("PAM launches", pam_launch_state_path()),
         ("Command queue", command_queue_path()),
-        ("DLP state", dlp_state_path()),
         ("Tray heartbeat", tray_heartbeat_path()),
     ]
     .into_iter()
@@ -457,49 +408,19 @@ fn load_device_info() -> DeviceInfo {
     let ztna_enabled = read_agent_config_value(config_path, "ztna", "enabled").unwrap_or_default();
     let mut posture_checks = vec![
         posture_check("Agent service", agent_service == "RUNNING", &agent_service),
-        posture_check(
-            "Tray responsiveness",
-            heartbeat_age.map(|age| age <= 20).unwrap_or(false),
-            &heartbeat_age
-                .map(|age| format!("Heartbeat {age}s ago"))
-                .unwrap_or_else(|| "Heartbeat missing".to_string()),
-        ),
-        posture_check(
-            "Agent configuration",
-            config_path.exists(),
-            if config_path.exists() {
-                "Configuration present"
-            } else {
-                "Configuration missing"
-            },
-        ),
-        posture_check(
-            "ZTNA policy",
-            ztna_enabled.eq_ignore_ascii_case("true"),
-            if ztna_enabled.eq_ignore_ascii_case("true") {
-                "ZTNA enabled"
-            } else {
-                "ZTNA disabled"
-            },
-        ),
-        posture_check(
-            "ZTNA state sync",
-            session_age.map(|age| age <= 300).unwrap_or(false),
-            &session_age
-                .map(|age| format!("Session state updated {age}s ago"))
-                .unwrap_or_else(|| "Session state missing".to_string()),
-        ),
+        posture_check("Tray responsiveness", heartbeat_age.map(|age| age <= 20).unwrap_or(false), &heartbeat_age.map(|age| format!("Heartbeat {age}s ago")).unwrap_or_else(|| "Heartbeat missing".to_string())),
+        posture_check("Agent configuration", config_path.exists(), if config_path.exists() { "Configuration present" } else { "Configuration missing" }),
+        posture_check("ZTNA policy", ztna_enabled.eq_ignore_ascii_case("true"), if ztna_enabled.eq_ignore_ascii_case("true") { "ZTNA enabled" } else { "ZTNA disabled" }),
+        posture_check("ZTNA state sync", session_age.map(|age| age <= 300).unwrap_or(false), &session_age.map(|age| format!("Session state updated {age}s ago")).unwrap_or_else(|| "Session state missing".to_string())),
     ];
     let posture_summary = if posture_checks.iter().all(|check| check.status == "pass") {
         "All local posture checks passed"
     } else {
         "One or more local posture checks require attention"
-    }
-    .to_string();
+    }.to_string();
     let policy = |name: &str, section: &str, key: &str| DevicePolicySetting {
         name: name.to_string(),
-        value: read_agent_config_value(config_path, section, key)
-            .unwrap_or_else(|| "Not configured".to_string()),
+        value: read_agent_config_value(config_path, section, key).unwrap_or_else(|| "Not configured".to_string()),
         source: "Local applied agent.conf".to_string(),
     };
     let applied_policy = vec![
@@ -507,34 +428,14 @@ fn load_device_info() -> DeviceInfo {
         policy("Device ownership", "inventory", "ownership"),
         policy("ZTNA enabled", "ztna", "enabled"),
         policy("ZTNA idle timeout", "ztna", "idle_timeout_secs"),
-        policy(
-            "Policy refresh interval",
-            "control_plane",
-            "policy_refresh_interval_secs",
-        ),
-        policy(
-            "Compliance check interval",
-            "compliance",
-            "check_interval_secs",
-        ),
-        policy(
-            "Compliance auto-remediation",
-            "compliance",
-            "auto_remediate",
-        ),
+        policy("Policy refresh interval", "control_plane", "policy_refresh_interval_secs"),
+        policy("Compliance check interval", "compliance", "check_interval_secs"),
+        policy("Compliance auto-remediation", "compliance", "auto_remediate"),
         policy("Autonomous response", "response", "autonomous_response"),
-        policy(
-            "Self-protection uninstall prevention",
-            "self_protection",
-            "prevent_uninstall",
-        ),
+        policy("Self-protection uninstall prevention", "self_protection", "prevent_uninstall"),
         policy("Scan files on create", "detection", "scan_on_create"),
         policy("Memory scanning", "detection", "memory_scan_enabled"),
-        policy(
-            "Kernel integrity checks",
-            "detection",
-            "kernel_integrity_enabled",
-        ),
+        policy("Kernel integrity checks", "detection", "kernel_integrity_enabled"),
     ];
     DeviceInfo {
         hostname: std::env::var("COMPUTERNAME").unwrap_or_else(|_| "Unknown".to_string()),
@@ -543,8 +444,7 @@ fn load_device_info() -> DeviceInfo {
         architecture: std::env::consts::ARCH.to_string(),
         agent_id: read_agent_config_value(config_path, "agent", "id").unwrap_or_default(),
         agent_mode: read_agent_config_value(config_path, "agent", "mode").unwrap_or_default(),
-        server_address: read_agent_config_value(config_path, "agent", "server_addr")
-            .unwrap_or_default(),
+        server_address: read_agent_config_value(config_path, "agent", "server_addr").unwrap_or_default(),
         agent_service,
         agent_config_path: config_path.display().to_string(),
         agent_binary_path: agent_binary.display().to_string(),
@@ -632,14 +532,8 @@ fn windows_service_state(service_name: &str) -> String {
 
 fn load_logs() -> Vec<LogFile> {
     [
-        (
-            "Tray Log",
-            std::path::PathBuf::from(r"C:\ProgramData\eGuard\logs\tray.log"),
-        ),
-        (
-            "Agent Log",
-            std::path::PathBuf::from(r"C:\ProgramData\eGuard\logs\agent.log"),
-        ),
+        ("Tray Log", std::path::PathBuf::from(r"C:\ProgramData\eGuard\logs\tray.log")),
+        ("Agent Log", std::path::PathBuf::from(r"C:\ProgramData\eGuard\logs\agent.log")),
     ]
     .into_iter()
     .map(|(name, path)| match tail_log_file(&path, 96 * 1024, 180) {
@@ -811,7 +705,6 @@ function connectApp(id){ send({type:'open_app', app_id:id}); }
 function copyLogs(){ const text = Array.from(document.querySelectorAll('#logbox pre')).map(p => p.innerText).join('\n\n'); navigator.clipboard.writeText(text).catch(() => {}); }
 function retryApp(id){ const now=Date.now(); const until=retryUntil.get(id)||0; if(now < until) return; optimistic.delete(id); retryUntil.set(id, now + 10000); send({type:'retry_app', app_id:id}); }
 function disconnectSession(id){ send({type:'disconnect', session_id:id}); }
-function acknowledgeDlp(detectedAt){ send({type:'acknowledge_dlp', detected_at_unix:detectedAt}); }
 function uninstallWithToken(){ const token=document.getElementById('uninstallToken').value.trim(); if(!token){ document.getElementById('uninstallMessage').textContent='Enter the one-time token from your administrator.'; return; } if(!confirm('Uninstall eGuard Agent from this device? The token will be consumed and this cannot be undone.')) return; document.getElementById('uninstallMessage').textContent='Requesting Administrator approval…'; send({type:'uninstall_with_token', token}); }
 function age(s){ return s == null ? 'n/a' : (s < 60 ? s + 's ago' : Math.round(s/60) + 'm ago'); }
 function table(rows, empty){ return rows.length ? '<table>'+rows.join('')+'</table>' : '<div class="muted">'+empty+'</div>'; }
@@ -874,12 +767,7 @@ window.__EGUARD_SET_STATE = function(s){
   const d=s.device||{};
   const deviceRows=[['Computer name',d.hostname],['Signed-in user',d.signed_in_user],['Operating system',d.operating_system],['Architecture',d.architecture],['Agent ID',d.agent_id],['Agent mode',d.agent_mode],['Agent service',d.agent_service],['Management server',d.server_address],['Agent binary',d.agent_binary_path],['Agent binary modified',d.agent_binary_modified ? new Date(Number(d.agent_binary_modified)*1000).toLocaleString() : 'Unknown'],['Agent configuration',d.agent_config_path],['ZTNA Manager version',d.tray_version],['Tray process ID',d.tray_process_id]];
   const postureRows=(d.posture_checks||[]).map(c=>'<tr><td><b>'+esc(c.name)+'</b></td><td class="check-'+esc(c.status)+'">'+(c.status==='pass'?'PASS':'ATTENTION')+'</td><td>'+esc(c.detail)+'</td></tr>');
-  const dlp=s.dlp||{};
-  const dlpStatus=String(dlp.status||'disabled').toLowerCase();
-  const lastDetection=dlp.last_detection_unix ? new Date(Number(dlp.last_detection_unix)*1000).toLocaleString() : 'None';
-  const dlpRows=[['Status',dlpStatus],['Scanner enabled',dlp.enabled?'Yes':'No'],['Scanner loaded',dlp.scanner_loaded?'Yes':'No'],['Max file scan size',String(dlp.max_file_scan_size_mb||0)+' MB'],['Last detection',lastDetection],['Last rule',dlp.last_rule_id||'None']];
-  const acknowledge = dlp.last_detection_unix && !s.dlp_acknowledged ? '<button onclick="acknowledgeDlp('+Number(dlp.last_detection_unix)+')">Acknowledge local alert</button>' : '';
-  document.getElementById('deviceinfo').innerHTML='<div class="device-grid">'+deviceRows.map(r=>'<div class="detail-key">'+esc(r[0])+'</div><div>'+esc(r[1]||'Unknown')+'</div>').join('')+'</div><div class="device-section"><h3>Data Loss Prevention</h3><div class="posture-summary">Status is local only; document content and evidence stay on the endpoint.</div>'+table(dlpRows.map(r=>'<tr><td><b>'+esc(r[0])+'</b></td><td>'+esc(r[1])+'</td></tr>'),'DLP state unavailable.')+acknowledge+'</div><div class="device-section"><h3>Agent Posture</h3><div class="posture-summary">'+esc(d.posture_summary||'Local posture unavailable')+'</div>'+table(postureRows,'No local posture checks available.')+'<div class="muted" style="margin-top:8px">These are local health checks, not a server compliance attestation.</div></div>';
+  document.getElementById('deviceinfo').innerHTML='<div class="device-grid">'+deviceRows.map(r=>'<div class="detail-key">'+esc(r[0])+'</div><div>'+esc(r[1]||'Unknown')+'</div>').join('')+'</div><div class="device-section"><h3>Agent Posture</h3><div class="posture-summary">'+esc(d.posture_summary||'Local posture unavailable')+'</div>'+table(postureRows,'No local posture checks available.')+'<div class="muted" style="margin-top:8px">These are local health checks, not a server compliance attestation.</div></div>';
   document.getElementById('diag').innerHTML = '<h3>Launch Requests</h3>' + table((s.pending_requests||[]).map(r => '<tr class="'+((String(r.status).toLowerCase()==='launch_failed')?'':'app-pending')+'"><td><b>'+esc(r.app_id)+'</b><div class="muted">'+esc(r.target)+'</div></td><td>'+esc(r.status)+'</td><td>'+esc(r.message)+'</td></tr>'), 'No launch requests.') + '<h3>State Files</h3>' + table((s.diagnostics||[]).map(d => '<tr><td><b>'+esc(d.name)+'</b><div class="muted">'+esc(d.path)+'</div></td><td>'+ (d.ok ? 'OK' : 'Missing/Error') +'</td><td>'+age(d.age_seconds)+'</td><td>'+esc(d.detail)+'</td></tr>'), 'No diagnostics.');
   const oldLogScroll = Array.from(document.querySelectorAll('#logbox pre')).map(p => p.scrollTop);
   document.getElementById('logbox').innerHTML = (s.logs||[]).map((l,i) => '<div class="log-title">'+esc(l.name)+' <span class="muted">'+esc(l.path)+'</span></div><pre data-logidx="'+i+'">'+esc(l.content)+'</pre>').join('');

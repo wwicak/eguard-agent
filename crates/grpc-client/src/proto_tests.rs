@@ -466,33 +466,6 @@ fn certificate_policy_contract_covers_pinning_rotation_client_cert_and_transport
 }
 
 #[test]
-fn dlp_contract_includes_capabilities_policy_and_redacted_detection_fields() {
-    assert_contains_all(
-        AGENT_PROTO,
-        &[
-            "repeated string dlp_capabilities",
-            "message DlpStatus",
-            "string bundle_version",
-            "string bundle_sha256",
-            "message DlpPolicy",
-            "int64 expires_at_unix",
-        ],
-    );
-    assert_contains_all(
-        TELEMETRY_PROTO,
-        &[
-            "DLP_DETECTION = 7",
-            "message DlpDetectionEvent",
-            "string rule_id",
-            "string path_hash",
-            "string content_sha256",
-            "string redacted_evidence",
-            "DlpDetectionEvent dlp_detection = 31",
-        ],
-    );
-}
-
-#[test]
 // AC-GRP-098 AC-GRP-099
 fn go_binding_contract_is_explicit_in_proto() {
     assert!(AGENT_PROTO.contains(

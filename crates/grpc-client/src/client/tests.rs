@@ -1358,7 +1358,6 @@ impl pb::agent_control_service_server::AgentControlService for MockAgentControlS
             fleet_baseline,
             ztna_revocations: Vec::new(),
             ztna_bookmarks,
-            dlp_policy: None,
             status: "ok".to_string(),
             server_time: String::new(),
         }))

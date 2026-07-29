@@ -63,19 +63,6 @@ impl AgentConfig {
     }
 
     fn apply_env_detection(&mut self) {
-        if let Some(v) = env_non_empty("EGUARD_DLP_RULES_PATH") {
-            self.dlp_rules_path = v;
-        }
-        if let Some(v) = env_non_empty("EGUARD_DLP_ENABLED") {
-            if let Ok(parsed) = v.parse::<bool>() {
-                self.dlp_enabled = parsed;
-            }
-        }
-        if let Some(v) = env_non_empty("EGUARD_DLP_MAX_FILE_SCAN_SIZE_MB") {
-            if let Ok(parsed) = v.parse::<usize>() {
-                self.dlp_max_file_scan_size_mb = parsed.max(1);
-            }
-        }
         if let Some(v) = env_non_empty("EGUARD_BUNDLE_PATH") {
             self.detection_bundle_path = v;
         }

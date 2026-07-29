@@ -41,15 +41,6 @@ message AgentCapabilities {
   bool lsm_supported = 2;
   bool yara_supported = 3;
   repeated string ebpf_programs = 4;
-  repeated string dlp_capabilities = 5;
-}
-
-message DlpStatus {
-  string bundle_version = 1;
-  string bundle_sha256 = 2;
-  repeated string capabilities = 3;
-  string state = 4;
-  string last_error = 5;
 }
 
 message EnrollRequest {
@@ -115,7 +106,6 @@ message AgentStatus {
   int64 active_ioc_entries = 5;
   string last_detection = 6;
   string last_response_action = 7;
-  DlpStatus dlp_status = 8;
 }
 
 message ResourceUsage {
@@ -148,7 +138,6 @@ message HeartbeatRequest {
   int64 buffered_events = 8;
   repeated ActiveZtnaSession ztna_sessions = 9;
   string last_bookmark_version = 10;
-  DlpStatus dlp_status = 11;
 
   // Legacy compatibility fields.
   string compliance_status = 20;
@@ -163,20 +152,10 @@ message HeartbeatResponse {
   BaselineReport fleet_baseline = 5;
   repeated TunnelRelease ztna_revocations = 6;
   BookmarkList ztna_bookmarks = 7;
-  DlpPolicy dlp_policy = 8;
 
   // Legacy compatibility fields.
   string status = 20;
   string server_time = 21;
-}
-
-message DlpPolicy {
-  string policy_id = 1;
-  string policy_version = 2;
-  string bundle_version = 3;
-  string bundle_sha256 = 4;
-  string policy_json = 5;
-  int64 expires_at_unix = 6;
 }
 
 message ThreatIntelRequest {

@@ -204,7 +204,7 @@ fn should_skip_macos_interface(name: &str) -> bool {
     .any(|prefix| name.starts_with(prefix))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(test, target_os = "macos"))]
 fn score_macos_interface(name: &str, flags: i32) -> u8 {
     let mut score = 200u8;
 
@@ -316,9 +316,6 @@ impl Default for AgentConfig {
             detection_bundle_public_key: None,
             detection_scan_on_create: true,
             detection_max_file_scan_size_mb: 100,
-            dlp_enabled: false,
-            dlp_rules_path: String::new(),
-            dlp_max_file_scan_size_mb: 10,
             detection_memory_scan_enabled: false,
             detection_memory_scan_interval_secs: 900,
             detection_memory_scan_mode: "executable".to_string(),
@@ -361,9 +358,7 @@ impl Default for AgentConfig {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(target_os = "macos")]
-    use super::score_macos_interface;
-    use super::{normalize_mac_bytes, should_skip_macos_interface};
+    use super::{normalize_mac_bytes, score_macos_interface, should_skip_macos_interface};
 
     #[test]
     fn normalize_mac_bytes_rejects_invalid_values() {
@@ -385,7 +380,6 @@ mod tests {
         assert!(!should_skip_macos_interface("en7"));
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
     fn macos_interface_scoring_prefers_primary_running_en_devices() {
         let running = libc::IFF_UP | libc::IFF_RUNNING;
