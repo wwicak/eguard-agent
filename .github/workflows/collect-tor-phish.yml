@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "45 1 * * *"
   workflow_dispatch:
+    inputs:
+      include_restricted_sources:
+        description: "Restore restricted OpenPhish community feed"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -16,6 +21,8 @@ jobs:
   collect:
     runs-on: ubuntu-latest
 
+    env:
+      INCLUDE_RESTRICTED_SOURCES: ${{ github.event_name == 'schedule' || inputs.include_restricted_sources }}
     steps:
       - name: Collect Tor exit nodes
         run: |
@@ -31,7 +38,8 @@ jobs:
           touch tor_exit_ips.txt
           echo "Tor exit IPs collected: $(wc -l < tor_exit_ips.txt)"
 
-      - name: Collect OpenPhish domains
+      - name: Collect OpenPhish domains (restricted)
+        if: ${{ env.INCLUDE_RESTRICTED_SOURCES == 'true' }}
         run: |
           curl -fsSL --retry 3 --retry-delay 5 \
             https://openphish.com/feed.txt \
@@ -70,9 +78,10 @@ jobs:
 
       - name: Merge and deduplicate phishing domains
         run: |
-          cat openphish_domains.txt phishing_database_domains.txt \
-            | grep -v '^$' \
-            | sort -u > phishing_domains.txt
+          {
+            cat phishing_database_domains.txt 2>/dev/null
+            cat openphish_domains.txt 2>/dev/null
+          } | grep -v '^$' | sort -u > phishing_domains.txt
 
           echo "Combined phishing domains: $(wc -l < phishing_domains.txt)"
 

@@ -44,9 +44,18 @@ pub fn isolate_host(allowed_server_ips: &[&str]) -> Result<(), super::process::R
         let (saved_defaults, had_saved_defaults) = load_or_persist_firewall_profile_defaults()?;
 
         if let Err(err) = run_powershell_script(&build_apply_isolation_script(&normalized_ips)) {
-            let _ = run_powershell_script(&build_remove_isolation_rules_script());
-            let _ = run_powershell_script(&build_restore_profiles_script(&saved_defaults));
-            if !had_saved_defaults {
+            // The apply script always flips the profile DefaultOutboundAction to
+            // Block, so the persisted defaults file is the ONLY way to restore
+            // the host. During rollback, discard those defaults ONLY if BOTH the
+            // rule removal and the profile restoration verifiably succeed (and we
+            // created them this call). Otherwise keep them so a later
+            // remove_isolation can complete the restore instead of leaving the
+            // host default-blocked with no recovery record.
+            let rules_removed =
+                run_powershell_script(&build_remove_isolation_rules_script()).is_ok();
+            let profiles_restored =
+                run_powershell_script(&build_restore_profiles_script(&saved_defaults)).is_ok();
+            if rules_removed && profiles_restored && !had_saved_defaults {
                 let _ = clear_persisted_firewall_profile_defaults();
             }
             return Err(err);
@@ -86,9 +95,29 @@ pub fn remove_isolation() -> Result<(), super::process::ResponseError> {
         let saved_defaults = load_persisted_firewall_profile_defaults()?;
         run_powershell_script(&build_remove_isolation_rules_script())?;
 
-        if let Some(defaults) = saved_defaults {
-            run_powershell_script(&build_restore_profiles_script(&defaults))?;
-            clear_persisted_firewall_profile_defaults()?;
+        match saved_defaults {
+            Some(defaults) => {
+                run_powershell_script(&build_restore_profiles_script(&defaults))?;
+                clear_persisted_firewall_profile_defaults()?;
+            }
+            None => {
+                // No persisted profile defaults exist. isolate_host ALWAYS
+                // persists the original profile defaults BEFORE flipping any
+                // profile DefaultOutboundAction to Block, and (see above) only
+                // deletes that file again after a VERIFIED restore. Therefore a
+                // missing defaults file means this host's profile defaults were
+                // never changed by eGuard — e.g. legacy rule-only isolation, or
+                // a host that was never fully isolated — so there is nothing to
+                // restore. The rule removal above is now honest (a genuine
+                // Get/Remove failure would have propagated as Err instead of
+                // reaching here), so once it succeeds the host is verifiably no
+                // longer isolated by eGuard. Reporting success is correct and
+                // does NOT strand the host. We deliberately do NOT inspect the
+                // live profile DefaultOutboundAction here: a host may legitimately
+                // default-block outbound on its own, and treating that as
+                // "isolation" would be a false negative that blocks recovery
+                // forever.
+            }
         }
 
         Ok(())
@@ -228,8 +257,24 @@ fn powershell_single_quote(value: &str) -> String {
 #[cfg(any(test, target_os = "windows"))]
 fn build_remove_isolation_rules_script() -> String {
     let group = powershell_single_quote(ISOLATION_RULE_GROUP);
+    // Both the lookup AND the deletion must be honest. Earlier this used
+    // `Get-NetFirewallRule -ErrorAction SilentlyContinue`, which swallowed a
+    // GENUINE query failure (firewall service down, WMI/CIM error) the same way
+    // it swallows the benign "no matching rules" case — making the script report
+    // success while legacy same-group block rules survive and keep the host
+    // isolated. Instead we run Get with -ErrorAction Stop inside try/catch and
+    // swallow ONLY the cmdletization selector-no-match error, identified by its
+    // fully-qualified error id `CmdletizationQuery_NotFound_<Property>` (this is
+    // exactly the "no rule matched -Group" case). We deliberately do NOT key on
+    // the broad `ObjectNotFound` error CATEGORY: a genuine CIM/provider
+    // NativeErrorCode.NotFound also surfaces as category ObjectNotFound but with
+    // a different FQID, and keying on the category would mask that real failure.
+    // Every other failure is rethrown so remove_isolation() reports it honestly
+    // and the failsafe retains its recovery record and retries. The deletion
+    // likewise runs under $ErrorActionPreference='Stop' so a failed Remove is
+    // never swallowed.
     format!(
-        "$ErrorActionPreference='Stop'; $group={group}; $rules=@(Get-NetFirewallRule -Group $group -ErrorAction SilentlyContinue); if ($rules.Count -gt 0) {{ $rules | Remove-NetFirewallRule -Confirm:$false -ErrorAction SilentlyContinue | Out-Null; }}"
+        "$ErrorActionPreference='Stop'; $group={group}; $rules=@(); try {{ $rules=@(Get-NetFirewallRule -Group $group -ErrorAction Stop); }} catch {{ if ($_.FullyQualifiedErrorId -like 'CmdletizationQuery_NotFound*') {{ $rules=@(); }} else {{ throw; }} }} if ($rules.Count -gt 0) {{ $rules | Remove-NetFirewallRule -Confirm:$false | Out-Null; }}"
     )
 }
 
@@ -426,9 +471,10 @@ fn normalize_active_peer_ip(raw: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_apply_isolation_script, build_restore_profiles_script, normalize_allowed_server_ips,
-        normalize_ip_or_cidr, parse_active_management_peer_ips_json,
-        parse_firewall_profile_defaults, FirewallProfileDefaults,
+        build_apply_isolation_script, build_remove_isolation_rules_script,
+        build_restore_profiles_script, normalize_allowed_server_ips, normalize_ip_or_cidr,
+        parse_active_management_peer_ips_json, parse_firewall_profile_defaults,
+        FirewallProfileDefaults,
     };
 
     #[test]
@@ -496,6 +542,37 @@ mod tests {
         assert!(!script.contains("advfirewall"));
         assert!(!script.contains("firewall add rule"));
         assert!(!script.contains("netsh"));
+    }
+
+    #[test]
+    fn remove_isolation_rules_script_is_honest_about_lookup_failures() {
+        let script = build_remove_isolation_rules_script();
+        // The rule lookup must NOT silently swallow a genuine query failure:
+        // doing so would let legacy same-group block rules survive while the
+        // script falsely reports success, stranding the host isolated.
+        assert!(
+            !script.contains("SilentlyContinue"),
+            "removal script must not swallow lookup failures with SilentlyContinue"
+        );
+        assert!(script.contains("-ErrorAction Stop"));
+        assert!(script.contains("throw"));
+        // ...while still tolerating the benign "no matching rules" case, keyed on
+        // the SPECIFIC cmdletization no-match FQID, not the broad ObjectNotFound
+        // category (which a genuine CIM/provider NotFound failure also uses).
+        assert!(
+            script.contains("FullyQualifiedErrorId")
+                && script.contains("CmdletizationQuery_NotFound"),
+            "removal script must tolerate only the specific no-match FQID"
+        );
+        assert!(
+            !script.contains("CategoryInfo.Category"),
+            "removal script must NOT key on the broad ObjectNotFound category"
+        );
+        assert!(script.contains("Remove-NetFirewallRule"));
+        // The apply path embeds the same removal preamble, so it inherits the
+        // honest lookup behaviour too.
+        let apply = build_apply_isolation_script(&["203.0.113.10".to_string()]);
+        assert!(!apply.contains("SilentlyContinue"));
     }
 
     #[test]

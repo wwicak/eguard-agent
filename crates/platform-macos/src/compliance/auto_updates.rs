@@ -2,8 +2,17 @@
 
 #[cfg(target_os = "macos")]
 use std::process::Command;
+#[cfg(target_os = "macos")]
+use std::time::Duration;
 
+#[cfg(target_os = "macos")]
+use crate::subprocess::output_with_timeout;
 use serde::{Deserialize, Serialize};
+
+#[cfg(target_os = "macos")]
+const SOFTWAREUPDATE_TIMEOUT: Duration = Duration::from_secs(8);
+#[cfg(target_os = "macos")]
+const DEFAULTS_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Auto-update status.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,10 +62,11 @@ fn check_auto_updates_macos() -> AutoUpdateStatus {
 
 #[cfg(target_os = "macos")]
 fn softwareupdate_schedule_enabled() -> Option<bool> {
-    let output = Command::new("softwareupdate")
-        .arg("--schedule")
-        .output()
-        .ok()?;
+    let output = output_with_timeout(
+        Command::new("softwareupdate").arg("--schedule"),
+        SOFTWAREUPDATE_TIMEOUT,
+    )
+    .ok()??;
     if !output.status.success() {
         return None;
     }
@@ -73,14 +83,15 @@ fn softwareupdate_schedule_enabled() -> Option<bool> {
 /// Export the entire SoftwareUpdate plist domain as XML via a single subprocess.
 #[cfg(target_os = "macos")]
 fn export_software_update_plist() -> Option<String> {
-    let output = Command::new("defaults")
-        .args([
+    let output = output_with_timeout(
+        Command::new("defaults").args([
             "export",
             "/Library/Preferences/com.apple.SoftwareUpdate",
             "-",
-        ])
-        .output()
-        .ok()?;
+        ]),
+        DEFAULTS_TIMEOUT,
+    )
+    .ok()??;
 
     if !output.status.success() {
         return None;
@@ -92,7 +103,7 @@ fn export_software_update_plist() -> Option<String> {
 /// Extract a boolean value from plist XML output.
 ///
 /// Looks for `<key>NAME</key>` followed by `<true/>` or `<false/>`.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 fn plist_xml_bool_value(xml: &str, key: &str) -> bool {
     let key_tag = format!("<key>{key}</key>");
     let Some(pos) = xml.find(&key_tag) else {

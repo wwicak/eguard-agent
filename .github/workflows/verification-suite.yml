@@ -27,6 +27,11 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.0
+
       - name: Install nightly toolchain for miri
         if: github.event_name != 'push' && github.event_name != 'pull_request'
         run: |

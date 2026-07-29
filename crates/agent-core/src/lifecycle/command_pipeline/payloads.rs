@@ -37,6 +37,8 @@ pub(super) struct UpdatePayload {
 #[derive(Debug, Deserialize, Default)]
 pub(super) struct RestoreQuarantinePayload {
     #[serde(default)]
+    pub(super) sha256: String,
+    #[serde(default)]
     pub(super) quarantine_path: String,
     #[serde(default)]
     pub(super) original_path: String,
@@ -68,6 +70,7 @@ impl ForensicsPayload {
         self.process_list || self.network_connections || self.open_files || self.loaded_modules
     }
 
+    #[cfg(any(target_os = "windows", test))]
     pub(super) fn effective_target_pids(&self) -> Vec<u32> {
         let mut out = Vec::new();
         for pid in &self.target_pids {

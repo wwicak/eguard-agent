@@ -258,7 +258,7 @@ fn load_object_with_degradation(
     event_map_name: &str,
     failed_probes: &mut Vec<String>,
 ) -> Result<LoadedObject> {
-    let mut open_obj = libbpf_rs::ObjectBuilder::default()
+    let open_obj = libbpf_rs::ObjectBuilder::default()
         .open_file(path)
         .map_err(|err| EbpfError::Backend(format!("open ELF '{}': {}", path.display(), err)))?;
 

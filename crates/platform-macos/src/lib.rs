@@ -11,6 +11,7 @@ pub mod inventory;
 pub mod response;
 pub mod self_protect;
 pub mod service;
+pub(crate) mod subprocess;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -175,6 +176,12 @@ impl EnrichmentCache {
         self.process_cache.pop(&pid).is_some()
     }
 
+    pub fn prime_process_metadata(&mut self, raw: &RawEvent) {
+        if matches!(raw.event_type, EventType::ProcessExec) {
+            let _ = self.process_entry(raw);
+        }
+    }
+
     fn process_entry(&mut self, raw: &RawEvent) -> ProcessCacheEntry {
         if let Some(entry) = self.process_cache.get_mut(&raw.pid) {
             entry.last_seen_ns = raw.ts_ns;
@@ -205,6 +212,15 @@ impl EnrichmentCache {
 
     fn hash_for_path_mode(&mut self, path: &str, mode: HashMode) -> Option<String> {
         let metadata = fs::metadata(path).ok()?;
+        // Only hash regular files. Opening a character device (e.g. /dev/console,
+        // /dev/tty), FIFO, block device, or socket for a content read can block
+        // indefinitely on a headless host — and because event enrichment runs on
+        // the agent's single tick loop, that blocking read wedges the loop, stops
+        // heartbeats, and makes the endpoint show inactive while the process is
+        // still alive. stat() above is safe; open()+read() below is not.
+        if !metadata.is_file() {
+            return None;
+        }
         let modified_ns = metadata
             .modified()
             .ok()
@@ -735,6 +751,33 @@ mod tests {
             "hash must refresh even when size is unchanged"
         );
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn hash_for_path_skips_non_regular_files() {
+        // Regression: event enrichment must never open a non-regular file for a
+        // content read. Opening a character device (e.g. /dev/console, /dev/tty),
+        // FIFO, or socket can block forever on a headless host; because
+        // enrichment runs on the agent's single tick loop, that wedges the loop
+        // and stops heartbeats, making the endpoint show inactive while alive.
+        let mut cache = EnrichmentCache::default();
+
+        // Character device (present on macOS and Linux) is never a regular file.
+        assert_eq!(
+            cache.hash_for_path("/dev/null"),
+            None,
+            "must not hash a character device"
+        );
+
+        // Directories are likewise non-regular and must be skipped.
+        let dir = unique_temp_path("hash-skip-dir");
+        fs::create_dir(&dir).expect("create temp dir");
+        assert_eq!(
+            cache.hash_for_path(&dir.to_string_lossy()),
+            None,
+            "must not hash a directory"
+        );
+        let _ = fs::remove_dir(&dir);
     }
 
     #[test]

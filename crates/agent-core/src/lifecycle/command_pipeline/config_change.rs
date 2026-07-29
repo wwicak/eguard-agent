@@ -18,7 +18,17 @@ impl AgentRuntime {
         match extract_agent_control_restart_reason(payload_json) {
             Ok(Some(reason)) => match schedule_agent_service_restart(Some(reason.as_str())) {
                 Ok(detail) => {
-                    exec.detail = detail;
+                    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+                    {
+                        exec.status = "restart_dispatched";
+                        exec.detail = format!(
+                            "config applied; {detail}; verification asynchronous (see journal)"
+                        );
+                    }
+                    #[cfg(any(target_os = "windows", target_os = "macos"))]
+                    {
+                        exec.detail = detail;
+                    }
                 }
                 Err(err) => {
                     exec.outcome = CommandOutcome::Ignored;
@@ -234,14 +244,37 @@ fn schedule_agent_service_restart(reason: Option<&str>) -> Result<String, String
         .map(|duration| duration.as_secs())
         .unwrap_or_default();
     let unit_name = format!("eguard-agent-self-restart-{}", unit_suffix);
-    let restart_script =
-        "sleep 2; systemctl restart eguard-agent.service || systemctl restart eguard-agent";
+    let restart_script = r#"set -u
+service_main_pid() { systemctl show -p MainPID --value eguard-agent 2>/dev/null || true; }
+running_binary_path() {
+  local pid="${1:-}" exe=""
+  if [[ -n "$pid" && "$pid" != "0" ]]; then exe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"; fi
+  if [[ -n "$exe" ]]; then printf '%s' "${exe% (deleted)}"; else systemctl show -p ExecStart eguard-agent 2>/dev/null | head -n 1 | sed -n 's/.*path=\([^ ;]*\).*/\1/p'; fi
+}
+probe_version() { env -u EGUARD_AGENT_VERSION timeout 10 "$1" --version 2>/dev/null | head -n 1 || true; }
+sleep 2
+before_pid="$(service_main_pid)"
+target_version="$(probe_version /usr/bin/eguard-agent)"
+[[ -n "$before_pid" && "$before_pid" != "0" ]] || { echo 'eguard-agent restart verification failed: MainPID unavailable' >&2; exit 1; }
+[[ -n "$target_version" ]] || { echo 'eguard-agent restart verification failed: installed version unavailable' >&2; exit 1; }
+systemctl kill --kill-who=main -s TERM eguard-agent 2>/dev/null || true
+for _ in $(seq 1 45); do
+  pid="$(service_main_pid)"
+  if [[ -n "$pid" && "$pid" != "0" && "$pid" != "$before_pid" ]] && systemctl is-active --quiet eguard-agent && [[ "/proc/$pid/exe" -ef /usr/bin/eguard-agent ]] && [[ "$(probe_version "/proc/$pid/exe")" == "$target_version" ]]; then
+    sleep 3
+    [[ "$(service_main_pid)" == "$pid" && "/proc/$pid/exe" -ef /usr/bin/eguard-agent ]] && systemctl is-active --quiet eguard-agent && { echo "eguard-agent restart verified: pid=$pid version=$target_version"; exit 0; }
+  fi
+  sleep 1
+done
+echo "eguard-agent restart verification failed: before_pid=$before_pid current_pid=$(service_main_pid) running=$(running_binary_path "$(service_main_pid)")" >&2
+exit 1"#;
 
     let output = Command::new("systemd-run")
         .arg("--unit")
         .arg(&unit_name)
+        .arg("--collect")
         .arg(internal_process_systemd_run_env_arg())
-        .arg("/bin/sh")
+        .arg("/bin/bash")
         .arg("-lc")
         .arg(restart_script)
         .output()

@@ -4,7 +4,13 @@ mod kill;
 mod quarantine;
 
 use std::collections::VecDeque;
+#[cfg(windows)]
+use std::ffi::OsString;
+#[cfg(windows)]
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Component, Path, PathBuf};
+#[cfg(windows)]
+use std::path::{Prefix, PrefixComponent};
 use std::time::{Duration, Instant};
 
 use regex::Regex;
@@ -14,12 +20,10 @@ use detection::Confidence;
 
 pub use capture::{capture_script_content, ScriptCapture};
 pub use errors::{ResponseError, ResponseResult};
-pub use kill::{
-    kill_process_tree, kill_process_tree_with, KillReport, NixSignalSender, ProcessIntrospector,
-    ProcfsIntrospector, Signal, SignalSender,
-};
+pub use kill::{kill_process_tree, KillReport, ProcessIntrospector, Signal, SignalSender};
 pub use quarantine::{
-    quarantine_file, quarantine_file_with_dir, restore_quarantined, QuarantineReport, RestoreReport,
+    quarantine_file, quarantine_file_with_dir, restore_quarantined, restore_quarantined_with_dir,
+    QuarantineReport, RestoreReport,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,7 +47,10 @@ impl ResponsePolicy {
 pub struct ResponseConfig {
     pub autonomous_response: bool,
     pub dry_run: bool,
+    #[serde(default)]
+    pub allow_remote_uninstall: bool,
     pub max_kills_per_minute: usize,
+    pub max_quarantines_per_minute: usize,
     pub auto_isolation: AutoIsolationPolicy,
     pub definite: ResponsePolicy,
     pub very_high: ResponsePolicy,
@@ -78,23 +85,20 @@ pub struct AutoIsolationState {
 
 impl Default for ResponseConfig {
     fn default() -> Self {
-        // Autonomous response is enabled by default. Operators can disable
-        // via agent.conf: {"response":{"autonomous_response":false}}.
-        // Env override: EGUARD_AUTONOMOUS_RESPONSE=false
-        let autonomous = std::env::var("EGUARD_AUTONOMOUS_RESPONSE")
-            .ok()
-            .map(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no"))
-            .unwrap_or(true);
+        // Destructive autonomy must be explicitly enabled by config or server policy,
+        // never by the compiled fallback.
         Self {
-            autonomous_response: autonomous,
+            autonomous_response: false,
             dry_run: false,
+            allow_remote_uninstall: false,
             max_kills_per_minute: 10,
+            max_quarantines_per_minute: 5,
             auto_isolation: AutoIsolationPolicy::default(),
             //              kill  quarantine  capture_script
             definite: ResponsePolicy::new(true, true, true),
             very_high: ResponsePolicy::new(true, true, true),
-            high: ResponsePolicy::new(false, true, true), // was: (false, false, true) — quarantine enabled
-            medium: ResponsePolicy::new(false, false, true), // was: (false, false, false) — capture enabled
+            high: ResponsePolicy::new(false, false, true),
+            medium: ResponsePolicy::new(false, false, false),
         }
     }
 }
@@ -122,13 +126,34 @@ impl ProtectedList {
         .collect();
 
         let protected_paths = vec![
+            PathBuf::from("/bin"),
+            PathBuf::from("/sbin"),
             PathBuf::from("/usr/bin"),
             PathBuf::from("/usr/sbin"),
             PathBuf::from("/lib"),
+            PathBuf::from("/lib64"),
             PathBuf::from("/usr/lib"),
+            PathBuf::from("/usr/lib64"),
+            PathBuf::from("/usr/lib32"),
+            PathBuf::from("/usr/libx32"),
             PathBuf::from("/usr/libexec"),
             PathBuf::from("/boot"),
+            PathBuf::from("/etc"),
+            PathBuf::from("/root"),
+            PathBuf::from("/proc"),
+            PathBuf::from("/sys"),
+            PathBuf::from("/dev"),
+            PathBuf::from("/run"),
+            PathBuf::from("/var/run"),
             PathBuf::from("/usr/local/eg"),
+            PathBuf::from("/var/lib/eguard-agent"),
+            PathBuf::from("/var/lib/rpm"),
+            PathBuf::from("/var/lib/dnf"),
+            PathBuf::from("/var/lib/dpkg"),
+            PathBuf::from("/var/lib/apt"),
+            PathBuf::from("/var/lib/systemd"),
+            PathBuf::from("/var/lib/NetworkManager"),
+            PathBuf::from("/var/lib/dbus"),
         ];
 
         Self {
@@ -138,6 +163,22 @@ impl ProtectedList {
     }
 
     pub fn default_windows() -> Self {
+        #[cfg(target_os = "windows")]
+        let system_root = windows_directory().unwrap_or_else(|| r"C:\Windows".to_string());
+        #[cfg(target_os = "windows")]
+        let system_drive =
+            windows_drive_from_root(&system_root).unwrap_or_else(|| "C:".to_string());
+
+        #[cfg(not(target_os = "windows"))]
+        let (system_drive, system_root) = ("C:".to_string(), r"C:\Windows".to_string());
+
+        Self::default_windows_with_roots(&system_drive, &system_root)
+    }
+
+    fn default_windows_with_roots(system_drive: &str, system_root: &str) -> Self {
+        let (system_drive, system_root) =
+            valid_windows_roots(system_drive, system_root).unwrap_or(("C:", r"C:\Windows"));
+
         let process_patterns = [
             "^System$",
             "^csrss(\\.exe)?$",
@@ -147,16 +188,35 @@ impl ProtectedList {
             "^lsass(\\.exe)?$",
             "^svchost(\\.exe)?$",
             "^smss(\\.exe)?$",
+            // conhost/logonui are Microsoft-documented built-in critical
+            // processes: terminating either can trigger bugcheck 0xEF
+            // (CRITICAL_PROCESS_DIED). The OS-level IsProcessCritical query in
+            // the Windows kill path is the authoritative guard; these names are
+            // a defense-in-depth backstop for when that query is unavailable.
+            "^conhost(\\.exe)?$",
+            "^logonui(\\.exe)?$",
             "^eguard-agent(\\.exe)?$",
         ]
         .into_iter()
-        .map(compile_process_pattern)
+        .map(compile_windows_process_pattern)
         .collect();
 
         let protected_paths = vec![
-            PathBuf::from(r"C:\Windows\System32"),
-            PathBuf::from(r"C:\Windows\SysWOW64"),
-            PathBuf::from(r"C:\ProgramData\eGuard"),
+            PathBuf::from(format!(r"{system_root}\System32")),
+            PathBuf::from(format!(r"{system_root}\System32\config")),
+            PathBuf::from(format!(r"{system_root}\SysWOW64")),
+            PathBuf::from(format!(r"{system_drive}\ProgramData\eGuard")),
+            PathBuf::from(system_root),
+            PathBuf::from(format!(r"{system_drive}\Program Files")),
+            PathBuf::from(format!(r"{system_drive}\Program Files (x86)")),
+            PathBuf::from(format!(r"{system_drive}\ProgramData\Microsoft")),
+            PathBuf::from(format!(r"{system_drive}\Boot")),
+            // Boot/ESP artifacts (P1-3): quarantining any of these can leave the
+            // machine unbootable, so they must be protected alongside the rest
+            // of the boot volume regardless of which drive letter it is.
+            PathBuf::from(format!(r"{system_drive}\bootmgr")),
+            PathBuf::from(format!(r"{system_drive}\BOOTNXT")),
+            PathBuf::from(format!(r"{system_drive}\EFI\Microsoft")),
         ];
 
         Self {
@@ -181,10 +241,27 @@ impl ProtectedList {
         .collect();
 
         let protected_paths = vec![
+            PathBuf::from("/bin"),
+            PathBuf::from("/sbin"),
             PathBuf::from("/usr/bin"),
             PathBuf::from("/usr/sbin"),
             PathBuf::from("/usr/lib"),
+            PathBuf::from("/etc"),
+            PathBuf::from("/private/etc"),
+            PathBuf::from("/var/run"),
+            PathBuf::from("/private/var/run"),
+            PathBuf::from("/var/db/dslocal"),
+            PathBuf::from("/private/var/db/dslocal"),
+            PathBuf::from("/var/db/opendirectory"),
+            PathBuf::from("/private/var/db/opendirectory"),
+            PathBuf::from("/Library/Keychains"),
             PathBuf::from("/System"),
+            // Do not protect all of /Library/LaunchDaemons: malicious launch
+            // daemons must stay quarantinable. Only the agent's own binary and
+            // its LaunchDaemon plist are protected, matching the paths the
+            // installer writes (installer/macos/scripts/postinstall).
+            PathBuf::from("/usr/local/bin/eguard-agent"),
+            PathBuf::from("/Library/LaunchDaemons/com.eguard.agent.plist"),
             PathBuf::from("/Library/Application Support/eGuard"),
         ];
 
@@ -202,17 +279,87 @@ impl ProtectedList {
 
     pub fn is_protected_path(&self, path: &Path) -> bool {
         let normalized = normalize_path(path);
-        self.protected_paths
-            .iter()
-            .any(|p| normalized.starts_with(normalize_path(p)))
+        let macos_variant = macos_private_path_variant(&normalized);
+        self.protected_paths.iter().any(|p| {
+            let protected = normalize_path(p);
+            path_starts_with(&normalized, &protected)
+                || macos_variant
+                    .as_ref()
+                    .is_some_and(|variant| path_starts_with(variant, &protected))
+        })
     }
+}
+
+fn valid_windows_roots<'a>(
+    system_drive: &'a str,
+    system_root: &'a str,
+) -> Option<(&'a str, &'a str)> {
+    let drive = system_drive.as_bytes();
+    let root = system_root.as_bytes();
+    (drive.len() == 2
+        && drive[0].is_ascii_alphabetic()
+        && drive[1] == b':'
+        && root.len() > 3
+        && root[0].eq_ignore_ascii_case(&drive[0])
+        && root[1] == b':'
+        && matches!(root[2], b'\\' | b'/'))
+    .then_some((system_drive, system_root))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_drive_from_root(system_root: &str) -> Option<String> {
+    let root = system_root.as_bytes();
+    (root.len() > 3
+        && root[0].is_ascii_alphabetic()
+        && root[1] == b':'
+        && matches!(root[2], b'\\' | b'/'))
+    .then(|| system_root[..2].to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn windows_directory() -> Option<String> {
+    use windows::Win32::System::SystemInformation::GetSystemWindowsDirectoryW;
+
+    let mut buffer = vec![0u16; 260];
+    loop {
+        let len = unsafe { GetSystemWindowsDirectoryW(Some(&mut buffer)) } as usize;
+        if len == 0 {
+            return None;
+        }
+        if len < buffer.len() {
+            return String::from_utf16(&buffer[..len]).ok();
+        }
+        buffer.resize(len + 1, 0);
+    }
+}
+
+fn macos_private_path_variant(path: &Path) -> Option<PathBuf> {
+    let path = path.to_str()?;
+    for (private, public) in [("/private/var", "/var"), ("/private/etc", "/etc")] {
+        if let Some(rest) = path.strip_prefix(private) {
+            if rest.is_empty() || rest.starts_with('/') {
+                return Some(PathBuf::from(format!("{public}{rest}")));
+            }
+        }
+        if let Some(rest) = path.strip_prefix(public) {
+            if rest.is_empty() || rest.starts_with('/') {
+                return Some(PathBuf::from(format!("{private}{rest}")));
+            }
+        }
+    }
+    None
 }
 
 fn normalize_path(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {
         match component {
-            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::Prefix(prefix) => {
+                #[cfg(windows)]
+                normalized.push(normalize_windows_prefix(prefix));
+                #[cfg(not(windows))]
+                normalized.push(prefix.as_os_str());
+            }
             Component::RootDir => normalized.push(Path::new("/")),
             Component::CurDir => {}
             Component::ParentDir => {
@@ -222,6 +369,39 @@ fn normalize_path(path: &Path) -> PathBuf {
         }
     }
     normalized
+}
+
+#[cfg(windows)]
+fn normalize_windows_prefix(prefix: PrefixComponent<'_>) -> OsString {
+    match prefix.kind() {
+        Prefix::VerbatimDisk(drive) => OsString::from_wide(&[drive as u16, b':' as u16]),
+        Prefix::VerbatimUNC(server, share) => {
+            let mut normalized = vec![b'\\' as u16, b'\\' as u16];
+            normalized.extend(server.encode_wide());
+            normalized.push(b'\\' as u16);
+            normalized.extend(share.encode_wide());
+            OsString::from_wide(&normalized)
+        }
+        _ => prefix.as_os_str().to_os_string(),
+    }
+}
+
+#[cfg(windows)]
+fn path_starts_with(path: &Path, base: &Path) -> bool {
+    let mut path_components = path.components();
+    base.components().all(|base_component| {
+        path_components.next().is_some_and(|path_component| {
+            path_component
+                .as_os_str()
+                .to_string_lossy()
+                .eq_ignore_ascii_case(&base_component.as_os_str().to_string_lossy())
+        })
+    })
+}
+
+#[cfg(not(windows))]
+fn path_starts_with(path: &Path, base: &Path) -> bool {
+    path.starts_with(base)
 }
 
 fn compile_process_pattern(raw: &str) -> Regex {
@@ -235,6 +415,23 @@ fn compile_process_pattern(raw: &str) -> Regex {
     })
 }
 
+fn compile_windows_process_pattern(raw: &str) -> Regex {
+    let pattern = if looks_like_regex(raw) {
+        raw.to_string()
+    } else {
+        format!("^{}$", regex::escape(raw))
+    };
+    regex::RegexBuilder::new(&pattern)
+        .case_insensitive(true)
+        .build()
+        .unwrap_or_else(|_| {
+            regex::RegexBuilder::new(&format!("^{}$", regex::escape(raw)))
+                .case_insensitive(true)
+                .build()
+                .expect("fallback regex should compile")
+        })
+}
+
 fn looks_like_regex(raw: &str) -> bool {
     raw.chars().any(|c| {
         matches!(
@@ -243,6 +440,13 @@ fn looks_like_regex(raw: &str) -> bool {
         )
     })
 }
+
+/// Hard compiled ceiling on the per-minute rate of any response limiter (kills
+/// or quarantines). This is the single, authoritative upper bound: because it
+/// is enforced inside the limiter constructor/setter, NO configuration source
+/// — file, environment, or remote policy — can raise the effective rate above
+/// it, only lower it. Bounds the blast radius of a storm regardless of config.
+pub const MAX_RESPONSE_RATE_PER_MINUTE: usize = 120;
 
 #[derive(Debug)]
 pub struct KillRateLimiter {
@@ -253,9 +457,13 @@ pub struct KillRateLimiter {
 impl KillRateLimiter {
     pub fn new(max_kills_per_minute: usize) -> Self {
         Self {
-            max_kills_per_minute,
+            max_kills_per_minute: max_kills_per_minute.min(MAX_RESPONSE_RATE_PER_MINUTE),
             kill_timestamps: VecDeque::new(),
         }
+    }
+
+    pub fn set_max_per_minute(&mut self, max_per_minute: usize) {
+        self.max_kills_per_minute = max_per_minute.min(MAX_RESPONSE_RATE_PER_MINUTE);
     }
 
     pub fn allow(&mut self, now: Instant) -> bool {
@@ -509,11 +717,35 @@ pub fn execute_server_command_with_state(
             detail: "configuration change accepted".to_string(),
         },
         ServerCommand::Uninstall => {
+            // The default behavior does not self-remove: a remotely triggered
+            // uninstall of the security agent can be a fleet-wide EDR kill switch
+            // (MITRE ATT&CK T1562.001). Record the request but report honestly that
+            // nothing was executed; an explicit agent-side opt-in may override this.
             state.uninstall_requested = true;
+            // OS-appropriate decommission hint (matches the compiled target, so a
+            // Fedora/RHEL agent no longer suggests apt, macOS/Windows get native steps).
+            let hint = match std::env::consts::OS {
+                "linux" => {
+                    "decommission locally with your package manager \
+                     (e.g. `apt purge eguard-agent` on Debian/Ubuntu or \
+                     `dnf remove eguard-agent` on Fedora/RHEL)"
+                }
+                "macos" => {
+                    "decommission locally (run the eGuard uninstaller or remove the \
+                     LaunchDaemon and app bundle)"
+                }
+                "windows" => {
+                    "decommission locally (uninstall via the eGuard installer or \
+                     `sc.exe delete eGuardAgent` and remove the program files)"
+                }
+                _ => "decommission locally using your platform's standard uninstall procedure",
+            };
             CommandExecution {
-                outcome: CommandOutcome::Applied,
-                status: "completed",
-                detail: "uninstall request flagged".to_string(),
+                outcome: CommandOutcome::Ignored,
+                status: "failed",
+                detail: format!(
+                    "remote uninstall not executed: agent does not self-remove; {hint}"
+                ),
             }
         }
         ServerCommand::RestoreQuarantine => CommandExecution {

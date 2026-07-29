@@ -93,6 +93,11 @@ def _parse_bool(raw: str) -> bool:
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _restricted_excluded(manifest: dict, key: str) -> bool:
+    marker = manifest.get("restricted_sources", {}).get(key, {})
+    return isinstance(marker, dict) and marker.get("status") == "restricted_excluded"
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Validate bundle signature/intel coverage against minimum thresholds"
@@ -171,6 +176,8 @@ def main() -> int:
         print(f"coverage gate failed: invalid manifest JSON: {exc}")
         return 1
 
+    suricata_excluded = _restricted_excluded(manifest, "suricata")
+    elastic_excluded = _restricted_excluded(manifest, "elastic")
     measured = {
         "sigma_count": _to_int(manifest, "sigma_count"),
         "yara_count": _to_int(manifest, "yara_count"),
@@ -247,9 +254,9 @@ def main() -> int:
         ("yara_source_count", measured["yara_source_count"], args.min_yara_sources),
         ("sigma_source_count", measured["sigma_source_count"], args.min_sigma_sources),
     ]
-    if args.require_suricata:
+    if args.require_suricata and not suricata_excluded:
         checks.append(("suricata_count", measured["suricata_count"], args.min_suricata))
-    if args.require_elastic:
+    if args.require_elastic and not elastic_excluded:
         checks.append(("elastic_count", measured["elastic_count"], args.min_elastic))
 
     failures: list[str] = []
@@ -295,6 +302,10 @@ def main() -> int:
         "measured": measured,
         "status": "fail" if failures and fail_on_threshold else ("warn" if failures else "pass"),
         "failures": failures,
+        "restricted_excluded": {
+            "suricata": suricata_excluded,
+            "elastic": elastic_excluded,
+        },
         "observed_sources": {
             "yara": sorted(yara_sources),
             "sigma": sorted(sigma_sources),

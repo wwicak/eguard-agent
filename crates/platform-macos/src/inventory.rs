@@ -4,8 +4,14 @@
 
 use std::collections::HashMap;
 use std::process::Command;
+use std::time::Duration;
 
 use serde::Serialize;
+
+use crate::subprocess::output_with_timeout;
+
+const QUICK_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
+const SYSTEM_PROFILER_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// Collect hardware inventory from sysctl and system_profiler.
 pub fn collect_hardware_inventory() -> HashMap<String, String> {
@@ -284,7 +290,10 @@ fn collect_gpu_info(attrs: &mut HashMap<String, String>) {
 fn collect_security_info(attrs: &mut HashMap<String, String>) {
     attrs.insert("hw.security.tpm.present".into(), "false".to_string());
 
-    if let Ok(output) = Command::new("/usr/bin/fdesetup").arg("status").output() {
+    if let Ok(Some(output)) = output_with_timeout(
+        Command::new("/usr/bin/fdesetup").arg("status"),
+        QUICK_COMMAND_TIMEOUT,
+    ) {
         if output.status.success() {
             let status = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
             if status.contains("filevault is on") {
@@ -332,6 +341,11 @@ struct AppEntry {
 }
 
 fn collect_installed_apps(attrs: &mut HashMap<String, String>) {
+    if !macos_application_inventory_enabled() {
+        attrs.insert("hw.software.collection".into(), "disabled".to_string());
+        return;
+    }
+
     let json = match run_system_profiler("SPApplicationsDataType") {
         Some(j) => j,
         None => return,
@@ -431,10 +445,11 @@ fn infer_macos_disk_interface(name: &str, medium: &str) -> String {
 }
 
 fn sysctl_string(key: &str) -> Option<String> {
-    let output = Command::new("/usr/sbin/sysctl")
-        .args(["-n", key])
-        .output()
-        .ok()?;
+    let output = output_with_timeout(
+        Command::new("/usr/sbin/sysctl").args(["-n", key]),
+        QUICK_COMMAND_TIMEOUT,
+    )
+    .ok()??;
     if !output.status.success() {
         return None;
     }
@@ -451,10 +466,11 @@ fn sysctl_u64(key: &str) -> Option<u64> {
 }
 
 fn run_system_profiler(data_type: &str) -> Option<String> {
-    let output = Command::new("/usr/sbin/system_profiler")
-        .args([data_type, "-json"])
-        .output()
-        .ok()?;
+    let output = output_with_timeout(
+        Command::new("/usr/sbin/system_profiler").args([data_type, "-json"]),
+        SYSTEM_PROFILER_TIMEOUT,
+    )
+    .ok()??;
     if !output.status.success() {
         return None;
     }
@@ -464,6 +480,18 @@ fn run_system_profiler(data_type: &str) -> Option<String> {
     } else {
         Some(s)
     }
+}
+
+fn macos_application_inventory_enabled() -> bool {
+    std::env::var("EGUARD_MACOS_COLLECT_APPLICATION_INVENTORY")
+        .ok()
+        .map(|raw| {
+            matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
 }
 
 /// Parse size strings like "8 GB", "16384 MB", "512 GB" to megabytes.

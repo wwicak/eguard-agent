@@ -1,21 +1,23 @@
 use std::path::Path;
 use std::time::Instant;
 
-use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 
 use baseline::{BaselineStatus, BaselineTransition, ProcessKey};
 use detection::{Confidence, TelemetryEvent};
 use grpc_client::ResponseEnvelope;
 use response::{
-    capture_script_content, kill_process_tree, quarantine_file, PlannedAction, ResponseConfig,
+    capture_script_content, quarantine_file, KillReport, PlannedAction, ResponseConfig,
+    ResponseError,
 };
 
 use crate::config::AgentMode;
 
 use super::{
-    confidence_label, interval_due, types::LocalActionStepResult, AgentRuntime, LocalActionResult,
-    BASELINE_SAVE_INTERVAL_SECS,
+    circuit_breaker::{BreakerDecision, DestructiveKind, BREAKER_MAX_BLAST_UNITS},
+    confidence_label, interval_due, now_unix,
+    types::LocalActionStepResult,
+    AgentRuntime, LocalActionResult, BASELINE_SAVE_INTERVAL_SECS,
 };
 
 impl AgentRuntime {
@@ -218,6 +220,11 @@ impl AgentRuntime {
 
         let mut step = new_local_action_step("kill_tree");
         if event.pid == std::process::id() {
+            self.breaker.record_units(
+                DestructiveKind::ProtectedGuardViolation,
+                16,
+                now_unix().max(0) as u64,
+            );
             *success = false;
             step.success = false;
             step.detail = "kill_skipped:self_pid".to_string();
@@ -226,7 +233,40 @@ impl AgentRuntime {
             return;
         }
 
-        if !self.limiter.allow(Instant::now()) {
+        let mut circuit_open = false;
+        let mut rate_limited = false;
+        let kill_result = {
+            let breaker = &mut self.breaker;
+            let limiter = &mut self.limiter;
+            let protected = &self.protected;
+            KillReport::kill_process_tree_budgeted(event.pid, protected, |tree_size| {
+                if matches!(
+                    breaker.check_and_charge(
+                        DestructiveKind::Kill,
+                        tree_size as u64,
+                        now_unix().max(0) as u64,
+                    ),
+                    BreakerDecision::Deny { .. }
+                ) {
+                    circuit_open = true;
+                    return false;
+                }
+                if !limiter.allow(Instant::now()) {
+                    rate_limited = true;
+                    return false;
+                }
+                true
+            })
+        };
+        if circuit_open {
+            *success = false;
+            step.success = false;
+            step.detail = "kill_skipped:circuit_open".to_string();
+            notes.push(step.detail.clone());
+            result.reports.push(step);
+            return;
+        }
+        if rate_limited {
             *success = false;
             step.success = false;
             step.detail = "kill_skipped:rate_limited".to_string();
@@ -235,13 +275,30 @@ impl AgentRuntime {
             return;
         }
 
-        match kill_process_tree(event.pid, &self.protected) {
+        match kill_result {
             Ok(kill_report) => {
                 step.killed_pids = kill_report.killed_pids.clone();
                 step.detail = format!("killed_pids={}", kill_report.killed_pids.len());
                 notes.push(step.detail.clone());
             }
             Err(err) => {
+                match &err {
+                    ResponseError::ProtectedProcess(_) => self.breaker.record_units(
+                        DestructiveKind::ProtectedGuardViolation,
+                        16,
+                        now_unix().max(0) as u64,
+                    ),
+                    ResponseError::Signal(message)
+                        if message.contains("exceeds") && message.contains("descendants") =>
+                    {
+                        self.breaker.record_units(
+                            DestructiveKind::Kill,
+                            BREAKER_MAX_BLAST_UNITS,
+                            now_unix().max(0) as u64,
+                        )
+                    }
+                    _ => {}
+                }
                 *success = false;
                 step.success = false;
                 step.detail = format!("kill_failed:{}", err);
@@ -252,7 +309,7 @@ impl AgentRuntime {
     }
 
     fn execute_quarantine_step(
-        &self,
+        &mut self,
         action: PlannedAction,
         event: &TelemetryEvent,
         success: &mut bool,
@@ -274,13 +331,47 @@ impl AgentRuntime {
             return;
         };
 
+        let file_bytes = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+        let size_units = quarantine_size_units(file_bytes);
+        let blast_units = 1u64.saturating_add(size_units);
+        if matches!(
+            self.breaker.check_and_charge(
+                DestructiveKind::Quarantine,
+                blast_units,
+                now_unix().max(0) as u64,
+            ),
+            BreakerDecision::Deny { .. }
+        ) {
+            *success = false;
+            step.success = false;
+            step.detail = "quarantine_skipped:circuit_open".to_string();
+            notes.push(step.detail.clone());
+            result.reports.push(step);
+            return;
+        }
+
+        // Consume quota before the attempt: failures count intentionally to cap incident blast radius.
+        if !self.quarantine_limiter.allow(Instant::now()) {
+            *success = false;
+            step.success = false;
+            step.detail = "quarantine_skipped:rate_limited".to_string();
+            notes.push(step.detail.clone());
+            result.reports.push(step);
+            return;
+        }
+
         let sha = event
             .file_hash
             .as_deref()
             .and_then(normalize_quarantine_sha256)
-            .unwrap_or_else(|| synthetic_quarantine_id(event));
+            .unwrap_or_default();
         match quarantine_file(Path::new(path), &sha, &self.protected) {
             Ok(quarantine_report) => {
+                self.reconcile_quarantine_size_charge(
+                    size_units,
+                    quarantine_report.file_size,
+                    now_unix().max(0) as u64,
+                );
                 step.file_path = Some(quarantine_report.original_path.display().to_string());
                 step.quarantine_path =
                     Some(quarantine_report.quarantine_path.display().to_string());
@@ -293,6 +384,13 @@ impl AgentRuntime {
                 notes.push(step.detail.clone());
             }
             Err(err) => {
+                if matches!(err, ResponseError::ProtectedPath(_)) {
+                    self.breaker.record_units(
+                        DestructiveKind::ProtectedGuardViolation,
+                        16,
+                        now_unix().max(0) as u64,
+                    );
+                }
                 *success = false;
                 step.success = false;
                 step.detail = format!("quarantine_failed:{}", err);
@@ -301,6 +399,26 @@ impl AgentRuntime {
         }
         result.reports.push(step);
     }
+
+    fn reconcile_quarantine_size_charge(
+        &mut self,
+        charged_size_units: u64,
+        authoritative_file_size: u64,
+        now_unix: u64,
+    ) {
+        let authoritative_units = quarantine_size_units(authoritative_file_size);
+        if authoritative_units > charged_size_units {
+            self.breaker.record_units(
+                DestructiveKind::Quarantine,
+                authoritative_units - charged_size_units,
+                now_unix,
+            );
+        }
+    }
+}
+
+fn quarantine_size_units(file_bytes: u64) -> u64 {
+    file_bytes.saturating_add(8 * 1024 * 1024 - 1) / (8 * 1024 * 1024)
 }
 
 fn build_local_action_response_reports(
@@ -394,24 +512,6 @@ fn is_script_interpreter(process: &str) -> bool {
     )
 }
 
-fn synthetic_quarantine_id(event: &TelemetryEvent) -> String {
-    let seed = format!(
-        "{}|{}|{}|{}|{}",
-        event.file_path.as_deref().unwrap_or_default(),
-        event.process,
-        event.pid,
-        event.session_id,
-        event.ts_unix
-    );
-    let digest = Sha256::digest(seed.as_bytes());
-    let mut out = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        use std::fmt::Write as _;
-        let _ = write!(&mut out, "{byte:02x}");
-    }
-    out
-}
-
 fn normalize_quarantine_sha256(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.len() != 64 || !trimmed.chars().all(|ch| ch.is_ascii_hexdigit()) {
@@ -423,7 +523,9 @@ fn normalize_quarantine_sha256(raw: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::AgentConfig;
     use detection::EventClass;
+    use std::fs;
 
     fn sample_event() -> TelemetryEvent {
         TelemetryEvent {
@@ -450,6 +552,154 @@ mod tests {
             container_escape: false,
             container_privileged: false,
         }
+    }
+
+    fn runtime_with_response_limits(
+        max_kills_per_minute: usize,
+        max_quarantines_per_minute: usize,
+    ) -> AgentRuntime {
+        let mut cfg = AgentConfig::default();
+        cfg.offline_buffer_backend = "memory".to_string();
+        cfg.server_addr = "127.0.0.1:1".to_string();
+        cfg.self_protection_integrity_check_interval_secs = 0;
+        cfg.response.max_kills_per_minute = max_kills_per_minute;
+        cfg.response.max_quarantines_per_minute = max_quarantines_per_minute;
+        AgentRuntime::new(cfg).expect("runtime")
+    }
+
+    fn unique_temp_dir(label: &str) -> std::path::PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock before unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("eguard-{label}-{}-{nonce}", std::process::id()))
+    }
+
+    #[test]
+    fn quarantine_rate_limiter_skips_second_file_without_consuming_kill_quota() {
+        let _guard = crate::test_support::env_lock().lock().expect("env lock");
+        let base = unique_temp_dir("quarantine-rate-limit");
+        let quarantine_dir = base.join("quarantine");
+        let data_dir = base.join("data");
+        fs::create_dir_all(&quarantine_dir).expect("create quarantine dir");
+        fs::create_dir_all(&data_dir).expect("create data dir");
+        std::env::set_var("EGUARD_TEST_QUARANTINE_DIR", &quarantine_dir);
+        std::env::set_var("EGUARD_AGENT_DATA_DIR", &data_dir);
+
+        let mut runtime = runtime_with_response_limits(2, 1);
+        let first_path = base.join("first.bin");
+        let second_path = base.join("second.bin");
+        fs::write(&first_path, b"first").expect("write first file");
+        fs::write(&second_path, b"second").expect("write second file");
+
+        let mut first_event = sample_event();
+        first_event.file_path = Some(first_path.display().to_string());
+        first_event.file_hash = None;
+        let first = runtime.execute_planned_action(PlannedAction::QuarantineOnly, &first_event, 1);
+        assert!(first.success, "{}", first.detail);
+        assert_eq!(first.reports.len(), 1);
+        assert_eq!(first.reports[0].action_type, "quarantine_file");
+        assert!(first.reports[0].success);
+
+        let mut second_event = sample_event();
+        second_event.file_path = Some(second_path.display().to_string());
+        second_event.file_hash = None;
+        let second =
+            runtime.execute_planned_action(PlannedAction::QuarantineOnly, &second_event, 2);
+        assert!(!second.success);
+        assert_eq!(second.reports.len(), 1);
+        assert_eq!(second.reports[0].action_type, "quarantine_file");
+        assert_eq!(second.reports[0].detail, "quarantine_skipped:rate_limited");
+        assert!(second_path.exists(), "rate-limited file remains untouched");
+
+        let now = Instant::now();
+        assert!(runtime.limiter.allow(now));
+        assert!(runtime.limiter.allow(now));
+        assert!(!runtime.limiter.allow(now));
+
+        std::env::remove_var("EGUARD_TEST_QUARANTINE_DIR");
+        std::env::remove_var("EGUARD_AGENT_DATA_DIR");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn circuit_breaker_denies_local_quarantine_before_file_change() {
+        let _guard = crate::test_support::env_lock().lock().expect("env lock");
+        let base = unique_temp_dir("quarantine-circuit-open");
+        let quarantine_dir = base.join("quarantine");
+        let data_dir = base.join("data");
+        fs::create_dir_all(&quarantine_dir).expect("create quarantine dir");
+        fs::create_dir_all(&data_dir).expect("create data dir");
+        std::env::set_var("EGUARD_TEST_QUARANTINE_DIR", &quarantine_dir);
+        std::env::set_var("EGUARD_AGENT_DATA_DIR", &data_dir);
+
+        let mut runtime = runtime_with_response_limits(1, 1);
+        let now = now_unix().max(0) as u64;
+        assert!(matches!(
+            runtime.breaker.check_and_charge(
+                DestructiveKind::Kill,
+                super::super::circuit_breaker::BREAKER_MAX_BLAST_UNITS,
+                now,
+            ),
+            BreakerDecision::Allow
+        ));
+        assert!(matches!(
+            runtime
+                .breaker
+                .check_and_charge(DestructiveKind::Kill, 1, now),
+            BreakerDecision::Deny { .. }
+        ));
+
+        let path = base.join("payload.bin");
+        fs::write(&path, b"payload").expect("write payload");
+        let mut event = sample_event();
+        event.file_path = Some(path.display().to_string());
+        event.file_hash = None;
+        let result = runtime.execute_planned_action(PlannedAction::QuarantineOnly, &event, 1);
+
+        assert!(!result.success);
+        assert_eq!(result.reports[0].detail, "quarantine_skipped:circuit_open");
+        assert!(
+            path.exists(),
+            "circuit-open quarantine must not move the file"
+        );
+
+        std::env::remove_var("EGUARD_TEST_QUARANTINE_DIR");
+        std::env::remove_var("EGUARD_AGENT_DATA_DIR");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn circuit_breaker_quarantine_post_action_size_reconciliation_charges_growth_delta() {
+        let _guard = crate::test_support::env_lock().lock().expect("env lock");
+        let base = unique_temp_dir("quarantine-size-reconcile");
+        fs::create_dir_all(&base).expect("create data dir");
+        std::env::set_var("EGUARD_AGENT_DATA_DIR", &base);
+
+        let mut runtime = runtime_with_response_limits(1, 1);
+        let now = now_unix().max(0) as u64;
+        assert_eq!(
+            runtime
+                .breaker
+                .check_and_charge(DestructiveKind::Quarantine, 2, now),
+            BreakerDecision::Allow
+        );
+        runtime.reconcile_quarantine_size_charge(1, 16 * 1024 * 1024, now);
+        assert_eq!(
+            runtime
+                .breaker
+                .check_and_charge(DestructiveKind::Kill, 125, now),
+            BreakerDecision::Allow
+        );
+        assert!(matches!(
+            runtime
+                .breaker
+                .check_and_charge(DestructiveKind::Kill, 1, now),
+            BreakerDecision::Deny { .. }
+        ));
+
+        std::env::remove_var("EGUARD_AGENT_DATA_DIR");
+        let _ = fs::remove_dir_all(base);
     }
 
     #[test]
@@ -541,39 +791,5 @@ mod tests {
         assert_eq!(reports.len(), 1);
         assert_eq!(reports[0].action_type, "capture_script");
         assert!(reports[0].success);
-    }
-
-    #[test]
-    fn synthetic_quarantine_id_is_valid_hex_identifier() {
-        let event = TelemetryEvent {
-            ts_unix: 1_700_000_000,
-            event_class: EventClass::FileOpen,
-            pid: 42,
-            ppid: 7,
-            uid: 1000,
-            process: "bash".to_string(),
-            parent_process: "sshd".to_string(),
-            session_id: 42,
-            file_path: Some("/tmp/proof.txt".to_string()),
-            file_write: false,
-            file_hash: None,
-            dst_port: None,
-            dst_ip: None,
-            dst_domain: None,
-            command_line: Some("bash /tmp/proof.txt".to_string()),
-            event_size: None,
-            container_runtime: None,
-            container_id: None,
-            container_escape: false,
-            container_privileged: false,
-        };
-
-        let synthetic = synthetic_quarantine_id(&event);
-        assert_eq!(synthetic.len(), 64);
-        assert!(synthetic.chars().all(|ch| ch.is_ascii_hexdigit()));
-        assert_eq!(
-            normalize_quarantine_sha256(&synthetic).as_deref(),
-            Some(synthetic.as_str())
-        );
     }
 }

@@ -6,7 +6,7 @@ mod platform;
 mod test_support;
 
 use anyhow::Result;
-use std::fs::OpenOptions;
+use std::ffi::OsStr;
 use std::future::Future;
 #[cfg(target_os = "windows")]
 use std::path::Path;
@@ -27,7 +27,9 @@ type ShutdownFuture = Pin<Box<dyn Future<Output = ShutdownReason> + Send>>;
 enum ShutdownReason {
     SigInt,
     SigTerm,
+    #[cfg(target_os = "windows")]
     ServiceStop,
+    #[cfg(not(unix))]
     CtrlC,
 }
 
@@ -42,6 +44,14 @@ enum ShutdownReason {
 // and preventing SetServiceStatus(SERVICE_RUNNING) from being called
 // within the 30-second SCM timeout.
 fn main() -> Result<()> {
+    if std::env::args_os()
+        .skip(1)
+        .any(|arg| is_version_flag(arg.as_os_str()))
+    {
+        println!("{}", effective_agent_version());
+        return Ok(());
+    }
+
     #[cfg(target_os = "windows")]
     {
         return windows_service_entry::run();
@@ -54,6 +64,15 @@ fn main() -> Result<()> {
             .build()?;
         runtime.block_on(run_console())
     }
+}
+
+fn is_version_flag(arg: &OsStr) -> bool {
+    arg == OsStr::new("--version") || arg == OsStr::new("-V")
+}
+
+fn effective_agent_version() -> String {
+    std::env::var(agent_version::BUILD_VERSION_ENV)
+        .unwrap_or_else(|_| agent_version::current_agent_version().to_string())
 }
 
 async fn run_console() -> Result<()> {
@@ -107,8 +126,6 @@ async fn run_console_with_shutdown(shutdown: ShutdownFuture) -> Result<()> {
             warn!(error = %err, "failed to emit shutdown tamper alert");
         }
     }
-
-    runtime.shutdown().await;
 
     #[cfg(target_os = "linux")]
     systemd_notifier.notify_stopping();
@@ -188,9 +205,9 @@ fn init_tracing() {
                 let _ = std::fs::create_dir_all(parent);
             }
 
-            match OpenOptions::new().create(true).append(true).open(&log_path) {
-                Ok(file) => {
-                    let writer = std::sync::Mutex::new(file);
+            match lifecycle::ManagedLogWriter::open(&log_path) {
+                Ok(writer) => {
+                    let writer = std::sync::Mutex::new(writer);
                     tracing_subscriber::fmt()
                         .with_env_filter(env_filter)
                         .with_ansi(false)
@@ -198,8 +215,11 @@ fn init_tracing() {
                         .init();
                     return;
                 }
-                Err(_) => {
-                    // Fall back to stderr if the log file can't be opened.
+                Err(err) => {
+                    eprintln!(
+                        "eguard-agent: cannot open persistent log {}: {err}; falling back to stderr",
+                        log_path.display()
+                    );
                 }
             }
         }
@@ -248,9 +268,9 @@ fn init_tracing_to_file(log_path: &Path) {
             let _ = std::fs::create_dir_all(parent);
         }
 
-        match OpenOptions::new().create(true).append(true).open(log_path) {
-            Ok(file) => {
-                let writer = std::sync::Mutex::new(file);
+        match lifecycle::ManagedLogWriter::open(log_path) {
+            Ok(writer) => {
+                let writer = std::sync::Mutex::new(writer);
                 let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
                     .or_else(|_| tracing_subscriber::EnvFilter::try_new("info"))
                     .expect("default tracing filter should be valid");
@@ -260,8 +280,12 @@ fn init_tracing_to_file(log_path: &Path) {
                     .with_ansi(false)
                     .init();
             }
-            Err(_) => {
-                // Fall back to stderr if the log file can't be opened.
+            Err(err) => {
+                eprintln!(
+                    "eguard-agent: cannot open persistent log {}: {err}; falling back to stderr",
+                    log_path.display()
+                );
+                // Windows SCM does not capture stderr, but retain a subscriber for console mode.
                 let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
                     .or_else(|_| tracing_subscriber::EnvFilter::try_new("info"))
                     .expect("default tracing filter should be valid");
@@ -469,7 +493,7 @@ mod windows_service_entry {
 
     fn run_service_main() -> Result<()> {
         let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
-        let allow_stop_control = resolve_windows_service_stop_control_policy();
+        let allow_stop_control = resolve_windows_service_stop_control_policy_fast();
 
         // Share the status handle with the event handler closure so it can
         // immediately transition to StopPending when SCM sends Stop/Shutdown.
@@ -536,7 +560,6 @@ mod windows_service_entry {
         // Initialize file-based tracing before anything else logs. Windows SCM
         // does not capture stderr, so service mode must write to a log file.
         let log_path = crate::lifecycle::resolve_logs_dir().join("agent.log");
-        crate::lifecycle::prepare_managed_log_file(&log_path);
         super::init_tracing_to_file(&log_path);
 
         set_service_status(
@@ -591,21 +614,18 @@ mod windows_service_entry {
         run_result
     }
 
-    fn resolve_windows_service_stop_control_policy() -> bool {
+    fn resolve_windows_service_stop_control_policy_fast() -> bool {
         if std::env::var_os("EGUARD_WINDOWS_ALLOW_STOP").is_some() {
             return super::env_flag_enabled("EGUARD_WINDOWS_ALLOW_STOP");
         }
 
-        match super::AgentConfig::load() {
-            Ok(config) => !config.self_protection_prevent_uninstall,
-            Err(err) => {
-                warn!(
-                    error = %err,
-                    "failed loading config for Windows stop-control policy; defaulting to deny stop"
-                );
-                false
-            }
-        }
+        // Do not load AgentConfig here. Windows SCM requires the service process
+        // to connect and report status promptly; first-enrollment bootstrap and
+        // config recovery can perform filesystem/network work and previously
+        // caused service start timeouts before SERVICE_RUNNING was reported.
+        // Once the runtime is online, self-protection still handles tamper and
+        // stop reporting through the normal tick loop.
+        true
     }
 
     async fn wait_for_service_shutdown(rx: mpsc::Receiver<()>) -> super::ShutdownReason {
@@ -631,5 +651,17 @@ mod windows_service_entry {
             wait_hint: Duration::from_millis(wait_hint_ms as u64),
             process_id: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsStr;
+
+    #[test]
+    fn version_flag_accepts_long_and_short_forms() {
+        assert!(super::is_version_flag(OsStr::new("--version")));
+        assert!(super::is_version_flag(OsStr::new("-V")));
+        assert!(!super::is_version_flag(OsStr::new("--verbose")));
     }
 }

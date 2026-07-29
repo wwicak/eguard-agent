@@ -141,41 +141,16 @@ pub fn quarantine_file(
     }
 }
 
-/// Restore a file from quarantine to its original location.
+/// Legacy path-authoritative restore is intentionally disabled.
+/// Agent command handling uses the provenance-bound implementation in `response`.
 pub fn restore_file(
     quarantine_path: &str,
     original_path: &str,
 ) -> Result<(), super::process::ResponseError> {
-    #[cfg(target_os = "windows")]
-    {
-        let source = Path::new(quarantine_path);
-        let target = Path::new(original_path);
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent).map_err(|err| {
-                super::process::ResponseError::OperationFailed(format!(
-                    "failed creating restore parent dir {}: {err}",
-                    parent.display()
-                ))
-            })?;
-        }
-
-        fs::rename(source, target).map_err(|err| {
-            super::process::ResponseError::OperationFailed(format!(
-                "failed restoring {} to {}: {err}",
-                source.display(),
-                target.display()
-            ))
-        })?;
-
-        let _ = fs::remove_file(quarantine_metadata_path(source));
-        Ok(())
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = (quarantine_path, original_path);
-        tracing::warn!("restore_file is a stub on non-Windows");
-        Ok(())
-    }
+    let _ = (quarantine_path, original_path);
+    Err(super::process::ResponseError::OperationFailed(
+        "legacy_quarantine_requires_manual_restore".to_string(),
+    ))
 }
 
 #[cfg(any(test, target_os = "windows"))]

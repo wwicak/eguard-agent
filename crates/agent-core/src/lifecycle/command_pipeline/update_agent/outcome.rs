@@ -11,6 +11,7 @@ pub(super) struct UpdateOutcomeReport {
     pub(super) detail: String,
 }
 
+#[cfg(test)]
 fn sanitize_file_component(raw: &str) -> String {
     let cleaned = raw
         .trim()
@@ -30,6 +31,7 @@ fn sanitize_file_component(raw: &str) -> String {
     }
 }
 
+#[cfg(test)]
 pub(super) fn update_outcome_path(update_dir: &Path, command_id: &str) -> PathBuf {
     update_dir.join(format!(
         "{}{}{}",
@@ -39,6 +41,7 @@ pub(super) fn update_outcome_path(update_dir: &Path, command_id: &str) -> PathBu
     ))
 }
 
+#[cfg(test)]
 pub(super) fn write_update_outcome_report(
     update_dir: &Path,
     command_id: &str,

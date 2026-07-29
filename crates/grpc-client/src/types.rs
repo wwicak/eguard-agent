@@ -404,5 +404,24 @@ pub struct CampaignAlertResponse {
     pub campaigns: Vec<CampaignAlert>,
 }
 
+/// Evidence artifact (forensics snapshot, memory dump) staged for upload to
+/// the server over AgentService.UploadArtifact.
+#[derive(Debug, Clone, Default)]
+pub struct ArtifactUploadEnvelope {
+    pub agent_id: String,
+    pub command_id: String,
+    pub artifact_type: String,
+    pub filename: String,
+    pub sha256_hex: String,
+    pub data: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ArtifactUploadResult {
+    pub accepted: bool,
+    pub artifact_id: String,
+    pub detail: String,
+}
+
 #[cfg(test)]
 mod tests;

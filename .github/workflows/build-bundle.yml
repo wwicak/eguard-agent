@@ -40,6 +40,18 @@ on:
         description: "Allow coverage gate shortfalls in workflow_dispatch (shadow mode)"
         type: boolean
         default: false
+      regression_ack:
+        description: "Acknowledge intentional regression baseline reset (for example license exclusions)"
+        type: boolean
+        default: false
+      regression_ack_reason:
+        description: "Reason for acknowledged regression baseline reset"
+        type: string
+        default: ""
+      include_restricted_sources:
+        description: "Restore restricted/non-redistributable feeds in this manually dispatched bundle"
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -91,15 +103,17 @@ jobs:
             zlib1g-dev
 
       - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.0
+
+      - name: Verify Zig linker is on PATH
         run: |
-          ZIG_VER="0.14.0"
-          ZIG_TARBALL="zig-linux-x86_64-${ZIG_VER}.tar.xz"
-          ZIG_ROOT="${RUNNER_TEMP}/zig-${ZIG_VER}"
-          rm -rf "${ZIG_ROOT}"
-          mkdir -p "${ZIG_ROOT}"
-          curl -sSfL "https://ziglang.org/download/${ZIG_VER}/${ZIG_TARBALL}" | tar -xJ -C "${ZIG_ROOT}" --strip-components=1
-          echo "${ZIG_ROOT}" >> "$GITHUB_PATH"
-          "${ZIG_ROOT}/zig" version
+          zig_path="$(command -v zig)"
+          echo "zig_path=${zig_path}"
+          echo "$(dirname "${zig_path}")" >> "${GITHUB_PATH}"
+          zig version
+          scripts/zig-cc.sh --version
 
       - name: Set version
         id: version
@@ -454,32 +468,23 @@ jobs:
         run: |
           IOC_DIR="/tmp/artifacts/ioc-curated"
 
-          # Merge C2-Tracker IPs
+          # Merge supplemental plain-text feeds without destroying JSONL provenance.
           C2_DIR="/tmp/artifacts/c2-tracker-collected"
-          if [ -f "$C2_DIR/c2_ips.txt" ]; then
-            echo "Merging C2-Tracker IPs"
-            cat "$C2_DIR/c2_ips.txt" >> "$IOC_DIR/ips.txt" 2>/dev/null || true
-          fi
-
-          # Merge Tor exit IPs
           TOR_DIR="/tmp/artifacts/tor-phish-collected"
-          if [ -f "$TOR_DIR/tor_exit_ips.txt" ]; then
-            echo "Merging Tor exit IPs"
-            cat "$TOR_DIR/tor_exit_ips.txt" >> "$IOC_DIR/ips.txt" 2>/dev/null || true
-          fi
 
-          # Merge phishing domains
-          if [ -f "$TOR_DIR/phishing_domains.txt" ]; then
-            echo "Merging phishing domains"
-            cat "$TOR_DIR/phishing_domains.txt" >> "$IOC_DIR/domains.txt" 2>/dev/null || true
-          fi
+          python threat-intel/processing/merge_plain_iocs.py \
+            --target "$IOC_DIR/ips.txt" \
+            --merge "$C2_DIR/c2_ips.txt:c2_tracker:medium" \
+            --merge "$TOR_DIR/tor_exit_ips.txt:tor_exit_list:low"
 
-          # Deduplicate all merged IOC files
-          for f in "$IOC_DIR"/hashes.txt "$IOC_DIR"/domains.txt "$IOC_DIR"/ips.txt; do
-            if [ -f "$f" ]; then
-              sort -u "$f" -o "$f"
-            fi
-          done
+          python threat-intel/processing/merge_plain_iocs.py \
+            --target "$IOC_DIR/domains.txt" \
+            --merge "$TOR_DIR/phishing_domains.txt:phishing_database:medium"
+
+          # Hashes remain plain-line safe; domains/IPs are JSONL after merge.
+          if [ -f "$IOC_DIR/hashes.txt" ]; then
+            sort -u "$IOC_DIR/hashes.txt" -o "$IOC_DIR/hashes.txt"
+          fi
 
           echo "Post-merge IOC counts:"
           echo "  Hashes:  $(wc -l < "$IOC_DIR/hashes.txt" 2>/dev/null || echo 0)"
@@ -519,6 +524,8 @@ jobs:
           fi
 
       - name: Build bundle
+        env:
+          EGUARD_INCLUDE_RESTRICTED_SOURCES: ${{ (github.event_name == 'schedule' || inputs.include_restricted_sources) && '1' || '0' }}
         run: |
           python threat-intel/processing/build_bundle.py \
             --sigma /tmp/artifacts/sigma-filtered \
@@ -548,8 +555,8 @@ jobs:
           EGUARD_MIN_SIGMA: "150"
           EGUARD_MIN_YARA: "600"
           EGUARD_MIN_IOC_HASH: "5000"
-          EGUARD_MIN_IOC_DOMAIN: "500"
-          EGUARD_MIN_IOC_IP: "5000"
+          EGUARD_MIN_IOC_DOMAIN: "300"
+          EGUARD_MIN_IOC_IP: "800"
           EGUARD_MIN_CVE: "1000"
           EGUARD_MIN_CVE_KEV: "50"
           EGUARD_MIN_SIGNATURE_TOTAL: "900"
@@ -633,6 +640,7 @@ jobs:
             --sigma-dir bundle/sigma \
             --elastic-jsonl bundle/elastic/elastic-rules.jsonl \
             --output bundle/attack-coverage.json \
+            --manifest bundle/manifest.json \
             --min-techniques "${EGUARD_MIN_ATTACK_TECHNIQUES}" \
             --min-tactics "${EGUARD_MIN_ATTACK_TACTICS}" \
             --min-sigma-rules-with-attack "${EGUARD_MIN_SIGMA_ATTACK_RULES}" \
@@ -819,7 +827,14 @@ jobs:
           EGUARD_MAX_DROP_DATABASE_TOTAL_PCT: "15"
           EGUARD_MAX_DROP_YARA_SOURCES: "1"
           EGUARD_MAX_DROP_SIGMA_SOURCES: "1"
+          EGUARD_REGRESSION_ACK: ${{ inputs.regression_ack }}
+          EGUARD_REGRESSION_ACK_REASON: ${{ inputs.regression_ack_reason }}
         run: |
+          ACK_FLAGS=()
+          if [ "${EGUARD_REGRESSION_ACK}" = "true" ]; then
+            ACK_FLAGS=(--acknowledge-reset --acknowledge-reason "${EGUARD_REGRESSION_ACK_REASON}")
+          fi
+
           python threat-intel/processing/coverage_regression_gate.py \
             --current bundle/coverage-metrics.json \
             --previous /tmp/previous-coverage-metrics.json \
@@ -833,7 +848,8 @@ jobs:
             --max-drop-signature-total-pct "${EGUARD_MAX_DROP_SIGNATURE_TOTAL_PCT}" \
             --max-drop-database-total-pct "${EGUARD_MAX_DROP_DATABASE_TOTAL_PCT}" \
             --max-drop-yara-sources "${EGUARD_MAX_DROP_YARA_SOURCES}" \
-            --max-drop-sigma-sources "${EGUARD_MAX_DROP_SIGMA_SOURCES}"
+            --max-drop-sigma-sources "${EGUARD_MAX_DROP_SIGMA_SOURCES}" \
+            "${ACK_FLAGS[@]}"
 
       - name: Enforce ATT&CK coverage regression gate
         env:
@@ -843,7 +859,14 @@ jobs:
           EGUARD_MAX_DROP_ELASTIC_ATTACK_RULES_PCT: "25"
           EGUARD_MAX_DROP_SIGMA_ATTACK_TECHNIQUES_PCT: "25"
           EGUARD_MAX_DROP_ELASTIC_ATTACK_TECHNIQUES_PCT: "25"
+          EGUARD_REGRESSION_ACK: ${{ inputs.regression_ack }}
+          EGUARD_REGRESSION_ACK_REASON: ${{ inputs.regression_ack_reason }}
         run: |
+          ACK_FLAGS=()
+          if [ "${EGUARD_REGRESSION_ACK}" = "true" ]; then
+            ACK_FLAGS=(--acknowledge-reset --acknowledge-reason "${EGUARD_REGRESSION_ACK_REASON}")
+          fi
+
           python threat-intel/processing/attack_regression_gate.py \
             --current bundle/attack-coverage.json \
             --previous /tmp/previous-attack-coverage.json \
@@ -853,7 +876,8 @@ jobs:
             --max-drop-sigma-rules-with-attack-pct "${EGUARD_MAX_DROP_SIGMA_ATTACK_RULES_PCT}" \
             --max-drop-elastic-rules-with-attack-pct "${EGUARD_MAX_DROP_ELASTIC_ATTACK_RULES_PCT}" \
             --max-drop-sigma-techniques-pct "${EGUARD_MAX_DROP_SIGMA_ATTACK_TECHNIQUES_PCT}" \
-            --max-drop-elastic-techniques-pct "${EGUARD_MAX_DROP_ELASTIC_ATTACK_TECHNIQUES_PCT}"
+            --max-drop-elastic-techniques-pct "${EGUARD_MAX_DROP_ELASTIC_ATTACK_TECHNIQUES_PCT}" \
+            "${ACK_FLAGS[@]}"
 
       - name: Enforce ATT&CK gap burn-down gate
         env:
@@ -863,7 +887,13 @@ jobs:
           EGUARD_ATTACK_MAX_TECHNIQUE_GAP_INCREASE: "0"
           EGUARD_ATTACK_MAX_TACTIC_GAP_INCREASE: "0"
           EGUARD_ATTACK_MAX_NEW_MISSING_TACTICS: "0"
+          EGUARD_REGRESSION_ACK: ${{ inputs.regression_ack }}
+          EGUARD_REGRESSION_ACK_REASON: ${{ inputs.regression_ack_reason }}
         run: |
+          ACK_FLAGS=()
+          if [ "${EGUARD_REGRESSION_ACK}" = "true" ]; then
+            ACK_FLAGS=(--acknowledge-reset --acknowledge-reason "${EGUARD_REGRESSION_ACK_REASON}")
+          fi
           EXTRA_FLAGS=()
           for tactic in ${EGUARD_ATTACK_REQUIRED_TACTICS//,/ }; do
             if [ -n "${tactic}" ]; then
@@ -880,7 +910,8 @@ jobs:
             --max-technique-gap-increase "${EGUARD_ATTACK_MAX_TECHNIQUE_GAP_INCREASE}" \
             --max-tactic-gap-increase "${EGUARD_ATTACK_MAX_TACTIC_GAP_INCREASE}" \
             --max-new-missing-required-tactics "${EGUARD_ATTACK_MAX_NEW_MISSING_TACTICS}" \
-            "${EXTRA_FLAGS[@]}"
+            "${EXTRA_FLAGS[@]}" \
+            "${ACK_FLAGS[@]}"
 
       - name: Enforce critical ATT&CK technique floor gate
         env:
@@ -914,7 +945,14 @@ jobs:
           EGUARD_CRITICAL_MAX_MISSING_REQUIRED_INCREASE: "0"
           EGUARD_CRITICAL_MAX_P0_UNCOVERED_INCREASE: "0"
           EGUARD_CRITICAL_MAX_OWNER_P0_UNCOVERED_INCREASE: "1"
+          EGUARD_REGRESSION_ACK: ${{ inputs.regression_ack }}
+          EGUARD_REGRESSION_ACK_REASON: ${{ inputs.regression_ack_reason }}
         run: |
+          ACK_FLAGS=()
+          if [ "${EGUARD_REGRESSION_ACK}" = "true" ]; then
+            ACK_FLAGS=(--acknowledge-reset --acknowledge-reason "${EGUARD_REGRESSION_ACK_REASON}")
+          fi
+
           python threat-intel/processing/attack_critical_regression_gate.py \
             --current bundle/attack-critical-technique-gate.json \
             --previous /tmp/previous-attack-critical-technique-gate.json \
@@ -924,7 +962,8 @@ jobs:
             --max-missing-count-increase "${EGUARD_CRITICAL_MAX_MISSING_COUNT_INCREASE}" \
             --max-missing-required-increase "${EGUARD_CRITICAL_MAX_MISSING_REQUIRED_INCREASE}" \
             --max-p0-uncovered-increase "${EGUARD_CRITICAL_MAX_P0_UNCOVERED_INCREASE}" \
-            --max-owner-p0-uncovered-increase "${EGUARD_CRITICAL_MAX_OWNER_P0_UNCOVERED_INCREASE}"
+            --max-owner-p0-uncovered-increase "${EGUARD_CRITICAL_MAX_OWNER_P0_UNCOVERED_INCREASE}" \
+            "${ACK_FLAGS[@]}"
 
       - name: Update critical ATT&CK regression history
         env:

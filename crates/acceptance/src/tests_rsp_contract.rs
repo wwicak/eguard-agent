@@ -6,7 +6,7 @@ use grpc_client::{pb, Client};
 use platform_linux::{enrich_event_with_cache, EnrichmentCache, EventType, RawEvent};
 use response::{
     capture_script_content, execute_server_command_with_state, kill_process_tree,
-    parse_server_command, plan_action, quarantine_file_with_dir, restore_quarantined,
+    parse_server_command, plan_action, quarantine_file_with_dir, restore_quarantined_with_dir,
     HostControlState, KillRateLimiter, PlannedAction, ProtectedList, ResponseConfig, ResponseError,
     ServerCommand,
 };
@@ -226,9 +226,9 @@ fn response_runtime_contracts_cover_kill_quarantine_capture_and_lsm_enrichment_p
     let payload = b"hello quarantine".to_vec();
     std::fs::write(&original, &payload).expect("write original");
 
-    let report = quarantine_file_with_dir(&original, "deadbeef", &protected, &quarantine_dir)
+    let report = quarantine_file_with_dir(&original, "", &protected, &quarantine_dir)
         .expect("quarantine file");
-    assert_eq!(report.sha256, "deadbeef");
+    assert_eq!(report.sha256.len(), 64);
     assert_eq!(report.file_size, payload.len() as u64);
     assert_eq!(report.original_path, original);
     assert!(!report.quarantine_path.as_os_str().is_empty());
@@ -238,9 +238,14 @@ fn response_runtime_contracts_cover_kill_quarantine_capture_and_lsm_enrichment_p
         payload
     );
 
-    let restored = base.join("restored.bin");
-    let restore = restore_quarantined(&report.quarantine_path, &restored, 0o600).expect("restore");
-    assert_eq!(restore.restored_path, restored);
+    let restore = restore_quarantined_with_dir(
+        &report.sha256,
+        Some(&report.quarantine_path),
+        Some(&report.original_path),
+        &quarantine_dir,
+    )
+    .expect("restore");
+    assert_eq!(restore.restored_path, report.original_path);
     assert_eq!(
         std::fs::read(&restore.restored_path).expect("read restored"),
         payload

@@ -272,10 +272,6 @@ ensure_plist_env_dict() {
         <key>NumberOfFiles</key>
         <integer>8192</integer>
     </dict>
-    <key>StandardOutPath</key>
-    <string>/var/log/eguard-agent.out.log</string>
-    <key>StandardErrorPath</key>
-    <string>/var/log/eguard-agent.err.log</string>
 </dict>
 </plist>
 EOF
@@ -361,6 +357,11 @@ chmod 700 "$BOOTSTRAP_DIR"
 ensure_plist_env_dict
 
 set_plist_env "EGUARD_ENROLLMENT_TOKEN" "$TOKEN"
+# The agent reads its server address from the process environment, not from
+# bootstrap.conf. Without EGUARD_SERVER_ADDR in the LaunchDaemon environment the
+# daemon starts with no server and exits EX_CONFIG (78), even though
+# bootstrap.conf was written. Persist it into the plist env dict here.
+set_plist_env "EGUARD_SERVER_ADDR" "$SERVER_ADDR"
 
 for key in \
     EGUARD_TRANSPORT_MODE \

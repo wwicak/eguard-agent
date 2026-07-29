@@ -31,20 +31,6 @@ enum CommandType {
   REMOVE_APP = 16;
   UPDATE_APP = 17;
   APPLY_PROFILE = 18;
-  APPLY_WIFI_PROFILE = 19;
-  APPLY_VPN_PROFILE = 20;
-  PUSH_CERTIFICATE = 21;
-  ZTNA_TUNNEL_REVOKE = 22;
-  ZTNA_CONFIG_UPDATE = 23;
-}
-
-enum ProfileType {
-  PROFILE_TYPE_UNSPECIFIED = 0;
-  PROFILE_TYPE_WIFI = 1;
-  PROFILE_TYPE_VPN = 2;
-  PROFILE_TYPE_CERTIFICATE = 3;
-  PROFILE_TYPE_APP_CONFIG = 4;
-  PROFILE_TYPE_CUSTOM = 5;
 }
 
 message IsolateParams {
@@ -101,58 +87,11 @@ message AppParams {
   string package_name = 1;
   string version = 2;
   bool managed = 3;
-  string package_url = 4;
-  string checksum_sha256 = 5;
-  string installer_type = 6;
-  string install_args = 7;
-  string uninstall_args = 8;
-  string signature = 9;
 }
 
 message ProfileParams {
   string profile_id = 1;
   string profile_json = 2;
-  ProfileType profile_type = 3;
-}
-
-message WifiProfileParams {
-  string profile_id = 1;
-  string ssid = 2;
-  bool hidden = 3;
-  string security_type = 4;
-  string passphrase = 5;
-  string identity = 6;
-  string anonymous_identity = 7;
-  string eap_method = 8;
-  string ca_certificate_pem = 9;
-  string client_certificate_pem = 10;
-  string client_key_encrypted = 11;
-  bool auto_join = 12;
-  repeated string dns_servers = 13;
-}
-
-message VpnProfileParams {
-  string profile_id = 1;
-  string provider = 2;
-  string server = 3;
-  string username = 4;
-  string password_encrypted = 5;
-  string shared_secret_encrypted = 6;
-  string ca_certificate_pem = 7;
-  string client_certificate_pem = 8;
-  string client_key_encrypted = 9;
-  repeated string routes = 10;
-  repeated string dns_servers = 11;
-  bool always_on = 12;
-}
-
-message CertificateParams {
-  string pem = 1;
-  string key_encrypted = 2;
-  repeated string ca_chain = 3;
-  string alias = 4;
-  string use_case = 5;
-  int32 rotate_before_expiry_days = 6;
 }
 
 message CommandPollRequest {
@@ -184,9 +123,6 @@ message ServerCommand {
     AppParams remove_app = 24;
     AppParams update_app = 25;
     ProfileParams apply_profile = 26;
-    WifiProfileParams apply_wifi_profile = 27;
-    VpnProfileParams apply_vpn_profile = 28;
-    CertificateParams push_certificate = 29;
   }
 }
 

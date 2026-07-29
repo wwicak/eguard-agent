@@ -45,6 +45,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-drop-elastic-rules-with-attack-pct", type=float, default=25.0)
     parser.add_argument("--max-drop-sigma-techniques-pct", type=float, default=25.0)
     parser.add_argument("--max-drop-elastic-techniques-pct", type=float, default=25.0)
+    parser.add_argument("--acknowledge-reset", action="store_true", help="Acknowledge failing regression checks as an intentional one-run baseline reset")
+    parser.add_argument("--acknowledge-reason", default="", help="Reason for an intentional regression baseline reset")
     return parser
 
 
@@ -136,6 +138,8 @@ def main() -> int:
         "thresholds": thresholds,
         "regressions": regressions,
     }
+    if regressions and args.acknowledge_reset:
+        report["acknowledged_reset"] = {"reason": args.acknowledge_reason, "failures": regressions}
     _write_report(args.output, report)
 
     print("ATT&CK regression snapshot:")
@@ -153,6 +157,9 @@ def main() -> int:
         print("\nATT&CK regression gate failed:")
         for item in regressions:
             print(f"- {item}")
+        if args.acknowledge_reset:
+            print(f"regression failures acknowledged as intentional baseline reset: {args.acknowledge_reason}")
+            return 0
         return 1
 
     print("\nATT&CK regression gate passed")

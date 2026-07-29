@@ -31,10 +31,6 @@ pub fn generate_plist(label: &str, binary_path: &str) -> String {
         <key>SuccessfulExit</key>
         <false/>
     </dict>
-    <key>StandardOutPath</key>
-    <string>/var/log/eguard-agent.log</string>
-    <key>StandardErrorPath</key>
-    <string>/var/log/eguard-agent.err</string>
     <key>ProcessType</key>
     <string>Background</string>
     <key>ThrottleInterval</key>

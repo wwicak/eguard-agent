@@ -188,6 +188,12 @@ pub(crate) fn persist_runtime_config_snapshot(config: &AgentConfig) -> Result<Pa
             toml::Value::String(config.agent_id.clone()),
         );
     }
+    // Phase-2 (MITRE T1562.001): bind remote-uninstall authorization to the
+    // enrollment token by persisting only its SHA-256 (never the raw secret)
+    // before we drop the bootstrap credential from the on-disk snapshot.
+    if let Some(token) = config.enrollment_token.as_deref() {
+        super::uninstall_auth::provision_from_enrollment_token(token);
+    }
     // Enrollment token is bootstrap-only credential material. Do not persist it
     // into restart config snapshots written to disk.
     agent_table.remove("enrollment_token");
@@ -232,6 +238,10 @@ pub(crate) fn persist_runtime_config_snapshot(config: &AgentConfig) -> Result<Pa
     response_rate_limit.insert(
         "max_kills_per_minute".to_string(),
         toml::Value::Integer(config.response.max_kills_per_minute as i64),
+    );
+    response_rate_limit.insert(
+        "max_quarantines_per_minute".to_string(),
+        toml::Value::Integer(config.response.max_quarantines_per_minute as i64),
     );
 
     let auto_isolation = ensure_nested_table(response_table, "auto_isolation", &path)?;
@@ -689,6 +699,7 @@ mod tests {
             ),
             response: response::ResponseConfig {
                 autonomous_response: true,
+                max_quarantines_per_minute: 13,
                 ..response::ResponseConfig::default()
             },
             offline_buffer_backend: "memory".to_string(),
@@ -706,6 +717,7 @@ mod tests {
         assert_eq!(loaded.agent_id, "agent-a");
         assert!(matches!(loaded.mode, crate::config::AgentMode::Active));
         assert!(loaded.response.autonomous_response);
+        assert_eq!(loaded.response.max_quarantines_per_minute, 13);
         assert_eq!(loaded.detection_yara_rules_dir, "/opt/eguard/rules/yara");
         assert_eq!(loaded.detection_ioc_dir, "/opt/eguard/rules/ioc");
         assert_eq!(
