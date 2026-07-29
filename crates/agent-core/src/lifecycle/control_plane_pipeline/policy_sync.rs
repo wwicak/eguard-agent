@@ -155,6 +155,34 @@ impl AgentRuntime {
         self.apply_runtime_tuning_overrides(&raw);
         self.apply_bundle_key_override(&raw);
         self.apply_feature_policy_overrides(&raw);
+        self.apply_dlp_policy_overrides(&raw);
+    }
+
+    fn apply_dlp_policy_overrides(&mut self, raw: &serde_json::Value) {
+        let Some(dlp) = raw.get("dlp") else {
+            return;
+        };
+        let mut changed = false;
+        if let Some(enabled) = dlp.get("enabled").and_then(|v| v.as_bool()) {
+            changed |= self.config.dlp_enabled != enabled;
+            self.config.dlp_enabled = enabled;
+        }
+        if let Some(path) = dlp
+            .get("rules_path")
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.trim().is_empty())
+        {
+            changed |= self.config.dlp_rules_path != path;
+            self.config.dlp_rules_path = path.to_string();
+        }
+        if let Some(size) = dlp.get("max_file_scan_size_mb").and_then(|v| v.as_u64()) {
+            let size = usize::try_from(size).unwrap_or(usize::MAX).max(1);
+            changed |= self.config.dlp_max_file_scan_size_mb != size;
+            self.config.dlp_max_file_scan_size_mb = size;
+        }
+        if changed {
+            self.reload_dlp_scanner();
+        }
     }
 
     fn apply_detection_allowlist_override(&mut self, raw: &serde_json::Value) {

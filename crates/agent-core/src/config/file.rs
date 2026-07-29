@@ -274,6 +274,15 @@ impl AgentConfig {
         if let Some(v) = detection.max_file_scan_size_mb {
             self.detection_max_file_scan_size_mb = v;
         }
+        if let Some(v) = detection.dlp_enabled {
+            self.dlp_enabled = v;
+        }
+        if let Some(v) = non_empty(detection.dlp_rules_path) {
+            self.dlp_rules_path = v;
+        }
+        if let Some(v) = detection.dlp_max_file_scan_size_mb {
+            self.dlp_max_file_scan_size_mb = v.max(1);
+        }
         if let Some(v) = detection.memory_scan_enabled {
             self.detection_memory_scan_enabled = v;
         }
@@ -613,6 +622,12 @@ struct FileDetectionConfig {
     scan_on_create: Option<bool>,
     #[serde(default)]
     max_file_scan_size_mb: Option<usize>,
+    #[serde(default)]
+    dlp_enabled: Option<bool>,
+    #[serde(default)]
+    dlp_rules_path: Option<String>,
+    #[serde(default)]
+    dlp_max_file_scan_size_mb: Option<usize>,
     #[serde(default)]
     memory_scan_enabled: Option<bool>,
     #[serde(default)]

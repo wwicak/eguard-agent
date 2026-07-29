@@ -139,7 +139,7 @@ pub(crate) fn shared_env_var_lock() -> &'static std::sync::Mutex<()> {
 #[allow(clippy::field_reassign_with_default)]
 mod tests;
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 #[allow(clippy::field_reassign_with_default)]
 mod tests_ebpf_policy;
 
@@ -149,17 +149,17 @@ mod tests_baseline_seed_policy;
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)]
 mod tests_det_stub_completion;
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests_ebpf_memory;
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)]
 mod tests_network_profile_push;
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 #[allow(clippy::field_reassign_with_default)]
 mod tests_observability;
 #[cfg(test)]
 mod tests_pkg_contract;
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 #[allow(clippy::field_reassign_with_default)]
 mod tests_resource_policy;
 #[cfg(test)]

@@ -754,6 +754,23 @@ fn eguard_server_fallback_env_is_used_when_primary_is_absent() {
 }
 
 #[test]
+fn dlp_environment_overrides_are_loaded() {
+    let _guard = env_lock().lock().expect("env lock");
+    clear_env();
+    std::env::set_var("EGUARD_DLP_ENABLED", "true");
+    std::env::set_var("EGUARD_DLP_RULES_PATH", "/opt/eguard/dlp.json");
+    std::env::set_var("EGUARD_DLP_MAX_FILE_SCAN_SIZE_MB", "25");
+
+    let mut cfg = AgentConfig::default();
+    cfg.apply_env_overrides();
+    assert!(cfg.dlp_enabled);
+    assert_eq!(cfg.dlp_rules_path, "/opt/eguard/dlp.json");
+    assert_eq!(cfg.dlp_max_file_scan_size_mb, 25);
+
+    clear_env();
+}
+
+#[test]
 // AC-CFG-004
 fn eguard_server_addr_takes_precedence_over_eguard_server() {
     let _guard = env_lock().lock().expect("env lock");
