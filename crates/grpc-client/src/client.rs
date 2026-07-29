@@ -1116,10 +1116,16 @@ fn truncate_commands(mut commands: Vec<CommandEnvelope>, limit: usize) -> Vec<Co
 }
 
 fn to_pb_telemetry_event(event: &EventEnvelope) -> pb::TelemetryEvent {
+    let event_type = map_event_type(&event.event_type);
+    let detail = if event_type == pb::EventType::DlpDetection {
+        dlp_detail_from_payload(&event.payload_json, &event.rule_name)
+    } else {
+        None
+    };
     pb::TelemetryEvent {
         event_id: format!("{}-{}", event.agent_id, event.created_at_unix),
         agent_id: event.agent_id.clone(),
-        event_type: map_event_type(&event.event_type) as i32,
+        event_type: event_type as i32,
         severity: map_severity(&event.severity) as i32,
         timestamp: event.created_at_unix,
         pid: 0,
@@ -1131,8 +1137,24 @@ fn to_pb_telemetry_event(event: &EventEnvelope) -> pb::TelemetryEvent {
         payload_json: event.payload_json.clone(),
         labels: HashMap::new(),
         created_at_unix: event.created_at_unix,
-        detail: None,
+        detail,
     }
+}
+
+fn dlp_detail_from_payload(payload: &str, fallback_rule_id: &str) -> Option<pb::telemetry_event::Detail> {
+    let root: serde_json::Value = serde_json::from_str(payload).ok()?;
+    let detection = root.get("dlp")?.get("detections")?.as_array()?.first()?;
+    Some(pb::telemetry_event::Detail::DlpDetection(pb::DlpDetectionEvent {
+        policy_id: root.get("dlp").and_then(|v| v.get("policy_id")).and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+        bundle_version: root.get("dlp").and_then(|v| v.get("bundle_version")).and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+        rule_id: detection.get("rule_id").and_then(|v| v.as_str()).unwrap_or(fallback_rule_id).to_string(),
+        channel: root.get("dlp").and_then(|v| v.get("channel")).and_then(|v| v.as_str()).unwrap_or("file_write").to_string(),
+        action: detection.get("action").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+        confidence: detection.get("confidence").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+        path_hash: root.get("dlp").and_then(|v| v.get("path_hash")).and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+        content_sha256: root.get("dlp").and_then(|v| v.get("content_sha256")).and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+        redacted_evidence: detection.get("redacted_evidence").and_then(|v| v.as_str()).unwrap_or("[REDACTED]").to_string(),
+    }))
 }
 
 fn from_pb_agent_command(command: pb::AgentCommand) -> CommandEnvelope {
@@ -1286,6 +1308,7 @@ fn map_event_type(raw: &str) -> pb::EventType {
         "module_load" | "module" => pb::EventType::ModuleLoad,
         "user_login" | "login" => pb::EventType::UserLogin,
         "alert" => pb::EventType::Alert,
+        "dlp_detection" | "dlp" => pb::EventType::DlpDetection,
         _ => pb::EventType::ProcessExec,
     }
 }
