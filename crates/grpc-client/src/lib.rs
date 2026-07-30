@@ -15,10 +15,11 @@ pub use buffer::{
 pub use client::Client;
 pub use retry::RetryPolicy;
 pub use types::{
-    BaselineProfileEnvelope, CampaignAlert, CampaignAlertResponse, CertificatePolicyEnvelope,
-    CommandEnvelope, ComplianceCheckEnvelope, ComplianceEnvelope, EnrollmentEnvelope,
-    EnrollmentResultEnvelope, EventEnvelope, FleetBaselineEnvelope, HeartbeatAgentStatusEnvelope,
-    HeartbeatResourceUsageEnvelope, HeartbeatRuntimeEnvelope, InventoryEnvelope, IocSignal,
-    IocSignalBatch, PolicyEnvelope, ResponseEnvelope, ServerState, ThreatIntelVersionEnvelope,
-    TlsConfig, TransportMode, ZtnaBookmarkEnvelope, ZtnaBookmarkListEnvelope,
+    ArtifactUploadEnvelope, ArtifactUploadResult, BaselineProfileEnvelope, CampaignAlert,
+    CampaignAlertResponse, CertificatePolicyEnvelope, CommandEnvelope, ComplianceCheckEnvelope,
+    ComplianceEnvelope, EnrollmentEnvelope, EnrollmentResultEnvelope, EventEnvelope,
+    FleetBaselineEnvelope, HeartbeatAgentStatusEnvelope, HeartbeatResourceUsageEnvelope,
+    HeartbeatRuntimeEnvelope, InventoryEnvelope, IocSignal, IocSignalBatch, PolicyEnvelope,
+    ResponseEnvelope, ServerState, ThreatIntelVersionEnvelope, TlsConfig, TransportMode,
+    ZtnaBookmarkEnvelope, ZtnaBookmarkListEnvelope,
 };

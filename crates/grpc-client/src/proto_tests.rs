@@ -57,8 +57,7 @@ fn agent_proto_imports_domain_protos_and_declares_nine_rpc_agent_service() {
     assert_eq!(service_block.matches("rpc ").count(), 9);
     assert!(AGENT_PROTO.contains("rpc GetPolicy("));
     assert!(AGENT_PROTO.contains("rpc DownloadRuleBundle("));
-    assert!(AGENT_PROTO
-        .contains("rpc UploadArtifact(stream ArtifactChunk) returns (ArtifactAck);"));
+    assert!(AGENT_PROTO.contains("rpc UploadArtifact(stream ArtifactChunk) returns (ArtifactAck);"));
 }
 
 #[test]

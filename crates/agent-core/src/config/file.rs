@@ -119,9 +119,15 @@ impl AgentConfig {
         if let Some(v) = response.dry_run {
             self.response.dry_run = v;
         }
+        if let Some(v) = response.allow_remote_uninstall {
+            self.response.allow_remote_uninstall = v;
+        }
         if let Some(rate_limit) = response.rate_limit {
             if let Some(v) = rate_limit.max_kills_per_minute {
                 self.response.max_kills_per_minute = v;
+            }
+            if let Some(v) = rate_limit.max_quarantines_per_minute {
+                self.response.max_quarantines_per_minute = v;
             }
         }
         if let Some(auto_isolation) = response.auto_isolation {
@@ -482,6 +488,8 @@ struct FileResponseConfig {
     #[serde(default)]
     dry_run: Option<bool>,
     #[serde(default)]
+    allow_remote_uninstall: Option<bool>,
+    #[serde(default)]
     definite: Option<FileResponsePolicy>,
     #[serde(default)]
     very_high: Option<FileResponsePolicy>,
@@ -535,6 +543,8 @@ pub struct FileResponsePolicy {
 struct FileResponseRateLimitConfig {
     #[serde(default)]
     max_kills_per_minute: Option<usize>,
+    #[serde(default)]
+    max_quarantines_per_minute: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

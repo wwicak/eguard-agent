@@ -240,8 +240,14 @@ impl AgentConfig {
         if let Ok(v) = std::env::var("EGUARD_RESPONSE_DRY_RUN") {
             self.response.dry_run = parse_bool(&v);
         }
+        if let Ok(v) = std::env::var("EGUARD_RESPONSE_ALLOW_REMOTE_UNINSTALL") {
+            self.response.allow_remote_uninstall = parse_bool(&v);
+        }
         if let Some(v) = env_usize("EGUARD_RESPONSE_MAX_KILLS_PER_MINUTE") {
             self.response.max_kills_per_minute = v;
+        }
+        if let Some(v) = env_usize("EGUARD_RESPONSE_MAX_QUARANTINES_PER_MINUTE") {
+            self.response.max_quarantines_per_minute = v;
         }
         if let Ok(v) = std::env::var("EGUARD_RESPONSE_AUTO_ISOLATION_ENABLED") {
             self.response.auto_isolation.enabled = parse_bool(&v);

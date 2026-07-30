@@ -21,10 +21,11 @@ use tracing::{info, warn};
 use crate::pb;
 use crate::retry::RetryPolicy;
 use crate::types::{
-    BaselineProfileEnvelope, CampaignAlert, CommandEnvelope, ComplianceEnvelope,
-    EnrollmentEnvelope, EnrollmentResultEnvelope, EventEnvelope, FleetBaselineEnvelope,
-    HeartbeatRuntimeEnvelope, InventoryEnvelope, IocSignalBatch, PolicyEnvelope, ResponseEnvelope,
-    ServerState, ThreatIntelVersionEnvelope, TlsConfig, TransportMode, ZtnaBookmarkListEnvelope,
+    ArtifactUploadEnvelope, ArtifactUploadResult, BaselineProfileEnvelope, CampaignAlert,
+    CommandEnvelope, ComplianceEnvelope, EnrollmentEnvelope, EnrollmentResultEnvelope,
+    EventEnvelope, FleetBaselineEnvelope, HeartbeatRuntimeEnvelope, InventoryEnvelope,
+    IocSignalBatch, PolicyEnvelope, ResponseEnvelope, ServerState, ThreatIntelVersionEnvelope,
+    TlsConfig, TransportMode, ZtnaBookmarkListEnvelope,
 };
 
 #[path = "client/client_grpc.rs"]
@@ -324,6 +325,18 @@ impl Client {
             }
         }
         Ok(())
+    }
+
+    /// Upload an evidence artifact to the server over gRPC only.
+    pub async fn upload_artifact(
+        &self,
+        envelope: &ArtifactUploadEnvelope,
+    ) -> Result<ArtifactUploadResult> {
+        self.ensure_online()?;
+        match self.mode {
+            TransportMode::Http => anyhow::bail!("artifact upload requires grpc transport mode"),
+            TransportMode::Grpc => self.upload_artifact_grpc(envelope).await,
+        }
     }
 
     pub async fn stream_command_channel(
@@ -694,7 +707,6 @@ impl Client {
         let current_port = parsed.port_or_known_default()?;
         let alternate_port = match current_port {
             50052 => 50053,
-            50053 => 50052,
             _ => return None,
         };
         parsed.set_port(Some(alternate_port)).ok()?;
