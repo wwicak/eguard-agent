@@ -86,6 +86,7 @@ impl Client {
                         lsm_supported: cfg!(target_os = "linux"),
                         yara_supported: true,
                         ebpf_programs: Vec::new(),
+                        dlp_capabilities: Vec::new(),
                     }),
                     tenant_id: enrollment.tenant_id.clone().unwrap_or_default(),
                     agent_id: enrollment.agent_id.clone(),
@@ -137,6 +138,7 @@ impl Client {
                         active_ioc_entries: runtime.status.active_ioc_entries,
                         last_detection: runtime.status.last_detection.clone(),
                         last_response_action: runtime.status.last_response_action.clone(),
+                        dlp_status: None,
                     }),
                     resource_usage: runtime.map(|runtime| pb::ResourceUsage {
                         cpu_percent: runtime.resource_usage.cpu_percent,
@@ -156,6 +158,7 @@ impl Client {
                     buffered_events: runtime.map(|r| r.buffered_events).unwrap_or(0),
                     ztna_sessions: Vec::new(),
                     last_bookmark_version,
+                    dlp_status: None,
                     compliance_status: compliance_status.to_string(),
                     sent_at_unix: now_unix(),
                 })

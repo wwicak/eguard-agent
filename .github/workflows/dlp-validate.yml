@@ -1,0 +1,72 @@
+name: Validate DLP Rules
+
+on:
+  pull_request:
+    paths:
+      - "dlp/**"
+      - "scripts/validate_dlp.py"
+      - "scripts/build_dlp_bundle.py"
+      - ".github/workflows/dlp-validate.yml"
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dlp-validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate rules and fixtures
+        run: python3 scripts/validate_dlp.py
+
+      - name: Build and verify manifest
+        run: |
+          rm -rf /tmp/eguard-dlp-bundle
+          python3 scripts/build_dlp_bundle.py \
+            --version "0.0.0-ci.${GITHUB_SHA::7}" \
+            --output /tmp/eguard-dlp-bundle
+          python3 - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          root = Path('/tmp/eguard-dlp-bundle')
+          manifest = json.loads((root / 'manifest.json').read_text())
+          assert manifest['bundle_type'] == 'eguard-dlp-rules'
+          assert manifest['signed'] is False
+          for rel, expected in manifest['files'].items():
+              actual = hashlib.sha256((root / rel).read_bytes()).hexdigest()
+              assert expected == f'sha256:{actual}', rel
+          print(f"verified {len(manifest['files'])} bundle files")
+          PY
+
+      - name: Check JSON formatting
+        run: python3 -m json.tool dlp/schema.json >/dev/null
+
+      - name: Check workflow YAML
+        run: python3 -c "import pathlib, yaml; [yaml.safe_load(p.read_text()) for p in pathlib.Path('.github/workflows').glob('dlp-*.yml')]"
+
+  weekly-review:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Report pack review metadata
+        run: |
+          python3 -c "import json; from pathlib import Path; p=json.loads(Path('dlp/rules/indonesia.json').read_text()); print(f\"pack={p['pack_id']} version={p['version']} rules={len(p['rules'])}\")"
+          echo "Review regulation provenance and synthetic fixtures before release."

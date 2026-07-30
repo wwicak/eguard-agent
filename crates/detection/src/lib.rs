@@ -4,6 +4,7 @@ pub mod behavioral;
 mod bench_detection;
 mod calibration;
 pub mod deception;
+pub mod dlp;
 mod engine;
 mod exploit;
 pub mod fim;

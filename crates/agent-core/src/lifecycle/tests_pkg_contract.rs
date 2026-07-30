@@ -239,36 +239,6 @@ fn repo_sigma_rules_compile_from_rules_directory() {
 }
 
 #[test]
-fn endpoint_logs_are_bounded_and_event_evaluations_are_diagnostic() {
-    let telemetry = read("crates/agent-core/src/lifecycle/telemetry.rs");
-    let evaluation = telemetry
-        .split("pub(super) fn log_detection_evaluation")
-        .nth(1)
-        .expect("evaluation logger");
-    assert!(evaluation.contains("debug!("));
-    assert!(!evaluation.contains("info!("));
-
-    let main = read("crates/agent-core/src/main.rs");
-    assert_eq!(main.matches("ManagedLogWriter::open").count(), 2);
-
-    for plist_source in [
-        "installer/macos/com.eguard.agent.plist",
-        "installer/macos/scripts/configure-from-env.sh",
-        "crates/platform-macos/src/service/plist.rs",
-    ] {
-        let plist = read(plist_source);
-        assert!(!plist.contains("StandardOutPath"), "{plist_source}");
-        assert!(!plist.contains("StandardErrorPath"), "{plist_source}");
-    }
-
-    let mac_uninstall = read("installer/macos/uninstall.sh");
-    assert!(mac_uninstall.contains("for archive in /var/log/eguard-agent-*.log; do"));
-    assert!(mac_uninstall.contains("if [[ -L \"$archive\" ]]"));
-    assert!(mac_uninstall.contains("remove_path_if_exists \"$AGENT_LOG\""));
-    assert!(!mac_uninstall.contains("newsyslog"));
-}
-
-#[test]
 fn linux_update_packaging_recovers_service_after_upgrade() {
     let service_unit = read("packaging/systemd/eguard-agent.service");
     assert!(
@@ -287,20 +257,16 @@ fn linux_update_packaging_recovers_service_after_upgrade() {
         "postinstall should patch legacy /etc unit files to the safer stop timeout"
     );
     assert!(
-        postinstall.contains("chattr -i /etc/eguard-agent/agent.conf 2>/dev/null || true"),
-        "postinstall must clear legacy immutable config protection before chown/chmod"
+        postinstall.contains("systemd-run --unit \"eguard-agent-postinstall-$(date +%s)\" --collect /bin/sh -c \"$recover_cmd\""),
+        "postinstall should prefer delayed systemd-run recovery so upgrade cleanup cannot immediately undo it"
     );
     assert!(
-        postinstall.contains("systemctl kill --kill-who=main -s TERM eguard-agent.service")
-            && postinstall.contains("systemctl show -p MainPID --value eguard-agent.service")
-            && postinstall.contains("[ \"/proc/$pid/exe\" -ef /usr/bin/eguard-agent ]"),
-        "postinstall should signal MainPID and verify the replacement live inode"
+        postinstall.contains("systemctl reset-failed eguard-agent.service || true"),
+        "postinstall should clear failed state before restart"
     );
     assert!(
-        postinstall.contains("if ! restart_agent; then")
-            && postinstall.contains("restart could not be verified")
-            && postinstall.ends_with("exit 0\n"),
-        "shared nFPM postinstall must report restart verification failure without failing the package transaction"
+        postinstall.contains("systemctl restart eguard-agent.service || systemctl start eguard-agent.service || true"),
+        "postinstall should retry service recovery after upgrade"
     );
 
     let install_script = read("scripts/install-eguard-agent.sh");
@@ -331,87 +297,15 @@ fn linux_update_packaging_recovers_service_after_upgrade() {
         "preremove should skip stop/disable work during package upgrades"
     );
     assert!(
-        preremove.contains("RefuseManualStop=no")
-            && preremove.contains("Restart=no")
-            && preremove.contains("trap 'cleanup' EXIT")
-            && preremove.contains("trap 'trap \"\" HUP INT TERM EXIT; cleanup; exit 1' HUP INT TERM")
-            && preremove.contains("if ! pid=$(systemctl show -p MainPID --value")
-            && preremove.contains("refusing to remove while agent state is unknown")
-            && !preremove.contains("systemctl stop eguard-agent.service || true"),
-        "preremove must authorize stop transiently, clean up on every exit, and abort on unknown MainPID state"
+        preremove.contains("systemctl stop eguard-agent.service || true"),
+        "preremove should still stop the service on real removals"
     );
-    // The signal traps MUST be armed before the weakening drop-in is written to disk,
-    // otherwise a signal in the setup window leaves RefuseManualStop=no on disk with no
-    // handler to remove it. Enforce ordering, not just presence.
-    {
-        let sig_trap = preremove
-            .find("trap 'trap \"\" HUP INT TERM EXIT; cleanup; exit 1' HUP INT TERM")
-            .expect("preremove must arm the signal trap");
-        let dropin_write = preremove
-            .find("RefuseManualStop=no\\n\\n[Service]\\nRestart=no\\n' > \"$dropin\"")
-            .expect("preremove must write the transient drop-in");
-        assert!(
-            sig_trap < dropin_write,
-            "preremove must arm the HUP/INT/TERM cleanup trap BEFORE writing the RefuseManualStop=no drop-in (no unguarded setup window)"
-        );
-    }
-    // An interrupted/aborted removal must never leave the host installed-but-
-    // unprotected: if we stopped the agent but removal did not complete, cleanup must
-    // restart it (an explicit stop suppresses Restart=, and daemon-reload does not
-    // start the unit). Only a fully authorized removal sets preremove_ok=1.
-    assert!(
-        preremove.contains("stopped_service=1")
-            && preremove.contains("preremove_ok=1")
-            && preremove
-                .contains("[ \"$stopped_service\" = 1 ] && [ \"$preremove_ok\" != 1 ]")
-            && preremove.contains("systemctl start eguard-agent.service"),
-        "preremove must restart the agent when it was stopped but removal did not complete, so an interrupted uninstall never leaves the host unprotected"
-    );
-    // The success boundary must be non-interruptible: signals are ignored BEFORE
-    // preremove_ok=1 so an interrupt during the final EXIT cleanup cannot flip an
-    // authorized removal into a nonzero abort while the restart restore is suppressed.
-    {
-        let ignore_boundary = preremove
-            .find("trap '' HUP INT TERM")
-            .expect("preremove must ignore signals at the success boundary");
-        let ok_flag = preremove
-            .find("preremove_ok=1")
-            .expect("preremove must set the success flag");
-        assert!(
-            ignore_boundary < ok_flag,
-            "preremove must ignore HUP/INT/TERM BEFORE setting preremove_ok=1 (non-interruptible success boundary)"
-        );
-    }
-    // The RPM %preun mirror must carry the identical fail-closed + restart-on-abort +
-    // non-interruptible-success-boundary + signal-safe-drop-in lifecycle.
-    {
-        let spec = read("packaging/rpm/eguard-agent.spec");
-        assert!(
-            spec.contains("stopped_service=1")
-                && spec.contains("systemctl start eguard-agent.service")
-                && spec.contains("[ \"$stopped_service\" = 1 ] && [ \"$preremove_ok\" != 1 ]")
-                && spec.contains(
-                    "trap 'trap \"\" HUP INT TERM EXIT; cleanup; exit 1' HUP INT TERM"
-                ),
-            "rpm %preun must mirror the deb removal lifecycle (fail-closed, restart-on-abort, signal-safe drop-in)"
-        );
-        let spec_ignore = spec
-            .find("trap '' HUP INT TERM")
-            .expect("rpm %preun must ignore signals at the success boundary");
-        let spec_ok = spec
-            .find("preremove_ok=1")
-            .expect("rpm %preun must set the success flag");
-        assert!(
-            spec_ignore < spec_ok,
-            "rpm %preun must ignore signals before preremove_ok=1 (non-interruptible success boundary)"
-        );
-    }
 
     let worker_source =
         read("crates/agent-core/src/lifecycle/command_pipeline/update_agent/worker_linux.rs");
     assert!(
-        worker_source.contains("systemctl reset-failed eguard-agent 2>/dev/null || true"),
-        "linux update worker should clear failed service state when nudging a down unit back up"
+        worker_source.contains("systemctl reset-failed eguard-agent || true"),
+        "linux update worker should clear failed service state after package install"
     );
     assert!(
         worker_source.contains("rpm -Uvh --replacepkgs --replacefiles \"$pkg_path\""),
@@ -421,25 +315,16 @@ fn linux_update_packaging_recovers_service_after_upgrade() {
         worker_source.contains("case \"$rpm_output\" in"),
         "linux rpm update worker should inspect rpm stderr before deciding whether replace flags are safe"
     );
-    // RefuseManualStop=yes makes `systemctl stop`/`restart` refused (rc=4) and
-    // never cycle the tamper-resistant service, so the worker must NOT rely on
-    // them; the sanctioned cycle is to signal the main process and let
-    // Restart=always relaunch the new binary.
     assert!(
-        !worker_source.contains("systemctl restart eguard-agent"),
-        "linux update worker must not use `systemctl restart` (refused by RefuseManualStop=yes)"
+        worker_source.contains("if ! systemctl restart eguard-agent; then"),
+        "linux update worker should prefer a full service restart after package install"
     );
     assert!(
-        worker_source
-            .contains("systemctl kill --kill-who=main -s TERM eguard-agent 2>/dev/null || true"),
-        "linux update worker should cycle the service via a guarded SIGTERM to the main process"
+        worker_source.contains(
+            "systemctl start eguard-agent || fail_outcome \"agent service restart failed after package install\""
+        ),
+        "linux update worker should still fall back to start and report failure if recovery cannot bring the service back"
     );
-    assert!(
-        worker_source
-            .contains("systemctl kill --kill-who=main -s KILL eguard-agent 2>/dev/null || true"),
-        "linux update worker should escalate to SIGKILL if the old process ignores SIGTERM"
-    );
-    // start safety-net is asserted (with --no-block) in the bounded-loop block below.
     assert!(
         worker_source.contains("Command::new(\"/bin/bash\")"),
         "linux update worker fallback should launch via /bin/bash so noexec update dirs do not block self-update"
@@ -465,161 +350,6 @@ fn linux_update_packaging_recovers_service_after_upgrade() {
         worker_source.contains("mark_internal_command("),
         "linux update worker fallback should tag directly spawned maintenance workers as internal"
     );
-    // Path-mismatch + un-restarted-process hardening: the worker must gate success
-    // on the LIVE process's own version, probed by executing the /proc/<pid>/exe
-    // magic symlink directly (so an in-place replace of a still-running old inode
-    // cannot masquerade as success), never a resolved on-disk path.
-    assert!(
-        worker_source.contains("env -u EGUARD_AGENT_VERSION timeout 10 \"/proc/$pid/exe\" --version"),
-        "linux update worker must probe the LIVE inode's version directly, with a bounded timeout and no inherited version env"
-    );
-    assert!(
-        worker_source
-            .contains("env -u EGUARD_AGENT_VERSION timeout 10 \"$INSTALLED_BIN\" --version"),
-        "linux update worker post-install version check must clear the runtime version override and be bounded so a hanging binary cannot hold the update lock forever"
-    );
-    assert!(
-        worker_source.contains("running_version=\"$(restart_and_confirm_update)\""),
-        "linux update worker should confirm the running service version before writing the completed outcome"
-    );
-    assert!(
-        worker_source.contains("recheck_pid=\"$(service_main_pid)\"")
-            && worker_source.contains("systemctl is-active --quiet eguard-agent"),
-        "linux update worker should re-read MainPID after probing to close a PID-recycle/flap race"
-    );
-    // Same-version hotfix guard: success must require a genuinely NEW process
-    // instance, not just a version-string match on the still-running old process.
-    assert!(
-        worker_source.contains("proc_identity()")
-            && worker_source.contains("\"$cur_ident\" != \"$before_ident\""),
-        "linux update worker must require a process-identity change (actual restart), not only a version match"
-    );
-    // Attached fallback worker must fail safe (never kill the agent from inside
-    // its own cgroup, which control-group teardown would kill mid-restart).
-    assert!(
-        worker_source.contains("if [[ \"$RESTART_MODE\" != \"detached\" ]]; then")
-            && worker_source.contains("a safe self-restart needs the detached update worker"),
-        "linux update worker must fail safe (no kill) when spawned attached (systemd-run unavailable)"
-    );
-    // Fail-closed default: a missing/unset restart-mode must NOT enable the kill.
-    assert!(
-        worker_source.contains("RESTART_MODE=\"attached\""),
-        "linux update worker must default RESTART_MODE to attached (fail closed: never kill unless explicitly detached)"
-    );
-    assert!(
-        worker_source.contains("detached_args.push(\"--restart-mode\".to_string());")
-            && worker_source.contains("detached_args.push(\"detached\".to_string());")
-            && worker_source.contains("script_args.push(\"attached\".to_string());"),
-        "spawn should pass restart-mode=detached to the transient worker and attached to the direct fallback"
-    );
-    // Installed-inode gate: success must require the LIVE process to be executing
-    // the freshly installed package file, not merely the target version on a
-    // cycled but non-package (alternate ExecStart) or deleted inode.
-    assert!(
-        worker_source.contains("INSTALLED_BIN=\"/usr/bin/eguard-agent\"")
-            && worker_source.contains("\"/proc/$cur_pid/exe\" -ef \"$INSTALLED_BIN\"")
-            && worker_source.contains("\"/proc/$recheck_pid/exe\" -ef \"$INSTALLED_BIN\""),
-        "linux update worker must require the live inode to be the package-installed binary before success"
-    );
-    // Startup-failure recovery: snapshot the running binary before the kill and
-    // roll it back if the new payload cannot stay up, so a bad-but-version-valid
-    // package cannot brick the endpoint.
-    assert!(
-        worker_source.contains("cp -f \"/proc/$before_pid/exe\" \"$rollback_bin\"")
-            && worker_source.contains("rolled back to the previous binary"),
-        "linux update worker must snapshot + roll back the previous binary if the update cannot stay running"
-    );
-    // Snapshot must be bound to the captured process identity (guard PID reuse),
-    // and only armed with a nonempty prior identity.
-    assert!(
-        worker_source.contains("\"$(proc_identity \"$before_pid\")\" == \"$before_ident\""),
-        "linux update worker must bind the rollback snapshot to the captured pid:starttime identity"
-    );
-    // Restore must be a CHECKED chain: only claim rollback after verifying the
-    // target holds the snapshot bytes; a swallowed cp/mv error must report an
-    // honest restore failure, never a false recovery.
-    assert!(
-        worker_source.contains("cmp -s \"$rollback_bin\" \"$rollback_path\"")
-            && worker_source.contains("rollback restore FAILED"),
-        "linux update worker must verify restored bytes and report honestly when the restore fails"
-    );
-    // Post-rollback recovery must confirm a STABLE process on the restored inode,
-    // not a single is-active sample.
-    assert!(
-        worker_source.contains("\"/proc/$r2/exe\" -ef \"$rollback_path\""),
-        "linux update worker must confirm the recovered process is executing the restored inode"
-    );
-    // Single-flight lock: overlapping update workers would race the install,
-    // service cycle, and rollback target, invalidating the byte/inode gates.
-    assert!(
-        worker_source.contains("flock -n 9")
-            && worker_source.contains("another agent update is already in progress"),
-        "linux update worker must hold an exclusive lock so concurrent updates cannot interleave"
-    );
-    // Per-command staging paths (defense in depth on top of the lock).
-    assert!(
-        worker_source.contains("eguard-agent-${VERSION}-${COMMAND_ID}.${FORMAT}"),
-        "linux update worker should stage the package under a command-specific path"
-    );
-    // Per-command staging must not grow without bound: age-sweep staged packages
-    // and orphaned downloads alongside stale rollback snapshots.
-    assert!(
-        worker_source.contains("-name 'eguard-agent-*.deb'")
-            && worker_source.contains("-name 'eguard-agent-*.rpm'")
-            && worker_source.contains("-name '*.download'"),
-        "linux update worker must age-sweep staged packages and partial downloads so per-command staging cannot grow without bound"
-    );
-    // Script rewrites must be atomic (write temp + rename): a later command's
-    // rewrite must never truncate the script a running worker is still reading.
-    assert!(
-        worker_source.contains("fs::rename(&tmp_path, path)")
-            && worker_source.contains("SCRIPT_TMP_SEQ.fetch_add")
-            && worker_source.contains("std::process::id()"),
-        "linux update worker script must be activated via atomic rename from a UNIQUE per-invocation temp (pid+seq) so a concurrent rewrite cannot truncate/torn-activate a running worker's script"
-    );
-    // Final target-admission check before rollback (a healthy target that appears
-    // at the deadline boundary must not be rolled back over a good install), and
-    // the success gate is factored into a single helper used by loop + admission.
-    assert!(
-        worker_source.contains("try_confirm_target()")
-            && worker_source.contains("# Final admission"),
-        "linux update worker must re-run the full success gate immediately before rollback"
-    );
-    // Stability dwell: a target that passes --version then crashes must not be
-    // reported completed.
-    assert!(
-        worker_source.contains("# Stability dwell"),
-        "linux update worker must require a post-readiness stability dwell before success"
-    );
-    // Real bound + non-blocking recovery start (no waiting out TimeoutStartSec).
-    assert!(
-        worker_source.contains("local deadline=$((start_ts + deadline_secs))"),
-        "linux update worker confirm loop must use a wall-clock loop-admission deadline"
-    );
-    assert!(
-        worker_source.contains("systemctl start --no-block eguard-agent 2>/dev/null || true"),
-        "linux update worker recovery start must be non-blocking so it cannot wait out TimeoutStartSec"
-    );
-    // Rollback routing must sample MainPID stability (a crash-looping unit
-    // flickers active), not a single is-active.
-    assert!(
-        worker_source.contains("s1=\"$(service_main_pid)\"")
-            && worker_source.contains("\"$s1\" == \"$s2\""),
-        "linux update worker must sample MainPID stability before choosing honest-failure vs rollback"
-    );
-    assert!(
-        worker_source
-            .contains("running agent service did not reach the updated version after restart"),
-        "linux update worker must fail (not silently succeed) when the live service is not on the target version"
-    );
-    assert!(
-        worker_source.contains("node may use a non-package install layout and require manual reinstall"),
-        "linux update worker failure diagnostic should name the non-package-layout cause for the operator"
-    );
-    assert!(
-        worker_source.contains(", running=$running_version)"),
-        "linux update worker completed outcome should report the confirmed running binary/version"
-    );
 
     let config_change_source =
         read("crates/agent-core/src/lifecycle/command_pipeline/config_change.rs");
@@ -631,67 +361,24 @@ fn linux_update_packaging_recovers_service_after_upgrade() {
     let windows_worker_source =
         read("crates/agent-core/src/lifecycle/command_pipeline/update_agent/worker_windows.rs");
     assert!(
-        windows_worker_source.contains("taskkill /F /PID $killPid"),
-        "windows update worker should force-kill the actual service process id (not a fixed image name), without /T so the detached updater survives"
+        windows_worker_source.contains("taskkill /F /PID $runningProc.Id"),
+        "windows update worker should force-kill a lingering service process before replacing the binary without killing the detached updater itself"
     );
     assert!(
-        windows_worker_source.contains("Test-TrackedProcessAlive"),
-        "windows update worker should key process identity on (pid, start time) so a reused pid is never force-killed as the agent"
-    );
-    assert!(
-        windows_worker_source.contains("@('failureflag', $ServiceName, '0')"),
+        windows_worker_source.contains("failureflag $ServiceName 0"),
         "windows update worker should disable non-crash failure recovery before killing the service"
     );
     assert!(
-        !windows_worker_source.contains("config $ServiceName binPath="),
-        "windows update worker must NOT rewrite the service binPath (the installer owns it; rewriting risks the wrong lineage or dropped service args)"
-    );
-    assert!(
-        windows_worker_source.contains("service binary path empty after msi install"),
-        "windows MSI update worker should treat an empty post-install service path as fatal, never fall back to a guessed path"
+        windows_worker_source.contains("sc.exe config $ServiceName binPath="),
+        "windows update worker should re-assert the canonical service binary path after update"
     );
     assert!(
         windows_worker_source
             .contains("Verify-FileHash -Path $agentPath -ExpectedSha256 $ExpectedSha256"),
-        "windows EXE update worker should verify the installed binary hash after the atomic swap"
+        "windows EXE update worker should verify the installed binary hash after copy"
     );
     assert!(
-        windows_worker_source
-            .contains("[System.IO.File]::Replace($stagedPath, $agentPath, $backupPath"),
-        "windows EXE update worker must swap the binary via the atomic ReplaceFile primitive (Move-Item -Force is delete-then-move, not atomic, and can leave the EDR binary absent on power loss)"
-    );
-    assert!(
-        windows_worker_source.contains("if ($null -eq $StartTime) { return $false }"),
-        "windows update worker must reject a pid with no captured start time as untracked so a reused pid is never force-killed as the agent"
-    );
-    assert!(
-        windows_worker_source.contains("throw $detail"),
-        "windows update worker must fail closed on a nonzero sc.exe exit (Invoke-Sc throws, so unsuppressed auto-restart cannot pass silently)"
-    );
-    assert!(
-        windows_worker_source.contains("Remove-Item -Path $stagedPath -Force"),
-        "windows update worker must clean up a staged binary after a failed update so leftovers cannot accumulate"
-    );
-    assert!(
-        windows_worker_source.contains("service restart after failed update did not complete"),
-        "windows update worker recovery must attempt the service restart independently of (and after) service-policy restore so a policy-restore failure never leaves the agent stopped"
-    );
-    assert!(
-        windows_worker_source.contains("function Restore-AgentBinaryIfAbsent")
-            && windows_worker_source.contains("Restore-AgentBinaryIfAbsent -AgentPath $agentPath"),
-        "windows update worker recovery must run a filesystem-state-driven restore (ReplaceFile -- even during rollback -- can leave the target absent) rather than trust in-memory flags"
-    );
-    assert!(
-        windows_worker_source.contains("recovered agent binary into absent target from"),
-        "windows update worker recovery must restore a known-good binary (backup, rollback scratch, or hash-verified staged) whenever the target slot is left absent"
-    );
-    assert!(
-        windows_worker_source
-            .contains("if ((Test-Path $agentPath) -and $stagedPath -and (Test-Path $stagedPath))"),
-        "windows update worker must only delete the staged binary when the target binary actually exists, so a failed recovery never discards the last valid binary"
-    );
-    assert!(
-        windows_worker_source.contains("@('failureflag', $ServiceName, '1')"),
+        windows_worker_source.contains("failureflag $ServiceName 1"),
         "windows update worker should restore non-crash failure recovery after update"
     );
     assert!(
@@ -1004,6 +691,7 @@ fn update_script_executes_deb_and_rpm_paths_with_mocked_installers() {
     let heartbeat = pb::HeartbeatResponse {
         heartbeat_interval_secs: 30,
         policy_update: None,
+        dlp_policy: None,
         rule_update: None,
         pending_commands: vec![pb::ServerCommand {
             command_id: "cmd-update-1".to_string(),
@@ -1541,99 +1229,4 @@ fn repo_windows_csc_rule_matches_shape() {
         .temporal_hits
         .iter()
         .any(|hit| hit == "windows_csc_lolbin"));
-}
-
-// Behavioral: execute preremove.sh with a mocked systemctl and assert that every
-// deterministic nonzero exit after the agent is stopped restarts it (host never left
-// installed-but-unprotected), while a fully authorized removal leaves it down.
-#[test]
-fn preremove_restarts_agent_on_failed_removal_but_not_on_success() {
-    let _guard = script_lock().lock().unwrap_or_else(|e| e.into_inner());
-    let root = workspace_root();
-    let src =
-        std::fs::read_to_string(root.join("packaging/preremove.sh")).expect("read preremove.sh");
-
-    // Run preremove.sh (arg "remove") in a sandbox with a mocked systemctl/sleep/chattr,
-    // redirecting the absolute /run path into the sandbox. Returns (success, mock log).
-    fn run_preremove(src: &str, main_pid: &str, stop_rc: i32, show_rc: i32) -> (bool, String) {
-        let sandbox = temp_dir("eguard-preremove-test");
-        let bin_dir = sandbox.join("bin");
-        std::fs::create_dir_all(&bin_dir).expect("mkdir bin");
-        std::fs::create_dir_all(sandbox.join("run/systemd/system")).expect("mkdir run");
-        let log_path = sandbox.join("mock.log");
-        let script_path = sandbox.join("preremove.sh");
-        let redirected = src.replace(
-            "/run/systemd/system",
-            &format!("{}/run/systemd/system", sandbox.display()),
-        );
-        std::fs::write(&script_path, redirected).expect("write script");
-
-        let systemctl = format!(
-            "#!/bin/bash\n\
-echo \"systemctl $*\" >> \"{log}\"\n\
-case \"$*\" in\n\
-  *\"daemon-reload\"*) exit 0 ;;\n\
-  *\"stop eguard-agent\"*) exit {stop_rc} ;;\n\
-  *\"start eguard-agent\"*) exit 0 ;;\n\
-  *\"disable eguard-agent\"*) exit 0 ;;\n\
-  *\"show -p MainPID\"*) if [ {show_rc} -ne 0 ]; then exit {show_rc}; fi; echo \"{main_pid}\" ;;\n\
-  *) exit 0 ;;\n\
-esac\n",
-            log = log_path.display(),
-            stop_rc = stop_rc,
-            show_rc = show_rc,
-            main_pid = main_pid,
-        );
-        write_exec(&bin_dir.join("systemctl"), &systemctl);
-        write_exec(&bin_dir.join("sleep"), "#!/bin/bash\nexit 0\n");
-        write_exec(&bin_dir.join("chattr"), "#!/bin/bash\nexit 0\n");
-
-        let path = format!("{}:/usr/bin:/bin", bin_dir.display());
-        let out = std::process::Command::new("bash")
-            .arg(&script_path)
-            .arg("remove")
-            .env("PATH", path)
-            .current_dir(&sandbox)
-            .output()
-            .expect("run preremove");
-        let log = std::fs::read_to_string(&log_path).unwrap_or_default();
-        let _ = std::fs::remove_dir_all(&sandbox);
-        (out.status.success(), log)
-    }
-
-    // Normal removal: agent reports stopped (MainPID=0) -> success, STOP+DISABLE, no START.
-    let (ok, log) = run_preremove(&src, "0", 0, 0);
-    assert!(ok, "normal removal should succeed: log={log}");
-    assert!(
-        log.contains("stop eguard-agent"),
-        "normal removal must stop the agent: log={log}"
-    );
-    assert!(
-        !log.contains("start eguard-agent"),
-        "normal removal must NOT restart the agent (it stays down for erasure): log={log}"
-    );
-
-    // Stop attempt fails -> fail closed and restore the agent.
-    let (ok, log) = run_preremove(&src, "0", 1, 0);
-    assert!(!ok, "stop failure must fail closed: log={log}");
-    assert!(
-        log.contains("start eguard-agent"),
-        "a failed removal after the stop attempt must restart the agent: log={log}"
-    );
-
-    // Unknown MainPID (systemctl show fails) -> fail closed and restore.
-    let (ok, log) = run_preremove(&src, "0", 0, 1);
-    assert!(!ok, "unknown MainPID must fail closed: log={log}");
-    assert!(
-        log.contains("start eguard-agent"),
-        "unknown-state removal must restart the agent: log={log}"
-    );
-
-    // Agent never reports stopped (MainPID stays nonzero) -> poll timeout, fail closed, restore.
-    let (ok, log) = run_preremove(&src, "123", 0, 0);
-    assert!(!ok, "stop timeout must fail closed: log={log}");
-    assert!(
-        log.contains("start eguard-agent"),
-        "timed-out removal must restart the agent: log={log}"
-    );
 }

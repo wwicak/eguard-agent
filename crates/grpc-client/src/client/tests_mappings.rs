@@ -7,6 +7,28 @@ fn env_lock() -> &'static Mutex<()> {
 }
 
 #[test]
+fn dlp_event_mapping_preserves_redacted_detail() {
+    let event = EventEnvelope {
+        agent_id: "agent-dlp".to_string(),
+        event_type: "dlp_detection".to_string(),
+        severity: "high".to_string(),
+        rule_name: "id.nik".to_string(),
+        payload_json: r#"{"dlp":{"detections":[{"rule_id":"id.nik","action":"alert","redacted_evidence":"3174********0001"}]}}"#.to_string(),
+        created_at_unix: 42,
+    };
+    let mapped = to_pb_telemetry_event(&event);
+    assert_eq!(mapped.event_type, pb::EventType::DlpDetection as i32);
+    match mapped.detail {
+        Some(pb::telemetry_event::Detail::DlpDetection(detail)) => {
+            assert_eq!(detail.rule_id, "id.nik");
+            assert_eq!(detail.redacted_evidence, "3174********0001");
+            assert_eq!(detail.action, "alert");
+        }
+        other => panic!("expected DLP detail, got {other:?}"),
+    }
+}
+
+#[test]
 // AC-GRP-021 AC-GRP-022 AC-GRP-023
 fn event_type_mapping_supports_aliases_and_safe_default() {
     assert_eq!(map_event_type("process_exec"), pb::EventType::ProcessExec);

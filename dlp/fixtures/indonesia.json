@@ -1,0 +1,26 @@
+{
+  "positive": [
+    {"rule_id": "id.nik", "text": "NIK: 3174012301900001", "expected_matches": 1},
+    {"rule_id": "id.kk", "text": "Nomor Kartu Keluarga: 3174012301900002", "expected_matches": 1},
+    {"rule_id": "id.npwp", "text": "NPWP 12.345.678.9-012.345", "expected_matches": 1},
+    {"rule_id": "id.npwp.new", "text": "NPWP baru: 1234567890123456", "expected_matches": 1},
+    {"rule_id": "id.bpjs", "text": "Nomor peserta BPJS: 0001234567890", "expected_matches": 1},
+    {"rule_id": "id.phone", "text": "Telepon kantor: +628123456789", "expected_matches": 1},
+    {"rule_id": "id.rekening", "text": "Nomor rekening: 123456789012", "expected_matches": 1},
+    {"rule_id": "id.passport", "text": "Nomor paspor: A1234567", "expected_matches": 1},
+    {"rule_id": "id.efin", "text": "e-FIN wajib pajak: 1234567890", "expected_matches": 1},
+    {"rule_id": "id.nib", "text": "NIB perusahaan: 9123456789012", "expected_matches": 1},
+    {"rule_id": "id.kartu_kredit", "text": "Credit card: 4111111111111111", "expected_matches": 1},
+    {"rule_id": "id.ktp.cluster", "text": "NIK 3174012301900001, nama Budi, alamat Jalan Melati, tanggal lahir 1 Januari 1990", "expected_matches": 1}
+  ],
+  "negative": [
+    {"rule_id": "id.nik", "text": "Invoice order ID: 3174012301900001", "expected_matches": 0},
+    {"rule_id": "id.rekening", "text": "Order number: 123456789012", "expected_matches": 0},
+    {"rule_id": "id.bpjs", "text": "Random numeric value: 0001234567890", "expected_matches": 0},
+    {"rule_id": "id.passport", "text": "Asset code A1234567 without sensitive-document context", "expected_matches": 0},
+    {"rule_id": "id.kartu_kredit", "text": "Test number: 4111111111111112", "expected_matches": 0},
+    {"rule_id": "id.efin", "text": "Timestamp-like value 1234567890 without tax context", "expected_matches": 0},
+    {"rule_id": "id.ktp.cluster", "text": "NIK 3174012301900001 only", "expected_matches": 0},
+    {"rule_id": "id.phone", "text": "Code 08123456789 in a build artifact", "expected_matches": 0}
+  ]
+}

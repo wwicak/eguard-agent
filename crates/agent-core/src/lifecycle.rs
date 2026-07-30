@@ -1,7 +1,6 @@
 mod async_workers;
 mod baseline;
 mod bundle_support;
-mod circuit_breaker;
 mod compliance;
 mod compliance_platform;
 mod constants;
@@ -27,7 +26,6 @@ mod tick;
 mod timing;
 mod tray_integration;
 mod types;
-mod uninstall_auth;
 
 mod bundle_path;
 mod command_control_pipeline;
@@ -40,13 +38,14 @@ mod rule_bundle_loader;
 mod rule_bundle_verify;
 mod telemetry_pipeline;
 mod threat_intel_pipeline;
+mod ztna_tunnel;
 
 #[allow(unused_imports)]
 pub use response_playbook::PlaybookEngine;
 pub use runtime::AgentRuntime;
 pub(super) use runtime::BackgroundReloadResult;
 #[allow(unused_imports)]
-pub(crate) use storage_hygiene::{resolve_logs_dir, ManagedLogWriter};
+pub(crate) use storage_hygiene::{prepare_managed_log_file, resolve_logs_dir};
 pub use types::RuntimeObservabilitySnapshot;
 
 #[allow(unused_imports)]
@@ -140,7 +139,7 @@ pub(crate) fn shared_env_var_lock() -> &'static std::sync::Mutex<()> {
 #[allow(clippy::field_reassign_with_default)]
 mod tests;
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 #[allow(clippy::field_reassign_with_default)]
 mod tests_ebpf_policy;
 
@@ -150,17 +149,17 @@ mod tests_baseline_seed_policy;
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)]
 mod tests_det_stub_completion;
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests_ebpf_memory;
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)]
 mod tests_network_profile_push;
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 #[allow(clippy::field_reassign_with_default)]
 mod tests_observability;
 #[cfg(test)]
 mod tests_pkg_contract;
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 #[allow(clippy::field_reassign_with_default)]
 mod tests_resource_policy;
 #[cfg(test)]

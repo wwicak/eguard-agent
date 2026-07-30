@@ -31,7 +31,6 @@ fn clear_env() {
         "EGUARD_AUTONOMOUS_RESPONSE",
         "EGUARD_RESPONSE_DRY_RUN",
         "EGUARD_RESPONSE_MAX_KILLS_PER_MINUTE",
-        "EGUARD_RESPONSE_MAX_QUARANTINES_PER_MINUTE",
         "EGUARD_RESPONSE_AUTO_ISOLATION_ENABLED",
         "EGUARD_RESPONSE_AUTO_ISOLATION_MIN_INCIDENTS",
         "EGUARD_RESPONSE_AUTO_ISOLATION_WINDOW_SECS",
@@ -82,7 +81,7 @@ fn file_config_is_loaded() {
     let mut f = std::fs::File::create(&path).expect("create file");
     writeln!(
             f,
-            "[agent]\nserver_addr=\"10.0.0.1:50052\"\nmode=\"active\"\n[transport]\nmode=\"grpc\"\n[response]\nautonomous_response=true\ndry_run=true\n[response.high]\nkill=true\nquarantine=false\ncapture_script=true\n[response.rate_limit]\nmax_kills_per_minute=21\nmax_quarantines_per_minute=7\n[response.auto_isolation]\nenabled=true\nmin_incidents_in_window=4\nwindow_secs=180\nmax_isolations_per_hour=6\n[storage]\nbackend=\"memory\"\ncap_mb=10\n[detection]\nbundle_public_key=\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\""
+            "[agent]\nserver_addr=\"10.0.0.1:50052\"\nmode=\"active\"\n[transport]\nmode=\"grpc\"\n[response]\nautonomous_response=true\ndry_run=true\n[response.high]\nkill=true\nquarantine=false\ncapture_script=true\n[response.rate_limit]\nmax_kills_per_minute=21\n[response.auto_isolation]\nenabled=true\nmin_incidents_in_window=4\nwindow_secs=180\nmax_isolations_per_hour=6\n[storage]\nbackend=\"memory\"\ncap_mb=10\n[detection]\nbundle_public_key=\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\""
         )
         .expect("write file");
 
@@ -97,7 +96,6 @@ fn file_config_is_loaded() {
     assert!(!cfg.response.high.quarantine);
     assert!(cfg.response.high.capture_script);
     assert_eq!(cfg.response.max_kills_per_minute, 21);
-    assert_eq!(cfg.response.max_quarantines_per_minute, 7);
     assert!(cfg.response.auto_isolation.enabled);
     assert_eq!(cfg.response.auto_isolation.min_incidents_in_window, 4);
     assert_eq!(cfg.response.auto_isolation.window_secs, 180);
@@ -258,7 +256,6 @@ fn env_overrides_file_config() {
     std::env::set_var("EGUARD_SERVER_ADDR_FORCE", "true");
     std::env::set_var("EGUARD_TRANSPORT", "http");
     std::env::set_var("EGUARD_AUTONOMOUS_RESPONSE", "true");
-    std::env::set_var("EGUARD_RESPONSE_MAX_QUARANTINES_PER_MINUTE", "8");
     std::env::set_var("EGUARD_RESPONSE_AUTO_ISOLATION_ENABLED", "true");
     std::env::set_var("EGUARD_RESPONSE_AUTO_ISOLATION_MIN_INCIDENTS", "5");
     let cfg = AgentConfig::load().expect("load config");
@@ -266,7 +263,6 @@ fn env_overrides_file_config() {
     assert_eq!(cfg.server_addr, "10.9.9.9:50052");
     assert_eq!(cfg.transport_mode, "http");
     assert!(cfg.response.autonomous_response);
-    assert_eq!(cfg.response.max_quarantines_per_minute, 8);
     assert!(cfg.response.auto_isolation.enabled);
     assert_eq!(cfg.response.auto_isolation.min_incidents_in_window, 5);
 
@@ -753,6 +749,23 @@ fn eguard_server_fallback_env_is_used_when_primary_is_absent() {
     let mut cfg = AgentConfig::default();
     cfg.apply_env_overrides();
     assert_eq!(cfg.server_addr, "10.2.3.4:50052");
+
+    clear_env();
+}
+
+#[test]
+fn dlp_environment_overrides_are_loaded() {
+    let _guard = env_lock().lock().expect("env lock");
+    clear_env();
+    std::env::set_var("EGUARD_DLP_ENABLED", "true");
+    std::env::set_var("EGUARD_DLP_RULES_PATH", "/opt/eguard/dlp.json");
+    std::env::set_var("EGUARD_DLP_MAX_FILE_SCAN_SIZE_MB", "25");
+
+    let mut cfg = AgentConfig::default();
+    cfg.apply_env_overrides();
+    assert!(cfg.dlp_enabled);
+    assert_eq!(cfg.dlp_rules_path, "/opt/eguard/dlp.json");
+    assert_eq!(cfg.dlp_max_file_scan_size_mb, 25);
 
     clear_env();
 }
