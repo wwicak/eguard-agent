@@ -8,7 +8,7 @@ use tracing::warn;
 
 use crate::types::EventEnvelope;
 
-pub const DEFAULT_BUFFER_CAP_BYTES: usize = 50 * 1024 * 1024;
+pub const DEFAULT_BUFFER_CAP_BYTES: usize = 100 * 1024 * 1024;
 const OFFLINE_META_ROW_ID: i64 = 1;
 
 #[derive(Debug)]
@@ -111,6 +111,8 @@ impl SqliteBuffer {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 agent_id TEXT NOT NULL,
                 event_type TEXT NOT NULL,
+                severity TEXT NOT NULL DEFAULT '',
+                rule_name TEXT NOT NULL DEFAULT '',
                 payload_json TEXT NOT NULL,
                 created_at_unix INTEGER NOT NULL,
                 size_bytes INTEGER NOT NULL
@@ -127,6 +129,25 @@ impl SqliteBuffer {
             ",
         )
         .context("failed initializing sqlite schema")?;
+        let columns = {
+            let mut stmt = conn.prepare("PRAGMA table_info(offline_events)")?;
+            let columns = stmt
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<rusqlite::Result<std::collections::HashSet<_>>>()?;
+            columns
+        };
+        if !columns.contains("severity") {
+            conn.execute(
+                "ALTER TABLE offline_events ADD COLUMN severity TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
+        if !columns.contains("rule_name") {
+            conn.execute(
+                "ALTER TABLE offline_events ADD COLUMN rule_name TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
 
         Ok(Self {
             conn,
@@ -139,8 +160,16 @@ impl SqliteBuffer {
         let size = estimate_event_size(&event) as i64;
         let tx = self.conn.transaction()?;
         tx.execute(
-            "INSERT INTO offline_events(agent_id,event_type,payload_json,created_at_unix,size_bytes) VALUES(?1,?2,?3,?4,?5)",
-            params![event.agent_id, event.event_type, event.payload_json, event.created_at_unix, size],
+            "INSERT INTO offline_events(agent_id,event_type,severity,rule_name,payload_json,created_at_unix,size_bytes) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+            params![
+                event.agent_id,
+                event.event_type,
+                event.severity,
+                event.rule_name,
+                event.payload_json,
+                event.created_at_unix,
+                size
+            ],
         )?;
         tx.execute(
             "UPDATE offline_buffer_meta SET total_bytes = total_bytes + ?1 WHERE id = ?2",
@@ -152,7 +181,7 @@ impl SqliteBuffer {
 
     pub fn drain_batch(&mut self, max_items: usize) -> Result<Vec<EventEnvelope>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, agent_id, event_type, payload_json, created_at_unix, size_bytes FROM offline_events ORDER BY id ASC LIMIT ?1",
+            "SELECT id, agent_id, event_type, severity, rule_name, payload_json, created_at_unix, size_bytes FROM offline_events ORDER BY id ASC LIMIT ?1",
         )?;
 
         let rows = stmt.query_map(params![max_items as i64], |row| {
@@ -161,12 +190,12 @@ impl SqliteBuffer {
                 EventEnvelope {
                     agent_id: row.get::<_, String>(1)?,
                     event_type: row.get::<_, String>(2)?,
-                    severity: String::new(),
-                    rule_name: String::new(),
-                    payload_json: row.get::<_, String>(3)?,
-                    created_at_unix: row.get::<_, i64>(4)?,
+                    severity: row.get::<_, String>(3)?,
+                    rule_name: row.get::<_, String>(4)?,
+                    payload_json: row.get::<_, String>(5)?,
+                    created_at_unix: row.get::<_, i64>(6)?,
                 },
-                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(7)?,
             ))
         })?;
 

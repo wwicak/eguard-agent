@@ -1,6 +1,7 @@
 mod async_workers;
 mod baseline;
 mod bundle_support;
+mod circuit_breaker;
 mod compliance;
 mod compliance_platform;
 mod constants;
@@ -26,6 +27,7 @@ mod tick;
 mod timing;
 mod tray_integration;
 mod types;
+mod uninstall_auth;
 
 mod bundle_path;
 mod command_control_pipeline;
@@ -45,7 +47,7 @@ pub use response_playbook::PlaybookEngine;
 pub use runtime::AgentRuntime;
 pub(super) use runtime::BackgroundReloadResult;
 #[allow(unused_imports)]
-pub(crate) use storage_hygiene::{prepare_managed_log_file, resolve_logs_dir};
+pub(crate) use storage_hygiene::{resolve_logs_dir, ManagedLogWriter};
 pub use types::RuntimeObservabilitySnapshot;
 
 #[allow(unused_imports)]

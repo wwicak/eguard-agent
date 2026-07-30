@@ -13,6 +13,7 @@ serde.workspace = true
 serde_json.workspace = true
 dirs.workspace = true
 grpc-client = { path = "../grpc-client" }
+agent-version = { path = "../agent-version" }
 detection = { path = "../detection" }
 response = { path = "../response" }
 compliance = { path = "../compliance" }
@@ -43,3 +44,7 @@ windows-service.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 platform-macos = { path = "../platform-macos" }
 libc.workspace = true
+
+[dev-dependencies]
+response = { path = "../response", features = ["test-quarantine-dir"] }
+tempfile = "3"

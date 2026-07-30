@@ -59,6 +59,89 @@ fn sqlite_buffer_roundtrip() {
 }
 
 #[test]
+fn dlp_detection_survives_offline_restart_without_raw_data() {
+    let unique = format!(
+        "eguard-dlp-offline-reconnect-{}.db",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    );
+    let path = std::env::temp_dir().join(unique);
+    let path_str = path.to_string_lossy().into_owned();
+    let payload = r#"{"dlp":{"detections":[{"rule_id":"id.nik","action":"alert","redacted_evidence":"3174********0001"}]}}"#;
+
+    {
+        let mut offline = SqliteBuffer::new(&path_str, 4096).expect("open offline buffer");
+        offline
+            .enqueue(EventEnvelope {
+                agent_id: "agent-dlp".to_string(),
+                event_type: "dlp_detection".to_string(),
+                severity: "high".to_string(),
+                rule_name: "id.nik".to_string(),
+                payload_json: payload.to_string(),
+                created_at_unix: 1_700_000_000,
+            })
+            .expect("buffer DLP detection");
+    }
+
+    let mut reconnected = SqliteBuffer::new(&path_str, 4096).expect("reopen buffer");
+    let drained = reconnected.drain_batch(10).expect("drain after reconnect");
+    assert_eq!(drained.len(), 1);
+    assert_eq!(drained[0].event_type, "dlp_detection");
+    assert_eq!(drained[0].rule_name, "id.nik");
+    assert_eq!(drained[0].payload_json, payload);
+    assert!(!drained[0].payload_json.contains("3174000000000001"));
+    assert!(!drained[0].payload_json.contains("C:\\Users"));
+    assert_eq!(reconnected.pending_count().expect("pending count"), 0);
+
+    drop(reconnected);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(format!("{}-wal", path.to_string_lossy()));
+    let _ = std::fs::remove_file(format!("{}-shm", path.to_string_lossy()));
+}
+
+#[test]
+fn sqlite_buffer_migrates_legacy_event_schema() {
+    let unique = format!(
+        "eguard-buffer-legacy-migration-{}.db",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    );
+    let path = std::env::temp_dir().join(unique);
+    let conn = rusqlite::Connection::open(&path).expect("open legacy database");
+    conn.execute_batch(
+        "CREATE TABLE offline_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at_unix INTEGER NOT NULL,
+            size_bytes INTEGER NOT NULL
+        );
+        INSERT INTO offline_events(agent_id,event_type,payload_json,created_at_unix,size_bytes)
+        VALUES('legacy-agent','dlp_detection','{}',1700000000,64);",
+    )
+    .expect("create legacy schema");
+    drop(conn);
+
+    let path_str = path.to_string_lossy().into_owned();
+    let mut migrated = SqliteBuffer::new(&path_str, 4096).expect("migrate legacy schema");
+    let drained = migrated.drain_batch(1).expect("drain migrated event");
+    assert_eq!(drained.len(), 1);
+    assert_eq!(drained[0].event_type, "dlp_detection");
+    assert_eq!(drained[0].severity, "");
+    assert_eq!(drained[0].rule_name, "");
+
+    drop(migrated);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(format!("{}-wal", path.to_string_lossy()));
+    let _ = std::fs::remove_file(format!("{}-shm", path.to_string_lossy()));
+}
+
+#[test]
 // AC-GRP-083 AC-RES-024
 fn memory_buffer_drain_preserves_fifo_order() {
     let mut b = OfflineBuffer::new(4096);
