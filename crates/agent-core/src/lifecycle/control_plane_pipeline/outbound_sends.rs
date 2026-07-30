@@ -1,7 +1,7 @@
 use baseline::BaselineStatus;
 use grpc_client::{
-    ComplianceCheckEnvelope, HeartbeatAgentStatusEnvelope, HeartbeatResourceUsageEnvelope,
-    HeartbeatRuntimeEnvelope, InventoryEnvelope,
+    ComplianceCheckEnvelope, DlpStatusEnvelope, HeartbeatAgentStatusEnvelope,
+    HeartbeatResourceUsageEnvelope, HeartbeatRuntimeEnvelope, InventoryEnvelope,
 };
 use tracing::debug;
 
@@ -136,6 +136,19 @@ impl AgentRuntime {
                 events_per_second: 0.0,
             },
             buffered_events: snapshot.pending_event_count as i64,
+            dlp_status: DlpStatusEnvelope {
+                enabled: self.config.dlp_enabled,
+                scanner_loaded: self.dlp_scanner.is_some(),
+                state: if !self.config.dlp_enabled {
+                    "disabled"
+                } else if self.dlp_scanner.is_some() {
+                    "active"
+                } else {
+                    "degraded"
+                }
+                .to_string(),
+                capabilities: vec!["file_write".to_string(), "audit".to_string(), "alert".to_string()],
+            },
         }
     }
 

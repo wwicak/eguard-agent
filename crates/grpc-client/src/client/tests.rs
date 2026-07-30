@@ -690,6 +690,7 @@ async fn send_heartbeat_http_includes_runtime_status_and_resource_usage() {
                     events_per_second: 14.5,
                 },
                 buffered_events: 9,
+                dlp_status: Default::default(),
             }),
         )
         .await
@@ -2173,6 +2174,16 @@ async fn send_heartbeat_grpc_captures_agent_and_compliance_and_config_version() 
                     events_per_second: 42.0,
                 },
                 buffered_events: 7,
+                dlp_status: crate::types::DlpStatusEnvelope {
+                    enabled: true,
+                    scanner_loaded: true,
+                    state: "active".to_string(),
+                    capabilities: vec![
+                        "file_write".to_string(),
+                        "alert".to_string(),
+                        "block".to_string(),
+                    ],
+                },
             }),
         )
         .await
@@ -2205,6 +2216,9 @@ async fn send_heartbeat_grpc_captures_agent_and_compliance_and_config_version() 
                 .map(|r| r.memory_rss_bytes),
             Some(123_456)
         );
+        let dlp = heartbeat.dlp_status.as_ref().expect("DLP status");
+        assert_eq!(dlp.state, "active");
+        assert_eq!(dlp.capabilities, vec!["file_write", "alert"]);
     }
 
     server.shutdown().await;

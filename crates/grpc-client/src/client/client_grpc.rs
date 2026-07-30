@@ -138,7 +138,7 @@ impl Client {
                         active_ioc_entries: runtime.status.active_ioc_entries,
                         last_detection: runtime.status.last_detection.clone(),
                         last_response_action: runtime.status.last_response_action.clone(),
-                        dlp_status: None,
+                        dlp_status: Some(dlp_status_from_runtime(runtime)),
                     }),
                     resource_usage: runtime.map(|runtime| pb::ResourceUsage {
                         cpu_percent: runtime.resource_usage.cpu_percent,
@@ -158,7 +158,7 @@ impl Client {
                     buffered_events: runtime.map(|r| r.buffered_events).unwrap_or(0),
                     ztna_sessions: Vec::new(),
                     last_bookmark_version,
-                    dlp_status: None,
+                    dlp_status: runtime.map(dlp_status_from_runtime),
                     compliance_status: compliance_status.to_string(),
                     sent_at_unix: now_unix(),
                 })
@@ -608,6 +608,23 @@ impl Client {
             })
         })
         .await
+    }
+}
+
+fn dlp_status_from_runtime(runtime: &HeartbeatRuntimeEnvelope) -> pb::DlpStatus {
+    let capabilities = runtime
+        .dlp_status
+        .capabilities
+        .iter()
+        .filter(|value| matches!(value.as_str(), "file_write" | "audit" | "alert"))
+        .cloned()
+        .collect();
+    pb::DlpStatus {
+        bundle_version: String::new(),
+        bundle_sha256: String::new(),
+        capabilities,
+        state: runtime.dlp_status.state.clone(),
+        last_error: String::new(),
     }
 }
 

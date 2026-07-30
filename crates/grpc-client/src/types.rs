@@ -231,6 +231,18 @@ pub struct HeartbeatResourceUsageEnvelope {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct DlpStatusEnvelope {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub scanner_loaded: bool,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct HeartbeatRuntimeEnvelope {
     #[serde(default)]
     pub status: HeartbeatAgentStatusEnvelope,
@@ -238,6 +250,8 @@ pub struct HeartbeatRuntimeEnvelope {
     pub resource_usage: HeartbeatResourceUsageEnvelope,
     #[serde(default)]
     pub buffered_events: i64,
+    #[serde(default)]
+    pub dlp_status: DlpStatusEnvelope,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

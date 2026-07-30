@@ -17,9 +17,9 @@ pub use retry::RetryPolicy;
 pub use types::{
     ArtifactUploadEnvelope, ArtifactUploadResult, BaselineProfileEnvelope, CampaignAlert,
     CampaignAlertResponse, CertificatePolicyEnvelope, CommandEnvelope, ComplianceCheckEnvelope,
-    ComplianceEnvelope, EnrollmentEnvelope, EnrollmentResultEnvelope, EventEnvelope,
-    FleetBaselineEnvelope, HeartbeatAgentStatusEnvelope, HeartbeatResourceUsageEnvelope,
-    HeartbeatRuntimeEnvelope, InventoryEnvelope, IocSignal, IocSignalBatch, PolicyEnvelope,
-    ResponseEnvelope, ServerState, ThreatIntelVersionEnvelope, TlsConfig, TransportMode,
-    ZtnaBookmarkEnvelope, ZtnaBookmarkListEnvelope,
+    ComplianceEnvelope, DlpStatusEnvelope, EnrollmentEnvelope, EnrollmentResultEnvelope,
+    EventEnvelope, FleetBaselineEnvelope, HeartbeatAgentStatusEnvelope,
+    HeartbeatResourceUsageEnvelope, HeartbeatRuntimeEnvelope, InventoryEnvelope, IocSignal,
+    IocSignalBatch, PolicyEnvelope, ResponseEnvelope, ServerState, ThreatIntelVersionEnvelope,
+    TlsConfig, TransportMode, ZtnaBookmarkEnvelope, ZtnaBookmarkListEnvelope,
 };

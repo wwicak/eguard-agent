@@ -253,6 +253,7 @@ mod tests {
                 },
                 resource_usage: HeartbeatResourceUsageEnvelope::default(),
                 buffered_events: 1,
+                dlp_status: Default::default(),
             },
         }
     }
