@@ -68,7 +68,7 @@ pub struct DlpState {
 
 impl DlpState {
     pub fn load_default() -> Result<Self> {
-        let mut state = read_json_or_default(dlp_state_path()?)?;
+        let mut state: Self = read_json_or_default(dlp_state_path()?)?;
         state.status = normalized_dlp_status(&state.status, state.enabled, state.scanner_loaded);
         Ok(state)
     }
@@ -413,6 +413,11 @@ impl TrayPreferences {
     pub fn acknowledge_dlp_detection(&mut self, detected_at_unix: i64) {
         self.acknowledged_dlp_detection_unix = Some(detected_at_unix);
     }
+
+    pub fn is_dlp_detection_acknowledged(&self, detected_at_unix: i64) -> bool {
+        self.acknowledged_dlp_detection_unix
+            .is_some_and(|acknowledged| acknowledged >= detected_at_unix)
+    }
 }
 
 pub fn snapshot_session_cache() -> Result<SessionCacheSnapshot> {
@@ -613,7 +618,7 @@ mod tests {
     use super::{
         bookmark_cache_path, dlp_state_path, normalized_dlp_status, snapshot_bookmark_cache,
         wait_for_bookmark_cache_update, write_json, BookmarkEntry, BookmarkState, DlpState,
-        TrayCommand, TrayCommandQueue,
+        TrayCommand, TrayCommandQueue, TrayPreferences,
     };
 
     #[test]
@@ -641,6 +646,17 @@ mod tests {
         assert!(state.scanner_loaded);
         assert_eq!(state.max_file_scan_size_mb, 10);
         assert_eq!(state.status, "active");
+    }
+
+    #[test]
+    fn dlp_acknowledgement_only_covers_same_or_older_detection() {
+        let mut preferences = TrayPreferences::default();
+        assert!(!preferences.is_dlp_detection_acknowledged(100));
+
+        preferences.acknowledge_dlp_detection(100);
+        assert!(preferences.is_dlp_detection_acknowledged(99));
+        assert!(preferences.is_dlp_detection_acknowledged(100));
+        assert!(!preferences.is_dlp_detection_acknowledged(101));
     }
 
     #[test]

@@ -270,9 +270,8 @@ fn load_ui_state() -> UiState {
     let dlp = load_or_default::<DlpState>("DLP state", &mut errors);
     let dlp_acknowledged = TrayPreferences::load_default()
         .ok()
-        .and_then(|preferences| preferences.acknowledged_dlp_detection_unix)
         .zip(dlp.last_detection_unix)
-        .is_some_and(|(acknowledged, detected)| acknowledged >= detected);
+        .is_some_and(|(preferences, detected)| preferences.is_dlp_detection_acknowledged(detected));
     let diagnostics = build_diagnostics();
     let stale = diagnostics.iter().any(|diag| {
         diag.name == "Sessions" && diag.age_seconds.map(|age| age > 300).unwrap_or(false)
@@ -878,7 +877,7 @@ window.__EGUARD_SET_STATE = function(s){
   const dlpStatus=String(dlp.status||'disabled').toLowerCase();
   const lastDetection=dlp.last_detection_unix ? new Date(Number(dlp.last_detection_unix)*1000).toLocaleString() : 'None';
   const dlpRows=[['Status',dlpStatus],['Scanner enabled',dlp.enabled?'Yes':'No'],['Scanner loaded',dlp.scanner_loaded?'Yes':'No'],['Max file scan size',String(dlp.max_file_scan_size_mb||0)+' MB'],['Last detection',lastDetection],['Last rule',dlp.last_rule_id||'None']];
-  const acknowledge = dlp.last_detection_unix && !s.dlp_acknowledged ? '<button onclick="acknowledgeDlp('+Number(dlp.last_detection_unix)+')">Acknowledge local alert</button>' : '';
+  const acknowledge = dlp.last_detection_unix && !s.dlp_acknowledged ? '<div class="errorbox"><b>DLP alert detected</b><br><span class="muted">Rule '+esc(dlp.last_rule_id||'unknown')+' · '+esc(lastDetection)+'</span><br><button onclick="acknowledgeDlp('+Number(dlp.last_detection_unix)+')">Acknowledge local alert</button></div>' : '';
   document.getElementById('deviceinfo').innerHTML='<div class="device-grid">'+deviceRows.map(r=>'<div class="detail-key">'+esc(r[0])+'</div><div>'+esc(r[1]||'Unknown')+'</div>').join('')+'</div><div class="device-section"><h3>Data Loss Prevention</h3><div class="posture-summary">Status is local only; document content and evidence stay on the endpoint.</div>'+table(dlpRows.map(r=>'<tr><td><b>'+esc(r[0])+'</b></td><td>'+esc(r[1])+'</td></tr>'),'DLP state unavailable.')+acknowledge+'</div><div class="device-section"><h3>Agent Posture</h3><div class="posture-summary">'+esc(d.posture_summary||'Local posture unavailable')+'</div>'+table(postureRows,'No local posture checks available.')+'<div class="muted" style="margin-top:8px">These are local health checks, not a server compliance attestation.</div></div>';
   document.getElementById('diag').innerHTML = '<h3>Launch Requests</h3>' + table((s.pending_requests||[]).map(r => '<tr class="'+((String(r.status).toLowerCase()==='launch_failed')?'':'app-pending')+'"><td><b>'+esc(r.app_id)+'</b><div class="muted">'+esc(r.target)+'</div></td><td>'+esc(r.status)+'</td><td>'+esc(r.message)+'</td></tr>'), 'No launch requests.') + '<h3>State Files</h3>' + table((s.diagnostics||[]).map(d => '<tr><td><b>'+esc(d.name)+'</b><div class="muted">'+esc(d.path)+'</div></td><td>'+ (d.ok ? 'OK' : 'Missing/Error') +'</td><td>'+age(d.age_seconds)+'</td><td>'+esc(d.detail)+'</td></tr>'), 'No diagnostics.');
   const oldLogScroll = Array.from(document.querySelectorAll('#logbox pre')).map(p => p.scrollTop);
@@ -893,4 +892,16 @@ send({type:'refresh'});
 </body>
 </html>"#
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn manager_html_contains_local_dlp_alert_and_acknowledge_action() {
+        let html = super::manager_html();
+        assert!(html.contains("DLP alert detected"));
+        assert!(html.contains("Acknowledge local alert"));
+        assert!(html
+            .contains("Status is local only; document content and evidence stay on the endpoint."));
+    }
 }

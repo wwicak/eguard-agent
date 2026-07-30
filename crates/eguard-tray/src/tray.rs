@@ -1343,6 +1343,8 @@ mod tests {
                 scanner_loaded: false,
                 max_file_scan_size_mb: 10,
                 status: "degraded".to_string(),
+                last_detection_unix: None,
+                last_rule_id: None,
             }),
             "DLP: Degraded"
         );

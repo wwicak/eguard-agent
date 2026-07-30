@@ -742,8 +742,9 @@ mod tests {
     use std::fs;
 
     use super::{
-        bookmark_state_path, command_queue_path, read_json_or_default, session_state_path,
-        BookmarkState, SessionState, TrayCommand, TrayCommandQueue,
+        bookmark_state_path, command_queue_path, dlp_state_path, read_json_or_default,
+        session_state_path, BookmarkState, DlpTrayState, SessionState, TrayCommand,
+        TrayCommandQueue,
     };
     use crate::config::AgentConfig;
     use crate::lifecycle::{shared_env_var_lock, AgentRuntime};
@@ -776,6 +777,41 @@ mod tests {
         assert_eq!(state.sessions.len(), 1);
         assert_eq!(state.sessions[0].session_id, "session-123");
         assert_eq!(state.sessions[0].app_id, "rdp-prod");
+    }
+
+    #[tokio::test]
+    async fn sync_tray_state_writes_privacy_safe_dlp_bridge() {
+        let _guard = shared_env_var_lock().lock().expect("env lock");
+        let tray_dir = std::env::temp_dir().join("eguard-agent-tray-sync-dlp");
+        let _ = fs::remove_dir_all(&tray_dir);
+        std::env::set_var("EGUARD_TRAY_DATA_DIR", &tray_dir);
+
+        let mut cfg = AgentConfig::default();
+        cfg.dlp_enabled = true;
+        cfg.dlp_max_file_scan_size_mb = 10;
+        let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+        runtime.last_dlp_detection = Some((1_700_000_001, "id.nik".to_string()));
+
+        runtime
+            .sync_tray_state(1_700_000_100)
+            .await
+            .expect("sync tray state");
+
+        let path = dlp_state_path().expect("DLP path");
+        let raw = fs::read_to_string(&path).expect("read raw DLP state");
+        let state: DlpTrayState = serde_json::from_str(&raw).expect("parse DLP state");
+        assert!(state.enabled);
+        assert!(!state.scanner_loaded);
+        assert_eq!(state.status, "degraded");
+        assert_eq!(state.last_detection_unix, Some(1_700_000_001));
+        assert_eq!(state.last_rule_id.as_deref(), Some("id.nik"));
+
+        for forbidden in ["content", "path", "evidence", "sha256", "hash"] {
+            assert!(
+                !raw.to_ascii_lowercase().contains(forbidden),
+                "leaked {forbidden}"
+            );
+        }
     }
 
     #[tokio::test]
