@@ -93,16 +93,6 @@ struct PamLaunchState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct DlpTrayState {
-    enabled: bool,
-    scanner_loaded: bool,
-    max_file_scan_size_mb: usize,
-    status: String,
-    last_detection_unix: Option<i64>,
-    last_rule_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 struct PamLaunchEntry {
     checkout_id: i64,
     #[serde(default)]
@@ -156,7 +146,6 @@ impl AgentRuntime {
 
     pub(super) async fn sync_tray_state(&mut self, now_unix: i64) -> Result<()> {
         self.apply_tray_commands().await?;
-        self.write_tray_dlp_state()?;
         // Avoid control-plane I/O on every agent tick when ZTNA is disabled.
         // Besides being unnecessary, probing the controller here makes the
         // runtime tick latency depend on network connection failure/timeout.
@@ -330,30 +319,6 @@ impl AgentRuntime {
     pub(super) async fn write_tray_session_state(&self, now_unix: i64) -> Result<()> {
         let sessions = self.collect_tray_sessions(now_unix).await;
         write_json(&session_state_path()?, &SessionState { sessions })
-    }
-
-    fn write_tray_dlp_state(&self) -> Result<()> {
-        let status = if !self.config.dlp_enabled {
-            "disabled"
-        } else if self.dlp_scanner.is_some() {
-            "active"
-        } else {
-            "degraded"
-        };
-        write_json(
-            &dlp_state_path()?,
-            &DlpTrayState {
-                enabled: self.config.dlp_enabled,
-                scanner_loaded: self.dlp_scanner.is_some(),
-                max_file_scan_size_mb: self.config.dlp_max_file_scan_size_mb,
-                status: status.to_string(),
-                last_detection_unix: self.last_dlp_detection.as_ref().map(|(at, _)| *at),
-                last_rule_id: self
-                    .last_dlp_detection
-                    .as_ref()
-                    .map(|(_, rule_id)| rule_id.clone()),
-            },
-        )
     }
 
     async fn reconcile_pam_runtime_state(&mut self) -> Result<()> {
@@ -586,10 +551,6 @@ fn command_queue_path() -> Result<PathBuf> {
 
 fn pam_launch_state_path() -> Result<PathBuf> {
     Ok(tray_data_root()?.join("ztna-pam-launches.json"))
-}
-
-fn dlp_state_path() -> Result<PathBuf> {
-    Ok(tray_data_root()?.join("dlp-state.json"))
 }
 
 fn tray_data_root() -> Result<PathBuf> {

@@ -63,19 +63,6 @@ impl AgentConfig {
     }
 
     fn apply_env_detection(&mut self) {
-        if let Some(v) = env_non_empty("EGUARD_DLP_RULES_PATH") {
-            self.dlp_rules_path = v;
-        }
-        if let Some(v) = env_non_empty("EGUARD_DLP_ENABLED") {
-            if let Ok(parsed) = v.parse::<bool>() {
-                self.dlp_enabled = parsed;
-            }
-        }
-        if let Some(v) = env_non_empty("EGUARD_DLP_MAX_FILE_SCAN_SIZE_MB") {
-            if let Ok(parsed) = v.parse::<usize>() {
-                self.dlp_max_file_scan_size_mb = parsed.max(1);
-            }
-        }
         if let Some(v) = env_non_empty("EGUARD_BUNDLE_PATH") {
             self.detection_bundle_path = v;
         }
@@ -253,8 +240,14 @@ impl AgentConfig {
         if let Ok(v) = std::env::var("EGUARD_RESPONSE_DRY_RUN") {
             self.response.dry_run = parse_bool(&v);
         }
+        if let Ok(v) = std::env::var("EGUARD_RESPONSE_ALLOW_REMOTE_UNINSTALL") {
+            self.response.allow_remote_uninstall = parse_bool(&v);
+        }
         if let Some(v) = env_usize("EGUARD_RESPONSE_MAX_KILLS_PER_MINUTE") {
             self.response.max_kills_per_minute = v;
+        }
+        if let Some(v) = env_usize("EGUARD_RESPONSE_MAX_QUARANTINES_PER_MINUTE") {
+            self.response.max_quarantines_per_minute = v;
         }
         if let Ok(v) = std::env::var("EGUARD_RESPONSE_AUTO_ISOLATION_ENABLED") {
             self.response.auto_isolation.enabled = parse_bool(&v);

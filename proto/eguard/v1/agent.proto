@@ -8,7 +8,6 @@ import "eguard/v1/telemetry.proto";
 import "eguard/v1/compliance.proto";
 import "eguard/v1/command.proto";
 import "eguard/v1/response.proto";
-import "eguard/v1/ztna.proto";
 
 service AgentControlService {
   rpc Ping(PingRequest) returns (PingResponse);
@@ -26,6 +25,7 @@ service AgentService {
   rpc ReportResponse(ResponseReport) returns (ResponseAck);
   rpc GetPolicy(PolicyRequest) returns (PolicyResponse);
   rpc DownloadRuleBundle(RuleBundleRequest) returns (stream RuleBundleChunk);
+  rpc UploadArtifact(stream ArtifactChunk) returns (ArtifactAck);
 }
 
 message PingRequest {
@@ -41,15 +41,6 @@ message AgentCapabilities {
   bool lsm_supported = 2;
   bool yara_supported = 3;
   repeated string ebpf_programs = 4;
-  repeated string dlp_capabilities = 5;
-}
-
-message DlpStatus {
-  string bundle_version = 1;
-  string bundle_sha256 = 2;
-  repeated string capabilities = 3;
-  string state = 4;
-  string last_error = 5;
 }
 
 message EnrollRequest {
@@ -115,7 +106,6 @@ message AgentStatus {
   int64 active_ioc_entries = 5;
   string last_detection = 6;
   string last_response_action = 7;
-  DlpStatus dlp_status = 8;
 }
 
 message ResourceUsage {
@@ -146,9 +136,6 @@ message HeartbeatRequest {
   BaselineReport baseline_report = 6;
   string config_version = 7;
   int64 buffered_events = 8;
-  repeated ActiveZtnaSession ztna_sessions = 9;
-  string last_bookmark_version = 10;
-  DlpStatus dlp_status = 11;
 
   // Legacy compatibility fields.
   string compliance_status = 20;
@@ -161,43 +148,14 @@ message HeartbeatResponse {
   RuleUpdate rule_update = 3;
   repeated ServerCommand pending_commands = 4;
   BaselineReport fleet_baseline = 5;
-  repeated TunnelRelease ztna_revocations = 6;
-  BookmarkList ztna_bookmarks = 7;
-  DlpPolicy dlp_policy = 8;
 
   // Legacy compatibility fields.
   string status = 20;
   string server_time = 21;
 }
 
-message DlpPolicy {
-  string policy_id = 1;
-  string policy_version = 2;
-  string bundle_version = 3;
-  string bundle_sha256 = 4;
-  string policy_json = 5;
-  int64 expires_at_unix = 6;
-}
-
 message ThreatIntelRequest {
   string agent_id = 1;
-}
-
-enum ZtnaTransport {
-  ZTNA_TRANSPORT_WIREGUARD = 0;
-  ZTNA_TRANSPORT_TLS_FALLBACK = 1;
-}
-
-message ActiveZtnaSession {
-  string session_id = 1;
-  string app_id = 2;
-  string tunnel_ip = 3;
-  ZtnaTransport transport = 4;
-  int64 bytes_tx = 5;
-  int64 bytes_rx = 6;
-  int32 active_connections = 7;
-  int32 tunnel_latency_ms = 8;
-  int64 started_at_unix = 9;
 }
 
 message ThreatIntelVersion {
@@ -256,4 +214,26 @@ message RuleBundleChunk {
   int32 chunk_size_bytes = 6;
   bool verified = 7;
   int32 reload_deadline_secs = 8;
+}
+
+// ArtifactChunk streams an evidence artifact (forensics snapshot, memory
+// dump) from the agent to the server. Metadata fields (agent_id, command_id,
+// artifact_type, filename, sha256, total_size_bytes) must be set on the
+// first chunk; subsequent chunks only need data/sequence/last.
+message ArtifactChunk {
+  string agent_id = 1;
+  string command_id = 2;
+  string artifact_type = 3;
+  string filename = 4;
+  string sha256 = 5;
+  uint64 total_size_bytes = 6;
+  bytes data = 7;
+  int32 sequence = 8;
+  bool last = 9;
+}
+
+message ArtifactAck {
+  bool accepted = 1;
+  string artifact_id = 2;
+  string detail = 3;
 }

@@ -42,7 +42,7 @@ fn agent_control_proto_declares_enroll_and_heartbeat_rpcs() {
 
 #[test]
 // AC-GRP-071 AC-GRP-076
-fn agent_proto_imports_domain_protos_and_declares_eight_rpc_agent_service() {
+fn agent_proto_imports_domain_protos_and_declares_nine_rpc_agent_service() {
     assert!(AGENT_PROTO.contains("import \"eguard/v1/telemetry.proto\";"));
     assert!(AGENT_PROTO.contains("import \"eguard/v1/compliance.proto\";"));
     assert!(AGENT_PROTO.contains("import \"eguard/v1/command.proto\";"));
@@ -54,9 +54,10 @@ fn agent_proto_imports_domain_protos_and_declares_eight_rpc_agent_service() {
         .nth(1)
         .and_then(|tail| tail.split('}').next())
         .expect("agent service block");
-    assert_eq!(service_block.matches("rpc ").count(), 8);
+    assert_eq!(service_block.matches("rpc ").count(), 9);
     assert!(AGENT_PROTO.contains("rpc GetPolicy("));
     assert!(AGENT_PROTO.contains("rpc DownloadRuleBundle("));
+    assert!(AGENT_PROTO.contains("rpc UploadArtifact(stream ArtifactChunk) returns (ArtifactAck);"));
 }
 
 #[test]
@@ -461,33 +462,6 @@ fn certificate_policy_contract_covers_pinning_rotation_client_cert_and_transport
             "int32 grpc_max_recv_msg_size_bytes",
             "int32 grpc_port",
             "CertificatePolicy certificate_policy",
-        ],
-    );
-}
-
-#[test]
-fn dlp_contract_includes_capabilities_policy_and_redacted_detection_fields() {
-    assert_contains_all(
-        AGENT_PROTO,
-        &[
-            "repeated string dlp_capabilities",
-            "message DlpStatus",
-            "string bundle_version",
-            "string bundle_sha256",
-            "message DlpPolicy",
-            "int64 expires_at_unix",
-        ],
-    );
-    assert_contains_all(
-        TELEMETRY_PROTO,
-        &[
-            "DLP_DETECTION = 7",
-            "message DlpDetectionEvent",
-            "string rule_id",
-            "string path_hash",
-            "string content_sha256",
-            "string redacted_evidence",
-            "DlpDetectionEvent dlp_detection = 31",
         ],
     );
 }

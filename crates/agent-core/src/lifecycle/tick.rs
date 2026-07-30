@@ -3,7 +3,6 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use tracing::{debug, info, warn};
 
-use detection::TelemetryEvent;
 use nac::posture_from_compliance;
 use response::plan_action;
 use tokio::time::timeout;
@@ -236,7 +235,6 @@ impl AgentRuntime {
         let enriched = enrich_event_with_cache(raw, &mut self.enrichment_cache);
 
         let detection_event = to_detection_event(&enriched, now_unix);
-        let dlp_matches = self.scan_dlp_file(&detection_event);
         if should_drop_low_value_windows_event(&enriched, &detection_event)
             || should_drop_low_value_linux_event(&enriched, &detection_event)
         {
@@ -325,7 +323,6 @@ impl AgentRuntime {
         if let Some(rule_name) = Self::detection_rule_name(&detection_outcome) {
             event_envelope.rule_name = rule_name;
         }
-        self.attach_dlp_matches(&mut event_envelope, &dlp_matches);
 
         Ok(Some(TickEvaluation {
             detection_event,
@@ -336,67 +333,6 @@ impl AgentRuntime {
             event_txn,
             event_envelope,
         }))
-    }
-
-    fn scan_dlp_file(&self, event: &TelemetryEvent) -> Vec<detection::dlp::DlpMatch> {
-        let Some(scanner) = &self.dlp_scanner else {
-            return Vec::new();
-        };
-        let Some(path) = event.file_path.as_deref() else {
-            return Vec::new();
-        };
-        if !event.file_write {
-            return Vec::new();
-        }
-        scanner
-            .scan_file(
-                std::path::Path::new(path),
-                (self.config.dlp_max_file_scan_size_mb as u64) * 1024 * 1024,
-            )
-            .unwrap_or_default()
-    }
-
-    fn dlp_telemetry_action(action: &str) -> &'static str {
-        if action.trim().eq_ignore_ascii_case("alert") {
-            "alert"
-        } else {
-            "audit"
-        }
-    }
-
-    fn attach_dlp_matches(
-        &mut self,
-        envelope: &mut grpc_client::EventEnvelope,
-        matches: &[detection::dlp::DlpMatch],
-    ) {
-        if matches.is_empty() {
-            return;
-        }
-        self.last_dlp_detection = matches
-            .first()
-            .map(|item| (envelope.created_at_unix, item.rule_id.clone()));
-        let Ok(mut payload) = serde_json::from_str::<serde_json::Value>(&envelope.payload_json)
-        else {
-            return;
-        };
-        payload["dlp"] = serde_json::json!({
-            "detected": true,
-            "detections": matches.iter().map(|item| serde_json::json!({
-                "rule_id": item.rule_id,
-                "severity": item.severity,
-                "action": Self::dlp_telemetry_action(&item.action),
-                "start": item.start,
-                "end": item.end,
-                "redacted_evidence": item.redacted_evidence,
-            })).collect::<Vec<_>>(),
-        });
-        envelope.event_type = "dlp_detection".to_string();
-        envelope.rule_name = matches
-            .iter()
-            .map(|item| item.rule_id.as_str())
-            .collect::<Vec<_>>()
-            .join(",");
-        envelope.payload_json = payload.to_string();
     }
 
     async fn handle_degraded_tick(
@@ -743,14 +679,6 @@ mod tests {
     use detection::{Confidence, DetectionOutcome, DetectionSignals, EventClass, TelemetryEvent};
     use grpc_client::EventEnvelope;
     use response::PlannedAction;
-
-    #[test]
-    fn dlp_telemetry_action_never_emits_enforcement() {
-        assert_eq!(AgentRuntime::dlp_telemetry_action("alert"), "alert");
-        assert_eq!(AgentRuntime::dlp_telemetry_action("audit"), "audit");
-        assert_eq!(AgentRuntime::dlp_telemetry_action("block"), "audit");
-        assert_eq!(AgentRuntime::dlp_telemetry_action("isolate"), "audit");
-    }
 
     fn new_runtime() -> AgentRuntime {
         let mut cfg = AgentConfig::default();

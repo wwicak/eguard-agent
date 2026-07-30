@@ -1,5 +1,11 @@
 use super::*;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+// Shared across every test that mutates process-global %SystemDrive%/%SystemRoot%,
+// so those tests serialize against EACH OTHER (per-fn statics would not) and the
+// env is never observed half-set by a concurrently running sibling.
+static SYSTEM_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 // AC-RSP-117
@@ -38,11 +44,17 @@ fn emergency_rule_push_is_recognized() {
 #[test]
 // AC-RSP-001 AC-RSP-002 AC-RSP-003 AC-RSP-004 AC-RSP-049 AC-RSP-050 AC-RSP-101 AC-DET-066 AC-DET-067 AC-DET-068 AC-DET-069 AC-DET-070 AC-DET-071 AC-DET-092
 fn default_policy_gates_autonomous_actions_by_confidence() {
-    let mut cfg = ResponseConfig {
-        autonomous_response: true,
-        ..ResponseConfig::default()
-    };
+    let defaults = ResponseConfig::default();
+    assert!(!defaults.autonomous_response);
+    assert_eq!(
+        plan_action(Confidence::Definite, &defaults),
+        PlannedAction::AlertOnly
+    );
 
+    let cfg = ResponseConfig {
+        autonomous_response: true,
+        ..defaults
+    };
     assert_eq!(
         plan_action(Confidence::Definite, &cfg),
         PlannedAction::KillAndQuarantine
@@ -60,10 +72,8 @@ fn default_policy_gates_autonomous_actions_by_confidence() {
         PlannedAction::AlertOnly
     );
     assert_eq!(plan_action(Confidence::Low, &cfg), PlannedAction::AlertOnly);
-
-    cfg.autonomous_response = false;
     assert_eq!(
-        plan_action(Confidence::Definite, &cfg),
+        plan_action(Confidence::None, &cfg),
         PlannedAction::AlertOnly
     );
 }
@@ -92,14 +102,46 @@ fn dry_run_forces_alert_only() {
 fn default_linux_protected_paths_match_acceptance_baseline() {
     let protected = ProtectedList::default_linux();
 
-    assert!(protected.is_protected_path(Path::new("/usr/bin/ls")));
-    assert!(protected.is_protected_path(Path::new("/usr/sbin/sshd")));
-    assert!(protected.is_protected_path(Path::new("/usr/lib/libc.so")));
-    assert!(protected.is_protected_path(Path::new("/usr/libexec/openssh/sshd-session")));
-    assert!(protected.is_protected_path(Path::new("/lib/modules")));
-    assert!(protected.is_protected_path(Path::new("/boot/vmlinuz")));
-    assert!(protected.is_protected_path(Path::new("/usr/local/eg/agent")));
+    for path in [
+        "/usr/bin/ls",
+        "/usr/sbin/sshd",
+        "/usr/lib/libc.so",
+        "/usr/libexec/openssh/sshd-session",
+        "/lib/modules",
+        "/boot/vmlinuz",
+        "/etc/shadow",
+        "/etc/fstab",
+        "/usr/local/eg/agent",
+        "/bin/systemctl",
+        "/sbin/reboot",
+        "/lib64/ld-linux-x86-64.so.2",
+        "/usr/lib64/ld-linux-x86-64.so.2",
+        "/usr/lib32/libc.so.6",
+        "/usr/libx32/libc.so.6",
+        "/root/.ssh/authorized_keys",
+        "/var/lib/eguard-agent/quarantine/sample",
+        "/var/lib/rpm/rpmdb.sqlite",
+        "/var/lib/dnf/history.sqlite",
+        "/var/lib/dpkg/status",
+        "/var/lib/apt/lists/lock",
+        "/var/lib/systemd/random-seed",
+        "/var/lib/NetworkManager/NetworkManager.state",
+        "/var/lib/dbus/machine-id",
+        "/proc/1/exe",
+        "/sys/kernel",
+        "/dev/null",
+        "/run/systemd/private",
+        "/var/run/dbus/system_bus_socket",
+    ] {
+        assert!(
+            protected.is_protected_path(Path::new(path)),
+            "{path} should be protected"
+        );
+    }
+
     assert!(!protected.is_protected_path(Path::new("/tmp/sample.bin")));
+    assert!(!protected.is_protected_path(Path::new("/var/tmp/sample.bin")));
+    assert!(!protected.is_protected_path(Path::new("/home/user/sample.bin")));
 }
 
 #[test]
@@ -119,6 +161,15 @@ fn protected_paths_accept_normalized_equivalents_inside_roots() {
     assert!(protected.is_protected_path(Path::new("/usr/local/eg/./agent")));
     assert!(protected.is_protected_path(Path::new("/usr/local/eg/runtime/../agentd")));
     assert!(protected.is_protected_path(Path::new("/usr/bin/./sh")));
+}
+
+#[test]
+#[cfg(unix)]
+fn unix_protected_path_matching_remains_case_sensitive() {
+    let protected = ProtectedList::default_linux();
+
+    assert!(protected.is_protected_path(Path::new("/usr/bin/sh")));
+    assert!(!protected.is_protected_path(Path::new("/USR/BIN/sh")));
 }
 
 #[test]
@@ -175,7 +226,8 @@ fn scan_update_and_uninstall_commands_update_state() {
     assert_eq!(state.last_update_unix, Some(456));
 
     let uninstall = execute_server_command_with_state(ServerCommand::Uninstall, 789, &mut state);
-    assert_eq!(uninstall.outcome, CommandOutcome::Applied);
+    assert_eq!(uninstall.outcome, CommandOutcome::Ignored);
+    assert_eq!(uninstall.status, "failed");
     assert!(state.uninstall_requested);
 }
 
@@ -321,10 +373,45 @@ fn default_macos_protected_paths_match_baseline() {
 
     assert!(protected.is_protected_path(Path::new("/System/Library/Frameworks")));
     assert!(protected.is_protected_path(Path::new("/Library/Application Support/eGuard")));
+    assert!(protected.is_protected_path(Path::new("/bin/sh")));
+    assert!(protected.is_protected_path(Path::new("/sbin/mount")));
     assert!(protected.is_protected_path(Path::new("/usr/bin/ssh")));
     assert!(protected.is_protected_path(Path::new("/usr/sbin/sysctl")));
     assert!(protected.is_protected_path(Path::new("/usr/lib/dyld")));
+    assert!(protected.is_protected_path(Path::new("/var/run/syslog")));
+    assert!(protected.is_protected_path(Path::new("/private/var/run/syslog")));
+    assert!(
+        protected.is_protected_path(Path::new("/var/db/dslocal/nodes/Default/users/root.plist"))
+    );
+    assert!(protected.is_protected_path(Path::new(
+        "/private/var/db/dslocal/nodes/Default/groups/admin.plist"
+    )));
+    assert!(protected.is_protected_path(Path::new("/etc/passwd")));
+    assert!(protected.is_protected_path(Path::new("/Library/Keychains/System.keychain")));
+    assert!(!protected.is_protected_path(Path::new(
+        "/Library/LaunchDaemons/com.example.malware.plist"
+    )));
     assert!(!protected.is_protected_path(Path::new("/tmp/sample.bin")));
+}
+
+// The /private<->/etc and /private/var<->/var firmlink aliasing is Unix
+// path-grammar semantics (macOS/Linux). On Windows these POSIX-absolute paths
+// are not valid protected roots, so this equivalence only applies on unix.
+#[cfg(unix)]
+#[test]
+fn macos_private_path_spellings_match_protected_roots() {
+    let protected = ProtectedList {
+        process_patterns: Vec::new(),
+        protected_paths: vec![
+            PathBuf::from("/var/db/dslocal"),
+            PathBuf::from("/private/etc"),
+        ],
+    };
+
+    assert!(protected.is_protected_path(Path::new(
+        "/private/var/db/dslocal/nodes/Default/users/root.plist"
+    )));
+    assert!(protected.is_protected_path(Path::new("/etc/passwd")));
 }
 
 #[test]
@@ -341,12 +428,44 @@ fn default_macos_protected_processes_match_baseline() {
 #[test]
 #[cfg(target_os = "windows")]
 fn default_windows_protected_paths_match_baseline() {
+    let _guard = SYSTEM_ENV_LOCK.lock().expect("lock env");
+    let system_root = windows_directory().unwrap_or_else(|| r"C:\Windows".to_string());
+    let system_drive = windows_drive_from_root(&system_root).unwrap_or_else(|| "C:".to_string());
     let protected = ProtectedList::default_windows();
 
-    assert!(protected.is_protected_path(Path::new(r"C:\Windows\System32\kernel32.dll")));
-    assert!(protected.is_protected_path(Path::new(r"C:\Windows\SysWOW64\ntdll.dll")));
-    assert!(protected.is_protected_path(Path::new(r"C:\ProgramData\eGuard\agent.conf")));
-    assert!(!protected.is_protected_path(Path::new(r"C:\Users\Public\malware.exe")));
+    for path in [
+        format!(r"{system_root}\explorer.exe"),
+        format!(r"{system_root}\System32\kernel32.dll"),
+        format!(r"{system_root}\System32\config\SAM"),
+        format!(r"{system_root}\SysWOW64\ntdll.dll"),
+        format!(r"{system_drive}\Program Files\Common Files\system.dll"),
+        format!(r"{system_drive}\Program Files (x86)\Common Files\system.dll"),
+        format!(r"{system_drive}\ProgramData\Microsoft\Crypto\RSA\MachineKeys\key"),
+        format!(r"{system_drive}\ProgramData\eGuard\agent.conf"),
+        format!(r"{system_drive}\Boot\BCD"),
+    ] {
+        assert!(
+            protected.is_protected_path(Path::new(&path)),
+            "{path} should be protected"
+        );
+    }
+    assert!(!protected.is_protected_path(Path::new(&format!(
+        r"{system_drive}\Users\Public\malware.exe"
+    ))));
+}
+
+#[test]
+#[cfg(target_os = "windows")]
+fn windows_protected_path_matching_is_case_insensitive_and_deverbatimized() {
+    let _guard = SYSTEM_ENV_LOCK.lock().expect("lock env");
+    let protected = ProtectedList::default_windows();
+
+    assert!(protected.is_protected_path(Path::new(r"\\?\c:\windows\system32\kernel32.dll")));
+    assert!(protected.is_protected_path(Path::new(r"c:\program files\Common Files\system.dll")));
+    assert_eq!(
+        normalize_path(Path::new(r"\\?\UNC\server\share\folder\file.bin")),
+        PathBuf::from(r"\\server\share\folder\file.bin")
+    );
 }
 
 #[test]
@@ -358,12 +477,156 @@ fn default_windows_protected_processes_match_baseline() {
     assert!(protected.is_protected_process("svchost"));
     assert!(protected.is_protected_process("eguard-agent"));
     assert!(protected.is_protected_process("System"));
+    // Microsoft-documented critical processes (bugcheck 0xEF if terminated).
+    assert!(protected.is_protected_process("conhost"));
+    assert!(protected.is_protected_process("conhost.exe"));
+    assert!(protected.is_protected_process("logonui"));
+    assert!(protected.is_protected_process("LogonUI.exe"));
     // .exe variants
     assert!(protected.is_protected_process("csrss.exe"));
     assert!(protected.is_protected_process("lsass.exe"));
     assert!(protected.is_protected_process("svchost.exe"));
     assert!(protected.is_protected_process("eguard-agent.exe"));
+    // Windows image names are case-insensitive.
+    assert!(protected.is_protected_process("CSRSS.EXE"));
+    assert!(protected.is_protected_process("Csrss.Exe"));
+    assert!(protected.is_protected_process("SYSTEM"));
     // Negatives
     assert!(!protected.is_protected_process("notepad"));
     assert!(!protected.is_protected_process("notepad.exe"));
+}
+
+// P1-SELFPROT / FIX A: macOS must protect its own installed binary and
+// LaunchDaemon plist (see installer/macos/scripts/postinstall), without
+// opening up all of /Library/LaunchDaemons.
+#[test]
+fn default_macos_protected_paths_include_agent_binary_and_launch_daemon() {
+    let protected = ProtectedList::default_macos();
+
+    assert!(protected.is_protected_path(Path::new("/usr/local/bin/eguard-agent")));
+    assert!(protected.is_protected_path(Path::new("/Library/LaunchDaemons/com.eguard.agent.plist")));
+    // Only the agent's own plist is protected; other LaunchDaemons must stay
+    // quarantinable so malicious persistence can still be removed.
+    assert!(!protected.is_protected_path(Path::new(
+        "/Library/LaunchDaemons/com.example.malware.plist"
+    )));
+}
+
+#[test]
+fn quarantine_of_macos_agent_binary_and_launch_daemon_is_denied() {
+    let protected = ProtectedList::default_macos();
+
+    let binary = Path::new("/usr/local/bin/eguard-agent");
+    let err = quarantine_file(binary, "deadbeef", &protected).expect_err("binary is protected");
+    assert!(matches!(err, ResponseError::ProtectedPath(p) if p == binary));
+
+    let plist = Path::new("/Library/LaunchDaemons/com.eguard.agent.plist");
+    let err = quarantine_file(plist, "deadbeef", &protected).expect_err("plist is protected");
+    assert!(matches!(err, ResponseError::ProtectedPath(p) if p == plist));
+}
+
+// P1-SELFPROT / FIX B: Windows protected roots follow roots discovered through
+// the Windows API and cover boot/ESP artifacts. These assert directly on the
+// pure construction seam because backslash is not a path separator on Unix.
+#[test]
+fn default_windows_protected_roots_include_boot_and_efi_artifacts_on_system_drive() {
+    let protected = ProtectedList::default_windows_with_roots("C:", r"C:\Windows");
+    for expected in [
+        r"C:\Windows\System32",
+        r"C:\Windows\System32\config",
+        r"C:\Windows\SysWOW64",
+        r"C:\ProgramData\eGuard",
+        r"C:\Windows",
+        r"C:\Program Files",
+        r"C:\Program Files (x86)",
+        r"C:\ProgramData\Microsoft",
+        r"C:\Boot",
+        r"C:\bootmgr",
+        r"C:\BOOTNXT",
+        r"C:\EFI\Microsoft",
+    ] {
+        assert!(
+            protected.protected_paths.contains(&PathBuf::from(expected)),
+            "{expected} should be a protected root"
+        );
+    }
+}
+
+#[test]
+fn default_windows_protected_roots_follow_discovered_system_drive() {
+    let protected = ProtectedList::default_windows_with_roots("D:", r"D:\Windows");
+    for expected in [
+        r"D:\Windows\System32",
+        r"D:\Windows\System32\config",
+        r"D:\Windows\SysWOW64",
+        r"D:\ProgramData\eGuard",
+        r"D:\Windows",
+        r"D:\Program Files",
+        r"D:\Program Files (x86)",
+        r"D:\ProgramData\Microsoft",
+        r"D:\Boot",
+        r"D:\bootmgr",
+        r"D:\BOOTNXT",
+        r"D:\EFI\Microsoft",
+    ] {
+        assert!(
+            protected.protected_paths.contains(&PathBuf::from(expected)),
+            "{expected} should be a protected root when the system drive is D:"
+        );
+    }
+    // Proves the pure constructor is not hard-coded to C:.
+    assert!(!protected
+        .protected_paths
+        .iter()
+        .any(|p| p.to_string_lossy().starts_with("C:")));
+}
+
+#[test]
+fn invalid_discovered_windows_root_fails_closed_without_env_override() {
+    let _guard = SYSTEM_ENV_LOCK.lock().expect("lock env");
+    let _reset = SystemEnvReset::capture();
+    std::env::set_var("SystemDrive", "Z:");
+    std::env::set_var("SystemRoot", r"Z:\Injected");
+
+    let protected = ProtectedList::default_windows_with_roots("Z:", "");
+    assert!(protected
+        .protected_paths
+        .contains(&PathBuf::from(r"C:\Windows")));
+    assert!(protected
+        .protected_paths
+        .contains(&PathBuf::from(r"C:\bootmgr")));
+    assert!(!protected
+        .protected_paths
+        .iter()
+        .any(|p| p.to_string_lossy().starts_with("Z:")));
+}
+
+/// Saves SystemDrive/SystemRoot on construction and restores the original
+/// values (present or absent) on drop, so env-override tests can't leak
+/// state into other tests sharing the process environment.
+struct SystemEnvReset {
+    drive: Option<std::ffi::OsString>,
+    root: Option<std::ffi::OsString>,
+}
+
+impl SystemEnvReset {
+    fn capture() -> Self {
+        Self {
+            drive: std::env::var_os("SystemDrive"),
+            root: std::env::var_os("SystemRoot"),
+        }
+    }
+}
+
+impl Drop for SystemEnvReset {
+    fn drop(&mut self) {
+        match &self.drive {
+            Some(value) => std::env::set_var("SystemDrive", value),
+            None => std::env::remove_var("SystemDrive"),
+        }
+        match &self.root {
+            Some(value) => std::env::set_var("SystemRoot", value),
+            None => std::env::remove_var("SystemRoot"),
+        }
+    }
 }

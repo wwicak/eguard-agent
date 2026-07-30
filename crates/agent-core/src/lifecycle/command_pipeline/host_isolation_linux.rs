@@ -64,6 +64,11 @@ pub(super) fn apply_linux_host_isolation(allowed_server_ips: &[String]) -> Resul
 
     remove_linux_host_isolation().ok();
 
+    // Apply is multi-command and not atomic; on any failure this returns Err
+    // leaving possibly-partial rules in place. The caller (apply_host_isolate)
+    // performs a verified rollback via force_remove_isolation() and only clears
+    // the durable recovery record when that teardown succeeds, so a failed
+    // isolate never strands the host half-isolated with no recovery record.
     match detect_firewall_backend() {
         FirewallBackend::Iptables => {
             for command in build_ipv4_apply_commands(allowed_server_ips) {

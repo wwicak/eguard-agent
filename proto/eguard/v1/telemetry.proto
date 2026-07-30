@@ -18,7 +18,6 @@ enum EventType {
   MODULE_LOAD = 4;
   USER_LOGIN = 5;
   ALERT = 6;
-  DLP_DETECTION = 7;
 }
 
 enum Severity {
@@ -35,18 +34,6 @@ message ProcessExecEvent {
   string sha256 = 3;
   string cgroup_id = 4;
   repeated string ancestors = 5;
-}
-
-message DlpDetectionEvent {
-  string policy_id = 1;
-  string bundle_version = 2;
-  string rule_id = 3;
-  string channel = 4;
-  string action = 5;
-  string confidence = 6;
-  string path_hash = 7;
-  string content_sha256 = 8;
-  string redacted_evidence = 9;
 }
 
 message TelemetryEvent {
@@ -69,7 +56,6 @@ message TelemetryEvent {
 
   oneof detail {
     ProcessExecEvent process_exec = 30;
-    DlpDetectionEvent dlp_detection = 31;
   }
 }
 

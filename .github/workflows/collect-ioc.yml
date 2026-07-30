@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "0 */4 * * *"  # Every 4 hours
   workflow_dispatch:
+    inputs:
+      include_restricted_sources:
+        description: "Restore restricted/non-redistributable IOC feeds (Spamhaus, FireHOL, DShield, AlienVault OTX)"
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -17,6 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       MALWARE_BAZAAR_KEY: ${{ secrets.MALWARE_BAZAAR_KEY }}
+      INCLUDE_RESTRICTED_SOURCES: ${{ github.event_name == 'schedule' || inputs.include_restricted_sources }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -30,12 +36,12 @@ jobs:
         run: mkdir -p sources/ioc/{hashes,domains,ips}
 
       # ────────────────────────────────────────────────────────────────
-      # Tier 1: Government / Premium Blocklists (highest confidence)
+      # Restricted / license-sensitive sources (manual opt-in only)
       # ────────────────────────────────────────────────────────────────
 
-      - name: "Fetch Spamhaus DROP + EDROP (Tier 1)"
+      - name: "Fetch Spamhaus DROP + EDROP (restricted)"
+        if: ${{ env.INCLUDE_RESTRICTED_SOURCES == 'true' }}
         run: |
-          # DROP: most conservative, zero false-positive IP blocklist
           curl -sSfL --retry 3 --max-time 60 \
             "https://www.spamhaus.org/drop/drop.txt" \
             -o /tmp/spamhaus_drop.txt 2>/dev/null || true
@@ -48,9 +54,9 @@ jobs:
           } | sort -u > sources/ioc/ips/spamhaus.txt
           echo "Spamhaus DROP+EDROP: $(wc -l < sources/ioc/ips/spamhaus.txt) entries"
 
-      - name: "Fetch FireHOL Level 1 (Tier 1)"
+      - name: "Fetch FireHOL Level 1 (restricted aggregator)"
+        if: ${{ env.INCLUDE_RESTRICTED_SOURCES == 'true' }}
         run: |
-          # Aggregated from DShield, Spamhaus, blocklist.de, etc. — highest confidence tier
           curl -sSfL --retry 3 --max-time 120 \
             "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level1.netset" \
             -o /tmp/firehol.txt 2>/dev/null || true
@@ -59,8 +65,48 @@ jobs:
             echo "FireHOL L1: $(wc -l < sources/ioc/ips/firehol_l1.txt) entries"
           fi
 
+      - name: "Fetch DShield top attackers (restricted — SANS ISC)"
+        if: ${{ env.INCLUDE_RESTRICTED_SOURCES == 'true' }}
+        run: |
+          curl -sSfL --retry 3 --max-time 60 \
+            "https://www.dshield.org/block.txt" \
+            -o /tmp/dshield.txt 2>/dev/null || true
+          if [ -s /tmp/dshield.txt ]; then
+            awk '/^[0-9]/ {print $1}' /tmp/dshield.txt | sort -u > sources/ioc/ips/dshield.txt
+            echo "DShield IPs: $(wc -l < sources/ioc/ips/dshield.txt)"
+          fi
+
+      - name: "Fetch AlienVault OTX (restricted — optional)"
+        if: ${{ env.INCLUDE_RESTRICTED_SOURCES == 'true' && env.OTX_API_KEY != '' }}
+        env:
+          OTX_API_KEY: ${{ secrets.OTX_API_KEY }}
+        run: |
+          curl -sSfL --retry 3 --max-time 120 \
+            -H "X-OTX-API-KEY: ${OTX_API_KEY}" \
+            "https://otx.alienvault.com/api/v1/pulses/subscribed?modified_since=$(date -u -d '1 day ago' +%Y-%m-%dT%H:%M:%S)" \
+            -o /tmp/otx_pulses.json
+          python3 - <<'PYOTX'
+          import json
+          data = json.load(open('/tmp/otx_pulses.json'))
+          hashes, domains, ips = set(), set(), set()
+          for pulse in data.get('results', []):
+              for ind in pulse.get('indicators', []):
+                  t = ind.get('type', '')
+                  v = ind.get('indicator', '')
+                  if t in ('FileHash-SHA256',): hashes.add(v)
+                  elif t in ('domain', 'hostname'): domains.add(v)
+                  elif t in ('IPv4',): ips.add(v)
+          open('sources/ioc/hashes/otx.txt', 'w').write('\n'.join(sorted(hashes)))
+          open('sources/ioc/domains/otx.txt', 'w').write('\n'.join(sorted(domains)))
+          open('sources/ioc/ips/otx.txt', 'w').write('\n'.join(sorted(ips)))
+          PYOTX
+
       # ────────────────────────────────────────────────────────────────
-      # Tier 2: Community-Vetted Sources (abuse.ch, SANS, DigitalSide)
+      # Tier 1: Retained high-confidence sources pending permission
+      # ────────────────────────────────────────────────────────────────
+
+      # ────────────────────────────────────────────────────────────────
+      # Tier 2: Community-Vetted Sources (abuse.ch, DigitalSide)
       # ────────────────────────────────────────────────────────────────
 
       - name: "Fetch MalwareBazaar full SHA256 dump (Tier 2 — abuse.ch)"
@@ -217,17 +263,6 @@ jobs:
             awk -F, '{print $2}' | grep -E '^[0-9a-f]{40}$' | \
             sort -u > sources/ioc/hashes/sslbl_sha1.txt
 
-      - name: "Fetch DShield top attackers (Tier 2 — SANS ISC)"
-        run: |
-          curl -sSfL --retry 3 --max-time 60 \
-            "https://www.dshield.org/block.txt" \
-            -o /tmp/dshield.txt 2>/dev/null || true
-          if [ -s /tmp/dshield.txt ]; then
-            # Format: Start_IP\tEnd_IP\tAttacks\tName...
-            awk '/^[0-9]/ {print $1}' /tmp/dshield.txt | sort -u > sources/ioc/ips/dshield.txt
-            echo "DShield IPs: $(wc -l < sources/ioc/ips/dshield.txt)"
-          fi
-
       - name: "Fetch DigitalSide OSINT (Tier 2)"
         run: |
           curl -sSfL --retry 3 --max-time 60 \
@@ -304,31 +339,6 @@ jobs:
             echo "Blocklist.de IPs: $(wc -l < sources/ioc/ips/blocklist_de.txt)"
           fi
 
-      - name: "Fetch AlienVault OTX (Tier 3 — optional)"
-        if: ${{ env.OTX_API_KEY != '' }}
-        env:
-          OTX_API_KEY: ${{ secrets.OTX_API_KEY }}
-        run: |
-          curl -sSfL --retry 3 --max-time 120 \
-            -H "X-OTX-API-KEY: ${OTX_API_KEY}" \
-            "https://otx.alienvault.com/api/v1/pulses/subscribed?modified_since=$(date -u -d '1 day ago' +%Y-%m-%dT%H:%M:%S)" \
-            -o /tmp/otx_pulses.json
-          python3 -c "
-          import json, sys
-          data = json.load(open('/tmp/otx_pulses.json'))
-          hashes, domains, ips = set(), set(), set()
-          for pulse in data.get('results', []):
-              for ind in pulse.get('indicators', []):
-                  t = ind.get('type', '')
-                  v = ind.get('indicator', '')
-                  if t in ('FileHash-SHA256',): hashes.add(v)
-                  elif t in ('domain', 'hostname'): domains.add(v)
-                  elif t in ('IPv4',): ips.add(v)
-          open('sources/ioc/hashes/otx.txt', 'w').write('\n'.join(sorted(hashes)))
-          open('sources/ioc/domains/otx.txt', 'w').write('\n'.join(sorted(domains)))
-          open('sources/ioc/ips/otx.txt', 'w').write('\n'.join(sorted(ips)))
-          "
-
       # ────────────────────────────────────────────────────────────────
       # Dedup, corroborate, and allowlist
       # ────────────────────────────────────────────────────────────────
@@ -352,7 +362,7 @@ jobs:
         env:
           EGUARD_MIN_IOC_HASH: "5000"
           EGUARD_MIN_IOC_DOMAIN: "300"
-          EGUARD_MIN_IOC_IP: "1500"
+          EGUARD_MIN_IOC_IP: "800"
         run: |
           HASH_COUNT=$(wc -l < sources/ioc/consolidated/hashes.txt 2>/dev/null || echo 0)
           DOMAIN_COUNT=$(wc -l < sources/ioc/consolidated/domains.txt 2>/dev/null || echo 0)

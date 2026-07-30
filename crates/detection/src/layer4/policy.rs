@@ -133,6 +133,18 @@ pub(super) fn is_expected_auth_stack_access(process: &str, path: &str) -> bool {
             | "systemd-homed"
             | "sssd"
             | "winbindd"
+            | "opendirectoryd"
+            | "mdmclient"
+            | "profiles"
+            | "mbsetupuser"
+            | "securityd"
+            | "configd"
+            | "dscl"
+            | "dseditgroup"
+            | "sysadminctl"
+            | "dsimport"
+            | "system_installd"
+            | "installd"
     ) {
         return false;
     }
@@ -351,4 +363,22 @@ pub(super) fn path_root_prefix(path: &str) -> Option<String> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expected_auth_stack_allows_macos_directory_services_access() {
+        assert!(is_expected_auth_stack_access(
+            "opendirectoryd",
+            "/var/db/dslocal/nodes/Default/users/root.plist"
+        ));
+        assert!(is_expected_auth_stack_access(
+            "/usr/libexec/opendirectoryd",
+            "/private/var/db/dslocal/nodes/Default/groups/admin.plist"
+        ));
+        assert!(!is_expected_auth_stack_access("evil_dumper", "/etc/shadow"));
+    }
 }

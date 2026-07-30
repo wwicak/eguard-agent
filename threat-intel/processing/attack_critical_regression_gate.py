@@ -106,6 +106,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-missing-required-increase", type=int, default=0)
     parser.add_argument("--max-p0-uncovered-increase", type=int, default=0)
     parser.add_argument("--max-owner-p0-uncovered-increase", type=int, default=1)
+    parser.add_argument("--acknowledge-reset", action="store_true", help="Acknowledge failing regression checks as an intentional one-run baseline reset")
+    parser.add_argument("--acknowledge-reason", default="", help="Reason for an intentional regression baseline reset")
     return parser
 
 
@@ -274,6 +276,8 @@ def main() -> int:
         },
         "regressions": regressions,
     }
+    if regressions and args.acknowledge_reset:
+        report["acknowledged_reset"] = {"reason": args.acknowledge_reason, "failures": regressions}
     _write_report(args.output, report)
 
     print("Critical ATT&CK regression snapshot:")
@@ -302,6 +306,9 @@ def main() -> int:
         print("\nCritical ATT&CK regression gate failed:")
         for item in regressions:
             print(f"- {item}")
+        if args.acknowledge_reset:
+            print(f"regression failures acknowledged as intentional baseline reset: {args.acknowledge_reason}")
+            return 0
         return 1
 
     print("\nCritical ATT&CK regression gate passed")

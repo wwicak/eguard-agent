@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
-use grpc_client::{CommandEnvelope, ResponseEnvelope};
+use grpc_client::{ArtifactUploadEnvelope, CommandEnvelope, ResponseEnvelope};
 use response::{
     execute_server_command_with_state, parse_server_command, CommandOutcome, ServerCommand,
 };
@@ -10,7 +10,10 @@ use tracing::{info, warn};
 
 use crate::detection_state::EmergencyRule;
 
-use super::{parse_emergency_rule_type, AgentRuntime, EmergencyRulePayload};
+use super::{
+    circuit_breaker::{BreakerDecision, DestructiveKind},
+    parse_emergency_rule_type, AgentRuntime, EmergencyRulePayload,
+};
 
 mod app_management;
 mod command_utils;
@@ -35,6 +38,17 @@ mod windows_network_profile;
 
 const COMPLETED_COMMAND_CURSOR_CAP: usize = 256;
 const COMMAND_ACK_TIMEOUT_MS: u64 = 5_000;
+const ARTIFACT_UPLOAD_TIMEOUT_MS: u64 = 30_000;
+const ARTIFACT_UPLOAD_MAX_BYTES_ENV: &str = "EGUARD_ARTIFACT_UPLOAD_MAX_BYTES";
+const DEFAULT_ARTIFACT_UPLOAD_MAX_BYTES: u64 = 32 << 20; // 32 MiB
+
+fn artifact_upload_max_bytes() -> u64 {
+    std::env::var(ARTIFACT_UPLOAD_MAX_BYTES_ENV)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_ARTIFACT_UPLOAD_MAX_BYTES)
+}
 
 fn reconcile_isolation_state_after_command(
     parsed: ServerCommand,
@@ -50,6 +64,27 @@ fn reconcile_isolation_state_after_command(
 }
 
 impl AgentRuntime {
+    fn allow_destructive_command(
+        &mut self,
+        kind: DestructiveKind,
+        units: u64,
+        now_unix: i64,
+        denied_detail: &str,
+        exec: &mut response::CommandExecution,
+    ) -> bool {
+        if matches!(
+            self.breaker
+                .check_and_charge(kind, units, now_unix.max(0) as u64),
+            BreakerDecision::Deny { .. }
+        ) {
+            exec.outcome = CommandOutcome::Ignored;
+            exec.status = "failed";
+            exec.detail = denied_detail.to_string();
+            return false;
+        }
+        true
+    }
+
     pub(super) fn completed_command_cursor(&self) -> Vec<String> {
         self.completed_command_ids.iter().cloned().collect()
     }
@@ -65,7 +100,11 @@ impl AgentRuntime {
         }
     }
 
-    pub(super) async fn handle_command(&mut self, command: CommandEnvelope, now_unix: i64) {
+    pub(super) async fn handle_command(
+        &mut self,
+        command: CommandEnvelope,
+        now_unix: i64,
+    ) -> response::CommandExecution {
         let command_id = command.command_id.clone();
         let parsed = parse_server_command(&command.command_type);
         let isolated_before = self.host_control.isolated;
@@ -90,30 +129,71 @@ impl AgentRuntime {
                 self.apply_quarantine_restore(&command.payload_json, &mut exec)
             }
             ServerCommand::Forensics => {
-                self.apply_forensics_collection(&command.payload_json, &mut exec)
+                let artifacts = self.apply_forensics_collection(&command.payload_json, &mut exec);
+                if exec.status == "completed" && !artifacts.is_empty() {
+                    self.upload_forensics_artifacts(&command_id, artifacts, &mut exec)
+                        .await;
+                }
             }
             ServerCommand::KillProcess => self.apply_kill_process(&command.payload_json, &mut exec),
             ServerCommand::Update => {
-                self.apply_agent_update(&command.command_id, &command.payload_json, &mut exec)
+                if self.allow_destructive_command(
+                    DestructiveKind::RestartOrUpdate,
+                    4,
+                    now_unix,
+                    "update_skipped:circuit_open",
+                    &mut exec,
+                ) {
+                    self.apply_agent_update(&command.command_id, &command.payload_json, &mut exec)
+                }
             }
             ServerCommand::LockDevice => self.apply_device_lock(&command.payload_json, &mut exec),
-            ServerCommand::WipeDevice => self.apply_device_wipe(&command.payload_json, &mut exec),
+            ServerCommand::WipeDevice => {
+                if self.allow_destructive_command(
+                    DestructiveKind::DeviceWipe,
+                    32,
+                    now_unix,
+                    "wipe_device_skipped:circuit_open",
+                    &mut exec,
+                ) {
+                    self.apply_device_wipe(&command.payload_json, &mut exec);
+                }
+            }
             ServerCommand::RetireDevice => {
                 self.apply_device_retire(&command.payload_json, &mut exec)
             }
             ServerCommand::RestartDevice => {
-                self.apply_device_restart(&command.payload_json, &mut exec)
+                if self.allow_destructive_command(
+                    DestructiveKind::RestartOrUpdate,
+                    4,
+                    now_unix,
+                    "restart_device_skipped:circuit_open",
+                    &mut exec,
+                ) {
+                    self.apply_device_restart(&command.payload_json, &mut exec)
+                }
             }
             ServerCommand::LostMode => self.apply_lost_mode(&command.payload_json, &mut exec),
             ServerCommand::LocateDevice => {
                 self.apply_device_locate(&command.payload_json, &mut exec)
             }
             ServerCommand::InstallApp => self.apply_app_install(&command.payload_json, &mut exec),
-            ServerCommand::RemoveApp => self.apply_app_remove(&command.payload_json, &mut exec),
+            ServerCommand::RemoveApp => {
+                if self.allow_destructive_command(
+                    DestructiveKind::AppRemove,
+                    8,
+                    now_unix,
+                    "remove_app_skipped:circuit_open",
+                    &mut exec,
+                ) {
+                    self.apply_app_remove(&command.payload_json, &mut exec);
+                }
+            }
             ServerCommand::UpdateApp => self.apply_app_update(&command.payload_json, &mut exec),
             ServerCommand::ApplyProfile => {
                 self.apply_config_profile(&command.payload_json, &mut exec)
             }
+            ServerCommand::Uninstall => self.apply_uninstall(&command.payload_json, &mut exec),
             _ => {}
         }
 
@@ -140,6 +220,7 @@ impl AgentRuntime {
             .await;
 
         self.track_completed_command(&command_id);
+        exec
     }
 
     pub(super) fn apply_emergency_rule_from_payload(&self, payload_json: &str) -> Result<String> {
@@ -199,6 +280,85 @@ impl AgentRuntime {
                 exec.outcome = CommandOutcome::Ignored;
                 exec.status = "failed";
                 exec.detail = format!("emergency rule push rejected: {}", err);
+            }
+        }
+    }
+
+    /// Best-effort upload of captured evidence to the server so it survives
+    /// endpoint tampering and NAC isolation. The local copy is always kept;
+    /// every outcome is appended to the command detail for the operator.
+    async fn upload_forensics_artifacts(
+        &self,
+        command_id: &str,
+        artifacts: Vec<forensics::PendingForensicsArtifact>,
+        exec: &mut response::CommandExecution,
+    ) {
+        let max_bytes = artifact_upload_max_bytes();
+
+        for artifact in artifacts {
+            let filename = std::path::Path::new(&artifact.path)
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_else(|| "artifact.bin".to_string());
+
+            let data = match std::fs::read(&artifact.path) {
+                Ok(data) => data,
+                Err(err) => {
+                    exec.detail
+                        .push_str(&format!("; artifact read failed ({}): {}", filename, err));
+                    continue;
+                }
+            };
+
+            if data.len() as u64 > max_bytes {
+                exec.detail.push_str(&format!(
+                    "; artifact {} kept local only: {} bytes exceeds upload cap {}",
+                    filename,
+                    data.len(),
+                    max_bytes
+                ));
+                continue;
+            }
+
+            let envelope = ArtifactUploadEnvelope {
+                agent_id: self.config.agent_id.clone(),
+                command_id: command_id.to_string(),
+                artifact_type: artifact.artifact_type.to_string(),
+                filename: filename.clone(),
+                sha256_hex: forensics::sha256_hex(&data),
+                data,
+            };
+
+            match timeout(
+                Duration::from_millis(ARTIFACT_UPLOAD_TIMEOUT_MS),
+                self.client.upload_artifact(&envelope),
+            )
+            .await
+            {
+                Ok(Ok(result)) if result.accepted => {
+                    exec.detail.push_str(&format!(
+                        "; uploaded to server as artifact {}",
+                        result.artifact_id
+                    ));
+                }
+                Ok(Ok(result)) => {
+                    exec.detail.push_str(&format!(
+                        "; server rejected artifact {}: {}",
+                        filename, result.detail
+                    ));
+                }
+                Ok(Err(err)) => {
+                    warn!(error = %err, filename = %filename, "artifact upload failed");
+                    exec.detail
+                        .push_str(&format!("; artifact upload failed ({}): {}", filename, err));
+                }
+                Err(_) => {
+                    warn!(filename = %filename, timeout_ms = ARTIFACT_UPLOAD_TIMEOUT_MS, "artifact upload timed out");
+                    exec.detail.push_str(&format!(
+                        "; artifact upload timed out ({}); evidence kept local",
+                        filename
+                    ));
+                }
             }
         }
     }

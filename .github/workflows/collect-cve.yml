@@ -50,6 +50,7 @@ jobs:
         if: steps.mode.outputs.mode == 'incremental'
         run: |
           mkdir -p /tmp/nvd_data
+          CURL_OPTS=(--http1.1 --retry 5 --retry-all-errors --retry-delay 10 --connect-timeout 30 --max-time 300)
           START_DATE=$(date -u -d '7 days ago' +%Y-%m-%dT00:00:00.000)
           END_DATE=$(date -u +%Y-%m-%dT23:59:59.999)
 
@@ -57,7 +58,7 @@ jobs:
           START_INDEX=0
           while true; do
             OUT="/tmp/nvd_data/nvd_recent_${PAGE}.json"
-            HTTP_CODE=$(curl -sSL --retry 3 --max-time 300 -w "%{http_code}" \
+            HTTP_CODE=$(curl -sSL "${CURL_OPTS[@]}" -w "%{http_code}" \
               "https://services.nvd.nist.gov/rest/json/cves/2.0/?lastModStartDate=${START_DATE}&lastModEndDate=${END_DATE}&resultsPerPage=2000&startIndex=${START_INDEX}" \
               -o "$OUT")
 
@@ -88,6 +89,7 @@ jobs:
         if: steps.mode.outputs.mode == 'full'
         run: |
           mkdir -p /tmp/nvd_data
+          CURL_OPTS=(--http1.1 --retry 5 --retry-all-errors --retry-delay 10 --connect-timeout 30 --max-time 300)
           START="$(date -u -d '1 year ago' +%Y-%m-%d)"
           TODAY=$(date -u +%Y-%m-%d)
           PAGE=0
@@ -106,7 +108,7 @@ jobs:
             START_INDEX=0
             while true; do
               OUT="/tmp/nvd_data/page_${PAGE}.json"
-              HTTP_CODE=$(curl -sSL --retry 3 --max-time 300 -w "%{http_code}" \
+              HTTP_CODE=$(curl -sSL "${CURL_OPTS[@]}" -w "%{http_code}" \
                 "https://services.nvd.nist.gov/rest/json/cves/2.0/?lastModStartDate=${S}&lastModEndDate=${E}&resultsPerPage=2000&startIndex=${START_INDEX}" \
                 -o "$OUT")
 
@@ -136,7 +138,7 @@ jobs:
       # flagging — any CVE in KEV is actively weaponized.
       - name: Fetch CISA KEV catalog
         run: |
-          curl -sSfL --retry 3 --max-time 120 \
+          curl -sSfL --http1.1 --retry 5 --retry-all-errors --retry-delay 10 --connect-timeout 30 --max-time 120 \
             "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json" \
             -o /tmp/cisa_kev.json
           COUNT=$(python3 -c "import json; print(len(json.load(open('/tmp/cisa_kev.json')).get('vulnerabilities', [])))")
@@ -147,7 +149,7 @@ jobs:
       # FIRST.org. Downloaded as CSV with CVE ID → EPSS score mapping.
       - name: Fetch EPSS scores
         run: |
-          curl -sSfL --retry 3 --max-time 300 \
+          curl -sSfL --http1.1 --retry 5 --retry-all-errors --retry-delay 10 --connect-timeout 30 --max-time 300 \
             "https://epss.cyentia.com/epss_scores-current.csv.gz" \
             -o /tmp/epss.csv.gz
           gunzip -f /tmp/epss.csv.gz

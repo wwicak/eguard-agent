@@ -20,6 +20,26 @@ def _slug(value: str) -> str:
     return cleaned.strip("_")
 
 
+# SigmaHQ renamed/split ATT&CK tactic tags (defense-evasion became
+# stealth + defense-impairment). Normalize to canonical ATT&CK tactic
+# slugs so required-tactic gates keep working across taxonomy renames.
+TACTIC_ALIASES = {
+    "stealth": "defense_evasion",
+    "defense_impairment": "defense_evasion",
+}
+
+# attack.g#### / attack.s#### tags reference ATT&CK groups/software,
+# not tactics; they must not inflate tactic coverage counts.
+ATTACK_NON_TACTIC_SUFFIX_RE = re.compile(r"^[gs]\d{4}$")
+
+
+def _normalize_tactic(value: str) -> str:
+    slug = _slug(value)
+    if not slug or ATTACK_NON_TACTIC_SUFFIX_RE.match(slug):
+        return ""
+    return TACTIC_ALIASES.get(slug, slug)
+
+
 def _load_sigma_attack_coverage(sigma_dir: Path) -> tuple[int, int, set[str], set[str]]:
     total_rules = 0
     rules_with_attack = 0
@@ -52,7 +72,7 @@ def _load_sigma_attack_coverage(sigma_dir: Path) -> tuple[int, int, set[str], se
                 if ATTACK_TECHNIQUE_SUFFIX_RE.match(suffix):
                     rule_techniques.add(suffix.upper())
                 else:
-                    tactic = _slug(suffix)
+                    tactic = _normalize_tactic(suffix)
                     if tactic:
                         rule_tactics.add(tactic)
 
@@ -94,7 +114,7 @@ def _load_elastic_attack_coverage(elastic_jsonl: Path) -> tuple[int, int, set[st
         for entry in record.get("mitre_tactics", []):
             if not isinstance(entry, dict):
                 continue
-            tactic_name = _slug(str(entry.get("name", "")))
+            tactic_name = _normalize_tactic(str(entry.get("name", "")))
             if tactic_name:
                 rule_tactics.add(tactic_name)
 
@@ -111,6 +131,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--sigma-dir", required=True, help="Path to bundled sigma directory")
     parser.add_argument("--elastic-jsonl", required=True, help="Path to bundled elastic-rules.jsonl")
     parser.add_argument("--output", default="", help="Optional report output path")
+    parser.add_argument("--manifest", default="", help="Optional bundle manifest for restricted-source skips")
 
     parser.add_argument("--min-techniques", type=int, default=80)
     parser.add_argument("--min-tactics", type=int, default=10)
@@ -129,6 +150,15 @@ def _parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = _parser().parse_args()
+    elastic_restricted_excluded = False
+    if args.manifest:
+        manifest_path = Path(args.manifest)
+        if manifest_path.is_file():
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            marker = manifest.get("restricted_sources", {}).get("elastic", {})
+            elastic_restricted_excluded = (
+                isinstance(marker, dict) and marker.get("status") == "restricted_excluded"
+            )
 
     sigma_total, sigma_with_attack, sigma_techniques, sigma_tactics = _load_sigma_attack_coverage(
         Path(args.sigma_dir)
@@ -139,7 +169,7 @@ def main() -> int:
 
     total_techniques = sigma_techniques | elastic_techniques
     total_tactics = sigma_tactics | elastic_tactics
-    required_tactics = sorted({_slug(t) for t in args.require_tactic if _slug(t)})
+    required_tactics = sorted({_normalize_tactic(t) for t in args.require_tactic if _normalize_tactic(t)})
     missing_required_tactics = sorted([t for t in required_tactics if t not in total_tactics])
 
     measured = {
@@ -173,18 +203,21 @@ def main() -> int:
             measured["sigma_rules_with_attack"],
             args.min_sigma_rules_with_attack,
         ),
-        (
-            "elastic_rules_with_attack",
-            measured["elastic_rules_with_attack"],
-            args.min_elastic_rules_with_attack,
-        ),
         ("sigma_techniques_count", measured["sigma_techniques_count"], args.min_sigma_techniques),
-        (
-            "elastic_techniques_count",
-            measured["elastic_techniques_count"],
-            args.min_elastic_techniques,
-        ),
     ]
+    if not elastic_restricted_excluded:
+        checks.extend([
+            (
+                "elastic_rules_with_attack",
+                measured["elastic_rules_with_attack"],
+                args.min_elastic_rules_with_attack,
+            ),
+            (
+                "elastic_techniques_count",
+                measured["elastic_techniques_count"],
+                args.min_elastic_techniques,
+            ),
+        ])
 
     failures: list[str] = []
     for label, actual, minimum in checks:
@@ -199,6 +232,7 @@ def main() -> int:
         "thresholds": thresholds,
         "measured": measured,
         "failures": failures,
+        "restricted_excluded": {"elastic": elastic_restricted_excluded},
         "observed_tactics": sorted(total_tactics),
         "observed_techniques": sorted(total_techniques),
         "missing_required_tactics": missing_required_tactics,

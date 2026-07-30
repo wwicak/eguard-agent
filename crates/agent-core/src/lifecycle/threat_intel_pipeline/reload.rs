@@ -2,17 +2,19 @@ use anyhow::{anyhow, Result};
 use grpc_client::ThreatIntelVersionEnvelope;
 use tracing::{info, warn};
 
-use super::super::{
-    build_ransomware_policy, detection_bootstrap, load_bundle_full, AgentRuntime, ReloadReport,
-};
+use super::super::AgentRuntime;
+#[cfg(test)]
+use super::super::{build_ransomware_policy, detection_bootstrap, load_bundle_full, ReloadReport};
 use super::bundle_guard::{
     bundle_ioc_total, enforce_bundle_signature_database_floor, enforce_signature_drop_guard,
     ensure_shard_bundle_summary_matches, push_count_lower_bound_mismatch, push_count_mismatch,
     signature_database_total,
 };
+#[cfg(test)]
 use super::state::persist_threat_intel_last_known_good_state;
 
 impl AgentRuntime {
+    #[cfg(test)]
     pub(crate) fn reload_detection_state(
         &mut self,
         version: &str,
@@ -37,7 +39,7 @@ impl AgentRuntime {
         let ioc_entries = bundle_ioc_total(&summary);
         let signature_total = signature_database_total(&summary);
 
-        self.corroborate_threat_intel_update(version, expected_intel, &summary)?;
+        corroborate_threat_intel_update(version, expected_intel, &summary)?;
         enforce_bundle_signature_database_floor(bundle_path, &summary)?;
         enforce_signature_drop_guard(bundle_path, previous_signature_total, signature_total)?;
 
@@ -118,59 +120,6 @@ impl AgentRuntime {
             }
         }
     }
-
-    fn corroborate_threat_intel_update(
-        &self,
-        version: &str,
-        expected_intel: Option<&ThreatIntelVersionEnvelope>,
-        summary: &super::super::rule_bundle_loader::BundleLoadSummary,
-    ) -> Result<()> {
-        let Some(expected) = expected_intel else {
-            return Ok(());
-        };
-
-        if !expected.version.trim().is_empty() && expected.version.trim() != version.trim() {
-            return Err(anyhow!(
-                "threat-intel version mismatch: expected '{}' but applying '{}'",
-                expected.version,
-                version
-            ));
-        }
-
-        let mut mismatches = Vec::new();
-
-        // SIGMA count semantics currently diverge between upstream manifest files and
-        // runtime-loadable rules. Keep strict corroboration on families with stable
-        // semantics (IOC/CVE) and use lower-bound corroboration for YARA.
-        push_count_lower_bound_mismatch(
-            &mut mismatches,
-            "yara_count",
-            expected.yara_count,
-            summary.yara_loaded,
-        );
-        push_count_mismatch(
-            &mut mismatches,
-            "ioc_count",
-            expected.ioc_count,
-            bundle_ioc_total(summary),
-        );
-        push_count_mismatch(
-            &mut mismatches,
-            "cve_count",
-            expected.cve_count,
-            summary.cve_entries,
-        );
-
-        if !mismatches.is_empty() {
-            warn!(
-                version = version,
-                mismatches = %mismatches.join(", "),
-                "threat-intel bundle corroboration mismatch (warn-only)"
-            );
-        }
-
-        Ok(())
-    }
 }
 
 impl AgentRuntime {
@@ -178,7 +127,12 @@ impl AgentRuntime {
     /// The tick loop calls `poll_background_reload` to check for completion
     /// and apply the lightweight engine swap.  This keeps heartbeat and
     /// telemetry running while sigma/YARA/IOC rules compile.
-    pub(crate) fn start_background_reload(&mut self, version: &str, bundle_path: &str) {
+    pub(crate) fn start_background_reload(
+        &mut self,
+        version: &str,
+        bundle_path: &str,
+        expected_intel: Option<ThreatIntelVersionEnvelope>,
+    ) {
         if self.background_reload_rx.is_some() {
             warn!("background reload already in progress, skipping");
             return;
@@ -188,6 +142,16 @@ impl AgentRuntime {
         let bundle_path_str = bundle_path.to_string();
         let config = self.config.clone();
         let shard_count = self.detection_state.shard_count();
+        let previous_signature_total = self
+            .last_reload_report
+            .as_ref()
+            .map(|report| report.sigma_rules + report.yara_rules + report.ioc_entries);
+        let old_version = self
+            .detection_state
+            .version()
+            .ok()
+            .flatten()
+            .unwrap_or_default();
         let previous_layer5_model = self.capture_previous_layer5_model();
 
         let (tx, rx) = std::sync::mpsc::channel();
@@ -230,18 +194,58 @@ impl AgentRuntime {
                 };
 
                 let (primary_engine, primary_summary) = build_engine();
+                let ioc_entries = bundle_ioc_total(&primary_summary);
+                let signature_total = signature_database_total(&primary_summary);
+
+                if let Err(err) = corroborate_threat_intel_update(
+                    &version,
+                    expected_intel.as_ref(),
+                    &primary_summary,
+                ) {
+                    warn!(error = %err, version = %version, "rejecting background threat-intel reload");
+                    return;
+                }
+                if let Err(err) =
+                    enforce_bundle_signature_database_floor(&bundle_path_str, &primary_summary)
+                {
+                    warn!(error = %err, version = %version, "rejecting background threat-intel reload");
+                    return;
+                }
+                if let Err(err) = enforce_signature_drop_guard(
+                    &bundle_path_str,
+                    previous_signature_total,
+                    signature_total,
+                ) {
+                    warn!(error = %err, version = %version, "rejecting background threat-intel reload");
+                    return;
+                }
+
                 let report = super::super::ReloadReport {
-                    old_version: String::new(),
+                    old_version,
                     new_version: version.clone(),
                     sigma_rules: primary_summary.sigma_loaded,
                     yara_rules: primary_summary.yara_loaded,
-                    ioc_entries: super::bundle_guard::bundle_ioc_total(&primary_summary),
+                    ioc_entries,
                 };
 
                 let mut engines = Vec::with_capacity(shard_count);
                 engines.push(primary_engine);
-                for _ in 1..shard_count {
-                    let (engine, _) = build_engine();
+                for shard_idx in 1..shard_count {
+                    let (engine, shard_summary) = build_engine();
+                    if let Err(err) =
+                        enforce_bundle_signature_database_floor(&bundle_path_str, &shard_summary)
+                    {
+                        warn!(error = %err, version = %version, shard_idx, "rejecting background threat-intel reload");
+                        return;
+                    }
+                    if let Err(err) = ensure_shard_bundle_summary_matches(
+                        shard_idx,
+                        &primary_summary,
+                        &shard_summary,
+                    ) {
+                        warn!(error = %err, version = %version, shard_idx, "rejecting background threat-intel reload");
+                        return;
+                    }
                     engines.push(engine);
                 }
 
@@ -322,6 +326,58 @@ impl AgentRuntime {
             "detection state hot-reloaded from background thread"
         );
     }
+}
+
+fn corroborate_threat_intel_update(
+    version: &str,
+    expected_intel: Option<&ThreatIntelVersionEnvelope>,
+    summary: &super::super::rule_bundle_loader::BundleLoadSummary,
+) -> Result<()> {
+    let Some(expected) = expected_intel else {
+        return Ok(());
+    };
+
+    if !expected.version.trim().is_empty() && expected.version.trim() != version.trim() {
+        return Err(anyhow!(
+            "threat-intel version mismatch: expected '{}' but applying '{}'",
+            expected.version,
+            version
+        ));
+    }
+
+    let mut mismatches = Vec::new();
+
+    // SIGMA count semantics currently diverge between upstream manifest files and
+    // runtime-loadable rules. Keep strict corroboration on families with stable
+    // semantics (IOC/CVE) and use lower-bound corroboration for YARA.
+    push_count_lower_bound_mismatch(
+        &mut mismatches,
+        "yara_count",
+        expected.yara_count,
+        summary.yara_loaded,
+    );
+    push_count_mismatch(
+        &mut mismatches,
+        "ioc_count",
+        expected.ioc_count,
+        bundle_ioc_total(summary),
+    );
+    push_count_mismatch(
+        &mut mismatches,
+        "cve_count",
+        expected.cve_count,
+        summary.cve_entries,
+    );
+
+    if !mismatches.is_empty() {
+        warn!(
+            version = version,
+            mismatches = %mismatches.join(", "),
+            "threat-intel bundle corroboration mismatch (warn-only)"
+        );
+    }
+
+    Ok(())
 }
 
 fn apply_previous_layer5_model_fallback(

@@ -51,41 +51,6 @@ pub struct BookmarkEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct DlpState {
-    #[serde(default)]
-    pub enabled: bool,
-    #[serde(default)]
-    pub scanner_loaded: bool,
-    #[serde(default)]
-    pub max_file_scan_size_mb: u32,
-    #[serde(default)]
-    pub status: String,
-    #[serde(default)]
-    pub last_detection_unix: Option<i64>,
-    #[serde(default)]
-    pub last_rule_id: Option<String>,
-}
-
-impl DlpState {
-    pub fn load_default() -> Result<Self> {
-        let mut state = read_json_or_default(dlp_state_path()?)?;
-        state.status = normalized_dlp_status(&state.status, state.enabled, state.scanner_loaded);
-        Ok(state)
-    }
-}
-
-pub fn normalized_dlp_status(raw: &str, enabled: bool, scanner_loaded: bool) -> String {
-    if !enabled {
-        return "disabled".to_string();
-    }
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "active" if scanner_loaded => "active".to_string(),
-        "disabled" | "active" | "degraded" => "degraded".to_string(),
-        _ => "degraded".to_string(),
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SessionState {
     #[serde(default)]
     pub sessions: Vec<SessionEntry>,
@@ -130,8 +95,6 @@ pub struct TrayPreferences {
     pub favorite_app_ids: Vec<String>,
     #[serde(default)]
     pub recent_launches: Vec<RecentLaunchEntry>,
-    #[serde(default)]
-    pub acknowledged_dlp_detection_unix: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -409,10 +372,6 @@ impl TrayPreferences {
             self.recent_launches.truncate(12);
         }
     }
-
-    pub fn acknowledge_dlp_detection(&mut self, detected_at_unix: i64) {
-        self.acknowledged_dlp_detection_unix = Some(detected_at_unix);
-    }
 }
 
 pub fn snapshot_session_cache() -> Result<SessionCacheSnapshot> {
@@ -490,10 +449,6 @@ pub fn bookmark_cache_path() -> Result<PathBuf> {
 
 pub fn session_state_path() -> Result<PathBuf> {
     Ok(data_root()?.join("ztna-sessions.json"))
-}
-
-pub fn dlp_state_path() -> Result<PathBuf> {
-    Ok(data_root()?.join("dlp-state.json"))
 }
 
 pub fn command_queue_path() -> Result<PathBuf> {
@@ -611,37 +566,9 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        bookmark_cache_path, dlp_state_path, normalized_dlp_status, snapshot_bookmark_cache,
-        wait_for_bookmark_cache_update, write_json, BookmarkEntry, BookmarkState, DlpState,
-        TrayCommand, TrayCommandQueue,
+        bookmark_cache_path, snapshot_bookmark_cache, wait_for_bookmark_cache_update, write_json,
+        BookmarkEntry, BookmarkState, TrayCommand, TrayCommandQueue,
     };
-
-    #[test]
-    fn dlp_status_normalization_fails_safe() {
-        assert_eq!(normalized_dlp_status("active", true, true), "active");
-        assert_eq!(normalized_dlp_status("active", true, false), "degraded");
-        assert_eq!(normalized_dlp_status("unexpected", true, true), "degraded");
-        assert_eq!(normalized_dlp_status("active", false, true), "disabled");
-    }
-
-    #[test]
-    fn dlp_state_loads_agent_status() {
-        let tray_dir = std::env::temp_dir().join("eguard-tray-dlp-state-test");
-        let _ = fs::remove_dir_all(&tray_dir);
-        std::env::set_var("EGUARD_TRAY_DATA_DIR", &tray_dir);
-        fs::create_dir_all(&tray_dir).expect("create tray dir");
-        fs::write(
-            dlp_state_path().expect("dlp path"),
-            r#"{"enabled":true,"scanner_loaded":true,"max_file_scan_size_mb":10,"status":"active"}"#,
-        )
-        .expect("write dlp state");
-
-        let state = DlpState::load_default().expect("load DLP state");
-        assert!(state.enabled);
-        assert!(state.scanner_loaded);
-        assert_eq!(state.max_file_scan_size_mb, 10);
-        assert_eq!(state.status, "active");
-    }
 
     #[test]
     fn bookmark_state_defaults_when_missing() {

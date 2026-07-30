@@ -57,3 +57,4 @@ artifacts
 tasks
 eguard-agent
 .pi/plans
+__pycache__/

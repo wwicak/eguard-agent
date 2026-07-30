@@ -25,10 +25,10 @@ use crate::launcher::{
     launch_bookmark, launch_launch_request_with_session_fallback, reconcile_pending_launch_requests,
 };
 use crate::state::{
-    bookmark_cache_path, clear_launch_request_entry, dlp_state_path, launch_request_state_path,
+    bookmark_cache_path, clear_launch_request_entry, launch_request_state_path,
     pam_launch_state_path, session_state_path, snapshot_session_cache, tray_heartbeat_path,
     tray_preferences_path, tray_shutdown_marker_path, upsert_launch_request_entry,
-    wait_for_session_cache_update, BookmarkEntry, BookmarkState, DlpState, LaunchRequestEntry,
+    wait_for_session_cache_update, BookmarkEntry, BookmarkState, LaunchRequestEntry,
     LaunchRequestState, PamLaunchState, RecentLaunchEntry, SessionState, TrayCommand,
     TrayCommandQueue, TrayPreferences,
 };
@@ -210,8 +210,6 @@ fn build_menu() -> Result<(Menu, Vec<MenuAction>)> {
         format!("Status: Connected · {} active sessions", sessions.len())
     };
     menu.append(&MenuItem::new(&connection_label, false, None))?;
-    let dlp = DlpState::load_default().unwrap_or_default();
-    menu.append(&MenuItem::new(dlp_menu_label(&dlp), false, None))?;
     menu.append(&PredefinedMenuItem::separator())?;
 
     if bookmarks.bookmarks.is_empty() {
@@ -233,8 +231,12 @@ fn build_menu() -> Result<(Menu, Vec<MenuAction>)> {
     menu.append(&PredefinedMenuItem::separator())?;
 
     if !sessions.is_empty() {
-        let disconnect_all =
-            MenuItem::with_id(MenuAction::DisconnectAll.id(), "Disconnect All", true, None);
+        let disconnect_all = MenuItem::with_id(
+            MenuAction::DisconnectAll.id(),
+            "Disconnect All",
+            true,
+            None,
+        );
         actions.push(MenuAction::DisconnectAll);
         menu.append(&disconnect_all)?;
     }
@@ -602,20 +604,6 @@ fn recent_launcher_suffix(entry: &RecentLaunchEntry) -> String {
         .unwrap_or_default()
 }
 
-fn dlp_status_label(dlp: &DlpState) -> String {
-    if !dlp.enabled {
-        return "Disabled".to_string();
-    }
-    if dlp.scanner_loaded && dlp.status.eq_ignore_ascii_case("active") {
-        return format!("Active · {} MB", dlp.max_file_scan_size_mb);
-    }
-    "Degraded".to_string()
-}
-
-fn dlp_menu_label(dlp: &DlpState) -> String {
-    format!("DLP: {}", dlp_status_label(dlp))
-}
-
 fn blank_fallback<'a>(value: &'a str, fallback: &'a str) -> &'a str {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -651,7 +639,11 @@ impl LaunchRequestEntryExt for LaunchRequestEntry {
     }
 }
 
-fn refresh_menu(state: &mut TrayUiState, tray_icon: Option<&mut tray_icon::TrayIcon>, force: bool) {
+fn refresh_menu(
+    state: &mut TrayUiState,
+    tray_icon: Option<&mut tray_icon::TrayIcon>,
+    force: bool,
+) {
     let fingerprint = current_menu_fingerprint();
     if !force && state.last_menu_fingerprint.as_deref() == Some(fingerprint.as_str()) {
         refresh_tray_visuals(state, tray_icon);
@@ -671,7 +663,6 @@ fn current_menu_fingerprint() -> String {
     [
         bookmark_cache_path().ok(),
         session_state_path().ok(),
-        dlp_state_path().ok(),
         launch_request_state_path().ok(),
         pam_launch_state_path().ok(),
         tray_preferences_path().ok(),
@@ -939,8 +930,6 @@ fn current_tooltip() -> Option<String> {
     let bookmarks = BookmarkState::load_default().ok()?;
     let launch_requests = LaunchRequestState::load_default().ok()?;
     let sessions = effective_sessions(&bookmarks).ok()?;
-    let dlp = DlpState::load_default().unwrap_or_default();
-    let dlp_line = format!("\nDLP: {}", dlp_status_label(&dlp));
     if !launch_requests.active_entries().is_empty() {
         let waiting = launch_requests
             .active_entries()
@@ -949,18 +938,17 @@ fn current_tooltip() -> Option<String> {
             .count();
         if waiting > 0 {
             return Some(format!(
-                "eGuard ZTNA\nStatus: Waiting for approval\nPending requests: {}{}",
-                waiting, dlp_line
+                "eGuard ZTNA\nStatus: Waiting for approval\nPending requests: {}",
+                waiting
             ));
         }
         return Some(format!(
-            "eGuard ZTNA\nStatus: Connecting\nPending requests: {}{}",
-            launch_requests.active_entries().len(),
-            dlp_line
+            "eGuard ZTNA\nStatus: Connecting\nPending requests: {}",
+            launch_requests.active_entries().len()
         ));
     }
     if sessions.is_empty() {
-        return Some(format!("eGuard ZTNA\nStatus: Not connected{}", dlp_line));
+        return Some("eGuard ZTNA\nStatus: Not connected".to_string());
     }
 
     let total_rx: i64 = sessions
@@ -972,11 +960,10 @@ fn current_tooltip() -> Option<String> {
         .map(|session| session.bytes_tx.unwrap_or(0))
         .sum();
     Some(format!(
-        "eGuard ZTNA\nStatus: Connected ({})\nIncoming: {}\nOutgoing: {}{}",
+        "eGuard ZTNA\nStatus: Connected ({})\nIncoming: {}\nOutgoing: {}",
         sessions.len(),
         format_bytes(total_rx),
-        format_bytes(total_tx),
-        dlp_line
+        format_bytes(total_tx)
     ))
 }
 
@@ -1141,9 +1128,7 @@ fn effective_sessions(bookmarks: &BookmarkState) -> Result<Vec<crate::state::Ses
     for pam_session in pam_sessions {
         let duplicate = sessions.iter().any(|session| {
             session.app_id == pam_session.app_id
-                && session
-                    .transport
-                    .eq_ignore_ascii_case(&pam_session.transport)
+                && session.transport.eq_ignore_ascii_case(&pam_session.transport)
                 && session.status.eq_ignore_ascii_case(&pam_session.status)
         });
         if !duplicate {
@@ -1314,37 +1299,5 @@ impl SessionLabel for crate::state::SessionEntry {
         } else {
             self.app_name.clone()
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{dlp_menu_label, dlp_status_label};
-    use crate::state::DlpState;
-
-    #[test]
-    fn dlp_menu_label_reports_safe_operational_state() {
-        assert_eq!(dlp_status_label(&DlpState::default()), "Disabled");
-        assert_eq!(dlp_menu_label(&DlpState::default()), "DLP: Disabled");
-        assert_eq!(
-            dlp_menu_label(&DlpState {
-                enabled: true,
-                scanner_loaded: true,
-                max_file_scan_size_mb: 10,
-                status: "active".to_string(),
-                last_detection_unix: None,
-                last_rule_id: None,
-            }),
-            "DLP: Active · 10 MB"
-        );
-        assert_eq!(
-            dlp_menu_label(&DlpState {
-                enabled: true,
-                scanner_loaded: false,
-                max_file_scan_size_mb: 10,
-                status: "degraded".to_string(),
-            }),
-            "DLP: Degraded"
-        );
     }
 }

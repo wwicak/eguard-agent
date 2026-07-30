@@ -229,9 +229,10 @@ fn config_change_agent_control_restart_schedules_service_restart() {
     runtime.apply_config_change(&payload, &mut exec);
 
     assert_eq!(exec.outcome, response::CommandOutcome::Applied);
-    assert_eq!(exec.status, "completed");
+    assert_eq!(exec.status, "restart_dispatched");
     assert!(
-        exec.detail.contains("agent service restart scheduled"),
+        exec.detail
+            .contains("verification asynchronous (see journal)"),
         "detail={}",
         exec.detail
     );
@@ -251,11 +252,12 @@ fn config_change_agent_control_restart_schedules_service_restart() {
         captured.contains("--setenv=EGUARD_INTERNAL_SUBPROCESS=1"),
         "captured={captured}"
     );
-    assert!(captured.contains("/bin/sh"), "captured={captured}");
+    assert!(captured.contains("/bin/bash"), "captured={captured}");
     assert!(captured.contains("-lc"), "captured={captured}");
     assert!(
-        captured
-            .contains("systemctl restart eguard-agent.service || systemctl restart eguard-agent"),
+        captured.contains("systemctl kill --kill-who=main -s TERM eguard-agent")
+            && captured.contains("/proc/$pid/exe")
+            && captured.contains("probe_version"),
         "captured={captured}"
     );
 

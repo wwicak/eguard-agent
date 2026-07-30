@@ -1,4 +1,5 @@
 use super::*;
+#[cfg(target_os = "linux")]
 use std::io::Write;
 
 #[test]
@@ -8,6 +9,7 @@ fn capture_current_process_metadata() {
     assert_eq!(capture.pid, pid);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 // AC-RSP-044
 fn files_larger_than_limit_are_not_captured() {
@@ -33,6 +35,7 @@ fn files_larger_than_limit_are_not_captured() {
     let _ = fs::remove_dir(base);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 // AC-RSP-043
 fn file_exactly_at_capture_limit_is_accepted() {
@@ -57,6 +60,7 @@ fn file_exactly_at_capture_limit_is_accepted() {
     let _ = fs::remove_dir(base);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 // AC-RSP-046
 fn environ_bytes_are_normalized_to_newline_pairs() {
@@ -67,12 +71,13 @@ fn environ_bytes_are_normalized_to_newline_pairs() {
     assert_eq!(lines, vec!["USER=root", "SHELL=/bin/bash", "PATH=/usr/bin"]);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn empty_environ_bytes_normalize_to_none() {
     assert!(normalize_environ_bytes(b"\0\0").is_none());
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn nonblocking_pipe_capture_returns_without_blocking_when_writer_is_open() {
     use std::os::fd::AsRawFd;

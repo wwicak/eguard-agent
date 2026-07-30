@@ -25,44 +25,6 @@ use ztna::{LocalForwardHandle, TunnelClient, TunnelClientConfig};
 use crate::config::{AgentConfig, AgentMode};
 use crate::detection_state::SharedDetectionState;
 
-fn load_dlp_scanner(config: &AgentConfig) -> Option<detection::dlp::DlpScanner> {
-    if !config.dlp_enabled || config.dlp_rules_path.trim().is_empty() {
-        return None;
-    }
-    let raw = match std::fs::read_to_string(&config.dlp_rules_path) {
-        Ok(raw) => raw,
-        Err(err) => {
-            warn!(error = %err, path = %config.dlp_rules_path, "DLP rule pack unavailable; keeping DLP disabled");
-            return None;
-        }
-    };
-    match detection::dlp::DlpScanner::from_json(&raw) {
-        Ok(scanner) => Some(scanner),
-        Err(err) => {
-            warn!(error = %err, path = %config.dlp_rules_path, "DLP rule pack invalid; keeping DLP disabled");
-            None
-        }
-    }
-}
-
-impl AgentRuntime {
-    pub(super) fn reload_dlp_scanner(&mut self) {
-        if !self.config.dlp_enabled {
-            self.dlp_scanner = None;
-            return;
-        }
-        match load_dlp_scanner(&self.config) {
-            Some(scanner) => {
-                self.dlp_scanner = Some(scanner);
-                info!(path = %self.config.dlp_rules_path, "DLP rule pack reloaded");
-            }
-            None => {
-                warn!(path = %self.config.dlp_rules_path, "DLP rule pack rejected; keeping previous scanner")
-            }
-        }
-    }
-}
-
 use super::{
     build_ransomware_policy, derive_runtime_mode, host_is_low_memory, init_ebpf_engine,
     linux_host_mem_total_bytes, load_baseline_store, load_bundle_full, load_compliance_policy,
@@ -139,8 +101,6 @@ pub struct AgentRuntime {
     pub(super) deception_policy: DeceptionPolicyConfig,
     pub(super) hunting_policy: HuntingPolicyConfig,
     pub(super) zero_trust_policy: ZeroTrustPolicyConfig,
-    pub(super) dlp_scanner: Option<detection::dlp::DlpScanner>,
-    pub(super) last_dlp_detection: Option<(i64, String)>,
     pub(super) fleet_seed_enabled: bool,
     pub(super) baseline_upload_canary_percent: u8,
     pub(super) fleet_seed_canary_percent: u8,
@@ -491,7 +451,6 @@ impl AgentRuntime {
         let mut playbook_engine = PlaybookEngine::new();
         playbook_engine.load_default_playbooks();
 
-        let dlp_scanner = load_dlp_scanner(&config);
         let mut runtime = Self {
             limiter: KillRateLimiter::new(config.response.max_kills_per_minute),
             protected: {
@@ -567,8 +526,6 @@ impl AgentRuntime {
             deception_policy: DeceptionPolicyConfig::default(),
             hunting_policy: HuntingPolicyConfig::default(),
             zero_trust_policy: ZeroTrustPolicyConfig::default(),
-            dlp_scanner,
-            last_dlp_detection: None,
             fleet_seed_enabled,
             baseline_upload_canary_percent,
             fleet_seed_canary_percent,
@@ -986,39 +943,5 @@ mod runtime_budget_tests {
         assert_eq!(small.1, LOW_MEMORY_ENRICHMENT_FILE_HASH_ENTRIES);
         assert!(full.0 > small.0);
         assert!(full.1 > small.1);
-    }
-
-    #[test]
-    fn dlp_loader_accepts_valid_pack_and_rejects_invalid_or_disabled_config() {
-        let dir = std::env::temp_dir().join(format!(
-            "eguard-dlp-loader-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create tempdir");
-        let path = dir.join("dlp.json");
-        std::fs::write(
-            &path,
-            r#"{"schema_version":"1","pack_id":"indonesia","version":"1.0.0","rules":[{"id":"id.nik","name":"NIK","pattern":"\\b\\d{16}\\b","validator":"context_only","context":["nik"],"severity":"high","default_action":"alert","regulations":["UU PDP"],"redaction":"mask_middle","max_matches":1}]}"#,
-        )
-        .expect("write valid pack");
-
-        let mut valid = crate::config::AgentConfig::default();
-        valid.dlp_enabled = true;
-        valid.dlp_rules_path = path.to_string_lossy().into_owned();
-        assert!(super::load_dlp_scanner(&valid).is_some());
-
-        let mut invalid = valid.clone();
-        invalid.dlp_rules_path = dir.join("invalid.json").to_string_lossy().into_owned();
-        std::fs::write(&invalid.dlp_rules_path, "not-json").expect("write invalid pack");
-        assert!(super::load_dlp_scanner(&invalid).is_none());
-
-        invalid.dlp_enabled = false;
-        assert!(super::load_dlp_scanner(&invalid).is_none());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

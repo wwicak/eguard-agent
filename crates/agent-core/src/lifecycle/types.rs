@@ -2,7 +2,6 @@ use serde::Deserialize;
 
 use compliance::ComplianceResult;
 use detection::{Confidence, DetectionOutcome, TelemetryEvent};
-
 use grpc_client::{
     CommandEnvelope, ComplianceEnvelope, EventEnvelope, HeartbeatRuntimeEnvelope,
     InventoryEnvelope, ResponseEnvelope,

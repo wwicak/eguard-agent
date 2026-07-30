@@ -96,3 +96,123 @@ Fix the Windows root cause that creates multiple agent identities for the same h
 - [ ] Make Windows identity/hostname resolution use a stable Windows source (`COMPUTERNAME`) before PID fallback.
 - [ ] Add regression tests covering Windows-style env resolution.
 - [ ] Build and, if needed, deploy to the lab VM to verify repeated restarts keep one agent identity.
+
+## Windows self-protect fix release update 2026-05-10T07:58Z
+- Pushed `release/v15.0.0-clean` with commit `19ee55e fix(self-protect): keep timing anomalies non-terminal`.
+- Triggered GitHub Actions `Release Agent (All Platforms)` run `25623002992` for `version=v15.0.0`; Windows package artifacts were produced and downloaded to `/home/dimas/eguard-agent/artifacts/fixed-windows-25623002992`.
+- Fixed Windows artifacts staged into the eGuard server package directories on eg-1 and eg-2:
+  - `/usr/local/eg/var/agent-packages/windows/eguard-agent-15.0.0-x64.msi`
+  - `/usr/local/eg/var/agent-packages/windows/eguard-agent-15.0.0.exe`
+  - `/usr/local/eg/var/agent-packages/msi/eguard-agent-15.0.0-x64.msi`
+  - `/usr/local/eg/var/agent-packages/exe/eguard-agent-15.0.0.exe`
+- Normal MSI upgrade on stale WINAD2022 failed because the old protected service could not stop (`Error 1921`), proving a separate maintenance/upgrade self-protection seam remains.
+- Bounded endpoint-only forced remediation installed the fixed MSI successfully and restored live Windows heartbeat:
+  - `msiexec_exit=0`
+  - service running with `CanStop=True`
+  - server DB row `WINAD2022 active` with fresh ~30s heartbeats
+  - eg-1 tcpdump captured live Windows gRPC traffic to `192.168.122.25:50053`
+- Evidence lives in `/home/dimas/fe_eguard/tasks/evidence/`:
+  - `windows-fixed-agent-upgrade-20260510T074307Z/`
+  - `windows-fixed-agent-forced-remediation-20260510T074925Z/`
+  - `final-agent-live-snapshot-20260510T075714Z.txt`
+- Remaining product follow-up: make self-protection/installer maintenance mode allow supported stop/upgrade/uninstall without a forced process kill, while preserving tamper resistance outside maintenance.
+
+## Plan — Windows supported maintenance upgrade path
+
+## Objective
+Allow trusted Windows MSI/installer upgrades to stop and replace `eGuardAgent` without ad hoc `taskkill`, while preserving self-protection/tamper resistance during normal operation.
+
+## Current evidence
+- Normal MSI upgrade of the stale lab agent failed with `Error 1921` because service `eGuardAgent` could not be stopped.
+- Old service state before forced remediation: `CanStop=False`, `Status=Running`.
+- Forced endpoint-only remediation succeeded by disabling service start, killing old PID, running MSI, restoring automatic start/failure actions.
+- Fixed post-install service reports `CanStop=True`, so the latest MSI/service configuration may already improve this seam, but we still need source-level confirmation and a supported test path.
+
+## Work items
+- [ ] Wait for `code-explorer` and `security-reviewer` subagent reports:
+  - `/home/dimas/eguard-agent/tasks/subagent-windows-maintenance-upgrade-code-map.md`
+  - `/home/dimas/eguard-agent/tasks/subagent-windows-maintenance-mode-security.md`
+- [ ] Inspect Windows service registration in MSI/WiX/scripts and runtime service control handler behavior.
+- [ ] Determine whether `CanStop=True` after fixed MSI is intentional, sufficient, and safe.
+- [ ] If source change is needed, implement minimal maintenance-mode support with tests.
+- [ ] Validate with a normal MSI reinstall/repair or upgrade path on WINAD2022 without forced process kill.
+- [ ] Document final supported operator procedure and security assumptions.
+
+## Windows maintenance upgrade investigation result 2026-05-10T08:08Z
+- Security reviewer completed: `/home/dimas/eguard-agent/tasks/subagent-windows-maintenance-mode-security.md`.
+- Code explorer stalled and was interrupted; direct code map written: `/home/dimas/eguard-agent/tasks/windows-maintenance-upgrade-code-map-direct.md`.
+- Current fixed MSI/runtime already supports normal SCM Stop:
+  - `crates/agent-core/src/main.rs` advertises STOP by default via `resolve_windows_service_stop_control_policy_fast() -> true`.
+  - `installer/windows/eguard-agent.wxs` uses `ServiceControl Stop="both" Wait="yes"`.
+- Lab proof after fixed MSI:
+  - `Stop-Service eGuardAgent` succeeded without `taskkill`.
+  - `Start-Service eGuardAgent` succeeded.
+  - `CanStop=True` after restart.
+  - server heartbeats/compliance resumed.
+  - evidence in `/home/dimas/fe_eguard/tasks/evidence/windows-fixed-agent-supported-restart-20260510T080201Z/` and `/home/dimas/fe_eguard/tasks/evidence/windows-supported-restart-followup-20260510T080635Z.txt`.
+- Interpretation:
+  - old `CanStop=False` state was a stale/wedged installed product problem requiring one-time endpoint remediation.
+  - current fixed package does not require a new source patch to support normal SCM stop/start.
+- Remaining follow-ups:
+  - remove or gate `taskkill /F` fallback in `crates/agent-core/src/lifecycle/command_pipeline/update_agent/worker_windows.rs`.
+  - avoid temporary SCM failure-action/start-mode mutation during updater flow where possible.
+  - add tests/docs for Windows service stop policy and supported MSI maintenance workflow.
+  - add fe_eguard server tests/docs for package alias precedence or migrate to a single package layout.
+
+---
+
+## Task Plan — Protected-path hardening for autonomous quarantine
+
+## Objective
+Prevent autonomous quarantine from damaging core Linux OS files through direct paths, usr-merge aliases, intermediate symlinks, or runtime/state roots.
+
+## Plan
+- [x] Read the hardening spec and relevant response/quarantine code before editing.
+- [x] Review prior protected-path commit `ece5d48` before editing.
+- [x] Extend Linux protected paths for usr-merge aliases, pseudo/runtime roots, eGuard state, and critical `/var/lib` state without protecting all `/var` or `/home`.
+- [x] Canonicalize existing quarantine source paths at the destructive primitive and re-check protection before move/copy.
+- [x] Add regression coverage for `/etc/fstab`, alias roots, protected state roots, intermediate symlink bypass, and ordinary quarantine behavior.
+- [x] Apply security-review additions for lib variants, `/root`, Debian package state roots, canonical report path, and unprotected intermediate-symlink happy path.
+
+## Checks
+- [x] `cargo test -p response default_linux_protected_paths_match_acceptance_baseline` — passed.
+- [x] `cargo test -p response quarantine_rejects_intermediate_symlink_into_protected_root` — passed.
+- [x] `cargo test -p response quarantine_allows_intermediate_symlink_to_unprotected_target_and_reports_canonical_path` — passed.
+- [x] `rustfmt --edition 2021 --check crates/response/src/lib.rs crates/response/src/quarantine.rs crates/response/src/tests.rs crates/response/src/quarantine/tests.rs` — passed.
+- [x] `cargo test -p agent-core response_pipeline::tests` — passed.
+- [x] `cargo fmt --all -- --check` — failed on unrelated pre-existing formatting in `crates/agent-core/src/lifecycle/command_pipeline/update_agent/worker_macos.rs` and `crates/platform-windows/src/compliance/screen_lock.rs`; not changed for this task.
+- [x] `cargo test -p response` — failed on unrelated pre-existing expectations/permissions tests; targeted hardening tests passed.
+
+## Review Result
+- Minimal response-only hardening implemented; security-review protected-root and canonical-report fixes applied.
+- No deployment or commit performed.
+
+
+---
+
+## Task Plan — Quarantine rate limit circuit breaker
+
+## Objective
+Enforce the configured per-minute quarantine limit before destructive quarantine filesystem mutation.
+
+## Plan
+- [x] Add `max_quarantines_per_minute` to response config with default `5`.
+- [x] Parse/persist the limit from TOML, environment, enrollment snapshots, and policy sync.
+- [x] Reuse the existing rolling one-minute limiter for an independent quarantine quota.
+- [x] Reject rate-limited quarantine attempts before mutation with `quarantine_skipped:rate_limited`.
+- [x] Add focused config, persistence, policy, and action tests.
+
+## Checks
+- [x] `rustfmt --edition 2021 --check` on changed Rust files — passed.
+- [x] `cargo test -p agent-core file_config_is_loaded` — passed.
+- [x] `cargo test -p agent-core env_overrides_file_config` — passed.
+- [x] `cargo test -p agent-core persist_runtime_config_snapshot_writes_restart_safe_values` — passed.
+- [x] `cargo test -p agent-core policy_response_overrides_update_runtime_response_config` — passed.
+- [x] `cargo test -p agent-core quarantine_rate_limiter_skips_second_file_without_consuming_kill_quota` — passed.
+- [x] `cargo test -p agent-core response_pipeline::tests` — passed.
+- [x] `git diff --check` — passed.
+
+## Review Result
+- Minimal quarantine circuit breaker implemented; existing protected-path hardening diff preserved.
+- Broader pre-existing failures from prior report were not rerun: `cargo fmt --all -- --check` had unrelated formatting failures in `crates/agent-core/src/lifecycle/command_pipeline/update_agent/worker_macos.rs` and `crates/platform-windows/src/compliance/screen_lock.rs`; `cargo test -p response` had unrelated pre-existing response expectation/permission failures.
+- No deployment or commit performed.

@@ -7,10 +7,11 @@ use tracing::warn;
 
 use crate::pb;
 use crate::types::{
-    CertificatePolicyEnvelope, CommandEnvelope, ComplianceEnvelope, EnrollmentEnvelope,
-    EnrollmentResultEnvelope, EventEnvelope, FleetBaselineEnvelope, HeartbeatRuntimeEnvelope,
-    InventoryEnvelope, PolicyEnvelope, ResponseEnvelope, ServerState, ThreatIntelVersionEnvelope,
-    ZtnaBookmarkEnvelope, ZtnaBookmarkListEnvelope,
+    ArtifactUploadEnvelope, ArtifactUploadResult, CertificatePolicyEnvelope, CommandEnvelope,
+    ComplianceEnvelope, EnrollmentEnvelope, EnrollmentResultEnvelope, EventEnvelope,
+    FleetBaselineEnvelope, HeartbeatRuntimeEnvelope, InventoryEnvelope, PolicyEnvelope,
+    ResponseEnvelope, ServerState, ThreatIntelVersionEnvelope, ZtnaBookmarkEnvelope,
+    ZtnaBookmarkListEnvelope,
 };
 
 use super::{
@@ -85,7 +86,6 @@ impl Client {
                         lsm_supported: cfg!(target_os = "linux"),
                         yara_supported: true,
                         ebpf_programs: Vec::new(),
-                        dlp_capabilities: Vec::new(),
                     }),
                     tenant_id: enrollment.tenant_id.clone().unwrap_or_default(),
                     agent_id: enrollment.agent_id.clone(),
@@ -137,7 +137,6 @@ impl Client {
                         active_ioc_entries: runtime.status.active_ioc_entries,
                         last_detection: runtime.status.last_detection.clone(),
                         last_response_action: runtime.status.last_response_action.clone(),
-                        dlp_status: None,
                     }),
                     resource_usage: runtime.map(|runtime| pb::ResourceUsage {
                         cpu_percent: runtime.resource_usage.cpu_percent,
@@ -157,7 +156,6 @@ impl Client {
                     buffered_events: runtime.map(|r| r.buffered_events).unwrap_or(0),
                     ztna_sessions: Vec::new(),
                     last_bookmark_version,
-                    dlp_status: None,
                     compliance_status: compliance_status.to_string(),
                     sent_at_unix: now_unix(),
                 })
@@ -541,6 +539,72 @@ impl Client {
         let channel = self.connect_channel().await?;
         Ok(pb::agent_service_client::AgentServiceClient::new(channel)
             .max_decoding_message_size(MAX_GRPC_RECV_MSG_SIZE_BYTES))
+    }
+
+    pub(super) async fn upload_artifact_grpc(
+        &self,
+        envelope: &ArtifactUploadEnvelope,
+    ) -> Result<ArtifactUploadResult> {
+        const ARTIFACT_CHUNK_BYTES: usize = 1 << 20;
+        self.with_retry("upload_artifact_grpc", || async {
+            let mut client = self.agent_service_client().await?;
+            let total_size = envelope.data.len() as u64;
+            let mut chunks = Vec::new();
+            let mut offset = 0usize;
+            let mut sequence = 0i32;
+            loop {
+                let end = (offset + ARTIFACT_CHUNK_BYTES).min(envelope.data.len());
+                let first = offset == 0;
+                let last = end >= envelope.data.len();
+                chunks.push(pb::ArtifactChunk {
+                    agent_id: if first {
+                        envelope.agent_id.clone()
+                    } else {
+                        String::new()
+                    },
+                    command_id: if first {
+                        envelope.command_id.clone()
+                    } else {
+                        String::new()
+                    },
+                    artifact_type: if first {
+                        envelope.artifact_type.clone()
+                    } else {
+                        String::new()
+                    },
+                    filename: if first {
+                        envelope.filename.clone()
+                    } else {
+                        String::new()
+                    },
+                    sha256: if first {
+                        envelope.sha256_hex.clone()
+                    } else {
+                        String::new()
+                    },
+                    total_size_bytes: if first { total_size } else { 0 },
+                    data: envelope.data[offset..end].to_vec(),
+                    sequence,
+                    last,
+                });
+                if last {
+                    break;
+                }
+                offset = end;
+                sequence += 1;
+            }
+            let response = client
+                .upload_artifact(tonic::Request::new(iter(chunks)))
+                .await
+                .context("upload_artifact RPC failed")?
+                .into_inner();
+            Ok(ArtifactUploadResult {
+                accepted: response.accepted,
+                artifact_id: response.artifact_id,
+                detail: response.detail,
+            })
+        })
+        .await
     }
 }
 

@@ -107,7 +107,7 @@ pub(super) fn init_ebpf_engine() -> EbpfEngine {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(test, target_os = "linux"))]
 pub(super) fn try_init_ebpf_from_object_dir(
     objects_dir: &Path,
     map_name: &str,

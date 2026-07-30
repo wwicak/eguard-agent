@@ -119,9 +119,15 @@ impl AgentConfig {
         if let Some(v) = response.dry_run {
             self.response.dry_run = v;
         }
+        if let Some(v) = response.allow_remote_uninstall {
+            self.response.allow_remote_uninstall = v;
+        }
         if let Some(rate_limit) = response.rate_limit {
             if let Some(v) = rate_limit.max_kills_per_minute {
                 self.response.max_kills_per_minute = v;
+            }
+            if let Some(v) = rate_limit.max_quarantines_per_minute {
+                self.response.max_quarantines_per_minute = v;
             }
         }
         if let Some(auto_isolation) = response.auto_isolation {
@@ -273,15 +279,6 @@ impl AgentConfig {
         }
         if let Some(v) = detection.max_file_scan_size_mb {
             self.detection_max_file_scan_size_mb = v;
-        }
-        if let Some(v) = detection.dlp_enabled {
-            self.dlp_enabled = v;
-        }
-        if let Some(v) = non_empty(detection.dlp_rules_path) {
-            self.dlp_rules_path = v;
-        }
-        if let Some(v) = detection.dlp_max_file_scan_size_mb {
-            self.dlp_max_file_scan_size_mb = v.max(1);
         }
         if let Some(v) = detection.memory_scan_enabled {
             self.detection_memory_scan_enabled = v;
@@ -491,6 +488,8 @@ struct FileResponseConfig {
     #[serde(default)]
     dry_run: Option<bool>,
     #[serde(default)]
+    allow_remote_uninstall: Option<bool>,
+    #[serde(default)]
     definite: Option<FileResponsePolicy>,
     #[serde(default)]
     very_high: Option<FileResponsePolicy>,
@@ -544,6 +543,8 @@ pub struct FileResponsePolicy {
 struct FileResponseRateLimitConfig {
     #[serde(default)]
     max_kills_per_minute: Option<usize>,
+    #[serde(default)]
+    max_quarantines_per_minute: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -622,12 +623,6 @@ struct FileDetectionConfig {
     scan_on_create: Option<bool>,
     #[serde(default)]
     max_file_scan_size_mb: Option<usize>,
-    #[serde(default)]
-    dlp_enabled: Option<bool>,
-    #[serde(default)]
-    dlp_rules_path: Option<String>,
-    #[serde(default)]
-    dlp_max_file_scan_size_mb: Option<usize>,
     #[serde(default)]
     memory_scan_enabled: Option<bool>,
     #[serde(default)]
