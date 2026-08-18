@@ -9,6 +9,7 @@ pub mod compliance;
 pub mod enrichment;
 pub mod etw;
 pub mod inventory;
+pub mod removable_media;
 pub mod response;
 pub mod self_protect;
 pub mod service;

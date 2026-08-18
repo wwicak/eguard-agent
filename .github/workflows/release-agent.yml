@@ -253,6 +253,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path artifacts/windows | Out-Null
           wix build installer/windows/eguard-agent.wxs `
+            -arch x64 `
             -d AgentExePath=target/x86_64-pc-windows-msvc/release/agent-core.exe `
             -d TrayExePath=target/x86_64-pc-windows-msvc/release/eguard-tray.exe `
             -d AgentVersion=${{ steps.semver.outputs.version }} `

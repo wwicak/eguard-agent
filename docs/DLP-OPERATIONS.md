@@ -7,6 +7,8 @@ The current DLP implementation is **audit/alert only**. It scans bounded UTF-8 t
 Implemented channels:
 
 - Agent file-write scan for configured text-like files.
+- Windows removable-media observation: a sensitive file-write on a `GetDriveTypeW` removable volume is tagged `channel=removable_media`.
+- Windows/UNC file-share observation: a sensitive file-write on `\\server\\share\\...` is tagged `channel=file_share`.
 - Versioned JSON rule pack loading.
 - Context and validator checks.
 - Redacted evidence in the existing telemetry envelope.
@@ -18,8 +20,9 @@ Not implemented or not proven:
 
 - Windows blocking/file interception end-to-end.
 - macOS/Linux blocking.
-- Clipboard, browser upload, cloud upload, SSL inspection, OCR, and archive expansion.
-- Tray notification and acknowledge UI.
+- SMB protocol-content inspection (UNC file-write observation is available, but not SMB packet/body inspection).
+- HTTP(S), SMTP, FTP, chat, clipboard, browser upload, cloud upload, SSL inspection, OCR, and archive expansion. Existing Windows telemetry observes TCP connect/DNS metadata only; it does not inspect content or apply enforcement.
+- Native OS toast notifications; the Tray Manager provides local DLP alert/acknowledge UI.
 - Full workspace test suite on Windows.
 
 ## Safe configuration

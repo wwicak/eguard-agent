@@ -51,10 +51,30 @@ pub fn decode_etw_record(
     ts_ns: u64,
     user_data: &[u8],
 ) -> Option<RawEvent> {
+    decode_etw_record_with_event_id(provider_guid, 0, opcode, 0, pid, ts_ns, user_data)
+}
+
+/// Decode a real ETW record when the event descriptor metadata is available.
+///
+/// The Windows Kernel-File provider emits file writes as Event ID 16 with
+/// opcode 0 and the write keyword. The legacy opcode-only API cannot identify
+/// that record safely, so the live consumer supplies the descriptor metadata.
+pub fn decode_etw_record_with_event_id(
+    provider_guid: &str,
+    event_id: u16,
+    opcode: u8,
+    keyword: u64,
+    pid: u32,
+    ts_ns: u64,
+    user_data: &[u8],
+) -> Option<RawEvent> {
     use super::providers::*;
 
     match provider_guid {
         KERNEL_PROCESS => decode_kernel_process(opcode, pid, ts_ns, user_data),
+        KERNEL_FILE if event_id == 16 && opcode == 0 && keyword & 0x200 != 0 => {
+            decode_kernel_file(15, pid, ts_ns, user_data)
+        }
         KERNEL_FILE => decode_kernel_file(opcode, pid, ts_ns, user_data),
         KERNEL_NETWORK => decode_kernel_network(opcode, pid, ts_ns, user_data),
         DNS_CLIENT => decode_dns_client(opcode, pid, ts_ns, user_data),
@@ -774,6 +794,35 @@ mod tests {
         assert!(event.payload.contains("file_object=0x2222"));
         assert!(event.payload.contains("file_key=0x3333"));
         assert!(event.payload.contains("size=77"));
+    }
+
+    #[test]
+    fn decode_kernel_file_event_16_write_opcode_zero_is_file_write() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&0u64.to_le_bytes());
+        data.extend_from_slice(&0x1234u64.to_le_bytes());
+        data.extend_from_slice(&0x5678u64.to_le_bytes());
+        data.extend_from_slice(&0x9abcu64.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&99u32.to_le_bytes());
+
+        let event = decode_etw_record_with_event_id(
+            super::super::providers::KERNEL_FILE,
+            16,
+            0,
+            0x220,
+            42,
+            502,
+            &data,
+        )
+        .expect("should decode");
+
+        assert!(matches!(event.event_type, EventType::FileWrite));
+        assert!(event.payload.contains("file_object=0x5678"));
+        assert!(event.payload.contains("file_key=0x9abc"));
+        assert!(event.payload.contains("size=99"));
     }
 
     #[test]

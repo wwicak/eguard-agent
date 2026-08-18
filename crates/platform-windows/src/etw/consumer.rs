@@ -193,7 +193,9 @@ mod win32 {
             // Convert FILETIME (100-ns since 1601) to Unix nanoseconds.
             let ts_ns = filetime_to_unix_ns(header.TimeStamp);
 
+            let event_id = header.EventDescriptor.Id;
             let opcode = header.EventDescriptor.Opcode;
+            let keyword = header.EventDescriptor.Keyword;
             let pid = state.resolve_event_pid(&guid_str, header.ProcessId, header.ThreadId, ts_ns);
 
             if header.ProcessId == state.agent_pid || pid == state.agent_pid {
@@ -227,7 +229,15 @@ mod win32 {
             {
                 super::super::security_auditing::decode_security_auditing_record(record, ts_ns)
             } else {
-                codec::decode_etw_record(&guid_str, opcode, pid, ts_ns, user_data)
+                codec::decode_etw_record_with_event_id(
+                    &guid_str,
+                    event_id,
+                    opcode,
+                    keyword,
+                    pid,
+                    ts_ns,
+                    user_data,
+                )
             };
 
             if let Some(event) = event {

@@ -31,6 +31,9 @@ Use stable strings until the canonical proto is extended:
 - `dlp.browser_upload_block`
 - `dlp.content_redaction`
 - `dlp.hot_reload`
+- `dlp.trusted_label_observe`
+- `dlp.structured_fingerprint_observe`
+- `dlp.unstructured_fingerprint_observe`
 
 Capabilities are reported per endpoint and must have an explicit state: `available`, `audit_only`, `unsupported`, or `degraded`.
 
@@ -56,6 +59,16 @@ Capabilities are reported per endpoint and must have an explicit state: `availab
 ```
 
 MVP actions are `audit` and `alert`. `block` is allowed only when the endpoint capability explicitly reports a tested block path and the policy is in targeted rollout.
+
+## Classification extensions (Scenario 01–03)
+
+The classification core is local-only and audit/alert-only.
+
+- **Trusted labels/properties:** adapters may emit only an opaque Microsoft Purview/MIP or Office label identifier after the platform adapter verifies the source. Filenames, arbitrary sidecar files, and user-provided values are not trusted labels.
+- **Structured fingerprints:** tenant tooling canonicalizes approved records and supplies only keyed SHA-256 fingerprints to the Agent. Raw structured records and tenant keys are not telemetry fields.
+- **Unstructured fingerprints:** tenant tooling supplies bounded keyed five-word-shingle fingerprints. The Agent compares local text to those fingerprints; it never uploads the reference corpus or observed text.
+- **Precedence:** accepted trusted label, structured fingerprint, and unstructured fingerprint are independent audit signals. A future policy may combine them, but none creates a block action.
+- **Capability state:** these capabilities remain `unsupported` until a verified MIP/Office adapter and tenant-provisioned fingerprint pack are active; the core alone does not advertise them as available.
 
 ## Detection event
 
