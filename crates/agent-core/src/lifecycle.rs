@@ -6,6 +6,7 @@ mod compliance;
 mod compliance_platform;
 mod constants;
 mod detection_event;
+mod dlp_policy_engine;
 mod ebpf_support;
 mod emergency_rule;
 mod enrollment;

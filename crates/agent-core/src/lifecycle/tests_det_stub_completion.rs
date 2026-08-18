@@ -666,6 +666,7 @@ rule bootstrap_last_known_good_yara {
         container_id: None,
         container_escape: false,
         container_privileged: false,
+        user: None,
     };
     let out = runtime
         .detection_state

@@ -649,6 +649,7 @@ mod tests {
             container_id: None,
             container_escape: false,
             container_privileged: false,
+            user: None,
         }
     }
 

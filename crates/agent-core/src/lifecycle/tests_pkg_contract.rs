@@ -780,6 +780,7 @@ fn repo_credential_access_rule_ignores_passwd_and_sudoers_noise_but_keeps_shadow
         container_id: None,
         container_escape: false,
         container_privileged: false,
+        user: None,
     };
 
     let passwd = engine.process_event(&mk_event("/etc/passwd", "sudo"));
@@ -840,6 +841,7 @@ fn repo_windows_runkey_rule_matches_cmd_wrapper_shape() {
         container_id: None,
         container_escape: false,
         container_privileged: false,
+        user: None,
     };
 
     let out = engine.process_event(&event);
@@ -879,6 +881,7 @@ fn repo_windows_mshta_rule_matches_live_https_shape() {
         container_id: None,
         container_escape: false,
         container_privileged: false,
+        user: None,
     };
 
     let out = engine.process_event(&event);
@@ -918,6 +921,7 @@ fn repo_windows_certutil_rule_matches_live_urlcache_shape() {
         container_id: None,
         container_escape: false,
         container_privileged: false,
+        user: None,
     };
 
     let out = engine.process_event(&event);
@@ -951,6 +955,7 @@ fn repo_windows_event(process: &str, parent: &str, command_line: &str) -> Teleme
         container_id: None,
         container_escape: false,
         container_privileged: false,
+        user: None,
     }
 }
 
@@ -1013,6 +1018,7 @@ fn repo_default_yara_bundle_keeps_eicar_yara_hits_on_exact_ioc() {
         container_id: None,
         container_escape: false,
         container_privileged: false,
+        user: None,
     };
 
     let out = engine.process_event(&event);

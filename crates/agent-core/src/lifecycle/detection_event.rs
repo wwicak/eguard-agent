@@ -125,6 +125,23 @@ pub(super) fn to_detection_event(
         container_id: enriched.container_id.clone(),
         container_escape: enriched.container_escape,
         container_privileged: enriched.container_privileged,
+        user: resolve_session_user(),
+    }
+}
+
+/// Session-level username for DLP user-targeted policies.
+/// ponytail: session identity, not per-process owner — see TelemetryEvent.user.
+fn resolve_session_user() -> Option<String> {
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var("USERNAME").ok().filter(|u| !u.trim().is_empty())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::env::var("SUDO_USER")
+            .ok()
+            .or_else(|| std::env::var("USER").ok())
+            .filter(|u| !u.trim().is_empty())
     }
 }
 

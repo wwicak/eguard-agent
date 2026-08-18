@@ -12,6 +12,7 @@ use grpc_client::{
 use response::{AutoIsolationState, HostControlState, KillRateLimiter, ProtectedList};
 
 use super::circuit_breaker::{CircuitBreaker, BREAKER_MAX_BLAST_UNITS};
+use super::dlp_policy_engine;
 use super::feature_policy::{
     DeceptionPolicyConfig, FimPolicyConfig, HuntingPolicyConfig, UsbPolicyConfig,
     ZeroTrustPolicyConfig,
@@ -46,10 +47,55 @@ fn load_dlp_scanner(config: &AgentConfig) -> Option<detection::dlp::DlpScanner> 
     }
 }
 
+fn load_dlp_fingerprint_policy(
+    config: &AgentConfig,
+) -> Option<(detection::dlp_classification::ClassificationPolicy, Vec<u8>)> {
+    if !config.dlp_enabled
+        || config.dlp_fingerprint_pack_path.trim().is_empty()
+        || config.dlp_fingerprint_key_path.trim().is_empty()
+    {
+        tracing::debug!(
+            dlp_enabled = config.dlp_enabled,
+            pack_path = %config.dlp_fingerprint_pack_path,
+            key_path = %config.dlp_fingerprint_key_path,
+            "load_dlp_fingerprint_policy: skipped (disabled or paths empty)"
+        );
+        return None;
+    }
+    let raw = std::fs::read_to_string(&config.dlp_fingerprint_pack_path).ok()?;
+    tracing::debug!(
+        pack_path = %config.dlp_fingerprint_pack_path,
+        bytes = raw.len(),
+        "load_dlp_fingerprint_policy: read pack file OK"
+    );
+    let pack = detection::dlp_classification::FingerprintPack::from_json(&raw).ok()?;
+    tracing::debug!("load_dlp_fingerprint_policy: from_json OK");
+    let key = std::fs::read(&config.dlp_fingerprint_key_path).ok()?;
+    tracing::debug!(
+        key_path = %config.dlp_fingerprint_key_path,
+        key_len = key.len(),
+        "load_dlp_fingerprint_policy: read key OK"
+    );
+    if key.is_empty() || key.len() > 4_096 {
+        tracing::warn!(
+            key_len = key.len(),
+            "load_dlp_fingerprint_policy: key size invalid"
+        );
+        return None;
+    }
+    tracing::info!(
+        key_id = %pack.key_id,
+        "load_dlp_fingerprint_policy: loaded successfully"
+    );
+    Some((pack.policy(), key))
+}
+
 impl AgentRuntime {
     pub(super) fn reload_dlp_scanner(&mut self) {
         if !self.config.dlp_enabled {
             self.dlp_scanner = None;
+            self.dlp_fingerprint_policy = None;
+            self.dlp_fingerprint_key = None;
             return;
         }
         match load_dlp_scanner(&self.config) {
@@ -60,6 +106,18 @@ impl AgentRuntime {
             None => {
                 warn!(path = %self.config.dlp_rules_path, "DLP rule pack rejected; keeping previous scanner")
             }
+        }
+        if self.config.dlp_fingerprint_pack_path.trim().is_empty()
+            && self.config.dlp_fingerprint_key_path.trim().is_empty()
+        {
+            self.dlp_fingerprint_policy = None;
+            self.dlp_fingerprint_key = None;
+        } else if let Some((policy, key)) = load_dlp_fingerprint_policy(&self.config) {
+            self.dlp_fingerprint_policy = Some(policy);
+            self.dlp_fingerprint_key = Some(key);
+            info!(path = %self.config.dlp_fingerprint_pack_path, "DLP fingerprint pack reloaded");
+        } else {
+            warn!(path = %self.config.dlp_fingerprint_pack_path, "DLP fingerprint pack rejected; keeping previous policy");
         }
     }
 }
@@ -143,6 +201,9 @@ pub struct AgentRuntime {
     pub(super) hunting_policy: HuntingPolicyConfig,
     pub(super) zero_trust_policy: ZeroTrustPolicyConfig,
     pub(super) dlp_scanner: Option<detection::dlp::DlpScanner>,
+    pub(super) dlp_fingerprint_policy: Option<detection::dlp_classification::ClassificationPolicy>,
+    pub(super) dlp_fingerprint_key: Option<Vec<u8>>,
+    pub(super) dlp_policy_engine: Option<dlp_policy_engine::DlpPolicyEngine>,
     pub(super) last_dlp_detection: Option<(i64, String)>,
     pub(super) fleet_seed_enabled: bool,
     pub(super) baseline_upload_canary_percent: u8,
@@ -409,7 +470,19 @@ impl AgentRuntime {
         } else {
             None
         };
-        let self_protect_engine = SelfProtectEngine::from_env();
+        let dlp_integrity_paths = [
+            config.dlp_rules_path.clone(),
+            config.dlp_fingerprint_pack_path.clone(),
+            config.dlp_fingerprint_key_path.clone(),
+        ];
+        let dlp_state_paths = super::tray_integration::dlp_state_path()
+            .ok()
+            .into_iter()
+            .map(|path| path.to_string_lossy().into_owned());
+        let self_protect_engine = SelfProtectEngine::from_env_with_paths(
+            dlp_integrity_paths,
+            dlp_state_paths,
+        );
         if let (Some(cert), Some(key), Some(ca)) = (
             config.tls_cert_path.clone(),
             config.tls_key_path.clone(),
@@ -495,6 +568,7 @@ impl AgentRuntime {
         playbook_engine.load_default_playbooks();
 
         let dlp_scanner = load_dlp_scanner(&config);
+        let dlp_fingerprint = load_dlp_fingerprint_policy(&config);
         let breaker_max_blast_units = std::env::var("EGUARD_BREAKER_MAX_BLAST_UNITS")
             .ok()
             .and_then(|raw| raw.trim().parse::<u64>().ok())
@@ -578,6 +652,9 @@ impl AgentRuntime {
             hunting_policy: HuntingPolicyConfig::default(),
             zero_trust_policy: ZeroTrustPolicyConfig::default(),
             dlp_scanner,
+            dlp_fingerprint_policy: dlp_fingerprint.as_ref().map(|(policy, _)| policy.clone()),
+            dlp_fingerprint_key: dlp_fingerprint.map(|(_, key)| key),
+            dlp_policy_engine: None,
             last_dlp_detection: None,
             fleet_seed_enabled,
             baseline_upload_canary_percent,

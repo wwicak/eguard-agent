@@ -23,6 +23,7 @@ fn event_with_hash(hash: &str) -> TelemetryEvent {
         container_id: None,
         container_escape: false,
         container_privileged: false,
+        user: None,
     }
 }
 
@@ -48,6 +49,7 @@ fn event_with_command(cmd: &str) -> TelemetryEvent {
         container_id: None,
         container_escape: false,
         container_privileged: false,
+        user: None,
     }
 }
 
@@ -80,6 +82,7 @@ fn event_process_exec_for_pid(pid: u32, process: &str, parent: &str, ts: i64) ->
         container_id: None,
         container_escape: false,
         container_privileged: false,
+        user: None,
     }
 }
 
@@ -111,6 +114,7 @@ fn event_network_for_pid(
         container_id: None,
         container_escape: false,
         container_privileged: false,
+        user: None,
     }
 }
 

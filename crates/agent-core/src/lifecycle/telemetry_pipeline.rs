@@ -308,6 +308,10 @@ impl AgentRuntime {
                 debug_trace_matching_raw_event("drop_internal", &event);
                 continue;
             }
+            if self.telemetry_flag_disables(&event) {
+                debug_trace_matching_raw_event("drop_telemetry_disabled", &event);
+                continue;
+            }
             if Self::should_drop_low_value_linux_raw_event(&event) {
                 debug_trace_matching_raw_event("drop_low_value", &event);
                 continue;
@@ -315,6 +319,22 @@ impl AgentRuntime {
             kept.push(event);
         }
         kept
+    }
+
+    /// Enforce the `[telemetry]` config flags: drop event classes whose
+    /// telemetry category is disabled before they consume poll/dequeue budget.
+    fn telemetry_flag_disables(&self, event: &RawEvent) -> bool {
+        use crate::platform::EventType;
+        match event.event_type {
+            EventType::ProcessExec | EventType::ProcessExit => !self.config.telemetry_process_exec,
+            EventType::FileOpen
+            | EventType::FileWrite
+            | EventType::FileRename
+            | EventType::FileUnlink => !self.config.telemetry_file_events,
+            EventType::TcpConnect => !self.config.telemetry_network_connections,
+            EventType::DnsQuery => !self.config.telemetry_dns_queries,
+            _ => false,
+        }
     }
 
     pub(super) fn should_drop_low_value_linux_raw_event(event: &RawEvent) -> bool {
@@ -422,6 +442,18 @@ impl AgentRuntime {
     }
 
     fn should_suppress_internal_process_event(&mut self, event: &RawEvent) -> bool {
+        // Internal-process suppression exists to cut agent-noise PROCESS events
+        // (the agent's own subprocesses). File events must survive it so DLP
+        // fingerprint scanning sees every write, including writes from the
+        // agent's own helper processes.
+        if !matches!(
+            event.event_type,
+            crate::platform::EventType::ProcessExec
+                | crate::platform::EventType::ProcessExit
+        ) {
+            return false;
+        }
+
         let event_ns = if event.ts_ns == 0 {
             unix_now_ns()
         } else {
@@ -818,7 +850,13 @@ impl AgentRuntime {
                 }
 
                 let path = parse_payload_field(&event.payload, "path").unwrap_or_default();
-                if is_high_value_linux_file_path(&path) {
+                if !path.is_empty() {
+                    // A FileOpen with a resolvable path is scannable (DLP
+                    // fingerprint classification reads the file content).
+                    // Frontload it ahead of path-less churn so backlog-cap
+                    // eviction cannot drop it before the tick evaluates it.
+                    1
+                } else if is_high_value_linux_file_path(&path) {
                     0
                 } else {
                     2

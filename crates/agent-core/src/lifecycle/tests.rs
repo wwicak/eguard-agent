@@ -538,6 +538,7 @@ rule bundle_runtime_marker {
         container_id: None,
         container_escape: false,
         container_privileged: false,
+        user: None,
     };
     let stage_one_out = runtime
         .detection_state
@@ -569,6 +570,7 @@ rule bundle_runtime_marker {
         container_id: None,
         container_escape: false,
         container_privileged: false,
+        user: None,
     };
     let stage_two_out = runtime
         .detection_state
@@ -648,6 +650,7 @@ fn reload_detection_state_from_bundle_populates_ioc_layers_on_all_shards() {
         container_id: None,
         container_escape: false,
         container_privileged: false,
+        user: None,
     };
 
     for pid in [9000u32, 9001u32] {
@@ -984,6 +987,7 @@ rule nested_signed_bundle_marker {
         container_id: None,
         container_escape: false,
         container_privileged: false,
+        user: None,
     };
     let out = engine.process_event(&nested_event);
     assert!(out
@@ -1691,6 +1695,7 @@ async fn emergency_command_is_applied_immediately_in_command_path() {
         container_id: None,
         container_escape: false,
         container_privileged: false,
+        user: None,
     };
 
     let out = runtime

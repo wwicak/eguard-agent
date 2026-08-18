@@ -175,14 +175,61 @@ impl AgentRuntime {
             changed |= self.config.dlp_rules_path != path;
             self.config.dlp_rules_path = path.to_string();
         }
+        if let Some(path) = dlp
+            .get("fingerprint_pack_path")
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.trim().is_empty())
+        {
+            changed |= self.config.dlp_fingerprint_pack_path != path;
+            self.config.dlp_fingerprint_pack_path = path.to_string();
+        }
+        if let Some(path) = dlp
+            .get("fingerprint_key_path")
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.trim().is_empty())
+        {
+            changed |= self.config.dlp_fingerprint_key_path != path;
+            self.config.dlp_fingerprint_key_path = path.to_string();
+        }
         if let Some(size) = dlp.get("max_file_scan_size_mb").and_then(|v| v.as_u64()) {
             let size = usize::try_from(size).unwrap_or(usize::MAX).max(1);
             changed |= self.config.dlp_max_file_scan_size_mb != size;
             self.config.dlp_max_file_scan_size_mb = size;
         }
+        if dlp.get("policies").is_some() {
+            self.reload_dlp_policy_engine(dlp);
+            changed = true;
+        }
         if changed {
             self.reload_dlp_scanner();
         }
+    }
+
+    /// Parse the server-provided `dlp.policies[]` array into the policy engine.
+    /// Unknown classifier types are skipped at evaluation time (fail closed);
+    /// a malformed array clears the engine (keeps legacy scan behavior).
+    fn reload_dlp_policy_engine(&mut self, dlp: &serde_json::Value) {
+        use super::super::dlp_policy_engine::{DlpPolicyEngine, DlpPolicyEnvelope};
+
+        let policies: Vec<DlpPolicyEnvelope> = dlp
+            .get("policies")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+        let engine = DlpPolicyEngine::new(
+            policies,
+            self.dlp_fingerprint_policy.clone(),
+            self.dlp_fingerprint_key.clone(),
+            self.dlp_scanner.clone(),
+        );
+        if engine.is_empty() {
+            self.dlp_policy_engine = None;
+            return;
+        }
+        info!(
+            dlp_policies = engine.len(),
+            "DLP policy engine loaded from server"
+        );
+        self.dlp_policy_engine = Some(engine);
     }
 
     fn apply_detection_allowlist_override(&mut self, raw: &serde_json::Value) {

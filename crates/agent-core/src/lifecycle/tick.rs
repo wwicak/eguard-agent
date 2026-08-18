@@ -10,6 +10,7 @@ use tokio::time::timeout;
 
 use crate::platform::enrich_event_with_cache;
 
+use super::dlp_policy_engine;
 use crate::config::AgentMode;
 
 use super::{
@@ -20,6 +21,27 @@ use super::{
     ISOLATION_FAILSAFE_CHECK_INTERVAL_SECS, MEMORY_PRESSURE_CHECK_INTERVAL_TICKS,
     STORAGE_HYGIENE_INTERVAL_SECS,
 };
+
+#[cfg(target_os = "windows")]
+fn dlp_channel(path: Option<&str>) -> &'static str {
+    let Some(path) = path else {
+        return "file_write";
+    };
+    if path.starts_with("\\\\") {
+        return "file_share";
+    }
+    if platform_windows::removable_media::is_removable_path(path) {
+        return "removable_media";
+    }
+    "file_write"
+}
+
+#[cfg(not(target_os = "windows"))]
+fn dlp_channel(path: Option<&str>) -> &'static str {
+    path.filter(|path| path.starts_with("//"))
+        .map(|_| "file_share")
+        .unwrap_or("file_write")
+}
 
 impl AgentRuntime {
     const DEGRADED_RECOVERY_PROBE_TIMEOUT_MS: u64 = 750;
@@ -236,7 +258,12 @@ impl AgentRuntime {
         let enriched = enrich_event_with_cache(raw, &mut self.enrichment_cache);
 
         let detection_event = to_detection_event(&enriched, now_unix);
-        let dlp_matches = self.scan_dlp_file(&detection_event);
+        let mut dlp_matches = self.scan_dlp_policies(&detection_event);
+        if dlp_matches.is_empty() {
+            // Fallback to the legacy scanners when no policy matched.
+            dlp_matches = self.scan_dlp_file(&detection_event);
+            dlp_matches.extend(self.scan_dlp_classification_file(&detection_event));
+        }
         if should_drop_low_value_windows_event(&enriched, &detection_event)
             || should_drop_low_value_linux_event(&enriched, &detection_event)
         {
@@ -325,7 +352,11 @@ impl AgentRuntime {
         if let Some(rule_name) = Self::detection_rule_name(&detection_outcome) {
             event_envelope.rule_name = rule_name;
         }
-        self.attach_dlp_matches(&mut event_envelope, &dlp_matches);
+        self.attach_dlp_matches(
+            &mut event_envelope,
+            &dlp_matches,
+            detection_event.file_path.as_deref(),
+        );
 
         Ok(Some(TickEvaluation {
             detection_event,
@@ -356,6 +387,89 @@ impl AgentRuntime {
             .unwrap_or_default()
     }
 
+    /// Evaluate the event against the server-provided DLP policy engine
+    /// (Forcepoint-style: classifier + source + destination -> action).
+    fn scan_dlp_policies(&self, event: &TelemetryEvent) -> Vec<detection::dlp::DlpMatch> {
+        let Some(engine) = &self.dlp_policy_engine else {
+            return Vec::new();
+        };
+        let Some(path) = event.file_path.as_deref() else {
+            return Vec::new();
+        };
+        let ctx = dlp_policy_engine::DlpEvalContext {
+            file_path: path,
+            process: &event.process,
+            channel: dlp_channel(Some(path)),
+            user: event.user.as_deref(),
+        };
+        engine.evaluate(&ctx).into_iter().collect()
+    }
+
+    fn scan_dlp_classification_file(
+        &self,
+        event: &TelemetryEvent,
+    ) -> Vec<detection::dlp::DlpMatch> {
+        let (Some(policy), Some(key), Some(path)) = (
+            self.dlp_fingerprint_policy.as_ref(),
+            self.dlp_fingerprint_key.as_deref(),
+            event.file_path.as_deref(),
+        ) else {
+            return Vec::new();
+        };
+        let Ok(metadata) = std::fs::metadata(path) else {
+            return Vec::new();
+        };
+        let max_bytes = (self.config.dlp_max_file_scan_size_mb as u64) * 1024 * 1024;
+        if metadata.len() > max_bytes {
+            return Vec::new();
+        }
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return Vec::new();
+        };
+        let mut matches = Vec::new();
+        if let Ok(object) =
+            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&text)
+        {
+            let fields = object
+                .iter()
+                .filter_map(|(name, value)| value.as_str().map(|value| (name.as_str(), value)))
+                .collect();
+            let record = detection::dlp_classification::StructuredRecord { fields };
+            if detection::dlp_classification::classify(policy, None, Some((key, &record)), None)
+                .contains(
+                    &detection::dlp_classification::ClassificationMatch::StructuredFingerprint,
+                )
+            {
+                matches.push(detection::dlp::DlpMatch {
+                    rule_id: "classification.structured_fingerprint".to_string(),
+                    severity: "high".to_string(),
+                    action: "alert".to_string(),
+                    start: 0,
+                    end: 0,
+                    redacted_evidence: "[REDACTED]".to_string(),
+                });
+            }
+        }
+        for item in detection::dlp_classification::classify(policy, None, None, Some((key, &text)))
+        {
+            if let detection::dlp_classification::ClassificationMatch::UnstructuredFingerprint {
+                ..
+            } = item
+            {
+                matches.push(detection::dlp::DlpMatch {
+                    rule_id: "classification.unstructured_fingerprint".to_string(),
+                    severity: "high".to_string(),
+                    action: "alert".to_string(),
+                    start: 0,
+                    end: 0,
+                    redacted_evidence: "[REDACTED]".to_string(),
+                });
+                break;
+            }
+        }
+        matches
+    }
+
     fn dlp_telemetry_action(action: &str) -> &'static str {
         if action.trim().eq_ignore_ascii_case("alert") {
             "alert"
@@ -368,6 +482,7 @@ impl AgentRuntime {
         &mut self,
         envelope: &mut grpc_client::EventEnvelope,
         matches: &[detection::dlp::DlpMatch],
+        file_path: Option<&str>,
     ) {
         if matches.is_empty() {
             return;
@@ -379,8 +494,10 @@ impl AgentRuntime {
         else {
             return;
         };
+        let channel = dlp_channel(file_path);
         payload["dlp"] = serde_json::json!({
             "detected": true,
+            "channel": channel,
             "detections": matches.iter().map(|item| serde_json::json!({
                 "rule_id": item.rule_id,
                 "severity": item.severity,
@@ -745,6 +862,18 @@ mod tests {
     use response::PlannedAction;
 
     #[test]
+    fn dlp_file_share_channel_is_observe_only() {
+        #[cfg(target_os = "windows")]
+        assert_eq!(
+            dlp_channel(Some(r"\\server\share\sample.txt")),
+            "file_share"
+        );
+        #[cfg(not(target_os = "windows"))]
+        assert_eq!(dlp_channel(Some("//server/share/sample.txt")), "file_share");
+        assert_eq!(dlp_channel(None), "file_write");
+    }
+
+    #[test]
     fn dlp_telemetry_action_never_emits_enforcement() {
         assert_eq!(AgentRuntime::dlp_telemetry_action("alert"), "alert");
         assert_eq!(AgentRuntime::dlp_telemetry_action("audit"), "audit");
@@ -782,6 +911,7 @@ mod tests {
             container_id: None,
             container_escape: false,
             container_privileged: false,
+            user: None,
         };
         let mut detection_outcome = DetectionOutcome::default();
         detection_outcome.confidence = Confidence::High;

@@ -445,6 +445,7 @@ mod tests {
             container_id: None,
             container_escape: false,
             container_privileged: false,
+            user: None,
         };
 
         let txn = EventTxn::from_enriched(&enriched, &event, 1_700_000_000);

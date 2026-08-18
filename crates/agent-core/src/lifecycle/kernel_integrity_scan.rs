@@ -55,6 +55,7 @@ impl AgentRuntime {
             container_id: None,
             container_escape: false,
             container_privileged: false,
+            user: None,
         };
 
         let outcome = match self.detection_state.process_event(&event) {
