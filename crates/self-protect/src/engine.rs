@@ -112,6 +112,18 @@ impl SelfProtectEngine {
         Self::new(config)
     }
 
+    /// Build a baseline that also covers configured local DLP assets.
+    /// Only SHA-256 digests are retained; asset bytes never leave the process.
+    pub fn from_env_with_paths(
+        runtime_integrity_paths: impl IntoIterator<Item = String>,
+        runtime_config_paths: impl IntoIterator<Item = String>,
+    ) -> Self {
+        let mut config = SelfProtectConfig::default();
+        append_unique_paths(&mut config.runtime_integrity_paths, runtime_integrity_paths);
+        append_unique_paths(&mut config.runtime_config_paths, runtime_config_paths);
+        Self::new(config)
+    }
+
     pub fn new(config: SelfProtectConfig) -> Self {
         let runtime_baseline = OnceLock::new();
         if !env_flag_enabled("EGUARD_SELF_PROTECT_LAZY_BASELINE") {
@@ -434,6 +446,18 @@ fn env_path_list(name: &str, fallback: Vec<String>) -> Vec<String> {
         fallback
     } else {
         out
+    }
+}
+
+fn append_unique_paths<I>(paths: &mut Vec<String>, additions: I)
+where
+    I: IntoIterator<Item = String>,
+{
+    for path in additions {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() && !paths.iter().any(|existing| existing == trimmed) {
+            paths.push(trimmed.to_string());
+        }
     }
 }
 

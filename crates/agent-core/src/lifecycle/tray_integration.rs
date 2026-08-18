@@ -588,7 +588,7 @@ fn pam_launch_state_path() -> Result<PathBuf> {
     Ok(tray_data_root()?.join("ztna-pam-launches.json"))
 }
 
-fn dlp_state_path() -> Result<PathBuf> {
+pub(super) fn dlp_state_path() -> Result<PathBuf> {
     Ok(tray_data_root()?.join("dlp-state.json"))
 }
 
