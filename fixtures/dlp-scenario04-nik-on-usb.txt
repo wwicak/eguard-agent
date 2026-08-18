@@ -1,0 +1,5 @@
+# Scenario 04 sample: file written to a removable-media path containing PII (NIK)
+# The content matches the "NIK Indonesia" classifier (regex \b\d{16}\b + context term).
+NIK: 3201011234567890
+Nama: BUDI SANTOSO
+KTP di atas adalah identitas pribadi yang dilindungi.

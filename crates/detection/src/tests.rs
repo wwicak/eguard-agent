@@ -26,6 +26,7 @@ fn event(ts: i64, class: EventClass, process: &str, parent: &str, uid: u32) -> T
         container_id: None,
         container_escape: false,
         container_privileged: false,
+        user: None,
     }
 }
 
@@ -100,6 +101,7 @@ fn cmdline_information_consistency_between_layers() {
         container_id: None,
         container_escape: false,
         container_privileged: false,
+        user: None,
     };
 
     let signals = DetectionSignals {
@@ -175,6 +177,7 @@ fn dns_entropy_feature_is_stable_and_high_for_dga_like_domains() {
         container_id: None,
         container_escape: false,
         container_privileged: false,
+        user: None,
     };
     let features =
         layer5::MlFeatures::extract(&event, &signals, 0, 0, 0, 0, 0, &Default::default());
@@ -218,6 +221,7 @@ fn behavioral_dns_entropy_alarm_triggers_for_high_entropy_domains() {
         container_id: None,
         container_escape: false,
         container_privileged: false,
+        user: None,
     };
 
     let mut alarm = None;

@@ -49,6 +49,8 @@ pub struct AgentConfig {
     pub detection_max_file_scan_size_mb: usize,
     pub dlp_enabled: bool,
     pub dlp_rules_path: String,
+    pub dlp_fingerprint_pack_path: String,
+    pub dlp_fingerprint_key_path: String,
     pub dlp_max_file_scan_size_mb: usize,
     pub detection_memory_scan_enabled: bool,
     pub detection_memory_scan_interval_secs: u64,

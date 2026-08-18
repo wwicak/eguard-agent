@@ -1,0 +1,18 @@
+{
+  "trusted_labels": {
+    "accepted": ["mip-confidential-finance"],
+    "rejected": ["user-supplied-public"]
+  },
+  "structured_record": {
+    "key_id": "tenant-test-key",
+    "fields": {
+      "customer_id": "ACME-001",
+      "region": "Jakarta"
+    }
+  },
+  "unstructured": {
+    "reference": "confidential merger plan covers acme revenue projection and customer pricing",
+    "positive": "The confidential merger plan covers ACME revenue projection and customer pricing for 2027.",
+    "negative": "The cafeteria menu changes for the quarterly town hall."
+  }
+}

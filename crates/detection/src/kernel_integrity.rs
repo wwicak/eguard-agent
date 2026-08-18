@@ -79,6 +79,7 @@ mod tests {
             container_id: None,
             container_escape: false,
             container_privileged: false,
+            user: None,
         }
     }
 
@@ -126,6 +127,7 @@ mod tests {
             container_id: None,
             container_escape: false,
             container_privileged: false,
+            user: None,
         };
         let indicators = detect_kernel_integrity_indicators(&ev);
         assert!(indicators.iter().any(|v| v == "hidden_module_sysfs:evil"));

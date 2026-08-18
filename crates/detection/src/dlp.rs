@@ -33,11 +33,13 @@ pub struct DlpMatch {
     pub redacted_evidence: String,
 }
 
+#[derive(Clone)]
 struct CompiledRule {
     rule: DlpRule,
     regex: Regex,
 }
 
+#[derive(Clone)]
 pub struct DlpScanner {
     rules: Vec<CompiledRule>,
 }
@@ -211,5 +213,37 @@ mod tests {
         assert!(scanner.scan_file(&path, 4).is_err());
         std::fs::write(&path, [0xff, 0xfe]).expect("write binary");
         assert!(scanner.scan_file(&path, 1024).is_err());
+    }
+
+    #[test]
+    fn scenario04_05_fixtures_detect_nik() {
+        // Scenario 04 (removable media) and 05 (file share) fixtures must be
+        // detected by the NIK regex classifier (16-digit + context term).
+        let scanner = scanner();
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap(); // workspace root (repo top-level)
+        for fixture in [
+            "fixtures/dlp-scenario04-nik-on-usb.txt",
+            "fixtures/dlp-scenario05-nik-on-share.txt",
+        ] {
+            let path = root.join(fixture);
+            let found = scanner
+                .scan_file(&path, 1024 * 1024)
+                .expect("scan fixture");
+            assert!(
+                !found.is_empty(),
+                "fixture {fixture} should trigger the NIK classifier"
+            );
+            assert!(found.iter().all(|m| m.redacted_evidence.contains('*')));
+        }
+    }
+
+    #[test]
+    fn scenario04_negative_control_ignored() {
+        // A file with the same numeric shape but no NIK context must NOT match.
+        assert!(scanner().scan("invoice no: 3174012301900001").is_empty());
     }
 }

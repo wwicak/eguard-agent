@@ -28,6 +28,7 @@ fn event(ts: i64, class: EventClass) -> TelemetryEvent {
         container_id: None,
         container_escape: false,
         container_privileged: false,
+        user: None,
     }
 }
 

@@ -5,6 +5,7 @@ mod bench_detection;
 mod calibration;
 pub mod deception;
 pub mod dlp;
+pub mod dlp_classification;
 mod engine;
 mod exploit;
 pub mod fim;

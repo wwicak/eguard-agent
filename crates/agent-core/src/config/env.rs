@@ -71,6 +71,12 @@ impl AgentConfig {
                 self.dlp_enabled = parsed;
             }
         }
+        if let Some(v) = env_non_empty("EGUARD_DLP_FINGERPRINT_PACK_PATH") {
+            self.dlp_fingerprint_pack_path = v;
+        }
+        if let Some(v) = env_non_empty("EGUARD_DLP_FINGERPRINT_KEY_PATH") {
+            self.dlp_fingerprint_key_path = v;
+        }
         if let Some(v) = env_non_empty("EGUARD_DLP_MAX_FILE_SCAN_SIZE_MB") {
             if let Ok(parsed) = v.parse::<usize>() {
                 self.dlp_max_file_scan_size_mb = parsed.max(1);

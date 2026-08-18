@@ -1,0 +1,5 @@
+# Scenario 05 sample: file written to a UNC share containing PII (NIK)
+NIK: 7371129876543210
+Nama: SITI AMINAH
+NPWP: 012345678901234
+Data karyawan ini tidak boleh keluar ke share publik.

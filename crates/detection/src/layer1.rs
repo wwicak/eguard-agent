@@ -880,6 +880,7 @@ mod tests {
             container_id: None,
             container_escape: false,
             container_privileged: false,
+            user: None,
         };
         let hit = l1.check_event(&event);
         eprintln!("hit = {:?}", hit);

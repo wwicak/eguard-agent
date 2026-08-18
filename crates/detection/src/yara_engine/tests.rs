@@ -50,6 +50,7 @@ rule test_rule {
         container_id: None,
         container_escape: false,
         container_privileged: false,
+        user: None,
     };
 
     let hits = engine.scan_event(&event);
@@ -109,6 +110,7 @@ rule sample_from_dir {
         container_id: None,
         container_escape: false,
         container_privileged: false,
+        user: None,
     };
 
     let sample = base.join("payload.bin");
@@ -185,6 +187,7 @@ rule elf_marker {
         container_id: None,
         container_escape: false,
         container_privileged: false,
+        user: None,
     };
 
     let hits = engine.scan_event(&event);

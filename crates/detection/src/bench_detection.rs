@@ -46,6 +46,7 @@ mod tests {
             container_id: None,
             container_escape: false,
             container_privileged: false,
+            user: None,
         }
     }
 
@@ -71,6 +72,7 @@ mod tests {
             container_id: None,
             container_escape: false,
             container_privileged: false,
+            user: None,
         }
     }
 
@@ -96,6 +98,7 @@ mod tests {
             container_id: None,
             container_escape: false,
             container_privileged: false,
+            user: None,
         }
     }
 
@@ -125,6 +128,7 @@ mod tests {
             container_id: None,
             container_escape: false,
             container_privileged: false,
+            user: None,
         }
     }
 
@@ -154,6 +158,7 @@ mod tests {
         container_id: None,
         container_escape: false,
         container_privileged: false,
+        user: None,
     }
     }
 
@@ -182,6 +187,7 @@ mod tests {
             container_id: None,
             container_escape: false,
             container_privileged: false,
+            user: None,
         }
     }
 
@@ -209,6 +215,7 @@ mod tests {
             container_id: None,
             container_escape: false,
             container_privileged: false,
+            user: None,
         }
     }
 
@@ -238,6 +245,7 @@ mod tests {
             container_id: None,
             container_escape: false,
             container_privileged: false,
+            user: None,
         }
     }
 
@@ -675,6 +683,7 @@ mod tests {
                 container_id: None,
                 container_escape: false,
                 container_privileged: false,
+                user: None,
             };
             normal_alarms += engine.observe(&event).len();
         }
@@ -704,6 +713,7 @@ mod tests {
                 container_id: None,
                 container_escape: false,
                 container_privileged: false,
+                user: None,
             };
             attack_alarms += engine.observe(&event).len();
         }

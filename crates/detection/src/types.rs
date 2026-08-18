@@ -75,6 +75,11 @@ pub struct TelemetryEvent {
     pub container_id: Option<String>,
     pub container_escape: bool,
     pub container_privileged: bool,
+    /// Optional resolved username for DLP user-targeted policies.
+    /// Windows: session user (USERNAME env); Linux: SUDO_USER/USER env.
+    /// ponytail: session-level identity, not per-process owner. Upgrade to
+    /// OpenProcess/GetTokenInformation per-pid when per-process accuracy matters.
+    pub user: Option<String>,
 }
 
 impl TelemetryEvent {

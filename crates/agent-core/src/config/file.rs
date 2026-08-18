@@ -286,6 +286,12 @@ impl AgentConfig {
         if let Some(v) = non_empty(detection.dlp_rules_path) {
             self.dlp_rules_path = v;
         }
+        if let Some(v) = non_empty(detection.dlp_fingerprint_pack_path) {
+            self.dlp_fingerprint_pack_path = v;
+        }
+        if let Some(v) = non_empty(detection.dlp_fingerprint_key_path) {
+            self.dlp_fingerprint_key_path = v;
+        }
         if let Some(v) = detection.dlp_max_file_scan_size_mb {
             self.dlp_max_file_scan_size_mb = v.max(1);
         }
@@ -636,6 +642,10 @@ struct FileDetectionConfig {
     dlp_enabled: Option<bool>,
     #[serde(default)]
     dlp_rules_path: Option<String>,
+    #[serde(default)]
+    dlp_fingerprint_pack_path: Option<String>,
+    #[serde(default)]
+    dlp_fingerprint_key_path: Option<String>,
     #[serde(default)]
     dlp_max_file_scan_size_mb: Option<usize>,
     #[serde(default)]

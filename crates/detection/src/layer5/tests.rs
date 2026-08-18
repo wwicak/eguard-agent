@@ -25,6 +25,7 @@ fn make_event(class: EventClass, uid: u32, dst_port: Option<u16>) -> TelemetryEv
         container_id: None,
         container_escape: false,
         container_privileged: false,
+        user: None,
     }
 }
 

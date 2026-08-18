@@ -318,6 +318,8 @@ impl Default for AgentConfig {
             detection_max_file_scan_size_mb: 100,
             dlp_enabled: false,
             dlp_rules_path: String::new(),
+            dlp_fingerprint_pack_path: String::new(),
+            dlp_fingerprint_key_path: String::new(),
             dlp_max_file_scan_size_mb: 10,
             detection_memory_scan_enabled: false,
             detection_memory_scan_interval_secs: 900,
