@@ -19,6 +19,7 @@ mod app_management;
 mod command_utils;
 mod config_change;
 mod device_actions;
+mod dlp_discovery;
 mod forensics;
 mod handlers;
 mod host_actions;
@@ -125,6 +126,10 @@ impl AgentRuntime {
                 self.apply_on_demand_scan(&command.payload_json, now_unix, &mut exec)
                     .await
             }
+            ServerCommand::DlpDiscovery => {
+                self.apply_dlp_discovery(&command.payload_json, &mut exec)
+                    .await
+            }
             ServerCommand::RestoreQuarantine => {
                 self.apply_quarantine_restore(&command.payload_json, &mut exec)
             }
@@ -207,7 +212,6 @@ impl AgentRuntime {
         info!(
             command_id = %command.command_id,
             command_type = %command.command_type,
-            payload = %command.payload_json,
             parsed = ?parsed,
             outcome = ?exec.outcome,
             detail = %exec.detail,

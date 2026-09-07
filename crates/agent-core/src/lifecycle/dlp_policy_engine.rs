@@ -24,6 +24,12 @@ pub struct DlpClassifierRef {
     pub classifier_type: String,
     #[serde(default)]
     pub r#ref: String,
+    #[serde(default)]
+    pub pattern: String,
+    #[serde(default)]
+    pub validator: String,
+    #[serde(default)]
+    pub context: Vec<String>,
 }
 
 /// Source condition: where the file comes from.
@@ -202,7 +208,34 @@ impl DlpPolicyEngine {
     }
 
     fn match_regex_rule(&self, classifier: &DlpClassifierRef, ctx: &DlpEvalContext<'_>) -> bool {
-        let Some(scanner) = &self.regex_scanner else {
+        let custom_scanner = if !classifier.pattern.trim().is_empty() {
+            detection::dlp::DlpScanner::from_pack(detection::dlp::DlpRulePack {
+                schema_version: "1".to_string(),
+                pack_id: "server-classifier".to_string(),
+                version: "1".to_string(),
+                rules: vec![detection::dlp::DlpRule {
+                    id: classifier.r#ref.clone(),
+                    name: classifier.r#ref.clone(),
+                    pattern: classifier.pattern.clone(),
+                    validator: if classifier.validator.trim().is_empty() {
+                        "none".to_string()
+                    } else {
+                        classifier.validator.clone()
+                    },
+                    context: classifier.context.clone(),
+                    severity: "high".to_string(),
+                    default_action: "audit".to_string(),
+                    regulations: vec![],
+                    redaction: "full".to_string(),
+                    max_matches: 10,
+                }],
+            })
+            .ok()
+        } else {
+            None
+        };
+        let scanner = custom_scanner.as_ref().or(self.regex_scanner.as_ref());
+        let Some(scanner) = scanner else {
             return false;
         };
         let Ok(text) = std::fs::read_to_string(ctx.file_path) else {
@@ -226,8 +259,7 @@ impl DlpPolicyEngine {
         let Ok(text) = std::fs::read_to_string(ctx.file_path) else {
             return false;
         };
-        let Ok(object) =
-            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&text)
+        let Ok(object) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&text)
         else {
             return false;
         };
@@ -236,8 +268,7 @@ impl DlpPolicyEngine {
             .filter_map(|(name, value)| value.as_str().map(|value| (name.as_str(), value)))
             .collect();
         let record = StructuredRecord { fields };
-        let matches =
-            dlp_classification::classify(policy, None, Some((key, &record)), None);
+        let matches = dlp_classification::classify(policy, None, Some((key, &record)), None);
         if classifier.r#ref.is_empty() {
             return matches
                 .iter()
@@ -290,12 +321,11 @@ fn match_source(source: &DlpSourceCond, ctx: &DlpEvalContext<'_>) -> bool {
         return false;
     }
     let path_ok = source.paths.is_empty()
-        || source.paths.iter().any(|prefix| path.starts_with(prefix.as_str()));
-    let channel_ok = source.channels.is_empty()
         || source
-            .channels
+            .paths
             .iter()
-            .any(|c| c == ctx.channel);
+            .any(|prefix| path.starts_with(prefix.as_str()));
+    let channel_ok = source.channels.is_empty() || source.channels.iter().any(|c| c == ctx.channel);
     let process_ok = source.processes.is_empty()
         || source
             .processes
@@ -326,8 +356,7 @@ fn match_dest(dest: &DlpDestCond, ctx: &DlpEvalContext<'_>) -> bool {
     if dest.channels.is_empty() && dest.paths.is_empty() && dest.apps.is_empty() {
         return true;
     }
-    let channel_ok = dest.channels.is_empty()
-        || dest.channels.iter().any(|c| c == ctx.channel);
+    let channel_ok = dest.channels.is_empty() || dest.channels.iter().any(|c| c == ctx.channel);
     let path_ok = dest.paths.is_empty()
         || dest
             .paths
@@ -336,7 +365,10 @@ fn match_dest(dest: &DlpDestCond, ctx: &DlpEvalContext<'_>) -> bool {
     // Apps are resolved from the process name (Scenario 08); treat the process
     // as the app identity for now.
     let app_ok = dest.apps.is_empty()
-        || dest.apps.iter().any(|app| ctx.process.contains(app.as_str()));
+        || dest
+            .apps
+            .iter()
+            .any(|app| ctx.process.contains(app.as_str()));
     channel_ok && path_ok && app_ok
 }
 
@@ -366,7 +398,9 @@ mod tests {
     fn empty_policy_set_matches_nothing() {
         let e = engine(vec![], None, None, None);
         assert!(e.is_empty());
-        assert!(e.evaluate(&ctx("C:\\x\\a.txt", "explorer", "file_write")).is_none());
+        assert!(e
+            .evaluate(&ctx("C:\\x\\a.txt", "explorer", "file_write"))
+            .is_none());
     }
 
     #[test]
@@ -391,8 +425,12 @@ mod tests {
         };
         let e = engine(vec![policy], None, None, None);
         // No classifiers -> content matches; destination gate decides.
-        assert!(e.evaluate(&ctx("E:\\x\\a.txt", "explorer", "removable_media")).is_some());
-        assert!(e.evaluate(&ctx("C:\\x\\a.txt", "explorer", "file_write")).is_none());
+        assert!(e
+            .evaluate(&ctx("E:\\x\\a.txt", "explorer", "removable_media"))
+            .is_some());
+        assert!(e
+            .evaluate(&ctx("C:\\x\\a.txt", "explorer", "file_write"))
+            .is_none());
     }
 
     #[test]
@@ -417,9 +455,19 @@ mod tests {
             targets: DlpTargets::default(),
         };
         let e = engine(vec![policy], None, None, None);
-        assert!(e.evaluate(&ctx("C:\\Users\\bob\\doc.txt", "notepad.exe", "file_write")).is_some());
-        assert!(e.evaluate(&ctx("D:\\other\\doc.txt", "notepad.exe", "file_write")).is_none());
-        assert!(e.evaluate(&ctx("C:\\Users\\bob\\doc.txt", "explorer.exe", "file_write")).is_none());
+        assert!(e
+            .evaluate(&ctx("C:\\Users\\bob\\doc.txt", "notepad.exe", "file_write"))
+            .is_some());
+        assert!(e
+            .evaluate(&ctx("D:\\other\\doc.txt", "notepad.exe", "file_write"))
+            .is_none());
+        assert!(e
+            .evaluate(&ctx(
+                "C:\\Users\\bob\\doc.txt",
+                "explorer.exe",
+                "file_write"
+            ))
+            .is_none());
     }
 
     #[test]
@@ -444,8 +492,16 @@ mod tests {
             targets: DlpTargets::default(),
         };
         let e = engine(vec![policy], None, None, None);
-        assert!(e.evaluate(&ctx("C:\\Users\\bob\\doc.txt", "x", "file_write")).is_some());
-        assert!(e.evaluate(&ctx("C:\\Users\\bob\\excluded\\secret.txt", "x", "file_write")).is_none());
+        assert!(e
+            .evaluate(&ctx("C:\\Users\\bob\\doc.txt", "x", "file_write"))
+            .is_some());
+        assert!(e
+            .evaluate(&ctx(
+                "C:\\Users\\bob\\excluded\\secret.txt",
+                "x",
+                "file_write"
+            ))
+            .is_none());
     }
 
     #[test]
@@ -469,12 +525,17 @@ mod tests {
             targets: DlpTargets::default(),
         };
         let e = engine(
-            vec![mk("low-prio", 100, "removable_media"), mk("high-prio", 1, "removable_media")],
+            vec![
+                mk("low-prio", 100, "removable_media"),
+                mk("high-prio", 1, "removable_media"),
+            ],
             None,
             None,
             None,
         );
-        let m = e.evaluate(&ctx("E:\\a.txt", "x", "removable_media")).expect("match");
+        let m = e
+            .evaluate(&ctx("E:\\a.txt", "x", "removable_media"))
+            .expect("match");
         assert_eq!(m.rule_id, "high-prio");
     }
 
@@ -487,6 +548,9 @@ mod tests {
             classifiers: vec![DlpClassifierRef {
                 classifier_type: "quantum".to_string(),
                 r#ref: "x".to_string(),
+                pattern: String::new(),
+                validator: String::new(),
+                context: vec![],
             }],
             match_mode: "any".to_string(),
             source: DlpSourceCond::default(),
@@ -534,5 +598,47 @@ mod tests {
         };
         assert!(e.evaluate(&matching).is_some());
         assert!(e.evaluate(&missing).is_none());
+    }
+
+    #[test]
+    fn custom_regex_classifier_matches_without_local_rule_pack_entry() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("payroll.txt");
+        std::fs::write(&path, "DOKUMEN UJI SLIP GAJI KARYAWAN").expect("write fixture");
+        let policy = DlpPolicyEnvelope {
+            policy_id: "deteksi-slip-gaji".to_string(),
+            name: "Deteksi Slip Gaji".to_string(),
+            priority: 1,
+            classifiers: vec![DlpClassifierRef {
+                classifier_type: "regex_rule".to_string(),
+                r#ref: "slip-gaji".to_string(),
+                pattern: r"(?i)\bSLIP\s+GAJI\s+KARYAWAN\b".to_string(),
+                validator: "none".to_string(),
+                context: vec![],
+            }],
+            match_mode: "any".to_string(),
+            source: DlpSourceCond::default(),
+            destination: DlpDestCond::default(),
+            severity: "high".to_string(),
+            action: "alert".to_string(),
+            redaction: "mask_middle".to_string(),
+            regulations: vec![],
+            max_file_size_mb: 10,
+            targets: DlpTargets::default(),
+        };
+        let matched = engine(vec![policy.clone()], None, None, None).evaluate(&ctx(
+            path.to_str().unwrap(),
+            "notepad.exe",
+            "file_write",
+        ));
+        assert_eq!(
+            matched.expect("custom classifier match").rule_id,
+            "deteksi-slip-gaji"
+        );
+
+        std::fs::write(&path, "DOKUMEN UJI KEHADIRAN KARYAWAN").expect("write negative fixture");
+        assert!(engine(vec![policy], None, None, None)
+            .evaluate(&ctx(path.to_str().unwrap(), "notepad.exe", "file_write"))
+            .is_none());
     }
 }

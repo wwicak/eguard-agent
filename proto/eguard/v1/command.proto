@@ -31,6 +31,7 @@ enum CommandType {
   REMOVE_APP = 16;
   UPDATE_APP = 17;
   APPLY_PROFILE = 18;
+  DLP_DISCOVERY = 24;
 }
 
 message IsolateParams {
@@ -42,6 +43,13 @@ message ScanParams {
   repeated string paths = 1;
   bool yara_scan = 2;
   bool ioc_scan = 3;
+}
+
+message DlpDiscoveryParams {
+  repeated string roots = 1;
+  repeated string approved_roots = 2;
+  repeated string allowed_extensions = 3;
+  repeated string excluded_roots = 4;
 }
 
 message UpdateParams {
@@ -123,6 +131,7 @@ message ServerCommand {
     AppParams remove_app = 24;
     AppParams update_app = 25;
     ProfileParams apply_profile = 26;
+    DlpDiscoveryParams dlp_discovery = 30;
   }
 }
 

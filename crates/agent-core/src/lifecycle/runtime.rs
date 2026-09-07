@@ -1,4 +1,5 @@
 use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::path::Path;
 
 use anyhow::Result;
 use tracing::{info, warn};
@@ -18,6 +19,7 @@ use super::feature_policy::{
     ZeroTrustPolicyConfig,
 };
 use super::response_playbook::PlaybookEngine;
+use super::rule_bundle_verify;
 use self_protect::SelfProtectEngine;
 #[cfg(target_os = "linux")]
 use self_protect::{apply_linux_hardening, LinuxHardeningConfig};
@@ -29,6 +31,10 @@ use crate::detection_state::SharedDetectionState;
 
 fn load_dlp_scanner(config: &AgentConfig) -> Option<detection::dlp::DlpScanner> {
     if !config.dlp_enabled || config.dlp_rules_path.trim().is_empty() {
+        return None;
+    }
+    if let Err(err) = verify_dlp_artifact(Path::new(&config.dlp_rules_path)) {
+        warn!(error = %err, path = %config.dlp_rules_path, "DLP rule pack integrity verification failed; keeping DLP disabled");
         return None;
     }
     let raw = match std::fs::read_to_string(&config.dlp_rules_path) {
@@ -47,6 +53,75 @@ fn load_dlp_scanner(config: &AgentConfig) -> Option<detection::dlp::DlpScanner> 
     }
 }
 
+fn verify_dlp_artifact(path: &Path) -> Result<(), String> {
+    let Some(manifest_path) = (0..=3).find_map(|depth| {
+        let mut directory = path.parent()?;
+        for _ in 0..depth {
+            directory = directory.parent()?;
+        }
+        let candidate = directory.join("manifest.json");
+        candidate.is_file().then_some(candidate)
+    }) else {
+        return Ok(());
+    };
+
+    let manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&manifest_path)
+            .map_err(|err| format!("read DLP manifest {}: {err}", manifest_path.display()))?,
+    )
+    .map_err(|err| format!("parse DLP manifest {}: {err}", manifest_path.display()))?;
+    if manifest.get("bundle_type").and_then(|value| value.as_str()) != Some("eguard-dlp-rules") {
+        return Err(format!(
+            "unsupported DLP manifest bundle type: {}",
+            manifest_path.display()
+        ));
+    }
+
+    if manifest.get("signed").and_then(|value| value.as_bool()) == Some(true) {
+        let signature_path = rule_bundle_verify::resolve_bundle_signature_path(&manifest_path)
+            .ok_or_else(|| {
+                format!(
+                    "signed DLP manifest signature not found: {}",
+                    manifest_path.display()
+                )
+            })?;
+        let public_key = rule_bundle_verify::resolve_rule_bundle_public_key()
+            .ok_or_else(|| "signed DLP manifest public key is not configured".to_string())?;
+        rule_bundle_verify::verify_bundle_signature_with_material(
+            &manifest_path,
+            &signature_path,
+            public_key,
+        )?;
+    }
+
+    let root = manifest_path
+        .parent()
+        .ok_or_else(|| "DLP manifest has no parent".to_string())?;
+    let relative = path
+        .strip_prefix(root)
+        .map_err(|_| format!("DLP artifact is outside manifest root: {}", path.display()))?;
+    let relative_key = relative.to_string_lossy().replace('\\', "/");
+    let expected = manifest
+        .get("files")
+        .and_then(|files| files.get(&relative_key))
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| format!("DLP artifact is not listed in manifest: {relative_key}"))?;
+    let expected = expected
+        .strip_prefix("sha256:")
+        .ok_or_else(|| format!("DLP manifest hash missing sha256 prefix: {relative_key}"))?;
+    let actual = sha256_file_hex(path)?;
+    if !actual.eq_ignore_ascii_case(expected) {
+        return Err(format!("DLP manifest sha256 mismatch for {relative_key}"));
+    }
+    Ok(())
+}
+
+fn sha256_file_hex(path: &Path) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    let bytes = std::fs::read(path).map_err(|err| format!("read {}: {err}", path.display()))?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
 fn load_dlp_fingerprint_policy(
     config: &AgentConfig,
 ) -> Option<(detection::dlp_classification::ClassificationPolicy, Vec<u8>)> {
@@ -59,6 +134,22 @@ fn load_dlp_fingerprint_policy(
             pack_path = %config.dlp_fingerprint_pack_path,
             key_path = %config.dlp_fingerprint_key_path,
             "load_dlp_fingerprint_policy: skipped (disabled or paths empty)"
+        );
+        return None;
+    }
+    if let Err(err) = verify_dlp_artifact(Path::new(&config.dlp_fingerprint_pack_path)) {
+        tracing::warn!(
+            error = %err,
+            path = %config.dlp_fingerprint_pack_path,
+            "DLP fingerprint pack integrity verification failed; keeping DLP disabled"
+        );
+        return None;
+    }
+    if let Err(err) = verify_dlp_artifact(Path::new(&config.dlp_fingerprint_key_path)) {
+        tracing::warn!(
+            error = %err,
+            path = %config.dlp_fingerprint_key_path,
+            "DLP fingerprint key integrity verification failed; keeping DLP disabled"
         );
         return None;
     }
@@ -475,14 +566,9 @@ impl AgentRuntime {
             config.dlp_fingerprint_pack_path.clone(),
             config.dlp_fingerprint_key_path.clone(),
         ];
-        let dlp_state_paths = super::tray_integration::dlp_state_path()
-            .ok()
-            .into_iter()
-            .map(|path| path.to_string_lossy().into_owned());
-        let self_protect_engine = SelfProtectEngine::from_env_with_paths(
-            dlp_integrity_paths,
-            dlp_state_paths,
-        );
+        // dlp-state.json is a writable observation artifact, not a protected
+        // runtime config. It changes after every detection by design.
+        let self_protect_engine = SelfProtectEngine::from_env_with_paths(dlp_integrity_paths, []);
         if let (Some(cert), Some(key), Some(ca)) = (
             config.tls_cert_path.clone(),
             config.tls_key_path.clone(),
@@ -1106,6 +1192,45 @@ mod runtime_budget_tests {
 
         invalid.dlp_enabled = false;
         assert!(super::load_dlp_scanner(&invalid).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dlp_manifest_hash_rejects_tampered_artifact() {
+        let dir = std::env::temp_dir().join(format!(
+            "eguard-dlp-manifest-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("rules")).expect("create tempdir");
+        let path = dir.join("rules/indonesia.json");
+        let key_path = dir.join("fingerprint.key");
+        std::fs::write(&path, b"synthetic dlp pack").expect("write pack");
+        std::fs::write(&key_path, b"synthetic fingerprint key").expect("write key");
+        let hash = super::sha256_file_hex(&path).expect("hash pack");
+        let key_hash = super::sha256_file_hex(&key_path).expect("hash key");
+        std::fs::write(
+            dir.join("manifest.json"),
+            format!(
+                r#"{{"bundle_type":"eguard-dlp-rules","signed":false,"files":{{"rules/indonesia.json":"sha256:{hash}","fingerprint.key":"sha256:{key_hash}"}}}}"#
+            ),
+        )
+        .expect("write manifest");
+
+        assert!(super::verify_dlp_artifact(&path).is_ok());
+        assert!(super::verify_dlp_artifact(&key_path).is_ok());
+        std::fs::write(&path, b"tampered dlp pack").expect("tamper pack");
+        assert!(super::verify_dlp_artifact(&path)
+            .expect_err("tampered pack must fail")
+            .contains("sha256 mismatch"));
+        std::fs::write(&key_path, b"tampered fingerprint key").expect("tamper key");
+        assert!(super::verify_dlp_artifact(&key_path)
+            .expect_err("tampered key must fail")
+            .contains("sha256 mismatch"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

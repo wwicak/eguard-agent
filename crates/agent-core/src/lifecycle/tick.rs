@@ -356,6 +356,7 @@ impl AgentRuntime {
             &mut event_envelope,
             &dlp_matches,
             detection_event.file_path.as_deref(),
+            &detection_event.process,
         );
 
         Ok(Some(TickEvaluation {
@@ -376,9 +377,9 @@ impl AgentRuntime {
         let Some(path) = event.file_path.as_deref() else {
             return Vec::new();
         };
-        if !event.file_write {
-            return Vec::new();
-        }
+        // Windows Kernel-File can report a content-bearing create/open event
+        // without the separate write opcode.  A path-bearing event is still
+        // safe to scan; the UI operation remains `accessed`.
         scanner
             .scan_file(
                 std::path::Path::new(path),
@@ -409,6 +410,9 @@ impl AgentRuntime {
         &self,
         event: &TelemetryEvent,
     ) -> Vec<detection::dlp::DlpMatch> {
+        if !event.file_write {
+            return Vec::new();
+        }
         let (Some(policy), Some(key), Some(path)) = (
             self.dlp_fingerprint_policy.as_ref(),
             self.dlp_fingerprint_key.as_deref(),
@@ -483,6 +487,7 @@ impl AgentRuntime {
         envelope: &mut grpc_client::EventEnvelope,
         matches: &[detection::dlp::DlpMatch],
         file_path: Option<&str>,
+        process: &str,
     ) {
         if matches.is_empty() {
             return;
@@ -495,9 +500,22 @@ impl AgentRuntime {
             return;
         };
         let channel = dlp_channel(file_path);
+        let policy_id = matches
+            .first()
+            .map(|item| item.rule_id.clone())
+            .unwrap_or_default();
+        let action = matches
+            .first()
+            .map(|item| Self::dlp_telemetry_action(&item.action))
+            .unwrap_or("audit");
         payload["dlp"] = serde_json::json!({
             "detected": true,
             "channel": channel,
+            "operation": "accessed",
+            "file_path": file_path.unwrap_or_default(),
+            "process": process,
+            "policy_id": policy_id,
+            "action": action,
             "detections": matches.iter().map(|item| serde_json::json!({
                 "rule_id": item.rule_id,
                 "severity": item.severity,
@@ -508,6 +526,19 @@ impl AgentRuntime {
             })).collect::<Vec<_>>(),
         });
         envelope.event_type = "dlp_detection".to_string();
+        if let Some(severity) = matches
+            .iter()
+            .map(|item| item.severity.as_str())
+            .max_by_key(|severity| match *severity {
+                "critical" => 4,
+                "high" => 3,
+                "medium" => 2,
+                "low" => 1,
+                _ => 0,
+            })
+        {
+            envelope.severity = severity.to_string();
+        }
         envelope.rule_name = matches
             .iter()
             .map(|item| item.rule_id.as_str())
@@ -612,7 +643,10 @@ impl AgentRuntime {
                     )
                     .await
                 {
-                    Ok(_) => {
+                    Ok(policy_update) => {
+                        if let Some(policy) = policy_update {
+                            self.apply_policy_from_server(policy);
+                        }
                         self.runtime_mode = self.config.mode.clone();
                         self.consecutive_send_failures = 0;
                         self.last_recovery_probe_unix = None;

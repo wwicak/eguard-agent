@@ -112,7 +112,7 @@ impl Client {
         config_version: &str,
         baseline_status: &str,
         runtime: Option<&HeartbeatRuntimeEnvelope>,
-    ) -> Result<()> {
+    ) -> Result<Option<PolicyEnvelope>> {
         self.with_retry("heartbeat_grpc", || async {
             let mut client = self.agent_control_client().await?;
             let last_bookmark_version = self
@@ -179,7 +179,11 @@ impl Client {
                     *guard = Some(bookmarks_from_pb(&bookmarks));
                 }
             }
-            Ok(())
+            Ok(response.policy_update.map(|update| PolicyEnvelope {
+                config_version: update.config_version,
+                policy_json: update.policy_json,
+                ..PolicyEnvelope::default()
+            }))
         })
         .await
     }

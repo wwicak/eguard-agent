@@ -215,10 +215,13 @@ fn decode_kernel_file(opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Option<R
             } else {
                 0
             };
-            Some(raw_event(
-                EventType::FileWrite,
-                format!("file_object=0x{file_object:x};file_key=0x{file_key:x};size={io_size}"),
-            ))
+            let filename = read_utf16_path_at_offsets(data, &[40, 48, 44, 52]);
+            let mut payload =
+                format!("file_object=0x{file_object:x};file_key=0x{file_key:x};size={io_size}");
+            if let Some(name) = filename {
+                payload.push_str(&format!(";path={name}"));
+            }
+            Some(raw_event(EventType::FileWrite, payload))
         }
         // Manifest provider: Delete / Rename info events.
         70 | 71 => {
@@ -786,6 +789,10 @@ mod tests {
         data.extend_from_slice(&0u32.to_le_bytes()); // padding / thread field before IoSize on x64 manifest layout
         data.extend_from_slice(&77u32.to_le_bytes()); // IoSize @ x64 manifest offset 36
         data.extend_from_slice(&0u32.to_le_bytes()); // IoFlags
+        for ch in r"C:\DLP-Test\tail.txt".encode_utf16() {
+            data.extend_from_slice(&ch.to_le_bytes());
+        }
+        data.extend_from_slice(&0u16.to_le_bytes());
 
         let event = decode_etw_record(super::super::providers::KERNEL_FILE, 68, 42, 501, &data)
             .expect("should decode");
@@ -794,6 +801,7 @@ mod tests {
         assert!(event.payload.contains("file_object=0x2222"));
         assert!(event.payload.contains("file_key=0x3333"));
         assert!(event.payload.contains("size=77"));
+        assert!(event.payload.contains(r"path=C:\DLP-Test\tail.txt"));
     }
 
     #[test]

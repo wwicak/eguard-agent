@@ -26,7 +26,7 @@ impl AgentRuntime {
         Ok(())
     }
 
-    fn apply_policy_from_server(&mut self, policy: PolicyEnvelope) {
+    pub(crate) fn apply_policy_from_server(&mut self, policy: PolicyEnvelope) {
         let mut policy_changed = self.apply_policy_metadata_fields(&policy);
         self.apply_compliance_policy_document(&policy, &mut policy_changed);
         self.apply_policy_json_runtime_overrides(&policy.policy_json);
@@ -197,6 +197,39 @@ impl AgentRuntime {
             self.config.dlp_max_file_scan_size_mb = size;
         }
         if dlp.get("policies").is_some() {
+            let policy_count = dlp
+                .get("policies")
+                .and_then(|value| value.as_array())
+                .map_or(0, Vec::len);
+            let custom_regex_count = dlp
+                .get("policies")
+                .and_then(|value| value.as_array())
+                .map(|policies| {
+                    let mut count = 0;
+                    for policy in policies {
+                        if let Some(classifiers) =
+                            policy.get("classifiers").and_then(|value| value.as_array())
+                        {
+                            count += classifiers
+                                .iter()
+                                .filter(|classifier| {
+                                    classifier.get("type").and_then(|value| value.as_str())
+                                        == Some("regex_rule")
+                                        && classifier
+                                            .get("pattern")
+                                            .and_then(|value| value.as_str())
+                                            .is_some_and(|pattern| !pattern.trim().is_empty())
+                                })
+                                .count();
+                        }
+                    }
+                    count
+                })
+                .unwrap_or(0);
+            info!(
+                policy_count,
+                custom_regex_count, "DLP policy definitions received from server"
+            );
             self.reload_dlp_policy_engine(dlp);
             changed = true;
         }
@@ -211,10 +244,17 @@ impl AgentRuntime {
     fn reload_dlp_policy_engine(&mut self, dlp: &serde_json::Value) {
         use super::super::dlp_policy_engine::{DlpPolicyEngine, DlpPolicyEnvelope};
 
-        let policies: Vec<DlpPolicyEnvelope> = dlp
-            .get("policies")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default();
+        let policies: Vec<DlpPolicyEnvelope> = match dlp.get("policies") {
+            Some(value) => match serde_json::from_value(value.clone()) {
+                Ok(policies) => policies,
+                Err(err) => {
+                    warn!(error = %err, "DLP policy engine rejected server policy definitions");
+                    Vec::new()
+                }
+            },
+            None => Vec::new(),
+        };
+        let policy_count = policies.len();
         let engine = DlpPolicyEngine::new(
             policies,
             self.dlp_fingerprint_policy.clone(),
@@ -222,6 +262,10 @@ impl AgentRuntime {
             self.dlp_scanner.clone(),
         );
         if engine.is_empty() {
+            info!(
+                policy_count,
+                "DLP policy engine received no usable policies"
+            );
             self.dlp_policy_engine = None;
             return;
         }

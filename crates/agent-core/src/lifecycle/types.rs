@@ -5,7 +5,7 @@ use detection::{Confidence, DetectionOutcome, TelemetryEvent};
 
 use grpc_client::{
     CommandEnvelope, ComplianceEnvelope, EventEnvelope, HeartbeatRuntimeEnvelope,
-    InventoryEnvelope, ResponseEnvelope,
+    InventoryEnvelope, PolicyEnvelope, ResponseEnvelope,
 };
 use response::PlannedAction;
 
@@ -104,6 +104,7 @@ pub(super) enum AsyncWorkerResult {
     ControlPlaneSend {
         kind: &'static str,
         error: Option<String>,
+        policy_update: Option<PolicyEnvelope>,
     },
     ResponseReport {
         action_type: String,

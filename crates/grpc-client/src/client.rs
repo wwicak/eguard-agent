@@ -192,6 +192,7 @@ impl Client {
     pub async fn send_heartbeat(&self, agent_id: &str, compliance_status: &str) -> Result<()> {
         self.send_heartbeat_with_runtime_config(agent_id, compliance_status, "", "", None)
             .await
+            .map(|_| ())
     }
 
     pub async fn send_heartbeat_with_config(
@@ -209,6 +210,7 @@ impl Client {
             None,
         )
         .await
+        .map(|_| ())
     }
 
     pub async fn send_heartbeat_with_runtime_config(
@@ -218,7 +220,7 @@ impl Client {
         config_version: &str,
         baseline_status: &str,
         runtime: Option<&HeartbeatRuntimeEnvelope>,
-    ) -> Result<()> {
+    ) -> Result<Option<PolicyEnvelope>> {
         self.ensure_online()?;
         match self.mode {
             TransportMode::Http => {
@@ -229,7 +231,7 @@ impl Client {
                     baseline_status,
                     runtime,
                 )
-                .await?
+                .await
             }
             TransportMode::Grpc => {
                 self.send_heartbeat_grpc(
@@ -239,10 +241,9 @@ impl Client {
                     baseline_status,
                     runtime,
                 )
-                .await?
+                .await
             }
         }
-        Ok(())
     }
 
     pub async fn send_compliance(&self, compliance: &ComplianceEnvelope) -> Result<()> {
@@ -1211,6 +1212,24 @@ fn dlp_detail_from_payload(
                 .and_then(|v| v.as_str())
                 .unwrap_or("[REDACTED]")
                 .to_string(),
+            file_path: root
+                .get("dlp")
+                .and_then(|v| v.get("file_path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            process: root
+                .get("dlp")
+                .and_then(|v| v.get("process"))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            operation: root
+                .get("dlp")
+                .and_then(|v| v.get("operation"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("accessed")
+                .to_string(),
         },
     ))
 }
@@ -1234,6 +1253,13 @@ fn from_pb_server_command(command: pb::ServerCommand) -> CommandEnvelope {
             "paths": params.paths,
             "yara_scan": params.yara_scan,
             "ioc_scan": params.ioc_scan
+        })
+        .to_string(),
+        Some(pb::server_command::Params::DlpDiscovery(params)) => json!({
+            "roots": params.roots,
+            "approved_roots": params.approved_roots,
+            "allowed_extensions": params.allowed_extensions,
+            "excluded_roots": params.excluded_roots
         })
         .to_string(),
         Some(pb::server_command::Params::Update(params)) => json!({
@@ -1362,6 +1388,7 @@ fn map_command_type(raw: i32) -> String {
         pb::CommandType::RemoveApp => "remove_app",
         pb::CommandType::UpdateApp => "update_app",
         pb::CommandType::ApplyProfile => "apply_profile",
+        pb::CommandType::DlpDiscovery => "dlp_discovery",
     }
     .to_string()
 }
@@ -1423,5 +1450,7 @@ fn now_unix() -> i64 {
 #[cfg(test)]
 #[allow(clippy::await_holding_lock)]
 mod tests;
+#[cfg(test)]
+mod tests_dlp_discovery;
 #[cfg(test)]
 mod tests_mappings;

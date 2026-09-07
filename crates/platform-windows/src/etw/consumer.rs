@@ -230,13 +230,7 @@ mod win32 {
                 super::super::security_auditing::decode_security_auditing_record(record, ts_ns)
             } else {
                 codec::decode_etw_record_with_event_id(
-                    &guid_str,
-                    event_id,
-                    opcode,
-                    keyword,
-                    pid,
-                    ts_ns,
-                    user_data,
+                    &guid_str, event_id, opcode, keyword, pid, ts_ns, user_data,
                 )
             };
 

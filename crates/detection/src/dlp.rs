@@ -91,14 +91,20 @@ impl DlpScanner {
         matches
     }
 
-    pub fn scan_file(&self, path: &std::path::Path, max_bytes: u64) -> Result<Vec<DlpMatch>, String> {
-        let metadata = std::fs::metadata(path)
-            .map_err(|err| format!("stat {}: {err}", path.display()))?;
+    pub fn scan_file(
+        &self,
+        path: &std::path::Path,
+        max_bytes: u64,
+    ) -> Result<Vec<DlpMatch>, String> {
+        let metadata =
+            std::fs::metadata(path).map_err(|err| format!("stat {}: {err}", path.display()))?;
         if metadata.len() > max_bytes {
-            return Err(format!("file exceeds DLP scan limit: {} > {max_bytes}", metadata.len()));
+            return Err(format!(
+                "file exceeds DLP scan limit: {} > {max_bytes}",
+                metadata.len()
+            ));
         }
-        let bytes = std::fs::read(path)
-            .map_err(|err| format!("read {}: {err}", path.display()))?;
+        let bytes = std::fs::read(path).map_err(|err| format!("read {}: {err}", path.display()))?;
         let text = std::str::from_utf8(&bytes)
             .map_err(|_| format!("file is not UTF-8 text: {}", path.display()))?;
         Ok(self.scan(text))
@@ -107,6 +113,7 @@ impl DlpScanner {
 
 fn validator_accepts(validator: &str, value: &str, has_context: bool) -> bool {
     match validator {
+        "none" => true,
         "context_only" | "context_cluster" | "nik_indonesia" | "npwp_indonesia"
         | "phone_indonesia" => has_context,
         "luhn" => has_context && luhn(value),
@@ -126,7 +133,11 @@ fn luhn(value: &str) -> bool {
         .map(|(index, digit)| {
             if index % 2 == 1 {
                 let doubled = digit * 2;
-                if doubled > 9 { doubled - 9 } else { doubled }
+                if doubled > 9 {
+                    doubled - 9
+                } else {
+                    doubled
+                }
             } else {
                 *digit
             }
@@ -138,10 +149,19 @@ fn luhn(value: &str) -> bool {
 fn redact(value: &str, mode: &str) -> String {
     let chars: Vec<char> = value.chars().collect();
     match mode {
-        "last4" if chars.len() > 4 => format!("{}{}", "*".repeat(chars.len() - 4), chars[chars.len() - 4..].iter().collect::<String>()),
+        "last4" if chars.len() > 4 => format!(
+            "{}{}",
+            "*".repeat(chars.len() - 4),
+            chars[chars.len() - 4..].iter().collect::<String>()
+        ),
         "mask_middle" if chars.len() > 4 => {
             let visible = (chars.len() / 4).max(1);
-            format!("{}{}{}", chars[..visible].iter().collect::<String>(), "*".repeat(chars.len() - (visible * 2)), chars[chars.len() - visible..].iter().collect::<String>())
+            format!(
+                "{}{}{}",
+                chars[..visible].iter().collect::<String>(),
+                "*".repeat(chars.len() - (visible * 2)),
+                chars[chars.len() - visible..].iter().collect::<String>()
+            )
         }
         _ => "[REDACTED]".to_string(),
     }
@@ -186,6 +206,30 @@ mod tests {
     }
 
     #[test]
+    fn none_validator_accepts_regex_match_without_context() {
+        let scanner = DlpScanner::from_pack(DlpRulePack {
+            schema_version: "1".to_string(),
+            pack_id: "none-validator".to_string(),
+            version: "1.0.0".to_string(),
+            rules: vec![DlpRule {
+                id: "id.none".to_string(),
+                name: "Regex only".to_string(),
+                pattern: r"\b[0-9]{16}\b".to_string(),
+                validator: "none".to_string(),
+                context: vec![],
+                severity: "high".to_string(),
+                default_action: "audit".to_string(),
+                regulations: vec!["test".to_string()],
+                redaction: "partial".to_string(),
+                max_matches: 1,
+            }],
+        })
+        .expect("valid pack");
+
+        assert_eq!(scanner.scan("3174123456780001").len(), 1);
+    }
+
+    #[test]
     fn invalid_regex_is_rejected() {
         let mut pack = scanner();
         pack.rules.clear();
@@ -194,12 +238,19 @@ mod tests {
             pack_id: "indonesia".to_string(),
             version: "1.0.0".to_string(),
             rules: vec![DlpRule {
-                id: "id.bad".to_string(), name: "bad".to_string(), pattern: "(".to_string(),
-                validator: "context_only".to_string(), context: vec!["x".to_string()],
-                severity: "low".to_string(), default_action: "audit".to_string(),
-                regulations: vec!["test".to_string()], redaction: "last4".to_string(), max_matches: 1,
+                id: "id.bad".to_string(),
+                name: "bad".to_string(),
+                pattern: "(".to_string(),
+                validator: "context_only".to_string(),
+                context: vec!["x".to_string()],
+                severity: "low".to_string(),
+                default_action: "audit".to_string(),
+                regulations: vec!["test".to_string()],
+                redaction: "last4".to_string(),
+                max_matches: 1,
             }],
-        }).is_err());
+        })
+        .is_err());
     }
 
     #[test]
@@ -230,9 +281,7 @@ mod tests {
             "fixtures/dlp-scenario05-nik-on-share.txt",
         ] {
             let path = root.join(fixture);
-            let found = scanner
-                .scan_file(&path, 1024 * 1024)
-                .expect("scan fixture");
+            let found = scanner.scan_file(&path, 1024 * 1024).expect("scan fixture");
             assert!(
                 !found.is_empty(),
                 "fixture {fixture} should trigger the NIK classifier"

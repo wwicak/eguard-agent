@@ -107,7 +107,7 @@ impl Client {
         config_version: &str,
         baseline_status: &str,
         runtime: Option<&HeartbeatRuntimeEnvelope>,
-    ) -> Result<()> {
+    ) -> Result<Option<PolicyEnvelope>> {
         let mut body = json!({
             "agent_id": agent_id,
             "agent_version": self.agent_version.clone(),
@@ -137,6 +137,7 @@ impl Client {
 
         self.post_json_with_retry("heartbeat_http", PATH_HEARTBEAT, &body, "heartbeat")
             .await
+            .map(|_| None)
     }
 
     pub(super) async fn send_compliance_http(&self, compliance: &ComplianceEnvelope) -> Result<()> {

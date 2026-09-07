@@ -47,6 +47,9 @@ message DlpDetectionEvent {
   string path_hash = 7;
   string content_sha256 = 8;
   string redacted_evidence = 9;
+  string file_path = 10;
+  string process = 11;
+  string operation = 12;
 }
 
 message TelemetryEvent {

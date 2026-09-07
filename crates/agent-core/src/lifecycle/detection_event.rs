@@ -134,7 +134,9 @@ pub(super) fn to_detection_event(
 fn resolve_session_user() -> Option<String> {
     #[cfg(target_os = "windows")]
     {
-        std::env::var("USERNAME").ok().filter(|u| !u.trim().is_empty())
+        std::env::var("USERNAME")
+            .ok()
+            .filter(|u| !u.trim().is_empty())
     }
     #[cfg(not(target_os = "windows"))]
     {

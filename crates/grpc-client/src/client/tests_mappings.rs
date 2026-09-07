@@ -13,7 +13,7 @@ fn dlp_event_mapping_preserves_redacted_detail() {
         event_type: "dlp_detection".to_string(),
         severity: "high".to_string(),
         rule_name: "id.nik".to_string(),
-        payload_json: r#"{"dlp":{"detections":[{"rule_id":"id.nik","action":"alert","redacted_evidence":"3174********0001"}]}}"#.to_string(),
+        payload_json: r#"{"dlp":{"file_path":"G:\\Data Eguard.7z","process":"WhatsApp.exe","operation":"accessed","detections":[{"rule_id":"id.nik","action":"alert","redacted_evidence":"3174********0001"}]}}"#.to_string(),
         created_at_unix: 42,
     };
     let mapped = to_pb_telemetry_event(&event);
@@ -23,6 +23,9 @@ fn dlp_event_mapping_preserves_redacted_detail() {
             assert_eq!(detail.rule_id, "id.nik");
             assert_eq!(detail.redacted_evidence, "3174********0001");
             assert_eq!(detail.action, "alert");
+            assert_eq!(detail.file_path, r"G:\Data Eguard.7z");
+            assert_eq!(detail.process, "WhatsApp.exe");
+            assert_eq!(detail.operation, "accessed");
         }
         other => panic!("expected DLP detail, got {other:?}"),
     }

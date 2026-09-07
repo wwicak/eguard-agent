@@ -79,7 +79,14 @@ impl AgentRuntime {
     fn collect_control_plane_send_results(&mut self) {
         while let Some(joined) = self.control_plane_send_tasks.try_join_next() {
             match joined {
-                Ok(AsyncWorkerResult::ControlPlaneSend { kind, error }) => {
+                Ok(AsyncWorkerResult::ControlPlaneSend {
+                    kind,
+                    error,
+                    policy_update,
+                }) => {
+                    if let Some(policy) = policy_update {
+                        self.apply_policy_from_server(policy);
+                    }
                     if let Some(err) = error {
                         warn!(kind, error = %err, "control-plane async send failed");
                     } else {
@@ -169,13 +176,18 @@ async fn run_control_plane_send_with_timeout(
 ) -> AsyncWorkerResult {
     let kind = control_plane_send_kind(&send);
     match timeout(timeout_duration, run_control_plane_send(client, send)).await {
-        Ok(error) => AsyncWorkerResult::ControlPlaneSend { kind, error },
+        Ok((error, policy_update)) => AsyncWorkerResult::ControlPlaneSend {
+            kind,
+            error,
+            policy_update,
+        },
         Err(_) => AsyncWorkerResult::ControlPlaneSend {
             kind,
             error: Some(format!(
                 "control-plane send timed out after {}ms",
                 timeout_duration.as_millis()
             )),
+            policy_update: None,
         },
     }
 }
@@ -183,7 +195,7 @@ async fn run_control_plane_send_with_timeout(
 async fn run_control_plane_send(
     client: grpc_client::Client,
     send: PendingControlPlaneSend,
-) -> Option<String> {
+) -> (Option<String>, Option<grpc_client::PolicyEnvelope>) {
     match send {
         PendingControlPlaneSend::Heartbeat {
             agent_id,
@@ -191,7 +203,7 @@ async fn run_control_plane_send(
             config_version,
             baseline_status,
             runtime,
-        } => client
+        } => match client
             .send_heartbeat_with_runtime_config(
                 &agent_id,
                 &compliance_status,
@@ -200,18 +212,26 @@ async fn run_control_plane_send(
                 Some(&runtime),
             )
             .await
-            .err()
-            .map(|err| err.to_string()),
-        PendingControlPlaneSend::Compliance { envelope } => client
-            .send_compliance(&envelope)
-            .await
-            .err()
-            .map(|err| err.to_string()),
-        PendingControlPlaneSend::Inventory { envelope } => client
-            .send_inventory(&envelope)
-            .await
-            .err()
-            .map(|err| err.to_string()),
+        {
+            Ok(policy) => (None, policy),
+            Err(err) => (Some(err.to_string()), None),
+        },
+        PendingControlPlaneSend::Compliance { envelope } => (
+            client
+                .send_compliance(&envelope)
+                .await
+                .err()
+                .map(|err| err.to_string()),
+            None,
+        ),
+        PendingControlPlaneSend::Inventory { envelope } => (
+            client
+                .send_inventory(&envelope)
+                .await
+                .err()
+                .map(|err| err.to_string()),
+            None,
+        ),
     }
 }
 
@@ -434,8 +454,13 @@ mod tests {
         let elapsed = started.elapsed();
 
         match result {
-            AsyncWorkerResult::ControlPlaneSend { kind, error } => {
+            AsyncWorkerResult::ControlPlaneSend {
+                kind,
+                error,
+                policy_update,
+            } => {
                 assert_eq!(kind, "heartbeat");
+                assert!(policy_update.is_none());
                 let error = error.expect("timeout error");
                 assert!(
                     error.contains("timed out after 100ms"),

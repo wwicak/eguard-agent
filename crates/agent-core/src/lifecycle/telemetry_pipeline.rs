@@ -448,8 +448,7 @@ impl AgentRuntime {
         // agent's own helper processes.
         if !matches!(
             event.event_type,
-            crate::platform::EventType::ProcessExec
-                | crate::platform::EventType::ProcessExit
+            crate::platform::EventType::ProcessExec | crate::platform::EventType::ProcessExit
         ) {
             return false;
         }
