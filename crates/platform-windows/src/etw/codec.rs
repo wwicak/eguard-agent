@@ -57,11 +57,35 @@ pub fn decode_etw_record(
 /// Decode a real ETW record when the event descriptor metadata is available.
 ///
 /// The Windows Kernel-File provider emits file writes as Event ID 16 with
-/// opcode 0 and the write keyword. The legacy opcode-only API cannot identify
-/// that record safely, so the live consumer supplies the descriptor metadata.
+/// opcode 0 and the write keyword, and file reads as Event ID 15 with
+/// opcode 0 and the read keyword. The legacy opcode-only API cannot identify
+/// those records safely, so the live consumer supplies the descriptor metadata.
 pub fn decode_etw_record_with_event_id(
     provider_guid: &str,
     event_id: u16,
+    opcode: u8,
+    keyword: u64,
+    pid: u32,
+    ts_ns: u64,
+    user_data: &[u8],
+) -> Option<RawEvent> {
+    decode_etw_record_with_event_id_version(
+        provider_guid,
+        event_id,
+        0,
+        opcode,
+        keyword,
+        pid,
+        ts_ns,
+        user_data,
+    )
+}
+
+/// Decode a real ETW record including descriptor version.
+pub fn decode_etw_record_with_event_id_version(
+    provider_guid: &str,
+    event_id: u16,
+    version: u8,
     opcode: u8,
     keyword: u64,
     pid: u32,
@@ -72,8 +96,27 @@ pub fn decode_etw_record_with_event_id(
 
     match provider_guid {
         KERNEL_PROCESS => decode_kernel_process(opcode, pid, ts_ns, user_data),
+        // Manifest NameCreate: FileKey @0, FileName @8.
+        KERNEL_FILE if event_id == 10 && opcode == 0 && keyword & 0x10 != 0 => {
+            decode_kernel_file(0, pid, ts_ns, user_data)
+        }
+        // Manifest Create carries the FileObject and the path needed to
+        // resolve subsequent READ records through file_object_cache.
+        KERNEL_FILE if event_id == 12 && opcode == 0 && keyword & 0x80 != 0 => {
+            decode_kernel_file_create(version, pid, ts_ns, user_data)
+        }
         KERNEL_FILE if event_id == 16 && opcode == 0 && keyword & 0x200 != 0 => {
             decode_kernel_file(15, pid, ts_ns, user_data)
+        }
+        // Manifest provider: Read (Event ID 15, opcode 0, read keyword).
+        // Layout is ReadArgs_V1, identical shape to the manifest Write
+        // branch (opcode 68) above: FileObject @16, FileKey @24, IOSize @36.
+        // Emitted as FileOpen with the file_object/file_key pair so the
+        // existing file_object_cache resolves the path downstream; payload
+        // carries no direct path on this layout. Scoping to browser PIDs
+        // happens in the consumer callback, not here: pure parsing only.
+        KERNEL_FILE if event_id == 15 && opcode == 0 && keyword & 0x100 != 0 => {
+            decode_kernel_file_io(version, EventType::FileOpen, pid, ts_ns, user_data)
         }
         KERNEL_FILE => decode_kernel_file(opcode, pid, ts_ns, user_data),
         KERNEL_NETWORK => decode_kernel_network(opcode, pid, ts_ns, user_data),
@@ -84,6 +127,63 @@ pub fn decode_etw_record_with_event_id(
             None
         }
     }
+}
+
+fn decode_kernel_file_create(version: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Option<RawEvent> {
+    // CreateArgs:    FileObject @16, FileName @36 (x64 alignment).
+    // CreateArgs_V1: FileObject @8,  FileName @32.
+    let file_object_offset = if version == 0 { 16 } else { 8 };
+    let path_offsets = if version == 0 {
+        &[36, 32, 28, 24][..]
+    } else {
+        &[32, 28, 24][..]
+    };
+    if data.len() < file_object_offset + 8 {
+        return None;
+    }
+    let file_object = read_u64_le(data, file_object_offset);
+    let mut payload = format!("file_object=0x{file_object:x}");
+    if let Some(path) = read_utf16_path_at_offsets(data, path_offsets) {
+        payload.push_str(&format!(";path={path}"));
+    }
+    Some(RawEvent {
+        event_type: EventType::FileOpen,
+        pid,
+        uid: 0,
+        ts_ns,
+        payload,
+    })
+}
+
+fn decode_kernel_file_io(
+    version: u8,
+    event_type: EventType,
+    pid: u32,
+    ts_ns: u64,
+    data: &[u8],
+) -> Option<RawEvent> {
+    // ReadArgs_V1: FileObject @16, FileKey @24, IOSize @36.
+    // ReadArgs:    FileObject @24, FileKey @32, IOSize @40.
+    let (file_object_offset, file_key_offset, io_size_offset) = if version == 0 {
+        (24, 32, 40)
+    } else {
+        (16, 24, 36)
+    };
+    if data.len() < io_size_offset + 4 {
+        return None;
+    }
+    Some(RawEvent {
+        event_type,
+        pid,
+        uid: 0,
+        ts_ns,
+        payload: format!(
+            "file_object=0x{:x};file_key=0x{:x};size={};access=read",
+            read_u64_le(data, file_object_offset),
+            read_u64_le(data, file_key_offset),
+            read_u32_le(data, io_size_offset),
+        ),
+    })
 }
 
 // ── Per-provider binary parsers ──────────────────────────────────────
@@ -335,7 +435,6 @@ fn decode_kernel_network(_opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Opti
         let src_ip = format_ipv4(data, 12);
         let dst_port = read_u16_be(data, 16); // Network byte order
         let src_port = read_u16_be(data, 18);
-
         let payload =
             format!("src_ip={src_ip};src_port={src_port};dst_ip={dst_ip};dst_port={dst_port}");
         return Some(RawEvent {
@@ -346,8 +445,6 @@ fn decode_kernel_network(_opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Opti
             payload,
         });
     }
-
-    // Fallback for unknown/short buffers.
     fallback_event(EventType::TcpConnect, pid, ts_ns, data)
 }
 
@@ -878,6 +975,57 @@ mod tests {
         assert!(event.payload.contains("dst_port=443"));
         assert!(event.payload.contains("src_ip=10.0.0.1"));
         assert!(event.payload.contains("src_port=50000"));
+    }
+
+    #[test]
+    fn decode_kernel_file_read_manifest_v1_uses_read_args_v1_offsets() {
+        let mut data = vec![0u8; 44];
+        data[16..24].copy_from_slice(&0x2222u64.to_le_bytes());
+        data[24..32].copy_from_slice(&0x3333u64.to_le_bytes());
+        data[36..40].copy_from_slice(&77u32.to_le_bytes());
+
+        let event = decode_etw_record_with_event_id_version(
+            super::super::providers::KERNEL_FILE,
+            15,
+            1,
+            0,
+            0x300,
+            42,
+            503,
+            &data,
+        )
+        .expect("should decode");
+
+        assert!(matches!(event.event_type, EventType::FileOpen));
+        assert!(event.payload.contains("file_object=0x2222"));
+        assert!(event.payload.contains("file_key=0x3333"));
+        assert!(event.payload.contains("size=77"));
+        assert!(event.payload.contains("access=read"));
+    }
+
+    #[test]
+    fn decode_kernel_file_read_manifest_v0_uses_read_args_offsets() {
+        let mut data = vec![0u8; 48];
+        data[24..32].copy_from_slice(&0x4444u64.to_le_bytes());
+        data[32..40].copy_from_slice(&0x5555u64.to_le_bytes());
+        data[40..44].copy_from_slice(&88u32.to_le_bytes());
+
+        let event = decode_etw_record_with_event_id_version(
+            super::super::providers::KERNEL_FILE,
+            15,
+            0,
+            0,
+            0x300,
+            42,
+            504,
+            &data,
+        )
+        .expect("should decode");
+
+        assert!(matches!(event.event_type, EventType::FileOpen));
+        assert!(event.payload.contains("file_object=0x4444"));
+        assert!(event.payload.contains("file_key=0x5555"));
+        assert!(event.payload.contains("size=88"));
     }
 
     #[test]

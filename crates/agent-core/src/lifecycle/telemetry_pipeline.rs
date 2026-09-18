@@ -196,7 +196,9 @@ impl AgentRuntime {
         } else {
             std::time::Duration::from_millis(0)
         };
-        let polled = self.ebpf_engine.poll_once(timeout);
+        let polled = self
+            .ebpf_engine
+            .poll_once(timeout, self.config.telemetry_process_exec);
         self.observe_ebpf_stats();
 
         match polled {

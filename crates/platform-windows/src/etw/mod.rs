@@ -132,12 +132,20 @@ impl EtwEngine {
     }
 
     /// Poll decoded ETW events from the consumer.
-    pub fn poll_events(&mut self, max_batch: usize) -> Result<Vec<crate::RawEvent>, EtwError> {
+    pub fn poll_events(
+        &mut self,
+        max_batch: usize,
+        include_process_exec: bool,
+    ) -> Result<Vec<crate::RawEvent>, EtwError> {
         let Some(consumer) = self.consumer.as_mut() else {
             return Ok(Vec::new());
         };
 
-        let security_reserve = max_batch.min(32);
+        let security_reserve = if include_process_exec {
+            max_batch.min(32)
+        } else {
+            0
+        };
 
         // Prefer Security 4688 process-creation truth before draining the
         // noisier kernel ETW stream. Both sources become `ProcessExec` events

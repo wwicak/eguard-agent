@@ -21,6 +21,8 @@ const ETW_REPLAY_PATH_ENV: &str = "EGUARD_ETW_REPLAY_PATH";
 /// Channel capacity: bounded to provide back-pressure.
 #[cfg(target_os = "windows")]
 const CHANNEL_CAPACITY: usize = 16_384;
+#[cfg(target_os = "windows")]
+const PRIORITY_QUEUE_CAPACITY: usize = 4_096;
 
 const THREAD_PID_CACHE_CAPACITY: usize = 16_384;
 const THREAD_PID_CACHE_TTL_NS: u64 = 120 * 1_000_000_000;
@@ -94,24 +96,63 @@ fn remap_kernel_file_pid(
 mod win32 {
     use super::super::codec;
     use super::{remap_kernel_file_pid, thread_pid_cache, ThreadPidCacheEntry};
+    use crate::enrichment::process;
     use crate::RawEvent;
     use lru::LruCache;
     use std::cell::RefCell;
+    use std::collections::VecDeque;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::mpsc::SyncSender;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Diagnostics::Etw::*;
     use windows::Win32::System::Threading::{
         GetProcessIdOfThread, OpenThread, THREAD_QUERY_LIMITED_INFORMATION,
     };
 
+    /// Priority inbox for path-bearing FileOpen events.
+    ///
+    /// ETW file churn can fill the normal FIFO before the agent polls it. Keep
+    /// scannable opens in a separate bounded inbox so they reach the agent
+    /// before ordinary noise.
+    pub(super) struct PriorityInbox {
+        events: Mutex<VecDeque<RawEvent>>,
+        drops: Arc<AtomicU64>,
+    }
+
+    impl PriorityInbox {
+        pub(super) fn new(drops: Arc<AtomicU64>) -> Self {
+            Self {
+                events: Mutex::new(VecDeque::with_capacity(super::PRIORITY_QUEUE_CAPACITY)),
+                drops,
+            }
+        }
+
+        fn push(&self, event: RawEvent) {
+            let Ok(mut events) = self.events.lock() else {
+                self.drops.fetch_add(1, Ordering::Relaxed);
+                return;
+            };
+            if events.len() >= super::PRIORITY_QUEUE_CAPACITY {
+                events.pop_front();
+                self.drops.fetch_add(1, Ordering::Relaxed);
+            }
+            events.push_back(event);
+        }
+
+        pub(super) fn pop(&self) -> Option<RawEvent> {
+            self.events.lock().ok()?.pop_front()
+        }
+    }
+
     /// State passed to the ETW callback via thread-local storage.
     struct CallbackState {
+        priority_events: Arc<PriorityInbox>,
         sender: SyncSender<RawEvent>,
         agent_pid: u32,
         drops: Arc<AtomicU64>,
         thread_pid_cache: RefCell<LruCache<u32, ThreadPidCacheEntry>>,
+        browser_pid_cache: RefCell<LruCache<u32, bool>>,
     }
 
     thread_local! {
@@ -119,6 +160,31 @@ mod win32 {
     }
 
     impl CallbackState {
+        fn is_browser_pid(&self, pid: u32) -> bool {
+            if let Some(cached) = self.browser_pid_cache.borrow_mut().get(&pid).copied() {
+                return cached;
+            }
+
+            let is_browser = process::query_process_basename(pid)
+                .as_deref()
+                .map(|name| {
+                    matches!(
+                        name.to_ascii_lowercase().as_str(),
+                        "chrome.exe"
+                            | "chrome"
+                            | "msedge.exe"
+                            | "msedge"
+                            | "firefox.exe"
+                            | "firefox"
+                            | "brave.exe"
+                            | "brave"
+                    )
+                })
+                .unwrap_or(false);
+            self.browser_pid_cache.borrow_mut().put(pid, is_browser);
+            is_browser
+        }
+
         fn resolve_event_pid(
             &self,
             provider_guid: &str,
@@ -194,6 +260,7 @@ mod win32 {
             let ts_ns = filetime_to_unix_ns(header.TimeStamp);
 
             let event_id = header.EventDescriptor.Id;
+            let version = header.EventDescriptor.Version;
             let opcode = header.EventDescriptor.Opcode;
             let keyword = header.EventDescriptor.Keyword;
             let pid = state.resolve_event_pid(&guid_str, header.ProcessId, header.ThreadId, ts_ns);
@@ -225,21 +292,49 @@ mod win32 {
                 );
             }
 
+            let is_browser_read = guid_str
+                .eq_ignore_ascii_case(super::super::providers::KERNEL_FILE)
+                && event_id == 15
+                && opcode == 0
+                && keyword & 0x100 != 0;
+
+            // READ is enabled only for browser processes. Drop it before it
+            // reaches either queue; ordinary file reads remain invisible to
+            // the agent and cannot consume the telemetry budget.
+            if is_browser_read && !state.is_browser_pid(pid) {
+                return;
+            }
+
             let event = if guid_str.eq_ignore_ascii_case(super::super::providers::SECURITY_AUDITING)
             {
                 super::super::security_auditing::decode_security_auditing_record(record, ts_ns)
             } else {
-                codec::decode_etw_record_with_event_id(
-                    &guid_str, event_id, opcode, keyword, pid, ts_ns, user_data,
+                codec::decode_etw_record_with_event_id_version(
+                    &guid_str, event_id, version, opcode, keyword, pid, ts_ns, user_data,
                 )
             };
 
             if let Some(event) = event {
-                if state.sender.try_send(event).is_err() {
+                if is_browser_read || is_path_bearing_file_open(&event) {
+                    state.priority_events.push(event);
+                } else if state.sender.try_send(event).is_err() {
                     state.drops.fetch_add(1, Ordering::Relaxed);
                 }
             }
         });
+    }
+
+    fn is_path_bearing_file_open(event: &RawEvent) -> bool {
+        if !matches!(event.event_type, crate::EventType::FileOpen) {
+            return false;
+        }
+
+        event.payload.split([';', ',']).any(|segment| {
+            let Some((key, value)) = segment.split_once('=') else {
+                return false;
+            };
+            key.trim().eq_ignore_ascii_case("path") && !value.trim().is_empty()
+        })
     }
 
     /// Convert Windows FILETIME (100-ns intervals since 1601-01-01) to Unix nanoseconds.
@@ -256,6 +351,7 @@ mod win32 {
     /// Spawn the consumer thread. Returns `(JoinHandle, Receiver, Arc<AtomicU64>)`.
     pub(super) fn spawn_consumer_thread(
         session_name: String,
+        priority_events: Arc<PriorityInbox>,
         sender: SyncSender<RawEvent>,
         drops: Arc<AtomicU64>,
     ) -> std::thread::JoinHandle<()> {
@@ -267,10 +363,15 @@ mod win32 {
                 // Install thread-local callback state.
                 CALLBACK_STATE.with(|cell| {
                     *cell.borrow_mut() = Some(CallbackState {
+                        priority_events,
                         sender,
                         agent_pid,
                         drops,
                         thread_pid_cache: RefCell::new(thread_pid_cache()),
+                        browser_pid_cache: RefCell::new(LruCache::new(
+                            std::num::NonZeroUsize::new(16_384)
+                                .expect("browser pid cache capacity > 0"),
+                        )),
                     });
                 });
 
@@ -341,6 +442,8 @@ pub struct EtwConsumer {
     running: bool,
 
     #[cfg(target_os = "windows")]
+    priority_events: Option<std::sync::Arc<win32::PriorityInbox>>,
+    #[cfg(target_os = "windows")]
     receiver: Option<std::sync::mpsc::Receiver<RawEvent>>,
     #[cfg(target_os = "windows")]
     thread_handle: Option<std::thread::JoinHandle<()>>,
@@ -355,6 +458,8 @@ impl EtwConsumer {
             pending_events: VecDeque::new(),
             running: false,
 
+            #[cfg(target_os = "windows")]
+            priority_events: None,
             #[cfg(target_os = "windows")]
             receiver: None,
             #[cfg(target_os = "windows")]
@@ -380,9 +485,17 @@ impl EtwConsumer {
 
         #[cfg(target_os = "windows")]
         {
+            let priority_events =
+                std::sync::Arc::new(win32::PriorityInbox::new(self.drops_count.clone()));
             let (tx, rx) = std::sync::mpsc::sync_channel(CHANNEL_CAPACITY);
             let drops = self.drops_count.clone();
-            let handle = win32::spawn_consumer_thread(session_name.to_string(), tx, drops);
+            let handle = win32::spawn_consumer_thread(
+                session_name.to_string(),
+                priority_events.clone(),
+                tx,
+                drops,
+            );
+            self.priority_events = Some(priority_events);
             self.receiver = Some(rx);
             self.thread_handle = Some(handle);
         }
@@ -413,6 +526,15 @@ impl EtwConsumer {
         // 2. Drain real channel (Windows only).
         #[cfg(target_os = "windows")]
         {
+            if let Some(priority_events) = &self.priority_events {
+                while events.len() < max_batch {
+                    let Some(event) = priority_events.pop() else {
+                        break;
+                    };
+                    events.push(event);
+                }
+            }
+
             if let Some(rx) = &self.receiver {
                 while events.len() < max_batch {
                     match rx.try_recv() {
@@ -486,7 +608,8 @@ impl Drop for EtwConsumer {
         // stopped (by EtwEngine::stop), which causes ProcessTrace to return.
         #[cfg(target_os = "windows")]
         {
-            // Drop receiver first to unblock any pending send.
+            // Drop both queues before joining the callback thread.
+            self.priority_events = None;
             self.receiver = None;
             if let Some(handle) = self.thread_handle.take() {
                 let _ = handle.join();

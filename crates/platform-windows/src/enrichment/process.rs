@@ -80,6 +80,25 @@ pub fn query_process_info(pid: u32) -> ProcessInfo {
     }
 }
 
+/// Query only the executable basename without collecting command-line data.
+pub fn query_process_basename(pid: u32) -> Option<String> {
+    #[cfg(target_os = "windows")]
+    {
+        let snapshot = load_process_snapshot(false);
+        snapshot
+            .get(&pid)
+            .and_then(|record| record.name.as_deref().map(ToString::to_string))
+            .or_else(|| {
+                query_process_image_path(pid).map(|path| process_basename(&path).to_string())
+            })
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
 /// Collect the parent chain (up to `MAX_PARENT_CHAIN_DEPTH` ancestors).
 pub fn collect_parent_chain(pid: u32) -> Vec<u32> {
     #[cfg(target_os = "windows")]

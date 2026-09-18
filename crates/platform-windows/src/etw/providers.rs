@@ -43,9 +43,11 @@ pub const IMAGE_LOAD: &str = "2CB15D1D-5FC1-11D2-ABE1-00A0C911F518";
 /// Kernel-Process: PROCESS (0x10) | IMAGE (0x40) — process lifecycle + DLL loads.
 const KW_KERNEL_PROCESS: u64 = 0x10 | 0x40;
 
-/// Kernel-File: FILENAME | CREATE | WRITE | DELETE_PATH | RENAME_SETLINK_PATH | CREATE_NEW_FILE.
-/// Skips READ, FILEIO, OP_END (~80% volume reduction).
-const KW_KERNEL_FILE: u64 = 0x10 | 0x80 | 0x200 | 0x400 | 0x800 | 0x1000;
+/// Kernel-File: FILENAME | CREATE | READ (browser-scoped) | WRITE | DELETE_PATH | RENAME_SETLINK_PATH | CREATE_NEW_FILE.
+/// READ 0x100 is intentionally scoped: the ETW callback keeps Read records
+/// only for browser PIDs (see consumer.rs); without that guard the volume
+/// floods the 4096 backlog. Skips FILEIO, OP_END (~80% volume reduction).
+const KW_KERNEL_FILE: u64 = 0x10 | 0x80 | 0x100 | 0x200 | 0x400 | 0x800 | 0x1000;
 
 /// Kernel-Network: IPV4 (0x10) | IPV6 (0x20) — all TCP connections.
 const KW_KERNEL_NETWORK: u64 = 0x10 | 0x20;

@@ -82,7 +82,11 @@ mod windows_engine {
             })
         }
 
-        pub fn poll_once(&mut self, _timeout: Duration) -> Result<Vec<RawEvent>> {
+        pub fn poll_once(
+            &mut self,
+            _timeout: Duration,
+            include_process_exec: bool,
+        ) -> Result<Vec<RawEvent>> {
             if !self.enabled {
                 return Ok(Vec::new());
             }
@@ -96,7 +100,7 @@ mod windows_engine {
 
             let events = self
                 .etw
-                .poll_events(256)
+                .poll_events(256, include_process_exec)
                 .map_err(|err| EbpfError::Backend(err.to_string()))?;
 
             let etw_stats = self.etw.stats();
