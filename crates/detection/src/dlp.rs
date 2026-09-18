@@ -91,6 +91,14 @@ impl DlpScanner {
         matches
     }
 
+    /// Read a file and extract its text for DLP scanning.
+    ///
+    /// Plain text is read as-is. OOXML/OpenDocument files are ZIP containers,
+    /// so their text lives in deflated XML parts; extracting those raw parts is
+    /// enough for regex classifiers (a NIK is a NIK whether or not the XML
+    /// around it was parsed). PDF is deliberately not extracted — it needs a
+    /// parser, and silently returning no text would hide the gap; see
+    /// `is_unextractable_container`.
     pub fn scan_file(
         &self,
         path: &std::path::Path,
@@ -105,10 +113,93 @@ impl DlpScanner {
             ));
         }
         let bytes = std::fs::read(path).map_err(|err| format!("read {}: {err}", path.display()))?;
-        let text = std::str::from_utf8(&bytes)
-            .map_err(|_| format!("file is not UTF-8 text: {}", path.display()))?;
-        Ok(self.scan(text))
+        let text = extract_scan_text(path, &bytes)?;
+        Ok(self.scan(&text))
     }
+}
+
+/// OOXML / OpenDocument parts that carry the user-visible text.
+const DOC_TEXT_PART_SUFFIXES: &[&str] = &[
+    "word/document.xml",
+    "word/header",
+    "word/footer",
+    "word/footnotes.xml",
+    "word/endnotes.xml",
+    "xl/sharedStrings.xml",
+    "xl/worksheets/",
+    "ppt/slides/slide",
+    "ppt/notesSlides/notesSlide",
+    "content.xml",
+];
+
+/// Extract scannable text, transparently unwrapping OOXML/ODF containers.
+pub fn extract_scan_text(path: &std::path::Path, bytes: &[u8]) -> Result<String, String> {
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return Ok(text.to_string());
+    }
+    if is_zip_container(bytes) {
+        return extract_zip_text(bytes)
+            .ok_or_else(|| format!("no scannable text extracted from {}", path.display()));
+    }
+    Err(format!(
+        "unsupported binary format for DLP scan: {}",
+        path.display()
+    ))
+}
+
+/// ZIP local-file-header magic (`PK\x03\x04`). Enough to tell a container from
+/// arbitrary binary; a corrupt archive simply fails extraction and is logged.
+fn is_zip_container(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"PK\x03\x04")
+}
+
+fn extract_zip_text(bytes: &[u8]) -> Option<String> {
+    let cursor = std::io::Cursor::new(bytes);
+    let mut archive = zip::ZipArchive::new(cursor).ok()?;
+    let mut text = String::new();
+    for index in 0..archive.len() {
+        let Ok(mut entry) = archive.by_index(index) else {
+            continue;
+        };
+        if !entry.is_file() {
+            continue;
+        }
+        let name = entry.name().replace('\\', "/").to_ascii_lowercase();
+        if !DOC_TEXT_PART_SUFFIXES
+            .iter()
+            .any(|suffix| name.contains(suffix))
+        {
+            continue;
+        }
+        // ponytail: 64 MiB per part cap; OOXML parts are far smaller. Drop the
+        // cap if a legitimately huge sheet must be scanned in full.
+        let mut part = Vec::new();
+        let mut bounded = std::io::Read::take(&mut entry, 64 * 1024 * 1024);
+        if std::io::Read::read_to_end(&mut bounded, &mut part).is_err() {
+            continue;
+        }
+        if let Ok(part) = String::from_utf8(part) {
+            text.push_str(&part);
+            text.push('\n');
+        }
+    }
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
+/// True when the extension implies a container this scanner cannot read yet.
+/// Callers use it to surface a skip instead of reporting a silent clean scan.
+pub fn is_unextractable_container(path: &std::path::Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some("pdf")
+    )
 }
 
 fn validator_accepts(validator: &str, value: &str, has_context: bool) -> bool {
@@ -198,6 +289,49 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].rule_id, "id.nik");
         assert_eq!(found[0].redacted_evidence, "3174********0001");
+    }
+
+    /// A real .docx is a ZIP whose word/document.xml holds the text. Build one
+    /// and prove the classifier reads through the container, since the previous
+    /// UTF-8-only path returned "not text" and silently missed it.
+    #[test]
+    fn scan_file_reads_text_inside_docx_zip_container() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("data-classifier.docx");
+
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(&path).expect("create"));
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        writer
+            .start_file("word/document.xml", options)
+            .expect("start part");
+        std::io::Write::write_all(
+            &mut writer,
+            br#"<?xml version="1.0"?><w:document><w:t>NIK: 3174012301900001</w:t></w:document>"#,
+        )
+        .expect("write part");
+        // A non-text part must be ignored, not decoded as UTF-8.
+        writer
+            .start_file("word/media/image1.bin", options)
+            .expect("start binary part");
+        std::io::Write::write_all(&mut writer, &[0xff, 0xfe, 0x00, 0x01]).expect("write binary");
+        writer.finish().expect("finish zip");
+
+        let found = scanner()
+            .scan_file(&path, 10 * 1024 * 1024)
+            .expect("docx scan succeeds");
+        assert_eq!(found.len(), 1, "NIK inside docx must be detected");
+        assert_eq!(found[0].rule_id, "id.nik");
+    }
+
+    #[test]
+    fn scan_file_rejects_unextractable_binary_instead_of_reporting_clean() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("report.pdf");
+        std::fs::write(&path, b"%PDF-1.7\n\xff\xfe binary").expect("write pdf fixture");
+
+        assert!(scanner().scan_file(&path, 10 * 1024 * 1024).is_err());
+        assert!(is_unextractable_container(&path));
     }
 
     #[test]
