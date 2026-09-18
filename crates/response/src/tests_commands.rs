@@ -62,6 +62,14 @@ fn parse_server_command_accepts_all_supported_literals_and_aliases() {
         parse_server_command("apply_profile"),
         ServerCommand::ApplyProfile
     );
+    assert_eq!(
+        parse_server_command("dlp_discovery"),
+        ServerCommand::DlpDiscovery
+    );
+    assert_eq!(
+        parse_server_command("discovery_scan"),
+        ServerCommand::DlpDiscovery
+    );
 
     assert_eq!(
         parse_server_command("  emergency_rule_push  "),

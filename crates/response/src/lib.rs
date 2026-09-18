@@ -588,6 +588,7 @@ pub enum ServerCommand {
     Isolate,
     Unisolate,
     Scan,
+    DlpDiscovery,
     Update,
     Forensics,
     ConfigChange,
@@ -642,6 +643,7 @@ pub fn parse_server_command(raw: &str) -> ServerCommand {
         "isolate" | "isolate_host" => ServerCommand::Isolate,
         "unisolate" | "unisolate_host" => ServerCommand::Unisolate,
         "scan" | "run_scan" => ServerCommand::Scan,
+        "dlp_discovery" | "discovery_scan" => ServerCommand::DlpDiscovery,
         "update" | "update_rules" => ServerCommand::Update,
         "forensics" | "forensics_collect" => ServerCommand::Forensics,
         "config_change" => ServerCommand::ConfigChange,
@@ -698,6 +700,11 @@ pub fn execute_server_command_with_state(
                 detail: "quick scan scheduled".to_string(),
             }
         }
+        ServerCommand::DlpDiscovery => CommandExecution {
+            outcome: CommandOutcome::Applied,
+            status: "completed",
+            detail: "DLP discovery scheduled".to_string(),
+        },
         ServerCommand::Update => {
             state.last_update_unix = Some(now_unix);
             CommandExecution {
