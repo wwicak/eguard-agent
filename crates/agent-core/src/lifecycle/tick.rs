@@ -65,6 +65,17 @@ fn browser_activity_observed(event: &TelemetryEvent) -> bool {
             .unwrap_or(false)
 }
 
+/// Direction of the file access, so an egress read can be told apart from an
+/// ingress write. Windows ETW already distinguishes them (FileOpen vs
+/// FileWrite), which is what fills `file_write`.
+fn dlp_operation(event: &TelemetryEvent) -> &'static str {
+    if event.file_write {
+        "write"
+    } else {
+        "read"
+    }
+}
+
 fn dlp_channel(event: &TelemetryEvent) -> &'static str {
     if let Some(path) = event.file_path.as_deref() {
         if path.starts_with("\\\\") || path.starts_with("//") {
@@ -412,7 +423,7 @@ impl AgentRuntime {
         };
         // Windows Kernel-File can report a content-bearing create/open event
         // without the separate write opcode.  A path-bearing event is still
-        // safe to scan; the UI operation remains `accessed`.
+        // safe to scan; a scan failure is an error, never a silent clean.
         scanner
             .scan_file(
                 std::path::Path::new(path),
@@ -535,6 +546,12 @@ impl AgentRuntime {
             return;
         };
         let channel = dlp_channel(event);
+        // Direction, not a constant: a browser reading a local file and posting
+        // it (egress) must be distinguishable from a browser writing a
+        // downloaded file to disk (ingress). Reporting "accessed" for both made
+        // a download indistinguishable from a leak, so an analyst -- or a later
+        // enforcement rule -- could not tell them apart.
+        let operation = dlp_operation(event);
         let policy_id = matches
             .first()
             .map(|item| item.rule_id.clone())
@@ -546,7 +563,7 @@ impl AgentRuntime {
         payload["dlp"] = serde_json::json!({
             "detected": true,
             "channel": channel,
-            "operation": "accessed",
+            "operation": operation,
             "file_path": event.file_path.as_deref().unwrap_or_default(),
             "process": event.process.as_str(),
             "policy_id": policy_id,
@@ -977,6 +994,37 @@ mod tests {
             browser_domain_category(Some("web.telegram.org")),
             Some("messaging")
         );
+    }
+
+    #[test]
+    fn dlp_operation_distinguishes_egress_read_from_ingress_write() {
+        let mut event = TelemetryEvent {
+            ts_unix: 0,
+            event_class: EventClass::FileOpen,
+            pid: 1,
+            ppid: 0,
+            uid: 0,
+            process: "chrome.exe".to_string(),
+            parent_process: "explorer.exe".to_string(),
+            session_id: 1,
+            file_path: Some(r"C:\Users\a\Downloads\classifier.xlsx".to_string()),
+            file_write: false,
+            file_hash: None,
+            dst_port: None,
+            dst_ip: None,
+            dst_domain: None,
+            command_line: None,
+            event_size: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+            user: None,
+        };
+        assert_eq!(dlp_operation(&event), "read");
+        event.file_write = true;
+        assert_eq!(dlp_operation(&event), "write");
+        assert_ne!(dlp_operation(&event), "accessed");
     }
 
     #[test]
