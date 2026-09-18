@@ -38,6 +38,36 @@ fn has_line(lines: &[String], expected: &str) -> bool {
 }
 
 #[test]
+fn network_metadata_uses_frontload_priority_under_backpressure() {
+    let network = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::TcpConnect,
+        pid: 77,
+        uid: 0,
+        ts_ns: 1,
+        payload: "dst_ip=203.0.113.10;dst_port=443".to_string(),
+    };
+    let dns = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::DnsQuery,
+        pid: 77,
+        uid: 0,
+        ts_ns: 2,
+        payload: "qname=example.com".to_string(),
+    };
+
+    assert_eq!(AgentRuntime::raw_event_priority(&network), 0);
+    assert_eq!(AgentRuntime::raw_event_priority(&dns), 0);
+
+    let process = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::ProcessExec,
+        pid: 77,
+        uid: 0,
+        ts_ns: 3,
+        payload: "comm=helper".to_string(),
+    };
+    assert_eq!(AgentRuntime::raw_event_priority(&process), 1);
+}
+
+#[test]
 // AC-EBP-035
 fn tick_pipeline_produces_detection_compliance_envelope_and_baseline_learning() {
     let mut cfg = AgentConfig::default();

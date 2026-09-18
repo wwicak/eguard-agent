@@ -838,13 +838,15 @@ impl AgentRuntime {
 
     pub(super) fn raw_event_priority(event: &RawEvent) -> u8 {
         match event.event_type {
-            crate::platform::EventType::ProcessExec => 0,
+            // Keep network metadata ahead of process-exec bursts under backlog
+            // pressure; this does not inspect payloads or change enforcement.
+            crate::platform::EventType::TcpConnect | crate::platform::EventType::DnsQuery => 0,
+            crate::platform::EventType::ProcessExec => 1,
             crate::platform::EventType::ProcessExit => 1,
             crate::platform::EventType::LsmBlock => 1,
             crate::platform::EventType::FileWrite
             | crate::platform::EventType::FileRename
             | crate::platform::EventType::FileUnlink => 2,
-            crate::platform::EventType::TcpConnect | crate::platform::EventType::DnsQuery => 3,
             crate::platform::EventType::FileOpen => {
                 if Self::should_drop_low_value_linux_raw_event(event) {
                     return 3;
