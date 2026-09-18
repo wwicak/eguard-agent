@@ -10,6 +10,7 @@ use tokio::time::timeout;
 
 use crate::platform::enrich_event_with_cache;
 
+use super::detection_event::is_low_value_windows_browser_profile_path;
 use super::dlp_policy_engine;
 use crate::config::AgentMode;
 
@@ -22,25 +23,62 @@ use super::{
     STORAGE_HYGIENE_INTERVAL_SECS,
 };
 
-#[cfg(target_os = "windows")]
-fn dlp_channel(path: Option<&str>) -> &'static str {
-    let Some(path) = path else {
-        return "file_write";
-    };
-    if path.starts_with("\\\\") {
-        return "file_share";
+fn browser_app_category(process: &str) -> Option<&'static str> {
+    let name = process.rsplit(['\\', '/']).next()?.to_ascii_lowercase();
+    match name.as_str() {
+        "chrome.exe" | "chrome" | "msedge.exe" | "msedge" => Some("browser"),
+        _ => None,
     }
-    if platform_windows::removable_media::is_removable_path(path) {
-        return "removable_media";
-    }
-    "file_write"
 }
 
-#[cfg(not(target_os = "windows"))]
-fn dlp_channel(path: Option<&str>) -> &'static str {
-    path.filter(|path| path.starts_with("//"))
-        .map(|_| "file_share")
-        .unwrap_or("file_write")
+fn browser_domain_category(domain: Option<&str>) -> Option<&'static str> {
+    let domain = domain?.trim().to_ascii_lowercase();
+    if domain.is_empty() {
+        return None;
+    }
+    if [
+        "drive.google.com",
+        "docs.google.com",
+        "dropbox.com",
+        "onedrive.live.com",
+    ]
+    .iter()
+    .any(|suffix| domain == *suffix || domain.ends_with(&format!(".{suffix}")))
+    {
+        return Some("cloud_storage");
+    }
+    if ["web.whatsapp.com", "web.telegram.org", "messenger.com"]
+        .iter()
+        .any(|suffix| domain == *suffix || domain.ends_with(&format!(".{suffix}")))
+    {
+        return Some("messaging");
+    }
+    Some("web")
+}
+
+fn browser_activity_observed(event: &TelemetryEvent) -> bool {
+    browser_app_category(&event.process).is_some()
+        && event
+            .file_path
+            .as_deref()
+            .map(|path| !is_low_value_windows_browser_profile_path(path))
+            .unwrap_or(false)
+}
+
+fn dlp_channel(event: &TelemetryEvent) -> &'static str {
+    if let Some(path) = event.file_path.as_deref() {
+        if path.starts_with("\\\\") || path.starts_with("//") {
+            return "file_share";
+        }
+        #[cfg(target_os = "windows")]
+        if platform_windows::removable_media::is_removable_path(path) {
+            return "removable_media";
+        }
+    }
+    if browser_activity_observed(event) {
+        return "browser_activity";
+    }
+    "file_write"
 }
 
 impl AgentRuntime {
@@ -352,12 +390,7 @@ impl AgentRuntime {
         if let Some(rule_name) = Self::detection_rule_name(&detection_outcome) {
             event_envelope.rule_name = rule_name;
         }
-        self.attach_dlp_matches(
-            &mut event_envelope,
-            &dlp_matches,
-            detection_event.file_path.as_deref(),
-            &detection_event.process,
-        );
+        self.attach_dlp_matches(&mut event_envelope, &dlp_matches, &detection_event);
 
         Ok(Some(TickEvaluation {
             detection_event,
@@ -400,7 +433,10 @@ impl AgentRuntime {
         let ctx = dlp_policy_engine::DlpEvalContext {
             file_path: path,
             process: &event.process,
-            channel: dlp_channel(Some(path)),
+            channel: dlp_channel(event),
+            dst_domain: event.dst_domain.as_deref(),
+            app_category: browser_app_category(&event.process),
+            domain_category: browser_domain_category(event.dst_domain.as_deref()),
             user: event.user.as_deref(),
         };
         engine.evaluate(&ctx).into_iter().collect()
@@ -486,8 +522,7 @@ impl AgentRuntime {
         &mut self,
         envelope: &mut grpc_client::EventEnvelope,
         matches: &[detection::dlp::DlpMatch],
-        file_path: Option<&str>,
-        process: &str,
+        event: &TelemetryEvent,
     ) {
         if matches.is_empty() {
             return;
@@ -499,7 +534,7 @@ impl AgentRuntime {
         else {
             return;
         };
-        let channel = dlp_channel(file_path);
+        let channel = dlp_channel(event);
         let policy_id = matches
             .first()
             .map(|item| item.rule_id.clone())
@@ -512,8 +547,8 @@ impl AgentRuntime {
             "detected": true,
             "channel": channel,
             "operation": "accessed",
-            "file_path": file_path.unwrap_or_default(),
-            "process": process,
+            "file_path": event.file_path.as_deref().unwrap_or_default(),
+            "process": event.process.as_str(),
             "policy_id": policy_id,
             "action": action,
             "detections": matches.iter().map(|item| serde_json::json!({
@@ -896,15 +931,52 @@ mod tests {
     use response::PlannedAction;
 
     #[test]
-    fn dlp_file_share_channel_is_observe_only() {
-        #[cfg(target_os = "windows")]
-        assert_eq!(
-            dlp_channel(Some(r"\\server\share\sample.txt")),
-            "file_share"
+    fn dlp_channel_is_generic_and_observe_only() {
+        let mut event = TelemetryEvent {
+            ts_unix: 0,
+            event_class: EventClass::FileOpen,
+            pid: 1,
+            ppid: 0,
+            uid: 0,
+            process: "explorer.exe".to_string(),
+            parent_process: "explorer.exe".to_string(),
+            session_id: 1,
+            file_path: Some("//server/share/sample.txt".to_string()),
+            file_write: true,
+            file_hash: None,
+            dst_port: None,
+            dst_ip: None,
+            dst_domain: None,
+            command_line: None,
+            event_size: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+            user: None,
+        };
+        assert_eq!(dlp_channel(&event), "file_share");
+        event.file_path = None;
+        assert_eq!(dlp_channel(&event), "file_write");
+        event.process = "notepad.exe".to_string();
+        event.dst_domain = Some("drive.google.com".to_string());
+        assert_eq!(dlp_channel(&event), "file_write");
+        event.process = "chrome.exe".to_string();
+        event.file_path = Some(r"C:\Users\Administrator\Downloads\classified.txt".to_string());
+        assert_eq!(dlp_channel(&event), "browser_activity");
+        event.file_path = Some(
+            r"C:\Users\Administrator\AppData\Local\Google\Chrome\User Data\Default\Cache\data_1"
+                .to_string(),
         );
-        #[cfg(not(target_os = "windows"))]
-        assert_eq!(dlp_channel(Some("//server/share/sample.txt")), "file_share");
-        assert_eq!(dlp_channel(None), "file_write");
+        assert_eq!(dlp_channel(&event), "file_write");
+        assert_eq!(
+            browser_app_category(r"C:\\Program Files\\Microsoft\\Edge\\msedge.exe"),
+            Some("browser")
+        );
+        assert_eq!(
+            browser_domain_category(Some("web.telegram.org")),
+            Some("messaging")
+        );
     }
 
     #[test]

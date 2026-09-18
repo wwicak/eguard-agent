@@ -56,6 +56,10 @@ pub struct DlpDestCond {
     pub paths: Vec<String>,
     #[serde(default)]
     pub apps: Vec<String>,
+    #[serde(default)]
+    pub app_categories: Vec<String>,
+    #[serde(default)]
+    pub domain_categories: Vec<String>,
 }
 
 /// Flat user target list. Empty users = applies to all users (backward
@@ -117,6 +121,9 @@ pub struct DlpEvalContext<'a> {
     pub file_path: &'a str,
     pub process: &'a str,
     pub channel: &'a str,
+    pub dst_domain: Option<&'a str>,
+    pub app_category: Option<&'a str>,
+    pub domain_category: Option<&'a str>,
     /// Optional resolved user (Scenario 13 AD integration); None = not resolved.
     pub user: Option<&'a str>,
 }
@@ -353,7 +360,12 @@ fn match_targets(targets: &DlpTargets, user: Option<&str>) -> bool {
 }
 
 fn match_dest(dest: &DlpDestCond, ctx: &DlpEvalContext<'_>) -> bool {
-    if dest.channels.is_empty() && dest.paths.is_empty() && dest.apps.is_empty() {
+    if dest.channels.is_empty()
+        && dest.paths.is_empty()
+        && dest.apps.is_empty()
+        && dest.app_categories.is_empty()
+        && dest.domain_categories.is_empty()
+    {
         return true;
     }
     let channel_ok = dest.channels.is_empty() || dest.channels.iter().any(|c| c == ctx.channel);
@@ -369,7 +381,17 @@ fn match_dest(dest: &DlpDestCond, ctx: &DlpEvalContext<'_>) -> bool {
             .apps
             .iter()
             .any(|app| ctx.process.contains(app.as_str()));
-    channel_ok && path_ok && app_ok
+    let app_category_ok = dest.app_categories.is_empty()
+        || ctx
+            .app_category
+            .map(|category| dest.app_categories.iter().any(|v| v == category))
+            .unwrap_or(false);
+    let domain_category_ok = dest.domain_categories.is_empty()
+        || ctx
+            .domain_category
+            .map(|category| dest.domain_categories.iter().any(|v| v == category))
+            .unwrap_or(false);
+    channel_ok && path_ok && app_ok && app_category_ok && domain_category_ok
 }
 
 #[cfg(test)]
@@ -390,6 +412,9 @@ mod tests {
             file_path: path,
             process,
             channel,
+            dst_domain: None,
+            app_category: None,
+            domain_category: None,
             user: None,
         }
     }
@@ -590,6 +615,9 @@ mod tests {
             file_path: "C:\\Users\\budi\\doc.txt",
             process: "notepad.exe",
             channel: "file_write",
+            dst_domain: None,
+            app_category: None,
+            domain_category: None,
             user: Some("budi.s"),
         };
         let missing = DlpEvalContext {
@@ -640,5 +668,49 @@ mod tests {
         assert!(engine(vec![policy], None, None, None)
             .evaluate(&ctx(path.to_str().unwrap(), "notepad.exe", "file_write"))
             .is_none());
+    }
+
+    #[test]
+    fn browser_app_category_gate_matches_classifier_without_domain() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("browser-upload.txt");
+        std::fs::write(&path, "NIK 3174123456780001").expect("write fixture");
+        let policy = DlpPolicyEnvelope {
+            policy_id: "browser-nik".to_string(),
+            name: "Browser NIK".to_string(),
+            priority: 1,
+            classifiers: vec![DlpClassifierRef {
+                classifier_type: "regex_rule".to_string(),
+                r#ref: "nik-browser".to_string(),
+                pattern: r"\b\d{16}\b".to_string(),
+                validator: "context_only".to_string(),
+                context: vec!["NIK".to_string(), "KTP".to_string()],
+            }],
+            match_mode: "any".to_string(),
+            source: DlpSourceCond::default(),
+            destination: DlpDestCond {
+                app_categories: vec!["browser".to_string()],
+                ..Default::default()
+            },
+            severity: "high".to_string(),
+            action: "alert".to_string(),
+            redaction: "mask_middle".to_string(),
+            regulations: vec![],
+            max_file_size_mb: 10,
+            targets: DlpTargets::default(),
+        };
+        let mut browser_ctx = ctx(path.to_str().unwrap(), "chrome.exe", "browser_activity");
+        browser_ctx.app_category = Some("browser");
+        assert_eq!(
+            engine(vec![policy.clone()], None, None, None)
+                .evaluate(&browser_ctx)
+                .expect("browser classifier match")
+                .rule_id,
+            "browser-nik"
+        );
+        browser_ctx.dst_domain = Some("drive.google.com");
+        assert!(engine(vec![policy], None, None, None)
+            .evaluate(&browser_ctx)
+            .is_some());
     }
 }

@@ -413,7 +413,7 @@ fn is_low_value_windows_agent_state_path(path: &str) -> bool {
         || normalized == r"c:\var\lib\eguard-agent\baselines.journal"
 }
 
-fn is_low_value_windows_browser_profile_path(path: &str) -> bool {
+pub(super) fn is_low_value_windows_browser_profile_path(path: &str) -> bool {
     let mut normalized = path
         .trim()
         .trim_matches('"')
@@ -423,12 +423,16 @@ fn is_low_value_windows_browser_profile_path(path: &str) -> bool {
         normalized = normalized.replace("\\\\", "\\");
     }
 
-    (normalized.contains(r"\mozilla\firefox\profiles\")
-        && (normalized.contains(r"\cache2\")
-            || normalized.contains(r"\storage\permanent\chrome\idb\")
-            || normalized.contains(r"\datareporting\")
-            || normalized.contains(r"\safebrowsing\")
-            || normalized.ends_with(r"\prefs.js")))
+    normalized.contains(r"\google\chrome\user data\")
+        || normalized.contains(r"\microsoft\edge\user data\")
+        || normalized.contains(r"\chromium\user data\")
+        || normalized.contains(r"\brave-browser\user data\")
+        || (normalized.contains(r"\mozilla\firefox\profiles\")
+            && (normalized.contains(r"\cache2\")
+                || normalized.contains(r"\storage\permanent\chrome\idb\")
+                || normalized.contains(r"\datareporting\")
+                || normalized.contains(r"\safebrowsing\")
+                || normalized.ends_with(r"\prefs.js")))
         || normalized.starts_with(
             r"c:\windows\system32\config\systemprofile\appdata\local\microsoft\windows\webcache\",
         )
