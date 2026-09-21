@@ -844,9 +844,22 @@ impl AgentRuntime {
             crate::platform::EventType::ProcessExec => 1,
             crate::platform::EventType::ProcessExit => 1,
             crate::platform::EventType::LsmBlock => 1,
+            // File mutations are the DLP classification target, so keep them in
+            // the frontload tier even when the payload carries no path yet: a
+            // Windows write record holds only file_object/file_key, and the path
+            // is resolved later from file_object_cache during enrichment. At the
+            // old tier (>1) both backlog-cap eviction (`pop_back` drains the
+            // tail) and statistical sampling (skips anything >1) discarded the
+            // write before the tick ever evaluated it.
             crate::platform::EventType::FileWrite
             | crate::platform::EventType::FileRename
-            | crate::platform::EventType::FileUnlink => 2,
+            | crate::platform::EventType::FileUnlink => {
+                if Self::should_drop_low_value_linux_raw_event(event) {
+                    return 3;
+                }
+
+                1
+            }
             crate::platform::EventType::FileOpen => {
                 if Self::should_drop_low_value_linux_raw_event(event) {
                     return 3;

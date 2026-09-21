@@ -228,7 +228,14 @@ impl AgentRuntime {
             }
 
             let Some(evaluation) = self.evaluate_tick(now_unix)? else {
-                break;
+                // None means either "queue empty" or "queued event consumed and
+                // filtered out". Breaking on the latter stalled the whole drain
+                // (backlog pinned at cap, one event per tick), so only an empty
+                // queue ends it; a filtered event keeps draining.
+                if self.raw_event_backlog.is_empty() {
+                    break;
+                }
+                continue;
             };
 
             self.log_detection_evaluation(&evaluation);
@@ -307,16 +314,20 @@ impl AgentRuntime {
         let enriched = enrich_event_with_cache(raw, &mut self.enrichment_cache);
 
         let detection_event = to_detection_event(&enriched, now_unix);
+        // Cheap first, expensive last: the DLP scanners below read file contents
+        // (~4.6ms/event measured) while these predicates are pure string checks,
+        // and matches computed for an event we drop here are discarded anyway.
+        if should_drop_low_value_windows_event(&enriched, &detection_event)
+            || should_drop_low_value_linux_event(&enriched, &detection_event)
+        {
+            return Ok(None);
+        }
+
         let mut dlp_matches = self.scan_dlp_policies(&detection_event);
         if dlp_matches.is_empty() {
             // Fallback to the legacy scanners when no policy matched.
             dlp_matches = self.scan_dlp_file(&detection_event);
             dlp_matches.extend(self.scan_dlp_classification_file(&detection_event));
-        }
-        if should_drop_low_value_windows_event(&enriched, &detection_event)
-            || should_drop_low_value_linux_event(&enriched, &detection_event)
-        {
-            return Ok(None);
         }
 
         self.observe_baseline(&detection_event, now_unix);

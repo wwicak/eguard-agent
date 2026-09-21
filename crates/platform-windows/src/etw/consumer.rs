@@ -315,7 +315,7 @@ mod win32 {
             };
 
             if let Some(event) = event {
-                if is_browser_read || is_path_bearing_file_open(&event) {
+                if is_browser_read || is_dlp_priority_event(&event) {
                     state.priority_events.push(event);
                 } else if state.sender.try_send(event).is_err() {
                     state.drops.fetch_add(1, Ordering::Relaxed);
@@ -324,7 +324,20 @@ mod win32 {
         });
     }
 
-    fn is_path_bearing_file_open(event: &RawEvent) -> bool {
+    /// Events that must reach DLP analysis even when the bounded channel is
+    /// saturated: file mutations (the Windows DLP target — their record carries
+    /// the file_object/file_key pair whose path is resolved during enrichment)
+    /// and path-bearing FileOpen records.
+    pub(super) fn is_dlp_priority_event(event: &RawEvent) -> bool {
+        if matches!(
+            event.event_type,
+            crate::EventType::FileWrite
+                | crate::EventType::FileRename
+                | crate::EventType::FileUnlink
+        ) {
+            return true;
+        }
+
         if !matches!(event.event_type, crate::EventType::FileOpen) {
             return false;
         }
@@ -652,7 +665,64 @@ mod tests {
         load_replay_events, remap_kernel_file_pid, remember_thread_pid, thread_pid_cache,
         EtwConsumer,
     };
+    #[cfg(target_os = "windows")]
+    use super::win32::is_dlp_priority_event;
     use crate::{EventType, RawEvent};
+
+    /// Regression: Windows write records carry no `path` (only
+    /// file_object/file_key), so the old path-bearing-FileOpen-only predicate
+    /// sent every write to the saturating channel and dropped it. Writes are the
+    /// DLP classification target and must always take the priority lane.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn path_less_file_write_stays_dlp_priority() {
+        let write = RawEvent {
+            event_type: EventType::FileWrite,
+            pid: 4242,
+            uid: 0,
+            ts_ns: 7,
+            payload: "file_object=0x7f;file_key=0x7e;size=64".to_string(),
+        };
+        assert!(
+            is_dlp_priority_event(&write),
+            "a path-less FileWrite must take the priority lane or DLP never sees endpoint writes"
+        );
+
+        for event_type in [EventType::FileRename, EventType::FileUnlink] {
+            let mutation = RawEvent {
+                event_type,
+                pid: 4242,
+                uid: 0,
+                ts_ns: 8,
+                payload: "file_object=0x8a;file_key=0x8b".to_string(),
+            };
+            assert!(
+                is_dlp_priority_event(&mutation),
+                "file mutations must take the priority lane"
+            );
+        }
+
+        // Path-bearing FileOpen still qualifies (unchanged behaviour).
+        let open_with_path = RawEvent {
+            event_type: EventType::FileOpen,
+            pid: 4242,
+            uid: 0,
+            ts_ns: 9,
+            payload: "file_object=0x1;path=C:\\tmp\\a.txt".to_string(),
+        };
+        assert!(is_dlp_priority_event(&open_with_path));
+
+        // A path-less read stays ordinary telemetry — it is not the DLP target
+        // and must not consume the priority lane.
+        let pathless_open = RawEvent {
+            event_type: EventType::FileOpen,
+            pid: 4242,
+            uid: 0,
+            ts_ns: 10,
+            payload: "file_object=0x2;file_key=0x3".to_string(),
+        };
+        assert!(!is_dlp_priority_event(&pathless_open));
+    }
 
     #[test]
     fn kernel_file_pid_remap_prefers_recent_thread_cache_entry() {

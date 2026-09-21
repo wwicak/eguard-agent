@@ -1716,3 +1716,105 @@ fn to_hex(raw: &[u8]) -> String {
 fn env_var_lock() -> &'static std::sync::Mutex<()> {
     super::shared_env_var_lock()
 }
+
+/// Regression: a path-bearing file write must reach deep analysis.
+///
+/// Windows DLP is driven by write events, but writes used to sit below the
+/// frontload tier. Under backlog pressure both eviction (`pop_back` drains the
+/// tail, where writes accumulate) and statistical sampling (skips priority >1)
+/// discarded them, so endpoints with heavy file churn reported zero writes and
+/// no DLP detections at all while quiet endpoints worked.
+#[test]
+fn path_bearing_file_write_survives_sampling_and_backlog_eviction() {
+    use crate::platform::{EventType, RawEvent};
+
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    cfg.server_addr = "127.0.0.1:1".to_string();
+
+    let pathless_write = RawEvent {
+        event_type: EventType::FileWrite,
+        pid: 7802,
+        uid: 1000,
+        ts_ns: 4,
+        payload: "fd=3;size=68".to_string(),
+    };
+
+    // Windows write records carry only file_object/file_key — no path — and the
+    // path is resolved later during enrichment. Both shapes must rank above the
+    // skip tier that eviction and sampling drain, otherwise the endpoint reports
+    // zero writes and DLP never fires.
+    assert!(
+        AgentRuntime::raw_event_priority(&pathless_write) <= 1,
+        "a path-less FileWrite must still be frontloaded for DLP classification"
+    );
+    // A path-bearing write carries exactly what DLP classification needs, so it
+    // must rank above the skip tier that both eviction and sampling drain.
+    assert!(
+        AgentRuntime::raw_event_priority(&RawEvent {
+            event_type: EventType::FileWrite,
+            pid: 7801,
+            uid: 1000,
+            ts_ns: 3,
+            payload: "path=/tmp/eicar_write_proof.com;size=68".to_string(),
+        }) <= 1,
+        "path-bearing FileWrite must be frontloaded for DLP classification"
+    );
+    assert!(AgentRuntime::raw_event_priority(&RawEvent {
+        event_type: EventType::FileRename,
+        pid: 7804,
+        uid: 1000,
+        ts_ns: 6,
+        payload: "path=/tmp/eicar_rename_proof.com;new_path=/tmp/x.com".to_string(),
+    }) <= 1);
+    assert!(AgentRuntime::raw_event_priority(&RawEvent {
+        event_type: EventType::FileUnlink,
+        pid: 7805,
+        uid: 1000,
+        ts_ns: 7,
+        payload: "path=/tmp/eicar_unlink_proof.com".to_string(),
+    }) <= 1);
+
+    let mut runtime = AgentRuntime::new(cfg).expect("build runtime");
+    runtime.enqueue_raw_events_with_priority(vec![
+        RawEvent {
+            event_type: EventType::FileWrite,
+            pid: 7801,
+            uid: 1000,
+            ts_ns: 3,
+            payload: "path=/tmp/eicar_write_proof.com;size=68".to_string(),
+        },
+        RawEvent {
+            event_type: EventType::ProcessExec,
+            pid: 9001,
+            uid: 0,
+            ts_ns: 1,
+            payload: "comm=bash;parent_comm=sshd;path=/usr/bin/bash".to_string(),
+        },
+        pathless_write,
+    ]);
+
+    let next = runtime
+        .dequeue_sampled_raw_event(8)
+        .expect("path-bearing write must survive sampling");
+    assert!(matches!(next.event_type, EventType::FileWrite));
+    assert!(next.payload.contains("/tmp/eicar_write_proof.com"));
+
+    // Backlog-cap eviction drains the tail; the write must not be sitting there.
+    runtime.enqueue_raw_events_with_priority(vec![RawEvent {
+        event_type: EventType::FileWrite,
+        pid: 7803,
+        uid: 1000,
+        ts_ns: 5,
+        payload: "path=/tmp/eicar_write_proof_2.com;size=68".to_string(),
+    }]);
+    runtime.enforce_raw_event_backlog_cap();
+    assert!(
+        runtime
+            .raw_event_backlog
+            .iter()
+            .any(|event| matches!(event.event_type, EventType::FileWrite)
+                && event.payload.contains("/tmp/eicar_write_proof_2.com")),
+        "backlog cap eviction dropped the path-bearing file write"
+    );
+}
