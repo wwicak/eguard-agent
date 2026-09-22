@@ -134,10 +134,25 @@ mod win32 {
                 return;
             };
             if events.len() >= super::PRIORITY_QUEUE_CAPACITY {
-                events.pop_front();
+                // Preserve path-bearing opens: they populate the object->path
+                // cache required to enrich a later write.
+                let Some(index) = events.iter().position(Self::is_file_mutation) else {
+                    self.drops.fetch_add(1, Ordering::Relaxed);
+                    return;
+                };
+                events.remove(index);
                 self.drops.fetch_add(1, Ordering::Relaxed);
             }
             events.push_back(event);
+        }
+
+        fn is_file_mutation(event: &RawEvent) -> bool {
+            matches!(
+                event.event_type,
+                crate::EventType::FileWrite
+                    | crate::EventType::FileRename
+                    | crate::EventType::FileUnlink
+            )
         }
 
         pub(super) fn pop(&self) -> Option<RawEvent> {
