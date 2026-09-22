@@ -12,9 +12,7 @@ use super::compliance_platform::collect_platform_snapshot;
 use nac::Posture;
 use serde::Deserialize;
 
-use super::{
-    interval_due, now_unix, remediation_check_type, AgentRuntime, COMPLIANCE_INTERVAL_SECS,
-};
+use super::{interval_due, now_unix, remediation_check_type, AgentRuntime};
 
 impl AgentRuntime {
     pub(super) fn log_posture(&mut self, posture: Posture) {
@@ -92,15 +90,11 @@ impl AgentRuntime {
     }
 
     pub(super) fn compliance_interval_secs(&self) -> i64 {
-        let policy_interval = self
-            .compliance_policy
+        let local_interval = self.config.compliance_check_interval_secs.max(300);
+        self.compliance_policy
             .check_interval_secs
-            .unwrap_or(self.config.compliance_check_interval_secs);
-        if policy_interval == 0 {
-            COMPLIANCE_INTERVAL_SECS
-        } else {
-            policy_interval as i64
-        }
+            .unwrap_or(local_interval)
+            .max(local_interval) as i64
     }
 
     fn apply_compliance_grace(&mut self, now_unix: i64, result: &mut ComplianceResult) {

@@ -69,7 +69,8 @@ impl AgentRuntime {
         {
             self.compliance_policy_version = policy.policy_version.clone();
             policy_changed = true;
-        } else if !policy.config_version.trim().is_empty()
+        } else if policy.policy_version.trim().is_empty()
+            && !policy.config_version.trim().is_empty()
             && self.compliance_policy_version != policy.config_version
         {
             self.compliance_policy_version = policy.config_version.clone();
@@ -120,6 +121,9 @@ impl AgentRuntime {
 
         match parse_policy_json(&policy.policy_json) {
             Ok(parsed) => {
+                if parsed == self.compliance_policy {
+                    return;
+                }
                 info!(
                     firewall = parsed.firewall_required,
                     kernel_prefix = ?parsed.min_kernel_prefix,
@@ -836,6 +840,46 @@ mod tests {
             std::process::id(),
             nonce
         ))
+    }
+
+    #[test]
+    fn identical_compliance_policy_does_not_invalidate_cache() {
+        let mut runtime = new_runtime();
+        let policy = PolicyEnvelope {
+            policy_json: r#"{"firewall_required":true}"#.to_string(),
+            ..PolicyEnvelope::default()
+        };
+
+        let mut changed = false;
+        runtime.apply_compliance_policy_document(&policy, &mut changed);
+        assert!(changed);
+
+        changed = false;
+        runtime.apply_compliance_policy_document(&policy, &mut changed);
+        assert!(!changed);
+    }
+
+    #[test]
+    fn policy_version_does_not_oscillate_with_config_version() {
+        let mut runtime = new_runtime();
+        let policy = PolicyEnvelope {
+            policy_version: "policy-v1".to_string(),
+            config_version: "config-v1".to_string(),
+            ..PolicyEnvelope::default()
+        };
+
+        assert!(runtime.apply_policy_metadata_fields(&policy));
+        assert!(!runtime.apply_policy_metadata_fields(&policy));
+        assert_eq!(runtime.compliance_policy_version, "policy-v1");
+    }
+
+    #[test]
+    fn server_cannot_shorten_local_compliance_interval() {
+        let mut runtime = new_runtime();
+        runtime.config.compliance_check_interval_secs = 5;
+        runtime.compliance_policy.check_interval_secs = Some(5);
+
+        assert_eq!(runtime.compliance_interval_secs(), 300);
     }
 
     #[test]

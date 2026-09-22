@@ -24,7 +24,7 @@ impl std::error::Error for ComplianceError {}
 
 pub type Result<T> = std::result::Result<T, ComplianceError>;
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct CompliancePolicy {
     #[serde(default)]
     pub firewall_required: bool,
@@ -78,7 +78,7 @@ pub struct CompliancePolicy {
     pub checks: Vec<ComplianceCheckSpec>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ComplianceCheckSpec {
     pub id: String,
     #[serde(rename = "type")]
@@ -99,7 +99,7 @@ pub struct ComplianceCheckSpec {
     pub remediation: Option<ComplianceRemediation>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ComplianceRemediation {
     #[serde(default)]
     pub mode: String,
