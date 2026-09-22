@@ -94,8 +94,8 @@ fn dlp_channel(event: &TelemetryEvent) -> &'static str {
 
 impl AgentRuntime {
     const DEGRADED_RECOVERY_PROBE_TIMEOUT_MS: u64 = 750;
-    const EXTRA_TELEMETRY_EVAL_TIME_BUDGET_MS: u64 = 35;
-    pub(super) const MAX_EXTRA_TELEMETRY_EVALS_PER_TICK: usize = 7;
+    const EXTRA_TELEMETRY_EVAL_TIME_BUDGET_MS: u64 = 500;
+    pub(super) const MAX_EXTRA_TELEMETRY_EVALS_PER_TICK: usize = 64;
 
     pub async fn tick(&mut self, now_unix: i64) -> Result<()> {
         let tick_started = Instant::now();
@@ -221,6 +221,7 @@ impl AgentRuntime {
 
         let started = Instant::now();
         let mut processed = 0usize;
+        let mut pending_envelopes = Vec::with_capacity(extra_budget);
         while processed < extra_budget {
             if started.elapsed() >= Duration::from_millis(Self::EXTRA_TELEMETRY_EVAL_TIME_BUDGET_MS)
             {
@@ -239,18 +240,18 @@ impl AgentRuntime {
             };
 
             self.log_detection_evaluation(&evaluation);
+            self.run_connected_response_stage(now_unix, Some(&evaluation))
+                .await;
             if matches!(self.runtime_mode, AgentMode::Degraded) {
-                self.run_connected_response_stage(now_unix, Some(&evaluation))
-                    .await;
                 self.buffer_degraded_telemetry_if_present(Some(&evaluation))?;
             } else {
-                self.run_connected_response_stage(now_unix, Some(&evaluation))
-                    .await;
-                self.run_connected_telemetry_stage(Some(&evaluation))
-                    .await?;
+                pending_envelopes.push(evaluation.event_envelope.clone());
             }
-
             processed = processed.saturating_add(1);
+        }
+
+        if !pending_envelopes.is_empty() {
+            self.send_event_batch_many(pending_envelopes).await?;
         }
 
         if processed > 0 {

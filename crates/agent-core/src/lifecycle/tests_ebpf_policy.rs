@@ -541,6 +541,35 @@ fn backlog_cap_preserves_frontloaded_high_value_file_open_events() {
 }
 
 #[test]
+fn sampling_never_skips_file_mutations_under_backpressure() {
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".to_string();
+    cfg.server_addr = "127.0.0.1:1".to_string();
+
+    let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+    runtime.raw_event_backlog = std::collections::VecDeque::from([
+        platform_linux::RawEvent {
+            event_type: platform_linux::EventType::ProcessExec,
+            pid: 6201,
+            uid: 0,
+            ts_ns: 1,
+            payload: "path=/usr/bin/noise;comm=noise;ppid=1".to_string(),
+        },
+        platform_linux::RawEvent {
+            event_type: platform_linux::EventType::FileWrite,
+            pid: 6202,
+            uid: 0,
+            ts_ns: 2,
+            payload: "file_object=0x123;file_key=0x456;path=C:\\Users\\Public\\dlp.txt"
+                .to_string(),
+        },
+    ]);
+
+    let event = runtime.dequeue_sampled_raw_event(8).expect("file mutation");
+    assert_eq!(event.event_type, platform_linux::EventType::FileWrite);
+}
+
+#[test]
 fn evaluate_tick_suppresses_known_windows_powershell_sensor_child() {
     let mut cfg = AgentConfig::default();
     cfg.offline_buffer_backend = "memory".to_string();

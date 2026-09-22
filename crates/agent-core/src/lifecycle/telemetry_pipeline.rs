@@ -54,10 +54,20 @@ impl AgentRuntime {
     }
 
     pub(super) async fn send_event_batch(&mut self, envelope: EventEnvelope) -> Result<()> {
+        self.send_event_batch_many(vec![envelope]).await
+    }
+
+    pub(super) async fn send_event_batch_many(
+        &mut self,
+        envelopes: Vec<EventEnvelope>,
+    ) -> Result<()> {
+        if envelopes.is_empty() {
+            return Ok(());
+        }
         let send_started = Instant::now();
         let pending_before = self.buffer.pending_count();
         let mut batch = self.buffer.drain_batch(EVENT_BATCH_SIZE)?;
-        batch.push(envelope);
+        batch.extend(envelopes);
 
         let send_result = timeout(
             std::time::Duration::from_millis(TELEMETRY_SEND_TIMEOUT_MS),
@@ -577,7 +587,14 @@ impl AgentRuntime {
                 continue;
             }
 
-            if stride > 1 {
+            // Never sample a file mutation: its FileObject/FileKey may be the
+            // only bridge to the later path-bearing event used by DLP.
+            if stride > 1 && !matches!(
+                event.event_type,
+                crate::platform::EventType::FileWrite
+                    | crate::platform::EventType::FileRename
+                    | crate::platform::EventType::FileUnlink
+            ) {
                 self.sample_low_priority_backlog_events(stride.saturating_sub(1));
             }
 
