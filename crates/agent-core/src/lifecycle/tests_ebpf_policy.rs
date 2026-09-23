@@ -54,8 +54,8 @@ fn network_metadata_uses_frontload_priority_under_backpressure() {
         payload: "qname=example.com".to_string(),
     };
 
-    assert_eq!(AgentRuntime::raw_event_priority(&network), 0);
-    assert_eq!(AgentRuntime::raw_event_priority(&dns), 0);
+    assert_eq!(AgentRuntime::raw_event_priority(&network), 1);
+    assert_eq!(AgentRuntime::raw_event_priority(&dns), 1);
 
     let process = platform_linux::RawEvent {
         event_type: platform_linux::EventType::ProcessExec,
@@ -64,7 +64,7 @@ fn network_metadata_uses_frontload_priority_under_backpressure() {
         ts_ns: 3,
         payload: "comm=helper".to_string(),
     };
-    assert_eq!(AgentRuntime::raw_event_priority(&process), 1);
+    assert_eq!(AgentRuntime::raw_event_priority(&process), 2);
 }
 
 #[test]
@@ -560,8 +560,7 @@ fn sampling_never_skips_file_mutations_under_backpressure() {
             pid: 6202,
             uid: 0,
             ts_ns: 2,
-            payload: "file_object=0x123;file_key=0x456;path=C:\\Users\\Public\\dlp.txt"
-                .to_string(),
+            payload: "file_object=0x123;file_key=0x456;path=C:\\Users\\Public\\dlp.txt".to_string(),
         },
     ]);
 

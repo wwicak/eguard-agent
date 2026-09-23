@@ -1760,20 +1760,24 @@ fn path_bearing_file_write_survives_sampling_and_backlog_eviction() {
         }) <= 1,
         "path-bearing FileWrite must be frontloaded for DLP classification"
     );
-    assert!(AgentRuntime::raw_event_priority(&RawEvent {
-        event_type: EventType::FileRename,
-        pid: 7804,
-        uid: 1000,
-        ts_ns: 6,
-        payload: "path=/tmp/eicar_rename_proof.com;new_path=/tmp/x.com".to_string(),
-    }) <= 1);
-    assert!(AgentRuntime::raw_event_priority(&RawEvent {
-        event_type: EventType::FileUnlink,
-        pid: 7805,
-        uid: 1000,
-        ts_ns: 7,
-        payload: "path=/tmp/eicar_unlink_proof.com".to_string(),
-    }) <= 1);
+    assert!(
+        AgentRuntime::raw_event_priority(&RawEvent {
+            event_type: EventType::FileRename,
+            pid: 7804,
+            uid: 1000,
+            ts_ns: 6,
+            payload: "path=/tmp/eicar_rename_proof.com;new_path=/tmp/x.com".to_string(),
+        }) <= 1
+    );
+    assert!(
+        AgentRuntime::raw_event_priority(&RawEvent {
+            event_type: EventType::FileUnlink,
+            pid: 7805,
+            uid: 1000,
+            ts_ns: 7,
+            payload: "path=/tmp/eicar_unlink_proof.com".to_string(),
+        }) <= 1
+    );
 
     let mut runtime = AgentRuntime::new(cfg).expect("build runtime");
     runtime.enqueue_raw_events_with_priority(vec![
@@ -1801,20 +1805,31 @@ fn path_bearing_file_write_survives_sampling_and_backlog_eviction() {
     assert!(next.payload.contains("/tmp/eicar_write_proof.com"));
 
     // Backlog-cap eviction drains the tail; the write must not be sitting there.
-    runtime.enqueue_raw_events_with_priority(vec![RawEvent {
-        event_type: EventType::FileWrite,
-        pid: 7803,
-        uid: 1000,
-        ts_ns: 5,
-        payload: "path=/tmp/eicar_write_proof_2.com;size=68".to_string(),
-    }]);
+    runtime.enqueue_raw_events_with_priority(vec![
+        RawEvent {
+            event_type: EventType::FileWrite,
+            pid: 7803,
+            uid: 1000,
+            ts_ns: 5,
+            payload: "path=/tmp/eicar_write_proof_2.com;size=68".to_string(),
+        },
+        RawEvent {
+            event_type: EventType::FileOpen,
+            pid: 9002,
+            uid: 0,
+            ts_ns: 6,
+            payload: "path=/opt/noise".to_string(),
+        },
+    ]);
+    runtime.raw_event_backlog_cap = 2;
     runtime.enforce_raw_event_backlog_cap();
     assert!(
-        runtime
-            .raw_event_backlog
-            .iter()
-            .any(|event| matches!(event.event_type, EventType::FileWrite)
-                && event.payload.contains("/tmp/eicar_write_proof_2.com")),
+        runtime.raw_event_backlog.iter().any(|event| matches!(
+            event.event_type,
+            EventType::FileWrite
+        ) && event
+            .payload
+            .contains("/tmp/eicar_write_proof_2.com")),
         "backlog cap eviction dropped the path-bearing file write"
     );
 }

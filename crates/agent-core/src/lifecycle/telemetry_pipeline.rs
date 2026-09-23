@@ -589,12 +589,14 @@ impl AgentRuntime {
 
             // Never sample a file mutation: its FileObject/FileKey may be the
             // only bridge to the later path-bearing event used by DLP.
-            if stride > 1 && !matches!(
-                event.event_type,
-                crate::platform::EventType::FileWrite
-                    | crate::platform::EventType::FileRename
-                    | crate::platform::EventType::FileUnlink
-            ) {
+            if stride > 1
+                && !matches!(
+                    event.event_type,
+                    crate::platform::EventType::FileWrite
+                        | crate::platform::EventType::FileRename
+                        | crate::platform::EventType::FileUnlink
+                )
+            {
                 self.sample_low_priority_backlog_events(stride.saturating_sub(1));
             }
 
@@ -807,7 +809,22 @@ impl AgentRuntime {
             .len()
             .saturating_sub(self.raw_event_backlog_cap);
         for _ in 0..overflow {
-            if let Some(event) = self.raw_event_backlog.pop_back() {
+            let Some(worst_priority) = self
+                .raw_event_backlog
+                .iter()
+                .map(Self::raw_event_priority)
+                .max()
+            else {
+                break;
+            };
+            let Some(index) = self
+                .raw_event_backlog
+                .iter()
+                .rposition(|event| Self::raw_event_priority(event) == worst_priority)
+            else {
+                break;
+            };
+            if let Some(event) = self.raw_event_backlog.remove(index) {
                 debug_trace_matching_raw_event("backlog_evicted", &event);
             }
         }
@@ -855,11 +872,10 @@ impl AgentRuntime {
 
     pub(super) fn raw_event_priority(event: &RawEvent) -> u8 {
         match event.event_type {
-            // Keep network metadata ahead of process-exec bursts under backlog
-            // pressure; this does not inspect payloads or change enforcement.
-            crate::platform::EventType::TcpConnect | crate::platform::EventType::DnsQuery => 0,
-            crate::platform::EventType::ProcessExec => 1,
-            crate::platform::EventType::ProcessExit => 1,
+            // DLP mutations must survive sustained network/process noise.
+            crate::platform::EventType::TcpConnect | crate::platform::EventType::DnsQuery => 1,
+            crate::platform::EventType::ProcessExec => 2,
+            crate::platform::EventType::ProcessExit => 2,
             crate::platform::EventType::LsmBlock => 1,
             // File mutations are the DLP classification target, so keep them in
             // the frontload tier even when the payload carries no path yet: a
@@ -875,6 +891,14 @@ impl AgentRuntime {
                     return 3;
                 }
 
+                let path = parse_payload_field(&event.payload, "path").unwrap_or_default();
+                #[cfg(target_os = "windows")]
+                if path.starts_with("\\\\")
+                    || path.starts_with("//")
+                    || platform_windows::removable_media::is_removable_path(&path)
+                {
+                    return 0;
+                }
                 1
             }
             crate::platform::EventType::FileOpen => {

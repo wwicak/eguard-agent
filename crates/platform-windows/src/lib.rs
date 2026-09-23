@@ -1042,7 +1042,7 @@ fn sanitize_windows_command_line(raw: &str) -> String {
         .to_string()
 }
 
-fn normalize_windows_path(raw: &str) -> String {
+pub(crate) fn normalize_windows_path(raw: &str) -> String {
     let mut value = sanitize_windows_text(raw).replace('/', "\\");
     if let Some(stripped) = value.strip_prefix(r"\\?\") {
         value = stripped.to_string();
@@ -1061,18 +1061,29 @@ fn normalize_windows_path(raw: &str) -> String {
 }
 
 fn translate_harddisk_volume_to_dos(raw: &str) -> String {
-    let trimmed = raw.trim_start_matches('\\');
-    let lowered = trimmed.to_ascii_lowercase();
+    #[cfg(target_os = "windows")]
+    {
+        use windows::core::PCWSTR;
+        use windows::Win32::Storage::FileSystem::QueryDosDeviceW;
 
-    for prefix in ["device\\harddiskvolume", "harddiskvolume", "rddiskvolume"] {
-        if let Some(rest) = lowered.strip_prefix(prefix) {
-            let digits_len = rest.chars().take_while(|ch| ch.is_ascii_digit()).count();
-            if digits_len == 0 {
+        let lowered = raw.to_ascii_lowercase();
+        for letter in b'A'..=b'Z' {
+            let drive = format!("{}:", letter as char);
+            let wide: Vec<u16> = drive.encode_utf16().chain(std::iter::once(0)).collect();
+            let mut target = vec![0u16; 512];
+            let len = unsafe { QueryDosDeviceW(PCWSTR(wide.as_ptr()), Some(&mut target)) };
+            if len == 0 {
                 continue;
             }
-            let remainder = &trimmed[prefix.len() + digits_len..];
-            if remainder.starts_with('\\') {
-                return format!(r"C:{}", remainder);
+            let device = String::from_utf16_lossy(&target[..len as usize])
+                .trim_end_matches('\0')
+                .to_string();
+            if lowered == device.to_ascii_lowercase() {
+                return drive;
+            }
+            let prefix = format!("{}\\", device.to_ascii_lowercase());
+            if let Some(rest) = lowered.strip_prefix(&prefix) {
+                return format!("{drive}\\{}", &raw[raw.len() - rest.len()..]);
             }
         }
     }
@@ -1648,13 +1659,7 @@ mod tests {
             normalize_windows_path("\u{0007}\\??\\C:\\Windows\\Temp\\b.exe"),
             r"C:\Windows\Temp\b.exe"
         );
-        assert_eq!(
-            normalize_windows_path(r"\Device\HarddiskVolume1\Windows\System32\conhost.exe"),
-            r"C:\Windows\System32\conhost.exe"
-        );
-        assert_eq!(
-            normalize_windows_path(r"rddiskVolume1\Windows\Temp\sample.txt"),
-            r"C:\Windows\Temp\sample.txt"
-        );
+        let unknown = r"\Device\HarddiskVolume999999\Windows\System32\conhost.exe";
+        assert_eq!(normalize_windows_path(unknown), unknown);
     }
 }

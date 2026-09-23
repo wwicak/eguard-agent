@@ -116,34 +116,119 @@ mod win32 {
     /// scannable opens in a separate bounded inbox so they reach the agent
     /// before ordinary noise.
     pub(super) struct PriorityInbox {
+        mutations: Mutex<VecDeque<RawEvent>>,
         events: Mutex<VecDeque<RawEvent>>,
+        paths: Mutex<LruCache<String, String>>,
         drops: Arc<AtomicU64>,
     }
 
     impl PriorityInbox {
         pub(super) fn new(drops: Arc<AtomicU64>) -> Self {
             Self {
+                mutations: Mutex::new(VecDeque::with_capacity(super::PRIORITY_QUEUE_CAPACITY)),
                 events: Mutex::new(VecDeque::with_capacity(super::PRIORITY_QUEUE_CAPACITY)),
+                paths: Mutex::new(LruCache::new(
+                    std::num::NonZeroUsize::new(super::PRIORITY_QUEUE_CAPACITY)
+                        .expect("priority queue capacity > 0"),
+                )),
                 drops,
             }
         }
 
-        fn push(&self, event: RawEvent) {
+        pub(super) fn push(&self, mut event: RawEvent) {
+            if let Some(raw_path) = Self::payload_field(&event, "path").map(str::to_string) {
+                let path = crate::normalize_windows_path(&raw_path);
+                if path != raw_path {
+                    event.payload = event
+                        .payload
+                        .replace(&format!("path={raw_path}"), &format!("path={path}"));
+                }
+                if let Ok(mut paths) = self.paths.lock() {
+                    for name in ["file_object", "file_key"] {
+                        if let Some(identity) = Self::file_identity(&event, name) {
+                            paths.put(format!("{name}={identity}"), path.clone());
+                        }
+                    }
+                }
+            } else if Self::is_file_mutation(&event) {
+                let recovered = self.paths.lock().ok().and_then(|mut paths| {
+                    ["file_key", "file_object"].into_iter().find_map(|name| {
+                        let identity = Self::file_identity(&event, name)?;
+                        paths.get(&format!("{name}={identity}")).cloned()
+                    })
+                });
+                if let Some(path) = recovered {
+                    event.payload.push_str(";path=");
+                    event.payload.push_str(&path);
+                }
+            }
+
             let Ok(mut events) = self.events.lock() else {
                 self.drops.fetch_add(1, Ordering::Relaxed);
                 return;
             };
-            if events.len() >= super::PRIORITY_QUEUE_CAPACITY {
-                // Preserve path-bearing opens: they populate the object->path
-                // cache required to enrich a later write.
-                let Some(index) = events.iter().position(Self::is_file_mutation) else {
+
+            if Self::is_file_mutation(&event) {
+                let mapping = events
+                    .iter()
+                    .rposition(|queued| {
+                        queued.payload.contains("path=")
+                            && ["file_object", "file_key"].into_iter().any(|name| {
+                                Self::file_identity(queued, name).is_some_and(|identity| {
+                                    Self::file_identity(&event, name) == Some(identity)
+                                })
+                            })
+                    })
+                    .and_then(|index| events.remove(index));
+                drop(events);
+
+                let Ok(mut mutations) = self.mutations.lock() else {
                     self.drops.fetch_add(1, Ordering::Relaxed);
                     return;
                 };
-                events.remove(index);
+                if let Some(index) = mutations.iter().rposition(|queued| {
+                    Self::is_file_mutation(queued)
+                        && ["file_object", "file_key"].into_iter().any(|name| {
+                            Self::file_identity(queued, name).is_some_and(|identity| {
+                                Self::file_identity(&event, name) == Some(identity)
+                            })
+                        })
+                }) {
+                    mutations.remove(index);
+                }
+                let required = 1 + usize::from(mapping.is_some());
+                while mutations.len() + required > super::PRIORITY_QUEUE_CAPACITY {
+                    mutations.pop_front();
+                    self.drops.fetch_add(1, Ordering::Relaxed);
+                }
+                if mapping.is_some() {
+                    mutations.push_front(event);
+                    mutations.push_front(mapping.expect("checked mapping"));
+                } else {
+                    if let Some(mapping) = mapping {
+                        mutations.push_back(mapping);
+                    }
+                    mutations.push_back(event);
+                }
+                return;
+            }
+
+            if events.len() >= super::PRIORITY_QUEUE_CAPACITY {
+                events.pop_front();
                 self.drops.fetch_add(1, Ordering::Relaxed);
             }
             events.push_back(event);
+        }
+
+        fn payload_field<'a>(event: &'a RawEvent, name: &str) -> Option<&'a str> {
+            event.payload.split(';').find_map(|field| {
+                let (key, value) = field.split_once('=')?;
+                (key == name && !value.is_empty()).then_some(value)
+            })
+        }
+
+        fn file_identity<'a>(event: &'a RawEvent, name: &str) -> Option<&'a str> {
+            Self::payload_field(event, name).filter(|value| *value != "0x0")
         }
 
         fn is_file_mutation(event: &RawEvent) -> bool {
@@ -156,6 +241,9 @@ mod win32 {
         }
 
         pub(super) fn pop(&self) -> Option<RawEvent> {
+            if let Some(event) = self.mutations.lock().ok()?.pop_front() {
+                return Some(event);
+            }
             self.events.lock().ok()?.pop_front()
         }
     }
@@ -676,13 +764,66 @@ fn load_replay_events(path: &Path) -> std::io::Result<Vec<RawEvent>> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "windows")]
+    use super::win32::{is_dlp_priority_event, PriorityInbox};
     use super::{
         load_replay_events, remap_kernel_file_pid, remember_thread_pid, thread_pid_cache,
-        EtwConsumer,
+        EtwConsumer, PRIORITY_QUEUE_CAPACITY,
     };
-    #[cfg(target_os = "windows")]
-    use super::win32::is_dlp_priority_event;
     use crate::{EventType, RawEvent};
+    #[cfg(target_os = "windows")]
+    use std::sync::atomic::AtomicU64;
+    #[cfg(target_os = "windows")]
+    use std::sync::Arc;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn full_priority_inbox_keeps_latest_file_write() {
+        let inbox = PriorityInbox::new(Arc::new(AtomicU64::new(0)));
+        for index in 0..PRIORITY_QUEUE_CAPACITY {
+            inbox.push(RawEvent {
+                event_type: EventType::FileOpen,
+                pid: 1,
+                uid: 0,
+                ts_ns: index as u64,
+                payload: if index + 1 == PRIORITY_QUEUE_CAPACITY {
+                    "file_key=0xfe;path=E:\\fixture.txt".to_string()
+                } else {
+                    format!("file_object=0x{index:x};path=C:\\tmp\\{index}.txt")
+                },
+            });
+        }
+        inbox.push(RawEvent {
+            event_type: EventType::FileWrite,
+            pid: 2,
+            uid: 0,
+            ts_ns: 1,
+            payload: "file_object=0xff;file_key=0xfe;size=64".to_string(),
+        });
+        inbox.push(RawEvent {
+            event_type: EventType::FileWrite,
+            pid: 3,
+            uid: 0,
+            ts_ns: 2,
+            payload: "file_object=0xdead;file_key=0xbeef;size=32".to_string(),
+        });
+        for ts_ns in 3..(PRIORITY_QUEUE_CAPACITY as u64 + 10) {
+            inbox.push(RawEvent {
+                event_type: EventType::FileWrite,
+                pid: 4,
+                uid: 0,
+                ts_ns,
+                payload: "file_object=0x4444;file_key=0x5555;size=4096".to_string(),
+            });
+        }
+
+        let mapping = inbox.pop().expect("path mapping");
+        assert!(mapping.payload.contains("path=E:\\fixture.txt"));
+        let first_write = inbox.pop().expect("first write");
+        assert_eq!(first_write.pid, 2);
+        assert!(first_write.payload.contains("path=E:\\fixture.txt"));
+        assert_eq!(inbox.pop().expect("second write").pid, 3);
+    }
 
     /// Regression: Windows write records carry no `path` (only
     /// file_object/file_key), so the old path-bearing-FileOpen-only predicate

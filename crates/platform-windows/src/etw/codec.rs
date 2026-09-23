@@ -106,7 +106,7 @@ pub fn decode_etw_record_with_event_id_version(
             decode_kernel_file_create(version, pid, ts_ns, user_data)
         }
         KERNEL_FILE if event_id == 16 && opcode == 0 && keyword & 0x200 != 0 => {
-            decode_kernel_file(15, pid, ts_ns, user_data)
+            decode_kernel_file_io(version, EventType::FileWrite, pid, ts_ns, user_data)
         }
         // Manifest provider: Read (Event ID 15, opcode 0, read keyword).
         // Layout is ReadArgs_V1, identical shape to the manifest Write
@@ -130,19 +130,21 @@ pub fn decode_etw_record_with_event_id_version(
 }
 
 fn decode_kernel_file_create(version: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Option<RawEvent> {
-    // CreateArgs:    FileObject @16, FileName @36 (x64 alignment).
-    // CreateArgs_V1: FileObject @8,  FileName @32.
-    let file_object_offset = if version == 0 { 16 } else { 8 };
+    // CreateArgs_V1: IrpPtr @0, FileObject @8, FileKey @16, path @32.
+    let file_object_offset = 8;
     let path_offsets = if version == 0 {
         &[36, 32, 28, 24][..]
     } else {
-        &[32, 28, 24][..]
+        &[32, 36, 28, 24][..]
     };
     if data.len() < file_object_offset + 8 {
         return None;
     }
     let file_object = read_u64_le(data, file_object_offset);
     let mut payload = format!("file_object=0x{file_object:x}");
+    if version > 0 && data.len() >= 24 {
+        payload.push_str(&format!(";file_key=0x{:x}", read_u64_le(data, 16)));
+    }
     if let Some(path) = read_utf16_path_at_offsets(data, path_offsets) {
         payload.push_str(&format!(";path={path}"));
     }
@@ -172,13 +174,18 @@ fn decode_kernel_file_io(
     if data.len() < io_size_offset + 4 {
         return None;
     }
+    let access = if matches!(event_type, EventType::FileWrite) {
+        "write"
+    } else {
+        "read"
+    };
     Some(RawEvent {
         event_type,
         pid,
         uid: 0,
         ts_ns,
         payload: format!(
-            "file_object=0x{:x};file_key=0x{:x};size={};access=read",
+            "file_object=0x{:x};file_key=0x{:x};size={};access={access}",
             read_u64_le(data, file_object_offset),
             read_u64_le(data, file_key_offset),
             read_u32_le(data, io_size_offset),
@@ -903,15 +910,10 @@ mod tests {
 
     #[test]
     fn decode_kernel_file_event_16_write_opcode_zero_is_file_write() {
-        let mut data = Vec::new();
-        data.extend_from_slice(&0u64.to_le_bytes());
-        data.extend_from_slice(&0x1234u64.to_le_bytes());
-        data.extend_from_slice(&0x5678u64.to_le_bytes());
-        data.extend_from_slice(&0x9abcu64.to_le_bytes());
-        data.extend_from_slice(&0u32.to_le_bytes());
-        data.extend_from_slice(&0u32.to_le_bytes());
-        data.extend_from_slice(&0u32.to_le_bytes());
-        data.extend_from_slice(&99u32.to_le_bytes());
+        let mut data = vec![0u8; 48];
+        data[24..32].copy_from_slice(&0x5678u64.to_le_bytes());
+        data[32..40].copy_from_slice(&0x9abcu64.to_le_bytes());
+        data[40..44].copy_from_slice(&99u32.to_le_bytes());
 
         let event = decode_etw_record_with_event_id(
             super::super::providers::KERNEL_FILE,
@@ -928,6 +930,7 @@ mod tests {
         assert!(event.payload.contains("file_object=0x5678"));
         assert!(event.payload.contains("file_key=0x9abc"));
         assert!(event.payload.contains("size=99"));
+        assert!(event.payload.contains("access=write"));
     }
 
     #[test]
