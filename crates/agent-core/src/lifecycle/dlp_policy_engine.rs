@@ -252,10 +252,14 @@ impl DlpPolicyEngine {
         if classifier.r#ref.is_empty() {
             return !scanner.scan(&text).is_empty();
         }
-        scanner
-            .scan(&text)
-            .iter()
-            .any(|m| m.rule_id == classifier.r#ref)
+        let rule_id = match classifier.r#ref.as_str() {
+            "nik_indonesia" => "id.nik",
+            "npwp_indonesia" => "id.npwp",
+            "phone_indonesia" => "id.phone",
+            "credit_card" => "id.kartu_kredit",
+            value => value,
+        };
+        scanner.scan(&text).iter().any(|m| m.rule_id == rule_id)
     }
 
     fn match_structured(&self, classifier: &DlpClassifierRef, ctx: &DlpEvalContext<'_>) -> bool {
@@ -332,7 +336,11 @@ fn match_source(source: &DlpSourceCond, ctx: &DlpEvalContext<'_>) -> bool {
             .paths
             .iter()
             .any(|prefix| path.starts_with(prefix.as_str()));
-    let channel_ok = source.channels.is_empty() || source.channels.iter().any(|c| c == ctx.channel);
+    let channel_ok = source.channels.is_empty()
+        || source
+            .channels
+            .iter()
+            .any(|c| c == "file_system" || c == ctx.channel);
     let process_ok = source.processes.is_empty()
         || source
             .processes
@@ -456,6 +464,66 @@ mod tests {
         assert!(e
             .evaluate(&ctx("C:\\x\\a.txt", "explorer", "file_write"))
             .is_none());
+    }
+
+    #[test]
+    fn server_nik_reference_resolves_local_rule_id() {
+        let path = std::env::temp_dir().join("eguard-dlp-policy-nik.txt");
+        std::fs::write(&path, "NIK 7371092301900001").expect("write fixture");
+        let scanner = detection::dlp::DlpScanner::from_pack(detection::dlp::DlpRulePack {
+            schema_version: "1".into(),
+            pack_id: "test".into(),
+            version: "1".into(),
+            rules: vec![detection::dlp::DlpRule {
+                id: "id.nik".into(),
+                name: "NIK".into(),
+                pattern: r"\b\d{16}\b".into(),
+                validator: "nik_indonesia".into(),
+                context: vec!["nik".into()],
+                severity: "high".into(),
+                default_action: "alert".into(),
+                regulations: vec![],
+                redaction: "mask_middle".into(),
+                max_matches: 10,
+            }],
+        })
+        .expect("scanner");
+        let policy = DlpPolicyEnvelope {
+            policy_id: "pii-to-usb".into(),
+            name: "PII to USB".into(),
+            priority: 1,
+            classifiers: vec![DlpClassifierRef {
+                classifier_type: "regex_rule".into(),
+                r#ref: "nik_indonesia".into(),
+                pattern: String::new(),
+                validator: String::new(),
+                context: vec![],
+            }],
+            match_mode: "any".into(),
+            source: DlpSourceCond {
+                channels: vec!["file_system".into()],
+                ..Default::default()
+            },
+            destination: DlpDestCond {
+                channels: vec!["removable_media".into()],
+                ..Default::default()
+            },
+            severity: "high".into(),
+            action: "alert".into(),
+            redaction: "mask_middle".into(),
+            regulations: vec![],
+            max_file_size_mb: 10,
+            targets: DlpTargets::default(),
+        };
+        let e = engine(vec![policy], None, None, Some(scanner));
+        assert!(e
+            .evaluate(&ctx(
+                path.to_str().expect("path"),
+                "System",
+                "removable_media"
+            ))
+            .is_some());
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

@@ -205,6 +205,9 @@ impl AgentRuntime {
                 .get("policies")
                 .and_then(|value| value.as_array())
                 .map_or(0, Vec::len);
+            if policy_count > 0 && dlp.get("enabled").is_none() {
+                self.config.dlp_enabled = true;
+            }
             let custom_regex_count = dlp
                 .get("policies")
                 .and_then(|value| value.as_array())
@@ -234,11 +237,13 @@ impl AgentRuntime {
                 policy_count,
                 custom_regex_count, "DLP policy definitions received from server"
             );
-            self.reload_dlp_policy_engine(dlp);
             changed = true;
         }
         if changed {
             self.reload_dlp_scanner();
+        }
+        if dlp.get("policies").is_some() {
+            self.reload_dlp_policy_engine(dlp);
         }
     }
 

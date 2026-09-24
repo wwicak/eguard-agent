@@ -30,8 +30,14 @@ use crate::config::{AgentConfig, AgentMode};
 use crate::detection_state::SharedDetectionState;
 
 fn load_dlp_scanner(config: &AgentConfig) -> Option<detection::dlp::DlpScanner> {
-    if !config.dlp_enabled || config.dlp_rules_path.trim().is_empty() {
+    if !config.dlp_enabled {
         return None;
+    }
+    if config.dlp_rules_path.trim().is_empty() {
+        return detection::dlp::DlpScanner::from_json(include_str!(
+            "../../../../dlp/rules/indonesia.json"
+        ))
+        .ok();
     }
     if let Err(err) = verify_dlp_artifact(Path::new(&config.dlp_rules_path)) {
         warn!(error = %err, path = %config.dlp_rules_path, "DLP rule pack integrity verification failed; keeping DLP disabled");
