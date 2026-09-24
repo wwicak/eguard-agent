@@ -150,7 +150,9 @@ mod win32 {
                         }
                     }
                 }
-            } else if Self::is_file_mutation(&event) {
+            } else if Self::is_file_mutation(&event)
+                || Self::payload_field(&event, "access") == Some("read")
+            {
                 let recovered = self.paths.lock().ok().and_then(|mut paths| {
                     ["file_key", "file_object"].into_iter().find_map(|name| {
                         let identity = Self::file_identity(&event, name)?;
@@ -284,7 +286,9 @@ mod win32 {
                     )
                 })
                 .unwrap_or(false);
-            self.browser_pid_cache.borrow_mut().put(pid, is_browser);
+            if is_browser {
+                self.browser_pid_cache.borrow_mut().put(pid, true);
+            }
             is_browser
         }
 
@@ -823,6 +827,30 @@ mod tests {
         assert_eq!(first_write.pid, 2);
         assert!(first_write.payload.contains("path=E:\\fixture.txt"));
         assert_eq!(inbox.pop().expect("second write").pid, 3);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn browser_read_recovers_cached_path() {
+        let inbox = PriorityInbox::new(Arc::new(AtomicU64::new(0)));
+        inbox.push(RawEvent {
+            event_type: EventType::FileOpen,
+            pid: 7,
+            uid: 0,
+            ts_ns: 1,
+            payload: "file_object=0x7;file_key=0x8;path=C:\\tmp\\upload.txt".into(),
+        });
+        inbox.push(RawEvent {
+            event_type: EventType::FileOpen,
+            pid: 7,
+            uid: 0,
+            ts_ns: 2,
+            payload: "file_object=0x7;file_key=0x8;size=32;access=read".into(),
+        });
+
+        let _mapping = inbox.pop().expect("mapping");
+        let read = inbox.pop().expect("read");
+        assert!(read.payload.contains("path=C:\\tmp\\upload.txt"));
     }
 
     /// Regression: Windows write records carry no `path` (only
