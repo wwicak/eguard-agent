@@ -72,6 +72,16 @@ fn assert_quarantine_retained(report: &QuarantineReport, quarantine_dir: &Path) 
     );
 }
 
+#[cfg(windows)]
+#[test]
+fn open_restore_parent_accepts_canonical_unc_share_root() {
+    let Some(root) = std::env::var_os("EGUARD_TEST_UNC_RESTORE_ROOT") else {
+        return;
+    };
+    let canonical = fs::canonicalize(PathBuf::from(root)).expect("canonical UNC test root");
+    open_restore_parent(&canonical).expect("open canonical UNC share root");
+}
+
 #[test]
 // AC-RSP-032
 fn restore_quarantined_round_trip_uses_manifest_and_removes_artifacts() {

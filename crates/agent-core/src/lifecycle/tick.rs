@@ -97,16 +97,44 @@ fn dlp_enforcement_action(
     event: &TelemetryEvent,
     matches: &[detection::dlp::DlpMatch],
     channel: &str,
-    enabled: bool,
+    removable_enabled: bool,
+    file_share_enabled: bool,
+    file_share_allowlist: &str,
 ) -> Option<response::PlannedAction> {
-    (enabled
+    let destination_enabled = match channel {
+        "removable_media" => removable_enabled,
+        "file_share" => file_share_enabled && file_share_allowed(event, file_share_allowlist),
+        _ => false,
+    };
+    (destination_enabled
         && !config.dry_run
         && event.file_write
-        && channel == "removable_media"
         && matches
             .iter()
             .any(|item| item.action.trim().eq_ignore_ascii_case("quarantine")))
     .then_some(response::PlannedAction::QuarantineOnly)
+}
+
+fn file_share_allowed(event: &TelemetryEvent, allowlist: &str) -> bool {
+    let Some(path) = event.file_path.as_deref() else {
+        return false;
+    };
+    let normalized = path.replace('/', "\\").to_ascii_lowercase();
+    let mut parts = normalized.trim_start_matches('\\').split('\\');
+    let (Some(server), Some(share)) = (parts.next(), parts.next()) else {
+        return false;
+    };
+    if server.is_empty() || share.is_empty() {
+        return false;
+    }
+    let root = format!(r"\\{server}\{share}");
+    allowlist.split(';').any(|entry| {
+        entry
+            .trim()
+            .replace('/', "\\")
+            .trim_end_matches('\\')
+            .eq_ignore_ascii_case(&root)
+    })
 }
 
 fn clear_stale_hash_for_dlp_quarantine(
@@ -394,6 +422,10 @@ impl AgentRuntime {
             std::env::var("EGUARD_DLP_REMOVABLE_QUARANTINE_ENABLED")
                 .ok()
                 .is_some_and(|value| matches!(value.trim(), "1" | "true" | "yes" | "on")),
+            std::env::var("EGUARD_DLP_FILE_SHARE_QUARANTINE_ENABLED")
+                .ok()
+                .is_some_and(|value| matches!(value.trim(), "1" | "true" | "yes" | "on")),
+            &std::env::var("EGUARD_DLP_FILE_SHARE_QUARANTINE_ALLOWLIST").unwrap_or_default(),
         );
         let action = dlp_action.unwrap_or_else(|| plan_action(confidence, &response_cfg));
         clear_stale_hash_for_dlp_quarantine(&mut detection_event, dlp_action);
@@ -1084,7 +1116,7 @@ mod tests {
     }
 
     #[test]
-    fn dlp_quarantine_requires_explicit_removable_write_opt_in() {
+    fn dlp_quarantine_requires_explicit_destination_write_opt_in() {
         let mut config = response::ResponseConfig::default();
         let mut event = degraded_kill_evaluation(1, 0).detection_event;
         event.file_write = true;
@@ -1104,9 +1136,53 @@ mod tests {
                 &[quarantine.clone()],
                 "removable_media",
                 true,
+                false,
+                "",
             ),
             Some(response::PlannedAction::QuarantineOnly)
         );
+
+        event.file_path = Some(r"\\fileserver\approved\sensitive.txt".to_string());
+        assert_eq!(
+            dlp_enforcement_action(
+                &config,
+                &event,
+                &[quarantine.clone()],
+                "file_share",
+                false,
+                true,
+                r"\\fileserver\approved;\\backup\drop",
+            ),
+            Some(response::PlannedAction::QuarantineOnly)
+        );
+        for (path, enabled, allowlist) in [
+            (
+                r"\\fileserver\other\sensitive.txt",
+                true,
+                r"\\fileserver\approved",
+            ),
+            (r"\\fileserver\approved\sensitive.txt", true, ""),
+            (
+                r"\\fileserver\approved\sensitive.txt",
+                false,
+                r"\\fileserver\approved",
+            ),
+            (r"C:\sensitive.txt", true, r"\\fileserver\approved"),
+        ] {
+            event.file_path = Some(path.to_string());
+            assert_eq!(
+                dlp_enforcement_action(
+                    &config,
+                    &event,
+                    &[quarantine.clone()],
+                    "file_share",
+                    false,
+                    enabled,
+                    allowlist,
+                ),
+                None
+            );
+        }
 
         config.dry_run = true;
         assert_eq!(
@@ -1116,6 +1192,8 @@ mod tests {
                 &[quarantine.clone()],
                 "removable_media",
                 true,
+                false,
+                "",
             ),
             None
         );
@@ -1128,6 +1206,8 @@ mod tests {
                 &[quarantine.clone()],
                 "removable_media",
                 true,
+                false,
+                "",
             ),
             None
         );
@@ -1139,6 +1219,8 @@ mod tests {
                 &[quarantine.clone()],
                 "browser_activity",
                 true,
+                true,
+                r"\\fileserver\approved",
             ),
             None
         );
@@ -1146,11 +1228,27 @@ mod tests {
         let mut audit = quarantine.clone();
         audit.action = "audit".to_string();
         assert_eq!(
-            dlp_enforcement_action(&config, &event, &[audit], "removable_media", true),
+            dlp_enforcement_action(
+                &config,
+                &event,
+                &[audit],
+                "removable_media",
+                true,
+                false,
+                "",
+            ),
             None
         );
         assert_eq!(
-            dlp_enforcement_action(&config, &event, &[quarantine], "removable_media", false),
+            dlp_enforcement_action(
+                &config,
+                &event,
+                &[quarantine],
+                "removable_media",
+                false,
+                false,
+                "",
+            ),
             None
         );
 

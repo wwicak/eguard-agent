@@ -1480,7 +1480,7 @@ fn unix_name(name: &OsStr) -> ResponseResult<CString> {
 
 #[cfg(windows)]
 fn open_restore_parent(path: &Path) -> ResponseResult<File> {
-    use std::path::Component;
+    use std::path::{Component, Prefix};
 
     let mut components = path.components();
     let Some(Component::Prefix(prefix)) = components.next() else {
@@ -1488,14 +1488,17 @@ fn open_restore_parent(path: &Path) -> ResponseResult<File> {
             "restore parent must be a canonical absolute Windows path".to_string(),
         ));
     };
-    if !matches!(components.next(), Some(Component::RootDir)) {
+    let unc_root = matches!(prefix.kind(), Prefix::UNC(_, _) | Prefix::VerbatimUNC(_, _));
+    if !unc_root && !matches!(components.next(), Some(Component::RootDir)) {
         return Err(ResponseError::InvalidInput(
             "restore parent must be a canonical absolute Windows path".to_string(),
         ));
     }
 
     let mut root = PathBuf::from(prefix.as_os_str());
-    root.push(Path::new(r"\"));
+    if !unc_root {
+        root.push(Path::new(r"\"));
+    }
     let mut options = OpenOptions::new();
     options
         .read(true)
