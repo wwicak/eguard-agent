@@ -92,6 +92,32 @@ fn dlp_channel(event: &TelemetryEvent) -> &'static str {
     "file_write"
 }
 
+fn dlp_enforcement_action(
+    config: &response::ResponseConfig,
+    event: &TelemetryEvent,
+    matches: &[detection::dlp::DlpMatch],
+    channel: &str,
+    enabled: bool,
+) -> Option<response::PlannedAction> {
+    (enabled
+        && !config.dry_run
+        && event.file_write
+        && channel == "removable_media"
+        && matches
+            .iter()
+            .any(|item| item.action.trim().eq_ignore_ascii_case("quarantine")))
+    .then_some(response::PlannedAction::QuarantineOnly)
+}
+
+fn clear_stale_hash_for_dlp_quarantine(
+    event: &mut TelemetryEvent,
+    action: Option<response::PlannedAction>,
+) {
+    if matches!(action, Some(response::PlannedAction::QuarantineOnly)) {
+        event.file_hash = None;
+    }
+}
+
 impl AgentRuntime {
     const DEGRADED_RECOVERY_PROBE_TIMEOUT_MS: u64 = 750;
     const EXTRA_TELEMETRY_EVAL_TIME_BUDGET_MS: u64 = 500;
@@ -314,7 +340,7 @@ impl AgentRuntime {
             .set_budget_mode(self.strict_budget_mode);
         let enriched = enrich_event_with_cache(raw, &mut self.enrichment_cache);
 
-        let detection_event = to_detection_event(&enriched, now_unix);
+        let mut detection_event = to_detection_event(&enriched, now_unix);
         // Cheap first, expensive last: the DLP scanners below read file contents
         // (~4.6ms/event measured) while these predicates are pure string checks,
         // and matches computed for an event we drop here are discarded anyway.
@@ -360,7 +386,17 @@ impl AgentRuntime {
 
         let confidence = detection_outcome.confidence;
         let response_cfg = self.effective_response_config();
-        let action = plan_action(confidence, &response_cfg);
+        let dlp_action = dlp_enforcement_action(
+            &response_cfg,
+            &detection_event,
+            &dlp_matches,
+            dlp_channel(&detection_event),
+            std::env::var("EGUARD_DLP_REMOVABLE_QUARANTINE_ENABLED")
+                .ok()
+                .is_some_and(|value| matches!(value.trim(), "1" | "true" | "yes" | "on")),
+        );
+        let action = dlp_action.unwrap_or_else(|| plan_action(confidence, &response_cfg));
+        clear_stale_hash_for_dlp_quarantine(&mut detection_event, dlp_action);
 
         if std::env::var("EGUARD_DEBUG_EVENT_LOG")
             .ok()
@@ -1045,6 +1081,85 @@ mod tests {
         assert_eq!(AgentRuntime::dlp_telemetry_action("audit"), "audit");
         assert_eq!(AgentRuntime::dlp_telemetry_action("block"), "audit");
         assert_eq!(AgentRuntime::dlp_telemetry_action("isolate"), "audit");
+    }
+
+    #[test]
+    fn dlp_quarantine_requires_explicit_removable_write_opt_in() {
+        let mut config = response::ResponseConfig::default();
+        let mut event = degraded_kill_evaluation(1, 0).detection_event;
+        event.file_write = true;
+        let quarantine = detection::dlp::DlpMatch {
+            rule_id: "pilot".to_string(),
+            severity: "high".to_string(),
+            action: "quarantine".to_string(),
+            start: 0,
+            end: 0,
+            redacted_evidence: "[REDACTED]".to_string(),
+        };
+
+        assert_eq!(
+            dlp_enforcement_action(
+                &config,
+                &event,
+                &[quarantine.clone()],
+                "removable_media",
+                true,
+            ),
+            Some(response::PlannedAction::QuarantineOnly)
+        );
+
+        config.dry_run = true;
+        assert_eq!(
+            dlp_enforcement_action(
+                &config,
+                &event,
+                &[quarantine.clone()],
+                "removable_media",
+                true,
+            ),
+            None
+        );
+        config.dry_run = false;
+        event.file_write = false;
+        assert_eq!(
+            dlp_enforcement_action(
+                &config,
+                &event,
+                &[quarantine.clone()],
+                "removable_media",
+                true,
+            ),
+            None
+        );
+        event.file_write = true;
+        assert_eq!(
+            dlp_enforcement_action(
+                &config,
+                &event,
+                &[quarantine.clone()],
+                "browser_activity",
+                true,
+            ),
+            None
+        );
+
+        let mut audit = quarantine.clone();
+        audit.action = "audit".to_string();
+        assert_eq!(
+            dlp_enforcement_action(&config, &event, &[audit], "removable_media", true),
+            None
+        );
+        assert_eq!(
+            dlp_enforcement_action(&config, &event, &[quarantine], "removable_media", false),
+            None
+        );
+
+        event.file_hash = Some("stale-before-write-hash".to_string());
+        clear_stale_hash_for_dlp_quarantine(
+            &mut event,
+            Some(response::PlannedAction::QuarantineOnly),
+        );
+        assert_eq!(event.file_hash, None);
     }
 
     fn new_runtime() -> AgentRuntime {
