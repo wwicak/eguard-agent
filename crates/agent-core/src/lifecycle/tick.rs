@@ -504,12 +504,18 @@ impl AgentRuntime {
         // Windows Kernel-File can report a content-bearing create/open event
         // without the separate write opcode.  A path-bearing event is still
         // safe to scan; a scan failure is an error, never a silent clean.
-        scanner
-            .scan_file(
-                std::path::Path::new(path),
-                (self.config.dlp_max_file_scan_size_mb as u64) * 1024 * 1024,
-            )
-            .unwrap_or_default()
+        match scanner.scan_file(
+            std::path::Path::new(path),
+            (self.config.dlp_max_file_scan_size_mb as u64) * 1024 * 1024,
+        ) {
+            Ok(matches) => matches,
+            Err(err) => {
+                if dlp_policy_engine::debug_event_log_enabled() {
+                    info!(path, error = %err, "DLP file scan failed");
+                }
+                Vec::new()
+            }
+        }
     }
 
     /// Evaluate the event against the server-provided DLP policy engine

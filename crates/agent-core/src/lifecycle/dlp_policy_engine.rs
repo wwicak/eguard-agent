@@ -16,6 +16,31 @@ use detection::dlp_classification::{
     self, ClassificationMatch, ClassificationPolicy, StructuredRecord,
 };
 
+fn debug_event_log_enabled_value(value: Option<&str>) -> bool {
+    value.is_some_and(|value| !value.trim().is_empty())
+}
+
+pub(super) fn debug_event_log_enabled() -> bool {
+    debug_event_log_enabled_value(std::env::var("EGUARD_DEBUG_EVENT_LOG").ok().as_deref())
+}
+
+fn read_classifier_text(path: &str, classifier: &str) -> Option<String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Some(text),
+        Err(err) => {
+            if debug_event_log_enabled() {
+                tracing::info!(
+                    path,
+                    classifier,
+                    error = %err,
+                    "DLP classifier could not read file"
+                );
+            }
+            None
+        }
+    }
+}
+
 /// One content classifier reference in a policy.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -245,7 +270,7 @@ impl DlpPolicyEngine {
         let Some(scanner) = scanner else {
             return false;
         };
-        let Ok(text) = std::fs::read_to_string(ctx.file_path) else {
+        let Some(text) = read_classifier_text(ctx.file_path, "regex_rule") else {
             return false;
         };
         // Match by rule id when the policy pins a specific rule; otherwise any hit.
@@ -267,12 +292,23 @@ impl DlpPolicyEngine {
         else {
             return false;
         };
-        let Ok(text) = std::fs::read_to_string(ctx.file_path) else {
+        let Some(text) = read_classifier_text(ctx.file_path, "structured_fingerprint") else {
             return false;
         };
-        let Ok(object) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&text)
-        else {
-            return false;
+        let object = match serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&text)
+        {
+            Ok(object) => object,
+            Err(err) => {
+                if debug_event_log_enabled() {
+                    tracing::info!(
+                        path = ctx.file_path,
+                        classifier = "structured_fingerprint",
+                        error = %err,
+                        "DLP classifier could not parse structured file"
+                    );
+                }
+                return false;
+            }
         };
         let fields = object
             .iter()
@@ -300,7 +336,7 @@ impl DlpPolicyEngine {
         else {
             return false;
         };
-        let Ok(text) = std::fs::read_to_string(ctx.file_path) else {
+        let Some(text) = read_classifier_text(ctx.file_path, "unstructured_fingerprint") else {
             return false;
         };
         let matches = dlp_classification::classify(policy, None, None, Some((key, &text)));
@@ -405,6 +441,13 @@ fn match_dest(dest: &DlpDestCond, ctx: &DlpEvalContext<'_>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_event_log_gate_requires_non_empty_opt_in() {
+        assert!(!debug_event_log_enabled_value(None));
+        assert!(!debug_event_log_enabled_value(Some("   ")));
+        assert!(debug_event_log_enabled_value(Some("1")));
+    }
 
     fn engine(
         policies: Vec<DlpPolicyEnvelope>,
