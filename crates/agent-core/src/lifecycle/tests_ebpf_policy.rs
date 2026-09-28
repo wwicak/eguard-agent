@@ -344,36 +344,49 @@ fn sampling_stride_scales_with_backlog_and_drop_backpressure() {
     assert_eq!(compute_sampling_stride(9_000, 3), 8);
 }
 
-#[test]
-fn additional_telemetry_eval_budget_scales_with_backlog_pressure() {
+#[tokio::test]
+async fn tick_drains_queued_events_past_a_filtered_event() {
     let mut cfg = AgentConfig::default();
     cfg.offline_buffer_backend = "memory".to_string();
     cfg.server_addr = "127.0.0.1:1".to_string();
     cfg.self_protection_integrity_check_interval_secs = 0;
 
     let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+    runtime.ebpf_engine = platform_linux::EbpfEngine::disabled();
+    runtime.runtime_mode = crate::config::AgentMode::Degraded;
+    let now = 1_700_000_000;
+    runtime.last_recovery_probe_unix = Some(now);
+    runtime.last_kernel_integrity_scan_unix = Some(now);
     let raw = platform_linux::RawEvent {
         event_type: platform_linux::EventType::ProcessExec,
-        pid: 4242,
+        pid: 424242,
         uid: 0,
         ts_ns: 1,
         payload: "path=/usr/bin/cmd.exe;cmdline=cmd.exe /c whoami;ppid=1;cgroup_id=0;comm=cmd.exe;parent_comm=powershell.exe".to_string(),
     };
+    let filtered = platform_linux::RawEvent {
+        pid: 424243,
+        payload: "path=/usr/lib/systemd/systemd-tmpfiles;cmdline=/usr/lib/systemd/systemd-tmpfiles;ppid=1;comm=systemd-tmpfiles;parent_comm=systemd".to_string(),
+        ..raw.clone()
+    };
+    // Warm the compliance cache before measuring a bounded drain tick.
+    runtime.raw_event_backlog.push_back(raw.clone());
+    runtime.evaluate_tick(now).expect("warm evaluation");
+    runtime.metrics.telemetry_event_txn_total = 0;
+    // Verify this fixture is filtered during evaluation, not just ingress.
+    runtime.raw_event_backlog.push_back(filtered.clone());
+    assert!(runtime
+        .evaluate_tick(now)
+        .expect("filtered evaluation")
+        .is_none());
+    runtime.raw_event_backlog = [raw.clone(), filtered, raw.clone(), raw].into();
 
-    assert_eq!(runtime.additional_telemetry_eval_budget(), 0);
+    runtime.tick(now).await.expect("tick");
 
-    runtime.strict_budget_mode = true;
-    runtime.raw_event_backlog = std::collections::VecDeque::from(vec![raw.clone(); 1024]);
-    assert_eq!(runtime.additional_telemetry_eval_budget(), 1);
-
-    runtime.raw_event_backlog = std::collections::VecDeque::from(vec![raw.clone(); 2048]);
-    assert_eq!(runtime.additional_telemetry_eval_budget(), 3);
-
-    runtime.raw_event_backlog = std::collections::VecDeque::from(vec![raw; 4096]);
-    assert_eq!(
-        runtime.additional_telemetry_eval_budget(),
-        AgentRuntime::MAX_EXTRA_TELEMETRY_EVALS_PER_TICK
-    );
+    assert!(runtime.raw_event_backlog.is_empty());
+    assert_eq!(runtime.metrics.telemetry_event_txn_total, 3);
+    assert_eq!(runtime.buffer.pending_count(), 3);
+    assert_eq!(runtime.tick_count, 1);
 }
 
 #[test]

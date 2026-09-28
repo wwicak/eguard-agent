@@ -190,8 +190,12 @@ impl AgentRuntime {
     }
 
     pub(super) fn next_raw_event(&mut self) -> Option<RawEvent> {
+        self.next_raw_event_with_wait(true)
+    }
+
+    pub(super) fn next_raw_event_with_wait(&mut self, allow_wait: bool) -> Option<RawEvent> {
         self.refresh_strict_budget_mode();
-        let timeout = if self.raw_event_backlog.is_empty() {
+        let timeout = if allow_wait && self.raw_event_backlog.is_empty() {
             self.adaptive_poll_timeout()
         } else {
             std::time::Duration::from_millis(0)

@@ -22,8 +22,8 @@ use super::{
 
 impl AgentRuntime {
     const DEGRADED_RECOVERY_PROBE_TIMEOUT_MS: u64 = 750;
-    const EXTRA_TELEMETRY_EVAL_TIME_BUDGET_MS: u64 = 35;
-    pub(super) const MAX_EXTRA_TELEMETRY_EVALS_PER_TICK: usize = 7;
+    const TELEMETRY_EVAL_TIME_BUDGET_MS: u64 = 40;
+    const MAX_TELEMETRY_EVALS_PER_TICK: usize = 512;
 
     pub async fn tick(&mut self, now_unix: i64) -> Result<()> {
         let tick_started = Instant::now();
@@ -92,7 +92,8 @@ impl AgentRuntime {
             self.handle_connected_tick(now_unix, evaluation.as_ref())
                 .await?;
         }
-        self.run_additional_telemetry_evaluations(now_unix).await?;
+        self.run_additional_telemetry_evaluations(now_unix, evaluate_started)
+            .await?;
 
         self.metrics.last_tick_total_micros = elapsed_micros(tick_started);
         self.metrics.max_tick_total_micros = self
@@ -103,69 +104,38 @@ impl AgentRuntime {
         Ok(())
     }
 
-    async fn run_additional_telemetry_evaluations(&mut self, now_unix: i64) -> Result<()> {
-        let extra_budget = self.additional_telemetry_eval_budget();
-        if extra_budget == 0 {
-            return Ok(());
-        }
-
-        let started = Instant::now();
-        let mut processed = 0usize;
-        while processed < extra_budget {
-            if started.elapsed() >= Duration::from_millis(Self::EXTRA_TELEMETRY_EVAL_TIME_BUDGET_MS)
-            {
+    async fn run_additional_telemetry_evaluations(
+        &mut self,
+        now_unix: i64,
+        started: Instant,
+    ) -> Result<()> {
+        // The first evaluation and control-plane work count against the budget.
+        // Always run the control plane before draining, even if it exhausts it.
+        for _ in 1..Self::MAX_TELEMETRY_EVALS_PER_TICK {
+            if started.elapsed() >= Duration::from_millis(Self::TELEMETRY_EVAL_TIME_BUDGET_MS) {
                 break;
             }
 
-            let Some(evaluation) = self.evaluate_tick(now_unix)? else {
+            // Only the first poll in a tick may wait for events.
+            let Some(raw) = self.next_raw_event_with_wait(false) else {
                 break;
+            };
+            let Some(evaluation) = self.evaluate_raw_event(raw, now_unix)? else {
+                continue;
             };
 
             self.log_detection_evaluation(&evaluation);
+            self.run_connected_response_stage(now_unix, Some(&evaluation))
+                .await;
             if matches!(self.runtime_mode, AgentMode::Degraded) {
-                self.run_connected_response_stage(now_unix, Some(&evaluation))
-                    .await;
                 self.buffer_degraded_telemetry_if_present(Some(&evaluation))?;
             } else {
-                self.run_connected_response_stage(now_unix, Some(&evaluation))
-                    .await;
                 self.run_connected_telemetry_stage(Some(&evaluation))
                     .await?;
             }
-
-            processed = processed.saturating_add(1);
-        }
-
-        if processed > 0 {
-            info!(
-                processed,
-                backlog = self.telemetry_backlog_depth(),
-                budget = extra_budget,
-                time_budget_ms = Self::EXTRA_TELEMETRY_EVAL_TIME_BUDGET_MS,
-                "processed additional telemetry evaluations under backlog pressure"
-            );
         }
 
         Ok(())
-    }
-
-    pub(super) fn additional_telemetry_eval_budget(&self) -> usize {
-        if !self.strict_budget_mode {
-            return 0;
-        }
-
-        let backlog = self.telemetry_backlog_depth();
-        if backlog >= 4_096 {
-            return Self::MAX_EXTRA_TELEMETRY_EVALS_PER_TICK;
-        }
-        if backlog >= 2_048 {
-            return 3;
-        }
-        if backlog >= 1_024 {
-            return 1;
-        }
-
-        0
     }
 
     fn run_storage_hygiene_if_due(&mut self, now_unix: i64) {
@@ -192,6 +162,14 @@ impl AgentRuntime {
             return Ok(None);
         };
 
+        self.evaluate_raw_event(raw, now_unix)
+    }
+
+    fn evaluate_raw_event(
+        &mut self,
+        raw: crate::platform::RawEvent,
+        now_unix: i64,
+    ) -> Result<Option<TickEvaluation>> {
         self.enrichment_cache
             .set_budget_mode(self.strict_budget_mode);
         let enriched = enrich_event_with_cache(raw, &mut self.enrichment_cache);
