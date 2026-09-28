@@ -61,12 +61,26 @@ async fn first_send_outcome_controls_same_tick_maintenance() {
     let mut runtime = runtime();
     let now = 1_700_000_000;
     prepare_tick(&mut runtime, now);
+    for i in 0..EVENT_BATCH_SIZE {
+        runtime.buffer.enqueue(event(i as i64)).unwrap();
+    }
     queue_event(&mut runtime);
     runtime.tick(now).await.unwrap();
     assert_eq!(runtime.consecutive_send_failures, 1);
-    assert_eq!(runtime.buffer.pending_count(), 1);
+    assert_eq!(runtime.buffer.pending_count(), EVENT_BATCH_SIZE + 1);
+    assert_eq!(runtime.telemetry_send_batches, vec![EVENT_BATCH_SIZE + 1]);
     assert_eq!(runtime.last_policy_fetch_unix, None);
     assert_eq!(runtime.last_threat_intel_refresh_unix, None);
+    let retained = runtime.buffer.drain_batch(EVENT_BATCH_SIZE + 1).unwrap();
+    assert_eq!(
+        retained
+            .iter()
+            .map(|event| event.created_at_unix)
+            .collect::<Vec<_>>(),
+        (0..EVENT_BATCH_SIZE as i64)
+            .chain(std::iter::once(now))
+            .collect::<Vec<_>>()
+    );
 }
 
 #[tokio::test]
@@ -75,12 +89,15 @@ async fn successful_first_send_recovers_same_tick_maintenance() {
     let now = 1_700_000_000;
     prepare_tick(&mut runtime, now);
     runtime.consecutive_send_failures = 1;
-    runtime.buffer.enqueue(event(1)).unwrap();
+    for i in 0..EVENT_BATCH_SIZE {
+        runtime.buffer.enqueue(event(i as i64)).unwrap();
+    }
     runtime.telemetry_send_success = true;
     queue_event(&mut runtime);
     runtime.tick(now + 1).await.unwrap();
     assert_eq!(runtime.consecutive_send_failures, 0);
     assert_eq!(runtime.buffer.pending_count(), 0);
+    assert_eq!(runtime.telemetry_send_batches, vec![EVENT_BATCH_SIZE + 1]);
     assert_eq!(runtime.last_policy_fetch_unix, Some(now + 1));
     assert_eq!(runtime.last_threat_intel_refresh_unix, Some(now + 1));
 }

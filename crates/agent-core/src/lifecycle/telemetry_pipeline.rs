@@ -31,7 +31,10 @@ impl AgentRuntime {
             .map(std::mem::take)
             .unwrap_or_default();
         if !events.is_empty() {
-            self.flush_event_batch(events).await?;
+            // Like base, append current envelopes after draining EVENT_BATCH_SIZE
+            // old rows (not within that limit). Compliance alerts now share this
+            // first send rather than each causing a separate drain/send.
+            self.flush_telemetry_batch(events, true).await?;
         }
         if evaluation.is_some() {
             self.metrics.last_send_event_batch_micros = elapsed_micros(started);
@@ -112,6 +115,14 @@ impl AgentRuntime {
     }
 
     pub(super) async fn flush_event_batch(&mut self, events: Vec<EventEnvelope>) -> Result<()> {
+        self.flush_telemetry_batch(events, false).await
+    }
+
+    async fn flush_telemetry_batch(
+        &mut self,
+        events: Vec<EventEnvelope>,
+        include_all_current: bool,
+    ) -> Result<()> {
         let send_started = Instant::now();
         let pending_before = self.buffer.pending_count();
         let mut batch = match self.buffer.drain_batch(EVENT_BATCH_SIZE) {
@@ -124,7 +135,7 @@ impl AgentRuntime {
         };
         let mut overflow = Vec::new();
         for event in events {
-            if batch.len() < EVENT_BATCH_SIZE {
+            if include_all_current || batch.len() < EVENT_BATCH_SIZE {
                 batch.push(event);
             } else {
                 overflow.push(event);
