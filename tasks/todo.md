@@ -1,3 +1,11 @@
+# Priority parsing hotspot (perf/tick-drain)
+
+- [x] Verify profile: stable comparison sort repeatedly parses FileOpen payloads via raw_event_priority.
+- [x] Cache priority keys for the batch sort; preserve stable ordering and all detection decisions.
+- [x] Add counted-key regression, run requested tests/fmt/Clippy, commit and export patch.
+
+Review: regression fails with comparison sorting (some events classified 258 times), passes with cached keys (once/event), and checks stable ties. Requested connected/drain tests pass individually; 111 eBPF policy tests, module test, 6 telemetry tests and fmt pass. Clippy remains blocked by existing rule_bundle_loader modulo_one errors; no new touched-file warnings (existing warnings at telemetry_pipeline lines 561 and 1020 are unchanged). No events skip evaluation; exec/new binaries and IOC files retain existing behavior. Cached sort adds O(batch size) temporary key storage. Production 500/s soak throughput remains to be measured.
+
 # Connected tick telemetry batching (perf/tick-drain)
 
 - [x] Collect connected event envelopes and compliance alerts in a tick-local runtime vector; flush once after evaluation drain.

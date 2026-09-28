@@ -807,9 +807,8 @@ impl AgentRuntime {
         );
     }
 
-    fn prioritize_raw_events(mut events: Vec<RawEvent>) -> Vec<RawEvent> {
-        events.sort_by_key(Self::raw_event_priority);
-        events
+    fn prioritize_raw_events(events: Vec<RawEvent>) -> Vec<RawEvent> {
+        prioritize_raw_events_by_key(events, Self::raw_event_priority)
     }
 
     pub(super) fn enqueue_raw_events_with_priority(&mut self, events: Vec<RawEvent>) {
@@ -1411,6 +1410,16 @@ fn debug_trace_matching_raw_event(stage: &'static str, event: &RawEvent) {
     );
 }
 
+// Priority classification parses FileOpen payloads. Cache it once per event rather
+// than repeating that work for every comparison; equal priorities remain stable.
+fn prioritize_raw_events_by_key(
+    mut events: Vec<RawEvent>,
+    priority: impl FnMut(&RawEvent) -> u8,
+) -> Vec<RawEvent> {
+    events.sort_by_cached_key(priority);
+    events
+}
+
 fn parse_payload_field(payload: &str, field: &str) -> Option<String> {
     payload
         .split([';', ','])
@@ -1544,5 +1553,36 @@ fn normalize_severity(raw: &str) -> &'static str {
         "high" => "high",
         "critical" => "critical",
         _ => "medium",
+    }
+}
+
+#[cfg(test)]
+mod priority_tests {
+    use super::*;
+
+    #[test]
+    fn batch_priority_is_computed_once_per_event_and_ties_stay_stable() {
+        let events: Vec<_> = (0..128)
+            .map(|pid| RawEvent {
+                pid,
+                event_type: crate::platform::EventType::FileOpen,
+                payload: format!("path=/tmp/file-{pid};comm=cat;parent_comm=bash"),
+                uid: 1000,
+                ts_ns: 1,
+            })
+            .collect();
+        let mut expected = events.clone();
+        expected.sort_by_key(|event| event.pid % 3);
+        let mut calls = [0; 128];
+        let sorted = prioritize_raw_events_by_key(events, |event| {
+            calls[event.pid as usize] += 1;
+            // Mixed keys force comparisons; payload parsing must not scale with them.
+            (event.pid % 3) as u8
+        });
+        assert!(calls.iter().all(|&count| count == 1), "{calls:?}");
+        assert_eq!(
+            sorted.iter().map(|event| event.pid).collect::<Vec<_>>(),
+            expected.iter().map(|event| event.pid).collect::<Vec<_>>()
+        );
     }
 }
