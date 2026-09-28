@@ -466,11 +466,17 @@ impl AgentRuntime {
         };
         self.prune_suppressed_internal_process_pids(event_ns);
 
+        if matches!(
+            event.event_type,
+            crate::platform::EventType::ProcessExec | crate::platform::EventType::ProcessExit
+        ) {
+            self.unmarked_internal_process_pids.remove(&event.pid);
+        }
         if matches!(event.event_type, crate::platform::EventType::ProcessExit) {
             return self
                 .suppressed_internal_process_pids
                 .remove(&event.pid)
-                .is_some();
+                .is_some_and(|expires_ns| event_ns <= expires_ns);
         }
 
         if self.is_tracked_internal_process(event.pid, event_ns)
@@ -495,12 +501,32 @@ impl AgentRuntime {
         if payload_parent_process_name(&event.payload)
             .map(|value| is_eguard_agent_process(&value))
             .unwrap_or(false)
-            || is_marked_internal_process(event.pid)
+            || self.is_marked_internal_process_cached(event.pid, event_ns)
         {
             self.track_internal_process_pid(event.pid, event_ns);
             return true;
         }
 
+        false
+    }
+
+    fn is_marked_internal_process_cached(&mut self, pid: u32, event_ns: u64) -> bool {
+        // mark_internal_command sets the marker at spawn; treat it as immutable until exec.
+        // Stale negatives (including failed reads) only fail toward visibility, bounded by TTL.
+        if self
+            .unmarked_internal_process_pids
+            .get(&pid)
+            .is_some_and(|expires_ns| event_ns <= *expires_ns)
+        {
+            return false;
+        }
+        if is_marked_internal_process(pid) {
+            self.unmarked_internal_process_pids.remove(&pid);
+            return true;
+        }
+        self.unmarked_internal_process_pids
+            .insert(pid, event_ns.saturating_add(INTERNAL_PROCESS_TTL_NS));
+        self.prune_suppressed_internal_process_pids(event_ns);
         false
     }
 
@@ -528,8 +554,17 @@ impl AgentRuntime {
     }
 
     fn prune_suppressed_internal_process_pids(&mut self, now_ns: u64) {
-        self.suppressed_internal_process_pids
-            .retain(|_, expires_ns| now_ns <= *expires_ns);
+        if now_ns.saturating_sub(self.internal_process_last_prune_ns) >= 1_000_000_000 {
+            self.internal_process_last_prune_ns = now_ns;
+            self.suppressed_internal_process_pids
+                .retain(|_, expires_ns| now_ns <= *expires_ns);
+            self.unmarked_internal_process_pids
+                .retain(|_, expires_ns| now_ns <= *expires_ns);
+        }
+        if self.unmarked_internal_process_pids.len() > INTERNAL_PROCESS_PID_LIMIT.saturating_mul(2)
+        {
+            self.unmarked_internal_process_pids.clear();
+        }
         if self.suppressed_internal_process_pids.len()
             > INTERNAL_PROCESS_PID_LIMIT.saturating_mul(2)
         {
@@ -1494,6 +1529,8 @@ fn is_marked_internal_process(pid: u32) -> bool {
             return false;
         }
 
+        #[cfg(test)]
+        priority_tests::ENVIRON_READS.with(|calls| calls.set(calls.get() + 1));
         let Ok(raw) = std::fs::read(format!("/proc/{pid}/environ")) else {
             return false;
         };
@@ -1574,7 +1611,74 @@ mod priority_tests {
     use super::*;
 
     thread_local! {
+        pub(super) static ENVIRON_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
         pub(super) static PRIORITY_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    #[cfg(target_os = "linux")]
+    fn check_internal_process_cache(marked: bool) {
+        let cfg = crate::config::AgentConfig {
+            offline_buffer_backend: "memory".to_string(),
+            server_addr: "127.0.0.1:1".to_string(),
+            ..Default::default()
+        };
+        let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+        let mut child = std::process::Command::new("sleep")
+            .arg("5")
+            .env(INTERNAL_SUBPROCESS_ENV_NAME, if marked { "1" } else { "0" })
+            .spawn()
+            .expect("child");
+        let mut event = RawEvent {
+            pid: child.id(),
+            uid: 1000,
+            ts_ns: 1,
+            event_type: crate::platform::EventType::FileOpen,
+            // Omit parent metadata: this must exercise environ, not ancestry tracking.
+            payload: "path=/tmp/test;comm=sleep".to_string(),
+        };
+        // spawn can return before /proc exposes the child's post-exec environment.
+        let marker = format!(
+            "{INTERNAL_SUBPROCESS_ENV_NAME}={}",
+            if marked { "1" } else { "0" }
+        );
+        for _ in 0..100 {
+            if std::fs::read(format!("/proc/{}/environ", child.id()))
+                .unwrap_or_default()
+                .split(|byte| *byte == 0)
+                .any(|entry| entry == marker.as_bytes())
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        ENVIRON_READS.with(|calls| calls.set(0));
+        let first = runtime.should_suppress_internal_process_event(&event);
+        let second = runtime.should_suppress_internal_process_event(&event);
+        let reads = ENVIRON_READS.with(|calls| calls.get());
+        event.event_type = crate::platform::EventType::ProcessExec;
+        let exec = runtime.should_suppress_internal_process_event(&event);
+        let exec_reads = ENVIRON_READS.with(|calls| calls.get());
+        let _ = child.kill();
+        child.wait().expect("reap child");
+        assert_eq!((first, second, exec), (marked, marked, marked));
+        assert_eq!(reads, 1, "normal repeated events must not reread environ");
+        assert_eq!(
+            exec_reads,
+            if marked { 1 } else { 2 },
+            "exec invalidates negative cache"
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn internal_process_negative_cache_avoids_reads_and_exec_rechecks() {
+        check_internal_process_cache(false);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn internal_process_marked_child_remains_suppressed() {
+        check_internal_process_cache(true);
     }
 
     #[test]

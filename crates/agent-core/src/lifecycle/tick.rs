@@ -521,6 +521,8 @@ impl AgentRuntime {
             self.recent_file_event_keys.clear();
             self.recent_event_txn_keys.clear();
             self.suppressed_internal_process_pids.clear();
+            self.unmarked_internal_process_pids.clear();
+            self.internal_process_last_prune_ns = 0;
             self.compliance_alert_state.clear();
             self.compliance_grace_state.clear();
             self.active_campaign_iocs.clear();
