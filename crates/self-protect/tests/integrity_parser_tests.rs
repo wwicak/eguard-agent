@@ -11,6 +11,7 @@ fn measure_executable_sections_rejects_empty_section_list() {
 
 #[test]
 // AC-ATP-001
+#[cfg(target_os = "linux")]
 fn measure_executable_sections_rejects_missing_required_section() {
     let err = measure_executable_sections(Path::new("/proc/self/exe"), &[".definitely_missing"])
         .expect_err("missing section should fail");
@@ -19,6 +20,7 @@ fn measure_executable_sections_rejects_missing_required_section() {
 
 #[test]
 // AC-ATP-001
+#[cfg(target_os = "linux")]
 fn measure_executable_sections_preserves_requested_section_order() {
     let measurement =
         measure_executable_sections(Path::new("/proc/self/exe"), &[".rodata", ".text"])

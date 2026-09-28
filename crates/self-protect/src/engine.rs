@@ -68,18 +68,26 @@ struct RuntimeHash {
 struct RuntimeBaseline {
     integrity: Vec<RuntimeHash>,
     config: Vec<RuntimeHash>,
+    required_integrity: Vec<RuntimeHash>,
+    required_config: Vec<RuntimeHash>,
 }
 
 impl RuntimeBaseline {
-    fn capture(config: &SelfProtectConfig) -> Self {
+    fn capture(
+        config: &SelfProtectConfig,
+        required_integrity_paths: &[String],
+        required_config_paths: &[String],
+    ) -> Self {
         Self {
-            integrity: capture_runtime_hashes(&config.runtime_integrity_paths),
-            config: capture_runtime_hashes(&config.runtime_config_paths),
+            integrity: capture_runtime_hashes(&config.runtime_integrity_paths, false),
+            config: capture_runtime_hashes(&config.runtime_config_paths, false),
+            required_integrity: capture_runtime_hashes(required_integrity_paths, true),
+            required_config: capture_runtime_hashes(required_config_paths, true),
         }
     }
 }
 
-fn capture_runtime_hashes(paths: &[String]) -> Vec<RuntimeHash> {
+fn capture_runtime_hashes(paths: &[String], include_missing: bool) -> Vec<RuntimeHash> {
     let mut out = Vec::new();
     for path in paths {
         let trimmed = path.trim();
@@ -88,6 +96,12 @@ fn capture_runtime_hashes(paths: &[String]) -> Vec<RuntimeHash> {
         }
         let path_ref = Path::new(trimmed);
         if !path_ref.exists() {
+            if include_missing {
+                out.push(RuntimeHash {
+                    path: trimmed.to_string(),
+                    sha256_hex: String::new(),
+                });
+            }
             continue;
         }
         if let Ok(sha256_hex) = hash_file_sha256(path_ref) {
@@ -104,6 +118,8 @@ fn capture_runtime_hashes(paths: &[String]) -> Vec<RuntimeHash> {
 pub struct SelfProtectEngine {
     config: SelfProtectConfig,
     runtime_baseline: OnceLock<RuntimeBaseline>,
+    required_integrity_paths: Vec<String>,
+    required_config_paths: Vec<String>,
 }
 
 impl SelfProtectEngine {
@@ -118,20 +134,42 @@ impl SelfProtectEngine {
         runtime_integrity_paths: impl IntoIterator<Item = String>,
         runtime_config_paths: impl IntoIterator<Item = String>,
     ) -> Self {
+        let required_integrity_paths = normalized_paths(runtime_integrity_paths);
+        let required_config_paths = normalized_paths(runtime_config_paths);
         let mut config = SelfProtectConfig::default();
-        append_unique_paths(&mut config.runtime_integrity_paths, runtime_integrity_paths);
-        append_unique_paths(&mut config.runtime_config_paths, runtime_config_paths);
-        Self::new(config)
+        append_unique_paths(
+            &mut config.runtime_integrity_paths,
+            required_integrity_paths.iter().cloned(),
+        );
+        append_unique_paths(
+            &mut config.runtime_config_paths,
+            required_config_paths.iter().cloned(),
+        );
+        Self::new_with_required_paths(config, required_integrity_paths, required_config_paths)
     }
 
     pub fn new(config: SelfProtectConfig) -> Self {
+        Self::new_with_required_paths(config, Vec::new(), Vec::new())
+    }
+
+    fn new_with_required_paths(
+        config: SelfProtectConfig,
+        required_integrity_paths: Vec<String>,
+        required_config_paths: Vec<String>,
+    ) -> Self {
         let runtime_baseline = OnceLock::new();
         if !env_flag_enabled("EGUARD_SELF_PROTECT_LAZY_BASELINE") {
-            let _ = runtime_baseline.set(RuntimeBaseline::capture(&config));
+            let _ = runtime_baseline.set(RuntimeBaseline::capture(
+                &config,
+                &required_integrity_paths,
+                &required_config_paths,
+            ));
         }
         Self {
             config,
             runtime_baseline,
+            required_integrity_paths,
+            required_config_paths,
         }
     }
 
@@ -140,8 +178,13 @@ impl SelfProtectEngine {
     }
 
     fn runtime_baseline(&self) -> &RuntimeBaseline {
-        self.runtime_baseline
-            .get_or_init(|| RuntimeBaseline::capture(&self.config))
+        self.runtime_baseline.get_or_init(|| {
+            RuntimeBaseline::capture(
+                &self.config,
+                &self.required_integrity_paths,
+                &self.required_config_paths,
+            )
+        })
     }
 
     fn append_runtime_integrity(&self, report: &mut SelfProtectReport) {
@@ -196,11 +239,71 @@ impl SelfProtectEngine {
         }
     }
 
+    fn append_required_runtime_hashes(
+        &self,
+        report: &mut SelfProtectReport,
+        entries: &[RuntimeHash],
+        config: bool,
+    ) {
+        for entry in entries {
+            match hash_file_sha256(Path::new(&entry.path)) {
+                Ok(observed_sha256) => {
+                    if entry.sha256_hex.is_empty() || observed_sha256 != entry.sha256_hex {
+                        if config {
+                            report
+                                .violations
+                                .push(SelfProtectViolation::RuntimeConfigTamper {
+                                    path: entry.path.clone(),
+                                    expected_sha256: entry.sha256_hex.clone(),
+                                    observed_sha256,
+                                });
+                        } else {
+                            report.violations.push(
+                                SelfProtectViolation::RuntimeIntegrityMismatch {
+                                    path: entry.path.clone(),
+                                    expected_sha256: entry.sha256_hex.clone(),
+                                    observed_sha256,
+                                },
+                            );
+                        }
+                    }
+                }
+                Err(err) => {
+                    if config {
+                        report
+                            .violations
+                            .push(SelfProtectViolation::RuntimeConfigProbeFailed {
+                                path: entry.path.clone(),
+                                detail: err,
+                            });
+                    } else {
+                        report
+                            .violations
+                            .push(SelfProtectViolation::RuntimeIntegrityProbeFailed {
+                                path: entry.path.clone(),
+                                detail: err,
+                            });
+                    }
+                }
+            }
+        }
+    }
+
     pub fn evaluate(&self) -> SelfProtectReport {
         let mut report = SelfProtectReport::default();
 
         self.append_runtime_integrity(&mut report);
         self.append_runtime_config(&mut report);
+        self.append_required_runtime_hashes(
+            &mut report,
+            &self.runtime_baseline().required_integrity,
+            false,
+        );
+        self.append_required_runtime_hashes(
+            &mut report,
+            &self.runtime_baseline().required_config,
+            true,
+        );
 
         if let Some(expected_raw) = self.config.expected_integrity_sha256_hex.as_ref() {
             match normalize_sha256_hex(expected_raw) {
@@ -459,6 +562,15 @@ where
             paths.push(trimmed.to_string());
         }
     }
+}
+
+fn normalized_paths<I>(paths: I) -> Vec<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut out = Vec::new();
+    append_unique_paths(&mut out, paths);
+    out
 }
 
 fn env_flag_enabled(name: &str) -> bool {

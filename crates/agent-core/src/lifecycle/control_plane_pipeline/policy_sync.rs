@@ -167,6 +167,7 @@ impl AgentRuntime {
             return;
         };
         let mut changed = false;
+        let mut integrity_paths_changed = false;
         if let Some(enabled) = dlp.get("enabled").and_then(|v| v.as_bool()) {
             changed |= self.config.dlp_enabled != enabled;
             self.config.dlp_enabled = enabled;
@@ -176,6 +177,7 @@ impl AgentRuntime {
             .and_then(|v| v.as_str())
             .filter(|v| !v.trim().is_empty())
         {
+            integrity_paths_changed |= self.config.dlp_rules_path != path;
             changed |= self.config.dlp_rules_path != path;
             self.config.dlp_rules_path = path.to_string();
         }
@@ -184,6 +186,7 @@ impl AgentRuntime {
             .and_then(|v| v.as_str())
             .filter(|v| !v.trim().is_empty())
         {
+            integrity_paths_changed |= self.config.dlp_fingerprint_pack_path != path;
             changed |= self.config.dlp_fingerprint_pack_path != path;
             self.config.dlp_fingerprint_pack_path = path.to_string();
         }
@@ -192,6 +195,7 @@ impl AgentRuntime {
             .and_then(|v| v.as_str())
             .filter(|v| !v.trim().is_empty())
         {
+            integrity_paths_changed |= self.config.dlp_fingerprint_key_path != path;
             changed |= self.config.dlp_fingerprint_key_path != path;
             self.config.dlp_fingerprint_key_path = path.to_string();
         }
@@ -241,6 +245,16 @@ impl AgentRuntime {
         }
         if changed {
             self.reload_dlp_scanner();
+        }
+        if integrity_paths_changed {
+            self.self_protect_engine = self_protect::SelfProtectEngine::from_env_with_paths(
+                [
+                    self.config.dlp_rules_path.clone(),
+                    self.config.dlp_fingerprint_pack_path.clone(),
+                    self.config.dlp_fingerprint_key_path.clone(),
+                ],
+                [],
+            );
         }
         if dlp.get("policies").is_some() {
             self.reload_dlp_policy_engine(dlp);
@@ -845,6 +859,40 @@ mod tests {
             std::process::id(),
             nonce
         ))
+    }
+
+    #[test]
+    fn dlp_policy_path_override_rebinds_self_protection() {
+        let rules = unique_temp_path("dlp-rules-self-protect");
+        let fingerprint_pack = unique_temp_path("dlp-fingerprint-pack-self-protect");
+        let fingerprint_key = unique_temp_path("dlp-fingerprint-key-self-protect");
+        for path in [&rules, &fingerprint_pack, &fingerprint_key] {
+            fs::write(path, b"baseline").expect("write baseline asset");
+        }
+
+        let mut runtime = new_runtime();
+        runtime.apply_dlp_policy_overrides(&json!({
+            "dlp": {
+                "rules_path": rules.to_string_lossy(),
+                "fingerprint_pack_path": fingerprint_pack.to_string_lossy(),
+                "fingerprint_key_path": fingerprint_key.to_string_lossy()
+            }
+        }));
+        for path in [&rules, &fingerprint_pack, &fingerprint_key] {
+            fs::write(path, b"tampered").expect("tamper asset");
+        }
+
+        let tampered_paths = runtime.self_protect_engine.evaluate().tampered_paths();
+        for path in [&rules, &fingerprint_pack, &fingerprint_key] {
+            assert!(
+                tampered_paths
+                    .iter()
+                    .any(|found| found == &path.to_string_lossy()),
+                "policy-delivered DLP asset path must remain protected: {}",
+                path.display()
+            );
+            let _ = fs::remove_file(path);
+        }
     }
 
     #[test]

@@ -131,14 +131,51 @@ fn default_runtime_config_paths_exclude_bootstrap_file() {
     std::env::remove_var("EGUARD_SELF_PROTECT_RUNTIME_CONFIG_PATHS");
 
     let cfg = SelfProtectConfig::default();
+    #[cfg(target_os = "linux")]
     assert!(cfg
         .runtime_config_paths
         .iter()
         .any(|path| path == "/etc/eguard-agent/agent.conf"));
+    #[cfg(not(target_os = "linux"))]
+    assert!(cfg.runtime_config_paths.is_empty());
     assert!(!cfg
         .runtime_config_paths
         .iter()
-        .any(|path| path == "/etc/eguard-agent/bootstrap.conf"));
+        .any(|path| path.ends_with("bootstrap.conf")));
+}
+
+#[test]
+// AC-ATP-098 AC-ATP-099 AC-ATP-100
+fn required_runtime_asset_missing_at_baseline_is_not_silently_ignored() {
+    let _guard = env_lock().lock().expect("env lock");
+    std::env::remove_var("EGUARD_SELF_PROTECT_RUNTIME_INTEGRITY_PATHS");
+    std::env::remove_var("EGUARD_SELF_PROTECT_RUNTIME_CONFIG_PATHS");
+
+    let tmp = std::env::temp_dir().join(format!(
+        "eguard-self-protect-required-{}.bin",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    let path = tmp.to_string_lossy().to_string();
+    let engine = SelfProtectEngine::from_env_with_paths(vec![path.clone()], Vec::new());
+
+    let missing = engine.evaluate();
+    assert!(missing.violations.iter().any(|violation| matches!(
+        violation,
+        SelfProtectViolation::RuntimeIntegrityProbeFailed { path: found, .. } if found == &path
+    )));
+
+    std::fs::write(&tmp, b"unexpected asset").expect("write asset");
+    let appeared = engine.evaluate();
+    assert!(appeared.violations.iter().any(|violation| matches!(
+        violation,
+        SelfProtectViolation::RuntimeIntegrityMismatch { path: found, expected_sha256, .. }
+            if found == &path && expected_sha256.is_empty()
+    )));
+
+    let _ = std::fs::remove_file(tmp);
 }
 
 #[test]

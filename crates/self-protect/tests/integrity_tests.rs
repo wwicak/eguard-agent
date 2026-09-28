@@ -1,9 +1,11 @@
+#[cfg(target_os = "linux")]
 use self_protect::{
     measure_self_integrity, DebuggerCheckConfig, SelfProtectConfig, SelfProtectEngine,
     SelfProtectViolation,
 };
 
 #[test]
+#[cfg(target_os = "linux")]
 fn measure_self_integrity_hashes_text_and_rodata_sections() {
     let measurement = measure_self_integrity().expect("measure self integrity");
     let sections = measurement
@@ -17,6 +19,7 @@ fn measure_self_integrity_hashes_text_and_rodata_sections() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn engine_reports_integrity_mismatch_when_expected_hash_differs() {
     let config = SelfProtectConfig {
         expected_integrity_sha256_hex: Some(
@@ -39,6 +42,7 @@ fn engine_reports_integrity_mismatch_when_expected_hash_differs() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn engine_accepts_matching_integrity_hash() {
     let measurement = measure_self_integrity().expect("measure self integrity");
     let config = SelfProtectConfig {
