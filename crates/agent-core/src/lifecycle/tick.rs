@@ -155,7 +155,7 @@ impl AgentRuntime {
         for _ in 1..Self::MAX_TELEMETRY_EVALS_PER_TICK {
             let envelopes = self.tick_telemetry.as_ref().map_or(0, Vec::len);
             if started.elapsed() >= Duration::from_millis(Self::TELEMETRY_EVAL_TIME_BUDGET_MS)
-                || self.pending_response_actions.len() >= super::RESPONSE_QUEUE_CAPACITY / 2
+                || self.downstream_queues_near_capacity()
                 || envelopes >= super::EVENT_BATCH_SIZE
             {
                 break;
@@ -180,6 +180,14 @@ impl AgentRuntime {
         }
 
         Ok(())
+    }
+
+    pub(super) fn downstream_queues_near_capacity(&self) -> bool {
+        // These drop-oldest queues can grow during an additional evaluation.
+        // Leave headroom for its responses, playbook reports and IOC signals.
+        self.pending_response_actions.len() >= super::RESPONSE_QUEUE_CAPACITY / 2
+            || self.pending_response_reports.len() >= super::RESPONSE_REPORT_QUEUE_CAPACITY / 2
+            || self.ioc_signal_buffer.len() >= super::IOC_SIGNAL_BUFFER_CAP / 2
     }
 
     fn run_storage_hygiene_if_due(&mut self, now_unix: i64) {

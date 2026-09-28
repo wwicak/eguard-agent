@@ -30,11 +30,16 @@ impl AgentRuntime {
             .as_mut()
             .map(std::mem::take)
             .unwrap_or_default();
-        if !events.is_empty() {
-            // Like base, append current envelopes after draining EVENT_BATCH_SIZE
-            // old rows (not within that limit). Compliance alerts now share this
-            // first send rather than each causing a separate drain/send.
-            self.flush_telemetry_batch(events, true).await?;
+        let mut first_error = None;
+        for envelope in events {
+            // Base drains old rows again for each event/compliance envelope.
+            // Attempt every envelope even if an earlier recovery enqueue fails.
+            if let Err(err) = self.flush_telemetry_batch(vec![envelope], true).await {
+                first_error.get_or_insert(err);
+            }
+        }
+        if let Some(err) = first_error {
+            return Err(err);
         }
         if evaluation.is_some() {
             self.metrics.last_send_event_batch_micros = elapsed_micros(started);

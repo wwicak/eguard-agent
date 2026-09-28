@@ -289,3 +289,19 @@ drain batch-200 spread is 15.1%. Other groups are below 15%. Consumption include
 sampling; baseline strict-mode extras explain >1 raw event/tick. Separate ingest timing
 does not debit the production drain budget, so delivered-rate ceilings remain synthetic.
 No production behavior/dependency changes and no /proc caching implementation.
+
+## Reviewfix4
+- [x] Read final review and inventory event-fed drop-oldest queues.
+- [x] Restore per-envelope first-stage sends and guard all event-fed queues.
+- [x] Add discriminating tests, run requested regressions/fmt (no benchmark).
+- [x] Commit and export reviewfix4.patch.
+
+Review: tests_reviewfix 12/12, tests_ebpf_policy 111/111, priority_tests 4/4;
+fmt and diff whitespace checks pass. Replacing only production files with a74205c
+made all three new tests fail (first batches [258] instead of [257,2], report
+queue 256 instead of 128, IOC guard consumed an event instead of stopping).
+Additional-drain guards cover response actions, response reports and IOC signals.
+Control-plane tasks/sends and completed-command cursor are not evaluation-fed;
+raw backlog is ingress-fed and separately capped. Half-capacity guards leave
+headroom, but cannot bound arbitrary fanout within a single evaluation.
+Validation logs and queue inventory: /home/dimas/eguard-lab-soak/validation-reviewfix4.md.

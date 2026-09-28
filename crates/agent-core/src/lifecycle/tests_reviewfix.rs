@@ -365,3 +365,99 @@ async fn response_budget_is_shared_by_all_evaluations_in_a_tick() {
         RESPONSE_EXECUTION_BUDGET_PER_TICK
     );
 }
+
+#[tokio::test]
+async fn fresh_compliance_alert_drains_remaining_old_rows_before_scheduling() {
+    let mut runtime = runtime();
+    let now = 1_700_000_000;
+    prepare_tick(&mut runtime, now);
+    runtime.last_compliance_result = Some(
+        serde_json::from_value(serde_json::json!({
+            "status": "non_compliant", "detail": "fixture", "checks": [{
+                "check_id": "fresh-reviewfix", "check_type": "fixture",
+                "status": "non_compliant", "detail": "fresh alert"
+            }]
+        }))
+        .unwrap(),
+    );
+    runtime.telemetry_send_success = true;
+    for i in 0..EVENT_BATCH_SIZE + 1 {
+        runtime.buffer.enqueue(event(i as i64)).unwrap();
+    }
+    queue_event(&mut runtime);
+    runtime.tick(now).await.unwrap();
+    assert_eq!(
+        runtime.telemetry_send_batches,
+        vec![EVENT_BATCH_SIZE + 1, 2]
+    );
+    assert_eq!(runtime.buffer.pending_count(), 0);
+    assert_eq!(runtime.last_policy_fetch_unix, Some(now));
+    assert_eq!(runtime.last_threat_intel_refresh_unix, Some(now));
+}
+
+#[tokio::test]
+async fn drain_stops_at_half_report_capacity_without_evicting_reports() {
+    let mut runtime = runtime();
+    let now = 1_700_000_000;
+    prepare_tick(&mut runtime, now);
+    runtime.runtime_mode = AgentMode::Degraded;
+    runtime
+        .playbook_engine
+        .load_from_policy(&serde_json::json!({
+            "response_playbooks": [{"name":"report each evaluation", "enabled":true, "priority":1,
+                "conditions":{"require_signals":[]}, "actions":[{"action":"alert"}]}]
+        }));
+    queue_event(&mut runtime);
+    let evaluation = runtime.evaluate_tick(now).unwrap().unwrap();
+    runtime
+        .run_connected_response_stage(now, Some(&evaluation))
+        .await;
+    let mut report = runtime.pending_response_reports.front().unwrap().clone();
+    report.envelope.action_type = "old-report-sentinel".into();
+    runtime.pending_response_reports.clear();
+    for _ in 0..RESPONSE_REPORT_QUEUE_CAPACITY / 2 - 1 {
+        runtime.pending_response_reports.push_back(report.clone());
+    }
+    runtime.metrics.telemetry_event_txn_total = 0;
+    for _ in 0..300 {
+        queue_event(&mut runtime);
+    }
+    for _ in 0..300 {
+        runtime
+            .run_additional_telemetry_evaluations(now, std::time::Instant::now())
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        runtime.pending_response_reports.len(),
+        RESPONSE_REPORT_QUEUE_CAPACITY / 2
+    );
+    assert_eq!(runtime.metrics.telemetry_event_txn_total, 1);
+    assert_eq!(runtime.raw_event_backlog.len(), 299);
+    assert_eq!(
+        runtime
+            .pending_response_reports
+            .front()
+            .unwrap()
+            .envelope
+            .action_type,
+        report.envelope.action_type
+    );
+}
+
+#[tokio::test]
+async fn drain_stops_at_half_ioc_capacity() {
+    let mut runtime = runtime();
+    let now = 1_700_000_000;
+    for i in 0..IOC_SIGNAL_BUFFER_CAP / 2 {
+        runtime.buffer_ioc_signal(format!("ioc-{i}"), "domain".into(), "high", now);
+    }
+    queue_event(&mut runtime);
+    runtime
+        .run_additional_telemetry_evaluations(now, std::time::Instant::now())
+        .await
+        .unwrap();
+    assert_eq!(runtime.raw_event_backlog.len(), 1);
+    assert_eq!(runtime.ioc_signal_buffer.len(), IOC_SIGNAL_BUFFER_CAP / 2);
+    assert_eq!(runtime.ioc_signal_buffer[0].ioc_value, "ioc-0");
+}
