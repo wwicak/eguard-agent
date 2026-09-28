@@ -598,7 +598,12 @@ impl AgentRuntime {
         let mut preserved = Vec::new();
         let mut skipped = 0usize;
 
-        while skipped < max_skips {
+        // A frontloaded high-priority prefix must not be rescanned in full on
+        // every dequeue. Sampling may skip fewer events; the backlog cap remains.
+        for _ in 0..max_skips.saturating_mul(2) {
+            if skipped == max_skips {
+                break;
+            }
             let Some(candidate) = self.raw_event_backlog.pop_front() else {
                 break;
             };
@@ -840,6 +845,8 @@ impl AgentRuntime {
     }
 
     pub(super) fn raw_event_priority(event: &RawEvent) -> u8 {
+        #[cfg(test)]
+        priority_tests::PRIORITY_CALLS.with(|calls| calls.set(calls.get() + 1));
         match event.event_type {
             crate::platform::EventType::ProcessExec => 0,
             crate::platform::EventType::ProcessExit => 1,
@@ -1565,6 +1572,48 @@ fn normalize_severity(raw: &str) -> &'static str {
 #[cfg(test)]
 mod priority_tests {
     use super::*;
+
+    thread_local! {
+        pub(super) static PRIORITY_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    #[test]
+    fn dequeue_sampling_bounds_priority_work_and_preserves_high_priority_order() {
+        let cfg = crate::config::AgentConfig {
+            offline_buffer_backend: "memory".to_string(),
+            server_addr: "127.0.0.1:1".to_string(),
+            ..Default::default()
+        };
+        let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+        for index in 0..4020 {
+            runtime.raw_event_backlog.push_back(RawEvent {
+                pid: 7001,
+                uid: 1000,
+                ts_ns: index,
+                event_type: if index < 4000 {
+                    crate::platform::EventType::ProcessExec
+                } else if index == 4000 {
+                    crate::platform::EventType::ProcessExit
+                } else {
+                    crate::platform::EventType::FileOpen
+                },
+                payload: "path=/var/log/messages;comm=cat;parent_comm=bash".to_string(),
+            });
+        }
+        PRIORITY_CALLS.with(|calls| calls.set(0));
+        let first = runtime.dequeue_sampled_raw_event(8).expect("event");
+        assert_eq!(first.ts_ns, 0);
+        let calls = PRIORITY_CALLS.with(|calls| calls.get());
+        assert!(calls > 0 && calls <= 14, "priority calls: {calls}");
+        assert_eq!(
+            runtime
+                .raw_event_backlog
+                .iter()
+                .map(|event| event.ts_ns)
+                .collect::<Vec<_>>(),
+            (1..4020).collect::<Vec<_>>()
+        );
+    }
 
     #[test]
     fn batch_priority_is_computed_once_per_event_and_ties_stay_stable() {

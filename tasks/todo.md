@@ -222,6 +222,14 @@ Enforce the configured per-minute quarantine limit before destructive quarantine
 - Broader pre-existing failures from prior report were not rerun: `cargo fmt --all -- --check` had unrelated formatting failures in `crates/agent-core/src/lifecycle/command_pipeline/update_agent/worker_macos.rs` and `crates/platform-windows/src/compliance/screen_lock.rs`; `cargo test -p response` had unrelated pre-existing response expectation/permission failures.
 - No deployment or commit performed.
 
+## Bounded dequeue sampling
+- [x] Cap sampling candidate examinations at twice the skip budget; preserve high priorities/order.
+- [x] Prove regression test fails unbounded implementation; run requested tests, fmt and clippy.
+- [ ] Commit minimal fix, benchmark three revisions interleaved, publish patch/results externally.
+Review: regression measured 4007 classifications before, at most 14 after (stride 8).
+All requested tests pass, including 111 eBPF policy tests; fmt passes. Clippy has
+only pre-existing touched-file warnings and the two known rule_bundle_loader modulo-one errors.
+
 ## Local eval throughput benchmark
 - [x] Add portable ignored fixture; verify baseline APIs.
 - [x] Build four release binaries and run interleaved batches 50/200.
