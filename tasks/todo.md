@@ -1,3 +1,17 @@
+# Reviewfix2 — terminal-only spooling and FIFO recovery
+
+- [x] Read re-review and narrow spool failure gating to terminal command dispatch (including config self-restart).
+- [x] Hold new overflow until send outcome; attempt all recovery enqueues in old-batch/new-overflow order.
+- [x] Add SQLite FIFO, event-bearing maintenance, and terminal side-effect/failure regressions.
+- [x] Run requested regression suites and verify existing failures on 9cdb193.
+- [x] Benchmark ec0c9d2 versus fixed code, export patch and results.
+
+Review: final-source reviewfix tests 6/6, policy 111/111, priority 6/6, dequeue 2/2, negative cache 1/1, connected tick 1/1, scheduler 6/6, agent buffer 3/3. Response 42 pass/2 fail; command 70 pass/1 fail/1 ignored; control plane 26 pass/1 fail; grpc buffer 11 pass/1 fail. All five failures reproduce on 9cdb193. Agent-core fmt and diff check pass; workspace fmt has the same two unrelated baseline diffs (grpc proto tests and Windows screen lock).
+
+Benchmark: five interleaved memory rounds per batch; median cost change +7.13% (50), -9.16% (200), noisy/mixed. One isolated SQLite pair: +5.47% cost at 200, diagnostic only, both database files verified non-empty and no fallback warning. Report: `/home/dimas/eguard-lab-soak/bench/results-reviewfix2.md`; patch: `/home/dimas/eguard-lab-soak/reviewfix2.patch`. Benchmark binaries precede only the final connected-success send-duration metric placement correction (and test/documentation refinements); that path is not exercised by the degraded fixture. Supervisor accepted measurements without rerun; exact binary SHA-256 provenance is in the report.
+
+Scope: F9 remains deferred (failed-item loss, destructive drain crash window, old-tail requeue order, memory fallback durability); no buffer API redesign. Supersedes B1 stage-wide gating described below.
+
 # Throughput review blockers
 
 - [x] Spool tick telemetry before control-plane execution (B1).

@@ -117,9 +117,8 @@ impl AgentRuntime {
                 overflow.push(event);
             }
         }
-        let overflow_result = self.buffer_events(overflow);
         if batch.is_empty() {
-            return overflow_result;
+            return self.buffer_events(overflow);
         }
 
         let send_result = timeout(
@@ -140,9 +139,10 @@ impl AgentRuntime {
                 self.transition_to_degraded(DegradedCause::SendFailures);
             }
 
-            // The buffer appends: older drained events can follow existing overflow.
-            // Preserve order within this batch, and attempt every enqueue on failure.
+            // Requeue before new overflow. Existing buffered old-tail rows still
+            // precede this batch with the append-only API (pre-existing; follow-up F9).
             let requeue_result = self.buffer_events(batch);
+            let overflow_result = self.buffer_events(overflow);
             warn!(
                 error = %err,
                 pending = self.buffer.pending_count(),
@@ -150,7 +150,7 @@ impl AgentRuntime {
                 "send failed, event re-buffering attempted"
             );
             self.metrics.last_send_event_batch_micros = elapsed_micros(send_started);
-            return overflow_result.and(requeue_result);
+            return requeue_result.and(overflow_result);
         } else {
             self.consecutive_send_failures = 0;
             self.pipeline_events_sent =
@@ -169,6 +169,7 @@ impl AgentRuntime {
             }
         }
 
+        let overflow_result = self.buffer_events(overflow);
         self.metrics.last_send_event_batch_micros = elapsed_micros(send_started);
         overflow_result
     }

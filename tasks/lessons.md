@@ -1,5 +1,8 @@
 # Lessons
 
+- **Keep terminal-command durability barriers out of maintenance scheduling inputs**: spooling every current-tick event before scheduling turns normal traffic into permanent backpressure. Gate only terminal dispatch, and test an event-bearing tick with due maintenance.
+- **Test recovery ordering with old and new events on SQLite**: hold new overflow until the send outcome; requeue the drained batch before new overflow. Distinguish this regression from the pre-existing append-only old-tail limitation rather than accepting both together.
+
 - **Do not over-invest in legacy/pre-release compatibility by default**: since eGuard Agent has not had a real production release yet, prefer forward-looking product behavior over accommodating old pre-release runtimes unless the user explicitly asks.
 - **Bound async control-plane send duration separately from transport retry policy**: heartbeat/compliance/inventory async workers can otherwise occupy send concurrency for minutes after a wedged HTTP call, which strands `last_heartbeat` even though the service stays `active`. Keep a short outer timeout around those background sends so the next heartbeat can recover on schedule.
 - When a user adds perspective docs mid-task (e.g., operations/architecture guides), re-anchor implementation decisions to that document before coding.

@@ -85,6 +85,16 @@ impl AgentRuntime {
         true
     }
 
+    fn prepare_terminal_command(&mut self, exec: &mut response::CommandExecution) -> bool {
+        if let Err(err) = self.spool_tick_telemetry() {
+            exec.outcome = CommandOutcome::Ignored;
+            exec.status = "failed";
+            exec.detail = format!("terminal command telemetry spool failed: {err}");
+            return false;
+        }
+        true
+    }
+
     pub(super) fn completed_command_cursor(&self) -> Vec<String> {
         self.completed_command_ids.iter().cloned().collect()
     }
@@ -110,91 +120,128 @@ impl AgentRuntime {
         let isolated_before = self.host_control.isolated;
         let mut exec = execute_server_command_with_state(parsed, now_unix, &mut self.host_control);
 
-        if parsed == ServerCommand::EmergencyRulePush {
-            self.apply_emergency_rule_push(&command.payload_json, &mut exec);
-        }
+        // Only terminal commands need the safety barrier. Spooling at stage entry
+        // would make this tick's events look like scheduler backpressure.
+        let terminal = matches!(
+            parsed,
+            ServerCommand::RestartDevice | ServerCommand::Update | ServerCommand::Uninstall
+        ) || (parsed == ServerCommand::ConfigChange
+            && config_change::requests_agent_restart(&command.payload_json));
+        let spool_failed = terminal && !self.prepare_terminal_command(&mut exec);
 
-        if parsed == ServerCommand::ConfigChange {
-            self.apply_config_change(&command.payload_json, &mut exec);
-        }
+        // Replace terminal dispatch only after the barrier, never the barrier itself.
+        #[cfg(test)]
+        let intercepted = if terminal && !spool_failed {
+            if let Some(hook) = self.terminal_command_hook {
+                hook(self);
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        #[cfg(not(test))]
+        let intercepted = false;
 
-        match parsed {
-            ServerCommand::Isolate => self.apply_host_isolate(&command.payload_json, &mut exec),
-            ServerCommand::Unisolate => self.apply_host_unisolate(&mut exec),
-            ServerCommand::Scan => {
-                self.apply_on_demand_scan(&command.payload_json, now_unix, &mut exec)
-                    .await
+        if !spool_failed && !intercepted {
+            if parsed == ServerCommand::EmergencyRulePush {
+                self.apply_emergency_rule_push(&command.payload_json, &mut exec);
             }
-            ServerCommand::RestoreQuarantine => {
-                self.apply_quarantine_restore(&command.payload_json, &mut exec)
+
+            if parsed == ServerCommand::ConfigChange {
+                self.apply_config_change(&command.payload_json, &mut exec);
             }
-            ServerCommand::Forensics => {
-                let artifacts = self.apply_forensics_collection(&command.payload_json, &mut exec);
-                if exec.status == "completed" && !artifacts.is_empty() {
-                    self.upload_forensics_artifacts(&command_id, artifacts, &mut exec)
-                        .await;
+
+            match parsed {
+                ServerCommand::Isolate => self.apply_host_isolate(&command.payload_json, &mut exec),
+                ServerCommand::Unisolate => self.apply_host_unisolate(&mut exec),
+                ServerCommand::Scan => {
+                    self.apply_on_demand_scan(&command.payload_json, now_unix, &mut exec)
+                        .await
                 }
-            }
-            ServerCommand::KillProcess => self.apply_kill_process(&command.payload_json, &mut exec),
-            ServerCommand::Update => {
-                if self.allow_destructive_command(
-                    DestructiveKind::RestartOrUpdate,
-                    4,
-                    now_unix,
-                    "update_skipped:circuit_open",
-                    &mut exec,
-                ) {
-                    self.apply_agent_update(&command.command_id, &command.payload_json, &mut exec)
+                ServerCommand::RestoreQuarantine => {
+                    self.apply_quarantine_restore(&command.payload_json, &mut exec)
                 }
-            }
-            ServerCommand::LockDevice => self.apply_device_lock(&command.payload_json, &mut exec),
-            ServerCommand::WipeDevice => {
-                if self.allow_destructive_command(
-                    DestructiveKind::DeviceWipe,
-                    32,
-                    now_unix,
-                    "wipe_device_skipped:circuit_open",
-                    &mut exec,
-                ) {
-                    self.apply_device_wipe(&command.payload_json, &mut exec);
+                ServerCommand::Forensics => {
+                    let artifacts =
+                        self.apply_forensics_collection(&command.payload_json, &mut exec);
+                    if exec.status == "completed" && !artifacts.is_empty() {
+                        self.upload_forensics_artifacts(&command_id, artifacts, &mut exec)
+                            .await;
+                    }
                 }
-            }
-            ServerCommand::RetireDevice => {
-                self.apply_device_retire(&command.payload_json, &mut exec)
-            }
-            ServerCommand::RestartDevice => {
-                if self.allow_destructive_command(
-                    DestructiveKind::RestartOrUpdate,
-                    4,
-                    now_unix,
-                    "restart_device_skipped:circuit_open",
-                    &mut exec,
-                ) {
-                    self.apply_device_restart(&command.payload_json, &mut exec)
+                ServerCommand::KillProcess => {
+                    self.apply_kill_process(&command.payload_json, &mut exec)
                 }
-            }
-            ServerCommand::LostMode => self.apply_lost_mode(&command.payload_json, &mut exec),
-            ServerCommand::LocateDevice => {
-                self.apply_device_locate(&command.payload_json, &mut exec)
-            }
-            ServerCommand::InstallApp => self.apply_app_install(&command.payload_json, &mut exec),
-            ServerCommand::RemoveApp => {
-                if self.allow_destructive_command(
-                    DestructiveKind::AppRemove,
-                    8,
-                    now_unix,
-                    "remove_app_skipped:circuit_open",
-                    &mut exec,
-                ) {
-                    self.apply_app_remove(&command.payload_json, &mut exec);
+                ServerCommand::Update => {
+                    if self.allow_destructive_command(
+                        DestructiveKind::RestartOrUpdate,
+                        4,
+                        now_unix,
+                        "update_skipped:circuit_open",
+                        &mut exec,
+                    ) {
+                        self.apply_agent_update(
+                            &command.command_id,
+                            &command.payload_json,
+                            &mut exec,
+                        )
+                    }
                 }
+                ServerCommand::LockDevice => {
+                    self.apply_device_lock(&command.payload_json, &mut exec)
+                }
+                ServerCommand::WipeDevice => {
+                    if self.allow_destructive_command(
+                        DestructiveKind::DeviceWipe,
+                        32,
+                        now_unix,
+                        "wipe_device_skipped:circuit_open",
+                        &mut exec,
+                    ) {
+                        self.apply_device_wipe(&command.payload_json, &mut exec);
+                    }
+                }
+                ServerCommand::RetireDevice => {
+                    self.apply_device_retire(&command.payload_json, &mut exec)
+                }
+                ServerCommand::RestartDevice => {
+                    if self.allow_destructive_command(
+                        DestructiveKind::RestartOrUpdate,
+                        4,
+                        now_unix,
+                        "restart_device_skipped:circuit_open",
+                        &mut exec,
+                    ) {
+                        self.apply_device_restart(&command.payload_json, &mut exec)
+                    }
+                }
+                ServerCommand::LostMode => self.apply_lost_mode(&command.payload_json, &mut exec),
+                ServerCommand::LocateDevice => {
+                    self.apply_device_locate(&command.payload_json, &mut exec)
+                }
+                ServerCommand::InstallApp => {
+                    self.apply_app_install(&command.payload_json, &mut exec)
+                }
+                ServerCommand::RemoveApp => {
+                    if self.allow_destructive_command(
+                        DestructiveKind::AppRemove,
+                        8,
+                        now_unix,
+                        "remove_app_skipped:circuit_open",
+                        &mut exec,
+                    ) {
+                        self.apply_app_remove(&command.payload_json, &mut exec);
+                    }
+                }
+                ServerCommand::UpdateApp => self.apply_app_update(&command.payload_json, &mut exec),
+                ServerCommand::ApplyProfile => {
+                    self.apply_config_profile(&command.payload_json, &mut exec)
+                }
+                ServerCommand::Uninstall => self.apply_uninstall(&command.payload_json, &mut exec),
+                _ => {}
             }
-            ServerCommand::UpdateApp => self.apply_app_update(&command.payload_json, &mut exec),
-            ServerCommand::ApplyProfile => {
-                self.apply_config_profile(&command.payload_json, &mut exec)
-            }
-            ServerCommand::Uninstall => self.apply_uninstall(&command.payload_json, &mut exec),
-            _ => {}
         }
 
         self.host_control.isolated = reconcile_isolation_state_after_command(
