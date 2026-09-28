@@ -54,10 +54,35 @@ impl AgentRuntime {
     }
 
     pub(super) async fn send_event_batch(&mut self, envelope: EventEnvelope) -> Result<()> {
+        if let Some(events) = self.tick_telemetry.as_mut() {
+            events.push(envelope);
+            return Ok(());
+        }
+        self.flush_event_batch(vec![envelope]).await
+    }
+
+    pub(super) async fn flush_event_batch(&mut self, events: Vec<EventEnvelope>) -> Result<()> {
         let send_started = Instant::now();
         let pending_before = self.buffer.pending_count();
-        let mut batch = self.buffer.drain_batch(EVENT_BATCH_SIZE)?;
-        batch.push(envelope);
+        let mut batch = match self.buffer.drain_batch(EVENT_BATCH_SIZE) {
+            Ok(batch) => batch,
+            Err(err) => {
+                for event in events {
+                    self.buffer.enqueue(event)?;
+                }
+                return Err(err);
+            }
+        };
+        for event in events {
+            if batch.len() < EVENT_BATCH_SIZE {
+                batch.push(event);
+            } else {
+                self.buffer.enqueue(event)?;
+            }
+        }
+        if batch.is_empty() {
+            return Ok(());
+        }
 
         let send_result = timeout(
             std::time::Duration::from_millis(TELEMETRY_SEND_TIMEOUT_MS),
@@ -89,6 +114,8 @@ impl AgentRuntime {
             );
         } else {
             self.consecutive_send_failures = 0;
+            self.pipeline_events_sent =
+                self.pipeline_events_sent.saturating_add(batch.len() as u64);
             if std::env::var("EGUARD_DEBUG_OFFLINE_LOG")
                 .ok()
                 .filter(|v| !v.trim().is_empty())

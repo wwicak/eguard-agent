@@ -27,6 +27,45 @@ impl AgentRuntime {
 
     pub async fn tick(&mut self, now_unix: i64) -> Result<()> {
         let tick_started = Instant::now();
+        self.tick_telemetry = Some(Vec::new());
+        let result = self.tick_inner(now_unix).await;
+        let events = self.tick_telemetry.take().unwrap_or_default();
+        let flush_result = if result.is_err() || matches!(self.runtime_mode, AgentMode::Degraded) {
+            events
+                .into_iter()
+                .try_for_each(|event| self.buffer.enqueue(event))
+        } else {
+            self.flush_event_batch(events).await
+        };
+        self.metrics.last_tick_total_micros = elapsed_micros(tick_started);
+        self.metrics.max_tick_total_micros = self
+            .metrics
+            .max_tick_total_micros
+            .max(self.metrics.last_tick_total_micros);
+        self.pipeline_max_tick_micros = self
+            .pipeline_max_tick_micros
+            .max(self.metrics.last_tick_total_micros);
+        if self.tick_count.is_multiple_of(50) {
+            let evaluated = self.metrics.telemetry_event_txn_total;
+            let dropped = self.metrics.telemetry_raw_backlog_dropped_total;
+            info!(
+                events_evaluated = evaluated.saturating_sub(self.pipeline_stats_baseline.0),
+                events_sent = self.pipeline_events_sent,
+                raw_event_backlog = self.raw_event_backlog.len(),
+                buffer_pending = self.buffer.pending_count(),
+                raw_overflow_dropped = dropped.saturating_sub(self.pipeline_stats_baseline.1),
+                last_tick_micros = self.metrics.last_tick_total_micros,
+                max_tick_micros = self.pipeline_max_tick_micros,
+                "telemetry pipeline stats"
+            );
+            self.pipeline_stats_baseline = (evaluated, dropped);
+            self.pipeline_events_sent = 0;
+            self.pipeline_max_tick_micros = 0;
+        }
+        result.and(flush_result)
+    }
+
+    async fn tick_inner(&mut self, now_unix: i64) -> Result<()> {
         self.reset_tick_stage_metrics();
         self.tick_count = self.tick_count.saturating_add(1);
         if std::env::var("EGUARD_DEBUG_TICK_LOG")
@@ -95,11 +134,6 @@ impl AgentRuntime {
         self.run_additional_telemetry_evaluations(now_unix, evaluate_started)
             .await?;
 
-        self.metrics.last_tick_total_micros = elapsed_micros(tick_started);
-        self.metrics.max_tick_total_micros = self
-            .metrics
-            .max_tick_total_micros
-            .max(self.metrics.last_tick_total_micros);
         let _ = self.protected.is_protected_process("systemd");
         Ok(())
     }

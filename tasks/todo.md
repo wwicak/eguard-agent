@@ -1,3 +1,13 @@
+# Connected tick telemetry batching (perf/tick-drain)
+
+- [x] Collect connected event envelopes and compliance alerts in a tick-local runtime vector; flush once after evaluation drain.
+- [x] Bound each flush to EVENT_BATCH_SIZE, retain overflow, and buffer collected events on early error or degraded transition.
+- [x] Preserve send timeout/failure handling and add 50-tick pipeline stats.
+- [x] Add connected multi-event failure regression; confirm it fails against ecc269a.
+- [x] Validate targeted tests, telemetry tests, eBPF policy suite, formatting, and touched-file Clippy diagnostics.
+
+Review: agent-core is a binary-only package, so requested `--lib` commands have no target; equivalent binary tests pass (1 new regression, 1 drain regression, 5 telemetry, 111 policy tests). Existing Clippy modulo_one errors remain; no new touched-file warnings after adjusting the stats cadence check. No tasks/threads/channels introduced. Connected alerts wait until end of tick; transport remains bounded by the existing five-second timeout.
+
 # Task Plan — macOS real-bundle startup/restart readiness
 
 ## Objective
