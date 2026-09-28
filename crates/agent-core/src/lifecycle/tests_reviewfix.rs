@@ -28,10 +28,7 @@ fn event(ts: i64) -> EventEnvelope {
     }
 }
 
-#[tokio::test]
-async fn event_bearing_control_plane_keeps_maintenance_due() {
-    let mut runtime = runtime();
-    let now = 1_700_000_000;
+fn queue_event(runtime: &mut AgentRuntime) {
     runtime
         .raw_event_backlog
         .push_back(platform_linux::RawEvent {
@@ -39,72 +36,112 @@ async fn event_bearing_control_plane_keeps_maintenance_due() {
             pid: 424242,
             uid: 0,
             ts_ns: 1,
-            payload:
-                "path=/usr/bin/true;cmdline=true;ppid=1;cgroup_id=0;comm=true;parent_comm=init"
-                    .into(),
+            payload: "path=/usr/bin/true;cmdline=true;ppid=1;comm=true;parent_comm=init".into(),
         });
-    let evaluation = runtime
-        .evaluate_tick(now)
-        .expect("evaluate event")
-        .expect("one evaluated event");
-    runtime.tick_telemetry = Some(vec![evaluation.event_envelope.clone()]);
-    runtime.buffer_enqueue_failure_at = Some(0);
-    runtime
-        .run_connected_control_plane_stage(now, Some(&evaluation))
-        .await
-        .unwrap();
-    assert_eq!(runtime.buffer.pending_count(), 0);
-    assert_eq!(runtime.tick_telemetry.as_ref().unwrap().len(), 1);
-    assert_eq!(runtime.last_policy_fetch_unix, Some(now));
-    assert_eq!(runtime.last_threat_intel_refresh_unix, Some(now));
-    assert_eq!(
-        runtime.buffer_enqueue_failure_at,
-        Some(0),
-        "ordinary control-plane work must not spool"
-    );
+}
+
+fn prepare_tick(runtime: &mut AgentRuntime, now: i64) {
+    runtime.last_heartbeat_attempt_unix = Some(now);
+    runtime.last_compliance_attempt_unix = Some(now);
+    runtime.last_inventory_attempt_unix = Some(now);
+    runtime.last_baseline_save_unix = Some(now);
+    runtime.last_baseline_upload_unix = Some(now);
+    runtime.last_fleet_baseline_fetch_unix = Some(now);
+    runtime.last_memory_scan_unix = Some(now);
+    runtime.last_ioc_signal_upload_unix = Some(now);
+    runtime.last_campaign_fetch_unix = Some(now);
+    runtime.last_kernel_integrity_scan_unix = Some(now);
+    runtime.last_command_fetch_attempt_unix = Some(now);
+    let compliance = runtime.evaluate_compliance();
+    runtime.collect_compliance_alerts(&compliance, now);
 }
 
 #[tokio::test]
-async fn terminal_commands_spool_before_side_effect_and_fail_closed() {
-    for (kind, payload) in [
-        ("restart_device", "{}"),
-        ("update", "{}"),
-        ("uninstall", "{}"),
-        (
-            "config_change",
-            r#"{"config_json":{"config_type":"agent_control","restart_service":true}}"#,
-        ),
-    ] {
-        let mut runtime = runtime();
-        runtime.tick_telemetry = Some(vec![event(1), event(2)]);
-        runtime.terminal_command_hook = Some(|runtime| {
-            assert!(runtime.tick_telemetry.as_ref().unwrap().is_empty());
-            let events = runtime.buffer.drain_batch(10).unwrap();
-            assert_eq!(
-                events.iter().map(|e| e.created_at_unix).collect::<Vec<_>>(),
-                vec![1, 2]
-            );
-            runtime.metrics.last_control_plane_execute_count = 99;
-        });
-        let command = grpc_client::CommandEnvelope {
-            command_id: format!("terminal-{kind}"),
-            command_type: kind.into(),
-            payload_json: payload.into(),
-        };
-        runtime.handle_command(command.clone(), 1_700_000_000).await;
-        assert_eq!(
-            runtime.metrics.last_control_plane_execute_count, 99,
-            "{kind}"
-        );
-        runtime.metrics.last_control_plane_execute_count = 0;
-        runtime.tick_telemetry = Some(vec![event(3), event(4), event(5)]);
-        runtime.buffer_enqueue_failure_at = Some(1);
-        let exec = runtime.handle_command(command, 1_700_000_001).await;
-        assert_eq!(exec.status, "failed", "{kind}");
-        assert!(exec.detail.contains("telemetry spool failed"));
-        assert_eq!(runtime.metrics.last_control_plane_execute_count, 0);
-        assert_eq!(runtime.buffer.pending_count(), 2);
+async fn first_send_outcome_controls_same_tick_maintenance() {
+    let mut runtime = runtime();
+    let now = 1_700_000_000;
+    prepare_tick(&mut runtime, now);
+    queue_event(&mut runtime);
+    runtime.tick(now).await.unwrap();
+    assert_eq!(runtime.consecutive_send_failures, 1);
+    assert_eq!(runtime.buffer.pending_count(), 1);
+    assert_eq!(runtime.last_policy_fetch_unix, None);
+    assert_eq!(runtime.last_threat_intel_refresh_unix, None);
+}
+
+#[tokio::test]
+async fn successful_first_send_recovers_same_tick_maintenance() {
+    let mut runtime = runtime();
+    let now = 1_700_000_000;
+    prepare_tick(&mut runtime, now);
+    runtime.consecutive_send_failures = 1;
+    runtime.buffer.enqueue(event(1)).unwrap();
+    runtime.telemetry_send_success = true;
+    queue_event(&mut runtime);
+    runtime.tick(now + 1).await.unwrap();
+    assert_eq!(runtime.consecutive_send_failures, 0);
+    assert_eq!(runtime.buffer.pending_count(), 0);
+    assert_eq!(runtime.last_policy_fetch_unix, Some(now + 1));
+    assert_eq!(runtime.last_threat_intel_refresh_unix, Some(now + 1));
+}
+
+#[tokio::test]
+async fn terminal_command_observes_failed_first_send() {
+    check_terminal_command_order(false).await;
+}
+
+#[tokio::test]
+async fn terminal_command_observes_first_send_without_spooling_full_buffer() {
+    check_terminal_command_order(true).await;
+}
+
+async fn check_terminal_command_order(success: bool) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static RESTARTED: [AtomicBool; 2] = [AtomicBool::new(false), AtomicBool::new(false)];
+    let mut runtime = runtime();
+    let now = 1_700_000_000;
+    prepare_tick(&mut runtime, now);
+    runtime.telemetry_send_success = success;
+    runtime.buffer.enqueue(event(1)).unwrap();
+    if success {
+        let capacity = runtime.buffer.pending_bytes();
+        runtime.buffer = grpc_client::EventBuffer::memory(capacity);
+        runtime.buffer.enqueue(event(1)).unwrap();
+        // A full buffer must be sent before commands, never enqueued into first.
+        runtime.buffer_enqueue_failure_at = Some(0);
     }
+    RESTARTED[usize::from(success)].store(false, Ordering::SeqCst);
+    runtime.device_restart_hook = Some(|runtime| {
+        RESTARTED[usize::from(runtime.telemetry_send_success)].store(true, Ordering::SeqCst);
+        assert!(runtime.tick_telemetry.as_ref().unwrap().is_empty());
+        assert_eq!(runtime.host_control.last_restart_unix, Some(1_700_000_000));
+        if runtime.telemetry_send_success {
+            assert_eq!(runtime.pipeline_events_sent, 2);
+            assert_eq!(runtime.buffer.pending_count(), 0);
+            assert_eq!(runtime.buffer_enqueue_failure_at, Some(0));
+        } else {
+            assert_eq!(runtime.consecutive_send_failures, 1);
+            assert_eq!(runtime.buffer.pending_count(), 2);
+        }
+    });
+    runtime.pending_commands.push_back(PendingCommand {
+        envelope: grpc_client::CommandEnvelope {
+            command_id: "terminal-restart".into(),
+            command_type: "restart_device".into(),
+            payload_json: "{}".into(),
+        },
+        enqueued_at_unix: now,
+    });
+    queue_event(&mut runtime);
+    runtime.tick(now).await.unwrap();
+    assert!(
+        RESTARTED[usize::from(success)].load(Ordering::SeqCst),
+        "restart handler must execute"
+    );
+    assert_eq!(runtime.host_control.last_restart_unix, Some(now));
+    assert!(runtime
+        .completed_command_cursor()
+        .contains(&"terminal-restart".to_string()));
 }
 
 #[tokio::test]
@@ -198,8 +235,62 @@ async fn tick_error_recovery_attempts_all_enqueues_and_preserves_original_error(
 }
 
 #[tokio::test]
+async fn drain_stops_at_half_response_capacity_without_dropping_actions() {
+    let mut runtime = runtime();
+    let now = 1_700_000_000;
+    prepare_tick(&mut runtime, now);
+    runtime.runtime_mode = AgentMode::Degraded;
+    runtime.response_execution_remaining = 0;
+    runtime.response_action_dedupe_window_secs = 0;
+    runtime
+        .playbook_engine
+        .load_from_policy(&serde_json::json!({
+            "response_playbooks": [{"name":"capture every evaluation", "enabled":true, "priority":1,
+                "conditions":{"require_signals":[]}, "actions":[{"action":"capture"}]}]
+        }));
+    queue_event(&mut runtime);
+    runtime.evaluate_tick(now).unwrap();
+    runtime.metrics.telemetry_event_txn_total = 0;
+    for _ in 0..300 {
+        queue_event(&mut runtime);
+    }
+    // Renew only the time budget: a slow test host must still reach the capacity
+    // guard, rather than passing just because one 40ms window expired.
+    for _ in 0..300 {
+        runtime
+            .run_additional_telemetry_evaluations(now, std::time::Instant::now())
+            .await
+            .unwrap();
+        if runtime.pending_response_actions.len() >= RESPONSE_QUEUE_CAPACITY / 2 {
+            break;
+        }
+    }
+    assert_eq!(
+        runtime.pending_response_actions.len(),
+        RESPONSE_QUEUE_CAPACITY / 2
+    );
+    assert_eq!(
+        runtime.metrics.telemetry_event_txn_total as usize,
+        RESPONSE_QUEUE_CAPACITY / 2
+    );
+    assert_eq!(
+        runtime.raw_event_backlog.len(),
+        300 - RESPONSE_QUEUE_CAPACITY / 2
+    );
+    runtime
+        .run_additional_telemetry_evaluations(now, std::time::Instant::now())
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime.metrics.telemetry_event_txn_total as usize,
+        RESPONSE_QUEUE_CAPACITY / 2
+    );
+}
+
+#[tokio::test]
 async fn response_budget_is_shared_by_all_evaluations_in_a_tick() {
     let mut runtime = runtime();
+    runtime.telemetry_send_success = true;
     let now = 1_700_000_000;
     runtime.last_heartbeat_attempt_unix = Some(now);
     runtime.last_compliance_attempt_unix = Some(now);

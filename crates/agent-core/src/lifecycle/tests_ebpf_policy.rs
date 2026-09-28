@@ -390,7 +390,7 @@ async fn tick_drains_queued_events_past_a_filtered_event() {
 }
 
 #[tokio::test]
-async fn connected_tick_batches_queued_events_into_one_failed_send() {
+async fn connected_tick_batches_first_and_drain_events_into_two_sends() {
     let mut cfg = AgentConfig::default();
     cfg.offline_buffer_backend = "memory".to_string();
     cfg.server_addr = "127.0.0.1:1".to_string();
@@ -413,6 +413,7 @@ async fn connected_tick_batches_queued_events_into_one_failed_send() {
     runtime.last_memory_scan_unix = Some(now);
     runtime.last_ioc_signal_upload_unix = Some(now);
     runtime.last_campaign_fetch_unix = Some(now);
+    runtime.telemetry_send_success = true;
     // Seed alert deduplication: this test counts raw event envelopes only.
     let compliance = runtime.evaluate_compliance();
     runtime.collect_compliance_alerts(&compliance, now);
@@ -447,9 +448,10 @@ async fn connected_tick_batches_queued_events_into_one_failed_send() {
 
     assert!(runtime.raw_event_backlog.is_empty());
     assert_eq!(runtime.metrics.telemetry_event_txn_total, 3);
-    assert_eq!(runtime.buffer.pending_count(), 3);
+    assert_eq!(runtime.buffer.pending_count(), 0);
     assert_eq!(runtime.tick_count, 1);
-    assert_eq!(runtime.consecutive_send_failures, 1);
+    assert_eq!(runtime.consecutive_send_failures, 0);
+    assert_eq!(runtime.telemetry_send_batches, vec![1, 2]);
 }
 
 #[test]

@@ -21,6 +21,28 @@ impl AgentRuntime {
         &mut self,
         evaluation: Option<&TickEvaluation>,
     ) -> Result<()> {
+        let started = Instant::now();
+        self.queue_connected_telemetry(evaluation).await?;
+        // Preserve first-send outcome/backpressure state before scheduling and
+        // commands. Only additional evaluations share the end-of-tick send.
+        let events = self
+            .tick_telemetry
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default();
+        if !events.is_empty() {
+            self.flush_event_batch(events).await?;
+        }
+        if evaluation.is_some() {
+            self.metrics.last_send_event_batch_micros = elapsed_micros(started);
+        }
+        Ok(())
+    }
+
+    pub(super) async fn queue_connected_telemetry(
+        &mut self,
+        evaluation: Option<&TickEvaluation>,
+    ) -> Result<()> {
         let Some(evaluation) = evaluation else {
             return Ok(());
         };
@@ -89,15 +111,6 @@ impl AgentRuntime {
         self.buffer.enqueue(event)
     }
 
-    pub(super) fn spool_tick_telemetry(&mut self) -> Result<()> {
-        let events = self
-            .tick_telemetry
-            .as_mut()
-            .map(std::mem::take)
-            .unwrap_or_default();
-        self.buffer_events(events)
-    }
-
     pub(super) async fn flush_event_batch(&mut self, events: Vec<EventEnvelope>) -> Result<()> {
         let send_started = Instant::now();
         let pending_before = self.buffer.pending_count();
@@ -121,6 +134,19 @@ impl AgentRuntime {
             return self.buffer_events(overflow);
         }
 
+        #[cfg(test)]
+        self.telemetry_send_batches.push(batch.len());
+        #[cfg(test)]
+        let send_result = if self.telemetry_send_success {
+            Ok(Ok(()))
+        } else {
+            timeout(
+                std::time::Duration::from_millis(TELEMETRY_SEND_TIMEOUT_MS),
+                self.client.send_events(&batch),
+            )
+            .await
+        };
+        #[cfg(not(test))]
         let send_result = timeout(
             std::time::Duration::from_millis(TELEMETRY_SEND_TIMEOUT_MS),
             self.client.send_events(&batch),

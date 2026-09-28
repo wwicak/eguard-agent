@@ -61,7 +61,9 @@ impl AgentRuntime {
 
     pub(super) async fn finish_tick_telemetry(&mut self, result: Result<()>) -> Result<()> {
         let events = self.tick_telemetry.take().unwrap_or_default();
-        let flush_result = if result.is_err() || matches!(self.runtime_mode, AgentMode::Degraded) {
+        let flush_result = if events.is_empty() {
+            Ok(())
+        } else if result.is_err() || matches!(self.runtime_mode, AgentMode::Degraded) {
             // buffer_events warns with a failure count even when result is already Err.
             self.buffer_events(events)
         } else {
@@ -143,7 +145,7 @@ impl AgentRuntime {
         Ok(())
     }
 
-    async fn run_additional_telemetry_evaluations(
+    pub(super) async fn run_additional_telemetry_evaluations(
         &mut self,
         now_unix: i64,
         started: Instant,
@@ -151,7 +153,11 @@ impl AgentRuntime {
         // The first evaluation and control-plane work count against the budget.
         // Always run the control plane before draining, even if it exhausts it.
         for _ in 1..Self::MAX_TELEMETRY_EVALS_PER_TICK {
-            if started.elapsed() >= Duration::from_millis(Self::TELEMETRY_EVAL_TIME_BUDGET_MS) {
+            let envelopes = self.tick_telemetry.as_ref().map_or(0, Vec::len);
+            if started.elapsed() >= Duration::from_millis(Self::TELEMETRY_EVAL_TIME_BUDGET_MS)
+                || self.pending_response_actions.len() >= super::RESPONSE_QUEUE_CAPACITY / 2
+                || envelopes >= super::EVENT_BATCH_SIZE
+            {
                 break;
             }
 
@@ -169,8 +175,7 @@ impl AgentRuntime {
             if matches!(self.runtime_mode, AgentMode::Degraded) {
                 self.buffer_degraded_telemetry_if_present(Some(&evaluation))?;
             } else {
-                self.run_connected_telemetry_stage(Some(&evaluation))
-                    .await?;
+                self.queue_connected_telemetry(Some(&evaluation)).await?;
             }
         }
 

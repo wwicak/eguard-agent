@@ -258,6 +258,11 @@ impl AgentRuntime {
     }
 
     pub(super) fn apply_device_restart(&self, payload_json: &str, exec: &mut CommandExecution) {
+        #[cfg(test)]
+        if let Some(hook) = self.device_restart_hook {
+            hook(self);
+            return;
+        }
         let payload = parse_device_action_payload(payload_json);
         let context = format_device_action_context(&payload);
 

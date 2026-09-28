@@ -68,7 +68,11 @@ pub struct AgentRuntime {
     #[cfg(test)]
     pub(super) buffer_enqueue_failure_at: Option<usize>,
     #[cfg(test)]
-    pub(super) terminal_command_hook: Option<fn(&mut AgentRuntime)>,
+    pub(super) device_restart_hook: Option<fn(&AgentRuntime)>,
+    #[cfg(test)]
+    pub(super) telemetry_send_success: bool,
+    #[cfg(test)]
+    pub(super) telemetry_send_batches: Vec<usize>,
     pub(super) pipeline_stats_baseline: (u64, u64),
     pub(super) pipeline_events_sent: u64,
     pub(super) pipeline_max_tick_micros: u64,
@@ -493,7 +497,11 @@ impl AgentRuntime {
             #[cfg(test)]
             buffer_enqueue_failure_at: None,
             #[cfg(test)]
-            terminal_command_hook: None,
+            device_restart_hook: None,
+            #[cfg(test)]
+            telemetry_send_success: false,
+            #[cfg(test)]
+            telemetry_send_batches: Vec::new(),
             pipeline_stats_baseline: (0, 0),
             pipeline_events_sent: 0,
             pipeline_max_tick_micros: 0,

@@ -113,13 +113,6 @@ impl AgentRuntime {
     }
 }
 
-pub(super) fn requests_agent_restart(payload_json: &str) -> bool {
-    matches!(
-        extract_agent_control_restart_reason(payload_json),
-        Ok(Some(_))
-    )
-}
-
 fn extract_agent_control_restart_reason(payload_json: &str) -> Result<Option<String>, String> {
     let config_json = decode_config_change_config_json(payload_json)?;
     let Some(config) = config_json.as_object() else {

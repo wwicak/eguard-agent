@@ -1,3 +1,18 @@
+# Reviewfix3 — send before control plane
+
+- [x] Restore first-evaluation flush before scheduling; restore base command dispatch.
+- [x] Bound additional evaluations by response capacity and envelope batch size.
+- [x] Replace obsolete barrier tests with failure/recovery, terminal ordering, and response-capacity regressions.
+- [x] Run requested suites and benchmark five interleaved memory rounds; commit/export accompanies this entry.
+
+Review: telemetry stage flushes the first evaluation before control-plane scheduling; only additional evaluations queue for the final send (at most two sends). Empty end-of-tick queues do not retry buffered telemetry. Command dispatch and config parsing are byte-identical to 9cdb193; terminal spool barrier/classification removed. Additional drain stops at half response capacity or a full envelope batch; shared response budget and attempt-all recovery remain.
+
+Validation: reviewfix 9/9; all five new failure/recovery/terminal/capacity regressions fail on actual 1467a58 with test-only seams. Policy 111/111; drain 4/4, batch 7/7, priority 6/6, dequeue 2/2, negative cache 1/1, scheduler 6/6, agent buffer 4/4. Response 44 pass/1 known fail; command 70 pass/1 known fail/1 ignored; control plane 25 pass/1 known fail; grpc buffer 11 pass/1 known fail. The previously failing degraded response test passed this run. Agent-core fmt, non-test cargo check, release build, diff check pass. Full command suite completed in 1025 seconds. Archived validation and red-test shims: `/home/dimas/eguard-lab-soak/bench/validation-reviewfix3.md`.
+
+Benchmark: final-source binary, five interleaved memory rounds per batch versus ec0c9d2: median µs/raw-consumed +7.42% (50), -1.42% (200). An earlier equivalent-guard spelling measured +24.81%/-3.11%; retained separately, not discarded. Mixed/noisy results do not establish no-regression. Report: `/home/dimas/eguard-lab-soak/bench/results-reviewfix3.md`; patch: `/home/dimas/eguard-lab-soak/reviewfix3.patch`.
+
+Residual: F9 buffer durability/failed-enqueue/old-tail ordering limitations unchanged; capacity guards apply between evaluations (one policy evaluation can emit multiple actions/alerts). The benchmark is degraded/local-only, not connected transport validation.
+
 # Reviewfix2 — terminal-only spooling and FIFO recovery
 
 - [x] Read re-review and narrow spool failure gating to terminal command dispatch (including config self-restart).
