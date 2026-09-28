@@ -3,10 +3,7 @@ use std::path::Path;
 use detection::DetectionOutcome;
 use tracing::{info, warn};
 
-use super::{
-    AgentRuntime, PendingResponseAction, TickEvaluation, RESPONSE_EXECUTION_BUDGET_PER_TICK,
-    RESPONSE_QUEUE_CAPACITY,
-};
+use super::{AgentRuntime, PendingResponseAction, TickEvaluation, RESPONSE_QUEUE_CAPACITY};
 
 impl AgentRuntime {
     pub(super) async fn run_connected_response_stage(
@@ -31,7 +28,7 @@ impl AgentRuntime {
         let executed = self.execute_response_backlog_budget(now_unix).await;
         let oldest_age_secs = self.response_queue_oldest_age_secs(now_unix);
 
-        self.metrics.last_response_execute_count = executed;
+        self.metrics.last_response_execute_count += executed;
         self.metrics.last_response_queue_depth = self.pending_response_actions.len();
         self.metrics.max_response_queue_depth = self
             .metrics
@@ -382,7 +379,7 @@ impl AgentRuntime {
     async fn execute_response_backlog_budget(&mut self, now_unix: i64) -> usize {
         let mut executed = 0usize;
 
-        while executed < RESPONSE_EXECUTION_BUDGET_PER_TICK {
+        while self.response_execution_remaining > 0 {
             let Some(pending) = self.pending_response_actions.pop_front() else {
                 break;
             };
@@ -412,6 +409,7 @@ impl AgentRuntime {
             )
             .await;
 
+            self.response_execution_remaining -= 1;
             executed = executed.saturating_add(1);
         }
 

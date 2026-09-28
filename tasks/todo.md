@@ -1,3 +1,13 @@
+# Throughput review blockers
+
+- [x] Spool tick telemetry before control-plane execution (B1).
+- [x] Attempt every buffering operation and count send failures before recovery (B2/B3).
+- [x] Share one response execution budget across a tick (B4).
+- [x] Add four regressions and validate requested suites; all four fail on ec0c9d2 with test-only injection/extraction shims.
+- [ ] Compare five interleaved benchmark rounds and export patch (external report: `/home/dimas/eguard-lab-soak/bench/results-reviewfix.md`).
+
+Review: four new tests, 111 eBPF policy tests (including connected batching/drain), four priority tests, dequeue sampling, negative-cache and three agent-core buffer tests pass. Response filter: 42 pass, two fail; child-kill passes isolated, async-worker dispatch reproduces on ec0c9d2. Command filter: 70 pass, one ignored, offline isolation failure reproduces on ec0c9d2. Extra grpc-client buffer suite: 11 pass, default-cap mismatch reproduces on ec0c9d2. Fmt passes; Clippy has identical baseline warning counts and two existing modulo_one errors (no new touched-file warnings). Recovery preserves order inside each batch but the existing tail-requeue ordering caveat remains. Failed individual enqueues are counted/logged, not retained by a new buffer API. B1 deliberately gates all control-plane work on successful spooling; it adds buffer writes before commands rather than changing command semantics.
+
 # Priority parsing hotspot (perf/tick-drain)
 
 - [x] Verify profile: stable comparison sort repeatedly parses FileOpen payloads via raw_event_priority.

@@ -64,6 +64,9 @@ pub struct AgentRuntime {
     pub(super) self_protect_engine: SelfProtectEngine,
     pub(super) tick_count: u64,
     pub(super) tick_telemetry: Option<Vec<super::EventEnvelope>>,
+    pub(super) response_execution_remaining: usize,
+    #[cfg(test)]
+    pub(super) buffer_enqueue_failure_at: Option<usize>,
     pub(super) pipeline_stats_baseline: (u64, u64),
     pub(super) pipeline_events_sent: u64,
     pub(super) pipeline_max_tick_micros: u64,
@@ -484,6 +487,9 @@ impl AgentRuntime {
             config,
             tick_count: 0,
             tick_telemetry: None,
+            response_execution_remaining: super::RESPONSE_EXECUTION_BUDGET_PER_TICK,
+            #[cfg(test)]
+            buffer_enqueue_failure_at: None,
             pipeline_stats_baseline: (0, 0),
             pipeline_events_sent: 0,
             pipeline_max_tick_micros: 0,

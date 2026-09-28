@@ -145,6 +145,8 @@ mod tests;
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)]
 mod tests_ebpf_policy;
+#[cfg(all(test, target_os = "linux"))]
+mod tests_reviewfix;
 
 #[cfg(test)]
 mod tests_baseline_seed_policy;

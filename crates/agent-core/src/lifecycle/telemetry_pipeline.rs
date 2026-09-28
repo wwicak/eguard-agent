@@ -61,27 +61,65 @@ impl AgentRuntime {
         self.flush_event_batch(vec![envelope]).await
     }
 
+    pub(super) fn buffer_events(&mut self, events: Vec<EventEnvelope>) -> Result<()> {
+        let mut first_error = None;
+        let mut failed_enqueues = 0usize;
+        for event in events {
+            if let Err(err) = self.enqueue_buffer_event(event) {
+                failed_enqueues += 1;
+                first_error.get_or_insert(err);
+            }
+        }
+        if let Some(err) = first_error {
+            warn!(failed_enqueues, error = %err, "failed to buffer telemetry events");
+            return Err(err.context(format!("{failed_enqueues} telemetry enqueues failed")));
+        }
+        Ok(())
+    }
+
+    fn enqueue_buffer_event(&mut self, event: EventEnvelope) -> Result<()> {
+        #[cfg(test)]
+        if let Some(remaining) = self.buffer_enqueue_failure_at.as_mut() {
+            if *remaining == 0 {
+                self.buffer_enqueue_failure_at = None;
+                anyhow::bail!("injected buffer enqueue failure");
+            }
+            *remaining -= 1;
+        }
+        self.buffer.enqueue(event)
+    }
+
+    pub(super) fn spool_tick_telemetry(&mut self) -> Result<()> {
+        let events = self
+            .tick_telemetry
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default();
+        self.buffer_events(events)
+    }
+
     pub(super) async fn flush_event_batch(&mut self, events: Vec<EventEnvelope>) -> Result<()> {
         let send_started = Instant::now();
         let pending_before = self.buffer.pending_count();
         let mut batch = match self.buffer.drain_batch(EVENT_BATCH_SIZE) {
             Ok(batch) => batch,
             Err(err) => {
-                for event in events {
-                    self.buffer.enqueue(event)?;
-                }
+                // buffer_events logs recovery failures without hiding the drain error.
+                let _ = self.buffer_events(events);
                 return Err(err);
             }
         };
+        let mut overflow = Vec::new();
         for event in events {
             if batch.len() < EVENT_BATCH_SIZE {
                 batch.push(event);
             } else {
-                self.buffer.enqueue(event)?;
+                overflow.push(event);
             }
         }
+        let overflow_result = self.buffer_events(overflow);
         if batch.is_empty() {
-            return Ok(());
+            return overflow_result;
         }
 
         let send_result = timeout(
@@ -97,21 +135,22 @@ impl AgentRuntime {
                 TELEMETRY_SEND_TIMEOUT_MS
             )),
         } {
-            for ev in batch {
-                self.buffer.enqueue(ev)?;
-            }
-
             self.consecutive_send_failures = self.consecutive_send_failures.saturating_add(1);
             if self.consecutive_send_failures >= DEGRADE_AFTER_SEND_FAILURES {
                 self.transition_to_degraded(DegradedCause::SendFailures);
             }
 
+            // The buffer appends: older drained events can follow existing overflow.
+            // Preserve order within this batch, and attempt every enqueue on failure.
+            let requeue_result = self.buffer_events(batch);
             warn!(
                 error = %err,
                 pending = self.buffer.pending_count(),
                 timeout_ms = TELEMETRY_SEND_TIMEOUT_MS,
-                "send failed, events re-buffered"
+                "send failed, event re-buffering attempted"
             );
+            self.metrics.last_send_event_batch_micros = elapsed_micros(send_started);
+            return overflow_result.and(requeue_result);
         } else {
             self.consecutive_send_failures = 0;
             self.pipeline_events_sent =
@@ -131,7 +170,7 @@ impl AgentRuntime {
         }
 
         self.metrics.last_send_event_batch_micros = elapsed_micros(send_started);
-        Ok(())
+        overflow_result
     }
 
     pub(super) fn collect_compliance_alerts(

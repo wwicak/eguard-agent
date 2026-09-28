@@ -27,16 +27,10 @@ impl AgentRuntime {
 
     pub async fn tick(&mut self, now_unix: i64) -> Result<()> {
         let tick_started = Instant::now();
+        self.response_execution_remaining = super::RESPONSE_EXECUTION_BUDGET_PER_TICK;
         self.tick_telemetry = Some(Vec::new());
         let result = self.tick_inner(now_unix).await;
-        let events = self.tick_telemetry.take().unwrap_or_default();
-        let flush_result = if result.is_err() || matches!(self.runtime_mode, AgentMode::Degraded) {
-            events
-                .into_iter()
-                .try_for_each(|event| self.buffer.enqueue(event))
-        } else {
-            self.flush_event_batch(events).await
-        };
+        let result = self.finish_tick_telemetry(result).await;
         self.metrics.last_tick_total_micros = elapsed_micros(tick_started);
         self.metrics.max_tick_total_micros = self
             .metrics
@@ -62,6 +56,17 @@ impl AgentRuntime {
             self.pipeline_events_sent = 0;
             self.pipeline_max_tick_micros = 0;
         }
+        result
+    }
+
+    pub(super) async fn finish_tick_telemetry(&mut self, result: Result<()>) -> Result<()> {
+        let events = self.tick_telemetry.take().unwrap_or_default();
+        let flush_result = if result.is_err() || matches!(self.runtime_mode, AgentMode::Degraded) {
+            // buffer_events warns with a failure count even when result is already Err.
+            self.buffer_events(events)
+        } else {
+            self.flush_event_batch(events).await
+        };
         result.and(flush_result)
     }
 

@@ -18,6 +18,8 @@ impl AgentRuntime {
         now_unix: i64,
         evaluation: Option<&TickEvaluation>,
     ) -> Result<()> {
+        // Commands may terminate the agent or host before the outer tick flush.
+        self.spool_tick_telemetry()?;
         let control_started = Instant::now();
         self.enqueue_due_control_plane_tasks(now_unix, evaluation);
         let executed = self.execute_control_plane_task_budget(now_unix).await?;
