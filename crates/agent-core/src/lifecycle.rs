@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod bench_eval_throughput;
+
 mod async_workers;
 mod baseline;
 mod bundle_support;

@@ -246,6 +246,12 @@ impl AgentRuntime {
         event.pid == std::process::id()
     }
 
+    // Benchmark the real per-commit ingress implementation without exposing production API.
+    #[cfg(test)]
+    pub(super) fn bench_ingest_polled(&mut self, events: Vec<RawEvent>) {
+        self.ingest_polled_raw_events(events);
+    }
+
     fn ingest_polled_raw_events(&mut self, events: Vec<RawEvent>) {
         if events.is_empty() {
             self.refresh_strict_budget_mode();

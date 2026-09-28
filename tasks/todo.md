@@ -221,3 +221,24 @@ Enforce the configured per-minute quarantine limit before destructive quarantine
 - Minimal quarantine circuit breaker implemented; existing protected-path hardening diff preserved.
 - Broader pre-existing failures from prior report were not rerun: `cargo fmt --all -- --check` had unrelated formatting failures in `crates/agent-core/src/lifecycle/command_pipeline/update_agent/worker_macos.rs` and `crates/platform-windows/src/compliance/screen_lock.rs`; `cargo test -p response` had unrelated pre-existing response expectation/permission failures.
 - No deployment or commit performed.
+
+## Local eval throughput benchmark
+- [x] Add portable ignored fixture; verify baseline APIs.
+- [x] Build four release binaries and run interleaved batches 50/200.
+- [x] Review sanity/noise, commit fixture, publish external results.
+
+Baseline release sanity passed: 10 ticks, 15 dequeued raw events, 10 telemetry events.
+Approved validity adjustments: cfg(test) shim exercises actual ingest/sort/cap (enqueue alone does not);
+detached sleep PIDs avoid automatic agent-child suppression and retain real /proc parent lineage.
+Primary cost includes separately measured ingest + tick; requested tick-only metrics remain available.
+
+Review: all four release/offline builds and 40 interleaved runs passed. External runner,
+raw JSON, binary hashes, load samples, and median/min-max tables are in
+`/home/dimas/eguard-lab-soak/bench/` (`results.md`). Cached-sort vs batch-send total
+median cost changed +0.25% (batch 50) and -1.87% (batch 200): no measurable end-to-end
+change and no evidence of the claimed 70% regression. Current medians are 5,105.67 and
+15,678.28 us/consumed raw event respectively. Cached batch-50 spread is 16.9% (noisy);
+drain batch-200 spread is 15.1%. Other groups are below 15%. Consumption includes
+sampling; baseline strict-mode extras explain >1 raw event/tick. Separate ingest timing
+does not debit the production drain budget, so delivered-rate ceilings remain synthetic.
+No production behavior/dependency changes and no /proc caching implementation.
