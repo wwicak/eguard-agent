@@ -356,7 +356,7 @@ impl AgentRuntime {
             {
                 Ok(buf) => buf,
                 Err(err) => {
-                    tracing::error!(
+                    warn!(
                         error = %err,
                         backend = %config.offline_buffer_backend,
                         path = %config.offline_buffer_path,
