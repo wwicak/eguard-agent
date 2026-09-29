@@ -354,14 +354,3 @@ envelope estimates account for added bytes. Connected and first-evaluation paths
 retain their behavior. Supervisor approved threshold-only protection: an oversized
 single envelope exceeding the 10% reserve can still evict. No benchmark run.
 Patch: /home/dimas/eguard-lab-soak/reviewfix5.patch.
-
-## c1 telemetry health
-- [x] Verify degraded heartbeat payload and regression coverage.
-- [x] Retain server heartbeat health, persist derived stalled condition, reuse offline alert monitor.
-- [x] Run offline tests and base regression proof; commit and export artifacts.
-
-### c1 review
-- Agent production behavior is already correct: `observability_snapshot()` maps Degraded to `degraded` and reads `buffer.pending_count()`; heartbeat builder forwards both, and HTTP/gRPC encode both. Normal send-failure recovery probes send that degraded payload before returning to configured mode. Forced config/tamper degradation intentionally suppresses probes (existing offline-heartbeat handling applies).
-- Added heartbeat mode/backlog assertions to `observability_snapshot_tracks_send_failure_degraded_transition_and_queue_depth`; it passes. This is verification-only and therefore also applies to base production code, not a claimed agent behavioral regression.
-- Offline tests: observability module 14 passed, only the two advertised async-worker tests failed (1248.90s); eBPF policy 111 passed; payload integrity 6 passed. Reviewfix 12 passed/1 timing-sensitive response-budget assertion failed, then that test passed standalone (49.35s). Agent-core fmt check passes.
-- Server companion retains both fields, persists derived telemetry health under capabilities, and reuses deduped offline-monitor alerts. Server ingress/backlog/persistence and Perl alert regressions were transplanted onto the base tag and failed there. No proto changes, dependency additions, or deployment.
