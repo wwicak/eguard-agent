@@ -2,17 +2,9 @@
 
 - [x] Tag fa-start-a4r and inspect dequeue/tick ordering; leave ingest untouched.
 - [x] Add a 256-candidate dequeue budget and explicit exhaustion outcome.
-- [x] Prove bounded tick/control-plane/event preservation and short-backlog regressions; demonstrate base failure.
-- [x] Run offline validation and three interleaved benchmark rounds at batch 50/200.
-- [x] Commit, export patch, append follow-up status and record residual risks.
-
-Review: RawDequeue distinguishes Event, Empty, and BudgetExhausted. At most 256 candidates enter the existing self/internal/low-value filtering per dequeue; exhaustion with pending data yields the tick after its control-plane stage. Ingest, priority sampling, retention caps, and first-evaluation/control-plane ordering are unchanged. No persistent budget state is added.
-
-Validation: three new regressions pass; both bounded first-tick and additional-drain tests fail against fa-start-a4r production files (0 pending instead of 9745), while short-backlog compatibility passes. The retained ProcessExec evaluates by tick 40 and the first tick records the recovery probe. Filesystem fixtures use unique test-created temp directories; synthetic ticks suppress host-path maintenance. Existing telemetry-pipeline tests 13/13 and sampling/poll compatibility 2/2 pass; formatting and diff whitespace checks pass. Offline cargo commands used timeout 1500 and each checkout's own target directory.
-
-Benchmarks: source commit 8b0be543faa5d1de5a4d4153f79e65e12e784903 versus fa-start-a4r in temporary detached worktrees, removed afterwards. Three interleaved rounds, 300 ticks, batch 50/200: median total events/s +7.38%/+0.60%; total cost/event -6.88%/-0.60%. One noisy batch-50 pair regressed 20.77%, other pairs improved; report explains fixed 40ms drain sensitivity and shared-host variance. Full evidence: /home/dimas/eguard-lab-soak/bench/results-fa-start-a4r.md and /home/dimas/eguard-lab-soak/followups/a4r-validation/.
-
-Residuals: this bounds dequeue filtering, not ingest, sampling, filesystem enrichment, or entire tick wall time. Existing ingress overflow remains intentionally unchanged. Filter-heavy prefixes can defer useful events across ticks (10000 candidates require 40 ticks); the tail is retained rather than discarded by this change. Benchmark host noise warrants caution, not a throughput guarantee.
+- [ ] Prove bounded tick/control-plane/event preservation and short-backlog regressions; demonstrate base failure.
+- [ ] Run offline validation and three interleaved benchmark rounds at batch 50/200.
+- [ ] Commit, export patch, append follow-up status and record residual risks.
 
 # a1-hygiene second-pass review
 
