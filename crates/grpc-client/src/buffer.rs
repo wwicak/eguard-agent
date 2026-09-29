@@ -124,14 +124,31 @@ impl SqliteBuffer {
     pub fn new(path: &str, cap_bytes: usize) -> Result<Self> {
         if let Some(parent) = Path::new(path).parent() {
             if !parent.as_os_str().is_empty() {
-                fs::create_dir_all(parent).with_context(|| {
+                // DirBuilder applies the mode only to directories it creates,
+                // never to existing ancestors (including concurrent creations).
+                let mut builder = fs::DirBuilder::new();
+                builder.recursive(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::DirBuilderExt;
+                    builder.mode(0o700);
+                }
+                builder.create(parent).with_context(|| {
                     format!("failed creating sqlite parent dir {}", parent.display())
                 })?;
 
                 #[cfg(unix)]
                 {
-                    use std::os::unix::fs::PermissionsExt;
-                    let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+                    use std::os::unix::fs::MetadataExt;
+                    let metadata = fs::metadata(parent)?;
+                    // SAFETY: geteuid has no preconditions or pointer arguments.
+                    let euid = unsafe { libc::geteuid() };
+                    if metadata.mode() & 0o002 != 0 || metadata.uid() != euid {
+                        tracing::warn!(
+                            parent = %parent.display(),
+                            "sqlite parent is world-writable or owned by another user; preserving directory permissions and restricting database to 0600"
+                        );
+                    }
                 }
             }
         }

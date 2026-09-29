@@ -1,5 +1,7 @@
 # Lessons
 
+- **Never use a shared/system directory itself as an invalid SQLite filename in tests**: constructors may operate on the filename's parent. Create a unique test-owned parent and child directory, and keep every filesystem fixture beneath it. Production initialization must never chmod pre-existing shared parents; apply private modes only when creating directories.
+
 - **Do not infer an acceptance-contract change from implementation history alone**: check exact executable acceptance and config defaults before relaxing a failing assertion. A deliberate optimization can still violate the agreed contract.
 - **Assert command handler results, not generic parsing side effects**: scan timestamps alone do not establish successful scanning; require completed status and handler-specific detail.
 

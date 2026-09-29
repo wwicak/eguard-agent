@@ -20,6 +20,9 @@ sha2.workspace = true
 agent-version = { path = "../agent-version" }
 zstd = "0.13"
 
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 [build-dependencies]
 tonic-prost-build.workspace = true
 protoc-bin-vendored.workspace = true

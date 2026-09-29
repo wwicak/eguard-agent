@@ -288,8 +288,11 @@ async fn check_terminal_command_order(success: bool) {
 fn sqlite_fallback_is_heartbeat_visible() {
     let mut cfg = AgentConfig::default();
     cfg.offline_buffer_backend = "sqlite".to_string();
-    // Opening a directory as a database reliably fails without privileged fixtures.
-    cfg.offline_buffer_path = std::env::temp_dir().to_string_lossy().into_owned();
+    // Both the invalid database directory and its parent belong to this test.
+    let fixture = reviewfix_sqlite_dir();
+    let invalid_db = fixture.join("invalid.db");
+    std::fs::create_dir(&invalid_db).unwrap();
+    cfg.offline_buffer_path = invalid_db.to_string_lossy().into_owned();
     let mut runtime = AgentRuntime::new(cfg).unwrap();
     assert!(matches!(
         runtime.buffer,
@@ -306,19 +309,28 @@ fn sqlite_fallback_is_heartbeat_visible() {
         .status
         .last_detection
         .contains("offline_buffer_volatile_fallback=false"));
+    drop(runtime);
+    std::fs::remove_dir_all(fixture).unwrap();
 }
 
-#[tokio::test]
-async fn sqlite_failed_send_preserves_old_tail_before_new_tick_overflow() {
-    let mut runtime = runtime();
+fn reviewfix_sqlite_dir() -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!(
-        "eguard-reviewfix-fifo-{}-{}.db",
+        "eguard-reviewfix-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos()
     ));
+    std::fs::create_dir(&path).unwrap();
+    path
+}
+
+#[tokio::test]
+async fn sqlite_failed_send_preserves_old_tail_before_new_tick_overflow() {
+    let mut runtime = runtime();
+    let fixture = reviewfix_sqlite_dir();
+    let path = fixture.join("offline.db");
     runtime.buffer =
         grpc_client::EventBuffer::sqlite(path.to_str().unwrap(), 16 * 1024 * 1024).unwrap();
     // More than a batch exposes destructive drain/requeue's old-tail inversion.
@@ -340,7 +352,7 @@ async fn sqlite_failed_send_preserves_old_tail_before_new_tick_overflow() {
         (0..EVENT_BATCH_SIZE as i64 + 5).collect::<Vec<_>>()
     );
     drop(runtime);
-    let _ = std::fs::remove_file(path);
+    std::fs::remove_dir_all(fixture).unwrap();
 }
 
 #[tokio::test]

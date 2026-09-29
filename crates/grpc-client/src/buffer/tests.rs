@@ -1,5 +1,68 @@
 use super::*;
 
+struct TestDir(PathBuf);
+
+impl TestDir {
+    fn new() -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "eguard-buffer-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&path).unwrap();
+        Self(path)
+    }
+}
+
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn sqlite_new_parent_is_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = TestDir::new();
+    let parent = fixture.0.join("new").join("nested");
+    let path = parent.join("offline.db");
+    let _buffer = SqliteBuffer::new(path.to_str().unwrap(), 4096).unwrap();
+    for dir in [&parent, &fixture.0.join("new")] {
+        assert_eq!(
+            fs::metadata(dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
+    assert_eq!(
+        fs::metadata(path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn sqlite_existing_parent_permissions_are_preserved() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = TestDir::new();
+    for mode in [0o777, 0o755, 0o700] {
+        fs::set_permissions(&fixture.0, fs::Permissions::from_mode(mode)).unwrap();
+        let path = fixture.0.join(format!("offline-{mode:o}.db"));
+        let _buffer = SqliteBuffer::new(path.to_str().unwrap(), 4096).unwrap();
+        assert_eq!(
+            fs::metadata(&fixture.0).unwrap().permissions().mode() & 0o777,
+            mode
+        );
+        assert_eq!(
+            fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+}
+
 fn sample_event(i: i64) -> EventEnvelope {
     EventEnvelope {
         agent_id: "a1".to_string(),
@@ -13,14 +76,8 @@ fn sample_event(i: i64) -> EventEnvelope {
 
 #[test]
 fn sqlite_unacked_peek_survives_reopen_in_fifo_order() {
-    let path = std::env::temp_dir().join(format!(
-        "eguard-peek-{}-{}.db",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let fixture = TestDir::new();
+    let path = fixture.0.join("offline.db");
     let mut buffer = EventBuffer::sqlite(path.to_str().unwrap(), 4096).unwrap();
     for i in 0..3 {
         buffer.enqueue(sample_event(i)).unwrap();
@@ -166,7 +223,8 @@ fn sqlite_buffer_roundtrip() {
             .map(|d| d.as_nanos())
             .unwrap_or_default()
     );
-    let path = std::env::temp_dir().join(unique);
+    let fixture = TestDir::new();
+    let path = fixture.0.join(unique);
     let path_str = path.to_string_lossy().into_owned();
 
     let mut b = SqliteBuffer::new(&path_str, 1024).expect("sqlite open");
@@ -206,7 +264,8 @@ fn sqlite_buffer_enforces_fifo_eviction_when_full() {
             .map(|d| d.as_nanos())
             .unwrap_or_default()
     );
-    let path = std::env::temp_dir().join(unique);
+    let fixture = TestDir::new();
+    let path = fixture.0.join(unique);
     let path_str = path.to_string_lossy().into_owned();
 
     let sample_size = estimate_event_size(&sample_event(0));
@@ -232,7 +291,8 @@ fn sqlite_buffer_cap_preserves_fifo_suffix_and_size_accounting() {
             .map(|d| d.as_nanos())
             .unwrap_or_default()
     );
-    let path = std::env::temp_dir().join(unique);
+    let fixture = TestDir::new();
+    let path = fixture.0.join(unique);
     let path_str = path.to_string_lossy().into_owned();
 
     let ev1 = sample_event(1);
@@ -326,7 +386,8 @@ fn sqlite_buffer_new_creates_parent_directories() {
             .map(|d| d.as_nanos())
             .unwrap_or_default()
     );
-    let root = std::env::temp_dir().join(unique);
+    let fixture = TestDir::new();
+    let root = fixture.0.join(unique);
     let path = root.join("nested").join("offline.db");
     let path_str = path.to_string_lossy().into_owned();
 
@@ -350,7 +411,8 @@ fn sqlite_buffer_new_sets_private_permissions() {
             .map(|d| d.as_nanos())
             .unwrap_or_default()
     );
-    let path = std::env::temp_dir().join(unique);
+    let fixture = TestDir::new();
+    let path = fixture.0.join(unique);
     let path_str = path.to_string_lossy().into_owned();
 
     let _ = SqliteBuffer::new(&path_str, 1024).expect("sqlite open");
@@ -375,7 +437,8 @@ fn event_buffer_sqlite_variant_reports_sizes() {
             .map(|d| d.as_nanos())
             .unwrap_or_default()
     );
-    let path = std::env::temp_dir().join(unique);
+    let fixture = TestDir::new();
+    let path = fixture.0.join(unique);
     let path_str = path.to_string_lossy().into_owned();
 
     let mut b = EventBuffer::sqlite(&path_str, 1024).expect("sqlite");
@@ -399,7 +462,8 @@ fn sqlite_buffer_maintenance_checkpoints_wal() {
             .map(|d| d.as_nanos())
             .unwrap_or_default()
     );
-    let path = std::env::temp_dir().join(unique);
+    let fixture = TestDir::new();
+    let path = fixture.0.join(unique);
     let path_str = path.to_string_lossy().into_owned();
 
     let mut b = SqliteBuffer::new(&path_str, 1024).expect("sqlite open");

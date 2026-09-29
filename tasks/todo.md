@@ -453,3 +453,17 @@ Regression proof (stash/transplant on `fa-start-a5-buffer`): reopen expected [0,
 SQLite benchmark: batch50, 3 paired rounds, 300 ticks; all six database proofs pass. Median ingest+tick cost 2236.01 -> 2172.21 us/consumed event (-2.85%); paired -13.10%, +17.20%, -12.88%, noisy shared-host result, not a guaranteed improvement. Full report and proof logs: `/home/dimas/eguard-lab-soak/bench/results-fa-start-a5-buffer.md` and `a5-validation/`. Temporary backend fixture switch reverted.
 
 Residuals: at-least-once duplicates after delivery-before-ack crash; configured cap eviction and current-event enqueue failures can still lose events; memory fallback is not durable; WAL NORMAL power-loss semantics unchanged. Follow up connected successful-ack benchmarking, server dedupe if needed, and operational alerting/recovery for fallback.
+
+## a5r safe SQLite restoration
+- [x] Restore peek/ack commits and inspect review blocker.
+- [x] Isolate SQLite fixtures; preserve existing parent permissions and warn on unsafe parents.
+- [x] Prove regression failures on fa-start-a5r; run required offline suites/format.
+- [x] Commit and export patch/status with residual risks.
+
+Review: restored 2568fce behavior exactly before the safety fix. Unix DirBuilder creates missing ancestors with mode 0700 without chmodding existing paths (including concurrently created parents); existing world-writable/foreign-owned parents log a warning, and database mode remains 0600. Fallback's invalid filename is now a child directory inside an explicitly created unique fixture; SQLite buffer tests and FIFO test also use owned directories.
+
+Proof on fa-start-a5r production files: existing-parent regression observed 0700 instead of 0777; recursive new-parent test observed 0755 instead of 0700 on the intermediate directory. Peek/ack tests used an archived test-only adapter mapping peek to base destructive drain and ack to no-op: reopen got [2], pending count 1 instead of 3, and large-tail peek consumed 256 rows. Base lifecycle tests (no adapter) failed FIFO ([256,257,0,...]) and missing heartbeat fallback marker. Restored all production files and removed adapter afterward. All filesystem fixtures stayed within unique test-owned directories.
+
+Validation: full grpc-client 110 passed / 1 failed (alternate_grpc_server_addr_switches_known_agent_ports, separately reproduced on base); final buffer module 18/18; agent-core reviewfix 21/21, payload integrity 6/6, eBPF policy 111/111; workspace fmt and diff whitespace passed. Offline cargo commands used this worktree's target and timeout 1500, each shell under 20 minutes. Evidence: /home/dimas/eguard-lab-soak/followups/a5r-validation/.
+
+Residuals: at-least-once duplicates after send-before-ack crashes; memory fallback remains volatile and server marker persistence is outside scope; pre-existing SQLite severity/rule_name omission remains. Shared/foreign-owned directories are warned about, not rejected: 0600 is not protection against directory-owner replacement/unlink attacks. Existing best-effort db chmod and WAL durability semantics unchanged.
