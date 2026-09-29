@@ -226,3 +226,171 @@ fn f4b_all_linux_codec_enrichment_differential() {
         "all ten codec event types, three adversarial and twelve empty/mixed variants"
     );
 }
+
+// Payload byte lengths, independent of replay (which only emits current layouts).
+// Include both sides of every size check, historical/current complete records,
+// and every legacy rename split (384..512), including odd-length splits.
+#[test]
+fn f4b_binary_layout_enrichment_differential() {
+    let layouts: [(u8, Vec<usize>); 10] = [
+        (1, vec![0, 1, 43, 44, 363, 364, 395, 396, 397]),
+        // Put the reviewer's exact record first, so the baseline proof is explicit.
+        (2, vec![264, 0, 1, 7, 8, 263, 339, 340, 341]),
+        (3, vec![0, 1, 15, 16, 47, 48, 49]),
+        (4, vec![0, 1, 3, 4, 131, 132, 133]),
+        (5, vec![0, 1, 63, 64, 65]),
+        (6, vec![0, 1, 3, 4, 131, 132, 133]),
+        (7, vec![0, 1, 31, 32, 33]),
+        (8, vec![0, 1, 11, 12, 267, 268, 269]),
+        (
+            9,
+            std::iter::once(0)
+                .chain(std::iter::once(1))
+                .chain(383..=513)
+                .collect(),
+        ),
+        (10, vec![0, 1, 255, 256, 257]),
+    ];
+    let mut count = 0;
+    // Test FileOpen first to make the pre-fix failure identify the review case.
+    for index in [1, 0, 2, 3, 4, 5, 6, 7, 8, 9] {
+        let (kind, lengths) = &layouts[index];
+        for &len in lengths {
+            for v2 in [false, true] {
+                // empty, distinct, both mixed directions, whitespace, controls,
+                // delimiters/quotes and malformed UTF-8; network families 2/10.
+                for variant in 0..8 {
+                    let mut body = vec![0u8; len];
+                    let put = |body: &mut [u8], offset: usize, bytes: &[u8]| {
+                        if offset < body.len() {
+                            let n = bytes.len().min(body.len() - offset);
+                            body[offset..offset + n].copy_from_slice(&bytes[..n]);
+                        }
+                    };
+                    let slots: Vec<(usize, usize)> = match kind {
+                        1 => {
+                            put(&mut body, 0, &4294967294u32.to_le_bytes());
+                            put(&mut body, 4, &123u64.to_le_bytes());
+                            if len >= 396 {
+                                vec![(12, 32), (44, 32), (76, 160), (236, 160)]
+                            } else {
+                                vec![(12, 32), (44, 160), (204, 160)]
+                            }
+                        }
+                        2 => {
+                            put(&mut body, 0, &2u32.to_le_bytes());
+                            put(&mut body, 4, &384u32.to_le_bytes());
+                            if len >= 340 {
+                                put(&mut body, 8, &4294967294u32.to_le_bytes());
+                                put(&mut body, 12, &123u64.to_le_bytes());
+                                vec![(20, 32), (52, 32), (84, 256)]
+                            } else {
+                                vec![(8, 256)]
+                            }
+                        }
+                        3 => {
+                            put(
+                                &mut body,
+                                0,
+                                &(if variant % 2 == 0 { 2u16 } else { 10u16 }).to_le_bytes(),
+                            );
+                            put(&mut body, 2, &1234u16.to_le_bytes());
+                            put(&mut body, 4, &443u16.to_le_bytes());
+                            put(&mut body, 6, &[6]);
+                            if variant != 0 {
+                                put(&mut body, 8, &[192, 0, 2, 1, 198, 51, 100, 2]);
+                                put(&mut body, 31, &[1]);
+                                put(&mut body, 47, &[2]);
+                            }
+                            vec![]
+                        }
+                        4 => {
+                            put(&mut body, 0, &28u16.to_le_bytes());
+                            put(&mut body, 2, &1u16.to_le_bytes());
+                            vec![(4, 128)]
+                        }
+                        5 => vec![(0, 64)],
+                        6 => {
+                            put(&mut body, 0, &[3]);
+                            vec![(4, 128)]
+                        }
+                        7 => vec![(0, len)],
+                        8 => {
+                            put(&mut body, 0, &7u32.to_le_bytes());
+                            put(&mut body, 4, &12345u64.to_le_bytes());
+                            vec![(12, 256)]
+                        }
+                        9 if (384..512).contains(&len) => {
+                            vec![(0, len / 2), (len / 2, len - len / 2)]
+                        }
+                        9 => vec![(0, 256), (256, 256)],
+                        10 => vec![(0, 256)],
+                        _ => unreachable!(),
+                    };
+                    for (slot, (offset, width)) in slots.into_iter().enumerate() {
+                        let distinct = format!("slot-{slot}-value");
+                        let value: &[u8] = match variant {
+                            0 => b"",
+                            2 if slot % 2 == 0 => b"",
+                            3 if slot % 2 == 1 => b"",
+                            4 => b"   ",
+                            5 => b" \t\n ",
+                            6 => b"\"evil;,=%2F\"",
+                            7 => b"bad-\xff",
+                            _ => distinct.as_bytes(),
+                        };
+                        put(
+                            &mut body,
+                            offset,
+                            &value[..value.len().min(width.saturating_sub(1))],
+                        );
+                    }
+                    let mut record = vec![0; if v2 { 37 } else { 21 }];
+                    record[0] = *kind | if v2 { 0x80 } else { 0 };
+                    record[1..5].copy_from_slice(&u32::MAX.to_le_bytes());
+                    record[9..13].copy_from_slice(&1000u32.to_le_bytes());
+                    record[13..21].copy_from_slice(&1700000000000000000u64.to_le_bytes());
+                    if v2 {
+                        record[21..29].copy_from_slice(&123456u64.to_le_bytes());
+                        record[29..37].copy_from_slice(&654321u64.to_le_bytes());
+                    }
+                    record.extend_from_slice(&body);
+                    let raw = platform_linux::decode_binary_for_test(&record).unwrap();
+                    let mut fallback = raw.clone();
+                    fallback.fields = platform_linux::RawEventFields::default();
+                    let enrich = |event| {
+                        let mut cache = platform_linux::EnrichmentCache::default();
+                        cache.prime_process_metadata(&event);
+                        platform_linux::enrich_event_with_cache(event, &mut cache)
+                    };
+                    let typed = enrich(raw.clone());
+                    let legacy = enrich(fallback);
+                    let mut a = serde_json::to_value(&typed).unwrap();
+                    let mut b = serde_json::to_value(&legacy).unwrap();
+                    a.as_object_mut().unwrap().remove("event");
+                    b.as_object_mut().unwrap().remove("event");
+                    assert_eq!(
+                        a, b,
+                        "enrichment kind={kind} body={len} v2={v2} variant={variant} payload={:?}",
+                        raw.payload
+                    );
+                    assert_eq!(
+                        serde_json::to_value(to_detection_event(&typed, 1700000000)).unwrap(),
+                        serde_json::to_value(to_detection_event(&legacy, 1700000000)).unwrap(),
+                        "detection kind={kind} body={len} v2={v2} variant={variant}"
+                    );
+                    count += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(
+        count,
+        layouts
+            .iter()
+            .map(|(_, lengths)| lengths.len())
+            .sum::<usize>()
+            * 16
+    );
+    eprintln!("binary layout parity: {count} records");
+}

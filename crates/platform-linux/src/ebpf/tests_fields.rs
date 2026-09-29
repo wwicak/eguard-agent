@@ -63,6 +63,30 @@ fn decode(kind: u8, body: &[u8]) -> crate::RawEvent {
 }
 
 #[test]
+fn naked_binary_fallbacks_discard_all_typed_fields() {
+    // Numeric prefixes are deliberately nonzero: an empty textual body must
+    // not leave fields from an abandoned structured layout behind.
+    for (kind, len) in [(1, 364), (1, 396), (2, 264), (2, 340), (4, 132)] {
+        let mut body = vec![0; len];
+        body[0] = 2;
+        assert_eq!(
+            decode(kind, &body).fields,
+            RawEventFields::default(),
+            "kind={kind} len={len}"
+        );
+    }
+    for (kind, len) in [(5, 64), (9, 384), (9, 512), (10, 256)] {
+        assert_eq!(
+            decode(kind, &vec![0; len]).fields,
+            RawEventFields::default()
+        );
+    }
+    for kind in [1, 2, 3, 4, 6, 8] {
+        assert_eq!(decode(kind, b"x").fields, RawEventFields::default());
+    }
+}
+
+#[test]
 fn typed_fields_binary_legacy_ipv6_non_utf8_and_short_records() {
     let mut exec = vec![0; 364]; // legacy exec without parent_comm
     exec[..4].copy_from_slice(&42u32.to_le_bytes());

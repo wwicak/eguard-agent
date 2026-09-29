@@ -120,6 +120,13 @@ fn typed_text_normalization_matches_legacy_kv_values() {
     }
 }
 
+// A naked fallback exposes no structured fields to the legacy parser, even
+// when the attempted binary layout already recorded numeric or text fields.
+fn naked_fallback(raw: &[u8], fields: &mut RawEventFields) -> String {
+    *fields = RawEventFields::default();
+    escape_payload_value(&parse_c_string(raw))
+}
+
 fn parse_payload(event_type: EventType, raw: &[u8], fields: &mut RawEventFields) -> String {
     match event_type {
         EventType::ProcessExec => parse_process_exec_payload(raw, fields),
@@ -141,7 +148,7 @@ fn parse_payload(event_type: EventType, raw: &[u8], fields: &mut RawEventFields)
 
 fn parse_process_exec_payload(raw: &[u8], fields: &mut RawEventFields) -> String {
     if raw.len() < 4 + 8 + 32 {
-        return escape_payload_value(&parse_c_string(raw));
+        return naked_fallback(raw, fields);
     }
 
     let ppid = read_u32_le(raw, 0).unwrap_or_default();
@@ -168,9 +175,7 @@ fn parse_process_exec_payload(raw: &[u8], fields: &mut RawEventFields) -> String
     fields.cmdline = normalized_text(&cmdline);
 
     if comm.is_empty() && parent_comm.is_empty() && path.is_empty() && cmdline.is_empty() {
-        // The naked fallback exposes no structured lineage to the legacy parser.
-        *fields = RawEventFields::default();
-        return escape_payload_value(&parse_c_string(raw));
+        return naked_fallback(raw, fields);
     }
 
     format!(
@@ -186,7 +191,7 @@ fn parse_process_exec_payload(raw: &[u8], fields: &mut RawEventFields) -> String
 
 fn parse_file_open_payload(raw: &[u8], fields: &mut RawEventFields) -> String {
     if raw.len() < 8 {
-        return escape_payload_value(&parse_c_string(raw));
+        return naked_fallback(raw, fields);
     }
 
     let flags = read_u32_le(raw, 0).unwrap_or_default();
@@ -208,9 +213,7 @@ fn parse_file_open_payload(raw: &[u8], fields: &mut RawEventFields) -> String {
         let path = parse_c_string(slice_window(raw, 84, 256));
         fields.path = normalized_text(&path);
         if path.is_empty() && comm.is_empty() && parent_comm.is_empty() {
-            // Keep typed lineage consistent with the naked legacy fallback.
-            *fields = RawEventFields::default();
-            return escape_payload_value(&parse_c_string(raw));
+            return naked_fallback(raw, fields);
         }
 
         return format!(
@@ -228,7 +231,7 @@ fn parse_file_open_payload(raw: &[u8], fields: &mut RawEventFields) -> String {
     let path = parse_c_string(slice_window(raw, 8, 256));
     fields.path = normalized_text(&path);
     if path.is_empty() {
-        return escape_payload_value(&parse_c_string(raw));
+        return naked_fallback(raw, fields);
     }
 
     format!(
@@ -241,7 +244,7 @@ fn parse_file_open_payload(raw: &[u8], fields: &mut RawEventFields) -> String {
 
 fn parse_file_write_payload(raw: &[u8], fields: &mut RawEventFields) -> String {
     if raw.len() < 12 {
-        return escape_payload_value(&parse_c_string(raw));
+        return naked_fallback(raw, fields);
     }
 
     let fd = read_u32_le(raw, 0).unwrap_or_default();
@@ -275,7 +278,7 @@ fn parse_file_rename_payload(raw: &[u8], fields: &mut RawEventFields) -> String 
     let new_path = parse_c_string(slice_window(raw, new_offset, new_window));
     fields.secondary_path = normalized_text(&new_path);
     if old_path.is_empty() && new_path.is_empty() {
-        return escape_payload_value(&parse_c_string(raw));
+        return naked_fallback(raw, fields);
     }
     format!(
         "src={};dst={}",
@@ -288,14 +291,14 @@ fn parse_file_unlink_payload(raw: &[u8], fields: &mut RawEventFields) -> String 
     let path = parse_c_string(slice_window(raw, 0, 256));
     fields.path = normalized_text(&path);
     if path.is_empty() {
-        return escape_payload_value(&parse_c_string(raw));
+        return naked_fallback(raw, fields);
     }
     format!("path={}", escape_payload_value(&path))
 }
 
 fn parse_tcp_connect_payload(raw: &[u8], fields: &mut RawEventFields) -> String {
     if raw.len() < 16 {
-        return escape_payload_value(&parse_c_string(raw));
+        return naked_fallback(raw, fields);
     }
 
     let family = read_u16_le(raw, 0).unwrap_or_default();
@@ -331,7 +334,7 @@ fn parse_tcp_connect_payload(raw: &[u8], fields: &mut RawEventFields) -> String 
 
 fn parse_dns_query_payload(raw: &[u8], fields: &mut RawEventFields) -> String {
     if raw.len() < 4 {
-        return escape_payload_value(&parse_c_string(raw));
+        return naked_fallback(raw, fields);
     }
 
     let qtype = read_u16_le(raw, 0).unwrap_or_default();
@@ -341,7 +344,7 @@ fn parse_dns_query_payload(raw: &[u8], fields: &mut RawEventFields) -> String {
     let qname = parse_c_string(slice_window(raw, 4, 128));
     fields.domain = normalized_text(&qname);
     if qname.is_empty() {
-        return escape_payload_value(&parse_c_string(raw));
+        return naked_fallback(raw, fields);
     }
 
     format!(
@@ -356,7 +359,7 @@ fn parse_module_load_payload(raw: &[u8], fields: &mut RawEventFields) -> String 
     let module_name = parse_c_string(slice_window(raw, 0, 64));
     fields.module = normalized_text(&module_name);
     if module_name.is_empty() {
-        return escape_payload_value(&parse_c_string(raw));
+        return naked_fallback(raw, fields);
     }
 
     format!("module={}", escape_payload_value(&module_name))
@@ -364,7 +367,7 @@ fn parse_module_load_payload(raw: &[u8], fields: &mut RawEventFields) -> String 
 
 fn parse_lsm_block_payload(raw: &[u8], fields: &mut RawEventFields) -> String {
     if raw.len() < 4 {
-        return escape_payload_value(&parse_c_string(raw));
+        return naked_fallback(raw, fields);
     }
 
     let reason = raw[0];

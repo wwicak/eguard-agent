@@ -1,5 +1,7 @@
 pub mod container;
 mod ebpf;
+#[cfg(feature = "test-binary-codec")]
+pub use ebpf::decode_binary_for_test;
 pub mod inventory;
 mod kernel_integrity;
 #[path = "../../payload_codec.rs"]
