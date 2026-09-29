@@ -23,6 +23,37 @@ pub(super) enum ProcessGeneration {
     WindowsNs(u64),
 }
 
+// Capture once: our PID cannot be reused while this runtime is alive.
+pub(super) fn own_process_generation() -> Option<ProcessGeneration> {
+    #[cfg(target_os = "linux")]
+    {
+        let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+        parse_process_start_time(&stat).map(ProcessGeneration::ProcTicks)
+    }
+    #[cfg(target_os = "windows")]
+    {
+        platform_windows::process_generation::current_process_start_ns()
+            .map(ProcessGeneration::WindowsNs)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // TASK_AUDIT_TOKEN returns the same opaque pidversion used by ES.
+        unsafe extern "C" {
+            static mach_task_self_: u32;
+            fn task_info(task: u32, flavor: u32, info: *mut u32, count: *mut u32) -> i32;
+        }
+        let mut token = [0u32; 8];
+        let mut count = 8;
+        // SAFETY: writable eight-word audit_token_t and matching word count.
+        let result = unsafe { task_info(mach_task_self_, 15, token.as_mut_ptr(), &mut count) };
+        (result == 0 && count == 8).then_some(ProcessGeneration::BootNs(token[7] as u64))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+    {
+        None
+    }
+}
+
 // procfs expresses starttime in the reader's time namespace, while BPF reads
 // the initial namespace's raw task clock. Normalize only cross-clock checks.
 fn boot_ns_to_ticks_with_offset(ns: u64, offset_ns: i128, hz: u64) -> Option<u64> {
@@ -689,12 +720,27 @@ impl AgentRuntime {
         {
             return false;
         }
-        if let Some(parent_pid) = payload_parent_pid(&event.payload)
-            .filter(|_| !self.uses_windows_generations() || event.ppid_start_ns.is_some())
-        {
-            if (parent_pid == std::process::id()
-                && self.event_generation_matches_current(parent_pid, event.ppid_start_ns))
-                || self.is_tracked_internal_process(parent_pid, event_ns, event.ppid_start_ns)
+        if let Some(parent_pid) = payload_parent_pid(&event.payload) {
+            // Unlike any tracked PID, our PID cannot be reused while we are alive.
+            // Missing parent identity is safe here only; known stale identity is not.
+            if parent_pid == std::process::id()
+                && event.ppid_start_ns.is_none_or(|ns| {
+                    let emitted = if self.uses_windows_generations() {
+                        ProcessGeneration::WindowsNs(ns)
+                    } else {
+                        ProcessGeneration::BootNs(ns)
+                    };
+                    self.own_process_generation
+                        .is_some_and(|own| own.matches(emitted))
+                })
+            {
+                self.track_internal_process_pid(event.pid, event_ns, event.pid_start_ns);
+                // A short-lived helper may already have exited. Live child identity
+                // is needed to retain ancestry, not to authenticate this direct edge.
+                return true;
+            }
+            if (!self.uses_windows_generations() || event.ppid_start_ns.is_some())
+                && self.is_tracked_internal_process(parent_pid, event_ns, event.ppid_start_ns)
             {
                 self.track_internal_process_pid(event.pid, event_ns, event.pid_start_ns);
                 // Windows candidates need live identity; preserve other platforms' policy.

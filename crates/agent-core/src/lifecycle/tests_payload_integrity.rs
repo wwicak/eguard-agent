@@ -56,6 +56,7 @@ fn delayed_parent_event_requires_emitted_parent_generation() {
 fn event_generation_fallback_compares_proc_at_clock_tick_granularity() {
     let mut runtime = runtime();
     let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as u64;
+    runtime.own_process_generation = Some(ProcessGeneration::ProcTicks(2 * hz));
     runtime.internal_process_start_time_reader =
         Some(|_| Some(2 * unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as u64));
     let mut event = RawEvent {
@@ -257,8 +258,9 @@ fn windows_live_generation_rejects_reuse_and_missing_even_with_stale_event() {
 }
 
 #[test]
-fn windows_unknown_parent_generation_cannot_authenticate_ancestry() {
+fn windows_direct_child_unknown_parent_generation_is_suppressed() {
     let mut runtime = runtime();
+    runtime.own_process_generation = Some(ProcessGeneration::WindowsNs(100));
     runtime.windows_process_generations = true;
     runtime.internal_process_start_time_reader = Some(|_| Some(100));
     let mut event = RawEvent {
@@ -270,10 +272,23 @@ fn windows_unknown_parent_generation_cannot_authenticate_ancestry() {
         event_type: crate::platform::EventType::ProcessExec,
         payload: format!("ppid={}", std::process::id()),
     };
-    // A PID alone cannot authenticate a parent when ingest could not query it.
-    assert!(!runtime.should_suppress_internal_process_event(&event));
+    // ETW ProcessStart v3 carries ParentProcessID but may lack parent creation time.
+    assert!(runtime.should_suppress_internal_process_event(&event));
+    // Use a fresh PID so the cached child cannot mask the parent check.
+    event.pid = 4_000_060;
     event.ppid_start_ns = Some(100);
     assert!(runtime.should_suppress_internal_process_event(&event));
+    event.pid = 4_000_061;
+    event.ppid_start_ns = Some(99);
+    assert!(!runtime.should_suppress_internal_process_event(&event));
+    event.pid = 4_000_062;
+    event.ppid_start_ns = None;
+    runtime.internal_process_start_time_reader = Some(|_| None);
+    assert!(runtime.should_suppress_internal_process_event(&event));
+    assert!(!runtime
+        .suppressed_internal_process_pids
+        .contains_key(&event.pid));
+    runtime.internal_process_start_time_reader = Some(|_| Some(100));
     event.pid = 4_000_052;
     event.payload = "ppid=4000051".into();
     event.ppid_start_ns = None;

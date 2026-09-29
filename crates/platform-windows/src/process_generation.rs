@@ -4,6 +4,38 @@ pub(crate) fn filetime_to_unix_ns(time: u64) -> Option<u64> {
     time.checked_sub(116_444_736_000_000_000)?.checked_mul(100)
 }
 
+/// Capture our creation time at startup using the always-valid pseudo handle.
+pub fn current_process_start_ns() -> Option<u64> {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::Foundation::FILETIME;
+        use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+        let mut creation = FILETIME::default();
+        let mut exit = FILETIME::default();
+        let mut kernel = FILETIME::default();
+        let mut user = FILETIME::default();
+        // SAFETY: current-process pseudo handle and valid output pointers;
+        // pseudo handles must not be closed.
+        unsafe {
+            GetProcessTimes(
+                GetCurrentProcess(),
+                &mut creation,
+                &mut exit,
+                &mut kernel,
+                &mut user,
+            )
+            .ok()?;
+        }
+        filetime_to_unix_ns(
+            ((creation.dwHighDateTime as u64) << 32) | creation.dwLowDateTime as u64,
+        )
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        None
+    }
+}
+
 /// Query creation time without requesting VM access. Failure is not identity evidence.
 pub fn process_start_ns(pid: u32) -> Option<u64> {
     #[cfg(target_os = "windows")]

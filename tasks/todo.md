@@ -548,3 +548,10 @@ Proof on fa-start-a5r production files: existing-parent regression observed 0700
 Validation: full grpc-client 110 passed / 1 failed (alternate_grpc_server_addr_switches_known_agent_ports, separately reproduced on base); final buffer module 18/18; agent-core reviewfix 21/21, payload integrity 6/6, eBPF policy 111/111; workspace fmt and diff whitespace passed. Offline cargo commands used this worktree's target and timeout 1500, each shell under 20 minutes. Evidence: /home/dimas/eguard-lab-soak/followups/a5r-validation/.
 
 Residuals: at-least-once duplicates after send-before-ack crashes; memory fallback remains volatile and server marker persistence is outside scope; pre-existing SQLite severity/rule_name omission remains. Shared/foreign-owned directories are warned about, not rejected: 0600 is not protection against directory-owner replacement/unlink attacks. Existing best-effort db chmod and WAL durability semantics unchanged.
+
+## Windows direct-child suppression follow-up
+- [x] Reproduce unknown-parent failure against w-start (unchanged production; regression assertion failed).
+- [x] Cache own generation at startup; exempt only direct children with unknown/matching parent.
+- [x] Validate required suites, cross-check, format; commit and export patch/status.
+
+Review: Windows parent-generation filter rejected direct children before the own-PID check. Direct edges now use cached own identity and tolerate unknown parent identity; descendant/live-generation policy remains unchanged. Tests: payload integrity 12, reviewfix 21, eBPF policy 111, priority 7, platform-windows 120 passed; Windows GNU cross-check and fmt passed. Native Windows rerun and macOS TASK_AUDIT_TOKEN validation remain outstanding. Logs exported to followups/w-validation.
