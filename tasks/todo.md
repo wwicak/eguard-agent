@@ -1,11 +1,15 @@
 # F4b typed payload consumers
 
 - [x] Tag baseline and implement typed-first Linux/core consumers; compile incremental commit.
-- [ ] Cover typed/payload conflicts, trusted ancestry, partial/None fallback and unchanged golden.
-- [ ] Run required native/cross-platform checks and prove regression failures on tagged baseline.
-- [ ] Benchmark three interleaved rounds at batches 50/200; document sites and export patch/status.
+- [x] Cover typed/payload conflicts, trusted ancestry, partial/None fallback and unchanged golden.
+- [x] Run required native/cross-platform checks and prove regression failures on tagged baseline.
+- [x] Benchmark three interleaved rounds at batches 50/200; document sites and export patch/status.
 
 Design: preserve the legacy parsers as per-field lazy fallbacks. Present typed values (including zero/empty) are authoritative; payload duplicates only validate security fields still sourced from payload. No emitter or legacy envelope formatting changes.
+
+Review: five conflict regressions pass on HEAD and fail behaviorally on d42e9ec with test-only transplants (four core, one Linux). Required debug policy 111/111, reviewfix 21/21, payload_integrity 12/12 and unchanged F4a golden pass; Linux 102/102 serial, macOS 46/46, Windows GNU platform-windows/agent-core check pass. Full agent release suite: 564 pass, two ignored, three baseline failures; all three reproduce on tagged base (memory RSS ledger, mocked package strip, restart bundle restoration). Excluding exactly those gives 564/564. Full debug sweep timed out at 1500s without an observed failure. An initial policy drain-budget failure and Linux spawn-before-exec cmdline race passed reruns. No fixes to unrelated baseline failures.
+
+Benchmark: three interleaved release rounds at batch 50/200, 300 ticks, identical typed fixtures on d42e9ec/c259d7f: combined median cost 940.824→842.034 us/event (-10.50%) and 1606.640→1506.877 (-6.21%). Contended-host wall-time/drain-budget results, not an isolated speedup claim. Report: /home/dimas/eguard-lab-soak/bench/results-i3-start-f4b-consumers.md. Both owned detached worktrees removed. Validation/fail-proof logs: /home/dimas/eguard-lab-soak/followups/f4b-validation/.
 
 # F15 review follow-up — Linux 5.4 and time namespaces
 
