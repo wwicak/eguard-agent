@@ -115,9 +115,7 @@ fn f4a_legacy_envelope_and_detection_golden() {
             outcome.confidence,
             1700000000,
         );
-        output.push(serde_json::json!({"detection":event,"envelope":{
-            "agent_id":envelope.agent_id,"event_type":envelope.event_type,"severity":envelope.severity,
-            "rule_name":envelope.rule_name,"payload_json":envelope.payload_json,"created_at_unix":envelope.created_at_unix}}));
+        output.push(serde_json::json!({"detection":event,"envelope":envelope}));
     }
     let actual = serde_json::to_string_pretty(&output).unwrap() + "\n";
     let fixture =
