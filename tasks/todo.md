@@ -570,3 +570,12 @@ Residuals: at-least-once duplicates after send-before-ack crashes; memory fallba
 Review: d826a43 excludes ProcessExit comm from command-line hints, preserving baseline telemetry and low-value filtering. New real replay/enrichment/detection test does not overwrite enriched metadata; it fails on pre-fix dc00a34 (Some("ordinary") versus None), passes with the fix, and passes with tagged baseline Linux production code. This is a restoration, so failure on the original baseline is neither expected nor desirable; first-pass typed-consumer fail proofs remain unchanged.
 
 Validation: Linux 102 and macOS 46 tests passed; agent-core eBPF policy 111, reviewfix 21, payload integrity 12, F4b 5 and unchanged golden 1 passed; Windows GNU cross-check passed. Full core run hit its 1500-second limit after 464 reported outcomes; two failures were independently reproduced with all changed crate files restored to tagged baseline: memory layout ledger lower bound and runtime bootstrap last-known-good bundle (None vs rules-2026.02.14.42). Both are out of scope, not introduced by F4b. Evidence: /home/dimas/eguard-lab-soak/followups/f4b-review-validation/. First-pass benchmark remains host-contended and was not repeated for this narrow semantic restoration. Workspace format and tagged diff checks passed.
+
+## F4b systematic mapping review
+- [x] Read final review; add all-ten-event real-codec differential with distinct values and impossible /proc PIDs.
+- [x] Record rename fail proof; restore destination-only legacy enrichment/hash precedence.
+- [x] Remove golden metadata overrides and regenerate at i3-start-f4b-consumers in detached scratch worktree (removed).
+- [x] Run requested offline suites, Windows cross-check, format and whitespace checks.
+- [ ] Re-run three interleaved benchmark rounds against final commit and remove detached worktrees.
+
+Review: differential found only FileRename source-vs-destination mismatch; source is not a legacy hash candidate. Previous ProcessExit correction remains covered. Comparison removes only raw event (typed fields necessarily differ), preserving every enriched field and full DetectionEvent. Golden uses distinct source/destination, cmdline/comm/parent_comm and impossible PID/PPID; no enrichment fields are overwritten. Validation: payload integrity 12, reviewfix 21, eBPF policy 111, F4b 6, golden 1, Linux 102, macOS 46 passed; Windows GNU check passed. Fail proof and tagged-base fixture generation logs: /home/dimas/eguard-lab-soak/followups/f4b-final-validation/.

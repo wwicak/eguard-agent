@@ -1,4 +1,4 @@
-//! Baseline fixture generated at i2-start-f4a-fields with the real replay/binary codec.
+//! Baseline fixture generated at i3-start-f4b-consumers with the real replay/binary codec.
 use super::*;
 
 #[test]
@@ -54,35 +54,7 @@ fn f4a_legacy_envelope_and_detection_golden() {
     cfg.offline_buffer_backend = "memory".into();
     cfg.server_addr = "127.0.0.1:1".into();
     cfg.self_protection_integrity_check_interval_secs = 0;
-    let types = [
-        "process_exec",
-        "file_open",
-        "tcp_connect",
-        "dns_query",
-        "module_load",
-        "lsm_block",
-        "process_exit",
-        "file_write",
-        "file_rename",
-        "file_unlink",
-    ];
-    let mut lines = Vec::new();
-    for event_type in types {
-        for text in ["ordinary", "evil;,=%2F", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaé"] {
-            // The final comm's UTF-8 sequence is truncated at byte 31 by the real
-            // replay encoder, exercising non-UTF8 binary input to the decoder.
-            lines.push(
-                serde_json::json!({"event_type":event_type,"pid":4242,"uid":1000,
-                "ts_ns":1700000000000000000u64,"ppid":42,"cgroup_id":123,
-                "comm":text,"parent_comm":text,"path":text,"cmdline":text,
-                "file_path":text,"src":text,"dst":text,"domain":text,
-                "module_name":text,"subject":text,"flags":2,"mode":384,
-                "fd":7,"size":12345,"reason":3,"qtype":28,"qclass":1,
-                "src_ip":"192.0.2.1","dst_ip":"198.51.100.2","src_port":1234,"dst_port":443})
-                .to_string(),
-            );
-        }
-    }
+    let lines = linux_codec_corpus();
     let path = std::env::temp_dir().join(format!(
         "eguard-f4a-golden-{}-{}.ndjson",
         std::process::id(),
@@ -113,19 +85,10 @@ fn f4a_legacy_envelope_and_detection_golden() {
     assert_eq!(raw.len(), 30);
     let mut output = Vec::new();
     for event in raw {
-        // Exercise legacy event-specific enrichment, replacing only host-dependent
-        // metadata. Corpus paths are relative non-existent fixture names.
-        let mut enriched = platform_linux::enrich_event(event);
-        enriched.process_exe = Some("/fixture/bin/process".into());
-        enriched.process_exe_sha256 = None;
-        enriched.process_cmdline = Some("fixture --arg".into());
-        enriched.parent_process = Some("fixture-parent".into());
-        enriched.parent_chain = vec![42, 1];
-        enriched.file_sha256 = None;
-        enriched.container_runtime = None;
-        enriched.container_id = None;
-        enriched.container_escape = false;
-        enriched.container_privileged = false;
+        // Impossible PIDs make /proc deterministic without replacing event metadata.
+        let mut cache = platform_linux::EnrichmentCache::default();
+        cache.prime_process_metadata(&event);
+        let enriched = platform_linux::enrich_event_with_cache(event, &mut cache);
         let event = to_detection_event(&enriched, 1700000000);
         let outcome = detection::DetectionOutcome::default();
         let txn = EventTxn::from_enriched(&enriched, &event, 1700000000);
@@ -145,4 +108,85 @@ fn f4a_legacy_envelope_and_detection_golden() {
     let expected = std::fs::read_to_string(fixture).unwrap();
     std::fs::remove_dir_all(root).unwrap();
     assert_eq!(actual, expected);
+}
+
+fn linux_codec_corpus() -> Vec<String> {
+    let types = [
+        "process_exec",
+        "file_open",
+        "tcp_connect",
+        "dns_query",
+        "module_load",
+        "lsm_block",
+        "process_exit",
+        "file_write",
+        "file_rename",
+        "file_unlink",
+    ];
+    let mut lines = Vec::new();
+    for event_type in types {
+        for text in ["ordinary", "evil;,=%2F", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaé"] {
+            // The final comm's UTF-8 sequence is truncated at byte 31 by the real
+            // replay encoder, exercising non-UTF8 binary input to the decoder.
+            lines.push(
+                serde_json::json!({"event_type":event_type,"pid":4294967295u32,"uid":1000,
+                "ts_ns":1700000000000000000u64,"ppid":4294967294u32,"cgroup_id":123,
+                "comm":text,"parent_comm":format!("parent-{text}"),"path":text,"cmdline":format!("cmd-{text}"),
+                "file_path":text,"src":format!("src-{text}"),"dst":format!("dst-{text}"),"domain":text,
+                "module_name":text,"subject":text,"flags":2,"mode":384,
+                "fd":7,"size":12345,"reason":3,"qtype":28,"qclass":1,
+                "src_ip":"192.0.2.1","dst_ip":"198.51.100.2","src_port":1234,"dst_port":443})
+                .to_string(),
+            );
+        }
+    }
+    lines
+}
+
+#[test]
+fn f4b_all_linux_codec_enrichment_differential() {
+    let path =
+        std::env::temp_dir().join(format!("eguard-differential-{}.ndjson", std::process::id()));
+    std::fs::write(&path, linux_codec_corpus().join("\n")).unwrap();
+    let mut engine = platform_linux::EbpfEngine::from_replay(&path).unwrap();
+    let mut count = 0;
+    loop {
+        let batch = engine.poll_once(std::time::Duration::ZERO).unwrap();
+        if batch.is_empty() {
+            break;
+        }
+        for raw in batch {
+            let mut fallback = raw.clone();
+            fallback.fields = platform_linux::RawEventFields::default();
+            let enrich = |event| {
+                let mut cache = platform_linux::EnrichmentCache::default();
+                cache.prime_process_metadata(&event);
+                platform_linux::enrich_event_with_cache(event, &mut cache)
+            };
+            let typed = enrich(raw.clone());
+            let legacy = enrich(fallback);
+            let mut typed_json = serde_json::to_value(&typed).unwrap();
+            let mut legacy_json = serde_json::to_value(&legacy).unwrap();
+            typed_json.as_object_mut().unwrap().remove("event");
+            legacy_json.as_object_mut().unwrap().remove("event");
+            assert_eq!(
+                typed_json, legacy_json,
+                "enrichment {:?}: {}",
+                raw.event_type, raw.payload
+            );
+            assert_eq!(
+                serde_json::to_value(to_detection_event(&typed, 1700000000)).unwrap(),
+                serde_json::to_value(to_detection_event(&legacy, 1700000000)).unwrap(),
+                "detection {:?}: {}",
+                raw.event_type,
+                raw.payload
+            );
+            count += 1;
+        }
+    }
+    std::fs::remove_file(path).unwrap();
+    assert_eq!(
+        count, 30,
+        "all ten codec event types, three adversarial variants"
+    );
 }

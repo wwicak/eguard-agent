@@ -636,9 +636,11 @@ fn raw_event_metadata(raw: &RawEvent) -> PayloadMetadata {
         fallback().file_write
     };
     PayloadMetadata {
-        file_path: fields
-            .path
-            .clone()
+        // The legacy rename payload exposes src/dst, not path. Only dst
+        // participates in enrichment (via file_path_secondary); never hash src.
+        file_path: (!matches!(raw.event_type, EventType::FileRename))
+            .then(|| fields.path.clone())
+            .flatten()
             .or_else(|| {
                 if matches!(raw.event_type, EventType::ModuleLoad) {
                     fields.module.clone()
