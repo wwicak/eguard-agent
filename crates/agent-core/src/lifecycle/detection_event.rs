@@ -789,6 +789,7 @@ mod tests {
     fn to_detection_event_recovers_file_path_from_raw_payload_when_enrichment_misses_it() {
         let enriched = EnrichedEvent {
             event: RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 event_type: EventType::FileOpen,
@@ -824,6 +825,7 @@ mod tests {
     fn to_detection_event_ignores_empty_process_exe_and_falls_back_to_cmdline() {
         let enriched = EnrichedEvent {
             event: RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 event_type: EventType::FileOpen,
@@ -862,6 +864,7 @@ mod tests {
     fn to_detection_event_uses_meaningful_parent_when_process_is_proxy_host() {
         let enriched = EnrichedEvent {
             event: RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 event_type: EventType::FileOpen,
@@ -898,6 +901,7 @@ mod tests {
     fn to_detection_event_preserves_authoritative_process_exec_identity_for_conhost() {
         let enriched = EnrichedEvent {
             event: RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 event_type: EventType::ProcessExec,
@@ -952,6 +956,7 @@ mod tests {
     fn to_detection_event_infers_powershell_when_identity_is_weak() {
         let enriched = EnrichedEvent {
             event: RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 event_type: EventType::FileOpen,
@@ -991,6 +996,7 @@ mod tests {
     fn to_detection_event_file_open_without_subject_does_not_keep_pseudo_system_path() {
         let enriched = EnrichedEvent {
             event: RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 event_type: EventType::FileOpen,
@@ -1027,6 +1033,7 @@ mod tests {
     fn should_drop_low_value_windows_event_for_pseudo_system_file_noise() {
         let enriched = EnrichedEvent {
             event: RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 event_type: EventType::FileOpen,
@@ -1064,6 +1071,7 @@ mod tests {
     fn should_drop_low_value_windows_event_for_system_logfile_open_chatter() {
         let enriched = EnrichedEvent {
             event: RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 event_type: EventType::FileOpen,
@@ -1105,6 +1113,7 @@ mod tests {
     fn should_drop_low_value_windows_event_for_system_winsxs_chatter() {
         let enriched = EnrichedEvent {
             event: RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 event_type: EventType::FileOpen,
@@ -1145,6 +1154,7 @@ mod tests {
     fn should_drop_low_value_windows_event_for_system_catroot_chatter() {
         let enriched = EnrichedEvent {
             event: RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 event_type: EventType::FileOpen,
@@ -1186,6 +1196,7 @@ mod tests {
     fn should_drop_low_value_windows_event_for_system_gac_chatter() {
         let enriched = EnrichedEvent {
             event: RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 event_type: EventType::FileOpen,
@@ -1226,6 +1237,7 @@ mod tests {
     fn should_drop_low_value_windows_event_for_system_agent_binary_open() {
         let enriched = EnrichedEvent {
             event: RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 event_type: EventType::FileOpen,
@@ -1263,6 +1275,7 @@ mod tests {
     fn should_drop_low_value_windows_event_for_pid4_powershell_policytest_file_noise() {
         let enriched = EnrichedEvent {
             event: RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 event_type: EventType::FileOpen,
@@ -1302,6 +1315,7 @@ mod tests {
     fn should_drop_low_value_windows_event_for_pid4_powershell_module_file_noise() {
         let enriched = EnrichedEvent {
             event: RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 event_type: EventType::FileOpen,
@@ -1344,6 +1358,7 @@ mod tests {
     fn should_drop_low_value_windows_event_for_firefox_profile_file_chatter() {
         let enriched = EnrichedEvent {
             event: RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 event_type: EventType::FileOpen,
@@ -1388,6 +1403,7 @@ mod tests {
     fn should_drop_low_value_windows_event_for_system_agent_state_chatter() {
         let enriched = EnrichedEvent {
             event: RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 event_type: EventType::FileOpen,
@@ -1425,6 +1441,7 @@ mod tests {
     fn should_drop_low_value_windows_event_for_system_browser_profile_chatter() {
         let enriched = EnrichedEvent {
             event: RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 event_type: EventType::FileOpen,
@@ -1464,6 +1481,7 @@ mod tests {
     fn should_not_drop_firefox_file_event_for_non_profile_user_path() {
         let enriched = EnrichedEvent {
             event: RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 event_type: EventType::FileOpen,
@@ -1504,6 +1522,7 @@ mod tests {
     fn should_drop_low_value_windows_event_for_pathless_svchost_host_chatter() {
         let enriched = EnrichedEvent {
             event: RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 event_type: EventType::FileOpen,
@@ -1543,6 +1562,7 @@ mod tests {
     fn should_drop_low_value_windows_event_for_proxy_host_pathless_chatter() {
         let enriched = EnrichedEvent {
             event: RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 event_type: EventType::FileOpen,
@@ -1584,6 +1604,7 @@ mod tests {
     fn should_drop_pathless_windows_self_image_firefox_chatter() {
         let enriched = EnrichedEvent {
             event: RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 event_type: EventType::FileOpen,
@@ -1624,6 +1645,7 @@ mod tests {
     fn should_not_drop_pathless_windows_powershell_smoke_with_meaningful_cmdline() {
         let enriched = EnrichedEvent {
             event: RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 event_type: EventType::FileOpen,
@@ -1669,6 +1691,7 @@ mod tests {
     fn should_drop_proxy_host_process_lifecycle_when_parent_is_unknown() {
         let enriched = EnrichedEvent {
             event: RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 event_type: EventType::ProcessExec,
@@ -1708,6 +1731,7 @@ mod tests {
     fn should_not_drop_proxy_host_process_lifecycle_when_parent_is_known() {
         let enriched = EnrichedEvent {
             event: RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 event_type: EventType::ProcessExec,
@@ -1749,6 +1773,7 @@ mod tests {
     fn should_drop_process_exit_when_identity_and_context_are_unknown() {
         let enriched = EnrichedEvent {
             event: RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 event_type: EventType::ProcessExit,
@@ -1788,6 +1813,7 @@ mod tests {
     fn should_not_drop_process_exit_when_identity_is_present() {
         let enriched = EnrichedEvent {
             event: RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 event_type: EventType::ProcessExit,
@@ -1831,6 +1857,7 @@ mod tests {
     fn should_drop_low_value_linux_event_for_systemd_env_generator_process_lifecycle() {
         let enriched = EnrichedEvent {
             event: RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 event_type: EventType::ProcessExec,
@@ -1874,6 +1901,7 @@ mod tests {
     fn should_drop_low_value_linux_event_for_systemd_tmpfiles_process_lifecycle() {
         let enriched = EnrichedEvent {
             event: RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 event_type: EventType::ProcessExec,
@@ -1913,6 +1941,7 @@ mod tests {
     fn should_drop_low_value_linux_event_for_systemd_systemctl_process_lifecycle() {
         let enriched = EnrichedEvent {
             event: RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 event_type: EventType::ProcessExec,
@@ -1949,6 +1978,7 @@ mod tests {
     fn should_drop_low_value_linux_event_for_systemd_user_runtime_dir_process_lifecycle() {
         let enriched = EnrichedEvent {
             event: RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 event_type: EventType::ProcessExec,
@@ -1988,6 +2018,7 @@ mod tests {
     fn should_not_drop_low_value_linux_event_for_cat_tmp_exact_ioc_proof() {
         let enriched = EnrichedEvent {
             event: RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 event_type: EventType::ProcessExec,
@@ -2024,6 +2055,7 @@ mod tests {
     fn should_not_drop_windows_file_event_when_real_subject_path_exists() {
         let enriched = EnrichedEvent {
             event: RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 event_type: EventType::FileOpen,

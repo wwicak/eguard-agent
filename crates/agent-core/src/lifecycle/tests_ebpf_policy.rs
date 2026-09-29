@@ -55,6 +55,7 @@ fn tick_pipeline_produces_detection_compliance_envelope_and_baseline_learning() 
 
     let now = 1_700_000_000i64;
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::ProcessExec,
@@ -121,6 +122,7 @@ fn tick_pipeline_produces_detection_compliance_envelope_and_baseline_learning() 
 fn module_load_payload_maps_to_detection_file_path() {
     let now = 1_700_000_100i64;
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::ModuleLoad,
@@ -362,6 +364,7 @@ async fn tick_drains_queued_events_past_a_filtered_event() {
     runtime.last_recovery_probe_unix = Some(now);
     runtime.last_kernel_integrity_scan_unix = Some(now);
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::ProcessExec,
@@ -371,6 +374,7 @@ async fn tick_drains_queued_events_past_a_filtered_event() {
         payload: "path=/usr/bin/cmd.exe;cmdline=cmd.exe /c whoami;ppid=1;cgroup_id=0;comm=cmd.exe;parent_comm=powershell.exe".to_string(),
     };
     let filtered = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         pid: 424243,
@@ -429,6 +433,7 @@ async fn connected_tick_batches_first_and_drain_events_into_two_sends() {
     runtime.last_recovery_probe_unix = Some(now);
     runtime.last_kernel_integrity_scan_unix = Some(now);
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::ProcessExec,
@@ -438,6 +443,7 @@ async fn connected_tick_batches_first_and_drain_events_into_two_sends() {
         payload: "path=/usr/bin/cmd.exe;cmdline=cmd.exe /c whoami;ppid=1;cgroup_id=0;comm=cmd.exe;parent_comm=powershell.exe".to_string(),
     };
     let filtered = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         pid: 424243,
@@ -534,6 +540,7 @@ fn ingest_polled_events_caps_per_poll_burst_and_backlog_growth() {
 
     let burst = (0..12)
         .map(|idx| platform_linux::RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: platform_linux::EventType::ProcessExec,
@@ -571,6 +578,7 @@ fn backlog_cap_preserves_frontloaded_high_value_file_open_events() {
 
     runtime.enqueue_raw_events_with_priority(vec![
         platform_linux::RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: platform_linux::EventType::FileOpen,
@@ -580,6 +588,7 @@ fn backlog_cap_preserves_frontloaded_high_value_file_open_events() {
             payload: "path=/var/log/messages;flags=0;mode=0;ppid=1;cgroup_id=30;comm=cat;parent_comm=bash".to_string(),
         },
         platform_linux::RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: platform_linux::EventType::FileOpen,
@@ -589,6 +598,7 @@ fn backlog_cap_preserves_frontloaded_high_value_file_open_events() {
             payload: "path=/tmp/eguard-preserve-ioc.bin;flags=0;mode=0;ppid=1;cgroup_id=30;comm=cat;parent_comm=bash".to_string(),
         },
         platform_linux::RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: platform_linux::EventType::FileOpen,
@@ -617,6 +627,7 @@ fn evaluate_tick_suppresses_known_windows_powershell_sensor_child() {
     let mut runtime = AgentRuntime::new(cfg).expect("runtime");
     runtime.ebpf_engine = platform_linux::EbpfEngine::disabled();
     runtime.raw_event_backlog.push_back(platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::ProcessExec,
@@ -647,6 +658,7 @@ fn windows_sensor_child_pid_suppression_clears_on_process_exit() {
     runtime.internal_process_start_time_reader = Some(|_| Some(100));
     let sensor_pid = 4702u32;
     runtime.raw_event_backlog.push_back(platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::ProcessExec,
@@ -667,6 +679,7 @@ fn windows_sensor_child_pid_suppression_clears_on_process_exit() {
     runtime
         .raw_event_backlog
         .push_back(platform_linux::RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: platform_linux::EventType::FileOpen,
@@ -683,6 +696,7 @@ fn windows_sensor_child_pid_suppression_clears_on_process_exit() {
     runtime
         .raw_event_backlog
         .push_back(platform_linux::RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: platform_linux::EventType::ProcessExit,
@@ -699,6 +713,7 @@ fn windows_sensor_child_pid_suppression_clears_on_process_exit() {
     runtime
         .raw_event_backlog
         .push_back(platform_linux::RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: platform_linux::EventType::ProcessExec,
@@ -725,6 +740,7 @@ fn evaluate_tick_suppresses_linux_internal_child_process_exec() {
     runtime
         .raw_event_backlog
         .push_back(platform_linux::RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: platform_linux::EventType::ProcessExec,
@@ -756,6 +772,7 @@ fn linux_agent_helper_pid_suppression_clears_on_process_exit() {
     runtime
         .raw_event_backlog
         .push_back(platform_linux::RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: platform_linux::EventType::ProcessExec,
@@ -776,6 +793,7 @@ fn linux_agent_helper_pid_suppression_clears_on_process_exit() {
     runtime
         .raw_event_backlog
         .push_back(platform_linux::RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: platform_linux::EventType::FileOpen,
@@ -792,6 +810,7 @@ fn linux_agent_helper_pid_suppression_clears_on_process_exit() {
     runtime
         .raw_event_backlog
         .push_back(platform_linux::RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: platform_linux::EventType::ProcessExit,
@@ -808,6 +827,7 @@ fn linux_agent_helper_pid_suppression_clears_on_process_exit() {
     runtime
         .raw_event_backlog
         .push_back(platform_linux::RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: platform_linux::EventType::ProcessExec,
@@ -836,6 +856,7 @@ fn linux_internal_descendant_process_is_suppressed_transitively() {
     let descendant_pid = 5704u32;
 
     runtime.raw_event_backlog.push_back(platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::ProcessExec,
@@ -853,6 +874,7 @@ fn linux_internal_descendant_process_is_suppressed_transitively() {
         .is_none());
 
     runtime.raw_event_backlog.push_back(platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::ProcessExec,
@@ -878,6 +900,7 @@ fn linux_internal_direct_child_file_open_is_suppressed_without_exec_tracking() {
     let mut runtime = AgentRuntime::new(cfg).expect("runtime");
     runtime.ebpf_engine = platform_linux::EbpfEngine::disabled();
     runtime.raw_event_backlog.push_back(platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -1178,6 +1201,7 @@ fn same_session_eicar_exact_ioc_file_open_survives_process_exec_burst_ingress_ca
 
     let mut burst = vec![
         platform_linux::RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: platform_linux::EventType::ProcessExec,
@@ -1187,6 +1211,7 @@ fn same_session_eicar_exact_ioc_file_open_survives_process_exec_burst_ingress_ca
             payload: "path=/usr/bin/systemctl;cmdline=systemctl --user show-environment;ppid=9500;cgroup_id=30;comm=systemctl;parent_comm=bash".to_string(),
         },
         platform_linux::RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: platform_linux::EventType::ProcessExec,
@@ -1196,6 +1221,7 @@ fn same_session_eicar_exact_ioc_file_open_survives_process_exec_burst_ingress_ca
             payload: "path=/usr/bin/readlink;cmdline=readlink /usr/bin/bash;ppid=9500;cgroup_id=30;comm=readlink;parent_comm=bash".to_string(),
         },
         platform_linux::RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: platform_linux::EventType::ProcessExec,
@@ -1205,6 +1231,7 @@ fn same_session_eicar_exact_ioc_file_open_survives_process_exec_burst_ingress_ca
             payload: "path=/usr/bin/basename;cmdline=basename /usr/bin/bash;ppid=9500;cgroup_id=30;comm=basename;parent_comm=bash".to_string(),
         },
         platform_linux::RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: platform_linux::EventType::ProcessExec,
@@ -1214,6 +1241,7 @@ fn same_session_eicar_exact_ioc_file_open_survives_process_exec_burst_ingress_ca
             payload: "path=/usr/bin/locale;cmdline=locale;ppid=9500;cgroup_id=30;comm=locale;parent_comm=bash".to_string(),
         },
         platform_linux::RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: platform_linux::EventType::ProcessExec,
@@ -1223,6 +1251,7 @@ fn same_session_eicar_exact_ioc_file_open_survives_process_exec_burst_ingress_ca
             payload: "path=/usr/bin/sed;cmdline=sed -n 1p /etc/profile;ppid=9500;cgroup_id=30;comm=sed;parent_comm=bash".to_string(),
         },
         platform_linux::RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: platform_linux::EventType::ProcessExec,
@@ -1235,6 +1264,7 @@ fn same_session_eicar_exact_ioc_file_open_survives_process_exec_burst_ingress_ca
             ),
         },
         platform_linux::RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: platform_linux::EventType::FileOpen,
@@ -1320,6 +1350,7 @@ fn same_session_eicar_exact_ioc_file_open_survives_high_value_home_burst_ingress
 
     let mut burst = vec![
         platform_linux::RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: platform_linux::EventType::FileOpen,
@@ -1329,6 +1360,7 @@ fn same_session_eicar_exact_ioc_file_open_survives_high_value_home_burst_ingress
             payload: "path=/home/agent/.ssh/known_hosts;flags=0;mode=0;ppid=9500;cgroup_id=30;comm=bash;parent_comm=sshd-session".to_string(),
         },
         platform_linux::RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: platform_linux::EventType::FileOpen,
@@ -1338,6 +1370,7 @@ fn same_session_eicar_exact_ioc_file_open_survives_high_value_home_burst_ingress
             payload: "path=/home/agent/.local/share/direnv/allow/1234;flags=0;mode=0;ppid=9500;cgroup_id=30;comm=bash;parent_comm=sshd-session".to_string(),
         },
         platform_linux::RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: platform_linux::EventType::FileOpen,
@@ -1347,6 +1380,7 @@ fn same_session_eicar_exact_ioc_file_open_survives_high_value_home_burst_ingress
             payload: "path=/home/agent/projects/demo/.envrc;flags=0;mode=0;ppid=9500;cgroup_id=30;comm=bash;parent_comm=sshd-session".to_string(),
         },
         platform_linux::RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: platform_linux::EventType::FileOpen,
@@ -1560,6 +1594,7 @@ async fn send_event_batch_timeout_rebuffers_and_returns_promptly() {
 #[test]
 fn low_value_linux_systemd_cgroup_chatter_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -1575,6 +1610,7 @@ fn low_value_linux_systemd_cgroup_chatter_is_filtered_before_backloging() {
 #[test]
 fn systemd_spawned_loader_library_chatter_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -1590,6 +1626,7 @@ fn systemd_spawned_loader_library_chatter_is_filtered_before_backloging() {
 #[test]
 fn systemd_runtime_loader_cache_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -1605,6 +1642,7 @@ fn systemd_runtime_loader_cache_reads_are_filtered_before_backloging() {
 #[test]
 fn systemd_user_worker_library_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -1620,6 +1658,7 @@ fn systemd_user_worker_library_reads_are_filtered_before_backloging() {
 #[test]
 fn systemd_selinux_runtime_chatter_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -1635,6 +1674,7 @@ fn systemd_selinux_runtime_chatter_is_filtered_before_backloging() {
 #[test]
 fn systemd_selinux_policy_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -1650,6 +1690,7 @@ fn systemd_selinux_policy_reads_are_filtered_before_backloging() {
 #[test]
 fn systemd_pam_policy_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -1665,6 +1706,7 @@ fn systemd_pam_policy_reads_are_filtered_before_backloging() {
 #[test]
 fn systemd_user_hidden_config_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -1680,6 +1722,7 @@ fn systemd_user_hidden_config_reads_are_filtered_before_backloging() {
 #[test]
 fn systemd_journald_log_file_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -1695,6 +1738,7 @@ fn systemd_journald_log_file_reads_are_filtered_before_backloging() {
 #[test]
 fn systemd_journald_proc_scrape_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -1710,6 +1754,7 @@ fn systemd_journald_proc_scrape_is_filtered_before_backloging() {
 #[test]
 fn systemd_cleanup_relative_path_chatter_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -1726,6 +1771,7 @@ fn systemd_cleanup_relative_path_chatter_is_filtered_before_backloging() {
 #[test]
 fn agent_spawned_systemctl_loader_chatter_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -1741,6 +1787,7 @@ fn agent_spawned_systemctl_loader_chatter_is_filtered_before_backloging() {
 #[test]
 fn agent_spawned_systemctl_procfs_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -1756,6 +1803,7 @@ fn agent_spawned_systemctl_procfs_reads_are_filtered_before_backloging() {
 #[test]
 fn agent_spawned_rpm_metadata_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -1771,6 +1819,7 @@ fn agent_spawned_rpm_metadata_reads_are_filtered_before_backloging() {
 #[test]
 fn sshd_session_pam_stack_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -1786,6 +1835,7 @@ fn sshd_session_pam_stack_reads_are_filtered_before_backloging() {
 #[test]
 fn sshd_session_auth_config_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -1801,6 +1851,7 @@ fn sshd_session_auth_config_reads_are_filtered_before_backloging() {
 #[test]
 fn sshd_session_bootstrap_proc_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -1816,6 +1867,7 @@ fn sshd_session_bootstrap_proc_reads_are_filtered_before_backloging() {
 #[test]
 fn sshd_session_crypto_policy_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -1831,6 +1883,7 @@ fn sshd_session_crypto_policy_reads_are_filtered_before_backloging() {
 #[test]
 fn sshd_session_selinux_runtime_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -1846,6 +1899,7 @@ fn sshd_session_selinux_runtime_reads_are_filtered_before_backloging() {
 #[test]
 fn sshd_session_environment_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -1861,6 +1915,7 @@ fn sshd_session_environment_reads_are_filtered_before_backloging() {
 #[test]
 fn sshd_session_nologin_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -1876,6 +1931,7 @@ fn sshd_session_nologin_reads_are_filtered_before_backloging() {
 #[test]
 fn sshd_session_security_policy_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -1891,6 +1947,7 @@ fn sshd_session_security_policy_reads_are_filtered_before_backloging() {
 #[test]
 fn ssh_login_shell_dotfile_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -1906,6 +1963,7 @@ fn ssh_login_shell_dotfile_reads_are_filtered_before_backloging() {
 #[test]
 fn ssh_login_shell_profile_d_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -1921,6 +1979,7 @@ fn ssh_login_shell_profile_d_reads_are_filtered_before_backloging() {
 #[test]
 fn sshd_session_authorized_keys_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -1936,6 +1995,7 @@ fn sshd_session_authorized_keys_reads_are_filtered_before_backloging() {
 #[test]
 fn unix_chkpwd_bootstrap_localtime_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -1951,6 +2011,7 @@ fn unix_chkpwd_bootstrap_localtime_reads_are_filtered_before_backloging() {
 #[test]
 fn agent_spawned_systemctl_unit_reads_remain_visible() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -1966,6 +2027,7 @@ fn agent_spawned_systemctl_unit_reads_remain_visible() {
 #[test]
 fn user_spawned_rpm_metadata_reads_remain_visible() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -1981,6 +2043,7 @@ fn user_spawned_rpm_metadata_reads_remain_visible() {
 #[test]
 fn sudo_auth_stack_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -1998,6 +2061,7 @@ fn sudo_auth_stack_reads_are_filtered_before_backloging() {
 #[test]
 fn sudo_pam_library_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -2013,6 +2077,7 @@ fn sudo_pam_library_reads_are_filtered_before_backloging() {
 #[test]
 fn unix_chkpwd_shadow_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -2028,6 +2093,7 @@ fn unix_chkpwd_shadow_reads_are_filtered_before_backloging() {
 #[test]
 fn unix_chkpwd_passwd_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -2043,6 +2109,7 @@ fn unix_chkpwd_passwd_reads_are_filtered_before_backloging() {
 #[test]
 fn unix_chkpwd_nsswitch_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -2058,6 +2125,7 @@ fn unix_chkpwd_nsswitch_reads_are_filtered_before_backloging() {
 #[test]
 fn sudo_security_policy_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -2073,6 +2141,7 @@ fn sudo_security_policy_reads_are_filtered_before_backloging() {
 #[test]
 fn systemd_userwork_shadow_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -2088,6 +2157,7 @@ fn systemd_userwork_shadow_reads_are_filtered_before_backloging() {
 #[test]
 fn benign_procfd_exec_runtime_artifacts_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::ProcessExec,
@@ -2104,6 +2174,7 @@ fn benign_procfd_exec_runtime_artifacts_are_filtered_before_backloging() {
 #[test]
 fn sshd_session_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::ProcessExec,
@@ -2120,6 +2191,7 @@ fn sshd_session_exec_noise_is_filtered_before_backloging() {
 #[test]
 fn unix_chkpwd_ssh_auth_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::ProcessExec,
@@ -2136,6 +2208,7 @@ fn unix_chkpwd_ssh_auth_exec_noise_is_filtered_before_backloging() {
 #[test]
 fn systemd_user_manager_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::ProcessExec,
@@ -2151,6 +2224,7 @@ fn systemd_user_manager_exec_noise_is_filtered_before_backloging() {
 #[test]
 fn systemd_user_generator_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::ProcessExec,
@@ -2166,6 +2240,7 @@ fn systemd_user_generator_exec_noise_is_filtered_before_backloging() {
 #[test]
 fn systemd_user_environment_generator_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::ProcessExec,
@@ -2181,6 +2256,7 @@ fn systemd_user_environment_generator_exec_noise_is_filtered_before_backloging()
 #[test]
 fn systemd_user_environment_generator_exec_noise_without_path_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::ProcessExec,
@@ -2196,6 +2272,7 @@ fn systemd_user_environment_generator_exec_noise_without_path_is_filtered_before
 #[test]
 fn systemd_user_generator_exec_noise_without_path_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::ProcessExec,
@@ -2211,6 +2288,7 @@ fn systemd_user_generator_exec_noise_without_path_is_filtered_before_backloging(
 #[test]
 fn systemd_tmpfiles_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::ProcessExec,
@@ -2226,6 +2304,7 @@ fn systemd_tmpfiles_exec_noise_is_filtered_before_backloging() {
 #[test]
 fn systemd_tmpfiles_exec_noise_without_path_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::ProcessExec,
@@ -2243,6 +2322,7 @@ fn systemd_tmpfiles_exec_noise_without_path_is_filtered_before_backloging() {
 #[test]
 fn bash_systemctl_show_environment_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::ProcessExec,
@@ -2258,6 +2338,7 @@ fn bash_systemctl_show_environment_exec_noise_is_filtered_before_backloging() {
 #[test]
 fn systemd_user_runtime_dir_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::ProcessExec,
@@ -2273,6 +2354,7 @@ fn systemd_user_runtime_dir_exec_noise_is_filtered_before_backloging() {
 #[test]
 fn systemd_user_runtime_dir_exec_noise_without_path_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::ProcessExec,
@@ -2288,6 +2370,7 @@ fn systemd_user_runtime_dir_exec_noise_without_path_is_filtered_before_backlogin
 #[test]
 fn systemd_user_manager_exec_noise_without_path_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::ProcessExec,
@@ -2303,6 +2386,7 @@ fn systemd_user_manager_exec_noise_without_path_is_filtered_before_backloging() 
 #[test]
 fn systemd_systemctl_exec_noise_without_path_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::ProcessExec,
@@ -2319,6 +2403,7 @@ fn systemd_systemctl_exec_noise_without_path_is_filtered_before_backloging() {
 #[test]
 fn unix_chkpwd_systemd_exec_noise_without_path_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::ProcessExec,
@@ -2335,6 +2420,7 @@ fn unix_chkpwd_systemd_exec_noise_without_path_is_filtered_before_backloging() {
 #[test]
 fn bash_profile_helper_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::ProcessExec,
@@ -2350,6 +2436,7 @@ fn bash_profile_helper_exec_noise_is_filtered_before_backloging() {
 #[test]
 fn systemd_started_bash_login_shell_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::ProcessExec,
@@ -2367,6 +2454,7 @@ fn systemd_started_bash_login_shell_exec_noise_is_filtered_before_backloging() {
 #[test]
 fn sshd_session_started_bash_login_shell_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::ProcessExec,
@@ -2384,6 +2472,7 @@ fn sshd_session_started_bash_login_shell_exec_noise_is_filtered_before_backlogin
 #[test]
 fn sshd_session_started_pathless_bash_login_shell_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::ProcessExec,
@@ -2400,6 +2489,7 @@ fn sshd_session_started_pathless_bash_login_shell_exec_noise_is_filtered_before_
 #[test]
 fn bash_nohup_startup_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::ProcessExec,
@@ -2417,6 +2507,7 @@ fn bash_nohup_startup_exec_noise_is_filtered_before_backloging() {
 #[test]
 fn bash_basename_startup_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::ProcessExec,
@@ -2433,6 +2524,7 @@ fn bash_basename_startup_exec_noise_is_filtered_before_backloging() {
 #[test]
 fn bash_cat_startup_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::ProcessExec,
@@ -2449,6 +2541,7 @@ fn bash_cat_startup_exec_noise_is_filtered_before_backloging() {
 #[test]
 fn bash_readlink_startup_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::ProcessExec,
@@ -2465,6 +2558,7 @@ fn bash_readlink_startup_exec_noise_is_filtered_before_backloging() {
 #[test]
 fn bash_locale_startup_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::ProcessExec,
@@ -2481,6 +2575,7 @@ fn bash_locale_startup_exec_noise_is_filtered_before_backloging() {
 #[test]
 fn bash_tr_startup_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::ProcessExec,
@@ -2497,6 +2592,7 @@ fn bash_tr_startup_exec_noise_is_filtered_before_backloging() {
 #[test]
 fn bash_tty_startup_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::ProcessExec,
@@ -2513,6 +2609,7 @@ fn bash_tty_startup_exec_noise_is_filtered_before_backloging() {
 #[test]
 fn bash_sed_startup_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::ProcessExec,
@@ -2529,6 +2626,7 @@ fn bash_sed_startup_exec_noise_is_filtered_before_backloging() {
 #[test]
 fn bash_bashrc_read_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -2545,6 +2643,7 @@ fn bash_bashrc_read_noise_is_filtered_before_backloging() {
 #[test]
 fn bash_curlrc_read_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -2561,6 +2660,7 @@ fn bash_curlrc_read_noise_is_filtered_before_backloging() {
 #[test]
 fn sshd_session_motd_read_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -2578,6 +2678,7 @@ fn sshd_session_motd_read_noise_is_filtered_before_backloging() {
 #[test]
 fn sshd_session_nologin_read_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -2594,6 +2695,7 @@ fn sshd_session_nologin_read_noise_is_filtered_before_backloging() {
 #[test]
 fn sshd_session_boot_id_read_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -2610,6 +2712,7 @@ fn sshd_session_boot_id_read_noise_is_filtered_before_backloging() {
 #[test]
 fn sshd_session_userdb_runtime_read_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -2626,6 +2729,7 @@ fn sshd_session_userdb_runtime_read_noise_is_filtered_before_backloging() {
 #[test]
 fn sshd_session_unix_chkpwd_loader_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -2642,6 +2746,7 @@ fn sshd_session_unix_chkpwd_loader_noise_is_filtered_before_backloging() {
 #[test]
 fn systemd_userwork_root_probe_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -2658,6 +2763,7 @@ fn systemd_userwork_root_probe_noise_is_filtered_before_backloging() {
 #[test]
 fn sshd_session_bash_locale_file_read_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -2674,6 +2780,7 @@ fn sshd_session_bash_locale_file_read_noise_is_filtered_before_backloging() {
 #[test]
 fn sshd_session_bash_gconv_cache_read_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -2690,6 +2797,7 @@ fn sshd_session_bash_gconv_cache_read_noise_is_filtered_before_backloging() {
 #[test]
 fn sshd_session_oom_score_adj_read_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -2706,6 +2814,7 @@ fn sshd_session_oom_score_adj_read_noise_is_filtered_before_backloging() {
 #[test]
 fn bash_basename_pathless_file_open_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -2723,6 +2832,7 @@ fn bash_basename_pathless_file_open_noise_is_filtered_before_backloging() {
 #[test]
 fn bash_readlink_pathless_file_open_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -2740,6 +2850,7 @@ fn bash_readlink_pathless_file_open_noise_is_filtered_before_backloging() {
 #[test]
 fn linux_console_device_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -2757,6 +2868,7 @@ fn linux_console_device_reads_are_filtered_before_backloging() {
 #[test]
 fn pathless_linux_file_write_events_are_filtered_before_backlogging() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileWrite,
@@ -2772,6 +2884,7 @@ fn pathless_linux_file_write_events_are_filtered_before_backlogging() {
 #[test]
 fn suspicious_linux_tmp_file_open_is_not_filtered() {
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -2787,6 +2900,7 @@ fn suspicious_linux_tmp_file_open_is_not_filtered() {
 #[test]
 fn suspicious_linux_tmp_file_open_is_prioritized_ahead_of_systemd_chatter() {
     let noisy = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -2796,6 +2910,7 @@ fn suspicious_linux_tmp_file_open_is_prioritized_ahead_of_systemd_chatter() {
         payload: "path=/sys/fs/cgroup/user.slice/memory.events;flags=0;mode=0;ppid=0;cgroup_id=30;comm=systemd;parent_comm=swapper/0".to_string(),
     };
     let suspicious = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -2818,6 +2933,7 @@ fn frontloaded_high_priority_linux_event_is_dequeued_before_existing_low_value_b
 
     let mut runtime = AgentRuntime::new(cfg).expect("runtime");
     runtime.raw_event_backlog.push_back(platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -2828,6 +2944,7 @@ fn frontloaded_high_priority_linux_event_is_dequeued_before_existing_low_value_b
     });
 
     runtime.enqueue_raw_events_with_priority(vec![platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,
@@ -2853,6 +2970,7 @@ fn sampling_preserves_frontloaded_high_value_linux_file_open() {
     let mut runtime = AgentRuntime::new(cfg).expect("runtime");
     runtime.enqueue_raw_events_with_priority(vec![
         platform_linux::RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: platform_linux::EventType::ProcessExec,
@@ -2862,6 +2980,7 @@ fn sampling_preserves_frontloaded_high_value_linux_file_open() {
             payload: "path=/usr/bin/cat;cmdline=cat /home/agent/eicar_exact_proof.com >/dev/null;ppid=6999;cgroup_id=30;comm=cat;parent_comm=bash".to_string(),
         },
         platform_linux::RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: platform_linux::EventType::FileOpen,
@@ -2871,6 +2990,7 @@ fn sampling_preserves_frontloaded_high_value_linux_file_open() {
             payload: "path=/home/agent/eicar_exact_proof.com;flags=0;mode=0;ppid=6999;cgroup_id=30;comm=cat;parent_comm=bash".to_string(),
         },
         platform_linux::RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: platform_linux::EventType::FileOpen,
@@ -2917,6 +3037,7 @@ fn next_raw_event_continues_polling_kernel_when_backlog_is_non_empty() {
     runtime.ebpf_engine =
         platform_linux::EbpfEngine::from_replay(&replay_path).expect("replay backend");
     runtime.raw_event_backlog.push_back(platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::FileOpen,

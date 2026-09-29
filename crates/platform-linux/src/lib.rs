@@ -45,8 +45,38 @@ pub enum EventType {
     LsmBlock,
 }
 
+/// Keep identical in platform-linux, platform-windows, and platform-macos.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RawEventFields {
+    pub path: Option<String>,
+    pub secondary_path: Option<String>,
+    pub cmdline: Option<String>,
+    pub comm: Option<String>,
+    pub parent_comm: Option<String>,
+    pub ppid: Option<u32>,
+    pub cgroup_id: Option<u64>,
+    pub flags: Option<u32>,
+    pub mode: Option<u32>,
+    pub dst_ip: Option<String>,
+    pub dst_port: Option<u16>,
+    pub src_ip: Option<String>,
+    pub src_port: Option<u16>,
+    pub family: Option<u16>,
+    pub protocol: Option<u8>,
+    pub domain: Option<String>,
+    pub qtype: Option<u16>,
+    pub qclass: Option<u16>,
+    pub module: Option<String>,
+    pub size: Option<u64>,
+    pub fd: Option<u32>,
+    pub reason: Option<u8>,
+    pub subject: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawEvent {
+    #[serde(default)]
+    pub fields: RawEventFields,
     /// Process (TGID) generation: boot-time nanoseconds captured at emission.
     pub pid_start_ns: Option<u64>,
     /// Real parent TGID generation captured at emission.
@@ -56,6 +86,21 @@ pub struct RawEvent {
     pub uid: u32,
     pub ts_ns: u64,
     pub payload: String,
+}
+
+impl Default for RawEvent {
+    fn default() -> Self {
+        Self {
+            fields: Default::default(),
+            pid_start_ns: None,
+            ppid_start_ns: None,
+            event_type: EventType::ProcessExec,
+            pid: 0,
+            uid: 0,
+            ts_ns: 0,
+            payload: String::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

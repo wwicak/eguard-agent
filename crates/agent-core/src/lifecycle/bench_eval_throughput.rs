@@ -114,6 +114,7 @@ fn bench_eval_throughput() {
         let (mut ppid, mut comm, mut parent_comm) = lineage[0].clone();
         // Warm compliance as in tick_drains_queued_events_past_a_filtered_event.
         runtime.raw_event_backlog.push_back(RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: EventType::ProcessExec, pid: fixture.children[0], uid: 1000, ts_ns: 1,

@@ -32,6 +32,7 @@ fn queue_event(runtime: &mut AgentRuntime) {
     runtime
         .raw_event_backlog
         .push_back(platform_linux::RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: platform_linux::EventType::ProcessExec,
@@ -492,6 +493,7 @@ async fn response_budget_is_shared_by_all_evaluations_in_a_tick() {
                 "conditions":{"require_signals":[]}, "actions":[{"action":"capture"}]}]
         }));
     let raw = platform_linux::RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: platform_linux::EventType::ProcessExec,
@@ -508,6 +510,7 @@ async fn response_budget_is_shared_by_all_evaluations_in_a_tick() {
         runtime
             .raw_event_backlog
             .push_back(platform_linux::RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 pid: 424242 + i,

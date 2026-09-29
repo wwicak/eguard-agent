@@ -685,6 +685,7 @@ impl ProcessPollBackend {
 
             let payload = process_exec_payload(&current.cmdline);
             self.pending.push_back(super::RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 event_type: super::EventType::ProcessExec,
@@ -701,6 +702,7 @@ impl ProcessPollBackend {
             }
 
             self.pending.push_back(super::RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 event_type: super::EventType::ProcessExit,
@@ -842,6 +844,7 @@ fn decode_event_value(value: &Value) -> Option<super::RawEvent> {
     let ppid_start_ns = first_u64(process, &[&["parent_audit_token", "pidversion"]]);
 
     Some(super::RawEvent {
+        fields: Default::default(),
         pid_start_ns,
         ppid_start_ns,
         event_type,

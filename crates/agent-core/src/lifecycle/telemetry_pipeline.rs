@@ -2000,6 +2000,7 @@ mod priority_tests {
             .spawn()
             .expect("child");
         let mut event = RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             pid: child.id(),
@@ -2089,6 +2090,7 @@ mod priority_tests {
         };
         let mut runtime = AgentRuntime::new(cfg).expect("runtime");
         let mut event = RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             pid: u32::MAX,
@@ -2150,6 +2152,7 @@ mod priority_tests {
             .parse::<u32>()
             .unwrap();
         let event = RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             pid,
@@ -2187,6 +2190,7 @@ mod priority_tests {
         let mut runtime = AgentRuntime::new(cfg).expect("runtime");
         for index in 0..4020 {
             runtime.raw_event_backlog.push_back(RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 pid: 7001,
@@ -2221,6 +2225,7 @@ mod priority_tests {
     fn batch_priority_is_computed_once_per_event_and_ties_stay_stable() {
         let events: Vec<_> = (0..128)
             .map(|pid| RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 pid,
