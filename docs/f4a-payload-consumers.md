@@ -10,6 +10,10 @@ Legacy payload serialization is unchanged (F4a golden remains the byte oracle).
 - `EnrichmentCache::prime_process_metadata` and `enrich_event_with_cache` use
   `raw_event_metadata`: typed paths, command/parent hints, PPID, destination,
   domain, size and independent flags/mode, with a lazily cached legacy fallback.
+  ProcessExit `comm` remains identity-only, not a command-line hint: naked exits
+  preserve legacy unknown process/absent command line when /proc is unavailable.
+  An unmodified replay-to-detection regression covers this mapping (the F4a
+  envelope golden intentionally replaces host-dependent process metadata).
 - `parse_payload_metadata`, KV/endpoints/percent decoding and unstructured
   parsers are **fallback-only**. No producer or legacy rendering changes.
 

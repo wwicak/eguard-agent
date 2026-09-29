@@ -561,3 +561,12 @@ Proof on fa-start-a5r production files: existing-parent regression observed 0700
 Validation: full grpc-client 110 passed / 1 failed (alternate_grpc_server_addr_switches_known_agent_ports, separately reproduced on base); final buffer module 18/18; agent-core reviewfix 21/21, payload integrity 6/6, eBPF policy 111/111; workspace fmt and diff whitespace passed. Offline cargo commands used this worktree's target and timeout 1500, each shell under 20 minutes. Evidence: /home/dimas/eguard-lab-soak/followups/a5r-validation/.
 
 Residuals: at-least-once duplicates after send-before-ack crashes; memory fallback remains volatile and server marker persistence is outside scope; pre-existing SQLite severity/rule_name omission remains. Shared/foreign-owned directories are warned about, not rejected: 0600 is not protection against directory-owner replacement/unlink attacks. Existing best-effort db chmod and WAL durability semantics unchanged.
+
+## F4b review correction
+- [x] Preserve naked ProcessExit metadata mapping.
+- [x] Prove unmodified replay regression before fix and run offline validation.
+- [x] Commit and refresh exported patch/status.
+
+Review: d826a43 excludes ProcessExit comm from command-line hints, preserving baseline telemetry and low-value filtering. New real replay/enrichment/detection test does not overwrite enriched metadata; it fails on pre-fix dc00a34 (Some("ordinary") versus None), passes with the fix, and passes with tagged baseline Linux production code. This is a restoration, so failure on the original baseline is neither expected nor desirable; first-pass typed-consumer fail proofs remain unchanged.
+
+Validation: Linux 102 and macOS 46 tests passed; agent-core eBPF policy 111, reviewfix 21, payload integrity 12, F4b 5 and unchanged golden 1 passed; Windows GNU cross-check passed. Full core run hit its 1500-second limit after 464 reported outcomes; two failures were independently reproduced with all changed crate files restored to tagged baseline: memory layout ledger lower bound and runtime bootstrap last-known-good bundle (None vs rules-2026.02.14.42). Both are out of scope, not introduced by F4b. Evidence: /home/dimas/eguard-lab-soak/followups/f4b-review-validation/. First-pass benchmark remains host-contended and was not repeated for this narrow semantic restoration. Workspace format and tagged diff checks passed.
