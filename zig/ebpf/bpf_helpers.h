@@ -36,7 +36,9 @@ struct mm_struct {
 /* Minimal CO-RE-aware task struct subset used for parent process attribution. */
 struct task_struct {
     struct task_struct *real_parent;
+    struct task_struct *group_leader;
     struct mm_struct *mm;
+    __u64 start_boottime;
     __u32 tgid;
     char comm[16];
 } __preserve_access_index;
@@ -221,13 +223,16 @@ read_tp_data_loc_str(void *dst, __u32 dst_sz, void *ctx, __u32 loc_offset)
 #define EVENT_FILE_RENAME    9
 #define EVENT_FILE_UNLINK    10
 
-/* ── Event header — 21 bytes packed ────────────────────────── *
- * Matches parse_raw_event() in platform-linux/src/ebpf.rs:
- *   [0]  event_type  u8
+/* ── Event header — v2: 37 bytes packed ────────────────────────── *
+ * Matches parse_raw_event() in platform-linux/src/ebpf/codec.rs:
+ *   [0]  event_type  u8 (high bit marks v2)
  *   [1]  pid         u32 LE
  *   [5]  tid         u32 LE
  *   [9]  uid         u32 LE
  *   [13] timestamp   u64 LE
+ *   [21] pid_start   u64 LE (TGID leader start_boottime)
+ *   [29] ppid_start  u64 LE (real parent TGID leader start_boottime)
+ * Zero generation means unavailable; v1 records end their header at byte 21.
  */
 struct event_hdr {
     __u8  event_type;
@@ -235,6 +240,8 @@ struct event_hdr {
     __u32 tid;
     __u32 uid;
     __u64 timestamp_ns;
+    __u64 pid_start_ns;
+    __u64 ppid_start_ns;
 } __attribute__((packed));
 
 /* Fill header from current-task context */
@@ -243,11 +250,28 @@ fill_hdr(struct event_hdr *h, __u8 etype)
 {
     __u64 pt = bpf_get_current_pid_tgid();
     __u64 ug = bpf_get_current_uid_gid();
-    h->event_type   = etype;
+    /* High bit versions the extended header; legacy records have it clear. */
+    h->event_type   = etype | 0x80;
     h->pid          = (__u32)(pt >> 32);
     h->tid          = (__u32)(pt & 0xFFFFFFFF);
     h->uid          = (__u32)(ug & 0xFFFFFFFF);
     h->timestamp_ns = bpf_ktime_get_ns();
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    struct task_struct *parent = 0;
+    struct task_struct *leader = 0;
+    /* PID is TGID: use the leader's generation, not a worker thread's.
+     * preserve_access_index makes these probe reads CO-RE relocatable. */
+    bpf_probe_read_kernel(&leader, sizeof(leader), &task->group_leader);
+    if (leader)
+        bpf_probe_read_kernel(&h->pid_start_ns, sizeof(h->pid_start_ns),
+                              &leader->start_boottime);
+    bpf_probe_read_kernel(&parent, sizeof(parent), &task->real_parent);
+    leader = 0;
+    if (parent)
+        bpf_probe_read_kernel(&leader, sizeof(leader), &parent->group_leader);
+    if (leader)
+        bpf_probe_read_kernel(&h->ppid_start_ns, sizeof(h->ppid_start_ns),
+                              &leader->start_boottime);
 }
 
 /* GPL — required for probe_read*, perf_event_output, and ringbuf helpers */

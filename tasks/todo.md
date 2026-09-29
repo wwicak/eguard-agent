@@ -1,3 +1,19 @@
+# F15 — emission-time process generations (b1-generation)
+
+- [x] Version shared eBPF header; capture TGID/real-parent leader generations via CO-RE.
+- [x] Extend typed RawEvent identities across producers and legacy/v2 codecs.
+- [x] Bind suppression to emitted identities, with proc clock-tick compatibility for legacy records.
+- [x] Prove delayed PID, parent mismatch, tick fallback, codec and worker-leader regressions fail on the base tag.
+- [x] Finish broader suites, record build/format results, commit and export.
+
+Design approved with supervisor: event PID and parent PID are TGIDs, so generation reads follow group_leader (not worker task start). V2 sets event-type high bit and appends two u64s; old 21-byte records remain readable with None generations. Tests use exact nanoseconds for two emitted identities, and CLK_TCK granularity only when crossing to proc ticks.
+
+Baseline proof: stashed implementation and transplanted tests onto fb-start-b1-generation (30305f1), adding only inert RawEvent/C struct fields and default constructor fields to compile. delayed_event_cannot_bind_reused_pid_generation, delayed_parent_event_requires_emitted_parent_generation, and event_generation_fallback_compares_proc_at_clock_tick_granularity failed suppression assertions (6 existing tests passed). generation_header_round_trips_and_preserves_legacy_records failed its v2 version-bit assertion. The host header harness failed its leader-generation assertion with only C struct schema transplanted (version-bit assertion omitted for that baseline run). Restored implementation: all pass. Logs: /tmp/b1-baseline-{agent,codec,header}.log.
+
+Validation so far: zig build agent-artifacts passes for all 18 ring/perf objects; all contain start_boottime BTF and process_exec has BTF.ext. Host C worker/parent-leader harness passes. Linux 99, macOS 44, Windows 116 tests pass; Windows GNU and macOS aarch64 cross-checks pass. Required agent filters: policy 111, reviewfix 13, payload_integrity 9 pass. Touched-crate fmt passes except the unchanged Windows screen_lock.rs:34 baseline formatting; touched Windows files pass rustfmt. Acceptance tests were attempted but cannot compile because baseline tests_rsp_contract.rs ResponseReport lacks action_type_label (verified unchanged in base tag). No unrelated fix included. Live privileged BPF attachment remains unvalidated (host EPERM). Legacy/missing generations intentionally retain proc/other-platform fallback limitations.
+
+Final module sweep: 90 passed, 3 failed, 1 ignored in 1362s. Failures are the two listed async-worker queue tests and memory_layout_ledger_sums_to_target_rss_envelope; the latter was reproduced on pristine fb-start-b1-generation (fixed budgets total 18.3 MiB, asserted minimum 20 MiB). The long observability_snapshot_reports_bounded_command_backlog_progress test eventually passed; isolated on pristine base with timeout 300, --test-threads=1 --nocapture it times out (124), proving pre-existing scan-fixture slowness. A filtered sweep excluding those four tests passes 89 tests (+1 ignored benchmark). The optional full-agent sweep was interrupted after 145 passing tests to focus on touched modules. No test process remains running. Baseline evidence: /tmp/b1-baseline-memory.log and /tmp/b1-baseline-slow.log. Final validation logs are exported under /home/dimas/eguard-lab-soak/followups/b1-generation-validation/; patch: fb-start-b1-generation.patch. Follow-up: privileged kernel smoke/soak with the newly built objects, and independent fixes for the pre-existing test/format blockers.
+
 # F13/F14 — decoded fallback follow-up
 
 - [x] Add a regression proving naked escaped paths remain opaque (verify failure first).

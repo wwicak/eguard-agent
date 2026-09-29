@@ -33,27 +33,22 @@ pub(super) fn encode_replay_event(json_line: &str) -> Result<Vec<u8>> {
     let uid = v.get("uid").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
     let ts_ns = v.get("ts_ns").and_then(|v| v.as_u64()).unwrap_or(0);
 
-    // Build header: type(1) + pid(4) + ???(4 — uid occupies offset 9..13) + uid(4) + ts_ns(8)
-    // Header layout from parse_raw_event:
-    //   offset 0:  event_type (u8)
-    //   offset 1:  pid        (u32 LE)
-    //   offset 5:  ??? 4 bytes (from read_u32_le(raw, 9) → uid at byte 9)
-    // Wait, let me re-read the header parsing:
-    //   let event_type = parse_event_type(raw[0])?;         // offset 0, 1 byte
-    //   let pid = read_u32_le(raw, 1)?;                     // offset 1, 4 bytes  → [1..5)
-    //   let uid = read_u32_le(raw, 9)?;                     // offset 9, 4 bytes  → [9..13)
-    //   let timestamp_ns = read_u64_le(raw, 13)?;           // offset 13, 8 bytes → [13..21)
-    // EVENT_HEADER_SIZE = 1 + 4 + 4 + 4 + 8 = 21
-    // So bytes [5..9) are 4 padding/unused bytes (likely ppid in the kernel struct).
-
-    let ppid_field = v.get("ppid").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    // Preserve legacy replay records; generation-bearing records use header v2.
+    let pid_start_ns = v.get("pid_start_ns").and_then(|v| v.as_u64());
+    let ppid_start_ns = v.get("ppid_start_ns").and_then(|v| v.as_u64());
+    let version_two = pid_start_ns.is_some() || ppid_start_ns.is_some();
+    let tid = v.get("tid").and_then(|v| v.as_u64()).unwrap_or(pid as u64) as u32;
 
     let mut buf = Vec::with_capacity(256);
-    buf.push(type_id); // offset 0
+    buf.push(type_id | if version_two { 0x80 } else { 0 }); // offset 0
     buf.extend_from_slice(&pid.to_le_bytes()); // offset 1..5
-    buf.extend_from_slice(&ppid_field.to_le_bytes()); // offset 5..9 (unused in parse but keep layout)
+    buf.extend_from_slice(&tid.to_le_bytes()); // offset 5..9
     buf.extend_from_slice(&uid.to_le_bytes()); // offset 9..13
     buf.extend_from_slice(&ts_ns.to_le_bytes()); // offset 13..21
+    if version_two {
+        buf.extend_from_slice(&pid_start_ns.unwrap_or(0).to_le_bytes());
+        buf.extend_from_slice(&ppid_start_ns.unwrap_or(0).to_le_bytes());
+    }
 
     // Append payload based on event type
     match type_id {

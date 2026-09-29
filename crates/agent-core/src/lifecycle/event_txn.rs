@@ -330,6 +330,8 @@ mod tests {
     #[test]
     fn coalesce_file_event_key_normalizes_windows_separators() {
         let raw = RawEvent {
+            pid_start_ns: None,
+            ppid_start_ns: None,
             event_type: EventType::FileWrite,
             pid: 10,
             uid: 0,
@@ -344,6 +346,8 @@ mod tests {
     #[test]
     fn coalesce_file_event_key_distinguishes_read_and_write_file_open_modes() {
         let write_raw = RawEvent {
+            pid_start_ns: None,
+            ppid_start_ns: None,
             event_type: EventType::FileOpen,
             pid: 10,
             uid: 0,
@@ -351,6 +355,8 @@ mod tests {
             payload: "path=/tmp/eicar.com;flags=65;mode=420".to_string(),
         };
         let read_raw = RawEvent {
+            pid_start_ns: None,
+            ppid_start_ns: None,
             event_type: EventType::FileOpen,
             pid: 10,
             uid: 0,
@@ -368,6 +374,8 @@ mod tests {
     #[test]
     fn from_raw_file_rename_prefers_destination_subject() {
         let raw = RawEvent {
+            pid_start_ns: None,
+            ppid_start_ns: None,
             event_type: EventType::FileRename,
             pid: 11,
             uid: 0,
@@ -385,6 +393,8 @@ mod tests {
     #[test]
     fn from_raw_tcp_connect_parses_dst_ip_and_port_fields() {
         let raw = RawEvent {
+            pid_start_ns: None,
+            ppid_start_ns: None,
             event_type: EventType::TcpConnect,
             pid: 77,
             uid: 0,
@@ -402,6 +412,8 @@ mod tests {
     fn from_enriched_builds_stable_transaction_key() {
         let enriched = EnrichedEvent {
             event: RawEvent {
+                pid_start_ns: None,
+                ppid_start_ns: None,
                 event_type: EventType::TcpConnect,
                 pid: 200,
                 uid: 0,

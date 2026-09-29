@@ -40,6 +40,62 @@ fn encode_event(event_type: u8, pid: u32, uid: u32, ts_ns: u64, payload: &[u8]) 
 }
 
 #[test]
+fn generation_header_round_trips_and_preserves_legacy_records() {
+    for kind in [
+        "process_exec",
+        "file_open",
+        "tcp_connect",
+        "dns_query",
+        "module_load",
+        "lsm_block",
+        "process_exit",
+        "file_write",
+        "file_rename",
+        "file_unlink",
+    ] {
+        let json = serde_json::json!({
+            "event_type": kind, "pid": 42, "tid": 43, "uid": 1000, "ts_ns": 123,
+            "pid_start_ns": 1_000_000_001u64, "ppid_start_ns": 2_000_000_002u64,
+            "path": "/tmp/generation", "ppid": 41
+        });
+        let raw = super::replay_codec::encode_replay_event(&json.to_string()).unwrap();
+        assert_ne!(raw[0] & 0x80, 0, "new records must advertise their layout");
+        let event = parse_raw_event(&raw).unwrap();
+        assert_eq!(event.pid_start_ns, Some(1_000_000_001));
+        assert_eq!(event.ppid_start_ns, Some(2_000_000_002));
+        assert_eq!((event.pid, event.uid, event.ts_ns), (42, 1000, 123));
+        assert_eq!(
+            &raw[5..9],
+            &43u32.to_le_bytes(),
+            "TID is not the parent PID"
+        );
+        assert!(
+            parse_raw_event(&raw[..36]).is_err(),
+            "truncated v2 cannot become v1"
+        );
+        let mut backend = InMemoryRingBufferBackend::default();
+        backend.push_event(raw[..36].to_vec());
+        let mut engine = EbpfEngine {
+            backend: Box::new(backend),
+            stats: EbpfStats::default(),
+        };
+        assert!(engine.poll_once(Duration::ZERO).unwrap().is_empty());
+        assert_eq!(engine.stats().per_probe_errors.get(kind), Some(&1));
+        let mut legacy = json;
+        legacy.as_object_mut().unwrap().remove("pid_start_ns");
+        legacy.as_object_mut().unwrap().remove("ppid_start_ns");
+        let raw_legacy = super::replay_codec::encode_replay_event(&legacy.to_string()).unwrap();
+        assert_eq!(raw_legacy[0] & 0x80, 0);
+        let old = parse_raw_event(&raw_legacy).unwrap();
+        assert_eq!((old.pid_start_ns, old.ppid_start_ns), (None, None));
+        assert_eq!(
+            event.payload, old.payload,
+            "header growth must not shift payload parsing"
+        );
+    }
+}
+
+#[test]
 // AC-EBP-020 AC-EBP-021 AC-EBP-030
 fn parses_valid_raw_event() {
     let event = parse_raw_event(&encode_event(1, 4242, 1000, 99, b"/usr/bin/bash"))

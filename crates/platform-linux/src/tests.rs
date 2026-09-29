@@ -66,6 +66,8 @@ fn file_hash_cache_reuses_entries() {
 fn enrich_event_with_cache_populates_process_cache() {
     let mut cache = EnrichmentCache::default();
     let raw = RawEvent {
+        pid_start_ns: None,
+        ppid_start_ns: None,
         event_type: EventType::ProcessExec,
         pid: std::process::id(),
         uid: 0,
@@ -84,6 +86,8 @@ fn enrich_event_with_cache_populates_process_cache() {
 fn enrich_event_parent_chain_is_bounded_to_max_depth() {
     let mut cache = EnrichmentCache::default();
     let raw = RawEvent {
+        pid_start_ns: None,
+        ppid_start_ns: None,
         event_type: EventType::ProcessExec,
         pid: std::process::id(),
         uid: 0,
@@ -107,6 +111,8 @@ fn primed_process_exec_metadata_survives_short_lived_process_exit() {
 
     let mut cache = EnrichmentCache::default();
     let raw = RawEvent {
+        pid_start_ns: None,
+        ppid_start_ns: None,
         event_type: EventType::ProcessExec,
         pid,
         uid: 0,
@@ -152,6 +158,8 @@ fn payload_parser_decodes_percent_escaped_process_cmdline() {
 fn process_exec_payload_parent_hint_backfills_parent_process_when_proc_lookup_fails() {
     let mut cache = EnrichmentCache::default();
     let raw = RawEvent {
+        pid_start_ns: None,
+        ppid_start_ns: None,
         event_type: EventType::ProcessExec,
         pid: 999_999,
         uid: 0,
@@ -171,6 +179,8 @@ fn process_exec_payload_cmdline_is_cached_for_later_file_open_when_proc_lookup_f
     let pid = 999_998;
 
     let exec = RawEvent {
+        pid_start_ns: None,
+        ppid_start_ns: None,
         event_type: EventType::ProcessExec,
         pid,
         uid: 0,
@@ -185,6 +195,8 @@ fn process_exec_payload_cmdline_is_cached_for_later_file_open_when_proc_lookup_f
     );
 
     let file_open = RawEvent {
+        pid_start_ns: None,
+        ppid_start_ns: None,
         event_type: EventType::FileOpen,
         pid,
         uid: 0,
@@ -262,6 +274,8 @@ fn process_cache_is_lru_bounded() {
     let mut cache = EnrichmentCache::new(128, 256);
     for pid in 900_000..900_160 {
         let raw = RawEvent {
+            pid_start_ns: None,
+            ppid_start_ns: None,
             event_type: EventType::ProcessExec,
             pid,
             uid: 0,
@@ -348,6 +362,8 @@ fn process_exit_event_evicts_process_entry_from_cache() {
     let mut cache = EnrichmentCache::new(500, 10_000);
     let pid = std::process::id();
     let raw_exec = RawEvent {
+        pid_start_ns: None,
+        ppid_start_ns: None,
         event_type: EventType::ProcessExec,
         pid,
         uid: 0,
@@ -358,6 +374,8 @@ fn process_exit_event_evicts_process_entry_from_cache() {
     assert_eq!(cache.process_cache_len(), 1);
 
     let raw_exit = RawEvent {
+        pid_start_ns: None,
+        ppid_start_ns: None,
         event_type: EventType::ProcessExit,
         pid,
         uid: 0,
@@ -572,6 +590,8 @@ fn file_open_hashes_newly_written_file_immediately_even_when_write_event_is_pend
     cache.set_hash_finalize_delay_ms(60_000);
 
     let write_raw = RawEvent {
+        pid_start_ns: None,
+        ppid_start_ns: None,
         event_type: EventType::FileWrite,
         pid: std::process::id(),
         uid: 0,
@@ -586,6 +606,8 @@ fn file_open_hashes_newly_written_file_immediately_even_when_write_event_is_pend
     assert!(write_enriched.file_sha256.is_none());
 
     let open_raw = RawEvent {
+        pid_start_ns: None,
+        ppid_start_ns: None,
         event_type: EventType::FileOpen,
         pid: std::process::id(),
         uid: 0,
@@ -606,6 +628,8 @@ fn pseudo_and_device_paths_skip_file_hashing() {
     let mut cache = EnrichmentCache::new(128, 128);
 
     let proc_raw = RawEvent {
+        pid_start_ns: None,
+        ppid_start_ns: None,
         event_type: EventType::FileOpen,
         pid: std::process::id(),
         uid: 0,
@@ -616,6 +640,8 @@ fn pseudo_and_device_paths_skip_file_hashing() {
     assert!(proc_enriched.file_sha256.is_none());
 
     let dev_raw = RawEvent {
+        pid_start_ns: None,
+        ppid_start_ns: None,
         event_type: EventType::FileOpen,
         pid: std::process::id(),
         uid: 0,
@@ -646,6 +672,8 @@ fn expensive_check_exclusions_skip_file_hash_on_noisy_paths() {
     cache.set_expensive_check_exclusions(vec!["build-cache".to_string()], Vec::new());
 
     let raw = RawEvent {
+        pid_start_ns: None,
+        ppid_start_ns: None,
         event_type: EventType::FileWrite,
         pid: std::process::id(),
         uid: 0,
@@ -677,6 +705,8 @@ fn strict_budget_mode_keeps_hash_for_high_value_tmp_file_open() {
     cache.set_budget_mode(true);
 
     let raw = RawEvent {
+        pid_start_ns: None,
+        ppid_start_ns: None,
         event_type: EventType::FileOpen,
         pid: std::process::id(),
         uid: 0,

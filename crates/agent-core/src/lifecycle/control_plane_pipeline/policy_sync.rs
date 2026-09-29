@@ -811,6 +811,8 @@ mod tests {
         }));
 
         let raw = RawEvent {
+            pid_start_ns: None,
+            ppid_start_ns: None,
             event_type: EventType::FileWrite,
             pid: std::process::id(),
             uid: 0,
@@ -828,6 +830,8 @@ mod tests {
         }));
 
         let raw = RawEvent {
+            pid_start_ns: None,
+            ppid_start_ns: None,
             event_type: EventType::FileWrite,
             pid: std::process::id(),
             uid: 0,
@@ -854,6 +858,8 @@ mod tests {
         }));
 
         let raw = RawEvent {
+            pid_start_ns: None,
+            ppid_start_ns: None,
             event_type: EventType::FileWrite,
             pid: std::process::id(),
             uid: 0,

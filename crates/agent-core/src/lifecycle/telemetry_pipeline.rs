@@ -16,6 +16,36 @@ const INTERNAL_PROCESS_TTL_NS: u64 = 15 * 60 * 1_000_000_000;
 const INTERNAL_PROCESS_PID_LIMIT: usize = 4_096;
 const TELEMETRY_SEND_TIMEOUT_MS: u64 = 5_000;
 
+#[derive(Clone, Copy)]
+pub(super) enum ProcessGeneration {
+    BootNs(u64),
+    ProcTicks(u64),
+}
+
+fn boot_ns_to_ticks(ns: u64) -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        // sysconf has no pointer arguments and _SC_CLK_TCK is a constant query.
+        let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+        (hz > 0).then(|| ((ns as u128 * hz as u128) / 1_000_000_000) as u64)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = ns;
+        None
+    }
+}
+
+impl ProcessGeneration {
+    fn matches(self, other: Self) -> bool {
+        match (self, other) {
+            (Self::BootNs(a), Self::BootNs(b)) | (Self::ProcTicks(a), Self::ProcTicks(b)) => a == b,
+            (Self::BootNs(ns), Self::ProcTicks(ticks))
+            | (Self::ProcTicks(ticks), Self::BootNs(ns)) => boot_ns_to_ticks(ns) == Some(ticks),
+        }
+    }
+}
+
 impl AgentRuntime {
     pub(super) async fn run_connected_telemetry_stage(
         &mut self,
@@ -558,12 +588,12 @@ impl AgentRuntime {
             return false;
         }
         if matches!(event.event_type, crate::platform::EventType::ProcessExit) {
-            let tracked = self.is_tracked_internal_process(event.pid, event_ns);
+            let tracked = self.is_tracked_internal_process(event.pid, event_ns, event.pid_start_ns);
             self.suppressed_internal_process_pids.remove(&event.pid);
             return tracked;
         }
 
-        if self.is_tracked_internal_process(event.pid, event_ns)
+        if self.is_tracked_internal_process(event.pid, event_ns, event.pid_start_ns)
             || self.should_track_internal_process_event(event, event_ns)
         {
             return true;
@@ -581,17 +611,20 @@ impl AgentRuntime {
             return false;
         }
         if let Some(parent_pid) = payload_parent_pid(&event.payload) {
-            if parent_pid == std::process::id()
-                || self.is_tracked_internal_process(parent_pid, event_ns)
+            if (parent_pid == std::process::id()
+                && self.event_generation_matches_current(parent_pid, event.ppid_start_ns))
+                || self.is_tracked_internal_process(parent_pid, event_ns, event.ppid_start_ns)
             {
-                self.track_internal_process_pid(event.pid, event_ns);
+                self.track_internal_process_pid(event.pid, event_ns, event.pid_start_ns);
                 return true;
             }
         }
 
         // Parent comm and environment are user-controlled, not proof of ancestry.
-        if self.is_marked_internal_process_cached(event.pid, event_ns) {
-            self.track_internal_process_pid(event.pid, event_ns);
+        if self.is_marked_internal_process_cached(event.pid, event_ns)
+            && self.event_generation_matches_current(event.pid, event.pid_start_ns)
+        {
+            self.track_internal_process_pid(event.pid, event_ns, event.pid_start_ns);
             return true;
         }
 
@@ -618,12 +651,29 @@ impl AgentRuntime {
         false
     }
 
-    fn track_internal_process_pid(&mut self, pid: u32, event_ns: u64) {
+    // Live evidence (our own PID or a proc environment marker) must belong to
+    // the emitted generation. Tracked ancestry instead compares event identities.
+    fn event_generation_matches_current(&self, pid: u32, start_ns: Option<u64>) -> bool {
+        start_ns.is_none_or(|ns| {
+            self.internal_process_start_time(pid).is_some_and(|ticks| {
+                ProcessGeneration::BootNs(ns).matches(ProcessGeneration::ProcTicks(ticks))
+            })
+        })
+    }
+
+    fn process_generation(&self, pid: u32, start_ns: Option<u64>) -> Option<ProcessGeneration> {
+        start_ns.map(ProcessGeneration::BootNs).or_else(|| {
+            self.internal_process_start_time(pid)
+                .map(ProcessGeneration::ProcTicks)
+        })
+    }
+
+    fn track_internal_process_pid(&mut self, pid: u32, event_ns: u64, start_ns: Option<u64>) {
         if pid == 0 || pid == std::process::id() {
             return;
         }
 
-        let Some(start_time) = self.internal_process_start_time(pid) else {
+        let Some(start_time) = self.process_generation(pid, start_ns) else {
             return;
         };
         self.suppressed_internal_process_pids.insert(
@@ -633,14 +683,23 @@ impl AgentRuntime {
         self.prune_suppressed_internal_process_pids(event_ns);
     }
 
-    fn is_tracked_internal_process(&mut self, pid: u32, event_ns: u64) -> bool {
+    fn is_tracked_internal_process(
+        &mut self,
+        pid: u32,
+        event_ns: u64,
+        start_ns: Option<u64>,
+    ) -> bool {
         let Some((expires_ns, start_time)) =
             self.suppressed_internal_process_pids.get(&pid).copied()
         else {
             return false;
         };
 
-        if event_ns <= expires_ns && self.internal_process_start_time(pid) == Some(start_time) {
+        if event_ns <= expires_ns
+            && self
+                .process_generation(pid, start_ns)
+                .is_some_and(|current| start_time.matches(current))
+        {
             return true;
         }
 
@@ -1828,6 +1887,8 @@ mod priority_tests {
             .spawn()
             .expect("child");
         let mut event = RawEvent {
+            pid_start_ns: None,
+            ppid_start_ns: None,
             pid: child.id(),
             uid: 1000,
             ts_ns: 1,
@@ -1915,6 +1976,8 @@ mod priority_tests {
         };
         let mut runtime = AgentRuntime::new(cfg).expect("runtime");
         let mut event = RawEvent {
+            pid_start_ns: None,
+            ppid_start_ns: None,
             pid: u32::MAX,
             uid: 1000,
             ts_ns: 1,
@@ -1974,6 +2037,8 @@ mod priority_tests {
             .parse::<u32>()
             .unwrap();
         let event = RawEvent {
+            pid_start_ns: None,
+            ppid_start_ns: None,
             pid,
             uid: 1000,
             ts_ns: 1,
@@ -2009,6 +2074,8 @@ mod priority_tests {
         let mut runtime = AgentRuntime::new(cfg).expect("runtime");
         for index in 0..4020 {
             runtime.raw_event_backlog.push_back(RawEvent {
+                pid_start_ns: None,
+                ppid_start_ns: None,
                 pid: 7001,
                 uid: 1000,
                 ts_ns: index,
@@ -2041,6 +2108,8 @@ mod priority_tests {
     fn batch_priority_is_computed_once_per_event_and_ties_stay_stable() {
         let events: Vec<_> = (0..128)
             .map(|pid| RawEvent {
+                pid_start_ns: None,
+                ppid_start_ns: None,
                 pid,
                 event_type: crate::platform::EventType::FileOpen,
                 payload: format!("path=/tmp/file-{pid};comm=cat;parent_comm=bash"),

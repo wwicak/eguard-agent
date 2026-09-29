@@ -45,6 +45,10 @@ pub enum EventType {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawEvent {
+    /// Process (TGID) generation: boot-time nanoseconds captured at emission.
+    pub pid_start_ns: Option<u64>,
+    /// Real parent TGID generation captured at emission.
+    pub ppid_start_ns: Option<u64>,
     pub event_type: EventType,
     pub pid: u32,
     pub uid: u32,
@@ -1273,6 +1277,8 @@ mod tests {
     #[test]
     fn enrich_windows_process_event_uses_payload_hints_for_cache() {
         let raw = RawEvent {
+            pid_start_ns: None,
+            ppid_start_ns: None,
             event_type: EventType::ProcessExec,
             pid: 4242,
             uid: 0,
@@ -1302,6 +1308,8 @@ mod tests {
     #[test]
     fn process_exec_parent_process_hint_beats_unknown_parent() {
         let raw = RawEvent {
+            pid_start_ns: None,
+            ppid_start_ns: None,
             event_type: EventType::ProcessExec,
             pid: 4243,
             uid: 0,
@@ -1323,6 +1331,8 @@ mod tests {
 
         let test_pid = 9_999_991;
         let exec = RawEvent {
+            pid_start_ns: None,
+            ppid_start_ns: None,
             event_type: EventType::ProcessExec,
             pid: test_pid,
             uid: 0,
@@ -1333,6 +1343,8 @@ mod tests {
         let _ = enrich_event_with_cache(exec, &mut cache);
 
         let exit = RawEvent {
+            pid_start_ns: None,
+            ppid_start_ns: None,
             event_type: EventType::ProcessExit,
             pid: test_pid,
             uid: 0,
@@ -1360,6 +1372,8 @@ mod tests {
     #[test]
     fn file_open_payload_path_does_not_pollute_process_identity() {
         let raw = RawEvent {
+            pid_start_ns: None,
+            ppid_start_ns: None,
             event_type: EventType::FileOpen,
             pid: 9001,
             uid: 0,
@@ -1387,6 +1401,8 @@ mod tests {
     #[test]
     fn weak_windows_file_event_infers_powershell_process_exe() {
         let raw = RawEvent {
+            pid_start_ns: None,
+            ppid_start_ns: None,
             event_type: EventType::FileOpen,
             pid: 424_242,
             uid: 0,
@@ -1408,6 +1424,8 @@ mod tests {
         let mut cache = EnrichmentCache::default();
 
         let first = RawEvent {
+            pid_start_ns: None,
+            ppid_start_ns: None,
             event_type: EventType::FileOpen,
             pid: 424_243,
             uid: 0,
@@ -1417,6 +1435,8 @@ mod tests {
         let _ = enrich_event_with_cache(first, &mut cache);
 
         let second = RawEvent {
+            pid_start_ns: None,
+            ppid_start_ns: None,
             event_type: EventType::FileOpen,
             pid: 424_243,
             uid: 0,
@@ -1436,6 +1456,8 @@ mod tests {
         let mut cache = EnrichmentCache::default();
 
         let first = RawEvent {
+            pid_start_ns: None,
+            ppid_start_ns: None,
             event_type: EventType::FileOpen,
             pid: 4,
             uid: 0,
@@ -1449,6 +1471,8 @@ mod tests {
         );
 
         let second = RawEvent {
+            pid_start_ns: None,
+            ppid_start_ns: None,
             event_type: EventType::FileOpen,
             pid: 4,
             uid: 0,
@@ -1472,6 +1496,8 @@ mod tests {
     #[test]
     fn enrich_windows_tcp_event_parses_endpoint_from_payload() {
         let raw = RawEvent {
+            pid_start_ns: None,
+            ppid_start_ns: None,
             event_type: EventType::TcpConnect,
             pid: 1337,
             uid: 0,
@@ -1492,6 +1518,8 @@ mod tests {
         fs::write(&path, b"payload").expect("write payload");
 
         let raw = RawEvent {
+            pid_start_ns: None,
+            ppid_start_ns: None,
             event_type: EventType::FileWrite,
             pid: std::process::id(),
             uid: 0,
@@ -1516,6 +1544,8 @@ mod tests {
         cache.set_expensive_check_exclusions(vec![path.to_string_lossy().to_string()], Vec::new());
 
         let raw = RawEvent {
+            pid_start_ns: None,
+            ppid_start_ns: None,
             event_type: EventType::FileWrite,
             pid: std::process::id(),
             uid: 0,
@@ -1540,6 +1570,8 @@ mod tests {
         cache.set_expensive_check_exclusions(vec![windows_style], Vec::new());
 
         let raw = RawEvent {
+            pid_start_ns: None,
+            ppid_start_ns: None,
             event_type: EventType::FileWrite,
             pid: std::process::id(),
             uid: 0,
@@ -1579,6 +1611,8 @@ mod tests {
 
         let mut cache = EnrichmentCache::default();
         let open = RawEvent {
+            pid_start_ns: None,
+            ppid_start_ns: None,
             event_type: EventType::FileOpen,
             pid: 77,
             uid: 0,
@@ -1588,6 +1622,8 @@ mod tests {
         let _ = enrich_event_with_cache(open, &mut cache);
 
         let write = RawEvent {
+            pid_start_ns: None,
+            ppid_start_ns: None,
             event_type: EventType::FileWrite,
             pid: 77,
             uid: 0,
@@ -1613,6 +1649,8 @@ mod tests {
 
         let mut cache = EnrichmentCache::default();
         let name_event = RawEvent {
+            pid_start_ns: None,
+            ppid_start_ns: None,
             event_type: EventType::FileOpen,
             pid: 88,
             uid: 0,
@@ -1622,6 +1660,8 @@ mod tests {
         let _ = enrich_event_with_cache(name_event, &mut cache);
 
         let write = RawEvent {
+            pid_start_ns: None,
+            ppid_start_ns: None,
             event_type: EventType::FileWrite,
             pid: 88,
             uid: 0,

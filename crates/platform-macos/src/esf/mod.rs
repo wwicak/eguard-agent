@@ -685,6 +685,8 @@ impl ProcessPollBackend {
 
             let payload = process_exec_payload(&current.cmdline);
             self.pending.push_back(super::RawEvent {
+                pid_start_ns: None,
+                ppid_start_ns: None,
                 event_type: super::EventType::ProcessExec,
                 pid: *pid,
                 uid: current.uid,
@@ -699,6 +701,8 @@ impl ProcessPollBackend {
             }
 
             self.pending.push_back(super::RawEvent {
+                pid_start_ns: None,
+                ppid_start_ns: None,
                 event_type: super::EventType::ProcessExit,
                 pid: *pid,
                 uid: previous.uid,
@@ -825,6 +829,8 @@ fn decode_event_value(value: &Value) -> Option<super::RawEvent> {
     let payload = decode_payload(&event_type, value);
 
     Some(super::RawEvent {
+        pid_start_ns: None,
+        ppid_start_ns: None,
         event_type,
         pid,
         uid,

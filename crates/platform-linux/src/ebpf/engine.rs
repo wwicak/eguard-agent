@@ -123,7 +123,7 @@ impl EbpfEngine {
                     self.stats.parse_errors = self.stats.parse_errors.saturating_add(1);
                     // Track which probe type failed if we can determine it
                     if record.len() >= EVENT_HEADER_SIZE {
-                        let probe_name = match record[0] {
+                        let probe_name = match record[0] & 0x7f {
                             1 => "process_exec",
                             2 => "file_open",
                             3 => "tcp_connect",

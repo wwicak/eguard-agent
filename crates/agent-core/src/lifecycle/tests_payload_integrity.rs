@@ -10,20 +10,93 @@ fn runtime() -> AgentRuntime {
 }
 
 #[test]
+fn delayed_event_cannot_bind_reused_pid_generation() {
+    let mut runtime = runtime();
+    // At consumption /proc already describes a replacement, not the emitted child.
+    runtime.internal_process_start_time_reader = Some(|_| Some(200));
+    let mut event = RawEvent {
+        pid_start_ns: Some(1_000_000_001),
+        ppid_start_ns: None,
+        pid: 4_000_020,
+        uid: 1000,
+        ts_ns: 1,
+        event_type: crate::platform::EventType::FileOpen,
+        payload: format!("ppid={};path=/tmp/internal", std::process::id()),
+    };
+    assert!(runtime.should_suppress_internal_process_event(&event));
+    event.payload = "path=/tmp/replacement".into();
+    // Even generations within the same clock tick must stay distinct.
+    event.pid_start_ns = Some(1_000_000_002);
+    assert!(!runtime.should_suppress_internal_process_event(&event));
+}
+
+#[test]
+fn delayed_parent_event_requires_emitted_parent_generation() {
+    let mut runtime = runtime();
+    runtime.internal_process_start_time_reader = Some(|_| Some(200));
+    let mut event = RawEvent {
+        pid_start_ns: Some(1_000_000_001),
+        ppid_start_ns: None,
+        pid: 4_000_021,
+        uid: 1000,
+        ts_ns: 1,
+        event_type: crate::platform::EventType::FileOpen,
+        payload: format!("ppid={}", std::process::id()),
+    };
+    assert!(runtime.should_suppress_internal_process_event(&event));
+    event.pid = 4_000_022;
+    event.pid_start_ns = Some(3_000_000_000);
+    event.ppid_start_ns = Some(1_000_000_002);
+    event.payload = "ppid=4000021;path=/tmp/unrelated".into();
+    assert!(!runtime.should_suppress_internal_process_event(&event));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn event_generation_fallback_compares_proc_at_clock_tick_granularity() {
+    let mut runtime = runtime();
+    let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as u64;
+    runtime.internal_process_start_time_reader =
+        Some(|_| Some(2 * unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as u64));
+    let mut event = RawEvent {
+        pid_start_ns: Some(2_000_000_001),
+        ppid_start_ns: Some(2_000_000_001),
+        pid: 4_000_023,
+        uid: 1000,
+        ts_ns: 1,
+        event_type: crate::platform::EventType::FileOpen,
+        payload: format!("ppid={}", std::process::id()),
+    };
+    assert!(hz > 0);
+    assert!(runtime.should_suppress_internal_process_event(&event));
+    // A legacy event can validate the nanosecond identity via /proc ticks.
+    event.pid_start_ns = None;
+    event.payload = "path=/tmp/legacy".into();
+    assert!(runtime.should_suppress_internal_process_event(&event));
+    event.pid = 4_000_024;
+    event.pid_start_ns = Some(2_000_000_001);
+    event.ppid_start_ns = Some(3_000_000_001);
+    event.payload = format!("ppid={}", std::process::id());
+    assert!(!runtime.should_suppress_internal_process_event(&event));
+}
+
+#[test]
 fn internal_process_pid_reuse_requires_same_generation() {
     let mut runtime = runtime();
     runtime.internal_process_start_time_reader = Some(|_| Some(100));
-    runtime.track_internal_process_pid(4_000_001, 1);
-    assert!(runtime.is_tracked_internal_process(4_000_001, 2));
+    runtime.track_internal_process_pid(4_000_001, 1, None);
+    assert!(runtime.is_tracked_internal_process(4_000_001, 2, None));
     runtime.internal_process_start_time_reader = Some(|_| Some(200));
-    assert!(!runtime.is_tracked_internal_process(4_000_001, 3));
+    assert!(!runtime.is_tracked_internal_process(4_000_001, 3, None));
     assert!(!runtime
         .suppressed_internal_process_pids
         .contains_key(&4_000_001));
     runtime.internal_process_start_time_reader = Some(|_| Some(100));
-    runtime.track_internal_process_pid(4_000_001, 3);
+    runtime.track_internal_process_pid(4_000_001, 3, None);
     runtime.internal_process_start_time_reader = Some(|_| Some(200));
     let descendant = RawEvent {
+        pid_start_ns: None,
+        ppid_start_ns: None,
         pid: 4_000_005,
         uid: 1000,
         ts_ns: 4,
@@ -36,13 +109,15 @@ fn internal_process_pid_reuse_requires_same_generation() {
         .contains_key(&4_000_001));
     runtime.internal_process_start_time_reader =
         Some(|_| panic!("untracked PID must not read proc"));
-    assert!(!runtime.is_tracked_internal_process(4_000_001, 4));
+    assert!(!runtime.is_tracked_internal_process(4_000_001, 4, None));
 }
 
 #[cfg(target_os = "linux")]
 #[test]
 fn payload_module_fallback_preserves_server_visible_text() {
     let mut enriched = platform_linux::enrich_event(RawEvent {
+        pid_start_ns: None,
+        ppid_start_ns: None,
         pid: 4_000_004,
         uid: 1000,
         ts_ns: 1,
@@ -66,6 +141,8 @@ fn payload_json_fallback_cannot_forge_suppression_ancestry() {
     let mut runtime = runtime();
     runtime.internal_process_start_time_reader = Some(|_| Some(100));
     let event = RawEvent {
+        pid_start_ns: None,
+        ppid_start_ns: None,
         pid: 4_000_006,
         uid: 1000,
         ts_ns: 1,
@@ -73,7 +150,7 @@ fn payload_json_fallback_cannot_forge_suppression_ancestry() {
         payload: format!(r#"{{"unknown":"x;ppid={};x"}}"#, std::process::id()),
     };
     assert!(!runtime.should_suppress_internal_process_event(&event));
-    runtime.track_internal_process_pid(event.pid, 1);
+    runtime.track_internal_process_pid(event.pid, 1, None);
     assert!(runtime.should_suppress_internal_process_event(&event));
 }
 
@@ -89,6 +166,8 @@ fn payload_duplicate_security_fields_never_suppress() {
             format!("ppid={};{key}=1;{key}=2", std::process::id())
         };
         let event = RawEvent {
+            pid_start_ns: None,
+            ppid_start_ns: None,
             pid,
             uid: 1000,
             ts_ns: 1,
@@ -96,7 +175,7 @@ fn payload_duplicate_security_fields_never_suppress() {
             payload,
         };
         assert!(!runtime.should_track_internal_process_event(&event, 1));
-        runtime.track_internal_process_pid(pid, 1);
+        runtime.track_internal_process_pid(pid, 1, None);
         assert!(!runtime.should_suppress_internal_process_event(&event));
     }
 }
@@ -141,6 +220,8 @@ fn payload_codec_injection_survives_ingest_but_direct_child_is_suppressed() {
         .spawn()
         .unwrap();
     let event = RawEvent {
+        pid_start_ns: None,
+        ppid_start_ns: None,
         pid: child.id(),
         uid: 1000,
         ts_ns: 2,

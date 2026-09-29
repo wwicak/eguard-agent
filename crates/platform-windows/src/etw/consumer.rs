@@ -588,6 +588,8 @@ mod tests {
         let mut consumer = EtwConsumer::new("test-session");
         consumer.inject_events(vec![
             RawEvent {
+                pid_start_ns: None,
+                ppid_start_ns: None,
                 event_type: EventType::ProcessExec,
                 pid: 1,
                 uid: 0,
@@ -595,6 +597,8 @@ mod tests {
                 payload: "a".to_string(),
             },
             RawEvent {
+                pid_start_ns: None,
+                ppid_start_ns: None,
                 event_type: EventType::ProcessExec,
                 pid: 2,
                 uid: 0,

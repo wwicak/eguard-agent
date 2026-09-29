@@ -86,9 +86,10 @@ pub struct AgentRuntime {
     pub(super) file_event_coalesce_window_ns: u64,
     pub(super) event_txn_coalesce_window_ns: u64,
     pub(super) recent_event_txn_keys: HashMap<String, u64>,
-    // PID -> (expiry in event nanoseconds, Linux /proc starttime in clock ticks).
-    // Other platforms retain PID/TTL identity and use a zero generation.
-    pub(super) suppressed_internal_process_pids: HashMap<u32, (u64, u64)>,
+    // PID -> (expiry in event nanoseconds, emission-time generation).
+    // Legacy records fall back to /proc ticks (zero on other platforms).
+    pub(super) suppressed_internal_process_pids:
+        HashMap<u32, (u64, super::telemetry_pipeline::ProcessGeneration)>,
     #[cfg(test)]
     pub(super) internal_process_start_time_reader: Option<fn(u32) -> Option<u64>>,
     pub(super) unmarked_internal_process_pids: HashMap<u32, u64>,

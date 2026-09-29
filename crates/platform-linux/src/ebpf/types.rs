@@ -1,6 +1,8 @@
 use std::fmt;
 
+/// Legacy v1 header. V2 sets the event-type high bit and appends generations.
 pub(super) const EVENT_HEADER_SIZE: usize = 1 + 4 + 4 + 4 + 8;
+pub(super) const EVENT_HEADER_V2_SIZE: usize = EVENT_HEADER_SIZE + 8 + 8;
 
 #[cfg(any(test, feature = "ebpf-libbpf"))]
 pub(super) const FALLBACK_LAST_EVENT_DATA_SIZE: usize = 512;

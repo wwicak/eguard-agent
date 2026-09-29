@@ -1,5 +1,7 @@
 # Lessons
 
+- **Isolate slow tests before launching overlapping validation sweeps**: inspect completed test names, stop owned stale processes, and reproduce the specific remaining test serially with a short timeout on both the change and base revision. A scan fixture can run real filesystem work for many minutes; don't mistake that for a new generation-lookup deadlock or repeatedly run the whole module set.
+
 - **Keep terminal-command durability barriers out of maintenance scheduling inputs**: spooling every current-tick event before scheduling turns normal traffic into permanent backpressure. Gate only terminal dispatch, and test an event-bearing tick with due maintenance.
 - **Test recovery ordering with old and new events on SQLite**: hold new overflow until the send outcome; requeue the drained batch before new overflow. Distinguish this regression from the pre-existing append-only old-tail limitation rather than accepting both together.
 

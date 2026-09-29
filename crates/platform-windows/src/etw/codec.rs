@@ -29,6 +29,8 @@ pub fn decode_etw_event(
     let payload = String::from_utf8_lossy(data).into_owned();
 
     Some(RawEvent {
+        pid_start_ns: None,
+        ppid_start_ns: None,
         event_type,
         pid,
         uid: 0, // Windows uses SIDs, resolved during enrichment
@@ -93,6 +95,8 @@ fn decode_kernel_process(opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Optio
             }
 
             Some(RawEvent {
+                pid_start_ns: None,
+                ppid_start_ns: None,
                 event_type: EventType::ProcessExec,
                 pid: process_pid,
                 uid: 0,
@@ -116,6 +120,8 @@ fn decode_kernel_process(opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Optio
             }
 
             Some(RawEvent {
+                pid_start_ns: None,
+                ppid_start_ns: None,
                 event_type: EventType::ProcessExit,
                 pid: process_pid,
                 uid: 0,
@@ -141,6 +147,8 @@ fn decode_kernel_process(opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Optio
 /// We also retain legacy classic-provider decoding (`12/15/14/26`) for compatibility.
 fn decode_kernel_file(opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Option<RawEvent> {
     let raw_event = |event_type: EventType, payload: String| RawEvent {
+        pid_start_ns: None,
+        ppid_start_ns: None,
         event_type,
         pid,
         uid: 0,
@@ -316,6 +324,8 @@ fn decode_kernel_network(_opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Opti
         let payload =
             format!("src_ip={src_ip};src_port={src_port};dst_ip={dst_ip};dst_port={dst_port}");
         return Some(RawEvent {
+            pid_start_ns: None,
+            ppid_start_ns: None,
             event_type: EventType::TcpConnect,
             pid: process_pid,
             uid: 0,
@@ -338,6 +348,8 @@ fn decode_dns_client(_opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Option<R
         _ => return None, // No useful data to emit.
     };
     Some(RawEvent {
+        pid_start_ns: None,
+        ppid_start_ns: None,
         event_type: EventType::DnsQuery,
         pid,
         uid: 0,
@@ -363,6 +375,8 @@ fn decode_image_load(_opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Option<R
         _ => return None,
     };
     Some(RawEvent {
+        pid_start_ns: None,
+        ppid_start_ns: None,
         event_type: EventType::ModuleLoad,
         pid,
         uid: 0,
@@ -414,6 +428,8 @@ fn fallback_event(event_type: EventType, pid: u32, ts_ns: u64, data: &[u8]) -> O
         crate::payload_codec::escape_payload_value(&String::from_utf8_lossy(data))
     };
     Some(RawEvent {
+        pid_start_ns: None,
+        ppid_start_ns: None,
         event_type,
         pid,
         uid: 0,

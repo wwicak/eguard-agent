@@ -45,6 +45,10 @@ pub enum EventType {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawEvent {
+    /// Process (TGID) generation: boot-time nanoseconds captured at emission.
+    pub pid_start_ns: Option<u64>,
+    /// Real parent TGID generation captured at emission.
+    pub ppid_start_ns: Option<u64>,
     pub event_type: EventType,
     pub pid: u32,
     pub uid: u32,
@@ -672,6 +676,8 @@ mod tests {
     #[test]
     fn enrich_macos_process_event_uses_cmdline_payload_hint() {
         let raw = RawEvent {
+            pid_start_ns: None,
+            ppid_start_ns: None,
             event_type: EventType::ProcessExec,
             pid: 4242,
             uid: 0,
@@ -692,6 +698,8 @@ mod tests {
     #[test]
     fn enrich_macos_tcp_event_parses_endpoint_from_payload() {
         let raw = RawEvent {
+            pid_start_ns: None,
+            ppid_start_ns: None,
             event_type: EventType::TcpConnect,
             pid: 1337,
             uid: 0,
@@ -786,6 +794,8 @@ mod tests {
         fs::write(&path, b"payload").expect("write payload");
 
         let raw = RawEvent {
+            pid_start_ns: None,
+            ppid_start_ns: None,
             event_type: EventType::FileWrite,
             pid: std::process::id(),
             uid: 0,
@@ -811,6 +821,8 @@ mod tests {
         cache.set_expensive_check_exclusions(vec![path.to_string_lossy().to_string()], Vec::new());
 
         let raw = RawEvent {
+            pid_start_ns: None,
+            ppid_start_ns: None,
             event_type: EventType::FileWrite,
             pid: std::process::id(),
             uid: 0,

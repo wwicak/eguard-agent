@@ -42,13 +42,27 @@ pub(super) fn parse_raw_event(raw: &[u8]) -> Result<RawEvent> {
         )));
     }
 
-    let event_type = parse_event_type(raw[0])?;
+    let version_two = raw[0] & 0x80 != 0;
+    let event_type = parse_event_type(raw[0] & 0x7f)?;
+    let (pid_start_ns, ppid_start_ns, header_size) = if version_two {
+        let pid_start = read_u64_le(raw, EVENT_HEADER_SIZE)?;
+        let ppid_start = read_u64_le(raw, EVENT_HEADER_SIZE + 8)?;
+        (
+            (pid_start != 0).then_some(pid_start),
+            (ppid_start != 0).then_some(ppid_start),
+            super::types::EVENT_HEADER_V2_SIZE,
+        )
+    } else {
+        (None, None, EVENT_HEADER_SIZE)
+    };
     let pid = read_u32_le(raw, 1)?;
     let uid = read_u32_le(raw, 9)?;
     let timestamp_ns = read_u64_le(raw, 13)?;
-    let payload = parse_payload(event_type, &raw[EVENT_HEADER_SIZE..]);
+    let payload = parse_payload(event_type, &raw[header_size..]);
 
     Ok(RawEvent {
+        pid_start_ns,
+        ppid_start_ns,
         event_type,
         pid,
         uid,
