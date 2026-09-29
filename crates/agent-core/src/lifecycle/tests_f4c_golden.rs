@@ -48,6 +48,12 @@ fn f4c_conversion_rejects_missing_and_extra_fields() {
 #[test]
 fn f4c_full_detection_differential() {
     for (mut typed, legacy) in pairs() {
+        assert_eq!(
+            EventTxn::from_raw(&typed.event),
+            EventTxn::from_raw(&legacy.event),
+            "raw transaction: {}",
+            typed.event.payload
+        );
         let typed_detection = to_detection_event(&typed, 1700000000);
         let legacy_detection = to_detection_event(&legacy, 1700000000);
         assert_eq!(

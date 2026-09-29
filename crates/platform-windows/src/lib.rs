@@ -876,11 +876,17 @@ pub(crate) fn decoded_fields(event_type: &EventType, payload: &str) -> RawEventF
         src_port: kv.get("src_port").and_then(|value| value.parse().ok()),
         // Raw consumers (detection fallback and coalescing) historically read the
         // unnormalized payload. Normalize only at the enrichment boundary.
-        path: kv
-            .get("path")
-            .or_else(|| kv.get("file"))
-            .or_else(|| kv.get("src"))
-            .cloned(),
+        // ETW rename's `path` is an observed name, not a confirmed source:
+        // legacy raw transactions only accept src/old. Leave this ambiguous
+        // hint absent so enrichment can retain its historical path fallback.
+        path: if matches!(event_type, EventType::FileRename) {
+            kv.get("src").cloned()
+        } else {
+            kv.get("path")
+                .or_else(|| kv.get("file"))
+                .or_else(|| kv.get("src"))
+                .cloned()
+        },
         secondary_path: meta.file_path_secondary,
         cmdline: meta.command_line_hint,
         parent_comm: meta.parent_process_hint,

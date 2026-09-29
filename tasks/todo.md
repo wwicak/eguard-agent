@@ -603,6 +603,20 @@ Review: Windows ETW and 4688 plus macOS eslogger use existing platform parsing a
 
 Validation: Linux104, macOS48, Windows123; core integrity12/reviewfix21/policy111/golden7/differential3 and F4c3 pass. Windows GNU check, formatting, whitespace and production dependency-tree equivalence pass. Logs are exported under followups/f4c-validation.
 
+## F4c second-pass review fixes
+
+- [x] Preserve unnormalized Windows raw path spellings; normalize at enrichment only.
+- [x] Reject malformed macOS raw replay instead of native JSON fallback; strip reserved fields recursively.
+- [x] Expand distinct/empty/mixed matrix, numeric file values, variable SID offsets, unknown-version layouts and raw transaction differential.
+- [x] Regenerate unmasked 1,242-event golden at i4-start-f4c in detached scratch; remove scratch.
+- [x] Validate host suites, core filters, goldens/differentials, GNU Windows check, format/whitespace; export patch/status.
+
+Review: normalized Windows prefixes now preserve DetectionEvent and raw transaction output. The stronger raw transaction differential also found ETW rename `path` was incorrectly promoted to a source: retain that ambiguous hint in the legacy enrichment fallback, since baseline raw transactions accept only src/old. No payload serialization was changed. macOS valid replay remains serde-skipped; malformed replay with payload is rejected and native extraction cannot recurse into injected fields.
+
+Fail proof: a09118f fails normalized ProcessExec detection and malformed replay tests; b4982ec fails the added raw rename transaction check. Tagged baseline fails decoder-population and malformed-replay rejection tests. Normalization/rename parity are restorations and intentionally pass on the tag. Tagged fixture generation uses only transplanted tests/features, not production modifications, and the scratch was removed. Logs: followups/f4c-second-validation.
+
+Validation: Windows123/macOS49/Linux104; core integrity12/reviewfix21/policy111; golden7/differential3; Windows GNU platform-windows+agent-core check passed. Golden covers 1,242 events / 3,520,890 bytes without derived-field masking. Native Windows/macOS collectors remain untested; libbpf probe is EPERM on this host. No dependencies added.
+
 ## Binary-layout parity follow-up
 
 - [x] Audit every naked codec fallback and clear typed fields.

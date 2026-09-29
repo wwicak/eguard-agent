@@ -32,26 +32,39 @@ pub fn corpus() -> Vec<RawEvent> {
         "\u{0007}\\??\\C:\\x.exe",
     ] {
         for version in 0..=6 {
-            for opcode in [1, 2] {
-                let modern = if opcode == 1 {
-                    version >= 3
-                } else {
-                    version >= 2
-                };
-                let mut data = vec![0; if modern { 56 } else { 24 }];
-                data[..4].copy_from_slice(&pid.to_le_bytes());
-                if opcode == 1 {
-                    let offset = if modern { 20 } else { 12 };
-                    data[offset..offset + 4].copy_from_slice(&12345u32.to_le_bytes());
-                    wide(&mut data, if modern { 56 } else { 24 }, name);
-                } else if modern {
-                    data.resize(84, 0);
-                    data.extend_from_slice(name.as_bytes());
-                    data.push(0);
-                } else {
-                    wide(&mut data, 24, name);
+            for sid_subauthorities in [0u8, 1, 3] {
+                for opcode in [1, 2] {
+                    let modern = if opcode == 1 {
+                        version >= 3
+                    } else {
+                        version >= 2
+                    };
+                    let mut data = vec![0; if modern { 56 } else { 24 }];
+                    data[..4].copy_from_slice(&pid.to_le_bytes());
+                    if opcode == 1 {
+                        let offset = if modern { 20 } else { 12 };
+                        data[offset..offset + 4].copy_from_slice(&12345u32.to_le_bytes());
+                        if modern {
+                            data[49] = sid_subauthorities;
+                        }
+                        wide(
+                            &mut data,
+                            if modern {
+                                56 + usize::from(sid_subauthorities) * 4
+                            } else {
+                                24
+                            },
+                            name,
+                        );
+                    } else if modern {
+                        data.resize(84, 0);
+                        data.extend_from_slice(name.as_bytes());
+                        data.push(0);
+                    } else {
+                        wide(&mut data, 24, name);
+                    }
+                    decode(KERNEL_PROCESS, opcode, version, &data);
                 }
-                decode(KERNEL_PROCESS, opcode, version, &data);
             }
         }
         for (opcode, offsets) in [
@@ -103,16 +116,29 @@ pub fn corpus() -> Vec<RawEvent> {
         wide(&mut data, 0, name);
         decode(DNS_CLIENT, 1, 0, &data);
     }
-    for len in [0, 19, 20, 44] {
-        let mut data = vec![0; len];
-        if len >= 20 {
+    // Unknown-version short/legacy prefixes select a different fallback layout.
+    for opcode in [1, 2] {
+        for name in ["", "x", " y "] {
+            let mut data = vec![0; 24];
             data[..4].copy_from_slice(&pid.to_le_bytes());
-            data[8..12].copy_from_slice(&[192, 0, 2, 17]);
-            data[12..16].copy_from_slice(&[198, 51, 100, 23]);
-            data[16..18].copy_from_slice(&443u16.to_be_bytes());
-            data[18..20].copy_from_slice(&54321u16.to_be_bytes());
+            wide(&mut data, 24, name);
+            decode(KERNEL_PROCESS, opcode, 6, &data);
         }
-        decode(KERNEL_NETWORK, 10, 0, &data);
+    }
+    for len in [0, 19, 20, 44] {
+        for variant in 0..3 {
+            let mut data = vec![0; len];
+            if len >= 20 && variant != 0 {
+                data[..4].copy_from_slice(&pid.to_le_bytes());
+                data[8..12].copy_from_slice(&[192, 0, 2, 17]);
+                if variant == 1 {
+                    data[12..16].copy_from_slice(&[198, 51, 100, 23]);
+                }
+                data[16..18].copy_from_slice(&443u16.to_be_bytes());
+                data[18..20].copy_from_slice(&54321u16.to_be_bytes());
+            }
+            decode(KERNEL_NETWORK, 10, 0, &data);
+        }
     }
     for version in 0..=6 {
         for opcode in [1, 2] {

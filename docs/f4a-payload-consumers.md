@@ -49,11 +49,19 @@ Legacy payload serialization is unchanged (F4a golden remains the byte oracle).
   4688, and macOS eslogger decoding derive typed hints from the payload they just
   generated, using the platform's existing base parser. This is a trusted-boundary
   parse, not direct binary population; direct population is optional future work.
-- This preserves platform-specific normalization and empty-value handling exactly.
+- Empty values retain each base parser's `None` handling. Windows typed paths
+  retain the decoded, unnormalized payload spelling for raw coalescing/detection;
+  `raw_event_metadata` applies Windows normalization only when enriching. Kernel
+  prefixes (`\\??\\`, `\\\\?\\`, device-volume paths) and control characters are covered.
   Binary fallback events, Windows text replay, macOS raw-event JSON replay, and
-  macOS JSON fallback payloads keep default fields. Replay JSON cannot inject hints.
+  macOS JSON fallback payloads keep default fields. Malformed macOS replay records
+  carrying `payload` are rejected rather than retried as native eslogger JSON;
+  native JSON recursively drops reserved `fields` objects before extraction.
 - Windows `raw_event_metadata`, used by `prime_process_metadata` and enrichment,
-  prefers typed path/command/parent/destination/domain/size hints. macOS enrichment
+  prefers typed path/command/parent/destination/domain/size hints. ETW rename's
+  ambiguous `path` is intentionally not promoted to a typed source (legacy raw
+  transactions recognize only src/old); rename enrichment keeps its path fallback.
+  macOS enrichment
   similarly prefers typed path/rename/command/destination/domain/size hints.
 - **Still unconditional**: Windows base metadata parsing supplies file-object
   correlation and write classification; macOS base metadata parsing supplies write
@@ -71,7 +79,13 @@ worktree under `/home/dimas/eguard-lab-soak/bench/`, removed after verification.
 The real decoder → platform enrichment → DetectionEvent → envelope path is used;
 no derived detection/envelope fields are masked. Full enriched-event serde round
 trips reject extra or missing fields before conversion into the Linux-shaped
-agent-core test adapter. Separate differentials clear only raw typed hints.
+agent-core test adapter. Separate differentials clear only raw typed hints and
+compare raw EventTxn (including coalescing key), full enrichment and DetectionEvent.
+The expanded matrix includes distinct/empty/mixed strings, Windows numeric file
+layouts with distinct object/key/size values, SID-dependent process image offsets,
+unknown-version legacy and modern layouts, normalization-sensitive ETW/4688 paths,
+and distinct macOS command/target/rename/domain/subject values. Empty Security 4688
+image names are explicitly checked as rejected rather than silently omitted.
 These tests validate Windows/macOS codec and enrichment logic compiled on Linux,
 not native collection/runtime behavior (covered separately by F20).
 Existing workspace platforms are test-only dependencies; the production Linux
