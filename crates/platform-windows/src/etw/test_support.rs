@@ -112,11 +112,34 @@ pub fn corpus() -> Vec<RawEvent> {
 }
 
 #[test]
+fn f4c_windows_enrichment_prefers_typed_domain() {
+    let mut event = corpus()
+        .into_iter()
+        .find(|event| matches!(event.event_type, crate::EventType::DnsQuery))
+        .unwrap();
+    event.fields.domain = Some("typed.example".into());
+    assert_eq!(
+        crate::enrich_event(event).dst_domain.as_deref(),
+        Some("typed.example")
+    );
+}
+
+#[test]
 fn f4c_windows_decoder_fields_and_enrichment_differential() {
     let events = corpus();
     assert!(events.iter().any(|e| e.fields.path.is_some()));
     assert!(events.iter().any(|e| e.fields.domain.is_some()));
     assert!(events.iter().any(|e| e.fields.module.is_some()));
+    let mut dns = events
+        .iter()
+        .find(|event| event.fields.domain.is_some())
+        .unwrap()
+        .clone();
+    dns.fields.domain = Some("typed.example".into());
+    assert_eq!(
+        crate::enrich_event(dns).dst_domain.as_deref(),
+        Some("typed.example")
+    );
     for event in events {
         if event.payload == "short" {
             assert_eq!(event.fields, Default::default());

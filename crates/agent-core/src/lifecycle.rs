@@ -148,6 +148,8 @@ mod tests_ebpf_policy;
 #[cfg(all(test, target_os = "linux"))]
 mod tests_f4a_golden;
 #[cfg(all(test, target_os = "linux"))]
+mod tests_f4c_golden;
+#[cfg(all(test, target_os = "linux"))]
 mod tests_reviewfix;
 
 #[cfg(test)]

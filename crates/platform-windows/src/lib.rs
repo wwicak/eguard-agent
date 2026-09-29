@@ -224,7 +224,7 @@ impl EnrichmentCache {
 
     pub fn prime_process_metadata(&mut self, raw: &RawEvent) {
         if matches!(raw.event_type, EventType::ProcessExec) {
-            let payload_meta = parse_payload_metadata(&raw.event_type, &raw.payload);
+            let payload_meta = raw_event_metadata(raw);
             let _ = self.process_entry(raw, &payload_meta);
         }
     }
@@ -656,7 +656,7 @@ pub fn enrich_event(raw: RawEvent) -> EnrichedEvent {
     enrich_event_with_cache(raw, &mut cache)
 }
 
-pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> EnrichedEvent {
+fn raw_event_metadata(raw: &RawEvent) -> PayloadMetadata {
     // File-object correlation and write flags still live in the legacy transport.
     let mut payload_meta = parse_payload_metadata(&raw.event_type, &raw.payload);
     if matches!(
@@ -687,7 +687,11 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
     payload_meta.dst_port = raw.fields.dst_port.or(payload_meta.dst_port);
     payload_meta.dst_domain = raw.fields.domain.clone().or(payload_meta.dst_domain);
     payload_meta.event_size = raw.fields.size.or(payload_meta.event_size);
+    payload_meta
+}
 
+pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> EnrichedEvent {
+    let payload_meta = raw_event_metadata(&raw);
     if matches!(raw.event_type, EventType::ProcessExit) {
         let cached = cache.process_cache.peek(&raw.pid).cloned();
         let hinted_parent_chain = cache.parent_chain_from_hint(payload_meta.parent_pid);

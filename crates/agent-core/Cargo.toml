@@ -45,4 +45,6 @@ libc.workspace = true
 platform-linux = { path = "../platform-linux", features = ["test-binary-codec"] }
 
 [dev-dependencies]
+platform-windows = { path = "../platform-windows", features = ["test-support"] }
+platform-macos = { path = "../platform-macos", features = ["test-support"] }
 response = { path = "../response", features = ["test-quarantine-dir"] }

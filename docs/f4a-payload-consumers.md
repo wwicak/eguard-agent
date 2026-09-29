@@ -1,9 +1,9 @@
-# RawEvent payload consumer inventory (F4b)
+# RawEvent payload consumer inventory (F4c)
 
 F4b migrates Linux enrichment and agent-core decision consumers to typed
 `RawEventFields`. Each present field, including empty strings and zero, wins
 without decoding or consulting its shadow payload key. Missing fields retain
-legacy parsing for Windows/macOS producers, partial records and old replay.
+legacy parsing for partial records, decoder fallbacks and old replay.
 Legacy payload serialization is unchanged (F4a golden remains the byte oracle).
 
 ## platform-linux/src/lib.rs — migrated
@@ -44,13 +44,38 @@ Legacy payload serialization is unchanged (F4a golden remains the byte oracle).
 - `fallback_file_path_from_payload`: typed path before legacy path/file/src.
 - Field/percent/quote helpers: **fallback-only**.
 
-## Deferred platform-native consumers (F4c)
-These are intentionally **legacy/fallback-only**, not migrated in F4b. Their
-producers currently emit all-None fields; core consumers above accept that.
-- Windows `EnrichmentCache::prime_process_metadata`,
-  `enrich_event_with_cache` (including module fallback), KV/JSON parsers.
-- macOS `enrich_event_with_cache`, module fallback, KV/unstructured parsers.
-- macOS `esf/mod.rs` ES noise payload/path checks.
+## Windows and macOS decoder boundaries (F4c)
+- Windows binary ETW (process start/stop, file, network, DNS, image) and Security
+  4688, and macOS eslogger decoding derive typed hints from the payload they just
+  generated, using the platform's existing base parser. This is a trusted-boundary
+  parse, not direct binary population; direct population is optional future work.
+- This preserves platform-specific normalization and empty-value handling exactly.
+  Binary fallback events, Windows text replay, macOS raw-event JSON replay, and
+  macOS JSON fallback payloads keep default fields. Replay JSON cannot inject hints.
+- Windows `raw_event_metadata`, used by `prime_process_metadata` and enrichment,
+  prefers typed path/command/parent/destination/domain/size hints. macOS enrichment
+  similarly prefers typed path/rename/command/destination/domain/size hints.
+- **Still unconditional**: Windows base metadata parsing supplies file-object
+  correlation and write classification; macOS base metadata parsing supplies write
+  classification. Therefore their KV parsers are NOT globally fallback-only yet.
+  Values already represented by present typed hints no longer decide enrichment.
+- Module unstructured decoding in both platform enrichment paths is fallback-only.
+- macOS `esf/mod.rs` ES noise payload/path checks remain legacy consumers.
+- All agent-core decision call sites listed above remain typed-first/fallback-only
+  on every platform; diagnostic trace and payload serialization remain unchanged.
+
+## F4c regression provenance
+`tests/fixtures/f4c-platforms.json` was generated at `i4-start-f4c` (67748db)
+with only the test harness/feature exposure transplanted into a detached scratch
+worktree under `/home/dimas/eguard-lab-soak/bench/`, removed after verification.
+The real decoder → platform enrichment → DetectionEvent → envelope path is used;
+no derived detection/envelope fields are masked. Full enriched-event serde round
+trips reject extra or missing fields before conversion into the Linux-shaped
+agent-core test adapter. Separate differentials clear only raw typed hints.
+These tests validate Windows/macOS codec and enrichment logic compiled on Linux,
+not native collection/runtime behavior (covered separately by F20).
+Existing workspace platforms are test-only dependencies; the production Linux
+`cargo tree -e normal` is byte-identical before and after F4c.
 
 `telemetry.rs` serialization and `ebpf_smoke` printing are legacy passthroughs,
 not decision parsers. Command/control-plane JSON is outside this inventory.

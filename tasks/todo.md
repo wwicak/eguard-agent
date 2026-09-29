@@ -591,6 +591,18 @@ Fail proof: expanded differential failed on 0ba70ab production at ProcessExec, s
 
 Review: differential found only FileRename source-vs-destination mismatch; source is not a legacy hash candidate. Previous ProcessExit correction remains covered. Comparison removes only raw event (typed fields necessarily differ), preserving every enriched field and full DetectionEvent. Golden uses distinct source/destination, cmdline/comm/parent_comm and impossible PID/PPID; no enrichment fields are overwritten. Validation: payload integrity 12, reviewfix 21, eBPF policy 111, F4b 6, golden 1, Linux 102, macOS 46 passed; Windows GNU check passed. Fail proof and tagged-base fixture generation logs: /home/dimas/eguard-lab-soak/followups/f4b-final-validation/.
 
+## F4c Windows/macOS typed decoder follow-up
+- [x] Tag starting revision; inspect decoder and enrichment boundaries.
+- [x] Populate decoder-only typed hints with platform legacy normalization; keep replay/fallback guards.
+- [x] Add platform and full DetectionEvent differentials and fail-at-tag proofs.
+- [x] Generate unmasked envelope golden at tagged scratch worktree; remove scratch worktree.
+- [x] Run platform suites, required core suites and Windows GNU check; verify unchanged production dependency tree.
+- [x] Document remaining payload consumers and export committed patch/status.
+
+Review: Windows ETW and 4688 plus macOS eslogger use existing platform parsing at the trusted boundary (direct binary population deferred). Both platform enrichment paths prefer typed hints but still parse auxiliary legacy metadata. Tagged baseline fails both new decoder-population and typed-precedence tests on each platform. Tagged fixture generation succeeds and HEAD matches all 1,295,511 golden bytes. Cross-platform serde adapter rejects extra/missing fields and preserves all derived values. Native Windows/macOS collection is not exercised here.
+
+Validation: Linux104, macOS48, Windows123; core integrity12/reviewfix21/policy111/golden7/differential3 and F4c3 pass. Windows GNU check, formatting, whitespace and production dependency-tree equivalence pass. Logs are exported under followups/f4c-validation.
+
 ## Binary-layout parity follow-up
 
 - [x] Audit every naked codec fallback and clear typed fields.
