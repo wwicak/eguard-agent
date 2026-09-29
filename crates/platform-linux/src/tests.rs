@@ -1,6 +1,41 @@
 use super::*;
 
 #[test]
+fn f4b_typed_enrichment_and_prime_override_payload() {
+    let mut raw = RawEvent {
+        fields: RawEventFields::default(), pid_start_ns: None, ppid_start_ns: None,
+        event_type: EventType::ProcessExec, pid: u32::MAX, uid: 1000, ts_ns: 1,
+        payload: "path=/legacy;cmdline=legacy;ppid=12;parent_comm=legacy;dst_ip=192.0.2.1;dst_port=80;domain=legacy;size=1;flags=2;mode=73;dst=/legacy-new".into(),
+    };
+    raw.fields.path = Some("/nonexistent-f4b-typed".into());
+    raw.fields.cmdline = Some("typed-command".into());
+    raw.fields.parent_comm = Some("typed-parent".into());
+    raw.fields.ppid = Some(0);
+    raw.fields.secondary_path = Some("/typed-new".into());
+    raw.fields.dst_ip = Some("198.51.100.2".into());
+    raw.fields.dst_port = Some(443);
+    raw.fields.domain = Some("typed-domain".into());
+    raw.fields.size = Some(7);
+    raw.fields.flags = Some(0);
+    raw.fields.mode = Some(0);
+    let mut cache = EnrichmentCache::default();
+    cache.prime_process_metadata(&raw);
+    let enriched = enrich_event_with_cache(raw.clone(), &mut cache);
+    assert_eq!(enriched.process_cmdline.as_deref(), Some("typed-command"));
+    assert_eq!(enriched.parent_process.as_deref(), Some("typed-parent"));
+    assert_eq!(enriched.dst_ip.as_deref(), Some("198.51.100.2"));
+    assert_eq!(enriched.dst_port, Some(443));
+    assert_eq!(enriched.dst_domain.as_deref(), Some("typed-domain"));
+    assert_eq!(enriched.event_size, Some(7));
+    assert!(!enriched.file_write);
+    raw.fields = Default::default();
+    let legacy = enrich_event_with_cache(raw, &mut EnrichmentCache::default());
+    assert_eq!(legacy.process_cmdline.as_deref(), Some("legacy"));
+    assert_eq!(legacy.dst_port, Some(80));
+    assert!(legacy.file_write);
+}
+
+#[test]
 fn escaped_naked_file_payload_remains_opaque() {
     for event_type in [
         EventType::FileOpen,

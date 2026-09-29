@@ -1,3 +1,12 @@
+# F4b typed payload consumers
+
+- [x] Tag baseline and implement typed-first Linux/core consumers; compile incremental commit.
+- [ ] Cover typed/payload conflicts, trusted ancestry, partial/None fallback and unchanged golden.
+- [ ] Run required native/cross-platform checks and prove regression failures on tagged baseline.
+- [ ] Benchmark three interleaved rounds at batches 50/200; document sites and export patch/status.
+
+Design: preserve the legacy parsers as per-field lazy fallbacks. Present typed values (including zero/empty) are authoritative; payload duplicates only validate security fields still sourced from payload. No emitter or legacy envelope formatting changes.
+
 # F15 review follow-up — Linux 5.4 and time namespaces
 
 - [x] Guard modern task start field with CO-RE existence and fall back to Linux 5.4 real_start_time.

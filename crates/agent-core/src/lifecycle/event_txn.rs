@@ -91,15 +91,10 @@ impl EventTxn {
             }
             EventType::TcpConnect => {
                 let endpoint = if raw.fields.dst_ip.is_some() || raw.fields.dst_port.is_some() {
-                    let ip = raw.fields.dst_ip.clone().or_else(|| {
-                        parse_payload_field(&raw.payload, "dst_ip")
-                            .or_else(|| parse_payload_field(&raw.payload, "ip"))
-                    });
-                    let port = raw.fields.dst_port.or_else(|| {
-                        parse_payload_field(&raw.payload, "dst_port")
-                            .or_else(|| parse_payload_field(&raw.payload, "port"))
-                            .and_then(|v| v.parse().ok())
-                    });
+                    let legacy = std::cell::OnceCell::new();
+                    let fallback = || legacy.get_or_init(|| legacy_network_parts(&raw.payload));
+                    let ip = raw.fields.dst_ip.clone().or_else(|| fallback().0.clone());
+                    let port = raw.fields.dst_port.or_else(|| fallback().1);
                     network_endpoint(ip.as_deref(), port).or(ip)
                 } else {
                     parse_payload_field(&raw.payload, "dst")
@@ -317,6 +312,25 @@ fn decode_payload_value(raw: &str) -> String {
     out
 }
 
+fn legacy_network_parts(payload: &str) -> (Option<String>, Option<u16>) {
+    if let Some(endpoint) =
+        parse_payload_field(payload, "dst").or_else(|| parse_payload_field(payload, "endpoint"))
+    {
+        if let Some((ip, port)) = endpoint.rsplit_once(':') {
+            if let Ok(port) = port.parse() {
+                return (Some(ip.to_string()), Some(port));
+            }
+        }
+        return (Some(endpoint), None);
+    }
+    (
+        parse_payload_field(payload, "dst_ip").or_else(|| parse_payload_field(payload, "ip")),
+        parse_payload_field(payload, "dst_port")
+            .or_else(|| parse_payload_field(payload, "port"))
+            .and_then(|v| v.parse().ok()),
+    )
+}
+
 fn parse_rename_paths(payload: &str) -> (Option<String>, Option<String>) {
     let src = parse_payload_field(payload, "src")
         .or_else(|| parse_payload_field(payload, "old"))
@@ -327,40 +341,81 @@ fn parse_rename_paths(payload: &str) -> (Option<String>, Option<String>) {
     (src, dst)
 }
 
-fn file_open_access_intent(payload: &str) -> &'static str {
-    if parse_file_write_flags(
-        parse_payload_field(payload, "flags").as_deref(),
-        parse_payload_field(payload, "mode").as_deref(),
-    ) {
-        "write"
-    } else {
-        "read"
-    }
-}
-
-fn parse_file_write_flags(flags: Option<&str>, mode: Option<&str>) -> bool {
-    let flags_val = flags
-        .and_then(|value| value.parse::<u32>().ok())
-        .unwrap_or(0);
-    let mode_val = mode
-        .and_then(|value| value.parse::<u32>().ok())
-        .unwrap_or(0);
-
-    const O_WRONLY: u32 = 1;
-    const O_RDWR: u32 = 2;
-    const O_CREAT: u32 = 0x40;
-    const O_TRUNC: u32 = 0x200;
-
-    let write_intent = (flags_val & O_WRONLY) != 0 || (flags_val & O_RDWR) != 0;
-    let destructive = (flags_val & O_TRUNC) != 0 || (flags_val & O_CREAT) != 0;
-    let executable_bit = (mode_val & 0o111) != 0;
-
-    write_intent || destructive || executable_bit
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn f4b_typed_transaction_subjects_and_access_override_payload() {
+        let mut raw = RawEvent {
+            fields: Default::default(),
+            pid_start_ns: None,
+            ppid_start_ns: None,
+            event_type: EventType::FileOpen,
+            pid: 10,
+            uid: 0,
+            ts_ns: 1,
+            payload: "path=/legacy;flags=0;mode=0".into(),
+        };
+        raw.fields.path = Some("/typed".into());
+        raw.fields.flags = Some(2);
+        raw.fields.mode = Some(0);
+        assert_eq!(
+            coalesce_file_event_key(&raw).as_deref(),
+            Some("file_open:write:/typed")
+        );
+        raw.fields = Default::default();
+        assert_eq!(
+            coalesce_file_event_key(&raw).as_deref(),
+            Some("file_open:read:/legacy")
+        );
+        for (kind, payload, expected) in [
+            (EventType::ProcessExec, "path=/legacy", "/typed"),
+            (EventType::ModuleLoad, "module=legacy", "typed-module"),
+            (EventType::DnsQuery, "qname=legacy", "typed-domain"),
+            (EventType::FileRename, "src=/old;dst=/new", "/typed-new"),
+            (
+                EventType::TcpConnect,
+                "dst=192.0.2.1:80",
+                "198.51.100.2:443",
+            ),
+        ] {
+            raw.event_type = kind;
+            raw.payload = payload.into();
+            raw.fields.path = Some("/typed".into());
+            raw.fields.secondary_path = Some("/typed-new".into());
+            raw.fields.module = Some("typed-module".into());
+            raw.fields.domain = Some("typed-domain".into());
+            raw.fields.dst_ip = Some("198.51.100.2".into());
+            raw.fields.dst_port = Some(443);
+            assert_eq!(EventTxn::from_raw(&raw).subject.as_deref(), Some(expected));
+            raw.fields = Default::default();
+            assert_ne!(EventTxn::from_raw(&raw).subject.as_deref(), Some(expected));
+        }
+        raw.event_type = EventType::TcpConnect;
+        raw.payload = "dst=192.0.2.1:80".into();
+        raw.fields.dst_ip = Some("198.51.100.2".into());
+        assert_eq!(
+            EventTxn::from_raw(&raw).subject.as_deref(),
+            Some("198.51.100.2:80")
+        );
+        raw.fields.dst_ip = None;
+        raw.fields.dst_port = Some(443);
+        assert_eq!(
+            EventTxn::from_raw(&raw).subject.as_deref(),
+            Some("192.0.2.1:443")
+        );
+        raw.fields = Default::default();
+        raw.event_type = EventType::FileOpen;
+        raw.payload = "path=/legacy;flags=2;mode=0".into();
+        raw.fields.path = Some(String::new());
+        raw.fields.flags = Some(0);
+        assert_eq!(EventTxn::from_raw(&raw).subject.as_deref(), Some(""));
+        assert_eq!(
+            coalesce_file_event_key(&raw).as_deref(),
+            Some("file_open:read:")
+        );
+    }
 
     #[test]
     fn coalesce_file_event_key_normalizes_windows_separators() {

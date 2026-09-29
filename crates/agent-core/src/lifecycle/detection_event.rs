@@ -796,8 +796,8 @@ mod tests {
     }
 
     #[test]
-    fn to_detection_event_recovers_file_path_from_raw_payload_when_enrichment_misses_it() {
-        let enriched = EnrichedEvent {
+    fn f4b_detection_recovers_typed_path_and_module_before_legacy_payload() {
+        let mut enriched = EnrichedEvent {
             event: RawEvent {
                 fields: Default::default(),
                 pid_start_ns: None,
@@ -829,6 +829,37 @@ mod tests {
 
         let event = super::to_detection_event(&enriched, 55);
         assert_eq!(event.file_path.as_deref(), Some("/tmp/payload.bin"));
+        enriched.event.fields.path = Some("/typed".into());
+        assert_eq!(
+            super::to_detection_event(&enriched, 55)
+                .file_path
+                .as_deref(),
+            Some("/typed")
+        );
+        enriched.event.fields.path = Some(String::new());
+        assert_eq!(
+            super::to_detection_event(&enriched, 55)
+                .file_path
+                .as_deref(),
+            Some("")
+        );
+        enriched.event.event_type = EventType::ModuleLoad;
+        enriched.event.payload = "legacy-module".into();
+        enriched.event.fields.path = None;
+        enriched.event.fields.module = Some("typed-module".into());
+        assert_eq!(
+            super::to_detection_event(&enriched, 55)
+                .file_path
+                .as_deref(),
+            Some("typed-module")
+        );
+        enriched.event.fields = Default::default();
+        assert_eq!(
+            super::to_detection_event(&enriched, 55)
+                .file_path
+                .as_deref(),
+            Some("legacy-module")
+        );
     }
 
     #[test]

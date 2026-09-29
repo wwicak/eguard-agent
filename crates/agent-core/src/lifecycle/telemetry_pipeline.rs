@@ -2136,6 +2136,82 @@ mod priority_tests {
     }
 
     #[test]
+    fn f4b_typed_ancestry_rejects_forged_payload_and_ignores_shadow_duplicates() {
+        let _lock = super::super::shared_env_var_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("eguard-f4b-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let previous = std::env::var_os("EGUARD_AGENT_DATA_DIR");
+        std::env::set_var("EGUARD_AGENT_DATA_DIR", &root);
+        let mut cfg = crate::config::AgentConfig::default();
+        match previous {
+            Some(v) => std::env::set_var("EGUARD_AGENT_DATA_DIR", v),
+            None => std::env::remove_var("EGUARD_AGENT_DATA_DIR"),
+        }
+        cfg.offline_buffer_backend = "memory".into();
+        cfg.server_addr = "127.0.0.1:1".into();
+        cfg.self_protection_integrity_check_interval_secs = 0;
+        let mut runtime = AgentRuntime::new(cfg).unwrap();
+        let mut event = RawEvent {
+            fields: Default::default(),
+            pid_start_ns: None,
+            ppid_start_ns: None,
+            pid: u32::MAX,
+            uid: 1000,
+            ts_ns: 1,
+            event_type: crate::platform::EventType::ProcessExec,
+            payload: format!("ppid={};parent_comm=eguard-agent", std::process::id()),
+        };
+        event.fields.ppid = Some(0);
+        assert!(!runtime.should_suppress_internal_process_event(&event));
+        event.fields.ppid = Some(std::process::id());
+        event.payload = "ppid=0;parent_pid=1;pid=7;pid=8".into();
+        assert!(runtime.should_suppress_internal_process_event(&event));
+        event.pid -= 1;
+        event.fields = Default::default();
+        assert!(!runtime.should_suppress_internal_process_event(&event));
+        event.payload = format!("ppid={}", std::process::id());
+        assert!(runtime.should_suppress_internal_process_event(&event));
+        drop(runtime);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn f4b_typed_filter_priority_and_value_override_payload() {
+        let mut event = RawEvent {
+            fields: Default::default(),
+            pid_start_ns: None,
+            ppid_start_ns: None,
+            pid: u32::MAX,
+            uid: 1000,
+            ts_ns: 1,
+            event_type: crate::platform::EventType::FileOpen,
+            payload: "path=/proc/1/stat;comm=systemd;parent_comm=systemd;flags=0;mode=0".into(),
+        };
+        let legacy_drop = AgentRuntime::should_drop_low_value_linux_raw_event(&event);
+        assert!(legacy_drop);
+        event.fields.path = Some("/home/attacker/evil".into());
+        event.fields.comm = Some("malware".into());
+        event.fields.parent_comm = Some("malware".into());
+        event.fields.cmdline = Some("malware".into());
+        event.fields.flags = Some(2);
+        event.fields.mode = Some(0);
+        assert!(!AgentRuntime::should_drop_low_value_linux_raw_event(&event));
+        assert_eq!(AgentRuntime::raw_event_priority(&event), 0);
+        assert_eq!(AgentRuntime::raw_event_ingest_secondary_key(&event), 1);
+        assert!(is_high_value_linux_file_open_event(&event));
+        assert_eq!(raw_file_open_access_intent(&event), "write");
+        event.fields = Default::default();
+        assert_eq!(
+            AgentRuntime::should_drop_low_value_linux_raw_event(&event),
+            legacy_drop
+        );
+        assert_eq!(raw_file_open_access_intent(&event), "read");
+    }
+
+    #[test]
     fn internal_process_parent_comm_cannot_authenticate_but_direct_pid_can() {
         let cfg = crate::config::AgentConfig {
             offline_buffer_backend: "memory".to_string(),
