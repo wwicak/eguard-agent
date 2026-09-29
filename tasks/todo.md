@@ -408,3 +408,10 @@ envelope estimates account for added bytes. Connected and first-evaluation paths
 retain their behavior. Supervisor approved threshold-only protection: an oversized
 single envelope exceeding the 10% reserve can still evict. No benchmark run.
 Patch: /home/dimas/eguard-lab-soak/reviewfix5.patch.
+
+## a2-pipeline (F12/F7/F8)
+- [x] Inspect drain, compliance admission, send timing and callers.
+- [x] Transplant focused tests onto unchanged fa-start-a2-pipeline production code; all three fail (logs /tmp/a2-base*.log).
+- [x] Guard connected failed-send drain by byte headroom; bound compliance admission without clearing dedupe; leave timing to real flushes.
+- [x] Validate reviewfix (16), payload integrity (6), eBPF policy (111), tick (2), telemetry pipeline (13), and formatting.
+Review: connected regression isolates drain + end-of-tick flush to avoid control-plane latency exhausting the tick budget. Checks beyond dedupe capacity are intentionally not alerted until capacity is available. Single oversized envelopes can still exceed the 10% reserve; first evaluation retention remains unchanged.

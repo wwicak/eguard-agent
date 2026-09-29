@@ -21,7 +21,6 @@ impl AgentRuntime {
         &mut self,
         evaluation: Option<&TickEvaluation>,
     ) -> Result<()> {
-        let started = Instant::now();
         self.queue_connected_telemetry(evaluation).await?;
         // Preserve first-send outcome/backpressure state before scheduling and
         // commands. Only additional evaluations share the end-of-tick send.
@@ -40,9 +39,6 @@ impl AgentRuntime {
         }
         if let Some(err) = first_error {
             return Err(err);
-        }
-        if evaluation.is_some() {
-            self.metrics.last_send_event_batch_micros = elapsed_micros(started);
         }
         Ok(())
     }
@@ -67,7 +63,6 @@ impl AgentRuntime {
             );
         }
 
-        let send_batch_started = Instant::now();
         self.send_event_batch(evaluation.event_envelope.clone())
             .await?;
 
@@ -79,7 +74,6 @@ impl AgentRuntime {
             self.send_event_batch(alert).await?;
         }
 
-        self.metrics.last_send_event_batch_micros = elapsed_micros(send_batch_started);
         Ok(())
     }
 
@@ -230,7 +224,11 @@ impl AgentRuntime {
         for check in &compliance.checks {
             let key = format!("{}:{}", policy_key, check.check_id);
             if check.status == "non_compliant" {
-                if !self.compliance_alert_state.contains_key(&key) {
+                // Admit only checks we can remember. Evicting active failures
+                // would regenerate their alerts on every drain evaluation.
+                if !self.compliance_alert_state.contains_key(&key)
+                    && self.compliance_alert_state.len() < super::COMPLIANCE_ALERT_STATE_LIMIT
+                {
                     self.compliance_alert_state.insert(key.clone(), now_unix);
                     alerts.push(self.build_compliance_alert_envelope(check, now_unix));
                 }
