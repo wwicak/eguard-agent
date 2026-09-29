@@ -354,3 +354,14 @@ envelope estimates account for added bytes. Connected and first-evaluation paths
 retain their behavior. Supervisor approved threshold-only protection: an oversized
 single envelope exceeding the 10% reserve can still evict. No benchmark run.
 Patch: /home/dimas/eguard-lab-soak/reviewfix5.patch.
+
+## c2-enroll-race
+- [x] Bind authorized enrollment/policy config persistence to a path-scoped integrity update using the exact written bytes.
+- [x] Add runtime regressions for enrollment after baseline and subsequent external tampering; prove against base.
+- [x] Run touched-module and required branch tests, format checks, commit and export patch.
+
+Review: authorized persistence exclusively borrows the engine, verifies the previously baselined bytes before serialization, and updates only the destination config hash after successful atomic rename. It hashes the exact serialized output rather than re-reading an externally mutable destination; newly created configured paths become monitored. Permission enforcement changes only mode bits and needs no content-baseline update.
+
+Validation: offline tests passed: enrollment (7), self-protect policy/hardening (6), policy_sync (12), tests_ebpf_policy (111), tests_reviewfix (13), tests_payload_integrity (6), self-protect crate (28); cargo fmt --check for both touched crates and git diff --check passed. Four new enrollment regressions and the strengthened policy-key persistence regression were transplanted onto fc-start-c2-enroll-race with stashes and failed their intended assertions (exit 101); all pass with the fix. Base assertions cover false enrollment degradation, subsequent external edits, fresh-install file monitoring, refusal to bless existing tampering, and policy-write baseline refresh.
+
+Residual risks: privileged eBPF loading is unavailable in this environment (expected EPERM diagnostics); validation is runtime/unit-level, not a fresh Ubuntu VM install. Config-path alias normalization and transient external edits overwritten by an authorized atomic replacement remain outside this hash-monitoring contract. No dependencies added.

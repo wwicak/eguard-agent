@@ -586,7 +586,10 @@ impl AgentRuntime {
                 }
 
                 if changed {
-                    if let Err(err) = super::super::persist_runtime_config_snapshot(&self.config) {
+                    if let Err(err) = super::super::persist_runtime_config_snapshot(
+                        &self.config,
+                        &mut self.self_protect_engine,
+                    ) {
                         warn!(error = %err, "failed persisting bundle public key from server policy");
                     }
                 }
@@ -943,6 +946,18 @@ mod tests {
         cfg.self_protection_integrity_check_interval_secs = 0;
         let mut runtime = AgentRuntime::new(cfg).expect("runtime");
 
+        runtime.self_protect_engine =
+            ::self_protect::SelfProtectEngine::new(::self_protect::SelfProtectConfig {
+                expected_integrity_sha256_hex: None,
+                debugger: ::self_protect::DebuggerCheckConfig {
+                    enable_tracer_pid_probe: false,
+                    enable_timing_probe: false,
+                    ..Default::default()
+                },
+                runtime_integrity_paths: Vec::new(),
+                runtime_config_paths: vec![config_path.to_string_lossy().into_owned()],
+            });
+        assert!(runtime.self_protect_engine.evaluate().is_clean());
         let key_hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
         runtime.apply_bundle_key_override(&json!({ "bundle_public_key": key_hex }));
 
@@ -955,6 +970,10 @@ mod tests {
             Some(key_hex)
         );
 
+        assert!(
+            runtime.self_protect_engine.evaluate().is_clean(),
+            "authorized policy persistence must refresh the same config baseline as enrollment"
+        );
         let persisted = AgentConfig::load().expect("load persisted config");
         assert_eq!(
             persisted.detection_bundle_public_key.as_deref(),
