@@ -1,3 +1,25 @@
+# a1-hygiene
+
+- [x] Trace five failing tests and rule-loader cadence through history.
+- [x] Correct stale fixtures/contracts or implementation; preserve intentional safety guards.
+- [x] Verify baseline failures, module/regression tests, clippy and workspace formatting.
+- [x] Commit and export follow-up patch/status.
+
+Review (a1-hygiene): no production behavior change. `4993bc3` deliberately introduced a two-second pause between EVERY rule; replace the misleading modulo-one batch expression with `idx > 0`, preserving first-rule/no-sleep and all subsequent pauses. No lint suppression or dependency added.
+
+Root causes / test corrections:
+- Both async worker dispatch tests predated `91bae25`'s intentional offline dispatch guards. Assert queues remain intact offline, then set online and assert tasks are actually spawned.
+- The degraded local-response test spawned `sleep 30` BEFORE runtime initialization. `4993bc3`'s per-rule pauses make initialization exceed 30 seconds, so the child naturally exited before containment. Construct runtime before spawning the disposable child; keep real kill/report/buffer assertions.
+- The offline command cursor test assumed a real privileged host-isolation command always succeeds. `17cec9c` correctly reconciles failed isolation back to the prior state. Use a real scan of an isolated empty directory instead, retaining offline execution, unknown-command completion, FIFO cursor cap, and state assertions without mutating the host firewall or scanning arbitrary host files.
+- `f0cbb3d` intentionally reduced the grpc-client default buffer to 50 MiB. Assert the new default and the existing 100 MiB acceptance ceiling rather than restoring the obsolete larger allocation.
+- Apply rustfmt-only changes to grpc-client proto_tests.rs and platform-windows compliance/screen_lock.rs.
+
+Proof: stashed all changes and reran all five original named tests on exact `fa-start-a1-hygiene` (30305f1); all failed. Restored changes: all five pass. No new behavioral regression is required because production semantics are unchanged. Logs: `/tmp/fa-hygiene/stash-proof.log`, `validation.log`, `remaining.log`, `loader-tests.log`, `clippy-early.log`, `unrelated-baseline.log`.
+
+Validation (offline; every cargo command wrapped in timeout 1500 with this worktree's target): lifecycle loader/general tests 34 passed; tests_observability 16 passed (1194s); tests_det_stub_completion 16 passed / 1 pre-existing failure; tick tests 2 passed; tests_ebpf_policy 111 passed; tests_reviewfix 13 passed; tests_payload_integrity 6 passed; grpc-client full suite 104 passed / 1 pre-existing failure; buffer module 12 passed; proto_tests 14 passed; platform-windows screen_lock 1 passed (Linux-hosted stub coverage). `cargo clippy --offline -p agent-core --all-targets` passed: 56 emitted warning diagnostics (agent binary 13; test target 49 including 12 duplicates; dependencies 6). `cargo fmt --all --check` and `git diff --check` passed.
+
+Residuals: additional unrelated failures `runtime_bootstrap_restores_last_known_good_bundle_after_restart` (immediate version is None) and `alternate_grpc_server_addr_switches_known_agent_ports` (alternate address is None) both independently reproduced on exact base with a second stash/pop. Leave for follow-up; do not weaken production bootstrap or transport behavior in this hygiene change. Nonfatal libbpf EPERM warnings mean privileged live BPF was not exercised. The existing two-second loader cadence and slow default-path scan backlog test remain intentionally unchanged. Patch/status exported under `/home/dimas/eguard-lab-soak/followups/`.
+
 # F13/F14 — decoded fallback follow-up
 
 - [x] Add a regression proving naked escaped paths remain opaque (verify failure first).

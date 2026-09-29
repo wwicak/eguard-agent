@@ -155,7 +155,10 @@ fn event_buffer_memory_variant_reports_sizes() {
 #[test]
 // AC-GRP-082 AC-EBP-044 AC-CFG-020
 fn default_buffer_cap_matches_acceptance_limit() {
-    assert_eq!(DEFAULT_BUFFER_CAP_BYTES, 100 * 1024 * 1024);
+    // The memory-footprint reduction intentionally lowered the default to
+    // 50 MiB; the acceptance limit of 100 MiB is a ceiling, not a minimum.
+    assert_eq!(DEFAULT_BUFFER_CAP_BYTES, 50 * 1024 * 1024);
+    assert!(DEFAULT_BUFFER_CAP_BYTES <= 100 * 1024 * 1024);
 }
 
 #[test]

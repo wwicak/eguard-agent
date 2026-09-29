@@ -691,17 +691,22 @@ async fn command_pipeline_executes_offline_and_caps_completed_cursor() {
     let mut runtime = AgentRuntime::new(cfg).expect("runtime");
     runtime.client.set_online(false);
 
+    // Exercise real offline execution without requiring privileges or changing
+    // the test host's firewall. Isolation has its own outcome/safety tests.
+    let scan_root = unique_temp_dir("eguard-offline-command-scan");
+    std::fs::create_dir_all(&scan_root).expect("create empty scan root");
+    let scan_payload = serde_json::json!({ "paths": [scan_root] }).to_string();
     runtime
         .handle_command(
             grpc_client::CommandEnvelope {
-                command_id: "cmd-isolate-1".to_string(),
-                command_type: "isolate".to_string(),
-                payload_json: "{}".to_string(),
+                command_id: "cmd-scan-1".to_string(),
+                command_type: "scan".to_string(),
+                payload_json: scan_payload.clone(),
             },
             10,
         )
         .await;
-    assert!(runtime.host_control.isolated);
+    assert_eq!(runtime.host_control.last_scan_unix, Some(10));
 
     runtime
         .handle_command(
@@ -715,7 +720,7 @@ async fn command_pipeline_executes_offline_and_caps_completed_cursor() {
         .await;
     assert_eq!(
         runtime.completed_command_cursor(),
-        vec!["cmd-isolate-1".to_string(), "cmd-unknown-2".to_string()]
+        vec!["cmd-scan-1".to_string(), "cmd-unknown-2".to_string()]
     );
 
     for i in 0..300 {
@@ -724,7 +729,7 @@ async fn command_pipeline_executes_offline_and_caps_completed_cursor() {
                 grpc_client::CommandEnvelope {
                     command_id: format!("cmd-{i}"),
                     command_type: "scan".to_string(),
-                    payload_json: "{}".to_string(),
+                    payload_json: scan_payload.clone(),
                 },
                 i as i64,
             )
@@ -736,9 +741,10 @@ async fn command_pipeline_executes_offline_and_caps_completed_cursor() {
     assert_eq!(cursor.first().map(String::as_str), Some("cmd-44"));
     assert_eq!(cursor.last().map(String::as_str), Some("cmd-299"));
     assert_eq!(runtime.host_control.last_scan_unix, Some(299));
-    assert!(runtime.host_control.isolated);
+    assert!(!runtime.host_control.isolated);
     assert!(runtime.host_control.last_update_unix.is_none());
     assert!(!runtime.host_control.uninstall_requested);
+    std::fs::remove_dir_all(scan_root).expect("remove scan root");
 }
 
 #[test]

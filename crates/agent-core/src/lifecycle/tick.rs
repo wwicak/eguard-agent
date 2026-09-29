@@ -776,12 +776,13 @@ mod tests {
     #[tokio::test]
     async fn degraded_tick_executes_local_response_and_preserves_response_report_queue() {
         let _env_guard = shared_env_var_lock().lock().expect("env var lock");
+        // Rule loading can outlast the child's lifetime; initialize first so
+        // natural expiry cannot masquerade as a failed local response.
+        let mut runtime = new_runtime();
         let mut child = std::process::Command::new("sleep")
             .arg("30")
             .spawn()
             .expect("spawn disposable child");
-
-        let mut runtime = new_runtime();
         let now_unix = 1_700_000_100;
         runtime.runtime_mode = AgentMode::Degraded;
         runtime.last_recovery_probe_unix = Some(now_unix);

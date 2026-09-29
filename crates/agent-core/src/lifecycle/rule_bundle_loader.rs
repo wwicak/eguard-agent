@@ -222,13 +222,6 @@ fn load_bundle_rules_from_dir(detection: &mut DetectionEngine, path: &Path) -> (
     (sigma_loaded, yara_loaded)
 }
 
-/// Yield interval during rule compilation to prevent starving the heartbeat
-/// and telemetry loops.  Every RULE_LOAD_YIELD_BATCH rules we yield the thread
-/// so other work (heartbeat, event flush) can make progress.
-/// How many rules to compile before yielding.  The bundle loading runs
-/// synchronously on a tokio worker thread; without yields, heartbeat and
-/// telemetry tasks are starved for the entire compilation duration.
-const RULE_LOAD_YIELD_BATCH: usize = 1;
 /// Sleep between every rule.  2 seconds gives the async heartbeat task
 /// time to complete a full gRPC round-trip (typically <1s).  This slows
 /// the total bundle load to ~30min for a 1000-rule bundle, which is
@@ -241,8 +234,8 @@ fn load_sigma_rules_recursive(detection: &mut DetectionEngine, dir: &Path) -> us
     let rule_files = collect_rule_files_recursive(dir, &["yml", "yaml"]);
 
     for (idx, path) in rule_files.iter().enumerate() {
-        // Yield periodically so heartbeat/telemetry threads aren't starved
-        if idx > 0 && idx % RULE_LOAD_YIELD_BATCH == 0 {
+        // Pause between rules, but not before the first rule.
+        if idx > 0 {
             std::thread::sleep(RULE_LOAD_YIELD_SLEEP);
         }
 
@@ -267,7 +260,7 @@ fn load_yara_rules_recursive(detection: &mut DetectionEngine, dir: &Path) -> usi
     let rule_files = collect_rule_files_recursive(dir, &["yar", "yara"]);
 
     for (idx, path) in rule_files.iter().enumerate() {
-        if idx > 0 && idx % RULE_LOAD_YIELD_BATCH == 0 {
+        if idx > 0 {
             std::thread::sleep(RULE_LOAD_YIELD_SLEEP);
         }
 

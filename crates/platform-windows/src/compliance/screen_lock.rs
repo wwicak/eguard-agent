@@ -34,8 +34,8 @@ pub fn check_screen_lock() -> ScreenLockStatus {
         let screensaver_timeout = read_reg_string("HKCU", DESKTOP_KEY, "ScreenSaveTimeOut")
             .and_then(|v| v.trim().parse::<u32>().ok())
             .filter(|v| *v > 0);
-        let inactivity_timeout = read_reg_dword("HKLM", SYSTEM_POLICIES_KEY, "InactivityTimeoutSecs")
-            .filter(|v| *v > 0);
+        let inactivity_timeout =
+            read_reg_dword("HKLM", SYSTEM_POLICIES_KEY, "InactivityTimeoutSecs").filter(|v| *v > 0);
 
         let enabled = screensaver_active
             && secure_on_resume
