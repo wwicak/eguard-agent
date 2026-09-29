@@ -1,3 +1,15 @@
+# F17 — repair stale executable contracts
+
+- [x] Reproduce all three failures on h-start-h2-tests; trace divergence with git history.
+- [x] Update bootstrap test for asynchronous completion, directional failover contract, and report schema fixture.
+- [x] Run touched suites, required agent-core filters and formatting; record results and export commit.
+
+Design: test-only corrections. Bootstrap moved to background compilation in 4993bc3; poll the same completion hook as the tick loop with a deadline rather than reintroducing blocking startup. Reverse port fallback was removed in 899fe57; verify forward 50052→50053 fallback and no reverse retry, preserving schemes. ResponseReport gained action_type_label in 70a6197; populate and assert the canonical label rather than removing the field.
+
+Review/results: no product behavior changes. Original bootstrap and port tests failed on the start tag with None versus the expected version/reverse address; acceptance failed E0063 for action_type_label. After correction: tests_det_stub_completion 17/17, grpc-client 111/111, acceptance tests_rsp_contract 5/5, tests_ebpf_policy 111/111, tests_reviewfix 21/21, tests_payload_integrity 12/12; acceptance --lib --no-run and cargo fmt --all --check pass. All Cargo commands used the worktree target, --offline (where supported), and timeout 1500.
+
+Residual baseline: full acceptance now exposes seven unrelated failures (watchdog service contract, ML workflow, manifest hashes, feature snapshot, stratified CV, Navbar, verification-suite command). Baseline acceptance source with only action_type_label: String::new() to unblock compilation reproduces exactly the same 47 passes/7 failures. No new failure observed. Logs: /tmp/h2-tests-logs. Generated tracked metrics were restored. No new dependencies or production changes; test bundle remains in its unique temporary directory. Full agent-core suite was not run beyond touched module and required filters.
+
 # F24 second pass — Ubuntu native linking
 
 - [x] Override the Rust x86_64 Linux linker with cc for resource-budget, verification and adversary jobs.

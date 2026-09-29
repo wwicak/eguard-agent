@@ -326,6 +326,8 @@ fn response_reporting_and_pipeline_contracts_are_wired() {
         agent_id: "agent-1".to_string(),
         alert_id: "alert-1".to_string(),
         action: pb::ResponseAction::CaptureScript as i32,
+        // Preserve the canonical raw label alongside the proto3 enum.
+        action_type_label: "capture_script".to_string(),
         confidence: pb::ResponseConfidence::High as i32,
         detection_layers: vec!["L2".to_string()],
         detection_to_action_us: 4200,
@@ -340,6 +342,7 @@ fn response_reporting_and_pipeline_contracts_are_wired() {
     assert_eq!(report.alert_id, "alert-1");
     assert_eq!(report.detection_to_action_us, 4200);
     assert_eq!(report.action, pb::ResponseAction::CaptureScript as i32);
+    assert_eq!(report.action_type_label, "capture_script");
     assert_eq!(report.confidence, pb::ResponseConfidence::High as i32);
 
     let mut client = Client::new("127.0.0.1:50052".to_string());

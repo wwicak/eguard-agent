@@ -628,7 +628,19 @@ rule bootstrap_last_known_good_yara {
             .expect("reload with local bundle");
     }
 
-    let runtime = AgentRuntime::new(cfg).expect("runtime after restart");
+    let mut runtime = AgentRuntime::new(cfg).expect("runtime after restart");
+    // Bootstrap compiles off-thread to keep heartbeat/telemetry responsive.
+    // Drive the tick loop's completion hook instead of requiring blocking startup.
+    assert!(runtime.background_reload_rx.is_some());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while runtime.background_reload_rx.is_some() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "last-known-good bootstrap did not complete"
+        );
+        runtime.poll_background_reload();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     assert_eq!(
         runtime
             .detection_state
