@@ -38,8 +38,11 @@ Proof logs: `/home/dimas/eguard-lab-soak/followups/f4a-red-proof.log` and
 
 ## Full agent suite observations
 
-Full suite result is recorded in the final handoff. In addition to the supplied
-known base failures, the run exposed:
+`cargo test --offline -p agent-core` reached the 1500-second timeout (exit 124):
+552 passes, 11 failures and 2 ignored tests were observed; the remaining
+`observability_snapshot_reports_bounded_command_backlog_progress` never finished.
+The full run therefore is not green. In addition to the supplied known bootstrap
+failure, the run exposed:
 
 - Three parallel config identity failures (`default_agent_id_uses_machine_id_when_hostname_missing`,
   `default_agent_id_uses_windows_computername_when_hostname_missing`,
@@ -49,6 +52,17 @@ known base failures, the run exposed:
   its constant ledger totals 18.3 MiB while requiring >=20 MiB. A comparison
   against the tag proves the entire test function and `zig/ebpf/bpf_helpers.h`
   are byte-identical. This is not a RawEvent-size regression.
+
+- The parallel full run also reported failures in four network-profile tests,
+  the package-build harness, and the golden test after the shared-env bootstrap
+  failure. The focused golden passes; its lock acquisition now tolerates
+  poisoning rather than cascading another test's panic. A final paired run
+  (`runtime_bootstrap_restores_last_known_good_bundle_after_restart` plus
+  `f4a_legacy_envelope_and_detection_golden`, four threads, nocapture) confirms
+  the known bootstrap assertion fails while the golden still passes.
+- `cargo test --offline -p acceptance` reproduces the supplied base compile
+  failure: `ResponseReport` initializer lacks `action_type_label` at
+  `crates/acceptance/src/tests_rsp_contract.rs:326`.
 
 No unrelated test expectations or memory policy were weakened.
 

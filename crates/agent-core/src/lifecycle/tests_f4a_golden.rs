@@ -3,7 +3,9 @@ use super::*;
 
 #[test]
 fn f4a_legacy_envelope_and_detection_golden() {
-    let _lock = shared_env_var_lock().lock().unwrap();
+    let _lock = shared_env_var_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let root = std::env::temp_dir().join(format!(
         "eguard-f4a-golden-{}-{}",
         std::process::id(),
