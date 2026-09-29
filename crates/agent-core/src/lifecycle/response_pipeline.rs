@@ -5,6 +5,9 @@ use tracing::{info, warn};
 
 use super::{AgentRuntime, PendingResponseAction, TickEvaluation, RESPONSE_QUEUE_CAPACITY};
 
+// Well below half-queue drain headroom, even with primary/local response reports.
+const MAX_PLAYBOOK_REPORTS_PER_EVALUATION: usize = 16;
+
 impl AgentRuntime {
     pub(super) async fn run_connected_response_stage(
         &mut self,
@@ -177,7 +180,19 @@ impl AgentRuntime {
         let threat_category =
             super::AgentRuntime::detection_rule_type(&evaluation.detection_outcome).to_string();
 
+        let mut reports = 0usize;
+        let mut truncated = 0u64;
         for pb_action in &playbook_actions {
+            let produces_report = matches!(pb_action.action.as_str(), "alert" | "log")
+                || (pb_action.action == "isolate" && !self.host_control.isolated);
+            let emit_report = !produces_report || reports < MAX_PLAYBOOK_REPORTS_PER_EVALUATION;
+            if produces_report {
+                if emit_report {
+                    reports += 1;
+                } else {
+                    truncated += 1;
+                }
+            }
             match pb_action.action.as_str() {
                 "kill" => {
                     self.push_playbook_response(
@@ -210,9 +225,12 @@ impl AgentRuntime {
                     );
                 }
                 "isolate" => {
-                    self.execute_playbook_isolate(evaluation, now_unix);
+                    self.execute_playbook_isolate(evaluation, now_unix, emit_report);
                 }
                 "alert" | "log" => {
+                    if !emit_report {
+                        continue;
+                    }
                     self.enqueue_playbook_alert_report(
                         &pb_action.action,
                         evaluation,
@@ -225,6 +243,17 @@ impl AgentRuntime {
                     warn!(action = unknown, "unknown playbook action type; skipping");
                 }
             }
+        }
+        if truncated > 0 {
+            self.metrics.playbook_reports_truncated_total = self
+                .metrics
+                .playbook_reports_truncated_total
+                .saturating_add(truncated);
+            warn!(
+                truncated,
+                limit = MAX_PLAYBOOK_REPORTS_PER_EVALUATION,
+                "per-evaluation playbook report fanout truncated"
+            );
         }
     }
 
@@ -318,7 +347,12 @@ impl AgentRuntime {
         event.file_write || outcome.signals.z1_exact_ioc || outcome.signals.yara_hit
     }
 
-    fn execute_playbook_isolate(&mut self, evaluation: &TickEvaluation, now_unix: i64) {
+    fn execute_playbook_isolate(
+        &mut self,
+        evaluation: &TickEvaluation,
+        now_unix: i64,
+        emit_report: bool,
+    ) {
         if self.host_control.isolated {
             info!("playbook isolate skipped: host already isolated");
             return;
@@ -330,6 +364,10 @@ impl AgentRuntime {
             &mut self.host_control,
         );
 
+        // Preserve the local isolation action even when its side report is capped.
+        if !emit_report {
+            return;
+        }
         self.enqueue_response_report(super::ResponseEnvelope {
             agent_id: self.config.agent_id.clone(),
             action_type: "playbook_isolate".to_string(),

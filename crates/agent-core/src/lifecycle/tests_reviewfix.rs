@@ -40,6 +40,86 @@ fn queue_event(runtime: &mut AgentRuntime) {
         });
 }
 
+#[tokio::test]
+async fn fanout_playbook_reports_preserve_half_full_queue() {
+    let mut runtime = runtime();
+    let now = 1_700_000_000;
+    runtime
+        .playbook_engine
+        .load_from_policy(&serde_json::json!({
+            "response_playbooks": [{"name":"fanout", "enabled":true, "priority":1,
+                "conditions":{"require_signals":[]}, "actions":[{"action":"alert"}]}]
+        }));
+    queue_event(&mut runtime);
+    let evaluation = runtime.evaluate_tick(now).unwrap().unwrap();
+    runtime
+        .run_connected_response_stage(now, Some(&evaluation))
+        .await;
+    let mut sentinel = runtime.pending_response_reports.pop_front().unwrap();
+    sentinel.envelope.action_type = "old-report-sentinel".into();
+    for _ in 0..127 {
+        runtime.pending_response_reports.push_back(sentinel.clone());
+    }
+    runtime
+        .playbook_engine
+        .load_from_policy(&serde_json::json!({
+            "response_playbooks": [{"name":"fanout", "enabled":true, "priority":1,
+                "conditions":{"require_signals":[]},
+                "actions": vec![serde_json::json!({"action":"alert"}); 130]}]
+        }));
+    runtime
+        .run_connected_response_stage(now, Some(&evaluation))
+        .await;
+    // One evaluation must not consume the drain's entire half-capacity headroom.
+    assert_eq!(
+        runtime
+            .pending_response_reports
+            .iter()
+            .filter(|r| r.envelope.action_type == "old-report-sentinel")
+            .count(),
+        127
+    );
+    assert_eq!(runtime.pending_response_reports.len(), 127 + 16);
+}
+
+#[test]
+fn fanout_ioc_signals_preserve_half_full_queue_and_all_detection_signatures() {
+    let mut runtime = runtime();
+    let now = 1_700_000_000;
+    let signatures: Vec<String> = (0..514).map(|i| format!("signature-{i:04}")).collect();
+    let mut engine = detection::DetectionEngine::default_with_rules();
+    engine.layer1.load_string_signatures(signatures.clone());
+    engine.layer1.load_ips(vec!["192.0.2.123".to_string()]);
+    runtime.detection_state = crate::detection_state::SharedDetectionState::new(engine, None);
+    for i in 0..511 {
+        runtime.buffer_ioc_signal(format!("old-ioc-{i}"), "domain".into(), "high", now);
+    }
+    queue_event(&mut runtime);
+    runtime.raw_event_backlog.back_mut().unwrap().payload = format!(
+        "path=/synthetic/fanout;cmdline={};ppid=1;comm=fanout;parent_comm=init;dst_ip=192.0.2.123",
+        signatures.join(" ")
+    );
+    let evaluation = runtime.evaluate_tick(now).unwrap().unwrap();
+    assert!(evaluation.detection_outcome.signals.z1_exact_ioc);
+    assert_eq!(
+        evaluation.detection_outcome.layer1.matched_signatures,
+        signatures
+    );
+    // The full detection remains intact; only the campaign upload side queue is bounded.
+    assert_eq!(
+        runtime
+            .ioc_signal_buffer
+            .iter()
+            .filter(|s| s.ioc_value.starts_with("old-ioc-"))
+            .count(),
+        511
+    );
+    assert_eq!(runtime.ioc_signal_buffer.len(), 511 + 32);
+    for signature in signatures {
+        assert!(evaluation.event_envelope.payload_json.contains(&signature));
+    }
+}
+
 fn prepare_tick(runtime: &mut AgentRuntime, now: i64) {
     runtime.last_heartbeat_attempt_unix = Some(now);
     runtime.last_compliance_attempt_unix = Some(now);

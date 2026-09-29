@@ -424,3 +424,10 @@ Review: prior intentional overflow suppression below is superseded. State now sc
 - [x] Guard connected failed-send drain by byte headroom; bound compliance admission without clearing dedupe; leave timing to real flushes.
 - [x] Validate reviewfix (16), payload integrity (6), eBPF policy (111), tick (2), telemetry pipeline (13), and formatting.
 Review: connected regression isolates drain + end-of-tick flush to avoid control-plane latency exhausting the tick budget. Checks beyond dedupe capacity are intentionally not alerted until capacity is available. Single oversized envelopes can still exceed the 10% reserve; first evaluation retention remains unchanged.
+
+## a3-fanout
+- [x] Cap per-evaluation immediate playbook reports (16) and IOC signals (32), warn and count omitted entries without changing detection. Existing local-action execution remains bounded to four reports per tick; isolation still executes when its side report is capped.
+- [x] Add queue-sentinel regressions and prove failure against base: production-only stash preserved the two new tests; base retained 126/127 report sentinels and 510/511 IOC sentinels. Fixed tests retain all sentinels and all 514 detection/telemetry signatures.
+- [x] Required tests/format: reviewfix 20, payload_integrity 6, ebpf_policy 111, response_pipeline 10, response_playbook 15, tick 2 passed; final fanout rerun 2 passed; agent-core fmt and git diff checks passed.
+- [x] Review: broad lifecycle run reached 483 completed tests before the 1500-second timeout, with unrelated failures. Base-only targeted reproduction confirmed memory-ledger lower-bound, last-known-good bootstrap, package harness strip expectation, and consequent poisoned environment-lock failures; restart test passes outside poisoned run. Logs: /tmp/fa-lifecycle.log, /tmp/fa-base-broad.log, /tmp/fa-fanout-base.log, /tmp/fa-suite-results. No unrelated fixes included.
+- [x] Commit and export patch/status to the requested followups directory.

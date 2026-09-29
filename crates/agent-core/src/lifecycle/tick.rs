@@ -270,7 +270,24 @@ impl AgentRuntime {
 
         // Buffer IOC signals for cross-endpoint campaign correlation.
         if detection_outcome.signals.z1_exact_ioc || detection_outcome.signals.yara_hit {
-            for sig in &detection_outcome.layer1.matched_signatures {
+            // Bound side-queue fanout only; keep every signature in detection/telemetry.
+            const MAX_IOC_SIGNALS_PER_EVALUATION: usize = 32;
+            let signatures = &detection_outcome.layer1.matched_signatures;
+            let truncated = signatures
+                .len()
+                .saturating_sub(MAX_IOC_SIGNALS_PER_EVALUATION);
+            if truncated > 0 {
+                self.metrics.ioc_signals_truncated_total = self
+                    .metrics
+                    .ioc_signals_truncated_total
+                    .saturating_add(truncated as u64);
+                warn!(
+                    truncated,
+                    limit = MAX_IOC_SIGNALS_PER_EVALUATION,
+                    "per-evaluation IOC signal fanout truncated"
+                );
+            }
+            for sig in signatures.iter().take(MAX_IOC_SIGNALS_PER_EVALUATION) {
                 let ioc_type = Self::classify_ioc_type(sig);
                 self.buffer_ioc_signal(
                     sig.clone(),

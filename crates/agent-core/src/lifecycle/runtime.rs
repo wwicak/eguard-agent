@@ -720,6 +720,8 @@ impl AgentRuntime {
             telemetry_event_txn_total: self.metrics.telemetry_event_txn_total,
             telemetry_event_txn_coalesced_total: self.metrics.telemetry_event_txn_coalesced_total,
             response_action_deduped_total: self.metrics.response_action_deduped_total,
+            playbook_reports_truncated_total: self.metrics.playbook_reports_truncated_total,
+            ioc_signals_truncated_total: self.metrics.ioc_signals_truncated_total,
             strict_budget_mode_transition_total: self.metrics.strict_budget_mode_transition_total,
             control_plane_task_replaced_total: self.metrics.control_plane_task_replaced_total,
             control_plane_send_replaced_total: self.metrics.control_plane_send_replaced_total,
