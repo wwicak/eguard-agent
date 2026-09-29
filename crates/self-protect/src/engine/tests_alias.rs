@@ -74,6 +74,58 @@ fn check_alias(kind: &str) {
         .is_err());
 }
 
+#[cfg(unix)]
+fn check_atomic_alias(authorized: bool) {
+    let fixture = Fixture::new();
+    let target = fixture.0.join("target");
+    let alias = fixture.0.join("alias");
+    let temporary = fixture.0.join("temporary");
+    std::fs::write(&target, b"old").unwrap();
+    std::os::unix::fs::symlink(&target, &alias).unwrap();
+    let mut config = tests::config_without_runtime_paths();
+    config.runtime_config_paths = vec![
+        target.to_string_lossy().into_owned(),
+        alias.to_string_lossy().into_owned(),
+        alias.to_string_lossy().into_owned(),
+    ];
+    let mut engine = SelfProtectEngine::new(config);
+    let replace = |_: &[u8]| -> Result<Vec<u8>, String> {
+        std::fs::write(&temporary, b"replacement").unwrap();
+        std::fs::rename(&temporary, &alias).unwrap();
+        Ok(b"replacement".to_vec())
+    };
+    if authorized {
+        engine.authorized_config_write(&alias, replace).unwrap();
+        // Production persistence renames over the symlink, leaving its target unchanged.
+        assert!(
+            engine.evaluate().is_clean(),
+            "replacement must not advance the unchanged target"
+        );
+        std::fs::write(&alias, b"external").unwrap();
+    } else {
+        replace(&[]).unwrap();
+    }
+    assert!(
+        engine
+            .evaluate()
+            .violation_codes()
+            .contains(&"runtime_config_tamper".to_string()),
+        "the configured pathname must remain monitored after symlink replacement"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn authorized_atomic_alias_replacement() {
+    check_atomic_alias(true);
+}
+
+#[cfg(unix)]
+#[test]
+fn external_atomic_alias_replacement() {
+    check_atomic_alias(false);
+}
+
 #[test]
 fn duplicate_authorized_write() {
     check_alias("duplicate");

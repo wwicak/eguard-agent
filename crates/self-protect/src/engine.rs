@@ -84,6 +84,10 @@ fn normalize_path(path: &Path) -> PathBuf {
     if let Ok(canonical) = std::fs::canonicalize(path) {
         return canonical;
     }
+    lexical_path(path)
+}
+
+fn lexical_path(path: &Path) -> PathBuf {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -115,9 +119,8 @@ fn normalize_config_paths(paths: &[String]) -> Vec<String> {
         .map(|path| path.trim())
         .filter(|path| !path.is_empty())
     {
-        let path = normalize_path(Path::new(path))
-            .to_string_lossy()
-            .into_owned();
+        // Keep each pathname: rename over a symlink replaces the link, not its target.
+        let path = lexical_path(Path::new(path)).to_string_lossy().into_owned();
         if !normalized.contains(&path) {
             normalized.push(path);
         }
@@ -234,7 +237,11 @@ impl SelfProtectEngine {
         let sha256_hex = format!("{:x}", Sha256::digest(&bytes));
         if !entries.is_empty() {
             for index in entries {
-                baseline.config[index].sha256_hex = sha256_hex.clone();
+                // Atomic replacement may split formerly identical aliases. Only
+                // the destination and aliases still following it received these bytes.
+                if same_file(Path::new(&baseline.config[index].path), path) {
+                    baseline.config[index].sha256_hex = sha256_hex.clone();
+                }
             }
         } else if self
             .config
@@ -243,7 +250,7 @@ impl SelfProtectEngine {
             .any(|p| same_file(Path::new(p), path))
         {
             baseline.config.push(RuntimeHash {
-                path: normalize_path(path).to_string_lossy().into_owned(),
+                path: lexical_path(path).to_string_lossy().into_owned(),
                 sha256_hex,
             });
         }
