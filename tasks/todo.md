@@ -1,3 +1,15 @@
+# F17 second pass — deferred macOS bootstrap
+
+- [x] Drive deferred bootstrap before polling the restart regression; preserve platform startup assertions.
+- [x] Run touched modules, required agent filters, acceptance compilation and formatting.
+- [x] Record platform limitations, commit and refresh patch/status.
+
+Design: the restart test must drive both tick hooks: deferred scheduling (macOS) then background completion (all platforms). No product behavior changes. Assert macOS pending/no-worker startup before scheduling and cleared pending state afterward.
+
+Validation: Linux touched module 17/17, grpc-client 111/111, acceptance response 5/5; required policy 111/111, reviewfix 21/21, payload integrity 12/12. Acceptance lib --no-run, fmt and diff checks pass. Logs: /tmp/h2-second-logs. Original fail proofs remain those recorded below and independently confirmed by review. git show h-start-h2-tests confirms deferred scheduling already existed at runtime.rs:615, while the original restart test immediately asserted version. The first-pass unconditional worker assertion was incorrect on macOS; now the actual deferred hook runs before it. No additional product behavior changed.
+
+Residual: macOS runtime execution unavailable on Linux. Attempted aarch64-apple-darwin cargo check --tests fails in zstd-sys because host cc rejects -arch/-mmacosx-version-min; no successful macOS compile claimed. Full workspace suite not rerun. Generated rule-push metrics restored; no out-of-scope production fixes.
+
 # F17 — repair stale executable contracts
 
 - [x] Reproduce all three failures on h-start-h2-tests; trace divergence with git history.

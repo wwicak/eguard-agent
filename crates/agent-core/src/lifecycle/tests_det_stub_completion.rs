@@ -630,7 +630,15 @@ rule bootstrap_last_known_good_yara {
 
     let mut runtime = AgentRuntime::new(cfg).expect("runtime after restart");
     // Bootstrap compiles off-thread to keep heartbeat/telemetry responsive.
-    // Drive the tick loop's completion hook instead of requiring blocking startup.
+    // macOS defers even scheduling until tick so connectivity can start first.
+    #[cfg(target_os = "macos")]
+    {
+        assert!(runtime.deferred_bundle_bootstrap_pending);
+        assert!(runtime.background_reload_rx.is_none());
+    }
+    // Drive both tick hooks rather than requiring immediate scheduling/startup.
+    runtime.run_deferred_bundle_bootstrap();
+    assert!(!runtime.deferred_bundle_bootstrap_pending);
     assert!(runtime.background_reload_rx.is_some());
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while runtime.background_reload_rx.is_some() {
