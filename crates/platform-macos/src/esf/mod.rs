@@ -822,8 +822,27 @@ fn parse_event_line(raw_line: &str) -> Option<super::RawEvent> {
         return Some(event);
     }
 
-    let value = serde_json::from_str::<Value>(raw_line).ok()?;
+    let mut value = serde_json::from_str::<Value>(raw_line).ok()?;
+    // A malformed replay record must not be reinterpreted as native eslogger
+    // data. RawEvent's serde boundary is the only replay entry point.
+    if value.get("payload").is_some() {
+        return None;
+    }
+    remove_replay_fields(&mut value);
     decode_event_value(&value)
+}
+
+fn remove_replay_fields(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            object.remove("fields");
+            for child in object.values_mut() {
+                remove_replay_fields(child);
+            }
+        }
+        Value::Array(array) => array.iter_mut().for_each(remove_replay_fields),
+        _ => {}
+    }
 }
 
 fn decode_event_value(value: &Value) -> Option<super::RawEvent> {

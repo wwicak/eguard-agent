@@ -22,7 +22,15 @@ pub fn corpus() -> Vec<RawEvent> {
             out.push(event);
         }
     };
-    for name in [r"C:\f4c\distinct.exe", "", "  C:\\mixed;name,=x.exe  "] {
+    for name in [
+        r"C:\f4c\distinct.exe",
+        "",
+        "  C:\\mixed;name,=x.exe  ",
+        r"\??\C:\x.exe",
+        r"\\?\C:\x.exe",
+        r"\Device\HarddiskVolume1\x.exe",
+        "\u{0007}\\??\\C:\\x.exe",
+    ] {
         for version in 0..=6 {
             for opcode in [1, 2] {
                 let modern = if opcode == 1 {
@@ -64,7 +72,25 @@ pub fn corpus() -> Vec<RawEvent> {
         }
         for opcode in [68, 70, 71, 15] {
             for len in [0, 16, 24, 32, 40, 48] {
-                decode(KERNEL_FILE, opcode, 0, &vec![0; len]);
+                for variant in 0..3 {
+                    let mut data = vec![0; len];
+                    let object_offset = if opcode == 15 { 16 } else { 8 };
+                    let key_offset = object_offset + 8;
+                    for (offset, value) in [(object_offset, 0x1234u64), (key_offset, 0x5678u64)] {
+                        if variant != 0
+                            && offset + 8 <= len
+                            && (variant == 1 || offset == object_offset)
+                        {
+                            data[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+                        }
+                    }
+                    let size_offset = if opcode == 15 { 44 } else { 36 };
+                    if variant != 0 && size_offset + 4 <= len {
+                        data[size_offset..size_offset + 4]
+                            .copy_from_slice(&0x4321u32.to_le_bytes());
+                    }
+                    decode(KERNEL_FILE, opcode, 0, &data);
+                }
             }
         }
         for offset in [36, 24, 0] {
@@ -84,6 +110,7 @@ pub fn corpus() -> Vec<RawEvent> {
             data[8..12].copy_from_slice(&[192, 0, 2, 17]);
             data[12..16].copy_from_slice(&[198, 51, 100, 23]);
             data[16..18].copy_from_slice(&443u16.to_be_bytes());
+            data[18..20].copy_from_slice(&54321u16.to_be_bytes());
         }
         decode(KERNEL_NETWORK, 10, 0, &data);
     }
@@ -93,20 +120,31 @@ pub fn corpus() -> Vec<RawEvent> {
         }
     }
     for command in ["", "distinct --one", "mixed;comma,=value"] {
-        let fields = [
-            ("NewProcessId", "4294967295"),
-            ("NewProcessName", r"C:\f4c\audit.exe"),
-            ("CommandLine", command),
-            ("ProcessId", "12345"),
-            ("ParentProcessName", "parent.exe"),
-        ]
-        .into_iter()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect();
-        out.push(
-            security_auditing::build_process_create_event(&fields, 1_700_000_000_000_000_000)
-                .unwrap(),
-        );
+        for path in [
+            r"C:\f4c\audit.exe",
+            r"\??\C:\audit.exe",
+            r"\\?\C:\audit.exe",
+            r"\Device\HarddiskVolume1\audit.exe",
+            "",
+        ] {
+            let fields = [
+                ("NewProcessId", "4294967295"),
+                ("NewProcessName", path),
+                ("CommandLine", command),
+                ("ProcessId", "12345"),
+                ("ParentProcessName", "parent.exe"),
+            ]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+            if let Some(event) =
+                security_auditing::build_process_create_event(&fields, 1_700_000_000_000_000_000)
+            {
+                out.push(event);
+            } else {
+                assert!(path.is_empty());
+            }
+        }
     }
     out
 }
@@ -130,6 +168,38 @@ fn f4c_windows_decoder_fields_and_enrichment_differential() {
     assert!(events.iter().any(|e| e.fields.path.is_some()));
     assert!(events.iter().any(|e| e.fields.domain.is_some()));
     assert!(events.iter().any(|e| e.fields.module.is_some()));
+    for opcode in [68, 15] {
+        for len in [0, 16, 24, 32, 40, 48] {
+            let offset = if opcode == 15 { 44 } else { 36 };
+            let mut data = vec![0; len];
+            if offset + 4 <= len {
+                data[offset..offset + 4].copy_from_slice(&0x4321u32.to_le_bytes());
+            }
+            let event =
+                decode_etw_record_versioned(KERNEL_FILE, opcode, 0, u32::MAX, 42, &data).unwrap();
+            assert_eq!(
+                event.fields.size,
+                Some(if offset + 4 <= len { 0x4321 } else { 0 }),
+                "opcode={opcode} len={len}"
+            );
+        }
+    }
+    for event in events
+        .iter()
+        .filter(|event| matches!(event.event_type, crate::EventType::ProcessExec))
+    {
+        if event.payload.contains(r"\??\")
+            || event.payload.contains(r"\\?\")
+            || event.payload.contains("HarddiskVolume")
+        {
+            assert_eq!(
+                event.fields.path,
+                crate::parse_kv_fields(&event.payload).get("path").cloned(),
+                "{}",
+                event.payload
+            );
+        }
+    }
     let mut dns = events
         .iter()
         .find(|event| event.fields.domain.is_some())

@@ -1,6 +1,21 @@
 //! Real eslogger decoder corpus, unavailable in production builds.
 use crate::RawEvent;
 
+fn alternate(value: &str, distinct: &str) -> String {
+    if value.is_empty() {
+        String::new()
+    } else if value.starts_with(' ') {
+        // Mixed rows deliberately leave selected fields absent while retaining
+        // distinct delimiter-sensitive values in the other fields.
+        if distinct.contains("command") || distinct.contains("subject") {
+            return String::new();
+        }
+        format!("  {distinct};comma,=mixed  ")
+    } else {
+        distinct.to_owned()
+    }
+}
+
 pub fn corpus() -> Vec<RawEvent> {
     let mut out = Vec::new();
     for kind in [
@@ -20,9 +35,9 @@ pub fn corpus() -> Vec<RawEvent> {
                 let mut input = serde_json::json!({
                     "event_type": kind, "pid": 4294967295u32, "uid": 501,
                     "ts_ns": 1700000000000000000u64,
-                    "path": value, "cmdline": value, "dst": value,
-                    "dst_ip": "192.0.2.17", "dst_port": 443,
-                    "domain": value, "subject": value, "flags": 2
+                    "path": value, "cmdline": alternate(value, "command --arg"), "dst": alternate(value, "/rename/destination"),
+                    "dst_ip": alternate(value, "192.0.2.17"), "dst_port": 443,
+                    "domain": alternate(value, "distinct.example"), "subject": alternate(value, "denied-subject"), "flags": 2
                 });
                 if nested {
                     input = serde_json::json!({"event_type": kind, "pid": 4294967295u32, "uid": 501, "ts_ns": 1700000000000000000u64, "event": input});
@@ -43,7 +58,7 @@ pub fn corpus() -> Vec<RawEvent> {
     ] {
         for schema in [0, 1] {
             for value in ["/f4c/integer", "", " /mixed;comma,=x "] {
-                let input = serde_json::json!({"schema_version":schema,"event_type":code,"pid":4294967295u32,"uid":501,"ts_ns":1700000000000000000u64,"path":value,"cmdline":value,"dst_ip":value,"dst_port":0});
+                let input = serde_json::json!({"schema_version":schema,"event_type":code,"pid":4294967295u32,"uid":501,"ts_ns":1700000000000000000u64,"path":value,"cmdline":alternate(value,"integer --cmd"),"dst":alternate(value,"/integer/destination"),"domain":alternate(value,"integer.example"),"subject":alternate(value,"integer-subject"),"dst_ip":alternate(value,"198.51.100.23"),"dst_port":8443});
                 out.push(super::decode_event_value(&input).unwrap());
             }
         }
@@ -67,7 +82,7 @@ pub fn corpus() -> Vec<RawEvent> {
         "uipc_bind",
     ] {
         for value in ["/f4c/nested", "", " /mixed;comma,=x "] {
-            let input = serde_json::json!({"schema_version":1,"event_type":999,"pid":4294967295u32,"uid":501,"ts_ns":1700000000000000000u64,"process":{"audit_token":{"pidversion":12},"parent_audit_token":{"pidversion":11}},"event":{key:{"path":value,"target":{"executable":{"path":value},"audit_token":{"pid":4294967295u32,"pidversion":13}},"args":[value,"--distinct"],"destination":{"existing_file":{"path":value}}}}});
+            let input = serde_json::json!({"schema_version":1,"event_type":999,"pid":4294967295u32,"uid":501,"ts_ns":1700000000000000000u64,"process":{"audit_token":{"pidversion":12},"parent_audit_token":{"pidversion":11}},"event":{key:{"path":value,"target":{"executable":{"path":alternate(value,"/target/executable")},"audit_token":{"pid":4294967295u32,"pidversion":13}},"args":[alternate(value,"command"),"--distinct"],"destination":{"existing_file":{"path":alternate(value,"/nested/destination")}}}}});
             out.push(super::decode_event_value(&input).unwrap());
         }
     }
@@ -118,4 +133,25 @@ fn f4c_macos_decoder_fields_and_enrichment_differential() {
     }
     let replay = super::parse_event_line(r#"{"event_type":"ProcessExec","pid":4294967295,"uid":501,"ts_ns":42,"payload":"path=/safe","fields":{"path":"/injected"}}"#).unwrap();
     assert_eq!(replay.fields, Default::default());
+}
+
+#[test]
+fn f4c_malformed_replay_cannot_inject_fields() {
+    for injected in [
+        r#"{"path":"/injected"}"#,
+        r#"{"domain":"injected.example"}"#,
+    ] {
+        for kind in ["ProcessExec", "DnsQuery"] {
+            let replay = format!(
+                r#"{{"event_type":"{kind}","pid":1,"uid":501,"ts_ns":42,"pid_start_ns":"malformed","payload":"path=/safe","fields":{injected}}}"#
+            );
+            assert!(super::parse_event_line(&replay).is_none());
+            let native = format!(
+                r#"{{"event_type":"{kind}","pid":1,"uid":501,"ts_ns":42,"pid_start_ns":"malformed","event":{{"fields":{injected}}}}}"#
+            );
+            let event = super::parse_event_line(&native).unwrap();
+            assert_eq!(event.fields, Default::default());
+            assert!(!event.payload.contains("injected"));
+        }
+    }
 }

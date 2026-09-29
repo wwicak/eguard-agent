@@ -663,9 +663,19 @@ fn raw_event_metadata(raw: &RawEvent) -> PayloadMetadata {
         raw.event_type,
         EventType::ProcessExec | EventType::ProcessExit
     ) {
-        payload_meta.process_path_hint = raw.fields.path.clone().or(payload_meta.process_path_hint);
+        payload_meta.process_path_hint = raw
+            .fields
+            .path
+            .as_deref()
+            .map(normalize_windows_path)
+            .or(payload_meta.process_path_hint);
     } else {
-        payload_meta.file_path = raw.fields.path.clone().or(payload_meta.file_path);
+        payload_meta.file_path = raw
+            .fields
+            .path
+            .as_deref()
+            .map(normalize_windows_path)
+            .or(payload_meta.file_path);
     }
     payload_meta.file_path_secondary = raw
         .fields
@@ -864,7 +874,13 @@ pub(crate) fn decoded_fields(event_type: &EventType, payload: &str) -> RawEventF
         module: kv.get("module").cloned(),
         src_ip: kv.get("src_ip").cloned(),
         src_port: kv.get("src_port").and_then(|value| value.parse().ok()),
-        path: meta.process_path_hint.or(meta.file_path),
+        // Raw consumers (detection fallback and coalescing) historically read the
+        // unnormalized payload. Normalize only at the enrichment boundary.
+        path: kv
+            .get("path")
+            .or_else(|| kv.get("file"))
+            .or_else(|| kv.get("src"))
+            .cloned(),
         secondary_path: meta.file_path_secondary,
         cmdline: meta.command_line_hint,
         parent_comm: meta.parent_process_hint,
