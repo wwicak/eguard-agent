@@ -54,7 +54,7 @@ fn f4a_legacy_envelope_and_detection_golden() {
     cfg.offline_buffer_backend = "memory".into();
     cfg.server_addr = "127.0.0.1:1".into();
     cfg.self_protection_integrity_check_interval_secs = 0;
-    let lines = linux_codec_corpus();
+    let lines = linux_codec_corpus(false);
     let path = std::env::temp_dir().join(format!(
         "eguard-f4a-golden-{}-{}.ndjson",
         std::process::id(),
@@ -110,7 +110,7 @@ fn f4a_legacy_envelope_and_detection_golden() {
     assert_eq!(actual, expected);
 }
 
-fn linux_codec_corpus() -> Vec<String> {
+fn linux_codec_corpus(include_empty_variants: bool) -> Vec<String> {
     let types = [
         "process_exec",
         "file_open",
@@ -139,6 +139,42 @@ fn linux_codec_corpus() -> Vec<String> {
                 .to_string(),
             );
         }
+        if !include_empty_variants {
+            continue;
+        }
+        // Exercise every textual codec slot, both absent together and mixed with
+        // populated peers. IP text is encoded as binary addresses by replay.
+        let keys = [
+            "comm",
+            "parent_comm",
+            "path",
+            "cmdline",
+            "file_path",
+            "src",
+            "dst",
+            "domain",
+            "module_name",
+            "subject",
+            "src_ip",
+            "dst_ip",
+        ];
+        for empty in ["", "   ", "\t\n", " \t "] {
+            for variant in 0..3 {
+                let mut value = serde_json::json!({"event_type":event_type,
+                    "pid":4294967295u32,"uid":1000,"ppid":4294967294u32,
+                    "ts_ns":1700000000000000000u64,"cgroup_id":123,
+                    "flags":2,"mode":384,"fd":7,"size":12345,"reason":3,
+                    "qtype":28,"qclass":1,"src_port":1234,"dst_port":443});
+                for (index, key) in keys.iter().enumerate() {
+                    value[*key] = serde_json::json!(if variant == 0 || index % 2 == variant - 1 {
+                        empty
+                    } else {
+                        "populated"
+                    });
+                }
+                lines.push(value.to_string());
+            }
+        }
     }
     lines
 }
@@ -147,7 +183,7 @@ fn linux_codec_corpus() -> Vec<String> {
 fn f4b_all_linux_codec_enrichment_differential() {
     let path =
         std::env::temp_dir().join(format!("eguard-differential-{}.ndjson", std::process::id()));
-    std::fs::write(&path, linux_codec_corpus().join("\n")).unwrap();
+    std::fs::write(&path, linux_codec_corpus(true).join("\n")).unwrap();
     let mut engine = platform_linux::EbpfEngine::from_replay(&path).unwrap();
     let mut count = 0;
     loop {
@@ -186,7 +222,7 @@ fn f4b_all_linux_codec_enrichment_differential() {
     }
     std::fs::remove_file(path).unwrap();
     assert_eq!(
-        count, 30,
-        "all ten codec event types, three adversarial variants"
+        count, 150,
+        "all ten codec event types, three adversarial and twelve empty/mixed variants"
     );
 }

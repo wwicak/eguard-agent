@@ -408,12 +408,13 @@ mod tests {
         raw.fields = Default::default();
         raw.event_type = EventType::FileOpen;
         raw.payload = "path=/legacy;flags=2;mode=0".into();
-        raw.fields.path = Some(String::new());
+        // Empty strings arrive from the codec as None, allowing payload fallback.
+        raw.fields.path = None;
         raw.fields.flags = Some(0);
-        assert_eq!(EventTxn::from_raw(&raw).subject.as_deref(), Some(""));
+        assert_eq!(EventTxn::from_raw(&raw).subject.as_deref(), Some("/legacy"));
         assert_eq!(
             coalesce_file_event_key(&raw).as_deref(),
-            Some("file_open:read:")
+            Some("file_open:read:/legacy")
         );
     }
 

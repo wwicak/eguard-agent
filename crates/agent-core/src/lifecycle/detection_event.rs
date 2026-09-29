@@ -42,6 +42,7 @@ pub(super) fn to_detection_event(
             .module
             .clone()
             .or_else(|| enriched.event.fields.path.clone())
+            .filter(|path| !is_low_value_windows_pseudo_identity(path))
             .or_else(|| {
                 let trimmed = enriched.event.payload.trim();
                 if trimmed.is_empty() {
@@ -836,12 +837,13 @@ mod tests {
                 .as_deref(),
             Some("/typed")
         );
-        enriched.event.fields.path = Some(String::new());
+        // The codec normalizes empty typed strings to None.
+        enriched.event.fields.path = None;
         assert_eq!(
             super::to_detection_event(&enriched, 55)
                 .file_path
                 .as_deref(),
-            Some("")
+            Some("/tmp/payload.bin")
         );
         enriched.event.event_type = EventType::ModuleLoad;
         enriched.event.payload = "legacy-module".into();

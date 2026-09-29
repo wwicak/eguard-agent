@@ -576,6 +576,17 @@ Validation: Linux 102 and macOS 46 tests passed; agent-core eBPF policy 111, rev
 - [x] Record rename fail proof; restore destination-only legacy enrichment/hash precedence.
 - [x] Remove golden metadata overrides and regenerate at i3-start-f4b-consumers in detached scratch worktree (removed).
 - [x] Run requested offline suites, Windows cross-check, format and whitespace checks.
-- [ ] Re-run three interleaved benchmark rounds against final commit and remove detached worktrees.
+- [x] Re-run three interleaved benchmark rounds against final commit and remove detached worktrees (completed in 0ba70ab).
+
+## F4b empty-value parity correction
+- [x] Read reviewer blocker and inspect legacy trimming/empty semantics.
+- [x] Expand all-ten real-codec differential; prove failure on unchanged 0ba70ab production.
+- [x] Normalize typed text at codec boundary and preserve naked-fallback lineage semantics.
+- [x] Update consumer expectations; run required suites and unchanged golden.
+- [x] Commit correction and refresh patch export/STATUS.md.
+
+Review: 150 differential cases cover three original variants and twelve empty/mixed variants per event kind (empty, spaces, control whitespace and mixed whitespace; all-empty plus complementary mixed fields). Helper matches legacy escaped-KV trimming and quote removal; control whitespace remains encoded during legacy trimming and is therefore preserved. Empty normalized text becomes None. All-empty exec/open naked fallback clears structured metadata, matching the parser. ModuleLoad typed fallback applies the existing low-value identity filter before falling back to the payload.
+
+Fail proof: expanded differential failed on 0ba70ab production at ProcessExec, showing empty strings versus null and stale typed lineage; fixed 150-case differential passes. Golden corpus remains its original 30 events and fixture is byte-for-byte unchanged (SHA256 011f0acd4cb69021d751c48f4b30f10c113755b096b77cce123c597df3a9d9f4). Required core integrity12/reviewfix21/policy111/F4b6/golden1, Linux103, macOS46, Windows GNU cross-check pass. Logs: /home/dimas/eguard-lab-soak/followups/f4b-empty-validation/. Initial golden run caught the expanded shared corpus count; separated corpus selection and reran successfully without fixture changes. Residual: no native Windows/macOS runtime validation or new benchmark for this semantic correction.
 
 Review: differential found only FileRename source-vs-destination mismatch; source is not a legacy hash candidate. Previous ProcessExit correction remains covered. Comparison removes only raw event (typed fields necessarily differ), preserving every enriched field and full DetectionEvent. Golden uses distinct source/destination, cmdline/comm/parent_comm and impossible PID/PPID; no enrichment fields are overwritten. Validation: payload integrity 12, reviewfix 21, eBPF policy 111, F4b 6, golden 1, Linux 102, macOS 46 passed; Windows GNU check passed. Fail proof and tagged-base fixture generation logs: /home/dimas/eguard-lab-soak/followups/f4b-final-validation/.
