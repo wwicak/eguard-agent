@@ -5,6 +5,7 @@ use self_protect::{DebuggerCheckConfig, SelfProtectConfig, SelfProtectEngine};
 struct Fixture {
     root: PathBuf,
     previous: Option<std::ffi::OsString>,
+    previous_integrity_paths: Option<std::ffi::OsString>,
 }
 
 impl Drop for Fixture {
@@ -13,6 +14,11 @@ impl Drop for Fixture {
             std::env::set_var("EGUARD_AGENT_CONFIG", previous);
         } else {
             std::env::remove_var("EGUARD_AGENT_CONFIG");
+        }
+        if let Some(previous) = &self.previous_integrity_paths {
+            std::env::set_var("EGUARD_SELF_PROTECT_RUNTIME_INTEGRITY_PATHS", previous);
+        } else {
+            std::env::remove_var("EGUARD_SELF_PROTECT_RUNTIME_INTEGRITY_PATHS");
         }
         let _ = std::fs::remove_dir_all(&self.root);
     }
@@ -41,6 +47,7 @@ fn enroll_with_initial_config(config_exists: bool) -> (Fixture, AgentRuntime) {
     let fixture = Fixture {
         root,
         previous: std::env::var_os("EGUARD_AGENT_CONFIG"),
+        previous_integrity_paths: std::env::var_os("EGUARD_SELF_PROTECT_RUNTIME_INTEGRITY_PATHS"),
     };
     std::env::set_var("EGUARD_AGENT_CONFIG", &path);
     let config = AgentConfig {
@@ -51,6 +58,12 @@ fn enroll_with_initial_config(config_exists: bool) -> (Fixture, AgentRuntime) {
         self_protection_integrity_check_interval_secs: 1,
         ..AgentConfig::default()
     };
+    // An empty override falls back to /proc/self/exe. Use a missing fixture path
+    // to avoid hashing the test binary before installing the config-only engine.
+    std::env::set_var(
+        "EGUARD_SELF_PROTECT_RUNTIME_INTEGRITY_PATHS",
+        fixture.root.join("absent-runtime-binary"),
+    );
     let mut runtime = AgentRuntime::new(config).unwrap();
     runtime.client.set_online(false);
     runtime.self_protect_engine = SelfProtectEngine::new(SelfProtectConfig {

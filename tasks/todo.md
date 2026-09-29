@@ -596,3 +596,36 @@ Proof on fa-start-a5r production files: existing-parent regression observed 0700
 Validation: full grpc-client 110 passed / 1 failed (alternate_grpc_server_addr_switches_known_agent_ports, separately reproduced on base); final buffer module 18/18; agent-core reviewfix 21/21, payload integrity 6/6, eBPF policy 111/111; workspace fmt and diff whitespace passed. Offline cargo commands used this worktree's target and timeout 1500, each shell under 20 minutes. Evidence: /home/dimas/eguard-lab-soak/followups/a5r-validation/.
 
 Residuals: at-least-once duplicates after send-before-ack crashes; memory fallback remains volatile and server marker persistence is outside scope; pre-existing SQLite severity/rule_name omission remains. Shared/foreign-owned directories are warned about, not rejected: 0600 is not protection against directory-owner replacement/unlink attacks. Existing best-effort db chmod and WAL durability semantics unchanged.
+
+## h3-slowtests
+- [x] Measure original enrollment tests.
+- [x] Remove unrelated executable hashing from fixtures only.
+- [x] Measure optimized tests and prove F3 sensitivity in scratch copy.
+- [x] Run required checks, commit and export patch.
+
+Review: production code and all existing assertions unchanged. Direct persistence
+fixtures use an explicit engine with no executable/config paths. The race fixture
+sets a missing path inside its unique temp directory before runtime construction
+(empty env overrides fall back to /proc/self/exe), restores the original env on
+drop, and retains its explicit monitored-config engine.
+
+Timings (test execution, excludes compilation; same commands before/after):
+- `cargo test --offline -p agent-core tests_enroll_race -- --test-threads=4`:
+  4 passed, 104.29s -> 0.46s.
+- `cargo test --offline -p agent-core persist_runtime_config_snapshot -- --test-threads=1`:
+  2 passed, 56.10s -> 0.10s.
+- Enrollment module: 7 passed, 159.91s -> 0.88s (final rerun 0.94s).
+
+Fail proof: in ignored `target/h3-f3-scratch` source copy, restored pre-9ea9e9e
+unguarded read/persist behavior at the enrollment persistence seam, retaining the
+new function signature only. Ran each race test separately to avoid mutex poison:
+all four failed their original semantic assertions (authorized write degraded;
+already degraded before external edit; fresh config not monitored; preexisting
+tampering blessed). No production changes from this mutation were retained.
+No production behavior changed, so no new behavioral regression test was needed;
+base-tag timing measurements demonstrate the fixture performance regression.
+
+Validation: enrollment 7/7; tests_ebpf_policy 111/111; tests_reviewfix 21/21;
+tests_payload_integrity 12/12; cargo fmt --all --check and git diff --check pass.
+All cargo commands used timeout 1500, --offline and this worktree's target dir.
+Residual risk: timings vary by host; full workspace suite was not run.
