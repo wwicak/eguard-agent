@@ -99,11 +99,25 @@ fn decode_kernel_process_versioned(
     ts_ns: u64,
     data: &[u8],
 ) -> Option<RawEvent> {
-    // Unknown future schemas must not manufacture identity evidence.
-    if (opcode == 1 && version > 3) || (opcode == 2 && version > 2) {
-        return None;
+    // Start v4/v5 append fields to the v3 prefix. Stop's latest known
+    // identity prefix is v2. Unknown schemas remain visible but untrusted.
+    let unknown = (opcode == 1 && version > 5) || (opcode == 2 && version > 2);
+    if unknown {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static WARNED: [AtomicBool; 256] = [const { AtomicBool::new(false) }; 256];
+        if !WARNED[usize::from(version)].swap(true, Ordering::Relaxed) {
+            tracing::warn!(
+                version,
+                opcode,
+                "unknown ETW process schema; identity disabled"
+            );
+        }
     }
-    let modern = (opcode == 1 && version == 3) || (opcode == 2 && version == 2);
+    let modern = if unknown {
+        data.len() >= if opcode == 1 { 48 } else { 32 }
+    } else {
+        (opcode == 1 && version >= 3) || (opcode == 2 && version == 2)
+    };
     let create_offset = if modern { 12 } else { 4 };
     match opcode {
         // ProcessStart
@@ -117,7 +131,7 @@ fn decode_kernel_process_versioned(
             let session_id = read_u32_le(data, if modern { 32 } else { 16 });
             // v3 has a variable-length MandatoryLabel SID before ImageName.
             let image_offset = if modern {
-                56usize.checked_add(usize::from(*data.get(49)?) * 4)?
+                56 + usize::from(data.get(49).copied().unwrap_or(0)) * 4
             } else {
                 24
             };
@@ -129,11 +143,16 @@ fn decode_kernel_process_versioned(
             }
 
             Some(RawEvent {
-                pid_start_ns: crate::process_generation::filetime_to_unix_ns(read_u64_le(
-                    data,
-                    create_offset,
-                )),
-                ppid_start_ns: crate::process_generation::process_start_ns(parent_pid),
+                pid_start_ns: if unknown {
+                    None
+                } else {
+                    crate::process_generation::filetime_to_unix_ns(read_u64_le(data, create_offset))
+                },
+                ppid_start_ns: if unknown {
+                    None
+                } else {
+                    crate::process_generation::process_start_ns(parent_pid)
+                },
                 event_type: EventType::ProcessExec,
                 pid: process_pid,
                 uid: 0,
@@ -165,10 +184,11 @@ fn decode_kernel_process_versioned(
             }
 
             Some(RawEvent {
-                pid_start_ns: crate::process_generation::filetime_to_unix_ns(read_u64_le(
-                    data,
-                    create_offset,
-                )),
+                pid_start_ns: if unknown {
+                    None
+                } else {
+                    crate::process_generation::filetime_to_unix_ns(read_u64_le(data, create_offset))
+                },
                 ppid_start_ns: None,
                 event_type: EventType::ProcessExit,
                 pid: process_pid,
@@ -953,9 +973,14 @@ fn process_records_preserve_creation_identity() {
 
 #[test]
 fn versioned_process_identity_uses_creation_not_sequence_number() {
-    for (opcode, versions) in [(1, 0..=3), (2, 0..=2)] {
+    for (opcode, versions) in [(1, 0..=5), (2, 0..=2)] {
         for version in versions {
-            let modern = (opcode == 1 && version == 3) || (opcode == 2 && version == 2);
+            let modern = (opcode == 1 && version >= 3) || (opcode == 2 && version == 2);
+            // Synthetic manifest prefix: ProcessSequenceNumber, CreateTime,
+            // ParentProcessID/SequenceNumber, SessionID, Flags, token fields,
+            // MandatoryLabel SID, ImageName. v4/v5 append fields after ImageName.
+            // Sources: jdu2600/Windows10EtwEvents Kernel-Process.tsv,
+            // commits 5f8daea1120c (24H2) and 84e7261126f2 (26H1).
             let mut data = vec![0u8; 96];
             data[..4].copy_from_slice(&42u32.to_le_bytes());
             let offset = if modern { 12 } else { 4 };
@@ -973,6 +998,16 @@ fn versioned_process_identity_uses_creation_not_sequence_number() {
                     data[49] = 1;
                     for (i, ch) in "child.exe".encode_utf16().enumerate() {
                         data[60 + i * 2..62 + i * 2].copy_from_slice(&ch.to_le_bytes());
+                    }
+                    // ImageName ends at 80; checksum + timestamp then two
+                    // empty UTF-16 package strings end at 92.
+                    data.truncate(92);
+                    if version >= 4 {
+                        data.extend_from_slice(&0x1234u32.to_le_bytes()); // SecurityMitigations
+                    }
+                    if version >= 5 {
+                        data.extend_from_slice(&2u32.to_le_bytes()); // PartitionID
+                        data.extend_from_slice(&0x8664u16.to_le_bytes()); // ProcessMachine
                     }
                 }
             }
@@ -1008,5 +1043,27 @@ fn versioned_process_identity_uses_creation_not_sequence_number() {
             }
         }
     }
-    assert!(decode_kernel_process_versioned(1, 4, 1, 1, &[0; 96]).is_none());
+}
+
+#[test]
+fn unknown_process_versions_stay_visible_without_identity() {
+    for (opcode, version) in [(1, 6), (1, 255), (2, 3), (2, 255)] {
+        for size in [0, 24, 32, 48, 49, 96] {
+            let mut data = vec![0; size];
+            if size >= 24 {
+                data[..4].copy_from_slice(&42u32.to_le_bytes());
+                let offset = if size >= if opcode == 1 { 48 } else { 32 } {
+                    12
+                } else {
+                    4
+                };
+                data[offset..offset + 8].copy_from_slice(&116_444_736_123_456_789u64.to_le_bytes());
+            }
+            let event = decode_kernel_process_versioned(opcode, version, 42, 1, &data)
+                .expect("unknown schema must remain visible, including truncated payloads");
+            assert_eq!(event.pid, 42);
+            assert_eq!(event.pid_start_ns, None);
+            assert_eq!(event.ppid_start_ns, None);
+        }
+    }
 }

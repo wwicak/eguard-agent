@@ -828,9 +828,22 @@ fn decode_event_value(value: &Value) -> Option<super::RawEvent> {
     let ts_ns = decode_timestamp_ns(value).unwrap_or_else(unix_now_ns);
     let payload = decode_payload(&event_type, value);
 
+    // pidversion is an exact per-PID generation, not a timestamp. Keep both
+    // tokens on the same process object; exec's target replaces the actor.
+    // Do not mix start_time (wall clock) with opaque audit-token generations.
+    let process = if matches!(event_type, super::EventType::ProcessExec) {
+        value.pointer("/event/exec/target")
+    } else {
+        None
+    }
+    .or_else(|| value.get("process"))
+    .unwrap_or(value);
+    let pid_start_ns = first_u64(process, &[&["audit_token", "pidversion"], &["pidversion"]]);
+    let ppid_start_ns = first_u64(process, &[&["parent_audit_token", "pidversion"]]);
+
     Some(super::RawEvent {
-        pid_start_ns: None,
-        ppid_start_ns: None,
+        pid_start_ns,
+        ppid_start_ns,
         event_type,
         pid,
         uid,
@@ -1551,6 +1564,50 @@ mod tests {
             map_event_type("NOTIFY_DNS_REQUEST"),
             Some(super::super::EventType::DnsQuery)
         ));
+    }
+
+    #[test]
+    fn parser_decodes_eslogger_audit_generations() {
+        // Reduced real eslogger shapes: tstromberg/esl@4d890d24 testdata/exec.json
+        // and Reversenant/open-xp-rules-test@66da47bb process_exiting/raw_1.txt.
+        let exec = serde_json::json!({
+            "event_type": 9,
+            "process": {"audit_token": {"pid": 100, "pidversion": 11}},
+            "event": {"exec": {"target": {
+                "audit_token": {"pid": 200, "pidversion": 42, "euid": 501},
+                "parent_audit_token": {"pid": 100, "pidversion": 11},
+                "ppid": 100, "start_time": "2023-05-07T14:25:44.366137Z",
+                "executable": {"path": "/usr/bin/true"}
+            }}}
+        });
+        let event = super::decode_event_value(&exec).unwrap();
+        assert_eq!(event.pid, 200);
+        assert_eq!(event.pid_start_ns, Some(42));
+        assert_eq!(event.ppid_start_ns, Some(11));
+        let exit = serde_json::json!({
+            "event_type": "ES_EVENT_TYPE_NOTIFY_EXIT",
+            "process": {
+                "audit_token": {"pid": 200, "pidversion": 42, "euid": 501},
+                "parent_audit_token": {"pid": 100, "pidversion": 11},
+                "start_time": "2023-05-07T14:25:44.366137Z"
+            },
+            "event": {"exit": {"stat": 0}}
+        });
+        let event = super::decode_event_value(&exit).unwrap();
+        assert_eq!(event.pid, 200);
+        assert_eq!(event.pid_start_ns, Some(42));
+        assert_eq!(event.ppid_start_ns, Some(11));
+        let mut missing = exec.clone();
+        missing
+            .pointer_mut("/event/exec/target/audit_token")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .remove("pidversion");
+        assert_eq!(
+            super::decode_event_value(&missing).unwrap().pid_start_ns,
+            None
+        );
     }
 
     #[test]

@@ -811,8 +811,11 @@ impl AgentRuntime {
         {
             platform_windows::process_generation::process_start_ns(pid)
         }
-        // macOS ES JSON currently exposes audit-token PID, not a process start time.
-        // Its existing PID/TTL behavior is unchanged.
+        // macOS ES JSON supplies opaque audit-token pidversion generations.
+        // Tracked emitted generations compare by equality (BootNs/BootNs), not
+        // time conversion. No host-testable live pidversion reader is wired here;
+        // preserve existing revalidation behavior rather than mix wall-clock
+        // start_time with pidversion. Native live revalidation remains a follow-up.
         #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         {
             let _ = pid;

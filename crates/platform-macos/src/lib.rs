@@ -45,9 +45,9 @@ pub enum EventType {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawEvent {
-    /// Process (TGID) generation: boot-time nanoseconds captured at emission.
+    /// Opaque audit-token pidversion captured at emission (not nanoseconds).
     pub pid_start_ns: Option<u64>,
-    /// Real parent TGID generation captured at emission.
+    /// Parent audit-token pidversion captured at emission.
     pub ppid_start_ns: Option<u64>,
     pub event_type: EventType,
     pub pid: u32,
