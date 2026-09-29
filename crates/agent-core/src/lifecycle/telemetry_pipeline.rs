@@ -1776,6 +1776,12 @@ fn raw_event_field(event: &RawEvent, field: &str) -> Option<String> {
 }
 
 fn raw_event_has_duplicate_security_fields(event: &RawEvent) -> bool {
+    if event.fields.ppid.is_some() && event.fields.cgroup_id.is_some() {
+        return false;
+    }
+    if event.fields.ppid.is_none() && event.fields.cgroup_id.is_none() {
+        return payload_has_duplicate_security_fields(&event.payload);
+    }
     // PID and UID are always structured. Ignore payload duplicates for fields
     // that cannot supply ancestry; validate only missing typed security fields.
     let mut seen_ppid = false;
@@ -1801,10 +1807,6 @@ fn raw_event_has_duplicate_security_fields(event: &RawEvent) -> bool {
         if std::mem::replace(seen, true) {
             return true;
         }
-    }
-    // Preserve the complete legacy validation contract for all-None producers.
-    if event.fields.ppid.is_none() && event.fields.cgroup_id.is_none() {
-        return payload_has_duplicate_security_fields(&event.payload);
     }
     false
 }
