@@ -1,5 +1,7 @@
 # Lessons
 
+- **Separate identity-cache admission from validation**: requiring emitted Windows generation prevents stale-event cache insertion, but ordinary generationless telemetry must still validate existing entries against live generation. Test both paths, including reuse and process exit.
+
 - **Isolate slow tests before launching overlapping validation sweeps**: inspect completed test names, stop owned stale processes, and reproduce the specific remaining test serially with a short timeout on both the change and base revision. A scan fixture can run real filesystem work for many minutes; don't mistake that for a new generation-lookup deadlock or repeatedly run the whole module set.
 - **Never use a shared/system directory itself as an invalid SQLite filename in tests**: constructors may operate on the filename's parent. Create a unique test-owned parent and child directory, and keep every filesystem fixture beneath it. Production initialization must never chmod pre-existing shared parents; apply private modes only when creating directories.
 

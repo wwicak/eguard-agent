@@ -665,3 +665,25 @@ Validation: self-protect 37/37; enroll-race 4/4; reviewfix 21/21 (665.67s). All 
 Fail proof: injected only tests/module visibility into a unique archived h-start-f22r checkout: six behavior-changing tests failed (duplicate, lexical alias, symlink, hardlink, missing-path baseline fanout, authorized atomic replacement); three preservation tests passed. Historical clarification: symlink/.. PASSES 5ed8bd3, contrary to requested failure proof, because that revision canonicalizes existing files. It FAILS 1d136e2 with no tamper finding, proving the actual lexical-collapse regression. No production mutation retained. Logs: /home/dimas/eguard-lab-soak/followups/f22r-validation/.
 
 Residual risks: Linux-only validation; non-Unix identity falls back to canonical paths and does not identify hardlinks by inode. Existing filesystem race windows between metadata/read/callback remain; callback hash protects against trusting a post-write external reread. Full workspace suite not run. RuntimeConfigTamper gains an aliases field (external exhaustive constructors/patterns may need updates).
+## Windows direct-child suppression follow-up
+- [x] Reproduce unknown-parent failure against w-start (unchanged production; regression assertion failed).
+- [x] Cache own generation at startup; exempt only direct children with unknown/matching parent.
+- [x] Validate required suites, cross-check, format; commit and export patch/status.
+
+Review: Windows parent-generation filter rejected direct children before the own-PID check. Direct edges now use cached own identity and tolerate unknown parent identity. Second-pass correction: Windows ancestry caching now requires an emitted child generation that matches live identity; querying a generationless delayed event's PID could otherwise bless an unrelated replacement. Tests: payload integrity 12, reviewfix 21, eBPF policy 111, priority 7, platform-windows 120 passed; Windows GNU cross-check and fmt passed. Native Windows rerun and macOS TASK_AUDIT_TOKEN validation remain outstanding. Logs exported to followups/w-validation.
+
+### Third-pass cached Windows identity validation
+- [x] Reproduce cached generationless FileOpen failure at f4420e9.
+- [x] Restrict emitted-generation requirement to insertion; test live match/reuse/exit.
+- [x] Run required offline suites and cross-check, commit, export patch/status.
+
+Review: cached generation 100 now survives generationless FileOpen with live 100; live 200 or process exit evicts and exposes it. Emitted identity remains mandatory for Windows insertion only. New regression failed against unchanged f4420e9 production (false versus true suppression); preserved review-fail.log proves generationless 4688 regression failed at 60745ac. Existing direct-parent unknown/match/mismatch and 4688 regressions pass. Required suites passed: payload integrity 14, reviewfix 21, eBPF policy 111, priority 7, platform-windows 120; Windows GNU cross-check passed with existing warnings. Evidence: followups/w-validation/cached-*.log. Native Windows/macOS execution remains outstanding.
+
+### Second-pass PID-reuse blocker
+- [x] Reproduce generationless Security 4688 PID reuse with a live replacement.
+- [x] Require emitted Windows child generation before caching ancestry; preserve direct-event suppression.
+- [x] Run requested offline suites/cross-check/format and refresh export/status.
+
+Proof: new windows_generationless_direct_child_does_not_cache_reused_pid fails on 60745ac at the cache-absence assertion (review-fail.log). Both generations are absent and the live reader returns replacement generation 200. Fixed test proves the direct event is dropped while replacement telemetry and its generation-validated descendant remain visible. Windows process_generation now rejects missing emitted identity before any live lookup; matching emitted/live generations still seed ancestry. Non-Windows policy is unchanged.
+
+Validation: payload integrity 13/13, reviewfix 21/21, eBPF policy 111/111, priority 7/7, platform-windows 120/120; Windows GNU platform-windows + agent-core check, workspace fmt and diff checks passed. Logs: followups/w-validation/review-*.log. Original w-start positive fail proof remains preserved. Residuals: no native Windows rerun; macOS runtime validation outstanding; pre-existing Windows PPID spoofing assumption remains. Generationless children cannot seed descendant suppression, deliberately preferring visibility over false suppression.

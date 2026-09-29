@@ -92,6 +92,7 @@ pub struct AgentRuntime {
     // Legacy records fall back to /proc ticks (zero on other platforms).
     pub(super) suppressed_internal_process_pids:
         HashMap<u32, (u64, super::telemetry_pipeline::ProcessGeneration)>,
+    pub(super) own_process_generation: Option<super::telemetry_pipeline::ProcessGeneration>,
     #[cfg(test)]
     pub(super) internal_process_start_time_reader: Option<fn(u32) -> Option<u64>>,
     #[cfg(test)]
@@ -528,6 +529,7 @@ impl AgentRuntime {
             event_txn_coalesce_window_ns: event_txn_coalesce_window_ms.saturating_mul(1_000_000),
             recent_event_txn_keys: HashMap::new(),
             suppressed_internal_process_pids: HashMap::new(),
+            own_process_generation: super::telemetry_pipeline::own_process_generation(),
             #[cfg(test)]
             internal_process_start_time_reader: None,
             #[cfg(test)]
