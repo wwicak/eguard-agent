@@ -2796,3 +2796,53 @@ fn a4_sampling_shares_the_dequeue_candidate_budget() {
     assert!(runtime.dequeue_sampled_raw_event(8).is_some());
     assert_eq!(runtime.raw_event_backlog.len(), 20);
 }
+
+#[test]
+fn a4_deferred_records_remain_visible_after_filtered_chunk() {
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".into();
+    let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+    runtime.raw_event_ingest_cap = 4;
+    runtime.strict_budget_raw_backlog_threshold = 8;
+    runtime.bench_ingest_polled(
+        (0..12)
+            .map(|_| platform_linux::RawEvent {
+                event_type: platform_linux::EventType::ProcessExec,
+                pid: std::process::id(),
+                uid: 0,
+                ts_ns: 1,
+                payload: "path=/usr/bin/bash;comm=bash".into(),
+            })
+            .collect(),
+    );
+    // Filtering the processed chunk must not hide the resident deferred tail.
+    assert!(runtime.raw_event_backlog.is_empty());
+    assert_eq!(runtime.observability_snapshot().raw_event_backlog_depth, 8);
+    assert_eq!(
+        runtime.telemetry_backlog_depth(),
+        runtime.buffer.pending_count() + 8
+    );
+    assert!(runtime.strict_budget_mode);
+}
+
+#[test]
+fn a4_combined_residency_drops_incoming_tail_with_accounting() {
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".into();
+    let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+    runtime.raw_event_ingest_cap = 4;
+    runtime.raw_event_backlog_cap = 8;
+    let raw = platform_linux::RawEvent {
+        event_type: platform_linux::EventType::ProcessExec,
+        pid: 4000000,
+        uid: 0,
+        ts_ns: 1,
+        payload: "path=/usr/bin/bash;comm=bash".into(),
+    };
+    runtime.raw_event_backlog.push_back(raw.clone());
+    runtime.bench_ingest_polled(vec![raw; 12]);
+    // Existing backlog + processed chunk + deferred tail share one cap;
+    // rejected incoming records must be visible in the backlog drop counter.
+    assert_eq!(runtime.metrics.telemetry_raw_backlog_dropped_total, 5);
+    assert_eq!(runtime.observability_snapshot().raw_event_backlog_depth, 8);
+}

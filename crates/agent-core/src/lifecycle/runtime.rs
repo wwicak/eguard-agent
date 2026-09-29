@@ -669,7 +669,7 @@ impl AgentRuntime {
             consecutive_send_failures: self.consecutive_send_failures,
             recent_ebpf_drops: self.recent_ebpf_drops,
             strict_budget_mode: self.strict_budget_mode,
-            raw_event_backlog_depth: self.raw_event_backlog.len(),
+            raw_event_backlog_depth: self.pending_raw_event_count(),
             raw_event_backlog_cap: self.raw_event_backlog_cap,
             event_txn_coalesce_key_count: self.recent_event_txn_keys.len(),
             response_action_dedupe_key_count: self.recent_response_action_keys.len(),
