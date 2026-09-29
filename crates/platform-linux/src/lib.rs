@@ -699,66 +699,20 @@ fn trim_enclosing_quotes(raw: &str) -> &str {
     }
 }
 
+// The caller already parsed KV fields before decoding. Decoded delimiters are
+// value content, never another opportunity to discover fields.
 fn parse_payload_fallback(event_type: &EventType, payload: &str) -> PayloadMetadata {
     match event_type {
-        EventType::FileOpen | EventType::FileWrite => {
-            let fields = parse_kv_fields(payload);
-            if fields.is_empty() {
-                return PayloadMetadata {
-                    file_path: Some(payload.to_string()),
-                    file_write: matches!(event_type, EventType::FileWrite),
-                    ..PayloadMetadata::default()
-                };
-            }
-            PayloadMetadata {
-                file_path: fields
-                    .get("path")
-                    .cloned()
-                    .or_else(|| fields.get("file").cloned()),
-                file_write: matches!(event_type, EventType::FileWrite)
-                    || parse_file_write_flags(fields.get("flags"), fields.get("mode")),
-                event_size: fields
-                    .get("size")
-                    .or_else(|| fields.get("bytes"))
-                    .and_then(|value| value.parse::<u64>().ok()),
-                ..PayloadMetadata::default()
-            }
-        }
-        EventType::FileRename => {
-            let fields = parse_kv_fields(payload);
-            if fields.is_empty() {
-                return PayloadMetadata::default();
-            }
-            PayloadMetadata {
-                file_path: fields
-                    .get("src")
-                    .cloned()
-                    .or_else(|| fields.get("old").cloned())
-                    .or_else(|| fields.get("path").cloned()),
-                file_path_secondary: fields
-                    .get("dst")
-                    .cloned()
-                    .or_else(|| fields.get("new").cloned())
-                    .or_else(|| fields.get("target").cloned()),
-                ..PayloadMetadata::default()
-            }
-        }
-        EventType::FileUnlink => {
-            let fields = parse_kv_fields(payload);
-            if fields.is_empty() {
-                return PayloadMetadata {
-                    file_path: Some(payload.to_string()),
-                    ..PayloadMetadata::default()
-                };
-            }
-            PayloadMetadata {
-                file_path: fields
-                    .get("path")
-                    .cloned()
-                    .or_else(|| fields.get("file").cloned()),
-                ..PayloadMetadata::default()
-            }
-        }
+        EventType::FileOpen | EventType::FileWrite => PayloadMetadata {
+            file_path: Some(payload.to_string()),
+            file_write: matches!(event_type, EventType::FileWrite),
+            ..PayloadMetadata::default()
+        },
+        EventType::FileRename => PayloadMetadata::default(),
+        EventType::FileUnlink => PayloadMetadata {
+            file_path: Some(payload.to_string()),
+            ..PayloadMetadata::default()
+        },
         EventType::DnsQuery => PayloadMetadata {
             dst_domain: Some(payload.to_string()),
             ..PayloadMetadata::default()

@@ -1,3 +1,13 @@
+# F13/F14 — decoded fallback follow-up
+
+- [x] Add a regression proving naked escaped paths remain opaque (verify failure first).
+- [x] Remove decoded fallback KV reparsing; audit Linux/Windows decoder callers.
+- [x] Run requested Linux/agent tests and formatting; commit and export patch.
+
+Review: both new regressions failed on b9a497b, then passed after removing Linux fallback KV reparsing (FileOpen/FileWrite/FileUnlink and FileRename). Full platform-linux: 98 passed; agent tests_payload_integrity: 6 passed; platform-linux fmt check passed. Cargo commands used timeout 1500 and the assigned target directory. Agent tests emitted nonfatal libbpf EPERM warnings; live privileged BPF was not validated.
+
+Caller audit: Linux parse_payload_metadata -> decode -> parse_payload_fallback now consumes opaque values; Linux parse_kv_fields decodes only after raw splitting. Windows parse_payload_metadata -> decode -> parse_payload_fallback already consumes opaque values; Windows parse_kv_fields decodes only after raw splitting; Windows enrich_event_with_cache ModuleLoad fallback decodes then normalizes a path only. No other callers found by grep of parse_payload_fallback/decode_payload_value in both crates (apart from a Linux decoder assertion). Windows unchanged; its tests were not required/rerun. FileRename naked fallback still produces no metadata, as before for ordinary opaque inputs. Patch export: /home/dimas/eguard-lab-soak/f13-f14.patch.
+
 # F13/F14 — payload integrity and process generations
 
 - [x] Audit all producers/consumers; escape Linux/Windows values and decode before detection/telemetry.

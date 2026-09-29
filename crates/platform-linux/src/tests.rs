@@ -1,4 +1,31 @@
 use super::*;
+
+#[test]
+fn escaped_naked_file_payload_remains_opaque() {
+    for event_type in [
+        EventType::FileOpen,
+        EventType::FileWrite,
+        EventType::FileUnlink,
+    ] {
+        let metadata = parse_payload_metadata(&event_type, "/tmp/real%3Bpath%3D/tmp/decoy");
+        assert_eq!(
+            metadata.file_path.as_deref(),
+            Some("/tmp/real;path=/tmp/decoy")
+        );
+        assert_eq!(
+            metadata.file_write,
+            matches!(event_type, EventType::FileWrite)
+        );
+    }
+}
+
+#[test]
+fn escaped_naked_rename_payload_does_not_create_fields() {
+    let metadata =
+        parse_payload_metadata(&EventType::FileRename, "src%3D/tmp/real%3Bdst%3D/tmp/decoy");
+    assert_eq!(metadata.file_path, None);
+    assert_eq!(metadata.file_path_secondary, None);
+}
 #[cfg(target_os = "linux")]
 use std::os::unix::fs::symlink;
 #[cfg(target_os = "linux")]
