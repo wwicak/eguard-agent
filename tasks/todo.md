@@ -635,12 +635,4 @@ Residual risk: timings vary by host; full workspace suite was not run.
 - [x] Add regression coverage and prove failures on tagged base.
 - [x] Run self-protect/enrollment validation, format, commit/export.
 
-Review: five focused alias tests fail against h-start-h4-alias implementation and pass after fix. self-protect: 33 passed; enrollment race: 4; agent-core ebpf policy: 111; reviewfix: 21; payload integrity: 12. Workspace fmt check passed. Canonical/lexical config names deduplicate; distinct hard-link names remain monitored and update together by Unix device/inode. Superseded by the review follow-up below.
-
-### h4-alias review follow-up
-- [x] Retain lexical monitored pathnames and deduplicate exact/lexical duplicates; canonical/inode identity is used for matching, not discarding symlink names.
-- [x] Recheck identity after authorized replacement so split aliases keep their unchanged baseline.
-- [x] Add authorized/external atomic symlink replacement regressions (with duplicate monitored alias).
-- [x] Validate and export follow-up commit.
-
-Review: both new tests fail on pre-fix 5ed8bd3. Against git-show tagged-base engine (only test helper visibility adjusted), six tests fail: the original five plus authorized atomic replacement with duplicate aliases; external atomic replacement passes, confirming restoration of base behavior. Final self-protect: 35 passed; enrollment race: 4 passed (unprivileged libbpf warnings). fmt and diff checks pass. No agent-core sources changed. Linux tested; full workspace and other platforms not run.
+Review: five focused alias tests fail against h-start-h4-alias implementation and pass after fix. self-protect: 33 passed; enrollment race: 4; agent-core ebpf policy: 111; reviewfix: 21; payload integrity: 12. Workspace fmt check passed. Canonical/lexical config names deduplicate; distinct hard-link names remain monitored and update together by Unix device/inode. Canonical paths pin existing symlink targets; symlink retarget/replacement races are not addressed here.
