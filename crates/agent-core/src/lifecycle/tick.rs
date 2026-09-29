@@ -150,6 +150,19 @@ impl AgentRuntime {
         now_unix: i64,
         started: Instant,
     ) -> Result<()> {
+        // Preserve oldest-first offline retention; the first evaluation stays unchanged.
+        // The 10% reserve accommodates ordinary envelopes (a few KB); an envelope
+        // larger than 10% of the cap can still overflow it.
+        let degraded_headroom = if matches!(self.runtime_mode, AgentMode::Degraded) {
+            Some(
+                (self.config.offline_buffer_cap_bytes.saturating_mul(9) / 10)
+                    .saturating_sub(self.buffer.pending_bytes()),
+            )
+        } else {
+            None
+        };
+        let mut added_bytes = 0usize;
+
         // The first evaluation and control-plane work count against the budget.
         // Always run the control plane before draining, even if it exhausts it.
         for _ in 1..Self::MAX_TELEMETRY_EVALS_PER_TICK {
@@ -157,6 +170,7 @@ impl AgentRuntime {
             if started.elapsed() >= Duration::from_millis(Self::TELEMETRY_EVAL_TIME_BUDGET_MS)
                 || self.downstream_queues_near_capacity()
                 || envelopes >= super::EVENT_BATCH_SIZE
+                || degraded_headroom.is_some_and(|headroom| added_bytes >= headroom)
             {
                 break;
             }
@@ -173,7 +187,8 @@ impl AgentRuntime {
             self.run_connected_response_stage(now_unix, Some(&evaluation))
                 .await;
             if matches!(self.runtime_mode, AgentMode::Degraded) {
-                self.buffer_degraded_telemetry_if_present(Some(&evaluation))?;
+                added_bytes = added_bytes
+                    .saturating_add(self.buffer_degraded_telemetry_if_present(Some(&evaluation))?);
             } else {
                 self.queue_connected_telemetry(Some(&evaluation)).await?;
             }
@@ -351,9 +366,9 @@ impl AgentRuntime {
     fn buffer_degraded_telemetry_if_present(
         &mut self,
         evaluation: Option<&TickEvaluation>,
-    ) -> Result<()> {
+    ) -> Result<usize> {
         let Some(evaluation) = evaluation else {
-            return Ok(());
+            return Ok(0);
         };
 
         self.buffer.enqueue(evaluation.event_envelope.clone())?;
@@ -361,7 +376,7 @@ impl AgentRuntime {
             pending = self.buffer.pending_count(),
             "server unavailable, buffered event"
         );
-        Ok(())
+        Ok(grpc_client::estimate_event_size(&evaluation.event_envelope))
     }
 
     async fn run_degraded_control_plane_stage(

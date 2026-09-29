@@ -57,6 +57,49 @@ fn prepare_tick(runtime: &mut AgentRuntime, now: i64) {
 }
 
 #[tokio::test]
+async fn degraded_drain_preserves_oldest_buffered_sentinels() {
+    let mut runtime = runtime();
+    let now = 1_700_000_000;
+    prepare_tick(&mut runtime, now);
+    runtime.config.mode = AgentMode::Degraded;
+    runtime.runtime_mode = AgentMode::Degraded;
+
+    // Size the cap for twenty real evaluations, then fill 85% with sentinels.
+    queue_event(&mut runtime);
+    let sample = runtime.evaluate_tick(now).unwrap().unwrap().event_envelope;
+    let event_bytes = grpc_client::estimate_event_size(&sample);
+    let cap = event_bytes * 20;
+    runtime.config.offline_buffer_cap_bytes = cap;
+    runtime.buffer = grpc_client::EventBuffer::memory(cap);
+    for timestamp in 0..17 {
+        let mut sentinel = sample.clone();
+        sentinel.created_at_unix = timestamp;
+        runtime.buffer.enqueue(sentinel).unwrap();
+    }
+    assert_eq!(runtime.buffer.pending_bytes(), cap * 85 / 100);
+    for _ in 0..100 {
+        queue_event(&mut runtime);
+    }
+
+    runtime.tick(now).await.unwrap();
+
+    let retained = runtime.buffer.drain_batch(100).unwrap();
+    assert_eq!(
+        retained
+            .iter()
+            .take(17)
+            .map(|e| e.created_at_unix)
+            .collect::<Vec<_>>(),
+        (0..17).collect::<Vec<_>>(),
+        "additional degraded evaluations must not evict the oldest telemetry"
+    );
+    assert!(
+        !runtime.raw_event_backlog.is_empty(),
+        "drain must stop early"
+    );
+}
+
+#[tokio::test]
 async fn first_send_outcome_controls_same_tick_maintenance() {
     let mut runtime = runtime();
     let now = 1_700_000_000;

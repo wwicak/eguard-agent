@@ -305,3 +305,18 @@ Control-plane tasks/sends and completed-command cursor are not evaluation-fed;
 raw backlog is ingress-fed and separately capped. Half-capacity guards leave
 headroom, but cannot bound arbitrary fanout within a single evaluation.
 Validation logs and queue inventory: /home/dimas/eguard-lab-soak/validation-reviewfix4.md.
+
+# Offline drain retention (reviewfix5)
+
+- [x] Add degraded-only byte headroom guard without changing first evaluation.
+- [x] Add sentinel FIFO regression; prove failure on 26d0bbd.
+- [x] Run requested suites and fmt; commit and export patch.
+
+Review: degraded_drain_preserves_oldest_buffered_sentinels failed against unchanged
+26d0bbd production code (oldest retained sentinel was 14, not 0). With the guard,
+tests_reviewfix 13/13, tests_ebpf_policy 111/111, priority_tests 4/4 and fmt pass.
+Only one pending_bytes query is made before degraded draining; actual enqueued
+envelope estimates account for added bytes. Connected and first-evaluation paths
+retain their behavior. Supervisor approved threshold-only protection: an oversized
+single envelope exceeding the 10% reserve can still evict. No benchmark run.
+Patch: /home/dimas/eguard-lab-soak/reviewfix5.patch.
