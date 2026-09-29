@@ -350,34 +350,7 @@ impl AgentRuntime {
         self.ingest_polled_raw_events(events);
     }
 
-    pub(super) fn pending_raw_event_count(&self) -> usize {
-        self.pending_raw_polls
-            .iter()
-            .fold(self.raw_event_backlog.len(), |count, poll| {
-                count.saturating_add(poll.len())
-            })
-    }
-
-    fn ingest_polled_raw_events(&mut self, mut events: Vec<RawEvent>) {
-        // Deferred records share the backlog's residency cap. Preserve already
-        // queued work and discard the incoming tail before preprocessing it.
-        let available = self
-            .raw_event_backlog_cap
-            .saturating_sub(self.pending_raw_event_count());
-        let dropped = events.len().saturating_sub(available);
-        if dropped > 0 {
-            events.truncate(available);
-            events.shrink_to_fit();
-            self.metrics.telemetry_raw_backlog_dropped_total = self
-                .metrics
-                .telemetry_raw_backlog_dropped_total
-                .saturating_add(dropped as u64);
-            warn!(
-                dropped,
-                backlog_cap = self.raw_event_backlog_cap,
-                "combined raw backlog exceeded cap; dropped incoming tail"
-            );
-        }
+    fn ingest_polled_raw_events(&mut self, events: Vec<RawEvent>) {
         if !events.is_empty() {
             self.pending_raw_polls.push_back(events.into_iter());
         }
@@ -749,12 +722,12 @@ impl AgentRuntime {
     pub(super) fn telemetry_backlog_depth(&self) -> usize {
         self.buffer
             .pending_count()
-            .saturating_add(self.pending_raw_event_count())
+            .saturating_add(self.raw_event_backlog.len())
     }
 
     fn refresh_strict_budget_mode(&mut self) {
         let next = self.buffer.pending_count() >= self.strict_budget_pending_threshold
-            || self.pending_raw_event_count() >= self.strict_budget_raw_backlog_threshold;
+            || self.raw_event_backlog.len() >= self.strict_budget_raw_backlog_threshold;
 
         if next != self.strict_budget_mode {
             self.metrics.strict_budget_mode_transition_total = self

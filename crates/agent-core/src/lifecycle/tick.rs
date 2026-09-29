@@ -44,7 +44,7 @@ impl AgentRuntime {
             info!(
                 events_evaluated = evaluated.saturating_sub(self.pipeline_stats_baseline.0),
                 events_sent = self.pipeline_events_sent,
-                raw_event_backlog = self.pending_raw_event_count(),
+                raw_event_backlog = self.raw_event_backlog.len(),
                 buffer_pending = self.buffer.pending_count(),
                 raw_overflow_dropped = dropped.saturating_sub(self.pipeline_stats_baseline.1),
                 last_tick_micros = self.metrics.last_tick_total_micros,
