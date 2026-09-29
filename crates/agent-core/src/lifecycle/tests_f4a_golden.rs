@@ -4,7 +4,22 @@ use super::*;
 #[test]
 fn f4a_legacy_envelope_and_detection_golden() {
     let _lock = shared_env_var_lock().lock().unwrap();
+    let root = std::env::temp_dir().join(format!(
+        "eguard-f4a-golden-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let previous_data_dir = std::env::var_os("EGUARD_AGENT_DATA_DIR");
+    std::env::set_var("EGUARD_AGENT_DATA_DIR", &root);
     let mut cfg = crate::config::AgentConfig::default();
+    match previous_data_dir {
+        Some(value) => std::env::set_var("EGUARD_AGENT_DATA_DIR", value),
+        None => std::env::remove_var("EGUARD_AGENT_DATA_DIR"),
+    }
     cfg.agent_id = "golden-agent".into();
     cfg.offline_buffer_backend = "memory".into();
     cfg.server_addr = "127.0.0.1:1".into();
@@ -107,5 +122,7 @@ fn f4a_legacy_envelope_and_detection_golden() {
     let actual = serde_json::to_string_pretty(&output).unwrap() + "\n";
     let fixture =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/f4a-legacy.json");
-    assert_eq!(actual, std::fs::read_to_string(fixture).unwrap());
+    let expected = std::fs::read_to_string(fixture).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    assert_eq!(actual, expected);
 }
