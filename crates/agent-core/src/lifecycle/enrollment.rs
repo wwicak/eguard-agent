@@ -1,4 +1,3 @@
-use std::io;
 use std::path::{Path, PathBuf};
 
 use tracing::warn;
@@ -86,12 +85,12 @@ impl AgentRuntime {
         }
     }
 
-    fn consume_bootstrap_config(&self) {
+    fn consume_bootstrap_config(&mut self) {
         let Some(path) = self.config.bootstrap_config_path.as_ref() else {
             return;
         };
 
-        match persist_runtime_config_snapshot(&self.config) {
+        match persist_runtime_config_snapshot(&self.config, &mut self.self_protect_engine) {
             Ok(config_path) => {
                 tracing::info!(
                     path = %config_path.display(),
@@ -131,20 +130,24 @@ fn resolve_agent_config_persist_path() -> PathBuf {
     PathBuf::from(DEFAULT_AGENT_CONFIG_PATH)
 }
 
-pub(crate) fn persist_runtime_config_snapshot(config: &AgentConfig) -> Result<PathBuf, String> {
+pub(crate) fn persist_runtime_config_snapshot(
+    config: &AgentConfig,
+    engine: &mut self_protect::SelfProtectEngine,
+) -> Result<PathBuf, String> {
     let path = resolve_agent_config_persist_path();
+    engine.authorized_config_write(&path, |existing| {
+        persist_runtime_config_at(config, &path, existing)
+    })?;
+    Ok(path)
+}
 
-    let existing = match std::fs::read_to_string(&path) {
-        Ok(raw) => raw,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => String::new(),
-        Err(err) => {
-            return Err(format!(
-                "read existing agent config {}: {}",
-                path.display(),
-                err
-            ));
-        }
-    };
+fn persist_runtime_config_at(
+    config: &AgentConfig,
+    path: &Path,
+    existing: &[u8],
+) -> Result<Vec<u8>, String> {
+    let existing = std::str::from_utf8(existing)
+        .map_err(|err| format!("read existing agent config {}: {}", path.display(), err))?;
 
     if existing.trim_start().starts_with(ENCRYPTED_CONFIG_PREFIX) {
         return Err(format!(
@@ -551,7 +554,7 @@ pub(crate) fn persist_runtime_config_snapshot(config: &AgentConfig) -> Result<Pa
         )
     })?;
 
-    Ok(path)
+    Ok(serialized.into_bytes())
 }
 
 fn runtime_mode_label(mode: &crate::config::AgentMode) -> &'static str {
@@ -706,7 +709,9 @@ mod tests {
             ..AgentConfig::default()
         };
 
-        let persisted = persist_runtime_config_snapshot(&cfg).expect("persist runtime config");
+        let persisted =
+            persist_runtime_config_snapshot(&cfg, &mut self_protect::SelfProtectEngine::from_env())
+                .expect("persist runtime config");
         assert_eq!(persisted, path);
 
         let loaded = AgentConfig::load().expect("load persisted config");
@@ -759,10 +764,15 @@ mod tests {
         std::fs::write(&path, "eguardcfg:v1:Zm9vYmFy").expect("write encrypted marker");
 
         let cfg = AgentConfig::default();
-        let err = persist_runtime_config_snapshot(&cfg).expect_err("encrypted config should fail");
+        let err =
+            persist_runtime_config_snapshot(&cfg, &mut self_protect::SelfProtectEngine::from_env())
+                .expect_err("encrypted config should fail");
         assert!(err.contains("encrypted"));
 
         clear_env();
         let _ = std::fs::remove_file(path);
     }
 }
+
+#[cfg(test)]
+mod tests_enroll_race;

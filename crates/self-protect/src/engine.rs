@@ -1,5 +1,6 @@
 use crate::debugger::{detect_debugger, DebuggerCheckConfig, DebuggerObservation, DebuggerSignal};
 use crate::integrity::{hash_file_sha256, measure_self_integrity, IntegrityMeasurement};
+use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -130,6 +131,56 @@ impl SelfProtectEngine {
     fn runtime_baseline(&self) -> &RuntimeBaseline {
         self.runtime_baseline
             .get_or_init(|| RuntimeBaseline::capture(&self.config))
+    }
+
+    /// Commit an authorized config replacement without exposing an intermediate
+    /// baseline to evaluation. The callback receives the verified previous bytes
+    /// (empty for a new file) and returns the exact bytes it wrote;
+    /// never re-read the destination and accidentally trust a concurrent edit.
+    /// Failed writes and unrelated paths leave existing baselines unchanged.
+    pub fn authorized_config_write<F>(&mut self, path: &Path, write: F) -> Result<(), String>
+    where
+        F: FnOnce(&[u8]) -> Result<Vec<u8>, String>,
+    {
+        self.runtime_baseline();
+        let baseline = self
+            .runtime_baseline
+            .get_mut()
+            .expect("initialized baseline");
+        let entry = baseline
+            .config
+            .iter()
+            .position(|entry| Path::new(&entry.path) == path);
+        let existing = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound && entry.is_none() => Vec::new(),
+            Err(err) => return Err(format!("read existing config {}: {}", path.display(), err)),
+        };
+        if let Some(index) = entry {
+            let observed = format!("{:x}", Sha256::digest(&existing));
+            if observed != baseline.config[index].sha256_hex {
+                return Err(format!(
+                    "refusing authorized write over modified config {}",
+                    path.display()
+                ));
+            }
+        }
+        let bytes = write(&existing)?;
+        let sha256_hex = format!("{:x}", Sha256::digest(&bytes));
+        if let Some(index) = entry {
+            baseline.config[index].sha256_hex = sha256_hex;
+        } else if self
+            .config
+            .runtime_config_paths
+            .iter()
+            .any(|p| Path::new(p.trim()) == path)
+        {
+            baseline.config.push(RuntimeHash {
+                path: path.to_string_lossy().into_owned(),
+                sha256_hex,
+            });
+        }
+        Ok(())
     }
 
     fn append_runtime_integrity(&self, report: &mut SelfProtectReport) {
