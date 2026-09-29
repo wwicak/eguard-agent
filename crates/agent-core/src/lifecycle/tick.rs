@@ -11,6 +11,8 @@ use crate::platform::enrich_event_with_cache;
 
 use crate::config::AgentMode;
 
+use super::telemetry_pipeline::RawDequeue;
+
 use super::{
     confidence_to_severity, elapsed_micros, interval_due, run_periodic_storage_hygiene,
     should_drop_low_value_linux_event, should_drop_low_value_windows_event, to_detection_event,
@@ -107,7 +109,7 @@ impl AgentRuntime {
         self.check_disk_pressure(now_unix);
 
         let evaluate_started = Instant::now();
-        let evaluation = self.evaluate_tick(now_unix)?;
+        let (evaluation, raw_budget_exhausted) = self.evaluate_tick_with_raw_budget(now_unix)?;
         self.metrics.last_evaluate_micros = elapsed_micros(evaluate_started);
         if std::env::var("EGUARD_DEBUG_LATENCY_LOG")
             .ok()
@@ -137,8 +139,12 @@ impl AgentRuntime {
             self.handle_connected_tick(now_unix, evaluation.as_ref())
                 .await?;
         }
-        self.run_additional_telemetry_evaluations(now_unix, evaluate_started)
-            .await?;
+        // A filtered prefix must yield the rest of this tick, not get another
+        // candidate budget after the control plane has run.
+        if !raw_budget_exhausted {
+            self.run_additional_telemetry_evaluations(now_unix, evaluate_started)
+                .await?;
+        }
 
         let _ = self.protected.is_protected_process("systemd");
         Ok(())
@@ -183,8 +189,9 @@ impl AgentRuntime {
             }
 
             // Only the first poll in a tick may wait for events.
-            let Some(raw) = self.next_raw_event_with_wait(false) else {
-                break;
+            let raw = match self.next_raw_event_with_wait(false) {
+                RawDequeue::Event(raw) => raw,
+                RawDequeue::Empty | RawDequeue::BudgetExhausted => break,
             };
             let Some(evaluation) = self.evaluate_raw_event(raw, now_unix)? else {
                 continue;
@@ -240,12 +247,23 @@ impl AgentRuntime {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn evaluate_tick(&mut self, now_unix: i64) -> Result<Option<TickEvaluation>> {
-        let Some(raw) = self.next_raw_event() else {
-            return Ok(None);
-        };
+        self.evaluate_tick_with_raw_budget(now_unix)
+            .map(|(evaluation, _)| evaluation)
+    }
 
-        self.evaluate_raw_event(raw, now_unix)
+    fn evaluate_tick_with_raw_budget(
+        &mut self,
+        now_unix: i64,
+    ) -> Result<(Option<TickEvaluation>, bool)> {
+        match self.next_raw_event() {
+            RawDequeue::Event(raw) => self
+                .evaluate_raw_event(raw, now_unix)
+                .map(|event| (event, false)),
+            RawDequeue::Empty => Ok((None, false)),
+            RawDequeue::BudgetExhausted => Ok((None, true)),
+        }
     }
 
     fn evaluate_raw_event(

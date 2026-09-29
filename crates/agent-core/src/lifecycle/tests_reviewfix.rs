@@ -17,6 +17,124 @@ fn runtime() -> AgentRuntime {
     runtime
 }
 
+struct FilterBudgetFixture(std::path::PathBuf);
+
+impl FilterBudgetFixture {
+    fn new() -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "eguard-filter-budget-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("exec"), b"synthetic executable").unwrap();
+        Self(path)
+    }
+
+    fn queue(&self, runtime: &mut AgentRuntime, pid: u32) {
+        runtime
+            .raw_event_backlog
+            .push_back(platform_linux::RawEvent {
+                event_type: platform_linux::EventType::ProcessExec,
+                pid,
+                uid: 0,
+                ts_ns: 1,
+                payload: format!(
+                    "path={};cmdline=fixture;ppid=1;comm=fixture;parent_comm=init",
+                    self.0.join("exec").display()
+                ),
+            });
+    }
+}
+
+impl Drop for FilterBudgetFixture {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.0).unwrap();
+    }
+}
+
+// Keep maintenance that writes host paths out of these synthetic ticks.
+fn prepare_filter_budget_tick(runtime: &mut AgentRuntime, now: i64) {
+    runtime.runtime_mode = AgentMode::Degraded;
+    runtime.last_self_protect_check_unix = Some(now);
+    runtime.last_config_permission_check_unix = Some(now);
+    runtime.last_storage_hygiene_unix = Some(now);
+    runtime.last_isolation_failsafe_check_unix = Some(now);
+    runtime.last_kernel_integrity_scan_unix = Some(now);
+    runtime.telemetry_eval_budget_override = Some(std::time::Duration::from_secs(3600));
+}
+
+#[tokio::test]
+async fn filtered_raw_candidate_budget_bounds_tick_and_preserves_tail() {
+    let mut runtime = runtime();
+    let now = 1_700_000_000;
+    prepare_filter_budget_tick(&mut runtime, now);
+    let fixture = FilterBudgetFixture::new();
+    for _ in 0..10_000 {
+        fixture.queue(&mut runtime, std::process::id());
+    }
+    fixture.queue(&mut runtime, 424242);
+    runtime.tick(now).await.unwrap();
+    assert_eq!(
+        runtime.raw_event_backlog.len(),
+        10_001 - 256,
+        "one tick must not consume more than the filtered-candidate budget"
+    );
+    assert_eq!(
+        runtime.last_recovery_probe_unix,
+        Some(now),
+        "control-plane recovery must run even when the first dequeue exhausts its budget"
+    );
+    assert_eq!(runtime.metrics.telemetry_event_txn_total, 0);
+    for _ in 0..40 {
+        runtime.tick(now).await.unwrap();
+        if runtime.raw_event_backlog.is_empty() {
+            break;
+        }
+    }
+    assert!(runtime.raw_event_backlog.is_empty());
+    assert_eq!(
+        runtime.metrics.telemetry_event_txn_total, 1,
+        "the ProcessExec behind filtered candidates must survive for a later tick"
+    );
+}
+
+#[tokio::test]
+async fn filtered_raw_candidate_budget_stops_additional_drain() {
+    let mut runtime = runtime();
+    let now = 1_700_000_000;
+    prepare_filter_budget_tick(&mut runtime, now);
+    let fixture = FilterBudgetFixture::new();
+    for _ in 0..10_000 {
+        fixture.queue(&mut runtime, std::process::id());
+    }
+    fixture.queue(&mut runtime, 424242);
+    runtime
+        .run_additional_telemetry_evaluations(now, std::time::Instant::now())
+        .await
+        .unwrap();
+    assert_eq!(runtime.raw_event_backlog.len(), 10_001 - 256);
+}
+
+#[tokio::test]
+async fn filtered_raw_candidate_budget_short_backlog_unchanged() {
+    let mut runtime = runtime();
+    let now = 1_700_000_000;
+    prepare_filter_budget_tick(&mut runtime, now);
+    let fixture = FilterBudgetFixture::new();
+    for _ in 0..3 {
+        fixture.queue(&mut runtime, std::process::id());
+    }
+    fixture.queue(&mut runtime, 424242);
+    runtime.tick(now).await.unwrap();
+    assert!(runtime.raw_event_backlog.is_empty());
+    assert_eq!(runtime.metrics.telemetry_event_txn_total, 1);
+    assert_eq!(runtime.last_recovery_probe_unix, Some(now));
+}
+
 fn event(ts: i64) -> EventEnvelope {
     EventEnvelope {
         agent_id: "reviewfix".into(),
