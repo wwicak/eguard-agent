@@ -431,3 +431,25 @@ Review: connected regression isolates drain + end-of-tick flush to avoid control
 - [x] Required tests/format: reviewfix 20, payload_integrity 6, ebpf_policy 111, response_pipeline 10, response_playbook 15, tick 2 passed; final fanout rerun 2 passed; agent-core fmt and git diff checks passed.
 - [x] Review: broad lifecycle run reached 483 completed tests before the 1500-second timeout, with unrelated failures. Base-only targeted reproduction confirmed memory-ledger lower-bound, last-known-good bootstrap, package harness strip expectation, and consequent poisoned environment-lock failures; restart test passes outside poisoned run. Logs: /tmp/fa-lifecycle.log, /tmp/fa-base-broad.log, /tmp/fa-fanout-base.log, /tmp/fa-suite-results. No unrelated fixes included.
 - [x] Commit and export patch/status to the requested followups directory.
+
+## a5-buffer second-pass review
+- [x] Fast-path FIFO memory acknowledgements and restore direct-pop drain.
+- [x] Add large-tail no-compaction regression; prove failure on prior implementation and base adapter.
+- [x] Run buffer tests/format, record base-equal follow-ups, commit and export cumulative patch.
+
+Review: FIFO prefix ack now checks/pops only the batch (O(batch)); arbitrary/non-prefix IDs retain exact-ID selective scanning. Direct drain moves events without cloning or scanning the tail. The 65,536-row / 256-row-batch regression checks surviving queue slot addresses, avoiding noisy timing thresholds; it fails on 6b95692 because retain compacts the tail. Transplant onto fa-start-a5-buffer with a test-only destructive-drain API adapter fails the same regression's non-destructive peek assertion (65,280 vs 65,536 rows). Adapter removed after proof. Separate selective-ID test covers unsorted, duplicate, missing, and empty IDs. Buffer module 16/16, offline grpc-client check, crate fmt and diff whitespace checks pass. No agent-core files touched this pass. Logs: `/tmp/a5-second-{before,base,tests,check}.log` (also archived under followups/a5-buffer-second-validation).
+
+Unchanged follow-ups: base buffer.rs lines 142,164-165 omit severity/rule_name from INSERT and reconstruct empty strings; schema migration remains separate. Server persistence/UI for the wire-only fallback marker is outside this Rust worktree (review supplied server evidence); no server changes made. Fallback remains an empty volatile memory buffer, logs ERROR, heartbeat marker may be discarded by server; no migration or automatic recovery. Prior three-round SQLite benchmark is unchanged by this memory-only fix: median 2236.01 -> 2172.21 us/event (-2.85%), noisy paired -13.10%, +17.20%, -12.88%; report `/home/dimas/eguard-lab-soak/bench/results-fa-start-a5-buffer.md`. No repeat SQLite benchmark this pass; it does not exercise this memory fast path.
+
+## a5-buffer
+- [x] Add non-destructive peek and exact-ID ack to both backends; replace send recovery.
+- [x] Prove crash/FIFO/ack regressions against base; run module and branch suites.
+- [x] Benchmark SQLite base/HEAD (3 rounds, batch 50), commit and export.
+
+Review: peek leaves stable-ID rows intact; successful send transactionally acknowledges only sent rows, failed sends append only current events. Cap eviction is unchanged. SQLite initialization fallback now logs ERROR and heartbeat exposes `offline_buffer_volatile_fallback`; fallback is empty volatile memory, with no automatic SQLite recovery.
+
+Regression proof (stash/transplant on `fa-start-a5-buffer`): reopen expected [0,1,2], baseline got [2]; in-flight pending expected 3, baseline got 1; failed-send FIFO baseline began [256,257,0,...]; heartbeat fallback flag absent. New API tests used a baseline-only destructive-drain adapter, removed after proof. Fixed buffer tests pass (14), reviewfix (21), ebpf policy (111), payload integrity (6), telemetry module (13), control-plane module (20), observability (15 with one excluded). Full grpc-client: 106 pass, one unrelated port-switch failure reproduced on base. Optional observability scan-command backlog test was interrupted after >7 minutes; remaining 15 pass with it explicitly skipped. Touched-crate fmt and diff checks pass.
+
+SQLite benchmark: batch50, 3 paired rounds, 300 ticks; all six database proofs pass. Median ingest+tick cost 2236.01 -> 2172.21 us/consumed event (-2.85%); paired -13.10%, +17.20%, -12.88%, noisy shared-host result, not a guaranteed improvement. Full report and proof logs: `/home/dimas/eguard-lab-soak/bench/results-fa-start-a5-buffer.md` and `a5-validation/`. Temporary backend fixture switch reverted.
+
+Residuals: at-least-once duplicates after delivery-before-ack crash; configured cap eviction and current-event enqueue failures can still lose events; memory fallback is not durable; WAL NORMAL power-loss semantics unchanged. Follow up connected successful-ack benchmarking, server dedupe if needed, and operational alerting/recovery for fallback.
