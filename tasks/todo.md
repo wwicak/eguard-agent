@@ -1,4 +1,36 @@
-# a1-hygiene
+# a1-hygiene second-pass review
+
+- [x] Recheck the exact buffer acceptance/config contract and scan handler return API.
+- [x] Restore 100 MiB default and exact regression assertion; require scan handler success/detail.
+- [x] Verify focused/module/regression tests, clippy, formatting; commit/export.
+
+The first-pass buffer decision below was incorrect: `f0cbb3d` reduced the default
+without updating the exact 100 MiB acceptance/config contract. Restore the code,
+not weaken the test. The restored regression fails against the unchanged base
+buffer implementation (52428800 != 104857600; `/tmp/a1-second-base-proof.log`).
+The scan fixture now asserts completed status and handler-specific roots detail,
+not merely generic parsing's timestamp. This is test strengthening, not a runtime
+scan behavior change.
+
+Second-pass validation: buffer module 12 passed; command/lifecycle module 16
+passed, 1 known baseline bootstrap failure; eBPF policy 111 passed; reviewfix 13
+passed; payload integrity 6 passed; async dispatch 2 passed; degraded response 1
+passed. Exact cross-crate buffer acceptance passed. Clippy passed with 56 warning
+diagnostics (excluding 5 summary lines), no errors; workspace fmt and diff checks
+passed. Explicitly stashed the buffer production fix and verified its file was
+identical to fa-start-a1-hygiene: restored exact regression failed 50 != 100 MiB;
+popped the fix and reran successfully (`/tmp/a1-second-stash-proof.log`,
+`/tmp/a1-second-restored-proof.log`). Other logs: `/tmp/a1-second-*.log`.
+
+Out-of-scope unchanged failures: bootstrap restore and alternate gRPC address
+were reproduced on base in `/tmp/fa-hygiene/unrelated-baseline.log` (lines 18,
+43); bootstrap still fails identically in this module run. Acceptance library's
+missing ResponseReport.action_type_label is unchanged from base (review's
+independent reproduction); the focused integration target passes. No privileged
+live BPF or Windows execution. Restoring the specified capacity permits up to
+50 MiB more offline buffering than the accidental reduced default.
+
+# a1-hygiene (first-pass historical notes; buffer decision superseded above)
 
 - [x] Trace five failing tests and rule-loader cadence through history.
 - [x] Correct stale fixtures/contracts or implementation; preserve intentional safety guards.

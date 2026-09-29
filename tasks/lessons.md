@@ -1,5 +1,8 @@
 # Lessons
 
+- **Do not infer an acceptance-contract change from implementation history alone**: check exact executable acceptance and config defaults before relaxing a failing assertion. A deliberate optimization can still violate the agreed contract.
+- **Assert command handler results, not generic parsing side effects**: scan timestamps alone do not establish successful scanning; require completed status and handler-specific detail.
+
 - **Keep terminal-command durability barriers out of maintenance scheduling inputs**: spooling every current-tick event before scheduling turns normal traffic into permanent backpressure. Gate only terminal dispatch, and test an event-bearing tick with due maintenance.
 - **Test recovery ordering with old and new events on SQLite**: hold new overflow until the send outcome; requeue the drained batch before new overflow. Distinguish this regression from the pre-existing append-only old-tail limitation rather than accepting both together.
 

@@ -696,7 +696,7 @@ async fn command_pipeline_executes_offline_and_caps_completed_cursor() {
     let scan_root = unique_temp_dir("eguard-offline-command-scan");
     std::fs::create_dir_all(&scan_root).expect("create empty scan root");
     let scan_payload = serde_json::json!({ "paths": [scan_root] }).to_string();
-    runtime
+    let scan_exec = runtime
         .handle_command(
             grpc_client::CommandEnvelope {
                 command_id: "cmd-scan-1".to_string(),
@@ -706,6 +706,12 @@ async fn command_pipeline_executes_offline_and_caps_completed_cursor() {
             10,
         )
         .await;
+    assert_eq!(scan_exec.status, "completed", "{}", scan_exec.detail);
+    assert!(
+        scan_exec.detail.contains("quick scan completed: roots=1"),
+        "{}",
+        scan_exec.detail
+    );
     assert_eq!(runtime.host_control.last_scan_unix, Some(10));
 
     runtime
