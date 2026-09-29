@@ -458,6 +458,14 @@ async fn observability_snapshot_tracks_send_failure_degraded_transition_and_queu
 
     let snapshot = runtime.observability_snapshot();
     assert_eq!(snapshot.runtime_mode, "degraded");
+    // A fresh heartbeat must expose telemetry failure, not imply a healthy sender.
+    let heartbeat = runtime.build_heartbeat_runtime_payload("active");
+    assert_eq!(heartbeat.status.mode, "degraded");
+    assert_eq!(
+        heartbeat.buffered_events,
+        runtime.buffer.pending_count() as i64
+    );
+    assert_eq!(heartbeat.buffered_events, 3);
     assert_eq!(snapshot.consecutive_send_failures, 3);
     assert_eq!(snapshot.pending_event_count, 3);
     assert_eq!(snapshot.degraded_due_to_send_failures, 1);
