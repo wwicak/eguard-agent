@@ -554,11 +554,13 @@ impl AgentRuntime {
         ) {
             self.unmarked_internal_process_pids.remove(&event.pid);
         }
+        if payload_has_duplicate_security_fields(&event.payload) {
+            return false;
+        }
         if matches!(event.event_type, crate::platform::EventType::ProcessExit) {
-            return self
-                .suppressed_internal_process_pids
-                .remove(&event.pid)
-                .is_some_and(|expires_ns| event_ns <= expires_ns);
+            let tracked = self.is_tracked_internal_process(event.pid, event_ns);
+            self.suppressed_internal_process_pids.remove(&event.pid);
+            return tracked;
         }
 
         if self.is_tracked_internal_process(event.pid, event_ns)
@@ -571,6 +573,13 @@ impl AgentRuntime {
     }
 
     fn should_track_internal_process_event(&mut self, event: &RawEvent, event_ns: u64) -> bool {
+        // macOS can forward a JSON fallback. Its string contents are not
+        // authenticated k=v ancestry, even if they contain ';ppid=...'.
+        if payload_is_json_container(&event.payload)
+            || payload_has_duplicate_security_fields(&event.payload)
+        {
+            return false;
+        }
         if let Some(parent_pid) = payload_parent_pid(&event.payload) {
             if parent_pid == std::process::id()
                 || self.is_tracked_internal_process(parent_pid, event_ns)
@@ -614,17 +623,24 @@ impl AgentRuntime {
             return;
         }
 
-        self.suppressed_internal_process_pids
-            .insert(pid, event_ns.saturating_add(INTERNAL_PROCESS_TTL_NS));
+        let Some(start_time) = self.internal_process_start_time(pid) else {
+            return;
+        };
+        self.suppressed_internal_process_pids.insert(
+            pid,
+            (event_ns.saturating_add(INTERNAL_PROCESS_TTL_NS), start_time),
+        );
         self.prune_suppressed_internal_process_pids(event_ns);
     }
 
     fn is_tracked_internal_process(&mut self, pid: u32, event_ns: u64) -> bool {
-        let Some(expires_ns) = self.suppressed_internal_process_pids.get(&pid).copied() else {
+        let Some((expires_ns, start_time)) =
+            self.suppressed_internal_process_pids.get(&pid).copied()
+        else {
             return false;
         };
 
-        if event_ns <= expires_ns {
+        if event_ns <= expires_ns && self.internal_process_start_time(pid) == Some(start_time) {
             return true;
         }
 
@@ -632,11 +648,30 @@ impl AgentRuntime {
         false
     }
 
+    fn internal_process_start_time(&self, pid: u32) -> Option<u64> {
+        #[cfg(test)]
+        if let Some(reader) = self.internal_process_start_time_reader {
+            return reader(pid);
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+            parse_process_start_time(&stat)
+        }
+        // Non-Linux retains the existing PID/TTL behavior until a native
+        // process-generation reader is available.
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = pid;
+            Some(0)
+        }
+    }
+
     fn prune_suppressed_internal_process_pids(&mut self, now_ns: u64) {
         if now_ns.saturating_sub(self.internal_process_last_prune_ns) >= 1_000_000_000 {
             self.internal_process_last_prune_ns = now_ns;
             self.suppressed_internal_process_pids
-                .retain(|_, expires_ns| now_ns <= *expires_ns);
+                .retain(|_, (expires_ns, _)| now_ns <= *expires_ns);
             self.unmarked_internal_process_pids
                 .retain(|_, expires_ns| now_ns <= *expires_ns);
         }
@@ -1519,7 +1554,8 @@ fn debug_trace_matching_raw_event(stage: &'static str, event: &RawEvent) {
     };
 
     let path = parse_payload_field(&event.payload, "path").unwrap_or_default();
-    let payload_matches = event.payload.contains(&raw_filter);
+    let decoded_payload = decode_raw_payload(&event.payload);
+    let payload_matches = decoded_payload.contains(&raw_filter);
     let path_matches = !path.is_empty() && path.contains(&raw_filter);
     if !payload_matches && !path_matches {
         return;
@@ -1532,7 +1568,7 @@ fn debug_trace_matching_raw_event(stage: &'static str, event: &RawEvent) {
         uid = event.uid,
         ts_ns = event.ts_ns,
         path = %path,
-        payload = %event.payload,
+        payload = %decoded_payload,
         "debug traced raw file event"
     );
 }
@@ -1577,6 +1613,46 @@ fn parse_payload_u32_field(payload: &str, field: &str) -> Option<u32> {
             .and_then(|value| u32::try_from(value).ok());
     }
     trimmed.parse::<u32>().ok()
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn parse_process_start_time(stat: &str) -> Option<u64> {
+    // comm (field 2) may contain spaces and parentheses; field 22 is
+    // index 19 in the fields following the final closing parenthesis.
+    stat.rsplit_once(')')?
+        .1
+        .split_whitespace()
+        .nth(19)?
+        .parse()
+        .ok()
+}
+
+fn payload_is_json_container(payload: &str) -> bool {
+    payload.trim_start().starts_with(['{', '['])
+}
+
+fn payload_has_duplicate_security_fields(payload: &str) -> bool {
+    if payload_is_json_container(payload) {
+        return false; // JSON has no k=v fields; cached PID identity is independent.
+    }
+    let mut seen = [false; 4];
+    for (key, _) in payload.split([';', ',']).filter_map(|s| s.split_once('=')) {
+        let key = key.trim();
+        let index = if key.eq_ignore_ascii_case("parent_pid") {
+            0
+        } else if let Some(index) = ["ppid", "pid", "uid", "cgroup_id"]
+            .iter()
+            .position(|field| key.eq_ignore_ascii_case(field))
+        {
+            index
+        } else {
+            continue;
+        };
+        if std::mem::replace(&mut seen[index], true) {
+            return true;
+        }
+    }
+    false
 }
 
 fn payload_parent_pid(payload: &str) -> Option<u32> {
@@ -1661,6 +1737,19 @@ fn is_agent_internal_systemd_cgroup(content: &str) -> bool {
     })
 }
 
+/// Raw-string consumers must see OS text, never the escaped transport.
+/// macOS retains its existing lossy producer and raw-consumer semantics.
+pub(super) fn decode_raw_payload(raw: &str) -> String {
+    #[cfg(target_os = "macos")]
+    {
+        raw.to_string()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        decode_payload_value(raw)
+    }
+}
+
 fn decode_payload_value(raw: &str) -> String {
     let bytes = raw.as_bytes();
     let mut out = String::with_capacity(raw.len());
@@ -1701,6 +1790,10 @@ fn unix_now_ns() -> u64 {
         .map(|d| d.as_nanos().min(u64::MAX as u128) as u64)
         .unwrap_or(0)
 }
+
+#[cfg(test)]
+#[path = "tests_payload_integrity.rs"]
+mod tests_payload_integrity;
 
 fn normalize_severity(raw: &str) -> &'static str {
     match raw.trim().to_ascii_lowercase().as_str() {

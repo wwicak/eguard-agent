@@ -86,7 +86,11 @@ pub struct AgentRuntime {
     pub(super) file_event_coalesce_window_ns: u64,
     pub(super) event_txn_coalesce_window_ns: u64,
     pub(super) recent_event_txn_keys: HashMap<String, u64>,
-    pub(super) suppressed_internal_process_pids: HashMap<u32, u64>,
+    // PID -> (expiry in event nanoseconds, Linux /proc starttime in clock ticks).
+    // Other platforms retain PID/TTL identity and use a zero generation.
+    pub(super) suppressed_internal_process_pids: HashMap<u32, (u64, u64)>,
+    #[cfg(test)]
+    pub(super) internal_process_start_time_reader: Option<fn(u32) -> Option<u64>>,
     pub(super) unmarked_internal_process_pids: HashMap<u32, u64>,
     pub(super) internal_process_last_prune_ns: u64,
     pub(super) file_event_coalesce_key_limit: usize,
@@ -516,6 +520,8 @@ impl AgentRuntime {
             event_txn_coalesce_window_ns: event_txn_coalesce_window_ms.saturating_mul(1_000_000),
             recent_event_txn_keys: HashMap::new(),
             suppressed_internal_process_pids: HashMap::new(),
+            #[cfg(test)]
+            internal_process_start_time_reader: None,
             unmarked_internal_process_pids: HashMap::new(),
             internal_process_last_prune_ns: 0,
             file_event_coalesce_key_limit,

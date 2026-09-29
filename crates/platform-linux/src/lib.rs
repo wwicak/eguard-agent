@@ -2,6 +2,8 @@ pub mod container;
 mod ebpf;
 pub mod inventory;
 mod kernel_integrity;
+#[path = "../../payload_codec.rs"]
+mod payload_codec;
 pub mod response;
 
 use std::collections::HashMap;
@@ -575,7 +577,7 @@ fn parse_payload_metadata(event_type: &EventType, payload: &str) -> PayloadMetad
 
     let fields = parse_kv_fields(trimmed);
     if fields.is_empty() {
-        return parse_payload_fallback(event_type, trimmed);
+        return parse_payload_fallback(event_type, &decode_payload_value(trimmed));
     }
 
     let mut metadata = PayloadMetadata {

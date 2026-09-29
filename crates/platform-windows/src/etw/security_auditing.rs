@@ -3,6 +3,7 @@
 //! We use process-creation audit event 4688 as a stronger source of truth for
 //! process image / parent / command-line attribution than kernel ETW alone.
 
+use crate::payload_codec::escape_payload_value;
 use crate::{EventType, RawEvent};
 use std::collections::HashMap;
 
@@ -70,15 +71,6 @@ fn process_name_or_path(raw: &str) -> String {
         .filter(|value| !value.trim().is_empty())
         .unwrap_or(trimmed)
         .to_string()
-}
-
-fn escape_payload_value(raw: &str) -> String {
-    raw.replace('%', "%25")
-        .replace(';', "%3B")
-        .replace(',', "%2C")
-        .replace('=', "%3D")
-        .replace('\r', " ")
-        .replace('\n', " ")
 }
 
 fn parse_windows_pid(raw: &str) -> Option<u32> {

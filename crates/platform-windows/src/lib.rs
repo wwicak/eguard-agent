@@ -9,6 +9,8 @@ pub mod compliance;
 pub mod enrichment;
 pub mod etw;
 pub mod inventory;
+#[path = "../../payload_codec.rs"]
+mod payload_codec;
 pub mod response;
 pub mod self_protect;
 pub mod service;
@@ -668,7 +670,7 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
         })
         .or_else(|| {
             matches!(raw.event_type, EventType::ModuleLoad)
-                .then(|| normalize_windows_path(&raw.payload))
+                .then(|| normalize_windows_path(&decode_payload_value(&raw.payload)))
         });
 
     cache.remember_file_object_path(
@@ -778,7 +780,7 @@ fn parse_payload_metadata(event_type: &EventType, payload: &str) -> PayloadMetad
 
     let fields = parse_kv_fields(trimmed);
     if fields.is_empty() {
-        return parse_payload_fallback(event_type, trimmed);
+        return parse_payload_fallback(event_type, &decode_payload_value(trimmed));
     }
 
     let file_path = match *event_type {

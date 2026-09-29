@@ -621,6 +621,8 @@ fn windows_sensor_child_pid_suppression_clears_on_process_exit() {
 
     let mut runtime = AgentRuntime::new(cfg).expect("runtime");
     runtime.ebpf_engine = platform_linux::EbpfEngine::disabled();
+    // Synthetic PID fixture: supply a stable generation instead of host /proc.
+    runtime.internal_process_start_time_reader = Some(|_| Some(100));
     let sensor_pid = 4702u32;
     runtime.raw_event_backlog.push_back(platform_linux::RawEvent {
         event_type: platform_linux::EventType::ProcessExec,
@@ -717,6 +719,7 @@ fn linux_agent_helper_pid_suppression_clears_on_process_exit() {
 
     let mut runtime = AgentRuntime::new(cfg).expect("runtime");
     runtime.ebpf_engine = platform_linux::EbpfEngine::disabled();
+    runtime.internal_process_start_time_reader = Some(|_| Some(100));
     let helper_pid = 5702u32;
     runtime
         .raw_event_backlog
@@ -788,6 +791,7 @@ fn linux_internal_descendant_process_is_suppressed_transitively() {
 
     let mut runtime = AgentRuntime::new(cfg).expect("runtime");
     runtime.ebpf_engine = platform_linux::EbpfEngine::disabled();
+    runtime.internal_process_start_time_reader = Some(|_| Some(100));
     let bridge_pid = 5703u32;
     let descendant_pid = 5704u32;
 

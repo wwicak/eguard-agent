@@ -40,7 +40,7 @@ pub(super) fn to_detection_event(
         if trimmed.is_empty() {
             None
         } else {
-            Some(trimmed.to_string())
+            Some(super::telemetry_pipeline::decode_raw_payload(trimmed))
         }
     } else {
         None

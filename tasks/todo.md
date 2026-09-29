@@ -1,3 +1,14 @@
+# F13/F14 — payload integrity and process generations
+
+- [x] Audit all producers/consumers; escape Linux/Windows values and decode before detection/telemetry.
+- [x] Reject ambiguous security fields and bind Linux tracked PIDs to proc start times.
+- [x] Add codec, ingest, compatibility, and PID-reuse regressions; run requested suites.
+- [x] Prepare commit/export and document platform limits and producer inventory.
+
+Review: see `tasks/f13-f14-review.md` for full producer/consumer inventory, design, results and residual risks. New agent suite 6/6, Linux 96/96, host Windows 116/116, policy 111/111; all requested agent filters pass; Windows GNU cross-check passes. Agent/Linux fmt and touched Windows rustfmt pass; full Windows fmt has a proven pre-existing screen_lock.rs:34 failure.
+
+Plan checked with supervisor: raw ModuleLoad fallback must decode; macOS sanitation remains unchanged by explicit scope decision. Final audit identified macOS JSON fallback ancestry injection; a supervisor-approved platform-agnostic guard rejects JSON ancestry without changing telemetry.
+
 # F1 — authenticate internal subprocess suppression
 
 - [x] Audit marker launch sites and remove spoofable parent-name authentication.

@@ -411,7 +411,7 @@ fn fallback_event(event_type: EventType, pid: u32, ts_ns: u64, data: &[u8]) -> O
     let payload = if data.is_empty() {
         String::new()
     } else {
-        String::from_utf8_lossy(data).into_owned()
+        crate::payload_codec::escape_payload_value(&String::from_utf8_lossy(data))
     };
     Some(RawEvent {
         event_type,
@@ -460,7 +460,12 @@ fn read_u16_be(data: &[u8], offset: usize) -> u16 {
     u16::from_be_bytes([data[offset], data[offset + 1]])
 }
 
-/// Read a null-terminated UTF-16LE string starting at `offset`.
+#[cfg(test)]
+#[path = "tests_payload_integrity.rs"]
+mod tests_payload_integrity;
+
+/// Read a null-terminated UTF-16LE string starting at `offset`, escaping it
+/// for the internal payload transport. All callers serialize this value.
 fn read_utf16_str(data: &[u8], offset: usize) -> Option<String> {
     if offset >= data.len() {
         return None;
@@ -494,7 +499,7 @@ fn read_utf16_str(data: &[u8], offset: usize) -> Option<String> {
     if value.is_empty() {
         None
     } else {
-        Some(value)
+        Some(crate::payload_codec::escape_payload_value(&value))
     }
 }
 

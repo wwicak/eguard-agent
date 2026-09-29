@@ -1,3 +1,4 @@
+use crate::payload_codec::escape_payload_value;
 use crate::{EventType, RawEvent};
 
 use super::types::{EbpfError, Result, EVENT_HEADER_SIZE};
@@ -75,7 +76,7 @@ pub(super) fn parse_event_type(raw: u8) -> Result<EventType> {
 fn parse_payload(event_type: EventType, raw: &[u8]) -> String {
     match event_type {
         EventType::ProcessExec => parse_process_exec_payload(raw),
-        EventType::ProcessExit => parse_c_string(raw),
+        EventType::ProcessExit => escape_payload_value(&parse_c_string(raw)),
         EventType::FileOpen => parse_file_open_payload(raw),
         EventType::FileWrite => parse_file_write_payload(raw),
         EventType::FileRename => parse_file_rename_payload(raw),
@@ -89,7 +90,7 @@ fn parse_payload(event_type: EventType, raw: &[u8]) -> String {
 
 fn parse_process_exec_payload(raw: &[u8]) -> String {
     if raw.len() < 4 + 8 + 32 {
-        return parse_c_string(raw);
+        return escape_payload_value(&parse_c_string(raw));
     }
 
     let ppid = read_u32_le(raw, 0).unwrap_or_default();
@@ -110,7 +111,7 @@ fn parse_process_exec_payload(raw: &[u8]) -> String {
     let cmdline = parse_cmdline_buffer(slice_window(raw, cmdline_offset, 160));
 
     if comm.is_empty() && parent_comm.is_empty() && path.is_empty() && cmdline.is_empty() {
-        return parse_c_string(raw);
+        return escape_payload_value(&parse_c_string(raw));
     }
 
     format!(
@@ -126,7 +127,7 @@ fn parse_process_exec_payload(raw: &[u8]) -> String {
 
 fn parse_file_open_payload(raw: &[u8]) -> String {
     if raw.len() < 8 {
-        return parse_c_string(raw);
+        return escape_payload_value(&parse_c_string(raw));
     }
 
     let flags = read_u32_le(raw, 0).unwrap_or_default();
@@ -141,26 +142,37 @@ fn parse_file_open_payload(raw: &[u8]) -> String {
         let parent_comm = parse_c_string(slice_window(raw, 52, 32));
         let path = parse_c_string(slice_window(raw, 84, 256));
         if path.is_empty() && comm.is_empty() && parent_comm.is_empty() {
-            return parse_c_string(raw);
+            return escape_payload_value(&parse_c_string(raw));
         }
 
         return format!(
             "path={};flags={};mode={};ppid={};cgroup_id={};comm={};parent_comm={}",
-            path, flags, mode, ppid, cgroup_id, comm, parent_comm
+            escape_payload_value(&path),
+            flags,
+            mode,
+            ppid,
+            cgroup_id,
+            escape_payload_value(&comm),
+            escape_payload_value(&parent_comm)
         );
     }
 
     let path = parse_c_string(slice_window(raw, 8, 256));
     if path.is_empty() {
-        return parse_c_string(raw);
+        return escape_payload_value(&parse_c_string(raw));
     }
 
-    format!("path={};flags={};mode={}", path, flags, mode)
+    format!(
+        "path={};flags={};mode={}",
+        escape_payload_value(&path),
+        flags,
+        mode
+    )
 }
 
 fn parse_file_write_payload(raw: &[u8]) -> String {
     if raw.len() < 12 {
-        return parse_c_string(raw);
+        return escape_payload_value(&parse_c_string(raw));
     }
 
     let fd = read_u32_le(raw, 0).unwrap_or_default();
@@ -170,7 +182,12 @@ fn parse_file_write_payload(raw: &[u8]) -> String {
         return format!("fd={};size={}", fd, size);
     }
 
-    format!("path={};fd={};size={}", path, fd, size)
+    format!(
+        "path={};fd={};size={}",
+        escape_payload_value(&path),
+        fd,
+        size
+    )
 }
 
 fn parse_file_rename_payload(raw: &[u8]) -> String {
@@ -184,22 +201,26 @@ fn parse_file_rename_payload(raw: &[u8]) -> String {
     let old_path = parse_c_string(slice_window(raw, 0, old_window));
     let new_path = parse_c_string(slice_window(raw, new_offset, new_window));
     if old_path.is_empty() && new_path.is_empty() {
-        return parse_c_string(raw);
+        return escape_payload_value(&parse_c_string(raw));
     }
-    format!("src={};dst={}", old_path, new_path)
+    format!(
+        "src={};dst={}",
+        escape_payload_value(&old_path),
+        escape_payload_value(&new_path)
+    )
 }
 
 fn parse_file_unlink_payload(raw: &[u8]) -> String {
     let path = parse_c_string(slice_window(raw, 0, 256));
     if path.is_empty() {
-        return parse_c_string(raw);
+        return escape_payload_value(&parse_c_string(raw));
     }
-    format!("path={}", path)
+    format!("path={}", escape_payload_value(&path))
 }
 
 fn parse_tcp_connect_payload(raw: &[u8]) -> String {
     if raw.len() < 16 {
-        return parse_c_string(raw);
+        return escape_payload_value(&parse_c_string(raw));
     }
 
     let family = read_u16_le(raw, 0).unwrap_or_default();
@@ -228,31 +249,36 @@ fn parse_tcp_connect_payload(raw: &[u8]) -> String {
 
 fn parse_dns_query_payload(raw: &[u8]) -> String {
     if raw.len() < 4 {
-        return parse_c_string(raw);
+        return escape_payload_value(&parse_c_string(raw));
     }
 
     let qtype = read_u16_le(raw, 0).unwrap_or_default();
     let qclass = read_u16_le(raw, 2).unwrap_or_default();
     let qname = parse_c_string(slice_window(raw, 4, 128));
     if qname.is_empty() {
-        return parse_c_string(raw);
+        return escape_payload_value(&parse_c_string(raw));
     }
 
-    format!("qname={};qtype={};qclass={}", qname, qtype, qclass)
+    format!(
+        "qname={};qtype={};qclass={}",
+        escape_payload_value(&qname),
+        qtype,
+        qclass
+    )
 }
 
 fn parse_module_load_payload(raw: &[u8]) -> String {
     let module_name = parse_c_string(slice_window(raw, 0, 64));
     if module_name.is_empty() {
-        return parse_c_string(raw);
+        return escape_payload_value(&parse_c_string(raw));
     }
 
-    format!("module={}", module_name)
+    format!("module={}", escape_payload_value(&module_name))
 }
 
 fn parse_lsm_block_payload(raw: &[u8]) -> String {
     if raw.len() < 4 {
-        return parse_c_string(raw);
+        return escape_payload_value(&parse_c_string(raw));
     }
 
     let reason = raw[0];
@@ -261,7 +287,11 @@ fn parse_lsm_block_payload(raw: &[u8]) -> String {
         return format!("reason={}", reason);
     }
 
-    format!("reason={};subject={}", reason, subject)
+    format!(
+        "reason={};subject={}",
+        reason,
+        escape_payload_value(&subject)
+    )
 }
 
 fn format_ipv4(ip: [u8; 4]) -> String {
@@ -315,19 +345,6 @@ fn parse_cmdline_buffer(raw: &[u8]) -> String {
     }
 
     parts.join(" ")
-}
-
-fn escape_payload_value(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len());
-    for ch in raw.chars() {
-        match ch {
-            '%' => out.push_str("%25"),
-            ';' => out.push_str("%3B"),
-            ',' => out.push_str("%2C"),
-            _ => out.push(ch),
-        }
-    }
-    out
 }
 
 fn slice_window(raw: &[u8], offset: usize, max_len: usize) -> &[u8] {

@@ -312,7 +312,7 @@ fn parses_structured_process_exec_payload_escapes_semicolons() {
     assert!(matches!(event.event_type, EventType::ProcessExec));
     assert!(event
         .payload
-        .contains("cmdline=bash -c a=\"who\"%3B b=\"ami\"%3B eval \"$a$b\""));
+        .contains("cmdline=bash -c a%3D\"who\"%3B b%3D\"ami\"%3B eval \"$a$b\""));
 }
 
 #[test]

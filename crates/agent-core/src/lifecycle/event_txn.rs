@@ -104,7 +104,8 @@ impl EventTxn {
                     .or_else(|| parse_payload_field(&raw.payload, "exe"))
                     .or_else(|| {
                         let trimmed = raw.payload.trim();
-                        (!trimmed.is_empty() && !trimmed.contains('=')).then(|| trimmed.to_string())
+                        (!trimmed.is_empty() && !trimmed.contains('='))
+                            .then(|| super::telemetry_pipeline::decode_raw_payload(trimmed))
                     });
                 (process, None)
             }
@@ -113,14 +114,16 @@ impl EventTxn {
                     .or_else(|| parse_payload_field(&raw.payload, "path"))
                     .or_else(|| {
                         let trimmed = raw.payload.trim();
-                        (!trimmed.is_empty()).then(|| trimmed.to_string())
+                        (!trimmed.is_empty())
+                            .then(|| super::telemetry_pipeline::decode_raw_payload(trimmed))
                     });
                 (module, None)
             }
             _ => {
                 let path = parse_payload_field(&raw.payload, "path").or_else(|| {
                     let trimmed = raw.payload.trim();
-                    (!trimmed.is_empty() && !trimmed.contains('=')).then(|| trimmed.to_string())
+                    (!trimmed.is_empty() && !trimmed.contains('='))
+                        .then(|| super::telemetry_pipeline::decode_raw_payload(trimmed))
                 });
                 (path, None)
             }
