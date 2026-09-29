@@ -19,13 +19,16 @@ jobs:
         with:
           version: 0.15.1
 
+      - name: Install eBPF build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libelf-dev zlib1g-dev pkg-config
+
       - name: Run eBPF resource budget harness
         run: ./scripts/run_ebpf_resource_budget_ci.sh
 
       - name: Test eBPF generations against Linux 5.4 BTF
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libelf-dev zlib1g-dev pkg-config
           cargo fetch --locked
           CARGO_TARGET_DIR="$PWD/target" timeout 1500 cargo build --offline -p platform-linux --features ebpf-libbpf
           curl --fail --location --output /tmp/linux54.btf.tar.xz \

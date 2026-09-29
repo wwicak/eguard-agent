@@ -156,6 +156,11 @@ jobs:
           )
           PY
 
+      - name: Install eBPF build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libelf-dev zlib1g-dev pkg-config
+
       - name: Run adversary tournament harness
         run: bash scripts/run_adversary_tournament_ci.sh
 

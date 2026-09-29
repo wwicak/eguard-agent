@@ -1,3 +1,15 @@
+# F24 — h1-ci libbpf build prerequisites
+
+- [x] Move resource-budget native dependencies before the harness; audit indirect Linux agent builds.
+- [x] Validate touched YAML, run the unprivileged offline resource harness and formatting check.
+- [x] Record evidence, commit and export patch/status.
+
+Design: install libelf-dev, zlib1g-dev and pkg-config before any libbpf build. CI-only change; supplied failure evidence is libbpf-sys make failing on missing libelf.h/gelf.h, so no Rust regression test is required.
+
+Review: moved resource-budget installation before its harness, removed the later duplicate, completed verification-suite prerequisites, and added prerequisites to adversary-tournament (indirect runtime-tick/resource-budget builds). build-bundle, release-agent and package-agent already install all three dependencies before Linux builds; no edits needed there. Remaining workflows do not build Linux agent-core/libbpf.
+
+Validation: Python yaml.safe_load passes for all three changed workflows. Parsed step-order audit reports missing early prerequisites on h-start-h1-ci for all three, and complete prerequisites on the working tree. The unprivileged resource-budget harness passes (release agent build plus detection latency and LSM payload probes), using worktree-local CARGO_TARGET_DIR and a temporary cargo wrapper enforcing timeout 1500 and --offline; metrics and logs are in artifacts/ebpf-resource-budget and artifacts/h1-ci. cargo fmt --all --check and git diff --check pass. Initial wrapper setup failed because target did not yet exist; its launched build was stopped and validation restarted with the proper wrapper. No privileged/system-directory tests ran. Residual: GitHub-hosted execution and apt mirror availability are not validated locally.
+
 # F15 review follow-up — Linux 5.4 and time namespaces
 
 - [x] Guard modern task start field with CO-RE existence and fall back to Linux 5.4 real_start_time.
