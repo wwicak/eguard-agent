@@ -148,7 +148,7 @@ fn bench_eval_throughput() {
                     2 => (EventType::FileOpen, format!("path={path};flags=0;mode=0;ppid={ppid};cgroup_id=0;comm={comm};parent_comm={parent_comm}")),
                     _ => (EventType::FileUnlink, format!("path={path}")),
                 };
-                events.push(RawEvent { pid_start_ns: None, ppid_start_ns: None, event_type, pid, uid: 1000,
+                events.push(RawEvent { fields: Default::default(), pid_start_ns: None, ppid_start_ns: None, event_type, pid, uid: 1000,
                     ts_ns: 1_000_000_000 + tick as u64 * 100_000_000 + index as u64, payload });
             }
             // Keep files alive so delayed baseline events can still stat/hash them.

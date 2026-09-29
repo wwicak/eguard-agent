@@ -1,6 +1,8 @@
 use super::types::{EbpfError, Result};
 
 /// Convert a single NDJSON line into the binary format that `parse_raw_event` expects.
+/// Replay deliberately shares the binary decoder: both `RawEvent::fields` and the
+/// legacy payload are populated there, never by parsing the formatted payload.
 pub(super) fn encode_replay_event(json_line: &str) -> Result<Vec<u8>> {
     let v: serde_json::Value = serde_json::from_str(json_line)
         .map_err(|e| EbpfError::Parse(format!("replay JSON: {}", e)))?;

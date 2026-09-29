@@ -40,6 +40,8 @@ mod tests;
 mod tests_ring_contract;
 
 #[cfg(test)]
+mod tests_fields;
+#[cfg(test)]
 mod tests_kernel_caps;
 #[cfg(test)]
 mod tests_payload_integrity;

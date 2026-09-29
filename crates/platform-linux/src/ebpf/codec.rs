@@ -127,7 +127,7 @@ fn parse_process_exec_payload(raw: &[u8], fields: &mut RawEventFields) -> String
     } else {
         String::new()
     };
-    fields.parent_comm = Some(parent_comm.clone());
+    fields.parent_comm = has_parent_comm.then(|| parent_comm.clone());
 
     let path_offset = if has_parent_comm { 76 } else { 44 };
     let cmdline_offset = if has_parent_comm { 236 } else { 204 };
