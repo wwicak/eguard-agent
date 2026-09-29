@@ -174,7 +174,8 @@ impl AgentRuntime {
         // time, queue and retention budgets bound work without starving telemetry.
         for _ in 1..Self::MAX_TELEMETRY_EVALS_PER_TICK {
             let envelopes = self.tick_telemetry.as_ref().map_or(0, Vec::len);
-            if started.elapsed() >= time_budget
+            if self.raw_candidate_budget_exhausted
+                || started.elapsed() >= time_budget
                 || self.downstream_queues_near_capacity()
                 || envelopes >= super::EVENT_BATCH_SIZE
                 || offline_headroom.is_some_and(|headroom| added_bytes >= headroom)
@@ -241,6 +242,8 @@ impl AgentRuntime {
     }
 
     pub(super) fn evaluate_tick(&mut self, now_unix: i64) -> Result<Option<TickEvaluation>> {
+        self.raw_ingested_this_tick = 0;
+        self.raw_candidate_budget_exhausted = false;
         let Some(raw) = self.next_raw_event() else {
             return Ok(None);
         };

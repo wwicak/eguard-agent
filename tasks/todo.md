@@ -431,3 +431,12 @@ Review: connected regression isolates drain + end-of-tick flush to avoid control
 - [x] Required tests/format: reviewfix 20, payload_integrity 6, ebpf_policy 111, response_pipeline 10, response_playbook 15, tick 2 passed; final fanout rerun 2 passed; agent-core fmt and git diff checks passed.
 - [x] Review: broad lifecycle run reached 483 completed tests before the 1500-second timeout, with unrelated failures. Base-only targeted reproduction confirmed memory-ledger lower-bound, last-known-good bootstrap, package harness strip expectation, and consequent poisoned environment-lock failures; restart test passes outside poisoned run. Logs: /tmp/fa-lifecycle.log, /tmp/fa-base-broad.log, /tmp/fa-fanout-base.log, /tmp/fa-suite-results. No unrelated fixes included.
 - [x] Commit and export patch/status to the requested followups directory.
+
+## a4-bounds
+- [x] Bound ingress preprocessing and filtered dequeue; preserve tick ordering.
+- [x] Add regressions and prove failures at base (all three fail with base production files transplanted).
+- [x] Run required suites, benchmark base/HEAD, export commit artifacts.
+
+Design: reuse raw_event_ingest_cap as a per-tick preprocessing allowance; retain oversized polls as owning iterators and avoid another kernel poll until the tail is consumed. Existing coalescing/priority/backlog eviction remains applied to each bounded chunk. Dequeue examines at most 256 candidates including its sampling scan; a yield flag prevents the drain retrying a filtered first evaluation. First evaluation and control-plane ordering remain unchanged.
+
+Validation: final policy 114/114, reviewfix 20/20, payload-integrity 6/6, runtime 3/3, telemetry pipeline 13/13, tick 2/2; formatting and diff checks pass. Three interleaved release benchmark rounds at each batch size: median CPU throughput +7.52% at batch 50 and -0.83% at batch 200 versus fa-start-a4-bounds (no >10% regression). Method, raw logs and results are in /home/dimas/eguard-lab-soak/bench/results-fa-start-a4-bounds.md. Broad lifecycle run timed out at 1500s; memory ledger, cached bundle bootstrap and package harness failures observed there also fail using the base release binary. Deferred poll storage retains one entire returned poll in production, so this bounds preprocessing work, not the backend poll allocation or total retained raw bytes.

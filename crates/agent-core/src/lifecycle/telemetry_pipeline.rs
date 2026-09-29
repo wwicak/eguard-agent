@@ -318,7 +318,14 @@ impl AgentRuntime {
         } else {
             std::time::Duration::from_millis(0)
         };
-        let polled = self.ebpf_engine.poll_once(timeout);
+        // Retain an oversized poll without preprocessing its tail or polling again.
+        let polled = if self.pending_raw_polls.is_empty()
+            && self.raw_ingested_this_tick < self.raw_event_ingest_cap
+        {
+            self.ebpf_engine.poll_once(timeout)
+        } else {
+            Ok(Vec::new())
+        };
         self.observe_ebpf_stats();
 
         match polled {
@@ -344,6 +351,23 @@ impl AgentRuntime {
     }
 
     fn ingest_polled_raw_events(&mut self, events: Vec<RawEvent>) {
+        if !events.is_empty() {
+            self.pending_raw_polls.push_back(events.into_iter());
+        }
+        let remaining = self
+            .raw_event_ingest_cap
+            .saturating_sub(self.raw_ingested_this_tick);
+        let mut events = Vec::new();
+        while events.len() < remaining {
+            let Some(poll) = self.pending_raw_polls.front_mut() else {
+                break;
+            };
+            events.extend(poll.take(remaining - events.len()));
+            if poll.len() == 0 {
+                self.pending_raw_polls.pop_front();
+            }
+        }
+        self.raw_ingested_this_tick += events.len();
         if events.is_empty() {
             self.refresh_strict_budget_mode();
             return;
@@ -721,7 +745,8 @@ impl AgentRuntime {
     pub(super) fn dequeue_sampled_raw_event(&mut self, stride: usize) -> Option<RawEvent> {
         let stride = stride.max(1);
 
-        loop {
+        // A filtered prefix must not monopolize the tick before the control plane.
+        for examined in 0..256 {
             let Some(event) = self.raw_event_backlog.pop_front() else {
                 return None;
             };
@@ -740,12 +765,18 @@ impl AgentRuntime {
             }
 
             if stride > 1 {
-                self.sample_low_priority_backlog_events(stride.saturating_sub(1));
+                self.sample_low_priority_backlog_events(
+                    stride.saturating_sub(1).min((255 - examined) / 2),
+                );
             }
 
             debug_trace_matching_raw_event("dequeued", &event);
             return Some(event);
         }
+        // None with pending work is a yield, not an empty backlog. The first
+        // evaluation may yield too; do not retry it in this tick's drain.
+        self.raw_candidate_budget_exhausted = !self.raw_event_backlog.is_empty();
+        None
     }
 
     fn sample_low_priority_backlog_events(&mut self, max_skips: usize) {
