@@ -1,3 +1,16 @@
+# F1 — authenticate internal subprocess suppression
+
+- [x] Audit marker launch sites and remove spoofable parent-name authentication.
+- [x] Gate Linux markers on root systemd service membership; retain negative cache and PID ancestry.
+- [x] Cover forged real-process marker, forged parent comm, direct-child preservation, and cgroup hierarchy parsing.
+- [x] Run requested regression filters, formatting, and scoped clippy review; export committed patch.
+
+Review: marker recognition now requires exact numeric `eguard-agent-update-*.service` or `eguard-agent-self-restart-*.service` beneath `/system.slice/`. Unified hierarchy takes precedence; supervisor-approved legacy `name=systemd` fallback preserves update/restart suppression on cgroup-v1 hosts. Direct Command children retain the agent PPID; tracked descendants remain unchanged. No launcher changes needed.
+
+Validation: internal_process 5/5, suppress 8/8, negative 2/2, priority 9/9, tests_reviewfix 13/13, tests_ebpf_policy 111/111; agent-core fmt and diff checks pass. Clippy is blocked by pre-existing modulo-one errors in rule_bundle_loader.rs:245,270; touched file warnings concern unchanged question-mark/collapsible-if code only. Tests run without privileged eBPF loading (EPERM diagnostics).
+
+Residual: root attackers remain outside the trust model. Missing/unreadable proc files fail toward visibility; nested/delegated cgroups are not accepted. Non-Linux marker behavior remains false. Actual systemd transient-unit integration was not exercised in this environment. Existing comm-based narrow noise filters are outside this all-process-suppression fix.
+
 # Reviewfix3 — send before control plane
 
 - [x] Restore first-evaluation flush before scheduling; restore base command dispatch.

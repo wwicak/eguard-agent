@@ -580,11 +580,8 @@ impl AgentRuntime {
             }
         }
 
-        if payload_parent_process_name(&event.payload)
-            .map(|value| is_eguard_agent_process(&value))
-            .unwrap_or(false)
-            || self.is_marked_internal_process_cached(event.pid, event_ns)
-        {
+        // Parent comm and environment are user-controlled, not proof of ancestry.
+        if self.is_marked_internal_process_cached(event.pid, event_ns) {
             self.track_internal_process_pid(event.pid, event_ns);
             return true;
         }
@@ -1587,13 +1584,6 @@ fn payload_parent_pid(payload: &str) -> Option<u32> {
         .or_else(|| parse_payload_u32_field(payload, "parent_pid"))
 }
 
-fn payload_parent_process_name(payload: &str) -> Option<String> {
-    parse_payload_field(payload, "parent_process")
-        .or_else(|| parse_payload_field(payload, "parent_process_name"))
-        .or_else(|| parse_payload_field(payload, "parent_name"))
-        .or_else(|| parse_payload_field(payload, "parent_comm"))
-}
-
 fn process_basename(value: &str) -> &str {
     value.rsplit(['/', '\\']).next().unwrap_or(value)
 }
@@ -1617,7 +1607,7 @@ fn is_marked_internal_process(pid: u32) -> bool {
             return false;
         };
 
-        raw.split(|byte| *byte == 0).any(|entry| {
+        let marked = raw.split(|byte| *byte == 0).any(|entry| {
             let Ok(value) = std::str::from_utf8(entry) else {
                 return false;
             };
@@ -1633,8 +1623,42 @@ fn is_marked_internal_process(pid: u32) -> bool {
                 .strip_prefix('=')
                 .map(|raw_value| matches!(raw_value.trim(), "1" | "true" | "TRUE" | "True"))
                 .unwrap_or(false)
-        })
+        });
+        marked
+            && std::fs::read_to_string(format!("/proc/{pid}/cgroup"))
+                .is_ok_and(|content| is_agent_internal_systemd_cgroup(&content))
     }
+}
+
+#[cfg(target_os = "linux")]
+fn is_agent_internal_systemd_cgroup(content: &str) -> bool {
+    // Only root-created system services authenticate the otherwise forgeable marker.
+    // Unified hierarchy is authoritative on hybrid hosts. Legacy systemd uses
+    // its named hierarchy, not arbitrary cpu/memory controller paths.
+    let path = content
+        .lines()
+        .find_map(|line| line.strip_prefix("0::"))
+        .or_else(|| {
+            content.lines().find_map(|line| {
+                let (_, rest) = line.split_once(':')?;
+                rest.strip_prefix("name=systemd:")
+            })
+        });
+    path.is_some_and(|path| {
+        let Some(unit) = path.strip_prefix("/system.slice/") else {
+            return false;
+        };
+        let Some(name) = unit.strip_suffix(".service") else {
+            return false;
+        };
+        ["eguard-agent-update-", "eguard-agent-self-restart-"]
+            .iter()
+            .any(|prefix| {
+                name.strip_prefix(prefix).is_some_and(|suffix| {
+                    !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit())
+                })
+            })
+    })
 }
 
 fn decode_payload_value(raw: &str) -> String {
@@ -1742,13 +1766,9 @@ mod priority_tests {
         let exec_reads = ENVIRON_READS.with(|calls| calls.get());
         let _ = child.kill();
         child.wait().expect("reap child");
-        assert_eq!((first, second, exec), (marked, marked, marked));
+        assert_eq!((first, second, exec), (false, false, false));
         assert_eq!(reads, 1, "normal repeated events must not reread environ");
-        assert_eq!(
-            exec_reads,
-            if marked { 1 } else { 2 },
-            "exec invalidates negative cache"
-        );
+        assert_eq!(exec_reads, 2, "exec invalidates negative cache");
     }
 
     #[test]
@@ -1759,8 +1779,131 @@ mod priority_tests {
 
     #[test]
     #[cfg(target_os = "linux")]
-    fn internal_process_marked_child_remains_suppressed() {
+    fn internal_process_marker_without_system_unit_is_negative_cached() {
         check_internal_process_cache(true);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn internal_process_cgroup_requires_root_system_service() {
+        for prefix in ["eguard-agent-update-", "eguard-agent-self-restart-"] {
+            assert!(is_agent_internal_systemd_cgroup(&format!(
+                "0::/system.slice/{prefix}123.service\n"
+            )));
+        }
+        for content in [
+            "1:name=systemd:/system.slice/eguard-agent-update-123.service",
+            "1:cpu:/other\n2:name=systemd:/system.slice/eguard-agent-self-restart-123.service",
+            "1:name=systemd:/other\n0::/system.slice/eguard-agent-update-123.service",
+        ] {
+            assert!(is_agent_internal_systemd_cgroup(content), "{content}");
+        }
+        for content in [
+            "0::/user.slice/system.slice/eguard-agent-update-123.service",
+            "0::/system.slice/other.service",
+            "1:cpu,memory:/system.slice/eguard-agent-update-123.service",
+            "1:name=systemd:/user.slice/eguard-agent-update-123.service",
+            "0::/user.slice/other.service\n1:name=systemd:/system.slice/eguard-agent-update-123.service",
+            "0::/system.slice/eguard-agent-update-evil/../",
+            "0::/system.slice/eguard-agent-update-../123.service",
+            "0::/system.slice/eguard-agent-update-.service",
+            "0::/system.slice/eguard-agent-update-123.service/child",
+        ] {
+            assert!(!is_agent_internal_systemd_cgroup(content), "{content}");
+        }
+    }
+
+    #[test]
+    fn internal_process_parent_comm_cannot_authenticate_but_direct_pid_can() {
+        let cfg = crate::config::AgentConfig {
+            offline_buffer_backend: "memory".to_string(),
+            server_addr: "127.0.0.1:1".to_string(),
+            ..Default::default()
+        };
+        let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+        let mut event = RawEvent {
+            pid: u32::MAX,
+            uid: 1000,
+            ts_ns: 1,
+            event_type: crate::platform::EventType::ProcessExec,
+            payload: "ppid=0;parent_comm=eguard-agent;comm=malware".to_string(),
+        };
+        assert!(
+            !runtime.should_suppress_internal_process_event(&event),
+            "an attacker can name its parent binary eguard-agent"
+        );
+        event.payload = format!("ppid={};parent_comm=anything", std::process::id());
+        assert!(
+            runtime.should_suppress_internal_process_event(&event),
+            "Command children retain the agent PID as their kernel parent"
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn internal_process_detached_forged_marker_does_not_hide_events() {
+        let cfg = crate::config::AgentConfig {
+            offline_buffer_backend: "memory".to_string(),
+            server_addr: "127.0.0.1:1".to_string(),
+            ..Default::default()
+        };
+        let mut runtime = AgentRuntime::new(cfg).expect("runtime");
+        let output = std::process::Command::new("sh")
+            .args([
+                "-c",
+                "EGUARD_INTERNAL_SUBPROCESS=1 sleep 30 >/dev/null 2>&1 & echo $!",
+            ])
+            .output()
+            .expect("detached child");
+        let pid: u32 = String::from_utf8(output.stdout)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let marker = b"EGUARD_INTERNAL_SUBPROCESS=1";
+        let mut ready = false;
+        for _ in 0..100 {
+            ready = std::fs::read(format!("/proc/{pid}/environ"))
+                .unwrap_or_default()
+                .split(|byte| *byte == 0)
+                .any(|entry| entry == marker);
+            if ready {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
+        let ppid = status
+            .lines()
+            .find_map(|line| line.strip_prefix("PPid:"))
+            .unwrap()
+            .trim()
+            .parse::<u32>()
+            .unwrap();
+        let event = RawEvent {
+            pid,
+            uid: 1000,
+            ts_ns: 1,
+            event_type: crate::platform::EventType::ProcessExec,
+            payload: format!("ppid={ppid};comm=sleep;parent_comm=sh"),
+        };
+        let suppressed = runtime.should_suppress_internal_process_event(&event);
+        let _ = std::process::Command::new("kill")
+            .args(["-KILL", &pid.to_string()])
+            .status();
+        assert!(
+            ready,
+            "real post-exec environment must contain the forged marker"
+        );
+        assert_ne!(
+            ppid,
+            std::process::id(),
+            "must exercise marker rather than trusted ancestry"
+        );
+        assert!(
+            !suppressed,
+            "unprivileged environment markers must not hide malware"
+        );
     }
 
     #[test]
