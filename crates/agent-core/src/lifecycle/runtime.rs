@@ -92,6 +92,8 @@ pub struct AgentRuntime {
         HashMap<u32, (u64, super::telemetry_pipeline::ProcessGeneration)>,
     #[cfg(test)]
     pub(super) internal_process_start_time_reader: Option<fn(u32) -> Option<u64>>,
+    #[cfg(test)]
+    pub(super) windows_process_generations: bool,
     pub(super) unmarked_internal_process_pids: HashMap<u32, u64>,
     pub(super) internal_process_last_prune_ns: u64,
     pub(super) file_event_coalesce_key_limit: usize,
@@ -523,6 +525,8 @@ impl AgentRuntime {
             suppressed_internal_process_pids: HashMap::new(),
             #[cfg(test)]
             internal_process_start_time_reader: None,
+            #[cfg(test)]
+            windows_process_generations: cfg!(target_os = "windows"),
             unmarked_internal_process_pids: HashMap::new(),
             internal_process_last_prune_ns: 0,
             file_event_coalesce_key_limit,

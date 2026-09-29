@@ -20,6 +20,7 @@ const TELEMETRY_SEND_TIMEOUT_MS: u64 = 5_000;
 pub(super) enum ProcessGeneration {
     BootNs(u64),
     ProcTicks(u64),
+    WindowsNs(u64),
 }
 
 // procfs expresses starttime in the reader's time namespace, while BPF reads
@@ -98,9 +99,12 @@ fn generation_proc_ticks_apply_injected_time_namespace_offset() {
 impl ProcessGeneration {
     fn matches(self, other: Self) -> bool {
         match (self, other) {
-            (Self::BootNs(a), Self::BootNs(b)) | (Self::ProcTicks(a), Self::ProcTicks(b)) => a == b,
+            (Self::BootNs(a), Self::BootNs(b))
+            | (Self::ProcTicks(a), Self::ProcTicks(b))
+            | (Self::WindowsNs(a), Self::WindowsNs(b)) => a == b,
             (Self::BootNs(ns), Self::ProcTicks(ticks))
             | (Self::ProcTicks(ticks), Self::BootNs(ns)) => boot_ns_to_ticks(ns) == Some(ticks),
+            _ => false,
         }
     }
 }
@@ -664,12 +668,18 @@ impl AgentRuntime {
     fn should_track_internal_process_event(&mut self, event: &RawEvent, event_ns: u64) -> bool {
         // macOS can forward a JSON fallback. Its string contents are not
         // authenticated k=v ancestry, even if they contain ';ppid=...'.
-        if payload_is_json_container(&event.payload)
+        if (self.uses_windows_generations()
+            && self
+                .process_generation(event.pid, event.pid_start_ns)
+                .is_none())
+            || payload_is_json_container(&event.payload)
             || payload_has_duplicate_security_fields(&event.payload)
         {
             return false;
         }
-        if let Some(parent_pid) = payload_parent_pid(&event.payload) {
+        if let Some(parent_pid) = payload_parent_pid(&event.payload)
+            .filter(|_| !self.uses_windows_generations() || event.ppid_start_ns.is_some())
+        {
             if (parent_pid == std::process::id()
                 && self.event_generation_matches_current(parent_pid, event.ppid_start_ns))
                 || self.is_tracked_internal_process(parent_pid, event_ns, event.ppid_start_ns)
@@ -710,9 +720,23 @@ impl AgentRuntime {
         false
     }
 
+    fn uses_windows_generations(&self) -> bool {
+        #[cfg(test)]
+        {
+            self.windows_process_generations
+        }
+        #[cfg(not(test))]
+        {
+            cfg!(target_os = "windows")
+        }
+    }
+
     // Live evidence (our own PID or a proc environment marker) must belong to
-    // the emitted generation. Tracked ancestry instead compares event identities.
+    // the emitted generation. Windows also revalidates tracked ancestry live.
     fn event_generation_matches_current(&self, pid: u32, start_ns: Option<u64>) -> bool {
+        if self.uses_windows_generations() {
+            return start_ns.is_some() && start_ns == self.internal_process_start_time(pid);
+        }
         start_ns.is_none_or(|ns| {
             self.internal_process_start_time(pid).is_some_and(|ticks| {
                 ProcessGeneration::BootNs(ns).matches(ProcessGeneration::ProcTicks(ticks))
@@ -721,6 +745,13 @@ impl AgentRuntime {
     }
 
     fn process_generation(&self, pid: u32, start_ns: Option<u64>) -> Option<ProcessGeneration> {
+        if self.uses_windows_generations() {
+            // Always revalidate live identity: ProcessStop can be lost to ETW backpressure.
+            let current = self.internal_process_start_time(pid)?;
+            return start_ns
+                .is_none_or(|emitted| emitted == current)
+                .then_some(ProcessGeneration::WindowsNs(current));
+        }
         start_ns.map(ProcessGeneration::BootNs).or_else(|| {
             self.internal_process_start_time(pid)
                 .map(ProcessGeneration::ProcTicks)
@@ -776,9 +807,13 @@ impl AgentRuntime {
             let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
             parse_process_start_time(&stat)
         }
-        // Non-Linux retains the existing PID/TTL behavior until a native
-        // process-generation reader is available.
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "windows")]
+        {
+            platform_windows::process_generation::process_start_ns(pid)
+        }
+        // macOS ES JSON currently exposes audit-token PID, not a process start time.
+        // Its existing PID/TTL behavior is unchanged.
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         {
             let _ = pid;
             Some(0)

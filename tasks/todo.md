@@ -385,3 +385,13 @@ envelope estimates account for added bytes. Connected and first-evaluation paths
 retain their behavior. Supervisor approved threshold-only protection: an oversized
 single envelope exceeding the 10% reserve can still evict. No benchmark run.
 Patch: /home/dimas/eguard-lab-soak/reviewfix5.patch.
+
+## b2-windows: generation-bound suppression
+- [x] Inspect ETW creation identity, suppression lookup, and macOS ES representation.
+- [x] Carry Windows creation times and revalidate tracked identities with an injectable reader.
+- [x] Prove focused regressions against baseline; run host and cross-target checks.
+- [x] Commit and export follow-up patch (commit SHA recorded in followups/STATUS.md).
+
+Design: reuse typed generation fields with Windows Unix-epoch nanoseconds (checked FILETIME conversion); fail open to telemetry when parent identity is unknown or a live query fails. macOS unchanged: the current JSON ES decoder extracts audit-token PID/UID, not creation time. Live Windows validation remains a follow-up.
+
+Review: platform-windows 117 tests passed; telemetry_pipeline 19 passed; tests_payload_integrity 11 passed; tests_ebpf_policy 111 passed; tests_reviewfix 13 passed. Windows GNU cross-check passed without extra features. Touched-crate fmt check reports only the known untouched screen_lock.rs difference; git diff --check passed. Baseline proof restored telemetry_pipeline.rs and codec.rs from fb-start-b2-windows in this worktree, retaining new tests and inert test-only runtime selector: both Windows suppression regressions failed at their security assertions, and the codec regression failed with None vs Some(12345678900). Restored implementation passes all three. Logs: /tmp/b2-{baseline-agent,baseline-codec,payload,pipeline,ebpf,review,win-test,cross,fmt}.log. No dependencies added. Residual: native Windows ETW/GetProcessTimes soak is not performed; unavailable process queries intentionally increase visible telemetry.

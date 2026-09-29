@@ -11,6 +11,7 @@ pub mod etw;
 pub mod inventory;
 #[path = "../../payload_codec.rs"]
 mod payload_codec;
+pub mod process_generation;
 pub mod response;
 pub mod self_protect;
 pub mod service;
@@ -45,7 +46,7 @@ pub enum EventType {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawEvent {
-    /// Process (TGID) generation: boot-time nanoseconds captured at emission.
+    /// Process generation: Unix-epoch nanoseconds from Windows CreateTime.
     pub pid_start_ns: Option<u64>,
     /// Real parent TGID generation captured at emission.
     pub ppid_start_ns: Option<u64>,

@@ -95,8 +95,8 @@ fn decode_kernel_process(opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Optio
             }
 
             Some(RawEvent {
-                pid_start_ns: None,
-                ppid_start_ns: None,
+                pid_start_ns: crate::process_generation::filetime_to_unix_ns(read_u64_le(data, 4)),
+                ppid_start_ns: crate::process_generation::process_start_ns(parent_pid),
                 event_type: EventType::ProcessExec,
                 pid: process_pid,
                 uid: 0,
@@ -120,7 +120,7 @@ fn decode_kernel_process(opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Optio
             }
 
             Some(RawEvent {
-                pid_start_ns: None,
+                pid_start_ns: crate::process_generation::filetime_to_unix_ns(read_u64_le(data, 4)),
                 ppid_start_ns: None,
                 event_type: EventType::ProcessExit,
                 pid: process_pid,
@@ -883,4 +883,22 @@ mod tests {
     fn format_ipv4_short_buffer() {
         assert_eq!(format_ipv4(&[1, 2], 0), "0.0.0.0");
     }
+}
+
+#[test]
+fn process_records_preserve_creation_identity() {
+    let mut data = vec![0; 24];
+    data[0..4].copy_from_slice(&42u32.to_le_bytes());
+    data[4..12].copy_from_slice(&116_444_736_123_456_789u64.to_le_bytes());
+    // Start and Stop must carry the same generation, not merely the reused PID.
+    for opcode in [1, 2] {
+        let event = decode_kernel_process(opcode, 0, 1, &data).unwrap();
+        assert_eq!(event.pid_start_ns, Some(12_345_678_900));
+        assert_eq!(event.ppid_start_ns, None);
+    }
+    data[4..12].fill(0);
+    assert_eq!(
+        decode_kernel_process(1, 0, 1, &data).unwrap().pid_start_ns,
+        None
+    );
 }

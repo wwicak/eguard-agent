@@ -233,3 +233,54 @@ fn payload_codec_injection_survives_ingest_but_direct_child_is_suppressed() {
     let _ = child.wait();
     assert!(runtime.raw_event_backlog.is_empty());
 }
+
+#[test]
+fn windows_live_generation_rejects_reuse_and_missing_even_with_stale_event() {
+    let mut runtime = runtime();
+    runtime.windows_process_generations = true;
+    runtime.internal_process_start_time_reader = Some(|_| Some(100));
+    runtime.track_internal_process_pid(4_000_050, 1, Some(100));
+    assert!(runtime.is_tracked_internal_process(4_000_050, 2, Some(100)));
+    // A dropped ProcessStop must not let a queued old identity authenticate reuse.
+    runtime.internal_process_start_time_reader = Some(|_| Some(200));
+    assert!(!runtime.is_tracked_internal_process(4_000_050, 3, Some(100)));
+    assert!(!runtime
+        .suppressed_internal_process_pids
+        .contains_key(&4_000_050));
+    runtime.internal_process_start_time_reader = Some(|_| Some(100));
+    runtime.track_internal_process_pid(4_000_050, 4, Some(100));
+    runtime.internal_process_start_time_reader = Some(|_| None);
+    assert!(!runtime.is_tracked_internal_process(4_000_050, 5, Some(100)));
+    assert!(!runtime
+        .suppressed_internal_process_pids
+        .contains_key(&4_000_050));
+}
+
+#[test]
+fn windows_unknown_parent_generation_cannot_authenticate_ancestry() {
+    let mut runtime = runtime();
+    runtime.windows_process_generations = true;
+    runtime.internal_process_start_time_reader = Some(|_| Some(100));
+    let mut event = RawEvent {
+        pid_start_ns: Some(100),
+        ppid_start_ns: None,
+        pid: 4_000_051,
+        uid: 0,
+        ts_ns: 1,
+        event_type: crate::platform::EventType::ProcessExec,
+        payload: format!("ppid={}", std::process::id()),
+    };
+    // A PID alone cannot authenticate a parent when ingest could not query it.
+    assert!(!runtime.should_suppress_internal_process_event(&event));
+    event.ppid_start_ns = Some(100);
+    assert!(runtime.should_suppress_internal_process_event(&event));
+    event.pid = 4_000_052;
+    event.payload = "ppid=4000051".into();
+    event.ppid_start_ns = None;
+    assert!(!runtime.should_suppress_internal_process_event(&event));
+    event.ppid_start_ns = Some(100);
+    assert!(runtime.should_suppress_internal_process_event(&event));
+    event.pid = 4_000_053;
+    event.pid_start_ns = Some(99);
+    assert!(!runtime.should_suppress_internal_process_event(&event));
+}
