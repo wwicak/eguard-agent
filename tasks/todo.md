@@ -556,6 +556,13 @@ Residuals: at-least-once duplicates after send-before-ack crashes; memory fallba
 
 Review: Windows parent-generation filter rejected direct children before the own-PID check. Direct edges now use cached own identity and tolerate unknown parent identity. Second-pass correction: Windows ancestry caching now requires an emitted child generation that matches live identity; querying a generationless delayed event's PID could otherwise bless an unrelated replacement. Tests: payload integrity 12, reviewfix 21, eBPF policy 111, priority 7, platform-windows 120 passed; Windows GNU cross-check and fmt passed. Native Windows rerun and macOS TASK_AUDIT_TOKEN validation remain outstanding. Logs exported to followups/w-validation.
 
+### Third-pass cached Windows identity validation
+- [x] Reproduce cached generationless FileOpen failure at f4420e9.
+- [x] Restrict emitted-generation requirement to insertion; test live match/reuse/exit.
+- [x] Run required offline suites and cross-check, commit, export patch/status.
+
+Review: cached generation 100 now survives generationless FileOpen with live 100; live 200 or process exit evicts and exposes it. Emitted identity remains mandatory for Windows insertion only. New regression failed against unchanged f4420e9 production (false versus true suppression); preserved review-fail.log proves generationless 4688 regression failed at 60745ac. Existing direct-parent unknown/match/mismatch and 4688 regressions pass. Required suites passed: payload integrity 14, reviewfix 21, eBPF policy 111, priority 7, platform-windows 120; Windows GNU cross-check passed with existing warnings. Evidence: followups/w-validation/cached-*.log. Native Windows/macOS execution remains outstanding.
+
 ### Second-pass PID-reuse blocker
 - [x] Reproduce generationless Security 4688 PID reuse with a live replacement.
 - [x] Require emitted Windows child generation before caching ancestry; preserve direct-event suppression.

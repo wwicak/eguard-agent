@@ -258,6 +258,49 @@ fn windows_live_generation_rejects_reuse_and_missing_even_with_stale_event() {
 }
 
 #[test]
+fn windows_cached_helper_generationless_file_event_revalidates_live_identity() {
+    for live_generation in [Some(100), Some(200), None] {
+        let mut runtime = runtime();
+        runtime.windows_process_generations = true;
+        runtime.internal_process_start_time_reader = Some(|_| Some(100));
+        let mut event = RawEvent {
+            pid_start_ns: Some(100),
+            ppid_start_ns: None,
+            pid: 4_000_080,
+            uid: 0,
+            ts_ns: 1,
+            event_type: crate::platform::EventType::ProcessExec,
+            payload: format!("ppid={}", std::process::id()),
+        };
+        // ETW ProcessStart authenticates the helper before ordinary telemetry.
+        assert!(runtime.should_suppress_internal_process_event(&event));
+        assert!(runtime
+            .suppressed_internal_process_pids
+            .contains_key(&event.pid));
+        runtime.internal_process_start_time_reader = match live_generation {
+            Some(100) => Some(|_| Some(100)),
+            Some(_) => Some(|_| Some(200)),
+            None => Some(|_| None),
+        };
+        event.event_type = crate::platform::EventType::FileOpen;
+        event.pid_start_ns = None;
+        event.ts_ns = 2;
+        event.payload = "path=C:/temporary/helper-output".into();
+        let still_internal = live_generation == Some(100);
+        assert_eq!(
+            runtime.should_suppress_internal_process_event(&event),
+            still_internal
+        );
+        assert_eq!(
+            runtime
+                .suppressed_internal_process_pids
+                .contains_key(&event.pid),
+            still_internal
+        );
+    }
+}
+
+#[test]
 fn windows_direct_child_unknown_parent_generation_is_suppressed() {
     let mut runtime = runtime();
     runtime.own_process_generation = Some(ProcessGeneration::WindowsNs(100));
