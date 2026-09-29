@@ -652,3 +652,16 @@ Validation: enrollment 7/7; tests_ebpf_policy 111/111; tests_reviewfix 21/21;
 tests_payload_integrity 12/12; cargo fmt --all --check and git diff --check pass.
 All cargo commands used timeout 1500, --offline and this worktree's target dir.
 Residual risk: timings vary by host; full workspace suite was not run.
+
+## F22 retry
+- [x] Preserve operational paths, use kernel identity matching, dedup reports only (supervisor-approved revision).
+- [x] Add alias and atomic-split regressions; prove base failures and symlink/.. historical regression.
+- [x] Run required offline suites and checks; commit/export patch and status.
+
+Review: supervisor explicitly superseded identity-based entry collapse: retain every original pathname baseline, deduplicate tamper findings by current identity, and list aliases in detail. Unix identity uses metadata dev/inode; missing paths use canonical parent plus filename, then unchanged pathname. Authorized writes verify all pre-write matching baselines and advance all post-write matches, preserving split aliases. Hashes still come exclusively from callback bytes. Added alias details also preserve every affected pathname in tampered_paths().
+
+Validation: self-protect 37/37; enroll-race 4/4; reviewfix 21/21 (665.67s). All cargo tests offline, timeout 1500, target=$PWD/target; each shell below 20 minutes. Nine unique-directory regressions cover duplicate, normal-directory parent traversal, symlink, hardlink, missing-file creation, authorized/external atomic symlink replacement, symlink/.., and atomic alias splitting.
+
+Fail proof: injected only tests/module visibility into a unique archived h-start-f22r checkout: six behavior-changing tests failed (duplicate, lexical alias, symlink, hardlink, missing-path baseline fanout, authorized atomic replacement); three preservation tests passed. Historical clarification: symlink/.. PASSES 5ed8bd3, contrary to requested failure proof, because that revision canonicalizes existing files. It FAILS 1d136e2 with no tamper finding, proving the actual lexical-collapse regression. No production mutation retained. Logs: /home/dimas/eguard-lab-soak/followups/f22r-validation/.
+
+Residual risks: Linux-only validation; non-Unix identity falls back to canonical paths and does not identify hardlinks by inode. Existing filesystem race windows between metadata/read/callback remain; callback hash protects against trusting a post-write external reread. Full workspace suite not run. RuntimeConfigTamper gains an aliases field (external exhaustive constructors/patterns may need updates).
