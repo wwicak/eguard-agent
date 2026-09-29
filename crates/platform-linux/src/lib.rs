@@ -654,7 +654,13 @@ fn raw_event_metadata(raw: &RawEvent) -> PayloadMetadata {
         command_line_hint: fields
             .cmdline
             .clone()
-            .or_else(|| fields.comm.clone())
+            .or_else(|| {
+                // Naked exit payloads never supplied a command-line hint in the
+                // legacy parser. comm is identity, not an exit command line.
+                (!matches!(raw.event_type, EventType::ProcessExit))
+                    .then(|| fields.comm.clone())
+                    .flatten()
+            })
             .or_else(|| fields.subject.clone())
             .or_else(|| fallback().command_line_hint.clone()),
         parent_process_hint: fields

@@ -2,6 +2,34 @@
 use super::*;
 
 #[test]
+fn f4b_process_exit_unmodified_replay_preserves_legacy_detection() {
+    let path = std::env::temp_dir().join(format!(
+        "eguard-f4b-exit-{}-{}.ndjson",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    // An impossible Linux PID prevents host /proc metadata from masking the
+    // codec-to-enrichment mapping, without replacing any enriched fields.
+    std::fs::write(&path, r#"{"event_type":"process_exit","pid":4294967295,"uid":1000,"ts_ns":1700000000000000000,"comm":"ordinary"}"#).unwrap();
+    let mut engine = platform_linux::EbpfEngine::from_replay(&path).unwrap();
+    let raw = engine.poll_once(std::time::Duration::ZERO).unwrap();
+    std::fs::remove_file(path).unwrap();
+    assert_eq!(raw.len(), 1);
+    assert_eq!(raw[0].fields.comm.as_deref(), Some("ordinary"));
+    let enriched = platform_linux::enrich_event(raw.into_iter().next().unwrap());
+    assert_eq!(enriched.process_cmdline, None);
+    let event = to_detection_event(&enriched, 1700000000);
+    assert_eq!(event.process, "unknown");
+    assert_eq!(event.command_line, None);
+    assert!(detection_event::should_drop_low_value_windows_event(
+        &enriched, &event
+    ));
+}
+
+#[test]
 fn f4a_legacy_envelope_and_detection_golden() {
     let _lock = shared_env_var_lock()
         .lock()
