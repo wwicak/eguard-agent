@@ -163,6 +163,10 @@ impl AgentRuntime {
             None
         };
         let mut added_bytes = 0usize;
+        let time_budget = Duration::from_millis(Self::TELEMETRY_EVAL_TIME_BUDGET_MS);
+        // Tests can isolate retention from real connection-refusal latency.
+        #[cfg(test)]
+        let time_budget = self.telemetry_eval_budget_override.unwrap_or(time_budget);
 
         // The first evaluation and control-plane work count against the budget.
         // Always run the control plane before draining, even if it exhausts it.
@@ -170,7 +174,7 @@ impl AgentRuntime {
         // time, queue and retention budgets bound work without starving telemetry.
         for _ in 1..Self::MAX_TELEMETRY_EVALS_PER_TICK {
             let envelopes = self.tick_telemetry.as_ref().map_or(0, Vec::len);
-            if started.elapsed() >= Duration::from_millis(Self::TELEMETRY_EVAL_TIME_BUDGET_MS)
+            if started.elapsed() >= time_budget
                 || self.downstream_queues_near_capacity()
                 || envelopes >= super::EVENT_BATCH_SIZE
                 || offline_headroom.is_some_and(|headroom| added_bytes >= headroom)

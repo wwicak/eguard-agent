@@ -63,6 +63,8 @@ pub struct AgentRuntime {
     pub(super) client: GrpcClient,
     pub(super) self_protect_engine: SelfProtectEngine,
     pub(super) tick_count: u64,
+    #[cfg(test)]
+    pub(super) telemetry_eval_budget_override: Option<std::time::Duration>,
     pub(super) tick_telemetry: Option<Vec<super::EventEnvelope>>,
     pub(super) response_execution_remaining: usize,
     #[cfg(test)]
@@ -496,6 +498,8 @@ impl AgentRuntime {
             enrollment_backoff_secs: 5,
             config,
             tick_count: 0,
+            #[cfg(test)]
+            telemetry_eval_budget_override: None,
             tick_telemetry: None,
             response_execution_remaining: super::RESPONSE_EXECUTION_BUDGET_PER_TICK,
             #[cfg(test)]

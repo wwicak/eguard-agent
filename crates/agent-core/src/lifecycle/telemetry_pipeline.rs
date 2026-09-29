@@ -221,13 +221,24 @@ impl AgentRuntime {
             self.compliance_policy_id, self.compliance_policy_version, self.compliance_policy_hash
         );
 
+        // Only the current policy's checks need dedupe state. Prune old
+        // contexts before admission so a policy replacement cannot starve alerts.
+        let current_keys: HashSet<_> = compliance
+            .checks
+            .iter()
+            .map(|check| format!("{}:{}", policy_key, check.check_id))
+            .collect();
+        self.compliance_alert_state
+            .retain(|key, _| current_keys.contains(key));
+
         for check in &compliance.checks {
             let key = format!("{}:{}", policy_key, check.check_id);
             if check.status == "non_compliant" {
-                // Admit only checks we can remember. Evicting active failures
-                // would regenerate their alerts on every drain evaluation.
+                // Budget emissions per evaluation, not remembered failures:
+                // overflow is deferred, while admitted checks stay deduplicated.
+                // State is bounded by the current policy's check count.
                 if !self.compliance_alert_state.contains_key(&key)
-                    && self.compliance_alert_state.len() < super::COMPLIANCE_ALERT_STATE_LIMIT
+                    && alerts.len() < super::COMPLIANCE_ALERT_STATE_LIMIT
                 {
                     self.compliance_alert_state.insert(key.clone(), now_unix);
                     alerts.push(self.build_compliance_alert_envelope(check, now_unix));

@@ -513,6 +513,107 @@ async fn connected_failed_send_preserves_oldest_buffered_sentinels() {
     runtime.consecutive_send_failures = 1;
     runtime.client.set_online(true);
 
+    // Size the cap for ten real evaluations, then fill 90% with sentinels.
+    queue_event(&mut runtime);
+    let sample = runtime.evaluate_tick(now).unwrap().unwrap().event_envelope;
+    let event_bytes = grpc_client::estimate_event_size(&sample);
+    let cap = event_bytes * 10;
+    runtime.config.offline_buffer_cap_bytes = cap;
+    runtime.buffer = grpc_client::EventBuffer::memory(cap);
+    for timestamp in 0..9 {
+        let mut sentinel = sample.clone();
+        sentinel.created_at_unix = timestamp;
+        runtime.buffer.enqueue(sentinel).unwrap();
+    }
+    assert_eq!(runtime.buffer.pending_bytes(), cap * 90 / 100);
+    for _ in 0..100 {
+        queue_event(&mut runtime);
+    }
+
+    // The first evaluation fits; even one additional envelope evicts a sentinel.
+    // Real refused sends must not consume the drain's test budget.
+    runtime.telemetry_eval_budget_override = Some(std::time::Duration::from_secs(3600));
+    runtime.tick(now).await.unwrap();
+
+    let retained = runtime.buffer.drain_batch(100).unwrap();
+    assert_eq!(
+        retained
+            .iter()
+            .take(9)
+            .map(|e| e.created_at_unix)
+            .collect::<Vec<_>>(),
+        (0..9).collect::<Vec<_>>(),
+        "additional degraded evaluations must not evict the oldest telemetry"
+    );
+    assert!(
+        !runtime.raw_event_backlog.is_empty(),
+        "drain must stop early"
+    );
+}
+
+#[test]
+fn oversized_compliance_policy_keeps_dedupe_across_evaluations() {
+    for count in [
+        COMPLIANCE_ALERT_STATE_LIMIT * 2 + 10,
+        COMPLIANCE_ALERT_STATE_LIMIT + 10,
+    ] {
+        let mut runtime = runtime();
+        let result = ComplianceResult {
+            status: "non_compliant".into(),
+            detail: String::new(),
+            checks: (0..count)
+                .map(|i| {
+                    serde_json::from_value(serde_json::json!({
+                        "check_id": format!("check-{i}"), "check_type": "package",
+                        "status": "non_compliant", "detail": "missing"
+                    }))
+                    .unwrap()
+                })
+                .collect(),
+        };
+        let mut ids = std::collections::HashSet::new();
+        for _ in 0..4 {
+            let alerts = runtime.collect_compliance_alerts(&result, 123);
+            assert!(alerts.len() <= COMPLIANCE_ALERT_STATE_LIMIT);
+            for alert in alerts {
+                let payload: serde_json::Value = serde_json::from_str(&alert.payload_json).unwrap();
+                assert!(
+                    ids.insert(payload["mdm"]["check_id"].as_str().unwrap().to_owned()),
+                    "persistent failures must be emitted exactly once, not regenerated"
+                );
+            }
+        }
+        assert_eq!(ids.len(), count, "overflow must be deferred, never lost");
+    }
+}
+
+#[tokio::test]
+async fn telemetry_queue_push_does_not_change_send_work_metric() {
+    let mut runtime = runtime();
+    prepare_tick(&mut runtime, 123);
+    queue_event(&mut runtime);
+    let evaluation = runtime.evaluate_tick(123).unwrap().unwrap();
+    runtime.tick_telemetry = Some(Vec::new());
+    runtime.metrics.last_send_event_batch_micros = u64::MAX;
+    runtime
+        .queue_connected_telemetry(Some(&evaluation))
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime.metrics.last_send_event_batch_micros,
+        u64::MAX,
+        "queueing is not transport work"
+    );
+}
+
+#[tokio::test]
+async fn connected_failed_send_drain_stage_preserves_sentinels() {
+    let mut runtime = runtime();
+    let now = 1_700_000_000;
+    prepare_tick(&mut runtime, now);
+    runtime.consecutive_send_failures = 1;
+    runtime.client.set_online(true);
+
     // Size the cap for twenty real evaluations, then fill 85% with sentinels.
     queue_event(&mut runtime);
     let sample = runtime.evaluate_tick(now).unwrap().unwrap().event_envelope;
@@ -556,52 +657,37 @@ async fn connected_failed_send_preserves_oldest_buffered_sentinels() {
 }
 
 #[test]
-fn oversized_compliance_policy_keeps_dedupe_across_evaluations() {
-    for count in [
-        COMPLIANCE_ALERT_STATE_LIMIT * 2 + 10,
-        COMPLIANCE_ALERT_STATE_LIMIT + 10,
-    ] {
-        let mut runtime = runtime();
-        let result = ComplianceResult {
-            status: "non_compliant".into(),
-            detail: String::new(),
-            checks: (0..count)
-                .map(|i| {
-                    serde_json::from_value(serde_json::json!({
-                        "check_id": format!("check-{i}"), "check_type": "package",
-                        "status": "non_compliant", "detail": "missing"
-                    }))
-                    .unwrap()
-                })
-                .collect(),
-        };
-        let first = runtime.collect_compliance_alerts(&result, 123);
-        assert!(!first.is_empty());
-        for _ in 0..3 {
-            assert!(
-                runtime.collect_compliance_alerts(&result, 123).is_empty(),
-                "oversized policy must not regenerate alerts within a drain tick"
-            );
-        }
-        assert!(first.len() <= COMPLIANCE_ALERT_STATE_LIMIT);
-    }
-}
-
-#[tokio::test]
-async fn telemetry_queue_push_does_not_change_send_work_metric() {
+fn compliance_policy_transition_prunes_full_old_context() {
     let mut runtime = runtime();
-    prepare_tick(&mut runtime, 123);
-    queue_event(&mut runtime);
-    let evaluation = runtime.evaluate_tick(123).unwrap().unwrap();
-    runtime.tick_telemetry = Some(Vec::new());
-    runtime.metrics.last_send_event_batch_micros = u64::MAX;
-    runtime
-        .queue_connected_telemetry(Some(&evaluation))
-        .await
-        .unwrap();
+    let result = ComplianceResult {
+        status: "non_compliant".into(),
+        detail: String::new(),
+        checks: (0..COMPLIANCE_ALERT_STATE_LIMIT)
+            .map(|i| {
+                serde_json::from_value(serde_json::json!({
+                    "check_id": format!("check-{i}"), "check_type": "package",
+                    "status": "non_compliant", "detail": "missing"
+                }))
+                .unwrap()
+            })
+            .collect(),
+    };
     assert_eq!(
-        runtime.metrics.last_send_event_batch_micros,
-        u64::MAX,
-        "queueing is not transport work"
+        runtime.collect_compliance_alerts(&result, 123).len(),
+        COMPLIANCE_ALERT_STATE_LIMIT
     );
+    runtime.compliance_policy_id = "replacement".into();
+    runtime.compliance_policy_version = "replacement-version".into();
+    runtime.compliance_policy_hash = "replacement-hash".into();
+    assert_eq!(
+        runtime.collect_compliance_alerts(&result, 123).len(),
+        COMPLIANCE_ALERT_STATE_LIMIT,
+        "a full previous policy must not suppress new policy failures"
+    );
+    assert_eq!(
+        runtime.compliance_alert_state.len(),
+        COMPLIANCE_ALERT_STATE_LIMIT,
+        "obsolete policy dedupe entries must be pruned"
+    );
+    assert!(runtime.collect_compliance_alerts(&result, 123).is_empty());
 }

@@ -409,6 +409,15 @@ retain their behavior. Supervisor approved threshold-only protection: an oversiz
 single envelope exceeding the 10% reserve can still evict. No benchmark run.
 Patch: /home/dimas/eguard-lab-soak/reviewfix5.patch.
 
+## a2-pipeline second-pass review
+- [x] Replace hard dedupe admission ceiling with per-evaluation emission budget; prune obsolete policy keys.
+- [x] Assert complete, exactly-once overflow coverage and full-map policy replacement.
+- [x] Exercise full tick with one-envelope eviction margin; retain stage test. Supervisor approved test-only time-budget override.
+- [x] Prove focused regressions fail with base production transplanted (full tick includes only the test timing seam).
+- [x] Run required suites, non-test check and formatting; commit and export cumulative patch.
+Validation: reviewfix 18/18, payload integrity 6/6, eBPF policy 111/111, telemetry pipeline 13/13, tick 2/2; non-test cargo check and fmt pass. Overbroad lifecycle::tests run was stopped in favor of the exact touched tick module. Base transplant proofs: overflow exceeded per-evaluation budget; policy replacement retained 2048 instead of 1024 keys; full tick evicted all nine sentinels. Logs: /tmp/a2-base-{compliance,transition,fulltick}.log and /tmp/a2-final-*.log.
+Review: prior intentional overflow suppression below is superseded. State now scales with current policy check count, not historical policy contexts. F9 append-only failed-send ordering remains unchanged at base.
+
 ## a2-pipeline (F12/F7/F8)
 - [x] Inspect drain, compliance admission, send timing and callers.
 - [x] Transplant focused tests onto unchanged fa-start-a2-pipeline production code; all three fail (logs /tmp/a2-base*.log).

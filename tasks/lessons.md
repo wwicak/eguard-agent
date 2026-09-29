@@ -122,3 +122,4 @@
 - If user says a feature must not exist in a release line, remove/revert that feature instead of adding compatibility defaults for its new fields.
 - **Destructive response primitives must enforce protected paths independently of planner checks**: canonicalize the existing source path at the primitive and re-check protected roots there, including usr-merge aliases and intermediate symlink paths.
 - **Advertised destructive-action safety limits must be executable and regression-tested at the destructive seam**: config/install docs are not safety controls unless code consumes the limit before mutating, killing, or quarantining.
+- **Dedupe capacity must not silently suppress policy failures**: cap emissions per evaluation, test eventual exactly-once coverage, and prune obsolete policy contexts. Full-tick retention regressions must isolate wall-clock budgets from real transport latency.
