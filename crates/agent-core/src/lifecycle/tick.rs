@@ -102,6 +102,19 @@ impl AgentRuntime {
         self.run_self_protection_if_due(now_unix).await?;
         self.enforce_config_permissions_if_due(now_unix);
         self.run_storage_hygiene_if_due(now_unix);
+        if !self
+            .config
+            .offline_buffer_backend
+            .eq_ignore_ascii_case("memory")
+        {
+            super::buffer_recovery::retry_sqlite_buffer(
+                &mut self.buffer,
+                &self.config.offline_buffer_path,
+                self.config.offline_buffer_cap_bytes,
+                &mut self.last_buffer_recovery_unix,
+                now_unix,
+            );
+        }
         self.check_isolation_failsafe(now_unix);
         self.check_memory_pressure();
         self.check_disk_pressure(now_unix);

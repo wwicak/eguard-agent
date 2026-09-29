@@ -1,3 +1,16 @@
+# F21 — recover volatile SQLite fallback
+
+- [x] Inspect buffer peek/ack and runtime scheduling/status paths.
+- [x] Retry SQLite initialization once per minute and migrate FIFO with enqueue-before-ack.
+- [x] Verify recovery, failure throttling, required agent-core filters and formatting.
+- [x] Record fail proof, residual risks, commit and export patch.
+
+Design: use a dedicated tick interval; explicit memory configuration never retries. No existing backend/fallback status field was found, so no proto/status schema changes. Tests use exclusively owned temporary directories. Recovery enqueues each memory event durably before acknowledging it, retaining existing SQLite backlog ahead of fallback events.
+
+Validation: recovery tests 3/3 (including real tick), tick module 2/2, runtime module 3/3; required policy 111/111, reviewfix 21/21, payload integrity 12/12; fmt and diff checks pass. Identical real-tick test transplanted into a git archive of h-start-h5-fallback fails at `real tick must retry the volatile fallback` (/tmp/h5-baseline-proof.log). strace of the integration test with EGUARD_SELF_PROTECT_SET_DUMPABLE=false confirmed all file writes target its unique temp directory (/tmp/h5-files.trace); unrelated hard-coded /etc permission sweep is suppressed using its existing timestamp, as approved. No production adapter used for baseline proof.
+
+Residual: memory remains volatile until recovery; existing bounded-buffer eviction semantics still apply to combined backlog. Existing SQLite serialization reopens EventEnvelope severity as empty rather than info; this independent pre-existing limitation is not changed here. Full workspace suite not run.
+
 # F17 second pass — deferred macOS bootstrap
 
 - [x] Drive deferred bootstrap before polling the restart regression; preserve platform startup assertions.
