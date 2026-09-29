@@ -1,3 +1,15 @@
+# F24 second pass — Ubuntu native linking
+
+- [x] Override the Rust x86_64 Linux linker with cc for resource-budget, verification and adversary jobs.
+- [x] Parse/lint workflows, audit override against base and run the offline native-linker harness.
+- [x] Record results, commit and refresh patch/status.
+
+Design: use the established build-bundle native-linker override at job scope so all nested Cargo harnesses inherit it. Ubuntu 24.04 libelf.a requires __isoc23_strtol unavailable through the Zig static-link path. Native cc avoids that path; no runtime code changes or regression tests are required for this CI-only correction.
+
+Validation: all three workflows parse with yaml.safe_load and pass the repository workflow linter. A parsed job-env audit fails on h-start-h1-ci and passes on the working tree for all three native-linker overrides. The unprivileged resource-budget harness passes with cc, worktree-local target and a temporary wrapper enforcing timeout 1500 cargo <command> --offline: release agent build, detection latency probe and structured LSM probe succeed (artifacts/h1-ci/native-harness.log). cargo fmt --all --check passes with CARGO_NET_OFFLINE=true (fmt rejects an explicit --offline flag); diff hygiene passes. Generated tracked lint metrics were restored.
+
+Review evidence: git show h-start-h1-ci:.cargo/config.toml confirms the Zig linker is base-identical; git show h-start-h1-ci:.github/workflows/adversary-tournament.yml confirms no Zig setup. The new cc override also removes adversary's mandatory Zig linker invocation; crypto-accel/build.rs already falls back when Zig is absent. No unrelated Zig setup change is necessary. Residual: local host is Debian 12, not Ubuntu 24.04; no GitHub-hosted rerun or full verification/adversary harness run was performed. The Ubuntu __isoc23_strtol reproduction is supplied review evidence, not a new local reproduction.
+
 # F24 — h1-ci libbpf build prerequisites
 
 - [x] Move resource-budget native dependencies before the harness; audit indirect Linux agent builds.
