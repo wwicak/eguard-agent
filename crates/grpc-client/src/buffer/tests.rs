@@ -76,6 +76,64 @@ fn ack_only_sent_ids_preserves_appends_and_byte_accounting() {
     }
 }
 
+#[test]
+fn memory_prefix_ack_and_drain_leave_large_tail_in_place() {
+    const TOTAL: usize = 65_536;
+    const BATCH: usize = 256;
+    let mut buffer = OfflineBuffer::new(usize::MAX);
+    for i in 0..TOTAL {
+        buffer.enqueue(sample_event(i as i64));
+    }
+    let sent = buffer.peek_batch(BATCH);
+    assert_eq!(buffer.pending_count(), TOTAL, "peek must not consume rows");
+    // Compare slot addresses, not elapsed time: retain compacts the whole tail on
+    // each batch, making backlog recovery quadratic. FIFO pops leave it in place.
+    let tail_slot = &buffer.queue[BATCH] as *const _;
+    buffer.ack(&sent.iter().map(|(id, _)| *id).collect::<Vec<_>>());
+    assert_eq!(buffer.queue.front().unwrap() as *const _, tail_slot);
+    assert_eq!(buffer.pending_count(), TOTAL - BATCH);
+    assert_eq!(buffer.peek_batch(1)[0].1.created_at_unix, BATCH as i64);
+
+    let tail_slot = &buffer.queue[BATCH] as *const _;
+    let drained = buffer.drain_batch(BATCH);
+    assert_eq!(drained.len(), BATCH);
+    assert_eq!(drained[0].created_at_unix, BATCH as i64);
+    assert_eq!(buffer.queue.front().unwrap() as *const _, tail_slot);
+    assert_eq!(buffer.pending_count(), TOTAL - 2 * BATCH);
+    assert_eq!(
+        buffer.pending_bytes(),
+        (2 * BATCH..TOTAL)
+            .map(|i| estimate_event_size(&sample_event(i as i64)))
+            .sum::<usize>()
+    );
+}
+
+#[test]
+fn memory_ack_non_prefix_ids_remains_selective() {
+    let mut buffer = OfflineBuffer::new(4096);
+    for i in 0..6 {
+        buffer.enqueue(sample_event(i));
+    }
+    let rows = buffer.peek_batch(6);
+    buffer.ack(&[rows[3].0, rows[1].0, rows[3].0, -1]);
+    buffer.ack(&[]);
+    assert_eq!(
+        buffer
+            .peek_batch(6)
+            .iter()
+            .map(|(_, e)| e.created_at_unix)
+            .collect::<Vec<_>>(),
+        vec![0, 2, 4, 5]
+    );
+    assert_eq!(
+        buffer.pending_bytes(),
+        [0, 2, 4, 5]
+            .iter()
+            .map(|i| estimate_event_size(&sample_event(*i)))
+            .sum::<usize>()
+    );
+}
+
 fn large_event(i: i64, payload_bytes: usize) -> EventEnvelope {
     EventEnvelope {
         agent_id: "a1".to_string(),
