@@ -22,18 +22,77 @@ pub(super) enum ProcessGeneration {
     ProcTicks(u64),
 }
 
+// procfs expresses starttime in the reader's time namespace, while BPF reads
+// the initial namespace's raw task clock. Normalize only cross-clock checks.
+fn boot_ns_to_ticks_with_offset(ns: u64, offset_ns: i128, hz: u64) -> Option<u64> {
+    let adjusted = (ns as i128).checked_add(offset_ns)?;
+    let adjusted = u128::try_from(adjusted).ok()?;
+    u64::try_from(adjusted.checked_mul(hz as u128)? / 1_000_000_000).ok()
+}
+
+#[cfg(target_os = "linux")]
+fn proc_boottime_offset_ns() -> Option<i128> {
+    // timens_offsets describes time_for_children. If unshare has created a
+    // different child namespace, its offset is not evidence for this reader.
+    if let (Ok(current), Ok(children)) = (
+        std::fs::read_link("/proc/self/ns/time"),
+        std::fs::read_link("/proc/self/ns/time_for_children"),
+    ) {
+        if current != children {
+            return None;
+        }
+    }
+    let offsets = match std::fs::read_to_string("/proc/self/timens_offsets") {
+        Ok(offsets) => offsets,
+        // Kernels before time namespaces expose no offsets file.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Some(0),
+        Err(_) => return None,
+    };
+    let mut fields = offsets
+        .lines()
+        .find(|line| line.starts_with("boottime"))?
+        .split_whitespace();
+    fields.next()?;
+    let seconds = fields.next()?.parse::<i128>().ok()?;
+    let nanos = fields.next()?.parse::<i128>().ok()?;
+    seconds.checked_mul(1_000_000_000)?.checked_add(nanos)
+}
+
 fn boot_ns_to_ticks(ns: u64) -> Option<u64> {
     #[cfg(target_os = "linux")]
     {
         // sysconf has no pointer arguments and _SC_CLK_TCK is a constant query.
         let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
-        (hz > 0).then(|| ((ns as u128 * hz as u128) / 1_000_000_000) as u64)
+        if hz <= 0 {
+            return None;
+        }
+        boot_ns_to_ticks_with_offset(ns, proc_boottime_offset_ns()?, hz as u64)
     }
     #[cfg(not(target_os = "linux"))]
     {
         let _ = ns;
         None
     }
+}
+
+#[cfg(test)]
+#[test]
+fn generation_proc_ticks_apply_injected_time_namespace_offset() {
+    // The same live child must match procfs even when its namespace advances
+    // boot time; sub-tick precision is intentionally discarded by procfs.
+    assert_eq!(
+        boot_ns_to_ticks_with_offset(2_009_999_999, 7_000_000_001, 100),
+        Some(901)
+    );
+    assert_eq!(
+        boot_ns_to_ticks_with_offset(2_009_999_999, -1_000_000_000, 100),
+        Some(100)
+    );
+    assert_eq!(
+        boot_ns_to_ticks_with_offset(2_009_999_999, 0, 100),
+        Some(200)
+    );
+    assert_eq!(boot_ns_to_ticks_with_offset(1, -2, 100), None);
 }
 
 impl ProcessGeneration {

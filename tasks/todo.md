@@ -1,3 +1,18 @@
+# F15 review follow-up — Linux 5.4 and time namespaces
+
+- [x] Guard modern task start field with CO-RE existence and fall back to Linux 5.4 real_start_time.
+- [x] Normalize raw boot nanoseconds with the proc reader's time-namespace offset; fail visible on ambiguous/unreadable offsets.
+- [x] Wire host header checks into Zig and Linux 5.4 target-BTF relocation checks into CI.
+- [x] Prove regressions, run touched module/required suites, commit and refresh export.
+
+Design: exact event/event generations remain raw; only raw/proc comparisons apply the namespace offset. A different time_for_children namespace cannot supply a trustworthy reader offset and fails visible. Linux 5.4 compatibility checks use upstream libbpf relocation logic against the checksum-pinned Ubuntu 5.4.0-26-generic BTF image, without privileged attachment. Also declare the common header as a Zig system-command input: otherwise a header-only change reuses stale objects.
+
+Review validation: `zig build agent-artifacts ebpf-check -Dlinux54-btf=/tmp/5.4.0-26-generic.btf` passes the host harness and all 18 ring/perf objects against actual Ubuntu Linux 5.4 BTF. The new `core_generation.c` regression fails its required-existence/legacy-read assertion on separately compiled objects from both fb-start-b1-generation and first-pass HEAD (exit 134); no privileged load is claimed. The injected-offset regression fails on the first-pass conversion through a test-only adapter (200 ticks vs expected 901), then passes restored; base predates this cross-clock conversion, so namespace proof specifically targets the introduced first-pass regression. The original task's base suppression/codec proofs above remain valid.
+
+Rust validation: agent policy 111/111, reviewfix 13/13, payload_integrity 9/9, telemetry_pipeline 17/17, injected offset 1/1; platform-linux default 99/99. Optional libbpf feature build passes; feature tests 101 pass and one pre-existing ungated `from_elf_requires_feature_flag_when_disabled` fails (function byte-identical to base); skipping that one yields 101/101. Agent fmt, Zig fmt, shell syntax and diff checks pass. Workspace fmt still fails only the two reviewed baseline-identical grpc-client/proto_tests.rs and platform-windows/compliance/screen_lock.rs blobs. No unrelated fixes.
+
+Residual/follow-up: privileged 5.4/live time-namespace attachment remains untested; the BTF check validates libbpf relocations and the host harness exercises both accessor branches, not the kernel verifier. Different time/time_for_children namespaces deliberately fail visible. CI downloads a checksum-pinned 5.4 BTF archive and needs network availability plus existing libbpf build prerequisites. Detailed second-pass logs: /tmp/b1-second-*.log (copied to followups validation directory).
+
 # F15 — emission-time process generations (b1-generation)
 
 - [x] Version shared eBPF header; capture TGID/real-parent leader generations via CO-RE.

@@ -17,10 +17,22 @@ jobs:
       - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.14.0
+          version: 0.15.1
 
       - name: Run eBPF resource budget harness
         run: ./scripts/run_ebpf_resource_budget_ci.sh
+
+      - name: Test eBPF generations against Linux 5.4 BTF
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libelf-dev zlib1g-dev pkg-config
+          cargo fetch --locked
+          CARGO_TARGET_DIR="$PWD/target" timeout 1500 cargo build --offline -p platform-linux --features ebpf-libbpf
+          curl --fail --location --output /tmp/linux54.btf.tar.xz \
+            https://raw.githubusercontent.com/aquasecurity/btfhub-archive/main/ubuntu/20.04/x86_64/5.4.0-26-generic.btf.tar.xz
+          echo 'f5435aba2a2f85c289dec4c52f7f3f01f7139f3143561e9c1b02ced174514b9d  /tmp/linux54.btf.tar.xz' | sha256sum --check
+          tar -xf /tmp/linux54.btf.tar.xz -C /tmp
+          zig build agent-artifacts ebpf-check -Dlinux54-btf=/tmp/5.4.0-26-generic.btf
 
       - name: Upload eBPF budget artifacts
         uses: actions/upload-artifact@v4

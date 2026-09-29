@@ -1,9 +1,10 @@
-/* Host-side common-header regression: cc -Wno-attributes -o /tmp/header_generation
- * zig/ebpf/tests/header_generation.c && /tmp/header_generation
- * Mock only BPF helpers; exercise the same fill_hdr used by every producer. */
+/* Run with zig build ebpf-check. Mock helpers and field-existence relocation;
+ * exercise both Linux 5.4 and modern common-header paths. */
 #include <assert.h>
 #include <string.h>
 #include <unistd.h>
+static int has_start_boottime = 1;
+#define EGUARD_FIELD_EXISTS(field) has_start_boottime
 #include "../bpf_helpers.h"
 
 static struct task_struct leader, worker, parent, parent_leader;
@@ -44,5 +45,12 @@ int main(void)
     assert(h.ppid_start_ns == parent_leader.start_boottime);
     assert(h.pid_start_ns * hz / 1000000000ULL == 2 * hz);
     assert(h.ppid_start_ns * hz / 1000000000ULL == hz);
+    /* 5.4 has only real_start_time: never read the absent modern field. */
+    has_start_boottime = 0;
+    leader.real_start_time = 7000000001ULL;
+    parent_leader.real_start_time = 6000000001ULL;
+    fill_hdr(&h, EVENT_FILE_OPEN);
+    assert(h.pid_start_ns == leader.real_start_time);
+    assert(h.ppid_start_ns == parent_leader.real_start_time);
     return 0;
 }

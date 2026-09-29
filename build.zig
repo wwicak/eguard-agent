@@ -17,6 +17,20 @@ pub fn build(b: *std.Build) void {
     all_artifacts.dependOn(asm_step);
     all_artifacts.dependOn(ebpf_step);
 
+    const ebpf_check = b.step("ebpf-check", "Test common eBPF generation header compatibility");
+    const header_test = b.addSystemCommand(&.{ "zig", "cc", "-Wno-attributes" });
+    header_test.addFileArg(b.path("zig/ebpf/tests/header_generation.c"));
+    header_test.addFileInput(b.path("zig/ebpf/bpf_helpers.h"));
+    const header_exe = header_test.addPrefixedOutputFileArg("-o", "header-generation");
+    const run_header = b.addSystemCommand(&.{ "sh", "-c", "exec \"$1\"", "sh" });
+    run_header.addFileArg(header_exe);
+    ebpf_check.dependOn(&run_header.step);
+    if (b.option([]const u8, "linux54-btf", "Linux 5.4 BTF image for CO-RE regression")) |btf| {
+        const core_test = b.addSystemCommand(&.{ "bash", "scripts/test_ebpf_generation_core.sh", btf });
+        core_test.step.dependOn(ebpf_step);
+        ebpf_check.dependOn(&core_test.step);
+    }
+
     // ── Zig asm static libraries (AES-NI, SHA-NI, integrity) ────
     const asm_sources = [_]struct { name: []const u8, file: []const u8 }{
         .{ .name = "eguard_sha256_ni", .file = "zig/asm/sha256_ni.zig" },
@@ -85,6 +99,7 @@ pub fn build(b: *std.Build) void {
                 cmd.addArg("-DEGUARD_USE_PERFBUF=1");
             }
             cmd.addFileArg(b.path(entry.file));
+            cmd.addFileInput(b.path("zig/ebpf/bpf_helpers.h"));
             const output = cmd.addPrefixedOutputFileArg("-o", out_path);
             const install = b.addInstallFile(output, out_path);
             b.getInstallStep().dependOn(&install.step);

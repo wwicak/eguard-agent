@@ -83,6 +83,14 @@ zig build asm-artifacts
 
 # Build only eBPF probes
 zig build ebpf-artifacts
+
+# Run the common header regression (modern and Linux 5.4 field names)
+zig build ebpf-check
+
+# Also validate CO-RE relocations against a Linux 5.4 BTF image.
+# Requires the vendored libbpf archive from a prior platform-linux build
+# with --features ebpf-libbpf, plus libelf/zlib development libraries.
+zig build ebpf-check -Dlinux54-btf=/path/to/5.4.0-26-generic.btf
 ```
 
 Output locations:

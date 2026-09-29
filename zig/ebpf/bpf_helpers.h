@@ -39,6 +39,7 @@ struct task_struct {
     struct task_struct *group_leader;
     struct mm_struct *mm;
     __u64 start_boottime;
+    __u64 real_start_time; /* Linux 5.4 name; renamed in 5.5. */
     __u32 tgid;
     char comm[16];
 } __preserve_access_index;
@@ -244,6 +245,23 @@ struct event_hdr {
     __u64 ppid_start_ns;
 } __attribute__((packed));
 
+/* FIELD_EXISTS relocations let the verifier discard the unavailable branch
+ * before it sees a poisoned field-offset relocation on Linux 5.4. */
+#ifndef EGUARD_FIELD_EXISTS
+#define EGUARD_FIELD_EXISTS(field) __builtin_preserve_field_info(field, 2)
+#endif
+
+static __attribute__((always_inline)) __u64
+task_start_boottime(struct task_struct *task)
+{
+    __u64 start = 0;
+    if (EGUARD_FIELD_EXISTS(task->start_boottime))
+        bpf_probe_read_kernel(&start, sizeof(start), &task->start_boottime);
+    else
+        bpf_probe_read_kernel(&start, sizeof(start), &task->real_start_time);
+    return start;
+}
+
 /* Fill header from current-task context */
 static __attribute__((always_inline)) void
 fill_hdr(struct event_hdr *h, __u8 etype)
@@ -263,15 +281,13 @@ fill_hdr(struct event_hdr *h, __u8 etype)
      * preserve_access_index makes these probe reads CO-RE relocatable. */
     bpf_probe_read_kernel(&leader, sizeof(leader), &task->group_leader);
     if (leader)
-        bpf_probe_read_kernel(&h->pid_start_ns, sizeof(h->pid_start_ns),
-                              &leader->start_boottime);
+        h->pid_start_ns = task_start_boottime(leader);
     bpf_probe_read_kernel(&parent, sizeof(parent), &task->real_parent);
     leader = 0;
     if (parent)
         bpf_probe_read_kernel(&leader, sizeof(leader), &parent->group_leader);
     if (leader)
-        bpf_probe_read_kernel(&h->ppid_start_ns, sizeof(h->ppid_start_ns),
-                              &leader->start_boottime);
+        h->ppid_start_ns = task_start_boottime(leader);
 }
 
 /* GPL — required for probe_read*, perf_event_output, and ringbuf helpers */
