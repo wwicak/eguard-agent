@@ -668,11 +668,7 @@ impl AgentRuntime {
     fn should_track_internal_process_event(&mut self, event: &RawEvent, event_ns: u64) -> bool {
         // macOS can forward a JSON fallback. Its string contents are not
         // authenticated k=v ancestry, even if they contain ';ppid=...'.
-        if (self.uses_windows_generations()
-            && self
-                .process_generation(event.pid, event.pid_start_ns)
-                .is_none())
-            || payload_is_json_container(&event.payload)
+        if payload_is_json_container(&event.payload)
             || payload_has_duplicate_security_fields(&event.payload)
         {
             return false;
@@ -685,7 +681,11 @@ impl AgentRuntime {
                 || self.is_tracked_internal_process(parent_pid, event_ns, event.ppid_start_ns)
             {
                 self.track_internal_process_pid(event.pid, event_ns, event.pid_start_ns);
-                return true;
+                // Windows candidates need live identity; preserve other platforms' policy.
+                return !self.uses_windows_generations()
+                    || self
+                        .suppressed_internal_process_pids
+                        .contains_key(&event.pid);
             }
         }
 

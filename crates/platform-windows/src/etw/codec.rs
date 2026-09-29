@@ -53,10 +53,21 @@ pub fn decode_etw_record(
     ts_ns: u64,
     user_data: &[u8],
 ) -> Option<RawEvent> {
+    decode_etw_record_versioned(provider_guid, opcode, 0, pid, ts_ns, user_data)
+}
+
+pub fn decode_etw_record_versioned(
+    provider_guid: &str,
+    opcode: u8,
+    version: u8,
+    pid: u32,
+    ts_ns: u64,
+    user_data: &[u8],
+) -> Option<RawEvent> {
     use super::providers::*;
 
     match provider_guid {
-        KERNEL_PROCESS => decode_kernel_process(opcode, pid, ts_ns, user_data),
+        KERNEL_PROCESS => decode_kernel_process_versioned(opcode, version, pid, ts_ns, user_data),
         KERNEL_FILE => decode_kernel_file(opcode, pid, ts_ns, user_data),
         KERNEL_NETWORK => decode_kernel_network(opcode, pid, ts_ns, user_data),
         DNS_CLIENT => decode_dns_client(opcode, pid, ts_ns, user_data),
@@ -72,22 +83,45 @@ pub fn decode_etw_record(
 
 /// Microsoft-Windows-Kernel-Process
 ///
-/// Event ID 1 (ProcessStart): ProcessID(u32), CreateTime(u64), ParentProcessID(u32),
-///   SessionID(u32), Flags(u32), ImageName(UTF-16, variable)
-/// Event ID 2 (ProcessStop): ProcessID(u32), CreateTime(u64), ExitTime(u64),
-///   ExitCode(u32), ImageName(UTF-16, variable)
+/// Legacy identity prefix: ProcessID(u32), CreateTime(u64), then ParentProcessID
+/// (Start) or ExitTime (Stop). Start v3 / Stop v2 insert ProcessSequenceNumber
+/// before CreateTime. Start v3 also inserts ParentProcessSequenceNumber and
+/// elevation/SID fields. Sequence numbers are not creation timestamps.
+#[cfg(test)]
 fn decode_kernel_process(opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Option<RawEvent> {
+    decode_kernel_process_versioned(opcode, 0, pid, ts_ns, data)
+}
+
+fn decode_kernel_process_versioned(
+    opcode: u8,
+    version: u8,
+    pid: u32,
+    ts_ns: u64,
+    data: &[u8],
+) -> Option<RawEvent> {
+    // Unknown future schemas must not manufacture identity evidence.
+    if (opcode == 1 && version > 3) || (opcode == 2 && version > 2) {
+        return None;
+    }
+    let modern = (opcode == 1 && version == 3) || (opcode == 2 && version == 2);
+    let create_offset = if modern { 12 } else { 4 };
     match opcode {
         // ProcessStart
         1 => {
             // Minimum: ProcessID(4) + CreateTime(8) + ParentID(4) + SessionID(4) + Flags(4) = 24
-            if data.len() < 24 {
+            if data.len() < if modern { 48 } else { 24 } {
                 return fallback_event(EventType::ProcessExec, pid, ts_ns, data);
             }
             let process_pid = read_u32_le(data, 0);
-            let parent_pid = read_u32_le(data, 12);
-            let session_id = read_u32_le(data, 16);
-            let image_name = read_utf16_str(data, 24);
+            let parent_pid = read_u32_le(data, if modern { 20 } else { 12 });
+            let session_id = read_u32_le(data, if modern { 32 } else { 16 });
+            // v3 has a variable-length MandatoryLabel SID before ImageName.
+            let image_offset = if modern {
+                56usize.checked_add(usize::from(*data.get(49)?) * 4)?
+            } else {
+                24
+            };
+            let image_name = read_utf16_str(data, image_offset);
 
             let mut payload = format!("ppid={parent_pid};session_id={session_id}");
             if let Some(name) = image_name {
@@ -95,7 +129,10 @@ fn decode_kernel_process(opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Optio
             }
 
             Some(RawEvent {
-                pid_start_ns: crate::process_generation::filetime_to_unix_ns(read_u64_le(data, 4)),
+                pid_start_ns: crate::process_generation::filetime_to_unix_ns(read_u64_le(
+                    data,
+                    create_offset,
+                )),
                 ppid_start_ns: crate::process_generation::process_start_ns(parent_pid),
                 event_type: EventType::ProcessExec,
                 pid: process_pid,
@@ -107,12 +144,20 @@ fn decode_kernel_process(opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Optio
         // ProcessStop
         2 => {
             // ProcessID(4) + CreateTime(8) + ExitTime(8) + ExitCode(4) = 24
-            if data.len() < 24 {
+            if data.len() < if modern { 32 } else { 24 } {
                 return fallback_event(EventType::ProcessExit, pid, ts_ns, data);
             }
             let process_pid = read_u32_le(data, 0);
-            let exit_code = read_u32_le(data, 20);
-            let image_name = read_utf16_str(data, 24);
+            let exit_code = read_u32_le(data, if modern { 28 } else { 20 });
+            // Preserve legacy image decoding; v2 uses ANSI after accounting fields.
+            let image_name = if modern {
+                data.get(84..).and_then(|bytes| {
+                    let end = bytes.iter().position(|b| *b == 0)?;
+                    std::str::from_utf8(&bytes[..end]).ok().map(str::to_owned)
+                })
+            } else {
+                read_utf16_str(data, 24)
+            };
 
             let mut payload = format!("exit_code={exit_code}");
             if let Some(name) = image_name {
@@ -120,7 +165,10 @@ fn decode_kernel_process(opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Optio
             }
 
             Some(RawEvent {
-                pid_start_ns: crate::process_generation::filetime_to_unix_ns(read_u64_le(data, 4)),
+                pid_start_ns: crate::process_generation::filetime_to_unix_ns(read_u64_le(
+                    data,
+                    create_offset,
+                )),
                 ppid_start_ns: None,
                 event_type: EventType::ProcessExit,
                 pid: process_pid,
@@ -901,4 +949,64 @@ fn process_records_preserve_creation_identity() {
         decode_kernel_process(1, 0, 1, &data).unwrap().pid_start_ns,
         None
     );
+}
+
+#[test]
+fn versioned_process_identity_uses_creation_not_sequence_number() {
+    for (opcode, versions) in [(1, 0..=3), (2, 0..=2)] {
+        for version in versions {
+            let modern = (opcode == 1 && version == 3) || (opcode == 2 && version == 2);
+            let mut data = vec![0u8; 96];
+            data[..4].copy_from_slice(&42u32.to_le_bytes());
+            let offset = if modern { 12 } else { 4 };
+            if modern {
+                data[4..12].copy_from_slice(&777u64.to_le_bytes());
+            }
+            data[offset..offset + 8].copy_from_slice(&116_444_736_123_456_789u64.to_le_bytes());
+            if opcode == 1 {
+                let parent = if modern { 20 } else { 12 };
+                data[parent..parent + 4].copy_from_slice(&43u32.to_le_bytes());
+                if modern {
+                    data[24..32].copy_from_slice(&888u64.to_le_bytes());
+                    data[32..36].copy_from_slice(&9u32.to_le_bytes());
+                    data[48] = 1;
+                    data[49] = 1;
+                    for (i, ch) in "child.exe".encode_utf16().enumerate() {
+                        data[60 + i * 2..62 + i * 2].copy_from_slice(&ch.to_le_bytes());
+                    }
+                }
+            }
+            if opcode == 2 && modern {
+                data[28..32].copy_from_slice(&7u32.to_le_bytes());
+                data[84..94].copy_from_slice(b"child.exe\0");
+            }
+            let event = decode_etw_record_versioned(
+                super::providers::KERNEL_PROCESS,
+                opcode,
+                version,
+                99,
+                1,
+                &data,
+            )
+            .unwrap();
+            assert_eq!(event.pid, 42);
+            assert_eq!(
+                event.pid_start_ns,
+                Some(12_345_678_900),
+                "opcode={opcode} version={version}: sequence numbers are not CreateTime"
+            );
+            if opcode == 1 {
+                assert!(event.payload.contains("ppid=43;"));
+                if modern {
+                    assert!(event.payload.contains("session_id=9"));
+                }
+            } else if modern {
+                assert!(event.payload.contains("exit_code=7"));
+            }
+            if modern {
+                assert!(event.payload.contains("path=child.exe"));
+            }
+        }
+    }
+    assert!(decode_kernel_process_versioned(1, 4, 1, 1, &[0; 96]).is_none());
 }

@@ -227,7 +227,14 @@ mod win32 {
             {
                 super::super::security_auditing::decode_security_auditing_record(record, ts_ns)
             } else {
-                codec::decode_etw_record(&guid_str, opcode, pid, ts_ns, user_data)
+                codec::decode_etw_record_versioned(
+                    &guid_str,
+                    opcode,
+                    record.EventHeader.EventDescriptor.Version,
+                    pid,
+                    ts_ns,
+                    user_data,
+                )
             };
 
             if let Some(event) = event {

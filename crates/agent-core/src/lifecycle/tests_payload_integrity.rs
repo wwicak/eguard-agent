@@ -284,3 +284,22 @@ fn windows_unknown_parent_generation_cannot_authenticate_ancestry() {
     event.pid_start_ns = Some(99);
     assert!(!runtime.should_suppress_internal_process_event(&event));
 }
+
+#[test]
+fn windows_ordinary_events_do_not_query_live_processes() {
+    let mut runtime = runtime();
+    runtime.windows_process_generations = true;
+    runtime.internal_process_start_time_reader =
+        Some(|_| panic!("unauthenticated telemetry must not open process handles"));
+    let event = RawEvent {
+        pid_start_ns: None,
+        ppid_start_ns: None,
+        pid: 4_000_054,
+        uid: 0,
+        ts_ns: 1,
+        event_type: crate::platform::EventType::ProcessExec,
+        payload: "ppid=4000055".into(),
+    };
+    assert!(!runtime.should_suppress_internal_process_event(&event));
+    assert!(!runtime.should_suppress_internal_process_event(&event));
+}
