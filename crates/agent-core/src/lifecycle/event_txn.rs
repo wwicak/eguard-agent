@@ -76,54 +76,89 @@ impl EventTxn {
         let operation = operation_from_event_type(&raw.event_type).to_string();
         let (subject, object) = match raw.event_type {
             EventType::FileRename => {
-                let (src, dst) = parse_rename_paths(&raw.payload);
+                let src = raw
+                    .fields
+                    .path
+                    .clone()
+                    .or_else(|| parse_rename_paths(&raw.payload).0);
+                let dst = raw
+                    .fields
+                    .secondary_path
+                    .clone()
+                    .or_else(|| parse_rename_paths(&raw.payload).1);
                 let subject = dst.clone().or(src);
                 (subject, dst)
             }
             EventType::TcpConnect => {
-                let endpoint = parse_payload_field(&raw.payload, "dst")
-                    .or_else(|| parse_payload_field(&raw.payload, "endpoint"))
-                    .or_else(|| {
-                        let dst_ip = parse_payload_field(&raw.payload, "dst_ip")
-                            .or_else(|| parse_payload_field(&raw.payload, "ip"));
-                        let dst_port = parse_payload_field(&raw.payload, "dst_port")
-                            .or_else(|| parse_payload_field(&raw.payload, "port"))
-                            .and_then(|raw| raw.parse::<u16>().ok());
-                        network_endpoint(dst_ip.as_deref(), dst_port).or(dst_ip)
+                let endpoint = if raw.fields.dst_ip.is_some() || raw.fields.dst_port.is_some() {
+                    let ip = raw.fields.dst_ip.clone().or_else(|| {
+                        parse_payload_field(&raw.payload, "dst_ip")
+                            .or_else(|| parse_payload_field(&raw.payload, "ip"))
                     });
+                    let port = raw.fields.dst_port.or_else(|| {
+                        parse_payload_field(&raw.payload, "dst_port")
+                            .or_else(|| parse_payload_field(&raw.payload, "port"))
+                            .and_then(|v| v.parse().ok())
+                    });
+                    network_endpoint(ip.as_deref(), port).or(ip)
+                } else {
+                    parse_payload_field(&raw.payload, "dst")
+                        .or_else(|| parse_payload_field(&raw.payload, "endpoint"))
+                        .or_else(|| {
+                            let dst_ip = parse_payload_field(&raw.payload, "dst_ip")
+                                .or_else(|| parse_payload_field(&raw.payload, "ip"));
+                            let dst_port = parse_payload_field(&raw.payload, "dst_port")
+                                .or_else(|| parse_payload_field(&raw.payload, "port"))
+                                .and_then(|raw| raw.parse::<u16>().ok());
+                            network_endpoint(dst_ip.as_deref(), dst_port).or(dst_ip)
+                        })
+                };
                 (endpoint.clone(), endpoint)
             }
             EventType::DnsQuery => {
-                let domain = parse_payload_field(&raw.payload, "dst_domain")
-                    .or_else(|| parse_payload_field(&raw.payload, "qname"))
-                    .or_else(|| parse_payload_field(&raw.payload, "domain"));
+                let domain = raw.fields.domain.clone().or_else(|| {
+                    parse_payload_field(&raw.payload, "dst_domain")
+                        .or_else(|| parse_payload_field(&raw.payload, "qname"))
+                        .or_else(|| parse_payload_field(&raw.payload, "domain"))
+                });
                 (domain, None)
             }
             EventType::ProcessExec => {
-                let process = parse_payload_field(&raw.payload, "path")
-                    .or_else(|| parse_payload_field(&raw.payload, "exe"))
-                    .or_else(|| {
-                        let trimmed = raw.payload.trim();
-                        (!trimmed.is_empty() && !trimmed.contains('='))
-                            .then(|| super::telemetry_pipeline::decode_raw_payload(trimmed))
-                    });
+                let process = raw.fields.path.clone().or_else(|| {
+                    parse_payload_field(&raw.payload, "path")
+                        .or_else(|| parse_payload_field(&raw.payload, "exe"))
+                        .or_else(|| {
+                            let trimmed = raw.payload.trim();
+                            (!trimmed.is_empty() && !trimmed.contains('='))
+                                .then(|| super::telemetry_pipeline::decode_raw_payload(trimmed))
+                        })
+                });
                 (process, None)
             }
             EventType::ModuleLoad => {
-                let module = parse_payload_field(&raw.payload, "module")
-                    .or_else(|| parse_payload_field(&raw.payload, "path"))
+                let module = raw
+                    .fields
+                    .module
+                    .clone()
+                    .or_else(|| raw.fields.path.clone())
                     .or_else(|| {
-                        let trimmed = raw.payload.trim();
-                        (!trimmed.is_empty())
-                            .then(|| super::telemetry_pipeline::decode_raw_payload(trimmed))
+                        parse_payload_field(&raw.payload, "module")
+                            .or_else(|| parse_payload_field(&raw.payload, "path"))
+                            .or_else(|| {
+                                let trimmed = raw.payload.trim();
+                                (!trimmed.is_empty())
+                                    .then(|| super::telemetry_pipeline::decode_raw_payload(trimmed))
+                            })
                     });
                 (module, None)
             }
             _ => {
-                let path = parse_payload_field(&raw.payload, "path").or_else(|| {
-                    let trimmed = raw.payload.trim();
-                    (!trimmed.is_empty() && !trimmed.contains('='))
-                        .then(|| super::telemetry_pipeline::decode_raw_payload(trimmed))
+                let path = raw.fields.path.clone().or_else(|| {
+                    parse_payload_field(&raw.payload, "path").or_else(|| {
+                        let trimmed = raw.payload.trim();
+                        (!trimmed.is_empty() && !trimmed.contains('='))
+                            .then(|| super::telemetry_pipeline::decode_raw_payload(trimmed))
+                    })
                 });
                 (path, None)
             }
@@ -161,7 +196,7 @@ pub(super) fn coalesce_file_event_key(raw: &RawEvent) -> Option<String> {
                 format!(
                     "{}:{}:{}",
                     txn.operation,
-                    file_open_access_intent(&raw.payload),
+                    super::telemetry_pipeline::raw_file_open_access_intent(raw),
                     normalize_value(subject)
                 )
             })

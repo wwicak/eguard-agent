@@ -232,7 +232,7 @@ impl EnrichmentCache {
 
     pub fn prime_process_metadata(&mut self, raw: &RawEvent) {
         if matches!(raw.event_type, EventType::ProcessExec) {
-            let payload_meta = parse_payload_metadata(&raw.event_type, &raw.payload);
+            let payload_meta = raw_event_metadata(raw);
             let _ = self.process_entry(raw, Some(&payload_meta));
         }
     }
@@ -448,7 +448,7 @@ fn should_hash_file_in_strict_budget(event_type: &EventType, path: &str) -> bool
 }
 
 pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> EnrichedEvent {
-    let payload_meta = parse_payload_metadata(&raw.event_type, &raw.payload);
+    let payload_meta = raw_event_metadata(&raw);
     if matches!(raw.event_type, EventType::ProcessExit) {
         let _ = cache.evict_process(raw.pid);
         return EnrichedEvent {
@@ -616,6 +616,61 @@ struct PayloadMetadata {
     dst_domain: Option<String>,
     file_write: bool,
     event_size: Option<u64>,
+}
+
+fn raw_event_metadata(raw: &RawEvent) -> PayloadMetadata {
+    let legacy = std::cell::OnceCell::new();
+    let fallback = || legacy.get_or_init(|| parse_payload_metadata(&raw.event_type, &raw.payload));
+    let fields = &raw.fields;
+    let file_write = if fields.flags.is_some() || fields.mode.is_some() {
+        let flags = fields
+            .flags
+            .map(|v| v.to_string())
+            .or_else(|| parse_kv_fields(&raw.payload).remove("flags"));
+        let mode = fields
+            .mode
+            .map(|v| v.to_string())
+            .or_else(|| parse_kv_fields(&raw.payload).remove("mode"));
+        parse_file_write_flags(flags.as_ref(), mode.as_ref())
+    } else {
+        fallback().file_write
+    };
+    PayloadMetadata {
+        file_path: fields
+            .path
+            .clone()
+            .or_else(|| {
+                if matches!(raw.event_type, EventType::ModuleLoad) {
+                    fields.module.clone()
+                } else {
+                    None
+                }
+            })
+            .or_else(|| fallback().file_path.clone()),
+        file_path_secondary: fields
+            .secondary_path
+            .clone()
+            .or_else(|| fallback().file_path_secondary.clone()),
+        command_line_hint: fields
+            .cmdline
+            .clone()
+            .or_else(|| fields.comm.clone())
+            .or_else(|| fields.subject.clone())
+            .or_else(|| fallback().command_line_hint.clone()),
+        parent_process_hint: fields
+            .parent_comm
+            .clone()
+            .or_else(|| fallback().parent_process_hint.clone()),
+        ppid: fields.ppid.or_else(|| fallback().ppid),
+        dst_ip: fields.dst_ip.clone().or_else(|| fallback().dst_ip.clone()),
+        dst_port: fields.dst_port.or_else(|| fallback().dst_port),
+        dst_domain: fields
+            .domain
+            .clone()
+            .or_else(|| fallback().dst_domain.clone()),
+        file_write,
+        event_size: fields.size.or_else(|| fallback().event_size),
+    }
 }
 
 fn parse_payload_metadata(event_type: &EventType, payload: &str) -> PayloadMetadata {

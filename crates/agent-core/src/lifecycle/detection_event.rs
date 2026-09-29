@@ -36,12 +36,20 @@ pub(super) fn to_detection_event(
         enriched.event.event_type,
         crate::platform::EventType::ModuleLoad
     ) {
-        let trimmed = enriched.event.payload.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(super::telemetry_pipeline::decode_raw_payload(trimmed))
-        }
+        enriched
+            .event
+            .fields
+            .module
+            .clone()
+            .or_else(|| enriched.event.fields.path.clone())
+            .or_else(|| {
+                let trimmed = enriched.event.payload.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(super::telemetry_pipeline::decode_raw_payload(trimmed))
+                }
+            })
     } else {
         None
     };
@@ -151,9 +159,11 @@ fn fallback_file_path_from_payload(enriched: &crate::platform::EnrichedEvent) ->
         | crate::platform::EventType::FileRename
         | crate::platform::EventType::FileUnlink
         | crate::platform::EventType::ProcessExec => {
-            parse_payload_field(&enriched.event.payload, "path")
-                .or_else(|| parse_payload_field(&enriched.event.payload, "file"))
-                .or_else(|| parse_payload_field(&enriched.event.payload, "src"))
+            enriched.event.fields.path.clone().or_else(|| {
+                parse_payload_field(&enriched.event.payload, "path")
+                    .or_else(|| parse_payload_field(&enriched.event.payload, "file"))
+                    .or_else(|| parse_payload_field(&enriched.event.payload, "src"))
+            })
         }
         _ => None,
     }
