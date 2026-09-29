@@ -51,22 +51,6 @@ impl OfflineBuffer {
     }
 
     pub fn ack(&mut self, ids: &[i64]) {
-        // Normal delivery acknowledges the FIFO prefix. Do not scan or compact
-        // the unsent backlog on every batch: recovery must be linear overall.
-        if ids.len() <= self.queue.len()
-            && ids
-                .iter()
-                .zip(&self.queue)
-                .all(|(id, (queued_id, _))| id == queued_id)
-        {
-            for _ in ids {
-                let (_, event) = self.queue.pop_front().expect("checked prefix length");
-                self.current_bytes = self
-                    .current_bytes
-                    .saturating_sub(estimate_event_size(&event));
-            }
-            return;
-        }
         let ids: std::collections::HashSet<_> = ids.iter().copied().collect();
         self.queue.retain(|(id, event)| {
             if ids.contains(id) {
@@ -81,17 +65,9 @@ impl OfflineBuffer {
     }
 
     pub fn drain_batch(&mut self, max_items: usize) -> Vec<EventEnvelope> {
-        let mut events = Vec::with_capacity(max_items.min(self.queue.len()));
-        for _ in 0..max_items {
-            let Some((_, event)) = self.queue.pop_front() else {
-                break;
-            };
-            self.current_bytes = self
-                .current_bytes
-                .saturating_sub(estimate_event_size(&event));
-            events.push(event);
-        }
-        events
+        let rows = self.peek_batch(max_items);
+        self.ack(&rows.iter().map(|(id, _)| *id).collect::<Vec<_>>());
+        rows.into_iter().map(|(_, event)| event).collect()
     }
 
     pub fn pending_count(&self) -> usize {
