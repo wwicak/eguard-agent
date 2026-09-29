@@ -85,27 +85,19 @@ fn f4a_legacy_envelope_and_detection_golden() {
     assert_eq!(raw.len(), 30);
     let mut output = Vec::new();
     for event in raw {
-        // Deterministic metadata; never inspect the host's process or filesystem.
-        let enriched = platform_linux::EnrichedEvent {
-            event,
-            process_exe: Some("/fixture/bin/process".into()),
-            process_exe_sha256: None,
-            process_cmdline: Some("fixture --arg".into()),
-            parent_process: Some("fixture-parent".into()),
-            parent_chain: vec![42, 1],
-            file_path: None,
-            file_path_secondary: None,
-            file_write: false,
-            file_sha256: None,
-            event_size: None,
-            dst_ip: None,
-            dst_port: None,
-            dst_domain: None,
-            container_runtime: None,
-            container_id: None,
-            container_escape: false,
-            container_privileged: false,
-        };
+        // Exercise legacy event-specific enrichment, replacing only host-dependent
+        // metadata. Corpus paths are relative non-existent fixture names.
+        let mut enriched = platform_linux::enrich_event(event);
+        enriched.process_exe = Some("/fixture/bin/process".into());
+        enriched.process_exe_sha256 = None;
+        enriched.process_cmdline = Some("fixture --arg".into());
+        enriched.parent_process = Some("fixture-parent".into());
+        enriched.parent_chain = vec![42, 1];
+        enriched.file_sha256 = None;
+        enriched.container_runtime = None;
+        enriched.container_id = None;
+        enriched.container_escape = false;
+        enriched.container_privileged = false;
         let event = to_detection_event(&enriched, 1700000000);
         let outcome = detection::DetectionOutcome::default();
         let txn = EventTxn::from_enriched(&enriched, &event, 1700000000);

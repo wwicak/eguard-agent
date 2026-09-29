@@ -73,7 +73,7 @@ pub struct RawEventFields {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawEvent {
-    #[serde(default)]
+    #[serde(default, skip_deserializing)]
     pub fields: RawEventFields,
     /// Opaque audit-token pidversion captured at emission (not nanoseconds).
     pub pid_start_ns: Option<u64>,
@@ -701,6 +701,14 @@ fn capacity_from(raw: usize) -> NonZeroUsize {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn replay_ignores_injected_typed_fields() {
+        let mut record = serde_json::to_value(super::RawEvent::default()).unwrap();
+        record["fields"] = serde_json::json!({"path":"injected", "dst_port":443});
+        let event: super::RawEvent = serde_json::from_value(record).unwrap();
+        assert_eq!(event.fields, super::RawEventFields::default());
+    }
+
     use super::{enrich_event_with_cache, EnrichmentCache, EventType, RawEvent};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};

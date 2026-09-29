@@ -12,11 +12,16 @@ call sites at the F4a commit (test fixtures and emitters excluded).
 ## platform-windows/src/lib.rs
 - `EnrichmentCache::prime_process_metadata` (227): `parse_payload_metadata`.
 - `enrich_event_with_cache` (660): `parse_payload_metadata`.
+- Module fallback decoding in `enrich_event_with_cache` (721–724).
 - Parser implementation (825 onward): KV/JSON metadata and fallback parsing.
 
 ## platform-macos/src/lib.rs
 - `enrich_event_with_cache` (378): `parse_payload_metadata`.
+- Module payload fallback in `enrich_event_with_cache` (414–416).
 - Parser implementation (480 onward): KV metadata and fallback parsing.
+
+## platform-macos/src/esf/mod.rs
+- ES noise filtering (579–605): payload text/path checks.
 
 ## agent-core/src/lifecycle/telemetry_pipeline.rs
 - `should_drop_low_value_linux_raw_event` (557–565): path, comm,
