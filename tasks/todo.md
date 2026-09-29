@@ -28,6 +28,59 @@ Baseline proof: stashed implementation and transplanted tests onto fb-start-b1-g
 Validation so far: zig build agent-artifacts passes for all 18 ring/perf objects; all contain start_boottime BTF and process_exec has BTF.ext. Host C worker/parent-leader harness passes. Linux 99, macOS 44, Windows 116 tests pass; Windows GNU and macOS aarch64 cross-checks pass. Required agent filters: policy 111, reviewfix 13, payload_integrity 9 pass. Touched-crate fmt passes except the unchanged Windows screen_lock.rs:34 baseline formatting; touched Windows files pass rustfmt. Acceptance tests were attempted but cannot compile because baseline tests_rsp_contract.rs ResponseReport lacks action_type_label (verified unchanged in base tag). No unrelated fix included. Live privileged BPF attachment remains unvalidated (host EPERM). Legacy/missing generations intentionally retain proc/other-platform fallback limitations.
 
 Final module sweep: 90 passed, 3 failed, 1 ignored in 1362s. Failures are the two listed async-worker queue tests and memory_layout_ledger_sums_to_target_rss_envelope; the latter was reproduced on pristine fb-start-b1-generation (fixed budgets total 18.3 MiB, asserted minimum 20 MiB). The long observability_snapshot_reports_bounded_command_backlog_progress test eventually passed; isolated on pristine base with timeout 300, --test-threads=1 --nocapture it times out (124), proving pre-existing scan-fixture slowness. A filtered sweep excluding those four tests passes 89 tests (+1 ignored benchmark). The optional full-agent sweep was interrupted after 145 passing tests to focus on touched modules. No test process remains running. Baseline evidence: /tmp/b1-baseline-memory.log and /tmp/b1-baseline-slow.log. Final validation logs are exported under /home/dimas/eguard-lab-soak/followups/b1-generation-validation/; patch: fb-start-b1-generation.patch. Follow-up: privileged kernel smoke/soak with the newly built objects, and independent fixes for the pre-existing test/format blockers.
+# a1-hygiene second-pass review
+
+- [x] Recheck the exact buffer acceptance/config contract and scan handler return API.
+- [x] Restore 100 MiB default and exact regression assertion; require scan handler success/detail.
+- [x] Verify focused/module/regression tests, clippy, formatting; commit/export.
+
+The first-pass buffer decision below was incorrect: `f0cbb3d` reduced the default
+without updating the exact 100 MiB acceptance/config contract. Restore the code,
+not weaken the test. The restored regression fails against the unchanged base
+buffer implementation (52428800 != 104857600; `/tmp/a1-second-base-proof.log`).
+The scan fixture now asserts completed status and handler-specific roots detail,
+not merely generic parsing's timestamp. This is test strengthening, not a runtime
+scan behavior change.
+
+Second-pass validation: buffer module 12 passed; command/lifecycle module 16
+passed, 1 known baseline bootstrap failure; eBPF policy 111 passed; reviewfix 13
+passed; payload integrity 6 passed; async dispatch 2 passed; degraded response 1
+passed. Exact cross-crate buffer acceptance passed. Clippy passed with 56 warning
+diagnostics (excluding 5 summary lines), no errors; workspace fmt and diff checks
+passed. Explicitly stashed the buffer production fix and verified its file was
+identical to fa-start-a1-hygiene: restored exact regression failed 50 != 100 MiB;
+popped the fix and reran successfully (`/tmp/a1-second-stash-proof.log`,
+`/tmp/a1-second-restored-proof.log`). Other logs: `/tmp/a1-second-*.log`.
+
+Out-of-scope unchanged failures: bootstrap restore and alternate gRPC address
+were reproduced on base in `/tmp/fa-hygiene/unrelated-baseline.log` (lines 18,
+43); bootstrap still fails identically in this module run. Acceptance library's
+missing ResponseReport.action_type_label is unchanged from base (review's
+independent reproduction); the focused integration target passes. No privileged
+live BPF or Windows execution. Restoring the specified capacity permits up to
+50 MiB more offline buffering than the accidental reduced default.
+
+# a1-hygiene (first-pass historical notes; buffer decision superseded above)
+
+- [x] Trace five failing tests and rule-loader cadence through history.
+- [x] Correct stale fixtures/contracts or implementation; preserve intentional safety guards.
+- [x] Verify baseline failures, module/regression tests, clippy and workspace formatting.
+- [x] Commit and export follow-up patch/status.
+
+Review (a1-hygiene): no production behavior change. `4993bc3` deliberately introduced a two-second pause between EVERY rule; replace the misleading modulo-one batch expression with `idx > 0`, preserving first-rule/no-sleep and all subsequent pauses. No lint suppression or dependency added.
+
+Root causes / test corrections:
+- Both async worker dispatch tests predated `91bae25`'s intentional offline dispatch guards. Assert queues remain intact offline, then set online and assert tasks are actually spawned.
+- The degraded local-response test spawned `sleep 30` BEFORE runtime initialization. `4993bc3`'s per-rule pauses make initialization exceed 30 seconds, so the child naturally exited before containment. Construct runtime before spawning the disposable child; keep real kill/report/buffer assertions.
+- The offline command cursor test assumed a real privileged host-isolation command always succeeds. `17cec9c` correctly reconciles failed isolation back to the prior state. Use a real scan of an isolated empty directory instead, retaining offline execution, unknown-command completion, FIFO cursor cap, and state assertions without mutating the host firewall or scanning arbitrary host files.
+- `f0cbb3d` intentionally reduced the grpc-client default buffer to 50 MiB. Assert the new default and the existing 100 MiB acceptance ceiling rather than restoring the obsolete larger allocation.
+- Apply rustfmt-only changes to grpc-client proto_tests.rs and platform-windows compliance/screen_lock.rs.
+
+Proof: stashed all changes and reran all five original named tests on exact `fa-start-a1-hygiene` (30305f1); all failed. Restored changes: all five pass. No new behavioral regression is required because production semantics are unchanged. Logs: `/tmp/fa-hygiene/stash-proof.log`, `validation.log`, `remaining.log`, `loader-tests.log`, `clippy-early.log`, `unrelated-baseline.log`.
+
+Validation (offline; every cargo command wrapped in timeout 1500 with this worktree's target): lifecycle loader/general tests 34 passed; tests_observability 16 passed (1194s); tests_det_stub_completion 16 passed / 1 pre-existing failure; tick tests 2 passed; tests_ebpf_policy 111 passed; tests_reviewfix 13 passed; tests_payload_integrity 6 passed; grpc-client full suite 104 passed / 1 pre-existing failure; buffer module 12 passed; proto_tests 14 passed; platform-windows screen_lock 1 passed (Linux-hosted stub coverage). `cargo clippy --offline -p agent-core --all-targets` passed: 56 emitted warning diagnostics (agent binary 13; test target 49 including 12 duplicates; dependencies 6). `cargo fmt --all --check` and `git diff --check` passed.
+
+Residuals: additional unrelated failures `runtime_bootstrap_restores_last_known_good_bundle_after_restart` (immediate version is None) and `alternate_grpc_server_addr_switches_known_agent_ports` (alternate address is None) both independently reproduced on exact base with a second stash/pop. Leave for follow-up; do not weaken production bootstrap or transport behavior in this hygiene change. Nonfatal libbpf EPERM warnings mean privileged live BPF was not exercised. The existing two-second loader cadence and slow default-path scan backlog test remain intentionally unchanged. Patch/status exported under `/home/dimas/eguard-lab-soak/followups/`.
 
 # F13/F14 — decoded fallback follow-up
 
@@ -437,3 +490,61 @@ Residual risks: privileged eBPF loading is unavailable in this environment (expe
 - Added heartbeat mode/backlog assertions to `observability_snapshot_tracks_send_failure_degraded_transition_and_queue_depth`; it passes. This is verification-only and therefore also applies to base production code, not a claimed agent behavioral regression.
 - Offline tests: observability module 14 passed, only the two advertised async-worker tests failed (1248.90s); eBPF policy 111 passed; payload integrity 6 passed. Reviewfix 12 passed/1 timing-sensitive response-budget assertion failed, then that test passed standalone (49.35s). Agent-core fmt check passes.
 - Server companion retains both fields, persists derived telemetry health under capabilities, and reuses deduped offline-monitor alerts. Server ingress/backlog/persistence and Perl alert regressions were transplanted onto the base tag and failed there. No proto changes, dependency additions, or deployment.
+## a2-pipeline second-pass review
+- [x] Replace hard dedupe admission ceiling with per-evaluation emission budget; prune obsolete policy keys.
+- [x] Assert complete, exactly-once overflow coverage and full-map policy replacement.
+- [x] Exercise full tick with one-envelope eviction margin; retain stage test. Supervisor approved test-only time-budget override.
+- [x] Prove focused regressions fail with base production transplanted (full tick includes only the test timing seam).
+- [x] Run required suites, non-test check and formatting; commit and export cumulative patch.
+Validation: reviewfix 18/18, payload integrity 6/6, eBPF policy 111/111, telemetry pipeline 13/13, tick 2/2; non-test cargo check and fmt pass. Overbroad lifecycle::tests run was stopped in favor of the exact touched tick module. Base transplant proofs: overflow exceeded per-evaluation budget; policy replacement retained 2048 instead of 1024 keys; full tick evicted all nine sentinels. Logs: /tmp/a2-base-{compliance,transition,fulltick}.log and /tmp/a2-final-*.log.
+Review: prior intentional overflow suppression below is superseded. State now scales with current policy check count, not historical policy contexts. F9 append-only failed-send ordering remains unchanged at base.
+
+## a2-pipeline (F12/F7/F8)
+- [x] Inspect drain, compliance admission, send timing and callers.
+- [x] Transplant focused tests onto unchanged fa-start-a2-pipeline production code; all three fail (logs /tmp/a2-base*.log).
+- [x] Guard connected failed-send drain by byte headroom; bound compliance admission without clearing dedupe; leave timing to real flushes.
+- [x] Validate reviewfix (16), payload integrity (6), eBPF policy (111), tick (2), telemetry pipeline (13), and formatting.
+Review: connected regression isolates drain + end-of-tick flush to avoid control-plane latency exhausting the tick budget. Checks beyond dedupe capacity are intentionally not alerted until capacity is available. Single oversized envelopes can still exceed the 10% reserve; first evaluation retention remains unchanged.
+
+## a3-fanout
+- [x] Cap per-evaluation immediate playbook reports (16) and IOC signals (32), warn and count omitted entries without changing detection. Existing local-action execution remains bounded to four reports per tick; isolation still executes when its side report is capped.
+- [x] Add queue-sentinel regressions and prove failure against base: production-only stash preserved the two new tests; base retained 126/127 report sentinels and 510/511 IOC sentinels. Fixed tests retain all sentinels and all 514 detection/telemetry signatures.
+- [x] Required tests/format: reviewfix 20, payload_integrity 6, ebpf_policy 111, response_pipeline 10, response_playbook 15, tick 2 passed; final fanout rerun 2 passed; agent-core fmt and git diff checks passed.
+- [x] Review: broad lifecycle run reached 483 completed tests before the 1500-second timeout, with unrelated failures. Base-only targeted reproduction confirmed memory-ledger lower-bound, last-known-good bootstrap, package harness strip expectation, and consequent poisoned environment-lock failures; restart test passes outside poisoned run. Logs: /tmp/fa-lifecycle.log, /tmp/fa-base-broad.log, /tmp/fa-fanout-base.log, /tmp/fa-suite-results. No unrelated fixes included.
+- [x] Commit and export patch/status to the requested followups directory.
+
+## a5-buffer second-pass review
+- [x] Fast-path FIFO memory acknowledgements and restore direct-pop drain.
+- [x] Add large-tail no-compaction regression; prove failure on prior implementation and base adapter.
+- [x] Run buffer tests/format, record base-equal follow-ups, commit and export cumulative patch.
+
+Review: FIFO prefix ack now checks/pops only the batch (O(batch)); arbitrary/non-prefix IDs retain exact-ID selective scanning. Direct drain moves events without cloning or scanning the tail. The 65,536-row / 256-row-batch regression checks surviving queue slot addresses, avoiding noisy timing thresholds; it fails on 6b95692 because retain compacts the tail. Transplant onto fa-start-a5-buffer with a test-only destructive-drain API adapter fails the same regression's non-destructive peek assertion (65,280 vs 65,536 rows). Adapter removed after proof. Separate selective-ID test covers unsorted, duplicate, missing, and empty IDs. Buffer module 16/16, offline grpc-client check, crate fmt and diff whitespace checks pass. No agent-core files touched this pass. Logs: `/tmp/a5-second-{before,base,tests,check}.log` (also archived under followups/a5-buffer-second-validation).
+
+Unchanged follow-ups: base buffer.rs lines 142,164-165 omit severity/rule_name from INSERT and reconstruct empty strings; schema migration remains separate. Server persistence/UI for the wire-only fallback marker is outside this Rust worktree (review supplied server evidence); no server changes made. Fallback remains an empty volatile memory buffer, logs ERROR, heartbeat marker may be discarded by server; no migration or automatic recovery. Prior three-round SQLite benchmark is unchanged by this memory-only fix: median 2236.01 -> 2172.21 us/event (-2.85%), noisy paired -13.10%, +17.20%, -12.88%; report `/home/dimas/eguard-lab-soak/bench/results-fa-start-a5-buffer.md`. No repeat SQLite benchmark this pass; it does not exercise this memory fast path.
+
+## a5-buffer
+- [x] Add non-destructive peek and exact-ID ack to both backends; replace send recovery.
+- [x] Prove crash/FIFO/ack regressions against base; run module and branch suites.
+- [x] Benchmark SQLite base/HEAD (3 rounds, batch 50), commit and export.
+
+Review: peek leaves stable-ID rows intact; successful send transactionally acknowledges only sent rows, failed sends append only current events. Cap eviction is unchanged. SQLite initialization fallback now logs ERROR and heartbeat exposes `offline_buffer_volatile_fallback`; fallback is empty volatile memory, with no automatic SQLite recovery.
+
+Regression proof (stash/transplant on `fa-start-a5-buffer`): reopen expected [0,1,2], baseline got [2]; in-flight pending expected 3, baseline got 1; failed-send FIFO baseline began [256,257,0,...]; heartbeat fallback flag absent. New API tests used a baseline-only destructive-drain adapter, removed after proof. Fixed buffer tests pass (14), reviewfix (21), ebpf policy (111), payload integrity (6), telemetry module (13), control-plane module (20), observability (15 with one excluded). Full grpc-client: 106 pass, one unrelated port-switch failure reproduced on base. Optional observability scan-command backlog test was interrupted after >7 minutes; remaining 15 pass with it explicitly skipped. Touched-crate fmt and diff checks pass.
+
+SQLite benchmark: batch50, 3 paired rounds, 300 ticks; all six database proofs pass. Median ingest+tick cost 2236.01 -> 2172.21 us/consumed event (-2.85%); paired -13.10%, +17.20%, -12.88%, noisy shared-host result, not a guaranteed improvement. Full report and proof logs: `/home/dimas/eguard-lab-soak/bench/results-fa-start-a5-buffer.md` and `a5-validation/`. Temporary backend fixture switch reverted.
+
+Residuals: at-least-once duplicates after delivery-before-ack crash; configured cap eviction and current-event enqueue failures can still lose events; memory fallback is not durable; WAL NORMAL power-loss semantics unchanged. Follow up connected successful-ack benchmarking, server dedupe if needed, and operational alerting/recovery for fallback.
+
+## a5r safe SQLite restoration
+- [x] Restore peek/ack commits and inspect review blocker.
+- [x] Isolate SQLite fixtures; preserve existing parent permissions and warn on unsafe parents.
+- [x] Prove regression failures on fa-start-a5r; run required offline suites/format.
+- [x] Commit and export patch/status with residual risks.
+
+Review: restored 2568fce behavior exactly before the safety fix. Unix DirBuilder creates missing ancestors with mode 0700 without chmodding existing paths (including concurrently created parents); existing world-writable/foreign-owned parents log a warning, and database mode remains 0600. Fallback's invalid filename is now a child directory inside an explicitly created unique fixture; SQLite buffer tests and FIFO test also use owned directories.
+
+Proof on fa-start-a5r production files: existing-parent regression observed 0700 instead of 0777; recursive new-parent test observed 0755 instead of 0700 on the intermediate directory. Peek/ack tests used an archived test-only adapter mapping peek to base destructive drain and ack to no-op: reopen got [2], pending count 1 instead of 3, and large-tail peek consumed 256 rows. Base lifecycle tests (no adapter) failed FIFO ([256,257,0,...]) and missing heartbeat fallback marker. Restored all production files and removed adapter afterward. All filesystem fixtures stayed within unique test-owned directories.
+
+Validation: full grpc-client 110 passed / 1 failed (alternate_grpc_server_addr_switches_known_agent_ports, separately reproduced on base); final buffer module 18/18; agent-core reviewfix 21/21, payload integrity 6/6, eBPF policy 111/111; workspace fmt and diff whitespace passed. Offline cargo commands used this worktree's target and timeout 1500, each shell under 20 minutes. Evidence: /home/dimas/eguard-lab-soak/followups/a5r-validation/.
+
+Residuals: at-least-once duplicates after send-before-ack crashes; memory fallback remains volatile and server marker persistence is outside scope; pre-existing SQLite severity/rule_name omission remains. Shared/foreign-owned directories are warned about, not rejected: 0600 is not protection against directory-owner replacement/unlink attacks. Existing best-effort db chmod and WAL durability semantics unchanged.

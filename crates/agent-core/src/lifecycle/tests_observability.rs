@@ -1081,8 +1081,16 @@ async fn async_worker_queue_dispatches_control_plane_sends() {
     }
     assert!(saw_heartbeat, "expected queued heartbeat send");
 
+    // Offline dispatch must preserve queued sends, not spawn doomed requests.
+    let queued = runtime.pending_control_plane_sends.len();
+    runtime.drive_async_workers();
+    assert_eq!(runtime.pending_control_plane_sends.len(), queued);
+    assert!(runtime.control_plane_send_tasks.is_empty());
+
+    runtime.client.set_online(true);
     runtime.drive_async_workers();
     assert_eq!(runtime.pending_control_plane_sends.len(), 0);
+    assert_eq!(runtime.control_plane_send_tasks.len(), queued);
     assert!(runtime.control_plane_send_tasks.len() <= CONTROL_PLANE_SEND_CONCURRENCY);
 
     tokio::task::yield_now().await;
@@ -1121,8 +1129,15 @@ async fn async_worker_queue_dispatches_response_reports() {
     assert_eq!(runtime.pending_response_reports.len(), 1);
     assert_eq!(runtime.response_report_tasks.len(), 0);
 
+    // Reports must survive offline ticks and dispatch only after recovery.
+    runtime.drive_async_workers();
+    assert_eq!(runtime.pending_response_reports.len(), 1);
+    assert!(runtime.response_report_tasks.is_empty());
+
+    runtime.client.set_online(true);
     runtime.drive_async_workers();
     assert_eq!(runtime.pending_response_reports.len(), 0);
+    assert_eq!(runtime.response_report_tasks.len(), 1);
     assert!(runtime.response_report_tasks.len() <= RESPONSE_REPORT_CONCURRENCY);
 
     tokio::task::yield_now().await;

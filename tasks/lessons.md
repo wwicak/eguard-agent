@@ -1,6 +1,10 @@
 # Lessons
 
 - **Isolate slow tests before launching overlapping validation sweeps**: inspect completed test names, stop owned stale processes, and reproduce the specific remaining test serially with a short timeout on both the change and base revision. A scan fixture can run real filesystem work for many minutes; don't mistake that for a new generation-lookup deadlock or repeatedly run the whole module set.
+- **Never use a shared/system directory itself as an invalid SQLite filename in tests**: constructors may operate on the filename's parent. Create a unique test-owned parent and child directory, and keep every filesystem fixture beneath it. Production initialization must never chmod pre-existing shared parents; apply private modes only when creating directories.
+
+- **Do not infer an acceptance-contract change from implementation history alone**: check exact executable acceptance and config defaults before relaxing a failing assertion. A deliberate optimization can still violate the agreed contract.
+- **Assert command handler results, not generic parsing side effects**: scan timestamps alone do not establish successful scanning; require completed status and handler-specific detail.
 
 - **Keep terminal-command durability barriers out of maintenance scheduling inputs**: spooling every current-tick event before scheduling turns normal traffic into permanent backpressure. Gate only terminal dispatch, and test an event-bearing tick with due maintenance.
 - **Test recovery ordering with old and new events on SQLite**: hold new overflow until the send outcome; requeue the drained batch before new overflow. Distinguish this regression from the pre-existing append-only old-tail limitation rather than accepting both together.
@@ -121,3 +125,4 @@
 - If user says a feature must not exist in a release line, remove/revert that feature instead of adding compatibility defaults for its new fields.
 - **Destructive response primitives must enforce protected paths independently of planner checks**: canonicalize the existing source path at the primitive and re-check protected roots there, including usr-merge aliases and intermediate symlink paths.
 - **Advertised destructive-action safety limits must be executable and regression-tested at the destructive seam**: config/install docs are not safety controls unless code consumes the limit before mutating, killing, or quarantining.
+- **Dedupe capacity must not silently suppress policy failures**: cap emissions per evaluation, test eventual exactly-once coverage, and prune obsolete policy contexts. Full-tick retention regressions must isolate wall-clock budgets from real transport latency.

@@ -14,10 +14,9 @@ use crate::config::AgentMode;
 use super::{
     confidence_to_severity, elapsed_micros, interval_due, run_periodic_storage_hygiene,
     should_drop_low_value_linux_event, should_drop_low_value_windows_event, to_detection_event,
-    AgentRuntime, TickEvaluation, ACTIVE_CAMPAIGN_IOC_LIMIT, COMPLIANCE_ALERT_STATE_LIMIT,
-    COMPLIANCE_GRACE_STATE_LIMIT, DISK_CHECK_INTERVAL_SECS, HEARTBEAT_INTERVAL_SECS,
-    ISOLATION_FAILSAFE_CHECK_INTERVAL_SECS, MEMORY_PRESSURE_CHECK_INTERVAL_TICKS,
-    STORAGE_HYGIENE_INTERVAL_SECS,
+    AgentRuntime, TickEvaluation, ACTIVE_CAMPAIGN_IOC_LIMIT, COMPLIANCE_GRACE_STATE_LIMIT,
+    DISK_CHECK_INTERVAL_SECS, HEARTBEAT_INTERVAL_SECS, ISOLATION_FAILSAFE_CHECK_INTERVAL_SECS,
+    MEMORY_PRESSURE_CHECK_INTERVAL_TICKS, STORAGE_HYGIENE_INTERVAL_SECS,
 };
 
 impl AgentRuntime {
@@ -153,7 +152,9 @@ impl AgentRuntime {
         // Preserve oldest-first offline retention; the first evaluation stays unchanged.
         // The 10% reserve accommodates ordinary envelopes (a few KB); an envelope
         // larger than 10% of the cap can still overflow it.
-        let degraded_headroom = if matches!(self.runtime_mode, AgentMode::Degraded) {
+        let offline_headroom = if matches!(self.runtime_mode, AgentMode::Degraded)
+            || self.consecutive_send_failures > 0
+        {
             Some(
                 (self.config.offline_buffer_cap_bytes.saturating_mul(9) / 10)
                     .saturating_sub(self.buffer.pending_bytes()),
@@ -162,15 +163,21 @@ impl AgentRuntime {
             None
         };
         let mut added_bytes = 0usize;
+        let time_budget = Duration::from_millis(Self::TELEMETRY_EVAL_TIME_BUDGET_MS);
+        // Tests can isolate retention from real connection-refusal latency.
+        #[cfg(test)]
+        let time_budget = self.telemetry_eval_budget_override.unwrap_or(time_budget);
 
         // The first evaluation and control-plane work count against the budget.
         // Always run the control plane before draining, even if it exhausts it.
+        // Draining is intentionally not gated by strict_budget_mode: its own
+        // time, queue and retention budgets bound work without starving telemetry.
         for _ in 1..Self::MAX_TELEMETRY_EVALS_PER_TICK {
             let envelopes = self.tick_telemetry.as_ref().map_or(0, Vec::len);
-            if started.elapsed() >= Duration::from_millis(Self::TELEMETRY_EVAL_TIME_BUDGET_MS)
+            if started.elapsed() >= time_budget
                 || self.downstream_queues_near_capacity()
                 || envelopes >= super::EVENT_BATCH_SIZE
-                || degraded_headroom.is_some_and(|headroom| added_bytes >= headroom)
+                || offline_headroom.is_some_and(|headroom| added_bytes >= headroom)
             {
                 break;
             }
@@ -190,7 +197,16 @@ impl AgentRuntime {
                 added_bytes = added_bytes
                     .saturating_add(self.buffer_degraded_telemetry_if_present(Some(&evaluation))?);
             } else {
+                let queued_before = self.tick_telemetry.as_ref().map_or(0, Vec::len);
                 self.queue_connected_telemetry(Some(&evaluation)).await?;
+                if offline_headroom.is_some() {
+                    if let Some(events) = self.tick_telemetry.as_ref() {
+                        for envelope in &events[queued_before..] {
+                            added_bytes = added_bytes
+                                .saturating_add(grpc_client::estimate_event_size(envelope));
+                        }
+                    }
+                }
             }
         }
 
@@ -254,7 +270,24 @@ impl AgentRuntime {
 
         // Buffer IOC signals for cross-endpoint campaign correlation.
         if detection_outcome.signals.z1_exact_ioc || detection_outcome.signals.yara_hit {
-            for sig in &detection_outcome.layer1.matched_signatures {
+            // Bound side-queue fanout only; keep every signature in detection/telemetry.
+            const MAX_IOC_SIGNALS_PER_EVALUATION: usize = 32;
+            let signatures = &detection_outcome.layer1.matched_signatures;
+            let truncated = signatures
+                .len()
+                .saturating_sub(MAX_IOC_SIGNALS_PER_EVALUATION);
+            if truncated > 0 {
+                self.metrics.ioc_signals_truncated_total = self
+                    .metrics
+                    .ioc_signals_truncated_total
+                    .saturating_add(truncated as u64);
+                warn!(
+                    truncated,
+                    limit = MAX_IOC_SIGNALS_PER_EVALUATION,
+                    "per-evaluation IOC signal fanout truncated"
+                );
+            }
+            for sig in signatures.iter().take(MAX_IOC_SIGNALS_PER_EVALUATION) {
                 let ioc_type = Self::classify_ioc_type(sig);
                 self.buffer_ioc_signal(
                     sig.clone(),
@@ -598,17 +631,9 @@ impl AgentRuntime {
         }
     }
 
-    /// Cap compliance_alert_state, compliance_grace_state, and active_campaign_iocs
-    /// after insertion to prevent unbounded growth.
+    /// Cap compliance_grace_state and active_campaign_iocs after insertion.
+    /// Compliance alert dedupe is bounded at admission so active failures persist.
     pub(super) fn enforce_collection_caps(&mut self) {
-        if self.compliance_alert_state.len() > COMPLIANCE_ALERT_STATE_LIMIT * 2 {
-            warn!(
-                entries = self.compliance_alert_state.len(),
-                limit = COMPLIANCE_ALERT_STATE_LIMIT,
-                "compliance_alert_state exceeded limit, clearing"
-            );
-            self.compliance_alert_state.clear();
-        }
         if self.compliance_grace_state.len() > COMPLIANCE_GRACE_STATE_LIMIT * 2 {
             warn!(
                 entries = self.compliance_grace_state.len(),
@@ -776,12 +801,13 @@ mod tests {
     #[tokio::test]
     async fn degraded_tick_executes_local_response_and_preserves_response_report_queue() {
         let _env_guard = shared_env_var_lock().lock().expect("env var lock");
+        // Rule loading can outlast the child's lifetime; initialize first so
+        // natural expiry cannot masquerade as a failed local response.
+        let mut runtime = new_runtime();
         let mut child = std::process::Command::new("sleep")
             .arg("30")
             .spawn()
             .expect("spawn disposable child");
-
-        let mut runtime = new_runtime();
         let now_unix = 1_700_000_100;
         runtime.runtime_mode = AgentMode::Degraded;
         runtime.last_recovery_probe_unix = Some(now_unix);

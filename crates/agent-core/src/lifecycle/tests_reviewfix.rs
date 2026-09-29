@@ -42,6 +42,86 @@ fn queue_event(runtime: &mut AgentRuntime) {
         });
 }
 
+#[tokio::test]
+async fn fanout_playbook_reports_preserve_half_full_queue() {
+    let mut runtime = runtime();
+    let now = 1_700_000_000;
+    runtime
+        .playbook_engine
+        .load_from_policy(&serde_json::json!({
+            "response_playbooks": [{"name":"fanout", "enabled":true, "priority":1,
+                "conditions":{"require_signals":[]}, "actions":[{"action":"alert"}]}]
+        }));
+    queue_event(&mut runtime);
+    let evaluation = runtime.evaluate_tick(now).unwrap().unwrap();
+    runtime
+        .run_connected_response_stage(now, Some(&evaluation))
+        .await;
+    let mut sentinel = runtime.pending_response_reports.pop_front().unwrap();
+    sentinel.envelope.action_type = "old-report-sentinel".into();
+    for _ in 0..127 {
+        runtime.pending_response_reports.push_back(sentinel.clone());
+    }
+    runtime
+        .playbook_engine
+        .load_from_policy(&serde_json::json!({
+            "response_playbooks": [{"name":"fanout", "enabled":true, "priority":1,
+                "conditions":{"require_signals":[]},
+                "actions": vec![serde_json::json!({"action":"alert"}); 130]}]
+        }));
+    runtime
+        .run_connected_response_stage(now, Some(&evaluation))
+        .await;
+    // One evaluation must not consume the drain's entire half-capacity headroom.
+    assert_eq!(
+        runtime
+            .pending_response_reports
+            .iter()
+            .filter(|r| r.envelope.action_type == "old-report-sentinel")
+            .count(),
+        127
+    );
+    assert_eq!(runtime.pending_response_reports.len(), 127 + 16);
+}
+
+#[test]
+fn fanout_ioc_signals_preserve_half_full_queue_and_all_detection_signatures() {
+    let mut runtime = runtime();
+    let now = 1_700_000_000;
+    let signatures: Vec<String> = (0..514).map(|i| format!("signature-{i:04}")).collect();
+    let mut engine = detection::DetectionEngine::default_with_rules();
+    engine.layer1.load_string_signatures(signatures.clone());
+    engine.layer1.load_ips(vec!["192.0.2.123".to_string()]);
+    runtime.detection_state = crate::detection_state::SharedDetectionState::new(engine, None);
+    for i in 0..511 {
+        runtime.buffer_ioc_signal(format!("old-ioc-{i}"), "domain".into(), "high", now);
+    }
+    queue_event(&mut runtime);
+    runtime.raw_event_backlog.back_mut().unwrap().payload = format!(
+        "path=/synthetic/fanout;cmdline={};ppid=1;comm=fanout;parent_comm=init;dst_ip=192.0.2.123",
+        signatures.join(" ")
+    );
+    let evaluation = runtime.evaluate_tick(now).unwrap().unwrap();
+    assert!(evaluation.detection_outcome.signals.z1_exact_ioc);
+    assert_eq!(
+        evaluation.detection_outcome.layer1.matched_signatures,
+        signatures
+    );
+    // The full detection remains intact; only the campaign upload side queue is bounded.
+    assert_eq!(
+        runtime
+            .ioc_signal_buffer
+            .iter()
+            .filter(|s| s.ioc_value.starts_with("old-ioc-"))
+            .count(),
+        511
+    );
+    assert_eq!(runtime.ioc_signal_buffer.len(), 511 + 32);
+    for signature in signatures {
+        assert!(evaluation.event_envelope.payload_json.contains(&signature));
+    }
+}
+
 fn prepare_tick(runtime: &mut AgentRuntime, now: i64) {
     runtime.last_heartbeat_attempt_unix = Some(now);
     runtime.last_compliance_attempt_unix = Some(now);
@@ -206,42 +286,79 @@ async fn check_terminal_command_order(success: bool) {
         .contains(&"terminal-restart".to_string()));
 }
 
-#[tokio::test]
-async fn sqlite_failed_send_requeues_old_batch_before_new_tick_overflow() {
-    let mut runtime = runtime();
+#[test]
+fn sqlite_fallback_is_heartbeat_visible() {
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "sqlite".to_string();
+    // Both the invalid database directory and its parent belong to this test.
+    let fixture = reviewfix_sqlite_dir();
+    let invalid_db = fixture.join("invalid.db");
+    std::fs::create_dir(&invalid_db).unwrap();
+    cfg.offline_buffer_path = invalid_db.to_string_lossy().into_owned();
+    let mut runtime = AgentRuntime::new(cfg).unwrap();
+    assert!(matches!(
+        runtime.buffer,
+        grpc_client::EventBuffer::Memory(_)
+    ));
+    assert!(runtime
+        .build_heartbeat_runtime_payload("active")
+        .status
+        .last_detection
+        .contains("offline_buffer_volatile_fallback=true"));
+    runtime.config.offline_buffer_backend = "memory".to_string();
+    assert!(runtime
+        .build_heartbeat_runtime_payload("active")
+        .status
+        .last_detection
+        .contains("offline_buffer_volatile_fallback=false"));
+    drop(runtime);
+    std::fs::remove_dir_all(fixture).unwrap();
+}
+
+fn reviewfix_sqlite_dir() -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!(
-        "eguard-reviewfix-fifo-{}-{}.db",
+        "eguard-reviewfix-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos()
     ));
+    std::fs::create_dir(&path).unwrap();
+    path
+}
+
+#[tokio::test]
+async fn sqlite_failed_send_preserves_old_tail_before_new_tick_overflow() {
+    let mut runtime = runtime();
+    let fixture = reviewfix_sqlite_dir();
+    let path = fixture.join("offline.db");
     runtime.buffer =
         grpc_client::EventBuffer::sqlite(path.to_str().unwrap(), 16 * 1024 * 1024).unwrap();
-    for i in 0..EVENT_BATCH_SIZE {
+    // More than a batch exposes destructive drain/requeue's old-tail inversion.
+    for i in 0..EVENT_BATCH_SIZE + 2 {
         runtime.buffer.enqueue(event(i as i64)).unwrap();
     }
     runtime
         .flush_event_batch(
-            (EVENT_BATCH_SIZE..EVENT_BATCH_SIZE + 3)
+            (EVENT_BATCH_SIZE + 2..EVENT_BATCH_SIZE + 5)
                 .map(|i| event(i as i64))
                 .collect(),
         )
         .await
         .unwrap();
     assert_eq!(runtime.consecutive_send_failures, 1);
-    let events = runtime.buffer.drain_batch(EVENT_BATCH_SIZE + 3).unwrap();
+    let events = runtime.buffer.drain_batch(EVENT_BATCH_SIZE + 5).unwrap();
     assert_eq!(
         events.iter().map(|e| e.created_at_unix).collect::<Vec<_>>(),
-        (0..EVENT_BATCH_SIZE as i64 + 3).collect::<Vec<_>>()
+        (0..EVENT_BATCH_SIZE as i64 + 5).collect::<Vec<_>>()
     );
     drop(runtime);
-    let _ = std::fs::remove_file(path);
+    std::fs::remove_dir_all(fixture).unwrap();
 }
 
 #[tokio::test]
-async fn failed_send_attempts_all_requeues_and_counts_failure_before_recovery() {
+async fn failed_send_attempts_all_current_enqueues_and_counts_failure_before_recovery() {
     let mut runtime = runtime();
     runtime.consecutive_send_failures = DEGRADE_AFTER_SEND_FAILURES - 1;
     runtime.buffer_enqueue_failure_at = Some(1);
@@ -509,4 +626,191 @@ async fn drain_stops_at_half_ioc_capacity() {
     assert_eq!(runtime.raw_event_backlog.len(), 1);
     assert_eq!(runtime.ioc_signal_buffer.len(), IOC_SIGNAL_BUFFER_CAP / 2);
     assert_eq!(runtime.ioc_signal_buffer[0].ioc_value, "ioc-0");
+}
+
+#[tokio::test]
+async fn connected_failed_send_preserves_oldest_buffered_sentinels() {
+    let mut runtime = runtime();
+    let now = 1_700_000_000;
+    prepare_tick(&mut runtime, now);
+    runtime.consecutive_send_failures = 1;
+    runtime.client.set_online(true);
+
+    // Size the cap for ten real evaluations, then fill 90% with sentinels.
+    queue_event(&mut runtime);
+    let sample = runtime.evaluate_tick(now).unwrap().unwrap().event_envelope;
+    let event_bytes = grpc_client::estimate_event_size(&sample);
+    let cap = event_bytes * 10;
+    runtime.config.offline_buffer_cap_bytes = cap;
+    runtime.buffer = grpc_client::EventBuffer::memory(cap);
+    for timestamp in 0..9 {
+        let mut sentinel = sample.clone();
+        sentinel.created_at_unix = timestamp;
+        runtime.buffer.enqueue(sentinel).unwrap();
+    }
+    assert_eq!(runtime.buffer.pending_bytes(), cap * 90 / 100);
+    for _ in 0..100 {
+        queue_event(&mut runtime);
+    }
+
+    // The first evaluation fits; even one additional envelope evicts a sentinel.
+    // Real refused sends must not consume the drain's test budget.
+    runtime.telemetry_eval_budget_override = Some(std::time::Duration::from_secs(3600));
+    runtime.tick(now).await.unwrap();
+
+    let retained = runtime.buffer.drain_batch(100).unwrap();
+    assert_eq!(
+        retained
+            .iter()
+            .take(9)
+            .map(|e| e.created_at_unix)
+            .collect::<Vec<_>>(),
+        (0..9).collect::<Vec<_>>(),
+        "additional degraded evaluations must not evict the oldest telemetry"
+    );
+    assert!(
+        !runtime.raw_event_backlog.is_empty(),
+        "drain must stop early"
+    );
+}
+
+#[test]
+fn oversized_compliance_policy_keeps_dedupe_across_evaluations() {
+    for count in [
+        COMPLIANCE_ALERT_STATE_LIMIT * 2 + 10,
+        COMPLIANCE_ALERT_STATE_LIMIT + 10,
+    ] {
+        let mut runtime = runtime();
+        let result = ComplianceResult {
+            status: "non_compliant".into(),
+            detail: String::new(),
+            checks: (0..count)
+                .map(|i| {
+                    serde_json::from_value(serde_json::json!({
+                        "check_id": format!("check-{i}"), "check_type": "package",
+                        "status": "non_compliant", "detail": "missing"
+                    }))
+                    .unwrap()
+                })
+                .collect(),
+        };
+        let mut ids = std::collections::HashSet::new();
+        for _ in 0..4 {
+            let alerts = runtime.collect_compliance_alerts(&result, 123);
+            assert!(alerts.len() <= COMPLIANCE_ALERT_STATE_LIMIT);
+            for alert in alerts {
+                let payload: serde_json::Value = serde_json::from_str(&alert.payload_json).unwrap();
+                assert!(
+                    ids.insert(payload["mdm"]["check_id"].as_str().unwrap().to_owned()),
+                    "persistent failures must be emitted exactly once, not regenerated"
+                );
+            }
+        }
+        assert_eq!(ids.len(), count, "overflow must be deferred, never lost");
+    }
+}
+
+#[tokio::test]
+async fn telemetry_queue_push_does_not_change_send_work_metric() {
+    let mut runtime = runtime();
+    prepare_tick(&mut runtime, 123);
+    queue_event(&mut runtime);
+    let evaluation = runtime.evaluate_tick(123).unwrap().unwrap();
+    runtime.tick_telemetry = Some(Vec::new());
+    runtime.metrics.last_send_event_batch_micros = u64::MAX;
+    runtime
+        .queue_connected_telemetry(Some(&evaluation))
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime.metrics.last_send_event_batch_micros,
+        u64::MAX,
+        "queueing is not transport work"
+    );
+}
+
+#[tokio::test]
+async fn connected_failed_send_drain_stage_preserves_sentinels() {
+    let mut runtime = runtime();
+    let now = 1_700_000_000;
+    prepare_tick(&mut runtime, now);
+    runtime.consecutive_send_failures = 1;
+    runtime.client.set_online(true);
+
+    // Size the cap for twenty real evaluations, then fill 85% with sentinels.
+    queue_event(&mut runtime);
+    let sample = runtime.evaluate_tick(now).unwrap().unwrap().event_envelope;
+    let event_bytes = grpc_client::estimate_event_size(&sample);
+    let cap = event_bytes * 20;
+    runtime.config.offline_buffer_cap_bytes = cap;
+    runtime.buffer = grpc_client::EventBuffer::memory(cap);
+    for timestamp in 0..17 {
+        let mut sentinel = sample.clone();
+        sentinel.created_at_unix = timestamp;
+        runtime.buffer.enqueue(sentinel).unwrap();
+    }
+    assert_eq!(runtime.buffer.pending_bytes(), cap * 85 / 100);
+    for _ in 0..100 {
+        queue_event(&mut runtime);
+    }
+
+    // Isolate the additional-evaluation phase from unrelated control-plane latency.
+    runtime.tick_telemetry = Some(Vec::new());
+    runtime
+        .run_additional_telemetry_evaluations(now, std::time::Instant::now())
+        .await
+        .unwrap();
+    let batch = runtime.tick_telemetry.take().unwrap();
+    runtime.flush_event_batch(batch).await.unwrap();
+
+    let retained = runtime.buffer.drain_batch(100).unwrap();
+    assert_eq!(
+        retained
+            .iter()
+            .take(17)
+            .map(|e| e.created_at_unix)
+            .collect::<Vec<_>>(),
+        (0..17).collect::<Vec<_>>(),
+        "additional degraded evaluations must not evict the oldest telemetry"
+    );
+    assert!(
+        !runtime.raw_event_backlog.is_empty(),
+        "drain must stop early"
+    );
+}
+
+#[test]
+fn compliance_policy_transition_prunes_full_old_context() {
+    let mut runtime = runtime();
+    let result = ComplianceResult {
+        status: "non_compliant".into(),
+        detail: String::new(),
+        checks: (0..COMPLIANCE_ALERT_STATE_LIMIT)
+            .map(|i| {
+                serde_json::from_value(serde_json::json!({
+                    "check_id": format!("check-{i}"), "check_type": "package",
+                    "status": "non_compliant", "detail": "missing"
+                }))
+                .unwrap()
+            })
+            .collect(),
+    };
+    assert_eq!(
+        runtime.collect_compliance_alerts(&result, 123).len(),
+        COMPLIANCE_ALERT_STATE_LIMIT
+    );
+    runtime.compliance_policy_id = "replacement".into();
+    runtime.compliance_policy_version = "replacement-version".into();
+    runtime.compliance_policy_hash = "replacement-hash".into();
+    assert_eq!(
+        runtime.collect_compliance_alerts(&result, 123).len(),
+        COMPLIANCE_ALERT_STATE_LIMIT,
+        "a full previous policy must not suppress new policy failures"
+    );
+    assert_eq!(
+        runtime.compliance_alert_state.len(),
+        COMPLIANCE_ALERT_STATE_LIMIT,
+        "obsolete policy dedupe entries must be pruned"
+    );
+    assert!(runtime.collect_compliance_alerts(&result, 123).is_empty());
 }
