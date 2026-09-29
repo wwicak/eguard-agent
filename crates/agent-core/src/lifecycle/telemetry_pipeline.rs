@@ -808,11 +808,12 @@ impl AgentRuntime {
 
     fn process_generation(&self, pid: u32, start_ns: Option<u64>) -> Option<ProcessGeneration> {
         if self.uses_windows_generations() {
+            // A delayed generationless 4688 record may name a reused PID. Live
+            // identity alone cannot bind that record to its original child.
+            let emitted = start_ns?;
             // Always revalidate live identity: ProcessStop can be lost to ETW backpressure.
             let current = self.internal_process_start_time(pid)?;
-            return start_ns
-                .is_none_or(|emitted| emitted == current)
-                .then_some(ProcessGeneration::WindowsNs(current));
+            return (emitted == current).then_some(ProcessGeneration::WindowsNs(current));
         }
         start_ns.map(ProcessGeneration::BootNs).or_else(|| {
             self.internal_process_start_time(pid)

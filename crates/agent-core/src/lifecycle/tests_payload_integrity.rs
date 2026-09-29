@@ -301,6 +301,35 @@ fn windows_direct_child_unknown_parent_generation_is_suppressed() {
 }
 
 #[test]
+fn windows_generationless_direct_child_does_not_cache_reused_pid() {
+    let mut runtime = runtime();
+    runtime.windows_process_generations = true;
+    // A delayed Security 4688 record names an exited helper's PID, now reused.
+    runtime.internal_process_start_time_reader = Some(|_| Some(200));
+    let mut event = RawEvent {
+        pid_start_ns: None,
+        ppid_start_ns: None,
+        pid: 4_000_070,
+        uid: 0,
+        ts_ns: 1,
+        event_type: crate::platform::EventType::ProcessExec,
+        payload: format!("ppid={}", std::process::id()),
+    };
+    assert!(runtime.should_suppress_internal_process_event(&event));
+    assert!(!runtime
+        .suppressed_internal_process_pids
+        .contains_key(&event.pid));
+    // Telemetry from the replacement and its generation-validated child stays visible.
+    event.pid_start_ns = Some(200);
+    event.payload = "ppid=4000072".into();
+    assert!(!runtime.should_suppress_internal_process_event(&event));
+    event.pid = 4_000_071;
+    event.ppid_start_ns = Some(200);
+    event.payload = "ppid=4000070".into();
+    assert!(!runtime.should_suppress_internal_process_event(&event));
+}
+
+#[test]
 fn windows_ordinary_events_do_not_query_live_processes() {
     let mut runtime = runtime();
     runtime.windows_process_generations = true;

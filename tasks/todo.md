@@ -554,4 +554,13 @@ Residuals: at-least-once duplicates after send-before-ack crashes; memory fallba
 - [x] Cache own generation at startup; exempt only direct children with unknown/matching parent.
 - [x] Validate required suites, cross-check, format; commit and export patch/status.
 
-Review: Windows parent-generation filter rejected direct children before the own-PID check. Direct edges now use cached own identity and tolerate unknown parent identity; descendant/live-generation policy remains unchanged. Tests: payload integrity 12, reviewfix 21, eBPF policy 111, priority 7, platform-windows 120 passed; Windows GNU cross-check and fmt passed. Native Windows rerun and macOS TASK_AUDIT_TOKEN validation remain outstanding. Logs exported to followups/w-validation.
+Review: Windows parent-generation filter rejected direct children before the own-PID check. Direct edges now use cached own identity and tolerate unknown parent identity. Second-pass correction: Windows ancestry caching now requires an emitted child generation that matches live identity; querying a generationless delayed event's PID could otherwise bless an unrelated replacement. Tests: payload integrity 12, reviewfix 21, eBPF policy 111, priority 7, platform-windows 120 passed; Windows GNU cross-check and fmt passed. Native Windows rerun and macOS TASK_AUDIT_TOKEN validation remain outstanding. Logs exported to followups/w-validation.
+
+### Second-pass PID-reuse blocker
+- [x] Reproduce generationless Security 4688 PID reuse with a live replacement.
+- [x] Require emitted Windows child generation before caching ancestry; preserve direct-event suppression.
+- [x] Run requested offline suites/cross-check/format and refresh export/status.
+
+Proof: new windows_generationless_direct_child_does_not_cache_reused_pid fails on 60745ac at the cache-absence assertion (review-fail.log). Both generations are absent and the live reader returns replacement generation 200. Fixed test proves the direct event is dropped while replacement telemetry and its generation-validated descendant remain visible. Windows process_generation now rejects missing emitted identity before any live lookup; matching emitted/live generations still seed ancestry. Non-Windows policy is unchanged.
+
+Validation: payload integrity 13/13, reviewfix 21/21, eBPF policy 111/111, priority 7/7, platform-windows 120/120; Windows GNU platform-windows + agent-core check, workspace fmt and diff checks passed. Logs: followups/w-validation/review-*.log. Original w-start positive fail proof remains preserved. Residuals: no native Windows rerun; macOS runtime validation outstanding; pre-existing Windows PPID spoofing assumption remains. Generationless children cannot seed descendant suppression, deliberately preferring visibility over false suppression.
