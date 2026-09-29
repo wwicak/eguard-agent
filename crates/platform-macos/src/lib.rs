@@ -375,7 +375,23 @@ pub fn enrich_event(raw: RawEvent) -> EnrichedEvent {
 }
 
 pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> EnrichedEvent {
-    let payload_meta = parse_payload_metadata(&raw.event_type, &raw.payload);
+    // Write flags remain in the legacy transport.
+    let mut payload_meta = parse_payload_metadata(&raw.event_type, &raw.payload);
+    payload_meta.file_path = raw.fields.path.clone().or(payload_meta.file_path);
+    payload_meta.file_path_secondary = raw
+        .fields
+        .secondary_path
+        .clone()
+        .or(payload_meta.file_path_secondary);
+    payload_meta.command_line_hint = raw
+        .fields
+        .cmdline
+        .clone()
+        .or(payload_meta.command_line_hint);
+    payload_meta.dst_ip = raw.fields.dst_ip.clone().or(payload_meta.dst_ip);
+    payload_meta.dst_port = raw.fields.dst_port.or(payload_meta.dst_port);
+    payload_meta.dst_domain = raw.fields.domain.clone().or(payload_meta.dst_domain);
+    payload_meta.event_size = raw.fields.size.or(payload_meta.event_size);
 
     if matches!(raw.event_type, EventType::ProcessExit) {
         let _ = cache.evict_process(raw.pid);
@@ -475,6 +491,27 @@ struct PayloadMetadata {
     dst_domain: Option<String>,
     file_write: bool,
     event_size: Option<u64>,
+}
+
+/// Only trusted eslogger decoder output may supply typed hints.
+pub(crate) fn decoded_fields(event_type: &EventType, payload: &str) -> RawEventFields {
+    if payload.trim_start().starts_with(['{', '[']) {
+        return RawEventFields::default();
+    }
+    let meta = parse_payload_metadata(event_type, payload);
+    let kv = parse_kv_fields(payload);
+    RawEventFields {
+        flags: kv.get("flags").and_then(|value| value.parse().ok()),
+        subject: kv.get("subject").cloned(),
+        path: meta.file_path,
+        secondary_path: meta.file_path_secondary,
+        cmdline: meta.command_line_hint,
+        dst_ip: meta.dst_ip,
+        dst_port: meta.dst_port,
+        domain: meta.dst_domain,
+        size: meta.event_size,
+        ..Default::default()
+    }
 }
 
 fn parse_payload_metadata(event_type: &EventType, payload: &str) -> PayloadMetadata {

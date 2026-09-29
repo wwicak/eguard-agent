@@ -144,7 +144,7 @@ fn decode_kernel_process_versioned(
             }
 
             Some(RawEvent {
-                fields: Default::default(),
+                fields: crate::decoded_fields(&EventType::ProcessExec, &payload),
                 pid_start_ns: if unknown {
                     None
                 } else {
@@ -186,7 +186,7 @@ fn decode_kernel_process_versioned(
             }
 
             Some(RawEvent {
-                fields: Default::default(),
+                fields: crate::decoded_fields(&EventType::ProcessExit, &payload),
                 pid_start_ns: if unknown {
                     None
                 } else {
@@ -218,7 +218,7 @@ fn decode_kernel_process_versioned(
 /// We also retain legacy classic-provider decoding (`12/15/14/26`) for compatibility.
 fn decode_kernel_file(opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Option<RawEvent> {
     let raw_event = |event_type: EventType, payload: String| RawEvent {
-        fields: Default::default(),
+        fields: crate::decoded_fields(&event_type, &payload),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type,
@@ -396,7 +396,7 @@ fn decode_kernel_network(_opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Opti
         let payload =
             format!("src_ip={src_ip};src_port={src_port};dst_ip={dst_ip};dst_port={dst_port}");
         return Some(RawEvent {
-            fields: Default::default(),
+            fields: crate::decoded_fields(&EventType::TcpConnect, &payload),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: EventType::TcpConnect,
@@ -421,7 +421,7 @@ fn decode_dns_client(_opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Option<R
         _ => return None, // No useful data to emit.
     };
     Some(RawEvent {
-        fields: Default::default(),
+        fields: crate::decoded_fields(&EventType::DnsQuery, &payload),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: EventType::DnsQuery,
@@ -449,7 +449,7 @@ fn decode_image_load(_opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Option<R
         _ => return None,
     };
     Some(RawEvent {
-        fields: Default::default(),
+        fields: crate::decoded_fields(&EventType::ModuleLoad, &payload),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: EventType::ModuleLoad,

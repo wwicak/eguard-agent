@@ -814,6 +814,9 @@ fn env_enabled(name: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
+
 fn parse_event_line(raw_line: &str) -> Option<super::RawEvent> {
     if let Ok(event) = serde_json::from_str::<super::RawEvent>(raw_line) {
         return Some(event);
@@ -844,7 +847,7 @@ fn decode_event_value(value: &Value) -> Option<super::RawEvent> {
     let ppid_start_ns = first_u64(process, &[&["parent_audit_token", "pidversion"]]);
 
     Some(super::RawEvent {
-        fields: Default::default(),
+        fields: crate::decoded_fields(&event_type, &payload),
         pid_start_ns,
         ppid_start_ns,
         event_type,

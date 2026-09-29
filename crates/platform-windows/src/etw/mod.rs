@@ -2,6 +2,9 @@
 //!
 //! Provides real-time kernel and user-mode event collection via ETW sessions.
 
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
+
 mod audit;
 mod codec;
 mod consumer;

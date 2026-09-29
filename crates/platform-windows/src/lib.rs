@@ -657,7 +657,36 @@ pub fn enrich_event(raw: RawEvent) -> EnrichedEvent {
 }
 
 pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> EnrichedEvent {
-    let payload_meta = parse_payload_metadata(&raw.event_type, &raw.payload);
+    // File-object correlation and write flags still live in the legacy transport.
+    let mut payload_meta = parse_payload_metadata(&raw.event_type, &raw.payload);
+    if matches!(
+        raw.event_type,
+        EventType::ProcessExec | EventType::ProcessExit
+    ) {
+        payload_meta.process_path_hint = raw.fields.path.clone().or(payload_meta.process_path_hint);
+    } else {
+        payload_meta.file_path = raw.fields.path.clone().or(payload_meta.file_path);
+    }
+    payload_meta.file_path_secondary = raw
+        .fields
+        .secondary_path
+        .clone()
+        .or(payload_meta.file_path_secondary);
+    payload_meta.command_line_hint = raw
+        .fields
+        .cmdline
+        .clone()
+        .or(payload_meta.command_line_hint);
+    payload_meta.parent_pid = raw.fields.ppid.or(payload_meta.parent_pid);
+    payload_meta.parent_process_hint = raw
+        .fields
+        .parent_comm
+        .clone()
+        .or(payload_meta.parent_process_hint);
+    payload_meta.dst_ip = raw.fields.dst_ip.clone().or(payload_meta.dst_ip);
+    payload_meta.dst_port = raw.fields.dst_port.or(payload_meta.dst_port);
+    payload_meta.dst_domain = raw.fields.domain.clone().or(payload_meta.dst_domain);
+    payload_meta.event_size = raw.fields.size.or(payload_meta.event_size);
 
     if matches!(raw.event_type, EventType::ProcessExit) {
         let cached = cache.process_cache.peek(&raw.pid).cloned();
@@ -820,6 +849,28 @@ struct PayloadMetadata {
     dst_domain: Option<String>,
     file_write: bool,
     event_size: Option<u64>,
+}
+
+/// Derive trusted decoder hints using exactly the legacy transport normalization.
+/// Replay and binary fallback paths deliberately do not call this helper.
+pub(crate) fn decoded_fields(event_type: &EventType, payload: &str) -> RawEventFields {
+    let meta = parse_payload_metadata(event_type, payload);
+    let kv = parse_kv_fields(payload);
+    RawEventFields {
+        module: kv.get("module").cloned(),
+        src_ip: kv.get("src_ip").cloned(),
+        src_port: kv.get("src_port").and_then(|value| value.parse().ok()),
+        path: meta.process_path_hint.or(meta.file_path),
+        secondary_path: meta.file_path_secondary,
+        cmdline: meta.command_line_hint,
+        parent_comm: meta.parent_process_hint,
+        ppid: meta.parent_pid,
+        dst_ip: meta.dst_ip,
+        dst_port: meta.dst_port,
+        domain: meta.dst_domain,
+        size: meta.event_size,
+        ..Default::default()
+    }
 }
 
 fn parse_payload_metadata(event_type: &EventType, payload: &str) -> PayloadMetadata {
