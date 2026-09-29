@@ -1,7 +1,7 @@
 use crate::debugger::{detect_debugger, DebuggerCheckConfig, DebuggerObservation, DebuggerSignal};
 use crate::integrity::{hash_file_sha256, measure_self_integrity, IntegrityMeasurement};
 use sha2::{Digest, Sha256};
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
 
 const COMPILETIME_EXPECTED_SHA256: Option<&str> =
@@ -80,6 +80,65 @@ impl RuntimeBaseline {
     }
 }
 
+fn normalize_path(path: &Path) -> PathBuf {
+    if let Ok(canonical) = std::fs::canonicalize(path) {
+        return canonical;
+    }
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if normalized.file_name().is_some_and(|name| name != "..") {
+                    normalized.pop();
+                } else if !normalized.has_root() {
+                    normalized.push(component);
+                }
+            }
+            _ => normalized.push(component),
+        }
+    }
+    normalized
+}
+
+fn normalize_config_paths(paths: &[String]) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for path in paths
+        .iter()
+        .map(|path| path.trim())
+        .filter(|path| !path.is_empty())
+    {
+        let path = normalize_path(Path::new(path))
+            .to_string_lossy()
+            .into_owned();
+        if !normalized.contains(&path) {
+            normalized.push(path);
+        }
+    }
+    normalized
+}
+
+fn same_file(left: &Path, right: &Path) -> bool {
+    if normalize_path(left) == normalize_path(right) {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let (Ok(left), Ok(right)) = (std::fs::metadata(left), std::fs::metadata(right)) {
+            return left.dev() == right.dev() && left.ino() == right.ino();
+        }
+    }
+    false
+}
+
 fn capture_runtime_hashes(paths: &[String]) -> Vec<RuntimeHash> {
     let mut out = Vec::new();
     for path in paths {
@@ -113,7 +172,8 @@ impl SelfProtectEngine {
         Self::new(config)
     }
 
-    pub fn new(config: SelfProtectConfig) -> Self {
+    pub fn new(mut config: SelfProtectConfig) -> Self {
+        config.runtime_config_paths = normalize_config_paths(&config.runtime_config_paths);
         let runtime_baseline = OnceLock::new();
         if !env_flag_enabled("EGUARD_SELF_PROTECT_LAZY_BASELINE") {
             let _ = runtime_baseline.set(RuntimeBaseline::capture(&config));
@@ -147,16 +207,21 @@ impl SelfProtectEngine {
             .runtime_baseline
             .get_mut()
             .expect("initialized baseline");
-        let entry = baseline
+        // Resolve identity before the callback, which may replace the inode.
+        let entries: Vec<usize> = baseline
             .config
             .iter()
-            .position(|entry| Path::new(&entry.path) == path);
+            .enumerate()
+            .filter_map(|(index, entry)| same_file(Path::new(&entry.path), path).then_some(index))
+            .collect();
         let existing = match std::fs::read(path) {
             Ok(bytes) => bytes,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound && entry.is_none() => Vec::new(),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound && entries.is_empty() => {
+                Vec::new()
+            }
             Err(err) => return Err(format!("read existing config {}: {}", path.display(), err)),
         };
-        if let Some(index) = entry {
+        for &index in &entries {
             let observed = format!("{:x}", Sha256::digest(&existing));
             if observed != baseline.config[index].sha256_hex {
                 return Err(format!(
@@ -167,16 +232,18 @@ impl SelfProtectEngine {
         }
         let bytes = write(&existing)?;
         let sha256_hex = format!("{:x}", Sha256::digest(&bytes));
-        if let Some(index) = entry {
-            baseline.config[index].sha256_hex = sha256_hex;
+        if !entries.is_empty() {
+            for index in entries {
+                baseline.config[index].sha256_hex = sha256_hex.clone();
+            }
         } else if self
             .config
             .runtime_config_paths
             .iter()
-            .any(|p| Path::new(p.trim()) == path)
+            .any(|p| same_file(Path::new(p), path))
         {
             baseline.config.push(RuntimeHash {
-                path: path.to_string_lossy().into_owned(),
+                path: normalize_path(path).to_string_lossy().into_owned(),
                 sha256_hex,
             });
         }
@@ -504,7 +571,7 @@ fn env_flag_enabled(name: &str) -> bool {
 mod tests {
     use super::*;
 
-    fn config_without_runtime_paths() -> SelfProtectConfig {
+    pub(super) fn config_without_runtime_paths() -> SelfProtectConfig {
         SelfProtectConfig {
             expected_integrity_sha256_hex: None,
             debugger: DebuggerCheckConfig {
@@ -557,3 +624,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod tests_alias;
