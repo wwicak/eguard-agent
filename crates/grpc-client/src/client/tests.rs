@@ -1,5 +1,35 @@
 use super::*;
 use crate::types::ComplianceCheckEnvelope;
+
+#[test]
+fn print_metadata_survives_grpc_event_conversion() {
+    let payload = serde_json::json!({"dlp": {
+        "channel": "printing", "action": "audit", "policy_id": "print_job_observed",
+        "job_id": "42", "printer": "Disposable", "client": "TEST-PC", "port": "PORTPROMPT:",
+        "detections": [{"rule_id": "print_job_observed", "action": "audit"}]
+    }})
+    .to_string();
+    let event = EventEnvelope {
+        agent_id: "synthetic".into(),
+        event_type: "dlp_detection".into(),
+        severity: "info".into(),
+        rule_name: "print_job_observed".into(),
+        payload_json: payload.clone(),
+        created_at_unix: 1,
+    };
+    let pb = to_pb_telemetry_event(&event);
+    assert_eq!(pb.payload_json, payload);
+    assert!(
+        pb.detail.is_none(),
+        "typed DLP detail would discard print metadata on the deployed server"
+    );
+    let decoded: serde_json::Value = serde_json::from_str(&pb.payload_json).unwrap();
+    assert_eq!(decoded["dlp"]["job_id"], "42");
+    assert_eq!(decoded["dlp"]["printer"], "Disposable");
+    assert_eq!(decoded["dlp"]["client"], "TEST-PC");
+    assert_eq!(decoded["dlp"]["port"], "PORTPROMPT:");
+}
+
 use hyper_util::rt::TokioIo;
 use std::collections::HashMap;
 use std::pin::Pin;

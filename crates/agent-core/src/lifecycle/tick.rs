@@ -76,6 +76,83 @@ fn dlp_operation(event: &TelemetryEvent) -> &'static str {
     }
 }
 
+fn print_dlp_metadata(payload: &str) -> serde_json::Value {
+    let field = |name: &str| {
+        payload
+            .split(';')
+            .filter_map(|part| part.split_once('='))
+            .find(|(key, _)| key.trim().eq_ignore_ascii_case(name))
+            .map(|(_, value)| {
+                value
+                    .replace("%3B", ";")
+                    .replace("%2C", ",")
+                    .replace("%25", "%")
+            })
+            .unwrap_or_default()
+    };
+    serde_json::json!({
+        "detected": true,
+        "channel": "printing",
+        "operation": "print",
+        "action": "audit",
+        "policy_id": "print_job_observed",
+        "job_id": field("job_id"),
+        "document": field("document"),
+        "user": field("user"),
+        "client": field("client"),
+        "printer": field("printer"),
+        "port": field("port"),
+        "application": serde_json::Value::Null,
+        "status": field("status"),
+        "bytes": field("bytes").parse::<u64>().unwrap_or_default(),
+        "pages": field("pages").parse::<u64>().unwrap_or_default(),
+        "detections": [{
+            "rule_id": "print_job_observed",
+            "severity": "info",
+            "action": "audit",
+            "redacted_evidence": "[METADATA ONLY]"
+        }]
+    })
+}
+
+fn is_print_job(event_type: &crate::platform::EventType) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        matches!(event_type, crate::platform::EventType::PrintJob)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = event_type;
+        false
+    }
+}
+
+#[cfg(test)]
+mod print_tests {
+    use super::print_dlp_metadata;
+
+    #[test]
+    fn builds_metadata_only_print_dlp_payload() {
+        let metadata = print_dlp_metadata(
+            r"job_id=42;document=Quarterly Report.pdf;user=CONTOSO\alice;client=TEST-PC;printer=Disposable Test Printer;port=PORTPROMPT:;status=completed;bytes=4096;pages=3",
+        );
+
+        assert_eq!(metadata["channel"], "printing");
+        assert_eq!(metadata["operation"], "print");
+        assert_eq!(metadata["action"], "audit");
+        assert_eq!(metadata["printer"], "Disposable Test Printer");
+        assert_eq!(metadata["client"], "TEST-PC");
+        assert_eq!(metadata["port"], "PORTPROMPT:");
+        assert_eq!(metadata["user"], r"CONTOSO\alice");
+        assert_eq!(metadata["document"], "Quarterly Report.pdf");
+        assert_eq!(metadata["job_id"], "42");
+        assert_eq!(metadata["status"], "completed");
+        assert_eq!(metadata["pages"], 3);
+        assert!(metadata.get("spool_content").is_none());
+        assert!(metadata.get("command_line").is_none());
+    }
+}
+
 fn dlp_channel(event: &TelemetryEvent) -> &'static str {
     if let Some(path) = event.file_path.as_deref() {
         if path.starts_with("\\\\") || path.starts_with("//") {
@@ -430,10 +507,11 @@ impl AgentRuntime {
         let action = dlp_action.unwrap_or_else(|| plan_action(confidence, &response_cfg));
         clear_stale_hash_for_dlp_quarantine(&mut detection_event, dlp_action);
 
-        if std::env::var("EGUARD_DEBUG_EVENT_LOG")
-            .ok()
-            .filter(|v| !v.trim().is_empty())
-            .is_some()
+        if !is_print_job(&enriched.event.event_type)
+            && std::env::var("EGUARD_DEBUG_EVENT_LOG")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+                .is_some()
         {
             info!(
                 event_class = ?detection_event.event_class,
@@ -466,22 +544,39 @@ impl AgentRuntime {
         self.metrics.telemetry_event_txn_total =
             self.metrics.telemetry_event_txn_total.saturating_add(1);
 
-        let mut event_envelope = self.build_event_envelope(
-            &enriched,
-            &detection_event,
-            &detection_outcome,
-            &event_txn,
-            confidence,
-            now_unix,
-        );
+        let mut event_envelope = if is_print_job(&enriched.event.event_type) {
+            // Do not build or debug-log the general EDR payload for print jobs.
+            grpc_client::EventEnvelope {
+                agent_id: self.config.agent_id.clone(),
+                event_type: "dlp_detection".to_string(),
+                severity: "info".to_string(),
+                rule_name: "print_job_observed".to_string(),
+                payload_json:
+                    serde_json::json!({"dlp": print_dlp_metadata(&enriched.event.payload)})
+                        .to_string(),
+                created_at_unix: now_unix,
+            }
+        } else {
+            self.build_event_envelope(
+                &enriched,
+                &detection_event,
+                &detection_outcome,
+                &event_txn,
+                confidence,
+                now_unix,
+            )
+        };
 
-        // Enrich envelope with detection results
-        event_envelope.event_type = detection_event.event_class.as_str().to_string();
-        event_envelope.severity = confidence_to_severity(confidence).to_string();
-        if let Some(rule_name) = Self::detection_rule_name(&detection_outcome) {
-            event_envelope.rule_name = rule_name;
+        if is_print_job(&enriched.event.event_type) {
+            self.last_dlp_detection = Some((now_unix, "print_job_observed".to_string()));
+        } else {
+            event_envelope.event_type = detection_event.event_class.as_str().to_string();
+            event_envelope.severity = confidence_to_severity(confidence).to_string();
+            if let Some(rule_name) = Self::detection_rule_name(&detection_outcome) {
+                event_envelope.rule_name = rule_name;
+            }
+            self.attach_dlp_matches(&mut event_envelope, &dlp_matches, &detection_event);
         }
-        self.attach_dlp_matches(&mut event_envelope, &dlp_matches, &detection_event);
 
         Ok(Some(TickEvaluation {
             detection_event,

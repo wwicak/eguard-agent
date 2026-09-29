@@ -25,9 +25,14 @@ impl AgentRuntime {
             );
         }
 
-        self.maybe_apply_auto_isolation(now_unix, evaluation);
-        self.enqueue_response_action_if_present(now_unix, evaluation);
-        self.enqueue_playbook_actions_if_present(now_unix, evaluation);
+        let audit_only = evaluation
+            .map(|item| is_audit_only_rule(&item.event_envelope.rule_name))
+            .unwrap_or(false);
+        if !audit_only {
+            self.maybe_apply_auto_isolation(now_unix, evaluation);
+            self.enqueue_response_action_if_present(now_unix, evaluation);
+            self.enqueue_playbook_actions_if_present(now_unix, evaluation);
+        }
         let executed = self.execute_response_backlog_budget(now_unix).await;
         let oldest_age_secs = self.response_queue_oldest_age_secs(now_unix);
 
@@ -488,6 +493,10 @@ impl AgentRuntime {
     }
 }
 
+fn is_audit_only_rule(rule_name: &str) -> bool {
+    rule_name == "print_job_observed"
+}
+
 fn is_linux_runtime_or_pseudo_path(path: &Path) -> bool {
     path == Path::new("/proc")
         || path.starts_with("/proc/")
@@ -513,6 +522,12 @@ mod tests {
         cfg.server_addr = "127.0.0.1:1".to_string();
         cfg.self_protection_integrity_check_interval_secs = 0;
         AgentRuntime::new(cfg).expect("runtime")
+    }
+
+    #[test]
+    fn print_job_rule_is_audit_only() {
+        assert!(is_audit_only_rule("print_job_observed"));
+        assert!(!is_audit_only_rule("malware_detected"));
     }
 
     #[test]

@@ -184,6 +184,8 @@ fn map_event_class(event_type: &EventType) -> &'static str {
         EventType::TcpConnect => "network_connect",
         EventType::DnsQuery => "dns_query",
         EventType::ModuleLoad => "module_load",
+        #[cfg(target_os = "windows")]
+        EventType::PrintJob => "alert",
         EventType::LsmBlock => "alert",
     }
 }
@@ -199,6 +201,8 @@ fn operation_from_event_type(event_type: &EventType) -> &'static str {
         EventType::TcpConnect => "tcp_connect",
         EventType::DnsQuery => "dns_query",
         EventType::ModuleLoad => "module_load",
+        #[cfg(target_os = "windows")]
+        EventType::PrintJob => "print",
         EventType::LsmBlock => "lsm_block",
     }
 }

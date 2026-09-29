@@ -39,6 +39,7 @@ pub enum EventType {
     TcpConnect,
     DnsQuery,
     ModuleLoad,
+    PrintJob,
     LsmBlock,
 }
 
@@ -795,6 +796,7 @@ fn parse_payload_metadata(event_type: &EventType, payload: &str) -> PayloadMetad
             .get("path")
             .or_else(|| fields.get("file"))
             .map(|value| normalize_windows_path(value)),
+        EventType::PrintJob => None,
         _ => None,
     };
 
@@ -972,6 +974,7 @@ fn parse_payload_fallback(event_type: &EventType, payload: &str) -> PayloadMetad
             file_path: Some(normalize_windows_path(payload)),
             ..PayloadMetadata::default()
         },
+        EventType::PrintJob => PayloadMetadata::default(),
         EventType::LsmBlock => PayloadMetadata {
             command_line_hint: Some(sanitize_windows_command_line(payload)),
             ..PayloadMetadata::default()

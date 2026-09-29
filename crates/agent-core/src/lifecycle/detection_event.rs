@@ -744,6 +744,8 @@ pub(super) fn map_event_class(event_type: &crate::platform::EventType) -> EventC
         crate::platform::EventType::TcpConnect => EventClass::NetworkConnect,
         crate::platform::EventType::DnsQuery => EventClass::DnsQuery,
         crate::platform::EventType::ModuleLoad => EventClass::ModuleLoad,
+        #[cfg(target_os = "windows")]
+        crate::platform::EventType::PrintJob => EventClass::Alert,
         crate::platform::EventType::LsmBlock => EventClass::Alert,
     }
 }

@@ -5,6 +5,7 @@
 mod audit;
 mod codec;
 mod consumer;
+mod print_eventlog;
 pub(crate) mod providers;
 mod security_auditing;
 mod security_eventlog;
@@ -25,6 +26,7 @@ pub struct EtwEngine {
     session: Option<EtwSession>,
     consumer: Option<EtwConsumer>,
     security_eventlog: Option<security_eventlog::SecurityEventLogReader>,
+    print_eventlog: Option<print_eventlog::PrintEventLogReader>,
     stats: EtwStats,
 }
 
@@ -41,6 +43,7 @@ impl EtwEngine {
             session: None,
             consumer: None,
             security_eventlog: None,
+            print_eventlog: None,
             stats: EtwStats::default(),
         }
     }
@@ -94,6 +97,7 @@ impl EtwEngine {
 
         self.consumer = Some(consumer);
         self.security_eventlog = Some(security_eventlog::SecurityEventLogReader::new());
+        self.print_eventlog = Some(print_eventlog::PrintEventLogReader::new());
         self.stats.providers_active = providers_enabled;
         self.session = Some(session);
 
@@ -118,6 +122,7 @@ impl EtwEngine {
                 .saturating_add(consumer.drops_count());
         }
         self.security_eventlog = None;
+        self.print_eventlog = None;
 
         self.stats.providers_active = 0;
         Ok(())
@@ -159,6 +164,14 @@ impl EtwEngine {
         } else {
             Vec::new()
         };
+
+        let print_budget = max_batch.saturating_sub(events.len()).min(32);
+        if let Some(reader) = self.print_eventlog.as_mut() {
+            match reader.poll_events(print_budget) {
+                Ok(print_events) => events.extend(print_events),
+                Err(err) => tracing::warn!(error = %err, "optional PrintService poll failed"),
+            }
+        }
 
         let etw_budget = max_batch.saturating_sub(events.len());
         if etw_budget > 0 {

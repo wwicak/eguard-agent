@@ -1130,11 +1130,14 @@ fn truncate_commands(mut commands: Vec<CommandEnvelope>, limit: usize) -> Vec<Co
 
 fn to_pb_telemetry_event(event: &EventEnvelope) -> pb::TelemetryEvent {
     let event_type = map_event_type(&event.event_type);
-    let detail = if event_type == pb::EventType::DlpDetection {
-        dlp_detail_from_payload(&event.payload_json, &event.rule_name)
-    } else {
-        None
-    };
+    // The deployed server replaces DLP payload_json with a lossy typed
+    // projection. Print metadata has no typed fields; keep its JSON intact.
+    let detail =
+        if event_type == pb::EventType::DlpDetection && event.rule_name != "print_job_observed" {
+            dlp_detail_from_payload(&event.payload_json, &event.rule_name)
+        } else {
+            None
+        };
     pb::TelemetryEvent {
         event_id: format!("{}-{}", event.agent_id, event.created_at_unix),
         agent_id: event.agent_id.clone(),

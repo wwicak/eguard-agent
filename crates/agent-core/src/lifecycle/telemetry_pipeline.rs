@@ -876,6 +876,8 @@ impl AgentRuntime {
             crate::platform::EventType::TcpConnect | crate::platform::EventType::DnsQuery => 1,
             crate::platform::EventType::ProcessExec => 2,
             crate::platform::EventType::ProcessExit => 2,
+            #[cfg(target_os = "windows")]
+            crate::platform::EventType::PrintJob => 0,
             crate::platform::EventType::LsmBlock => 1,
             // File mutations are the DLP classification target, so keep them in
             // the frontload tier even when the payload carries no path yet: a
