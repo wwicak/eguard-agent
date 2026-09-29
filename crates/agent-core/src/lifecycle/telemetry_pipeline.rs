@@ -16,26 +16,6 @@ const INTERNAL_PROCESS_TTL_NS: u64 = 15 * 60 * 1_000_000_000;
 const INTERNAL_PROCESS_PID_LIMIT: usize = 4_096;
 const TELEMETRY_SEND_TIMEOUT_MS: u64 = 5_000;
 
-// Bound pre-evaluation filtering, not ingress retention or priority sampling.
-pub(super) const RAW_FILTER_CANDIDATE_BUDGET: usize = 256;
-
-pub(super) enum RawDequeue {
-    Event(RawEvent),
-    Empty,
-    // No event selected within the budget, but raw candidates remain pending.
-    BudgetExhausted,
-}
-
-impl RawDequeue {
-    #[cfg(test)]
-    pub(super) fn expect(self, message: &str) -> RawEvent {
-        match self {
-            Self::Event(event) => event,
-            _ => panic!("{message}"),
-        }
-    }
-}
-
 impl AgentRuntime {
     pub(super) async fn run_connected_telemetry_stage(
         &mut self,
@@ -334,11 +314,11 @@ impl AgentRuntime {
         }
     }
 
-    pub(super) fn next_raw_event(&mut self) -> RawDequeue {
+    pub(super) fn next_raw_event(&mut self) -> Option<RawEvent> {
         self.next_raw_event_with_wait(true)
     }
 
-    pub(super) fn next_raw_event_with_wait(&mut self, allow_wait: bool) -> RawDequeue {
+    pub(super) fn next_raw_event_with_wait(&mut self, allow_wait: bool) -> Option<RawEvent> {
         self.refresh_strict_budget_mode();
         let timeout = if allow_wait && self.raw_event_backlog.is_empty() {
             self.adaptive_poll_timeout()
@@ -745,12 +725,12 @@ impl AgentRuntime {
         compute_sampling_stride(self.telemetry_backlog_depth(), self.recent_ebpf_drops)
     }
 
-    pub(super) fn dequeue_sampled_raw_event(&mut self, stride: usize) -> RawDequeue {
+    pub(super) fn dequeue_sampled_raw_event(&mut self, stride: usize) -> Option<RawEvent> {
         let stride = stride.max(1);
 
-        for _ in 0..RAW_FILTER_CANDIDATE_BUDGET {
+        loop {
             let Some(event) = self.raw_event_backlog.pop_front() else {
-                return RawDequeue::Empty;
+                return None;
             };
 
             if Self::is_agent_self_event(&event) {
@@ -771,12 +751,7 @@ impl AgentRuntime {
             }
 
             debug_trace_matching_raw_event("dequeued", &event);
-            return RawDequeue::Event(event);
-        }
-        if self.raw_event_backlog.is_empty() {
-            RawDequeue::Empty
-        } else {
-            RawDequeue::BudgetExhausted
+            return Some(event);
         }
     }
 

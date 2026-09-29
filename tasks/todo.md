@@ -1,11 +1,3 @@
-# a4r bounded dequeue follow-up
-
-- [x] Tag fa-start-a4r and inspect dequeue/tick ordering; leave ingest untouched.
-- [x] Add a 256-candidate dequeue budget and explicit exhaustion outcome.
-- [ ] Prove bounded tick/control-plane/event preservation and short-backlog regressions; demonstrate base failure.
-- [ ] Run offline validation and three interleaved benchmark rounds at batch 50/200.
-- [ ] Commit, export patch, append follow-up status and record residual risks.
-
 # a1-hygiene second-pass review
 
 - [x] Recheck the exact buffer acceptance/config contract and scan handler return API.
