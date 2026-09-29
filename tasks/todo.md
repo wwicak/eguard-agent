@@ -1,3 +1,13 @@
+# F21 second pass — batch recovery below watchdog budget
+
+- [x] Replace transaction-per-event recovery with FIFO 4096-row transactions and acknowledge only successful batches.
+- [x] Add 150,000-event (~80 MiB) persistence/order and <15s latency regressions, including the production tick.
+- [x] Prove baseline and pre-fix failures; run touched modules, required filters and formatting; export follow-up commit.
+
+Validation: near-capacity direct recovery fails against the first-pass implementation at 88.27s (60s watchdog), then passes with batching. The enlarged real-tick test transplanted unchanged into a start-tag archive fails at `real tick must retry the volatile fallback`. Final recovery suite 4/4 in 24.64s total (including durable-backlog prefill; each recovery itself <15s), tick 2/2, grpc buffer 18/18, required policy 111/111, reviewfix 21/21, payload integrity 12/12. Formatting and diff checks pass. Logs: /tmp/h5-second-*.log. All data fixtures create unique temporary directories; real-tick test suppresses unrelated system-directory maintenance.
+
+Review disposition: corrected heartbeat documentation; `git show h-start-h5-fallback:crates/agent-core/src/lifecycle/control_plane_pipeline/outbound_sends.rs` already contains the fallback field at line 95. The single-event enqueue post-commit cap-enforcement error/duplicate window is base-identical (`git show h-start-h5-fallback:crates/grpc-client/src/buffer.rs`, lines 207–208) and out of scope. The new batch API enforces the cap inside its transaction, preventing that window during recovery and avoiding per-row eviction commits. The near-capacity regression also preloads durable backlog to exercise eviction. Recovery remains synchronous, so extremely slow or stalled storage can still delay a tick; batching removes the measured per-row transaction bottleneck, not arbitrary device stalls. Memory remains volatile until persisted, and existing cap eviction applies. Full workspace suite not run.
+
 # F21 — recover volatile SQLite fallback
 
 - [x] Inspect buffer peek/ack and runtime scheduling/status paths.
@@ -5,7 +15,7 @@
 - [x] Verify recovery, failure throttling, required agent-core filters and formatting.
 - [x] Record fail proof, residual risks, commit and export patch.
 
-Design: use a dedicated tick interval; explicit memory configuration never retries. No existing backend/fallback status field was found, so no proto/status schema changes. Tests use exclusively owned temporary directories. Recovery enqueues each memory event durably before acknowledging it, retaining existing SQLite backlog ahead of fallback events.
+Design: use a dedicated tick interval; explicit memory configuration never retries. The existing heartbeat `offline_buffer_volatile_fallback` field reflects the backend enum automatically; no proto/status schema changes. Tests use exclusively owned temporary directories. Recovery enqueues each memory event durably before acknowledging it, retaining existing SQLite backlog ahead of fallback events.
 
 Validation: recovery tests 3/3 (including real tick), tick module 2/2, runtime module 3/3; required policy 111/111, reviewfix 21/21, payload integrity 12/12; fmt and diff checks pass. Identical real-tick test transplanted into a git archive of h-start-h5-fallback fails at `real tick must retry the volatile fallback` (/tmp/h5-baseline-proof.log). strace of the integration test with EGUARD_SELF_PROTECT_SET_DUMPABLE=false confirmed all file writes target its unique temp directory (/tmp/h5-files.trace); unrelated hard-coded /etc permission sweep is suppressed using its existing timestamp, as approved. No production adapter used for baseline proof.
 

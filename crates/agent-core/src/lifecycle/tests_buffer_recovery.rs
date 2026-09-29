@@ -65,7 +65,7 @@ fn runtime_tick_recovers_sqlite_fallback_fifo_after_path_repair() {
     let mut cfg = AgentConfig::default();
     cfg.offline_buffer_backend = "sqlite".into();
     cfg.offline_buffer_path = db.to_string_lossy().into_owned();
-    cfg.offline_buffer_cap_bytes = 1_000_000;
+    cfg.offline_buffer_cap_bytes = 100 * 1024 * 1024;
     cfg.server_addr = "127.0.0.1:1".into();
     cfg.mode = AgentMode::Degraded;
     cfg.self_protection_prevent_uninstall = false;
@@ -83,13 +83,13 @@ fn runtime_tick_recovers_sqlite_fallback_fifo_after_path_repair() {
     runtime.client.set_online(false);
     runtime.ebpf_engine = crate::platform::EbpfEngine::disabled();
     assert!(matches!(runtime.buffer, EventBuffer::Memory(_)));
-    for seq in 1..=3 {
+    for seq in 1..=150_000 {
         runtime
             .buffer
             .enqueue(EventEnvelope::info(
                 "test".into(),
                 "test".into(),
-                seq.to_string(),
+                format!("{seq:0512}"),
                 seq,
             ))
             .unwrap();
@@ -117,10 +117,16 @@ fn runtime_tick_recovers_sqlite_fallback_fifo_after_path_repair() {
         runtime.last_command_fetch_attempt_unix = Some(now);
         runtime.last_policy_fetch_unix = Some(now);
         runtime.last_threat_intel_refresh_unix = Some(now);
+        let started = std::time::Instant::now();
         executor.block_on(runtime.tick(now)).unwrap();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(15),
+            "recovery tick must leave headroom below the 60s service watchdog: {:?}",
+            started.elapsed()
+        );
         if now == 1_700_000_000 {
             assert!(matches!(runtime.buffer, EventBuffer::Memory(_)));
-            assert_eq!(runtime.buffer.pending_count(), 3);
+            assert_eq!(runtime.buffer.pending_count(), 150_000);
             std::fs::remove_file(&parent).unwrap();
         }
     }
@@ -129,16 +135,18 @@ fn runtime_tick_recovers_sqlite_fallback_fifo_after_path_repair() {
         "real tick must retry the volatile fallback"
     );
     drop(runtime);
-    let reopened = EventBuffer::sqlite(db.to_str().unwrap(), 1_000_000).unwrap();
+    let reopened = EventBuffer::sqlite(db.to_str().unwrap(), 100 * 1024 * 1024).unwrap();
     let events = reopened
-        .peek_batch(10)
+        .peek_batch(150_001)
         .unwrap()
         .into_iter()
         .map(|(_, e)| e.payload_json)
         .collect::<Vec<_>>();
     assert_eq!(
         events,
-        ["1", "2", "3"],
+        (1..=150_000)
+            .map(|seq| format!("{seq:0512}"))
+            .collect::<Vec<_>>(),
         "fallback events must survive restart in FIFO order"
     );
 }

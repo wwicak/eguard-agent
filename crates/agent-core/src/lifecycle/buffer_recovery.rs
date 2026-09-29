@@ -16,20 +16,19 @@ pub(super) fn retry_sqlite_buffer(
     }
     *last_attempt = Some(now);
     let recovery = (|| -> anyhow::Result<()> {
-        let mut sqlite = EventBuffer::sqlite(path, cap_bytes)?;
+        let mut sqlite = grpc_client::SqliteBuffer::new(path, cap_bytes)?;
         // Keep existing SQLite rows ahead of fallback events. Acknowledge each
         // memory row only after its durable enqueue; a failed migration can retry.
         loop {
-            let batch = buffer.peek_batch(128)?;
+            let batch = buffer.peek_batch(4096)?;
             if batch.is_empty() {
                 break;
             }
-            for (id, event) in batch {
-                sqlite.enqueue(event)?;
-                buffer.ack(&[id])?;
-            }
+            let (ids, events): (Vec<_>, Vec<_>) = batch.into_iter().unzip();
+            sqlite.enqueue_batch(&events)?;
+            buffer.ack(&ids)?;
         }
-        *buffer = sqlite;
+        *buffer = EventBuffer::Sqlite(sqlite);
         Ok(())
     })();
     match recovery {
@@ -115,6 +114,51 @@ mod tests {
             actual, expected_with_backlog,
             "recovery must persist existing backlog followed by FIFO fallback events"
         );
+    }
+
+    #[test]
+    fn near_capacity_recovery_leaves_watchdog_headroom() {
+        let fixture = Fixture::new();
+        let path = fixture.0.join("near-capacity.db");
+        let cap = 100 * 1024 * 1024;
+        let mut buffer = EventBuffer::memory(cap);
+        for seq in 0..150_000 {
+            let mut row = event(seq);
+            row.payload_json = "x".repeat(512);
+            buffer.enqueue(row).unwrap();
+        }
+        assert_eq!(buffer.pending_count(), 150_000);
+        // Fill durable storage too: cap eviction must also avoid per-row commits.
+        let mut existing = grpc_client::SqliteBuffer::new(path.to_str().unwrap(), cap).unwrap();
+        let mut old = event(999_999);
+        old.payload_json = "y".repeat(512);
+        for _ in 0..40 {
+            existing.enqueue_batch(&vec![old.clone(); 4096]).unwrap();
+        }
+        drop(existing);
+        let started = std::time::Instant::now();
+        retry_sqlite_buffer(&mut buffer, path.to_str().unwrap(), cap, &mut None, 100);
+        assert!(
+            matches!(buffer, EventBuffer::Sqlite(_)),
+            "recovery must run"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(15),
+            "near-capacity recovery must leave ample headroom below the 60s watchdog: {:?}",
+            started.elapsed()
+        );
+        drop(buffer);
+        let reopened = EventBuffer::sqlite(path.to_str().unwrap(), cap).unwrap();
+        let rows = reopened.peek_batch(200_000).unwrap();
+        let rows = rows
+            .iter()
+            .filter(|(_, row)| row.created_at_unix != 999_999)
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 150_000);
+        assert!(rows
+            .iter()
+            .enumerate()
+            .all(|(seq, (_, row))| row.created_at_unix == seq as i64));
     }
 
     #[test]
