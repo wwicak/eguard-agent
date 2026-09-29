@@ -629,10 +629,3 @@ Validation: enrollment 7/7; tests_ebpf_policy 111/111; tests_reviewfix 21/21;
 tests_payload_integrity 12/12; cargo fmt --all --check and git diff --check pass.
 All cargo commands used timeout 1500, --offline and this worktree's target dir.
 Residual risk: timings vary by host; full workspace suite was not run.
-
-## h4-alias
-- [x] Normalize/deduplicate config paths and match all file aliases for authorized writes.
-- [x] Add regression coverage and prove failures on tagged base.
-- [x] Run self-protect/enrollment validation, format, commit/export.
-
-Review: five focused alias tests fail against h-start-h4-alias implementation and pass after fix. self-protect: 33 passed; enrollment race: 4; agent-core ebpf policy: 111; reviewfix: 21; payload integrity: 12. Workspace fmt check passed. Canonical/lexical config names deduplicate; distinct hard-link names remain monitored and update together by Unix device/inode. Canonical paths pin existing symlink targets; symlink retarget/replacement races are not addressed here.
