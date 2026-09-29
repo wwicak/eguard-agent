@@ -642,6 +642,17 @@ mod tests {
     use super::{persist_runtime_config_snapshot, resolve_enrollment_hostname};
     use crate::config::AgentConfig;
 
+    fn persistence_engine() -> self_protect::SelfProtectEngine {
+        // Serialization tests do not need a baseline of the running test binary
+        // or host config files; config-integrity coverage lives in tests_enroll_race.
+        self_protect::SelfProtectEngine::new(self_protect::SelfProtectConfig {
+            expected_integrity_sha256_hex: None,
+            debugger: self_protect::DebuggerCheckConfig::default(),
+            runtime_integrity_paths: Vec::new(),
+            runtime_config_paths: Vec::new(),
+        })
+    }
+
     fn env_lock() -> &'static std::sync::Mutex<()> {
         crate::test_support::env_lock()
     }
@@ -709,9 +720,8 @@ mod tests {
             ..AgentConfig::default()
         };
 
-        let persisted =
-            persist_runtime_config_snapshot(&cfg, &mut self_protect::SelfProtectEngine::from_env())
-                .expect("persist runtime config");
+        let persisted = persist_runtime_config_snapshot(&cfg, &mut persistence_engine())
+            .expect("persist runtime config");
         assert_eq!(persisted, path);
 
         let loaded = AgentConfig::load().expect("load persisted config");
@@ -764,9 +774,8 @@ mod tests {
         std::fs::write(&path, "eguardcfg:v1:Zm9vYmFy").expect("write encrypted marker");
 
         let cfg = AgentConfig::default();
-        let err =
-            persist_runtime_config_snapshot(&cfg, &mut self_protect::SelfProtectEngine::from_env())
-                .expect_err("encrypted config should fail");
+        let err = persist_runtime_config_snapshot(&cfg, &mut persistence_engine())
+            .expect_err("encrypted config should fail");
         assert!(err.contains("encrypted"));
 
         clear_env();

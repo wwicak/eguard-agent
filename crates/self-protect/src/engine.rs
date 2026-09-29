@@ -1,7 +1,7 @@
 use crate::debugger::{detect_debugger, DebuggerCheckConfig, DebuggerObservation, DebuggerSignal};
 use crate::integrity::{hash_file_sha256, measure_self_integrity, IntegrityMeasurement};
 use sha2::{Digest, Sha256};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 const COMPILETIME_EXPECTED_SHA256: Option<&str> =
@@ -80,10 +80,41 @@ impl RuntimeBaseline {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum ConfigIdentity {
+    #[cfg(unix)]
+    Inode(u64, u64),
+    Path(PathBuf),
+}
+
+// Never use identity as an operational pathname: symlink/.. needs kernel resolution.
+fn config_identity(path: &Path) -> ConfigIdentity {
+    #[cfg(unix)]
+    if let Ok(metadata) = std::fs::metadata(path) {
+        use std::os::unix::fs::MetadataExt;
+        return ConfigIdentity::Inode(metadata.dev(), metadata.ino());
+    }
+    #[cfg(not(unix))]
+    if let Ok(path) = std::fs::canonicalize(path) {
+        return ConfigIdentity::Path(path);
+    }
+    if let (Some(parent), Some(name)) = (path.parent(), path.file_name()) {
+        let parent = if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        };
+        if let Ok(parent) = std::fs::canonicalize(parent) {
+            return ConfigIdentity::Path(parent.join(name));
+        }
+    }
+    ConfigIdentity::Path(path.to_path_buf())
+}
+
 fn capture_runtime_hashes(paths: &[String]) -> Vec<RuntimeHash> {
     let mut out = Vec::new();
     for path in paths {
-        let trimmed = path.trim();
+        let trimmed = path.as_str();
         if trimmed.is_empty() {
             continue;
         }
@@ -147,16 +178,23 @@ impl SelfProtectEngine {
             .runtime_baseline
             .get_mut()
             .expect("initialized baseline");
-        let entry = baseline
+        let identity = config_identity(path);
+        let entries: Vec<_> = baseline
             .config
             .iter()
-            .position(|entry| Path::new(&entry.path) == path);
+            .enumerate()
+            .filter_map(|(index, entry)| {
+                (config_identity(Path::new(&entry.path)) == identity).then_some(index)
+            })
+            .collect();
         let existing = match std::fs::read(path) {
             Ok(bytes) => bytes,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound && entry.is_none() => Vec::new(),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound && entries.is_empty() => {
+                Vec::new()
+            }
             Err(err) => return Err(format!("read existing config {}: {}", path.display(), err)),
         };
-        if let Some(index) = entry {
+        for index in entries {
             let observed = format!("{:x}", Sha256::digest(&existing));
             if observed != baseline.config[index].sha256_hex {
                 return Err(format!(
@@ -167,18 +205,29 @@ impl SelfProtectEngine {
         }
         let bytes = write(&existing)?;
         let sha256_hex = format!("{:x}", Sha256::digest(&bytes));
-        if let Some(index) = entry {
-            baseline.config[index].sha256_hex = sha256_hex;
-        } else if self
-            .config
-            .runtime_config_paths
-            .iter()
-            .any(|p| Path::new(p.trim()) == path)
-        {
-            baseline.config.push(RuntimeHash {
-                path: path.to_string_lossy().into_owned(),
-                sha256_hex,
-            });
+        // Atomic rename can split aliases. Re-evaluate every original pathname.
+        let identity = config_identity(path);
+        for configured in &self.config.runtime_config_paths {
+            if config_identity(Path::new(configured)) != identity {
+                continue;
+            }
+            for entry in baseline
+                .config
+                .iter_mut()
+                .filter(|entry| entry.path == *configured)
+            {
+                entry.sha256_hex = sha256_hex.clone();
+            }
+            if !baseline
+                .config
+                .iter()
+                .any(|entry| entry.path == *configured)
+            {
+                baseline.config.push(RuntimeHash {
+                    path: configured.clone(),
+                    sha256_hex: sha256_hex.clone(),
+                });
+            }
         }
         Ok(())
     }
@@ -210,13 +259,28 @@ impl SelfProtectEngine {
     }
 
     fn append_runtime_config(&self, report: &mut SelfProtectReport) {
+        let mut reported: Vec<(ConfigIdentity, usize)> = Vec::new();
         for entry in &self.runtime_baseline().config {
             match hash_file_sha256(Path::new(&entry.path)) {
                 Ok(observed_sha256) => {
                     if observed_sha256 != entry.sha256_hex {
+                        let identity = config_identity(Path::new(&entry.path));
+                        if let Some((_, index)) = reported.iter().find(|(key, _)| *key == identity)
+                        {
+                            if let SelfProtectViolation::RuntimeConfigTamper { aliases, .. } =
+                                &mut report.violations[*index]
+                            {
+                                if !aliases.contains(&entry.path) {
+                                    aliases.push(entry.path.clone());
+                                }
+                            }
+                            continue;
+                        }
+                        reported.push((identity, report.violations.len()));
                         report
                             .violations
                             .push(SelfProtectViolation::RuntimeConfigTamper {
+                                aliases: vec![entry.path.clone()],
                                 path: entry.path.clone(),
                                 expected_sha256: entry.sha256_hex.clone(),
                                 observed_sha256,
@@ -312,6 +376,7 @@ pub enum SelfProtectViolation {
     },
     RuntimeConfigTamper {
         path: String,
+        aliases: Vec<String>,
         expected_sha256: String,
         observed_sha256: String,
     },
@@ -364,11 +429,12 @@ impl SelfProtectViolation {
             }
             Self::RuntimeConfigTamper {
                 path,
+                aliases,
                 expected_sha256,
                 observed_sha256,
             } => format!(
-                "runtime config tamper: path={} expected={} observed={}",
-                path, expected_sha256, observed_sha256
+                "runtime config tamper: path={} aliases={:?} expected={} observed={}",
+                path, aliases, expected_sha256, observed_sha256
             ),
             Self::RuntimeConfigProbeFailed { path, detail } => {
                 format!(
@@ -413,9 +479,11 @@ impl SelfProtectReport {
             match violation {
                 SelfProtectViolation::RuntimeIntegrityMismatch { path, .. }
                 | SelfProtectViolation::RuntimeIntegrityProbeFailed { path, .. }
-                | SelfProtectViolation::RuntimeConfigTamper { path, .. }
                 | SelfProtectViolation::RuntimeConfigProbeFailed { path, .. } => {
                     out.push(path.clone());
+                }
+                SelfProtectViolation::RuntimeConfigTamper { aliases, .. } => {
+                    out.extend(aliases.iter().cloned());
                 }
                 _ => {}
             }
@@ -501,10 +569,13 @@ fn env_flag_enabled(name: &str) -> bool {
 }
 
 #[cfg(test)]
+mod tests_alias;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
-    fn config_without_runtime_paths() -> SelfProtectConfig {
+    pub(super) fn config_without_runtime_paths() -> SelfProtectConfig {
         SelfProtectConfig {
             expected_integrity_sha256_hex: None,
             debugger: DebuggerCheckConfig {

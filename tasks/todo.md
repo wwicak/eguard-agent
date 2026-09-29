@@ -1,3 +1,74 @@
+# F21 second pass — batch recovery below watchdog budget
+
+- [x] Replace transaction-per-event recovery with FIFO 4096-row transactions and acknowledge only successful batches.
+- [x] Add 150,000-event (~80 MiB) persistence/order and <15s latency regressions, including the production tick.
+- [x] Prove baseline and pre-fix failures; run touched modules, required filters and formatting; export follow-up commit.
+
+Validation: near-capacity direct recovery fails against the first-pass implementation at 88.27s (60s watchdog), then passes with batching. The enlarged real-tick test transplanted unchanged into a start-tag archive fails at `real tick must retry the volatile fallback`. Final recovery suite 4/4 in 24.64s total (including durable-backlog prefill; each recovery itself <15s), tick 2/2, grpc buffer 18/18, required policy 111/111, reviewfix 21/21, payload integrity 12/12. Formatting and diff checks pass. Logs: /tmp/h5-second-*.log. All data fixtures create unique temporary directories; real-tick test suppresses unrelated system-directory maintenance.
+
+Review disposition: corrected heartbeat documentation; `git show h-start-h5-fallback:crates/agent-core/src/lifecycle/control_plane_pipeline/outbound_sends.rs` already contains the fallback field at line 95. The single-event enqueue post-commit cap-enforcement error/duplicate window is base-identical (`git show h-start-h5-fallback:crates/grpc-client/src/buffer.rs`, lines 207–208) and out of scope. The new batch API enforces the cap inside its transaction, preventing that window during recovery and avoiding per-row eviction commits. The near-capacity regression also preloads durable backlog to exercise eviction. Recovery remains synchronous, so extremely slow or stalled storage can still delay a tick; batching removes the measured per-row transaction bottleneck, not arbitrary device stalls. Memory remains volatile until persisted, and existing cap eviction applies. Full workspace suite not run.
+
+# F21 — recover volatile SQLite fallback
+
+- [x] Inspect buffer peek/ack and runtime scheduling/status paths.
+- [x] Retry SQLite initialization once per minute and migrate FIFO with enqueue-before-ack.
+- [x] Verify recovery, failure throttling, required agent-core filters and formatting.
+- [x] Record fail proof, residual risks, commit and export patch.
+
+Design: use a dedicated tick interval; explicit memory configuration never retries. The existing heartbeat `offline_buffer_volatile_fallback` field reflects the backend enum automatically; no proto/status schema changes. Tests use exclusively owned temporary directories. Recovery enqueues each memory event durably before acknowledging it, retaining existing SQLite backlog ahead of fallback events.
+
+Validation: recovery tests 3/3 (including real tick), tick module 2/2, runtime module 3/3; required policy 111/111, reviewfix 21/21, payload integrity 12/12; fmt and diff checks pass. Identical real-tick test transplanted into a git archive of h-start-h5-fallback fails at `real tick must retry the volatile fallback` (/tmp/h5-baseline-proof.log). strace of the integration test with EGUARD_SELF_PROTECT_SET_DUMPABLE=false confirmed all file writes target its unique temp directory (/tmp/h5-files.trace); unrelated hard-coded /etc permission sweep is suppressed using its existing timestamp, as approved. No production adapter used for baseline proof.
+
+Residual: memory remains volatile until recovery; existing bounded-buffer eviction semantics still apply to combined backlog. Existing SQLite serialization reopens EventEnvelope severity as empty rather than info; this independent pre-existing limitation is not changed here. Full workspace suite not run.
+
+# F17 second pass — deferred macOS bootstrap
+
+- [x] Drive deferred bootstrap before polling the restart regression; preserve platform startup assertions.
+- [x] Run touched modules, required agent filters, acceptance compilation and formatting.
+- [x] Record platform limitations, commit and refresh patch/status.
+
+Design: the restart test must drive both tick hooks: deferred scheduling (macOS) then background completion (all platforms). No product behavior changes. Assert macOS pending/no-worker startup before scheduling and cleared pending state afterward.
+
+Validation: Linux touched module 17/17, grpc-client 111/111, acceptance response 5/5; required policy 111/111, reviewfix 21/21, payload integrity 12/12. Acceptance lib --no-run, fmt and diff checks pass. Logs: /tmp/h2-second-logs. Original fail proofs remain those recorded below and independently confirmed by review. git show h-start-h2-tests confirms deferred scheduling already existed at runtime.rs:615, while the original restart test immediately asserted version. The first-pass unconditional worker assertion was incorrect on macOS; now the actual deferred hook runs before it. No additional product behavior changed.
+
+Residual: macOS runtime execution unavailable on Linux. Attempted aarch64-apple-darwin cargo check --tests fails in zstd-sys because host cc rejects -arch/-mmacosx-version-min; no successful macOS compile claimed. Full workspace suite not rerun. Generated rule-push metrics restored; no out-of-scope production fixes.
+
+# F17 — repair stale executable contracts
+
+- [x] Reproduce all three failures on h-start-h2-tests; trace divergence with git history.
+- [x] Update bootstrap test for asynchronous completion, directional failover contract, and report schema fixture.
+- [x] Run touched suites, required agent-core filters and formatting; record results and export commit.
+
+Design: test-only corrections. Bootstrap moved to background compilation in 4993bc3; poll the same completion hook as the tick loop with a deadline rather than reintroducing blocking startup. Reverse port fallback was removed in 899fe57; verify forward 50052→50053 fallback and no reverse retry, preserving schemes. ResponseReport gained action_type_label in 70a6197; populate and assert the canonical label rather than removing the field.
+
+Review/results: no product behavior changes. Original bootstrap and port tests failed on the start tag with None versus the expected version/reverse address; acceptance failed E0063 for action_type_label. After correction: tests_det_stub_completion 17/17, grpc-client 111/111, acceptance tests_rsp_contract 5/5, tests_ebpf_policy 111/111, tests_reviewfix 21/21, tests_payload_integrity 12/12; acceptance --lib --no-run and cargo fmt --all --check pass. All Cargo commands used the worktree target, --offline (where supported), and timeout 1500.
+
+Residual baseline: full acceptance now exposes seven unrelated failures (watchdog service contract, ML workflow, manifest hashes, feature snapshot, stratified CV, Navbar, verification-suite command). Baseline acceptance source with only action_type_label: String::new() to unblock compilation reproduces exactly the same 47 passes/7 failures. No new failure observed. Logs: /tmp/h2-tests-logs. Generated tracked metrics were restored. No new dependencies or production changes; test bundle remains in its unique temporary directory. Full agent-core suite was not run beyond touched module and required filters.
+
+# F24 second pass — Ubuntu native linking
+
+- [x] Override the Rust x86_64 Linux linker with cc for resource-budget, verification and adversary jobs.
+- [x] Parse/lint workflows, audit override against base and run the offline native-linker harness.
+- [x] Record results, commit and refresh patch/status.
+
+Design: use the established build-bundle native-linker override at job scope so all nested Cargo harnesses inherit it. Ubuntu 24.04 libelf.a requires __isoc23_strtol unavailable through the Zig static-link path. Native cc avoids that path; no runtime code changes or regression tests are required for this CI-only correction.
+
+Validation: all three workflows parse with yaml.safe_load and pass the repository workflow linter. A parsed job-env audit fails on h-start-h1-ci and passes on the working tree for all three native-linker overrides. The unprivileged resource-budget harness passes with cc, worktree-local target and a temporary wrapper enforcing timeout 1500 cargo <command> --offline: release agent build, detection latency probe and structured LSM probe succeed (artifacts/h1-ci/native-harness.log). cargo fmt --all --check passes with CARGO_NET_OFFLINE=true (fmt rejects an explicit --offline flag); diff hygiene passes. Generated tracked lint metrics were restored.
+
+Review evidence: git show h-start-h1-ci:.cargo/config.toml confirms the Zig linker is base-identical; git show h-start-h1-ci:.github/workflows/adversary-tournament.yml confirms no Zig setup. The new cc override also removes adversary's mandatory Zig linker invocation; crypto-accel/build.rs already falls back when Zig is absent. No unrelated Zig setup change is necessary. Residual: local host is Debian 12, not Ubuntu 24.04; no GitHub-hosted rerun or full verification/adversary harness run was performed. The Ubuntu __isoc23_strtol reproduction is supplied review evidence, not a new local reproduction.
+
+# F24 — h1-ci libbpf build prerequisites
+
+- [x] Move resource-budget native dependencies before the harness; audit indirect Linux agent builds.
+- [x] Validate touched YAML, run the unprivileged offline resource harness and formatting check.
+- [x] Record evidence, commit and export patch/status.
+
+Design: install libelf-dev, zlib1g-dev and pkg-config before any libbpf build. CI-only change; supplied failure evidence is libbpf-sys make failing on missing libelf.h/gelf.h, so no Rust regression test is required.
+
+Review: moved resource-budget installation before its harness, removed the later duplicate, completed verification-suite prerequisites, and added prerequisites to adversary-tournament (indirect runtime-tick/resource-budget builds). build-bundle, release-agent and package-agent already install all three dependencies before Linux builds; no edits needed there. Remaining workflows do not build Linux agent-core/libbpf.
+
+Validation: Python yaml.safe_load passes for all three changed workflows. Parsed step-order audit reports missing early prerequisites on h-start-h1-ci for all three, and complete prerequisites on the working tree. The unprivileged resource-budget harness passes (release agent build plus detection latency and LSM payload probes), using worktree-local CARGO_TARGET_DIR and a temporary cargo wrapper enforcing timeout 1500 and --offline; metrics and logs are in artifacts/ebpf-resource-budget and artifacts/h1-ci. cargo fmt --all --check and git diff --check pass. Initial wrapper setup failed because target did not yet exist; its launched build was stopped and validation restarted with the proper wrapper. No privileged/system-directory tests ran. Residual: GitHub-hosted execution and apt mirror availability are not validated locally.
+
 # F15 review follow-up — Linux 5.4 and time namespaces
 
 - [x] Guard modern task start field with CO-RE existence and fall back to Linux 5.4 real_start_time.
@@ -548,3 +619,49 @@ Proof on fa-start-a5r production files: existing-parent regression observed 0700
 Validation: full grpc-client 110 passed / 1 failed (alternate_grpc_server_addr_switches_known_agent_ports, separately reproduced on base); final buffer module 18/18; agent-core reviewfix 21/21, payload integrity 6/6, eBPF policy 111/111; workspace fmt and diff whitespace passed. Offline cargo commands used this worktree's target and timeout 1500, each shell under 20 minutes. Evidence: /home/dimas/eguard-lab-soak/followups/a5r-validation/.
 
 Residuals: at-least-once duplicates after send-before-ack crashes; memory fallback remains volatile and server marker persistence is outside scope; pre-existing SQLite severity/rule_name omission remains. Shared/foreign-owned directories are warned about, not rejected: 0600 is not protection against directory-owner replacement/unlink attacks. Existing best-effort db chmod and WAL durability semantics unchanged.
+
+## h3-slowtests
+- [x] Measure original enrollment tests.
+- [x] Remove unrelated executable hashing from fixtures only.
+- [x] Measure optimized tests and prove F3 sensitivity in scratch copy.
+- [x] Run required checks, commit and export patch.
+
+Review: production code and all existing assertions unchanged. Direct persistence
+fixtures use an explicit engine with no executable/config paths. The race fixture
+sets a missing path inside its unique temp directory before runtime construction
+(empty env overrides fall back to /proc/self/exe), restores the original env on
+drop, and retains its explicit monitored-config engine.
+
+Timings (test execution, excludes compilation; same commands before/after):
+- `cargo test --offline -p agent-core tests_enroll_race -- --test-threads=4`:
+  4 passed, 104.29s -> 0.46s.
+- `cargo test --offline -p agent-core persist_runtime_config_snapshot -- --test-threads=1`:
+  2 passed, 56.10s -> 0.10s.
+- Enrollment module: 7 passed, 159.91s -> 0.88s (final rerun 0.94s).
+
+Fail proof: in ignored `target/h3-f3-scratch` source copy, restored pre-9ea9e9e
+unguarded read/persist behavior at the enrollment persistence seam, retaining the
+new function signature only. Ran each race test separately to avoid mutex poison:
+all four failed their original semantic assertions (authorized write degraded;
+already degraded before external edit; fresh config not monitored; preexisting
+tampering blessed). No production changes from this mutation were retained.
+No production behavior changed, so no new behavioral regression test was needed;
+base-tag timing measurements demonstrate the fixture performance regression.
+
+Validation: enrollment 7/7; tests_ebpf_policy 111/111; tests_reviewfix 21/21;
+tests_payload_integrity 12/12; cargo fmt --all --check and git diff --check pass.
+All cargo commands used timeout 1500, --offline and this worktree's target dir.
+Residual risk: timings vary by host; full workspace suite was not run.
+
+## F22 retry
+- [x] Preserve operational paths, use kernel identity matching, dedup reports only (supervisor-approved revision).
+- [x] Add alias and atomic-split regressions; prove base failures and symlink/.. historical regression.
+- [x] Run required offline suites and checks; commit/export patch and status.
+
+Review: supervisor explicitly superseded identity-based entry collapse: retain every original pathname baseline, deduplicate tamper findings by current identity, and list aliases in detail. Unix identity uses metadata dev/inode; missing paths use canonical parent plus filename, then unchanged pathname. Authorized writes verify all pre-write matching baselines and advance all post-write matches, preserving split aliases. Hashes still come exclusively from callback bytes. Added alias details also preserve every affected pathname in tampered_paths().
+
+Validation: self-protect 37/37; enroll-race 4/4; reviewfix 21/21 (665.67s). All cargo tests offline, timeout 1500, target=$PWD/target; each shell below 20 minutes. Nine unique-directory regressions cover duplicate, normal-directory parent traversal, symlink, hardlink, missing-file creation, authorized/external atomic symlink replacement, symlink/.., and atomic alias splitting.
+
+Fail proof: injected only tests/module visibility into a unique archived h-start-f22r checkout: six behavior-changing tests failed (duplicate, lexical alias, symlink, hardlink, missing-path baseline fanout, authorized atomic replacement); three preservation tests passed. Historical clarification: symlink/.. PASSES 5ed8bd3, contrary to requested failure proof, because that revision canonicalizes existing files. It FAILS 1d136e2 with no tamper finding, proving the actual lexical-collapse regression. No production mutation retained. Logs: /home/dimas/eguard-lab-soak/followups/f22r-validation/.
+
+Residual risks: Linux-only validation; non-Unix identity falls back to canonical paths and does not identify hardlinks by inode. Existing filesystem race windows between metadata/read/callback remain; callback hash protects against trusting a post-write external reread. Full workspace suite not run. RuntimeConfigTamper gains an aliases field (external exhaustive constructors/patterns may need updates).

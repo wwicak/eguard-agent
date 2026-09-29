@@ -20,6 +20,9 @@ concurrency:
 jobs:
   verification:
     runs-on: ubuntu-latest
+    env:
+      # Use the host libc with Ubuntu's libelf, not Zig's static-link path.
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: cc
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -40,7 +43,7 @@ jobs:
       - name: Install verification dependencies (core)
         run: |
           sudo apt-get update
-          sudo apt-get install -y yq libelf-dev
+          sudo apt-get install -y yq libelf-dev zlib1g-dev pkg-config
 
       - name: Install verification dependencies (full profile)
         if: github.event_name != 'push' && github.event_name != 'pull_request'

@@ -208,6 +208,57 @@ impl SqliteBuffer {
         self.enforce_cap()
     }
 
+    /// Persist a FIFO recovery batch in one transaction, avoiding a commit per row.
+    pub fn enqueue_batch(&mut self, events: &[EventEnvelope]) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        let mut total_size = 0i64;
+        {
+            let mut insert = tx.prepare_cached(
+                "INSERT INTO offline_events(agent_id,event_type,payload_json,created_at_unix,size_bytes) VALUES(?1,?2,?3,?4,?5)",
+            )?;
+            for event in events {
+                let size = estimate_event_size(event) as i64;
+                insert.execute(params![
+                    event.agent_id,
+                    event.event_type,
+                    event.payload_json,
+                    event.created_at_unix,
+                    size
+                ])?;
+                total_size += size;
+            }
+        }
+        tx.execute(
+            "UPDATE offline_buffer_meta SET total_bytes = total_bytes + ?1 WHERE id = ?2",
+            params![total_size, OFFLINE_META_ROW_ID],
+        )?;
+        // Evict within the same transaction: existing durable backlog may already
+        // fill the cap. Per-row eviction commits would recreate the recovery stall.
+        let mut bytes: i64 = tx.query_row(
+            "SELECT total_bytes FROM offline_buffer_meta WHERE id = ?1",
+            params![OFFLINE_META_ROW_ID],
+            |row| row.get(0),
+        )?;
+        while bytes > self.cap_bytes as i64 {
+            let oldest: Option<(i64, i64)> = tx
+                .query_row(
+                    "SELECT id, size_bytes FROM offline_events ORDER BY id ASC LIMIT 1",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            let Some((id, size)) = oldest else { break };
+            tx.execute("DELETE FROM offline_events WHERE id = ?1", params![id])?;
+            bytes = bytes.saturating_sub(size).max(0);
+        }
+        tx.execute(
+            "UPDATE offline_buffer_meta SET total_bytes = ?1 WHERE id = ?2",
+            params![bytes, OFFLINE_META_ROW_ID],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn peek_batch(&self, max_items: usize) -> Result<Vec<(i64, EventEnvelope)>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, agent_id, event_type, payload_json, created_at_unix, size_bytes FROM offline_events ORDER BY id ASC LIMIT ?1",

@@ -398,11 +398,26 @@ fn alternate_grpc_server_addr_switches_known_agent_ports() {
         Some("10.0.0.1:50053")
     );
 
-    let c_https = Client::new("https://agent.example:50053".to_string());
-    assert_eq!(
-        c_https.alternate_grpc_server_addr().as_deref(),
-        Some("https://agent.example:50052")
-    );
+    // Fail over from the proxy port to the canonical agent port, retaining
+    // the configured transport scheme (never silently downgrade TLS).
+    for scheme in ["http", "https"] {
+        let c = Client::new(format!("{scheme}://agent.example:50052"));
+        assert_eq!(
+            c.alternate_grpc_server_addr(),
+            Some(format!("{scheme}://agent.example:50053"))
+        );
+    }
+
+    // The canonical port is terminal: do not bounce back to the proxy.
+    for addr in [
+        "10.0.0.1:50053",
+        "http://agent.example:50053",
+        "https://agent.example:50053",
+    ] {
+        assert!(Client::new(addr.to_string())
+            .alternate_grpc_server_addr()
+            .is_none());
+    }
 }
 
 #[test]

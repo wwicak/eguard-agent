@@ -24,6 +24,9 @@ concurrency:
 jobs:
   tournament:
     runs-on: ubuntu-latest
+    env:
+      # Use the host libc with Ubuntu's libelf, not Zig's static-link path.
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: cc
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -155,6 +158,11 @@ jobs:
               f"{run_id} (branch={(selected.get('workflow_run') or {}).get('head_branch')})"
           )
           PY
+
+      - name: Install eBPF build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libelf-dev zlib1g-dev pkg-config
 
       - name: Run adversary tournament harness
         run: bash scripts/run_adversary_tournament_ci.sh

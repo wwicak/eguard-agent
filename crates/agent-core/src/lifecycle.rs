@@ -3,6 +3,7 @@ mod bench_eval_throughput;
 
 mod async_workers;
 mod baseline;
+mod buffer_recovery;
 mod bundle_support;
 mod circuit_breaker;
 mod compliance;
@@ -26,6 +27,8 @@ mod runtime_mode;
 mod self_protect;
 mod storage_hygiene;
 mod telemetry;
+#[cfg(test)]
+mod tests_buffer_recovery;
 mod tick;
 mod timing;
 mod types;
