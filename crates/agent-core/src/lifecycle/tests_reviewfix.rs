@@ -284,8 +284,32 @@ async fn check_terminal_command_order(success: bool) {
         .contains(&"terminal-restart".to_string()));
 }
 
+#[test]
+fn sqlite_fallback_is_heartbeat_visible() {
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "sqlite".to_string();
+    // Opening a directory as a database reliably fails without privileged fixtures.
+    cfg.offline_buffer_path = std::env::temp_dir().to_string_lossy().into_owned();
+    let mut runtime = AgentRuntime::new(cfg).unwrap();
+    assert!(matches!(
+        runtime.buffer,
+        grpc_client::EventBuffer::Memory(_)
+    ));
+    assert!(runtime
+        .build_heartbeat_runtime_payload("active")
+        .status
+        .last_detection
+        .contains("offline_buffer_volatile_fallback=true"));
+    runtime.config.offline_buffer_backend = "memory".to_string();
+    assert!(runtime
+        .build_heartbeat_runtime_payload("active")
+        .status
+        .last_detection
+        .contains("offline_buffer_volatile_fallback=false"));
+}
+
 #[tokio::test]
-async fn sqlite_failed_send_requeues_old_batch_before_new_tick_overflow() {
+async fn sqlite_failed_send_preserves_old_tail_before_new_tick_overflow() {
     let mut runtime = runtime();
     let path = std::env::temp_dir().join(format!(
         "eguard-reviewfix-fifo-{}-{}.db",
@@ -297,29 +321,30 @@ async fn sqlite_failed_send_requeues_old_batch_before_new_tick_overflow() {
     ));
     runtime.buffer =
         grpc_client::EventBuffer::sqlite(path.to_str().unwrap(), 16 * 1024 * 1024).unwrap();
-    for i in 0..EVENT_BATCH_SIZE {
+    // More than a batch exposes destructive drain/requeue's old-tail inversion.
+    for i in 0..EVENT_BATCH_SIZE + 2 {
         runtime.buffer.enqueue(event(i as i64)).unwrap();
     }
     runtime
         .flush_event_batch(
-            (EVENT_BATCH_SIZE..EVENT_BATCH_SIZE + 3)
+            (EVENT_BATCH_SIZE + 2..EVENT_BATCH_SIZE + 5)
                 .map(|i| event(i as i64))
                 .collect(),
         )
         .await
         .unwrap();
     assert_eq!(runtime.consecutive_send_failures, 1);
-    let events = runtime.buffer.drain_batch(EVENT_BATCH_SIZE + 3).unwrap();
+    let events = runtime.buffer.drain_batch(EVENT_BATCH_SIZE + 5).unwrap();
     assert_eq!(
         events.iter().map(|e| e.created_at_unix).collect::<Vec<_>>(),
-        (0..EVENT_BATCH_SIZE as i64 + 3).collect::<Vec<_>>()
+        (0..EVENT_BATCH_SIZE as i64 + 5).collect::<Vec<_>>()
     );
     drop(runtime);
     let _ = std::fs::remove_file(path);
 }
 
 #[tokio::test]
-async fn failed_send_attempts_all_requeues_and_counts_failure_before_recovery() {
+async fn failed_send_attempts_all_current_enqueues_and_counts_failure_before_recovery() {
     let mut runtime = runtime();
     runtime.consecutive_send_failures = DEGRADE_AFTER_SEND_FAILURES - 1;
     runtime.buffer_enqueue_failure_at = Some(1);

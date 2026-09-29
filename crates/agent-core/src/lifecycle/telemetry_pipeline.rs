@@ -124,14 +124,17 @@ impl AgentRuntime {
     ) -> Result<()> {
         let send_started = Instant::now();
         let pending_before = self.buffer.pending_count();
-        let mut batch = match self.buffer.drain_batch(EVENT_BATCH_SIZE) {
+        let rows = match self.buffer.peek_batch(EVENT_BATCH_SIZE) {
             Ok(batch) => batch,
             Err(err) => {
-                // buffer_events logs recovery failures without hiding the drain error.
+                // Preserve current events without hiding the peek error.
                 let _ = self.buffer_events(events);
                 return Err(err);
             }
         };
+        let ids: Vec<_> = rows.iter().map(|(id, _)| *id).collect();
+        let buffered_count = rows.len();
+        let mut batch: Vec<_> = rows.into_iter().map(|(_, event)| event).collect();
         let mut overflow = Vec::new();
         for event in events {
             if include_all_current || batch.len() < EVENT_BATCH_SIZE {
@@ -163,6 +166,7 @@ impl AgentRuntime {
         )
         .await;
 
+        let ack_result;
         if let Err(err) = match send_result {
             Ok(result) => result,
             Err(_) => Err(anyhow::anyhow!(
@@ -175,9 +179,9 @@ impl AgentRuntime {
                 self.transition_to_degraded(DegradedCause::SendFailures);
             }
 
-            // Requeue before new overflow. Existing buffered old-tail rows still
-            // precede this batch with the append-only API (pre-existing; follow-up F9).
-            let requeue_result = self.buffer_events(batch);
+            // Old rows never left the buffer; append only unsent current events.
+            let current_result =
+                self.buffer_events(batch.into_iter().skip(buffered_count).collect());
             let overflow_result = self.buffer_events(overflow);
             warn!(
                 error = %err,
@@ -186,11 +190,14 @@ impl AgentRuntime {
                 "send failed, event re-buffering attempted"
             );
             self.metrics.last_send_event_batch_micros = elapsed_micros(send_started);
-            return requeue_result.and(overflow_result);
+            return current_result.and(overflow_result);
         } else {
             self.consecutive_send_failures = 0;
             self.pipeline_events_sent =
                 self.pipeline_events_sent.saturating_add(batch.len() as u64);
+            // An ack failure retains rows for at-least-once delivery; still append
+            // current overflow below rather than discarding it on this error.
+            ack_result = self.buffer.ack(&ids);
             if std::env::var("EGUARD_DEBUG_OFFLINE_LOG")
                 .ok()
                 .filter(|v| !v.trim().is_empty())
@@ -207,7 +214,7 @@ impl AgentRuntime {
 
         let overflow_result = self.buffer_events(overflow);
         self.metrics.last_send_event_batch_micros = elapsed_micros(send_started);
-        overflow_result
+        ack_result.and(overflow_result)
     }
 
     pub(super) fn collect_compliance_alerts(
