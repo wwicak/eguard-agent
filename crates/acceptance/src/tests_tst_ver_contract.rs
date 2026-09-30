@@ -1754,10 +1754,13 @@ fn signature_ml_training_uses_cost_sensitive_weights_and_stratified_cv() {
 from argparse import Namespace
 from signature_ml_train_model import _build_training_plan, _stratified_kfold
 args = Namespace(resource_profile='balanced', max_iter=1, holdout_ratio=0.2,
-                 max_samples=0, cv_folds=2, l2_grid_points=3, split_group_key='host_id')
+                 max_samples=0, cv_folds=2, l2_grid_points=3, split_group_key='host')
 plan = _build_training_plan(args)
 assert plan['cv_folds'] == 5, plan
-rows = [{'host_id': f'host-{i // 2}', 'rule_id': 'rule'} for i in range(40)]
+assert plan['split_group_key'] == 'host', plan
+# Different rules on the same host expose accidental host_rule fallback:
+# both rows for a host must stay together regardless of the rule ID.
+rows = [{'host_id': f'host-{i // 2}', 'rule_id': f'rule-{i % 2}'} for i in range(40)]
 labels = [(i // 2) % 2 for i in range(40)]
 folds = _stratified_kfold(rows, labels, plan['cv_folds'], plan['split_group_key'])
 assert len(folds) == 5, folds
