@@ -415,6 +415,14 @@ fn memory_layout_ledger_sums_to_target_rss_envelope() {
         + baseline_bytes
         + stack_misc_bytes;
 
-    assert!(total <= 25.5 * 1024.0 * 1024.0);
-    assert!(total >= 20.0 * 1024.0 * 1024.0);
+    // Design §11.3 defines a maximum (<25 MiB), not a minimum RSS.
+    // f0cbb3d reduced the ring from 8 to 2 MiB: the same complete ledger
+    // consequently drops from 24.3 to 18.3 MiB. Do not require wasted RAM.
+    let mib = 1024.0 * 1024.0;
+    assert!(
+        (total / mib - 18.3).abs() < 1e-9,
+        "ledger total: {} MiB",
+        total / mib
+    );
+    assert!(total < 25.0 * mib, "ledger exceeds design RSS budget");
 }

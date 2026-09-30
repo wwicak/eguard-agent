@@ -9,13 +9,19 @@ fn repo_root() -> PathBuf {
 }
 
 fn parse_ringbuf_capacity_bytes(source: &str) -> Option<u64> {
-    for line in source.lines() {
-        if !line.contains("8 * 1024 * 1024") {
-            continue;
-        }
-        return Some(8 * 1024 * 1024);
-    }
-    None
+    let definition = source
+        .lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix("#define DEFAULT_RINGBUF_CAPACITY "))?;
+    definition
+        .trim()
+        .trim_start_matches('(')
+        .trim_end_matches(')')
+        .split('*')
+        .map(|term| term.trim().parse::<u64>())
+        .collect::<Result<Vec<_>, _>>()
+        .ok()
+        .map(|terms| terms.into_iter().product())
 }
 
 #[test]
@@ -36,12 +42,13 @@ fn ac_det_benchmark_harness_ci_publishes_measured_artifact() {
 
 #[test]
 // AC-EBP-101
-fn ac_ebp_ring_buffer_capacity_is_eight_megabytes() {
+fn ac_ebp_ring_buffer_capacity_is_two_megabytes() {
     let root = repo_root();
     let helpers = std::fs::read_to_string(root.join("zig/ebpf/bpf_helpers.h"))
         .expect("read bpf ring buffer definition");
     let capacity = parse_ringbuf_capacity_bytes(&helpers).expect("parse ringbuf capacity");
-    assert_eq!(capacity, 8 * 1024 * 1024);
+    // f0cbb3d deliberately reduced the per-program ring from 8 to 2 MiB.
+    assert_eq!(capacity, 2 * 1024 * 1024);
 }
 
 #[test]
@@ -192,6 +199,13 @@ fn ac_ebp_memory_layout_ledger_sums_to_target_rss_envelope() {
         + baseline_bytes
         + stack_misc_bytes;
 
-    assert!(total <= 25.5 * 1024.0 * 1024.0);
-    assert!(total >= 20.0 * 1024.0 * 1024.0);
+    // Design §11.3 specifies a maximum, never a minimum RSS. The complete
+    // ledger is 24.3 MiB with the former 8 MiB ring, 18.3 with today's 2 MiB.
+    let mib = 1024.0 * 1024.0;
+    assert!(
+        (total / mib - 18.3).abs() < 1e-9,
+        "ledger total: {} MiB",
+        total / mib
+    );
+    assert!(total < 25.0 * mib, "ledger exceeds design RSS budget");
 }
