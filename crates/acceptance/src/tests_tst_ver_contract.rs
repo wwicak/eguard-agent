@@ -1411,7 +1411,6 @@ fn ux_acceptance_criteria_are_defined() {
 }
 
 #[test]
-#[ignore = "requires separately versioned fe_eguard checkout with AC-TST-061 endpoint navigation/views; NavbarMain.vue in the local sibling omits Incidents and is not an agent-owned fixture"]
 // AC-TST-061
 fn ux_routes_and_views_are_present() {
     let router = read("../fe_eguard/html/egappserver/root/src/views/endpoint/_router/index.js");
@@ -1445,17 +1444,33 @@ fn ux_routes_and_views_are_present() {
     }
 
     let nav = read("../fe_eguard/html/egappserver/root/src/components/common/NavbarMain.vue");
+    // Child labels/routes come from imported categories, not Navbar literals.
+    // Events and Responses are now displayed as Telemetry and Response.
     for marker in [
         "Endpoint Security",
-        "Agents",
-        "Events",
-        "Incidents",
-        "Responses",
-        "Compliance",
-        "NAC",
-        "Audit",
+        "import { ENDPOINT_NAV_CATEGORIES } from \"@/views/endpoint/endpointNavConfig\"",
+        "child: ENDPOINT_NAV_CATEGORIES.flatMap((cat)",
+        "cat.items.map((item)",
+        "name: item.label",
+        "route: item.name",
     ] {
-        assert!(nav.contains(marker), "Navbar must include {marker}");
+        assert!(nav.contains(marker), "Navbar must consume {marker}");
+    }
+    let categories = read("../fe_eguard/html/egappserver/root/src/views/endpoint/endpointNavConfig.js");
+    for (name, label) in [
+        ("endpointAgents", "Agents"),
+        ("endpointEvents", "Telemetry"),
+        ("endpointIncidents", "Incidents"),
+        ("endpointResponses", "Response"),
+        ("endpointCompliance", "Compliance"),
+        ("endpointNAC", "NAC"),
+        ("endpointAudit", "Audit"),
+    ] {
+        assert!(
+            categories.contains(&format!("name: '{name}', label: '{label}'")),
+            "Endpoint navigation must include {name} as {label}"
+        );
+        assert!(router.contains(name), "Endpoint router must define {name}");
     }
 }
 
