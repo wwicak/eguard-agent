@@ -245,8 +245,16 @@ pub(super) fn has_explicit_port(address: &str) -> bool {
 mod tests {
     use super::{default_agent_id, default_agent_id_with_sources};
 
-    fn env_lock() -> &'static std::sync::Mutex<()> {
-        crate::test_support::env_lock()
+    fn identity_env() -> crate::test_support::TestEnvGuard {
+        let guard = crate::test_support::TestEnvGuard::new(&[
+            "EGUARD_AGENT_ID_PATH",
+            "EGUARD_AGENT_DATA_DIR",
+            "EGUARD_MACHINE_ID_PATH",
+            "HOSTNAME",
+            "COMPUTERNAME",
+        ]);
+        clear_identity_env();
+        guard
     }
 
     fn temp_dir(label: &str) -> std::path::PathBuf {
@@ -279,8 +287,7 @@ mod tests {
 
     #[test]
     fn default_agent_id_uses_hostname_env_and_persists_it() {
-        let _guard = env_lock().lock().expect("env lock");
-        clear_identity_env();
+        let _guard = identity_env();
         let root = temp_dir("hostname");
         let identity_path = set_agent_id_path(&root);
         std::env::set_var("HOSTNAME", "agent-host-a");
@@ -299,8 +306,7 @@ mod tests {
 
     #[test]
     fn default_agent_id_prefers_persisted_id_over_hostname_env() {
-        let _guard = env_lock().lock().expect("env lock");
-        clear_identity_env();
+        let _guard = identity_env();
         let root = temp_dir("persisted");
         let identity_path = set_agent_id_path(&root);
         std::fs::create_dir_all(&root).expect("create identity dir");
@@ -315,8 +321,7 @@ mod tests {
 
     #[test]
     fn default_agent_id_uses_windows_computername_when_hostname_missing() {
-        let _guard = env_lock().lock().expect("env lock");
-        clear_identity_env();
+        let _guard = identity_env();
         let root = temp_dir("computername");
         set_agent_id_path(&root);
         std::env::set_var("COMPUTERNAME", "WIN-4209A3FD-104E-4");
@@ -330,8 +335,7 @@ mod tests {
 
     #[test]
     fn default_agent_id_uses_machine_id_when_hostname_missing() {
-        let _guard = env_lock().lock().expect("env lock");
-        clear_identity_env();
+        let _guard = identity_env();
         let root = temp_dir("machine-id");
         set_agent_id_path(&root);
         std::fs::create_dir_all(&root).expect("create identity dir");
@@ -348,8 +352,7 @@ mod tests {
 
     #[test]
     fn generated_agent_id_is_random_format_and_persists() {
-        let _guard = env_lock().lock().expect("env lock");
-        clear_identity_env();
+        let _guard = identity_env();
         let root = temp_dir("generated");
         let identity_path = set_agent_id_path(&root);
         std::env::set_var("EGUARD_MACHINE_ID_PATH", root.join("missing-machine-id"));
