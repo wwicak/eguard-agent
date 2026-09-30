@@ -103,6 +103,7 @@ fn telemetry_audit_payload_includes_rule_attribution() {
 
     let enriched = platform_linux::EnrichedEvent {
         event: platform_linux::RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: platform_linux::EventType::ProcessExec,
@@ -223,6 +224,7 @@ fn telemetry_payload_includes_nac_fields() {
 
     let enriched = platform_linux::EnrichedEvent {
         event: platform_linux::RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: platform_linux::EventType::ProcessExec,
@@ -331,6 +333,7 @@ fn telemetry_payload_includes_correlation_event_fields() {
 
     let enriched = platform_linux::EnrichedEvent {
         event: platform_linux::RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: platform_linux::EventType::ProcessExec,

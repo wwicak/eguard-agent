@@ -1,5 +1,5 @@
 use crate::payload_codec::escape_payload_value;
-use crate::{EventType, RawEvent};
+use crate::{EventType, RawEvent, RawEventFields};
 
 use super::types::{EbpfError, Result, EVENT_HEADER_SIZE};
 
@@ -58,9 +58,11 @@ pub(super) fn parse_raw_event(raw: &[u8]) -> Result<RawEvent> {
     let pid = read_u32_le(raw, 1)?;
     let uid = read_u32_le(raw, 9)?;
     let timestamp_ns = read_u64_le(raw, 13)?;
-    let payload = parse_payload(event_type, &raw[header_size..]);
+    let mut fields = RawEventFields::default();
+    let payload = parse_payload(event_type, &raw[header_size..], &mut fields);
 
     Ok(RawEvent {
+        fields,
         pid_start_ns,
         ppid_start_ns,
         event_type,
@@ -87,29 +89,74 @@ pub(super) fn parse_event_type(raw: u8) -> Result<EventType> {
     }
 }
 
-fn parse_payload(event_type: EventType, raw: &[u8]) -> String {
-    match event_type {
-        EventType::ProcessExec => parse_process_exec_payload(raw),
-        EventType::ProcessExit => escape_payload_value(&parse_c_string(raw)),
-        EventType::FileOpen => parse_file_open_payload(raw),
-        EventType::FileWrite => parse_file_write_payload(raw),
-        EventType::FileRename => parse_file_rename_payload(raw),
-        EventType::FileUnlink => parse_file_unlink_payload(raw),
-        EventType::TcpConnect => parse_tcp_connect_payload(raw),
-        EventType::DnsQuery => parse_dns_query_payload(raw),
-        EventType::ModuleLoad => parse_module_load_payload(raw),
-        EventType::LsmBlock => parse_lsm_block_payload(raw),
+// Match the legacy KV parser after escaping: control whitespace is percent-
+// encoded and therefore survives trimming; ordinary surrounding whitespace and
+// enclosing quotes do not. Empty decoded values are absent, not Some("").
+fn normalized_text(value: &str) -> Option<String> {
+    let value = value.trim_matches(|ch: char| ch.is_whitespace() && !ch.is_control());
+    let value = crate::trim_enclosing_quotes(value);
+    (!value.is_empty()).then(|| value.to_owned())
+}
+
+#[test]
+fn typed_text_normalization_matches_legacy_kv_values() {
+    for value in [
+        "",
+        " ",
+        "\t\n",
+        " \t ",
+        "  ordinary  ",
+        "\"\"",
+        "\"quoted\"",
+        "a;,=%2F",
+        "é",
+    ] {
+        let payload = format!("path={}", escape_payload_value(value));
+        assert_eq!(
+            normalized_text(value),
+            crate::parse_kv_fields(&payload).remove("path"),
+            "{value:?}"
+        );
     }
 }
 
-fn parse_process_exec_payload(raw: &[u8]) -> String {
+// A naked fallback exposes no structured fields to the legacy parser, even
+// when the attempted binary layout already recorded numeric or text fields.
+fn naked_fallback(raw: &[u8], fields: &mut RawEventFields) -> String {
+    *fields = RawEventFields::default();
+    escape_payload_value(&parse_c_string(raw))
+}
+
+fn parse_payload(event_type: EventType, raw: &[u8], fields: &mut RawEventFields) -> String {
+    match event_type {
+        EventType::ProcessExec => parse_process_exec_payload(raw, fields),
+        EventType::ProcessExit => {
+            let comm = parse_c_string(raw);
+            fields.comm = normalized_text(&comm);
+            escape_payload_value(&comm)
+        }
+        EventType::FileOpen => parse_file_open_payload(raw, fields),
+        EventType::FileWrite => parse_file_write_payload(raw, fields),
+        EventType::FileRename => parse_file_rename_payload(raw, fields),
+        EventType::FileUnlink => parse_file_unlink_payload(raw, fields),
+        EventType::TcpConnect => parse_tcp_connect_payload(raw, fields),
+        EventType::DnsQuery => parse_dns_query_payload(raw, fields),
+        EventType::ModuleLoad => parse_module_load_payload(raw, fields),
+        EventType::LsmBlock => parse_lsm_block_payload(raw, fields),
+    }
+}
+
+fn parse_process_exec_payload(raw: &[u8], fields: &mut RawEventFields) -> String {
     if raw.len() < 4 + 8 + 32 {
-        return escape_payload_value(&parse_c_string(raw));
+        return naked_fallback(raw, fields);
     }
 
     let ppid = read_u32_le(raw, 0).unwrap_or_default();
+    fields.ppid = Some(ppid);
     let cgroup_id = read_u64_le(raw, 4).unwrap_or_default();
+    fields.cgroup_id = Some(cgroup_id);
     let comm = parse_c_string(slice_window(raw, 12, 32));
+    fields.comm = normalized_text(&comm);
 
     // New payload layout includes parent_comm after comm.
     let has_parent_comm = raw.len() >= 4 + 8 + 32 + 32 + 160 + 160;
@@ -118,14 +165,17 @@ fn parse_process_exec_payload(raw: &[u8]) -> String {
     } else {
         String::new()
     };
+    fields.parent_comm = normalized_text(&parent_comm);
 
     let path_offset = if has_parent_comm { 76 } else { 44 };
     let cmdline_offset = if has_parent_comm { 236 } else { 204 };
     let path = parse_c_string(slice_window(raw, path_offset, 160));
+    fields.path = normalized_text(&path);
     let cmdline = parse_cmdline_buffer(slice_window(raw, cmdline_offset, 160));
+    fields.cmdline = normalized_text(&cmdline);
 
     if comm.is_empty() && parent_comm.is_empty() && path.is_empty() && cmdline.is_empty() {
-        return escape_payload_value(&parse_c_string(raw));
+        return naked_fallback(raw, fields);
     }
 
     format!(
@@ -139,24 +189,31 @@ fn parse_process_exec_payload(raw: &[u8]) -> String {
     )
 }
 
-fn parse_file_open_payload(raw: &[u8]) -> String {
+fn parse_file_open_payload(raw: &[u8], fields: &mut RawEventFields) -> String {
     if raw.len() < 8 {
-        return escape_payload_value(&parse_c_string(raw));
+        return naked_fallback(raw, fields);
     }
 
     let flags = read_u32_le(raw, 0).unwrap_or_default();
+    fields.flags = Some(flags);
     let mode = read_u32_le(raw, 4).unwrap_or_default();
+    fields.mode = Some(mode);
 
     // New payload layout includes pid lineage/process hints:
     // flags(4) + mode(4) + ppid(4) + cgroup_id(8) + comm(32) + parent_comm(32) + path(256)
     if raw.len() >= 4 + 4 + 4 + 8 + 32 + 32 + 256 {
         let ppid = read_u32_le(raw, 8).unwrap_or_default();
+        fields.ppid = Some(ppid);
         let cgroup_id = read_u64_le(raw, 12).unwrap_or_default();
+        fields.cgroup_id = Some(cgroup_id);
         let comm = parse_c_string(slice_window(raw, 20, 32));
+        fields.comm = normalized_text(&comm);
         let parent_comm = parse_c_string(slice_window(raw, 52, 32));
+        fields.parent_comm = normalized_text(&parent_comm);
         let path = parse_c_string(slice_window(raw, 84, 256));
+        fields.path = normalized_text(&path);
         if path.is_empty() && comm.is_empty() && parent_comm.is_empty() {
-            return escape_payload_value(&parse_c_string(raw));
+            return naked_fallback(raw, fields);
         }
 
         return format!(
@@ -172,8 +229,9 @@ fn parse_file_open_payload(raw: &[u8]) -> String {
     }
 
     let path = parse_c_string(slice_window(raw, 8, 256));
+    fields.path = normalized_text(&path);
     if path.is_empty() {
-        return escape_payload_value(&parse_c_string(raw));
+        return naked_fallback(raw, fields);
     }
 
     format!(
@@ -184,14 +242,17 @@ fn parse_file_open_payload(raw: &[u8]) -> String {
     )
 }
 
-fn parse_file_write_payload(raw: &[u8]) -> String {
+fn parse_file_write_payload(raw: &[u8], fields: &mut RawEventFields) -> String {
     if raw.len() < 12 {
-        return escape_payload_value(&parse_c_string(raw));
+        return naked_fallback(raw, fields);
     }
 
     let fd = read_u32_le(raw, 0).unwrap_or_default();
+    fields.fd = Some(fd);
     let size = read_u64_le(raw, 4).unwrap_or_default();
+    fields.size = Some(size);
     let path = parse_c_string(slice_window(raw, 12, 256));
+    fields.path = normalized_text(&path);
     if path.is_empty() {
         return format!("fd={};size={}", fd, size);
     }
@@ -204,7 +265,7 @@ fn parse_file_write_payload(raw: &[u8]) -> String {
     )
 }
 
-fn parse_file_rename_payload(raw: &[u8]) -> String {
+fn parse_file_rename_payload(raw: &[u8], fields: &mut RawEventFields) -> String {
     let (old_window, new_offset, new_window) = if (384..512).contains(&raw.len()) {
         let half = raw.len() / 2;
         (half, half, raw.len().saturating_sub(half))
@@ -213,9 +274,11 @@ fn parse_file_rename_payload(raw: &[u8]) -> String {
     };
 
     let old_path = parse_c_string(slice_window(raw, 0, old_window));
+    fields.path = normalized_text(&old_path);
     let new_path = parse_c_string(slice_window(raw, new_offset, new_window));
+    fields.secondary_path = normalized_text(&new_path);
     if old_path.is_empty() && new_path.is_empty() {
-        return escape_payload_value(&parse_c_string(raw));
+        return naked_fallback(raw, fields);
     }
     format!(
         "src={};dst={}",
@@ -224,23 +287,28 @@ fn parse_file_rename_payload(raw: &[u8]) -> String {
     )
 }
 
-fn parse_file_unlink_payload(raw: &[u8]) -> String {
+fn parse_file_unlink_payload(raw: &[u8], fields: &mut RawEventFields) -> String {
     let path = parse_c_string(slice_window(raw, 0, 256));
+    fields.path = normalized_text(&path);
     if path.is_empty() {
-        return escape_payload_value(&parse_c_string(raw));
+        return naked_fallback(raw, fields);
     }
     format!("path={}", escape_payload_value(&path))
 }
 
-fn parse_tcp_connect_payload(raw: &[u8]) -> String {
+fn parse_tcp_connect_payload(raw: &[u8], fields: &mut RawEventFields) -> String {
     if raw.len() < 16 {
-        return escape_payload_value(&parse_c_string(raw));
+        return naked_fallback(raw, fields);
     }
 
     let family = read_u16_le(raw, 0).unwrap_or_default();
+    fields.family = Some(family);
     let sport = read_u16_le(raw, 2).unwrap_or_default();
+    fields.src_port = Some(sport);
     let dport = read_u16_le(raw, 4).unwrap_or_default();
+    fields.dst_port = Some(dport);
     let protocol = raw.get(6).copied().unwrap_or_default();
+    fields.protocol = Some(protocol);
     let saddr_v4 = read_ipv4(raw, 8).unwrap_or([0u8; 4]);
     let daddr_v4 = read_ipv4(raw, 12).unwrap_or([0u8; 4]);
 
@@ -255,22 +323,28 @@ fn parse_tcp_connect_payload(raw: &[u8]) -> String {
         (format_ipv4(saddr_v4), format_ipv4(daddr_v4))
     };
 
+    fields.src_ip = normalized_text(&src_ip);
+    fields.dst_ip = normalized_text(&dst_ip);
+
     format!(
         "family={};protocol={};src_ip={};src_port={};dst_ip={};dst_port={}",
         family, protocol, src_ip, sport, dst_ip, dport
     )
 }
 
-fn parse_dns_query_payload(raw: &[u8]) -> String {
+fn parse_dns_query_payload(raw: &[u8], fields: &mut RawEventFields) -> String {
     if raw.len() < 4 {
-        return escape_payload_value(&parse_c_string(raw));
+        return naked_fallback(raw, fields);
     }
 
     let qtype = read_u16_le(raw, 0).unwrap_or_default();
+    fields.qtype = Some(qtype);
     let qclass = read_u16_le(raw, 2).unwrap_or_default();
+    fields.qclass = Some(qclass);
     let qname = parse_c_string(slice_window(raw, 4, 128));
+    fields.domain = normalized_text(&qname);
     if qname.is_empty() {
-        return escape_payload_value(&parse_c_string(raw));
+        return naked_fallback(raw, fields);
     }
 
     format!(
@@ -281,22 +355,25 @@ fn parse_dns_query_payload(raw: &[u8]) -> String {
     )
 }
 
-fn parse_module_load_payload(raw: &[u8]) -> String {
+fn parse_module_load_payload(raw: &[u8], fields: &mut RawEventFields) -> String {
     let module_name = parse_c_string(slice_window(raw, 0, 64));
+    fields.module = normalized_text(&module_name);
     if module_name.is_empty() {
-        return escape_payload_value(&parse_c_string(raw));
+        return naked_fallback(raw, fields);
     }
 
     format!("module={}", escape_payload_value(&module_name))
 }
 
-fn parse_lsm_block_payload(raw: &[u8]) -> String {
+fn parse_lsm_block_payload(raw: &[u8], fields: &mut RawEventFields) -> String {
     if raw.len() < 4 {
-        return escape_payload_value(&parse_c_string(raw));
+        return naked_fallback(raw, fields);
     }
 
     let reason = raw[0];
+    fields.reason = Some(reason);
     let subject = parse_c_string(slice_window(raw, 4, 128));
+    fields.subject = normalized_text(&subject);
     if subject.is_empty() {
         return format!("reason={}", reason);
     }

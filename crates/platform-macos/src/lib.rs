@@ -43,8 +43,38 @@ pub enum EventType {
     LsmBlock,
 }
 
+/// Keep identical in platform-linux, platform-windows, and platform-macos.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RawEventFields {
+    pub path: Option<String>,
+    pub secondary_path: Option<String>,
+    pub cmdline: Option<String>,
+    pub comm: Option<String>,
+    pub parent_comm: Option<String>,
+    pub ppid: Option<u32>,
+    pub cgroup_id: Option<u64>,
+    pub flags: Option<u32>,
+    pub mode: Option<u32>,
+    pub dst_ip: Option<String>,
+    pub dst_port: Option<u16>,
+    pub src_ip: Option<String>,
+    pub src_port: Option<u16>,
+    pub family: Option<u16>,
+    pub protocol: Option<u8>,
+    pub domain: Option<String>,
+    pub qtype: Option<u16>,
+    pub qclass: Option<u16>,
+    pub module: Option<String>,
+    pub size: Option<u64>,
+    pub fd: Option<u32>,
+    pub reason: Option<u8>,
+    pub subject: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawEvent {
+    #[serde(default, skip_deserializing)]
+    pub fields: RawEventFields,
     /// Opaque audit-token pidversion captured at emission (not nanoseconds).
     pub pid_start_ns: Option<u64>,
     /// Parent audit-token pidversion captured at emission.
@@ -54,6 +84,21 @@ pub struct RawEvent {
     pub uid: u32,
     pub ts_ns: u64,
     pub payload: String,
+}
+
+impl Default for RawEvent {
+    fn default() -> Self {
+        Self {
+            fields: Default::default(),
+            pid_start_ns: None,
+            ppid_start_ns: None,
+            event_type: EventType::ProcessExec,
+            pid: 0,
+            uid: 0,
+            ts_ns: 0,
+            payload: String::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -656,6 +701,14 @@ fn capacity_from(raw: usize) -> NonZeroUsize {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn replay_ignores_injected_typed_fields() {
+        let mut record = serde_json::to_value(super::RawEvent::default()).unwrap();
+        record["fields"] = serde_json::json!({"path":"injected", "dst_port":443});
+        let event: super::RawEvent = serde_json::from_value(record).unwrap();
+        assert_eq!(event.fields, super::RawEventFields::default());
+    }
+
     use super::{enrich_event_with_cache, EnrichmentCache, EventType, RawEvent};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -676,6 +729,7 @@ mod tests {
     #[test]
     fn enrich_macos_process_event_uses_cmdline_payload_hint() {
         let raw = RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: EventType::ProcessExec,
@@ -698,6 +752,7 @@ mod tests {
     #[test]
     fn enrich_macos_tcp_event_parses_endpoint_from_payload() {
         let raw = RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: EventType::TcpConnect,
@@ -794,6 +849,7 @@ mod tests {
         fs::write(&path, b"payload").expect("write payload");
 
         let raw = RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: EventType::FileWrite,
@@ -821,6 +877,7 @@ mod tests {
         cache.set_expensive_check_exclusions(vec![path.to_string_lossy().to_string()], Vec::new());
 
         let raw = RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: EventType::FileWrite,

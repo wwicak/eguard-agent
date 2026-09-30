@@ -114,6 +114,7 @@ fn bench_eval_throughput() {
         let (mut ppid, mut comm, mut parent_comm) = lineage[0].clone();
         // Warm compliance as in tick_drains_queued_events_past_a_filtered_event.
         runtime.raw_event_backlog.push_back(RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: EventType::ProcessExec, pid: fixture.children[0], uid: 1000, ts_ns: 1,
@@ -147,7 +148,19 @@ fn bench_eval_throughput() {
                     2 => (EventType::FileOpen, format!("path={path};flags=0;mode=0;ppid={ppid};cgroup_id=0;comm={comm};parent_comm={parent_comm}")),
                     _ => (EventType::FileUnlink, format!("path={path}")),
                 };
-                events.push(RawEvent { pid_start_ns: None, ppid_start_ns: None, event_type, pid, uid: 1000,
+                // F4b compares consumers with identical already-decoded typed inputs.
+                let fields = platform_linux::RawEventFields {
+                    path: Some(if n % 4 == 0 { "/bin/true".to_string() } else { path.to_string() }),
+                    cmdline: (n % 4 == 0).then(|| "/bin/true".to_string()),
+                    ppid: (n % 4 != 3).then_some(ppid),
+                    cgroup_id: (n % 4 != 3).then_some(0),
+                    comm: (n % 4 != 3).then(|| comm.clone()),
+                    parent_comm: (n % 4 != 3).then(|| parent_comm.clone()),
+                    flags: match n % 4 { 1 => Some(577), 2 => Some(0), _ => None },
+                    mode: match n % 4 { 1 => Some(420), 2 => Some(0), _ => None },
+                    ..Default::default()
+                };
+                events.push(RawEvent { fields, pid_start_ns: None, ppid_start_ns: None, event_type, pid, uid: 1000,
                     ts_ns: 1_000_000_000 + tick as u64 * 100_000_000 + index as u64, payload });
             }
             // Keep files alive so delayed baseline events can still stat/hash them.

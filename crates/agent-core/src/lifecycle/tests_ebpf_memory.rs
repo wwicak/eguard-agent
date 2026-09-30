@@ -241,6 +241,7 @@ fn process_and_file_cache_capacities_stay_in_half_megabyte_envelope() {
     let mut default_cache = EnrichmentCache::default();
     for pid in 20_000u32..20_900u32 {
         let event = RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: EventType::ProcessExec,
@@ -273,6 +274,7 @@ fn process_and_file_cache_capacities_stay_in_half_megabyte_envelope() {
         let path = temp.join(format!("f-{idx:04}.txt"));
         std::fs::write(&path, format!("content-{idx}")).expect("write file");
         let event = RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: EventType::FileOpen,

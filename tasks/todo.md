@@ -68,6 +68,18 @@ Design: install libelf-dev, zlib1g-dev and pkg-config before any libbpf build. C
 Review: moved resource-budget installation before its harness, removed the later duplicate, completed verification-suite prerequisites, and added prerequisites to adversary-tournament (indirect runtime-tick/resource-budget builds). build-bundle, release-agent and package-agent already install all three dependencies before Linux builds; no edits needed there. Remaining workflows do not build Linux agent-core/libbpf.
 
 Validation: Python yaml.safe_load passes for all three changed workflows. Parsed step-order audit reports missing early prerequisites on h-start-h1-ci for all three, and complete prerequisites on the working tree. The unprivileged resource-budget harness passes (release agent build plus detection latency and LSM payload probes), using worktree-local CARGO_TARGET_DIR and a temporary cargo wrapper enforcing timeout 1500 and --offline; metrics and logs are in artifacts/ebpf-resource-budget and artifacts/h1-ci. cargo fmt --all --check and git diff --check pass. Initial wrapper setup failed because target did not yet exist; its launched build was stopped and validation restarted with the proper wrapper. No privileged/system-directory tests ran. Residual: GitHub-hosted execution and apt mirror availability are not validated locally.
+# F4b typed payload consumers
+
+- [x] Tag baseline and implement typed-first Linux/core consumers; compile incremental commit.
+- [x] Cover typed/payload conflicts, trusted ancestry, partial/None fallback and unchanged golden.
+- [x] Run required native/cross-platform checks and prove regression failures on tagged baseline.
+- [x] Benchmark three interleaved rounds at batches 50/200; document sites and export patch/status.
+
+Design: preserve the legacy parsers as per-field lazy fallbacks. Present normalized typed values (including numeric zero) are authoritative; empty text is absent and naked codec fallbacks clear typed fields; payload duplicates only validate security fields still sourced from payload. No emitter or legacy envelope formatting changes.
+
+Review: five conflict regressions pass on HEAD and fail behaviorally on d42e9ec with test-only transplants (four core, one Linux). Required debug policy 111/111, reviewfix 21/21, payload_integrity 12/12 and unchanged F4a golden pass; Linux 102/102 serial, macOS 46/46, Windows GNU platform-windows/agent-core check pass. Full agent release suite: 564 pass, two ignored, three baseline failures; all three reproduce on tagged base (memory RSS ledger, mocked package strip, restart bundle restoration). Excluding exactly those gives 564/564. Full debug sweep timed out at 1500s without an observed failure. An initial policy drain-budget failure and Linux spawn-before-exec cmdline race passed reruns. No fixes to unrelated baseline failures.
+
+Benchmark: three interleaved release rounds at batch 50/200, 300 ticks, identical typed fixtures on d42e9ec/c259d7f: combined median cost 940.824→842.034 us/event (-10.50%) and 1606.640→1506.877 (-6.21%). Contended-host wall-time/drain-budget results, not an isolated speedup claim. Report: /home/dimas/eguard-lab-soak/bench/results-i3-start-f4b-consumers.md. Both owned detached worktrees removed. Validation/fail-proof logs: /home/dimas/eguard-lab-soak/followups/f4b-validation/.
 
 # F15 review follow-up — Linux 5.4 and time namespaces
 
@@ -687,3 +699,50 @@ Review: cached generation 100 now survives generationless FileOpen with live 100
 Proof: new windows_generationless_direct_child_does_not_cache_reused_pid fails on 60745ac at the cache-absence assertion (review-fail.log). Both generations are absent and the live reader returns replacement generation 200. Fixed test proves the direct event is dropped while replacement telemetry and its generation-validated descendant remain visible. Windows process_generation now rejects missing emitted identity before any live lookup; matching emitted/live generations still seed ancestry. Non-Windows policy is unchanged.
 
 Validation: payload integrity 13/13, reviewfix 21/21, eBPF policy 111/111, priority 7/7, platform-windows 120/120; Windows GNU platform-windows + agent-core check, workspace fmt and diff checks passed. Logs: followups/w-validation/review-*.log. Original w-start positive fail proof remains preserved. Residuals: no native Windows rerun; macOS runtime validation outstanding; pre-existing Windows PPID spoofing assumption remains. Generationless children cannot seed descendant suppression, deliberately preferring visibility over false suppression.
+## F4b review correction
+- [x] Preserve naked ProcessExit metadata mapping.
+- [x] Prove unmodified replay regression before fix and run offline validation.
+- [x] Commit and refresh exported patch/status.
+
+Review: d826a43 excludes ProcessExit comm from command-line hints, preserving baseline telemetry and low-value filtering. New real replay/enrichment/detection test does not overwrite enriched metadata; it fails on pre-fix dc00a34 (Some("ordinary") versus None), passes with the fix, and passes with tagged baseline Linux production code. This is a restoration, so failure on the original baseline is neither expected nor desirable; first-pass typed-consumer fail proofs remain unchanged.
+
+Validation: Linux 102 and macOS 46 tests passed; agent-core eBPF policy 111, reviewfix 21, payload integrity 12, F4b 5 and unchanged golden 1 passed; Windows GNU cross-check passed. Full core run hit its 1500-second limit after 464 reported outcomes; two failures were independently reproduced with all changed crate files restored to tagged baseline: memory layout ledger lower bound and runtime bootstrap last-known-good bundle (None vs rules-2026.02.14.42). Both are out of scope, not introduced by F4b. Evidence: /home/dimas/eguard-lab-soak/followups/f4b-review-validation/. First-pass benchmark remains host-contended and was not repeated for this narrow semantic restoration. Workspace format and tagged diff checks passed.
+
+## F4b systematic mapping review
+- [x] Read final review; add all-ten-event real-codec differential with distinct values and impossible /proc PIDs.
+- [x] Record rename fail proof; restore destination-only legacy enrichment/hash precedence.
+- [x] Remove golden metadata overrides and regenerate at i3-start-f4b-consumers in detached scratch worktree (removed).
+- [x] Run requested offline suites, Windows cross-check, format and whitespace checks.
+- [x] Re-run three interleaved benchmark rounds against final commit and remove detached worktrees (completed in 0ba70ab).
+
+## F4b empty-value parity correction
+- [x] Read reviewer blocker and inspect legacy trimming/empty semantics.
+- [x] Expand all-ten real-codec differential; prove failure on unchanged 0ba70ab production.
+- [x] Normalize typed text at codec boundary and preserve naked-fallback lineage semantics.
+- [x] Update consumer expectations; run required suites and unchanged golden.
+- [x] Commit correction and refresh patch export/STATUS.md.
+
+Review: 150 differential cases cover three original variants and twelve empty/mixed variants per event kind (empty, spaces, control whitespace and mixed whitespace; all-empty plus complementary mixed fields). Helper matches legacy escaped-KV trimming and quote removal; control whitespace remains encoded during legacy trimming and is therefore preserved. Empty normalized text becomes None. All-empty exec/open naked fallback clears structured metadata, matching the parser. ModuleLoad typed fallback applies the existing low-value identity filter before falling back to the payload.
+
+Fail proof: expanded differential failed on 0ba70ab production at ProcessExec, showing empty strings versus null and stale typed lineage; fixed 150-case differential passes. Golden corpus remains its original 30 events and fixture is byte-for-byte unchanged (SHA256 011f0acd4cb69021d751c48f4b30f10c113755b096b77cce123c597df3a9d9f4). Required core integrity12/reviewfix21/policy111/F4b6/golden1, Linux103, macOS46, Windows GNU cross-check pass. Logs: /home/dimas/eguard-lab-soak/followups/f4b-empty-validation/. Initial golden run caught the expanded shared corpus count; separated corpus selection and reran successfully without fixture changes. Residual: no native Windows/macOS runtime validation or new benchmark for this semantic correction.
+
+Review: differential found only FileRename source-vs-destination mismatch; source is not a legacy hash candidate. Previous ProcessExit correction remains covered. Comparison removes only raw event (typed fields necessarily differ), preserving every enriched field and full DetectionEvent. Golden uses distinct source/destination, cmdline/comm/parent_comm and impossible PID/PPID; no enrichment fields are overwritten. Validation: payload integrity 12, reviewfix 21, eBPF policy 111, F4b 6, golden 1, Linux 102, macOS 46 passed; Windows GNU check passed. Fail proof and tagged-base fixture generation logs: /home/dimas/eguard-lab-soak/followups/f4b-final-validation/.
+
+## Binary-layout parity follow-up
+
+- [x] Audit every naked codec fallback and clear typed fields.
+- [x] Add real binary current/legacy/header-layout enrichment + DetectionEvent differential; prove failure at 2c8b7f3.
+- [x] Run required suites, formatting and baseline diff check; commit and refresh export/status.
+
+Review: all 13 fallback return sites now use one clearing helper: exec short/empty, open short/full-empty/legacy-empty, write short, rename empty, unlink empty, TCP short, DNS short/empty, module empty, LSM short. The additional DNS empty-name branch previously retained qtype/qclass; now cleared too. ProcessExit's native comm encoding is not an abandoned-layout fallback and remains unchanged (its established mapping regression passes).
+
+Binary differential: 3,104 real records, both 21/37-byte headers; exec 364/396, open 264/340, TCP 16/48 (IPv4/IPv6), DNS 132, module 64, LSM 132, exit 32, write 268, rename 384/512 plus every 384..511 split, unlink 256; also short/empty and size-check boundaries. Eight variants include distinct slots, empty/mixed text, whitespace/controls, delimiters/quotes and invalid UTF-8. Compares every enriched output field and DetectionEvent without replacing host-derived outputs; impossible PIDs make /proc deterministic. Feature-gated codec access is enabled only by the Linux core dev dependency.
+
+Fail proof: before changing codec production at 2c8b7f3, the new differential failed on kind=2/body=264/v2=false/variant=0 (flags=2, empty path): typed file_write=true, fallback=false. Fixed run passes 3,104/3,104; raw-field unit regression additionally asserts every fallback clears fields. Logs: /home/dimas/eguard-lab-soak/followups/f4b-binary-validation/. Required core integrity12/reviewfix21/policy111/F4b7 (includes replay150 and binary3104)/golden1 passed, Linux104 and macOS46 passed; Windows GNU platform-windows + agent-core cross-check passed. Golden fixture unchanged. Formatting and whitespace checks pass. Residual: host-only macOS and Windows cross-check, not native collector execution; no new performance benchmark for this semantic fix.
+
+## F4 integration merge
+- [x] Merge accepted F4b; union notes and combine typed-first parent lookup with Windows generation rules.
+- [x] Run requested offline regression suites, cross-target/workspace checks and formatting.
+- [x] Review resolutions and commit merge without pushing.
+
+Review: pipeline conflict keeps typed-first ppid with the existing Windows direct-child generation rules; cache insertion/live-validation logic unchanged. Notes conflict unioned. Two newly merged Windows test literals needed default typed fields. All requested checks passed with CARGO_TARGET_DIR=$PWD/target and timeout 1500: agent-core payload integrity 14, reviewfix 21, eBPF policy 111, F4b 7, F4a 4 (including golden), buffer recovery 1, enroll race 4; platform-linux 104, platform-windows 121, platform-macos 46, self-protect 37 tests. Windows cross-check, workspace all-targets check, formatting and diff whitespace check passed. Windows cross-check emits warnings; native Windows/macOS runtime execution not performed. Logs: /tmp/f4-integ-logs/.

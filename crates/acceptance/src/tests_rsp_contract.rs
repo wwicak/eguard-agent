@@ -284,6 +284,7 @@ fn response_runtime_contracts_cover_kill_quarantine_capture_and_lsm_enrichment_p
     let mut cache = EnrichmentCache::default();
     let enriched = enrich_event_with_cache(
         RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: EventType::LsmBlock,

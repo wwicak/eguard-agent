@@ -6,6 +6,8 @@ license.workspace = true
 
 [features]
 default = []
+# Real binary codec access for downstream differential tests only.
+test-binary-codec = []
 ebpf-libbpf = ["dep:libbpf-rs"]
 
 [dependencies]

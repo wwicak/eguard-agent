@@ -41,5 +41,8 @@ windows-service.workspace = true
 platform-macos = { path = "../platform-macos" }
 libc.workspace = true
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+platform-linux = { path = "../platform-linux", features = ["test-binary-codec"] }
+
 [dev-dependencies]
 response = { path = "../response", features = ["test-quarantine-dir"] }

@@ -15,6 +15,7 @@ fn delayed_event_cannot_bind_reused_pid_generation() {
     // At consumption /proc already describes a replacement, not the emitted child.
     runtime.internal_process_start_time_reader = Some(|_| Some(200));
     let mut event = RawEvent {
+        fields: Default::default(),
         pid_start_ns: Some(1_000_000_001),
         ppid_start_ns: None,
         pid: 4_000_020,
@@ -35,6 +36,7 @@ fn delayed_parent_event_requires_emitted_parent_generation() {
     let mut runtime = runtime();
     runtime.internal_process_start_time_reader = Some(|_| Some(200));
     let mut event = RawEvent {
+        fields: Default::default(),
         pid_start_ns: Some(1_000_000_001),
         ppid_start_ns: None,
         pid: 4_000_021,
@@ -60,6 +62,7 @@ fn event_generation_fallback_compares_proc_at_clock_tick_granularity() {
     runtime.internal_process_start_time_reader =
         Some(|_| Some(2 * unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as u64));
     let mut event = RawEvent {
+        fields: Default::default(),
         pid_start_ns: Some(2_000_000_001),
         ppid_start_ns: Some(2_000_000_001),
         pid: 4_000_023,
@@ -96,6 +99,7 @@ fn internal_process_pid_reuse_requires_same_generation() {
     runtime.track_internal_process_pid(4_000_001, 3, None);
     runtime.internal_process_start_time_reader = Some(|_| Some(200));
     let descendant = RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         pid: 4_000_005,
@@ -117,6 +121,7 @@ fn internal_process_pid_reuse_requires_same_generation() {
 #[test]
 fn payload_module_fallback_preserves_server_visible_text() {
     let mut enriched = platform_linux::enrich_event(RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         pid: 4_000_004,
@@ -142,6 +147,7 @@ fn payload_json_fallback_cannot_forge_suppression_ancestry() {
     let mut runtime = runtime();
     runtime.internal_process_start_time_reader = Some(|_| Some(100));
     let event = RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         pid: 4_000_006,
@@ -167,6 +173,7 @@ fn payload_duplicate_security_fields_never_suppress() {
             format!("ppid={};{key}=1;{key}=2", std::process::id())
         };
         let event = RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             pid,
@@ -221,6 +228,7 @@ fn payload_codec_injection_survives_ingest_but_direct_child_is_suppressed() {
         .spawn()
         .unwrap();
     let event = RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         pid: child.id(),
@@ -264,6 +272,7 @@ fn windows_cached_helper_generationless_file_event_revalidates_live_identity() {
         runtime.windows_process_generations = true;
         runtime.internal_process_start_time_reader = Some(|_| Some(100));
         let mut event = RawEvent {
+            fields: Default::default(),
             pid_start_ns: Some(100),
             ppid_start_ns: None,
             pid: 4_000_080,
@@ -307,6 +316,7 @@ fn windows_direct_child_unknown_parent_generation_is_suppressed() {
     runtime.windows_process_generations = true;
     runtime.internal_process_start_time_reader = Some(|_| Some(100));
     let mut event = RawEvent {
+        fields: Default::default(),
         pid_start_ns: Some(100),
         ppid_start_ns: None,
         pid: 4_000_051,
@@ -350,6 +360,7 @@ fn windows_generationless_direct_child_does_not_cache_reused_pid() {
     // A delayed Security 4688 record names an exited helper's PID, now reused.
     runtime.internal_process_start_time_reader = Some(|_| Some(200));
     let mut event = RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         pid: 4_000_070,
@@ -379,6 +390,7 @@ fn windows_ordinary_events_do_not_query_live_processes() {
     runtime.internal_process_start_time_reader =
         Some(|_| panic!("unauthenticated telemetry must not open process handles"));
     let event = RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         pid: 4_000_054,

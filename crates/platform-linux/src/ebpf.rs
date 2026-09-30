@@ -10,6 +10,12 @@ mod types;
 mod libbpf_backend;
 
 pub use engine::EbpfEngine;
+
+/// Decode an actual kernel record for downstream binary-layout parity tests.
+#[cfg(feature = "test-binary-codec")]
+pub fn decode_binary_for_test(raw: &[u8]) -> Result<crate::RawEvent> {
+    codec::parse_raw_event(raw)
+}
 pub use types::{EbpfError, EbpfStats};
 #[allow(dead_code)]
 pub type Result<T> = types::Result<T>;
@@ -39,6 +45,8 @@ mod tests;
 #[cfg(test)]
 mod tests_ring_contract;
 
+#[cfg(test)]
+mod tests_fields;
 #[cfg(test)]
 mod tests_kernel_caps;
 #[cfg(test)]

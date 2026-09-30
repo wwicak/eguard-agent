@@ -585,15 +585,21 @@ impl AgentRuntime {
 
         #[cfg(target_os = "linux")]
         {
-            let path = parse_payload_field(&event.payload, "path").unwrap_or_default();
-            let comm = parse_payload_field(&event.payload, "comm")
+            let path = raw_event_field(event, "path").unwrap_or_default();
+            let comm = raw_event_field(event, "comm")
                 .map(|value| value.to_ascii_lowercase())
                 .unwrap_or_default();
-            let parent_comm = parse_payload_field(&event.payload, "parent_comm")
+            let parent_comm = raw_event_field(event, "parent_comm")
                 .map(|value| value.to_ascii_lowercase())
                 .unwrap_or_default();
-            let command_line = parse_payload_field(&event.payload, "cmdline")
-                .or_else(|| parse_payload_field(&event.payload, "command_line"))
+            let command_line = event
+                .fields
+                .cmdline
+                .clone()
+                .or_else(|| {
+                    parse_payload_field(&event.payload, "cmdline")
+                        .or_else(|| parse_payload_field(&event.payload, "command_line"))
+                })
                 .map(|value| value.to_ascii_lowercase())
                 .unwrap_or_default();
 
@@ -694,7 +700,7 @@ impl AgentRuntime {
         ) {
             self.unmarked_internal_process_pids.remove(&event.pid);
         }
-        if payload_has_duplicate_security_fields(&event.payload) {
+        if raw_event_has_duplicate_security_fields(event) {
             return false;
         }
         if matches!(event.event_type, crate::platform::EventType::ProcessExit) {
@@ -715,12 +721,16 @@ impl AgentRuntime {
     fn should_track_internal_process_event(&mut self, event: &RawEvent, event_ns: u64) -> bool {
         // macOS can forward a JSON fallback. Its string contents are not
         // authenticated k=v ancestry, even if they contain ';ppid=...'.
-        if payload_is_json_container(&event.payload)
-            || payload_has_duplicate_security_fields(&event.payload)
+        if (event.fields.ppid.is_none() && payload_is_json_container(&event.payload))
+            || raw_event_has_duplicate_security_fields(event)
         {
             return false;
         }
-        if let Some(parent_pid) = payload_parent_pid(&event.payload) {
+        if let Some(parent_pid) = event
+            .fields
+            .ppid
+            .or_else(|| payload_parent_pid(&event.payload))
+        {
             // Unlike any tracked PID, our PID cannot be reused while we are alive.
             // Missing parent identity is safe here only; known stale identity is not.
             if parent_pid == std::process::id()
@@ -1151,7 +1161,7 @@ impl AgentRuntime {
     fn raw_event_ingest_secondary_key(event: &RawEvent) -> u8 {
         match event.event_type {
             crate::platform::EventType::FileOpen => {
-                let path = parse_payload_field(&event.payload, "path").unwrap_or_default();
+                let path = raw_event_field(event, "path").unwrap_or_default();
                 if path.starts_with("/tmp/") || path.starts_with("/var/tmp/") {
                     0
                 } else if is_high_value_linux_file_path(&path) {
@@ -1235,7 +1245,7 @@ impl AgentRuntime {
                     return 3;
                 }
 
-                let path = parse_payload_field(&event.payload, "path").unwrap_or_default();
+                let path = raw_event_field(event, "path").unwrap_or_default();
                 if is_high_value_linux_file_path(&path) {
                     0
                 } else {
@@ -1299,10 +1309,9 @@ impl AgentRuntime {
     }
 }
 
-fn raw_file_open_access_intent(event: &RawEvent) -> &'static str {
-    let payload = &event.payload;
-    let flags = parse_payload_field(payload, "flags");
-    let mode = parse_payload_field(payload, "mode");
+pub(super) fn raw_file_open_access_intent(event: &RawEvent) -> &'static str {
+    let flags = raw_event_field(event, "flags");
+    let mode = raw_event_field(event, "mode");
     if parse_file_write_flags(flags.as_deref(), mode.as_deref()) {
         "write"
     } else {
@@ -1315,7 +1324,7 @@ fn is_high_value_linux_file_open_event(event: &RawEvent) -> bool {
         return false;
     }
 
-    let path = parse_payload_field(&event.payload, "path").unwrap_or_default();
+    let path = raw_event_field(event, "path").unwrap_or_default();
     is_high_value_linux_file_path(&path)
 }
 
@@ -1809,6 +1818,54 @@ fn prioritize_raw_events_by_key(
     events
 }
 
+fn raw_event_field(event: &RawEvent, field: &str) -> Option<String> {
+    let typed = match field {
+        "path" => event.fields.path.clone(),
+        "comm" => event.fields.comm.clone(),
+        "parent_comm" => event.fields.parent_comm.clone(),
+        "flags" => event.fields.flags.map(|value| value.to_string()),
+        "mode" => event.fields.mode.map(|value| value.to_string()),
+        _ => None,
+    };
+    typed.or_else(|| parse_payload_field(&event.payload, field))
+}
+
+fn raw_event_has_duplicate_security_fields(event: &RawEvent) -> bool {
+    if event.fields.ppid.is_some() && event.fields.cgroup_id.is_some() {
+        return false;
+    }
+    if event.fields.ppid.is_none() && event.fields.cgroup_id.is_none() {
+        return payload_has_duplicate_security_fields(&event.payload);
+    }
+    // PID and UID are always structured. Ignore payload duplicates for fields
+    // that cannot supply ancestry; validate only missing typed security fields.
+    let mut seen_ppid = false;
+    let mut seen_cgroup = false;
+    if payload_is_json_container(&event.payload) {
+        return false;
+    }
+    for (key, _) in event
+        .payload
+        .split([';', ','])
+        .filter_map(|s| s.split_once('='))
+    {
+        let key = key.trim();
+        let seen = if event.fields.ppid.is_none()
+            && (key.eq_ignore_ascii_case("ppid") || key.eq_ignore_ascii_case("parent_pid"))
+        {
+            &mut seen_ppid
+        } else if event.fields.cgroup_id.is_none() && key.eq_ignore_ascii_case("cgroup_id") {
+            &mut seen_cgroup
+        } else {
+            continue;
+        };
+        if std::mem::replace(seen, true) {
+            return true;
+        }
+    }
+    false
+}
+
 fn parse_payload_field(payload: &str, field: &str) -> Option<String> {
     payload
         .split([';', ','])
@@ -2054,6 +2111,7 @@ mod priority_tests {
             .spawn()
             .expect("child");
         let mut event = RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             pid: child.id(),
@@ -2135,6 +2193,82 @@ mod priority_tests {
     }
 
     #[test]
+    fn f4b_typed_ancestry_rejects_forged_payload_and_ignores_shadow_duplicates() {
+        let _lock = super::super::shared_env_var_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("eguard-f4b-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let previous = std::env::var_os("EGUARD_AGENT_DATA_DIR");
+        std::env::set_var("EGUARD_AGENT_DATA_DIR", &root);
+        let mut cfg = crate::config::AgentConfig::default();
+        match previous {
+            Some(v) => std::env::set_var("EGUARD_AGENT_DATA_DIR", v),
+            None => std::env::remove_var("EGUARD_AGENT_DATA_DIR"),
+        }
+        cfg.offline_buffer_backend = "memory".into();
+        cfg.server_addr = "127.0.0.1:1".into();
+        cfg.self_protection_integrity_check_interval_secs = 0;
+        let mut runtime = AgentRuntime::new(cfg).unwrap();
+        let mut event = RawEvent {
+            fields: Default::default(),
+            pid_start_ns: None,
+            ppid_start_ns: None,
+            pid: u32::MAX,
+            uid: 1000,
+            ts_ns: 1,
+            event_type: crate::platform::EventType::ProcessExec,
+            payload: format!("ppid={};parent_comm=eguard-agent", std::process::id()),
+        };
+        event.fields.ppid = Some(0);
+        assert!(!runtime.should_suppress_internal_process_event(&event));
+        event.fields.ppid = Some(std::process::id());
+        event.payload = "ppid=0;parent_pid=1;pid=7;pid=8".into();
+        assert!(runtime.should_suppress_internal_process_event(&event));
+        event.pid -= 1;
+        event.fields = Default::default();
+        assert!(!runtime.should_suppress_internal_process_event(&event));
+        event.payload = format!("ppid={}", std::process::id());
+        assert!(runtime.should_suppress_internal_process_event(&event));
+        drop(runtime);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn f4b_typed_filter_priority_and_value_override_payload() {
+        let mut event = RawEvent {
+            fields: Default::default(),
+            pid_start_ns: None,
+            ppid_start_ns: None,
+            pid: u32::MAX,
+            uid: 1000,
+            ts_ns: 1,
+            event_type: crate::platform::EventType::FileOpen,
+            payload: "path=/proc/1/stat;comm=systemd;parent_comm=systemd;flags=0;mode=0".into(),
+        };
+        let legacy_drop = AgentRuntime::should_drop_low_value_linux_raw_event(&event);
+        assert!(legacy_drop);
+        event.fields.path = Some("/home/attacker/evil".into());
+        event.fields.comm = Some("malware".into());
+        event.fields.parent_comm = Some("malware".into());
+        event.fields.cmdline = Some("malware".into());
+        event.fields.flags = Some(2);
+        event.fields.mode = Some(0);
+        assert!(!AgentRuntime::should_drop_low_value_linux_raw_event(&event));
+        assert_eq!(AgentRuntime::raw_event_priority(&event), 0);
+        assert_eq!(AgentRuntime::raw_event_ingest_secondary_key(&event), 1);
+        assert!(is_high_value_linux_file_open_event(&event));
+        assert_eq!(raw_file_open_access_intent(&event), "write");
+        event.fields = Default::default();
+        assert_eq!(
+            AgentRuntime::should_drop_low_value_linux_raw_event(&event),
+            legacy_drop
+        );
+        assert_eq!(raw_file_open_access_intent(&event), "read");
+    }
+
+    #[test]
     fn internal_process_parent_comm_cannot_authenticate_but_direct_pid_can() {
         let cfg = crate::config::AgentConfig {
             offline_buffer_backend: "memory".to_string(),
@@ -2143,6 +2277,7 @@ mod priority_tests {
         };
         let mut runtime = AgentRuntime::new(cfg).expect("runtime");
         let mut event = RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             pid: u32::MAX,
@@ -2204,6 +2339,7 @@ mod priority_tests {
             .parse::<u32>()
             .unwrap();
         let event = RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             pid,
@@ -2241,6 +2377,7 @@ mod priority_tests {
         let mut runtime = AgentRuntime::new(cfg).expect("runtime");
         for index in 0..4020 {
             runtime.raw_event_backlog.push_back(RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 pid: 7001,
@@ -2275,6 +2412,7 @@ mod priority_tests {
     fn batch_priority_is_computed_once_per_event_and_ties_stay_stable() {
         let events: Vec<_> = (0..128)
             .map(|pid| RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 pid,

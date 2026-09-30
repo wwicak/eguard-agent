@@ -76,54 +76,84 @@ impl EventTxn {
         let operation = operation_from_event_type(&raw.event_type).to_string();
         let (subject, object) = match raw.event_type {
             EventType::FileRename => {
-                let (src, dst) = parse_rename_paths(&raw.payload);
+                let src = raw
+                    .fields
+                    .path
+                    .clone()
+                    .or_else(|| parse_rename_paths(&raw.payload).0);
+                let dst = raw
+                    .fields
+                    .secondary_path
+                    .clone()
+                    .or_else(|| parse_rename_paths(&raw.payload).1);
                 let subject = dst.clone().or(src);
                 (subject, dst)
             }
             EventType::TcpConnect => {
-                let endpoint = parse_payload_field(&raw.payload, "dst")
-                    .or_else(|| parse_payload_field(&raw.payload, "endpoint"))
-                    .or_else(|| {
-                        let dst_ip = parse_payload_field(&raw.payload, "dst_ip")
-                            .or_else(|| parse_payload_field(&raw.payload, "ip"));
-                        let dst_port = parse_payload_field(&raw.payload, "dst_port")
-                            .or_else(|| parse_payload_field(&raw.payload, "port"))
-                            .and_then(|raw| raw.parse::<u16>().ok());
-                        network_endpoint(dst_ip.as_deref(), dst_port).or(dst_ip)
-                    });
+                let endpoint = if raw.fields.dst_ip.is_some() || raw.fields.dst_port.is_some() {
+                    let legacy = std::cell::OnceCell::new();
+                    let fallback = || legacy.get_or_init(|| legacy_network_parts(&raw.payload));
+                    let ip = raw.fields.dst_ip.clone().or_else(|| fallback().0.clone());
+                    let port = raw.fields.dst_port.or_else(|| fallback().1);
+                    network_endpoint(ip.as_deref(), port).or(ip)
+                } else {
+                    parse_payload_field(&raw.payload, "dst")
+                        .or_else(|| parse_payload_field(&raw.payload, "endpoint"))
+                        .or_else(|| {
+                            let dst_ip = parse_payload_field(&raw.payload, "dst_ip")
+                                .or_else(|| parse_payload_field(&raw.payload, "ip"));
+                            let dst_port = parse_payload_field(&raw.payload, "dst_port")
+                                .or_else(|| parse_payload_field(&raw.payload, "port"))
+                                .and_then(|raw| raw.parse::<u16>().ok());
+                            network_endpoint(dst_ip.as_deref(), dst_port).or(dst_ip)
+                        })
+                };
                 (endpoint.clone(), endpoint)
             }
             EventType::DnsQuery => {
-                let domain = parse_payload_field(&raw.payload, "dst_domain")
-                    .or_else(|| parse_payload_field(&raw.payload, "qname"))
-                    .or_else(|| parse_payload_field(&raw.payload, "domain"));
+                let domain = raw.fields.domain.clone().or_else(|| {
+                    parse_payload_field(&raw.payload, "dst_domain")
+                        .or_else(|| parse_payload_field(&raw.payload, "qname"))
+                        .or_else(|| parse_payload_field(&raw.payload, "domain"))
+                });
                 (domain, None)
             }
             EventType::ProcessExec => {
-                let process = parse_payload_field(&raw.payload, "path")
-                    .or_else(|| parse_payload_field(&raw.payload, "exe"))
-                    .or_else(|| {
-                        let trimmed = raw.payload.trim();
-                        (!trimmed.is_empty() && !trimmed.contains('='))
-                            .then(|| super::telemetry_pipeline::decode_raw_payload(trimmed))
-                    });
+                let process = raw.fields.path.clone().or_else(|| {
+                    parse_payload_field(&raw.payload, "path")
+                        .or_else(|| parse_payload_field(&raw.payload, "exe"))
+                        .or_else(|| {
+                            let trimmed = raw.payload.trim();
+                            (!trimmed.is_empty() && !trimmed.contains('='))
+                                .then(|| super::telemetry_pipeline::decode_raw_payload(trimmed))
+                        })
+                });
                 (process, None)
             }
             EventType::ModuleLoad => {
-                let module = parse_payload_field(&raw.payload, "module")
-                    .or_else(|| parse_payload_field(&raw.payload, "path"))
+                let module = raw
+                    .fields
+                    .module
+                    .clone()
+                    .or_else(|| raw.fields.path.clone())
                     .or_else(|| {
-                        let trimmed = raw.payload.trim();
-                        (!trimmed.is_empty())
-                            .then(|| super::telemetry_pipeline::decode_raw_payload(trimmed))
+                        parse_payload_field(&raw.payload, "module")
+                            .or_else(|| parse_payload_field(&raw.payload, "path"))
+                            .or_else(|| {
+                                let trimmed = raw.payload.trim();
+                                (!trimmed.is_empty())
+                                    .then(|| super::telemetry_pipeline::decode_raw_payload(trimmed))
+                            })
                     });
                 (module, None)
             }
             _ => {
-                let path = parse_payload_field(&raw.payload, "path").or_else(|| {
-                    let trimmed = raw.payload.trim();
-                    (!trimmed.is_empty() && !trimmed.contains('='))
-                        .then(|| super::telemetry_pipeline::decode_raw_payload(trimmed))
+                let path = raw.fields.path.clone().or_else(|| {
+                    parse_payload_field(&raw.payload, "path").or_else(|| {
+                        let trimmed = raw.payload.trim();
+                        (!trimmed.is_empty() && !trimmed.contains('='))
+                            .then(|| super::telemetry_pipeline::decode_raw_payload(trimmed))
+                    })
                 });
                 (path, None)
             }
@@ -161,7 +191,7 @@ pub(super) fn coalesce_file_event_key(raw: &RawEvent) -> Option<String> {
                 format!(
                     "{}:{}:{}",
                     txn.operation,
-                    file_open_access_intent(&raw.payload),
+                    super::telemetry_pipeline::raw_file_open_access_intent(raw),
                     normalize_value(subject)
                 )
             })
@@ -282,6 +312,25 @@ fn decode_payload_value(raw: &str) -> String {
     out
 }
 
+fn legacy_network_parts(payload: &str) -> (Option<String>, Option<u16>) {
+    if let Some(endpoint) =
+        parse_payload_field(payload, "dst").or_else(|| parse_payload_field(payload, "endpoint"))
+    {
+        if let Some((ip, port)) = endpoint.rsplit_once(':') {
+            if let Ok(port) = port.parse() {
+                return (Some(ip.to_string()), Some(port));
+            }
+        }
+        return (Some(endpoint), None);
+    }
+    (
+        parse_payload_field(payload, "dst_ip").or_else(|| parse_payload_field(payload, "ip")),
+        parse_payload_field(payload, "dst_port")
+            .or_else(|| parse_payload_field(payload, "port"))
+            .and_then(|v| v.parse().ok()),
+    )
+}
+
 fn parse_rename_paths(payload: &str) -> (Option<String>, Option<String>) {
     let src = parse_payload_field(payload, "src")
         .or_else(|| parse_payload_field(payload, "old"))
@@ -292,44 +341,87 @@ fn parse_rename_paths(payload: &str) -> (Option<String>, Option<String>) {
     (src, dst)
 }
 
-fn file_open_access_intent(payload: &str) -> &'static str {
-    if parse_file_write_flags(
-        parse_payload_field(payload, "flags").as_deref(),
-        parse_payload_field(payload, "mode").as_deref(),
-    ) {
-        "write"
-    } else {
-        "read"
-    }
-}
-
-fn parse_file_write_flags(flags: Option<&str>, mode: Option<&str>) -> bool {
-    let flags_val = flags
-        .and_then(|value| value.parse::<u32>().ok())
-        .unwrap_or(0);
-    let mode_val = mode
-        .and_then(|value| value.parse::<u32>().ok())
-        .unwrap_or(0);
-
-    const O_WRONLY: u32 = 1;
-    const O_RDWR: u32 = 2;
-    const O_CREAT: u32 = 0x40;
-    const O_TRUNC: u32 = 0x200;
-
-    let write_intent = (flags_val & O_WRONLY) != 0 || (flags_val & O_RDWR) != 0;
-    let destructive = (flags_val & O_TRUNC) != 0 || (flags_val & O_CREAT) != 0;
-    let executable_bit = (mode_val & 0o111) != 0;
-
-    write_intent || destructive || executable_bit
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    fn f4b_typed_transaction_subjects_and_access_override_payload() {
+        let mut raw = RawEvent {
+            fields: Default::default(),
+            pid_start_ns: None,
+            ppid_start_ns: None,
+            event_type: EventType::FileOpen,
+            pid: 10,
+            uid: 0,
+            ts_ns: 1,
+            payload: "path=/legacy;flags=0;mode=0".into(),
+        };
+        raw.fields.path = Some("/typed".into());
+        raw.fields.flags = Some(2);
+        raw.fields.mode = Some(0);
+        assert_eq!(
+            coalesce_file_event_key(&raw).as_deref(),
+            Some("file_open:write:/typed")
+        );
+        raw.fields = Default::default();
+        assert_eq!(
+            coalesce_file_event_key(&raw).as_deref(),
+            Some("file_open:read:/legacy")
+        );
+        for (kind, payload, expected) in [
+            (EventType::ProcessExec, "path=/legacy", "/typed"),
+            (EventType::ModuleLoad, "module=legacy", "typed-module"),
+            (EventType::DnsQuery, "qname=legacy", "typed-domain"),
+            (EventType::FileRename, "src=/old;dst=/new", "/typed-new"),
+            (
+                EventType::TcpConnect,
+                "dst=192.0.2.1:80",
+                "198.51.100.2:443",
+            ),
+        ] {
+            raw.event_type = kind;
+            raw.payload = payload.into();
+            raw.fields.path = Some("/typed".into());
+            raw.fields.secondary_path = Some("/typed-new".into());
+            raw.fields.module = Some("typed-module".into());
+            raw.fields.domain = Some("typed-domain".into());
+            raw.fields.dst_ip = Some("198.51.100.2".into());
+            raw.fields.dst_port = Some(443);
+            assert_eq!(EventTxn::from_raw(&raw).subject.as_deref(), Some(expected));
+            raw.fields = Default::default();
+            assert_ne!(EventTxn::from_raw(&raw).subject.as_deref(), Some(expected));
+        }
+        raw.event_type = EventType::TcpConnect;
+        raw.payload = "dst=192.0.2.1:80".into();
+        raw.fields.dst_ip = Some("198.51.100.2".into());
+        assert_eq!(
+            EventTxn::from_raw(&raw).subject.as_deref(),
+            Some("198.51.100.2:80")
+        );
+        raw.fields.dst_ip = None;
+        raw.fields.dst_port = Some(443);
+        assert_eq!(
+            EventTxn::from_raw(&raw).subject.as_deref(),
+            Some("192.0.2.1:443")
+        );
+        raw.fields = Default::default();
+        raw.event_type = EventType::FileOpen;
+        raw.payload = "path=/legacy;flags=2;mode=0".into();
+        // Empty strings arrive from the codec as None, allowing payload fallback.
+        raw.fields.path = None;
+        raw.fields.flags = Some(0);
+        assert_eq!(EventTxn::from_raw(&raw).subject.as_deref(), Some("/legacy"));
+        assert_eq!(
+            coalesce_file_event_key(&raw).as_deref(),
+            Some("file_open:read:/legacy")
+        );
+    }
+
+    #[test]
     fn coalesce_file_event_key_normalizes_windows_separators() {
         let raw = RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: EventType::FileWrite,
@@ -346,6 +438,7 @@ mod tests {
     #[test]
     fn coalesce_file_event_key_distinguishes_read_and_write_file_open_modes() {
         let write_raw = RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: EventType::FileOpen,
@@ -355,6 +448,7 @@ mod tests {
             payload: "path=/tmp/eicar.com;flags=65;mode=420".to_string(),
         };
         let read_raw = RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: EventType::FileOpen,
@@ -374,6 +468,7 @@ mod tests {
     #[test]
     fn from_raw_file_rename_prefers_destination_subject() {
         let raw = RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: EventType::FileRename,
@@ -393,6 +488,7 @@ mod tests {
     #[test]
     fn from_raw_tcp_connect_parses_dst_ip_and_port_fields() {
         let raw = RawEvent {
+            fields: Default::default(),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: EventType::TcpConnect,
@@ -412,6 +508,7 @@ mod tests {
     fn from_enriched_builds_stable_transaction_key() {
         let enriched = EnrichedEvent {
             event: RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 event_type: EventType::TcpConnect,

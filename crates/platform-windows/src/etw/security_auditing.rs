@@ -55,6 +55,7 @@ pub fn build_process_create_event(
     }
 
     Some(RawEvent {
+        fields: Default::default(),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: EventType::ProcessExec,

@@ -83,6 +83,7 @@ impl AgentRuntime {
 
         let enriched = EnrichedEvent {
             event: RawEvent {
+                fields: Default::default(),
                 pid_start_ns: None,
                 ppid_start_ns: None,
                 event_type: EventType::ProcessExec,
