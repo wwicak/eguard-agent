@@ -11,6 +11,46 @@ use super::{AgentRuntime, DegradedCause};
 /// Interval between config file permission enforcement checks (seconds).
 const CONFIG_PERMISSION_CHECK_INTERVAL_SECS: i64 = 300;
 
+#[cfg(all(test, unix))]
+mod tests;
+
+/// Use one no-follow descriptor for inspection and chmod, so replacing the final
+/// path with a symlink cannot redirect enforcement. Never chmod directories or
+/// other non-regular files (including shared parents such as /tmp or /).
+#[cfg(unix)]
+fn enforce_private_file_permissions(path: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(err)
+            if err.kind() == std::io::ErrorKind::NotFound
+                || err.raw_os_error() == Some(libc::ELOOP) =>
+        {
+            return Ok(());
+        }
+        Err(err) => return Err(err),
+    };
+    let meta = file.metadata()?;
+    if !meta.is_file() {
+        return Ok(());
+    }
+    let mode = meta.permissions().mode() & 0o777;
+    if mode != 0o600 && mode != 0o400 {
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        info!(
+            path = %path.display(),
+            old_mode = format!("{:o}", mode),
+            "enforced 0600 permissions on config file"
+        );
+    }
+    Ok(())
+}
+
 impl AgentRuntime {
     pub(crate) async fn run_self_protection_if_due(&mut self, now_unix: i64) -> Result<()> {
         if self.tamper_forced_degraded {
@@ -180,45 +220,9 @@ impl AgentRuntime {
         }
         self.last_config_permission_check_unix = Some(now_unix);
 
-        use std::os::unix::fs::PermissionsExt;
-
-        let sensitive_paths = [
-            "/etc/eguard-agent/agent.conf",
-            "/etc/eguard-agent/bootstrap.conf",
-            "/etc/eguard-agent/certs/agent.crt",
-            "/etc/eguard-agent/certs/agent.key",
-            "/etc/eguard-agent/certs/ca.crt",
-        ];
-
-        for path in &sensitive_paths {
-            let p = std::path::Path::new(path);
-            if !p.exists() {
-                continue;
-            }
-            match std::fs::metadata(p) {
-                Ok(meta) => {
-                    let mode = meta.permissions().mode() & 0o777;
-                    if mode != 0o600 && mode != 0o400 {
-                        if let Err(err) =
-                            std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o600))
-                        {
-                            warn!(
-                                path = path,
-                                error = %err,
-                                "failed enforcing 0600 permissions on config file"
-                            );
-                        } else {
-                            info!(
-                                path = path,
-                                old_mode = format!("{:o}", mode),
-                                "enforced 0600 permissions on config file"
-                            );
-                        }
-                    }
-                }
-                Err(err) => {
-                    warn!(path = path, error = %err, "failed reading config file metadata");
-                }
+        for path in self.config.sensitive_config_paths() {
+            if let Err(err) = enforce_private_file_permissions(&path) {
+                warn!(path = %path.display(), error = %err, "failed enforcing config file permissions");
             }
         }
     }

@@ -13,7 +13,10 @@ pub(super) const AGENT_CONFIG_CANDIDATES: [&str; 3] = [
 ];
 
 #[cfg(target_os = "macos")]
-pub(super) const AGENT_CONFIG_CANDIDATES: [&str; 3] = [
+pub(super) use MACOS_AGENT_CONFIG_CANDIDATES as AGENT_CONFIG_CANDIDATES;
+
+#[cfg(any(target_os = "macos", test))]
+pub(super) const MACOS_AGENT_CONFIG_CANDIDATES: [&str; 3] = [
     "/Library/Application Support/eGuard/agent.conf",
     "./conf/agent.conf",
     "./agent.conf",
@@ -34,7 +37,10 @@ pub(super) const BOOTSTRAP_CONFIG_CANDIDATES: [&str; 3] = [
 ];
 
 #[cfg(target_os = "macos")]
-pub(super) const BOOTSTRAP_CONFIG_CANDIDATES: [&str; 3] = [
+pub(super) use MACOS_BOOTSTRAP_CONFIG_CANDIDATES as BOOTSTRAP_CONFIG_CANDIDATES;
+
+#[cfg(any(target_os = "macos", test))]
+pub(super) const MACOS_BOOTSTRAP_CONFIG_CANDIDATES: [&str; 3] = [
     "/Library/Application Support/eGuard/bootstrap.conf",
     "./conf/bootstrap.conf",
     "./bootstrap.conf",

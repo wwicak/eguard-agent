@@ -73,6 +73,9 @@ pub struct AgentConfig {
     pub baseline_stale_after_days: u64,
     pub self_protection_integrity_check_interval_secs: u64,
     pub self_protection_prevent_uninstall: bool,
+    /// Source selected by the config loader (not a serialized configuration value).
+    #[serde(skip)]
+    pub agent_config_path: Option<PathBuf>,
     #[serde(skip)]
     pub bootstrap_config_path: Option<PathBuf>,
 }

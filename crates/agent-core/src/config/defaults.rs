@@ -342,6 +342,7 @@ impl Default for AgentConfig {
             baseline_stale_after_days: 30,
             self_protection_integrity_check_interval_secs: 60,
             self_protection_prevent_uninstall: true,
+            agent_config_path: None,
             bootstrap_config_path: None,
         }
     }
