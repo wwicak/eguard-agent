@@ -1,5 +1,6 @@
 //! Cross-platform codec/enrichment golden; native OS collection is not simulated.
 use super::*;
+use crate::platform::EventType;
 
 fn lossless(value: serde_json::Value) -> Result<platform_linux::EnrichedEvent, String> {
     let decoded: platform_linux::EnrichedEvent =
@@ -12,7 +13,11 @@ fn lossless(value: serde_json::Value) -> Result<platform_linux::EnrichedEvent, S
     Ok(decoded)
 }
 
-fn pairs() -> Vec<(platform_linux::EnrichedEvent, platform_linux::EnrichedEvent)> {
+fn pairs() -> Vec<(
+    platform_linux::EnrichedEvent,
+    platform_linux::EnrichedEvent,
+    bool,
+)> {
     let mut out = Vec::new();
     for event in platform_windows::etw::test_support::corpus() {
         let mut cleared = event.clone();
@@ -21,6 +26,7 @@ fn pairs() -> Vec<(platform_linux::EnrichedEvent, platform_linux::EnrichedEvent)
             lossless(serde_json::to_value(platform_windows::enrich_event(event)).unwrap()).unwrap(),
             lossless(serde_json::to_value(platform_windows::enrich_event(cleared)).unwrap())
                 .unwrap(),
+            false,
         ));
     }
     for event in platform_macos::esf::test_support::corpus() {
@@ -29,6 +35,7 @@ fn pairs() -> Vec<(platform_linux::EnrichedEvent, platform_linux::EnrichedEvent)
         out.push((
             lossless(serde_json::to_value(platform_macos::enrich_event(event)).unwrap()).unwrap(),
             lossless(serde_json::to_value(platform_macos::enrich_event(cleared)).unwrap()).unwrap(),
+            true,
         ));
     }
     out
@@ -47,10 +54,10 @@ fn f4c_conversion_rejects_missing_and_extra_fields() {
 
 #[test]
 fn f4c_full_detection_differential() {
-    for (mut typed, legacy) in pairs() {
+    for (mut typed, legacy, macos) in pairs() {
         assert_eq!(
-            EventTxn::from_raw(&typed.event),
-            EventTxn::from_raw(&legacy.event),
+            EventTxn::from_raw_platform(&typed.event, macos),
+            EventTxn::from_raw_platform(&legacy.event, macos),
             "raw transaction: {}",
             typed.event.payload
         );
@@ -66,6 +73,102 @@ fn f4c_full_detection_differential() {
         assert_eq!(
             serde_json::to_value(typed).unwrap(),
             serde_json::to_value(legacy).unwrap()
+        );
+    }
+}
+
+fn assert_macos_raw_parity(events: impl Iterator<Item = platform_macos::RawEvent>) {
+    for event in events {
+        let typed: platform_linux::RawEvent =
+            serde_json::from_value(serde_json::to_value(&event).unwrap()).unwrap();
+        let mut raw = typed.clone();
+        raw.fields = Default::default();
+        assert_eq!(
+            EventTxn::from_raw_platform(&typed, true),
+            EventTxn::from_raw_platform(&raw, true),
+            "{}",
+            event.payload
+        );
+    }
+}
+
+#[test]
+fn f4c_macos_ipv6_transaction_parity() {
+    assert_macos_raw_parity(
+        platform_macos::esf::test_support::edge_corpus()
+            .into_iter()
+            .filter(|event| matches!(event.event_type, platform_macos::EventType::TcpConnect)),
+    );
+}
+
+#[test]
+fn f4c_macos_percent_transaction_parity() {
+    assert_macos_raw_parity(
+        platform_macos::esf::test_support::edge_corpus()
+            .into_iter()
+            .filter(|event| event.payload.contains('%')),
+    );
+}
+
+#[test]
+fn f4c_macos_rename_quote_transaction_parity() {
+    assert_macos_raw_parity(
+        platform_macos::esf::test_support::edge_corpus()
+            .into_iter()
+            .filter(|event| {
+                matches!(event.event_type, platform_macos::EventType::FileRename)
+                    && !event.payload.contains('%')
+            }),
+    );
+}
+
+#[test]
+fn f4c_partial_typed_keys_use_whole_payload() {
+    for (kind, payload) in [
+        (EventType::TcpConnect, "dst=[2001:db8::1]:443"),
+        (EventType::TcpConnect, "dst=2001:db8::1:443"),
+        (EventType::FileRename, "src=/old;dst=\"/quoted new\""),
+    ] {
+        let raw = RawEvent {
+            event_type: kind,
+            payload: payload.into(),
+            ..Default::default()
+        };
+        let expected = EventTxn::from_raw_platform(&raw, false);
+        for secondary in [false, true] {
+            let mut typed = raw.clone();
+            if matches!(typed.event_type, EventType::TcpConnect) {
+                if secondary {
+                    typed.fields.dst_port = Some(999);
+                } else {
+                    typed.fields.dst_ip = Some("192.0.2.99".into());
+                }
+            } else if secondary {
+                typed.fields.secondary_path = Some("/disagree-destination".into());
+            } else {
+                typed.fields.path = Some("/disagree-source".into());
+            }
+            assert_eq!(
+                EventTxn::from_raw_platform(&typed, false),
+                expected,
+                "{payload}"
+            );
+        }
+    }
+}
+
+#[test]
+fn f4c_macos_transactions_ignore_enrichment_hints() {
+    for (mut typed, legacy, macos) in pairs().into_iter().filter(|pair| pair.2) {
+        typed.event.fields.path = Some("/disagree".into());
+        typed.event.fields.secondary_path = Some("/disagree-destination".into());
+        typed.event.fields.module = Some("disagree-module".into());
+        typed.event.fields.domain = Some("disagree.example".into());
+        typed.event.fields.dst_ip = Some("192.0.2.99".into());
+        typed.event.fields.dst_port = Some(999);
+        assert_eq!(
+            EventTxn::from_raw_platform(&typed.event, macos),
+            EventTxn::from_raw_platform(&legacy.event, macos)
         );
     }
 }
@@ -90,7 +193,7 @@ fn f4c_decoder_enrichment_detection_envelope_golden() {
     cfg.self_protection_integrity_check_interval_secs = 0;
     let runtime = AgentRuntime::new(cfg).unwrap();
     let mut output = Vec::new();
-    for (enriched, _) in pairs() {
+    for (enriched, _, _) in pairs() {
         let event = to_detection_event(&enriched, 1700000000);
         let outcome = detection::DetectionOutcome::default();
         let txn = EventTxn::from_enriched(&enriched, &event, 1700000000);

@@ -86,6 +86,33 @@ pub fn corpus() -> Vec<RawEvent> {
             out.push(super::decode_event_value(&input).unwrap());
         }
     }
+    out.extend(edge_corpus());
+    out
+}
+
+pub fn edge_corpus() -> Vec<RawEvent> {
+    let mut out = Vec::new();
+    for ip in [
+        "2001:db8::1",
+        "[2001:db8::1]",
+        "2001:db8::1:443",
+        "[2001:db8::1:443]",
+    ] {
+        let input = serde_json::json!({"event_type":"connect","pid":4294967295u32,"uid":501,"ts_ns":1700000000000000000u64,"dst_ip":ip,"dst_port":443});
+        out.push(super::decode_event_value(&input).unwrap());
+    }
+    for kind in ["exec", "open", "rename", "unlink", "module_load", "dns"] {
+        for value in [
+            "/tmp/literal%2Fname",
+            "/tmp/literal%25name",
+            "/tmp/literal%invalid",
+            "\"/tmp/quoted path\"",
+            "/tmp/unquoted path",
+        ] {
+            let input = serde_json::json!({"event_type":kind,"pid":4294967295u32,"uid":501,"ts_ns":1700000000000000000u64,"path":value,"dst":value,"domain":value});
+            out.push(super::decode_event_value(&input).unwrap());
+        }
+    }
     out
 }
 
@@ -136,7 +163,49 @@ fn f4c_macos_decoder_fields_and_enrichment_differential() {
 }
 
 #[test]
+fn f4c_unknown_schema_fields_are_untrusted() {
+    for schema in [6, 7, 255] {
+        let input = serde_json::json!({"schema_version":schema,"event_type":"exec","pid":1,"path":"/unknown"});
+        assert_eq!(
+            super::decode_event_value(&input).unwrap().fields,
+            Default::default()
+        );
+    }
+}
+
+#[test]
+fn f4c_offline_native_json_has_no_typed_trust() {
+    for input in [
+        r#"{"event_type":"exec","pid":1,"path":"/offline"}"#,
+        r#"{"event_type":"connect","pid":1,"dst_ip":"2001:db8::1","dst_port":443}"#,
+        r#"{"event_type":"rename","pid":1,"path":"/old","dst":"/new"}"#,
+    ] {
+        assert_eq!(
+            super::parse_event_line(input).unwrap().fields,
+            Default::default()
+        );
+    }
+}
+
+#[test]
 fn f4c_malformed_replay_cannot_inject_fields() {
+    for key in ["fields", "Fields", "FIELDS"] {
+        for nested in [false, true] {
+            let fields =
+                serde_json::json!({key: {"path":"/injected", "domain":"injected.example"}});
+            let mut input = serde_json::json!({"event_type":"exec", "pid":1});
+            if nested {
+                input["event"] = fields;
+            } else {
+                input
+                    .as_object_mut()
+                    .unwrap()
+                    .extend(fields.as_object().unwrap().clone());
+            }
+            let event = super::parse_event_line(&input.to_string()).unwrap();
+            assert_eq!(event.fields, Default::default(), "{input}");
+        }
+    }
     for injected in [
         r#"{"path":"/injected"}"#,
         r#"{"domain":"injected.example"}"#,
@@ -151,7 +220,7 @@ fn f4c_malformed_replay_cannot_inject_fields() {
             );
             let event = super::parse_event_line(&native).unwrap();
             assert_eq!(event.fields, Default::default());
-            assert!(!event.payload.contains("injected"));
+            // Replay payload remains legacy-compatible; no typed trust is granted.
         }
     }
 }

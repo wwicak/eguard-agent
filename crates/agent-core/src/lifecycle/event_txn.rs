@@ -73,29 +73,28 @@ impl EventTxn {
     }
 
     pub(super) fn from_raw(raw: &RawEvent) -> Self {
+        Self::from_raw_platform(raw, cfg!(target_os = "macos"))
+    }
+
+    pub(super) fn from_raw_platform(raw: &RawEvent, macos: bool) -> Self {
+        // macOS enrichment and transaction parsers intentionally have different
+        // percent/quote semantics. Transactions use the base payload parser only.
+        let payload_only = Default::default();
+        let fields = if macos { &payload_only } else { &raw.fields };
         let operation = operation_from_event_type(&raw.event_type).to_string();
         let (subject, object) = match raw.event_type {
             EventType::FileRename => {
-                let src = raw
-                    .fields
-                    .path
-                    .clone()
-                    .or_else(|| parse_rename_paths(&raw.payload).0);
-                let dst = raw
-                    .fields
-                    .secondary_path
-                    .clone()
-                    .or_else(|| parse_rename_paths(&raw.payload).1);
+                let (src, dst) = if fields.path.is_some() && fields.secondary_path.is_some() {
+                    (fields.path.clone(), fields.secondary_path.clone())
+                } else {
+                    parse_rename_paths(&raw.payload)
+                };
                 let subject = dst.clone().or(src);
                 (subject, dst)
             }
             EventType::TcpConnect => {
-                let endpoint = if raw.fields.dst_ip.is_some() || raw.fields.dst_port.is_some() {
-                    let legacy = std::cell::OnceCell::new();
-                    let fallback = || legacy.get_or_init(|| legacy_network_parts(&raw.payload));
-                    let ip = raw.fields.dst_ip.clone().or_else(|| fallback().0.clone());
-                    let port = raw.fields.dst_port.or_else(|| fallback().1);
-                    network_endpoint(ip.as_deref(), port).or(ip)
+                let endpoint = if fields.dst_ip.is_some() && fields.dst_port.is_some() {
+                    network_endpoint(fields.dst_ip.as_deref(), fields.dst_port)
                 } else {
                     parse_payload_field(&raw.payload, "dst")
                         .or_else(|| parse_payload_field(&raw.payload, "endpoint"))
@@ -111,7 +110,7 @@ impl EventTxn {
                 (endpoint.clone(), endpoint)
             }
             EventType::DnsQuery => {
-                let domain = raw.fields.domain.clone().or_else(|| {
+                let domain = fields.domain.clone().or_else(|| {
                     parse_payload_field(&raw.payload, "dst_domain")
                         .or_else(|| parse_payload_field(&raw.payload, "qname"))
                         .or_else(|| parse_payload_field(&raw.payload, "domain"))
@@ -119,7 +118,7 @@ impl EventTxn {
                 (domain, None)
             }
             EventType::ProcessExec => {
-                let process = raw.fields.path.clone().or_else(|| {
+                let process = fields.path.clone().or_else(|| {
                     parse_payload_field(&raw.payload, "path")
                         .or_else(|| parse_payload_field(&raw.payload, "exe"))
                         .or_else(|| {
@@ -131,11 +130,10 @@ impl EventTxn {
                 (process, None)
             }
             EventType::ModuleLoad => {
-                let module = raw
-                    .fields
+                let module = fields
                     .module
                     .clone()
-                    .or_else(|| raw.fields.path.clone())
+                    .or_else(|| fields.path.clone())
                     .or_else(|| {
                         parse_payload_field(&raw.payload, "module")
                             .or_else(|| parse_payload_field(&raw.payload, "path"))
@@ -148,7 +146,7 @@ impl EventTxn {
                 (module, None)
             }
             _ => {
-                let path = raw.fields.path.clone().or_else(|| {
+                let path = fields.path.clone().or_else(|| {
                     parse_payload_field(&raw.payload, "path").or_else(|| {
                         let trimmed = raw.payload.trim();
                         (!trimmed.is_empty() && !trimmed.contains('='))
@@ -312,25 +310,6 @@ fn decode_payload_value(raw: &str) -> String {
     out
 }
 
-fn legacy_network_parts(payload: &str) -> (Option<String>, Option<u16>) {
-    if let Some(endpoint) =
-        parse_payload_field(payload, "dst").or_else(|| parse_payload_field(payload, "endpoint"))
-    {
-        if let Some((ip, port)) = endpoint.rsplit_once(':') {
-            if let Ok(port) = port.parse() {
-                return (Some(ip.to_string()), Some(port));
-            }
-        }
-        return (Some(endpoint), None);
-    }
-    (
-        parse_payload_field(payload, "dst_ip").or_else(|| parse_payload_field(payload, "ip")),
-        parse_payload_field(payload, "dst_port")
-            .or_else(|| parse_payload_field(payload, "port"))
-            .and_then(|v| v.parse().ok()),
-    )
-}
-
 fn parse_rename_paths(payload: &str) -> (Option<String>, Option<String>) {
     let src = parse_payload_field(payload, "src")
         .or_else(|| parse_payload_field(payload, "old"))
@@ -362,7 +341,11 @@ mod tests {
         raw.fields.mode = Some(0);
         assert_eq!(
             coalesce_file_event_key(&raw).as_deref(),
-            Some("file_open:write:/typed")
+            Some(if cfg!(target_os = "macos") {
+                "file_open:write:/legacy"
+            } else {
+                "file_open:write:/typed"
+            })
         );
         raw.fields = Default::default();
         assert_eq!(
@@ -388,22 +371,28 @@ mod tests {
             raw.fields.domain = Some("typed-domain".into());
             raw.fields.dst_ip = Some("198.51.100.2".into());
             raw.fields.dst_port = Some(443);
-            assert_eq!(EventTxn::from_raw(&raw).subject.as_deref(), Some(expected));
+            assert_eq!(
+                EventTxn::from_raw_platform(&raw, false).subject.as_deref(),
+                Some(expected)
+            );
             raw.fields = Default::default();
-            assert_ne!(EventTxn::from_raw(&raw).subject.as_deref(), Some(expected));
+            assert_ne!(
+                EventTxn::from_raw_platform(&raw, false).subject.as_deref(),
+                Some(expected)
+            );
         }
         raw.event_type = EventType::TcpConnect;
         raw.payload = "dst=192.0.2.1:80".into();
         raw.fields.dst_ip = Some("198.51.100.2".into());
         assert_eq!(
             EventTxn::from_raw(&raw).subject.as_deref(),
-            Some("198.51.100.2:80")
+            Some("192.0.2.1:80")
         );
         raw.fields.dst_ip = None;
         raw.fields.dst_port = Some(443);
         assert_eq!(
             EventTxn::from_raw(&raw).subject.as_deref(),
-            Some("192.0.2.1:443")
+            Some("192.0.2.1:80")
         );
         raw.fields = Default::default();
         raw.event_type = EventType::FileOpen;

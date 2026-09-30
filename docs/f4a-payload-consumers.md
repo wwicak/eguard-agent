@@ -34,10 +34,12 @@ Legacy payload serialization is unchanged (F4a golden remains the byte oracle).
 ## agent-core/src/lifecycle/event_txn.rs — migrated
 - `EventTxn::from_raw`: typed rename paths, destination IP/port, domain,
   process path, module name and file path; legacy aliases and unstructured
-  decoding remain fallback-only. Partial typed endpoints fill only missing
-  components from legacy dst/endpoint or dst_ip/ip plus dst_port/port.
+  decoding remain fallback-only outside macOS. Partial typed endpoints or rename
+  pairs use the payload for the entire composite key. macOS transactions always
+  use the base payload parsers (typed enrichment hints have different
+  percent/quote semantics).
 - `coalesce_file_event_key`: uses the shared typed-first file-open access helper.
-- Rename/field/percent/endpoint parsers: **fallback-only**.
+- Rename/field/percent/endpoint parsers: **fallback-only outside macOS**.
 
 ## agent-core/src/lifecycle/detection_event.rs — migrated
 - Module fallback: typed module/path before legacy unstructured decoding.
@@ -56,7 +58,8 @@ Legacy payload serialization is unchanged (F4a golden remains the byte oracle).
   Binary fallback events, Windows text replay, macOS raw-event JSON replay, and
   macOS JSON fallback payloads keep default fields. Malformed macOS replay records
   carrying `payload` are rejected rather than retried as native eslogger JSON;
-  native JSON recursively drops reserved `fields` objects before extraction.
+  all offline JSON inputs keep default typed fields, irrespective of key spelling
+  or nesting. Only the live eslogger stream may derive typed hints.
 - Windows `raw_event_metadata`, used by `prime_process_metadata` and enrichment,
   prefers typed path/command/parent/destination/domain/size hints. ETW rename's
   ambiguous `path` is intentionally not promoted to a typed source (legacy raw
@@ -67,10 +70,12 @@ Legacy payload serialization is unchanged (F4a golden remains the byte oracle).
   correlation and write classification; macOS base metadata parsing supplies write
   classification. Therefore their KV parsers are NOT globally fallback-only yet.
   Values already represented by present typed hints no longer decide enrichment.
-- Module unstructured decoding in both platform enrichment paths is fallback-only.
+- macOS module unstructured decoding is fallback-only. Windows image-load
+  enrichment still unconditionally decodes the module payload.
 - macOS `esf/mod.rs` ES noise payload/path checks remain legacy consumers.
 - All agent-core decision call sites listed above remain typed-first/fallback-only
-  on every platform; diagnostic trace and payload serialization remain unchanged.
+  except macOS raw transactions as described above; diagnostic trace and payload
+  serialization remain unchanged.
 
 ## F4c regression provenance
 `tests/fixtures/f4c-platforms.json` was generated at `i4-start-f4c` (67748db)
@@ -83,7 +88,9 @@ agent-core test adapter. Separate differentials clear only raw typed hints and
 compare raw EventTxn (including coalescing key), full enrichment and DetectionEvent.
 The expanded matrix includes distinct/empty/mixed strings, Windows numeric file
 layouts with distinct object/key/size values, SID-dependent process image offsets,
-unknown-version legacy and modern layouts, normalization-sensitive ETW/4688 paths,
+unknown-version legacy and modern layouts (v6/v7/v255), normalization-sensitive
+ETW/4688 paths, bracketed/unbracketed IPv6 endpoints, percent literals, quoted and
+unquoted rename paths, replay fields/Fields/FIELDS at multiple nesting levels,
 and distinct macOS command/target/rename/domain/subject values. Empty Security 4688
 image names are explicitly checked as rejected rather than silently omitted.
 These tests validate Windows/macOS codec and enrichment logic compiled on Linux,

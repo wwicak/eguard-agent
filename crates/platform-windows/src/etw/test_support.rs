@@ -172,7 +172,99 @@ pub fn corpus() -> Vec<RawEvent> {
             }
         }
     }
+    out.extend(edge_corpus());
     out
+}
+
+pub fn edge_corpus() -> Vec<RawEvent> {
+    let mut out = Vec::new();
+    for version in [6, 7, 255] {
+        for opcode in [1, 2] {
+            for modern in [false, true] {
+                let mut data = vec![0; if modern { 56 } else { 24 }];
+                data[..4].copy_from_slice(&u32::MAX.to_le_bytes());
+                if opcode == 1 {
+                    let offset = if modern { 20 } else { 12 };
+                    data[offset..offset + 4].copy_from_slice(&12345u32.to_le_bytes());
+                    wide(&mut data, if modern { 56 } else { 24 }, r"C:\unknown.exe");
+                } else if modern {
+                    data.resize(84, 0);
+                    data.extend_from_slice(b"unknown.exe\0");
+                } else {
+                    wide(&mut data, 24, "unknown.exe");
+                }
+                out.push(
+                    decode_etw_record_versioned(
+                        KERNEL_PROCESS,
+                        opcode,
+                        version,
+                        u32::MAX,
+                        1_700_000_000_000_000_000,
+                        &data,
+                    )
+                    .unwrap(),
+                );
+            }
+        }
+    }
+    for endpoint in ["[2001:db8::1]:443", "2001:db8::1:443"] {
+        out.push(
+            super::codec::decode_etw_event(
+                KERNEL_NETWORK,
+                10,
+                u32::MAX,
+                1_700_000_000_000_000_000,
+                format!("dst={endpoint}").as_bytes(),
+            )
+            .unwrap(),
+        );
+    }
+    for name in [
+        r"C:\literal%2Fname",
+        r"C:\literal%25name",
+        r"C:\literal%invalid",
+        r#""C:\quoted path""#,
+        r"C:\unquoted path",
+    ] {
+        // Windows native image paths cannot contain quotes; quoted paths belong
+        // to the untrusted text replay matrix below.
+        if !name.contains('"') {
+            let mut data = vec![0; 24];
+            data[..4].copy_from_slice(&u32::MAX.to_le_bytes());
+            wide(&mut data, 24, name);
+            out.push(
+                decode_etw_record_versioned(
+                    KERNEL_PROCESS,
+                    1,
+                    0,
+                    u32::MAX,
+                    1_700_000_000_000_000_000,
+                    &data,
+                )
+                .unwrap(),
+            );
+        }
+        out.push(
+            super::codec::decode_etw_event(
+                KERNEL_FILE,
+                14,
+                u32::MAX,
+                1_700_000_000_000_000_000,
+                format!("src={name};dst={name}.new").as_bytes(),
+            )
+            .unwrap(),
+        );
+    }
+    out
+}
+
+#[test]
+fn f4c_windows_unknown_schema_fields_are_untrusted() {
+    for event in edge_corpus().into_iter().take(12) {
+        assert_eq!(event.fields, Default::default(), "{}", event.payload);
+        assert_eq!(event.pid_start_ns, None);
+        assert_eq!(event.ppid_start_ns, None);
+    }
 }
 
 #[test]
@@ -214,9 +306,10 @@ fn f4c_windows_decoder_fields_and_enrichment_differential() {
         .iter()
         .filter(|event| matches!(event.event_type, crate::EventType::ProcessExec))
     {
-        if event.payload.contains(r"\??\")
-            || event.payload.contains(r"\\?\")
-            || event.payload.contains("HarddiskVolume")
+        if event.fields != Default::default()
+            && (event.payload.contains(r"\??\")
+                || event.payload.contains(r"\\?\")
+                || event.payload.contains("HarddiskVolume"))
         {
             assert_eq!(
                 event.fields.path,

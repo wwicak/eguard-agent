@@ -144,7 +144,11 @@ fn decode_kernel_process_versioned(
             }
 
             Some(RawEvent {
-                fields: crate::decoded_fields(&EventType::ProcessExec, &payload),
+                fields: if unknown {
+                    Default::default()
+                } else {
+                    crate::decoded_fields(&EventType::ProcessExec, &payload)
+                },
                 pid_start_ns: if unknown {
                     None
                 } else {
@@ -186,7 +190,11 @@ fn decode_kernel_process_versioned(
             }
 
             Some(RawEvent {
-                fields: crate::decoded_fields(&EventType::ProcessExit, &payload),
+                fields: if unknown {
+                    Default::default()
+                } else {
+                    crate::decoded_fields(&EventType::ProcessExit, &payload)
+                },
                 pid_start_ns: if unknown {
                     None
                 } else {
@@ -1072,6 +1080,7 @@ fn unknown_process_versions_stay_visible_without_identity() {
             assert_eq!(event.pid, 42);
             assert_eq!(event.pid_start_ns, None);
             assert_eq!(event.ppid_start_ns, None);
+            assert_eq!(event.fields, Default::default());
         }
     }
 }

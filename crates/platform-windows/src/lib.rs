@@ -1348,10 +1348,19 @@ fn capacity_from(raw: usize) -> NonZeroUsize {
 mod tests {
     #[test]
     fn replay_ignores_injected_typed_fields() {
-        let mut record = serde_json::to_value(super::RawEvent::default()).unwrap();
-        record["fields"] = serde_json::json!({"path":"injected", "dst_port":443});
-        let event: super::RawEvent = serde_json::from_value(record).unwrap();
-        assert_eq!(event.fields, super::RawEventFields::default());
+        for key in ["fields", "Fields", "FIELDS"] {
+            for nested in [false, true] {
+                let mut record = serde_json::to_value(super::RawEvent::default()).unwrap();
+                let injected = serde_json::json!({"path":"injected", "dst_port":443});
+                if nested {
+                    record["event"] = serde_json::json!({key: injected});
+                } else {
+                    record[key] = injected;
+                }
+                let event: super::RawEvent = serde_json::from_value(record).unwrap();
+                assert_eq!(event.fields, super::RawEventFields::default());
+            }
+        }
     }
 
     use super::{
