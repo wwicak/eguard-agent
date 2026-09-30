@@ -1,3 +1,17 @@
+# F4c narrow Windows schema allowlist
+
+- [x] Add unsupported-schema/offset and quoted transaction regressions; prove failure at 5c7bdb7.
+- [x] Centralize typed promotion allowlist for Kernel-Process start/stop and Security 4688; gate both collectors.
+- [x] Verify required suites/cross-check/format/golden parity, document follow-up, commit and export.
+
+Supervisor-approved scope: typed hints only; preserve payloads and generations; Linux/macOS unchanged. Nonprocess native schema validation deferred.
+
+Review: one allowlist at platform-windows/src/lib.rs::decoded_fields accepts Kernel-Process Start v0–5, Stop v0–2, Security 4688 opcode0 v0–2. Other providers/guessed offsets pass no schema evidence; both Security collectors pass descriptor/XML metadata before promotion. Missing Security metadata remains payload-only; the legacy v0 builder is test-only.
+
+Fail proof: unchanged 5c7bdb7 production fails nonprocess v0/v255/offset tests, XML4688-v255, TDH-builder-v255 (inert test-only metadata adapter), all three quoted DNS/Image/General raw-key tests, and the all-nonprocess quoted buffer table. Supported process tests pass both revisions. Owned detached 5c7bdb7 scratch removed; no tags or stash touched.
+
+Validation: Windows129/macOS51/Linux104; agent-core integrity12/reviewfix21/F4c11/golden15/differential3/EventTxn10; Windows GNU cross-check, fmt and whitespace pass. The combined core bash wrapper expired after 1,150s during reviewfix; its timeout-1500 child completed successfully (21/21, 893.54s), and remaining filters ran separately. Logs/proof: /home/dimas/eguard-lab-soak/followups/f4c-final-allowlist-validation/. Golden corpus unchanged: 1,299 records, 3,680,146 bytes, SHA256 5c5cb6628635d45c15e90a370e93fb897b3c65ad66264e55d9b2d1c81bf39add; no regeneration required. Residual: host codec tests/cross-check only, no native Windows/macOS collector execution; existing GNU warnings/eBPF EPERM remain.
+
 # F4b typed payload consumers
 
 - [x] Tag baseline and implement typed-first Linux/core consumers; compile incremental commit.

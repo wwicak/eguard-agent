@@ -47,9 +47,17 @@ Legacy payload serialization is unchanged (F4a golden remains the byte oracle).
 - Field/percent/quote helpers: **fallback-only**.
 
 ## Windows and macOS decoder boundaries (F4c)
-- Windows binary ETW (process start/stop, file, network, DNS, image) and Security
-  4688, and macOS eslogger decoding derive typed hints from the payload they just
-  generated, using the platform's existing base parser. This is a trusted-boundary
+- Windows typed-hint promotion has one schema allowlist (`platform-windows/src/lib.rs::decoded_fields`):
+  Kernel-Process start versions 0–5, stop versions 0–2, and Security 4688 opcode 0
+  versions 0–2. Both Security collectors carry version/opcode to that boundary;
+  missing/unknown metadata stays payload-only. All Windows nonprocess events
+  (File, Network, DNS, General, Image-Load), at every version and guessed offset,
+  keep default fields. Payloads and generation fields are unchanged.
+- **Follow-up:** Windows nonprocess events remain payload-only until explicit
+  provider/opcode/version schemas and offsets are validated natively. Synthetic
+  v0 fixtures are not evidence of native schema support.
+- Allowlisted Windows process events and macOS eslogger derive typed hints from
+  their generated payload using the platform base parser. This is a boundary
   parse, not direct binary population; direct population is optional future work.
 - Empty values retain each base parser's `None` handling. Windows typed paths
   retain the decoded, unnormalized payload spelling for raw coalescing/detection;
@@ -93,6 +101,13 @@ ETW/4688 paths, bracketed/unbracketed IPv6 endpoints, percent literals, quoted a
 unquoted rename paths, replay fields/Fields/FIELDS at multiple nesting levels,
 and distinct macOS command/target/rename/domain/subject values. Empty Security 4688
 image names are explicitly checked as rejected rather than silently omitted.
+Separate (non-golden) Windows regressions assert default hints for v0/v255
+nonprocess records, all supported File opcodes, guessed File/Image offsets and
+quoted buffers; Security 4688 version 255 is checked through both collector
+builders. Supported process/4688 versions retain hints. DNS, Image-Load and
+General quoted-subject raw transaction keys match the tagged payload-only parser.
+The golden corpus remains unchanged at 1,299 records (SHA256
+`5c5cb6628635d45c15e90a370e93fb897b3c65ad66264e55d9b2d1c81bf39add`).
 These tests validate Windows/macOS codec and enrichment logic compiled on Linux,
 not native collection/runtime behavior (covered separately by F20).
 Existing workspace platforms are test-only dependencies; the production Linux

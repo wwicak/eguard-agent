@@ -176,6 +176,21 @@ pub fn corpus() -> Vec<RawEvent> {
     out
 }
 
+/// Accepted quoted buffers used only for transaction regression, not the golden corpus.
+pub fn quoted_buffer_probes() -> Vec<RawEvent> {
+    let mut out = Vec::new();
+    for (provider, opcode, offset, value) in [
+        (DNS_CLIENT, 1, 0, r#""quoted.example""#),
+        (IMAGE_LOAD, 10, 36, r#""quoted.dll""#),
+        (KERNEL_GENERAL, 10, 36, r#""quoted.dll""#),
+    ] {
+        let mut data = Vec::new();
+        wide(&mut data, offset, value);
+        out.push(decode_etw_record_versioned(provider, opcode, 0, 42, 1, &data).unwrap());
+    }
+    out
+}
+
 pub fn edge_corpus() -> Vec<RawEvent> {
     let mut out = Vec::new();
     for version in [6, 7, 255] {
@@ -259,6 +274,50 @@ pub fn edge_corpus() -> Vec<RawEvent> {
 }
 
 #[test]
+fn f4c_all_nonprocess_quoted_buffers_are_payload_only() {
+    let cases = [
+        (
+            KERNEL_FILE,
+            &[0, 12, 14, 15, 26, 32, 35, 36, 64, 68, 70, 71][..],
+        ),
+        (KERNEL_NETWORK, &[0, 10, 255][..]),
+        (DNS_CLIENT, &[0, 1, 255][..]),
+        (KERNEL_GENERAL, &[0, 10, 255][..]),
+        (IMAGE_LOAD, &[0, 10, 255][..]),
+    ];
+    for (provider, opcodes) in cases {
+        for &opcode in opcodes {
+            let offset = if provider == KERNEL_FILE {
+                match opcode {
+                    0 | 32 | 35 | 36 => 8,
+                    12 => 28,
+                    64 => 32,
+                    _ => 36,
+                }
+            } else if matches!(provider, KERNEL_GENERAL | IMAGE_LOAD) {
+                36
+            } else {
+                0
+            };
+            let mut data = Vec::new();
+            // A trailing quote preserves path detection; Network interprets
+            // these accepted bytes as numbers, not as a native quoted endpoint.
+            wide(&mut data, offset, r#"C:\quoted.subject""#);
+            for version in [0, 255] {
+                let event =
+                    decode_etw_record_versioned(provider, opcode, version, 42, 1, &data).unwrap();
+                assert_eq!(
+                    event.fields,
+                    Default::default(),
+                    "{provider}/{opcode}/v{version}: {}",
+                    event.payload
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn f4c_windows_unknown_schema_fields_are_untrusted() {
     for event in edge_corpus().into_iter().take(12) {
         assert_eq!(event.fields, Default::default(), "{}", event.payload);
@@ -284,8 +343,13 @@ fn f4c_windows_enrichment_prefers_typed_domain() {
 fn f4c_windows_decoder_fields_and_enrichment_differential() {
     let events = corpus();
     assert!(events.iter().any(|e| e.fields.path.is_some()));
-    assert!(events.iter().any(|e| e.fields.domain.is_some()));
-    assert!(events.iter().any(|e| e.fields.module.is_some()));
+    assert!(events
+        .iter()
+        .filter(|e| !matches!(
+            e.event_type,
+            crate::EventType::ProcessExec | crate::EventType::ProcessExit
+        ))
+        .all(|e| e.fields == Default::default()));
     for opcode in [68, 15] {
         for len in [0, 16, 24, 32, 40, 48] {
             let offset = if opcode == 15 { 44 } else { 36 };
@@ -296,8 +360,8 @@ fn f4c_windows_decoder_fields_and_enrichment_differential() {
             let event =
                 decode_etw_record_versioned(KERNEL_FILE, opcode, 0, u32::MAX, 42, &data).unwrap();
             assert_eq!(
-                event.fields.size,
-                Some(if offset + 4 <= len { 0x4321 } else { 0 }),
+                event.fields,
+                Default::default(),
                 "opcode={opcode} len={len}"
             );
         }
@@ -321,7 +385,7 @@ fn f4c_windows_decoder_fields_and_enrichment_differential() {
     }
     let mut dns = events
         .iter()
-        .find(|event| event.fields.domain.is_some())
+        .find(|event| matches!(event.event_type, crate::EventType::DnsQuery))
         .unwrap()
         .clone();
     dns.fields.domain = Some("typed.example".into());

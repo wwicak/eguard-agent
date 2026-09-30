@@ -41,6 +41,37 @@ fn pairs() -> Vec<(
     out
 }
 
+fn assert_windows_quoted_buffer_tag_key(index: usize) {
+    let event = platform_windows::etw::test_support::quoted_buffer_probes().remove(index);
+    let mut raw: platform_linux::RawEvent =
+        serde_json::from_value(serde_json::to_value(&event).unwrap()).unwrap();
+    // Explicitly preserve trusted hints across the test-only platform adapter.
+    raw.fields = serde_json::from_value(serde_json::to_value(&event.fields).unwrap()).unwrap();
+    let expected = if index == 0 {
+        "dns_query|dns_query|\"quoted.example\"|-|pid:42|sid:42"
+    } else {
+        "module_load|module_load|\"quoted.dll\"|-|pid:42|sid:42"
+    };
+    assert_eq!(EventTxn::from_raw_platform(&raw, false).key, expected);
+    raw.fields = Default::default();
+    assert_eq!(EventTxn::from_raw_platform(&raw, false).key, expected);
+}
+
+#[test]
+fn f4c_windows_quoted_dns_keeps_tagged_raw_transaction_key() {
+    assert_windows_quoted_buffer_tag_key(0);
+}
+
+#[test]
+fn f4c_windows_quoted_image_keeps_tagged_raw_transaction_key() {
+    assert_windows_quoted_buffer_tag_key(1);
+}
+
+#[test]
+fn f4c_windows_quoted_general_keeps_tagged_raw_transaction_key() {
+    assert_windows_quoted_buffer_tag_key(2);
+}
+
 #[test]
 fn f4c_conversion_rejects_missing_and_extra_fields() {
     let event = pairs().remove(0).0;

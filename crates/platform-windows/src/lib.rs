@@ -865,9 +865,35 @@ struct PayloadMetadata {
     event_size: Option<u64>,
 }
 
-/// Derive trusted decoder hints using exactly the legacy transport normalization.
-/// Replay and binary fallback paths deliberately do not call this helper.
-pub(crate) fn decoded_fields(event_type: &EventType, payload: &str) -> RawEventFields {
+/// Schema evidence carried to the single typed-hint promotion boundary.
+pub(crate) enum DecodedSchema {
+    KernelProcess { opcode: u8, version: u8 },
+    Security4688 { opcode: u8, version: Option<u8> },
+}
+
+/// Derive trusted hints only for explicitly allowlisted process schemas.
+/// Nonprocess providers/guessed layouts pass None; replay and binary fallback
+/// paths deliberately do not call this helper. Payloads remain unchanged.
+pub(crate) fn decoded_fields(
+    schema: Option<DecodedSchema>,
+    event_type: &EventType,
+    payload: &str,
+) -> RawEventFields {
+    if !matches!(
+        schema,
+        Some(DecodedSchema::KernelProcess {
+            opcode: 1,
+            version: 0..=5
+        }) | Some(DecodedSchema::KernelProcess {
+            opcode: 2,
+            version: 0..=2
+        }) | Some(DecodedSchema::Security4688 {
+            opcode: 0,
+            version: Some(0..=2)
+        })
+    ) {
+        return RawEventFields::default();
+    }
     let meta = parse_payload_metadata(event_type, payload);
     let kv = parse_kv_fields(payload);
     RawEventFields {
