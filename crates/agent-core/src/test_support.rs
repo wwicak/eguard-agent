@@ -29,29 +29,6 @@ impl Drop for TestEnvGuard {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{env_lock, TestEnvGuard};
-
-    #[test]
-    fn scoped_environment_restores_values_during_unwind() {
-        let names = ["HOSTNAME", "EGUARD_TEST_SCOPED_ENV_ABSENT"];
-        let guard = TestEnvGuard::new(&names);
-        let previous = guard.previous.clone();
-        let result = std::panic::catch_unwind(move || {
-            let _guard = guard;
-            std::env::set_var("HOSTNAME", "changed-hostname");
-            std::env::set_var("EGUARD_TEST_SCOPED_ENV_ABSENT", "changed");
-            panic!("exercise unwinding cleanup");
-        });
-        assert!(result.is_err());
-        let _lock = env_lock().lock().unwrap_or_else(|error| error.into_inner());
-        for (name, expected) in previous {
-            assert_eq!(std::env::var_os(name), expected, "restore {name}");
-        }
-    }
-}
-
 pub(crate) fn env_lock() -> &'static std::sync::Mutex<()> {
     static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
     let lock = LOCK.get_or_init(|| std::sync::Mutex::new(()));

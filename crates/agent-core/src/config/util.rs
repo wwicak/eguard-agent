@@ -286,6 +286,26 @@ mod tests {
     }
 
     #[test]
+    fn scoped_identity_environment_restores_values_during_unwind() {
+        let names = ["HOSTNAME", "EGUARD_TEST_SCOPED_ENV_ABSENT"];
+        let guard = crate::test_support::TestEnvGuard::new(&names);
+        let previous = names.map(|name| (name, std::env::var_os(name)));
+        let result = std::panic::catch_unwind(move || {
+            let _guard = guard;
+            std::env::set_var("HOSTNAME", "changed-hostname");
+            std::env::set_var("EGUARD_TEST_SCOPED_ENV_ABSENT", "changed");
+            panic!("exercise unwinding cleanup");
+        });
+        assert!(result.is_err());
+        let _lock = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        for (name, expected) in previous {
+            assert_eq!(std::env::var_os(name), expected, "restore {name}");
+        }
+    }
+
+    #[test]
     fn default_agent_id_uses_hostname_env_and_persists_it() {
         let _guard = identity_env();
         let root = temp_dir("hostname");
