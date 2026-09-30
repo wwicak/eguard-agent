@@ -18,7 +18,9 @@ pub fn build(b: *std.Build) void {
     all_artifacts.dependOn(ebpf_step);
 
     const ebpf_check = b.step("ebpf-check", "Test common eBPF generation header compatibility");
-    const header_test = b.addSystemCommand(&.{ "zig", "cc", "-Wno-attributes" });
+    // Baseline CPU: the Run step caches this binary by args only, so a native
+    // build restored from another runner's cache can SIGILL on an older CPU.
+    const header_test = b.addSystemCommand(&.{ "zig", "cc", "-mcpu=baseline", "-Wno-attributes" });
     header_test.addFileArg(b.path("zig/ebpf/tests/header_generation.c"));
     header_test.addFileInput(b.path("zig/ebpf/bpf_helpers.h"));
     const header_exe = header_test.addPrefixedOutputFileArg("-o", "header-generation");
