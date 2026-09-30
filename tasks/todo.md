@@ -1,3 +1,15 @@
+# F25 second pass — repair blocking review findings
+
+- [x] Isolate deliberate identity unwind in a single-test subprocess so the shared suite mutex cannot be poisoned; exact target and20 mixed enrollment/unwind runs pass4/4 at16threads (eefa46f).
+- [x] Re-enable UX route/view contract and assert Navbar's imported category wiring plus seven canonical navigation entries and router names; exact target passes (c8d4377).
+- [x] Exercise supported host CV grouping with varied per-host rule IDs; exact target passes. Negative fixture proof: host has0 overlaps in every fold; host_rule and unsupported host_id each have6/8/4/6/6 overlaps (476f6c0).
+- [x] Run isolated targets, config43/43 five times at16threads, package/memory34/34, acceptance2019/2019 with zero ignores, fmt and offline workspace/all-targets check; commit each fix separately.
+- [x] Record full-core revalidation outcome and second-pass residuals: supervisor requested stopping the owned rerun once the known base-identical F21 watchdog-budget failure reappeared. At stop:121passed/1failed/2ignored, zero PoisonError, all identity/unwind cases passed; no new failure observed. Owned wrapper/timeout/cargo/test processes terminated, no full-core success claimed.
+
+Second-pass disposition: all seven original acceptance failures are fixed, none ignored. The first-pass UX infrastructure diagnosis was wrong: labels moved into `ENDPOINT_NAV_CATEGORIES`, with Events→Telemetry and Responses→Response; imported Navbar child wiring and all canonical entries are now checked alongside unchanged route/view assertions. The intentional panic runs in a child with only its exact test, preserving real guard/drop restoration coverage without poisoning unrelated suite waiters. No dependency or production changes, no edits to lifecycle/self_protect.rs. Logs:/tmp/f25-second-logs/.
+
+Second-pass residuals: full-core remains unproven green due to the previously reproduced base-identical `near_capacity_recovery_leaves_watchdog_headroom` failure/slow scan tests; the requested rerun was stopped by supervisor, not passed. UX remains dependent on the separately versioned sibling checkout, just like other existing acceptance checks, but all required files are present locally. The 18.3MiB ledger is documented design arithmetic, not a measured runtime RSS or accounting of all independent loader rings. Four generated tracked metrics were dirty at entry and remain uncommitted; validation may rewrite them. Formatting initially found one long new line; corrected it, then fmt and offline workspace/all-targets check passed.
+
 # F25 — repair base-identical tests
 
 - [x] Reproduce package harness: clean 1224af4 exits zero/stderr empty but misses strip because fixture is musl while default build is glibc. Isolate workspace, pin child build inputs, seed actual glibc binary, capture diagnostics and assert actual commands.

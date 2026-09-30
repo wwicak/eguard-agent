@@ -1,5 +1,9 @@
 # Lessons
 
+- **Isolate intentional lock-poisoning tests from suite-global mutexes**: catching a panic does not prevent a guard dropped during unwind from poisoning the mutex; waiters can fail before poison clearing. Exercise the real guard in a single-test subprocess.
+- **Trace imported UI configuration before declaring infrastructure missing**: literal labels can move out of a Navbar into categories; verify the import/use and canonical entries instead of ignoring a present contract.
+- **Use supported grouping modes and adversarial split fixtures**: vary rule IDs within each host so a host-rule fallback cannot masquerade as host-only isolation.
+
 - **Separate identity-cache admission from validation**: requiring emitted Windows generation prevents stale-event cache insertion, but ordinary generationless telemetry must still validate existing entries against live generation. Test both paths, including reuse and process exit.
 
 - **Isolate slow tests before launching overlapping validation sweeps**: inspect completed test names, stop owned stale processes, and reproduce the specific remaining test serially with a short timeout on both the change and base revision. A scan fixture can run real filesystem work for many minutes; don't mistake that for a new generation-lookup deadlock or repeatedly run the whole module set.

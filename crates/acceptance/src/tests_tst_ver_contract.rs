@@ -1456,7 +1456,8 @@ fn ux_routes_and_views_are_present() {
     ] {
         assert!(nav.contains(marker), "Navbar must consume {marker}");
     }
-    let categories = read("../fe_eguard/html/egappserver/root/src/views/endpoint/endpointNavConfig.js");
+    let categories =
+        read("../fe_eguard/html/egappserver/root/src/views/endpoint/endpointNavConfig.js");
     for (name, label) in [
         ("endpointAgents", "Agents"),
         ("endpointEvents", "Telemetry"),
