@@ -403,7 +403,10 @@ impl EsloggerBackend {
                             continue;
                         }
 
-                        let Some(event) = parse_event_line(trimmed) else {
+                        let Some(event) = serde_json::from_str::<Value>(trimmed)
+                            .ok()
+                            .and_then(|value| decode_event_value(&value))
+                        else {
                             dropped_lines_clone.fetch_add(1, Ordering::Relaxed);
                             continue;
                         };
@@ -814,16 +817,32 @@ fn env_enabled(name: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
+
 fn parse_event_line(raw_line: &str) -> Option<super::RawEvent> {
     if let Ok(event) = serde_json::from_str::<super::RawEvent>(raw_line) {
         return Some(event);
     }
 
     let value = serde_json::from_str::<Value>(raw_line).ok()?;
-    decode_event_value(&value)
+    // A malformed replay record must not be reinterpreted as native eslogger
+    // data. RawEvent's serde boundary is the only replay entry point.
+    if value.get("payload").is_some() {
+        return None;
+    }
+    // Offline JSON is never a trusted source of typed collector hints,
+    // regardless of spelling, nesting, or apparent native schema.
+    decode_event_value_from_source(&value, false)
 }
 
+// Called only by the live eslogger stream (and decoder test fixtures).
+#[cfg(any(target_os = "macos", test, feature = "test-support"))]
 fn decode_event_value(value: &Value) -> Option<super::RawEvent> {
+    decode_event_value_from_source(value, true)
+}
+
+fn decode_event_value_from_source(value: &Value, live: bool) -> Option<super::RawEvent> {
     let event_type = decode_event_type(value)?;
     let pid = decode_pid(value).unwrap_or(0);
     let uid = decode_uid(value).unwrap_or(0);
@@ -844,7 +863,15 @@ fn decode_event_value(value: &Value) -> Option<super::RawEvent> {
     let ppid_start_ns = first_u64(process, &[&["parent_audit_token", "pidversion"]]);
 
     Some(super::RawEvent {
-        fields: Default::default(),
+        fields: if live
+            && value
+                .get("schema_version")
+                .is_none_or(|version| matches!(version.as_u64(), Some(0 | 1)))
+        {
+            crate::decoded_fields(&event_type, &payload)
+        } else {
+            Default::default()
+        },
         pid_start_ns,
         ppid_start_ns,
         event_type,

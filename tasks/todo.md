@@ -68,6 +68,20 @@ Design: install libelf-dev, zlib1g-dev and pkg-config before any libbpf build. C
 Review: moved resource-budget installation before its harness, removed the later duplicate, completed verification-suite prerequisites, and added prerequisites to adversary-tournament (indirect runtime-tick/resource-budget builds). build-bundle, release-agent and package-agent already install all three dependencies before Linux builds; no edits needed there. Remaining workflows do not build Linux agent-core/libbpf.
 
 Validation: Python yaml.safe_load passes for all three changed workflows. Parsed step-order audit reports missing early prerequisites on h-start-h1-ci for all three, and complete prerequisites on the working tree. The unprivileged resource-budget harness passes (release agent build plus detection latency and LSM payload probes), using worktree-local CARGO_TARGET_DIR and a temporary cargo wrapper enforcing timeout 1500 and --offline; metrics and logs are in artifacts/ebpf-resource-budget and artifacts/h1-ci. cargo fmt --all --check and git diff --check pass. Initial wrapper setup failed because target did not yet exist; its launched build was stopped and validation restarted with the proper wrapper. No privileged/system-directory tests ran. Residual: GitHub-hosted execution and apt mirror availability are not validated locally.
+# F4c narrow Windows schema allowlist
+
+- [x] Add unsupported-schema/offset and quoted transaction regressions; prove failure at 5c7bdb7.
+- [x] Centralize typed promotion allowlist for Kernel-Process start/stop and Security 4688; gate both collectors.
+- [x] Verify required suites/cross-check/format/golden parity, document follow-up, commit and export.
+
+Supervisor-approved scope: typed hints only; preserve payloads and generations; Linux/macOS unchanged. Nonprocess native schema validation deferred.
+
+Review: one allowlist at platform-windows/src/lib.rs::decoded_fields accepts Kernel-Process Start v0–5, Stop v0–2, Security 4688 opcode0 v0–2. Other providers/guessed offsets pass no schema evidence; both Security collectors pass descriptor/XML metadata before promotion. Missing Security metadata remains payload-only; the legacy v0 builder is test-only.
+
+Fail proof: unchanged 5c7bdb7 production fails nonprocess v0/v255/offset tests, XML4688-v255, TDH-builder-v255 (inert test-only metadata adapter), all three quoted DNS/Image/General raw-key tests, and the all-nonprocess quoted buffer table. Supported process tests pass both revisions. Owned detached 5c7bdb7 scratch removed; no tags or stash touched.
+
+Validation: Windows129/macOS51/Linux104; agent-core integrity12/reviewfix21/F4c11/golden15/differential3/EventTxn10; Windows GNU cross-check, fmt and whitespace pass. The combined core bash wrapper expired after 1,150s during reviewfix; its timeout-1500 child completed successfully (21/21, 893.54s), and remaining filters ran separately. Logs/proof: /home/dimas/eguard-lab-soak/followups/f4c-final-allowlist-validation/. Golden corpus unchanged: 1,299 records, 3,680,146 bytes, SHA256 5c5cb6628635d45c15e90a370e93fb897b3c65ad66264e55d9b2d1c81bf39add; no regeneration required. Residual: host codec tests/cross-check only, no native Windows/macOS collector execution; existing GNU warnings/eBPF EPERM remain.
+
 # F4b typed payload consumers
 
 - [x] Tag baseline and implement typed-first Linux/core consumers; compile incremental commit.
@@ -728,6 +742,32 @@ Fail proof: expanded differential failed on 0ba70ab production at ProcessExec, s
 
 Review: differential found only FileRename source-vs-destination mismatch; source is not a legacy hash candidate. Previous ProcessExit correction remains covered. Comparison removes only raw event (typed fields necessarily differ), preserving every enriched field and full DetectionEvent. Golden uses distinct source/destination, cmdline/comm/parent_comm and impossible PID/PPID; no enrichment fields are overwritten. Validation: payload integrity 12, reviewfix 21, eBPF policy 111, F4b 6, golden 1, Linux 102, macOS 46 passed; Windows GNU check passed. Fail proof and tagged-base fixture generation logs: /home/dimas/eguard-lab-soak/followups/f4b-final-validation/.
 
+## F4c Windows/macOS typed decoder follow-up
+- [x] Tag starting revision; inspect decoder and enrichment boundaries.
+- [x] Populate decoder-only typed hints with platform legacy normalization; keep replay/fallback guards.
+- [x] Add platform and full DetectionEvent differentials and fail-at-tag proofs.
+- [x] Generate unmasked envelope golden at tagged scratch worktree; remove scratch worktree.
+- [x] Run platform suites, required core suites and Windows GNU check; verify unchanged production dependency tree.
+- [x] Document remaining payload consumers and export committed patch/status.
+
+Review: Windows ETW and 4688 plus macOS eslogger use existing platform parsing at the trusted boundary (direct binary population deferred). Both platform enrichment paths prefer typed hints but still parse auxiliary legacy metadata. Tagged baseline fails both new decoder-population and typed-precedence tests on each platform. Tagged fixture generation succeeds and HEAD matches all 1,295,511 golden bytes. Cross-platform serde adapter rejects extra/missing fields and preserves all derived values. Native Windows/macOS collection is not exercised here.
+
+Validation: Linux104, macOS48, Windows123; core integrity12/reviewfix21/policy111/golden7/differential3 and F4c3 pass. Windows GNU check, formatting, whitespace and production dependency-tree equivalence pass. Logs are exported under followups/f4c-validation.
+
+## F4c second-pass review fixes
+
+- [x] Preserve unnormalized Windows raw path spellings; normalize at enrichment only.
+- [x] Reject malformed macOS raw replay instead of native JSON fallback; strip reserved fields recursively.
+- [x] Expand distinct/empty/mixed matrix, numeric file values, variable SID offsets, unknown-version layouts and raw transaction differential.
+- [x] Regenerate unmasked 1,242-event golden at i4-start-f4c in detached scratch; remove scratch.
+- [x] Validate host suites, core filters, goldens/differentials, GNU Windows check, format/whitespace; export patch/status.
+
+Review: normalized Windows prefixes now preserve DetectionEvent and raw transaction output. The stronger raw transaction differential also found ETW rename `path` was incorrectly promoted to a source: retain that ambiguous hint in the legacy enrichment fallback, since baseline raw transactions accept only src/old. No payload serialization was changed. macOS valid replay remains serde-skipped; malformed replay with payload is rejected and native extraction cannot recurse into injected fields.
+
+Fail proof: a09118f fails normalized ProcessExec detection and malformed replay tests; b4982ec fails the added raw rename transaction check. Tagged baseline fails decoder-population and malformed-replay rejection tests. Normalization/rename parity are restorations and intentionally pass on the tag. Tagged fixture generation uses only transplanted tests/features, not production modifications, and the scratch was removed. Logs: followups/f4c-second-validation.
+
+Validation: Windows123/macOS49/Linux104; core integrity12/reviewfix21/policy111; golden7/differential3; Windows GNU platform-windows+agent-core check passed. Golden covers 1,242 events / 3,520,890 bytes without derived-field masking. Native Windows/macOS collectors remain untested; libbpf probe is EPERM on this host. No dependencies added.
+
 ## Binary-layout parity follow-up
 
 - [x] Audit every naked codec fallback and clear typed fields.
@@ -746,3 +786,17 @@ Fail proof: before changing codec production at 2c8b7f3, the new differential fa
 - [x] Review resolutions and commit merge without pushing.
 
 Review: pipeline conflict keeps typed-first ppid with the existing Windows direct-child generation rules; cache insertion/live-validation logic unchanged. Notes conflict unioned. Two newly merged Windows test literals needed default typed fields. All requested checks passed with CARGO_TARGET_DIR=$PWD/target and timeout 1500: agent-core payload integrity 14, reviewfix 21, eBPF policy 111, F4b 7, F4a 4 (including golden), buffer recovery 1, enroll race 4; platform-linux 104, platform-windows 121, platform-macos 46, self-protect 37 tests. Windows cross-check, workspace all-targets check, formatting and diff whitespace check passed. Windows cross-check emits warnings; native Windows/macOS runtime execution not performed. Logs: /tmp/f4-integ-logs/.
+## F4c final review pass
+- [x] Reproduce unknown-schema, replay case and transaction parity blockers.
+- [x] Clear unknown Windows schemas; grant macOS typed trust only to live streams.
+- [x] Keep macOS transactions on base payload parsers; whole-key endpoint fallback.
+- [x] Complete edge matrices and prove blocker regressions fail at c86ff7e with unchanged production.
+- [x] Regenerate expanded golden using only harness exposure at original tag; remove scratch worktrees.
+- [x] Validate platform suites, integrity/reviewfix/F4c/goldens/differentials, Windows GNU cross-check, fmt and diff.
+- [x] Commit, verify/drop only partial snapshot stash, export patch and append external STATUS.md.
+
+Review: unknown Windows process versions now clear all typed hints while preserving payload/generation behavior. macOS offline JSON always has default hints; only live eslogger derives enrichment-parser hints, with unsupported schema versions also cleared. Removed dead key stripping. macOS raw transactions ignore typed hints without cloning events; all platforms use whole-payload fallback for partial endpoint/rename pairs. Corrected Windows module-load inventory.
+
+Fail proof: eight new tests and two strengthened regressions fail behaviorally at c86ff7e with production unchanged (test-only raw-platform adapter delegates to unchanged from_raw). Independent IPv6, percent and quoted-rename tests reproduce exact reviewed keys. Expanded Windows replay case/nesting controls already pass c86ff7e, as expected; no regression claimed there. Final suites: Windows124/macOS51/Linux104, integrity12/reviewfix21/F4c8/golden12/differential3/EventTxn10; GNU Windows cross-check and fmt/whitespace pass. Evidence: /home/dimas/eguard-lab-soak/followups/f4c-fix3-validation/.
+
+Golden: 1,299 records, generated at untouched i4-start-f4c via harness-only transplant; SHA256 5c5cb6628635d45c15e90a370e93fb897b3c65ad66264e55d9b2d1c81bf39add. All 1,242 previous records remain identical; 57 added edge records. Both owned scratch worktrees removed. Partial snapshot changes retained except event cloning replaced by borrowed default fields and fixture regenerated from the original tag; obsolete snapshot-only forms deliberately discarded. Residual: native Windows/macOS collector execution not exercised; existing GNU warnings and host eBPF EPERM remain.

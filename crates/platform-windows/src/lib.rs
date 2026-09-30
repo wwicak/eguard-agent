@@ -224,7 +224,7 @@ impl EnrichmentCache {
 
     pub fn prime_process_metadata(&mut self, raw: &RawEvent) {
         if matches!(raw.event_type, EventType::ProcessExec) {
-            let payload_meta = parse_payload_metadata(&raw.event_type, &raw.payload);
+            let payload_meta = raw_event_metadata(raw);
             let _ = self.process_entry(raw, &payload_meta);
         }
     }
@@ -656,9 +656,52 @@ pub fn enrich_event(raw: RawEvent) -> EnrichedEvent {
     enrich_event_with_cache(raw, &mut cache)
 }
 
-pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> EnrichedEvent {
-    let payload_meta = parse_payload_metadata(&raw.event_type, &raw.payload);
+fn raw_event_metadata(raw: &RawEvent) -> PayloadMetadata {
+    // File-object correlation and write flags still live in the legacy transport.
+    let mut payload_meta = parse_payload_metadata(&raw.event_type, &raw.payload);
+    if matches!(
+        raw.event_type,
+        EventType::ProcessExec | EventType::ProcessExit
+    ) {
+        payload_meta.process_path_hint = raw
+            .fields
+            .path
+            .as_deref()
+            .map(normalize_windows_path)
+            .or(payload_meta.process_path_hint);
+    } else {
+        payload_meta.file_path = raw
+            .fields
+            .path
+            .as_deref()
+            .map(normalize_windows_path)
+            .or(payload_meta.file_path);
+    }
+    payload_meta.file_path_secondary = raw
+        .fields
+        .secondary_path
+        .clone()
+        .or(payload_meta.file_path_secondary);
+    payload_meta.command_line_hint = raw
+        .fields
+        .cmdline
+        .clone()
+        .or(payload_meta.command_line_hint);
+    payload_meta.parent_pid = raw.fields.ppid.or(payload_meta.parent_pid);
+    payload_meta.parent_process_hint = raw
+        .fields
+        .parent_comm
+        .clone()
+        .or(payload_meta.parent_process_hint);
+    payload_meta.dst_ip = raw.fields.dst_ip.clone().or(payload_meta.dst_ip);
+    payload_meta.dst_port = raw.fields.dst_port.or(payload_meta.dst_port);
+    payload_meta.dst_domain = raw.fields.domain.clone().or(payload_meta.dst_domain);
+    payload_meta.event_size = raw.fields.size.or(payload_meta.event_size);
+    payload_meta
+}
 
+pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> EnrichedEvent {
+    let payload_meta = raw_event_metadata(&raw);
     if matches!(raw.event_type, EventType::ProcessExit) {
         let cached = cache.process_cache.peek(&raw.pid).cloned();
         let hinted_parent_chain = cache.parent_chain_from_hint(payload_meta.parent_pid);
@@ -820,6 +863,66 @@ struct PayloadMetadata {
     dst_domain: Option<String>,
     file_write: bool,
     event_size: Option<u64>,
+}
+
+/// Schema evidence carried to the single typed-hint promotion boundary.
+pub(crate) enum DecodedSchema {
+    KernelProcess { opcode: u8, version: u8 },
+    Security4688 { opcode: u8, version: Option<u8> },
+}
+
+/// Derive trusted hints only for explicitly allowlisted process schemas.
+/// Nonprocess providers/guessed layouts pass None; replay and binary fallback
+/// paths deliberately do not call this helper. Payloads remain unchanged.
+pub(crate) fn decoded_fields(
+    schema: Option<DecodedSchema>,
+    event_type: &EventType,
+    payload: &str,
+) -> RawEventFields {
+    if !matches!(
+        schema,
+        Some(DecodedSchema::KernelProcess {
+            opcode: 1,
+            version: 0..=5
+        }) | Some(DecodedSchema::KernelProcess {
+            opcode: 2,
+            version: 0..=2
+        }) | Some(DecodedSchema::Security4688 {
+            opcode: 0,
+            version: Some(0..=2)
+        })
+    ) {
+        return RawEventFields::default();
+    }
+    let meta = parse_payload_metadata(event_type, payload);
+    let kv = parse_kv_fields(payload);
+    RawEventFields {
+        module: kv.get("module").cloned(),
+        src_ip: kv.get("src_ip").cloned(),
+        src_port: kv.get("src_port").and_then(|value| value.parse().ok()),
+        // Raw consumers (detection fallback and coalescing) historically read the
+        // unnormalized payload. Normalize only at the enrichment boundary.
+        // ETW rename's `path` is an observed name, not a confirmed source:
+        // legacy raw transactions only accept src/old. Leave this ambiguous
+        // hint absent so enrichment can retain its historical path fallback.
+        path: if matches!(event_type, EventType::FileRename) {
+            kv.get("src").cloned()
+        } else {
+            kv.get("path")
+                .or_else(|| kv.get("file"))
+                .or_else(|| kv.get("src"))
+                .cloned()
+        },
+        secondary_path: meta.file_path_secondary,
+        cmdline: meta.command_line_hint,
+        parent_comm: meta.parent_process_hint,
+        ppid: meta.parent_pid,
+        dst_ip: meta.dst_ip,
+        dst_port: meta.dst_port,
+        domain: meta.dst_domain,
+        size: meta.event_size,
+        ..Default::default()
+    }
 }
 
 fn parse_payload_metadata(event_type: &EventType, payload: &str) -> PayloadMetadata {
@@ -1271,10 +1374,19 @@ fn capacity_from(raw: usize) -> NonZeroUsize {
 mod tests {
     #[test]
     fn replay_ignores_injected_typed_fields() {
-        let mut record = serde_json::to_value(super::RawEvent::default()).unwrap();
-        record["fields"] = serde_json::json!({"path":"injected", "dst_port":443});
-        let event: super::RawEvent = serde_json::from_value(record).unwrap();
-        assert_eq!(event.fields, super::RawEventFields::default());
+        for key in ["fields", "Fields", "FIELDS"] {
+            for nested in [false, true] {
+                let mut record = serde_json::to_value(super::RawEvent::default()).unwrap();
+                let injected = serde_json::json!({"path":"injected", "dst_port":443});
+                if nested {
+                    record["event"] = serde_json::json!({key: injected});
+                } else {
+                    record[key] = injected;
+                }
+                let event: super::RawEvent = serde_json::from_value(record).unwrap();
+                assert_eq!(event.fields, super::RawEventFields::default());
+            }
+        }
     }
 
     use super::{

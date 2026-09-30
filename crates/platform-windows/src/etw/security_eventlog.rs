@@ -91,7 +91,16 @@ fn parse_process_create_xml(xml: &str) -> Option<RawEvent> {
         }
     }
 
-    super::security_auditing::build_process_create_event(&fields, unix_now_ns())
+    let version = extract_tag_value(xml, "Version").and_then(|value| value.parse::<u8>().ok());
+    let opcode = extract_tag_value(xml, "Opcode")
+        .and_then(|value| value.parse::<u8>().ok())
+        .unwrap_or(u8::MAX);
+    super::security_auditing::build_process_create_event_versioned(
+        &fields,
+        unix_now_ns(),
+        opcode,
+        version,
+    )
 }
 
 fn extract_named_data(xml: &str, name: &str) -> Option<String> {
@@ -275,6 +284,23 @@ mod tests {
     <Data Name="CommandLine">powershell.exe -Command &quot;Get-Process; Get-Service&quot;</Data>
   </EventData>
 </Event>"#;
+
+    #[test]
+    fn f4c_security_eventlog_schema_versions() {
+        for version in [0, 1, 2, 255] {
+            let xml = SAMPLE_XML.replace(
+                "<EventID>4688</EventID>",
+                &format!("<EventID>4688</EventID><Version>{version}</Version><Opcode>0</Opcode>"),
+            );
+            let event = parse_process_create_xml(&xml).unwrap();
+            assert!(event.payload.contains("path=C:"));
+            if version == 255 {
+                assert_eq!(event.fields, Default::default());
+            } else {
+                assert!(event.fields.path.is_some());
+            }
+        }
+    }
 
     #[test]
     fn extracts_named_event_data_from_security_xml() {

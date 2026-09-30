@@ -9,9 +9,20 @@ use std::collections::HashMap;
 
 const PROCESS_CREATE_EVENT_ID: u16 = 4688;
 
+/// Build a known v0 process-create fixture (native collectors pass metadata below).
+#[cfg(any(test, feature = "test-support"))]
 pub fn build_process_create_event(
     fields: &HashMap<String, String>,
     ts_ns: u64,
+) -> Option<RawEvent> {
+    build_process_create_event_versioned(fields, ts_ns, 0, Some(0))
+}
+
+pub(super) fn build_process_create_event_versioned(
+    fields: &HashMap<String, String>,
+    ts_ns: u64,
+    opcode: u8,
+    version: Option<u8>,
 ) -> Option<RawEvent> {
     let pid = fields
         .get("NewProcessId")
@@ -55,7 +66,11 @@ pub fn build_process_create_event(
     }
 
     Some(RawEvent {
-        fields: Default::default(),
+        fields: crate::decoded_fields(
+            Some(crate::DecodedSchema::Security4688 { opcode, version }),
+            &EventType::ProcessExec,
+            &payload,
+        ),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: EventType::ProcessExec,
@@ -149,7 +164,12 @@ pub fn decode_security_auditing_record(
         }
     }
 
-    build_process_create_event(&fields, ts_ns)
+    build_process_create_event_versioned(
+        &fields,
+        ts_ns,
+        record.EventHeader.EventDescriptor.Opcode,
+        Some(record.EventHeader.EventDescriptor.Version),
+    )
 }
 
 #[cfg(target_os = "windows")]
@@ -216,6 +236,26 @@ fn decode_ansiish(buffer: &[u8]) -> Option<String> {
 mod tests {
     use super::{build_process_create_event, parse_windows_pid};
     use std::collections::HashMap;
+
+    #[test]
+    fn f4c_security_tdh_schema_versions() {
+        let fields = HashMap::from([
+            ("NewProcessId".into(), "42".into()),
+            ("NewProcessName".into(), r"C:\audit.exe".into()),
+        ]);
+        for version in [Some(0), Some(1), Some(2), Some(255), None] {
+            let event =
+                super::build_process_create_event_versioned(&fields, 1, 0, version).unwrap();
+            assert_eq!(event.payload, r"path=C:\audit.exe;audit_event_id=4688");
+            if matches!(version, Some(0..=2)) {
+                assert_eq!(event.fields.path.as_deref(), Some(r"C:\audit.exe"));
+            } else {
+                assert_eq!(event.fields, Default::default());
+            }
+        }
+        let event = super::build_process_create_event_versioned(&fields, 1, 1, Some(0)).unwrap();
+        assert_eq!(event.fields, Default::default());
+    }
 
     #[test]
     fn builds_security_auditing_process_create_payload() {

@@ -144,7 +144,11 @@ fn decode_kernel_process_versioned(
             }
 
             Some(RawEvent {
-                fields: Default::default(),
+                fields: crate::decoded_fields(
+                    Some(crate::DecodedSchema::KernelProcess { opcode, version }),
+                    &EventType::ProcessExec,
+                    &payload,
+                ),
                 pid_start_ns: if unknown {
                     None
                 } else {
@@ -186,7 +190,11 @@ fn decode_kernel_process_versioned(
             }
 
             Some(RawEvent {
-                fields: Default::default(),
+                fields: crate::decoded_fields(
+                    Some(crate::DecodedSchema::KernelProcess { opcode, version }),
+                    &EventType::ProcessExit,
+                    &payload,
+                ),
                 pid_start_ns: if unknown {
                     None
                 } else {
@@ -218,7 +226,7 @@ fn decode_kernel_process_versioned(
 /// We also retain legacy classic-provider decoding (`12/15/14/26`) for compatibility.
 fn decode_kernel_file(opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Option<RawEvent> {
     let raw_event = |event_type: EventType, payload: String| RawEvent {
-        fields: Default::default(),
+        fields: crate::decoded_fields(None, &event_type, &payload),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type,
@@ -396,7 +404,7 @@ fn decode_kernel_network(_opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Opti
         let payload =
             format!("src_ip={src_ip};src_port={src_port};dst_ip={dst_ip};dst_port={dst_port}");
         return Some(RawEvent {
-            fields: Default::default(),
+            fields: crate::decoded_fields(None, &EventType::TcpConnect, &payload),
             pid_start_ns: None,
             ppid_start_ns: None,
             event_type: EventType::TcpConnect,
@@ -421,7 +429,7 @@ fn decode_dns_client(_opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Option<R
         _ => return None, // No useful data to emit.
     };
     Some(RawEvent {
-        fields: Default::default(),
+        fields: crate::decoded_fields(None, &EventType::DnsQuery, &payload),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: EventType::DnsQuery,
@@ -449,7 +457,7 @@ fn decode_image_load(_opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Option<R
         _ => return None,
     };
     Some(RawEvent {
-        fields: Default::default(),
+        fields: crate::decoded_fields(None, &EventType::ModuleLoad, &payload),
         pid_start_ns: None,
         ppid_start_ns: None,
         event_type: EventType::ModuleLoad,
@@ -961,6 +969,91 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+fn schema_probe_buffer(offset: usize, value: &str) -> Vec<u8> {
+    let mut data = vec![0; offset];
+    data.extend(value.encode_utf16().chain([0]).flat_map(u16::to_le_bytes));
+    data
+}
+
+#[test]
+fn f4c_nonprocess_versions_and_guessed_offsets_are_payload_only() {
+    use super::providers::*;
+    for version in [0, 255] {
+        for (provider, opcode, offset, value) in [
+            (KERNEL_FILE, 0, 8, r"C:\probe.txt"),
+            (KERNEL_FILE, 64, 32, r"C:\probe.txt"),
+            (KERNEL_FILE, 64, 28, r"C:\probe.txt"),
+            (KERNEL_FILE, 64, 24, r"C:\probe.txt"),
+            (IMAGE_LOAD, 10, 36, "probe.dll"),
+            (IMAGE_LOAD, 10, 24, "x"),
+            (IMAGE_LOAD, 10, 0, "x"),
+            (KERNEL_GENERAL, 10, 36, "probe.dll"),
+            (KERNEL_GENERAL, 10, 24, "x"),
+            (KERNEL_GENERAL, 10, 0, "x"),
+            (DNS_CLIENT, 1, 0, "quoted.example"),
+        ] {
+            let data = schema_probe_buffer(offset, value);
+            let event =
+                decode_etw_record_versioned(provider, opcode, version, 42, 1, &data).unwrap();
+            assert!(
+                event.payload.contains(value),
+                "{provider}/{opcode}@{offset}"
+            );
+            assert_eq!(
+                event.fields,
+                Default::default(),
+                "{provider}/{opcode}/v{version}@{offset}"
+            );
+        }
+        // Numeric/name layouts and legacy aliases are untrusted too, even
+        // when they have enough data to emit size or file-object hints.
+        for opcode in [0, 12, 14, 15, 26, 32, 35, 36, 64, 68, 70, 71] {
+            let data = schema_probe_buffer(36, r"C:\probe.txt");
+            let event =
+                decode_etw_record_versioned(KERNEL_FILE, opcode, version, 42, 1, &data).unwrap();
+            assert_eq!(event.fields, Default::default(), "file/{opcode}/v{version}");
+        }
+        let mut network = vec![0; 20];
+        network[8..12].copy_from_slice(&[192, 0, 2, 1]);
+        network[16..18].copy_from_slice(&443u16.to_be_bytes());
+        let event =
+            decode_etw_record_versioned(KERNEL_NETWORK, 10, version, 42, 1, &network).unwrap();
+        assert!(event.payload.contains("dst_ip=192.0.2.1;dst_port=443"));
+        assert_eq!(event.fields, Default::default(), "network/v{version}");
+    }
+}
+
+#[test]
+fn f4c_supported_process_versions_remain_typed() {
+    for (opcode, versions) in [(1, 0..=5), (2, 0..=2)] {
+        for version in versions {
+            let modern = (opcode == 1 && version >= 3) || (opcode == 2 && version == 2);
+            let data = if opcode == 2 && modern {
+                let mut data = vec![0; 84];
+                data.extend_from_slice(b"child.exe\0");
+                data
+            } else {
+                schema_probe_buffer(if modern { 56 } else { 24 }, "child.exe")
+            };
+            let event = decode_etw_record_versioned(
+                super::providers::KERNEL_PROCESS,
+                opcode,
+                version,
+                42,
+                1,
+                &data,
+            )
+            .unwrap();
+            assert_eq!(
+                event.fields.path.as_deref(),
+                Some("child.exe"),
+                "{opcode}/v{version}"
+            );
+        }
+    }
+}
+
 #[test]
 fn process_records_preserve_creation_identity() {
     let mut data = vec![0; 24];
@@ -1072,6 +1165,7 @@ fn unknown_process_versions_stay_visible_without_identity() {
             assert_eq!(event.pid, 42);
             assert_eq!(event.pid_start_ns, None);
             assert_eq!(event.ppid_start_ns, None);
+            assert_eq!(event.fields, Default::default());
         }
     }
 }
