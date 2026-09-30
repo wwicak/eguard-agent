@@ -375,7 +375,11 @@ fn unsupported_windows_legacy_checks_are_not_applicable() {
     let snapshot = windows_snapshot_base(false, "10.0.26100");
 
     let result = evaluate_snapshot(&policy, &snapshot);
-    assert_eq!(result.status, "not_applicable");
+    // Overall status stays "compliant": the wire ComplianceStatus has no
+    // NOT_APPLICABLE, and grpc-client maps unknown overall values to ERROR,
+    // so an all-N/A endpoint must not surface as a compliance error.
+    assert_eq!(result.status, "compliant");
+    assert!(result.checks.iter().all(|c| c.status == "not_applicable"));
 
     assert!(result
         .checks
