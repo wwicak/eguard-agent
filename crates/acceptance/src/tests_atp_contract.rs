@@ -232,10 +232,17 @@ fn hardening_runtime_controls_watchdog_uninstall_and_security_verification_are_w
 
     let service = read("packaging/systemd/eguard-agent.service");
     let service_lines = non_comment_lines(&service);
-    assert!(service_lines.iter().any(|line| line == "WatchdogSec=30s"));
+    // 25a273c deliberately sets the freeze-detection window to 60 seconds.
+    assert!(service_lines.iter().any(|line| line == "WatchdogSec=60"));
     assert!(service_lines.iter().any(|line| line == "Restart=always"));
     assert!(service_lines.iter().any(|line| line == "Type=notify"));
-    assert!(service_lines.iter().any(|line| line == "NotifyAccess=main"));
+    // systemd defaults NotifyAccess to main when Type=notify; an explicit
+    // assignment is not required for the main-process notifier.
+    let notify_access = service_lines
+        .iter()
+        .find_map(|line| line.strip_prefix("NotifyAccess="))
+        .unwrap_or("main");
+    assert_eq!(notify_access, "main");
 
     assert_eq!(pb::CommandType::Uninstall as i32, 7);
     let uninstall = pb::UninstallParams {

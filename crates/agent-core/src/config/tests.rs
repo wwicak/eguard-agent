@@ -10,57 +10,58 @@ use super::{AgentConfig, AgentMode};
 use response::ResponsePolicy;
 use std::io::Write;
 
-fn env_lock() -> &'static std::sync::Mutex<()> {
-    crate::test_support::env_lock()
+fn config_env() -> crate::test_support::TestEnvGuard {
+    crate::test_support::TestEnvGuard::new(CONFIG_ENV_VARS)
 }
 
+const CONFIG_ENV_VARS: &[&str] = &[
+    "EGUARD_AGENT_CONFIG",
+    "EGUARD_BOOTSTRAP_CONFIG",
+    "EGUARD_LAST_KNOWN_AGENT_CONFIG",
+    "EGUARD_AGENT_ID",
+    "EGUARD_SERVER_ADDR",
+    "EGUARD_SERVER",
+    "EGUARD_SERVER_ADDR_FORCE",
+    "EGUARD_AGENT_MODE",
+    "EGUARD_TRANSPORT_MODE",
+    "EGUARD_TRANSPORT",
+    "EGUARD_ENROLLMENT_TOKEN",
+    "EGUARD_TENANT_ID",
+    "EGUARD_AUTONOMOUS_RESPONSE",
+    "EGUARD_RESPONSE_DRY_RUN",
+    "EGUARD_RESPONSE_MAX_KILLS_PER_MINUTE",
+    "EGUARD_RESPONSE_MAX_QUARANTINES_PER_MINUTE",
+    "EGUARD_RESPONSE_AUTO_ISOLATION_ENABLED",
+    "EGUARD_RESPONSE_AUTO_ISOLATION_MIN_INCIDENTS",
+    "EGUARD_RESPONSE_AUTO_ISOLATION_WINDOW_SECS",
+    "EGUARD_RESPONSE_AUTO_ISOLATION_MAX_PER_HOUR",
+    "EGUARD_BUFFER_BACKEND",
+    "EGUARD_BUFFER_PATH",
+    "EGUARD_BUFFER_CAP_MB",
+    "EGUARD_TLS_CERT",
+    "EGUARD_TLS_KEY",
+    "EGUARD_TLS_CA",
+    "EGUARD_TLS_PINNED_CA_SHA256",
+    "EGUARD_TLS_CA_PIN_PATH",
+    "EGUARD_TLS_ROTATE_BEFORE_DAYS",
+    "EGUARD_POLICY_REFRESH_INTERVAL_SECS",
+    "EGUARD_RULE_BUNDLE_PUBKEY",
+    "EGUARD_MACHINE_ID_PATH",
+    "EGUARD_CONFIG_TPM2_SEAL",
+    "EGUARD_CONFIG_KEY_SEED_PATH",
+    "EGUARD_KERNEL_INTEGRITY_ENABLED",
+    "EGUARD_KERNEL_INTEGRITY_INTERVAL_SECS",
+    "EGUARD_KERNEL_INTEGRITY_PROC_MODULES_PATH",
+    "EGUARD_KERNEL_INTEGRITY_SYS_MODULES_PATH",
+    "EGUARD_KERNEL_INTEGRITY_KPROBE_EVENTS_PATH",
+    "EGUARD_KERNEL_INTEGRITY_TRACER_PATH",
+    "EGUARD_KERNEL_INTEGRITY_FTRACE_FILTER_PATH",
+    "EGUARD_KERNEL_INTEGRITY_LSM_PATH",
+    "EGUARD_KERNEL_INTEGRITY_BPF_FS_PATH",
+];
+
 fn clear_env() {
-    let vars = [
-        "EGUARD_AGENT_CONFIG",
-        "EGUARD_BOOTSTRAP_CONFIG",
-        "EGUARD_LAST_KNOWN_AGENT_CONFIG",
-        "EGUARD_AGENT_ID",
-        "EGUARD_SERVER_ADDR",
-        "EGUARD_SERVER",
-        "EGUARD_SERVER_ADDR_FORCE",
-        "EGUARD_AGENT_MODE",
-        "EGUARD_TRANSPORT_MODE",
-        "EGUARD_TRANSPORT",
-        "EGUARD_ENROLLMENT_TOKEN",
-        "EGUARD_TENANT_ID",
-        "EGUARD_AUTONOMOUS_RESPONSE",
-        "EGUARD_RESPONSE_DRY_RUN",
-        "EGUARD_RESPONSE_MAX_KILLS_PER_MINUTE",
-        "EGUARD_RESPONSE_MAX_QUARANTINES_PER_MINUTE",
-        "EGUARD_RESPONSE_AUTO_ISOLATION_ENABLED",
-        "EGUARD_RESPONSE_AUTO_ISOLATION_MIN_INCIDENTS",
-        "EGUARD_RESPONSE_AUTO_ISOLATION_WINDOW_SECS",
-        "EGUARD_RESPONSE_AUTO_ISOLATION_MAX_PER_HOUR",
-        "EGUARD_BUFFER_BACKEND",
-        "EGUARD_BUFFER_PATH",
-        "EGUARD_BUFFER_CAP_MB",
-        "EGUARD_TLS_CERT",
-        "EGUARD_TLS_KEY",
-        "EGUARD_TLS_CA",
-        "EGUARD_TLS_PINNED_CA_SHA256",
-        "EGUARD_TLS_CA_PIN_PATH",
-        "EGUARD_TLS_ROTATE_BEFORE_DAYS",
-        "EGUARD_POLICY_REFRESH_INTERVAL_SECS",
-        "EGUARD_RULE_BUNDLE_PUBKEY",
-        "EGUARD_MACHINE_ID_PATH",
-        "EGUARD_CONFIG_TPM2_SEAL",
-        "EGUARD_CONFIG_KEY_SEED_PATH",
-        "EGUARD_KERNEL_INTEGRITY_ENABLED",
-        "EGUARD_KERNEL_INTEGRITY_INTERVAL_SECS",
-        "EGUARD_KERNEL_INTEGRITY_PROC_MODULES_PATH",
-        "EGUARD_KERNEL_INTEGRITY_SYS_MODULES_PATH",
-        "EGUARD_KERNEL_INTEGRITY_KPROBE_EVENTS_PATH",
-        "EGUARD_KERNEL_INTEGRITY_TRACER_PATH",
-        "EGUARD_KERNEL_INTEGRITY_FTRACE_FILTER_PATH",
-        "EGUARD_KERNEL_INTEGRITY_LSM_PATH",
-        "EGUARD_KERNEL_INTEGRITY_BPF_FS_PATH",
-    ];
-    for v in vars {
+    for v in CONFIG_ENV_VARS {
         std::env::remove_var(v);
     }
 }
@@ -68,7 +69,7 @@ fn clear_env() {
 #[test]
 // AC-CFG-004 AC-CFG-010 AC-CFG-013 AC-CFG-017 AC-CFG-020
 fn file_config_is_loaded() {
-    let _guard = env_lock().lock().expect("env lock");
+    let _guard = config_env();
     clear_env();
 
     let path = std::env::temp_dir().join(format!(
@@ -117,7 +118,7 @@ fn file_config_is_loaded() {
 #[test]
 // AC-ATP-095 AC-ATP-096
 fn encrypted_file_config_is_loaded_with_machine_id_key() {
-    let _guard = env_lock().lock().expect("env lock");
+    let _guard = config_env();
     clear_env();
 
     let suffix = std::time::SystemTime::now()
@@ -156,7 +157,7 @@ fn encrypted_file_config_is_loaded_with_machine_id_key() {
 #[test]
 // AC-ATP-095 AC-ATP-097
 fn encrypted_file_config_fails_when_authentication_fails() {
-    let _guard = env_lock().lock().expect("env lock");
+    let _guard = config_env();
     clear_env();
 
     let suffix = std::time::SystemTime::now()
@@ -199,7 +200,7 @@ fn encrypted_file_config_fails_when_authentication_fails() {
 #[test]
 // AC-ATP-095 legacy compatibility
 fn encrypted_file_config_legacy_key_is_still_accepted() {
-    let _guard = env_lock().lock().expect("env lock");
+    let _guard = config_env();
     clear_env();
 
     let suffix = std::time::SystemTime::now()
@@ -239,7 +240,7 @@ fn encrypted_file_config_legacy_key_is_still_accepted() {
 #[test]
 // AC-CFG-004
 fn env_overrides_file_config() {
-    let _guard = env_lock().lock().expect("env lock");
+    let _guard = config_env();
     clear_env();
 
     let path = std::env::temp_dir().join(format!(
@@ -277,7 +278,7 @@ fn env_overrides_file_config() {
 #[test]
 // AC-CFG-004
 fn env_server_addr_does_not_override_file_config_without_force() {
-    let _guard = env_lock().lock().expect("env lock");
+    let _guard = config_env();
     clear_env();
 
     let path = std::env::temp_dir().join(format!(
@@ -303,7 +304,7 @@ fn env_server_addr_does_not_override_file_config_without_force() {
 
 #[test]
 fn missing_agent_config_is_restored_from_last_known_good_copy() {
-    let _guard = env_lock().lock().expect("env lock");
+    let _guard = config_env();
     clear_env();
 
     let suffix = std::time::SystemTime::now()
@@ -339,7 +340,7 @@ fn missing_agent_config_is_restored_from_last_known_good_copy() {
 #[test]
 // AC-CFG-001 AC-CFG-002 AC-GRP-006
 fn bootstrap_config_is_used_when_agent_config_missing() {
-    let _guard = env_lock().lock().expect("env lock");
+    let _guard = config_env();
     clear_env();
 
     let path = std::env::temp_dir().join(format!(
@@ -373,7 +374,7 @@ fn bootstrap_config_is_used_when_agent_config_missing() {
 #[test]
 // AC-CFG-001 AC-CFG-002 AC-GRP-006
 fn bootstrap_config_overrides_existing_agent_config() {
-    let _guard = env_lock().lock().expect("env lock");
+    let _guard = config_env();
     clear_env();
 
     let config_path = std::env::temp_dir().join(format!(
@@ -413,7 +414,7 @@ fn bootstrap_config_overrides_existing_agent_config() {
 
 #[test]
 fn legacy_json_bootstrap_is_rewritten_to_canonical_server_schema() {
-    let _guard = env_lock().lock().expect("env lock");
+    let _guard = config_env();
     clear_env();
 
     let bootstrap_path = std::env::temp_dir().join(format!(
@@ -599,7 +600,7 @@ fn parse_bootstrap_config_rejects_enrollment_token_control_chars() {
 #[test]
 // AC-CFG-004
 fn resolve_config_path_fails_for_missing_explicit_env_path() {
-    let _guard = env_lock().lock().expect("env lock");
+    let _guard = config_env();
     clear_env();
     std::env::set_var(
         "EGUARD_AGENT_CONFIG",
@@ -673,7 +674,7 @@ fn default_config_matches_expected_baseline_values() {
 #[test]
 // AC-CFG-005 AC-CFG-006 AC-CFG-007 AC-CFG-008 AC-CFG-009 AC-CFG-018 AC-CFG-019 AC-CFG-021 AC-GRP-097 AC-EBP-045 AC-EBP-046
 fn file_config_loads_extended_sections() {
-    let _guard = env_lock().lock().expect("env lock");
+    let _guard = config_env();
     clear_env();
 
     let path = std::env::temp_dir().join(format!(
@@ -746,7 +747,7 @@ fn file_config_loads_extended_sections() {
 #[test]
 // AC-CFG-004
 fn eguard_server_fallback_env_is_used_when_primary_is_absent() {
-    let _guard = env_lock().lock().expect("env lock");
+    let _guard = config_env();
     clear_env();
     std::env::set_var("EGUARD_SERVER", "10.2.3.4:50052");
 
@@ -760,7 +761,7 @@ fn eguard_server_fallback_env_is_used_when_primary_is_absent() {
 #[test]
 // AC-CFG-004
 fn eguard_server_addr_takes_precedence_over_eguard_server() {
-    let _guard = env_lock().lock().expect("env lock");
+    let _guard = config_env();
     clear_env();
     std::env::set_var("EGUARD_SERVER", "10.2.3.4:50052");
     std::env::set_var("EGUARD_SERVER_ADDR", "10.9.9.9:50052");
@@ -775,7 +776,7 @@ fn eguard_server_addr_takes_precedence_over_eguard_server() {
 #[test]
 // AC-CFG-004
 fn eguard_server_addr_does_not_override_bootstrap_by_default() {
-    let _guard = env_lock().lock().expect("env lock");
+    let _guard = config_env();
     clear_env();
     std::env::set_var("EGUARD_SERVER_ADDR", "10.9.9.9:50052");
 
@@ -792,7 +793,7 @@ fn eguard_server_addr_does_not_override_bootstrap_by_default() {
 #[test]
 // AC-CFG-004
 fn eguard_server_addr_force_override_applies_even_with_bootstrap() {
-    let _guard = env_lock().lock().expect("env lock");
+    let _guard = config_env();
     clear_env();
     std::env::set_var("EGUARD_SERVER_ADDR", "10.9.9.9:50052");
     std::env::set_var("EGUARD_SERVER_ADDR_FORCE", "true");
@@ -810,7 +811,7 @@ fn eguard_server_addr_force_override_applies_even_with_bootstrap() {
 #[test]
 // AC-CFG-004
 fn policy_refresh_interval_env_override_is_applied() {
-    let _guard = env_lock().lock().expect("env lock");
+    let _guard = config_env();
     clear_env();
     std::env::set_var("EGUARD_POLICY_REFRESH_INTERVAL_SECS", "75");
 
@@ -825,7 +826,7 @@ fn policy_refresh_interval_env_override_is_applied() {
 #[test]
 // AC-ATP-082 AC-ATP-085
 fn tls_policy_env_overrides_are_applied() {
-    let _guard = env_lock().lock().expect("env lock");
+    let _guard = config_env();
     clear_env();
     std::env::set_var(
         "EGUARD_TLS_PINNED_CA_SHA256",
@@ -853,7 +854,7 @@ fn tls_policy_env_overrides_are_applied() {
 #[test]
 // AC-CFG-001
 fn resolve_bootstrap_path_fails_for_missing_explicit_env_path() {
-    let _guard = env_lock().lock().expect("env lock");
+    let _guard = config_env();
     clear_env();
     std::env::set_var(
         "EGUARD_BOOTSTRAP_CONFIG",

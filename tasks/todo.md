@@ -1,3 +1,42 @@
+# F25 second pass — repair blocking review findings
+
+- [x] Isolate deliberate identity unwind in a single-test subprocess so the shared suite mutex cannot be poisoned; exact target and20 mixed enrollment/unwind runs pass4/4 at16threads (eefa46f).
+- [x] Re-enable UX route/view contract and assert Navbar's imported category wiring plus seven canonical navigation entries and router names; exact target passes (c8d4377).
+- [x] Exercise supported host CV grouping with varied per-host rule IDs; exact target passes. Negative fixture proof: host has0 overlaps in every fold; host_rule and unsupported host_id each have6/8/4/6/6 overlaps (476f6c0).
+- [x] Run isolated targets, config43/43 five times at16threads, package/memory34/34, acceptance2019/2019 with zero ignores, fmt and offline workspace/all-targets check; commit each fix separately.
+- [x] Record full-core revalidation outcome and second-pass residuals: supervisor requested stopping the owned rerun once the known base-identical F21 watchdog-budget failure reappeared. At stop:121passed/1failed/2ignored, zero PoisonError, all identity/unwind cases passed; no new failure observed. Owned wrapper/timeout/cargo/test processes terminated, no full-core success claimed.
+
+Second-pass disposition: all seven original acceptance failures are fixed, none ignored. The first-pass UX infrastructure diagnosis was wrong: labels moved into `ENDPOINT_NAV_CATEGORIES`, with Events→Telemetry and Responses→Response; imported Navbar child wiring and all canonical entries are now checked alongside unchanged route/view assertions. The intentional panic runs in a child with only its exact test, preserving real guard/drop restoration coverage without poisoning unrelated suite waiters. No dependency or production changes, no edits to lifecycle/self_protect.rs. Logs:/tmp/f25-second-logs/.
+
+Second-pass residuals: full-core remains unproven green due to the previously reproduced base-identical `near_capacity_recovery_leaves_watchdog_headroom` failure/slow scan tests; the requested rerun was stopped by supervisor, not passed. UX remains dependent on the separately versioned sibling checkout, just like other existing acceptance checks, but all required files are present locally. The 18.3MiB ledger is documented design arithmetic, not a measured runtime RSS or accounting of all independent loader rings. Four generated tracked metrics were dirty at entry and remain uncommitted; validation may rewrite them. Formatting initially found one long new line; corrected it, then fmt and offline workspace/all-targets check passed.
+
+# F25 — repair base-identical tests
+
+- [x] Reproduce package harness: clean 1224af4 exits zero/stderr empty but misses strip because fixture is musl while default build is glibc. Isolate workspace, pin child build inputs, seed actual glibc binary, capture diagnostics and assert actual commands.
+- [x] Reconcile complete memory ledger against design §11.3 and f0cbb3d (8→2 MiB ring): 24.3→18.3 MiB, stale minimum20, strict maximum25; repair newly reachable acceptance macro parser too.
+- [x] Reuse shared env mutex, preserve OsString previous values with RAII before unlocking; config writer guards19→19, identity guards5→5, add one identity unwind regression. Config43/43 passes5x with16 threads.
+- [x] Reproduce seven acceptance lib failures (47pass/7fail); repair six stale contracts and precisely ignore only external fe_eguard Navbar/views contract. Full suite2018pass/1ignore; six repaired cases pass individually.
+- [x] Package target green isolated/hostile child env and module27/27; memory target isolated and module7/7; all five identity cases pass individually.
+- [x] Offline workspace/all-targets check and formatting check pass.
+- [x] Finish timeout1500 full-core observation: exit124, 512pass/1fail/2ignored/74incomplete of589. F25 memory/identity tests pass in this sweep; package has separate isolated/module proof.
+- [x] Record F21 baseline-sensitive performance follow-up: original15s recovery bound unchanged; 1224af4 fails at17.116s (31.54s test total), HEAD fails three isolated runs at17.872/18.080/19.899s recovery (28.21/30.09/29.93s totals). Source byte-identical; other QEMU VMs continue loading host. Supervisor confirms out of F25 scope.
+- [x] Record final validation/residuals and commit documentation.
+
+Lock audit:110 baseline shared-env-lock test users vs111 now; the only additional user is config::util::scoped_identity_environment_restores_values_during_unwind. No existing lock scope widened. Existing core full-suite slowness remains outside F25 by supervisor decision; no release-profile run, unrelated fixture repair or skipped core tests.
+
+Acceptance failure dispositions (all test-only repairs except the explicit external ignore):
+1. hardening_runtime_controls_watchdog_uninstall_and_security_verification_are_wired — stale30s watchdog and mandatory explicit NotifyAccess: assert deliberate60s and effective main default.
+2. attack_critical_burndown_bundle_release_contracts_are_present — CI renamed training step and switched logistic→tree model: assert actual tree trainer/step; retain artifact assertions.
+3. bundle_builder_includes_ml_model_in_manifest_hashes — hashes assigned after license metadata, not in dictionary literal: build a fixture and verify complete emitted file index/digests including ML and nested license manifest.
+4. signature_ml_runtime_feature_contracts_are_enforced — names moved into canonical imported module: verify gate imports/consumes it and retain every original runtime-feature/CI threshold assertion.
+5. signature_ml_training_uses_cost_sensitive_weights_and_stratified_cv — configurable minimum5 and group-aware fourth argument replaced literal5: exercise plan clamp, five-fold class coverage, disjoint host groups, and exactly-once validation coverage; retain FN cost/CV diagnostics checks.
+6. ux_routes_and_views_are_present — ignore with precise separate fe_eguard checkout/AC-TST-061/Navbar missing Incidents reason. No modification to external repository; explicit --ignored remains available.
+7. verification_coverage_and_security_pipeline_contracts_are_present — signed-bundle harness added nocapture/serial flags: assert actual exact logged commands and retain all coverage/security artifact checks.
+
+Full acceptance lib53pass/1ignore, integrations12+8+854+69+64+858pass =2018pass/1ignore overall. Every repaired lib case passes individually. Additional reachable acceptance ring parser and ledger failures were fixed with the core ledger commit. Config43/43 five times16threads, package27/27 and memory7/7 modules pass. New unwind regression is in config::util (initial helper-module proof also passed before relocation). Cargo workspace/all-targets offline check and fmt checks pass. All Cargo commands use timeout1500 and worktree-local target; baseline archive uses identical Cargo.lock (SHA256 fb5f8bf73c0af63d575ed60cb9c38e59a7c3d99fab775991c977ea417cbf6bdc) and a target symlink to this worktree.
+
+Residuals: full-core timeout/host-sensitive F21 follow-up above; external UX ignored and other pre-existing external acceptance fixture checks still need sibling fe_eguard. No production changes, dependency additions, edits to lifecycle/self_protect.rs, push or stash operations. Generated tracked metrics restored. Small commits:2eae80a config restoration; d134b06 ledger; 368527b package fixture; c95538a acceptance; 7735b2b identity regression placement. Evidence logs:/tmp/f25-logs/.
+
 # F21 second pass — batch recovery below watchdog budget
 
 - [x] Replace transaction-per-event recovery with FIFO 4096-row transactions and acknowledge only successful batches.

@@ -245,8 +245,16 @@ pub(super) fn has_explicit_port(address: &str) -> bool {
 mod tests {
     use super::{default_agent_id, default_agent_id_with_sources};
 
-    fn env_lock() -> &'static std::sync::Mutex<()> {
-        crate::test_support::env_lock()
+    fn identity_env() -> crate::test_support::TestEnvGuard {
+        let guard = crate::test_support::TestEnvGuard::new(&[
+            "EGUARD_AGENT_ID_PATH",
+            "EGUARD_AGENT_DATA_DIR",
+            "EGUARD_MACHINE_ID_PATH",
+            "HOSTNAME",
+            "COMPUTERNAME",
+        ]);
+        clear_identity_env();
+        guard
     }
 
     fn temp_dir(label: &str) -> std::path::PathBuf {
@@ -278,9 +286,53 @@ mod tests {
     }
 
     #[test]
+    fn scoped_identity_environment_restores_values_during_unwind() {
+        const CHILD: &str = "EGUARD_TEST_IDENTITY_UNWIND_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            // Dropping the real guard during unwind intentionally poisons its
+            // mutex. Keep that poison in a single-test process, never in the
+            // shared suite where enrollment/config tests may already be waiting.
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "config::util::tests::scoped_identity_environment_restores_values_during_unwind",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .env("HOSTNAME", "original-hostname")
+                .env_remove("EGUARD_TEST_SCOPED_ENV_ABSENT")
+                .output()
+                .expect("run isolated unwind regression");
+            assert!(
+                output.status.success(),
+                "isolated unwind regression failed: stdout={} stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        let names = ["HOSTNAME", "EGUARD_TEST_SCOPED_ENV_ABSENT"];
+        let guard = crate::test_support::TestEnvGuard::new(&names);
+        let previous = names.map(|name| (name, std::env::var_os(name)));
+        let result = std::panic::catch_unwind(move || {
+            let _guard = guard;
+            std::env::set_var("HOSTNAME", "changed-hostname");
+            std::env::set_var("EGUARD_TEST_SCOPED_ENV_ABSENT", "changed");
+            panic!("exercise unwinding cleanup");
+        });
+        assert!(result.is_err());
+        let _lock = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        for (name, expected) in previous {
+            assert_eq!(std::env::var_os(name), expected, "restore {name}");
+        }
+    }
+
+    #[test]
     fn default_agent_id_uses_hostname_env_and_persists_it() {
-        let _guard = env_lock().lock().expect("env lock");
-        clear_identity_env();
+        let _guard = identity_env();
         let root = temp_dir("hostname");
         let identity_path = set_agent_id_path(&root);
         std::env::set_var("HOSTNAME", "agent-host-a");
@@ -299,8 +351,7 @@ mod tests {
 
     #[test]
     fn default_agent_id_prefers_persisted_id_over_hostname_env() {
-        let _guard = env_lock().lock().expect("env lock");
-        clear_identity_env();
+        let _guard = identity_env();
         let root = temp_dir("persisted");
         let identity_path = set_agent_id_path(&root);
         std::fs::create_dir_all(&root).expect("create identity dir");
@@ -315,8 +366,7 @@ mod tests {
 
     #[test]
     fn default_agent_id_uses_windows_computername_when_hostname_missing() {
-        let _guard = env_lock().lock().expect("env lock");
-        clear_identity_env();
+        let _guard = identity_env();
         let root = temp_dir("computername");
         set_agent_id_path(&root);
         std::env::set_var("COMPUTERNAME", "WIN-4209A3FD-104E-4");
@@ -330,8 +380,7 @@ mod tests {
 
     #[test]
     fn default_agent_id_uses_machine_id_when_hostname_missing() {
-        let _guard = env_lock().lock().expect("env lock");
-        clear_identity_env();
+        let _guard = identity_env();
         let root = temp_dir("machine-id");
         set_agent_id_path(&root);
         std::fs::create_dir_all(&root).expect("create identity dir");
@@ -348,8 +397,7 @@ mod tests {
 
     #[test]
     fn generated_agent_id_is_random_format_and_persists() {
-        let _guard = env_lock().lock().expect("env lock");
-        clear_identity_env();
+        let _guard = identity_env();
         let root = temp_dir("generated");
         let identity_path = set_agent_id_path(&root);
         std::env::set_var("EGUARD_MACHINE_ID_PATH", root.join("missing-machine-id"));

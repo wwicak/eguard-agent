@@ -716,12 +716,25 @@ fn linux_update_packaging_recovers_service_after_upgrade() {
 // AC-PKG-028 AC-PKG-029 AC-PKG-030 AC-PKG-031 AC-PKG-032 AC-PKG-033
 fn package_build_harness_executes_and_emits_metrics_with_mocked_toolchain() {
     let _guard = script_lock().lock().unwrap_or_else(|e| e.into_inner());
-    let root = workspace_root();
+    let source_root = workspace_root();
     let sandbox = temp_dir("eguard-pkg-build-test");
+    // The harness writes relative to its script location. Keep all outputs and
+    // its fake binary away from real builds and other crate test harnesses.
+    let root = sandbox.join("workspace");
+    std::fs::create_dir_all(&root).expect("create fixture workspace");
+    for fixture in ["scripts", "packaging", "conf", "rules"] {
+        assert!(std::process::Command::new("cp")
+            .arg("-a")
+            .arg(source_root.join(fixture))
+            .arg(root.join(fixture))
+            .status()
+            .expect("copy package fixture")
+            .success());
+    }
     let bin_dir = sandbox.join("bin");
     std::fs::create_dir_all(&bin_dir).expect("create mock bin");
     install_mock_tools(&bin_dir);
-    let fake_bin = root.join("target/x86_64-unknown-linux-musl/release/agent-core");
+    let fake_bin = root.join("target/release/agent-core");
     let fake_bin_preexisting = fake_bin.exists();
     if !fake_bin_preexisting {
         std::fs::create_dir_all(fake_bin.parent().expect("fake binary parent"))
@@ -735,22 +748,43 @@ fn package_build_harness_executes_and_emits_metrics_with_mocked_toolchain() {
         bin_dir.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let status = std::process::Command::new("bash")
+    let output = std::process::Command::new("bash")
         .arg(root.join("scripts/build-agent-packages-ci.sh"))
         .current_dir(&root)
         .env("PATH", path)
         .env("MOCK_LOG", &log_path)
-        .status()
+        .env("EGUARD_BUILD_EBPF", "1")
+        .env("EGUARD_PACKAGE_REAL_BUILD", "0")
+        .env("EGUARD_AGENT_VERSION", "0.1.0")
+        .env("EGUARD_AGENT_RPM_RELEASE", "1")
+        .env("EGUARD_AGENT_DEB_ARCH", "amd64")
+        .env("EGUARD_AGENT_RPM_ARCH", "x86_64")
+        .env_remove("EGUARD_PACKAGE_AGENT_BINARY_TARGET_MB")
+        .output()
         .expect("run package build harness");
-    assert!(status.success());
+    eprintln!(
+        "package harness stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.status.success(),
+        "package harness exited {}: stdout={} stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let log = std::fs::read_to_string(&log_path).expect("read mock log");
     let log_lines = non_comment_lines(&log);
     assert!(has_line(
         &log_lines,
-        "cargo build --release --target x86_64-unknown-linux-musl -p agent-core"
+        "cargo build --release -p agent-core --features platform-linux/ebpf-libbpf"
     ));
     assert!(has_line(&log_lines, "zig build"));
+    assert!(has_line(
+        &log_lines,
+        &format!("strip {}", fake_bin.display())
+    ));
     assert!(log_lines.iter().any(|line| line.starts_with("strip ")));
 
     let metrics_path = root.join("artifacts/package-agent/metrics.json");
