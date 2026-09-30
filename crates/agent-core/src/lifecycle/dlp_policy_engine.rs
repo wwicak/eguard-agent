@@ -24,8 +24,24 @@ pub(super) fn debug_event_log_enabled() -> bool {
     debug_event_log_enabled_value(std::env::var("EGUARD_DEBUG_EVENT_LOG").ok().as_deref())
 }
 
-fn read_classifier_text(path: &str, classifier: &str) -> Option<String> {
-    match std::fs::read_to_string(path) {
+const MAX_CLASSIFIER_BYTES: u64 = 64 * 1024 * 1024;
+
+fn read_classifier_text(path: &str, classifier: &str, limit: u64) -> Option<String> {
+    let read = || -> std::io::Result<String> {
+        use std::io::Read;
+        let file = std::fs::File::open(path)?;
+        if file.metadata()?.len() > limit {
+            return Err(std::io::Error::other("file exceeds DLP classifier limit"));
+        }
+        let mut bytes = Vec::new();
+        file.take(limit.saturating_add(1)).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > limit {
+            return Err(std::io::Error::other("file exceeds DLP classifier limit"));
+        }
+        String::from_utf8(bytes)
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))
+    };
+    match read() {
         Ok(text) => Some(text),
         Err(err) => {
             if debug_event_log_enabled() {
@@ -190,24 +206,31 @@ impl DlpPolicyEngine {
     /// Evaluate a file event against all policies; first match by priority wins.
     pub fn evaluate(&self, ctx: &DlpEvalContext<'_>) -> Option<DlpMatch> {
         for policy in &self.policies {
-            if self.matches(policy, ctx) {
+            if !match_targets(&policy.targets, ctx.user)
+                || !match_source(&policy.source, ctx)
+                || !match_dest(&policy.destination, ctx)
+            {
+                continue;
+            }
+            if !policy.classifiers.is_empty() {
+                let Ok(metadata) = std::fs::metadata(ctx.file_path) else {
+                    continue;
+                };
+                let size = metadata.len();
+                if size > (policy.max_file_size_mb as u64).saturating_mul(1024 * 1024) {
+                    continue;
+                }
+                if size > MAX_CLASSIFIER_BYTES {
+                    let mut finding = self.build_match(policy);
+                    finding.action = "audit".to_string();
+                    return Some(finding);
+                }
+            }
+            if self.match_classifiers(policy, ctx) {
                 return Some(self.build_match(policy));
             }
         }
         None
-    }
-
-    fn matches(&self, policy: &DlpPolicyEnvelope, ctx: &DlpEvalContext<'_>) -> bool {
-        if !match_targets(&policy.targets, ctx.user) {
-            return false;
-        }
-        if !match_source(&policy.source, ctx) {
-            return false;
-        }
-        if !match_dest(&policy.destination, ctx) {
-            return false;
-        }
-        self.match_classifiers(policy, ctx)
     }
 
     fn match_classifiers(&self, policy: &DlpPolicyEnvelope, ctx: &DlpEvalContext<'_>) -> bool {
@@ -216,7 +239,7 @@ impl DlpPolicyEngine {
         }
         let mut matched = 0usize;
         for classifier in &policy.classifiers {
-            if self.match_classifier(classifier, ctx) {
+            if self.match_classifier(classifier, ctx, policy.max_file_size_mb) {
                 matched += 1;
                 if policy.match_mode == "any" {
                     return true;
@@ -226,17 +249,27 @@ impl DlpPolicyEngine {
         policy.match_mode == "all" && matched == policy.classifiers.len()
     }
 
-    fn match_classifier(&self, classifier: &DlpClassifierRef, ctx: &DlpEvalContext<'_>) -> bool {
+    fn match_classifier(
+        &self,
+        classifier: &DlpClassifierRef,
+        ctx: &DlpEvalContext<'_>,
+        max_mb: usize,
+    ) -> bool {
         match classifier.classifier_type.as_str() {
-            "regex_rule" => self.match_regex_rule(classifier, ctx),
-            "structured_fingerprint" => self.match_structured(classifier, ctx),
-            "unstructured_fingerprint" => self.match_unstructured(classifier, ctx),
+            "regex_rule" => self.match_regex_rule(classifier, ctx, max_mb),
+            "structured_fingerprint" => self.match_structured(classifier, ctx, max_mb),
+            "unstructured_fingerprint" => self.match_unstructured(classifier, ctx, max_mb),
             "label" => false, // Scenario 01: trusted label verifier not yet available
             _ => false,       // unknown classifier type: skip (fail closed)
         }
     }
 
-    fn match_regex_rule(&self, classifier: &DlpClassifierRef, ctx: &DlpEvalContext<'_>) -> bool {
+    fn match_regex_rule(
+        &self,
+        classifier: &DlpClassifierRef,
+        ctx: &DlpEvalContext<'_>,
+        max_mb: usize,
+    ) -> bool {
         let custom_scanner = if !classifier.pattern.trim().is_empty() {
             detection::dlp::DlpScanner::from_pack(detection::dlp::DlpRulePack {
                 schema_version: "1".to_string(),
@@ -267,7 +300,13 @@ impl DlpPolicyEngine {
         let Some(scanner) = scanner else {
             return false;
         };
-        let Some(text) = read_classifier_text(ctx.file_path, "regex_rule") else {
+        let Some(text) = read_classifier_text(
+            ctx.file_path,
+            "regex_rule",
+            (max_mb as u64)
+                .saturating_mul(1024 * 1024)
+                .min(MAX_CLASSIFIER_BYTES),
+        ) else {
             return false;
         };
         // Match by rule id when the policy pins a specific rule; otherwise any hit.
@@ -284,12 +323,23 @@ impl DlpPolicyEngine {
         scanner.scan(&text).iter().any(|m| m.rule_id == rule_id)
     }
 
-    fn match_structured(&self, classifier: &DlpClassifierRef, ctx: &DlpEvalContext<'_>) -> bool {
+    fn match_structured(
+        &self,
+        classifier: &DlpClassifierRef,
+        ctx: &DlpEvalContext<'_>,
+        max_mb: usize,
+    ) -> bool {
         let (Some(policy), Some(key)) = (&self.fingerprint_policy, self.fingerprint_key.as_deref())
         else {
             return false;
         };
-        let Some(text) = read_classifier_text(ctx.file_path, "structured_fingerprint") else {
+        let Some(text) = read_classifier_text(
+            ctx.file_path,
+            "structured_fingerprint",
+            (max_mb as u64)
+                .saturating_mul(1024 * 1024)
+                .min(MAX_CLASSIFIER_BYTES),
+        ) else {
             return false;
         };
         let object = match serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&text)
@@ -328,12 +378,23 @@ impl DlpPolicyEngine {
         })
     }
 
-    fn match_unstructured(&self, _classifier: &DlpClassifierRef, ctx: &DlpEvalContext<'_>) -> bool {
+    fn match_unstructured(
+        &self,
+        _classifier: &DlpClassifierRef,
+        ctx: &DlpEvalContext<'_>,
+        max_mb: usize,
+    ) -> bool {
         let (Some(policy), Some(key)) = (&self.fingerprint_policy, self.fingerprint_key.as_deref())
         else {
             return false;
         };
-        let Some(text) = read_classifier_text(ctx.file_path, "unstructured_fingerprint") else {
+        let Some(text) = read_classifier_text(
+            ctx.file_path,
+            "unstructured_fingerprint",
+            (max_mb as u64)
+                .saturating_mul(1024 * 1024)
+                .min(MAX_CLASSIFIER_BYTES),
+        ) else {
             return false;
         };
         let matches = dlp_classification::classify(policy, None, None, Some((key, &text)));
@@ -444,6 +505,61 @@ mod tests {
         assert!(!debug_event_log_enabled_value(None));
         assert!(!debug_event_log_enabled_value(Some("   ")));
         assert!(debug_event_log_enabled_value(Some("1")));
+    }
+
+    #[test]
+    fn policy_classifier_respects_configured_file_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("policy.txt");
+        let mut data = vec![b'a'; 11 * 1024 * 1024];
+        data.extend_from_slice(b" SECRET_MARKER");
+        std::fs::write(&path, data).unwrap();
+        let policy = DlpPolicyEnvelope {
+            policy_id: "large-file".into(),
+            name: String::new(),
+            priority: 0,
+            classifiers: vec![DlpClassifierRef {
+                classifier_type: "regex_rule".into(),
+                r#ref: String::new(),
+                pattern: "SECRET_MARKER".into(),
+                validator: "none".into(),
+                context: vec![],
+            }],
+            match_mode: "any".into(),
+            source: DlpSourceCond::default(),
+            destination: DlpDestCond::default(),
+            severity: "high".into(),
+            action: "alert".into(),
+            redaction: "full".into(),
+            regulations: vec![],
+            max_file_size_mb: 12,
+            targets: DlpTargets::default(),
+        };
+        let path = path.to_str().unwrap();
+        assert!(engine(vec![policy.clone()], None, None, None)
+            .evaluate(&ctx(path, "explorer", "file_write"))
+            .is_some());
+        let mut smaller = policy;
+        smaller.max_file_size_mb = 10;
+        assert!(engine(vec![smaller], None, None, None)
+            .evaluate(&ctx(path, "explorer", "file_write"))
+            .is_none());
+    }
+
+    #[test]
+    fn oversized_policy_file_is_audited_without_loading_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("large.txt");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(65 * 1024 * 1024).unwrap();
+        let policy: DlpPolicyEnvelope = serde_json::from_str(
+            r#"{"policy_id":"p-large","max_file_size_mb":128,"classifiers":[{"type":"regex_rule","pattern":"SECRET"}]}"#,
+        ).unwrap();
+        let found = engine(vec![policy], None, None, None)
+            .evaluate(&ctx(path.to_str().unwrap(), "explorer", "file_write"))
+            .unwrap();
+        assert_eq!(found.rule_id, "p-large");
+        assert_eq!(found.action, "audit");
     }
 
     fn engine(
