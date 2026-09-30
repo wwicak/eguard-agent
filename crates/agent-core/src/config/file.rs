@@ -26,6 +26,7 @@ impl AgentConfig {
         let file_cfg: FileConfig = toml::from_str(&raw)
             .with_context(|| format!("failed parsing TOML config {}", path.display()))?;
 
+        self.agent_config_path = Some(path);
         self.apply_file_agent(file_cfg.agent);
         self.apply_file_server(file_cfg.server);
         self.apply_file_transport(file_cfg.transport);

@@ -800,3 +800,17 @@ Review: unknown Windows process versions now clear all typed hints while preserv
 Fail proof: eight new tests and two strengthened regressions fail behaviorally at c86ff7e with production unchanged (test-only raw-platform adapter delegates to unchanged from_raw). Independent IPv6, percent and quoted-rename tests reproduce exact reviewed keys. Expanded Windows replay case/nesting controls already pass c86ff7e, as expected; no regression claimed there. Final suites: Windows124/macOS51/Linux104, integrity12/reviewfix21/F4c8/golden12/differential3/EventTxn10; GNU Windows cross-check and fmt/whitespace pass. Evidence: /home/dimas/eguard-lab-soak/followups/f4c-fix3-validation/.
 
 Golden: 1,299 records, generated at untouched i4-start-f4c via harness-only transplant; SHA256 5c5cb6628635d45c15e90a370e93fb897b3c65ad66264e55d9b2d1c81bf39add. All 1,242 previous records remain identical; 57 added edge records. Both owned scratch worktrees removed. Partial snapshot changes retained except event cloning replaced by borrowed default fields and fixture regenerated from the original tag; obsolete snapshot-only forms deliberately discarded. Residual: native Windows/macOS collector execution not exercised; existing GNU warnings and host eBPF EPERM remain.
+
+## F26 — configured self-protection permission paths
+- [x] Retain loader-resolved agent path and reuse bootstrap/TLS paths; preserve Linux defaults.
+- [x] Apply descriptor-based no-follow permissions only to regular files; never chmod directories.
+- [x] Add redirected/default/macOS-default and filesystem-safety regressions; prove baseline failure or unavailable seam.
+- [x] Run required offline suites, Windows cross-check, formatting; review and commit only F26 changes.
+
+Design approved by supervisor: platform-correct defaults; macOS also protects legacy /etc files only for each unset/default path (None or equal to the platform default). Explicit non-default paths are exclusive. Missing files remain ignored; modes 0400/0600 remain unchanged.
+
+Baseline proof: the redirected loader/runtime test transplanted verbatim (test-only module declaration/support) into an archive of 1224af4 fails because custom-agent.toml remains 0644 rather than 0600. The exact default-set test cannot compile at 1224af4: E0599, no AgentConfig::sensitive_config_paths resolution seam. No production adapter was added. Evidence: /tmp/f26-validation/baseline-configured.log and baseline-default.log.
+
+Validation: self-protect crate 37/37; agent-core self_protect 9/9; resolved-path policy 5/5; payload integrity 14/14; reviewfix 21/21; Windows GNU cross-check and cargo fmt --all --check pass. Redirected runtime strace records all 13 chmod/fchmod operations only on test-owned files, never /etc or parent directories. Logs: /tmp/f26-validation/. Owned baseline archive removed; no stash or push operations.
+
+Residual/review: platform-linux is byte-identical to 1224af4 and reports 103/104 both parallel and serial; the isolated primed_process_exec_metadata_survives_short_lived_process_exit test also fails at tests.rs:166 with the parent test-runner cmdline. Supervisor identifies this as a known pre-existing, load-sensitive fixture and approves committing F26 without unrelated edits. Native macOS enforcement was not executed (actual loader constants/default policy are host-tested); ancestor symlink traversal remains unchanged. Descriptor-based enforcement needs read-open access: a read-denied unprivileged caller logs and skips; the normal privileged agent can still correct drifted modes.
