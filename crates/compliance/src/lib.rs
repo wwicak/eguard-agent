@@ -1337,17 +1337,23 @@ fn detect_installed_packages() -> Option<HashSet<String>> {
     None
 }
 
+fn running_services_command() -> std::process::Command {
+    let mut cmd = std::process::Command::new("systemctl");
+    cmd.args([
+        "list-units",
+        "--type=service",
+        "--state=running",
+        "--no-legend",
+        "--no-pager",
+    ])
+    // systemd >= 254 systemctl reports EXIT_STATUS to an inherited
+    // NOTIFY_SOCKET; systemd then logs a rejection for every non-main PID.
+    .env_remove("NOTIFY_SOCKET");
+    cmd
+}
+
 fn detect_running_services() -> Option<HashSet<String>> {
-    let output = std::process::Command::new("systemctl")
-        .args([
-            "list-units",
-            "--type=service",
-            "--state=running",
-            "--no-legend",
-            "--no-pager",
-        ])
-        .output()
-        .ok()?;
+    let output = running_services_command().output().ok()?;
     if !output.status.success() {
         return None;
     }

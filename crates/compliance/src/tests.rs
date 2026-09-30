@@ -531,6 +531,17 @@ fn parse_running_services_output_extracts_service_names() {
 }
 
 #[test]
+fn running_services_probe_does_not_inherit_systemd_notify_socket() {
+    // Under Type=notify the agent's NOTIFY_SOCKET would let systemctl send
+    // EXIT_STATUS as a non-main PID, which systemd rejects and logs each time.
+    let cmd = running_services_command();
+    let notify = cmd
+        .get_envs()
+        .find(|(key, _)| *key == std::ffi::OsStr::new("NOTIFY_SOCKET"));
+    assert_eq!(notify, Some((std::ffi::OsStr::new("NOTIFY_SOCKET"), None)));
+}
+
+#[test]
 // AC-CMP-008
 fn parse_password_policy_requires_max_days_and_quality_module() {
     let login_defs = "PASS_MAX_DAYS 90\n";
