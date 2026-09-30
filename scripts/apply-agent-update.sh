@@ -81,7 +81,7 @@ curl -fsSL "${PACKAGE_URL}" -o "${pkg_path}"
 echo "${CHECKSUM}  ${pkg_path}" | sha256sum --check --status
 
 if [[ "${FORMAT}" == "deb" ]]; then
-  dpkg -i "${pkg_path}"
+  dpkg -i --force-confdef --force-confold "${pkg_path}" </dev/null
 else
   rpm -Uvh "${pkg_path}"
 fi

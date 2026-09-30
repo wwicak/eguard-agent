@@ -1078,7 +1078,10 @@ fn update_script_executes_deb_and_rpm_paths_with_mocked_installers() {
     assert!(has_line(&log_lines, "sha256sum --check --status"));
     assert!(has_line(
         &log_lines,
-        &format!("dpkg -i {}", deb_pkg.display())
+        &format!(
+            "dpkg -i --force-confdef --force-confold {}",
+            deb_pkg.display()
+        )
     ));
     assert!(has_line(
         &log_lines,

@@ -95,7 +95,8 @@ fi
 
 if [[ -f /etc/debian_version ]]; then
     PKG_FORMAT="deb"
-    INSTALL_CMD="dpkg -i"
+    # Keep an existing agent.conf without an interactive conffile prompt.
+    INSTALL_CMD="dpkg -i --force-confdef --force-confold"
 elif [[ -f /etc/redhat-release ]] || [[ -f /etc/fedora-release ]]; then
     PKG_FORMAT="rpm"
     if command -v dnf5 >/dev/null 2>&1; then

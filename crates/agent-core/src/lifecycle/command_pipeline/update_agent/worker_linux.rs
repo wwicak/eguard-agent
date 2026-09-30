@@ -504,7 +504,10 @@ echo "$CHECKSUM  $tmp_path" | sha256sum --check --status || fail_outcome "packag
 mv -f "$tmp_path" "$pkg_path"
 
 if [[ "$FORMAT" == "deb" ]]; then
-  dpkg -i "$pkg_path" || fail_outcome "deb package install failed for $pkg_path"
+  # Non-interactive: an existing /etc/eguard-agent/agent.conf (enrolled state)
+  # must be kept without a conffile prompt, which otherwise aborts dpkg with
+  # the package half-configured and systemd still running the old unit.
+  dpkg -i --force-confdef --force-confold "$pkg_path" </dev/null || fail_outcome "deb package install failed for $pkg_path"
 else
   rpm_output=""
   if ! rpm_output="$(rpm -Uvh "$pkg_path" 2>&1)"; then
