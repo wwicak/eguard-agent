@@ -142,9 +142,13 @@ mod tests {
             matches!(buffer, EventBuffer::Sqlite(_)),
             "recovery must run"
         );
+        // The invariant is headroom below the 60s systemd watchdog. Optimized
+        // builds (what ships) must keep 4x headroom; unoptimized debug builds
+        // run the same code several times slower but must still beat it.
+        let budget = if cfg!(debug_assertions) { 45 } else { 15 };
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(15),
-            "near-capacity recovery must leave ample headroom below the 60s watchdog: {:?}",
+            started.elapsed() < std::time::Duration::from_secs(budget),
+            "near-capacity recovery must leave headroom below the 60s watchdog (budget {budget}s): {:?}",
             started.elapsed()
         );
         drop(buffer);

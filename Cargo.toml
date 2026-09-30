@@ -78,6 +78,11 @@ version = "0.7"
 [workspace.dependencies.widestring]
 version = "1"
 
+# Bundled SQLite at -O0 made debug-build buffer timing tests measure an
+# unoptimized C library that never ships; release builds are unaffected.
+[profile.dev.package.libsqlite3-sys]
+opt-level = 3
+
 [profile.release]
 codegen-units = 1
 lto = "thin"
