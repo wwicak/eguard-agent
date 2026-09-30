@@ -287,6 +287,31 @@ mod tests {
 
     #[test]
     fn scoped_identity_environment_restores_values_during_unwind() {
+        const CHILD: &str = "EGUARD_TEST_IDENTITY_UNWIND_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            // Dropping the real guard during unwind intentionally poisons its
+            // mutex. Keep that poison in a single-test process, never in the
+            // shared suite where enrollment/config tests may already be waiting.
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "config::util::tests::scoped_identity_environment_restores_values_during_unwind",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .env("HOSTNAME", "original-hostname")
+                .env_remove("EGUARD_TEST_SCOPED_ENV_ABSENT")
+                .output()
+                .expect("run isolated unwind regression");
+            assert!(
+                output.status.success(),
+                "isolated unwind regression failed: stdout={} stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
         let names = ["HOSTNAME", "EGUARD_TEST_SCOPED_ENV_ABSENT"];
         let guard = crate::test_support::TestEnvGuard::new(&names);
         let previous = names.map(|name| (name, std::env::var_os(name)));
