@@ -1,3 +1,5 @@
+use std::io::Read;
+
 use regex::Regex;
 use serde::Deserialize;
 
@@ -112,7 +114,17 @@ impl DlpScanner {
                 metadata.len()
             ));
         }
-        let bytes = std::fs::read(path).map_err(|err| format!("read {}: {err}", path.display()))?;
+        let file =
+            std::fs::File::open(path).map_err(|err| format!("read {}: {err}", path.display()))?;
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut file.take(max_bytes.saturating_add(1)), &mut bytes)
+            .map_err(|err| format!("read {}: {err}", path.display()))?;
+        if bytes.len() as u64 > max_bytes {
+            return Err(format!(
+                "file exceeds DLP scan limit: {} > {max_bytes}",
+                bytes.len()
+            ));
+        }
         let text = extract_scan_text(path, &bytes)?;
         Ok(self.scan(&text))
     }
@@ -134,11 +146,22 @@ const DOC_TEXT_PART_SUFFIXES: &[&str] = &[
 
 /// Extract scannable text, transparently unwrapping OOXML/ODF containers.
 pub fn extract_scan_text(path: &std::path::Path, bytes: &[u8]) -> Result<String, String> {
+    extract_scan_text_with_limit(path, bytes, 64 * 1024 * 1024)
+}
+
+fn extract_scan_text_with_limit(
+    path: &std::path::Path,
+    bytes: &[u8],
+    max_text_bytes: usize,
+) -> Result<String, String> {
     if let Ok(text) = std::str::from_utf8(bytes) {
+        if bytes.len() > max_text_bytes {
+            return Err("DLP extracted text exceeds limit".to_string());
+        }
         return Ok(text.to_string());
     }
     if is_zip_container(bytes) {
-        return extract_zip_text(bytes)
+        return extract_zip_text(bytes, max_text_bytes)?
             .ok_or_else(|| format!("no scannable text extracted from {}", path.display()));
     }
     Err(format!(
@@ -153,9 +176,9 @@ fn is_zip_container(bytes: &[u8]) -> bool {
     bytes.starts_with(b"PK\x03\x04")
 }
 
-fn extract_zip_text(bytes: &[u8]) -> Option<String> {
+fn extract_zip_text(bytes: &[u8], max_text_bytes: usize) -> Result<Option<String>, String> {
     let cursor = std::io::Cursor::new(bytes);
-    let mut archive = zip::ZipArchive::new(cursor).ok()?;
+    let mut archive = zip::ZipArchive::new(cursor).map_err(|err| err.to_string())?;
     let mut text = String::new();
     for index in 0..archive.len() {
         let Ok(mut entry) = archive.by_index(index) else {
@@ -171,12 +194,18 @@ fn extract_zip_text(bytes: &[u8]) -> Option<String> {
         {
             continue;
         }
-        // ponytail: 64 MiB per part cap; OOXML parts are far smaller. Drop the
-        // cap if a legitimately huge sheet must be scanned in full.
+        // Limit the aggregate extracted text, not each part independently.
+        let remaining = max_text_bytes.saturating_sub(text.len());
+        if entry.size() > remaining as u64 {
+            return Err("DLP extracted text exceeds limit".to_string());
+        }
         let mut part = Vec::new();
-        let mut bounded = std::io::Read::take(&mut entry, 64 * 1024 * 1024);
+        let mut bounded = std::io::Read::take(&mut entry, remaining as u64 + 1);
         if std::io::Read::read_to_end(&mut bounded, &mut part).is_err() {
             continue;
+        }
+        if part.len() > remaining || (part.len() == remaining && !part.is_empty()) {
+            return Err("DLP extracted text exceeds limit".to_string());
         }
         if let Ok(part) = String::from_utf8(part) {
             text.push_str(&part);
@@ -184,9 +213,9 @@ fn extract_zip_text(bytes: &[u8]) -> Option<String> {
         }
     }
     if text.is_empty() {
-        None
+        Ok(None)
     } else {
-        Some(text)
+        Ok(Some(text))
     }
 }
 
@@ -322,6 +351,25 @@ mod tests {
             .expect("docx scan succeeds");
         assert_eq!(found.len(), 1, "NIK inside docx must be detected");
         assert_eq!(found[0].rule_id, "id.nik");
+    }
+
+    #[test]
+    fn zip_text_extraction_rejects_aggregate_over_limit() {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for index in 0..3 {
+            zip.start_file(format!("word/header{index}.xml"), options)
+                .expect("start part");
+            std::io::Write::write_all(&mut zip, &vec![b'x'; 1024 * 1024]).expect("write part");
+        }
+        let bytes = zip.finish().expect("finish zip").into_inner();
+        assert!(extract_scan_text_with_limit(
+            std::path::Path::new("a.docx"),
+            &bytes,
+            2 * 1024 * 1024
+        )
+        .is_err());
     }
 
     #[test]

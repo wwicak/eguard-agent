@@ -198,9 +198,6 @@ impl DlpPolicyEngine {
     }
 
     fn matches(&self, policy: &DlpPolicyEnvelope, ctx: &DlpEvalContext<'_>) -> bool {
-        if !self.match_classifiers(policy, ctx) {
-            return false;
-        }
         if !match_targets(&policy.targets, ctx.user) {
             return false;
         }
@@ -210,7 +207,7 @@ impl DlpPolicyEngine {
         if !match_dest(&policy.destination, ctx) {
             return false;
         }
-        true
+        self.match_classifiers(policy, ctx)
     }
 
     fn match_classifiers(&self, policy: &DlpPolicyEnvelope, ctx: &DlpEvalContext<'_>) -> bool {
