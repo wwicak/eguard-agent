@@ -549,8 +549,9 @@ impl AgentRuntime {
             .saturating_add(self.raw_event_backlog.len())
     }
 
-    fn refresh_strict_budget_mode(&mut self) {
-        let next = self.buffer.pending_count() >= self.strict_budget_pending_threshold
+    pub(super) fn refresh_strict_budget_mode(&mut self) {
+        let next = self.memory_pressure_mode
+            || self.buffer.pending_count() >= self.strict_budget_pending_threshold
             || self.raw_event_backlog.len() >= self.strict_budget_raw_backlog_threshold;
 
         if next != self.strict_budget_mode {

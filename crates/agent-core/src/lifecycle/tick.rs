@@ -973,7 +973,9 @@ impl AgentRuntime {
             .unwrap_or(512 * 1024 * 1024); // 512MB default
 
         let rss = read_process_rss_bytes();
-        if rss > threshold {
+        let was_pressured = self.memory_pressure_mode;
+        self.memory_pressure_mode = memory_pressure_active(was_pressured, rss, threshold);
+        if self.memory_pressure_mode && !was_pressured {
             tracing::error!(
                 rss_mb = rss / (1024 * 1024),
                 threshold_mb = threshold / (1024 * 1024),
@@ -986,11 +988,8 @@ impl AgentRuntime {
             self.compliance_grace_state.clear();
             self.active_campaign_iocs.clear();
             self.recent_response_action_keys.clear();
-            if self.raw_event_backlog_cap > 256 {
-                self.raw_event_backlog_cap = 256;
-            }
-            self.strict_budget_mode = true;
         }
+        self.refresh_strict_budget_mode();
     }
 
     /// Check disk free space and enable strict budget mode if disk space is low.
@@ -1072,6 +1071,10 @@ impl AgentRuntime {
     }
 }
 
+fn memory_pressure_active(was_active: bool, rss: u64, threshold: u64) -> bool {
+    rss > 0 && (rss > threshold || (was_active && rss > threshold.saturating_mul(3) / 4))
+}
+
 #[cfg(target_os = "linux")]
 fn read_process_rss_bytes() -> u64 {
     // Read from /proc/self/statm - second field is RSS in pages
@@ -1096,6 +1099,15 @@ fn read_process_rss_bytes() -> u64 {
 #[test]
 fn windows_memory_pressure_reads_live_working_set() {
     assert!(read_process_rss_bytes() > 0);
+}
+
+#[cfg(test)]
+#[test]
+fn memory_pressure_budget_holds_until_recovery() {
+    assert!(memory_pressure_active(false, 600, 512));
+    assert!(memory_pressure_active(true, 450, 512));
+    assert!(!memory_pressure_active(true, 350, 512));
+    assert!(!memory_pressure_active(false, 450, 512));
 }
 
 #[cfg(target_os = "macos")]
@@ -1365,6 +1377,17 @@ mod tests {
             Some(response::PlannedAction::QuarantineOnly),
         );
         assert_eq!(event.file_hash, None);
+    }
+
+    #[test]
+    fn memory_pressure_keeps_budget_active_until_recovery() {
+        let mut runtime = new_runtime();
+        runtime.memory_pressure_mode = true;
+        runtime.refresh_strict_budget_mode();
+        assert!(runtime.strict_budget_mode);
+        runtime.memory_pressure_mode = false;
+        runtime.refresh_strict_budget_mode();
+        assert!(!runtime.strict_budget_mode);
     }
 
     fn new_runtime() -> AgentRuntime {
