@@ -26,6 +26,23 @@ use serde::{Deserialize, Serialize};
 
 pub use etw::{EtwEngine, EtwError, EtwStats};
 
+/// Current process resident working set, for the agent's memory-pressure guard.
+pub fn process_working_set_bytes() -> u64 {
+    use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+    use windows::Win32::System::Threading::GetCurrentProcess;
+
+    let mut counters = PROCESS_MEMORY_COUNTERS {
+        cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: the pseudo-handle is valid in this process; cb matches the buffer.
+    unsafe {
+        GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb)
+            .map(|()| counters.WorkingSetSize as u64)
+            .unwrap_or(0)
+    }
+}
+
 // ── Shared event types (mirrors platform-linux) ────────────────────────
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

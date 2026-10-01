@@ -1089,7 +1089,13 @@ fn read_process_rss_bytes() -> u64 {
 
 #[cfg(target_os = "windows")]
 fn read_process_rss_bytes() -> u64 {
-    0
+    platform_windows::process_working_set_bytes()
+}
+
+#[cfg(all(test, target_os = "windows"))]
+#[test]
+fn windows_memory_pressure_reads_live_working_set() {
+    assert!(read_process_rss_bytes() > 0);
 }
 
 #[cfg(target_os = "macos")]
