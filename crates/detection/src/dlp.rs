@@ -68,13 +68,17 @@ impl DlpScanner {
 
     pub fn scan(&self, text: &str) -> Vec<DlpMatch> {
         let mut matches = Vec::new();
+        // A single scan may evaluate many rules against the same file. Lowercase
+        // only when a rule needs context, and share the allocation across rules.
+        let mut context: Option<String> = None;
         for compiled in &self.rules {
             let rule = &compiled.rule;
-            let context = text.to_lowercase();
-            let has_context = rule
-                .context
-                .iter()
-                .any(|term| context.contains(&term.to_lowercase()));
+            let has_context = !rule.context.is_empty()
+                && rule.context.iter().any(|term| {
+                    context
+                        .get_or_insert_with(|| text.to_lowercase())
+                        .contains(&term.to_lowercase())
+                });
             for found in compiled.regex.find_iter(text).take(rule.max_matches) {
                 let value = found.as_str();
                 if !validator_accepts(&rule.validator, value, has_context) {
@@ -310,6 +314,34 @@ mod tests {
             }],
         })
         .expect("valid pack")
+    }
+
+    #[test]
+    fn scanner_reuses_context_across_rules_and_keeps_none_validator() {
+        let mut pack = DlpRulePack {
+            schema_version: "1".to_string(),
+            pack_id: "multi".to_string(),
+            version: "1".to_string(),
+            rules: Vec::new(),
+        };
+        let mut context_rule = scanner().rules[0].rule.clone();
+        context_rule.id = "first".to_string();
+        context_rule.context = vec!["nik".to_string()];
+        pack.rules.push(context_rule.clone());
+        context_rule.id = "second".to_string();
+        context_rule.context = vec!["nomor".to_string()];
+        pack.rules.push(context_rule);
+        let mut no_context_rule = pack.rules[0].clone();
+        no_context_rule.id = "third".to_string();
+        no_context_rule.validator = "none".to_string();
+        no_context_rule.context.clear();
+        pack.rules.push(no_context_rule);
+        let scanner = DlpScanner::from_pack(pack).expect("valid pack");
+        let hits = scanner.scan("NIK nomor: 3174012301900001");
+        assert_eq!(
+            hits.iter().map(|m| m.rule_id.as_str()).collect::<Vec<_>>(),
+            ["first", "second", "third"]
+        );
     }
 
     #[test]
