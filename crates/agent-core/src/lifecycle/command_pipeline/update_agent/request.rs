@@ -68,9 +68,12 @@ impl NormalizedUpdateRequest {
     }
 }
 
+/// `grpc_tls` is whether the agent's gRPC client uses TLS; a relative
+/// package_url is fetched from server_addr with the same scheme.
 pub(super) fn normalize_update_request(
     payload: UpdatePayload,
     server_addr: &str,
+    grpc_tls: bool,
 ) -> Result<NormalizedUpdateRequest, String> {
     let version = payload.version.trim().to_string();
     if !is_safe_version_string(&version) {
@@ -78,7 +81,7 @@ pub(super) fn normalize_update_request(
     }
 
     let checksum_sha256 = normalize_sha256_checksum(&payload.checksum_sha256)?;
-    let package_url = resolve_update_url(payload.package_url.trim(), server_addr)?;
+    let package_url = resolve_update_url(payload.package_url.trim(), server_addr, grpc_tls)?;
 
     let hinted_kind = parse_package_kind_hint(payload.package_format.trim())?;
     let url_kind = infer_package_kind_from_url(&package_url);
@@ -120,7 +123,7 @@ fn normalize_sha256_checksum(raw: &str) -> Result<String, String> {
     Ok(checksum)
 }
 
-fn resolve_update_url(raw_url: &str, server_addr: &str) -> Result<String, String> {
+fn resolve_update_url(raw_url: &str, server_addr: &str, grpc_tls: bool) -> Result<String, String> {
     let trimmed = raw_url.trim();
     if trimmed.is_empty() {
         return Err("package_url is required".to_string());
@@ -152,11 +155,11 @@ fn resolve_update_url(raw_url: &str, server_addr: &str) -> Result<String, String
         return Err("package_url must be absolute (https://...) or /api-relative".to_string());
     }
 
-    let base = resolve_update_base_url(server_addr)?;
+    let base = resolve_update_base_url(server_addr, grpc_tls)?;
     Ok(format!("{}{}", base.trim_end_matches('/'), trimmed))
 }
 
-fn resolve_update_base_url(server_addr: &str) -> Result<String, String> {
+fn resolve_update_base_url(server_addr: &str, grpc_tls: bool) -> Result<String, String> {
     if let Ok(raw) = std::env::var(UPDATE_BASE_URL_ENV) {
         let value = raw.trim();
         if value.starts_with("https://") || value.starts_with("http://") {
@@ -173,7 +176,9 @@ fn resolve_update_base_url(server_addr: &str) -> Result<String, String> {
     }
 
     if let Some(port) = extract_server_port(raw_server) {
-        if port == 50053 {
+        // 50053 is the server's h2c listener; elsewhere (e.g. the stock
+        // plaintext 50052 proxy) follow the gRPC client's scheme.
+        if port == 50053 || !grpc_tls {
             return Ok(format!("http://{}", raw_server));
         }
         return Ok(format!("https://{}", raw_server));
@@ -332,6 +337,7 @@ mod tests {
                 "deb",
             ),
             "103.132.18.221:50053",
+            true,
         )
         .expect("normalize request");
 
@@ -342,7 +348,7 @@ mod tests {
     }
 
     #[test]
-    fn relative_linux_update_urls_keep_https_for_tls_frontend_ports() {
+    fn relative_linux_update_urls_keep_https_when_grpc_uses_tls() {
         let request = normalize_update_request(
             linux_payload(
                 "/api/v1/agent-install/linux-rpm?version=0.2.54",
@@ -350,12 +356,34 @@ mod tests {
                 "rpm",
             ),
             "eguard.example:50052",
+            true,
         )
         .expect("normalize request");
 
         assert_eq!(
             request.package_url(),
             "https://eguard.example:50052/api/v1/agent-install/linux-rpm?version=0.2.54"
+        );
+    }
+
+    // F30: the stock server's 50052 is a plaintext h1/h2c proxy, so a
+    // non-TLS agent on :50052 must not fetch the package over https.
+    #[test]
+    fn relative_linux_update_urls_use_http_on_50052_without_grpc_tls() {
+        let request = normalize_update_request(
+            linux_payload(
+                "/api/v1/agent-install/linux-deb?version=15.0.19",
+                "feedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface",
+                "deb",
+            ),
+            "192.168.122.25:50052",
+            false,
+        )
+        .expect("normalize request");
+
+        assert_eq!(
+            request.package_url(),
+            "http://192.168.122.25:50052/api/v1/agent-install/linux-deb?version=15.0.19"
         );
     }
 }

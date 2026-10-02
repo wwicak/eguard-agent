@@ -82,7 +82,11 @@ impl AgentRuntime {
         exec: &mut CommandExecution,
     ) {
         let payload = parse_update_payload(payload_json);
-        let request = match normalize_update_request(payload, &self.config.server_addr) {
+        let request = match normalize_update_request(
+            payload,
+            &self.config.server_addr,
+            self.client.is_tls_configured(),
+        ) {
             Ok(request) => request,
             Err(err) => {
                 exec.outcome = CommandOutcome::Ignored;
