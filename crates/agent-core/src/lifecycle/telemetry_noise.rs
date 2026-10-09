@@ -249,6 +249,13 @@ fn static_system_path(path: &str) -> bool {
 }
 
 impl AgentRuntime {
+    // The noise filter is Linux-only (and sensitive_config_paths is unix-only), so other targets always send.
+    #[cfg(not(target_os = "linux"))]
+    pub(super) fn should_send_evaluation(&mut self, _evaluation: &super::TickEvaluation) -> bool {
+        true
+    }
+
+    #[cfg(target_os = "linux")]
     pub(super) fn should_send_evaluation(&mut self, evaluation: &super::TickEvaluation) -> bool {
         if evaluation
             .detection_event
