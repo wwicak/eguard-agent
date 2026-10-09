@@ -301,6 +301,7 @@ impl Default for AgentConfig {
             tls_rotate_before_expiry_days: 30,
             heartbeat_interval_secs: 30,
             reconnect_backoff_max_secs: 300,
+            telemetry_noise_filter: true,
             telemetry_process_exec: true,
             telemetry_file_events: true,
             telemetry_network_connections: true,

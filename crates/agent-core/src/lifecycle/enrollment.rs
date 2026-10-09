@@ -301,6 +301,10 @@ fn persist_runtime_config_at(
 
     let telemetry_table = ensure_table(root_table, "telemetry", &path)?;
     telemetry_table.insert(
+        "noise_filter".to_string(),
+        toml::Value::Boolean(config.telemetry_noise_filter),
+    );
+    telemetry_table.insert(
         "process_exec".to_string(),
         toml::Value::Boolean(config.telemetry_process_exec),
     );

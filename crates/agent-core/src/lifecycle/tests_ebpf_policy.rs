@@ -353,6 +353,8 @@ fn sampling_stride_scales_with_backlog_and_drop_backpressure() {
 #[tokio::test]
 async fn tick_drains_queued_events_past_a_filtered_event() {
     let mut cfg = AgentConfig::default();
+    // Test ingress/drain ordering independently of post-detection delivery filtering.
+    cfg.telemetry_noise_filter = false;
     cfg.offline_buffer_backend = "memory".to_string();
     cfg.server_addr = "127.0.0.1:1".to_string();
     cfg.self_protection_integrity_check_interval_secs = 0;
@@ -404,6 +406,8 @@ async fn tick_drains_queued_events_past_a_filtered_event() {
 #[tokio::test]
 async fn connected_tick_batches_first_and_drain_events_into_two_sends() {
     let mut cfg = AgentConfig::default();
+    // Test batching with legacy delivery, including benign ML-negative evaluations.
+    cfg.telemetry_noise_filter = false;
     cfg.offline_buffer_backend = "memory".to_string();
     cfg.server_addr = "127.0.0.1:1".to_string();
     cfg.self_protection_integrity_check_interval_secs = 0;

@@ -6,6 +6,8 @@ fn runtime() -> AgentRuntime {
         offline_buffer_backend: "memory".to_string(),
         server_addr: "127.0.0.1:1".to_string(),
         self_protection_integrity_check_interval_secs: 0,
+        // These transport/queue regressions deliberately exercise legacy delivery.
+        telemetry_noise_filter: false,
         ..AgentConfig::default()
     };
     let mut runtime = AgentRuntime::new(cfg).expect("runtime");

@@ -82,6 +82,11 @@ pinned_ca_sha256 = ""
 ca_pin_path = "/etc/eguard-agent/tls/ca.crt.pin.sha256"
 rotate_before_expiry_days = 30
 
+[telemetry]
+# Suppress static read/negative ML noise and count repeated low/medium events.
+# Set false to restore pre-noise-filter delivery (detection/response are unchanged).
+noise_filter = true
+
 [control_plane]
 # Policy refresh cadence from eGuard server in seconds.
 # Default is 300 (5 minutes). Lower for faster propagation in lab/testing.

@@ -46,6 +46,9 @@ impl AgentRuntime {
                 events_sent = self.pipeline_events_sent,
                 raw_event_backlog = self.raw_event_backlog.len(),
                 buffer_pending = self.buffer.pending_count(),
+                suppressed_static_reads_total = self.telemetry_noise.static_reads,
+                suppressed_negative_ml_total = self.telemetry_noise.negative_ml,
+                suppressed_repeats_total = self.telemetry_noise.repeated,
                 raw_overflow_dropped = dropped.saturating_sub(self.pipeline_stats_baseline.1),
                 last_tick_micros = self.metrics.last_tick_total_micros,
                 max_tick_micros = self.pipeline_max_tick_micros,
@@ -409,7 +412,7 @@ impl AgentRuntime {
         Ok(())
     }
 
-    fn buffer_degraded_telemetry_if_present(
+    pub(super) fn buffer_degraded_telemetry_if_present(
         &mut self,
         evaluation: Option<&TickEvaluation>,
     ) -> Result<usize> {
@@ -417,6 +420,9 @@ impl AgentRuntime {
             return Ok(0);
         };
 
+        if !self.should_send_evaluation(evaluation) {
+            return Ok(0);
+        }
         self.buffer.enqueue(evaluation.event_envelope.clone())?;
         warn!(
             pending = self.buffer.pending_count(),

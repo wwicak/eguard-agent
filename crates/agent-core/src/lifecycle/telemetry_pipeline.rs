@@ -153,6 +153,10 @@ impl AgentRuntime {
             .as_mut()
             .map(std::mem::take)
             .unwrap_or_default();
+        // Suppressing new noise must not strand already-buffered detection evidence.
+        if evaluation.is_some() && events.is_empty() && self.buffer.pending_count() > 0 {
+            return self.flush_event_batch(Vec::new()).await;
+        }
         let mut first_error = None;
         for envelope in events {
             // Base drains old rows again for each event/compliance envelope.
@@ -187,8 +191,10 @@ impl AgentRuntime {
             );
         }
 
-        self.send_event_batch(evaluation.event_envelope.clone())
-            .await?;
+        if self.should_send_evaluation(evaluation) {
+            self.send_event_batch(evaluation.event_envelope.clone())
+                .await?;
+        }
 
         let compliance_alerts = self.collect_compliance_alerts(
             &evaluation.compliance,

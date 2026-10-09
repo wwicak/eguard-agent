@@ -92,7 +92,7 @@ impl AgentRuntime {
                 active_yara_rules: report.map(|r| r.yara_rules as i64).unwrap_or_default(),
                 active_ioc_entries: report.map(|r| r.ioc_entries as i64).unwrap_or_default(),
                 last_detection: format!(
-                    "tick={} strict_budget={} backlog={} txn_keys={} baseline={} task_replaced={} send_replaced={} task_dropped={} send_dropped={} queue_pressure={} command_pressure={} task_pressure={} send_pressure={} command_queue={}/{} task_queue={}/{} send_queue={}/{} telemetry_backend={} offline_buffer_volatile_fallback={}",
+                    "tick={} strict_budget={} backlog={} txn_keys={} baseline={} task_replaced={} send_replaced={} task_dropped={} send_dropped={} queue_pressure={} command_pressure={} task_pressure={} send_pressure={} command_queue={}/{} task_queue={}/{} send_queue={}/{} telemetry_backend={} offline_buffer_volatile_fallback={} suppressed_static_reads_total={} suppressed_negative_ml_total={} suppressed_repeats_total={}",
                     snapshot.tick_count,
                     snapshot.strict_budget_mode,
                     snapshot.raw_event_backlog_depth,
@@ -115,6 +115,9 @@ impl AgentRuntime {
                     self.ebpf_engine.backend_label(),
                     !self.config.offline_buffer_backend.eq_ignore_ascii_case("memory")
                         && matches!(self.buffer, grpc_client::EventBuffer::Memory(_)),
+                    self.telemetry_noise.static_reads,
+                    self.telemetry_noise.negative_ml,
+                    self.telemetry_noise.repeated,
                 ),
                 last_response_action: format!(
                     "last_response_exec={} queue_depth={}/{} deduped={} dedupe_keys={} report_dropped={} response_pressure={} response_queue_pressure={} report_queue_pressure={} report_queue={}/{}",
