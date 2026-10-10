@@ -111,6 +111,8 @@ struct SigmaStage {
     #[serde(default, deserialize_with = "deserialize_string_vec_lenient")]
     command_line_contains: Vec<String>,
     #[serde(default)]
+    require_file_write: bool,
+    #[serde(default)]
     within_secs: Option<u64>,
 }
 
@@ -183,7 +185,7 @@ fn compile_sequence_sigma_ast(doc: SigmaRuleDoc) -> Result<BoundedTemporalAst> {
                 file_path_any_of: into_set(stage.file_path_any_of),
                 file_path_contains: into_set(stage.file_path_contains),
                 command_line_contains: into_set(stage.command_line_contains),
-                require_file_write: false,
+                require_file_write: stage.require_file_write,
             },
             within_secs,
         });

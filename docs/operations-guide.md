@@ -423,7 +423,6 @@ ML can escalate confidence upward but never downgrade deterministic decisions:
 |----------------|-------------|-------------|
 | None | score >= 0.85 | Medium |
 | Low | score >= 0.80 | Medium |
-| Medium | score >= 0.90 | High |
 | High | score >= 0.95 | VeryHigh |
 
 ### 3.3 Threat Categories

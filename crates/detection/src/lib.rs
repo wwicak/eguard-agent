@@ -79,6 +79,8 @@ pub use zero_trust::{
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_detection_audit;
 #[cfg(all(test, not(miri)))]
 mod tests_resource_budget;
 #[cfg(all(test, not(miri)))]

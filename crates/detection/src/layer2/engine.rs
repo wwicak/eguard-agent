@@ -80,10 +80,14 @@ impl TemporalEngine {
         let automaton = DeterministicMonitorAutomaton::from_rule(rule);
         let rule_id = self.automata.len();
         for transition in &automaton.transitions {
-            self.subscriptions
+            // Two stages on one class must not let a single event advance twice.
+            let subscribers = self
+                .subscriptions
                 .entry(transition.predicate.event_class)
-                .or_default()
-                .push(rule_id);
+                .or_default();
+            if !subscribers.contains(&rule_id) {
+                subscribers.push(rule_id);
+            }
         }
         self.automata.push(automaton);
     }
