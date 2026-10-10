@@ -12,6 +12,7 @@ pub(super) struct DeterministicMonitorAutomaton {
     pub(super) name: String,
     pub(super) transitions: Vec<MonitorTransition>,
     pub(super) max_window_secs: i64,
+    pub(super) session_linked: bool,
 }
 
 impl DeterministicMonitorAutomaton {
@@ -35,10 +36,16 @@ impl DeterministicMonitorAutomaton {
             max_window_secs = 1;
         }
 
+        // Exec-to-exec chains may cross PIDs (e.g. curl | sh). Other chains
+        // require evidence from the same process, not every daemon under PID 1.
+        let session_linked = transitions.iter().skip(1).any(|transition| {
+            transition.predicate.event_class == crate::types::EventClass::ProcessExec
+        });
         Self {
             name: rule.name,
             transitions,
             max_window_secs,
+            session_linked,
         }
     }
 }
@@ -50,4 +57,5 @@ pub(super) struct TemporalState {
     pub(super) last_match_ts: i64,
     pub(super) exec_epoch: Option<u64>,
     pub(super) identity_fingerprint: u64,
+    pub(super) pid: u32,
 }

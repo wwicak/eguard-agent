@@ -288,16 +288,16 @@ detection:
       within_secs: 10
 "#;
 
-// ── Reverse shell: bash with /dev/tcp redirect or nc/ncat ──
+// ── Reverse shell: require shell-I/O evidence, not just a shell + network ──
 const SIGMA_REVERSE_SHELL: &str = r#"
 title: eguard_builtin_reverse_shell
 detection:
   sequence:
     - event_class: process_exec
-      process_any_of: [bash, sh, dash, zsh]
+      process_any_of: [bash, sh, dash, zsh, nc, ncat, socat]
+      command_line_contains: ['>& /dev/tcp/', 'nc -e /bin', 'ncat -e', 'socat exec', '0<&196']
       within_secs: 60
     - event_class: network_connect
-      dst_port_not_in: [80, 443, 22, 53, 8080, 8443]
       within_secs: 5
 "#;
 
@@ -314,15 +314,18 @@ detection:
       within_secs: 10
 "#;
 
-// ── Privilege escalation: non-root process chain to root ──
+// ── Privilege escalation: elevation tool followed by its root interpreter ──
 const SIGMA_PRIVESC: &str = r#"
 title: eguard_builtin_privesc
 detection:
   sequence:
     - event_class: process_exec
+      process_any_of: [sudo, su, pkexec]
       uid_ne: 0
       within_secs: 60
     - event_class: process_exec
+      process_any_of: [bash, sh, dash, zsh, ksh, python, python3, perl, ruby]
+      parent_any_of: [sudo, su, pkexec]
       uid_eq: 0
       within_secs: 20
 "#;
@@ -431,15 +434,16 @@ detection:
       within_secs: 300
 "#;
 
-// ── Data exfiltration: file read followed by outbound POST ──
+// ── Credential exfiltration candidate: sensitive file access + network ──
 const SIGMA_DATA_EXFIL: &str = r#"
 title: eguard_builtin_data_exfil
 detection:
   sequence:
     - event_class: file_open
+      file_path_any_of: [/etc/shadow, /etc/gshadow, /etc/master.passwd]
+      file_path_contains: ['/.ssh/id_', '/.aws/credentials', '/.kube/config']
       within_secs: 60
     - event_class: network_connect
-      dst_port_not_in: [22, 53]
       within_secs: 15
 "#;
 
