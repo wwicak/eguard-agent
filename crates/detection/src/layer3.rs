@@ -105,6 +105,14 @@ impl AnomalyEngine {
         self.baselines.insert(process_key, dist);
     }
 
+    /// Keep learned priors across a rule reload without replacing new scoring
+    /// configuration or any explicitly supplied replacement baselines.
+    pub fn inherit_baselines(&mut self, previous: &mut Self) {
+        for (key, distribution) in previous.baselines.drain() {
+            self.baselines.entry(key).or_insert(distribution);
+        }
+    }
+
     pub fn observe(&mut self, event: &TelemetryEvent) -> Option<AnomalyDecision> {
         self.tick += 1;
         let (entropy_bits, entropy_z, entropy_high) = self.observe_entropy(event);
@@ -223,7 +231,10 @@ impl AnomalyEngine {
             .iter()
             .map(|class| baseline.get(class).copied().unwrap_or(0.0))
             .sum();
-        let denom = bsum + self.config.alpha * EVENT_CLASS_COUNT as f64;
+        // Baselines are probabilities, not counts: apply one pseudocount per
+        // class at the window's sample scale, rather than flattening the prior.
+        let prior_scale = n / bsum.max(f64::EPSILON);
+        let denom = bsum * prior_scale + self.config.alpha * EVENT_CLASS_COUNT as f64;
 
         let mut p = Vec::with_capacity(EVENT_CLASS_COUNT);
         let mut q = Vec::with_capacity(EVENT_CLASS_COUNT);
@@ -233,7 +244,7 @@ impl AnomalyEngine {
             p.push(counts[idx] as f64 / n);
 
             let base = baseline.get(&class).copied().unwrap_or(0.0);
-            q.push((base + self.config.alpha) / denom);
+            q.push((base * prior_scale + self.config.alpha) / denom);
         }
 
         (p, q)
