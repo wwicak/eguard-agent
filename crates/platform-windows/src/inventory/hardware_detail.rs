@@ -43,10 +43,44 @@ pub fn collect_hardware_inventory() -> HashMap<String, String> {
         if let Some(json) = run_powershell(cmd) {
             attrs = parse_hardware_detail_json(&json);
         }
-        // Collect installed software from registry
+        // SecurityCenter2 is a local Windows registration catalog, not a health signal.
+        collect_antivirus_presence(&mut attrs);
         collect_software_inventory(&mut attrs);
     }
 
+    attrs
+}
+
+#[cfg(target_os = "windows")]
+fn collect_antivirus_presence(attrs: &mut HashMap<String, String>) {
+    // Never turn a denied/missing namespace or failed query into known absence.
+    // Do not use Win32_Product (it can trigger MSI repair).
+    let cmd = "$ErrorActionPreference='Stop'; try { $p=@(Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct -ErrorAction Stop | Select-Object displayName,instanceGuid); [pscustomobject]@{status='known';source='SecurityCenter2';products=$p} | ConvertTo-Json -Depth 4 -Compress } catch { [pscustomobject]@{status='unknown'} | ConvertTo-Json -Compress }";
+    if let Some(raw) = run_powershell(cmd) {
+        attrs.extend(parse_antivirus_presence_json(&raw));
+    }
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn parse_antivirus_presence_json(raw: &str) -> HashMap<String, String> {
+    let mut attrs = HashMap::new();
+    let Ok(v) = serde_json::from_str::<Value>(raw) else { return attrs };
+    if v.get("status").and_then(Value::as_str) != Some("known")
+        || v.get("source").and_then(Value::as_str) != Some("SecurityCenter2") { return attrs }
+    let Some(products) = v.get("products").and_then(Value::as_array) else { return attrs };
+    if products.len() > 64 { return attrs }
+    let mut named = Vec::new();
+    for product in products {
+        let Some(name) = product.get("displayName").and_then(Value::as_str) else { return HashMap::new() };
+        let name = name.trim();
+        if name.is_empty() || name.len() > 256 || name.chars().any(char::is_control) { return HashMap::new() }
+        let id = product.get("instanceGuid").and_then(Value::as_str).unwrap_or("");
+        if id.len() > 128 || id.chars().any(char::is_control) { return HashMap::new() }
+        named.push(serde_json::json!({"name": name, "id": id}));
+    }
+    attrs.insert("hw.av.presence".into(), if named.is_empty() { "absent" } else { "present" }.into());
+    attrs.insert("hw.av.source".into(), "SecurityCenter2".into());
+    attrs.insert("hw.av.products".into(), serde_json::to_string(&named).unwrap_or_default());
     attrs
 }
 
@@ -476,7 +510,19 @@ fn classify_windows_media_type(
 
 #[cfg(test)]
 mod tests {
-    use super::parse_hardware_detail_json;
+    use super::{parse_antivirus_presence_json, parse_hardware_detail_json};
+
+    #[test]
+    fn av_presence_requires_complete_named_catalog() {
+        let present = parse_antivirus_presence_json(r#"{"status":"known","source":"SecurityCenter2","products":[{"displayName":"Example AV","instanceGuid":"{123}"}]}"#);
+        assert_eq!(present.get("hw.av.presence").map(String::as_str), Some("present"));
+        assert!(present["hw.av.products"].contains("Example AV"));
+        let absent = parse_antivirus_presence_json(r#"{"status":"known","source":"SecurityCenter2","products":[]}"#);
+        assert_eq!(absent.get("hw.av.presence").map(String::as_str), Some("absent"));
+        for raw in [r#"{"status":"unknown"}"#, r#"{"status":"known","source":"SecurityCenter2"}"#, r#"{"status":"known","source":"SecurityCenter2","products":[{}]}"#] {
+            assert!(parse_antivirus_presence_json(raw).is_empty(), "{raw}");
+        }
+    }
 
     #[test]
     fn parses_full_hardware_detail_json() {
