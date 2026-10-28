@@ -148,6 +148,51 @@ pub(super) fn default_rules() -> Vec<TemporalRule> {
                 predicate: TemporalPredicate {
                     event_class: EventClass::ProcessExec,
                     process_any_of: Some(set_of(["curl", "wget", "fetch"])),
+                    process_starts_with: None,
+                    parent_any_of: None,
+                    uid_eq: None,
+                    uid_ne: None,
+                    dst_port_not_in: None,
+                    dst_port_any_of: None,
+                    file_path_any_of: None,
+                    file_path_contains: None,
+                    command_line_contains: None,
+                    require_file_write: false,
+                },
+                within_secs: 30,
+            },
+            TemporalStage {
+                predicate: TemporalPredicate {
+                    event_class: EventClass::ProcessExec,
+                    process_any_of: Some(shells.clone()),
+                    process_starts_with: None,
+                    parent_any_of: None,
+                    uid_eq: None,
+                    uid_ne: None,
+                    dst_port_not_in: None,
+                    dst_port_any_of: None,
+                    file_path_any_of: None,
+                    file_path_contains: None,
+                    command_line_contains: None,
+                    require_file_write: false,
+                },
+                within_secs: 30,
+            },
+        ],
+    };
+
+    // --- phi_download_exec (interpreters) ---
+    // An interpreter start alone is not a download: hypervisor guest agents and
+    // monitoring scripts run python/perl constantly. Require download evidence
+    // on the command line; stage 2 is only session-linked, so without this any
+    // daemon shell within 30s fired the rule.
+    let download_exec_interpreter = TemporalRule {
+        name: "phi_download_exec".to_string(),
+        stages: vec![
+            TemporalStage {
+                predicate: TemporalPredicate {
+                    event_class: EventClass::ProcessExec,
+                    process_any_of: None,
                     process_starts_with: Some(vec![
                         "python".to_string(),
                         "perl".to_string(),
@@ -160,7 +205,9 @@ pub(super) fn default_rules() -> Vec<TemporalRule> {
                     dst_port_any_of: None,
                     file_path_any_of: None,
                     file_path_contains: None,
-                    command_line_contains: None,
+                    command_line_contains: Some(set_of([
+                        "://", "urllib", "urlopen", "requests", "lwp", "http::", "open-uri",
+                    ])),
                     require_file_write: false,
                 },
                 within_secs: 30,
@@ -368,6 +415,7 @@ pub(super) fn default_rules() -> Vec<TemporalRule> {
         priv_esc,
         reverse_shell,
         download_exec,
+        download_exec_interpreter,
         credential_exfil,
         persistence_install,
         ssh_lateral,

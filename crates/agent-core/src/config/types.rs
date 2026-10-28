@@ -32,6 +32,7 @@ pub struct AgentConfig {
     pub tls_rotate_before_expiry_days: u64,
     pub heartbeat_interval_secs: u64,
     pub reconnect_backoff_max_secs: u64,
+    pub telemetry_noise_filter: bool,
     pub telemetry_process_exec: bool,
     pub telemetry_file_events: bool,
     pub telemetry_network_connections: bool,

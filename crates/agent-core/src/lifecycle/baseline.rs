@@ -119,7 +119,7 @@ pub(super) fn apply_fleet_baseline_seeds(
     seeded
 }
 
-fn parse_event_class_name(raw: &str) -> Option<EventClass> {
+pub(super) fn parse_event_class_name(raw: &str) -> Option<EventClass> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "process_exec" => Some(EventClass::ProcessExec),
         "process_exit" => Some(EventClass::ProcessExit),

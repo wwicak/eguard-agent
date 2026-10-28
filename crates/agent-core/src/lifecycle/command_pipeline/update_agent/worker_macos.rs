@@ -433,7 +433,7 @@ mod tests {
               "checksum_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
             }"#,
         );
-        normalize_update_request(payload, "127.0.0.1:0").expect("valid update payload")
+        normalize_update_request(payload, "127.0.0.1:0", false).expect("valid update payload")
     }
 
     #[test]
@@ -680,7 +680,7 @@ esac
             }"#,
         );
         let request =
-            normalize_update_request(payload, "127.0.0.1:0").expect("valid update payload");
+            normalize_update_request(payload, "127.0.0.1:0", false).expect("valid update payload");
         let dir = tempfile::tempdir().expect("tempdir");
         let err = spawn_update_worker("test-cmd-id", &request, dir.path())
             .expect_err("non-pkg must be rejected");

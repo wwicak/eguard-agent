@@ -115,6 +115,57 @@ fn event_network_for_pid(
 }
 
 #[test]
+fn r2_rule_reload_preserves_learned_priors_on_every_shard() {
+    fn engine() -> DetectionEngine {
+        let mut engine = DetectionEngine::default_with_rules();
+        let mut config = detection::AnomalyConfig::default();
+        config.alpha = 0.001; // Isolate prior loss from the old probability-smoothing bug.
+        engine.layer3 = detection::AnomalyEngine::new(config);
+        engine
+    }
+    let state = SharedDetectionState::new_with_shards(engine(), None, 2, engine);
+    state
+        .set_anomaly_baselines_bulk(vec![(
+            "worker:supervisor".into(),
+            [(EventClass::FileOpen, 1.0)].into(),
+        )])
+        .unwrap();
+    for phase in 0..2 {
+        if phase == 1 {
+            state
+                .swap_engine_with_builder("new-rules".into(), engine(), engine)
+                .unwrap();
+        }
+        for session in 1..=2 {
+            for i in 0..128 {
+                let mut event = event_process_exec_for_pid(
+                    200 + session,
+                    "worker",
+                    "supervisor",
+                    phase * 256 + i,
+                );
+                event.event_class = EventClass::FileOpen;
+                event.session_id = session;
+                assert!(
+                    state.process_event(&event).unwrap().anomaly.is_none(),
+                    "lost prior on shard/session {session}, phase {phase}"
+                );
+            }
+        }
+    }
+    let mut changed = false;
+    for i in 512..640 {
+        let event = event_network_for_pid(201, "worker", "supervisor", i, 443);
+        changed |= state
+            .process_event(&event)
+            .unwrap()
+            .anomaly
+            .is_some_and(|d| d.high);
+    }
+    assert!(changed, "reload normalized a new event class");
+}
+
+#[test]
 // AC-DET-165
 fn emergency_hash_rule_is_applied_without_engine_rebuild() {
     let state = SharedDetectionState::new(

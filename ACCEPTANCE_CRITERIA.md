@@ -252,7 +252,7 @@ Derived from `docs/eguard-agent-design.md`. These acceptance criteria define the
 ### Detection Accuracy Optimization (Tier 2)
 
 - **AC-DET-250**: Temporal engine MUST include `phi_reverse_shell` rule detecting shell exec with reverse-shell markers (e.g. `>& /dev/tcp/`, `bash -i`, `nc -e /bin`) followed by non-web-port network connect within 10 s.
-- **AC-DET-251**: Temporal engine MUST include `phi_download_exec` rule detecting download tool exec (`curl`, `wget`, `fetch`, or versioned interpreters) followed by shell exec within 30 s.
+- **AC-DET-251**: Temporal engine MUST include `phi_download_exec` rule detecting download tool exec (`curl`, `wget`, `fetch`), or a versioned interpreter (`python*`, `perl*`, `ruby*`) whose command line shows a download (URL, `urllib`, `requests`, LWP, `open-uri`), followed by shell exec within 30 s; interpreter starts without download evidence MUST NOT match.
 - **AC-DET-252**: Temporal engine MUST include `phi_credential_exfil` rule detecting file access to credential paths (`/etc/shadow`, `.ssh/id_`, `.aws/credentials`, etc.) followed by non-web-port network connect within 60 s.
 - **AC-DET-253**: Temporal engine MUST include `phi_persistence_install` rule detecting file write to persistence paths (`/etc/cron`, `/etc/systemd/system/`, `.bashrc`, etc.) followed by process exec within 30 s; stage 1 MUST require `file_write == true`.
 - **AC-DET-254**: Temporal engine MUST include `phi_ssh_lateral` rule detecting SSH key file access followed by network connect to port 22 within 60 s.

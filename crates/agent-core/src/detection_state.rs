@@ -204,9 +204,10 @@ fn shard_worker_loop(mut engine: DetectionEngine, rx: mpsc::Receiver<ShardComman
                 let _ = response.send(Ok(()));
             }
             ShardCommand::SwapEngine {
-                engine: replacement,
+                engine: mut replacement,
                 response,
             } => {
+                replacement.layer3.inherit_baselines(&mut engine.layer3);
                 // Swap the engine in immediately so subsequent ProcessEvent
                 // commands run against the new rules.
                 let old_engine = std::mem::replace(&mut engine, *replacement);

@@ -18,6 +18,7 @@ pub struct TemporalEvictionCounters {
 #[derive(Debug, Default)]
 pub struct TemporalEngine {
     automata: Vec<DeterministicMonitorAutomaton>,
+    // Rule-local key: PID for same-process chains, session for exec chains.
     states: HashMap<(usize, u32), TemporalState>,
     subscriptions: HashMap<EventClass, Vec<usize>>,
     pid_exec_epoch: HashMap<u32, u64>,
@@ -80,10 +81,14 @@ impl TemporalEngine {
         let automaton = DeterministicMonitorAutomaton::from_rule(rule);
         let rule_id = self.automata.len();
         for transition in &automaton.transitions {
-            self.subscriptions
+            // Two stages on one class must not let a single event advance twice.
+            let subscribers = self
+                .subscriptions
                 .entry(transition.predicate.event_class)
-                .or_default()
-                .push(rule_id);
+                .or_default();
+            if !subscribers.contains(&rule_id) {
+                subscribers.push(rule_id);
+            }
         }
         self.automata.push(automaton);
     }
@@ -101,20 +106,19 @@ impl TemporalEngine {
         let horizon_ts = self.advance_observation_horizon(event.ts_unix);
         self.prune_stale_temporal_entries(horizon_ts);
 
-        let entity = event.session_id;
-        if self.event_is_reorder_stale(entity, event.ts_unix) {
+        if self.event_is_reorder_stale(event.pid, event.ts_unix) {
             return hits;
         }
 
         if matches!(event.event_class, EventClass::ProcessExit) {
-            self.teardown_entity(entity);
+            self.teardown_entity(event.pid, event.session_id);
             self.enforce_capacity_limits();
             return hits;
         }
 
-        self.record_entity_timestamp(entity, event.ts_unix);
+        self.record_entity_timestamp(event.pid, event.ts_unix);
 
-        let current_exec_epoch = self.bump_exec_epoch(entity, event.event_class);
+        let current_exec_epoch = self.bump_exec_epoch(event.pid, event.event_class);
         let event_identity_fingerprint = Self::identity_fingerprint(event);
         let Some(rule_ids) = self.subscriptions.get(&event.event_class) else {
             self.enforce_capacity_limits();
@@ -129,6 +133,11 @@ impl TemporalEngine {
                 continue;
             }
 
+            let entity = if automaton.session_linked {
+                event.session_id
+            } else {
+                event.pid
+            };
             let key = (rule_id, entity);
             let current = self.states.get(&key).cloned();
 
@@ -174,6 +183,7 @@ impl TemporalEngine {
                         last_match_ts: event.ts_unix,
                         exec_epoch: next_exec_epoch,
                         identity_fingerprint: next_identity_fingerprint,
+                        pid: event.pid,
                     });
                 } else if automaton.transitions[0].predicate.matches(event) {
                     if automaton.transitions.len() == 1 {
@@ -187,9 +197,9 @@ impl TemporalEngine {
                         last_match_ts: event.ts_unix,
                         exec_epoch: Self::initial_exec_epoch(event, current_exec_epoch),
                         identity_fingerprint: event_identity_fingerprint,
+                        pid: event.pid,
                     });
-                } else if !exec_epoch_ok
-                    || !identity_ok
+                } else if (event.pid == state.pid && (!exec_epoch_ok || !identity_ok))
                     || event.ts_unix - state.first_match_ts > automaton.max_window_secs
                 {
                     next_state = None;
@@ -205,6 +215,7 @@ impl TemporalEngine {
                     last_match_ts: event.ts_unix,
                     exec_epoch: Self::initial_exec_epoch(event, current_exec_epoch),
                     identity_fingerprint: event_identity_fingerprint,
+                    pid: event.pid,
                 });
             }
 
@@ -227,11 +238,21 @@ impl TemporalEngine {
         self.enforce_pid_metadata_capacity();
     }
 
-    fn teardown_entity(&mut self, session_id: u32) {
-        self.states
-            .retain(|(_, state_session), _| *state_session != session_id);
-        self.pid_last_seen_ts.remove(&session_id);
-        self.pid_exec_epoch.remove(&session_id);
+    fn teardown_entity(&mut self, pid: u32, session_id: u32) {
+        self.states.retain(|(rule_id, _), state| {
+            if state.pid != pid {
+                return true;
+            }
+            // A downloader can exit before its sibling shell starts (wget && sh).
+            // Keep only pending exec transitions; never tear down its whole session.
+            pid != session_id
+                && self.automata[*rule_id].transitions[state.stage_idx]
+                    .predicate
+                    .event_class
+                    == EventClass::ProcessExec
+        });
+        self.pid_last_seen_ts.remove(&pid);
+        self.pid_exec_epoch.remove(&pid);
     }
 
     fn enforce_state_capacity(&mut self) {
@@ -270,7 +291,7 @@ impl TemporalEngine {
 
     fn enforce_pid_metadata_capacity(&mut self) {
         let capacity = self.max_tracked_pids.max(1);
-        let mut active_pids: HashSet<u32> = self.states.keys().map(|(_, pid)| *pid).collect();
+        let mut active_pids: HashSet<u32> = self.states.values().map(|state| state.pid).collect();
 
         loop {
             let tracked_pids = self.collect_tracked_pids();
@@ -283,7 +304,7 @@ impl TemporalEngine {
             };
 
             if active_pids.remove(&victim_pid) {
-                self.states.retain(|(_, pid), _| *pid != victim_pid);
+                self.states.retain(|_, state| state.pid != victim_pid);
             }
 
             let removed_last_seen = self.pid_last_seen_ts.remove(&victim_pid).is_some();
@@ -357,7 +378,7 @@ impl TemporalEngine {
         });
         let removed_states = before_states.saturating_sub(self.states.len());
 
-        let active_pids: HashSet<u32> = self.states.keys().map(|(_, pid)| *pid).collect();
+        let active_pids: HashSet<u32> = self.states.values().map(|state| state.pid).collect();
         let before_last_seen = self.pid_last_seen_ts.len();
         self.pid_last_seen_ts.retain(|pid, last_seen_ts| {
             active_pids.contains(pid)
@@ -460,6 +481,7 @@ impl TemporalEngine {
 
     fn identity_fingerprint(event: &TelemetryEvent) -> u64 {
         let mut hasher = DefaultHasher::new();
+        event.pid.hash(&mut hasher);
         event.process.hash(&mut hasher);
         event.parent_process.hash(&mut hasher);
         event.uid.hash(&mut hasher);

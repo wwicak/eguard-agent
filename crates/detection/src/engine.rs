@@ -428,10 +428,10 @@ fn ml_enhanced_confidence(base: Confidence, ml: &MlScore) -> Confidence {
     match base {
         // Deterministic decisions are authoritative — ML cannot override
         Confidence::Definite | Confidence::VeryHigh => base,
-        // ML can escalate from None/Low/Medium to Medium/High
+        // An anomaly also feeds ML features; that is not independent evidence
+        // for High. Keep ML-only detections visible at Medium.
         Confidence::None if ml.positive && ml.score >= 0.85 => Confidence::Medium,
         Confidence::Low if ml.positive && ml.score >= 0.80 => Confidence::Medium,
-        Confidence::Medium if ml.positive && ml.score >= 0.90 => Confidence::High,
         Confidence::High if ml.positive && ml.score >= 0.95 => Confidence::VeryHigh,
         _ => base,
     }

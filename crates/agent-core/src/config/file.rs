@@ -225,6 +225,9 @@ impl AgentConfig {
         let Some(telemetry) = telemetry else {
             return;
         };
+        if let Some(v) = telemetry.noise_filter {
+            self.telemetry_noise_filter = v;
+        }
         if let Some(v) = telemetry.process_exec {
             self.telemetry_process_exec = v;
         }
@@ -548,6 +551,8 @@ struct FileHeartbeatConfig {
 #[derive(Debug, Clone, Deserialize, Default)]
 struct FileTelemetryConfig {
     #[serde(default)]
+    noise_filter: Option<bool>,
+    #[serde(default)]
     process_exec: Option<bool>,
     #[serde(default)]
     file_events: Option<bool>,
@@ -753,4 +758,22 @@ fn write_recovered_agent_config(target: &std::path::Path, raw: &str) -> Result<(
         warn!(path = %target.display(), error = %err, "failed updating last-known-good config during recovery");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod noise_tests {
+    use super::*;
+
+    #[test]
+    fn telemetry_noise_switch_is_default_on_and_file_can_disable_it() {
+        let _guard = crate::test_support::TestEnvGuard::new(&[]);
+        let mut config = AgentConfig::default();
+        assert!(config.telemetry_noise_filter);
+        let file: FileConfig = toml::from_str("[telemetry]\nnoise_filter = false\n").unwrap();
+        config.apply_file_telemetry(file.telemetry);
+        assert!(!config.telemetry_noise_filter);
+        let file: FileConfig = toml::from_str("[telemetry]\nnoise_filter = true\n").unwrap();
+        config.apply_file_telemetry(file.telemetry);
+        assert!(config.telemetry_noise_filter);
+    }
 }

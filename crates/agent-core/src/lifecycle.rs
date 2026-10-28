@@ -27,8 +27,11 @@ mod runtime_mode;
 mod self_protect;
 mod storage_hygiene;
 mod telemetry;
+mod telemetry_noise;
 #[cfg(test)]
 mod tests_buffer_recovery;
+#[cfg(all(test, target_os = "linux"))]
+mod tests_telemetry_noise;
 mod tick;
 mod timing;
 mod types;

@@ -41,10 +41,42 @@ impl AgentRuntime {
         self.dirty_baseline_keys
             .insert(format!("{}:{}", process_key.comm, process_key.parent_comm));
 
+        // Publish a mature local profile once, not on every observation: a
+        // current attack window must not continually become its own baseline.
+        if let Some(profile) = self.baseline_store.baselines.get_mut(&process_key) {
+            if profile.sample_count == 1000 {
+                let distribution = profile
+                    .event_distribution
+                    .iter()
+                    .filter_map(|(name, count)| {
+                        super::baseline::parse_event_class_name(name)
+                            .map(|class| (class, *count as f64 / profile.sample_count as f64))
+                    })
+                    .collect();
+                let key = format!("{}:{}", process_key.comm, process_key.parent_comm);
+                match self
+                    .detection_state
+                    .set_anomaly_baselines_bulk(vec![(key, distribution)])
+                {
+                    Ok(()) => {
+                        profile.entropy_threshold = 1.0 + (profile.sample_count as f64).log10()
+                    }
+                    Err(err) => {
+                        warn!(error = %err, "failed publishing mature local anomaly baseline")
+                    }
+                }
+            }
+        }
+
         let now = now_unix.max(0) as u64;
         if let Some(transition) = self.baseline_store.check_transition_with_now(now) {
             match transition {
                 BaselineTransition::LearningComplete => {
+                    if let Err(err) =
+                        super::seed_anomaly_baselines(&self.detection_state, &self.baseline_store)
+                    {
+                        warn!(error = %err, "failed publishing completed anomaly baselines");
+                    }
                     info!(
                         agent_id = %self.config.agent_id,
                         baseline_status = "active",
@@ -552,6 +584,200 @@ mod tests {
             container_escape: false,
             container_privileged: false,
         }
+    }
+
+    #[test]
+    fn r2_mature_local_profile_is_published_in_learning_and_forced_active_modes() {
+        let _guard = crate::test_support::env_lock().lock().expect("env lock");
+        for force_active in [false, true] {
+            let base = unique_temp_dir("r2-mature-baseline");
+            let mut runtime = runtime_with_response_limits(2, 1);
+            runtime.baseline_store =
+                baseline::BaselineStore::new(base.join("baselines.bin")).unwrap();
+            let mut event = sample_event();
+            event.process = "stable-worker".into();
+            event.parent_process = "supervisor".into();
+            event.file_hash = None;
+            event.file_write = false;
+            let key = ProcessKey {
+                comm: event.process.clone(),
+                parent_comm: event.parent_process.clone(),
+            };
+            for _ in 0..999 {
+                runtime.baseline_store.learn_event(key.clone(), "file_open");
+            }
+            let now = runtime.baseline_store.learning_started_unix as i64;
+            if force_active {
+                runtime.baseline_store.force_active(now as u64);
+            }
+            runtime.observe_baseline(&event, now);
+            assert_eq!(
+                runtime.baseline_store.status,
+                if force_active {
+                    BaselineStatus::Active
+                } else {
+                    BaselineStatus::Learning
+                }
+            );
+            assert!(runtime.baseline_store.baselines[&key].entropy_threshold > 0.0);
+            for i in 0..256 {
+                event.ts_unix = now + i;
+                assert!(runtime
+                    .detection_state
+                    .process_event(&event)
+                    .unwrap()
+                    .anomaly
+                    .is_none());
+            }
+            drop(runtime);
+            fs::remove_dir_all(base).unwrap();
+        }
+    }
+
+    #[test]
+    fn r2_learning_completion_publishes_local_baseline_without_restart() {
+        let _guard = crate::test_support::env_lock().lock().expect("env lock");
+        let base = unique_temp_dir("r2-baseline");
+        let mut runtime = runtime_with_response_limits(2, 1);
+        runtime.baseline_store = baseline::BaselineStore::new(base.join("baselines.bin")).unwrap();
+        let mut event = sample_event();
+        event.process = "recurring-worker".into();
+        event.parent_process = "supervisor".into();
+        event.file_hash = None;
+        event.file_write = false;
+        let key = ProcessKey {
+            comm: event.process.clone(),
+            parent_comm: event.parent_process.clone(),
+        };
+        for _ in 0..1024 {
+            runtime.baseline_store.learn_event(key.clone(), "file_open");
+        }
+        let completion = runtime.baseline_store.learning_started_unix as i64 + 8 * 24 * 3600;
+        runtime.observe_baseline(&event, completion);
+        assert_eq!(runtime.baseline_store.status, BaselineStatus::Active);
+        for i in 0..256 {
+            event.ts_unix = completion + i;
+            let out = runtime.detection_state.process_event(&event).unwrap();
+            assert!(
+                out.anomaly.is_none(),
+                "learned behavior still anomalous: {:?}",
+                out.anomaly
+            );
+        }
+        // Active scoring must not follow the current window and normalize a new attack.
+        event.event_class = EventClass::NetworkConnect;
+        event.file_path = None;
+        let mut anomalous = false;
+        for i in 256..384 {
+            event.ts_unix = completion + i;
+            runtime.observe_baseline(&event, completion + i);
+            anomalous |= runtime
+                .detection_state
+                .process_event(&event)
+                .unwrap()
+                .anomaly
+                .is_some_and(|d| d.high);
+        }
+        assert!(anomalous, "new behavior was absorbed into the baseline");
+        drop(runtime);
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires an explicitly supplied local event export"]
+    fn r2_replay_exported_events() {
+        use std::collections::BTreeMap;
+        use std::io::{BufRead, BufReader};
+        let _guard = crate::test_support::env_lock().lock().expect("env lock");
+        let input = std::env::var("EGUARD_REPLAY_INPUT").expect("local input path");
+        let output = std::env::var("EGUARD_REPLAY_OUTPUT").expect("local output path");
+        let base = unique_temp_dir("r2-replay");
+        let mut runtime = runtime_with_response_limits(2, 1);
+        runtime.baseline_store = baseline::BaselineStore::new(base.join("baselines.bin")).unwrap();
+        runtime.baseline_store.seed_with_defaults_if_empty();
+        let sources = super::super::detection_bootstrap::DetectionSourcePaths {
+            sigma_dir: base.join("sigma"),
+            yara_dir: base.join("yara"),
+            ioc_dir: base.join("ioc"),
+        };
+        let engine =
+            super::super::detection_bootstrap::build_detection_engine_with_ransomware_policy(
+                detection::RansomwarePolicy::default(),
+                &sources,
+            );
+        runtime.detection_state = crate::detection_state::SharedDetectionState::new(engine, None);
+        super::super::seed_anomaly_baselines(&runtime.detection_state, &runtime.baseline_store)
+            .unwrap();
+        let mut confidences = BTreeMap::<String, usize>::new();
+        let mut rules = BTreeMap::<String, usize>::new();
+        let mut total = 0usize;
+        for line in BufReader::new(fs::File::open(input).unwrap()).lines() {
+            let row: serde_json::Value = serde_json::from_str(&line.unwrap()).unwrap();
+            let mut event = row["event"].clone();
+            let class = match event["event_class"].as_str().unwrap() {
+                "process_exec" => EventClass::ProcessExec,
+                "process_exit" => EventClass::ProcessExit,
+                "file_open" => EventClass::FileOpen,
+                "network_connect" | "tcp_connect" => EventClass::NetworkConnect,
+                "dns_query" => EventClass::DnsQuery,
+                "module_load" => EventClass::ModuleLoad,
+                "login" => EventClass::Login,
+                "alert" => EventClass::Alert,
+                other => panic!("unsupported event class: {other}"),
+            };
+            event["event_class"] = serde_json::to_value(class).unwrap();
+            event["container_runtime"] = serde_json::Value::Null;
+            event["container_id"] = serde_json::Value::Null;
+            event["container_escape"] = false.into();
+            event["container_privileged"] = false.into();
+            let event: TelemetryEvent = serde_json::from_value(event).unwrap();
+            runtime.observe_baseline(&event, event.ts_unix);
+            let outcome = runtime.detection_state.process_event(&event).unwrap();
+            *confidences
+                .entry(confidence_label(outcome.confidence).into())
+                .or_default() += 1;
+            let mut hits = outcome.temporal_hits;
+            hits.extend(outcome.kill_chain_hits);
+            hits.extend(
+                outcome
+                    .layer1
+                    .matched_signatures
+                    .into_iter()
+                    .map(|s| format!("ioc_sig:{s}")),
+            );
+            hits.extend(
+                outcome
+                    .yara_hits
+                    .into_iter()
+                    .map(|h| format!("yara:{}", h.rule_name)),
+            );
+            if let Some(a) = outcome.anomaly {
+                hits.push(format!(
+                    "anomaly:{}",
+                    if a.high {
+                        "high"
+                    } else if a.medium {
+                        "medium"
+                    } else {
+                        "drift"
+                    }
+                ));
+            }
+            if outcome.ml_score.is_some_and(|m| m.positive) {
+                hits.push("ml_positive".into());
+            }
+            hits.sort();
+            hits.dedup();
+            for hit in hits {
+                *rules.entry(hit).or_default() += 1;
+            }
+            total += 1;
+        }
+        let result =
+            serde_json::json!({"total": total, "confidence": confidences, "rule_hits": rules});
+        fs::write(output, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
+        drop(runtime);
+        fs::remove_dir_all(base).unwrap();
     }
 
     fn runtime_with_response_limits(
