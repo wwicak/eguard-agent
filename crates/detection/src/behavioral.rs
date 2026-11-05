@@ -258,8 +258,11 @@ impl BehavioralEngine {
             .observations
             .is_multiple_of(WINDOW_SIZE as u64)
         {
-            self.check_wasserstein_shifts();
-            self.check_cmdline_info_shifts(cmd_entropy, cmd_compression);
+            let is_exec = event.event_class == crate::types::EventClass::ProcessExec;
+            self.check_wasserstein_shifts(is_exec);
+            if is_exec {
+                self.check_cmdline_info_shifts(cmd_entropy, cmd_compression);
+            }
         }
 
         let result = self.alarms.clone();
@@ -360,7 +363,7 @@ impl BehavioralEngine {
         }
     }
 
-    fn check_wasserstein_shifts(&mut self) {
+    fn check_wasserstein_shifts(&mut self, is_exec: bool) {
         // Check each dimension with sufficient data
         let dims: Vec<(&str, &BehavioralDimension)> = vec![
             ("exec_rate", &self.exec_rate),
@@ -370,6 +373,9 @@ impl BehavioralEngine {
         ];
 
         for (name, dim) in dims {
+            if name == "cmdline_entropy" && !is_exec {
+                continue;
+            }
             if !dim.baseline_ready || dim.window.len() < 8 {
                 continue;
             }
@@ -397,6 +403,9 @@ impl BehavioralEngine {
         &mut self,
         event: &crate::types::TelemetryEvent,
     ) -> (Option<f64>, Option<f64>) {
+        if event.event_class != crate::types::EventClass::ProcessExec {
+            return (None, None);
+        }
         let Some(cmd) = &event.command_line else {
             return (None, None);
         };
@@ -583,6 +592,71 @@ mod tests {
             container_escape: false,
             container_privileged: false,
         }
+    }
+
+    #[test]
+    fn verdict_a9_file_fanout_does_not_repeat_exec_wasserstein_alarm() {
+        let mut engine = BehavioralEngine::new();
+        engine.exec_rate.observations = 63;
+        engine.cmdline_entropy.baseline_ready = true;
+        engine.cmdline_entropy.baseline = vec![1.0; WINDOW_SIZE];
+        engine.cmdline_entropy.window = (0..WINDOW_SIZE)
+            .map(|i| if i % 2 == 0 { 1.0 } else { 9.0 })
+            .collect();
+        let mut event = make_event(
+            EventClass::ProcessExec,
+            1000,
+            1,
+            Some("lsblk --json --output NAME,TYPE,SIZE,MOUNTPOINT"),
+        );
+        event.process = "lsblk".to_string();
+        let alarms = engine.observe(&event);
+        assert!(alarms
+            .iter()
+            .any(|a| a.gated && a.dimension == "cmdline_entropy_wasserstein"));
+        let entropy_observations = engine.cmdline_entropy.observations;
+        let compression_observations = engine.cmdline_compression.observations;
+        let info_observations = engine.info_baseline_observations;
+        event.event_class = EventClass::FileOpen;
+        for i in 0..55 {
+            event.file_path = Some(format!("/sys/devices/block/device{i}"));
+            let alarms = engine.observe(&event);
+            assert!(
+                alarms.iter().all(|a| !a.dimension.starts_with("cmdline_")),
+                "{alarms:?}"
+            );
+        }
+        assert_eq!(engine.cmdline_entropy.observations, entropy_observations);
+        assert_eq!(
+            engine.cmdline_compression.observations,
+            compression_observations
+        );
+        assert_eq!(engine.info_baseline_observations, info_observations);
+        assert_eq!(engine.file_rate.observations, 55);
+    }
+
+    #[test]
+    fn verdict_a9_non_exec_events_do_not_learn_or_evaluate_cmdlines() {
+        let mut engine = BehavioralEngine::new();
+        let cmd = (33u8..=126).map(char::from).collect::<String>();
+        for class in [
+            EventClass::FileOpen,
+            EventClass::NetworkConnect,
+            EventClass::ProcessExit,
+        ] {
+            for i in 0..55 {
+                let alarms = engine.observe(&make_event(class, 1000, i, Some(&cmd)));
+                assert!(
+                    alarms.iter().all(|a| !a.dimension.starts_with("cmdline_")),
+                    "{alarms:?}"
+                );
+            }
+        }
+        assert_eq!(engine.info_baseline_observations, 0);
+        assert!(engine.info_entropy_baseline.is_empty());
+        assert!(engine.info_compression_baseline.is_empty());
+        assert_eq!(engine.cmdline_entropy.observations, 0);
+        assert_eq!(engine.cmdline_compression.observations, 0);
     }
 
     #[test]

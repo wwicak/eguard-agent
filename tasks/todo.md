@@ -883,7 +883,12 @@ Contract: `/tmp/eg-verdict-agent.md`; started 2026-11-05 06:52 UTC, 3h time box.
 ## Plan
 - [x] A7: constrained telemetry T1003 context to bounded Windows hive paths and exact Linux credential stores, preserving dump-command context. All 3 new tests runtime RED; all 4 telemetry tests GREEN. Evidence: `artifacts/verdict-noise/A7-{red,green}.log`.
 - [x] A8: floored entropy sigma at max(0.1 bits, 5% baseline mean), with 10 prior samples required for entropy-high. All 3 new tests runtime RED/GREEN; entropy 16, anomaly 7, robust-z 1, drift-report 1 scoped executions GREEN (overlap). Evidence: `artifacts/verdict-noise/A8-*.log`.
-- [ ] A9: evaluate/attach cmdline dimensions only on exec, including periodic shifts and Layer3 entropy; prove file-event non-evaluation and exec positives RED/GREEN.
-- [ ] Run offline scoped regressions, touched-crate clippy, formatting and diff checks; create local commits and append release report.
+- [x] A9: exec-only cmdline metrics/baseline updates, CUSUM and periodic shift alarms; Layer3 entropy likewise exec-only. All 3 new tests runtime RED/GREEN, including 55 file opens without repeated cmdline alarms and preserved exec alarm.
+- [x] Offline scoped regressions, touched-crate clippy, formatting and diff checks passed; three local fix commits and append-only release report finalized.
 
-Verification: existing CARGO_HOME; `CARGO_TARGET_DIR=/home/dimas/eg-work/cargo-target-detp1`, `TMPDIR=$PWD/.tmp`; evidence under worktree-local ignored `artifacts/verdict-noise`. No host/network/push/tag/release access. Stop below 15GiB free or on contract stop rules.
+Verification: existing CARGO_HOME; `CARGO_TARGET_DIR=/home/dimas/eg-work/cargo-target-detp1`, `TMPDIR=$PWD/.tmp`; evidence under worktree-local ignored `artifacts/verdict-noise`. No remote host/network/push/tag/release access. Stop below 15GiB free or on contract stop rules.
+
+## Review
+Verification completed 2026-11-05 07:04 UTC, within 3h. All 9 new tests runtime RED on their pre-fix implementations and final GREEN. Scoped regression executions: detp1 10, entropy 17, anomaly 7, behavioral 12, layer4 13, killchain 12, temporal_engine 24, bootstrap 15, exact telemetry 4; counts overlap. Touched-crate all-target clippy exits 0 with only existing warnings in unchanged files; scoped rustfmt/diff checks pass. Minimum sampled disk free 34GiB. Existing malicious reverse-shell, credential-exfil, download-exec, encrypted-cmdline and large-entropy-spike fixtures still fire. No wire/schema/pipeline redesign.
+
+Verification deviation: broad `lifecycle::telemetry` filter also selected unrelated telemetry_pipeline runtime tests and attempted local BPF probes (EPERM denied). Terminated that binary, retained interrupted log, reran only `lifecycle::telemetry::tests` (4 GREEN). No remote access or privileged commands. Final release append: `/home/dimas/eg-work/release/DETP1-AGENT.md`; evidence includes RED/GREEN logs, test-source fidelity and clippy warning summary. No native Windows/macOS or live-host qualification; other behavioral dimensions are unchanged.

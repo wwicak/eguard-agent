@@ -252,6 +252,9 @@ impl AnomalyEngine {
     }
 
     fn observe_entropy(&mut self, event: &TelemetryEvent) -> (Option<f64>, Option<f64>, bool) {
+        if event.event_class != EventClass::ProcessExec {
+            return (None, None, false);
+        }
         let Some(cmd) = &event.command_line else {
             return (None, None, false);
         };

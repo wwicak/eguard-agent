@@ -3775,6 +3775,25 @@ fn anomaly_monitor_state_remains_memory_bounded_under_long_streams() {
 }
 
 #[test]
+fn verdict_a9_layer3_entropy_is_only_evaluated_on_exec() {
+    let mut engine = AnomalyEngine::new(AnomalyConfig {
+        window_size: 1,
+        ..AnomalyConfig::default()
+    });
+    let mut ev = event(1, EventClass::ProcessExec, "lsblk", "guest-agent", 1000);
+    ev.command_line = Some("lsblk --json --output NAME,TYPE,SIZE,MOUNTPOINT".to_string());
+    assert!(engine.observe(&ev).unwrap().entropy_bits.is_some());
+    assert_eq!(engine.debug_entropy_history_len("lsblk"), 1);
+    ev.event_class = EventClass::FileOpen;
+    for _ in 0..55 {
+        let decision = engine.observe(&ev).unwrap();
+        assert!(decision.entropy_bits.is_none());
+        assert!(decision.entropy_z.is_none());
+    }
+    assert_eq!(engine.debug_entropy_history_len("lsblk"), 1);
+}
+
+#[test]
 fn verdict_a8_entropy_sigma_has_absolute_and_relative_floors() {
     for (mean, expected_sigma) in [(0.5, 0.1), (5.0, 0.25)] {
         let history: VecDeque<f64> = (0..32)
