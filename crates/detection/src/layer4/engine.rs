@@ -15,10 +15,13 @@ pub struct KillChainEvidence {
     pub witnesses: Vec<KillChainWitness>,
     pub peer_ip: Option<String>,
     pub peer_port: Option<u16>,
+    pub peer_is_configured_server: bool,
 }
 
 pub struct Layer4Engine {
     last_evidence: Vec<KillChainEvidence>,
+    agent_pid: Option<u32>,
+    configured_peers: std::collections::HashSet<(String, u16)>,
     graph: ProcessGraph,
     templates: Vec<KillChainTemplate>,
 }
@@ -37,6 +40,8 @@ impl Layer4Engine {
             graph: ProcessGraph::with_capacity(window_secs, max_nodes, max_edges),
             templates: Vec::new(),
             last_evidence: Vec::new(),
+            agent_pid: None,
+            configured_peers: std::collections::HashSet::new(),
         }
     }
 
@@ -55,6 +60,8 @@ impl Layer4Engine {
             ),
             templates: Vec::new(),
             last_evidence: Vec::new(),
+            agent_pid: None,
+            configured_peers: std::collections::HashSet::new(),
         }
     }
 
@@ -357,6 +364,30 @@ impl Layer4Engine {
         engine
     }
 
+    pub fn configure_control_plane(&mut self, agent_pid: u32, peers: Vec<(String, u16)>) {
+        self.agent_pid = Some(agent_pid);
+        self.configured_peers = peers.into_iter().collect();
+    }
+
+    pub(crate) fn peer_is_configured_server(&self, event: &TelemetryEvent) -> bool {
+        if !matches!(event.event_class, crate::EventClass::NetworkConnect) {
+            return false;
+        }
+        let Some(port) = event.dst_port else {
+            return false;
+        };
+        [event.dst_ip.as_deref(), event.dst_domain.as_deref()]
+            .into_iter()
+            .flatten()
+            .any(|host| {
+                let host = host
+                    .parse::<std::net::IpAddr>()
+                    .map(|ip| ip.to_string())
+                    .unwrap_or_else(|_| host.trim_end_matches('.').to_ascii_lowercase());
+                self.configured_peers.contains(&(host, port))
+            })
+    }
+
     pub fn add_template(&mut self, template: KillChainTemplate) {
         self.templates.push(template);
     }
@@ -365,11 +396,26 @@ impl Layer4Engine {
         self.graph.observe(event);
         self.last_evidence.clear();
 
+        let peer_is_configured_server = self.peer_is_configured_server(event);
+        // Our live PID cannot be reused. Deeper lineage is generation-validated
+        // by the agent's raw-event filter; stale graph ancestry is not authority.
+        let own_control_plane = peer_is_configured_server
+            && self
+                .agent_pid
+                .is_some_and(|pid| event.pid == pid || event.ppid == pid);
         let mut hits = Vec::new();
         let candidate_roots = self
             .graph
             .candidate_roots(event.pid, self.max_template_depth());
         for template in &self.templates {
+            if own_control_plane
+                && template
+                    .stages
+                    .last()
+                    .is_some_and(|stage| stage.require_network_non_web)
+            {
+                continue;
+            }
             for pid in &candidate_roots {
                 if let Some(mut witnesses) = self.match_from(*pid, template, 0, 0, None, event.pid)
                 {
@@ -387,6 +433,7 @@ impl Layer4Engine {
                             witnesses,
                             peer_ip: event.dst_ip.clone(),
                             peer_port: event.dst_port,
+                            peer_is_configured_server,
                         });
                     }
                     break;

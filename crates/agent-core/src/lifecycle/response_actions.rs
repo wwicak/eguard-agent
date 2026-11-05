@@ -699,6 +699,7 @@ mod tests {
             sigma_dir: base.join("sigma"),
             yara_dir: base.join("yara"),
             ioc_dir: base.join("ioc"),
+            control_plane_peers: Vec::new(),
         };
         let engine =
             super::super::detection_bootstrap::build_detection_engine_with_ransomware_policy(

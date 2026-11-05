@@ -15,6 +15,7 @@ pub(super) struct DetectionSourcePaths {
     pub sigma_dir: PathBuf,
     pub yara_dir: PathBuf,
     pub ioc_dir: PathBuf,
+    pub control_plane_peers: Vec<(String, u16)>,
 }
 
 impl DetectionSourcePaths {
@@ -23,8 +24,39 @@ impl DetectionSourcePaths {
             sigma_dir: PathBuf::from(config.detection_sigma_rules_dir.clone()),
             yara_dir: PathBuf::from(config.detection_yara_rules_dir.clone()),
             ioc_dir: PathBuf::from(config.detection_ioc_dir.clone()),
+            control_plane_peers: configured_control_plane_peers(&config.server_addr),
         }
     }
+}
+
+fn configured_control_plane_peers(server: &str) -> Vec<(String, u16)> {
+    use std::net::ToSocketAddrs;
+    let url = if server.contains("://") {
+        server.to_string()
+    } else {
+        format!("http://{server}")
+    };
+    let Ok(url) = reqwest::Url::parse(&url) else {
+        return Vec::new();
+    };
+    let (Some(host), Some(port)) = (url.host_str(), url.port_or_known_default()) else {
+        return Vec::new();
+    };
+    let host = host
+        .trim_matches(['[', ']'])
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    let mut peers = vec![(host.clone(), port)];
+    if let Ok(addresses) = (host.as_str(), port).to_socket_addrs() {
+        peers.extend(addresses.map(|address| (address.ip().to_string(), port)));
+    }
+    // Same explicitly supported alternate endpoint as grpc-client.
+    if port == 50052 {
+        peers.extend(peers.clone().into_iter().map(|(host, _)| (host, 50053)));
+    }
+    peers.sort();
+    peers.dedup();
+    peers
 }
 
 pub(super) fn build_detection_engine_with_ransomware_policy(
@@ -43,7 +75,9 @@ pub(super) fn build_detection_engine_with_ransomware_policy(
     seed_yara_rules(&mut detection, &sources.yara_dir);
     seed_kill_chain_templates(&mut detection);
     load_ioc_files(&mut detection, &sources.ioc_dir);
-    seed_detection_allowlist(&mut detection);
+    detection
+        .layer4
+        .configure_control_plane(std::process::id(), sources.control_plane_peers.clone());
     detection
 }
 
@@ -118,17 +152,6 @@ fn cleanup_stale_ioc_exact_store_files(staging_root: &Path) {
 
         let _ = fs::remove_file(&path);
     }
-}
-
-fn seed_detection_allowlist(detection: &mut DetectionEngine) {
-    // The agent's own self-monitoring (reading /proc/self/stat every tick)
-    // triggers Layer 3 anomaly and behavioral CUSUM false positives.
-    // Allowlisting the agent process prevents wasted detection cycles on
-    // known-good self-monitoring while keeping all other processes fully
-    // monitored.
-    detection
-        .allowlist
-        .add_allowed_process("eguard-agent".to_string());
 }
 
 // ── Layer 1: IOC Hashes ─────────────────────────────────────────
@@ -1057,6 +1080,7 @@ detection:
             sigma_dir,
             yara_dir,
             ioc_dir,
+            control_plane_peers: Vec::new(),
         };
         let mut engine =
             build_detection_engine_with_ransomware_policy(RansomwarePolicy::default(), &sources);
@@ -1106,6 +1130,7 @@ rule eguard_custom_dir_test {
             sigma_dir,
             yara_dir,
             ioc_dir,
+            control_plane_peers: Vec::new(),
         };
         let mut engine =
             build_detection_engine_with_ransomware_policy(RansomwarePolicy::default(), &sources);
@@ -1140,6 +1165,7 @@ rule eguard_custom_dir_test {
             sigma_dir,
             yara_dir,
             ioc_dir,
+            control_plane_peers: Vec::new(),
         };
         let mut engine =
             build_detection_engine_with_ransomware_policy(RansomwarePolicy::default(), &sources);
@@ -1184,6 +1210,7 @@ rule eguard_custom_dir_test {
             sigma_dir,
             yara_dir,
             ioc_dir,
+            control_plane_peers: Vec::new(),
         };
         let engine =
             build_detection_engine_with_ransomware_policy(RansomwarePolicy::default(), &sources);
@@ -1204,6 +1231,7 @@ rule eguard_custom_dir_test {
             sigma_dir: base.join("sigma"),
             yara_dir: base.join("yara"),
             ioc_dir: base.join("ioc"),
+            control_plane_peers: Vec::new(),
         };
         std::fs::create_dir_all(&sources.sigma_dir).expect("create sigma dir");
         std::fs::create_dir_all(&sources.yara_dir).expect("create yara dir");
@@ -1232,6 +1260,7 @@ rule eguard_custom_dir_test {
             sigma_dir: base.join("sigma"),
             yara_dir: base.join("yara"),
             ioc_dir: base.join("ioc"),
+            control_plane_peers: Vec::new(),
         };
         std::fs::create_dir_all(&sources.sigma_dir).expect("create sigma dir");
         std::fs::create_dir_all(&sources.yara_dir).expect("create yara dir");
@@ -1263,6 +1292,7 @@ rule eguard_custom_dir_test {
             sigma_dir: base.join("sigma"),
             yara_dir: base.join("yara"),
             ioc_dir: base.join("ioc"),
+            control_plane_peers: Vec::new(),
         };
         std::fs::create_dir_all(&sources.sigma_dir).expect("create sigma dir");
         std::fs::create_dir_all(&sources.yara_dir).expect("create yara dir");
@@ -1291,6 +1321,7 @@ rule eguard_custom_dir_test {
             sigma_dir: base.join("sigma"),
             yara_dir: base.join("yara"),
             ioc_dir: base.join("ioc"),
+            control_plane_peers: Vec::new(),
         };
         std::fs::create_dir_all(&sources.sigma_dir).expect("create sigma dir");
         std::fs::create_dir_all(&sources.yara_dir).expect("create yara dir");
@@ -1320,6 +1351,7 @@ rule eguard_custom_dir_test {
             sigma_dir: base.join("sigma"),
             yara_dir: base.join("yara"),
             ioc_dir: base.join("ioc"),
+            control_plane_peers: Vec::new(),
         };
         std::fs::create_dir_all(&sources.sigma_dir).expect("create sigma dir");
         std::fs::create_dir_all(&sources.yara_dir).expect("create yara dir");
@@ -1349,6 +1381,7 @@ rule eguard_custom_dir_test {
             sigma_dir: base.join("sigma"),
             yara_dir: base.join("yara"),
             ioc_dir: base.join("ioc"),
+            control_plane_peers: Vec::new(),
         };
         std::fs::create_dir_all(&sources.sigma_dir).expect("create sigma dir");
         std::fs::create_dir_all(&sources.yara_dir).expect("create yara dir");
@@ -1369,5 +1402,108 @@ rule eguard_custom_dir_test {
             .all(|hit| hit != "eguard_builtin_sensitive_file_access"));
 
         let _ = std::fs::remove_dir_all(base);
+    }
+    fn detp1_engine(server: &str) -> detection::DetectionEngine {
+        let base = unique_temp_dir("detp1");
+        let config = crate::config::AgentConfig {
+            server_addr: server.into(),
+            detection_sigma_rules_dir: base.join("sigma").display().to_string(),
+            detection_yara_rules_dir: base.join("yara").display().to_string(),
+            detection_ioc_dir: base.join("ioc").display().to_string(),
+            ..Default::default()
+        };
+        let sources = DetectionSourcePaths::from_config(&config);
+        build_detection_engine_with_ransomware_policy(RansomwarePolicy::default(), &sources)
+    }
+
+    fn detp1_shell_connection(
+        engine: &mut detection::DetectionEngine,
+        pid: u32,
+        parent_pid: u32,
+        peer: &str,
+    ) -> (detection::DetectionOutcome, usize) {
+        let mut parent = base_event();
+        parent.process = "sh".into();
+        parent.parent_process = "service".into();
+        parent.pid = parent_pid;
+        engine.process_event(&parent);
+        let mut child = parent.clone();
+        child.ts_unix += 1;
+        child.pid = pid;
+        child.ppid = parent_pid;
+        child.process = "python3".into();
+        child.parent_process = "sh".into();
+        child.command_line = Some("python3 health_check.py".into());
+        engine.process_event(&child);
+        child.ts_unix += 1;
+        child.event_class = EventClass::NetworkConnect;
+        child.dst_ip = Some(peer.into());
+        child.dst_port = Some(50053);
+        let outcome = engine.process_event(&child);
+        let mut repeats = 0;
+        for _ in 0..10 {
+            child.event_class = EventClass::FileOpen;
+            child.file_path = Some("/usr/lib/python3/module.py".into());
+            repeats += engine
+                .process_event(&child)
+                .kill_chain_hits
+                .iter()
+                .filter(|hit| *hit == "killchain_reverse_shell")
+                .count();
+        }
+        (outcome, repeats)
+    }
+
+    #[test]
+    fn detp1_control_plane_excludes_only_agent_lineage_and_marks_other_connections() {
+        let server = "198.51.100.20:50053";
+        let own_pid = std::process::id();
+        for (pid, parent_pid) in [(own_pid, 100), (own_pid + 1, own_pid)] {
+            let mut engine = detp1_engine(server);
+            let (outcome, repeats) =
+                detp1_shell_connection(&mut engine, pid, parent_pid, "198.51.100.20");
+            assert!(!outcome
+                .kill_chain_hits
+                .iter()
+                .any(|hit| hit == "killchain_reverse_shell"));
+            assert_eq!(repeats, 0);
+        }
+        for (peer, expected_flag) in [("198.51.100.20", true), ("203.0.113.7", false)] {
+            let mut engine = detp1_engine(server);
+            let (outcome, repeats) = detp1_shell_connection(&mut engine, 201, 200, peer);
+            assert_eq!(
+                outcome
+                    .kill_chain_hits
+                    .iter()
+                    .filter(|hit| *hit == "killchain_reverse_shell")
+                    .count(),
+                1
+            );
+            assert_eq!(repeats, 0);
+            // Keep the RED-on-base test source compatible with the pre-evidence API.
+            assert!(format!("{outcome:?}")
+                .contains(&format!("peer_is_configured_server: {expected_flag}")));
+        }
+        let mut engine = detp1_engine(server);
+        let mut parent = base_event();
+        parent.pid = 200;
+        parent.process = "sh".into();
+        engine.process_event(&parent);
+        let mut impersonator = parent.clone();
+        impersonator.pid = 201;
+        impersonator.ppid = 200;
+        impersonator.process = "eguard-agent".into();
+        impersonator.parent_process = "sh".into();
+        impersonator.ts_unix += 1;
+        engine.process_event(&impersonator);
+        impersonator.ts_unix += 1;
+        impersonator.event_class = EventClass::NetworkConnect;
+        impersonator.dst_ip = Some("198.51.100.20".into());
+        impersonator.dst_port = Some(50053);
+        assert!(engine
+            .process_event(&impersonator)
+            .kill_chain_hits
+            .iter()
+            .any(|hit| hit == "killchain_reverse_shell"));
     }
 }

@@ -1117,6 +1117,7 @@ fn anomaly_engine_flags_distribution_shift() {
 // AC-DET-050 AC-DET-051 AC-DET-088
 fn layer4_matches_default_template() {
     let mut l4 = Layer4Engine::with_default_templates();
+    l4.configure_control_plane(std::process::id(), vec![("198.51.100.7".into(), 9001)]);
 
     let mut parent = event(1, EventClass::ProcessExec, "nginx", "systemd", 33);
     parent.pid = 10;
@@ -1141,11 +1142,32 @@ fn layer4_matches_default_template() {
     let evidence = &l4.last_evidence()[0];
     assert_eq!(evidence.peer_ip.as_deref(), Some("198.51.100.7"));
     assert_eq!(evidence.peer_port, Some(9001));
-    assert_eq!(evidence.witnesses.iter().map(|w| w.ts_unix).collect::<Vec<_>>(), vec![1, 2, 4]);
-    assert_eq!(evidence.witnesses[1].exec_generation, evidence.witnesses[2].exec_generation);
-    assert_ne!(evidence.witnesses[0].event_id, evidence.witnesses[2].event_id);
+    assert_eq!(
+        evidence
+            .witnesses
+            .iter()
+            .map(|w| w.ts_unix)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 4]
+    );
+    assert_eq!(
+        evidence.witnesses[1].exec_generation,
+        evidence.witnesses[2].exec_generation
+    );
+    assert_ne!(
+        evidence.witnesses[0].event_id,
+        evidence.witnesses[2].event_id
+    );
     let json = serde_json::to_value(evidence).unwrap();
     assert_eq!(json["witnesses"][2]["event_id"], l4.current_event_id());
+    assert_eq!(json["peer_is_configured_server"], true);
+    child.ts_unix = 5;
+    l4.observe(&child); // New exec generation remains independently detectable.
+    net.ts_unix = 6;
+    net.dst_ip = Some("203.0.113.7".into());
+    assert_eq!(l4.observe(&net), vec!["killchain_webshell_network"]);
+    let json = serde_json::to_value(&l4.last_evidence()[0]).unwrap();
+    assert_eq!(json["peer_is_configured_server"], false);
 }
 
 #[test]
@@ -1828,7 +1850,10 @@ fn privileged_container_killchain_triggers() {
     ev.event_class = EventClass::FileOpen;
     for ts in [21, 40] {
         ev.ts_unix = ts;
-        assert!(l4.observe(&ev).is_empty(), "cached state is not a new transition");
+        assert!(
+            l4.observe(&ev).is_empty(),
+            "cached state is not a new transition"
+        );
     }
     ev.ts_unix = 41;
     ev.container_privileged = false;

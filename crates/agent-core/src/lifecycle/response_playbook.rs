@@ -385,6 +385,7 @@ mod tests {
             kill_chain_hits: Vec::new(),
             kill_chain_evidence: Vec::new(),
             observation_id: None,
+            peer_is_configured_server: false,
             exploit_indicators: Vec::new(),
             kernel_integrity_indicators: Vec::new(),
             tamper_indicators: Vec::new(),
