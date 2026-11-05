@@ -1,7 +1,7 @@
 #[cfg(target_os = "linux")]
 pub use platform_linux::{
     enrich_event_with_cache, scan_kernel_integrity, EbpfEngine, EbpfStats, EnrichedEvent,
-    EnrichmentCache, EventType, KernelIntegrityScanOptions, RawEvent,
+    EnrichmentCache, EventType, KernelIntegrityReport, KernelIntegrityScanOptions, RawEvent,
 };
 
 #[cfg(target_os = "windows")]
@@ -140,7 +140,7 @@ mod windows_engine {
         }
     }
 
-    #[derive(Debug, Clone, Default)]
+    #[derive(Debug, Clone, Default, PartialEq, Eq)]
     pub struct KernelIntegrityReport {
         pub indicators: Vec<String>,
     }
@@ -160,7 +160,7 @@ mod windows_engine {
 
 #[cfg(target_os = "windows")]
 pub use windows_engine::{
-    scan_kernel_integrity, EbpfEngine, EbpfStats, KernelIntegrityScanOptions,
+    scan_kernel_integrity, EbpfEngine, EbpfStats, KernelIntegrityReport, KernelIntegrityScanOptions,
 };
 
 #[cfg(target_os = "macos")]
@@ -295,7 +295,7 @@ mod macos_engine {
         }
     }
 
-    #[derive(Debug, Clone, Default)]
+    #[derive(Debug, Clone, Default, PartialEq, Eq)]
     pub struct KernelIntegrityReport {
         pub indicators: Vec<String>,
     }
@@ -314,4 +314,6 @@ mod macos_engine {
 }
 
 #[cfg(target_os = "macos")]
-pub use macos_engine::{scan_kernel_integrity, EbpfEngine, EbpfStats, KernelIntegrityScanOptions};
+pub use macos_engine::{
+    scan_kernel_integrity, EbpfEngine, EbpfStats, KernelIntegrityReport, KernelIntegrityScanOptions,
+};

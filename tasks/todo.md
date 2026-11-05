@@ -1,3 +1,15 @@
+# AGENT-A10 — report kernel integrity results only on change
+
+- [x] Add real scheduler regressions and record RED on bccc5a1 (3 failures, 4 preservation passes).
+- [x] Compare complete scan results in memory; preserve interval, clean-scan suppression and indicator payloads. Canonicalize only a comparison copy so unordered indicators/bpffs cannot cause repeats or alter emitted rule ordering.
+- [x] Record final 8/8 GREEN and kill equal/different/no-state-update mutants (all assertion failures).
+- [x] Complete required offline test sweeps and supervisor-approved scoped clippy with nice -n 10 / -j 4. Workspace all-feature clippy hit uncached fs_extra 1.3.0; stopped and obtained explicit offline-only continuation approval.
+- [x] Prepare local commit on feat/detection-p1-agent and report at /home/dimas/eg-work/release/AGENT-A10.md; no push/deploy/hosts.
+
+Review: A10 regressions 8/8 pass, including the full-core sweep and a post-mutant rerun; all three required mutants are killed on the final implementation. Platform-linux 104/104 passes, including hidden-module/hooks; kernel parser and AC-DET-235 registry/document checks pass. Full agent-core: 623 pass/4 fail/3 existing ignores (same-session EICAR IOC signal, F4A/F4C envelope goldens, malicious Python detector). Detection: 306 pass/1 fail (benchmark TPR 0% versus >=8%). Acceptance: 2016 pass/3 missing ../fe_eguard fixture failures. These broader failures were not weakened or repaired; report verdict PARTIAL. Failure-source parity proof and complete logs: /tmp/agent-a10-logs/.
+
+Scoped offline clippy exits zero with no introduced warnings. Its five existing runtime.rs manual_clamp warnings are in a byte-identical baseline function (clippy-baseline-proof.json); supervisor explicitly accepted them without cleanup. Fmt and diff checks pass; generated metrics restored. Clean scans remain silent but update comparison state; Windows/macOS not_applicable reports remain silent. Emitted order/payload and acceptance text are unchanged. Native Windows/macOS execution was not performed.
+
 # F25 second pass — repair blocking review findings
 
 - [x] Isolate deliberate identity unwind in a single-test subprocess so the shared suite mutex cannot be poisoned; exact target and20 mixed enrollment/unwind runs pass4/4 at16threads (eefa46f).

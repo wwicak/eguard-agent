@@ -30,6 +30,15 @@ impl AgentRuntime {
                 return;
             }
         };
+        // Canonicalize only the comparison copy, preserving emitted indicator order.
+        let mut comparison_report = report.clone();
+        comparison_report.indicators.sort();
+        #[cfg(target_os = "linux")]
+        comparison_report.bpffs_objects.sort();
+        if self.last_kernel_integrity_report.as_ref() == Some(&comparison_report) {
+            return;
+        }
+        self.last_kernel_integrity_report = Some(comparison_report);
         if report.indicators.is_empty() {
             return;
         }

@@ -70,7 +70,7 @@ impl KernelIntegrityScanOptions {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct KernelIntegrityReport {
     pub indicators: Vec<String>,
     pub proc_module_count: usize,

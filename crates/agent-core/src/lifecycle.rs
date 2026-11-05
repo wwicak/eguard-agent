@@ -30,6 +30,8 @@ mod telemetry;
 mod telemetry_noise;
 #[cfg(test)]
 mod tests_buffer_recovery;
+#[cfg(test)]
+mod tests_kernel_integrity_scan;
 #[cfg(all(test, target_os = "linux"))]
 mod tests_telemetry_noise;
 mod tick;

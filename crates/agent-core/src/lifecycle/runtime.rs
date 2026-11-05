@@ -135,6 +135,8 @@ pub struct AgentRuntime {
     pub(super) last_recovery_probe_unix: Option<i64>,
     pub(super) last_memory_scan_unix: Option<i64>,
     pub(super) last_kernel_integrity_scan_unix: Option<i64>,
+    // shortcut: in-memory only, re-reports once per agent restart; persist it if restarts get frequent.
+    pub(super) last_kernel_integrity_report: Option<crate::platform::KernelIntegrityReport>,
     pub(super) tamper_forced_degraded: bool,
     pub(super) last_logged_posture: Option<nac::Posture>,
     pub(super) enrolled: bool,
@@ -573,6 +575,7 @@ impl AgentRuntime {
             last_recovery_probe_unix: None,
             last_memory_scan_unix: None,
             last_kernel_integrity_scan_unix: None,
+            last_kernel_integrity_report: None,
             tamper_forced_degraded: false,
             last_logged_posture: None,
             latest_threat_version: None,
