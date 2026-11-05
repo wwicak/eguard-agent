@@ -859,15 +859,19 @@ Approved contract: `/tmp/eg-detp1-agent.md`; start 2026-11-05 05:20 UTC, time bo
 
 ## Plan
 - [x] A1: metadata migration, conservative protection of legacy rows, telemetry-first eviction, counted/logged saturation; 5 new tests RED on base, all 23 buffer tests GREEN. Logs: `release/DETP1-AGENT-logs/A1-{red-base,green}.log`.
-- [x] A2: terminal-event matching, exec-generation/window dedup, real stage timestamps, locally namespaced witness IDs and peer JSON. Three new regressions RED on base and GREEN on the built test binary; 13 existing layer4 tests GREEN including strengthened serialized-witness assertions. Cargo-filter confirmation queued.
-- [ ] A3: verified self-lineage/configured-peer handling and analyst JSON flag; RED/GREEN; commit.
-- [ ] A4: broad strings as features only, retain specific malicious decisions; RED/GREEN; commit.
-- [ ] A5: credential-source precision without changing network semantics; RED/GREEN; commit.
-- [ ] A6: anonymized five-group and malicious replay fixtures; RED/GREEN; commit.
-- [ ] Run scoped regression tests/clippy, inspect diff/identifier scans, write release report.
+- [x] A2: terminal-event matching, exec-generation/window dedup, real stage timestamps, locally namespaced witness IDs and peer JSON. Three new regressions RED on base and GREEN via cargo; 13 layer4 and 12 killchain regression executions GREEN, including serialized witnesses and cached-container transition assertions.
+- [x] A3: configured-peer + live self/direct-child handling; existing generation-validated deeper-lineage filter retained; process-name allowlist removed. Base test RED, final GREEN. Workspace reqwest reused for URL parsing; JSON flag covers all network outcomes, not only kill chains.
+- [x] A4: broad command features and specific socket-to-stdio/download-pipe conjunctions. Base test RED; final GREEN, including no ML-positive or confidence decision on benign commands.
+- [x] A5: shared credential-source gate excluding public SSH/account files and including cloud/browser sources. All 3 new tests RED on base and final GREEN; original network semantics retained.
+- [x] A6: anonymized group/look-alike replay RED on base (22 vs 2 reverse firings) and final GREEN. Approved synthetic guest-agent/ordinary curl|sh must-keep qualification passes on both base and branch; explicit exception to RED requirement.
+- [x] Finalized the six local commits and release report; scoped tests, clippy, formatting and identifier scans are verified.
 
 ## Verification strategy
 New tests run against base implementation before each fix (later items restore relevant base files in a private base snapshot when needed). Background cargo commands log beneath `/home/dimas/eg-work/release/DETP1-AGENT*`, use the authorized cargo target and local temporary directory. Monitor disk >=15G. No network/host/VM access, push, tag or deployment.
 
 ## Review
-Pending.
+Verification completed 2026-11-05 06:38 UTC, within the 5h limit. Final new-test run: 15/15 GREEN. Exact same new-test source on 5df553e: 14 runtime RED + 1 approved must-keep positive; `post-clippy-test-source-proof.log` pins implementation/test fidelity. Scoped regressions GREEN: buffers 23, layer4 13, killchain 12, temporal_engine 24, layer1 10, bootstrap 15, telemetry 1 (overlap exists). All-target clippy passes; existing warnings remain, and the one new helper-style warning was fixed and rechecked. Formatting/diff/identifier scans pass. Minimum sampled disk free: 35GiB. No remote/host/VM/deploy/push/tag operations. Final report: `/home/dimas/eg-work/release/DETP1-AGENT.md`.
+
+Supervisor decisions:
+- Missing historical download-exec witnesses: clearly labeled synthetic qualification only; keep historical findings UNKNOWN, prove positive fixture on both base and branch. Temporal-stage witness IDs remain an open item because adding them requires automaton/result changes beyond the small accuracy fix.
+- Cargo updated its own ~/.cargo cache metadata; supervisor accepted it as a tool-cache side effect. Keep existing CARGO_HOME, --offline, authorized target/TMPDIR; no cargo config edits/install/update/network fetch.

