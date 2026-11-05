@@ -17,6 +17,7 @@ pub struct OfflineBuffer {
     next_id: i64,
     current_bytes: usize,
     cap_bytes: usize,
+    dropped_detections: u64,
 }
 
 impl OfflineBuffer {
@@ -26,16 +27,23 @@ impl OfflineBuffer {
             next_id: 1,
             current_bytes: 0,
             cap_bytes,
+            dropped_detections: 0,
         }
     }
 
     pub fn enqueue(&mut self, event: EventEnvelope) {
         let size = estimate_event_size(&event);
+        if size > self.cap_bytes {
+            self.note_drop(&event);
+            return;
+        }
         while self.current_bytes.saturating_add(size) > self.cap_bytes {
-            if let Some((_, old)) = self.queue.pop_front() {
+            if let Some(index) = self.queue.iter().position(|(_, old)| !is_detection(old)) {
+                let (_, old) = self.queue.remove(index).expect("checked index");
                 self.current_bytes = self.current_bytes.saturating_sub(estimate_event_size(&old));
             } else {
-                break;
+                self.note_drop(&event);
+                return;
             }
         }
         self.current_bytes = self.current_bytes.saturating_add(size);
@@ -44,6 +52,16 @@ impl OfflineBuffer {
             .next_id
             .checked_add(1)
             .expect("buffer row id exhausted");
+    }
+
+    fn note_drop(&mut self, event: &EventEnvelope) {
+        if is_detection(event) {
+            self.dropped_detections = self.dropped_detections.saturating_add(1);
+            warn!(
+                dropped_detections = self.dropped_detections,
+                "offline detection buffer full; detection dropped"
+            );
+        }
     }
 
     pub fn peek_batch(&self, max_items: usize) -> Vec<(i64, EventEnvelope)> {
@@ -110,7 +128,43 @@ impl Default for OfflineBuffer {
 }
 
 pub fn estimate_event_size(event: &EventEnvelope) -> usize {
-    event.agent_id.len() + event.event_type.len() + event.payload_json.len() + 16
+    event.agent_id.len()
+        + event.event_type.len()
+        + event.payload_json.len()
+        + event.severity.len()
+        + event.rule_name.len()
+        + 16
+}
+
+fn is_detection(event: &EventEnvelope) -> bool {
+    if !event.rule_name.is_empty() || !matches!(event.severity.as_str(), "" | "info" | "none") {
+        return true;
+    }
+    // Positive decisions can legitimately have confidence none / severity info.
+    let Ok(payload) = serde_json::from_str::<serde_json::Value>(&event.payload_json) else {
+        return false;
+    };
+    let detection = &payload["detection"];
+    detection["ml_score"]["positive"].as_bool() == Some(true)
+        || detection["signals"].as_object().is_some_and(|signals| {
+            signals
+                .iter()
+                .any(|(key, value)| key != "l1_prefilter_hit" && value.as_bool() == Some(true))
+        })
+        || [
+            "temporal_hits",
+            "kill_chain_hits",
+            "exploit_indicators",
+            "kernel_integrity_indicators",
+            "tamper_indicators",
+            "yara_hits",
+        ]
+        .iter()
+        .any(|key| {
+            detection[key]
+                .as_array()
+                .is_some_and(|hits| !hits.is_empty())
+        })
 }
 
 #[derive(Debug)]
@@ -186,6 +240,35 @@ impl SqliteBuffer {
         )
         .context("failed initializing sqlite schema")?;
 
+        // Legacy rows have no reliable envelope classification: protect them until ACK.
+        for (table, column, definition) in [
+            ("offline_events", "severity", "TEXT NOT NULL DEFAULT ''"),
+            ("offline_events", "rule_name", "TEXT NOT NULL DEFAULT ''"),
+            (
+                "offline_events",
+                "is_detection",
+                "INTEGER NOT NULL DEFAULT 1",
+            ),
+            (
+                "offline_buffer_meta",
+                "dropped_detections",
+                "INTEGER NOT NULL DEFAULT 0",
+            ),
+        ] {
+            let exists = conn
+                .prepare(&format!("PRAGMA table_info({table})"))?
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+                .iter()
+                .any(|name| name == column);
+            if !exists {
+                conn.execute_batch(&format!(
+                    "ALTER TABLE {table} ADD COLUMN {column} {definition}"
+                ))?;
+            }
+        }
+        conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_offline_events_priority ON offline_events(is_detection, id);")?;
+
         Ok(Self {
             conn,
             cap_bytes,
@@ -194,36 +277,39 @@ impl SqliteBuffer {
     }
 
     pub fn enqueue(&mut self, event: EventEnvelope) -> Result<()> {
-        let size = estimate_event_size(&event) as i64;
-        let tx = self.conn.transaction()?;
-        tx.execute(
-            "INSERT INTO offline_events(agent_id,event_type,payload_json,created_at_unix,size_bytes) VALUES(?1,?2,?3,?4,?5)",
-            params![event.agent_id, event.event_type, event.payload_json, event.created_at_unix, size],
-        )?;
-        tx.execute(
-            "UPDATE offline_buffer_meta SET total_bytes = total_bytes + ?1 WHERE id = ?2",
-            params![size, OFFLINE_META_ROW_ID],
-        )?;
-        tx.commit()?;
-        self.enforce_cap()
+        self.enqueue_batch(&[event])
     }
 
     /// Persist a FIFO recovery batch in one transaction, avoiding a commit per row.
     pub fn enqueue_batch(&mut self, events: &[EventEnvelope]) -> Result<()> {
         let tx = self.conn.transaction()?;
+        let dropped_before: i64 = tx.query_row(
+            "SELECT dropped_detections FROM offline_buffer_meta WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )?;
         let mut total_size = 0i64;
         {
             let mut insert = tx.prepare_cached(
-                "INSERT INTO offline_events(agent_id,event_type,payload_json,created_at_unix,size_bytes) VALUES(?1,?2,?3,?4,?5)",
+                "INSERT INTO offline_events(agent_id,event_type,payload_json,created_at_unix,size_bytes,severity,rule_name,is_detection) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
             )?;
             for event in events {
                 let size = estimate_event_size(event) as i64;
+                if size > self.cap_bytes as i64 {
+                    if is_detection(event) {
+                        tx.execute("UPDATE offline_buffer_meta SET dropped_detections = dropped_detections + 1 WHERE id = 1", [])?;
+                    }
+                    continue;
+                }
                 insert.execute(params![
                     event.agent_id,
                     event.event_type,
                     event.payload_json,
                     event.created_at_unix,
-                    size
+                    size,
+                    event.severity,
+                    event.rule_name,
+                    is_detection(event)
                 ])?;
                 total_size += size;
             }
@@ -240,14 +326,19 @@ impl SqliteBuffer {
             |row| row.get(0),
         )?;
         while bytes > self.cap_bytes as i64 {
-            let oldest: Option<(i64, i64)> = tx
+            let oldest: Option<(i64, i64, bool)> = tx
                 .query_row(
-                    "SELECT id, size_bytes FROM offline_events ORDER BY id ASC LIMIT 1",
+                    "SELECT id, size_bytes, is_detection FROM offline_events WHERE id = COALESCE((SELECT id FROM offline_events WHERE is_detection = 0 ORDER BY id ASC LIMIT 1), (SELECT id FROM offline_events ORDER BY id DESC LIMIT 1))",
                     [],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                 )
                 .optional()?;
-            let Some((id, size)) = oldest else { break };
+            let Some((id, size, detection)) = oldest else {
+                break;
+            };
+            if detection {
+                tx.execute("UPDATE offline_buffer_meta SET dropped_detections = dropped_detections + 1 WHERE id = 1", [])?;
+            }
             tx.execute("DELETE FROM offline_events WHERE id = ?1", params![id])?;
             bytes = bytes.saturating_sub(size).max(0);
         }
@@ -255,13 +346,24 @@ impl SqliteBuffer {
             "UPDATE offline_buffer_meta SET total_bytes = ?1 WHERE id = ?2",
             params![bytes, OFFLINE_META_ROW_ID],
         )?;
+        let dropped: i64 = tx.query_row(
+            "SELECT dropped_detections FROM offline_buffer_meta WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )?;
         tx.commit()?;
+        if dropped > dropped_before {
+            warn!(
+                dropped_detections = dropped,
+                "offline detection buffer has dropped detections; capacity exhausted"
+            );
+        }
         Ok(())
     }
 
     pub fn peek_batch(&self, max_items: usize) -> Result<Vec<(i64, EventEnvelope)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, agent_id, event_type, payload_json, created_at_unix, size_bytes FROM offline_events ORDER BY id ASC LIMIT ?1",
+            "SELECT id, agent_id, event_type, payload_json, created_at_unix, severity, rule_name FROM offline_events ORDER BY id ASC LIMIT ?1",
         )?;
 
         let rows = stmt.query_map(params![max_items as i64], |row| {
@@ -270,8 +372,8 @@ impl SqliteBuffer {
                 EventEnvelope {
                     agent_id: row.get::<_, String>(1)?,
                     event_type: row.get::<_, String>(2)?,
-                    severity: String::new(),
-                    rule_name: String::new(),
+                    severity: row.get::<_, String>(5)?,
+                    rule_name: row.get::<_, String>(6)?,
                     payload_json: row.get::<_, String>(3)?,
                     created_at_unix: row.get::<_, i64>(4)?,
                 },
@@ -339,44 +441,6 @@ impl SqliteBuffer {
             .optional()?
             .flatten();
         Ok(fallback.unwrap_or(0))
-    }
-
-    fn enforce_cap(&mut self) -> Result<()> {
-        loop {
-            let bytes = self.current_total_bytes()?;
-            if bytes <= self.cap_bytes as i64 {
-                break;
-            }
-
-            let oldest: Option<(i64, i64)> = self
-                .conn
-                .query_row(
-                    "SELECT id, size_bytes FROM offline_events ORDER BY id ASC LIMIT 1",
-                    [],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()?;
-
-            let Some((id, size_bytes)) = oldest else {
-                self.conn.execute(
-                    "UPDATE offline_buffer_meta SET total_bytes = 0 WHERE id = ?1",
-                    params![OFFLINE_META_ROW_ID],
-                )?;
-                break;
-            };
-
-            let tx = self.conn.transaction()?;
-            let deleted = tx.execute("DELETE FROM offline_events WHERE id = ?1", params![id])?;
-            if deleted == 0 {
-                break;
-            }
-            tx.execute(
-                "UPDATE offline_buffer_meta SET total_bytes = MAX(total_bytes - ?1, 0) WHERE id = ?2",
-                params![size_bytes.max(0), OFFLINE_META_ROW_ID],
-            )?;
-            tx.commit()?;
-        }
-        Ok(())
     }
 
     pub fn run_maintenance(&mut self) -> Result<()> {

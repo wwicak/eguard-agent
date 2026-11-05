@@ -853,3 +853,21 @@ Baseline proof: the redirected loader/runtime test transplanted verbatim (test-o
 Validation: self-protect crate 37/37; agent-core self_protect 9/9; resolved-path policy 5/5; payload integrity 14/14; reviewfix 21/21; Windows GNU cross-check and cargo fmt --all --check pass. Redirected runtime strace records all 13 chmod/fchmod operations only on test-owned files, never /etc or parent directories. Logs: /tmp/f26-validation/. Owned baseline archive removed; no stash or push operations.
 
 Residual/review: platform-linux is byte-identical to 1224af4 and reports 103/104 both parallel and serial; the isolated primed_process_exec_metadata_survives_short_lived_process_exit test also fails at tests.rs:166 with the parent test-runner cmdline. Supervisor identifies this as a known pre-existing, load-sensitive fixture and approves committing F26 without unrelated edits. Native macOS enforcement was not executed (actual loader constants/default policy are host-tested); ancestor symlink traversal remains unchanged. Descriptor-based enforcement needs read-open access: a read-denied unprivileged caller logs and skips; the normal privileged agent can still correct drifted modes.
+# DETP1-AGENT
+
+Approved contract: `/tmp/eg-detp1-agent.md`; start 2026-11-05 05:20 UTC, time box 5h.
+
+## Plan
+- [x] A1: metadata migration, conservative protection of legacy rows, telemetry-first eviction, counted/logged saturation; 5 new tests RED on base, all 23 buffer tests GREEN. Logs: `release/DETP1-AGENT-logs/A1-{red-base,green}.log`.
+- [ ] A2: causal, per-process-instance kill-chain firings with witnesses; RED/GREEN; commit.
+- [ ] A3: verified self-lineage/configured-peer handling and analyst JSON flag; RED/GREEN; commit.
+- [ ] A4: broad strings as features only, retain specific malicious decisions; RED/GREEN; commit.
+- [ ] A5: credential-source precision without changing network semantics; RED/GREEN; commit.
+- [ ] A6: anonymized five-group and malicious replay fixtures; RED/GREEN; commit.
+- [ ] Run scoped regression tests/clippy, inspect diff/identifier scans, write release report.
+
+## Verification strategy
+New tests run against base implementation before each fix (later items restore relevant base files in a private base snapshot when needed). Background cargo commands log beneath `/home/dimas/eg-work/release/DETP1-AGENT*`, use the authorized cargo target and local temporary directory. Monitor disk >=15G. No network/host/VM access, push, tag or deployment.
+
+## Review
+Pending.

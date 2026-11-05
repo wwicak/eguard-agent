@@ -483,3 +483,124 @@ fn sqlite_buffer_maintenance_checkpoints_wal() {
         path.to_string_lossy()
     )));
 }
+
+#[test]
+fn detp1_sqlite_restart_preserves_detection_metadata_and_migrates_legacy_rows() {
+    let fixture = TestDir::new();
+    let path = fixture.0.join("legacy.db");
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch("CREATE TABLE offline_events (id INTEGER PRIMARY KEY AUTOINCREMENT, agent_id TEXT NOT NULL, event_type TEXT NOT NULL, payload_json TEXT NOT NULL, created_at_unix INTEGER NOT NULL, size_bytes INTEGER NOT NULL); INSERT INTO offline_events VALUES(1, 'a1', 'process_exec', '{}', 0, 32);").unwrap();
+    drop(conn);
+    let mut buffer = SqliteBuffer::new(path.to_str().unwrap(), 4096).unwrap();
+    let mut detection = sample_event(1);
+    detection.severity = "high".into();
+    detection.rule_name = "test_detection".into();
+    buffer.enqueue(detection).unwrap();
+    drop(buffer);
+    for _ in 0..2 {
+        let buffer = SqliteBuffer::new(path.to_str().unwrap(), 4096).unwrap();
+        let rows = buffer.peek_batch(10).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].1.severity, "");
+        assert_eq!(rows[0].1.rule_name, "");
+        assert_eq!(rows[1].1.severity, "high");
+        assert_eq!(rows[1].1.rule_name, "test_detection");
+    }
+    let mut buffer = SqliteBuffer::new(path.to_str().unwrap(), 4096).unwrap();
+    for i in 2..200 {
+        let mut event = sample_event(i);
+        event.rule_name = "positive_rule".into();
+        buffer.enqueue(event).unwrap();
+    }
+    let dropped: i64 = buffer
+        .conn
+        .query_row(
+            "SELECT dropped_detections FROM offline_buffer_meta WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(dropped > 0);
+    drop(buffer);
+    let buffer = SqliteBuffer::new(path.to_str().unwrap(), 4096).unwrap();
+    let persisted: i64 = buffer
+        .conn
+        .query_row(
+            "SELECT dropped_detections FROM offline_buffer_meta WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(persisted, dropped);
+}
+
+#[test]
+fn detp1_telemetry_flood_preserves_queued_detection() {
+    for mut buffer in [
+        EventBuffer::memory(256),
+        EventBuffer::sqlite(":memory:", 256).unwrap(),
+    ] {
+        let mut detection = sample_event(0);
+        detection.severity = "high".into();
+        detection.rule_name = "test_detection".into();
+        buffer.enqueue(detection).unwrap();
+        for i in 1..100 {
+            buffer.enqueue(sample_event(i)).unwrap();
+        }
+        assert!(buffer.pending_bytes() <= 256);
+        assert!(buffer
+            .peek_batch(100)
+            .unwrap()
+            .iter()
+            .any(|(_, e)| e.created_at_unix == 0));
+    }
+}
+
+#[test]
+fn detp1_detection_saturation_keeps_oldest_and_rejects_oversized_events() {
+    for mut buffer in [
+        EventBuffer::memory(128),
+        EventBuffer::sqlite(":memory:", 128).unwrap(),
+    ] {
+        for i in 0..100 {
+            let mut event = sample_event(i);
+            event.rule_name = "positive_rule".into();
+            buffer.enqueue(event).unwrap();
+        }
+        assert!(buffer.pending_bytes() <= 128);
+        assert_eq!(buffer.peek_batch(1).unwrap()[0].1.created_at_unix, 0);
+        buffer.enqueue(large_event(200, 1024)).unwrap();
+        assert!(buffer.pending_bytes() <= 128);
+        assert_eq!(buffer.peek_batch(1).unwrap()[0].1.created_at_unix, 0);
+    }
+}
+
+#[test]
+fn detp1_sqlite_recovery_batch_protects_detection() {
+    let mut buffer = SqliteBuffer::new(":memory:", 256).unwrap();
+    let mut detection = sample_event(0);
+    detection.rule_name = "positive_rule".into();
+    buffer.enqueue(detection).unwrap();
+    buffer
+        .enqueue_batch(&(1..100).map(sample_event).collect::<Vec<_>>())
+        .unwrap();
+    assert!(buffer.pending_bytes().unwrap() <= 256);
+    assert_eq!(buffer.peek_batch(1).unwrap()[0].1.created_at_unix, 0);
+}
+
+#[test]
+fn detp1_positive_decision_with_info_envelope_is_protected() {
+    for mut buffer in [
+        EventBuffer::memory(256),
+        EventBuffer::sqlite(":memory:", 256).unwrap(),
+    ] {
+        let mut detection = sample_event(0);
+        detection.severity = "info".into();
+        detection.payload_json = r#"{"detection":{"ml_score":{"positive":true}}}"#.into();
+        buffer.enqueue(detection).unwrap();
+        for i in 1..100 {
+            buffer.enqueue(sample_event(i)).unwrap();
+        }
+        assert_eq!(buffer.peek_batch(1).unwrap()[0].1.created_at_unix, 0);
+    }
+}
