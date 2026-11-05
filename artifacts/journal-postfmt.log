@@ -1,0 +1,4 @@
+ok  	eguard-nac-agent/boundary	1.455s
+ok  	eguard-nac-agent/collector	0.031s
+ok  	eguard-nac-agent/core	0.020s
+ok  	eguard-nac-agent/journal	0.661s

@@ -1,0 +1,13 @@
+# eguard-nac-agent/boundary [eguard-nac-agent/boundary.test]
+boundary/boundary_test.go:25:11: undefined: Run
+boundary/boundary_test.go:35:31: undefined: Run
+boundary/boundary_test.go:37:26: undefined: Run
+# eguard-nac-agent/collector [eguard-nac-agent/collector.test]
+collector/route_test.go:8:32: undefined: routeEvidence
+collector/route_test.go:8:54: undefined: routeRecord
+collector/route_test.go:9:5: undefined: routeEvidence
+collector/route_test.go:10:5: undefined: routeEvidence
+collector/route_test.go:12:45: undefined: osBuild
+FAIL	eguard-nac-agent/collector [build failed]
+FAIL	eguard-nac-agent/boundary [build failed]
+FAIL

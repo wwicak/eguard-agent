@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>eGuard NAC Agent — Enrollment & Lifecycle (MOCKUP, sample data)</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;background:#f4f6f9;color:#1b2430;font-size:14px;line-height:1.45}
+.banner{background:#fff4d6;color:#7a5600;padding:6px 16px;font-size:12px;text-align:center;border-bottom:1px solid #f0dca0}
+header{background:#fff;border-bottom:1px solid #e3e7ee;padding:0 24px;display:flex;align-items:center;gap:28px;height:56px}
+.logo{font-weight:700;color:#177DFA;font-size:16px}
+nav a{color:#5b6573;text-decoration:none;padding:18px 2px;margin-right:18px;border-bottom:2px solid transparent;cursor:pointer}
+nav a.on{color:#177DFA;border-color:#177DFA;font-weight:600}
+main{max-width:1180px;margin:24px auto;padding:0 24px}
+h1{font-size:20px;margin-bottom:4px}.sub{color:#6b7684;margin-bottom:20px}
+.card{background:#fff;border:1px solid #e3e7ee;border-radius:10px;padding:20px;margin-bottom:16px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+label{display:block;font-weight:600;margin:14px 0 6px}
+input,select{width:100%;padding:9px 10px;border:1px solid #cfd6df;border-radius:7px;font:inherit}
+.seg{display:flex;border:1px solid #cfd6df;border-radius:8px;overflow:hidden}
+.seg button{flex:1;padding:9px;border:0;background:#fff;cursor:pointer;font:inherit}
+.seg button.on{background:#177DFA;color:#fff;font-weight:600}
+.hint{color:#6b7684;font-size:12px;margin-top:6px}
+.btn{background:#177DFA;color:#fff;border:0;border-radius:7px;padding:10px 16px;font-weight:600;cursor:pointer}
+.btn.ghost{background:#fff;color:#177DFA;border:1px solid #177DFA}.btn.danger{background:#d93a3a}
+.btn:disabled{background:#c7cdd6;color:#5b6573;cursor:not-allowed}
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:10px 8px;border-bottom:1px solid #eef1f5}
+th{font-size:12px;color:#6b7684;font-weight:600;text-transform:uppercase}
+tr.row{cursor:pointer}tr.row:hover{background:#f6f9ff}
+.pill{display:inline-block;padding:2px 9px;border-radius:20px;font-size:12px;font-weight:600}
+.ok{background:#e3f6ea;color:#16794a}.warn{background:#fff1d6;color:#9a6200}.bad{background:#fde5e5;color:#b42727}.unk{background:#eceff3;color:#5b6573}.info{background:#e3efff;color:#177DFA}
+.kv{display:grid;grid-template-columns:170px 1fr;gap:8px 12px}.kv div:nth-child(odd){color:#6b7684}
+.timeline{border-left:2px solid #dbe3ee;margin-left:6px;padding-left:16px}
+.timeline div{margin-bottom:12px;position:relative}.timeline div:before{content:"";position:absolute;left:-22px;top:5px;width:10px;height:10px;border-radius:50%;background:#177DFA}
+.modal{position:fixed;inset:0;background:rgba(15,25,40,.45);display:none;align-items:center;justify-content:center}
+.modal.on{display:flex}.dlg{background:#fff;border-radius:12px;padding:22px;width:460px}
+.toast{position:fixed;right:20px;bottom:20px;background:#1b2430;color:#fff;padding:12px 16px;border-radius:8px;display:none}
+.screen{display:none}.screen.on{display:block}
+.win{width:560px;margin:10px auto;background:#fff;border:1px solid #c9ced6;border-radius:6px;box-shadow:0 8px 30px rgba(0,0,0,.12);overflow:hidden}
+.win .tb{background:#f0f0f0;padding:7px 12px;font-size:12px;border-bottom:1px solid #ddd}
+.win .bd{padding:20px}.bar{height:8px;background:#e3e7ee;border-radius:4px;overflow:hidden;margin:10px 0}.bar i{display:block;height:100%;width:72%;background:#177DFA}
+code{background:#f1f4f8;padding:1px 5px;border-radius:4px;font-size:12px}
+</style></head><body>
+<div class="banner">MOCKUP for approval — sample data, not connected to any server. Buttons demonstrate flow only.</div>
+<header><span class="logo">eGuard</span>
+<nav><a class="on" data-s="enroll">Enroll device</a><a data-s="devices">NAC agents</a><a data-s="detail">Device lifecycle</a><a data-s="installer">Installer (Windows)</a></nav></header>
+<main>
+
+<!-- 1. ENROLL -->
+<section class="screen on" id="enroll">
+<h1>Enroll a device for NAC Agent</h1><div class="sub">Creates signed enrollment files for one device. Posture only — no EDR, no remote commands.</div>
+<div class="grid">
+<div class="card">
+<label>Device</label><input value="LAPTOP-FIN-0142">
+<label>Site</label><select><option>Head Office — Jakarta</option><option>Branch — Makassar</option></select>
+<label>Installation mode</label>
+<div class="seg" id="mode"><button class="on" data-v="permanent">Permanent</button><button data-v="temporary">Temporary</button></div>
+<div id="tempBox" style="display:none">
+<label>Access valid until</label><input value="10 Nov 2026, 17:00 (WITA)">
+<div class="hint">Network access ends at this time on the server. The agent removes itself while the device is running, or at the next start-up if it was off.</div></div>
+<label>Anti-Tamper</label>
+<div class="seg" id="at"><button class="on" data-v="on">On</button><button data-v="off">Off</button></div>
+<div class="hint" id="atHint">Uninstall requires a one-time authorization from this console. Local administrators can still remove the agent through the documented recovery procedure.</div>
+</div>
+<div class="card">
+<h3 style="margin-bottom:10px">Summary</h3>
+<div class="kv" id="sum"></div>
+<div style="margin-top:18px;display:flex;gap:8px"><button class="btn" id="gen">Generate enrollment files</button><button class="btn ghost">Cancel</button></div>
+<div class="hint" style="margin-top:12px">Files: <code>bootstrap.json</code> and <code>activation.json</code>. Activation expires in 15 minutes and works once.</div>
+</div></div></section>
+
+<!-- 2. LIST -->
+<section class="screen" id="devices">
+<h1>NAC agents</h1><div class="sub">Evidence freshness is shown as reported. Unknown values are never treated as compliant.</div>
+<div class="card"><table><thead><tr><th>Device</th><th>Mode</th><th>Anti-Tamper</th><th>Lifecycle</th><th>Last posture</th><th>Domain</th><th>AV</th><th>Firewall</th></tr></thead><tbody>
+<tr class="row" data-s="detail"><td>LAPTOP-FIN-0142</td><td>Permanent</td><td>On</td><td><span class="pill ok">Active</span></td><td>32 s ago</td><td><span class="pill ok">Joined</span></td><td><span class="pill ok">Running · Updated</span></td><td><span class="pill ok">3/3 on</span></td></tr>
+<tr class="row"><td>GUEST-AUDIT-07</td><td>Temporary · ends 10 Nov 17:00</td><td>Off</td><td><span class="pill ok">Active</span></td><td>1 min ago</td><td><span class="pill warn">Not joined</span></td><td><span class="pill unk">Unknown</span></td><td><span class="pill ok">3/3 on</span></td></tr>
+<tr class="row"><td>VENDOR-LAP-22</td><td>Temporary · ended 02 Nov</td><td>On</td><td><span class="pill unk">Expired · cleanup pending</span></td><td>2 days ago <span class="pill warn">Stale</span></td><td>—</td><td>—</td><td>—</td></tr>
+<tr class="row"><td>WS-HR-0031</td><td>Permanent</td><td>On</td><td><span class="pill info">Uninstall authorized</span></td><td>5 min ago</td><td><span class="pill ok">Joined</span></td><td><span class="pill bad">Not running</span></td><td><span class="pill warn">2/3 on</span></td></tr>
+</tbody></table></div></section>
+
+<!-- 3. DETAIL -->
+<section class="screen" id="detail">
+<h1>LAPTOP-FIN-0142</h1><div class="sub">Permanent · Anti-Tamper On · Enrolled 03 Nov 2026 09:41 by admin.rina</div>
+<div class="grid">
+<div class="card"><h3 style="margin-bottom:12px">Latest posture <span class="pill ok">Fresh · 32 s</span></h3>
+<div class="kv"><div>OS</div><div>Windows 10 Pro 22H2 (19045)</div><div>Domain</div><div>eglab.local — joined</div>
+<div>Adapters</div><div>Ethernet 00:15:5D:xx:xx:01 · 10.20.4.17<br>Wi-Fi 3C:22:FB:xx:xx:9A · —</div>
+<div>Antivirus</div><div>Microsoft Defender — installed, running, updated</div><div>Firewall</div><div>Domain on · Private on · Public on</div>
+<div>Agent</div><div>0.2.0 · machine certificate valid</div></div></div>
+<div class="card"><h3 style="margin-bottom:12px">Lifecycle</h3>
+<div class="timeline"><div><b>Active</b> — posture every 30 s<br><span class="hint">03 Nov 09:41</span></div><div>Activated (Permanent)<br><span class="hint">03 Nov 09:41 · activation used once</span></div><div>Enrollment files generated<br><span class="hint">03 Nov 09:38 · admin.rina</span></div></div>
+<div style="display:flex;gap:8px;margin-top:8px"><button class="btn danger" id="authBtn">Authorize uninstall…</button><button class="btn ghost" id="revBtn">Revoke access</button></div>
+<div class="hint" style="margin-top:8px">Revoke ends network access but does not uninstall the agent.</div></div></div></section>
+
+<!-- 4. INSTALLER -->
+<section class="screen" id="installer">
+<h1>Windows installer</h1><div class="sub">Standard Windows installer pages. Shown in English on the device.</div>
+<div class="win"><div class="tb">eGuard NAC Agent Setup</div><div class="bd" id="instBody">
+<b>eGuard NAC Agent 0.2.0</b><p style="margin:10px 0">This agent reports device posture for network access policy: network adapters, device identity, domain membership, antivirus and firewall status. It does not monitor user activity or run remote commands.</p>
+<div class="kv"><div>Enrollment file</div><div>bootstrap.json ✓</div><div>Activation</div><div>activation.json ✓ (valid 14 min)</div><div>Mode</div><div>Permanent · Anti-Tamper On</div></div>
+<div style="text-align:right;margin-top:16px"><button class="btn" id="instGo">Install</button></div></div></div></section>
+
+</main>
+<div class="modal" id="m"><div class="dlg"><h3>Authorize uninstall</h3>
+<p style="margin:10px 0">Creates a one-time authorization for <b>LAPTOP-FIN-0142</b> only. It expires in <b>10 minutes</b> and cannot be reused.</p>
+<label>Reason (recorded in audit log)</label><input id="reason" placeholder="e.g. Device returned to vendor">
+<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px"><button class="btn ghost" id="mClose">Cancel</button><button class="btn danger" id="mOk" disabled>Create authorization</button></div></div></div>
+<div class="toast" id="t"></div>
+<script>
+const $=s=>document.querySelector(s),$$=s=>document.querySelectorAll(s);
+let mode="permanent",at="on";
+function show(id){$$(".screen").forEach(x=>x.classList.toggle("on",x.id===id));$$("nav a").forEach(a=>a.classList.toggle("on",a.dataset.s===id))}
+$$("nav a,tr.row[data-s]").forEach(a=>a.onclick=()=>show(a.dataset.s));
+function toast(m){const t=$("#t");t.textContent=m;t.style.display="block";setTimeout(()=>t.style.display="none",2600)}
+function seg(id,cb){$$("#"+id+" button").forEach(b=>b.onclick=()=>{$$("#"+id+" button").forEach(x=>x.classList.remove("on"));b.classList.add("on");cb(b.dataset.v);sum()})}
+seg("mode",v=>{mode=v;$("#tempBox").style.display=v==="temporary"?"block":"none"});
+seg("at",v=>{at=v;$("#atHint").textContent=v==="on"?"Uninstall requires a one-time authorization from this console. Local administrators can still remove the agent through the documented recovery procedure.":"An administrator on the device can uninstall the agent without authorization from this console."});
+function sum(){$("#sum").innerHTML=`<div>Device</div><div>LAPTOP-FIN-0142</div><div>Mode</div><div>${mode==="permanent"?"Permanent — no expiry":"Temporary — until 10 Nov 2026 17:00"}</div><div>Anti-Tamper</div><div>${at==="on"?"On":"Off"}</div><div>After expiry</div><div>${mode==="temporary"?"Access ends; agent removes itself":"—"}</div><div>Uninstall</div><div>${at==="on"?"Needs authorization (10 min, one-time)":"Local administrator"}</div>`}
+sum();$("#gen").onclick=()=>toast("Sample: bootstrap.json and activation.json would download now");
+$("#authBtn").onclick=()=>$("#m").classList.add("on");$("#mClose").onclick=()=>$("#m").classList.remove("on");
+$("#reason").oninput=e=>$("#mOk").disabled=!e.target.value.trim();
+$("#mOk").onclick=()=>{$("#m").classList.remove("on");toast("Sample: authorization.json created — expires in 10 minutes")};
+$("#revBtn").onclick=()=>toast("Sample: access revoked; agent stays installed");
+$("#instGo").onclick=()=>{$("#instBody").innerHTML='<b>Installing…</b><div class="bar"><i></i></div><p class="hint">Verifying enrollment · Securing configuration · Starting service</p>';setTimeout(()=>{$("#instBody").innerHTML='<b>eGuard NAC Agent is installed and running.</b><p style="margin:10px 0">This device now reports posture to eGuard.</p><div style="text-align:right"><button class="btn">Finish</button></div>'},1800)};
+</script></body></html>

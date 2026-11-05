@@ -1,0 +1,1 @@
+go test ./boundary ./collector exit=0

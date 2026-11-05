@@ -1,0 +1,130 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "serialNumber": "urn:uuid:5510c51e-1770-48bc-9af0-d755f6a371ee",
+  "metadata": {
+    "timestamp": "2026-11-04T02:52:03+00:00",
+    "component": {
+      "type": "application",
+      "name": "eguard-nac-agent",
+      "version": "0.2.0",
+      "properties": [
+        {
+          "name": "eguard:build-label",
+          "value": "TEST-UNSIGNED"
+        }
+      ]
+    }
+  },
+  "components": [
+    {
+      "type": "library",
+      "name": "github.com/StackExchange/wmi",
+      "version": "v1.2.1",
+      "purl": "pkg:golang/github.com/StackExchange/wmi@v1.2.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "go:module-sum",
+          "value": "h1:VIkavFPXSjcnS+O8yTq7NI32k0R5Aj+v39y29VYDOSA="
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/go-ole/go-ole",
+      "version": "v1.3.0",
+      "purl": "pkg:golang/github.com/go-ole/go-ole@v1.3.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "go:module-sum",
+          "value": "h1:Dt6ye7+vXGIKZ7Xtk4s6/xVdGDQynvom7xCFEdWr6uE="
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "go.etcd.io/bbolt",
+      "version": "v1.4.3",
+      "purl": "pkg:golang/go.etcd.io/bbolt@v1.4.3",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "go:module-sum",
+          "value": "h1:dEadXpI6G79deX5prL3QRNP6JB8UxVkqo4UPnHaNXJo="
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "golang.org/x/sys",
+      "version": "v0.47.0",
+      "purl": "pkg:golang/golang.org/x/sys@v0.47.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "go:module-sum",
+          "value": "h1:o7XGOvZQCADBQQ4Y7VNq2dRWQR7JmOUW8Kxx4ZsNgWs="
+        }
+      ]
+    },
+    {
+      "type": "framework",
+      "name": "golang-toolchain",
+      "version": "go1.26.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "eguard-nac-service.exe",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "a842d7f0211c0577132d6053a1e0cce51f43ec89334787cefe10c99d13cbdecd"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "nac-setup.exe",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "9d3b3958993f9c599aabcaa67237db0e6ff9471ef680321e2084b4b9d07f2a6c"
+        }
+      ]
+    }
+  ]
+}

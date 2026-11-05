@@ -1,0 +1,6 @@
+--- FAIL: TestBoundedOutputAndTimeout (0.46s)
+    --- FAIL: TestBoundedOutputAndTimeout/stale (0.01s)
+        boundary_test.go:61: untrusted helper accepted
+FAIL
+FAIL	eguard-nac-agent/boundary	1.380s
+FAIL

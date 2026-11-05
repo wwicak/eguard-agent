@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>eGuard — Access Control › NAC Agent (MOCKUP)</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;background:#f6f8fb;color:#1b2430;font-size:14px}
+.banner{background:#fff4d6;color:#7a5600;padding:5px;font-size:12px;text-align:center}
+.l1{height:62px;background:#177DFA;box-shadow:0 5px 18px rgba(0,74,168,.18);display:flex;align-items:center;padding:0 40px;gap:16px}
+.logo{color:#fff;font-weight:800;font-size:18px;margin-right:12px}
+.l1 a{color:#eaf3ff;font-weight:600;height:36px;display:inline-flex;align-items:center;padding:0 16px;border-radius:999px;white-space:nowrap}
+.l1 a.on{background:#fff;color:#177DFA}
+.l2,.l3{display:flex;align-items:center;overflow-x:auto;padding:0 32px;justify-content:safe center;scrollbar-width:thin}
+.l2{background:#f4f8ff;border-bottom:1px solid #dbeafe;min-height:58px;gap:6px}
+.l3{background:#fff;border-bottom:1px solid #e2e8f0;min-height:54px;gap:4px}
+.l2 a,.l3 a{white-space:nowrap;flex-shrink:0;font-weight:600;padding:0 14px;height:36px;display:inline-flex;align-items:center;border-radius:8px;cursor:pointer;color:#475569}
+.l2 a.on{background:#177DFA;color:#fff}.l3 a{height:32px}.l3 a.on{background:#F1F8FF;color:#177DFA}
+.new{display:inline-flex;align-items:center;height:16px;font-size:10px;line-height:1;background:#16a34a;color:#fff!important;border-radius:4px;padding:0 5px;margin-left:6px}
+main{max-width:1180px;margin:20px auto;padding:0 24px}
+h2{font-size:18px;margin-bottom:4px}.sub{color:#64748b;margin-bottom:16px}
+.panel{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:18px;margin-bottom:14px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+label{display:block;font-weight:600;font-size:13px;margin:12px 0 5px}
+input,select{width:100%;padding:8px 10px;border:1px solid #cbd5e1;border-radius:6px;font:inherit}
+.seg{display:flex;border:1px solid #cbd5e1;border-radius:6px;overflow:hidden}
+.seg button{flex:1;padding:8px;border:0;background:#fff;cursor:pointer;font:inherit}.seg button.on{background:#177DFA;color:#fff;font-weight:600}
+.hint{color:#64748b;font-size:12px;margin-top:4px}
+.btn{white-space:nowrap;background:#177DFA;color:#fff;border:0;border-radius:6px;padding:8px 14px;font-weight:600;cursor:pointer}
+.btn.o{background:#fff;color:#177DFA;border:1px solid #177DFA}.btn.d{background:#dc2626}.btn.s{padding:5px 10px;font-size:13px}
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:9px 8px;border-bottom:1px solid #eef2f6;vertical-align:middle}
+th{white-space:nowrap;font-size:12px;color:#64748b;text-transform:uppercase}td.dev{white-space:nowrap;font-family:ui-monospace,monospace;font-size:13px}
+.pill{white-space:nowrap;display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:600}
+.ok{background:#dcfce7;color:#166534}.warn{background:#fef3c7;color:#92400e}.bad{background:#fee2e2;color:#991b1b}.unk{background:#e2e8f0;color:#475569}.info{background:#dbeafe;color:#1d4ed8}
+.screen{display:none}.screen.on{display:block}
+.modal{z-index:2000;position:fixed;inset:0;background:rgba(15,25,40,.45);display:none;align-items:center;justify-content:center}.modal.on{display:flex}
+.dlg{background:#fff;border-radius:12px;padding:22px;width:540px}
+code,.tok{background:#f1f5f9;padding:2px 6px;border-radius:4px;font-family:ui-monospace,monospace;font-size:12px}.tok{display:block;padding:10px;word-break:break-all;margin:6px 0}
+.opt{border:1px solid #e2e8f0;border-radius:8px;padding:10px 12px;margin-top:8px}.opt b{display:block;margin-bottom:2px}
+.kv{display:grid;grid-template-columns:170px 1fr;gap:6px 10px}.kv div:nth-child(odd){color:#64748b}
+</style></head><body>
+<div class="banner">MOCKUP — Access Control › NAC Agent. Sample data. Green "NEW" = only additions to the current menu.</div>
+<div class="l1"><span class="logo">eGuard</span><a>Dashboard</a><a>Assets</a><a class="on">Access Control</a><a>Endpoint Security</a><a>Logs &amp; Reports</a><a>Settings</a></div>
+<div class="l2" id="l2"></div><div class="l3" id="l3"></div>
+<main>
+<section class="screen" id="Fleet">
+<h2>NAC Agent Fleet</h2><div class="sub">Posture-only agents used by Access Policies. Unknown is never treated as compliant. If eGuard is unreachable, devices keep their last decision until evidence freshness runs out.</div>
+<div class="panel"><table><thead><tr><th>Device</th><th>Mode</th><th>Anti-Tamper</th><th>Lifecycle</th><th>Last posture</th><th>Domain</th><th>AV</th><th>Firewall</th><th>Action</th></tr></thead><tbody>
+<tr><td class="dev">LAPTOP-FIN-0142</td><td>Permanent</td><td>On</td><td><span class="pill ok">Active</span></td><td>32 s ago</td><td><span class="pill ok">Joined</span></td><td><span class="pill ok">Running · Updated</span></td><td><span class="pill ok">3/3</span></td><td><button class="btn d s un">Uninstall…</button></td></tr>
+<tr><td class="dev">GUEST-AUDIT-07</td><td>Temporary<div class="hint">ends 10 Nov 17:00</div></td><td>On</td><td><span class="pill ok">Active</span></td><td>1 min ago</td><td><span class="pill warn">Not joined</span></td><td><span class="pill unk">Unknown</span></td><td><span class="pill ok">3/3</span></td><td><button class="btn d s un">Uninstall…</button></td></tr>
+<tr><td class="dev">WS-HR-0031</td><td>Permanent</td><td>On</td><td><span class="pill info">Uninstall pending</span><div class="hint">delivered at next check-in</div></td><td>3 h ago <span class="pill warn">Stale</span></td><td><span class="pill ok">Joined</span></td><td><span class="pill unk">Unknown</span></td><td>—</td><td><button class="btn o s tk">Show token</button></td></tr>
+<tr><td class="dev">VENDOR-LAP-22</td><td>Temporary<div class="hint">ended 02 Nov</div></td><td>Off</td><td><span class="pill unk">Expired · removes at next start</span></td><td>2 days ago</td><td>—</td><td>—</td><td>—</td><td class="hint">—</td></tr>
+</tbody></table></div></section>
+
+<section class="screen" id="Enrollment &amp; Install">
+<h2>Enrollment &amp; Install</h2><div class="sub">Create signed enrollment files and the installer for one device.</div>
+<div class="panel"><div class="grid"><div>
+<label>Device name</label><input value="GUEST-AUDIT-07">
+<label>Site</label><select><option>Head Office</option><option>Branch</option></select>
+<label>Mode</label><div class="seg" id="mode"><button data-v="temporary" class="on">Temporary</button><button data-v="permanent">Permanent</button></div>
+<div id="tbox"><label>Access valid until</label><input value="10 Nov 2026, 17:00 (WITA)"><div class="hint">Access ends on the server at this time; the agent removes itself while running or at next start-up — no connection to eGuard needed.</div></div>
+<label>Agent Config</label><select><option>Default NAC posture (30 s)</option></select>
+<label>Anti-Tamper</label><div class="seg" id="at"><button data-v="on" class="on">On</button><button data-v="off">Off</button></div>
+<div class="hint" id="ath">Uninstall only from this console (remote or token). Local administrators can still use the documented recovery procedure.</div>
+</div><div>
+<label>Installer</label><div class="panel" style="margin:0"><b>eGuard-NAC-Setup-0.2.0-x64.exe</b><div class="hint">Windows 10/11 x64 · posture only (adapters, identity, domain, antivirus, firewall). Not an EDR.</div></div>
+<label>Enrollment files</label><div class="hint">bootstrap.json + activation.json · activation valid 15 minutes, single use</div>
+<div style="margin-top:12px;display:flex;gap:8px"><button class="btn">Generate</button><button class="btn o">Download installer</button></div>
+<label>Install command</label><code>eGuard-NAC-Setup-0.2.0-x64.exe /BOOTSTRAP=bootstrap.json /ACTIVATION=activation.json</code>
+</div></div></div></section>
+
+<section class="screen" id="Agent Config">
+<h2>Agent Config</h2><div class="sub">Signed settings delivered at enrollment. Collection is fixed to NAC posture; no commands or user monitoring.</div>
+<div class="panel"><div class="kv"><div>Profile</div><div>Default NAC posture</div><div>Report interval</div><div>30 seconds</div><div>Evidence freshness (TTL)</div><div>5 minutes</div><div>Collected</div><div>Adapters (MAC/IP), identity, domain, antivirus, firewall</div><div>Server certificate</div><div>eGuard CA (pinned)</div></div><div style="margin-top:12px"><button class="btn o">Edit profile</button></div></div></section>
+
+<section class="screen" id="Policies">
+<h2>Policies</h2><div class="sub">Which posture checks the existing Access Policies use, and what happens when evidence is missing.</div>
+<div class="panel"><table><thead><tr><th>Check</th><th>Required value</th><th>If Unknown or stale</th><th>Used by</th></tr></thead><tbody>
+<tr><td>Domain joined</td><td>Yes</td><td><span class="pill warn">Guest VLAN</span></td><td>Corporate LAN</td></tr>
+<tr><td>Antivirus running &amp; updated</td><td>Yes</td><td><span class="pill warn">Guest VLAN</span></td><td>Corporate LAN, Guest Wi-Fi</td></tr>
+<tr><td>Firewall all profiles</td><td>On</td><td><span class="pill unk">Keep last decision</span></td><td>Guest Wi-Fi</td></tr>
+</tbody></table><div class="hint" style="margin-top:8px">Outage policy: while eGuard is down, devices keep their last decision until evidence freshness runs out — no mass blocking.</div></div></section>
+</main>
+<div class="modal" id="m"><div class="dlg"><h3>Uninstall <span id="dev">LAPTOP-FIN-0142</span></h3>
+<p class="hint" style="margin:6px 0 2px">One-time, device-bound authorization. Valid 10 minutes, cannot be reused.</p>
+<label>Reason (audit log)</label><input id="r" placeholder="e.g. Guest left the site">
+<div id="out" style="display:none">
+<div class="opt"><b>Remote — sent ✓</b><span class="hint">Delivered at the device's next check-in (about 30 s). Status shows "Uninstall pending" until the device confirms.</span></div>
+<div class="opt"><b>Offline — give the user this token</b><span class="hint">For devices that already left the network. Run in an elevated prompt:</span>
+<span class="tok">nac-setup.exe uninstall /TOKEN=eyJ2ZXJzaW9uIjoxLCJrZXlfaWQiOiJsaWZlLTEiLCJwYXlsb2FkX2I2NCI6Ii4uLiJ9</span>
+<div style="display:flex;gap:8px"><button class="btn o s" id="cp">Copy command</button><button class="btn o s">Download authorization.json</button></div></div></div>
+<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px"><button class="btn o" id="c">Close</button><button class="btn d" id="g" disabled>Uninstall</button></div></div></div>
+<script>
+const $=s=>document.querySelector(s),$$=s=>document.querySelectorAll(s);
+const L2=['Access Profiles','RADIUS Rules','Access Policies','Agentless Management','Agentless Readiness','Investigate Device','Segmentation','Manual Override','NAC Agent'];
+const L3=['Policies','Agent Config','Enrollment & Install','Fleet'];
+let cur='Fleet';
+function nav(){$('#l2').innerHTML=L2.map(x=>`<a class="${x==='NAC Agent'?'on':''}">${x}${x==='NAC Agent'?'<span class="new">NEW</span>':''}</a>`).join('');
+$('#l3').innerHTML=L3.map(x=>`<a data-p="${x}" class="${x===cur?'on':''}">${x.replace('&','&amp;')}</a>`).join('');
+$$('#l3 a').forEach(a=>a.onclick=()=>{cur=a.dataset.p;show()});
+$$('.screen').forEach(s=>s.classList.toggle('on',s.id===cur));
+document.querySelector('.l2 a.on').scrollIntoView({inline:'center',block:'nearest'})}
+function show(){nav()} show();
+function seg(id,cb){$$('#'+id+' button').forEach(b=>b.onclick=()=>{$$('#'+id+' button').forEach(x=>x.classList.remove('on'));b.classList.add('on');cb(b.dataset.v)})}
+seg('mode',v=>$('#tbox').style.display=v==='temporary'?'block':'none');
+seg('at',v=>$('#ath').textContent=v==='on'?'Uninstall only from this console (remote or token). Local administrators can still use the documented recovery procedure.':'A local administrator can also uninstall without authorization.');
+function open(row,done){$('#dev').textContent=row.querySelector('.dev').textContent;$('#r').value='';$('#r').disabled=!!done;$('#g').style.display=done?'none':'';$('#g').disabled=true;$('#out').style.display=done?'block':'none';$('#m').classList.add('on')}
+$$('.un').forEach(b=>b.onclick=()=>open(b.closest('tr')));$$('.tk').forEach(b=>b.onclick=()=>open(b.closest('tr'),true));
+$('#c').onclick=()=>$('#m').classList.remove('on');$('#r').oninput=e=>$('#g').disabled=!e.target.value.trim();
+$('#g').onclick=()=>{$('#out').style.display='block';$('#r').disabled=true;$('#g').style.display='none'};
+$('#cp').onclick=()=>$('#cp').textContent='Copied';
+</script></body></html>

@@ -1,0 +1,1 @@
+go test ./core GREEN exit=0
