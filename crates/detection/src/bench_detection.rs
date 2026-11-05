@@ -248,14 +248,58 @@ mod tests {
         // Zero planted IOCs — engine uses only its default rule set
         let mut engine = DetectionEngine::default_with_rules();
 
+        // A first-seen process name has no entropy anomaly until warmed;
+        // rules, IOC and kill-chain detection still apply during this trade-off.
+        let warmup_processes = [
+            (
+                "ls",
+                "/usr/bin/ls",
+                "ls -la /home/user/documents/project/reports",
+            ),
+            (
+                "curl",
+                "/usr/bin/curl",
+                "curl https://www.example.org/reports/daily.csv",
+            ),
+            (
+                "vim",
+                "/usr/bin/vim",
+                "vim /home/user/documents/project/meeting-notes.txt",
+            ),
+            (
+                "python3",
+                "/usr/bin/python3",
+                "python3 /home/user/scripts/rotate_reports.py",
+            ),
+            (
+                "bash",
+                "/bin/bash",
+                "bash /home/user/scripts/rotate_daily_reports.sh",
+            ),
+            (
+                "insmod",
+                "/usr/sbin/insmod",
+                "insmod /lib/modules/6.1.0/kernel/drivers/net/dummy.ko",
+            ),
+        ];
+        let warmup_count = 20 * warmup_processes.len() as i64;
+        for i in 0..warmup_count {
+            let (process, path, command) = warmup_processes[i as usize % warmup_processes.len()];
+            let mut event = benign_event(i, 3000 + i as u32);
+            event.process = process.into();
+            event.file_path = Some(path.into());
+            event.command_line = Some(command.into());
+            engine.process_event(&event);
+        }
+
         // Phase 1: Benign workload (200 events, mixed types)
         let mut benign_detected = 0;
         let benign_count = 200;
         for i in 0..benign_count {
             let event = match i % 3 {
-                0 => benign_event(i, 1000 + i as u32),
-                1 => benign_network(i, 1000 + i as u32),
-                _ => benign_file_op(i, 1000 + i as u32),
+                0 => benign_event(warmup_count + i, 1000 + i as u32),
+                1 => benign_network(warmup_count + i, 1000 + i as u32),
+                _ => benign_file_op(warmup_count + i, 1000 + i as u32),
             };
             let outcome = engine.process_event(&event);
             if outcome.confidence >= Confidence::Medium {
@@ -270,7 +314,7 @@ mod tests {
         let mut malicious_by_type = [0u32; 5];
         let malicious_count = 50;
         for i in 0..malicious_count {
-            let ts = 200 + i;
+            let ts = warmup_count + 200 + i;
             let pid = 2000 + i as u32;
             let type_idx = i as usize % 5;
             let event = match type_idx {
