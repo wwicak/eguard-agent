@@ -49,7 +49,8 @@ pub use layer2::{
 };
 pub use layer3::{AnomalyConfig, AnomalyDecision, AnomalyEngine};
 pub use layer4::{
-    KillChainTemplate, Layer4Engine, Layer4EvictionCounters, RansomwarePolicy, TemplatePredicate,
+    KillChainEvidence, KillChainTemplate, KillChainWitness, Layer4Engine, Layer4EvictionCounters,
+    RansomwarePolicy, TemplatePredicate,
 };
 pub use layer5::{MlEngine, MlError, MlExtraContext, MlFeatures, MlModel, MlScore};
 pub use policy::confidence_policy;

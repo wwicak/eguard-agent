@@ -1,14 +1,24 @@
 use crate::types::TelemetryEvent;
 use crate::util::set_of;
 
-use super::graph::{Layer4EvictionCounters, ProcessGraph};
+use super::graph::{KillChainWitness, Layer4EvictionCounters, ProcessGraph};
 use super::policy::RansomwarePolicy;
 use super::template::{KillChainTemplate, TemplatePredicate};
+use serde::Serialize;
 
 const DEFAULT_LAYER4_MAX_NODES: usize = 8_192;
 const DEFAULT_LAYER4_MAX_EDGES: usize = 32_768;
 
+#[derive(Debug, Clone, Serialize)]
+pub struct KillChainEvidence {
+    pub template: String,
+    pub witnesses: Vec<KillChainWitness>,
+    pub peer_ip: Option<String>,
+    pub peer_port: Option<u16>,
+}
+
 pub struct Layer4Engine {
+    last_evidence: Vec<KillChainEvidence>,
     graph: ProcessGraph,
     templates: Vec<KillChainTemplate>,
 }
@@ -26,6 +36,7 @@ impl Layer4Engine {
         Self {
             graph: ProcessGraph::with_capacity(window_secs, max_nodes, max_edges),
             templates: Vec::new(),
+            last_evidence: Vec::new(),
         }
     }
 
@@ -43,6 +54,7 @@ impl Layer4Engine {
                 ransomware_policy,
             ),
             templates: Vec::new(),
+            last_evidence: Vec::new(),
         }
     }
 
@@ -351,6 +363,7 @@ impl Layer4Engine {
 
     pub fn observe(&mut self, event: &TelemetryEvent) -> Vec<String> {
         self.graph.observe(event);
+        self.last_evidence.clear();
 
         let mut hits = Vec::new();
         let candidate_roots = self
@@ -358,8 +371,24 @@ impl Layer4Engine {
             .candidate_roots(event.pid, self.max_template_depth());
         for template in &self.templates {
             for pid in &candidate_roots {
-                if self.match_from(*pid, template, 0, 0, 0) {
-                    hits.push(template.name.clone());
+                if let Some(mut witnesses) = self.match_from(*pid, template, 0, 0, None, event.pid)
+                {
+                    if self.graph.mark_fired(
+                        event.pid,
+                        &template.name,
+                        event.ts_unix,
+                        template.max_inter_stage_secs,
+                    ) {
+                        let mut seen = std::collections::HashSet::new();
+                        witnesses.retain(|witness| seen.insert(witness.event_id.clone()));
+                        hits.push(template.name.clone());
+                        self.last_evidence.push(KillChainEvidence {
+                            template: template.name.clone(),
+                            witnesses,
+                            peer_ip: event.dst_ip.clone(),
+                            peer_port: event.dst_port,
+                        });
+                    }
                     break;
                 }
             }
@@ -380,42 +409,57 @@ impl Layer4Engine {
             .unwrap_or(0)
     }
 
+    pub fn last_evidence(&self) -> &[KillChainEvidence] {
+        &self.last_evidence
+    }
+
+    pub fn current_event_id(&self) -> &str {
+        &self.graph.current_event_id
+    }
+
     fn match_from(
         &self,
         pid: u32,
         template: &KillChainTemplate,
         stage_idx: usize,
         depth: usize,
-        prev_ts: i64,
-    ) -> bool {
+        prev_ts: Option<i64>,
+        terminal_pid: u32,
+    ) -> Option<Vec<KillChainWitness>> {
         if stage_idx >= template.stages.len() || depth > template.max_depth {
-            return false;
+            return None;
         }
-
-        let Some(node) = self.graph.node(pid) else {
-            return false;
-        };
-        if stage_idx > 0 && node.last_seen - prev_ts > template.max_inter_stage_secs {
-            return false;
+        let node = self.graph.node(pid)?;
+        let mut witnesses = template.stages[stage_idx].witnesses(node)?;
+        let stage_ts = witnesses.iter().map(|w| w.ts_unix).max()?;
+        if prev_ts.is_some_and(|prev| {
+            stage_ts < prev || stage_ts.saturating_sub(prev) > template.max_inter_stage_secs
+        }) {
+            return None;
         }
-
-        if !template.stages[stage_idx].matches(node) {
-            return false;
-        }
-
         if stage_idx + 1 == template.stages.len() {
-            return true;
+            return (pid == terminal_pid
+                && witnesses
+                    .iter()
+                    .any(|w| w.event_id == self.graph.current_event_id))
+            .then_some(witnesses);
         }
-
         if let Some(children) = self.graph.children_of(pid) {
             for child in children {
-                if self.match_from(*child, template, stage_idx + 1, depth + 1, node.last_seen) {
-                    return true;
+                if let Some(next) = self.match_from(
+                    *child,
+                    template,
+                    stage_idx + 1,
+                    depth + 1,
+                    Some(stage_ts),
+                    terminal_pid,
+                ) {
+                    witnesses.extend(next);
+                    return Some(witnesses);
                 }
             }
         }
-
-        false
+        None
     }
 
     #[cfg(test)]

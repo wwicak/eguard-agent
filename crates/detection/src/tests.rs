@@ -1135,8 +1135,17 @@ fn layer4_matches_default_template() {
     net.ppid = 10;
     net.session_id = net.pid;
     net.dst_port = Some(9001);
+    net.dst_ip = Some("198.51.100.7".into());
     let hits = l4.observe(&net);
     assert!(hits.iter().any(|h| h == "killchain_webshell_network"));
+    let evidence = &l4.last_evidence()[0];
+    assert_eq!(evidence.peer_ip.as_deref(), Some("198.51.100.7"));
+    assert_eq!(evidence.peer_port, Some(9001));
+    assert_eq!(evidence.witnesses.iter().map(|w| w.ts_unix).collect::<Vec<_>>(), vec![1, 2, 4]);
+    assert_eq!(evidence.witnesses[1].exec_generation, evidence.witnesses[2].exec_generation);
+    assert_ne!(evidence.witnesses[0].event_id, evidence.witnesses[2].event_id);
+    let json = serde_json::to_value(evidence).unwrap();
+    assert_eq!(json["witnesses"][2]["event_id"], l4.current_event_id());
 }
 
 #[test]
@@ -1816,6 +1825,17 @@ fn privileged_container_killchain_triggers() {
         hits.iter().any(|h| h == "killchain_container_privileged"),
         "privileged container should trigger killchain"
     );
+    ev.event_class = EventClass::FileOpen;
+    for ts in [21, 40] {
+        ev.ts_unix = ts;
+        assert!(l4.observe(&ev).is_empty(), "cached state is not a new transition");
+    }
+    ev.ts_unix = 41;
+    ev.container_privileged = false;
+    assert!(l4.observe(&ev).is_empty());
+    ev.ts_unix = 42;
+    ev.container_privileged = true;
+    assert_eq!(l4.observe(&ev), vec!["killchain_container_privileged"]);
 }
 
 #[test]
@@ -3895,3 +3915,6 @@ fn ephemeral_exact_store_file_is_removed_on_drop() {
         "ephemeral store should be removed once the owning engine/store drops"
     );
 }
+
+#[path = "tests/detp1_killchain.rs"]
+mod detp1_killchain;

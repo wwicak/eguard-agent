@@ -859,7 +859,7 @@ Approved contract: `/tmp/eg-detp1-agent.md`; start 2026-11-05 05:20 UTC, time bo
 
 ## Plan
 - [x] A1: metadata migration, conservative protection of legacy rows, telemetry-first eviction, counted/logged saturation; 5 new tests RED on base, all 23 buffer tests GREEN. Logs: `release/DETP1-AGENT-logs/A1-{red-base,green}.log`.
-- [ ] A2: causal, per-process-instance kill-chain firings with witnesses; RED/GREEN; commit.
+- [x] A2: terminal-event matching, exec-generation/window dedup, real stage timestamps, locally namespaced witness IDs and peer JSON. Three new regressions RED on base and GREEN on the built test binary; 13 existing layer4 tests GREEN including strengthened serialized-witness assertions. Cargo-filter confirmation queued.
 - [ ] A3: verified self-lineage/configured-peer handling and analyst JSON flag; RED/GREEN; commit.
 - [ ] A4: broad strings as features only, retain specific malicious decisions; RED/GREEN; commit.
 - [ ] A5: credential-source precision without changing network semantics; RED/GREEN; commit.

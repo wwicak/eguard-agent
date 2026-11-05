@@ -383,6 +383,8 @@ mod tests {
             signals,
             temporal_hits: Vec::new(),
             kill_chain_hits: Vec::new(),
+            kill_chain_evidence: Vec::new(),
+            observation_id: None,
             exploit_indicators: Vec::new(),
             kernel_integrity_indicators: Vec::new(),
             tamper_indicators: Vec::new(),

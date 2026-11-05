@@ -2,13 +2,39 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::information;
 use crate::types::{EventClass, TelemetryEvent};
+use serde::Serialize;
 
 use super::policy::{
     is_expected_auth_stack_access, is_sensitive_credential_path, path_root_prefix, RansomwarePolicy,
 };
 
+#[derive(Debug, Clone, Serialize)]
+pub struct KillChainWitness {
+    pub event_id: String,
+    pub ts_unix: i64,
+    pub pid: u32,
+    pub process: String,
+    pub exec_generation: u64,
+}
+
+fn witness_epoch() -> String {
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    format!(
+        "local:{}:{}:{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos(),
+        SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct GraphNode {
+    pub(super) identity_witness: KillChainWitness,
+    pub(super) signal_witnesses: HashMap<&'static str, KillChainWitness>,
+    pub(super) fired_templates: HashMap<String, i64>,
     pub(super) ppid: u32,
     pub(super) process: String,
     pub(super) uid: u32,
@@ -98,6 +124,8 @@ impl WriteWindowState {
 
 impl GraphNode {
     fn reset_runtime_signals(&mut self) {
+        self.signal_witnesses.clear();
+        self.fired_templates.clear();
         self.network_non_web = false;
         self.module_loaded = false;
         self.sensitive_file_access = false;
@@ -114,6 +142,9 @@ impl GraphNode {
 
 #[derive(Debug, Clone)]
 pub(super) struct ProcessGraph {
+    witness_epoch: String,
+    observation_sequence: u64,
+    pub(super) current_event_id: String,
     nodes: HashMap<u32, GraphNode>,
     children: HashMap<u32, HashSet<u32>>,
     window_secs: i64,
@@ -130,6 +161,9 @@ pub(super) struct ProcessGraph {
 impl ProcessGraph {
     pub(super) fn with_capacity(window_secs: i64, max_nodes: usize, max_edges: usize) -> Self {
         Self {
+            witness_epoch: witness_epoch(),
+            observation_sequence: 0,
+            current_event_id: String::new(),
             nodes: HashMap::new(),
             children: HashMap::new(),
             window_secs,
@@ -151,6 +185,9 @@ impl ProcessGraph {
         ransomware_policy: RansomwarePolicy,
     ) -> Self {
         Self {
+            witness_epoch: witness_epoch(),
+            observation_sequence: 0,
+            current_event_id: String::new(),
             nodes: HashMap::new(),
             children: HashMap::new(),
             window_secs,
@@ -166,6 +203,25 @@ impl ProcessGraph {
     }
 
     pub(super) fn observe(&mut self, event: &TelemetryEvent) {
+        self.observation_sequence = self
+            .observation_sequence
+            .checked_add(1)
+            .expect("observation sequence exhausted");
+        self.current_event_id = format!("{}:{}", self.witness_epoch, self.observation_sequence);
+        let generation = self
+            .nodes
+            .get(&event.pid)
+            .filter(|_| !matches!(event.event_class, EventClass::ProcessExec))
+            .map_or(self.observation_sequence, |node| {
+                node.identity_witness.exec_generation
+            });
+        let witness = KillChainWitness {
+            event_id: self.current_event_id.clone(),
+            ts_unix: event.ts_unix,
+            pid: event.pid,
+            process: event.process.clone(),
+            exec_generation: generation,
+        };
         if matches!(event.event_class, EventClass::ProcessExit) {
             self.observe_process_exit(event.pid, event.ts_unix);
             self.prune(event.ts_unix);
@@ -213,6 +269,9 @@ impl ProcessGraph {
 
         let previous_ppid = {
             let node = self.nodes.entry(event.pid).or_insert_with(|| GraphNode {
+                identity_witness: witness.clone(),
+                signal_witnesses: HashMap::new(),
+                fired_templates: HashMap::new(),
                 ppid: event.ppid,
                 process: event.process.clone(),
                 uid: event.uid,
@@ -234,8 +293,12 @@ impl ProcessGraph {
 
             if reset_for_exec {
                 node.reset_runtime_signals();
+                node.identity_witness = witness.clone();
             }
 
+            let container_escape_transition = event.container_escape && !node.container_escape;
+            let container_privileged_transition =
+                event.container_privileged && !node.container_privileged;
             node.ppid = event.ppid;
             node.process = event.process.clone();
             node.uid = event.uid;
@@ -281,6 +344,32 @@ impl ProcessGraph {
             }
             if execveat_activity {
                 node.execveat_activity = true;
+            }
+
+            // Record the causative event, not last_seen refreshed by unrelated reads.
+            for (signal, active) in [
+                (
+                    "network_non_web",
+                    matches!(event.event_class, EventClass::NetworkConnect)
+                        && event.dst_port.is_some_and(|port| port != 80 && port != 443),
+                ),
+                (
+                    "module_loaded",
+                    matches!(event.event_class, EventClass::ModuleLoad),
+                ),
+                ("sensitive_file_access", sensitive_access),
+                ("ransomware_write_burst", ransomware_burst),
+                ("container_escape", container_escape_transition),
+                ("container_privileged", container_privileged_transition),
+                ("ptrace_activity", ptrace_activity),
+                ("userfaultfd_activity", userfaultfd_activity),
+                ("execveat_activity", execveat_activity),
+                ("proc_mem_access", proc_mem_access),
+                ("fileless_exec", fileless_exec),
+            ] {
+                if active {
+                    node.signal_witnesses.insert(signal, witness.clone());
+                }
             }
 
             previous_ppid
@@ -338,6 +427,21 @@ impl ProcessGraph {
 
     pub(super) fn node(&self, pid: u32) -> Option<&GraphNode> {
         self.nodes.get(&pid)
+    }
+
+    pub(super) fn mark_fired(&mut self, pid: u32, template: &str, now: i64, window: i64) -> bool {
+        let Some(node) = self.nodes.get_mut(&pid) else {
+            return false;
+        };
+        if node
+            .fired_templates
+            .get(template)
+            .is_some_and(|last| now.saturating_sub(*last) <= window)
+        {
+            return false;
+        }
+        node.fired_templates.insert(template.to_string(), now);
+        true
     }
 
     pub(super) fn children_of(&self, pid: u32) -> Option<&HashSet<u32>> {
