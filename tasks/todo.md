@@ -875,3 +875,15 @@ Verification completed 2026-11-05 06:38 UTC, within the 5h limit. Final new-test
 Supervisor decisions:
 - Missing historical download-exec witnesses: clearly labeled synthetic qualification only; keep historical findings UNKNOWN, prove positive fixture on both base and branch. Temporal-stage witness IDs remain an open item because adding them requires automaton/result changes beyond the small accuracy fix.
 - Cargo updated its own ~/.cargo cache metadata; supervisor accepted it as a tool-cache side effect. Keep existing CARGO_HOME, --offline, authorized target/TMPDIR; no cargo config edits/install/update/network fetch.
+
+# A7-A9 (verdict noise)
+
+Contract: `/tmp/eg-verdict-agent.md`; started 2026-11-05 06:52 UTC, 3h time box.
+
+## Plan
+- [x] A7: constrained telemetry T1003 context to bounded Windows hive paths and exact Linux credential stores, preserving dump-command context. All 3 new tests runtime RED; all 4 telemetry tests GREEN. Evidence: `artifacts/verdict-noise/A7-{red,green}.log`.
+- [ ] A8: floor entropy sigma at max(0.1 bits, 5% baseline mean); explicit minimum history gate; prove small/large deviations RED/GREEN.
+- [ ] A9: evaluate/attach cmdline dimensions only on exec, including periodic shifts and Layer3 entropy; prove file-event non-evaluation and exec positives RED/GREEN.
+- [ ] Run offline scoped regressions, touched-crate clippy, formatting and diff checks; create local commits and append release report.
+
+Verification: existing CARGO_HOME; `CARGO_TARGET_DIR=/home/dimas/eg-work/cargo-target-detp1`, `TMPDIR=$PWD/.tmp`; evidence under worktree-local ignored `artifacts/verdict-noise`. No host/network/push/tag/release access. Stop below 15GiB free or on contract stop rules.

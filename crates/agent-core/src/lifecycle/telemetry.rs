@@ -370,11 +370,19 @@ impl AgentRuntime {
         {
             techniques.insert("T1059.004".to_string());
         }
-        if file_path.contains("hklm\\sam")
-            || file_path.contains("security")
-            || file_path.contains("system32\\config\\sam")
-            || file_path.contains("/etc/shadow")
-            || file_path.contains("/etc/master.passwd")
+        if ["\\config\\sam", "\\config\\security", "\\config\\system"]
+            .iter()
+            .any(|store| file_path.ends_with(store))
+            || ["hklm\\sam", "hklm\\security"]
+                .iter()
+                .any(|hive| file_path == *hive || file_path.starts_with(&format!("{hive}\\")))
+            || matches!(
+                event.file_path.as_deref(),
+                Some(
+                    "/etc/shadow" | "/etc/gshadow" | "/etc/master.passwd" | "/etc/security/opasswd"
+                )
+            )
+            || matches!(process.as_str(), "lsass" | "lsass.exe")
             || command_line.contains("reg save")
             || command_line.contains("minidump")
             || command_line.contains("lsass")
@@ -488,6 +496,80 @@ mod tests {
             container_id: None,
             container_escape: false,
             container_privileged: false,
+        }
+    }
+
+    fn context_techniques(event: &TelemetryEvent) -> Vec<String> {
+        let mut engine = detection::DetectionEngine::default_with_rules();
+        let outcome = engine.process_event(&self::event("cron", None));
+        AgentRuntime::mitre_techniques(event, &outcome)
+    }
+
+    #[test]
+    fn verdict_a7_cron_security_config_is_not_credential_access() {
+        for path in [
+            "/etc/security/limits.conf",
+            "/etc/security/pam_env.conf",
+            "/etc/security/namespace.conf",
+            "/tmp/security-report",
+            "/etc/shadow.backup-not-a-store",
+        ] {
+            let mut event = event("cron", Some("cron"));
+            event.event_class = EventClass::FileOpen;
+            event.file_path = Some(path.to_string());
+            assert!(
+                !context_techniques(&event).iter().any(|t| t == "T1003"),
+                "ordinary configuration read tagged as credentials: {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn verdict_a7_linux_credential_stores_keep_t1003() {
+        for path in [
+            "/etc/gshadow",
+            "/etc/shadow",
+            "/etc/master.passwd",
+            "/etc/security/opasswd",
+        ] {
+            let mut event = event("cat", None);
+            event.event_class = EventClass::FileOpen;
+            event.file_path = Some(path.to_string());
+            assert!(
+                context_techniques(&event).iter().any(|t| t == "T1003"),
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn verdict_a7_windows_credential_stores_keep_t1003() {
+        for path in [
+            r"C:\Windows\System32\config\SYSTEM",
+            r"C:\Windows\System32\config\SAM",
+            r"C:\Windows\System32\config\SECURITY",
+            r"HKLM\SAM",
+            r"HKLM\SECURITY",
+        ] {
+            let mut event = event("reg.exe", None);
+            event.event_class = EventClass::FileOpen;
+            event.file_path = Some(path.to_string());
+            assert!(
+                context_techniques(&event).iter().any(|t| t == "T1003"),
+                "{path}"
+            );
+        }
+        for cmd in [
+            "reg save HKLM\\SAM backup",
+            "rundll32 minidump",
+            "dump lsass",
+        ] {
+            assert!(
+                context_techniques(&event("reg.exe", Some(cmd)))
+                    .iter()
+                    .any(|t| t == "T1003"),
+                "{cmd}"
+            );
         }
     }
 
