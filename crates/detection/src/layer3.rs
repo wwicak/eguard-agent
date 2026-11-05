@@ -3,6 +3,7 @@ use std::collections::{HashMap, VecDeque};
 use crate::information::CusumDetector;
 use crate::math::{
     default_uniform_baseline, kl_divergence_bits, robust_z, shannon_entropy_bits, tau_delta_bits,
+    MIN_ENTROPY_SAMPLES,
 };
 use crate::types::{EventClass, TelemetryEvent, EVENT_CLASSES, EVENT_CLASS_COUNT};
 
@@ -264,13 +265,16 @@ impl AnomalyEngine {
             .entry(event.process.clone())
             .or_default();
 
+        let baseline_ready = history.len() >= MIN_ENTROPY_SAMPLES;
         let z = robust_z(entropy, history);
         history.push_back(entropy);
         while history.len() > self.config.entropy_history_limit {
             history.pop_front();
         }
 
-        let high = entropy > self.config.entropy_threshold && z > self.config.entropy_z_threshold;
+        let high = baseline_ready
+            && entropy > self.config.entropy_threshold
+            && z > self.config.entropy_z_threshold;
         (Some(entropy), Some(z), high)
     }
 

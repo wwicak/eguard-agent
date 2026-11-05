@@ -3775,6 +3775,58 @@ fn anomaly_monitor_state_remains_memory_bounded_under_long_streams() {
 }
 
 #[test]
+fn verdict_a8_entropy_sigma_has_absolute_and_relative_floors() {
+    for (mean, expected_sigma) in [(0.5, 0.1), (5.0, 0.25)] {
+        let history: VecDeque<f64> = (0..32)
+            .map(|i| mean + if i % 2 == 0 { 1e-10 } else { -1e-10 })
+            .collect();
+        let z = crate::math::robust_z(mean + 0.05, &history);
+        assert!((z - 0.05 / expected_sigma).abs() < 1e-6, "z={z}");
+        let large_z = crate::math::robust_z(mean + 3.0, &history);
+        assert!(large_z > 3.0 && large_z <= 30.0001, "z={large_z}");
+    }
+}
+
+#[test]
+fn verdict_a8_small_entropy_deviation_is_not_high_but_large_is() {
+    let mut engine = AnomalyEngine::default();
+    let mut ev = event(1, EventClass::ProcessExec, "python", "timer", 1000);
+    ev.command_line = Some("abcdefghijklmnopqrstuvwx01234567".repeat(2));
+    for _ in 0..32 {
+        assert!(engine.observe(&ev).is_none());
+    }
+    ev.command_line.as_mut().unwrap().push('Z');
+    assert!(
+        engine.observe(&ev).is_none(),
+        "small deviation must not be high"
+    );
+    ev.command_line = Some((33u8..=126).map(char::from).collect());
+    let decision = engine
+        .observe(&ev)
+        .expect("large entropy deviation still alerts");
+    assert!(decision.high);
+    assert!(decision.entropy_z.unwrap() > 3.0);
+}
+
+#[test]
+fn verdict_a8_entropy_high_requires_minimum_history() {
+    let mut engine = AnomalyEngine::new(AnomalyConfig {
+        entropy_threshold: 0.1,
+        entropy_z_threshold: -0.1,
+        ..AnomalyConfig::default()
+    });
+    let mut ev = event(1, EventClass::ProcessExec, "python", "timer", 1000);
+    ev.command_line = Some("abcdefghijklmnopqrstuvwx01234567".repeat(2));
+    for _ in 0..10 {
+        assert!(
+            engine.observe(&ev).is_none(),
+            "entropy baseline is not ready"
+        );
+    }
+    assert!(engine.observe(&ev).unwrap().high);
+}
+
+#[test]
 // AC-DET-044
 fn robust_zscore_uses_median_and_mad_baseline() {
     let history: VecDeque<f64> = (1..=11).map(|v| v as f64).collect();

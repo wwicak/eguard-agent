@@ -882,7 +882,7 @@ Contract: `/tmp/eg-verdict-agent.md`; started 2026-11-05 06:52 UTC, 3h time box.
 
 ## Plan
 - [x] A7: constrained telemetry T1003 context to bounded Windows hive paths and exact Linux credential stores, preserving dump-command context. All 3 new tests runtime RED; all 4 telemetry tests GREEN. Evidence: `artifacts/verdict-noise/A7-{red,green}.log`.
-- [ ] A8: floor entropy sigma at max(0.1 bits, 5% baseline mean); explicit minimum history gate; prove small/large deviations RED/GREEN.
+- [x] A8: floored entropy sigma at max(0.1 bits, 5% baseline mean), with 10 prior samples required for entropy-high. All 3 new tests runtime RED/GREEN; entropy 16, anomaly 7, robust-z 1, drift-report 1 scoped executions GREEN (overlap). Evidence: `artifacts/verdict-noise/A8-*.log`.
 - [ ] A9: evaluate/attach cmdline dimensions only on exec, including periodic shifts and Layer3 entropy; prove file-event non-evaluation and exec positives RED/GREEN.
 - [ ] Run offline scoped regressions, touched-crate clippy, formatting and diff checks; create local commits and append release report.
 

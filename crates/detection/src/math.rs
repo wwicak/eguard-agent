@@ -2,6 +2,8 @@ use std::collections::{HashMap, VecDeque};
 
 use crate::types::{EventClass, EVENT_CLASSES};
 
+pub(crate) const MIN_ENTROPY_SAMPLES: usize = 10;
+
 pub(crate) fn default_uniform_baseline() -> HashMap<EventClass, f64> {
     let mut out = HashMap::new();
     let p = 1.0 / EVENT_CLASSES.len() as f64;
@@ -80,7 +82,7 @@ pub(crate) fn shannon_entropy_bits(s: &str) -> f64 {
 }
 
 pub(crate) fn robust_z(value: f64, history: &VecDeque<f64>) -> f64 {
-    if history.len() < 10 {
+    if history.len() < MIN_ENTROPY_SAMPLES {
         return 0.0;
     }
 
@@ -90,9 +92,12 @@ pub(crate) fn robust_z(value: f64, history: &VecDeque<f64>) -> f64 {
 
     let mut abs_dev: Vec<f64> = values.iter().map(|x| (x - median).abs()).collect();
     abs_dev.sort_by(|a, b| a.total_cmp(b));
-    let mad = percentile_sorted(&abs_dev, 50.0).max(1e-9);
+    let mad = percentile_sorted(&abs_dev, 50.0);
+    let mean = history.iter().sum::<f64>() / history.len() as f64;
+    // Near-constant entropy baselines need a meaningful scale, not numerical noise.
+    let sigma = (1.4826 * mad).max(0.1).max(0.05 * mean.abs());
 
-    (value - median) / (1.4826 * mad)
+    (value - median) / sigma
 }
 
 fn percentile_sorted(values: &[f64], p: f64) -> f64 {
