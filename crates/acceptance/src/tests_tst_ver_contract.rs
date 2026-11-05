@@ -1444,17 +1444,23 @@ fn ux_routes_and_views_are_present() {
     }
 
     let nav = read("../fe_eguard/html/egappserver/root/src/components/common/NavbarMain.vue");
-    // Child labels/routes come from imported categories, not Navbar literals.
-    // Events and Responses are now displayed as Telemetry and Response.
-    for marker in [
-        "Endpoint Security",
-        "import { ENDPOINT_NAV_CATEGORIES } from \"@/views/endpoint/endpointNavConfig\"",
-        "child: ENDPOINT_NAV_CATEGORIES.flatMap((cat)",
-        "cat.items.map((item)",
-        "name: item.label",
-        "route: item.name",
-    ] {
+    // Navbar delegates menu construction; labels/routes live in its builder.
+    for marker in ["from './navigation/navConfig'", "buildNavConfig({"] {
         assert!(nav.contains(marker), "Navbar must consume {marker}");
+    }
+    let nav_config =
+        read("../fe_eguard/html/egappserver/root/src/components/common/navigation/navConfig.js");
+    for marker in [
+        "export const buildNavConfig",
+        "import { ENDPOINT_NAV_CATEGORIES } from '@/views/endpoint/endpointNavConfig'",
+        "node('endpoint-security', 'Endpoint Security', 'endpointDetectionDashboard'",
+        "child: ENDPOINT_NAV_CATEGORIES.map(cat =>",
+        "child: items.map(item => node(item.name, item.label, item.name,",
+    ] {
+        assert!(
+            nav_config.contains(marker),
+            "Navigation builder must include {marker}"
+        );
     }
     let categories =
         read("../fe_eguard/html/egappserver/root/src/views/endpoint/endpointNavConfig.js");
