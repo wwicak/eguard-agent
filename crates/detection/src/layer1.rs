@@ -680,13 +680,15 @@ impl IocLayer1 {
             // Require the whole socket-to-stdio shape, never interpreter/dup2 alone.
             let reverse_shell = compact.contains("socket.socket(")
                 && compact.contains(".connect(")
-                && compact.contains(".dup2(")
+                && (compact.contains(".dup2(") || compact.contains(".fileno()"))
                 && (compact.contains("/bin/sh") || compact.contains("/bin/bash"));
+            let exec_base64 = compact.contains("exec(") && compact.contains("b64decode(");
             let download_exec = (compact.contains("curl") || compact.contains("wget"))
                 && compact.contains("://")
                 && (compact.contains("|sh") || compact.contains("|bash"));
             for (signature, matched) in [
                 ("python_socket_stdio_reverse_shell", reverse_shell),
+                ("python_exec_base64_payload", exec_base64),
                 ("download_pipe_shell", download_exec),
             ] {
                 if matched {
