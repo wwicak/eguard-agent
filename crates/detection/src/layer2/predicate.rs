@@ -16,6 +16,7 @@ pub struct TemporalPredicate {
     pub file_path_contains: Option<HashSet<String>>,
     pub command_line_contains: Option<HashSet<String>>,
     pub require_file_write: bool,
+    pub require_credential_source: bool,
 }
 
 impl TemporalPredicate {
@@ -117,6 +118,15 @@ impl TemporalPredicate {
             {
                 return false;
             }
+        }
+
+        if self.require_credential_source
+            && !event
+                .file_path
+                .as_deref()
+                .is_some_and(crate::layer4::is_credential_source)
+        {
+            return false;
         }
 
         if self.file_path_any_of.is_some() || self.file_path_contains.is_some() {

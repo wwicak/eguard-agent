@@ -48,6 +48,7 @@ fn one_stage_rule(name: &str, class: EventClass) -> TemporalRule {
                 file_path_contains: None,
                 command_line_contains: None,
                 require_file_write: false,
+                require_credential_source: false,
             },
             within_secs: 15,
         }],

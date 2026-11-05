@@ -104,6 +104,29 @@ pub(super) fn is_sensitive_credential_path(path: &str) -> bool {
     false
 }
 
+pub(crate) fn is_credential_source(path: &str) -> bool {
+    let lower = path.replace('\\', "/").to_ascii_lowercase();
+    let name = lower.rsplit('/').next().unwrap_or("");
+    if lower.ends_with(".pub") || matches!(name, "authorized_keys" | "authorized_keys2") {
+        return false;
+    }
+    // Reuse the graph's credential-source policy, without treating public keys as secrets.
+    is_sensitive_credential_path(&lower)
+        || [
+            "/.kube/config",
+            "/.config/gcloud/credentials.db",
+            "/application_default_credentials.json",
+            "/.azure/accesstokens.json",
+            "/.azure/msal_token_cache.json",
+            "/login data",
+            "/logins.json",
+            "/key4.db",
+            "/signons.sqlite",
+        ]
+        .iter()
+        .any(|needle| lower.contains(needle))
+}
+
 pub(super) fn is_expected_auth_stack_access(process: &str, path: &str) -> bool {
     let process = process_basename(process).to_ascii_lowercase();
     if !matches!(

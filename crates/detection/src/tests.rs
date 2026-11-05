@@ -47,6 +47,7 @@ fn temporal_cap_rule(name: &str) -> TemporalRule {
                     file_path_contains: None,
                     command_line_contains: None,
                     require_file_write: false,
+                    require_credential_source: false,
                 },
                 within_secs: 30,
             },
@@ -64,6 +65,7 @@ fn temporal_cap_rule(name: &str) -> TemporalRule {
                     file_path_contains: None,
                     command_line_contains: None,
                     require_file_write: false,
+                    require_credential_source: false,
                 },
                 within_secs: 10,
             },
@@ -3943,3 +3945,6 @@ fn ephemeral_exact_store_file_is_removed_on_drop() {
 
 #[path = "tests/detp1_killchain.rs"]
 mod detp1_killchain;
+
+#[path = "tests/detp1_credentials.rs"]
+mod detp1_credentials;

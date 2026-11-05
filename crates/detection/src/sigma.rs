@@ -186,6 +186,7 @@ fn compile_sequence_sigma_ast(doc: SigmaRuleDoc) -> Result<BoundedTemporalAst> {
                 file_path_contains: into_set(stage.file_path_contains),
                 command_line_contains: into_set(stage.command_line_contains),
                 require_file_write: stage.require_file_write,
+                require_credential_source: false,
             },
             within_secs,
         });
@@ -253,6 +254,7 @@ fn compile_legacy_sigma_ast(yaml: &str, doc: &SigmaRuleDoc) -> Result<BoundedTem
             file_path_contains: some_set(acc.file_path_contains),
             command_line_contains: some_set(acc.command_line_contains),
             require_file_write: false,
+            require_credential_source: false,
         },
         within_secs: 30,
     };
