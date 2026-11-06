@@ -36,6 +36,7 @@ fn one_stage_rule(name: &str, class: EventClass) -> TemporalRule {
         name: name.to_string(),
         stages: vec![TemporalStage {
             predicate: TemporalPredicate {
+                sigma: None,
                 event_class: class,
                 process_any_of: None,
                 process_starts_with: None,

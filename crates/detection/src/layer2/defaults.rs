@@ -14,6 +14,7 @@ pub(super) fn default_rules() -> Vec<TemporalRule> {
         stages: vec![
             TemporalStage {
                 predicate: TemporalPredicate {
+                sigma: None,
                     event_class: EventClass::ProcessExec,
                     process_any_of: Some(shells.clone()),
                     process_starts_with: None,
@@ -32,6 +33,7 @@ pub(super) fn default_rules() -> Vec<TemporalRule> {
             },
             TemporalStage {
                 predicate: TemporalPredicate {
+                sigma: None,
                     event_class: EventClass::NetworkConnect,
                     process_any_of: None,
                     process_starts_with: None,
@@ -57,6 +59,7 @@ pub(super) fn default_rules() -> Vec<TemporalRule> {
         stages: vec![
             TemporalStage {
                 predicate: TemporalPredicate {
+                sigma: None,
                     event_class: EventClass::ProcessExec,
                     process_any_of: Some(set_of(["sudo", "su", "pkexec"])),
                     process_starts_with: None,
@@ -75,6 +78,7 @@ pub(super) fn default_rules() -> Vec<TemporalRule> {
             },
             TemporalStage {
                 predicate: TemporalPredicate {
+                sigma: None,
                     event_class: EventClass::ProcessExec,
                     process_any_of: Some(set_of([
                         "bash", "sh", "dash", "zsh", "ksh", "python", "python3", "perl", "ruby",
@@ -102,6 +106,7 @@ pub(super) fn default_rules() -> Vec<TemporalRule> {
         stages: vec![
             TemporalStage {
                 predicate: TemporalPredicate {
+                sigma: None,
                     event_class: EventClass::ProcessExec,
                     process_any_of: None,
                     process_starts_with: None,
@@ -127,6 +132,7 @@ pub(super) fn default_rules() -> Vec<TemporalRule> {
             },
             TemporalStage {
                 predicate: TemporalPredicate {
+                sigma: None,
                     event_class: EventClass::NetworkConnect,
                     process_any_of: None,
                     process_starts_with: None,
@@ -152,6 +158,7 @@ pub(super) fn default_rules() -> Vec<TemporalRule> {
         stages: vec![
             TemporalStage {
                 predicate: TemporalPredicate {
+                sigma: None,
                     event_class: EventClass::ProcessExec,
                     process_any_of: Some(set_of(["curl", "wget", "fetch"])),
                     process_starts_with: None,
@@ -170,6 +177,7 @@ pub(super) fn default_rules() -> Vec<TemporalRule> {
             },
             TemporalStage {
                 predicate: TemporalPredicate {
+                sigma: None,
                     event_class: EventClass::ProcessExec,
                     process_any_of: Some(shells.clone()),
                     process_starts_with: None,
@@ -199,6 +207,7 @@ pub(super) fn default_rules() -> Vec<TemporalRule> {
         stages: vec![
             TemporalStage {
                 predicate: TemporalPredicate {
+                sigma: None,
                     event_class: EventClass::ProcessExec,
                     process_any_of: None,
                     process_starts_with: Some(vec![
@@ -223,6 +232,7 @@ pub(super) fn default_rules() -> Vec<TemporalRule> {
             },
             TemporalStage {
                 predicate: TemporalPredicate {
+                sigma: None,
                     event_class: EventClass::ProcessExec,
                     process_any_of: Some(shells),
                     process_starts_with: None,
@@ -248,6 +258,7 @@ pub(super) fn default_rules() -> Vec<TemporalRule> {
         stages: vec![
             TemporalStage {
                 predicate: TemporalPredicate {
+                sigma: None,
                     event_class: EventClass::FileOpen,
                     process_any_of: None,
                     process_starts_with: None,
@@ -266,6 +277,7 @@ pub(super) fn default_rules() -> Vec<TemporalRule> {
             },
             TemporalStage {
                 predicate: TemporalPredicate {
+                sigma: None,
                     event_class: EventClass::NetworkConnect,
                     process_any_of: None,
                     process_starts_with: None,
@@ -291,6 +303,7 @@ pub(super) fn default_rules() -> Vec<TemporalRule> {
         stages: vec![
             TemporalStage {
                 predicate: TemporalPredicate {
+                sigma: None,
                     event_class: EventClass::FileOpen,
                     process_any_of: None,
                     process_starts_with: None,
@@ -316,6 +329,7 @@ pub(super) fn default_rules() -> Vec<TemporalRule> {
             },
             TemporalStage {
                 predicate: TemporalPredicate {
+                sigma: None,
                     event_class: EventClass::ProcessExec,
                     process_any_of: None,
                     process_starts_with: None,
@@ -341,6 +355,7 @@ pub(super) fn default_rules() -> Vec<TemporalRule> {
         stages: vec![
             TemporalStage {
                 predicate: TemporalPredicate {
+                sigma: None,
                     event_class: EventClass::FileOpen,
                     process_any_of: None,
                     process_starts_with: None,
@@ -359,6 +374,7 @@ pub(super) fn default_rules() -> Vec<TemporalRule> {
             },
             TemporalStage {
                 predicate: TemporalPredicate {
+                sigma: None,
                     event_class: EventClass::NetworkConnect,
                     process_any_of: None,
                     process_starts_with: None,
@@ -384,6 +400,7 @@ pub(super) fn default_rules() -> Vec<TemporalRule> {
         stages: vec![
             TemporalStage {
                 predicate: TemporalPredicate {
+                sigma: None,
                     event_class: EventClass::ProcessExec,
                     process_any_of: None,
                     process_starts_with: None,
@@ -402,6 +419,7 @@ pub(super) fn default_rules() -> Vec<TemporalRule> {
             },
             TemporalStage {
                 predicate: TemporalPredicate {
+                sigma: None,
                     event_class: EventClass::NetworkConnect,
                     process_any_of: None,
                     process_starts_with: None,

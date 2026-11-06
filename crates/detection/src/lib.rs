@@ -20,6 +20,7 @@ pub mod memory_scanner;
 mod policy;
 mod replay;
 mod sigma;
+pub mod sigma_expr;
 mod tamper;
 pub mod threat_hunting;
 mod types;
