@@ -1,9 +1,7 @@
-// RULEAUDIT2 lane A1 characterization harness (read-only audit evidence).
-// Builds a DetectionEngine the way agent-core detection_bootstrap.rs does
-// (default_with_rules + L1 seeds + the 15 built-in SIGMA YAMLs), with the
-// seeds/YAML parsed from the real bootstrap source, then replays realistic
-// benign and attack event sequences and prints the outcome per scenario.
-// Assertions only pin CURRENT behaviour that the audit report cites.
+// Adapted RULEAUDIT2-A1 synthetic scenarios: precision and attack controls.
+// Seeds and remaining built-in YAML are read from the real bootstrap source;
+// default temporal/L4 families are shared with production. Directory packs are
+// intentionally excluded (APACKS owns their qualification).
 
 use std::collections::BTreeMap;
 
@@ -132,8 +130,8 @@ impl E {
 
 use EventClass::*;
 
-// Linux runtime: session_id = root of the parent chain (PID 1) for almost all
-// processes (detection_event.rs:29-33 + platform-linux collect_parent_chain).
+// Deliberately retain the old shared PID-1 key in fixtures: it must never
+// authorize correlations without causal PID/PPID evidence.
 const HOST_SESSION: u32 = 1;
 // Windows: chain root is typically explorer/wininit; use one desktop root.
 const WIN_SESSION: u32 = 5000;

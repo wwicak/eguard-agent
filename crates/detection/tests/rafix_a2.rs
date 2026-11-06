@@ -1,11 +1,8 @@
-// RULEAUDIT2-A2 harness (read-only audit; scratch worktree only).
-// Production-equivalent agent detection engine (fe43f8a):
-//   DetectionEngine::default_with_rules()          (9 phi_* temporal defaults)
-//   + layer4 REPLACED by with_capacity_and_policy   (detection_bootstrap.rs:68-69, NO default templates)
-//   + 15 built-in SIGMA YAMLs                       (parsed verbatim from detection_bootstrap.rs at compile time)
-//   + L1 string signatures/features                 (parsed verbatim from detection_bootstrap.rs)
-//   + 9 bootstrap kill-chain templates              (hand-copied from detection_bootstrap.rs:618-928)
-// Events model agent-core to_detection_event(): session_id = parent_chain.last() == 1 (PID 1) on Linux.
+// Adapted RULEAUDIT2-A2 synthetic precision/recall scenarios.
+// Uses canonical default temporal/L4 families plus remaining bootstrap YAML
+// and L1 seeds, not a hand-copied alternate production template list.
+// Fixtures deliberately share session_id=1 to guard against host-wide joins.
+// Directory packs and native telemetry qualification are separate owner gates.
 use detection::{Confidence, DetectionEngine, EventClass, Layer4Engine, TelemetryEvent};
 
 const BOOTSTRAP: &str = include_str!("../../agent-core/src/lifecycle/detection_bootstrap.rs");
@@ -1561,6 +1558,7 @@ fn ra2_a2_session_scope_property() {
     );
     let _ = d.process_event(&a.0);
     let o = d.process_event(&b.0);
+    assert!(o.temporal_hits.is_empty());
     println!("RA2A2-SESSION|same_session_id=1|unrelated wget(cron) then bash(other user ssh)|T={:?}|conf={:?}", o.temporal_hits, o.confidence);
     let mut d = production_engine();
     let mut a2 = a.clone();
@@ -1575,10 +1573,10 @@ fn ra2_a2_session_scope_property() {
     );
 }
 
-// Templates that exist in Layer4Engine::with_default_templates() but are DROPPED in production
-// (detection_bootstrap.rs:68-69 replaces layer4 with an empty-template engine).
+// Unsafe/duplicate historical templates must not return through the default
+// constructor; webshell behavior is covered by canonical temporal rules.
 #[test]
-fn ra2_a2_default_templates_not_in_production() {
+fn ra2_a2_retired_default_templates_do_not_reappear() {
     for (label, nginx_exec_ts) in [
         ("nginx_started_1_day_ago", T0 - 86_400),
         ("nginx_started_5s_ago", T0 - 5),
@@ -1670,6 +1668,7 @@ fn ra2_a2_default_templates_not_in_production() {
         "RA2A2-DEFAULTL4|ransomware_write_burst|default_templates|hits={:?}",
         hits
     );
+    assert!(hits.is_empty(), "creates alone cannot qualify ransomware");
     let mut l4 = Layer4Engine::with_default_templates();
     let mut hits = Vec::new();
     for e in [
@@ -1710,6 +1709,7 @@ fn ra2_a2_default_templates_not_in_production() {
         "RA2A2-DEFAULTL4|user_root_module|sudo_modprobe|hits={:?}",
         hits
     );
+    assert!(hits.is_empty());
 }
 
 // Windows shapes (uid is always 0 on Windows: platform-windows etw/codec.rs:37; process names keep ".exe").
@@ -1853,16 +1853,19 @@ fn ra2_a2_ransomware_template_bulk_write_benign() {
         }
         hits.dedup();
         println!("RA2A2-RANSOM-BENIGN|{}|hits={:?}", label, hits);
+        assert!(
+            hits.is_empty(),
+            "{label}: normal creates are not ransomware"
+        );
     }
 }
 
 // Real-event replay (aggregate only). RA2_A2_CORPUS = JSON array extracted read-only from SIGFIX-corpus/events-full.json.
 #[test]
+#[ignore = "manual aggregate-only replay requires RA2_A2_CORPUS"]
 fn ra2_a2_corpus_replay_aggregate() {
-    let Ok(path) = std::env::var("RA2_A2_CORPUS") else {
-        println!("RA2A2-CORPUS|skipped (RA2_A2_CORPUS unset)");
-        return;
-    };
+    let path =
+        std::env::var("RA2_A2_CORPUS").expect("set RA2_A2_CORPUS for manual aggregate replay");
     let rows: Vec<serde_json::Value> =
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
     let mut by_agent: std::collections::BTreeMap<String, Vec<serde_json::Value>> =
