@@ -1,0 +1,19 @@
+# eGuard-authored endpoint rule; GPL-2.0-or-later.
+title: linux_setuid_setgid_writable_path
+description: Setuid or setgid bit set on a file in a user-writable directory.
+id: linux_setuid_setgid_writable_path
+level: medium
+status: experimental
+tags: [attack.privilege_escalation, attack.t1548.001]
+mitre_techniques: [T1548.001]
+logsource:
+  product: linux
+  category: process_creation
+detection:
+  selection_image:
+    Image|endswith: /chmod
+  selection_mode:
+    CommandLine|re: '(?-i:(?:^|\s)(?:[ugoa]*\+[rwxXstugo]*s[rwxXstugo]*|[2-7][0-7]{3})(?:\s|$))'
+  selection_target:
+    CommandLine|re: '(?-i:(?:^|\s)/(?:tmp|var/tmp|dev/shm|run/user|home)/\S+)'
+  condition: selection_image and selection_mode and selection_target

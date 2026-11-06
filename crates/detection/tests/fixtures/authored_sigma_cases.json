@@ -1140,5 +1140,84 @@
         }
       ]
     ]
+  },
+  {
+    "id": "linux_setuid_setgid_writable_path",
+    "file": "rules/sigma/linux_setuid_setgid_writable_path.yml",
+    "expected_level": "medium",
+    "must_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "chmod",
+          "cmdline": "chmod u+s /tmp/bash"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "chmod",
+          "cmdline": "chmod 4755 /dev/shm/x"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "chmod",
+          "cmdline": "chmod g+s /var/tmp/y"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "chmod",
+          "cmdline": "chmod a+sx /home/synthetic/x"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "chmod",
+          "cmdline": "chmod 2750 /run/user/1000/x"
+        }
+      ]
+    ],
+    "must_not_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "chmod",
+          "cmdline": "chmod u+s /usr/local/bin/tool"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "chmod",
+          "cmdline": "chmod 755 /tmp/x"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "chmod",
+          "cmdline": "chmod 1777 /tmp/d"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "chmod",
+          "cmdline": "chmod 04755 /tmp/x"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "chmod",
+          "cmdline": "chmod u+s /homebackup/x"
+        }
+      ]
+    ]
   }
 ]

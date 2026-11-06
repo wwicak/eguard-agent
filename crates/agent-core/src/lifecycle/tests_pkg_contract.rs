@@ -250,10 +250,10 @@ fn repo_sigma_rules_compile_from_rules_directory() {
 
     let mut names = detection.layer2.rule_names();
     names.sort();
-    // These authored rule titles equal their stable ids.
+    // Compare stable authored identities, independent of human-readable titles.
     let expected = vec![
         "linux_data_staging_archive", "linux_download_exec", "linux_ld_preload_defense_evasion",
-        "linux_persistence_cron_systemd", "linux_reverse_shell_devtcp", "linux_ssh_lateral_movement",
+        "linux_persistence_cron_systemd", "linux_reverse_shell_devtcp", "linux_setuid_setgid_writable_path", "linux_ssh_lateral_movement",
         "sigma_credential_access", "sigma_credential_access_ssh_private_key",
     ];
     assert_eq!(names, expected);

