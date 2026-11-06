@@ -2174,11 +2174,11 @@ detection:
       within_secs: 30
     - event_class: network_connect
       dst_port_not_in: [80, 443]
-      file_path_any_of: None,
-      file_path_contains: None,
       within_secs: 10
 "#;
 
+    // RAFIX shared: test expectation (APACKS spec)
+    // Omit absent constraints instead of relying on dropped "None," placeholders.
     let mut t = TemporalEngine::new();
     let name = t
         .add_sigma_rule_yaml(sigma_yaml)
@@ -2243,7 +2243,7 @@ detection:
 
 #[test]
 // AC-DET-023 AC-DET-171
-fn sigma_legacy_selection_compiles_and_fires_on_command_line() {
+fn sigma_legacy_auditd_logsource_is_rejected_without_telemetry() {
     let sigma_yaml = r#"
 title: sigma_legacy_cmdline
 logsource:
@@ -2259,23 +2259,15 @@ detection:
   condition: selection
 "#;
 
-    let mut engine = TemporalEngine::new();
-    let name = engine
-        .add_sigma_rule_yaml(sigma_yaml)
-        .expect("compile legacy sigma rule");
-    assert_eq!(name, "sigma_legacy_cmdline");
-
-    let mut e = event(10, EventClass::ProcessExec, "bash", "sshd", 1000);
-    e.pid = 901;
-    e.session_id = e.pid;
-    e.command_line = Some("bash --cpu-priority 5 --foo".to_string());
-    let hits = engine.observe(&e);
-    assert!(hits.iter().any(|v| v == "sigma_legacy_cmdline"));
+    // RAFIX shared: test expectation (APACKS spec)
+    // Process telemetry is not an auditd record; never reinterpret that logsource.
+    let err = compile_sigma_rule(sigma_yaml).expect_err("auditd is unobservable");
+    assert!(matches!(err, SigmaCompileError::Unsupported { reason: "unsupported_logsource", .. }));
 }
 
 #[test]
 // AC-DET-023 AC-DET-171
-fn sigma_legacy_condition_one_of_prefix_compiles_and_fires() {
+fn sigma_legacy_auditd_positional_argv_is_rejected() {
     let sigma_yaml = r#"
 title: sigma_legacy_one_of
 logsource:
@@ -2290,18 +2282,10 @@ detection:
   condition: 1 of cmd*
 "#;
 
-    let mut engine = TemporalEngine::new();
-    let name = engine
-        .add_sigma_rule_yaml(sigma_yaml)
-        .expect("compile legacy one-of sigma rule");
-    assert_eq!(name, "sigma_legacy_one_of");
-
-    let mut e = event(11, EventClass::ProcessExec, "bash", "sshd", 1000);
-    e.pid = 902;
-    e.session_id = e.pid;
-    e.command_line = Some("/usr/bin/miner --cpu-priority 4".to_string());
-    let hits = engine.observe(&e);
-    assert!(hits.iter().any(|v| v == "sigma_legacy_one_of"));
+    // RAFIX shared: test expectation (APACKS spec)
+    // a1/a2 positions are absent from the agent's process command-line telemetry.
+    let err = compile_sigma_rule(sigma_yaml).expect_err("auditd argv is unavailable");
+    assert!(matches!(err, SigmaCompileError::Unsupported { reason: "unsupported_logsource", .. }));
 }
 
 #[test]
@@ -2380,7 +2364,8 @@ detection:
     let err = compile_sigma_ast(sigma_yaml)
         .expect_err("keyword-only legacy sigma without usable constraints must be rejected");
     assert!(
-        matches!(err, SigmaCompileError::UnsupportedEventClass(ref reason) if reason == "legacy_sigma_unmappable"),
+        // RAFIX shared: test expectation (APACKS spec)
+        matches!(err, SigmaCompileError::Unsupported { reason: "unsupported_logsource", .. }),
         "unexpected error: {err}"
     );
 }
