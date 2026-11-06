@@ -322,7 +322,7 @@ impl DetectionEngine {
         // ── Layer 4: Kill chain graph matching ──────────────────
         let kill_chain_hits = self.layer4.observe(event);
 
-        // ── Behavioral engine: CUSUM + entropy + spectral ───────
+        // ── Calibrated behavioral context ───────────────────────
         let behavioral_alarms = self.behavioral.observe(event);
 
         let behavioral_high = behavioral_alarms
@@ -332,14 +332,18 @@ impl DetectionEngine {
             .iter()
             .any(|a| a.gated && a.magnitude > 1.0);
 
-        // ── Beaconing tracker: MI-based C2 detection ────────────
-        let (c2_beaconing_detected, beacon_mi_score) = if matches!(
-            event.event_class,
-            EventClass::NetworkConnect | EventClass::DnsQuery
-        ) {
+        // RAFIX shared: periodic connection context excludes our configured peers.
+        let (c2_beaconing_detected, beacon_mi_score) = if event.event_class
+            == EventClass::NetworkConnect
+            && !self.layer4.peer_is_configured_server(event)
+        {
             let dst_key = format!(
                 "{}:{}",
-                event.dst_ip.as_deref().unwrap_or(""),
+                event
+                    .dst_ip
+                    .as_deref()
+                    .or(event.dst_domain.as_deref())
+                    .unwrap_or(""),
                 event.dst_port.unwrap_or(0)
             );
             let result =

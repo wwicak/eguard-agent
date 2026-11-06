@@ -4,6 +4,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use crate::information::{self, ConformalCalibrator};
 use crate::types::{EventClass, TelemetryEvent};
 
+const MAX_DNS_PROCESSES: usize = 128;
+const MAX_DNS_QUERIES: usize = 256;
+
 /// Behavioral alarm with provenance.
 #[derive(Debug, Clone)]
 pub struct BehavioralAlarm {
@@ -20,8 +23,20 @@ pub struct BehavioralEngine {
     calibrator: Option<ConformalCalibrator>,
     // A bounded five-minute query history per process, not a global entropy sum.
     dns: HashMap<u32, VecDeque<(i64, String)>>,
+    exec: HashMap<u32, ExecRate>,
     pub alarms: Vec<BehavioralAlarm>,
     pub total_alarms: u64,
+}
+
+#[derive(Debug, Clone)]
+struct ExecRate {
+    start: i64,
+    second: i64,
+    count: u32,
+    samples: u32,
+    mean: f64,
+    variance: f64,
+    alerted: bool,
 }
 
 impl BehavioralEngine {
@@ -31,6 +46,9 @@ impl BehavioralEngine {
 
     pub fn observe(&mut self, event: &TelemetryEvent) -> Vec<BehavioralAlarm> {
         self.alarms.clear();
+        if event.event_class == EventClass::ProcessExec {
+            self.observe_exec_rate(event);
+        }
         if event.event_class == EventClass::ProcessExec && encoded_blob(event) {
             self.emit_alarm("cmdline_encoded_blob", 1.5);
         }
@@ -68,6 +86,57 @@ impl BehavioralEngine {
         });
     }
 
+    fn observe_exec_rate(&mut self, event: &TelemetryEvent) {
+        let now = event.ts_unix;
+        self.exec
+            .retain(|_, state| now.saturating_sub(state.second) <= 600);
+        if self.exec.len() >= 1024 && !self.exec.contains_key(&event.ppid) {
+            return;
+        }
+        let rate = self.exec.entry(event.ppid).or_insert(ExecRate {
+            start: now,
+            second: now,
+            count: 0,
+            samples: 0,
+            mean: 0.0,
+            variance: 0.0,
+            alerted: false,
+        });
+        if now < rate.second {
+            return;
+        }
+        if now > rate.second {
+            let value = f64::from(rate.count) / (now - rate.second) as f64;
+            let delta = value - rate.mean;
+            if rate.samples == 0 {
+                rate.mean = value;
+            } else {
+                rate.mean += 0.05 * delta;
+                rate.variance = 0.95 * (rate.variance + 0.05 * delta * delta);
+            }
+            rate.samples = rate.samples.saturating_add(1);
+            rate.second = now;
+            rate.count = 0;
+            rate.alerted = false;
+        }
+        rate.count = rate.count.saturating_add(1);
+        // A rate needs observed history, not just elapsed wall time. Evaluate the
+        // unfinished bucket too, so a fork storm is visible before the next second.
+        let warmed = now.saturating_sub(rate.start) >= 600 && rate.samples >= 300;
+        let count = f64::from(rate.count);
+        let sigma = rate.variance.sqrt().max(1.0);
+        if warmed
+            && !rate.alerted
+            && rate.count >= 50
+            && count >= 10.0 * rate.mean.max(1.0)
+            && count - rate.mean - 2.0 * sigma > 8.0 * sigma
+        {
+            rate.alerted = true;
+            // Keep behavioral-only findings LOW rather than treating a count ratio as severity.
+            self.emit_alarm("exec_burst", 1.5);
+        }
+    }
+
     fn observe_dns(&mut self, event: &TelemetryEvent) {
         let Some(domain) = event.dst_domain.as_deref() else {
             return;
@@ -84,7 +153,7 @@ impl BehavioralEngine {
             q.back()
                 .is_some_and(|(ts, _)| now.saturating_sub(*ts) <= 300)
         });
-        if self.dns.len() >= 1024 && !self.dns.contains_key(&event.pid) {
+        if self.dns.len() >= MAX_DNS_PROCESSES && !self.dns.contains_key(&event.pid) {
             return;
         }
         let queries = self.dns.entry(event.pid).or_default();
@@ -99,7 +168,7 @@ impl BehavioralEngine {
             queries.pop_front();
         }
         queries.push_back((now, domain.clone()));
-        if queries.len() > 512 {
+        if queries.len() > MAX_DNS_QUERIES {
             queries.pop_front();
         }
         let parent = dns_parent(&domain);
@@ -199,4 +268,28 @@ pub(crate) fn encoded_blob(event: &TelemetryEvent) -> bool {
                     && information::char_entropy(t.as_bytes()) >= 5.0
             })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn rafix_dns_state_remains_bounded() {
+        let mut b = BehavioralEngine::new();
+        let mut e: TelemetryEvent = serde_json::from_value(serde_json::json!({
+            "ts_unix":1, "event_class":"DnsQuery", "pid":1, "ppid":0, "uid":0,
+            "process":"resolver", "parent_process":"init", "session_id":1,
+            "file_write":false, "container_escape":false, "container_privileged":false
+        }))
+        .unwrap();
+        for pid in 0..MAX_DNS_PROCESSES + 20 {
+            e.pid = pid as u32;
+            for i in 0..MAX_DNS_QUERIES + 20 {
+                e.dst_domain = Some(format!("service{i}.fixture.test"));
+                b.observe(&e);
+            }
+        }
+        assert_eq!(b.dns.len(), MAX_DNS_PROCESSES);
+        assert!(b.dns.values().all(|q| q.len() <= MAX_DNS_QUERIES));
+    }
 }
