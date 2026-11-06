@@ -24,23 +24,16 @@ pub const DEFAULT_FIM_PATHS: &[&str] = &[
     "/etc/sudoers",
     "/etc/ssh/sshd_config",
     "/etc/crontab",
-    "/etc/hosts",
-    "/etc/resolv.conf",
     "/etc/ld.so.conf",
     "/etc/pam.d/",
     "/usr/bin/sudo",
     "/usr/bin/ssh",
     "/usr/bin/passwd",
     "/usr/sbin/sshd",
-    "/boot/vmlinuz*",
-    "/boot/initrd*",
 ];
 
 #[cfg(target_os = "windows")]
 pub const DEFAULT_FIM_PATHS: &[&str] = &[
-    "C:\\Windows\\System32\\config\\SAM",
-    "C:\\Windows\\System32\\config\\SECURITY",
-    "C:\\Windows\\System32\\config\\SYSTEM",
     "C:\\Windows\\System32\\drivers\\etc\\hosts",
     "C:\\Windows\\System32\\GroupPolicy\\",
     "C:\\Windows\\System32\\Tasks\\",
@@ -53,7 +46,6 @@ pub const DEFAULT_FIM_PATHS: &[&str] = &[
 pub const DEFAULT_FIM_PATHS: &[&str] = &[
     "/etc/passwd",
     "/etc/sudoers",
-    "/etc/hosts",
     "/etc/ssh/sshd_config",
     "/etc/pam.d/",
     "/Library/Preferences/com.apple.loginwindow.plist",

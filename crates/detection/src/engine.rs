@@ -355,12 +355,8 @@ impl DetectionEngine {
             .iter()
             .any(|a| a.gated && a.dimension == "tree_branching");
 
-        // ── CVE vulnerability check on ModuleLoad ───────────────
-        let vulnerable_software = event.event_class == EventClass::ModuleLoad
-            && event
-                .file_path
-                .as_deref()
-                .is_some_and(|path| self.cve.check_module_path(path));
+        // RAFIX shared: versionless module names are inventory context, not exploitation.
+        let vulnerable_software = false;
 
         let exploit_indicators = detect_exploit_indicators(event);
         let kernel_integrity_indicators = detect_kernel_integrity_indicators(event);
@@ -378,9 +374,18 @@ impl DetectionEngine {
             z3_anomaly_med: anomaly.as_ref().map(|a| a.medium).unwrap_or(false) || behavioral_med,
             z4_kill_chain: !kill_chain_hits.is_empty(),
             l1_prefilter_hit: layer1.prefilter_hit,
-            exploit_indicator: !exploit_indicators.is_empty(),
-            kernel_integrity: !kernel_integrity_indicators.is_empty(),
-            tamper_indicator: !tamper_indicators.is_empty(),
+            // RAFIX shared: context-only exploit subclasses must not set the HIGH boolean.
+            exploit_indicator: exploit_indicators
+                .iter()
+                .any(|i| crate::exploit::is_high_indicator(i)),
+            // RAFIX shared: only strong kernel classes may assert the response-facing boolean.
+            kernel_integrity: crate::kernel_integrity::kernel_integrity_confidence(
+                &kernel_integrity_indicators,
+            ) >= Confidence::High,
+            // RAFIX shared: service-control context is distinct from file mutation.
+            tamper_indicator: tamper_indicators
+                .iter()
+                .any(|i| i == "tamper:agent_file_mutation"),
             c2_beaconing_detected,
             process_tree_anomaly,
             network_ioc_hit,
@@ -406,9 +411,27 @@ impl DetectionEngine {
 
         // ── Confidence aggregation ──────────────────────────────
         // Deterministic confidence from L1–L4, then ML can escalate
-        let base_confidence = confidence_policy(&signals);
+        // RAFIX shared: narrowed context subclasses are named MEDIUM, not standalone HIGH.
+        let base_confidence = confidence_policy(&signals)
+            .max(
+                if exploit_indicators
+                    .iter()
+                    .any(|i| !crate::exploit::is_high_indicator(i))
+                    || tamper_indicators
+                        .iter()
+                        .any(|i| i == "tamper:agent_service_control")
+                {
+                    Confidence::Medium
+                } else {
+                    Confidence::None
+                },
+            )
+            .max(crate::kernel_integrity::kernel_integrity_confidence(
+                &kernel_integrity_indicators,
+            ));
         // RAFIX shared: ML reuses policy signals and cannot corroborate them.
-        let confidence = ml_enhanced_confidence(base_confidence, &ml_result, self.layer5.has_calibration());
+        let confidence =
+            ml_enhanced_confidence(base_confidence, &ml_result, self.layer5.has_calibration());
 
         DetectionOutcome {
             confidence,
@@ -449,5 +472,40 @@ fn ml_enhanced_confidence(base: Confidence, ml: &MlScore, calibrated: bool) -> C
 impl Default for DetectionEngine {
     fn default() -> Self {
         Self::default_with_rules()
+    }
+}
+
+#[cfg(test)]
+mod rafix_ml_policy_tests {
+    use super::*;
+    #[test]
+    fn rafix_ml_echo_never_upgrades_existing_confidence() {
+        let score = MlScore {
+            score: 0.999,
+            positive: true,
+            raw_positive: true,
+            conformal_gated: false,
+            decision_threshold: 0.95,
+            top_features: vec![],
+            conformal_p_value: Some(0.001),
+        };
+        for base in [
+            Confidence::Low,
+            Confidence::Medium,
+            Confidence::High,
+            Confidence::VeryHigh,
+            Confidence::Definite,
+        ] {
+            assert_eq!(ml_enhanced_confidence(base, &score, true), base);
+            assert_eq!(ml_enhanced_confidence(base, &score, false), base);
+        }
+        assert_eq!(
+            ml_enhanced_confidence(Confidence::None, &score, false),
+            Confidence::None
+        );
+        assert_eq!(
+            ml_enhanced_confidence(Confidence::None, &score, true),
+            Confidence::Low
+        );
     }
 }

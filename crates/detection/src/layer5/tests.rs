@@ -1,3 +1,10 @@
+fn qualified_ci_json(input: &str) -> String {
+    let mut value: serde_json::Value = serde_json::from_str(input).unwrap();
+    value["label_source"] = "adjudicated".into();
+    value["calibration_scores"] = serde_json::json!(vec![0.1; 100]);
+    value.to_string()
+}
+
 use super::math::sigmoid;
 use super::*;
 use crate::layer5::model::ModelFamily;
@@ -297,21 +304,21 @@ fn ml_feature_contract_includes_extended_runtime_and_interaction_terms() {
 }
 
 #[test]
-fn event_size_normalization_uses_4096_divisor() {
+fn event_size_placeholder_is_zero_until_a_real_feature_exists() {
     let mut event = make_event(EventClass::FileOpen, 1000, None);
     event.event_size = Some(2048);
     let signals = DetectionSignals::default();
     let features = MlFeatures::extract(&event, &signals, 0, 0, 0, 0, 0, &Default::default());
     let idx = feature_index("event_size_norm");
     assert!(
-        (features.values[idx] - 0.5).abs() < 1e-12,
-        "expected 2048/4096=0.5, got {}",
+        features.values[idx] == 0.0,
+        "event size is context, not risk: {}",
         features.values[idx]
     );
 }
 
 #[test]
-fn process_tree_v2_features_are_deterministically_non_zero_when_context_exists() {
+fn process_tree_placeholder_features_are_zero_but_rare_pair_remains() {
     let mut event = make_event(EventClass::ProcessExec, 0, Some(4444));
     event.ppid = 2222;
     event.pid = 3333;
@@ -324,17 +331,17 @@ fn process_tree_v2_features_are_deterministically_non_zero_when_context_exists()
     };
     let features = MlFeatures::extract(&event, &signals, 0, 0, 0, 0, 2, &Default::default());
 
+    assert_eq!(features.values[28], 0.8);
     for name in [
         "process_tree_depth_norm",
-        "rare_parent_child_pair",
         "parent_cmdline_hash_risk",
         "parent_child_cmdline_distance",
         "sibling_spawn_burst_norm",
     ] {
         let idx = feature_index(name);
         assert!(
-            features.values[idx] > 0.0,
-            "{name} should be non-zero with populated process context"
+            features.values[idx] == 0.0,
+            "{name} placeholder must not invent process-tree risk"
         );
     }
 }
@@ -370,7 +377,7 @@ fn ci_trained_model_converts_to_runtime() {
         }"#;
 
     // Should auto-detect CI format
-    let model = MlModel::from_json_auto(ci_json).unwrap();
+    let model = MlModel::from_json_auto(&qualified_ci_json(ci_json)).unwrap();
     assert_eq!(model.model_id, "ci-rules-2026.02.15.ml.v1");
     assert_eq!(model.weights.len(), FEATURE_COUNT);
     assert_eq!(model.bias, -0.8);
@@ -432,7 +439,7 @@ fn ci_tree_model_converts_and_scores_with_tree_engine() {
             ]
         }"#;
 
-    let model = MlModel::from_json_auto(ci_json).unwrap();
+    let model = MlModel::from_json_auto(&qualified_ci_json(ci_json)).unwrap();
     assert_eq!(model.family, ModelFamily::GbdtTree);
     assert_eq!(model.trees.len(), 1);
 
@@ -470,7 +477,7 @@ fn ci_threshold_passthrough_uses_ci_value_and_bounds_fallback() {
             "positive_samples": 30,
             "negative_samples": 70
         }"#;
-    let model = MlModel::from_json_auto(valid_threshold_json).unwrap();
+    let model = MlModel::from_json_auto(&qualified_ci_json(valid_threshold_json)).unwrap();
     assert_eq!(model.threshold, 0.7);
 
     let invalid_threshold_json = r#"{
@@ -487,7 +494,7 @@ fn ci_threshold_passthrough_uses_ci_value_and_bounds_fallback() {
             "positive_samples": 30,
             "negative_samples": 70
         }"#;
-    let model = MlModel::from_json_auto(invalid_threshold_json).unwrap();
+    let model = MlModel::from_json_auto(&qualified_ci_json(invalid_threshold_json)).unwrap();
     assert_eq!(model.threshold, 0.5);
 }
 
@@ -507,6 +514,7 @@ fn ci_model_validation_rejects_empty_features_non_finite_and_bad_scales() {
         negative_samples: 5,
         threshold: None,
         calibration_scores: None,
+        label_source: None,
         base_score: None,
         trees: None,
     };
@@ -525,6 +533,7 @@ fn ci_model_validation_rejects_empty_features_non_finite_and_bad_scales() {
         negative_samples: 5,
         threshold: None,
         calibration_scores: None,
+        label_source: None,
         base_score: None,
         trees: None,
     };
@@ -543,6 +552,7 @@ fn ci_model_validation_rejects_empty_features_non_finite_and_bad_scales() {
         negative_samples: 5,
         threshold: None,
         calibration_scores: None,
+        label_source: None,
         base_score: None,
         trees: None,
     };
@@ -561,6 +571,7 @@ fn ci_model_validation_rejects_empty_features_non_finite_and_bad_scales() {
         negative_samples: 5,
         threshold: None,
         calibration_scores: None,
+        label_source: None,
         base_score: None,
         trees: None,
     };
@@ -589,6 +600,7 @@ fn ci_model_conversion_tracks_feature_mapping_mismatches() {
         negative_samples: 5,
         threshold: Some(0.4),
         calibration_scores: None,
+        label_source: None,
         base_score: None,
         trees: None,
     };

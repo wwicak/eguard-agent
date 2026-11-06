@@ -41,7 +41,8 @@ pub use fim::{
     default_fim_paths, FimBaseline, FimChange, FimChangeType, FimEntry, FimError,
     DEFAULT_FIM_PATHS, DEFAULT_FIM_SCAN_INTERVAL_SECS,
 };
-pub use kernel_integrity::detect_kernel_integrity_indicators;
+// RAFIX shared: scans and live module events must use the same indicator classes.
+pub use kernel_integrity::{detect_kernel_integrity_indicators, kernel_integrity_confidence};
 pub use lateral_movement::{LateralMovementAlert, LateralMovementDetector, LateralTechnique};
 pub use layer1::{IocExactStore, IocLayer1, Layer1EventHit, Layer1Result};
 pub use layer2::{
@@ -81,10 +82,10 @@ pub use zero_trust::{
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
-mod tests_windows_fp;
-#[cfg(test)]
 mod tests_detection_audit;
 #[cfg(all(test, not(miri)))]
 mod tests_resource_budget;
 #[cfg(all(test, not(miri)))]
 mod tests_stub_completion;
+#[cfg(test)]
+mod tests_windows_fp;

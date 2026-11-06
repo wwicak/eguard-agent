@@ -149,3 +149,27 @@ fn test_find_suspicious_self() {
     let pid = std::process::id();
     assert!(!is_suspicious_process(pid));
 }
+
+#[test]
+fn rafix_memory_candidates_exclude_jit_shm_and_upgraded_daemons() {
+    let anon = "1000-2000 rwxp 00000000 00:00 0\n";
+    assert!(!suspicious_memory_shape(
+        "/usr/bin/ls",
+        "1000-2000 r-xp 00000000 00:00 0 [vdso]\n2000-3000 r-xp 00000000 00:00 0 [vsyscall]\n"
+    ));
+    assert!(!suspicious_memory_shape("/usr/bin/java", anon));
+    assert!(!suspicious_memory_shape("/usr/bin/node", anon));
+    assert!(!suspicious_memory_shape("/usr/sbin/nginx (deleted)", ""));
+    assert!(!suspicious_memory_shape(
+        "/usr/bin/pipewire",
+        "1000-2000 rw-s 00000000 00:01 1 /memfd:audio (deleted)\n"
+    ));
+    assert!(suspicious_memory_shape(
+        "/dev/shm/stage",
+        "1000-2000 r-xp 00000000 00:00 0\n"
+    ));
+    assert!(suspicious_memory_shape(
+        "/usr/bin/java",
+        "1000-2000 r-xp 00000000 00:01 1 /memfd:stage (deleted)\n"
+    ));
+}

@@ -957,3 +957,17 @@ mod tests {
         assert!(!hit.matched_signatures.is_empty());
     }
 }
+
+#[cfg(test)]
+mod rafix_exact_provenance_tests {
+    use super::*;
+    #[test]
+    fn rafix_exact_domain_does_not_upgrade_prefilter_only_hash() {
+        let mut hit = Layer1EventHit::default();
+        IocLayer1::apply_result(Layer1Result::PrefilterOnly, "file_hash", &mut hit);
+        IocLayer1::apply_result(Layer1Result::ExactMatch, "dst_domain", &mut hit);
+        assert_eq!(hit.result, Layer1Result::ExactMatch);
+        assert_eq!(hit.matched_fields, ["file_hash", "dst_domain"]);
+        assert_eq!(hit.exact_matched_fields, ["dst_domain"]);
+    }
+}

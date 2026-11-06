@@ -12,42 +12,8 @@ const SSH_BRUTE_FORCE_COUNT: usize = 5;
 const SSH_BRUTE_FORCE_WINDOW_SECS: i64 = 300; // 5 minutes
 const UNUSUAL_LOGIN_BASELINE_SECS: i64 = 7 * 86_400; // 7 days
 
-// ── Known lateral-movement tool names (lowercase) ────────────────────
-const REMOTE_TOOLS: &[&str] = &[
-    "psexec", "psexec64", "psexesvc", "wmic", "winrm", "winrs", "ncat", "socat", "chisel",
-    "ligolo", "schtasks", // Windows scheduled task creation
-    "mstsc",    // RDP client (unusual if spawned by script)
-    "wmiexec",  // Impacket
-    "smbexec",  // Impacket
-    "atexec",   // Impacket
-];
-
-const CREDENTIAL_TOOLS: &[&str] = &["mimikatz", "secretsdump", "hashdump", "procdump", "lsass"];
-
-// ── Platform-specific credential store paths ─────────────────────────
-
-#[cfg(target_os = "linux")]
-const CREDENTIAL_PATHS: &[&str] = &["/etc/shadow", "/etc/passwd"];
-
-#[cfg(target_os = "windows")]
-const CREDENTIAL_PATHS: &[&str] = &[
-    "\\windows\\system32\\config\\sam",
-    "\\windows\\system32\\config\\security",
-    "\\windows\\ntds\\ntds.dit",
-    "\\windows\\system32\\config\\system",
-];
-
-#[cfg(target_os = "macos")]
-const CREDENTIAL_PATHS: &[&str] = &["/var/db/dslocal/", "/library/keychains/", "/etc/shadow"];
-
-#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-const CREDENTIAL_PATHS: &[&str] = &["/etc/shadow", "/etc/passwd"];
-
 /// Port used for RDP brute force detection.
 const RDP_PORT: u16 = 3389;
-
-/// Substrings in command_line that indicate SSH tunnelling.
-const SSH_TUNNEL_FLAGS: &[&str] = &[" -L ", " -R ", " -D ", " -L\t", " -R\t", " -D\t"];
 
 // ── Public types ─────────────────────────────────────────────────────
 
@@ -218,72 +184,116 @@ impl LateralMovementDetector {
         None
     }
 
-    /// Detect execution of known remote-admin / tunnelling tools.
+    /// Exact tools and arguments are context; native admin tool names alone are not.
     fn check_remote_tools(&self, event: &TelemetryEvent) -> Option<LateralMovementAlert> {
         if event.event_class != EventClass::ProcessExec {
             return None;
         }
-        let proc_lower = event.process.to_lowercase();
-
-        // Check binary name against the known-tools list.
-        if REMOTE_TOOLS.iter().any(|t| proc_lower == *t) {
-            return Some(LateralMovementAlert {
-                technique: LateralTechnique::RemoteToolExecution,
-                confidence: 0.85,
-                source_ip: event.dst_ip.clone(),
-                detail: format!("Lateral movement tool executed: {}", event.process),
-            });
-        }
-
-        // Check command_line for SSH tunnelling flags.
-        if let Some(ref cmdline) = event.command_line {
-            if SSH_TUNNEL_FLAGS.iter().any(|flag| cmdline.contains(flag)) {
-                return Some(LateralMovementAlert {
-                    technique: LateralTechnique::RemoteToolExecution,
-                    confidence: 0.80,
-                    source_ip: event.dst_ip.clone(),
-                    detail: format!("SSH tunnel detected: {}", cmdline),
-                });
-            }
-        }
-
-        None
+        let process = crate::behavioral::basename(&event.process);
+        let cmd = event.command_line.as_deref().unwrap_or("");
+        let argv: Vec<_> = cmd
+            .split_whitespace()
+            .map(|s| s.trim_matches(['\'', '\"']))
+            .collect();
+        let impacket = argv.iter().any(|a| {
+            matches!(
+                crate::behavioral::basename(a).as_str(),
+                "wmiexec.py" | "smbexec.py" | "atexec.py" | "psexec.py" | "dcomexec.py"
+            )
+        });
+        let confidence = if matches!(process.as_str(), "psexesvc" | "chisel" | "ligolo") || impacket
+        {
+            0.95
+        } else if matches!(process.as_str(), "psexec" | "psexec64")
+            || (matches!(process.as_str(), "ncat" | "socat")
+                && argv.iter().any(|a| *a == "-e" || a.starts_with("exec:")))
+        {
+            0.75
+        } else if matches!(process.as_str(), "ssh" | "plink" | "autossh") {
+            ssh_tunnel_confidence(&argv)?
+        } else {
+            return None;
+        };
+        Some(LateralMovementAlert {
+            technique: LateralTechnique::RemoteToolExecution,
+            confidence,
+            source_ip: event.dst_ip.clone(),
+            detail: format!("Remote tool context: {}", event.process),
+        })
     }
 
-    /// Detect access to credential stores or credential-dumping binaries.
     fn check_credential_access(&self, event: &TelemetryEvent) -> Option<LateralMovementAlert> {
-        // Process name matching (mimikatz, secretsdump, etc.)
-        if event.event_class == EventClass::ProcessExec {
-            let proc_lower = event.process.to_lowercase();
-            if CREDENTIAL_TOOLS.iter().any(|t| proc_lower.contains(t)) {
-                return Some(LateralMovementAlert {
-                    technique: LateralTechnique::CredentialDumping,
-                    confidence: 0.95,
-                    source_ip: None,
-                    detail: format!("Credential dumping tool: {}", event.process),
-                });
-            }
+        let process = crate::behavioral::basename(&event.process);
+        let cmd = event.command_line.as_deref().unwrap_or("");
+        let tool = event.event_class == EventClass::ProcessExec
+            && (matches!(
+                process.as_str(),
+                "mimikatz" | "secretsdump" | "pypykatz" | "lsassy" | "nanodump"
+            ) || cmd
+                .split_whitespace()
+                .any(|a| crate::behavioral::basename(a) == "secretsdump.py")
+                || (matches!(process.as_str(), "procdump" | "procdump64")
+                    && cmd
+                        .split_whitespace()
+                        .any(|a| crate::behavioral::basename(a) == "lsass")));
+        let path = event
+            .file_path
+            .as_deref()
+            .unwrap_or("")
+            .replace('\\', "/")
+            .to_ascii_lowercase();
+        let unix_owner = process.starts_with("systemd-")
+            || matches!(
+                process.as_str(),
+                "unix_chkpwd"
+                    | "sshd"
+                    | "login"
+                    | "su"
+                    | "sudo"
+                    | "passwd"
+                    | "chage"
+                    | "chpasswd"
+                    | "useradd"
+                    | "usermod"
+                    | "nscd"
+                    | "sssd"
+                    | "polkitd"
+                    | "cron"
+            );
+        let windows_owner = matches!(
+            process.as_str(),
+            "system" | "lsass" | "svchost" | "wbengine" | "vssvc" | "msmpeng" | "trustedinstaller"
+        );
+        let sensitive = event.event_class == EventClass::FileOpen
+            && ((matches!(
+                path.as_str(),
+                "/etc/shadow" | "/etc/gshadow" | "/etc/security/opasswd"
+            ) && !unix_owner)
+                || ([
+                    "/config/sam",
+                    "/config/security",
+                    "/config/system",
+                    "/ntds.dit",
+                ]
+                .iter()
+                .any(|p| path.ends_with(p))
+                    && !windows_owner)
+                || (path.starts_with("/var/db/dslocal/nodes/default/users/")
+                    && path.ends_with(".plist")
+                    && !matches!(process.as_str(), "opendirectoryd" | "directoryservice")));
+        if !tool && !sensitive {
+            return None;
         }
-
-        // File access to credential stores (case-insensitive for Windows/macOS).
-        if event.event_class == EventClass::FileOpen {
-            if let Some(ref path) = event.file_path {
-                let normalized = path.replace('\\', "/").to_ascii_lowercase();
-                if CREDENTIAL_PATHS
-                    .iter()
-                    .any(|p| normalized.contains(&p.replace('\\', "/").to_ascii_lowercase()))
-                {
-                    return Some(LateralMovementAlert {
-                        technique: LateralTechnique::CredentialDumping,
-                        confidence: 0.75,
-                        source_ip: None,
-                        detail: format!("Credential file accessed: {}", path),
-                    });
-                }
-            }
-        }
-
-        None
+        Some(LateralMovementAlert {
+            technique: LateralTechnique::CredentialDumping,
+            confidence: 0.95,
+            source_ip: None,
+            detail: if tool {
+                format!("Credential dumping tool: {}", event.process)
+            } else {
+                format!("Credential store accessed: {path}")
+            },
+        })
     }
 
     /// Detect logins from a source IP not seen in the 7-day baseline.
@@ -328,6 +338,42 @@ impl Default for LateralMovementDetector {
     fn default() -> Self {
         Self::new()
     }
+}
+
+// SSH short options are case-sensitive; options taking values must not turn
+// characters in an identity/config filename into forwarding flags.
+fn ssh_tunnel_confidence(argv: &[&str]) -> Option<f64> {
+    let mut skip_value = false;
+    let mut local = false;
+    for arg in argv.iter().skip(1) {
+        if skip_value {
+            skip_value = false;
+            continue;
+        }
+        if *arg == "--" {
+            break;
+        }
+        if !arg.starts_with('-') {
+            continue;
+        }
+        let mut chars = arg[1..].chars().peekable();
+        while let Some(flag) = chars.next() {
+            match flag {
+                'R' | 'D' => return Some(0.7),
+                'L' => {
+                    local = true;
+                    break;
+                }
+                'p' | 'l' | 'i' | 'F' | 'o' | 'S' | 'W' | 'b' | 'c' | 'm' | 'E' | 'e' | 'w'
+                | 'Q' | 'O' | 'J' => {
+                    skip_value = chars.peek().is_none();
+                    break;
+                }
+                _ => {}
+            }
+        }
+    }
+    local.then_some(0.4)
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -454,8 +500,8 @@ mod tests {
     #[test]
     fn credential_path_access_triggers_credential_dumping() {
         let mut det = LateralMovementDetector::new();
-        // Use the first credential path for the current platform.
-        let cred_path = CREDENTIAL_PATHS[0];
+        // Runtime path semantics must also work in cross-platform replay.
+        let cred_path = "/etc/shadow";
         let ev = make_event(
             1_700_000_000,
             EventClass::FileOpen,
@@ -508,7 +554,7 @@ mod tests {
     }
 
     #[test]
-    fn winrs_triggers_remote_tool() {
+    fn winrs_name_alone_does_not_trigger() {
         let mut det = LateralMovementDetector::new();
         let ev = make_event(
             1_700_000_000,
@@ -519,20 +565,19 @@ mod tests {
             None,
             0,
         );
-        let alert = det.check_event(&ev).unwrap();
-        assert_eq!(alert.technique, LateralTechnique::RemoteToolExecution);
+        assert!(det.check_event(&ev).is_none());
     }
 
     #[test]
-    fn smbexec_triggers_remote_tool() {
+    fn impacket_smbexec_script_triggers_remote_tool() {
         let mut det = LateralMovementDetector::new();
         let ev = make_event(
             1_700_000_000,
             EventClass::ProcessExec,
-            "smbexec",
+            "python3",
             None,
             None,
-            None,
+            Some("python3 smbexec.py fixture@10.0.0.5"),
             0,
         );
         let alert = det.check_event(&ev).unwrap();
