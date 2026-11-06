@@ -1,31 +1,11 @@
-title: windows_lateral_movement_service_exec
-id: windows_lateral_movement_service_exec
-status: experimental
+# eGuard-authored endpoint rule; GPL-2.0-or-later.
+title: windows_remote_service_exec_child
+id: windows_remote_service_exec_child
+level: medium
 logsource:
   product: windows
-  category: process_creation
-tags:
-  - attack.t1021
-  - attack.t1053
-  - attack.t1070
-  - attack.t1134
-  - attack.t1543
-  - attack.t1569
-mitre_techniques:
-  - T1021
-  - T1053
-  - T1070
-  - T1134
-  - T1543
-  - T1569
-
 detection:
   sequence:
     - event_class: process_exec
-      process_any_of:
-        - psexec.exe
-      command_line_contains:
-        - psexec
-        - accepteula
-        - "\\\\"
+      parent_any_of: [psexesvc.exe, remcomsvc.exe, csexecsvc.exe, paexec.exe]
       within_secs: 30

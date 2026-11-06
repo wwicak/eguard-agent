@@ -1,26 +1,14 @@
+# eGuard-authored endpoint rule; GPL-2.0-or-later.
 title: windows_com_hijack_registry
 id: windows_com_hijack_registry
-status: experimental
+level: high
 logsource:
   product: windows
-  category: process_creation
-tags:
-  - attack.t1546
-  - attack.t1112
-mitre_techniques:
-  - T1546
-  - T1112
-
 detection:
   sequence:
     - event_class: process_exec
-      process_any_of:
-        - reg.exe
-        - powershell.exe
-        - pwsh.exe
-      command_line_contains:
-        - "inprocserver32"
-        - "localserver32"
-        - "delegateexecute"
-        - "\\clsid\\"
+      process_any_of: [reg.exe, powershell.exe, pwsh.exe]
+      command_line_contains: ["hkcu\\software\\classes\\clsid\\", "hkey_current_user\\software\\classes\\clsid\\", "hkcu:\\software\\classes\\clsid\\"]
+      command_line_all_groups:
+        - [" add ", "new-item", "set-itemproperty"]
       within_secs: 30

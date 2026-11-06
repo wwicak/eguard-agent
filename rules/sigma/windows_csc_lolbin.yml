@@ -1,23 +1,12 @@
+# eGuard-authored endpoint rule; GPL-2.0-or-later.
 title: windows_csc_lolbin
 id: windows_csc_lolbin
-status: experimental
+level: medium
 logsource:
   product: windows
-  category: process_creation
-tags:
-  - attack.t1127
-mitre_techniques:
-  - T1127
-
 detection:
   sequence:
     - event_class: process_exec
-      process_any_of:
-        - csc.exe
-        - cmd.exe
-        - powershell.exe
-        - pwsh.exe
-      command_line_contains:
-        - "csc.exe /out:"
-        - "csc.exe /out"
+      process_any_of: [csc.exe]
+      command_line_contains: ["/out:c:\\users\\public\\", "/out:c:\\programdata\\", "/out:c:\\windows\\temp\\", "/out:%temp%", "/out:%public%"]
       within_secs: 30

@@ -1,20 +1,14 @@
-title: windows_uac_bypass_signals
-id: windows_uac_bypass_signals
-status: experimental
+# eGuard-authored endpoint rule; GPL-2.0-or-later.
+title: windows_uac_bypass_registry_hijack
+id: windows_uac_bypass_registry_hijack
+level: high
 logsource:
   product: windows
-  category: process_creation
-tags:
-  - attack.t1548
-mitre_techniques:
-  - T1548
-
 detection:
   sequence:
     - event_class: process_exec
-      process_any_of:
-        - fodhelper.exe
-      command_line_contains:
-        - DelegateExecute
-        - ms-settings\\shell\\open\\command
+      process_any_of: [reg.exe, powershell.exe, pwsh.exe, cmd.exe]
+      command_line_contains: ["classes\\ms-settings\\shell\\open\\command", "classes\\mscfile\\shell\\open\\command", "classes\\folder\\shell\\open\\command", "classes\\launcher.systemsettings\\shell\\open\\command", "classes\\exefile\\shell\\runas\\command"]
+      command_line_all_groups:
+        - [" add ", "new-item", "set-itemproperty"]
       within_secs: 30
