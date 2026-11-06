@@ -778,12 +778,14 @@ mod tests {
             container_privileged: false,
         };
         let mut detection_outcome = DetectionOutcome::default();
-        detection_outcome.confidence = Confidence::High;
+        detection_outcome.confidence = Confidence::VeryHigh;
         detection_outcome.signals = DetectionSignals::default();
+        detection_outcome.temporal_hits = vec!["credential_dump_sequence".into()];
+        detection_outcome.exploit_indicators = vec!["process_injection".into()];
         TickEvaluation {
             detection_event: detection_event.clone(),
             detection_outcome,
-            confidence: Confidence::High,
+            confidence: Confidence::VeryHigh,
             action: PlannedAction::KillOnly,
             compliance: ComplianceResult {
                 status: "ok".to_string(),
@@ -846,6 +848,49 @@ mod tests {
             runtime.pending_response_reports.len(),
             1,
             "offline response report should stay queued until connectivity returns"
+        );
+        assert_eq!(runtime.buffer.pending_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn degraded_tick_suppresses_evidenceless_kill_and_preserves_report_queue() {
+        let _env_guard = crate::test_support::TestEnvGuard::new(&[]);
+        let mut runtime = new_runtime();
+        runtime.enqueue_response_report(
+            serde_json::from_value(serde_json::json!({
+                "agent_id": "agent-test", "action_type": "existing-report",
+                "confidence": "high", "success": true, "error_message": ""
+            }))
+            .unwrap(),
+        );
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn disposable child");
+        let now_unix = 1_700_000_100;
+        runtime.runtime_mode = AgentMode::Degraded;
+        runtime.last_recovery_probe_unix = Some(now_unix);
+        let mut evaluation = degraded_kill_evaluation(child.id(), now_unix);
+        evaluation.confidence = Confidence::High;
+        evaluation.detection_outcome = DetectionOutcome {
+            confidence: Confidence::High,
+            ..Default::default()
+        };
+        runtime
+            .handle_degraded_tick(now_unix, Some(&evaluation))
+            .await
+            .expect("degraded tick");
+        let survived = child.try_wait().expect("query disposable child").is_none();
+        if survived {
+            child.kill().expect("clean up disposable child");
+            child.wait().expect("reap disposable child");
+        }
+        assert!(survived, "evidence-less degraded evaluation must not kill");
+        assert!(runtime.pending_response_actions.is_empty());
+        assert_eq!(runtime.pending_response_reports.len(), 1);
+        assert_eq!(
+            runtime.pending_response_reports[0].envelope.action_type,
+            "existing-report"
         );
         assert_eq!(runtime.buffer.pending_count(), 1);
     }
