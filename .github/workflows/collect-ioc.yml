@@ -33,7 +33,10 @@ jobs:
           python-version: "3.12"
 
       - name: Create source directories
-        run: mkdir -p sources/ioc/{hashes,domains,ips}
+        run: |
+          IOC_DIR="$RUNNER_TEMP/ioc-collected"
+          echo "IOC_DIR=$RUNNER_TEMP/ioc-collected" >> "$GITHUB_ENV"
+          mkdir -p "$IOC_DIR"/{hashes,domains,ips}
 
       # ────────────────────────────────────────────────────────────────
       # Restricted / license-sensitive sources (manual opt-in only)
@@ -51,8 +54,8 @@ jobs:
           {
             grep -v '^;' /tmp/spamhaus_drop.txt 2>/dev/null | awk '{print $1}' | grep -E '^[0-9]'
             grep -v '^;' /tmp/spamhaus_edrop.txt 2>/dev/null | awk '{print $1}' | grep -E '^[0-9]'
-          } | sort -u > sources/ioc/ips/spamhaus.txt
-          echo "Spamhaus DROP+EDROP: $(wc -l < sources/ioc/ips/spamhaus.txt) entries"
+          } | sort -u > "$IOC_DIR/ips/spamhaus.txt"
+          echo "Spamhaus DROP+EDROP: $(wc -l < "$IOC_DIR/ips/spamhaus.txt") entries"
 
       - name: "Fetch FireHOL Level 1 (restricted aggregator)"
         if: ${{ env.INCLUDE_RESTRICTED_SOURCES == 'true' }}
@@ -61,8 +64,8 @@ jobs:
             "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level1.netset" \
             -o /tmp/firehol.txt 2>/dev/null || true
           if [ -s /tmp/firehol.txt ]; then
-            grep -v '^#' /tmp/firehol.txt | grep -v '^$' | sort -u > sources/ioc/ips/firehol_l1.txt
-            echo "FireHOL L1: $(wc -l < sources/ioc/ips/firehol_l1.txt) entries"
+            grep -v '^#' /tmp/firehol.txt | grep -v '^$' | sort -u > "$IOC_DIR/ips/firehol_l1.txt"
+            echo "FireHOL L1: $(wc -l < "$IOC_DIR/ips/firehol_l1.txt") entries"
           fi
 
       - name: "Fetch DShield top attackers (restricted — SANS ISC)"
@@ -72,8 +75,8 @@ jobs:
             "https://www.dshield.org/block.txt" \
             -o /tmp/dshield.txt 2>/dev/null || true
           if [ -s /tmp/dshield.txt ]; then
-            awk '/^[0-9]/ {print $1}' /tmp/dshield.txt | sort -u > sources/ioc/ips/dshield.txt
-            echo "DShield IPs: $(wc -l < sources/ioc/ips/dshield.txt)"
+            awk '/^[0-9]/ {print $1}' /tmp/dshield.txt | sort -u > "$IOC_DIR/ips/dshield.txt"
+            echo "DShield IPs: $(wc -l < "$IOC_DIR/ips/dshield.txt")"
           fi
 
       - name: "Fetch AlienVault OTX (restricted — optional)"
@@ -87,6 +90,7 @@ jobs:
             -o /tmp/otx_pulses.json
           python3 - <<'PYOTX'
           import json
+          import os
           data = json.load(open('/tmp/otx_pulses.json'))
           hashes, domains, ips = set(), set(), set()
           for pulse in data.get('results', []):
@@ -96,9 +100,9 @@ jobs:
                   if t in ('FileHash-SHA256',): hashes.add(v)
                   elif t in ('domain', 'hostname'): domains.add(v)
                   elif t in ('IPv4',): ips.add(v)
-          open('sources/ioc/hashes/otx.txt', 'w').write('\n'.join(sorted(hashes)))
-          open('sources/ioc/domains/otx.txt', 'w').write('\n'.join(sorted(domains)))
-          open('sources/ioc/ips/otx.txt', 'w').write('\n'.join(sorted(ips)))
+          open(os.path.join(os.environ["IOC_DIR"], "hashes/otx.txt"), 'w').write('\n'.join(sorted(hashes)))
+          open(os.path.join(os.environ["IOC_DIR"], "domains/otx.txt"), 'w').write('\n'.join(sorted(domains)))
+          open(os.path.join(os.environ["IOC_DIR"], "ips/otx.txt"), 'w').write('\n'.join(sorted(ips)))
           PYOTX
 
       # ────────────────────────────────────────────────────────────────
@@ -186,9 +190,9 @@ jobs:
             cat /tmp/bazaar_full_hashes.txt 2>/dev/null
             cat /tmp/bazaar_export_hashes.txt 2>/dev/null
             cat /tmp/bazaar_api_hashes.txt 2>/dev/null
-          } | grep -iE '^[0-9a-f]{64}$' | sort -u > sources/ioc/hashes/malwarebazaar.txt
+          } | grep -iE '^[0-9a-f]{64}$' | sort -u > "$IOC_DIR/hashes/malwarebazaar.txt"
 
-          echo "MalwareBazaar hashes: $(wc -l < sources/ioc/hashes/malwarebazaar.txt)"
+          echo "MalwareBazaar hashes: $(wc -l < "$IOC_DIR/hashes/malwarebazaar.txt")"
 
       - name: "Fetch ThreatFox IOCs (Tier 2 — abuse.ch)"
         run: |
@@ -200,20 +204,20 @@ jobs:
               type=$5; ioc=$6;
               gsub(/"/, "", type); gsub(/"/, "", ioc);
               if (type ~ /domain/) print ioc;
-            }' | sort -u > sources/ioc/domains/threatfox.txt
+            }' | sort -u > "$IOC_DIR/domains/threatfox.txt"
           grep -v '^#' /tmp/threatfox.csv | grep -v '^$' | \
             awk -F'","' '{
               type=$5; ioc=$6;
               gsub(/"/, "", type); gsub(/"/, "", ioc);
               if (type ~ /ip/) { split(ioc, a, ":"); print a[1]; }
-            }' | sort -u > sources/ioc/ips/threatfox.txt
+            }' | sort -u > "$IOC_DIR/ips/threatfox.txt"
           # Also extract SHA-256 hashes from ThreatFox
           grep -v '^#' /tmp/threatfox.csv | grep -v '^$' | \
             awk -F'","' '{
               type=$5; ioc=$6;
               gsub(/"/, "", type); gsub(/"/, "", ioc);
               if (type ~ /sha256/) print ioc;
-            }' | sort -u > sources/ioc/hashes/threatfox.txt
+            }' | sort -u > "$IOC_DIR/hashes/threatfox.txt"
 
       - name: "Fetch Feodo C2 IPs (Tier 2 — abuse.ch)"
         run: |
@@ -221,8 +225,8 @@ jobs:
             "https://feodotracker.abuse.ch/downloads/ipblocklist_aggressive.txt" \
             -o /tmp/feodo.txt
           grep -v '^#' /tmp/feodo.txt | grep -v '^$' | \
-            sort -u > sources/ioc/ips/feodo.txt
-          echo "Feodo C2 IPs: $(wc -l < sources/ioc/ips/feodo.txt)"
+            sort -u > "$IOC_DIR/ips/feodo.txt"
+          echo "Feodo C2 IPs: $(wc -l < "$IOC_DIR/ips/feodo.txt")"
 
       - name: "Fetch URLhaus domains (Tier 2 — abuse.ch)"
         run: |
@@ -231,7 +235,7 @@ jobs:
             -o /tmp/urlhaus.txt
           grep -v '^#' /tmp/urlhaus.txt | grep -v '^$' | \
             sed 's|https\?://||; s|/.*||; s|:.*||' | \
-            sort -u > sources/ioc/domains/urlhaus.txt
+            sort -u > "$IOC_DIR/domains/urlhaus.txt"
 
       - name: "Fetch URLhaus payload hashes (Tier 2 — abuse.ch)"
         run: |
@@ -243,9 +247,9 @@ jobs:
             unzip -p /tmp/urlhaus_payloads.zip 2>/dev/null | \
               grep -v '^#' | grep -v '^$' | \
               grep -iE '^[0-9a-f]{64}$' | tr '[:upper:]' '[:lower:]' | \
-              sort -u > sources/ioc/hashes/urlhaus_payloads.txt 2>/dev/null || true
-            if [ -s sources/ioc/hashes/urlhaus_payloads.txt ]; then
-              echo "URLhaus payload hashes: $(wc -l < sources/ioc/hashes/urlhaus_payloads.txt)"
+              sort -u > "$IOC_DIR/hashes/urlhaus_payloads.txt" 2>/dev/null || true
+            if [ -s "$IOC_DIR/hashes/urlhaus_payloads.txt" ]; then
+              echo "URLhaus payload hashes: $(wc -l < "$IOC_DIR/hashes/urlhaus_payloads.txt")"
             fi
           fi
 
@@ -256,12 +260,12 @@ jobs:
             -o /tmp/sslbl.csv
           grep -v '^#' /tmp/sslbl.csv | grep -v '^$' | \
             awk -F, '{print $1}' | grep -E '^[0-9]' | \
-            sort -u > sources/ioc/ips/sslbl.txt
-          echo "SSL Blacklist IPs: $(wc -l < sources/ioc/ips/sslbl.txt)"
+            sort -u > "$IOC_DIR/ips/sslbl.txt"
+          echo "SSL Blacklist IPs: $(wc -l < "$IOC_DIR/ips/sslbl.txt")"
           # Also extract SHA1 fingerprints as supplementary hashes
           grep -v '^#' /tmp/sslbl.csv | grep -v '^$' | \
             awk -F, '{print $2}' | grep -E '^[0-9a-f]{40}$' | \
-            sort -u > sources/ioc/hashes/sslbl_sha1.txt
+            sort -u > "$IOC_DIR/hashes/sslbl_sha1.txt"
 
       - name: "Fetch DigitalSide OSINT (Tier 2)"
         run: |
@@ -272,12 +276,12 @@ jobs:
             "https://osint.digitalside.it/Threat-Intel/lists/latestdomains.txt" \
             -o /tmp/digitalside_domains.txt 2>/dev/null || true
           if [ -s /tmp/digitalside_ips.txt ]; then
-            grep -v '^#' /tmp/digitalside_ips.txt | grep -v '^$' | sort -u > sources/ioc/ips/digitalside.txt
-            echo "DigitalSide IPs: $(wc -l < sources/ioc/ips/digitalside.txt)"
+            grep -v '^#' /tmp/digitalside_ips.txt | grep -v '^$' | sort -u > "$IOC_DIR/ips/digitalside.txt"
+            echo "DigitalSide IPs: $(wc -l < "$IOC_DIR/ips/digitalside.txt")"
           fi
           if [ -s /tmp/digitalside_domains.txt ]; then
-            grep -v '^#' /tmp/digitalside_domains.txt | grep -v '^$' | sort -u > sources/ioc/domains/digitalside.txt
-            echo "DigitalSide domains: $(wc -l < sources/ioc/domains/digitalside.txt)"
+            grep -v '^#' /tmp/digitalside_domains.txt | grep -v '^$' | sort -u > "$IOC_DIR/domains/digitalside.txt"
+            echo "DigitalSide domains: $(wc -l < "$IOC_DIR/domains/digitalside.txt")"
           fi
           # Also fetch SHA256 hashes from DigitalSide
           curl -sSfL --retry 3 --max-time 60 \
@@ -286,8 +290,8 @@ jobs:
           if [ -s /tmp/digitalside_hashes.txt ]; then
             grep -v '^#' /tmp/digitalside_hashes.txt | grep -v '^$' | \
               grep -iE '^[0-9a-f]{64}$' | tr '[:upper:]' '[:lower:]' | \
-              sort -u > sources/ioc/hashes/digitalside.txt
-            echo "DigitalSide hashes: $(wc -l < sources/ioc/hashes/digitalside.txt)"
+              sort -u > "$IOC_DIR/hashes/digitalside.txt"
+            echo "DigitalSide hashes: $(wc -l < "$IOC_DIR/hashes/digitalside.txt")"
           fi
 
       # ────────────────────────────────────────────────────────────────
@@ -303,10 +307,10 @@ jobs:
             "https://www.botvrij.eu/data/ioclist.ip-dst.raw" \
             -o /tmp/botvrij_ips.txt 2>/dev/null || true
           if [ -s /tmp/botvrij_domains.txt ]; then
-            grep -v '^#' /tmp/botvrij_domains.txt | grep -v '^$' | sort -u > sources/ioc/domains/botvrij.txt
+            grep -v '^#' /tmp/botvrij_domains.txt | grep -v '^$' | sort -u > "$IOC_DIR/domains/botvrij.txt"
           fi
           if [ -s /tmp/botvrij_ips.txt ]; then
-            grep -v '^#' /tmp/botvrij_ips.txt | grep -v '^$' | sort -u > sources/ioc/ips/botvrij.txt
+            grep -v '^#' /tmp/botvrij_ips.txt | grep -v '^$' | sort -u > "$IOC_DIR/ips/botvrij.txt"
           fi
           # Also fetch SHA256 hashes from Botvrij
           curl -sSfL --retry 3 --max-time 60 \
@@ -315,8 +319,8 @@ jobs:
           if [ -s /tmp/botvrij_hashes.txt ]; then
             grep -v '^#' /tmp/botvrij_hashes.txt | grep -v '^$' | \
               grep -iE '^[0-9a-f]{64}$' | tr '[:upper:]' '[:lower:]' | \
-              sort -u > sources/ioc/hashes/botvrij.txt
-            echo "Botvrij hashes: $(wc -l < sources/ioc/hashes/botvrij.txt)"
+              sort -u > "$IOC_DIR/hashes/botvrij.txt"
+            echo "Botvrij hashes: $(wc -l < "$IOC_DIR/hashes/botvrij.txt")"
           fi
 
       - name: "Fetch CINSscore threat IPs (Tier 3)"
@@ -325,8 +329,8 @@ jobs:
             "https://cinsscore.com/list/ci-badguys.txt" \
             -o /tmp/cins.txt 2>/dev/null || true
           if [ -s /tmp/cins.txt ]; then
-            grep -v '^#' /tmp/cins.txt | grep -v '^$' | sort -u > sources/ioc/ips/cins.txt
-            echo "CINS IPs: $(wc -l < sources/ioc/ips/cins.txt)"
+            grep -v '^#' /tmp/cins.txt | grep -v '^$' | sort -u > "$IOC_DIR/ips/cins.txt"
+            echo "CINS IPs: $(wc -l < "$IOC_DIR/ips/cins.txt")"
           fi
 
       - name: "Fetch Blocklist.de (Tier 3)"
@@ -335,8 +339,8 @@ jobs:
             "https://lists.blocklist.de/lists/all.txt" \
             -o /tmp/blocklist_de.txt 2>/dev/null || true
           if [ -s /tmp/blocklist_de.txt ]; then
-            grep -v '^#' /tmp/blocklist_de.txt | grep -v '^$' | sort -u > sources/ioc/ips/blocklist_de.txt
-            echo "Blocklist.de IPs: $(wc -l < sources/ioc/ips/blocklist_de.txt)"
+            grep -v '^#' /tmp/blocklist_de.txt | grep -v '^$' | sort -u > "$IOC_DIR/ips/blocklist_de.txt"
+            echo "Blocklist.de IPs: $(wc -l < "$IOC_DIR/ips/blocklist_de.txt")"
           fi
 
       # ────────────────────────────────────────────────────────────────
@@ -346,14 +350,14 @@ jobs:
       - name: Deduplicate and corroborate IOCs
         run: |
           python threat-intel/processing/ioc_dedup.py \
-            --input sources/ioc \
+            --input "$IOC_DIR" \
             --output /tmp/ioc_deduped
 
       - name: Apply allowlists
         run: |
           python threat-intel/processing/ioc_allowlist.py \
             --input /tmp/ioc_deduped \
-            --output sources/ioc/consolidated \
+            --output "$IOC_DIR/consolidated" \
             --hash-allowlist threat-intel/allowlists/known_good_hashes.txt \
             --domain-allowlist threat-intel/allowlists/known_good_domains.txt \
             --ip-allowlist threat-intel/allowlists/known_good_ips.txt
@@ -364,9 +368,9 @@ jobs:
           EGUARD_MIN_IOC_DOMAIN: "300"
           EGUARD_MIN_IOC_IP: "800"
         run: |
-          HASH_COUNT=$(wc -l < sources/ioc/consolidated/hashes.txt 2>/dev/null || echo 0)
-          DOMAIN_COUNT=$(wc -l < sources/ioc/consolidated/domains.txt 2>/dev/null || echo 0)
-          IP_COUNT=$(wc -l < sources/ioc/consolidated/ips.txt 2>/dev/null || echo 0)
+          HASH_COUNT=$(wc -l < "$IOC_DIR/consolidated/hashes.txt" 2>/dev/null || echo 0)
+          DOMAIN_COUNT=$(wc -l < "$IOC_DIR/consolidated/domains.txt" 2>/dev/null || echo 0)
+          IP_COUNT=$(wc -l < "$IOC_DIR/consolidated/ips.txt" 2>/dev/null || echo 0)
 
           echo "IOC hashes: ${HASH_COUNT}"
           echo "IOC domains: ${DOMAIN_COUNT}"
@@ -390,7 +394,7 @@ jobs:
       - name: Attach behavioral IOC rules for bundle sync
         run: |
           SRC="threat-intel/rules/ioc_behavior_rules.json"
-          DST="sources/ioc/consolidated/ioc_behavior_rules.json"
+          DST="$IOC_DIR/consolidated/ioc_behavior_rules.json"
 
           if [ ! -s "$SRC" ]; then
             echo "Missing behavioral IOC source file: $SRC"
@@ -403,7 +407,8 @@ jobs:
           import json
           from pathlib import Path
 
-          path = Path("sources/ioc/consolidated/ioc_behavior_rules.json")
+          import os
+          path = Path(os.environ["IOC_DIR"]) / "consolidated/ioc_behavior_rules.json"
           data = json.loads(path.read_text(encoding="utf-8"))
           rules = data.get("rules") if isinstance(data, dict) else None
           if not isinstance(rules, list) or not rules:
@@ -417,7 +422,7 @@ jobs:
       - name: IOC behavior quality gate (source)
         run: |
           python3 threat-intel/processing/ioc_behavior_quality_gate.py \
-            --input sources/ioc/consolidated/ioc_behavior_rules.json \
+            --input "$IOC_DIR/consolidated/ioc_behavior_rules.json" \
             --output /tmp/ioc_behavior_quality_source.json \
             --max-load-ms 1000 \
             --min-rules 20 \
@@ -429,5 +434,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ioc-curated
-          path: sources/ioc/consolidated/
+          path: ${{ env.IOC_DIR }}/consolidated/
           retention-days: 7
