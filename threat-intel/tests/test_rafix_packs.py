@@ -284,3 +284,29 @@ def test_collector_uses_fresh_job_scratch_not_checkout_snapshots():
     assert 'IOC_DIR=$RUNNER_TEMP/ioc-collected' in workflow
     assert "${{ env.IOC_DIR }}/consolidated/" in workflow
     assert "ioc-curated" in workflow
+
+
+def test_malwarebazaar_api_dates_survive_collection(tmp_path, monkeypatch):
+    import urllib.request
+    workflow = yaml.safe_load((ROOT / ".github/workflows/collect-ioc.yml").read_text())
+    step = next(step for job in workflow["jobs"].values() for step in job["steps"]
+                if "MalwareBazaar full SHA256" in step.get("name", ""))
+    code = step["run"].split("python - <<'PY'\n", 1)[1].split("\nPY", 1)[0]
+    output = tmp_path / "api.jsonl"
+    code = code.replace("/tmp/bazaar_api_hashes.txt", str(output))
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def read(self):
+            return json.dumps({"query_status":"ok","data":[{"sha256_hash":"a"*64,"first_seen":"2020-01-01 00:00:00"}, {"sha256_hash":"not-a-hash","first_seen":"2020-01-01 00:00:00"}]}).encode()
+    monkeypatch.setenv("MALWARE_BAZAAR_KEY", "synthetic-public-test-value")
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *args, **kwargs: Response())
+    exec(compile(code, "<synthetic-collector>", "exec"), {})
+    lines = output.read_text().splitlines()
+    assert lines and all(line.startswith("{") for line in lines), "dated API rows became undated plain hashes"
+    rows = [json.loads(line) for line in lines]
+    assert len(rows) == 1
+    assert rows[0]["first_seen"] == rows[0]["last_seen"] == "2020-01-01 00:00:00"
+    assert ioc_dedup.deduplicate(rows, "hashes") == [], "old API metadata must expire, not be refreshed"
+    # The final collector must retain JSONL outside the plain-hash-only grep.
+    assert 'cat /tmp/bazaar_api_hashes.txt >> "$IOC_DIR/hashes/malwarebazaar.txt"' in step["run"]

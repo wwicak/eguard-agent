@@ -178,19 +178,28 @@ jobs:
               print(f"MalwareBazaar API query_status={doc.get('query_status')}")
               sys.exit(0)
 
-          hashes = [item.get("sha256_hash") for item in doc.get("data", []) if item.get("sha256_hash")]
+          rows = []
+          for item in doc.get("data", []):
+              value = item.get("sha256_hash", "")
+              if not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdefABCDEF" for c in value):
+                  continue
+              rows.append({"value": value.lower(), "source": "malwarebazaar",
+                  "first_seen": item.get("first_seen") or "",
+                  "last_seen": item.get("last_seen") or item.get("first_seen") or ""})
           with open("/tmp/bazaar_api_hashes.txt", "w", encoding="utf-8") as handle:
-              for value in hashes:
-                  handle.write(f"{value}\n")
-          print(f"MalwareBazaar API hashes: {len(hashes)}")
+              for row in rows:
+                  handle.write(json.dumps(row) + "\n")
+          print(f"MalwareBazaar API hashes: {len(rows)}")
           PY
           fi
 
           {
             cat /tmp/bazaar_full_hashes.txt 2>/dev/null
             cat /tmp/bazaar_export_hashes.txt 2>/dev/null
-            cat /tmp/bazaar_api_hashes.txt 2>/dev/null
           } | grep -iE '^[0-9a-f]{64}$' | sort -u > "$IOC_DIR/hashes/malwarebazaar.txt"
+          if [ -s /tmp/bazaar_api_hashes.txt ]; then
+            cat /tmp/bazaar_api_hashes.txt >> "$IOC_DIR/hashes/malwarebazaar.txt"
+          fi
 
           echo "MalwareBazaar hashes: $(wc -l < "$IOC_DIR/hashes/malwarebazaar.txt")"
 
