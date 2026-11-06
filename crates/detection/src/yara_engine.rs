@@ -480,6 +480,18 @@ fn normalized_path(path: &str) -> String {
 fn is_platform_system_path(path: &str) -> bool {
     // Match any Windows system drive, not just C:; keep component boundaries.
     let windows = path.as_bytes().get(1) == Some(&b':')
-        && path.get(2..).is_some_and(|p| p.starts_with("/windows/"));
-    windows || path.starts_with("/system/") || path.starts_with("/usr/libexec/")
+        && path.get(2..).is_some_and(|p| {
+            [
+                "/windows/system32/",
+                "/windows/syswow64/",
+                "/windows/winsxs/",
+            ]
+            .iter()
+            .any(|root| p.starts_with(root))
+        });
+    // Windows Temp/Tasks and macOS Data volumes contain user-controlled files.
+    windows
+        || path.starts_with("/system/library/")
+        || path.starts_with("/system/applications/")
+        || path.starts_with("/usr/libexec/")
 }

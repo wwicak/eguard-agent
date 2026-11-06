@@ -293,6 +293,9 @@ fn system_root_exclusions_cover_windows_and_macos_with_boundaries() {
     }
     for p in [
         r"C:\WindowsBackup\payload.exe",
+        r"C:\Windows\Temp\payload.exe",
+        r"D:\Windows\Tasks\payload.exe",
+        "/System/Volumes/Data/Users/synthetic/payload",
         "/SystemBackup/payload",
         "/tmp/payload",
     ] {
