@@ -949,6 +949,13 @@ async fn observability_snapshot_reports_bounded_response_queue_progress() {
     assert!(snapshot.max_response_oldest_age_secs >= snapshot.last_response_oldest_age_secs);
 }
 
+fn corroborated_evaluation(confidence: Confidence, ts: i64, pid: u32) -> TickEvaluation {
+    let mut evaluation = tick_evaluation_for_confidence(confidence, ts, pid);
+    evaluation.detection_outcome.temporal_hits.push("credential_dump_sequence".into());
+    evaluation.detection_outcome.exploit_indicators.push("process_injection".into());
+    evaluation
+}
+
 #[tokio::test]
 // AC-RSP-124 AC-RSP-125 AC-RSP-126
 async fn auto_isolation_policy_updates_host_state_and_emits_response_report() {
@@ -966,12 +973,12 @@ async fn auto_isolation_policy_updates_host_state_and_emits_response_report() {
     runtime.runtime_mode = AgentMode::Active;
     runtime.baseline_store.status = BaselineStatus::Active;
 
-    let eval1 = tick_evaluation_for_confidence(Confidence::VeryHigh, 1_700_010_000, 41_001);
+    let eval1 = corroborated_evaluation(Confidence::VeryHigh, 1_700_010_000, 41_001);
     runtime.maybe_apply_auto_isolation(1_700_010_000, Some(&eval1));
     assert!(!runtime.host_control.isolated);
     assert!(runtime.pending_response_reports.is_empty());
 
-    let eval2 = tick_evaluation_for_confidence(Confidence::Definite, 1_700_010_030, 41_002);
+    let eval2 = corroborated_evaluation(Confidence::Definite, 1_700_010_030, 41_002);
     runtime.maybe_apply_auto_isolation(1_700_010_030, Some(&eval2));
 
     assert!(runtime.host_control.isolated);
@@ -1007,7 +1014,7 @@ async fn auto_isolation_policy_ignores_high_confidence_and_hourly_cap() {
     runtime.maybe_apply_auto_isolation(1_700_020_010, Some(&high));
     assert!(!runtime.host_control.isolated);
 
-    let very_high = tick_evaluation_for_confidence(Confidence::VeryHigh, 1_700_020_020, 42_002);
+    let very_high = corroborated_evaluation(Confidence::VeryHigh, 1_700_020_020, 42_002);
     runtime.maybe_apply_auto_isolation(1_700_020_020, Some(&very_high));
     runtime.maybe_apply_auto_isolation(1_700_020_030, Some(&very_high));
     assert!(runtime.host_control.isolated);

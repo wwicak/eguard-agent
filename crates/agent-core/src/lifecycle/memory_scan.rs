@@ -149,7 +149,11 @@ impl AgentRuntime {
             );
         }
         let response_cfg = self.effective_response_config();
-        let action = plan_action(confidence, &response_cfg);
+        let action = self.sanitize_planned_action_for_event(
+            plan_action(confidence, &response_cfg),
+            &event,
+            &detection_outcome,
+        );
         let rule_name = detection
             .hits
             .first()

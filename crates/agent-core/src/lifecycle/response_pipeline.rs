@@ -53,7 +53,9 @@ impl AgentRuntime {
             return;
         };
 
-        if self.host_control.isolated {
+        if self.host_control.isolated
+            || !Self::has_concrete_response_evidence(&evaluation.detection_outcome)
+        {
             return;
         }
 
@@ -266,6 +268,12 @@ impl AgentRuntime {
         rule_name: &str,
         threat_category: &str,
     ) {
+        let cfg = self.effective_response_config();
+        if action != super::PlannedAction::CaptureScript
+            && (!cfg.autonomous_response || cfg.dry_run)
+        {
+            return;
+        }
         let action = self.sanitize_planned_action_for_event(
             action,
             &evaluation.detection_event,
@@ -309,12 +317,52 @@ impl AgentRuntime {
             });
     }
 
-    fn sanitize_planned_action_for_event(
+    pub(super) fn has_concrete_response_evidence(outcome: &DetectionOutcome) -> bool {
+        if outcome.confidence < detection::Confidence::VeryHigh {
+            return false;
+        }
+        if outcome.signals.deception_triggered {
+            return true;
+        }
+        if outcome.signals.z1_exact_ioc
+            && outcome.layer1.result == detection::Layer1Result::ExactMatch
+            && outcome
+                .layer1
+                .matched_fields
+                .iter()
+                .any(|field| matches!(field.as_str(), "file_hash" | "dst_ip" | "dst_domain"))
+        {
+            return true;
+        }
+        // Anomaly/ML and prefilter text are not independent attack evidence.
+        [
+            !outcome.temporal_hits.is_empty(),
+            !outcome.kill_chain_hits.is_empty(),
+            !outcome.yara_hits.is_empty(),
+            !outcome.exploit_indicators.is_empty(),
+            !outcome.tamper_indicators.is_empty(),
+        ]
+        .into_iter()
+        .filter(|active| *active)
+        .count()
+            >= 2
+    }
+
+    pub(super) fn sanitize_planned_action_for_event(
         &self,
         action: super::PlannedAction,
         event: &detection::TelemetryEvent,
         outcome: &DetectionOutcome,
     ) -> super::PlannedAction {
+        if matches!(
+            action,
+            super::PlannedAction::KillOnly
+                | super::PlannedAction::QuarantineOnly
+                | super::PlannedAction::KillAndQuarantine
+        ) && !Self::has_concrete_response_evidence(outcome)
+        {
+            return super::PlannedAction::AlertOnly;
+        }
         if self.event_supports_quarantine(event, outcome) {
             return action;
         }
@@ -353,6 +401,13 @@ impl AgentRuntime {
         now_unix: i64,
         emit_report: bool,
     ) {
+        let cfg = self.effective_response_config();
+        if !cfg.autonomous_response
+            || cfg.dry_run
+            || !Self::has_concrete_response_evidence(&evaluation.detection_outcome)
+        {
+            return;
+        }
         if self.host_control.isolated {
             info!("playbook isolate skipped: host already isolated");
             return;
@@ -663,6 +718,127 @@ mod tests {
         assert!(runtime.recent_response_action_keys.len() <= 2);
     }
 
+    fn windows_evaluation() -> TickEvaluation {
+        let fixtures: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+            "../../../detection/src/testdata/windows_discovery.json"
+        ))
+        .unwrap();
+        let event: TelemetryEvent = serde_json::from_value(fixtures[0]["event"].clone()).unwrap();
+        TickEvaluation {
+            event_txn: super::super::EventTxn {
+                event_class: "network_connect".into(),
+                operation: "network_connect".into(),
+                subject: Some(event.process.clone()),
+                object: event.dst_ip.clone(),
+                pid: event.pid,
+                uid: event.uid,
+                session_id: event.session_id,
+                ts_unix: event.ts_unix,
+                key: "windows-discovery".into(),
+            },
+            event_envelope: grpc_client::EventEnvelope::info(
+                "fixture".into(),
+                "network_connect".into(),
+                "{}".into(),
+                event.ts_unix,
+            ),
+            detection_event: event,
+            detection_outcome: DetectionOutcome::default(),
+            confidence: detection::Confidence::VeryHigh,
+            action: response::PlannedAction::KillAndQuarantine,
+            compliance: compliance::ComplianceResult {
+                status: "ok".into(),
+                detail: "ok".into(),
+                checks: vec![],
+            },
+        }
+    }
+
+    #[test]
+    fn windows_fp_local_destructive_actions_reject_weak_evidence() {
+        let _guard = crate::test_support::TestEnvGuard::new(&[]);
+        let mut runtime = runtime();
+        runtime.runtime_mode = crate::config::AgentMode::Active;
+        runtime.baseline_store.status = baseline::BaselineStatus::Active;
+        runtime.config.response.autonomous_response = true;
+        runtime.config.response.auto_isolation.enabled = true;
+        runtime
+            .config
+            .response
+            .auto_isolation
+            .min_incidents_in_window = 1;
+        runtime
+            .playbook_engine
+            .load_from_policy(&serde_json::json!({
+                "response_playbooks": [{"name":"test", "enabled":true, "priority":1,
+                    "conditions":{"require_signals":[]},
+                    "actions":[{"action":"kill"},{"action":"quarantine"},{"action":"isolate"},
+                        {"action":"capture"},{"action":"alert"}]}]
+            }));
+        for one_pattern in [false, true] {
+            let mut evaluation = windows_evaluation();
+            evaluation.detection_outcome.confidence = detection::Confidence::VeryHigh;
+            evaluation.detection_outcome.signals.z3_anomaly_high = true;
+            if one_pattern {
+                evaluation
+                    .detection_outcome
+                    .temporal_hits
+                    .push("one_pattern".into());
+                evaluation.detection_outcome.signals.z2_temporal = true;
+                evaluation.detection_outcome.signals.l1_prefilter_hit = true;
+            }
+            runtime.enqueue_response_action_if_present(10, Some(&evaluation));
+            assert!(runtime
+                .pending_response_actions
+                .iter()
+                .all(|pending| { pending.action == response::PlannedAction::CaptureScript }));
+            runtime.enqueue_playbook_actions_if_present(10, Some(&evaluation));
+            runtime.maybe_apply_auto_isolation(10, Some(&evaluation));
+            assert!(!runtime.host_control.isolated);
+            assert!(runtime
+                .pending_response_actions
+                .iter()
+                .all(|pending| { pending.action == response::PlannedAction::CaptureScript }));
+            assert!(runtime
+                .pending_response_reports
+                .iter()
+                .all(|report| { report.envelope.action_type == "playbook_alert" }));
+        }
+        assert!(
+            !runtime.pending_response_actions.is_empty(),
+            "capture remains available"
+        );
+        assert!(
+            !runtime.pending_response_reports.is_empty(),
+            "alerts remain available"
+        );
+    }
+
+    #[test]
+    fn windows_fp_verified_malware_hash_still_queues_destructive_response() {
+        let _guard = crate::test_support::TestEnvGuard::new(&[]);
+        let mut runtime = runtime();
+        let mut evaluation = windows_evaluation();
+        evaluation.detection_event.file_hash = Some("known-malware-sha256".into());
+        let mut layer1 = detection::IocLayer1::new();
+        layer1.load_hashes(["known-malware-sha256".into()]);
+        let mut engine = detection::DetectionEngine::new(
+            layer1,
+            detection::TemporalEngine::with_default_rules(),
+            detection::AnomalyEngine::default(),
+            detection::Layer4Engine::with_default_templates(),
+        );
+        evaluation.detection_outcome = engine.process_event(&evaluation.detection_event);
+        evaluation.confidence = evaluation.detection_outcome.confidence;
+        runtime.enqueue_response_action_if_present(10, Some(&evaluation));
+        assert_eq!(evaluation.confidence, detection::Confidence::Definite);
+        assert_eq!(runtime.pending_response_actions.len(), 1);
+        assert_eq!(
+            runtime.pending_response_actions[0].action,
+            response::PlannedAction::KillOnly
+        );
+    }
+
     fn quarantine_event(path: &str, file_write: bool, event_class: EventClass) -> TelemetryEvent {
         TelemetryEvent {
             ts_unix: 1_700_000_000,
@@ -688,6 +864,15 @@ mod tests {
         }
     }
 
+    fn concrete_outcome() -> DetectionOutcome {
+        DetectionOutcome {
+            confidence: detection::Confidence::VeryHigh,
+            temporal_hits: vec!["credential_dump_sequence".into()],
+            exploit_indicators: vec!["process_injection".into()],
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn quarantine_only_is_downgraded_for_non_write_process_paths() {
         let runtime = runtime();
@@ -701,7 +886,7 @@ mod tests {
             runtime.sanitize_planned_action_for_event(
                 super::super::PlannedAction::QuarantineOnly,
                 &event,
-                &DetectionOutcome::default(),
+                &concrete_outcome(),
             ),
             super::super::PlannedAction::AlertOnly
         );
@@ -720,7 +905,7 @@ mod tests {
             runtime.sanitize_planned_action_for_event(
                 super::super::PlannedAction::KillAndQuarantine,
                 &event,
-                &DetectionOutcome::default(),
+                &concrete_outcome(),
             ),
             super::super::PlannedAction::KillOnly
         );
@@ -739,7 +924,7 @@ mod tests {
             runtime.sanitize_planned_action_for_event(
                 super::super::PlannedAction::QuarantineOnly,
                 &event,
-                &DetectionOutcome::default(),
+                &concrete_outcome(),
             ),
             super::super::PlannedAction::QuarantineOnly
         );
@@ -754,7 +939,7 @@ mod tests {
             runtime.sanitize_planned_action_for_event(
                 super::super::PlannedAction::QuarantineOnly,
                 &event,
-                &DetectionOutcome::default(),
+                &concrete_outcome(),
             ),
             super::super::PlannedAction::AlertOnly
         );
@@ -768,7 +953,7 @@ mod tests {
             false,
             EventClass::FileOpen,
         );
-        let mut outcome = DetectionOutcome::default();
+        let mut outcome = concrete_outcome();
         outcome.signals.z1_exact_ioc = true;
 
         assert_eq!(
@@ -782,7 +967,7 @@ mod tests {
     }
 
     #[test]
-    fn quarantine_only_is_retained_for_read_only_yara_file() {
+    fn quarantine_only_is_downgraded_for_uncorroborated_yara_file() {
         let runtime = runtime();
         let event = quarantine_event(
             "/tmp/platinum_yara_read_quarantine_test.txt",
@@ -798,7 +983,7 @@ mod tests {
                 &event,
                 &outcome,
             ),
-            super::super::PlannedAction::QuarantineOnly
+            super::super::PlannedAction::AlertOnly
         );
     }
 }

@@ -71,8 +71,11 @@ impl AgentRuntime {
             }
 
             matched_files = matched_files.saturating_add(1);
-            let action =
-                normalize_scan_action(response::plan_action(outcome.confidence, &response_cfg));
+            let action = self.sanitize_planned_action_for_event(
+                normalize_scan_action(response::plan_action(outcome.confidence, &response_cfg)),
+                &event,
+                &outcome,
+            );
             let detection_layers = Self::detection_layers(&outcome);
             let rule_name =
                 Self::detection_rule_name(&outcome).unwrap_or_else(|| "manual_scan".to_string());
