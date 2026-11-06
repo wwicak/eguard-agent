@@ -249,7 +249,7 @@ fn process_exec_payload_cmdline_is_cached_for_later_file_open_when_proc_lookup_f
         enriched_file.process_cmdline.as_deref(),
         Some("bash -c a=\"who\"; b=\"ami\"; eval \"$a$b\"")
     );
-    assert_eq!(enriched_file.process_exe.as_deref(), Some("/usr/bin/bash"));
+    assert!(enriched_file.process_exe.is_none(), "cached command text is not resolved image provenance");
 }
 
 #[test]
@@ -770,4 +770,19 @@ fn strict_budget_mode_keeps_hash_for_high_value_tmp_file_open() {
     );
 
     let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+fn rafix_new_exec_refreshes_cached_image_but_same_event_keeps_primed_metadata() {
+    let mut cache = EnrichmentCache::default();
+    let mut raw = RawEvent { event_type: EventType::ProcessExec, pid: 999_999_998,
+        ts_ns: 1, payload: "path=/usr/bin/python3;cmdline=python3 fixture.py".into(), ..Default::default() };
+    cache.prime_process_metadata(&raw);
+    // Synthetic previously-resolved metadata; no real process or host fixture.
+    cache.process_cache.get_mut(&raw.pid).unwrap().process_exe = Some("/usr/bin/python3".into());
+    assert_eq!(enrich_event_with_cache(raw.clone(), &mut cache).process_exe.as_deref(), Some("/usr/bin/python3"));
+    raw.ts_ns = 2; raw.payload = "path=/dev/fd/5;cmdline=5".into();
+    let enriched = enrich_event_with_cache(raw, &mut cache);
+    assert!(enriched.process_exe.is_none(), "new exec must not inherit the previous image");
+    assert_eq!(enriched.process_cmdline.as_deref(), Some("5"));
 }

@@ -123,3 +123,19 @@ fn rafix_kscan_attack_taint_and_probe_symbol() {
     assert!(!ind.iter().any(|i| i.starts_with("kprobe_hook_count:")));
     let _ = fs::remove_dir_all(&r);
 }
+
+#[test]
+fn rafix_unresolved_exec_invocation_is_not_a_resolved_image() {
+    use platform_linux::{enrich_event, EventType, RawEvent};
+    let enriched = enrich_event(RawEvent {
+        event_type: EventType::ProcessExec,
+        pid: 999_999_999,
+        payload: "path=/dev/fd/5;comm=runc".into(),
+        ..Default::default()
+    });
+    assert_eq!(enriched.file_path.as_deref(), Some("/dev/fd/5"));
+    assert!(
+        enriched.process_exe.is_none(),
+        "unresolved invocation must not impersonate a resolved image"
+    );
+}

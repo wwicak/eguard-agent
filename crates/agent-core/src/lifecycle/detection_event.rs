@@ -80,14 +80,26 @@ pub(super) fn to_detection_event(
         .as_deref()
         .and_then(process_name_from_cmdline)
         .filter(|value| !value.trim().is_empty());
+    // RAFIX shared: an invocation may label an exited process, but is not image provenance.
+    let process_name_from_invocation = matches!(
+        enriched.event.event_type,
+        crate::platform::EventType::ProcessExec
+    )
+    .then_some(file_path.as_deref())
+    .flatten()
+    .filter(|p| !p.starts_with("/proc/") && !p.starts_with("/dev/fd/"))
+    .map(process_basename)
+    .filter(|p| !p.trim().is_empty());
     let authoritative_process_exec = matches!(
         enriched.event.event_type,
         crate::platform::EventType::ProcessExec
     ) && (process_name_from_path.is_some()
-        || process_name_from_cmd.is_some());
+        || process_name_from_cmd.is_some()
+        || process_name_from_invocation.is_some());
 
     let mut process = process_name_from_path
         .or(process_name_from_cmd)
+        .or(process_name_from_invocation)
         .unwrap_or("unknown")
         .to_string();
 
@@ -803,6 +815,13 @@ mod tests {
             super::to_detection_event(&enriched, 1).file_hash,
             enriched.file_sha256
         );
+        enriched.process_exe = None;
+        enriched.process_cmdline = None;
+        enriched.event.event_type = EventType::ProcessExec;
+        enriched.file_path = Some("/usr/bin/short-lived-fixture".into());
+        let e = super::to_detection_event(&enriched, 1);
+        assert_eq!(e.process, "short-lived-fixture");
+        assert!(e.process_exe.is_none());
         for (kind, write, unlink) in [
             (EventType::FileOpen, false, false),
             (EventType::FileWrite, true, false),

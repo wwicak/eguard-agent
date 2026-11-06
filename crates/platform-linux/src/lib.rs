@@ -139,6 +139,7 @@ struct ProcessCacheEntry {
     parent_chain: Vec<u32>,
     start_time_ticks: Option<u64>,
     last_seen_ns: u64,
+    exec_event_ts_ns: Option<u64>,
 }
 
 const DEFAULT_HASH_FINALIZE_DELAY_MS: u64 = 1_200;
@@ -251,22 +252,20 @@ impl EnrichmentCache {
                 (_, None) => true,
                 _ => false,
             };
-            if same_process_instance {
+            // Re-exec changes the image without changing /proc starttime. Reuse
+            // a primed image only for the very same emitted exec observation.
+            let same_exec = !matches!(raw.event_type, EventType::ProcessExec)
+                || entry.exec_event_ts_ns == Some(raw.ts_ns);
+            if same_process_instance && same_exec {
                 entry.last_seen_ns = raw.ts_ns;
                 return entry.clone();
             }
         }
 
+        // Image identity must come from /proc, never the exec invocation alias.
         let process_exe = fs::read_link(format!("/proc/{}/exe", raw.pid))
             .ok()
-            .map(|p| p.to_string_lossy().into_owned())
-            .or_else(|| {
-                if matches!(raw.event_type, EventType::ProcessExec) {
-                    payload_meta.and_then(|meta| meta.file_path.clone())
-                } else {
-                    None
-                }
-            });
+            .map(|p| p.to_string_lossy().into_owned());
 
         let process_cmdline = fs::read(format!("/proc/{}/cmdline", raw.pid))
             .ok()
@@ -302,6 +301,7 @@ impl EnrichmentCache {
             parent_chain,
             start_time_ticks: current_start_time_ticks,
             last_seen_ns: raw.ts_ns,
+            exec_event_ts_ns: matches!(raw.event_type, EventType::ProcessExec).then_some(raw.ts_ns),
         };
 
         self.process_cache.put(raw.pid, entry.clone());
@@ -540,15 +540,8 @@ pub fn enrich_event_with_cache(raw: RawEvent, cache: &mut EnrichmentCache) -> En
         }
     };
 
-    // For process_exec events, fall back to the payload's executable path
-    // when /proc/<pid>/exe is unavailable (e.g., replay or short-lived PIDs).
-    let process_exe = entry.process_exe.or_else(|| {
-        if matches!(raw.event_type, EventType::ProcessExec) {
-            payload_meta.file_path.clone()
-        } else {
-            None
-        }
-    });
+    // The invocation is preserved in file_path even when image resolution failed.
+    let process_exe = entry.process_exe;
 
     EnrichedEvent {
         event: raw,
