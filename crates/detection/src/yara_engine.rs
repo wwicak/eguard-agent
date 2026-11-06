@@ -165,6 +165,11 @@ impl YaraEngine {
     }
 
     pub fn scan_event(&self, event: &TelemetryEvent) -> Vec<YaraHit> {
+        if event.event_class != EventClass::ProcessExec
+            && !(event.event_class == EventClass::FileOpen && event.file_write)
+        {
+            return Vec::new();
+        }
         let Some(path) = event.file_path.as_deref() else {
             return Vec::new();
         };
@@ -438,7 +443,7 @@ fn load_excluded_path_prefixes() -> Vec<String> {
         .collect()
 }
 
-fn is_excluded_process_exec_path(path: &str) -> bool {
+pub(crate) fn is_excluded_process_exec_path(path: &str) -> bool {
     let path = normalized_path(path);
     DEFAULT_PROCESS_EXEC_EXCLUDED_PATH_PREFIXES
         .iter()

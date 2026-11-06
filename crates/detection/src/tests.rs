@@ -2373,20 +2373,23 @@ detection:
 #[test]
 fn yara_rule_match_escalates_to_definite() {
     let mut engine = DetectionEngine::default_with_rules();
-    engine
+    // RAFIX shared: test expectation (APACKS spec)
+    let loaded = engine
         .load_yara_rules_str(
             r#"
-rule suspicious_payload {
+rule eguard_fixture_suspicious_payload {
   strings:
     $a = "malware-test-marker"
   condition:
-    $a
+    $a at 0 and filesize <= 128
 }
 "#,
         )
         .expect("load yara rules");
+    assert_eq!(loaded, 1);
 
     let mut ev = event(1, EventClass::FileOpen, "bash", "sshd", 1000);
+    ev.file_write = true;
     // YARA now only scans file content, not command lines.
     // Create a temp file with the marker for the engine to scan.
     let tmp_dir = std::env::temp_dir().join(format!(
@@ -2408,7 +2411,7 @@ rule suspicious_payload {
     assert!(out
         .yara_hits
         .iter()
-        .any(|hit| hit.rule_name == "suspicious_payload"));
+        .any(|hit| hit.rule_name == "eguard_fixture_suspicious_payload"));
     let _ = std::fs::remove_dir_all(tmp_dir);
 }
 
@@ -2418,18 +2421,20 @@ fn exact_ioc_file_match_preserves_yara_hits_for_known_malware() {
     engine.layer1.load_hashes([
         "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f".to_string(),
     ]);
-    engine
+    // RAFIX shared: test expectation (APACKS spec)
+    let loaded = engine
         .load_yara_rules_str(
             r#"
-rule eicar_signature {
+rule eguard_fixture_eicar_signature {
   strings:
     $eicar = "X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
   condition:
-    $eicar
+    $eicar at 0 and filesize <= 128
 }
 "#,
         )
         .expect("load eicar yara rule");
+    assert_eq!(loaded, 1);
 
     let tmp_dir = std::env::temp_dir().join(format!(
         "eguard-eicar-marker-{}",
@@ -2447,6 +2452,7 @@ rule eicar_signature {
     .unwrap();
 
     let mut ev = event(3, EventClass::FileOpen, "bash", "sshd", 1000);
+    ev.file_write = true;
     ev.file_path = Some(eicar_file.display().to_string());
     ev.file_hash =
         Some("275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f".to_string());
@@ -2460,7 +2466,7 @@ rule eicar_signature {
     assert!(out
         .yara_hits
         .iter()
-        .any(|hit| hit.rule_name == "eicar_signature"));
+        .any(|hit| hit.rule_name == "eguard_fixture_eicar_signature"));
 
     let _ = std::fs::remove_dir_all(tmp_dir);
 }
@@ -2468,18 +2474,22 @@ rule eicar_signature {
 #[test]
 fn process_exec_system_binary_does_not_surface_yara_hits() {
     let mut engine = DetectionEngine::default_with_rules();
-    engine
+    // RAFIX shared: test expectation (APACKS spec)
+    let loaded = engine
         .load_yara_rules_str(
             r#"
-rule elf_marker {
+rule eguard_fixture_elf_marker {
   strings:
     $a = "ELF"
   condition:
-    $a
+    $a at 0 and filesize <= 128
 }
 "#,
         )
         .expect("load yara rules");
+    assert_eq!(loaded, 1);
+    assert_eq!(engine.yara.scan_bytes("positive control", b"ELF").len(), 1);
+    assert!(crate::yara_engine::is_excluded_process_exec_path("/usr/bin/cat"));
 
     let mut ev = event(4, EventClass::ProcessExec, "cat", "bash", 0);
     ev.file_path = Some("/usr/bin/cat".to_string());

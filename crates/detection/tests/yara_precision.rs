@@ -98,6 +98,38 @@ fn scans_only_exec_and_write_not_exit_or_reads() {
     );
 }
 #[test]
+fn eicar_read_is_quiet_but_write_and_exec_scan() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("eicar.com");
+    std::fs::write(
+        &path,
+        b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*",
+    )
+    .unwrap();
+    let mut engine = YaraEngine::new();
+    assert_eq!(
+        engine
+            .load_rules_str(include_str!("../../../rules/yara/default.yar"))
+            .unwrap(),
+        1
+    );
+    assert!(engine
+        .scan_event(&event(&path, EventClass::FileOpen, false))
+        .is_empty());
+    assert_eq!(
+        engine
+            .scan_event(&event(&path, EventClass::FileOpen, true))
+            .len(),
+        1
+    );
+    assert_eq!(
+        engine
+            .scan_event(&event(&path, EventClass::ProcessExec, false))
+            .len(),
+        1
+    );
+}
+#[test]
 fn canonical_eicar_is_full_string_at_zero_and_small_file_only() {
     let mut engine = YaraEngine::new();
     engine
