@@ -2,6 +2,9 @@
 title: windows_defender_disable
 id: windows_defender_disable
 level: high
+status: "experimental"
+tags: ["attack.t1562"]
+mitre_techniques: ["T1562"]
 logsource:
   product: windows
 detection:

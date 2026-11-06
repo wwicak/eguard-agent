@@ -1,7 +1,10 @@
 # eGuard-authored endpoint rule; GPL-2.0-or-later.
-title: windows_eguard_tamper
-id: windows_eguard_tamper
+title: windows_taskkill_eguard_tamper
+id: windows_taskkill_eguard_tamper
 level: high
+status: "experimental"
+tags: ["attack.t1562"]
+mitre_techniques: ["T1562"]
 logsource:
   product: windows
 detection:

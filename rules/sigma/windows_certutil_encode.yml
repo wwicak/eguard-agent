@@ -1,12 +1,15 @@
 # eGuard-authored endpoint rule; GPL-2.0-or-later.
-title: windows_certutil_decode
-id: windows_certutil_decode
-level: medium
+title: windows_certutil_encode
+id: windows_certutil_encode
+level: low
+status: "experimental"
+tags: ["attack.t1027","attack.t1218"]
+mitre_techniques: ["T1027","T1218"]
 logsource:
   product: windows
 detection:
   sequence:
     - event_class: process_exec
       process_any_of: [certutil.exe]
-      command_line_contains: ["-decode ", "/decode ", "-decodehex", "/decodehex"]
+      command_line_contains: ["-encode ", "/encode ", "-encodehex ", "/encodehex "]
       within_secs: 30

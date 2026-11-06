@@ -17,7 +17,15 @@ fn event(v: &Value, ts: i64) -> TelemetryEvent {
         process: s("process"),
         parent_process: s("parent"),
         session_id: 42,
-        file_path: v["file_path"].as_str().map(String::from),
+        file_path: v["file_path"].as_str().map(String::from).or_else(|| {
+            (s("class") == "process_exec").then(|| {
+                if s("process").ends_with(".exe") {
+                    format!("C:\\Windows\\System32\\{}", s("process"))
+                } else {
+                    format!("/usr/bin/{}", s("process"))
+                }
+            })
+        }),
         file_write: v["file_write"].as_bool().unwrap_or(false),
         command_line: v["cmdline"].as_str().map(String::from),
         file_hash: None,
@@ -38,6 +46,7 @@ fn authored_verdict_recall_and_precision() {
         serde_json::from_str(include_str!("fixtures/authored_sigma_cases.json")).unwrap();
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut failures = Vec::new();
+    let mut metadata_failures = Vec::new();
     let mut total = 0;
     for case in cases {
         let path = root.join(case["file"].as_str().unwrap());
@@ -47,7 +56,17 @@ fn authored_verdict_recall_and_precision() {
         let source = source
             .replace("  product: windows\n", "")
             .replace("  product: linux\n", "");
+        if let Some(level) = case["expected_level"].as_str() {
+            let doc: serde_yaml::Value = serde_yaml::from_str(&source).unwrap();
+            if doc["level"].as_str() != Some(level) {
+                metadata_failures.push(format!("{} expected level {level}", case["id"]));
+            }
+        }
         let rule = compile_sigma_rule(&source).unwrap();
+        let identity: serde_yaml::Value = serde_yaml::from_str(&source).unwrap();
+        if Some(rule.name.as_str()) != identity["id"].as_str() {
+            metadata_failures.push(format!("{} authored rule identity changed", case["id"]));
+        }
         for (kind, expected) in [("must_fire", true), ("must_not_fire", false)] {
             for (i, sequence) in case[kind].as_array().unwrap().iter().enumerate() {
                 total += 1;
@@ -58,7 +77,12 @@ fn authored_verdict_recall_and_precision() {
                     .unwrap()
                     .iter()
                     .enumerate()
-                    .any(|(t, v)| !engine.observe(&event(v, 100 + t as i64)).is_empty());
+                    .any(|(t, v)| {
+                        engine
+                            .observe(&event(v, 100 + t as i64))
+                            .iter()
+                            .any(|name| name == &rule.name)
+                    });
                 if fired != expected {
                     failures.push(format!(
                         "{} {kind}[{i}] expected={expected} fired={fired}",
@@ -73,5 +97,10 @@ fn authored_verdict_recall_and_precision() {
         total - failures.len(),
         total
     );
-    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    assert!(
+        failures.is_empty() && metadata_failures.is_empty(),
+        "{}\n{}",
+        failures.join("\n"),
+        metadata_failures.join("\n")
+    );
 }

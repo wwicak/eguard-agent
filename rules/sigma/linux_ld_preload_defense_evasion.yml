@@ -2,6 +2,9 @@
 title: linux_ld_preload_defense_evasion
 id: linux_ld_preload_defense_evasion
 level: high
+status: "experimental"
+tags: ["attack.t1574","attack.t1562"]
+mitre_techniques: ["T1574","T1562"]
 logsource:
   product: linux
 detection:

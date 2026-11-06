@@ -2,6 +2,9 @@
 title: windows_lsass_access_dump
 id: windows_lsass_access_dump
 level: high
+status: "experimental"
+tags: ["attack.t1003","attack.t1055","attack.t1218"]
+mitre_techniques: ["T1003","T1055","T1218"]
 logsource:
   product: windows
 detection:

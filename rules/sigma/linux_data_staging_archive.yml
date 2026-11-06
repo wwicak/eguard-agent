@@ -2,6 +2,9 @@
 title: linux_data_staging_archive
 id: linux_data_staging_archive
 level: medium
+status: "experimental"
+tags: ["attack.t1074","attack.t1560"]
+mitre_techniques: ["T1074","T1560"]
 logsource:
   product: linux
 detection:

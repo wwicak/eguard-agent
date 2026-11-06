@@ -2,6 +2,9 @@
 title: linux_ssh_lateral_movement
 id: linux_ssh_lateral_movement
 level: medium
+status: "experimental"
+tags: ["attack.t1021","attack.t1098"]
+mitre_techniques: ["T1021","T1098"]
 logsource:
   product: linux
 detection:

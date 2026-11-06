@@ -1,7 +1,10 @@
 # eGuard-authored endpoint rule; GPL-2.0-or-later.
-title: windows_remote_service_exec_child
-id: windows_remote_service_exec_child
+title: windows_lateral_movement_service_exec
+id: windows_lateral_movement_service_exec
 level: medium
+status: "experimental"
+tags: ["attack.t1021","attack.t1053","attack.t1070","attack.t1134","attack.t1543","attack.t1569"]
+mitre_techniques: ["T1021","T1053","T1070","T1134","T1543","T1569"]
 logsource:
   product: windows
 detection:

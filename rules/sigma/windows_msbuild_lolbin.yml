@@ -2,6 +2,9 @@
 title: windows_msbuild_lolbin
 id: windows_msbuild_lolbin
 level: medium
+status: "experimental"
+tags: ["attack.t1127"]
+mitre_techniques: ["T1127"]
 logsource:
   product: windows
 detection:
@@ -10,5 +13,5 @@ detection:
       process_any_of: [msbuild.exe]
       command_line_all_groups:
         - ["\\users\\public\\", "\\appdata\\local\\temp\\", "\\programdata\\", "\\windows\\temp\\", "\\downloads\\"]
-        - [".xml", ".txt"]
+        - [".xml", ".txt", ".csproj"]
       within_secs: 30

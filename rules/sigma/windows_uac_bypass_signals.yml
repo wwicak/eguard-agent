@@ -1,7 +1,10 @@
 # eGuard-authored endpoint rule; GPL-2.0-or-later.
-title: windows_uac_bypass_registry_hijack
-id: windows_uac_bypass_registry_hijack
+title: windows_uac_bypass_signals
+id: windows_uac_bypass_signals
 level: high
+status: "experimental"
+tags: ["attack.t1548"]
+mitre_techniques: ["T1548"]
 logsource:
   product: windows
 detection:

@@ -2,6 +2,9 @@
 title: linux_reverse_shell_devtcp
 id: linux_reverse_shell_devtcp
 level: high
+status: "experimental"
+tags: ["attack.t1059","attack.t1071"]
+mitre_techniques: ["T1059","T1071"]
 logsource:
   product: linux
 detection:

@@ -1,21 +1,19 @@
+# Retained until the ACORE/A2 write-based merge target passes the same cases.
 title: linux_persistence_cron_systemd
 id: linux_persistence_cron_systemd
-status: experimental
-tags:
-  - attack.t1053
-  - attack.t1543
-mitre_techniques:
-  - T1053
-  - T1543
-
+level: medium
+status: "experimental"
+tags: ["attack.t1053","attack.t1543"]
+mitre_techniques: ["T1053","T1543"]
+logsource:
+  product: linux
 detection:
   sequence:
-    - event_class: process_exec
-      process_any_of:
-        - crontab
-        - systemctl
-      command_line_contains:
-        - enable
-        - --user
-        - /etc/cron.
+    - event_class: file_open
+      process_any_of: [bash, sh, dash, zsh, python, python3, perl]
+      file_path_contains: [/etc/cron.d/, /var/spool/cron/, /etc/systemd/system/, /.config/systemd/user/, /etc/rc.local]
+      require_file_write: true
+      command_line_all_groups:
+        - ['curl ', 'wget ', '/dev/tcp/']
+        - ['|sh', '| sh', '|bash', '| bash', 'bash -i']
       within_secs: 30

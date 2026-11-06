@@ -2,6 +2,9 @@
 title: windows_wmi_event_subscription_persistence
 id: windows_wmi_event_subscription_persistence
 level: high
+status: "experimental"
+tags: ["attack.t1546","attack.t1047"]
+mitre_techniques: ["T1546","T1047"]
 logsource:
   product: windows
 detection:

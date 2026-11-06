@@ -2,6 +2,9 @@
 title: windows_installutil_lolbin
 id: windows_installutil_lolbin
 level: medium
+status: "experimental"
+tags: ["attack.t1218"]
+mitre_techniques: ["T1218"]
 logsource:
   product: windows
 detection:
@@ -10,6 +13,6 @@ detection:
       process_any_of: [installutil.exe]
       command_line_all_groups:
         - ["/u ", "-u "]
-        - ["/logtoconsole=false"]
+        - ["/logtoconsole=false", "/logfile="]
         - ["\\users\\public\\", "\\appdata\\local\\temp\\", "\\programdata\\", "\\windows\\temp\\", "\\downloads\\"]
       within_secs: 30

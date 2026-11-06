@@ -2,6 +2,9 @@
 title: windows_com_hijack_registry
 id: windows_com_hijack_registry
 level: high
+status: "experimental"
+tags: ["attack.t1546","attack.t1112"]
+mitre_techniques: ["T1546","T1112"]
 logsource:
   product: windows
 detection:

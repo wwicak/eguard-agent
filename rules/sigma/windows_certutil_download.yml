@@ -2,6 +2,9 @@
 title: windows_certutil_download
 id: windows_certutil_download
 level: high
+status: "experimental"
+tags: ["attack.t1105","attack.t1218"]
+mitre_techniques: ["T1105","T1218"]
 logsource:
   product: windows
 detection:
