@@ -1,0 +1,105 @@
+use detection::{compile_sigma_rule, EventClass, TelemetryEvent, TemporalEngine};
+
+fn event(command: &str) -> TelemetryEvent {
+    serde_json::from_value(serde_json::json!({
+        "ts_unix": 1, "event_class": "ProcessExec", "pid": 42, "ppid": 1,
+        "uid": 1000, "process": "bash", "parent_process": "sshd", "session_id": 42,
+        "file_path": "/usr/bin/bash", "file_write": false, "command_line": command,
+        "container_escape": false, "container_privileged": false
+    })).unwrap()
+}
+fn rule(selection: &str, condition: &str) -> String {
+    format!("title: fidelity\nlogsource:\n  category: process_creation\ndetection:\n{selection}\n  condition: {condition}\n")
+}
+fn matches(yaml: &str, e: &TelemetryEvent) -> bool {
+    let r = compile_sigma_rule(yaml).unwrap();
+    assert_eq!(r.stages.len(), 1);
+    r.stages[0].predicate.matches(e)
+}
+#[test]
+fn boolean_conditions_are_same_event_not_temporal_or_flattened() {
+    let y = rule("  a:\n    CommandLine|contains: alpha\n  b:\n    CommandLine|contains: beta\n  filter:\n    CommandLine|contains: benign", "(a and b) and not filter");
+    assert!(!matches(&y, &event("alpha")));
+    assert!(!matches(&y, &event("beta")));
+    assert!(!matches(&y, &event("alpha beta benign")));
+    assert!(matches(&y, &event("alpha beta")));
+    let mut engine = TemporalEngine::new();
+    engine.add_rule(compile_sigma_rule(&y).unwrap());
+    assert_eq!(engine.observe(&event("alpha beta")), vec!["fidelity"]);
+}
+#[test]
+fn condition_or_across_fields_and_wildcard_quantifiers() {
+    let s = "  selection_a:\n    Image: bash\n  selection_b:\n    CommandLine|contains: beta";
+    assert!(matches(&rule(s, "1 of selection_*"), &event("alpha")));
+    assert!(!matches(&rule(s, "all of selection_*"), &event("alpha")));
+    assert!(matches(&rule(s, "all of them"), &event("beta")));
+    assert!(matches(&rule(s, "selection_a or selection_b"), &event("alpha")));
+}
+#[test]
+fn modifiers_all_prefix_suffix_regex_and_globs() {
+    assert!(!matches(&rule("  selection:\n    CommandLine|contains|all: [alpha, beta]", "selection"), &event("alpha")));
+    assert!(matches(&rule("  selection:\n    CommandLine|startswith: alpha", "selection"), &event("alpha beta")));
+    assert!(!matches(&rule("  selection:\n    CommandLine|startswith: alpha", "selection"), &event("x alpha")));
+    assert!(!matches(&rule("  selection:\n    CommandLine|endswith: beta", "selection"), &event("beta x")));
+    assert!(matches(&rule("  selection:\n    CommandLine|re: '^alpha [0-9]+$'", "selection"), &event("alpha 123")));
+    assert!(matches(&rule("  selection:\n    CommandLine: '*alpha?beta*'", "selection"), &event("x alpha beta y")));
+}
+#[test]
+fn image_path_modifiers_do_not_collapse_to_basename() {
+    let mut e = event("bash");
+    let y = rule("  selection:\n    Image|startswith: /tmp/", "selection");
+    assert!(!matches(&y, &e));
+    e.file_path = Some("/tmp/bash".into());
+    assert!(matches(&y, &e));
+}
+#[test]
+fn unknown_fields_modifiers_auditd_and_conditions_fail_closed() {
+    for s in ["ParentCommandLine: bash", "comm: bash", "CurrentDirectory: /tmp", "Name: bash", "User: root", "a0: tar", "CommandLine|base64: bash", "CommandLine|windash: bash", "CommandLine|cased: bash", "CommandLine|re: '['", "CommandLine|contains: ''"] {
+        let y = rule(&format!("  selection:\n    CommandLine|contains: bash\n    {s}"), "selection");
+        assert!(compile_sigma_rule(&y).is_err(), "accepted {s}");
+    }
+    for c in ["selection | count() > 1", "selection and missing", "1 of missing*", "selection xor selection", "(selection", "selection)"] {
+        assert!(compile_sigma_rule(&rule("  selection:\n    Image: bash", c)).is_err(), "accepted {c}");
+    }
+}
+#[test]
+fn unobservable_sources_and_foreign_platform_are_rejected() {
+    for ls in ["category: proxy", "category: webserver", "category: process_creation\n  service: auditd", "category: process_creation\n  product: plan9"] {
+        let y = format!("title: gate\nlogsource:\n  {ls}\ndetection:\n  selection:\n    CommandLine|contains: bash\n  condition: selection");
+        assert!(compile_sigma_rule(&y).is_err(), "accepted {ls}");
+    }
+    let foreign = if cfg!(target_os = "windows") { "linux" } else { "windows" };
+    assert!(compile_sigma_rule(&format!("logsource:\n  category: process_creation\n  product: {foreign}\ndetection:\n  sequence:\n    - event_class: process_exec\n      process_any_of: [bash]\n      within_secs: 10")).is_err());
+    assert!(compile_sigma_rule(&rule("  selection: [bash]", "selection")).is_err());
+}
+#[test]
+fn whitespace_dollar_and_caret_are_literal() {
+    for needle in [" add ", "$env:", "${IFS}", "^caret$"] {
+        let y = rule(&format!("  selection:\n    CommandLine|contains: '{needle}'"), "selection");
+        assert!(matches(&y, &event(&format!("before{needle}after"))));
+        if needle == " add " { assert!(!matches(&y, &event("address"))); }
+    }
+    let y = "title: spaces\ndetection:\n  sequence:\n    - event_class: process_exec\n      command_line_contains: [' add ']\n      within_secs: 10";
+    assert!(!matches(y, &event("address")));
+}
+#[test]
+fn network_domain_cidr_and_uid_mapping() {
+    let y = "title: net\nlogsource:\n  category: network_connection\ndetection:\n  selection:\n    DestinationHostname|endswith: .evil.example\n    DestinationIp|cidr: 203.0.113.0/24\n    DestinationPort: 443\n    uid: 1000\n  condition: selection";
+    let mut e = event(""); e.event_class = EventClass::NetworkConnect;
+    e.dst_domain = Some("c2.evil.example".into()); e.dst_ip = Some("203.0.113.9".into()); e.dst_port = Some(443);
+    assert!(matches(y, &e)); e.dst_ip = Some("198.51.100.9".into()); assert!(!matches(y, &e));
+    let dns = "title: dns\nlogsource:\n  category: dns\ndetection:\n  selection:\n    query: evil.example\n  condition: selection";
+    e.event_class = EventClass::DnsQuery; e.dst_domain = Some("evil.example".into());
+    assert!(matches(dns, &e));
+}
+#[test]
+fn sequence_extra_keys_are_not_silently_ignored() {
+    assert!(compile_sigma_rule("title: typo\ndetection:\n  sequence:\n    - event_class: process_exec\n      process_any_of: [bash]\n      command_line_contians: [attack]\n      within_secs: 10").is_err());
+}
+#[test]
+fn sequence_exclusions_and_groups_are_and_constraints() {
+    let y = "title: groups\ndetection:\n  sequence:\n    - event_class: process_exec\n      process_any_of: [bash]\n      command_line_all_groups: [[alpha, gamma], [beta]]\n      command_line_not_contains: [benign]\n      process_not_any_of: [ssh]\n      parent_not_any_of: [cron]\n      file_path_not_contains: [.pub]\n      within_secs: 10";
+    assert!(!matches(y, &event("alpha")));
+    assert!(matches(y, &event("alpha beta")));
+    assert!(!matches(y, &event("alpha beta benign")));
+}
