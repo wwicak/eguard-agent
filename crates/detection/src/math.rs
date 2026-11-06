@@ -1,17 +1,9 @@
 use std::collections::{HashMap, VecDeque};
 
+#[cfg(test)]
 use crate::types::{EventClass, EVENT_CLASSES};
 
 pub(crate) const MIN_ENTROPY_SAMPLES: usize = 10;
-
-pub(crate) fn default_uniform_baseline() -> HashMap<EventClass, f64> {
-    let mut out = HashMap::new();
-    let p = 1.0 / EVENT_CLASSES.len() as f64;
-    for class in EVENT_CLASSES {
-        out.insert(class, p);
-    }
-    out
-}
 
 #[cfg(test)]
 pub(crate) fn distributions(

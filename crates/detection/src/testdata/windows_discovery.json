@@ -1,0 +1,68 @@
+[
+  {
+    "event": {
+      "command_line": "\"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe\" --type=utility --utility-sub-type=network.mojom.NetworkService --lang=en-US --service-sandbox-type=none --metrics-shmem-handle=2408,i,9992315988513176036,5997588358120331795,524288 --field-trial-handle=2092,i,15982232932728208950,1696643090687017811,262144 --variations-seed-version=20261105-170107.359000-production --pseudonymization-salt-handle=2104,i,14136807699023239920,6051611681904014184,4 --trace-process-track-uuid=3190708989122997041 --mojo-platform-channel-handle=2388 /prefetch:3",
+      "dst_domain": null,
+      "dst_ip": "224.0.0.251",
+      "dst_port": 5353,
+      "event_class": "NetworkConnect",
+      "event_size": null,
+      "file_hash": "46461accbdc87dc88a5bdd6d611be095dd6147db009863d794f742ca90662efa",
+      "file_path": null,
+      "file_write": false,
+      "parent_process": "chrome.exe",
+      "pid": 10268,
+      "ppid": 6160,
+      "process": "chrome.exe",
+      "session_id": 13520,
+      "ts_unix": 1793959071,
+      "uid": 0,
+      "container_runtime": null,
+      "container_id": null,
+      "container_escape": false,
+      "container_privileged": false
+    },
+    "observed_anomaly": {
+      "entropy_bits": 5.134949086397962,
+      "entropy_z": -5.990681368542596e-07,
+      "high": true,
+      "kl_bits": 2.4373686848572085,
+      "medium": false,
+      "tau_high": 0.5939170829117985,
+      "tau_med": 0.516059393187876
+    }
+  },
+  {
+    "event": {
+      "command_line": "C:\\Windows\\system32\\svchost.exe -k LocalServiceAndNoImpersonation -p -s SSDPSRV",
+      "dst_domain": null,
+      "dst_ip": "239.255.255.250",
+      "dst_port": 1900,
+      "event_class": "NetworkConnect",
+      "event_size": null,
+      "file_hash": "b0b36bff7ae4057f687d839cd4b3d81159ab646f1ee1b22106a927e93decbb61",
+      "file_path": null,
+      "file_write": false,
+      "parent_process": "services.exe",
+      "pid": 10604,
+      "ppid": 748,
+      "process": "svchost.exe",
+      "session_id": 696,
+      "ts_unix": 1793959252,
+      "uid": 0,
+      "container_runtime": null,
+      "container_id": null,
+      "container_escape": false,
+      "container_privileged": false
+    },
+    "observed_anomaly": {
+      "entropy_bits": 4.860045147565568,
+      "entropy_z": 199976485.94628412,
+      "high": true,
+      "kl_bits": 0,
+      "medium": false,
+      "tau_high": 0,
+      "tau_med": 0
+    }
+  }
+]

@@ -3780,6 +3780,10 @@ fn verdict_a9_layer3_entropy_is_only_evaluated_on_exec() {
         window_size: 1,
         ..AnomalyConfig::default()
     });
+    engine.set_baseline(
+        "lsblk:guest-agent".into(),
+        EVENT_CLASSES.into_iter().map(|class| (class, 0.125)).collect(),
+    );
     let mut ev = event(1, EventClass::ProcessExec, "lsblk", "guest-agent", 1000);
     ev.command_line = Some("lsblk --json --output NAME,TYPE,SIZE,MOUNTPOINT".to_string());
     assert!(engine.observe(&ev).unwrap().entropy_bits.is_some());
@@ -3897,6 +3901,10 @@ fn anomaly_engine_emits_medium_when_above_medium_threshold_only() {
         ..AnomalyConfig::default()
     };
     let mut engine = AnomalyEngine::new(config);
+    engine.set_baseline(
+        "python:bash".into(),
+        EVENT_CLASSES.into_iter().map(|class| (class, 0.125)).collect(),
+    );
 
     for i in 0..32 {
         let ev = event(i, EventClass::ProcessExec, "python", "bash", 1000);

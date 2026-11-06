@@ -2,8 +2,7 @@ use std::collections::{HashMap, VecDeque};
 
 use crate::information::CusumDetector;
 use crate::math::{
-    default_uniform_baseline, kl_divergence_bits, robust_z, shannon_entropy_bits, tau_delta_bits,
-    MIN_ENTROPY_SAMPLES,
+    kl_divergence_bits, robust_z, shannon_entropy_bits, tau_delta_bits, MIN_ENTROPY_SAMPLES,
 };
 use crate::types::{EventClass, TelemetryEvent, EVENT_CLASSES, EVENT_CLASS_COUNT};
 
@@ -125,14 +124,26 @@ impl AnomalyEngine {
                 window.counts[event.event_class.index()].saturating_add(1);
             window.n = window.n.saturating_add(1);
 
-            if window.n < self.config.window_size {
+            if window.n < self.config.window_size || !self.baselines.contains_key(&key) {
+                let sample_count = window.n;
+                if window.n >= self.config.window_size {
+                    *window = WindowState::default();
+                }
                 if entropy_high {
                     return Some(AnomalyDecision {
                         high: true,
                         medium: false,
                         kl_bits: 0.0,
-                        tau_high: 0.0,
-                        tau_med: 0.0,
+                        tau_high: self.config.tau_floor_high.max(tau_delta_bits(
+                            sample_count,
+                            EVENT_CLASS_COUNT,
+                            self.config.delta_high,
+                        )),
+                        tau_med: self.config.tau_floor_med.max(tau_delta_bits(
+                            sample_count,
+                            EVENT_CLASS_COUNT,
+                            self.config.delta_med,
+                        )),
                         entropy_bits,
                         entropy_z,
                         drift_alarm: false,
@@ -146,13 +157,10 @@ impl AnomalyEngine {
             (counts, sample_count)
         };
 
-        let baseline = self
-            .baselines
-            .get(&key)
-            .cloned()
-            .unwrap_or_else(default_uniform_baseline);
+        // A uniform fallback measures workload shape, not a learned deviation.
+        let baseline = &self.baselines[&key];
 
-        let (p, q) = self.distributions_from_window_counts(&counts, sample_count, &baseline);
+        let (p, q) = self.distributions_from_window_counts(&counts, sample_count, baseline);
         let kl = kl_divergence_bits(&p, &q);
 
         let tau_high = self.config.tau_floor_high.max(tau_delta_bits(
