@@ -64,8 +64,8 @@ CONFIDENCE_MEDIUM = "medium"
 CONFIDENCE_LOW = "low"
 
 
-def parse_ioc_file(path: str) -> list[dict]:
-    """Parse an IOC file (one IOC per line, optional JSON metadata)."""
+def parse_ioc_file(path: str, *, preserve_provenance: bool = False) -> list[dict]:
+    """Parse raw feeds; only trusted re-curation may retain merged provenance."""
     entries = []
     source_name = infer_source(path)
 
@@ -78,7 +78,7 @@ def parse_ioc_file(path: str) -> list[dict]:
             try:
                 entry = json.loads(line)
                 if isinstance(entry, dict):
-                    if source_name != "other":
+                    if not preserve_provenance:
                         # Raw feed identity comes from the collector, not its content.
                         entry["source"] = source_name
                         entry.pop("sources", None)

@@ -19,7 +19,7 @@ def finalize(input_dir: Path, output_dir: Path, allowlists: Path) -> dict[str, t
             source = input_dir / f"{kind}.txt"
             if not source.is_file():
                 raise ValueError(f"missing final IOC input: {kind}")
-            rows = deduplicate(parse_ioc_file(str(source)), kind)
+            rows = deduplicate(parse_ioc_file(str(source), preserve_provenance=True), kind)
             temporary = str(Path(scratch) / f"{kind}.jsonl")
             write_output(rows, temporary)
             output = str(output_dir / f"{kind}.txt")

@@ -81,11 +81,12 @@ def test_supplemental_merge_does_not_refresh_old_feed_dates(tmp_path):
     assert rows["new.example"]["first_seen"] == rows["new.example"]["last_seen"] == ""
 
 
-def test_raw_feed_cannot_claim_another_sources_confidence(tmp_path):
-    path = tmp_path / "otx.txt"
-    write_jsonl(path, [{"value": "dedicated-c2.example", "source": "spamhaus", "sources": ["spamhaus", "urlhaus"]}])
+@pytest.mark.parametrize("filename,origin", [("otx.txt", "otx"), ("unknown_raw.txt", "other")])
+def test_raw_feed_cannot_claim_another_sources_confidence(tmp_path, filename, origin):
+    path = tmp_path / filename
+    write_jsonl(path, [{"value": "dedicated-c2.example", "source": "spamhaus", "sources": ["spamhaus", "urlhaus"], "last_seen": datetime.now(timezone.utc).isoformat()}])
     rows = ioc_dedup.deduplicate(ioc_dedup.parse_ioc_file(str(path)), "domains")
-    assert rows[0]["sources"] == ["otx"]
+    assert rows[0]["sources"] == [origin]
     assert rows[0]["confidence"] == "low"
 
 
