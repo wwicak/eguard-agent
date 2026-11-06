@@ -19,20 +19,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ── Source 1: YARA Forge Full ──────────────────────────────────
-      # Aggregates 20+ curated repos (signature-base, Yara-Rules,
-      # ReversingLabs, InQuest, Malpedia, ESET, CAPE, and more).
-      # "Full" = all functional rules — higher FP rate acceptable
-      # because our validation pipeline catches false positives.
-      - name: Download YARA Forge Full ruleset
+      # ── Source 1: YARA Forge Core ──────────────────────────────────
+      # Community execution remains fail-closed until a real agent backend is qualified.
+      - name: Download YARA Forge Core ruleset
         run: |
           mkdir -p /tmp/yara_collected/yara-forge
           curl -sSfL --retry 3 --max-time 300 \
             -o /tmp/yara-forge.zip \
-            "https://github.com/YARAHQ/yara-forge/releases/latest/download/yara-forge-rules-full.zip"
+            "https://github.com/YARAHQ/yara-forge/releases/latest/download/yara-forge-rules-core.zip"
           unzip -o /tmp/yara-forge.zip -d /tmp/yara_collected/yara-forge
           COUNT=$(find /tmp/yara_collected/yara-forge -name '*.yar' -o -name '*.yara' | wc -l)
-          echo "YARA Forge Full: ${COUNT} rule files"
+          echo "YARA Forge Core: ${COUNT} rule files"
 
       # ── Source 2: Elastic Security YARA ────────────────────────────
       # Vendor-maintained rules for endpoint malware detection.
