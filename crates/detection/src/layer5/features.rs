@@ -50,7 +50,10 @@ impl MlFeatures {
 
         // Event metadata
         values[7] = event_class_risk_score(event.event_class);
-        values[8] = if event.uid == 0 { 1.0 } else { 0.0 };
+        // Windows ETW uses uid=0 as unavailable, not UNIX root.
+        let windows = event.process.to_ascii_lowercase().ends_with(".exe")
+            || event.file_path.as_deref().is_some_and(|p| p.contains('\\'));
+        values[8] = if event.uid == 0 && !windows { 1.0 } else { 0.0 };
         values[9] = dst_port_risk_score(event.dst_port);
         values[10] = if command_line.is_some() { 1.0 } else { 0.0 };
         values[11] = cmdline_length_normalized(command_line);

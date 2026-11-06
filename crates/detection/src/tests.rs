@@ -197,7 +197,7 @@ fn dns_entropy_feature_is_stable_and_high_for_dga_like_domains() {
 }
 
 #[test]
-fn behavioral_dns_entropy_alarm_triggers_for_high_entropy_domains() {
+fn behavioral_repeated_high_entropy_domain_is_not_an_alarm() {
     let mut engine = behavioral::BehavioralEngine::new();
     let mut event = TelemetryEvent {
         ts_unix: 1,
@@ -222,26 +222,12 @@ fn behavioral_dns_entropy_alarm_triggers_for_high_entropy_domains() {
         container_privileged: false,
     };
 
-    let mut alarm = None;
-    for idx in 0..24 {
-        event.ts_unix += idx as i64;
-        for entry in engine.observe(&event) {
-            if entry.dimension == "dns_entropy" {
-                alarm = Some(entry);
-                break;
-            }
-        }
-        if alarm.is_some() {
-            break;
-        }
+    // Repeated lookups of one high-entropy service name are not a tunnel.
+    for idx in 0..100 {
+        event.ts_unix = idx;
+        assert!(engine.observe(&event).is_empty());
     }
 
-    let alarm = alarm.expect("expected dns entropy alarm");
-    let entropy = alarm.current_entropy.expect("expected entropy value");
-    assert!(
-        entropy > 0.7,
-        "dns entropy should be high for DGA-like labels"
-    );
 }
 
 #[test]

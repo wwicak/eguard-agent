@@ -398,7 +398,8 @@ impl DetectionEngine {
             kill_chain_hits.len(),
             yara_hits.len(),
             layer1.matched_signatures.len(),
-            behavioral_alarms.len(),
+            // RAFIX shared: ungated context is not ML anomaly evidence.
+            behavioral_alarms.iter().filter(|a| a.gated).count(),
             &extra,
         );
         let ml_result = self.layer5.score(&features);
@@ -406,7 +407,8 @@ impl DetectionEngine {
         // ── Confidence aggregation ──────────────────────────────
         // Deterministic confidence from L1–L4, then ML can escalate
         let base_confidence = confidence_policy(&signals);
-        let confidence = ml_enhanced_confidence(base_confidence, &ml_result);
+        // RAFIX shared: ML reuses policy signals and cannot corroborate them.
+        let confidence = ml_enhanced_confidence(base_confidence, &ml_result, self.layer5.has_calibration());
 
         DetectionOutcome {
             confidence,
@@ -436,18 +438,10 @@ fn has_network_ioc_field(layer1: &Layer1EventHit) -> bool {
         .any(|f| f == "dst_domain" || f == "dst_ip")
 }
 
-/// ML can escalate confidence but never downgrade deterministic decisions.
-/// This keeps CrowdStrike-style "ML overrules everything" from causing FPs
-/// while letting ML catch things the rule layers miss.
-fn ml_enhanced_confidence(base: Confidence, ml: &MlScore) -> Confidence {
+// RAFIX shared: echoed anomaly/rule features are not independent corroboration.
+fn ml_enhanced_confidence(base: Confidence, ml: &MlScore, calibrated: bool) -> Confidence {
     match base {
-        // Deterministic decisions are authoritative — ML cannot override
-        Confidence::Definite | Confidence::VeryHigh => base,
-        // An anomaly also feeds ML features; that is not independent evidence
-        // for High. Keep ML-only detections visible at Medium.
-        Confidence::None if ml.positive && ml.score >= 0.85 => Confidence::Medium,
-        Confidence::Low if ml.positive && ml.score >= 0.80 => Confidence::Medium,
-        Confidence::High if ml.positive && ml.score >= 0.95 => Confidence::VeryHigh,
+        Confidence::None if calibrated && ml.positive && ml.score >= 0.95 => Confidence::Low,
         _ => base,
     }
 }

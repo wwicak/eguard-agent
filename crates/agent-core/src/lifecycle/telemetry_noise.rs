@@ -137,7 +137,8 @@ fn has_evidence(event: &TelemetryEvent, outcome: &DetectionOutcome) -> bool {
         || !outcome.kernel_integrity_indicators.is_empty()
         || !outcome.tamper_indicators.is_empty()
         || !outcome.yara_hits.is_empty()
-        || !outcome.behavioral_alarms.is_empty()
+        // RAFIX shared: uncalibrated behavioral context is not detection evidence.
+        || outcome.behavioral_alarms.iter().any(|a| a.gated)
         || outcome.anomaly.as_ref().is_some_and(|a| a.high || a.medium)
         || outcome
             .ml_score

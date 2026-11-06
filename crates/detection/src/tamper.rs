@@ -1,40 +1,24 @@
 use crate::types::{EventClass, TelemetryEvent};
 
-const TAMPER_PATH_MARKERS: &[&str] = &[
-    "/proc/self/exe",
-    "/usr/bin/eguard-agent",
-    "/opt/eguard-agent",
-    "/etc/eguard-agent/agent.conf",
-    "/etc/eguard-agent/bootstrap.conf",
+const AGENT_DIRS: &[&str] = &["/opt/eguard-agent/", "/etc/eguard-agent/", "/var/lib/eguard-agent/"];
+const AGENT_FILES: &[&str] = &[
+    "/usr/bin/eguard-agent", "/etc/systemd/system/eguard-agent.service",
+    "/lib/systemd/system/eguard-agent.service", "/usr/lib/systemd/system/eguard-agent.service",
 ];
 
 pub fn detect_tamper_indicators(event: &TelemetryEvent) -> Vec<String> {
-    let is_file_event = matches!(
-        event.event_class,
-        EventClass::FileOpen | EventClass::ProcessExec
-    );
-    if !is_file_event {
+    // Image execution, reads and /proc/self/exe are not agent tampering.
+    if event.event_class != EventClass::FileOpen || !event.file_write {
         return Vec::new();
     }
-
-    let path = event
-        .file_path
-        .as_deref()
-        .or(event.command_line.as_deref())
-        .unwrap_or("");
-    if path.is_empty() {
+    let process = crate::behavioral::basename(&event.process);
+    if matches!(process.as_str(), "dpkg" | "rpm" | "dnf" | "yum" | "apt" | "apt-get" | "zypper" | "installer" | "package_script_service") {
         return Vec::new();
     }
-
-    let normalized = path.replace('\\', "/").to_ascii_lowercase();
-    let mut indicators = Vec::new();
-    for marker in TAMPER_PATH_MARKERS {
-        if normalized.contains(&marker.to_ascii_lowercase()) {
-            indicators.push(format!("tamper:{}", marker));
-        }
-    }
-
-    indicators
+    let path = event.file_path.as_deref().unwrap_or("");
+    let owned = AGENT_DIRS.iter().any(|dir| path.starts_with(dir))
+        || AGENT_FILES.iter().any(|file| path == *file || path.starts_with(&format!("{file}.")));
+    if owned { vec!["tamper:agent_file_mutation".into()] } else { Vec::new() }
 }
 
 #[cfg(test)]
@@ -70,10 +54,11 @@ mod tests {
     #[test]
     // AC-DET-226
     fn tamper_indicator_matches_agent_binary() {
-        let ev = event("/usr/bin/eguard-agent");
+        let mut ev = event("/usr/bin/eguard-agent");
+        ev.file_write = true;
         let indicators = detect_tamper_indicators(&ev);
         assert!(indicators
             .iter()
-            .any(|v| v.contains("/usr/bin/eguard-agent")));
+            .any(|v| v == "tamper:agent_file_mutation"));
     }
 }

@@ -80,6 +80,8 @@ impl MlEngine {
     pub fn reload_model(&mut self, model: MlModel) -> Result<(), MlError> {
         model.validate()?;
         self.model = model;
+        // Calibration belongs to the model that produced the scores.
+        self.calibrator = None;
         Ok(())
     }
 
@@ -99,7 +101,7 @@ impl MlEngine {
 
     /// Whether conformal calibration is active.
     pub fn has_calibration(&self) -> bool {
-        self.calibrator.is_some()
+        self.calibrator.as_ref().is_some_and(|c| c.calibration_size() >= 100)
     }
 
     /// Compute ML risk score for one event.
@@ -114,12 +116,13 @@ impl MlEngine {
         let score = sigmoid(z);
         let raw_positive = score >= self.model.threshold;
 
-        let mut positive = raw_positive;
-        let mut conformal_gated = false;
+        let calibrated = self.has_calibration();
+        let mut positive = raw_positive && calibrated;
+        let mut conformal_gated = raw_positive && !calibrated;
         let mut decision_threshold = self.model.threshold;
 
         // Conformal p-value — compute only on raw-positive events for hot-path efficiency.
-        let conformal_p_value = if raw_positive {
+        let conformal_p_value = if raw_positive && calibrated {
             self.calibrator.as_ref().map(|cal| {
                 decision_threshold = decision_threshold.max(cal.threshold);
                 let p = cal.p_value(score);

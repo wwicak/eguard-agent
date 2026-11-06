@@ -103,7 +103,8 @@ fn ioc_hit_scores_high() {
         "IOC hit should score high: {}",
         result.score
     );
-    assert!(result.positive);
+    assert!(result.raw_positive);
+    assert!(!result.positive, "uncalibrated scores are advisory");
 }
 
 #[test]
@@ -130,7 +131,8 @@ fn multi_layer_agreement_scores_highest() {
         "multi-layer should score near 1.0: {}",
         result.score
     );
-    assert!(result.positive);
+    assert!(result.raw_positive);
+    assert!(!result.positive, "uncalibrated scores are advisory");
 }
 
 #[test]
@@ -616,7 +618,7 @@ fn conformal_gates_borderline_raw_positive_scores() {
         tree_base_score: 0.0,
         trees: Vec::new(),
     };
-    let engine = MlEngine::with_model_and_calibration(model, vec![0.7, 0.8, 0.9], 0.1);
+    let engine = MlEngine::with_model_and_calibration(model, vec![0.8; 100], 0.1);
 
     let event = make_event(EventClass::FileOpen, 1000, None);
     let signals = DetectionSignals::default();
@@ -644,7 +646,7 @@ fn conformal_gates_borderline_raw_positive_scores() {
 }
 
 #[test]
-fn no_calibration_keeps_raw_decision_path() {
+fn no_calibration_keeps_raw_score_but_not_positive() {
     let model = MlModel {
         model_id: "raw-decision-test".to_string(),
         model_version: "1.0.0".to_string(),
@@ -667,10 +669,10 @@ fn no_calibration_keeps_raw_decision_path() {
     let result = engine.score(&features);
     assert!(result.raw_positive);
     assert!(
-        result.positive,
-        "without conformal calibration decision is raw threshold"
+        !result.positive,
+        "without mature calibration decisions are advisory"
     );
-    assert!(!result.conformal_gated);
+    assert!(result.conformal_gated);
     assert!(result.conformal_p_value.is_none());
     assert!((result.decision_threshold - 0.5).abs() < 1e-12);
 }
