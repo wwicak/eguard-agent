@@ -76,7 +76,7 @@ case("tree-feature", M, "node.leaf.is_none() && !FEATURE_NAMES.contains(&node.fe
 case("tmp-strong-signal", X, '"fileless_fd_exec"\n            | "exec_from_shm"', '"fileless_fd_exec"\n            | "exec_from_tmp"\n            | "exec_from_shm"')
 case("fd-regular-image", X, "&& !regular_system", "&& true")
 case("fd-runc-clone", X, "&& !clone", "&& true")
-case("stdin-interpreter", X, "&& args\n        .iter()\n        .skip(1)\n        .all(|a| matches!(*a, \"-s\" | \"-\" | \"-x\" | \"--\"))", "&& true")
+case("stdin-interpreter", X, '.all(|a|', '.any(|a|')
 case("preload-builder", X, "if !build_parent", "if true")
 case("decoded-execution", X, "decode = true;", 'decode = true; indicators.push("encoded_payload_exec".into());')
 case("tamper-read", T, "!(event.file_write || event.file_unlink)", "false")
@@ -171,6 +171,8 @@ case("image-display-fallback", "crates/agent-core/src/lifecycle/detection_event.
 
 case("rename-role-secondary", "crates/platform-windows/src/etw/codec.rs", 'fields.path = Some(path);', 'if id == 27 { fields.secondary_path = Some(path); } else { fields.path = Some(path); }', "platform-windows", "rafix_manifest", "windows")
 case("rename-role-write-gate", "crates/agent-core/src/lifecycle/detection_event.rs", '&& !unknown_rename_role', '&& true', "agent-core", "rafix_windows_manifest_rename", "core")
+
+case("bash-stdin-e", X, '*a == "-e"', 'false')
 
 
 def run(package, test, log):
