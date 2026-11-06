@@ -30,7 +30,8 @@ fn boolean_conditions_are_same_event_not_temporal_or_flattened() {
 }
 #[test]
 fn condition_or_across_fields_and_wildcard_quantifiers() {
-    let s = "  selection_a:\n    Image: bash\n  selection_b:\n    CommandLine|contains: beta";
+    let s =
+        "  selection_a:\n    Image|endswith: /bash\n  selection_b:\n    CommandLine|contains: beta";
     assert!(matches(&rule(s, "1 of selection_*"), &event("alpha")));
     assert!(!matches(&rule(s, "all of selection_*"), &event("alpha")));
     assert!(matches(&rule(s, "all of them"), &event("beta")));
@@ -85,6 +86,26 @@ fn image_path_modifiers_do_not_collapse_to_basename() {
     assert!(!matches(&y, &e));
     e.file_path = Some("/tmp/bash".into());
     assert!(matches(&y, &e));
+}
+#[test]
+fn image_is_executable_path_not_target_path_or_basename() {
+    assert!(!matches(
+        &rule("  selection:\n    Image: bash", "selection"),
+        &event("bash")
+    ));
+    let y = "title: image\nlogsource:\n  category: file_event\ndetection:\n  selection:\n    Image|endswith: /bash\n    TargetFilename: /etc/shadow\n  condition: selection";
+    let mut e = event("");
+    e.event_class = EventClass::FileOpen;
+    e.file_path = Some("/etc/shadow".into());
+    assert!(matches(y, &e));
+}
+#[test]
+fn parent_image_basename_preserves_path_boundary() {
+    let y = rule("  selection:\n    ParentImage|endswith: /sshd", "selection");
+    let mut e = event("bash");
+    assert!(matches(&y, &e));
+    e.parent_process = "not-sshd".into();
+    assert!(!matches(&y, &e));
 }
 #[test]
 fn unknown_fields_modifiers_auditd_and_conditions_fail_closed() {

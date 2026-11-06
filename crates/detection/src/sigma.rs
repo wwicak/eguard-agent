@@ -176,6 +176,7 @@ pub fn compile_sigma_ast(yaml: &str) -> Result<BoundedTemporalAst> {
                     | "fields"
                     | "scope"
                     | "mitre_techniques"
+                    | "simulation"
             )
         }) {
             return Err(unsupported("unsupported_document", "unknown root key"));
@@ -404,6 +405,7 @@ fn compile_field(key: &str, value: &Value, event_class: EventClass) -> Result<Si
     };
     let mut exprs = Vec::new();
     for value in values {
+        let mut mode = mode;
         let pattern = match value {
             Value::String(s) if !s.is_empty() => s,
             Value::Number(n) => n.to_string(),
@@ -412,8 +414,13 @@ fn compile_field(key: &str, value: &Value, event_class: EventClass) -> Result<Si
         let mut pattern = pattern.as_str();
         let field = match field_name.to_ascii_lowercase().as_str() {
             "commandline" => SigmaField::CommandLine,
-            "image" if mode == "exact" && !pattern.contains(['/', '\\']) => SigmaField::Process,
             "image" if event_class == EventClass::ProcessExec => SigmaField::ProcessPath,
+            "image" if mode == "endswith" && (pattern.starts_with('/') || pattern.starts_with('\\')) && !pattern[1..].contains(['/', '\\']) => {
+                // On file/network events only the executable basename is available.
+                pattern = &pattern[1..];
+                mode = "exact";
+                SigmaField::Process
+            }
             "parentimage" => {
                 // Telemetry has a parent basename, not a parent image path.
                 if pattern.contains(['/', '\\']) {
@@ -422,6 +429,7 @@ fn compile_field(key: &str, value: &Value, event_class: EventClass) -> Result<Si
                         && !pattern[1..].contains(['/', '\\'])
                     {
                         pattern = &pattern[1..];
+                        mode = "exact";
                     } else {
                         return Err(unsupported(
                             "unsupported_field",
