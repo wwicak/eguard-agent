@@ -58,7 +58,9 @@ pub fn confidence_policy(s: &DetectionSignals) -> Confidence {
     if s.usb_violation {
         return Confidence::High;
     }
-    if s.z2_temporal_medium { return Confidence::Medium; }
+    if s.z2_temporal_medium {
+        return Confidence::Medium;
+    }
     if s.kernel_integrity {
         return Confidence::Medium;
     }
@@ -68,6 +70,8 @@ pub fn confidence_policy(s: &DetectionSignals) -> Confidence {
     if s.z3_anomaly_med && !(s.z1_exact_ioc || s.z2_temporal || s.z4_kill_chain) {
         return Confidence::Low;
     }
-    if s.z2_temporal_low { return Confidence::Low; }
+    if s.z2_temporal_low {
+        return Confidence::Low;
+    }
     Confidence::None
 }

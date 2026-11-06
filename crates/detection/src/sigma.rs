@@ -205,7 +205,13 @@ fn compile_sequence_sigma_ast(doc: SigmaRuleDoc) -> Result<BoundedTemporalAst> {
         .unwrap_or_else(|| "sigma_unnamed_rule".to_string());
 
     let root = build_bounded_expr(&stages);
-    Ok(BoundedTemporalAst { level: doc.level, any_order: false, name, stages, root })
+    Ok(BoundedTemporalAst {
+        level: doc.level,
+        any_order: false,
+        name,
+        stages,
+        root,
+    })
 }
 
 fn compile_legacy_sigma_ast(yaml: &str, doc: &SigmaRuleDoc) -> Result<BoundedTemporalAst> {
@@ -248,7 +254,7 @@ fn compile_legacy_sigma_ast(yaml: &str, doc: &SigmaRuleDoc) -> Result<BoundedTem
 
     let stage = AstStage {
         predicate: TemporalPredicate {
-                sigma: None,
+            sigma: None,
             event_class,
             process_any_of: some_set(acc.process_any_of),
             process_starts_with: None,

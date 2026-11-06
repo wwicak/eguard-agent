@@ -108,7 +108,12 @@ fn rafix_old_parent_recent_child_uses_child_exec_as_network_window_anchor() {
     let mut engine = reverse_shell_engine();
     engine.observe(&shell(1));
     engine.observe(&child(200, EventClass::ProcessExec));
-    assert_eq!(engine.observe(&child(201, EventClass::NetworkConnect)).len(), 1);
+    assert_eq!(
+        engine
+            .observe(&child(201, EventClass::NetworkConnect))
+            .len(),
+        1
+    );
 }
 
 #[test]

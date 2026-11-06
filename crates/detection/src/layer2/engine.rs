@@ -6,8 +6,8 @@ use crate::types::{EventClass, TelemetryEvent};
 
 use super::automaton::{DeterministicMonitorAutomaton, MonitorTransition, TemporalState};
 use super::defaults::default_rules;
-use super::rule::{RuleLevel, TemporalRule};
 use super::predicate::TemporalLink;
+use super::rule::{RuleLevel, TemporalRule};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TemporalEvictionCounters {
@@ -151,7 +151,9 @@ impl TemporalEngine {
             let mut candidates = vec![event.pid];
             let mut ancestor = event.ppid;
             for _ in 0..4 {
-                if ancestor <= 1 { break; }
+                if ancestor <= 1 {
+                    break;
+                }
                 candidates.push(ancestor);
                 ancestor = self.pid_parents.get(&ancestor).copied().unwrap_or(0);
             }
@@ -159,21 +161,24 @@ impl TemporalEngine {
                 let key = (rule_id, pid);
                 let state = self.states.get(&key)?;
                 let transition = &automaton.transitions[state.stage_idx];
-                self.link_compatible(state, transition, event).then_some(key)
+                self.link_compatible(state, transition, event)
+                    .then_some(key)
             });
-            let key = current_key.unwrap_or((rule_id, initial_entity));
+            let mut key = current_key.unwrap_or((rule_id, initial_entity));
             let current = current_key.and_then(|key| self.states.get(&key).cloned());
 
-            if current.is_none() && !automaton.transitions[0].predicate.matches(event) { continue; }
+            if current.is_none() && !automaton.transitions[0].predicate.matches(event) {
+                continue;
+            }
             let mut next_state = current.clone();
             if let Some(state) = current {
                 let stage_idx = state.stage_idx.min(automaton.transitions.len() - 1);
                 let transition = &automaton.transitions[stage_idx];
                 let same_pid = event.pid == state.pid;
-                let exec_epoch_ok = !same_pid ||
-                    Self::exec_epoch_compatible(&state, transition, current_exec_epoch);
-                let identity_ok = !same_pid ||
-                    Self::identity_compatible(&state, transition, event_identity_fingerprint);
+                let exec_epoch_ok = !same_pid
+                    || Self::exec_epoch_compatible(&state, transition, current_exec_epoch);
+                let identity_ok = !same_pid
+                    || Self::identity_compatible(&state, transition, event_identity_fingerprint);
 
                 let monotonic_ok =
                     event.ts_unix + self.reorder_tolerance_secs >= state.last_match_ts;
@@ -213,6 +218,8 @@ impl TemporalEngine {
                         command_line: event.command_line.clone(),
                     });
                 } else if automaton.transitions[0].predicate.matches(event) {
+                    // A child starting its own chain must not erase its parent's pending evidence.
+                    key = (rule_id, initial_entity);
                     if automaton.transitions.len() == 1 {
                         hits.push(automaton.name.clone());
                         self.states.remove(&key);
@@ -267,24 +274,38 @@ impl TemporalEngine {
     }
 
     pub fn rule_level(&self, name: &str) -> RuleLevel {
-        self.automata.iter().filter(|a| a.name == name).map(|a| a.level).max().unwrap_or_default()
+        self.automata
+            .iter()
+            .filter(|a| a.name == name)
+            .map(|a| a.level)
+            .max()
+            .unwrap_or_default()
     }
 
-    fn link_compatible(&self, state: &TemporalState, transition: &MonitorTransition, event: &TelemetryEvent) -> bool {
+    fn link_compatible(
+        &self,
+        state: &TemporalState,
+        transition: &MonitorTransition,
+        event: &TelemetryEvent,
+    ) -> bool {
         let same = event.pid == state.pid;
         let child = event.ppid > 1 && event.ppid == state.pid;
         let sibling = event.ppid > 1 && event.ppid == state.ppid && !same;
         let mut ancestor = event.ppid;
         let descendant = (0..3).any(|_| {
-            if ancestor <= 1 { return false; }
+            if ancestor <= 1 {
+                return false;
+            }
             let found = ancestor == state.pid;
             ancestor = self.pid_parents.get(&ancestor).copied().unwrap_or(0);
             found
         });
         // Fork-before-exec inherits argv. Do not join arbitrary child activity
         // for rules that explicitly require a single process.
-        let fork = child && event.event_class != EventClass::ProcessExec
-            && state.command_line.is_some() && state.command_line == event.command_line;
+        let fork = child
+            && event.event_class != EventClass::ProcessExec
+            && state.command_line.is_some()
+            && state.command_line == event.command_line;
         let linked = match transition.predicate.link {
             TemporalLink::SameProcess => same || fork,
             TemporalLink::SameProcessOrChild => same || child,
@@ -294,22 +315,34 @@ impl TemporalEngine {
             TemporalLink::SiblingOrChild => sibling || child,
             TemporalLink::SameProcessOrDescendantOrSibling => same || descendant || sibling,
         };
-        linked && (same || state.exec_epoch.is_none_or(|epoch| self.pid_exec_epoch.get(&state.pid) == Some(&epoch)))
+        linked
+            && (same
+                || state
+                    .exec_epoch
+                    .is_none_or(|epoch| self.pid_exec_epoch.get(&state.pid) == Some(&epoch)))
     }
 
     fn enforce_capacity_limits(&mut self) {
         self.enforce_state_capacity();
         self.enforce_pid_metadata_capacity();
-        self.pid_parents.retain(|pid, _| self.pid_last_seen_ts.contains_key(pid));
+        self.pid_parents
+            .retain(|pid, _| self.pid_last_seen_ts.contains_key(pid));
     }
 
     fn teardown_entity(&mut self, pid: u32, _session_id: u32) {
         self.states.retain(|(rule_id, _), state| {
-            if state.pid != pid { return true; }
+            if state.pid != pid {
+                return true;
+            }
             // A completed downloader may exit before its sibling interpreter starts.
             let keep = self.automata[*rule_id].sibling_linked
-                && self.automata[*rule_id].transitions[state.stage_idx].predicate.event_class == EventClass::ProcessExec;
-            if keep { state.exec_epoch = None; }
+                && self.automata[*rule_id].transitions[state.stage_idx]
+                    .predicate
+                    .event_class
+                    == EventClass::ProcessExec;
+            if keep {
+                state.exec_epoch = None;
+            }
             keep
         });
         self.pid_last_seen_ts.remove(&pid);

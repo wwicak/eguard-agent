@@ -38,11 +38,13 @@ impl DeterministicMonitorAutomaton {
         }
 
         let sibling_linked = transitions.iter().skip(1).any(|transition| {
-            matches!(transition.predicate.link,
+            matches!(
+                transition.predicate.link,
                 super::predicate::TemporalLink::Sibling
-                | super::predicate::TemporalLink::SameProcessOrSibling
-                | super::predicate::TemporalLink::SiblingOrChild
-                | super::predicate::TemporalLink::SameProcessOrDescendantOrSibling)
+                    | super::predicate::TemporalLink::SameProcessOrSibling
+                    | super::predicate::TemporalLink::SiblingOrChild
+                    | super::predicate::TemporalLink::SameProcessOrDescendantOrSibling
+            )
         });
         Self {
             name: rule.name,

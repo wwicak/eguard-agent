@@ -662,7 +662,11 @@ impl IocLayer1 {
         // signals, not exact IOC matches.  Treat them as prefilter hits so
         // they can escalate confidence when combined with temporal/killchain
         // signals, but don't promote to ExactMatch (→ Definite) on their own.
-        if let Some(cmd) = event.command_line.as_ref().filter(|_| event.event_class == EventClass::ProcessExec) {
+        if let Some(cmd) = event
+            .command_line
+            .as_ref()
+            .filter(|_| event.event_class == EventClass::ProcessExec)
+        {
             let matches = self.check_text(cmd);
             if !matches.is_empty() {
                 hit.prefilter_hit = true;
@@ -674,7 +678,11 @@ impl IocLayer1 {
                 );
             }
         }
-        if let Some(command) = event.command_line.as_ref().filter(|_| event.event_class == EventClass::ProcessExec) {
+        if let Some(command) = event
+            .command_line
+            .as_ref()
+            .filter(|_| event.event_class == EventClass::ProcessExec)
+        {
             let compact: String = normalize_for_matching(command)
                 .chars()
                 .filter(|ch| !ch.is_ascii_whitespace())
@@ -682,20 +690,29 @@ impl IocLayer1 {
             // Require the whole socket-to-stdio shape, never interpreter/dup2 alone.
             let strong = strong_command_signatures(event);
             hit.strong = !strong.is_empty();
-            hit.matched_signatures.extend(strong.iter().map(|s| s.to_string()));
+            hit.matched_signatures
+                .extend(strong.iter().map(|s| s.to_string()));
             let reverse_shell = strong.contains(&"python_socket_stdio_reverse_shell");
             let exec_base64 = compact.contains("exec(") && compact.contains("b64decode(");
             let pipe_segments: Vec<_> = command.split('|').collect();
             let download_exec = pipe_segments.windows(2).any(|parts| {
                 let source = parts[0].to_ascii_lowercase();
-                let mut words = parts[1].split_whitespace().map(|word| word.trim_matches(['\'', '"']));
+                let mut words = parts[1]
+                    .split_whitespace()
+                    .map(|word| word.trim_matches(['\'', '"']));
                 let mut target = words.next().unwrap_or("");
-                if target == "sudo" { target = words.next().unwrap_or(""); }
+                if target == "sudo" {
+                    target = words.next().unwrap_or("");
+                }
                 if target == "env" {
                     target = words.find(|word| !word.contains('=')).unwrap_or("");
                 }
-                source.contains("://") && (source.contains("curl") || source.contains("wget"))
-                    && matches!(target.rsplit('/').next().unwrap_or(""), "sh" | "bash" | "dash" | "zsh" | "ksh" | "python" | "python3" | "perl")
+                source.contains("://")
+                    && (source.contains("curl") || source.contains("wget"))
+                    && matches!(
+                        target.rsplit('/').next().unwrap_or(""),
+                        "sh" | "bash" | "dash" | "zsh" | "ksh" | "python" | "python3" | "perl"
+                    )
             });
             for (signature, matched) in [
                 ("python_socket_stdio_reverse_shell", reverse_shell),
@@ -715,7 +732,12 @@ impl IocLayer1 {
                 }
             }
         }
-        if let Some(path) = event.file_path.as_ref().filter(|_| matches!(event.event_class, EventClass::FileOpen | EventClass::ModuleLoad)) {
+        if let Some(path) = event.file_path.as_ref().filter(|_| {
+            matches!(
+                event.event_class,
+                EventClass::FileOpen | EventClass::ModuleLoad
+            )
+        }) {
             let matches = self.check_text(path);
             if !matches.is_empty() {
                 hit.prefilter_hit = true;
@@ -970,32 +992,79 @@ mod tests {
 }
 
 pub(crate) fn strong_command_signatures(event: &TelemetryEvent) -> Vec<&'static str> {
-    if event.event_class != EventClass::ProcessExec { return Vec::new(); }
-    let command = event.command_line.as_deref().unwrap_or("").to_ascii_lowercase();
-    let compact: String = command.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+    if event.event_class != EventClass::ProcessExec {
+        return Vec::new();
+    }
+    let command = event
+        .command_line
+        .as_deref()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let compact: String = command
+        .chars()
+        .filter(|c| !c.is_ascii_whitespace())
+        .collect();
     let process = event.process.to_ascii_lowercase();
-    let shell = matches!(process.as_str(), "sh" | "bash" | "dash" | "zsh" | "ksh" | "ash");
-    let python = matches!(process.as_str(), "python" | "python2" | "python3");
-    let netcat = matches!(process.as_str(), "nc" | "ncat" | "netcat" | "nc.openbsd" | "nc.traditional" | "ncat.exe" | "nc.exe");
-    let words: Vec<_> = command.split_whitespace().map(|s| s.trim_matches(['\'', '"', ';'])).collect();
-    let netcat = netcat || (process == "busybox" && words.get(1).is_some_and(|w| matches!(*w, "nc" | "ncat" | "netcat")));
-    let netcat_exec = netcat && words.windows(2).any(|w| {
-        matches!(w[0], "-e" | "-c" | "--exec" | "--sh-exec")
-            && matches!(w[1].rsplit(['/', '\\']).next().unwrap_or(""), "sh" | "bash" | "dash" | "zsh" | "cmd.exe" | "powershell.exe")
-    });
-    let devtcp = shell && (compact.contains("/dev/tcp/") || compact.contains("/dev/udp/"))
-        && ["0>&1", "0<&1", ">&0", "<&196", ">&196"].iter().any(|s| compact.contains(s));
-    let python_stdio = python && compact.contains("socket.socket(") && compact.contains(".connect(")
+    let shell = matches!(
+        process.as_str(),
+        "sh" | "bash" | "dash" | "zsh" | "ksh" | "ash"
+    );
+    let python = process == "python"
+        || process.strip_prefix("python").is_some_and(|version| {
+            !version.is_empty() && version.bytes().all(|c| c.is_ascii_digit() || c == b'.')
+        });
+    let netcat = matches!(
+        process.as_str(),
+        "nc" | "ncat" | "netcat" | "nc.openbsd" | "nc.traditional" | "ncat.exe" | "nc.exe"
+    );
+    let words: Vec<_> = command
+        .split_whitespace()
+        .map(|s| s.trim_matches(['\'', '"', ';']))
+        .collect();
+    let netcat = netcat
+        || (process == "busybox"
+            && words
+                .get(1)
+                .is_some_and(|w| matches!(*w, "nc" | "ncat" | "netcat")));
+    let netcat_exec = netcat
+        && words.windows(2).any(|w| {
+            matches!(w[0], "-e" | "-c" | "--exec" | "--sh-exec")
+                && matches!(
+                    w[1].rsplit(['/', '\\']).next().unwrap_or(""),
+                    "sh" | "bash" | "dash" | "zsh" | "cmd.exe" | "powershell.exe"
+                )
+        });
+    let devtcp = shell
+        && (compact.contains("/dev/tcp/") || compact.contains("/dev/udp/"))
+        && ["0>&1", "0<&1", ">&0", "<&196", ">&196"]
+            .iter()
+            .any(|s| compact.contains(s));
+    let python_stdio = python
+        && compact.contains("socket.socket(")
+        && compact.contains(".connect(")
         && (compact.contains(".dup2(") || compact.contains(".fileno()"))
         && (compact.contains("/bin/sh") || compact.contains("/bin/bash"));
-    let fifo = shell && words.iter().any(|w| *w == "mkfifo" || w.ends_with(";mkfifo"))
-        && ["|sh-i", "|bash-i", "|/bin/sh-i", "|/bin/bash-i"].iter().any(|s| compact.contains(s))
-        && ["|nc", "|ncat", "|netcat"].iter().any(|s| compact.contains(s));
+    let fifo = shell
+        && words
+            .iter()
+            .any(|w| *w == "mkfifo" || w.ends_with(";mkfifo"))
+        && ["|sh-i", "|bash-i", "|/bin/sh-i", "|/bin/bash-i"]
+            .iter()
+            .any(|s| compact.contains(s))
+        && ["|nc", "|ncat", "|netcat"]
+            .iter()
+            .any(|s| compact.contains(s));
     [
         ("shell_devtcp_stdio", devtcp),
         ("python_socket_stdio_reverse_shell", python_stdio),
         ("netcat_exec", netcat_exec),
         ("fifo_shell_netcat", fifo),
-        ("stratum_protocol", compact.contains("stratum+tcp://") || compact.contains("stratum+ssl://")),
-    ].into_iter().filter_map(|(name, matched)| matched.then_some(name)).collect()
+        (
+            "stratum_protocol",
+            compact.contains("stratum+tcp://") || compact.contains("stratum+ssl://"),
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(name, matched)| matched.then_some(name))
+    .collect()
 }

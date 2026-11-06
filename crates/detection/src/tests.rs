@@ -51,7 +51,7 @@ fn temporal_cap_rule(name: &str) -> TemporalRule {
                     command_line_contains: None,
                     require_file_write: false,
                     require_credential_source: false,
-                ..Default::default()
+                    ..Default::default()
                 },
                 within_secs: 30,
             },
@@ -71,7 +71,7 @@ fn temporal_cap_rule(name: &str) -> TemporalRule {
                     command_line_contains: None,
                     require_file_write: false,
                     require_credential_source: false,
-                ..Default::default()
+                    ..Default::default()
                 },
                 within_secs: 10,
             },
@@ -646,7 +646,10 @@ fn temporal_engine_detects_credential_exfil_rule() {
     file_access.pid = 242;
     file_access.session_id = 242;
     file_access.file_path = Some("/etc/shadow".to_string());
-    assert!(!t.observe(&file_access).iter().any(|h| h == "phi_credential_exfil"));
+    assert!(!t
+        .observe(&file_access)
+        .iter()
+        .any(|h| h == "phi_credential_exfil"));
 
     let mut connect = event(70, EventClass::NetworkConnect, "curl", "bash", 1000);
     connect.pid = 242;
@@ -680,7 +683,10 @@ fn temporal_engine_persistence_install_requires_file_write() {
     with_write.session_id = 244;
     with_write.file_path = Some("/home/user/.config/systemd/user/x.service".to_string());
     with_write.file_write = true;
-    assert!(t.observe(&with_write).iter().any(|h| h == "phi_persistence_write"));
+    assert!(t
+        .observe(&with_write)
+        .iter()
+        .any(|h| h == "phi_persistence_write"));
 
     let mut exec_after_write = event(110, EventClass::ProcessExec, "systemctl", "bash", 1000);
     exec_after_write.pid = 245;
@@ -1131,10 +1137,18 @@ fn webshell_graph_fixture() -> Layer4Engine {
     l4.add_template(KillChainTemplate {
         name: "killchain_webshell_network".into(),
         stages: vec![
-            TemplatePredicate { process_any_of: Some(crate::util::set_of(["nginx"])), ..Default::default() },
-            TemplatePredicate { process_any_of: Some(crate::util::set_of(["bash"])), require_network_non_web: true, ..Default::default() },
+            TemplatePredicate {
+                process_any_of: Some(crate::util::set_of(["nginx"])),
+                ..Default::default()
+            },
+            TemplatePredicate {
+                process_any_of: Some(crate::util::set_of(["bash"])),
+                require_network_non_web: true,
+                ..Default::default()
+            },
         ],
-        max_depth: 4, max_inter_stage_secs: 30,
+        max_depth: 4,
+        max_inter_stage_secs: 30,
     });
     l4
 }
@@ -1598,7 +1612,7 @@ fn layer4_evaluation_runtime_is_bounded_with_depth_limited_templates() {
                     require_execveat_activity: false,
                     require_proc_mem_access: false,
                     require_fileless_exec: false,
-                ..Default::default()
+                    ..Default::default()
                 },
                 TemplatePredicate {
                     process_any_of: Some(std::iter::once("never-match".to_string()).collect()),
@@ -1615,7 +1629,7 @@ fn layer4_evaluation_runtime_is_bounded_with_depth_limited_templates() {
                     require_execveat_activity: false,
                     require_proc_mem_access: false,
                     require_fileless_exec: false,
-                ..Default::default()
+                    ..Default::default()
                 },
             ],
             max_depth: 6,
@@ -1661,7 +1675,8 @@ fn engine_runs_all_layers() {
 fn detection_allowlist_never_suppresses_exact_ioc() {
     let mut d = DetectionEngine::default_with_rules();
     d.layer1.load_hashes(["deadbeef".into()]);
-    d.allowlist.add_allowed_process("/opt/vendor/trusted-agent".into());
+    d.allowlist
+        .add_allowed_process("/opt/vendor/trusted-agent".into());
     let mut ev = event(2, EventClass::ProcessExec, "trusted-agent", "init", 1000);
     ev.file_path = Some("/opt/vendor/trusted-agent".into());
     ev.file_hash = Some("deadbeef".into());
@@ -1676,8 +1691,12 @@ fn explicit_ransomware_template_tests_burst_algorithm_not_production_admission()
     let mut l4 = Layer4Engine::new(300);
     l4.add_template(KillChainTemplate {
         name: "killchain_ransomware_write_burst".into(),
-        stages: vec![TemplatePredicate { require_ransomware_write_burst: true, ..Default::default() }],
-        max_depth: 2, max_inter_stage_secs: 15,
+        stages: vec![TemplatePredicate {
+            require_ransomware_write_burst: true,
+            ..Default::default()
+        }],
+        max_depth: 2,
+        max_inter_stage_secs: 15,
     });
 
     for i in 0..10 {
@@ -1774,7 +1793,7 @@ fn explicit_ransomware_template_tests_burst_algorithm_not_production_admission()
             require_execveat_activity: false,
             require_proc_mem_access: false,
             require_fileless_exec: false,
-                ..Default::default()
+            ..Default::default()
         }],
         max_depth: 2,
         max_inter_stage_secs: 15,
@@ -2767,7 +2786,11 @@ fn detection_latency_p99_stays_within_budget_for_reference_workload() {
     samples_ns.sort_unstable();
     let idx = ((samples_ns.len() as f64) * 0.99).ceil() as usize - 1;
     let p99 = samples_ns[idx.min(samples_ns.len() - 1)];
-    assert!(p99 < std::time::Duration::from_millis(10).as_nanos() as u64);
+    println!("detection p99={p99}ns");
+    assert!(
+        p99 < std::time::Duration::from_millis(10).as_nanos() as u64,
+        "p99={p99}ns"
+    );
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3799,7 +3822,10 @@ fn verdict_a9_layer3_entropy_is_only_evaluated_on_exec() {
     });
     engine.set_baseline(
         "lsblk:guest-agent".into(),
-        EVENT_CLASSES.into_iter().map(|class| (class, 0.125)).collect(),
+        EVENT_CLASSES
+            .into_iter()
+            .map(|class| (class, 0.125))
+            .collect(),
     );
     let mut ev = event(1, EventClass::ProcessExec, "lsblk", "guest-agent", 1000);
     ev.command_line = Some("lsblk --json --output NAME,TYPE,SIZE,MOUNTPOINT".to_string());
@@ -3920,7 +3946,10 @@ fn anomaly_engine_emits_medium_when_above_medium_threshold_only() {
     let mut engine = AnomalyEngine::new(config);
     engine.set_baseline(
         "python:bash".into(),
-        EVENT_CLASSES.into_iter().map(|class| (class, 0.125)).collect(),
+        EVENT_CLASSES
+            .into_iter()
+            .map(|class| (class, 0.125))
+            .collect(),
     );
 
     for i in 0..32 {

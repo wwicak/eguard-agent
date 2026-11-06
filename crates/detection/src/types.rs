@@ -61,7 +61,7 @@ pub struct TelemetryEvent {
     pub uid: u32,
     pub process: String,
     pub parent_process: String,
-    /// Top-level ancestor (session-like) PID for correlation.
+    /// Immediate parent/PID fallback for display; temporal rules use causal links.
     pub session_id: u32,
     pub file_path: Option<String>,
     pub file_write: bool,
@@ -128,13 +128,17 @@ pub struct DetectionSignals {
     pub z1_exact_ioc: bool,
     pub yara_hit: bool,
     pub z2_temporal: bool,
+    #[serde(default)]
     pub z2_temporal_medium: bool,
+    #[serde(default)]
     pub z2_temporal_low: bool,
     pub z3_anomaly_high: bool,
     pub z3_anomaly_med: bool,
     pub z4_kill_chain: bool,
     pub l1_prefilter_hit: bool,
+    #[serde(default)]
     pub l1_named_hit: bool,
+    #[serde(default)]
     pub l1_strong_signature: bool,
     pub exploit_indicator: bool,
     pub kernel_integrity: bool,

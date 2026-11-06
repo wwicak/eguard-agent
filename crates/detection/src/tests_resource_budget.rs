@@ -35,7 +35,7 @@ fn temporal_rule(name: &str) -> TemporalRule {
         stages: vec![
             TemporalStage {
                 predicate: TemporalPredicate {
-                sigma: None,
+                    sigma: None,
                     event_class: EventClass::ProcessExec,
                     process_any_of: None,
                     process_starts_with: None,
@@ -49,13 +49,13 @@ fn temporal_rule(name: &str) -> TemporalRule {
                     command_line_contains: None,
                     require_file_write: false,
                     require_credential_source: false,
-                ..Default::default()
+                    ..Default::default()
                 },
                 within_secs: 30,
             },
             TemporalStage {
                 predicate: TemporalPredicate {
-                sigma: None,
+                    sigma: None,
                     event_class: EventClass::NetworkConnect,
                     process_any_of: None,
                     process_starts_with: None,
@@ -69,7 +69,7 @@ fn temporal_rule(name: &str) -> TemporalRule {
                     command_line_contains: None,
                     require_file_write: false,
                     require_credential_source: false,
-                ..Default::default()
+                    ..Default::default()
                 },
                 within_secs: 10,
             },
@@ -239,7 +239,7 @@ fn process_graph_and_templates_fit_budget_with_bounded_batch_evaluation() {
                     require_execveat_activity: false,
                     require_proc_mem_access: false,
                     require_fileless_exec: false,
-                ..Default::default()
+                    ..Default::default()
                 },
                 TemplatePredicate {
                     process_any_of: Some(HashSet::from(["bash".to_string()])),
@@ -256,7 +256,7 @@ fn process_graph_and_templates_fit_budget_with_bounded_batch_evaluation() {
                     require_execveat_activity: false,
                     require_proc_mem_access: false,
                     require_fileless_exec: false,
-                ..Default::default()
+                    ..Default::default()
                 },
             ],
             max_depth: 8,

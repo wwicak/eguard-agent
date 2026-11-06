@@ -37,12 +37,10 @@ pub struct TemporalPredicate {
     pub parent_starts_with: Option<Vec<String>>,
     pub process_not_any_of: Option<HashSet<String>>,
     pub parent_not_any_of: Option<HashSet<String>>,
-    pub command_line_contains_all: Option<HashSet<String>>,
     pub command_line_all_of: Vec<HashSet<String>>,
     pub command_line_not_contains: Option<HashSet<String>>,
     pub command_line_exact_any_of: Option<HashSet<String>>,
     pub file_path_not_contains: Option<HashSet<String>>,
-    pub file_path_not_endswith: Option<HashSet<String>>,
     pub dst_not_loopback: bool,
     pub link: TemporalLink,
 }
@@ -67,12 +65,10 @@ impl Default for TemporalPredicate {
             parent_starts_with: None,
             process_not_any_of: None,
             parent_not_any_of: None,
-            command_line_contains_all: None,
             command_line_all_of: Vec::new(),
             command_line_not_contains: None,
             command_line_exact_any_of: None,
             file_path_not_contains: None,
-            file_path_not_endswith: None,
             dst_not_loopback: false,
             link: TemporalLink::default(),
         }
@@ -126,30 +122,58 @@ impl TemporalPredicate {
         let parent = event.parent_process.to_ascii_lowercase();
         if self.parent_any_of.is_some() || self.parent_starts_with.is_some() {
             let exact = self.parent_any_of.as_ref().is_some_and(|set| {
-                set.iter().any(|expected| expected.eq_ignore_ascii_case(&parent))
+                set.iter()
+                    .any(|expected| expected.eq_ignore_ascii_case(&parent))
             });
             let prefix = self.parent_starts_with.as_ref().is_some_and(|prefixes| {
-                prefixes.iter().any(|prefix| parent.starts_with(&prefix.to_ascii_lowercase()))
+                prefixes
+                    .iter()
+                    .any(|prefix| parent.starts_with(&prefix.to_ascii_lowercase()))
             });
-            if !exact && !prefix { return false; }
+            if !exact && !prefix {
+                return false;
+            }
         }
-        if self.process_not_any_of.as_ref().is_some_and(|set| set.iter().any(|p| p.eq_ignore_ascii_case(&event.process)))
-            || self.parent_not_any_of.as_ref().is_some_and(|set| set.iter().any(|p| p.eq_ignore_ascii_case(&parent))) {
+        if self
+            .process_not_any_of
+            .as_ref()
+            .is_some_and(|set| set.iter().any(|p| p.eq_ignore_ascii_case(&event.process)))
+            || self
+                .parent_not_any_of
+                .as_ref()
+                .is_some_and(|set| set.iter().any(|p| p.eq_ignore_ascii_case(&parent)))
+        {
             return false;
         }
         if self.dst_not_loopback && !event.dst_ip.as_deref().is_some_and(is_non_loopback) {
             return false;
         }
-        let cmd = event.command_line.as_deref().unwrap_or("").to_ascii_lowercase();
-        if self.command_line_contains_all.as_ref().is_some_and(|set| !set.iter().all(|s| cmd.contains(&s.to_ascii_lowercase())))
-            || !self.command_line_all_of.iter().all(|group| group.iter().any(|s| cmd.contains(&s.to_ascii_lowercase())))
-            || self.command_line_not_contains.as_ref().is_some_and(|set| set.iter().any(|s| cmd.contains(&s.to_ascii_lowercase())))
-            || self.command_line_exact_any_of.as_ref().is_some_and(|set| !set.iter().any(|s| s.eq_ignore_ascii_case(cmd.trim()))) {
+        let cmd = event
+            .command_line
+            .as_deref()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if !self
+            .command_line_all_of
+            .iter()
+            .all(|group| group.iter().any(|s| cmd.contains(&s.to_ascii_lowercase())))
+            || self
+                .command_line_not_contains
+                .as_ref()
+                .is_some_and(|set| set.iter().any(|s| cmd.contains(&s.to_ascii_lowercase())))
+            || self
+                .command_line_exact_any_of
+                .as_ref()
+                .is_some_and(|set| !set.iter().any(|s| s.eq_ignore_ascii_case(cmd.trim())))
+        {
             return false;
         }
         let path = normalize_path(event.file_path.as_deref().unwrap_or(""));
-        if self.file_path_not_contains.as_ref().is_some_and(|set| set.iter().any(|s| path.contains(&normalize_path(s))))
-            || self.file_path_not_endswith.as_ref().is_some_and(|set| set.iter().any(|s| path.ends_with(&normalize_path(s)))) {
+        if self
+            .file_path_not_contains
+            .as_ref()
+            .is_some_and(|set| set.iter().any(|s| path.contains(&normalize_path(s))))
+        {
             return false;
         }
 
@@ -219,7 +243,8 @@ impl TemporalPredicate {
                 .file_path_any_of
                 .as_ref()
                 .map(|set| {
-                    set.iter().any(|needle| normalize_path(needle) == normalized_path)
+                    set.iter()
+                        .any(|needle| normalize_path(needle) == normalized_path)
                 })
                 .unwrap_or(false);
             let contains_ok = self

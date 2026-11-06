@@ -27,7 +27,10 @@ pub(super) fn to_detection_event(
     now_unix: i64,
 ) -> TelemetryEvent {
     // Root ancestors (notably PID 1) are host-wide, not correlation sessions.
-    let session_id = enriched.parent_chain.first().copied()
+    let session_id = enriched
+        .parent_chain
+        .first()
+        .copied()
         .filter(|pid| *pid > 1)
         .unwrap_or(enriched.event.pid);
 
@@ -828,7 +831,10 @@ mod tests {
         };
 
         let event = super::to_detection_event(&enriched, 55);
-        assert_eq!(event.session_id, 100, "root ancestor must not be the session");
+        assert_eq!(
+            event.session_id, 100,
+            "root ancestor must not be the session"
+        );
         enriched.parent_chain = vec![1];
         assert_eq!(super::to_detection_event(&enriched, 55).session_id, 4242);
         enriched.parent_chain = vec![100, 1];

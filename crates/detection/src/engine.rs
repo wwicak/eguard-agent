@@ -77,13 +77,24 @@ impl DetectionAllowlist {
     }
 
     pub fn is_allowed(&self, event: &TelemetryEvent) -> bool {
-        if event.event_class != EventClass::ProcessExec { return false; }
-        let Some(path) = event.file_path.as_deref() else { return false; };
-        if !(path.starts_with('/') || path.as_bytes().get(1) == Some(&b':')) { return false; }
-        self.processes.contains(path) || self.path_prefixes.iter().any(|prefix| {
-            let prefix = prefix.trim_end_matches(['/', '\\']);
-            !prefix.is_empty() && (path == prefix || path.strip_prefix(prefix).is_some_and(|suffix| suffix.starts_with(['/', '\\'])))
-        })
+        if event.event_class != EventClass::ProcessExec {
+            return false;
+        }
+        let Some(path) = event.file_path.as_deref() else {
+            return false;
+        };
+        if !(path.starts_with('/') || path.as_bytes().get(1) == Some(&b':')) {
+            return false;
+        }
+        self.processes.contains(path)
+            || self.path_prefixes.iter().any(|prefix| {
+                let prefix = prefix.trim_end_matches(['/', '\\']);
+                !prefix.is_empty()
+                    && (path == prefix
+                        || path
+                            .strip_prefix(prefix)
+                            .is_some_and(|suffix| suffix.starts_with(['/', '\\'])))
+            })
     }
 }
 
@@ -243,11 +254,14 @@ impl DetectionEngine {
             // RAFIX shared: one malformed pack file must not stop later rules.
             let source = match std::fs::read_to_string(&path) {
                 Ok(source) => source,
-                Err(_) => { eprintln!("skipping unreadable Sigma file: {}", path.display()); continue; }
+                Err(err) => {
+                    eprintln!("skipping Sigma file {}: {err}", path.display());
+                    continue;
+                }
             };
             match self.layer2.add_sigma_rule_yaml(&source) {
                 Ok(_) => loaded += 1,
-                Err(_) => eprintln!("skipping invalid Sigma file: {}", path.display()),
+                Err(err) => eprintln!("skipping Sigma file {}: {err}", path.display()),
             }
         }
 
@@ -260,7 +274,12 @@ impl DetectionEngine {
         // RAFIX shared: discard non-curated substring hits before ML, telemetry or response.
         let mut yara_hits = self.yara.scan_event(event);
         // RAFIX-INTEGRATION: remove when APACKS fail-closed YARA loader lands.
-        yara_hits.retain(|hit| matches!(hit.rule_name.as_str(), "eguard_eicar_test" | "eguard_eicar_test_file"));
+        yara_hits.retain(|hit| {
+            matches!(
+                hit.rule_name.as_str(),
+                "eguard_eicar_test" | "eguard_eicar_test_file"
+            )
+        });
 
         // ── Layer 2: Temporal pattern correlation ───────────────
         let temporal_hits = self.layer2.observe(event);
@@ -318,14 +337,24 @@ impl DetectionEngine {
         let signals = DetectionSignals {
             z1_exact_ioc: layer1.result == Layer1Result::ExactMatch,
             yara_hit: !yara_hits.is_empty(),
-            z2_temporal: temporal_hits.iter().any(|name| self.layer2.rule_level(name) >= crate::RuleLevel::High),
-            z2_temporal_medium: temporal_hits.iter().any(|name| self.layer2.rule_level(name) == crate::RuleLevel::Medium),
-            z2_temporal_low: temporal_hits.iter().any(|name| self.layer2.rule_level(name) == crate::RuleLevel::Low),
+            z2_temporal: temporal_hits
+                .iter()
+                .any(|name| self.layer2.rule_level(name) >= crate::RuleLevel::High),
+            z2_temporal_medium: temporal_hits
+                .iter()
+                .any(|name| self.layer2.rule_level(name) == crate::RuleLevel::Medium),
+            z2_temporal_low: temporal_hits
+                .iter()
+                .any(|name| self.layer2.rule_level(name) == crate::RuleLevel::Low),
             z3_anomaly_high: anomaly.as_ref().map(|a| a.high).unwrap_or(false) || behavioral_high,
             z3_anomaly_med: anomaly.as_ref().map(|a| a.medium).unwrap_or(false) || behavioral_med,
             z4_kill_chain: !kill_chain_hits.is_empty(),
             l1_prefilter_hit: layer1.prefilter_hit,
-            l1_named_hit: !layer1.matched_signatures.is_empty() || !layer1.matched_fields.iter().all(|f| f == "command_line" || f == "file_path"),
+            l1_named_hit: !layer1.matched_signatures.is_empty()
+                || !layer1
+                    .matched_fields
+                    .iter()
+                    .all(|f| f == "command_line" || f == "file_path"),
             l1_strong_signature: layer1.strong,
             exploit_indicator: !exploit_indicators.is_empty(),
             kernel_integrity: !kernel_integrity_indicators.is_empty(),
