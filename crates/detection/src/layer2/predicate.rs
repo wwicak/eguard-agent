@@ -1,4 +1,7 @@
 use std::collections::HashSet;
+use std::sync::Arc;
+
+use crate::sigma_expr::SigmaExpr;
 
 use crate::types::{EventClass, TelemetryEvent};
 
@@ -17,6 +20,7 @@ pub enum TemporalLink {
 
 #[derive(Debug, Clone)]
 pub struct TemporalPredicate {
+    pub sigma: Option<Arc<SigmaExpr>>, // RAFIX shared: sigma expr (APACKS)
     pub event_class: EventClass,
     pub process_any_of: Option<HashSet<String>>,
     pub process_starts_with: Option<Vec<String>>,
@@ -46,6 +50,7 @@ pub struct TemporalPredicate {
 impl Default for TemporalPredicate {
     fn default() -> Self {
         Self {
+            sigma: None,
             event_class: EventClass::ProcessExec,
             process_any_of: None,
             process_starts_with: None,
@@ -232,6 +237,11 @@ impl TemporalPredicate {
         }
 
         if self.require_file_write && !event.file_write {
+            return false;
+        }
+
+        if self.sigma.as_ref().is_some_and(|expr| !expr.matches(event)) {
+            // RAFIX shared: sigma expr (APACKS)
             return false;
         }
 

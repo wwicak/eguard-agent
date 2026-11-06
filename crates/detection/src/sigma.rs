@@ -178,6 +178,7 @@ fn compile_sequence_sigma_ast(doc: SigmaRuleDoc) -> Result<BoundedTemporalAst> {
 
         stages.push(AstStage {
             predicate: TemporalPredicate {
+                sigma: None,
                 event_class,
                 process_any_of: into_set(stage.process_any_of),
                 process_starts_with: None,
@@ -247,6 +248,7 @@ fn compile_legacy_sigma_ast(yaml: &str, doc: &SigmaRuleDoc) -> Result<BoundedTem
 
     let stage = AstStage {
         predicate: TemporalPredicate {
+                sigma: None,
             event_class,
             process_any_of: some_set(acc.process_any_of),
             process_starts_with: None,
