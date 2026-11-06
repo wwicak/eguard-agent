@@ -957,6 +957,14 @@ mod tests {
     }
 
     #[test]
+    fn windows_fp_truncated_ipv4_does_not_fabricate_an_address() {
+        // These are the six short records (three variants per length) in the codec corpus.
+        for len in [0, 19] {
+            assert!(decode_kernel_network(10, 42, 700, &vec![0; len]).is_none());
+        }
+    }
+
+    #[test]
     fn windows_fp_ipv6_attack_destination_remains_visible() {
         let mut data = vec![0; 44];
         data[8..24].copy_from_slice(
