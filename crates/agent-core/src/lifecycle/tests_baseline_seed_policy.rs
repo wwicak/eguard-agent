@@ -467,3 +467,37 @@ async fn baseline_e2e_upload_fetch_seed_flow_works() {
 
     server.await.expect("mock server join");
 }
+
+#[test]
+fn windows_fp_restart_requires_mature_local_baseline_but_keeps_shift_detection() {
+    let fixtures: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+        "../../../detection/src/testdata/windows_discovery.json"
+    ))
+    .unwrap();
+    let mut event: TelemetryEvent = serde_json::from_value(fixtures[1]["event"].clone()).unwrap();
+    let path = unique_baseline_path("windows-fp-maturity");
+    let mut store = BaselineStore::new(path).unwrap();
+    let key = ProcessKey {
+        comm: event.process.clone(),
+        parent_comm: event.parent_process.clone(),
+    };
+    for _ in 0..999 {
+        store.learn_event(key.clone(), "process_exec");
+    }
+    let state = crate::detection_state::SharedDetectionState::new(
+        detection::DetectionEngine::default_with_rules(), None,
+    );
+    seed_anomaly_baselines(&state, &store).unwrap();
+    for _ in 0..128 {
+        assert!(state.process_event(&event).unwrap().anomaly.is_none());
+    }
+    store.learn_event(key, "process_exec");
+    seed_anomaly_baselines(&state, &store).unwrap();
+    event.dst_ip = Some("203.0.113.9".into());
+    event.dst_port = Some(4444);
+    let mut alarm = false;
+    for _ in 0..128 {
+        alarm |= state.process_event(&event).unwrap().anomaly.is_some_and(|decision| decision.high);
+    }
+    assert!(alarm, "mature profile still detects a sustained distribution shift");
+}

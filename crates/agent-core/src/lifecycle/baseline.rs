@@ -75,18 +75,21 @@ pub(super) fn seed_anomaly_baselines(
     baseline_store: &BaselineStore,
 ) -> Result<()> {
     let mut bulk = Vec::new();
-    for ((comm, parent), distribution) in baseline_store.init_entropy_baselines() {
+    for (key, profile) in &baseline_store.baselines {
+        if profile.sample_count < 1000 {
+            continue;
+        }
         let mut parsed = HashMap::new();
-        for (event_name, probability) in distribution {
-            if let Some(event_class) = parse_event_class_name(&event_name) {
-                parsed.insert(event_class, probability);
+        for (event_name, count) in &profile.event_distribution {
+            if let Some(event_class) = parse_event_class_name(event_name) {
+                parsed.insert(event_class, *count as f64 / profile.sample_count as f64);
             }
         }
         if parsed.is_empty() {
             continue;
         }
 
-        bulk.push((format!("{}:{}", comm, parent), parsed));
+        bulk.push((format!("{}:{}", key.comm, key.parent_comm), parsed));
     }
 
     let seeded = bulk.len();
