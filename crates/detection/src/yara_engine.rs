@@ -188,6 +188,13 @@ impl YaraEngine {
             // A path replaced by a FIFO after stat must not block the event loop.
             options.custom_flags(libc::O_NONBLOCK);
         }
+        // A writer can preserve size/mtime; never reuse a pre-write verdict.
+        if event.file_write {
+            self.verdicts
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clear();
+        }
         let Ok(mut file) = options.open(path) else {
             return Vec::new();
         };

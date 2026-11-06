@@ -246,12 +246,23 @@ fn cache_reuses_verdict_and_invalidates_content_and_rule_changes() {
     engine.scan_event(&event);
     engine.scan_event(&event);
     assert_eq!(calls.load(Ordering::Relaxed), 1);
-    fs::write(&path, b"two_changed").unwrap();
+    let mut write = event.clone();
+    write.event_class = EventClass::FileOpen;
+    write.file_write = true;
+    engine.scan_event(&write);
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        2,
+        "writes must bypass possibly restored metadata"
+    );
     engine.scan_event(&event);
     assert_eq!(calls.load(Ordering::Relaxed), 2);
-    engine.load_rules_str("new rules").unwrap();
+    fs::write(&path, b"two_changed").unwrap();
     engine.scan_event(&event);
     assert_eq!(calls.load(Ordering::Relaxed), 3);
+    engine.load_rules_str("new rules").unwrap();
+    engine.scan_event(&event);
+    assert_eq!(calls.load(Ordering::Relaxed), 4);
 }
 
 #[test]

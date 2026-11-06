@@ -63,8 +63,9 @@ fn windows_identity(file: &File) -> Option<(u64, u64)> {
     if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
         return None;
     }
-    Some((
-        u64::from(info.volume),
-        (u64::from(info.index_high) << 32) | u64::from(info.index_low),
-    ))
+    let index = (u64::from(info.index_high) << 32) | u64::from(info.index_low);
+    if index == 0 {
+        return None;
+    }
+    Some((u64::from(info.volume), index))
 }
