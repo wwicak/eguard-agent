@@ -313,21 +313,23 @@ fn exact_ioc_keeps_temporal_state_consistent() {
 
 #[test]
 fn malformed_sigma_file_does_not_abort_directory_load() {
-    let dir = tempfile::tempdir().unwrap();
-    let yaml = "title: first_native\nlevel: high\nlogsource:\n  product: linux\n  category: process_creation\ndetection:\n  sequence:\n    - event_class: process_exec\n      process_any_of: [fixture]\n      within_secs: 1\n";
-    std::fs::write(dir.path().join("00-native.yml"), yaml).unwrap();
-    std::fs::write(dir.path().join("01-broken.yml"), "detection: [invalid").unwrap();
-    std::fs::write(
-        dir.path().join("99-valid.yml"),
-        yaml.replace("first_native", "last_valid"),
-    )
-    .unwrap();
-    let mut engine = isolated();
-    assert_eq!(engine.load_sigma_rules_from_dir(dir.path()).unwrap(), 2);
-    let hits = engine
-        .process_event(&event(ProcessExec, 100, 10, "fixture", "bash", "fixture"))
-        .temporal_hits;
-    assert_eq!(hits, vec!["first_native", "last_valid"]);
+    for invalid in [b"detection: [invalid".as_slice(), b"\xff\xfe".as_slice()] {
+        let dir = tempfile::tempdir().unwrap();
+        let yaml = "title: first_native\nlevel: high\nlogsource:\n  product: linux\n  category: process_creation\ndetection:\n  sequence:\n    - event_class: process_exec\n      process_any_of: [fixture]\n      within_secs: 1\n";
+        std::fs::write(dir.path().join("00-native.yml"), yaml).unwrap();
+        std::fs::write(dir.path().join("01-broken.yml"), invalid).unwrap();
+        std::fs::write(
+            dir.path().join("99-valid.yml"),
+            yaml.replace("first_native", "last_valid"),
+        )
+        .unwrap();
+        let mut engine = isolated();
+        assert_eq!(engine.load_sigma_rules_from_dir(dir.path()).unwrap(), 2);
+        let hits = engine
+            .process_event(&event(ProcessExec, 100, 10, "fixture", "bash", "fixture"))
+            .temporal_hits;
+        assert_eq!(hits, vec!["first_native", "last_valid"]);
+    }
 }
 
 #[test]
