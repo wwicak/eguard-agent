@@ -590,3 +590,127 @@ fn installer_pipeline_unquoted_argv_has_no_high_or_wrapper_duplicate() {
         assert_eq!(alerts[0].temporal_hits, vec!["phi_download_pipe_shell"]);
     }
 }
+
+#[test]
+fn kernel_loader_arguments_are_real_exec_fields_not_module_load_paths() {
+    for (process, command, expected) in [
+        ("insmod", "insmod /tmp/.d/driver.ko", true),
+        ("insmod", "insmod /home/u/build/driver.ko.xz", true),
+        ("insmod", "insmod /var/tmp/driver.ko.zst", true),
+        ("kmod", "/usr/sbin/insmod /dev/shm/driver.ko", true),
+        ("kmod", "kmod insmod /run/user/1000/driver.ko.zst", true),
+        ("insmod", "insmod /lib/modules/6.1/extra/vboxdrv.ko", false),
+        (
+            "insmod",
+            "insmod /usr/lib/modules/6.1/extra/nvidia.ko.xz",
+            false,
+        ),
+        (
+            "insmod",
+            "insmod /tmp/../lib/modules/6.1/extra/vboxdrv.ko",
+            false,
+        ),
+        (
+            "insmod",
+            "insmod /lib/modules/6.1/extra/vboxdrv.ko firmware=/tmp/driver.ko",
+            false,
+        ),
+        ("insmod", "insmod /tmp/driver.ko.txt", false),
+        ("insmod", "insmod /TMP/driver.ko", false),
+        ("insmod", "insmod /tmp/driver.KO", false),
+        ("modprobe", "modprobe nvidia", false),
+        ("kmod", "kmod modprobe /tmp/driver.ko", false),
+        ("insmod", "insmod ./driver.ko", false),
+        ("insmod", "insmod --help /tmp/driver.ko", false),
+        ("insmod", "insmod -V /tmp/driver.ko", false),
+        ("kmod", "kmod insmod --version /tmp/driver.ko", false),
+    ] {
+        let mut engine = isolated();
+        let mut e = event(ProcessExec, 100, 10, process, "sudo", command);
+        e.uid = 0;
+        e.file_path = Some(
+            if process == "kmod" {
+                "/usr/bin/kmod"
+            } else {
+                "/usr/sbin/insmod"
+            }
+            .into(),
+        );
+        let out = engine.process_event(&e);
+        assert_eq!(
+            out.confidence >= Confidence::High,
+            expected,
+            "{process}: {command}; {:?}",
+            out.layer1
+        );
+        if expected {
+            assert!(out
+                .layer1
+                .matched_signatures
+                .iter()
+                .any(|s| s == "writable_kernel_module_argument"));
+        }
+    }
+}
+
+#[test]
+fn name_only_module_loads_match_only_exact_public_rootkit_names() {
+    let bootstrap = include_str!("../../agent-core/src/lifecycle/detection_bootstrap.rs");
+    let yaml = bootstrap
+        .split_once("const SIGMA_KERNEL_MODULE: &str = r#\"")
+        .unwrap()
+        .1
+        .split_once("\"#;")
+        .unwrap()
+        .0;
+    for (name, expected) in [
+        ("diamorphine", true),
+        ("reptile", true),
+        ("suterusu", true),
+        ("kovid", true),
+        ("nvidia", false),
+        ("vboxdrv", false),
+        ("dkms_custom", false),
+        ("kovid_x", false),
+        ("not_diamorphine", false),
+    ] {
+        let mut engine = isolated();
+        engine.load_sigma_rule_yaml(yaml).unwrap();
+        let mut e = event(ModuleLoad, 100, 0, "unknown", "unknown", "");
+        e.uid = 0;
+        e.command_line = None;
+        e.file_path = Some(name.into());
+        let out = engine.process_event(&e);
+        assert_eq!(
+            out.confidence >= Confidence::High,
+            expected,
+            "{name}: {:?}",
+            out.temporal_hits
+        );
+        if expected {
+            assert_eq!(out.temporal_hits, vec!["eguard_builtin_kernel_module"]);
+        }
+    }
+}
+
+#[test]
+fn credential_exfil_needs_a_read_not_an_output_file_write() {
+    for write in [true, false] {
+        let mut engine = DetectionEngine::default_with_rules();
+        let mut file = event(FileOpen, 100, 10, "curl", "bash", "curl");
+        file.file_path = Some("/home/u/.aws/credentials".into());
+        file.file_write = write;
+        engine.process_event(&file);
+        let out = engine.process_event(&event(NetworkConnect, 100, 10, "curl", "bash", "curl"));
+        assert_eq!(
+            out.temporal_hits
+                .iter()
+                .any(|h| h == "phi_credential_exfil"),
+            !write,
+            "write={write}"
+        );
+        if write {
+            assert!(out.confidence < Confidence::High);
+        }
+    }
+}

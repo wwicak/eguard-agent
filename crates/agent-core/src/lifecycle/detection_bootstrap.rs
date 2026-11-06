@@ -263,14 +263,17 @@ fn seed_sigma_rules(detection: &mut DetectionEngine, configured_dir: &Path) {
     info!(loaded_sigma_rules = loaded, "SIGMA rules initialized");
 }
 
-// ── Suspicious kernel module load ──
+// Kernel events carry only module names, not the loaded path (Linux codec).
+// Public build names: m0nad/Diamorphine Makefile; f0rb1dd3n/Reptile
+// kernel/kmatryoshka/Kbuild; mncoppola/suterusu Makefile; carloslack/KoviD Makefile.
+// Writable .ko arguments are checked on insmod/kmod process_exec in layer1.
 const SIGMA_KERNEL_MODULE: &str = r#"
 title: eguard_builtin_kernel_module
 level: high
 detection:
   sequence:
     - event_class: module_load
-      file_path_contains: ['/tmp/', '/dev/shm/', '/var/tmp/', '/home/', '/root/', '/run/user/', '/media/', '/mnt/']
+      file_path_any_of: [diamorphine, reptile, suterusu, kovid]
       within_secs: 300
 "#;
 

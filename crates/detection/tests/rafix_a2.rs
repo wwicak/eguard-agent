@@ -131,10 +131,8 @@ fn conn(
         .cmd(cmd)
         .port(port, ip)
 }
-fn modload(ts: i64, pid: u32, ppid: u32, uid: u32, p: &str, parent: &str, cmd: &str, m: &str) -> E {
-    base(ts, EventClass::ModuleLoad, pid, ppid, uid, p, parent)
-        .cmd(cmd)
-        .path(m)
+fn modload(ts: i64, pid: u32, ppid: u32, uid: u32, p: &str, parent: &str, m: &str) -> E {
+    base(ts, EventClass::ModuleLoad, pid, ppid, uid, p, parent).path(m)
 }
 
 fn sev(c: Confidence) -> &'static str {
@@ -235,10 +233,11 @@ fn run(id: &str, kind: &str, events: Vec<E>) -> (Vec<String>, Vec<String>, Confi
             Some((Confidence::Medium, "phi_persistence_write"))
         }
         "A13_systemd_user_unit" => Some((Confidence::High, "phi_persistence_install")),
+        "A14_insmod_rootkit" => Some((Confidence::High, "eguard_builtin_kernel_module")),
         "A16_tar_then_nc_upload" => Some((Confidence::High, "phi_data_staging")),
         "A17_ssh_with_stolen_key" => Some((Confidence::Medium, "phi_ssh_unusual_key")),
         "W03_win_mimikatz_sam_read" => Some((Confidence::High, "eguard_win_credential_store_read")),
-        _ => None, // A14 lacks module path; A15 needs write metadata; W04 lacks shell I/O evidence.
+        _ => None, // A15 needs write metadata; W04 lacks shell I/O evidence.
     };
     if let Some((expected, rule)) = expected {
         assert!(max >= expected, "{id}: missed attack");
@@ -612,16 +611,7 @@ fn ra2_a2_scenarios() {
                 "modprobe wireguard",
                 "/usr/sbin/modprobe",
             ),
-            modload(
-                T0 + 1,
-                3002,
-                3001,
-                0,
-                "modprobe",
-                "sudo",
-                "modprobe wireguard",
-                "wireguard",
-            ),
+            modload(T0 + 1, 3002, 3001, 0, "modprobe", "sudo", "wireguard"),
         ],
     );
     // B11 `kubectl get pods` (reads ~/.kube/config, connects API server :6443)
@@ -1404,28 +1394,7 @@ fn ra2_a2_scenarios() {
     run(
         "A14_insmod_rootkit",
         "attack",
-        vec![
-            exec(
-                T0,
-                6301,
-                6300,
-                0,
-                "insmod",
-                "bash",
-                "insmod /tmp/.r/diamorphine.ko",
-                "/usr/sbin/insmod",
-            ),
-            modload(
-                T0,
-                6301,
-                6300,
-                0,
-                "insmod",
-                "bash",
-                "insmod /tmp/.r/diamorphine.ko",
-                "diamorphine",
-            ),
-        ],
+        vec![modload(T0, 6301, 0, 0, "unknown", "unknown", "diamorphine")],
     );
     // A15 ransomware burst: 40 renames/writes under /home in 10 s (production layer4 has NO ransomware template)
     let mut ev = vec![exec(
@@ -1692,16 +1661,7 @@ fn ra2_a2_retired_default_templates_do_not_reappear() {
             "modprobe wireguard",
             "/usr/sbin/modprobe",
         ),
-        modload(
-            T0 + 1,
-            3002,
-            3001,
-            0,
-            "modprobe",
-            "sudo",
-            "modprobe wireguard",
-            "wireguard",
-        ),
+        modload(T0 + 1, 3002, 3001, 0, "modprobe", "sudo", "wireguard"),
     ] {
         hits.extend(l4.observe(&e.0));
     }

@@ -1055,6 +1055,10 @@ pub(crate) fn strong_command_signatures(event: &TelemetryEvent) -> Vec<&'static 
             .iter()
             .any(|s| compact.contains(s));
     [
+        (
+            "writable_kernel_module_argument",
+            has_writable_module_argument(&process, event.command_line.as_deref().unwrap_or("")),
+        ),
         ("shell_devtcp_stdio", devtcp),
         ("python_socket_stdio_reverse_shell", python_stdio),
         ("netcat_exec", netcat_exec),
@@ -1067,4 +1071,66 @@ pub(crate) fn strong_command_signatures(event: &TelemetryEvent) -> Vec<&'static 
     .into_iter()
     .filter_map(|(name, matched)| matched.then_some(name))
     .collect()
+}
+
+fn has_writable_module_argument(process: &str, command: &str) -> bool {
+    if !matches!(process, "insmod" | "kmod") {
+        return false;
+    }
+    let words: Vec<_> = command
+        .split_whitespace()
+        .map(|word| word.trim_matches(['\'', '"']))
+        .collect();
+    if words
+        .iter()
+        .skip(1)
+        .any(|word| matches!(*word, "--help" | "-h" | "--version" | "-V"))
+    {
+        return false;
+    }
+    // /proc/exe resolves the insmod symlink to kmod; argv retains the applet name.
+    let start = if process == "insmod"
+        || words
+            .first()
+            .is_some_and(|word| word.rsplit('/').next() == Some("insmod"))
+    {
+        1
+    } else if words.get(1) == Some(&"insmod") {
+        2
+    } else {
+        return false;
+    };
+    let Some(path) = words.iter().skip(start).find(|word| !word.starts_with('-')) else {
+        return false;
+    };
+    if !path.starts_with('/') {
+        return false;
+    }
+    let mut parts = Vec::new();
+    for part in path.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            part => parts.push(part),
+        }
+    }
+    let path = format!("/{}", parts.join("/"));
+    let writable = [
+        "/tmp/",
+        "/var/tmp/",
+        "/dev/shm/",
+        "/home/",
+        "/root/",
+        "/run/user/",
+        "/media/",
+        "/mnt/",
+    ]
+    .iter()
+    .any(|prefix| path.starts_with(prefix));
+    writable
+        && [".ko", ".ko.xz", ".ko.zst"]
+            .iter()
+            .any(|suffix| path.ends_with(suffix))
 }

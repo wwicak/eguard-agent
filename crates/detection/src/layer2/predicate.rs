@@ -225,10 +225,11 @@ impl TemporalPredicate {
         }
 
         if self.require_credential_source
-            && !event
-                .file_path
-                .as_deref()
-                .is_some_and(crate::layer4::is_credential_source)
+            && (event.file_write
+                || !event
+                    .file_path
+                    .as_deref()
+                    .is_some_and(crate::layer4::is_credential_source))
         {
             return false;
         }
