@@ -1021,13 +1021,18 @@ mod tests {
         e.event_class = EventClass::ProcessExec;
         e.file_hash = None;
         assert!(!AgentRuntime::has_concrete_response_evidence(&e, &o));
+        e.file_hash = Some("invalid-hash".into());
+        assert!(!AgentRuntime::has_concrete_response_evidence(&e, &o));
     }
 
     #[test]
     fn rafix_response_yara_and_chain_must_bind_same_file_event() {
         let (e, o) = bound_file_evidence();
         assert!(AgentRuntime::has_concrete_response_evidence(&e, &o));
-        for change in 0..11 {
+        let mut deleted = e.clone();
+        deleted.file_unlink = true;
+        assert!(!AgentRuntime::has_concrete_response_evidence(&deleted, &o));
+        for change in 0..13 {
             let mut bad = o.clone();
             match change {
                 0 => bad.kill_chain_evidence[0].witnesses[0].file_path = Some("/tmp/other".into()),
@@ -1040,7 +1045,12 @@ mod tests {
                 7 => bad.kill_chain_hits.clear(),
                 8 => bad.yara_hits.clear(),
                 9 => bad.confidence = detection::Confidence::High,
-                _ => bad.observation_id = None,
+                10 => bad.observation_id = None,
+                11 => bad.yara_hits[0].rule_name.clear(),
+                _ => {
+                    bad.kill_chain_evidence[0].template.clear();
+                    bad.kill_chain_hits = vec![String::new()];
+                }
             }
             assert!(
                 !AgentRuntime::has_concrete_response_evidence(&e, &bad),
