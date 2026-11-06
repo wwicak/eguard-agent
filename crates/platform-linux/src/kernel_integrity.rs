@@ -134,7 +134,7 @@ pub fn scan_kernel_integrity(
         // as "hidden" produces hundreds of false positives on VPS and
         // cloud hosts where many subsystems are compiled-in.
         let initstate_path = opts.sys_module_path.join(name).join("initstate");
-        if !initstate_path.exists() {
+        if read_trimmed(&initstate_path).as_deref() != Some("live") {
             continue;
         }
         report
@@ -150,19 +150,12 @@ pub fn scan_kernel_integrity(
 
     for module in &sys_modules {
         let taint_path = opts.sys_module_path.join(module).join("taint");
-        if let Some(taint) = read_numeric(&taint_path) {
-            if taint > 0 {
+        // sysfs taint is a set of letters, not the numeric /proc tainted mask.
+        if let Some(taint) = read_trimmed(&taint_path) {
+            if taint.contains('O') && taint.contains('E') {
                 report
                     .indicators
-                    .push(format!("tainted_module:{}:{}", module, taint));
-                let signer_path = opts.sys_module_path.join(module).join("signer");
-                if let Some(signer) = read_trimmed(&signer_path) {
-                    if signer.is_empty() {
-                        report
-                            .indicators
-                            .push(format!("unsigned_module:{}", module));
-                    }
-                }
+                    .push(format!("unsigned_oot_module:{module}"));
             }
         }
     }
@@ -183,9 +176,6 @@ pub fn scan_kernel_integrity(
         }
         if count > 0 {
             report.kprobe_count = count;
-            report
-                .indicators
-                .push(format!("kprobe_hook_count:{}", count));
         }
     }
 
@@ -200,7 +190,7 @@ pub fn scan_kernel_integrity(
         let count = contents
             .lines()
             .map(str::trim)
-            .filter(|line| !line.is_empty())
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
             .count();
         if count > 0 {
             report.ftrace_filter_count = count;
@@ -224,9 +214,6 @@ pub fn scan_kernel_integrity(
             .collect::<Vec<_>>();
         if !list.is_empty() {
             report.lsm_list = list.clone();
-            if list.iter().any(|entry| entry == "bpf") {
-                report.indicators.push("lsm_bpf_enabled".to_string());
-            }
         }
     }
 
@@ -237,9 +224,14 @@ pub fn scan_kernel_integrity(
                 continue;
             }
             report.bpffs_objects.push(name.clone());
-            report
-                .indicators
-                .push(format!("bpffs_pinned_object:{}", name));
+            if !matches!(
+                name.as_str(),
+                "snap" | "tc" | "ip" | "xdp" | "cilium" | "calico" | "systemd"
+            ) {
+                report
+                    .indicators
+                    .push(format!("bpffs_pinned_object:{name}"));
+            }
         }
     }
 
@@ -286,16 +278,13 @@ fn read_trimmed(path: &Path) -> Option<String> {
         .map(|val| val.trim().to_string())
 }
 
-fn read_numeric(path: &Path) -> Option<u64> {
-    read_trimmed(path).and_then(|value| value.parse::<u64>().ok())
-}
-
 fn extract_probe_symbol(line: &str) -> Option<String> {
     let parts: Vec<&str> = line.split_whitespace().collect();
     if parts.len() < 2 {
         return None;
     }
-    parts.last().map(|val| val.to_string())
+    let symbol = parts[1].split('+').next()?.rsplit(':').next()?;
+    Some(symbol.to_string())
 }
 
 fn is_sensitive_symbol(symbol: &str) -> bool {
@@ -343,7 +332,7 @@ mod tests {
         // initstate file.  Built-in modules lack this file.
         std::fs::write(sys_modules.join("sys_only").join("initstate"), "live")
             .expect("write initstate");
-        std::fs::write(sys_modules.join("sys_only").join("taint"), "1").expect("write taint");
+        std::fs::write(sys_modules.join("sys_only").join("taint"), "OE").expect("write taint");
         std::fs::write(sys_modules.join("sys_only").join("signer"), "").expect("write signer");
 
         std::fs::write(
@@ -373,13 +362,12 @@ mod tests {
         let indicators = report.indicators.join("|");
         assert!(indicators.contains("hidden_module_sysfs:sys_only"));
         assert!(indicators.contains("hidden_module_proc:proc_only"));
-        assert!(indicators.contains("tainted_module:sys_only"));
-        assert!(indicators.contains("unsigned_module:sys_only"));
-        assert!(indicators.contains("kprobe_hook_count:1"));
+        assert!(indicators.contains("unsigned_oot_module:sys_only"));
+        assert_eq!(report.kprobe_count, 1);
         assert!(indicators.contains("kprobe_hook:__x64_sys_execve"));
         assert!(indicators.contains("ftrace_tracer:function"));
         assert!(indicators.contains("ftrace_filter_count:1"));
-        assert!(indicators.contains("lsm_bpf_enabled"));
+        assert!(!indicators.contains("lsm_bpf_enabled"));
         assert!(indicators.contains("bpffs_pinned_object:evil_prog"));
     }
 }
