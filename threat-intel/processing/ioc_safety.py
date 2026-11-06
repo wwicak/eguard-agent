@@ -9,12 +9,16 @@ SHARED_HOST_SUFFIXES = frozenset({
     "paste.ee", "tinyurl.com", "bit.ly", "dweb.link", "archive.org",
     "github.com", "raw.githubusercontent.com", "gist.githubusercontent.com",
     "discord.com", "discordapp.com", "api.telegram.org", "t.me",
+    "sharepoint.com", "onedrive.live.com", "objects.githubusercontent.com",
+    "dropbox.com", "dl.dropboxusercontent.com", "blob.core.windows.net", "ipfs.io",
+    "workers.dev", "pages.dev", "web.app", "firebaseapp.com", "github.io",
+    "vercel.app", "netlify.app",
 })
 SPECIAL_NETWORKS = tuple(map(ipaddress.ip_network, (
     "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
     "169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24",
     "192.88.99.0/24", "192.168.0.0/16", "198.18.0.0/15", "198.51.100.0/24",
-    "203.0.113.0/24", "224.0.0.0/3", "::/128", "::1/128", "::ffff:0:0/96",
+    "203.0.113.0/24", "224.0.0.0/3", "::/8", "::1/128", "::ffff:0:0/96",
     "64:ff9b::/96", "64:ff9b:1::/48", "100::/64", "2001::/23",
     "2001:db8::/32", "2002::/16", "3fff::/20", "fc00::/7", "fe80::/10", "ff00::/8",
 )))

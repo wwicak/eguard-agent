@@ -24,7 +24,7 @@ def read_jsonl(path):
     return [json.loads(line) for line in path.read_text().splitlines() if line]
 
 
-@pytest.mark.parametrize("host", ["docs.google.com", "drive.google.com", "sites.google.com", "pastebin.com", "tinyurl.com", "a.docs.google.com", "firebasestorage.googleapis.com", "dweb.link"])
+@pytest.mark.parametrize("host", ["docs.google.com", "drive.google.com", "sites.google.com", "pastebin.com", "tinyurl.com", "a.docs.google.com", "firebasestorage.googleapis.com", "dweb.link", "synthetic.sharepoint.com", "onedrive.live.com", "objects.githubusercontent.com", "dropbox.com", "dl.dropboxusercontent.com", "synthetic.blob.core.windows.net", "ipfs.io", "synthetic.workers.dev", "synthetic.pages.dev", "synthetic.web.app", "synthetic.firebaseapp.com", "synthetic.github.io", "synthetic.vercel.app", "synthetic.netlify.app"])
 def test_shared_hosts_never_survive_domain_curation(tmp_path, host):
     src, dst = tmp_path / "in", tmp_path / "out"
     write_jsonl(src, [{"value": host, "sources": ["urlhaus"]}, {"value": "dedicated-c2.example", "sources": ["urlhaus"]}])
@@ -34,7 +34,7 @@ def test_shared_hosts_never_survive_domain_curation(tmp_path, host):
 
 def test_bogons_and_overlapping_special_networks_are_removed(tmp_path):
     src, dst = tmp_path / "in", tmp_path / "out"
-    special = ["0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "198.18.0.0/15", "224.0.0.0/3", "239.255.255.250", "192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24", "0.0.0.0/0", "::1", "2001:db8::/32", "fc00::/7", "ff00::/8", "not-an-ip"]
+    special = ["0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "198.18.0.0/15", "224.0.0.0/3", "239.255.255.250", "192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24", "0.0.0.0/0", "::1", "::1234", "2001:db8::/32", "fc00::/7", "ff00::/8", "not-an-ip"]
     write_jsonl(src, [{"value": v} for v in special + ["8.8.8.9", "193.0.0.0/24"]])
     ioc_allowlist.filter_ip_iocs(str(src), str(dst), set(), [])
     assert {row["value"] for row in read_jsonl(dst)} == {"8.8.8.9", "193.0.0.0/24"}
