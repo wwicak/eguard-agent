@@ -158,6 +158,17 @@ case("beacon-sample-maturity", "crates/detection/src/beaconing.rs", "state.inter
 case("beacon-timescale", "crates/detection/src/beaconing.rs", "!(10.0..=21600.0).contains(&mean)", "false")
 case("beacon-event-size", "crates/detection/src/beaconing.rs", "self.tick = self.tick.wrapping_add(1);", "if _event_size == 0 { return quiet; } self.tick = self.tick.wrapping_add(1);")
 
+case("noise-ungated-alarms", "crates/agent-core/src/lifecycle/telemetry_noise.rs", "outcome.behavioral_alarms.iter().any(|a| a.gated)", "!outcome.behavioral_alarms.is_empty()", "agent-core", "rafix_noise_evidence", "core")
+
+case("hash-attribution", "crates/agent-core/src/lifecycle/detection_event.rs", 'enriched.file_sha256.clone()\n        },\n        dst_port', 'enriched.file_sha256.clone().or_else(|| enriched.process_exe_sha256.clone())\n        },\n        dst_port', "agent-core", "rafix_mapping", "core")
+case("scan-forced-high", S, 'detection::kernel_integrity_confidence(&outcome.kernel_integrity_indicators);', 'detection::kernel_integrity_confidence(&outcome.kernel_integrity_indicators).max(Confidence::High);', "agent-core", "identical_kernel_integrity_scans_emit", "core")
+
+case("image-cache-invocation-fallback", "crates/platform-linux/src/lib.rs", '.map(|p| p.to_string_lossy().into_owned());', '.map(|p| p.to_string_lossy().into_owned()).or_else(|| payload_meta.and_then(|m| m.file_path.clone()));', "platform-linux", "rafix_", "linux")
+case("image-output-invocation-fallback", "crates/platform-linux/src/lib.rs", 'let process_exe = entry.process_exe;', 'let process_exe = entry.process_exe.or_else(|| payload_meta.file_path.clone());', "platform-linux", "rafix_", "linux")
+case("image-reexec-refresh", "crates/platform-linux/src/lib.rs", 'if same_process_instance && same_exec {', 'if same_process_instance {', "platform-linux", "rafix_", "linux")
+case("image-prime-continuity", "crates/platform-linux/src/lib.rs", 'if same_process_instance && same_exec {', 'if false {', "platform-linux", "rafix_", "linux")
+case("image-display-fallback", "crates/agent-core/src/lifecycle/detection_event.rs", '.or(process_name_from_invocation)', '', "agent-core", "rafix_mapping", "core")
+
 
 def run(package, test, log):
     cmd = ["cargo", "test", "--offline", "-p", package, test, "--", "--test-threads=1"]
