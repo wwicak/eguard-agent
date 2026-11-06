@@ -304,8 +304,15 @@ fn f4c_all_nonprocess_quoted_buffers_are_payload_only() {
             // these accepted bytes as numbers, not as a native quoted endpoint.
             wide(&mut data, offset, r#"C:\quoted.subject""#);
             for version in [0, 255] {
-                let event =
-                    decode_etw_record_versioned(provider, opcode, version, 42, 1, &data).unwrap();
+                let event = decode_etw_record_versioned(provider, opcode, version, 42, 1, &data);
+                if provider == KERNEL_NETWORK && opcode != 10 {
+                    assert!(
+                        event.is_none(),
+                        "unknown network layout must not invent an address"
+                    );
+                    continue;
+                }
+                let event = event.unwrap();
                 assert_eq!(
                     event.fields,
                     Default::default(),

@@ -70,7 +70,7 @@ pub fn decode_etw_record_versioned(
     match provider_guid {
         KERNEL_PROCESS => decode_kernel_process_versioned(opcode, version, pid, ts_ns, user_data),
         KERNEL_FILE => decode_kernel_file(opcode, pid, ts_ns, user_data),
-        KERNEL_NETWORK => decode_kernel_network(opcode, pid, ts_ns, user_data),
+        KERNEL_NETWORK => decode_kernel_network(u16::from(opcode), pid, ts_ns, user_data),
         DNS_CLIENT => decode_dns_client(opcode, pid, ts_ns, user_data),
         KERNEL_GENERAL | IMAGE_LOAD => decode_image_load(opcode, pid, ts_ns, user_data),
         _ => {
@@ -390,33 +390,43 @@ fn decode_kernel_file(opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Option<R
 
 /// Microsoft-Windows-Kernel-Network (TCP/IP events).
 ///
-/// Classic layout: PID(4) + size(4) + daddr(4) + saddr(4) + dport(2) + sport(2) = 20 bytes (IPv4).
-/// IPv6: PID(4) + size(4) + daddr(16) + saddr(16) + dport(2) + sport(2) = 44 bytes.
-fn decode_kernel_network(_opcode: u8, pid: u32, ts_ns: u64, data: &[u8]) -> Option<RawEvent> {
-    // Try IPv4 first (20 bytes minimum).
-    if data.len() >= 20 {
-        let process_pid = read_u32_le(data, 0);
-        let dst_ip = format_ipv4(data, 8);
-        let src_ip = format_ipv4(data, 12);
-        let dst_port = read_u16_be(data, 16); // Network byte order
-        let src_port = read_u16_be(data, 18);
-
-        let payload =
-            format!("src_ip={src_ip};src_port={src_port};dst_ip={dst_ip};dst_port={dst_port}");
-        return Some(RawEvent {
-            fields: crate::decoded_fields(None, &EventType::TcpConnect, &payload),
-            pid_start_ns: None,
-            ppid_start_ns: None,
-            event_type: EventType::TcpConnect,
-            pid: process_pid,
-            uid: 0,
-            ts_ns,
-            payload,
-        });
-    }
-
-    // Fallback for unknown/short buffers.
-    fallback_event(EventType::TcpConnect, pid, ts_ns, data)
+/// PID(4) + size(4) + daddr + saddr + dport(2) + sport(2).
+/// Manifest IPv4 and IPv6 events share opcodes; only the event ID selects the layout.
+pub(super) fn decode_kernel_network(
+    event_id: u16,
+    _pid: u32,
+    ts_ns: u64,
+    data: &[u8],
+) -> Option<RawEvent> {
+    let (dst_ip, src_ip, port_offset) = match event_id {
+        10..=16 | 18 | 42 | 43 if data.len() >= 20 => {
+            (format_ipv4(data, 8), format_ipv4(data, 12), 16)
+        }
+        26..=32 | 34 | 58 | 59 if data.len() >= 44 => {
+            let dst = <[u8; 16]>::try_from(&data[8..24]).ok()?;
+            let src = <[u8; 16]>::try_from(&data[24..40]).ok()?;
+            (
+                std::net::Ipv6Addr::from(dst).to_string(),
+                std::net::Ipv6Addr::from(src).to_string(),
+                40,
+            )
+        }
+        _ => return None,
+    };
+    let dst_port = read_u16_be(data, port_offset);
+    let src_port = read_u16_be(data, port_offset + 2);
+    let payload =
+        format!("src_ip={src_ip};src_port={src_port};dst_ip={dst_ip};dst_port={dst_port}");
+    Some(RawEvent {
+        fields: crate::decoded_fields(None, &EventType::TcpConnect, &payload),
+        pid_start_ns: None,
+        ppid_start_ns: None,
+        event_type: EventType::TcpConnect,
+        pid: read_u32_le(data, 0),
+        uid: 0,
+        ts_ns,
+        payload,
+    })
 }
 
 /// Microsoft-Windows-DNS-Client.
@@ -926,6 +936,38 @@ mod tests {
         assert!(event.payload.contains("dst_port=443"));
         assert!(event.payload.contains("src_ip=10.0.0.1"));
         assert!(event.payload.contains("src_port=50000"));
+    }
+
+    #[test]
+    fn windows_fp_ipv6_discovery_is_not_255_2_0_0_port_zero() {
+        // Manifest event 58 (UDP send), reconstructed from the observed ff02 prefix.
+        let mut data = vec![0; 44];
+        data[..4].copy_from_slice(&1000u32.to_le_bytes());
+        data[8..24].copy_from_slice(&"ff02::fb".parse::<std::net::Ipv6Addr>().unwrap().octets());
+        data[24..40].copy_from_slice(&"fe80::1234".parse::<std::net::Ipv6Addr>().unwrap().octets());
+        data[40..42].copy_from_slice(&5353u16.to_be_bytes());
+        data[42..44].copy_from_slice(&5353u16.to_be_bytes());
+        let event = decode_kernel_network(58, 9999, 700, &data).unwrap();
+        assert!(event.payload.contains("dst_ip=ff02::fb;dst_port=5353"));
+        assert!(event.payload.contains("src_ip=fe80::1234;src_port=5353"));
+        assert!(!event.payload.contains("255.2.0.0"));
+        assert!(decode_kernel_network(58, 9999, 700, &data[..20]).is_none());
+        assert!(decode_kernel_network(999, 9999, 700, &data).is_none());
+        assert!(decode_kernel_network(49, 9999, 700, &data).is_none());
+    }
+
+    #[test]
+    fn windows_fp_ipv6_attack_destination_remains_visible() {
+        let mut data = vec![0; 44];
+        data[8..24].copy_from_slice(
+            &"2001:db8::bad"
+                .parse::<std::net::Ipv6Addr>()
+                .unwrap()
+                .octets(),
+        );
+        data[40..42].copy_from_slice(&4444u16.to_be_bytes());
+        let event = decode_kernel_network(28, 42, 700, &data).unwrap();
+        assert!(event.payload.contains("dst_ip=2001:db8::bad;dst_port=4444"));
     }
 
     #[test]
