@@ -26,10 +26,9 @@ pub(super) fn to_detection_event(
     enriched: &crate::platform::EnrichedEvent,
     now_unix: i64,
 ) -> TelemetryEvent {
-    let session_id = enriched
-        .parent_chain
-        .last()
-        .copied()
+    // Root ancestors (notably PID 1) are host-wide, not correlation sessions.
+    let session_id = enriched.parent_chain.first().copied()
+        .filter(|pid| *pid > 1)
         .unwrap_or(enriched.event.pid);
 
     let module_payload = if matches!(
@@ -813,7 +812,7 @@ mod tests {
             process_exe_sha256: None,
             process_cmdline: Some("/usr/bin/bash -lc test".to_string()),
             parent_process: Some("sshd".to_string()),
-            parent_chain: vec![100],
+            parent_chain: vec![100, 1],
             file_path: None,
             file_path_secondary: None,
             file_write: false,
@@ -829,6 +828,10 @@ mod tests {
         };
 
         let event = super::to_detection_event(&enriched, 55);
+        assert_eq!(event.session_id, 100, "root ancestor must not be the session");
+        enriched.parent_chain = vec![1];
+        assert_eq!(super::to_detection_event(&enriched, 55).session_id, 4242);
+        enriched.parent_chain = vec![100, 1];
         assert_eq!(event.file_path.as_deref(), Some("/tmp/payload.bin"));
         enriched.event.fields.path = Some("/typed".into());
         assert_eq!(

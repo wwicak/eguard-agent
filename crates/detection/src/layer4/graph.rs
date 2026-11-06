@@ -40,6 +40,9 @@ pub(super) struct GraphNode {
     pub(super) uid: u32,
     pub(super) last_seen: i64,
     pub(super) network_non_web: bool,
+    pub(super) network_non_loopback: bool,
+    pub(super) command_line: String,
+    pub(super) container_context: bool,
     pub(super) module_loaded: bool,
     pub(super) sensitive_file_access: bool,
     pub(super) ransomware_write_burst: bool,
@@ -127,6 +130,7 @@ impl GraphNode {
         self.signal_witnesses.clear();
         self.fired_templates.clear();
         self.network_non_web = false;
+        self.network_non_loopback = false;
         self.module_loaded = false;
         self.sensitive_file_access = false;
         self.ransomware_write_burst = false;
@@ -257,10 +261,10 @@ impl ProcessGraph {
         };
 
         let ptrace_activity = is_ptrace_tool(event);
-        let userfaultfd_activity = is_userfaultfd_tool(event);
-        let execveat_activity = is_execveat_tool(event);
+        let userfaultfd_activity = false;
+        let execveat_activity = false;
         let fileless_exec = is_fileless_exec(event);
-        let proc_mem_access = matches!(event.event_class, EventClass::FileOpen)
+        let proc_mem_access = matches!(event.event_class, EventClass::FileOpen) && event.file_write
             && event
                 .file_path
                 .as_deref()
@@ -277,6 +281,9 @@ impl ProcessGraph {
                 uid: event.uid,
                 last_seen: event.ts_unix,
                 network_non_web: false,
+                network_non_loopback: false,
+                command_line: if reset_for_exec { event.command_line.clone().unwrap_or_default() } else { String::new() },
+                container_context: false,
                 module_loaded: false,
                 sensitive_file_access: false,
                 ransomware_write_burst: false,
@@ -294,6 +301,7 @@ impl ProcessGraph {
             if reset_for_exec {
                 node.reset_runtime_signals();
                 node.identity_witness = witness.clone();
+                node.command_line = event.command_line.clone().unwrap_or_default();
             }
 
             let container_escape_transition = event.container_escape && !node.container_escape;
@@ -303,11 +311,13 @@ impl ProcessGraph {
             node.process = event.process.clone();
             node.uid = event.uid;
             node.last_seen = event.ts_unix;
+            node.container_context = event.container_runtime.as_deref().is_some_and(|r| !r.is_empty() && r != "host");
             node.container_escape = event.container_escape;
             node.container_privileged = event.container_privileged;
 
             match event.event_class {
                 EventClass::NetworkConnect => {
+                    node.network_non_loopback |= event.dst_ip.as_deref().is_some_and(crate::layer2::is_non_loopback);
                     if let Some(port) = event.dst_port {
                         if port != 80 && port != 443 {
                             node.network_non_web = true;
@@ -348,6 +358,7 @@ impl ProcessGraph {
 
             // Record the causative event, not last_seen refreshed by unrelated reads.
             for (signal, active) in [
+                ("network_non_loopback", event.event_class == EventClass::NetworkConnect && event.dst_ip.as_deref().is_some_and(crate::layer2::is_non_loopback)),
                 (
                     "network_non_web",
                     matches!(event.event_class, EventClass::NetworkConnect)
@@ -726,75 +737,23 @@ impl ProcessGraph {
 }
 
 fn is_ptrace_tool(event: &TelemetryEvent) -> bool {
-    if !matches!(event.event_class, EventClass::ProcessExec) {
-        return false;
-    }
-    let process = event.process.to_ascii_lowercase();
-    let cmdline = event
-        .command_line
-        .as_deref()
-        .unwrap_or("")
-        .to_ascii_lowercase();
-
-    matches!(
-        process.as_str(),
-        "gdb" | "gdbserver" | "strace" | "ltrace" | "perf" | "gcore" | "lldb" | "dbx"
-    ) || cmdline.contains("ptrace")
-}
-
-fn is_userfaultfd_tool(event: &TelemetryEvent) -> bool {
-    if !matches!(event.event_class, EventClass::ProcessExec) {
-        return false;
-    }
-    let cmdline = event
-        .command_line
-        .as_deref()
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    cmdline.contains("userfaultfd") || cmdline.contains("uffd")
-}
-
-fn is_execveat_tool(event: &TelemetryEvent) -> bool {
-    if !matches!(event.event_class, EventClass::ProcessExec) {
-        return false;
-    }
-    let cmdline = event
-        .command_line
-        .as_deref()
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    cmdline.contains("execveat")
+    event.event_class == EventClass::ProcessExec && matches!(event.process.to_ascii_lowercase().as_str(),
+        "gdb" | "gdbserver" | "strace" | "ltrace" | "gcore" | "lldb" | "dbx")
 }
 
 fn is_proc_mem_path(path: &str) -> bool {
-    let lower = path.to_ascii_lowercase();
-    if !lower.contains("/proc/") {
-        return false;
-    }
-    lower.contains("/mem")
-        || lower.contains("/maps")
-        || lower.contains("/map_files")
-        || lower.contains("/syscall")
-        || lower.contains("/stack")
+    let parts: Vec<_> = path.split('/').collect();
+    parts.len() == 4 && parts[0].is_empty() && parts[1] == "proc"
+        && !parts[2].is_empty() && parts[2].bytes().all(|c| c.is_ascii_digit()) && parts[3] == "mem"
 }
 
 fn is_fileless_exec(event: &TelemetryEvent) -> bool {
-    if !matches!(event.event_class, EventClass::ProcessExec) {
-        return false;
-    }
-    let path = event.file_path.as_deref().unwrap_or("");
-    let lower = path.to_ascii_lowercase();
-    if lower.contains("memfd:")
-        || lower.ends_with(" (deleted)")
-        || lower.contains("/proc/") && lower.contains("/fd/")
-        || lower.contains("/dev/fd")
-    {
-        return true;
-    }
-    let cmdline = event
-        .command_line
-        .as_deref()
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    cmdline.contains("memfd:") || cmdline.contains("execveat")
+    if event.event_class != EventClass::ProcessExec { return false; }
+    let path = event.file_path.as_deref().unwrap_or("").to_ascii_lowercase();
+    let memfd = path.strip_prefix('/').unwrap_or(&path);
+    if memfd.starts_with("memfd:") && !memfd.starts_with("memfd:runc_cloned") { return true; }
+    let parts: Vec<_> = path.split('/').collect();
+    parts.len() == 5 && parts[0].is_empty() && parts[1] == "proc"
+        && (parts[2] == "self" || (!parts[2].is_empty() && parts[2].bytes().all(|c| c.is_ascii_digit())))
+        && parts[3] == "fd" && !parts[4].is_empty() && parts[4].bytes().all(|c| c.is_ascii_digit())
 }

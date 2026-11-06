@@ -65,7 +65,7 @@ impl DetectionAllowlist {
     }
 
     /// Replace the allowlist contents from server-provided lists.
-    /// Always re-seeds `eguard-agent` as an allowed process.
+    /// Entries must identify full executable paths, never basenames.
     pub fn load_from_lists(&mut self, processes: Vec<String>, path_prefixes: Vec<String>) {
         self.processes.clear();
         self.path_prefixes.clear();
@@ -73,22 +73,17 @@ impl DetectionAllowlist {
             self.processes.insert(p);
         }
         self.path_prefixes = path_prefixes;
-        // Always keep the agent itself allowlisted to prevent self-monitoring FPs.
-        self.processes.insert("eguard-agent".to_string());
+        // Bare basenames are not identities; only explicit executable paths qualify.
     }
 
     pub fn is_allowed(&self, event: &TelemetryEvent) -> bool {
-        if self.processes.contains(&event.process) {
-            return true;
-        }
-        if let Some(ref path) = event.file_path {
-            for prefix in &self.path_prefixes {
-                if path.starts_with(prefix) {
-                    return true;
-                }
-            }
-        }
-        false
+        if event.event_class != EventClass::ProcessExec { return false; }
+        let Some(path) = event.file_path.as_deref() else { return false; };
+        if !(path.starts_with('/') || path.as_bytes().get(1) == Some(&b':')) { return false; }
+        self.processes.contains(path) || self.path_prefixes.iter().any(|prefix| {
+            let prefix = prefix.trim_end_matches(['/', '\\']);
+            !prefix.is_empty() && (path == prefix || path.strip_prefix(prefix).is_some_and(|suffix| suffix.starts_with(['/', '\\'])))
+        })
     }
 }
 
@@ -245,73 +240,27 @@ impl DetectionEngine {
 
         let mut loaded = 0usize;
         for path in entries {
-            let source = std::fs::read_to_string(&path).map_err(SigmaLoadError::Io)?;
-            self.layer2
-                .add_sigma_rule_yaml(&source)
-                .map_err(SigmaLoadError::Compile)?;
-            loaded += 1;
+            // RAFIX shared: one malformed pack file must not stop later rules.
+            let source = match std::fs::read_to_string(&path) {
+                Ok(source) => source,
+                Err(_) => { eprintln!("skipping unreadable Sigma file: {}", path.display()); continue; }
+            };
+            match self.layer2.add_sigma_rule_yaml(&source) {
+                Ok(_) => loaded += 1,
+                Err(_) => eprintln!("skipping invalid Sigma file: {}", path.display()),
+            }
         }
 
         Ok(loaded)
     }
 
     pub fn process_event(&mut self, event: &TelemetryEvent) -> DetectionOutcome {
-        // ── Allowlist: skip detection for known-good entities ───
-        if self.allowlist.is_allowed(event) {
-            return DetectionOutcome {
-                confidence: Confidence::None,
-                signals: DetectionSignals::default(),
-                temporal_hits: Vec::new(),
-                kill_chain_hits: Vec::new(),
-                kill_chain_evidence: Vec::new(),
-                observation_id: None,
-                peer_is_configured_server: false,
-                exploit_indicators: Vec::new(),
-                kernel_integrity_indicators: Vec::new(),
-                tamper_indicators: Vec::new(),
-                yara_hits: Vec::new(),
-                anomaly: None,
-                layer1: Layer1EventHit::default(),
-                ml_score: None,
-                behavioral_alarms: Vec::new(),
-            };
-        }
-
-        // ── Layer 1: IOC/signature matching ─────────────────────
+        let allowed = self.allowlist.is_allowed(event);
         let layer1 = self.layer1.check_event(event);
-
-        // ── Early termination on Definite IOC match ─────────────
-        if layer1.result == Layer1Result::ExactMatch {
-            let network_ioc_hit = has_network_ioc_field(&layer1);
-            // Preserve file-backed YARA evidence for exact IOC hits so
-            // downstream telemetry and playbooks can still observe the
-            // matched content without running the rest of the pipeline.
-            let yara_hits = self.yara.scan_event(event);
-            return DetectionOutcome {
-                confidence: Confidence::Definite,
-                signals: DetectionSignals {
-                    z1_exact_ioc: true,
-                    yara_hit: !yara_hits.is_empty() && yara_hits.len() <= 50,
-                    network_ioc_hit,
-                    ..Default::default()
-                },
-                temporal_hits: Vec::new(),
-                kill_chain_hits: Vec::new(),
-                kill_chain_evidence: Vec::new(),
-                observation_id: None,
-                peer_is_configured_server: false,
-                exploit_indicators: Vec::new(),
-                kernel_integrity_indicators: Vec::new(),
-                tamper_indicators: Vec::new(),
-                yara_hits,
-                anomaly: None,
-                layer1,
-                ml_score: None,
-                behavioral_alarms: Vec::new(),
-            };
-        }
-
-        let yara_hits = self.yara.scan_event(event);
+        // RAFIX shared: discard non-curated substring hits before ML, telemetry or response.
+        let mut yara_hits = self.yara.scan_event(event);
+        // RAFIX-INTEGRATION: remove when APACKS fail-closed YARA loader lands.
+        yara_hits.retain(|hit| matches!(hit.rule_name.as_str(), "eguard_eicar_test" | "eguard_eicar_test_file"));
 
         // ── Layer 2: Temporal pattern correlation ───────────────
         let temporal_hits = self.layer2.observe(event);
@@ -368,16 +317,16 @@ impl DetectionEngine {
         let network_ioc_hit = has_network_ioc_field(&layer1);
         let signals = DetectionSignals {
             z1_exact_ioc: layer1.result == Layer1Result::ExactMatch,
-            // A genuine malware file triggers a handful of YARA rules.
-            // When the substring backend matches thousands of rules on a
-            // system binary, that is a false positive and should not
-            // elevate the confidence score.
-            yara_hit: !yara_hits.is_empty() && yara_hits.len() <= 50,
-            z2_temporal: !temporal_hits.is_empty(),
+            yara_hit: !yara_hits.is_empty(),
+            z2_temporal: temporal_hits.iter().any(|name| self.layer2.rule_level(name) >= crate::RuleLevel::High),
+            z2_temporal_medium: temporal_hits.iter().any(|name| self.layer2.rule_level(name) == crate::RuleLevel::Medium),
+            z2_temporal_low: temporal_hits.iter().any(|name| self.layer2.rule_level(name) == crate::RuleLevel::Low),
             z3_anomaly_high: anomaly.as_ref().map(|a| a.high).unwrap_or(false) || behavioral_high,
             z3_anomaly_med: anomaly.as_ref().map(|a| a.medium).unwrap_or(false) || behavioral_med,
             z4_kill_chain: !kill_chain_hits.is_empty(),
             l1_prefilter_hit: layer1.prefilter_hit,
+            l1_named_hit: !layer1.matched_signatures.is_empty() || !layer1.matched_fields.iter().all(|f| f == "command_line" || f == "file_path"),
+            l1_strong_signature: layer1.strong,
             exploit_indicator: !exploit_indicators.is_empty(),
             kernel_integrity: !kernel_integrity_indicators.is_empty(),
             tamper_indicator: !tamper_indicators.is_empty(),
@@ -406,7 +355,11 @@ impl DetectionEngine {
         // ── Confidence aggregation ──────────────────────────────
         // Deterministic confidence from L1–L4, then ML can escalate
         let base_confidence = confidence_policy(&signals);
-        let confidence = ml_enhanced_confidence(base_confidence, &ml_result);
+        let confidence = if allowed && !signals.z1_exact_ioc && !signals.yara_hit {
+            Confidence::None
+        } else {
+            ml_enhanced_confidence(base_confidence, &ml_result)
+        };
 
         DetectionOutcome {
             confidence,

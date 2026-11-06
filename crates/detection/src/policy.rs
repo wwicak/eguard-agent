@@ -18,7 +18,7 @@ pub fn confidence_policy(s: &DetectionSignals) -> Confidence {
     .into_iter()
     .filter(|active| *active)
     .count();
-    if high_grade_signal_count >= 2 || (s.z2_temporal && s.l1_prefilter_hit) {
+    if high_grade_signal_count >= 2 || (s.z2_temporal && s.l1_named_hit) {
         return Confidence::VeryHigh;
     }
     // YARA hit corroborated by another high-grade signal → VeryHigh
@@ -26,6 +26,9 @@ pub fn confidence_policy(s: &DetectionSignals) -> Confidence {
         return Confidence::VeryHigh;
     }
     if s.z2_temporal || s.z4_kill_chain || s.exploit_indicator || s.tamper_indicator {
+        return Confidence::High;
+    }
+    if s.l1_strong_signature {
         return Confidence::High;
     }
     // Network IOC hit: dst_domain or dst_ip matched IOC list.
@@ -55,6 +58,7 @@ pub fn confidence_policy(s: &DetectionSignals) -> Confidence {
     if s.usb_violation {
         return Confidence::High;
     }
+    if s.z2_temporal_medium { return Confidence::Medium; }
     if s.kernel_integrity {
         return Confidence::Medium;
     }
@@ -64,5 +68,6 @@ pub fn confidence_policy(s: &DetectionSignals) -> Confidence {
     if s.z3_anomaly_med && !(s.z1_exact_ioc || s.z2_temporal || s.z4_kill_chain) {
         return Confidence::Low;
     }
+    if s.z2_temporal_low { return Confidence::Low; }
     Confidence::None
 }

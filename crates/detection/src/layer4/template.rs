@@ -2,9 +2,12 @@ use std::collections::HashSet;
 
 use super::graph::{GraphNode, KillChainWitness};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TemplatePredicate {
     pub process_any_of: Option<HashSet<String>>,
+    pub command_line_any_of: Option<HashSet<String>>,
+    pub require_network_non_loopback: bool,
+    pub require_container_context: bool,
     pub uid_eq: Option<u32>,
     pub uid_ne: Option<u32>,
     pub require_network_non_web: bool,
@@ -28,6 +31,7 @@ impl TemplatePredicate {
         let mut witnesses = vec![node.identity_witness.clone()];
         for (signal, required) in [
             ("network_non_web", self.require_network_non_web),
+            ("network_non_loopback", self.require_network_non_loopback),
             ("module_loaded", self.require_module_loaded),
             ("sensitive_file_access", self.require_sensitive_file_access),
             (
@@ -50,6 +54,9 @@ impl TemplatePredicate {
     }
 
     pub(super) fn matches(&self, node: &GraphNode) -> bool {
+        if self.command_line_any_of.as_ref().is_some_and(|set| !set.iter().any(|s| node.command_line.to_ascii_lowercase().contains(&s.to_ascii_lowercase()))) { return false; }
+        if self.require_container_context && !node.container_context { return false; }
+        if self.require_network_non_loopback && !node.network_non_loopback { return false; }
         if let Some(set) = &self.process_any_of {
             if !set.contains(&node.process) {
                 return false;

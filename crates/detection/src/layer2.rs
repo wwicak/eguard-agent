@@ -5,5 +5,6 @@ mod predicate;
 mod rule;
 
 pub use engine::{TemporalEngine, TemporalEvictionCounters};
-pub use predicate::TemporalPredicate;
-pub use rule::{TemporalRule, TemporalStage};
+pub(crate) use predicate::is_non_loopback;
+pub use predicate::{TemporalLink, TemporalPredicate};
+pub use rule::{RuleLevel, TemporalRule, TemporalStage};

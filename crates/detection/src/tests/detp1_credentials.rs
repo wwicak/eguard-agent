@@ -2,7 +2,7 @@ use super::*;
 
 fn credential_exfil(path: &str) -> bool {
     let mut engine = TemporalEngine::with_default_rules();
-    let mut read = event(1, EventClass::FileOpen, "cron", "cron", 0);
+    let mut read = event(1, EventClass::FileOpen, "curl", "bash", 0);
     read.file_path = Some(path.into());
     engine.observe(&read);
     let mut network = read.clone();

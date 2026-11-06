@@ -212,7 +212,11 @@ impl AgentRuntime {
     }
 
     pub(super) fn detection_rule_type(outcome: &DetectionOutcome) -> &'static str {
-        if !outcome.yara_hits.is_empty() {
+        let mut without_yara = outcome.signals.clone();
+        without_yara.yara_hit = false;
+        if outcome.signals.yara_hit && !outcome.yara_hits.is_empty()
+            && detection::confidence_policy(&outcome.signals) >= Confidence::High
+            && detection::confidence_policy(&without_yara) < detection::confidence_policy(&outcome.signals) {
             return "yara";
         }
         if !outcome.temporal_hits.is_empty() {
@@ -248,6 +252,9 @@ impl AgentRuntime {
     }
 
     pub(super) fn detection_rule_name(outcome: &DetectionOutcome) -> Option<String> {
+        if Self::detection_rule_type(outcome) == "yara" {
+            return outcome.yara_hits.first().map(|hit| hit.rule_name.clone());
+        }
         if !outcome.temporal_hits.is_empty() {
             return Some(outcome.temporal_hits[0].clone());
         }
@@ -262,9 +269,6 @@ impl AgentRuntime {
         }
         if !outcome.exploit_indicators.is_empty() {
             return Some(format!("exploit:{}", outcome.exploit_indicators[0]));
-        }
-        if !outcome.yara_hits.is_empty() {
-            return Some(outcome.yara_hits[0].rule_name.clone());
         }
         if !outcome.layer1.matched_signatures.is_empty() {
             return Some(format!("ioc_sig:{}", outcome.layer1.matched_signatures[0]));
@@ -303,7 +307,7 @@ impl AgentRuntime {
         {
             layers.push("L5_ml".to_string());
         }
-        if !outcome.yara_hits.is_empty() {
+        if outcome.signals.yara_hit {
             layers.push("yara".to_string());
         }
         layers
@@ -339,10 +343,6 @@ impl AgentRuntime {
             for technique in Self::mitre_techniques_for_label(indicator) {
                 techniques.insert(technique.to_string());
             }
-        }
-
-        if !outcome.yara_hits.is_empty() {
-            techniques.insert("T1027".to_string());
         }
 
         let process = event.process.to_ascii_lowercase();
@@ -396,28 +396,28 @@ impl AgentRuntime {
     fn mitre_techniques_for_label(label: &str) -> &'static [&'static str] {
         let normalized = label.trim().to_ascii_lowercase();
         match normalized.as_str() {
-            "eguard_builtin_webshell" | "killchain_webshell_network" => &["T1505.003", "T1190"],
-            "eguard_builtin_reverse_shell" | "killchain_reverse_shell" => &["T1059.004", "T1071"],
-            "eguard_builtin_download_exec" => &["T1105", "T1059"],
-            "eguard_builtin_privesc" | "killchain_user_root_module" => &["T1548", "T1068"],
+            "phi_webshell" | "eguard_builtin_webshell" | "killchain_webshell_network" => &["T1505.003", "T1190"],
+            "phi_reverse_shell" | "eguard_builtin_reverse_shell" | "killchain_reverse_shell" => &["T1059.004", "T1071"],
+            "phi_download_pipe_shell" | "phi_download_then_exec_file" | "phi_interpreter_download_exec" | "eguard_builtin_download_exec" => &["T1105", "T1059"],
+            "phi_unbrokered_root_shell" | "eguard_builtin_privesc" | "killchain_user_root_module" => &["T1548", "T1068"],
             "eguard_builtin_kernel_module" | "rootkit_load" => &["T1014"],
-            "eguard_builtin_persistence" => &["T1053", "T1543"],
+            "phi_persistence_write" | "phi_persistence_install" | "eguard_builtin_persistence" => &["T1053", "T1543"],
             "eguard_builtin_lateral_movement" | "killchain_lateral_ssh" => {
                 &["T1021", "T1021.004", "T1570"]
             }
-            "eguard_builtin_sensitive_file_access" | "killchain_credential_theft" => {
+            "eguard_builtin_shadow_read" | "eguard_win_credential_store_read" | "eguard_builtin_sensitive_file_access" | "killchain_credential_theft" => {
                 &["T1003", "T1552"]
             }
-            "eguard_builtin_data_exfil"
+            "phi_credential_exfil" | "phi_data_staging" | "eguard_builtin_data_exfil"
             | "killchain_data_theft"
             | "eguard_dns_tunneling_detected" => &["T1048", "T1041"],
             "eguard_c2_beaconing_detected" => &["T1071", "T1105"],
             "eguard_win_reg_save_sam" => &["T1003"],
-            "eguard_win_ps_download_cradle" => &["T1059.001", "T1105"],
+            "eguard_win_ps_download_cradle" | "eguard_win_ps_download_cradle_office" => &["T1059.001", "T1105"],
             "eguard_win_shadow_copy_delete" => &["T1490", "T1486"],
             "eguard_win_event_log_clear" => &["T1070"],
-            "eguard_win_schtask_creation" => &["T1053"],
-            "eguard_win_service_creation_suspicious" => &["T1543"],
+            "eguard_win_schtask_creation" | "eguard_win_schtask_suspicious_action" => &["T1053"],
+            "eguard_win_service_creation" | "eguard_win_service_creation_suspicious" => &["T1543"],
             "killchain_ransomware_write_burst" => &["T1486"],
             "killchain_exploit_ptrace_fileless"
             | "killchain_exploit_userfaultfd_execveat"
@@ -604,4 +604,33 @@ mod tests {
         assert!(techniques.iter().any(|value| value == "T1003"));
         assert!(techniques.iter().any(|value| value == "T1059.001"));
     }
+    #[test]
+    fn rafix_yara_type_requires_severity_driving_signal_not_raw_hits() {
+        let mut outcome = DetectionOutcome::default();
+        outcome.confidence = Confidence::High;
+        outcome.temporal_hits.push("fixture_sigma".into());
+        outcome.signals.z2_temporal = true;
+        outcome.yara_hits.push(detection::YaraHit {
+            rule_name: "uncurated_noise".into(), source: "synthetic".into(), matched_literal: "1.0".into(),
+        });
+        assert_eq!(AgentRuntime::detection_rule_type(&outcome), "sigma");
+        assert!(!AgentRuntime::detection_layers(&outcome).iter().any(|l| l == "yara"));
+        assert!(!AgentRuntime::mitre_techniques(&event("fixture", None), &outcome).iter().any(|t| t == "T1027"));
+        outcome.temporal_hits.clear();
+        outcome.signals.z2_temporal = false;
+        outcome.signals.yara_hit = true;
+        outcome.yara_hits[0].rule_name = "eguard_eicar_test".into();
+        assert_eq!(AgentRuntime::detection_rule_type(&outcome), "yara");
+        assert_eq!(AgentRuntime::detection_rule_name(&outcome).as_deref(), Some("eguard_eicar_test"));
+        outcome.signals.z1_exact_ioc = true;
+        assert_eq!(AgentRuntime::detection_rule_type(&outcome), "ioc", "YARA did not cause the definite IOC severity");
+    }
+
+    #[test]
+    fn rafix_canonical_temporal_labels_keep_their_mitre_mapping() {
+        for (label, expected) in [("phi_webshell", "T1505.003"), ("phi_reverse_shell", "T1059.004"), ("phi_unbrokered_root_shell", "T1068"), ("phi_download_pipe_shell", "T1105")] {
+            assert!(AgentRuntime::mitre_techniques_for_label(label).contains(&expected), "{label}");
+        }
+    }
+
 }
