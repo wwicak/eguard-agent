@@ -21,7 +21,7 @@
         "platform:linux",
         "tactic:credential_access"
       ],
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "eguard_linux_reverse_shell",
@@ -45,7 +45,7 @@
         "platform:linux",
         "tactic:execution"
       ],
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "eguard_linux_cron_persistence",
@@ -66,7 +66,7 @@
         "platform:linux",
         "tactic:persistence"
       ],
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "eguard_linux_ssh_credential_theft",
@@ -89,7 +89,7 @@
         "platform:linux",
         "tactic:credential_access"
       ],
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "eguard_linux_systemd_persistence",
@@ -110,7 +110,7 @@
         "platform:linux",
         "tactic:persistence"
       ],
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "eguard_linux_tmp_exec",
@@ -130,7 +130,7 @@
         "platform:linux",
         "tactic:execution"
       ],
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "eguard_linux_binary_masquerade",
@@ -148,7 +148,7 @@
         "platform:linux",
         "tactic:defense_evasion"
       ],
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "eguard_linux_timestomp",
@@ -165,7 +165,7 @@
         "platform:linux",
         "tactic:defense_evasion"
       ],
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "eguard_linux_data_exfil",
@@ -183,7 +183,7 @@
         "platform:linux",
         "tactic:exfiltration"
       ],
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "eguard_linux_cryptominer",
@@ -211,7 +211,7 @@
         "platform:linux",
         "tactic:impact"
       ],
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "eguard_linux_ransomware_encrypt",
@@ -229,7 +229,7 @@
         "platform:linux",
         "tactic:impact"
       ],
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "eguard_linux_log_tampering",
@@ -248,7 +248,7 @@
         "platform:linux",
         "tactic:defense_evasion"
       ],
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "eguard_linux_path_hijack",
@@ -268,7 +268,7 @@
         "platform:linux",
         "tactic:persistence"
       ],
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "eguard_linux_shell_init_hijack",
@@ -286,7 +286,7 @@
         "platform:linux",
         "tactic:persistence"
       ],
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "eguard_linux_ssh_tunnel",
@@ -305,7 +305,7 @@
         "platform:linux",
         "tactic:command_and_control"
       ],
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "eguard_linux_ld_preload_injection",
@@ -321,7 +321,7 @@
         "platform:linux",
         "tactic:persistence"
       ],
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "eguard_linux_supply_chain_attack",
@@ -337,7 +337,7 @@
         "platform:linux",
         "tactic:execution"
       ],
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "eguard_linux_supply_chain_wget",
@@ -353,7 +353,7 @@
         "platform:linux",
         "tactic:execution"
       ],
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "eguard_linux_staged_payload",
@@ -370,7 +370,7 @@
         "platform:linux",
         "tactic:execution"
       ],
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "eguard_linux_base64_exec",
@@ -387,7 +387,7 @@
         "platform:linux",
         "tactic:defense_evasion"
       ],
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "eguard_linux_hex_encoded_exec",
@@ -402,7 +402,7 @@
         "platform:linux",
         "tactic:defense_evasion"
       ],
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "eguard_linux_eval_evasion",
@@ -418,7 +418,7 @@
         "platform:linux",
         "tactic:defense_evasion"
       ],
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "eguard_linux_process_substitution_exec",
@@ -435,7 +435,7 @@
         "platform:linux",
         "tactic:execution"
       ],
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "eguard_linux_chattr_abuse",
@@ -451,7 +451,7 @@
         "platform:linux",
         "tactic:defense_evasion"
       ],
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "eguard_linux_network_recon",
@@ -473,7 +473,7 @@
         "platform:linux",
         "tactic:discovery"
       ],
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "eguard_linux_sudo_abuse",
@@ -491,7 +491,7 @@
         "platform:linux",
         "tactic:privilege_escalation"
       ],
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "eguard_linux_fileless_exec",
@@ -508,7 +508,7 @@
         "platform:linux",
         "tactic:execution"
       ],
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "eguard_kernel_core_pattern_hijack",
@@ -526,7 +526,7 @@
         "platform:linux",
         "tactic:privilege_escalation"
       ],
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "eguard_kernel_kallsyms_read",
@@ -546,7 +546,7 @@
         "platform:linux",
         "tactic:discovery"
       ],
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "eguard_kernel_mount_bind_hide",
@@ -564,7 +564,7 @@
         "platform:linux",
         "tactic:defense_evasion"
       ],
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "eguard_kernel_modprobe_hijack",
@@ -583,7 +583,7 @@
         "platform:linux",
         "tactic:persistence"
       ],
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "eguard_rootkit_kptr_unrestrict",
@@ -601,7 +601,7 @@
         "platform:linux",
         "tactic:defense_evasion"
       ],
-      "enabled": true
+      "enabled": false
     }
   ]
 }
