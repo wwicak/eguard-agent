@@ -449,6 +449,24 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Qualify pinned SIGMA pack with agent compiler and benign replay
+        run: |
+          python threat-intel/processing/sigma_provenance.py \
+            /tmp/artifacts/sigma-filtered 53423dac8742ef6a44fb73f23f049e84594a66ce
+          python threat-intel/tests/sigma_benign_events.py "$RUNNER_TEMP/sigma-benign.json"
+          cargo run -p detection --example sigma_gate -- \
+            /tmp/artifacts/sigma-filtered "$RUNNER_TEMP/sigma-benign.json" \
+            --manifest threat-intel/sigmahq-qualified-53423dac.txt \
+            --report "$RUNNER_TEMP/sigma-qualification.json"
+
+      - name: Upload SIGMA qualification report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundle-sigma-qualification
+          path: ${{ runner.temp }}/sigma-qualification.json
+          retention-days: 7
+
       - name: Validate and deduplicate YARA rules
         run: |
           mkdir -p /tmp/yara_validated
@@ -495,10 +513,11 @@ jobs:
         run: |
           mkdir -p /tmp/ioc_ready
           IOC_DIR="/tmp/artifacts/ioc-curated"
-          if [ -d "$IOC_DIR" ]; then
-            cp "$IOC_DIR"/*.txt /tmp/ioc_ready/ 2>/dev/null || true
-            cp "$IOC_DIR"/ioc_behavior_rules.json /tmp/ioc_ready/ 2>/dev/null || true
-          fi
+          python threat-intel/processing/finalize_iocs.py \
+            --input "$IOC_DIR" --output "$RUNNER_TEMP/ioc-final" \
+            --allowlists threat-intel/allowlists
+          cp "$RUNNER_TEMP/ioc-final/"*.txt /tmp/ioc_ready/
+          cp "$RUNNER_TEMP/ioc-final/ioc_behavior_rules.json" /tmp/ioc_ready/
 
       - name: Prepare JA3 and VT enrichment files
         run: |
@@ -539,6 +558,14 @@ jobs:
             --output bundle \
             --version "${{ steps.version.outputs.version }}"
 
+      - name: Verify packaged SIGMA qualified set
+        run: |
+          python threat-intel/processing/sigma_provenance.py \
+            bundle/sigma 53423dac8742ef6a44fb73f23f049e84594a66ce
+          cargo run -p detection --example sigma_gate -- \
+            bundle/sigma "$RUNNER_TEMP/sigma-benign.json" \
+            --manifest threat-intel/sigmahq-qualified-53423dac.txt
+
       - name: IOC behavior quality gate (bundle)
         run: |
           python3 threat-intel/processing/ioc_behavior_quality_gate.py \
@@ -552,7 +579,8 @@ jobs:
 
       - name: Enforce signature database coverage gate
         env:
-          EGUARD_MIN_SIGMA: "150"
+          # The exact qualified id manifest replaces volume quotas.
+          EGUARD_MIN_SIGMA: "0"
           EGUARD_MIN_YARA: "600"
           EGUARD_MIN_IOC_HASH: "5000"
           EGUARD_MIN_IOC_DOMAIN: "300"
@@ -568,9 +596,9 @@ jobs:
           EGUARD_REQUIRE_SURICATA: "true"
           EGUARD_REQUIRE_ELASTIC: "true"
           EGUARD_REQUIRED_YARA_SOURCES: "yara-forge,gcti,reversinglabs"
-          EGUARD_REQUIRED_SIGMA_SOURCES: "rules,rules-emerging-threats,rules-threat-hunting"
+          EGUARD_REQUIRED_SIGMA_SOURCES: "rules,rules-emerging-threats"
           EGUARD_MIN_YARA_SOURCE_RULES: "yara-forge=1,gcti=30,reversinglabs=100"
-          EGUARD_MIN_SIGMA_SOURCE_RULES: "rules=100,rules-emerging-threats=20,rules-threat-hunting=4"
+          EGUARD_MIN_SIGMA_SOURCE_RULES: ""
         run: |
           EXTRA_FLAGS=()
           if [ "${EGUARD_REQUIRE_SURICATA}" = "true" ]; then
@@ -623,9 +651,9 @@ jobs:
         env:
           EGUARD_MIN_ATTACK_TECHNIQUES: "80"
           EGUARD_MIN_ATTACK_TACTICS: "10"
-          EGUARD_MIN_SIGMA_ATTACK_RULES: "150"
+          EGUARD_MIN_SIGMA_ATTACK_RULES: "0"
           EGUARD_MIN_ELASTIC_ATTACK_RULES: "50"
-          EGUARD_MIN_SIGMA_ATTACK_TECHNIQUES: "60"
+          EGUARD_MIN_SIGMA_ATTACK_TECHNIQUES: "0"
           EGUARD_MIN_ELASTIC_ATTACK_TECHNIQUES: "20"
           EGUARD_REQUIRED_ATTACK_TACTICS: "execution,persistence,privilege_escalation,defense_evasion,credential_access,discovery,lateral_movement,collection,command_and_control,impact"
         run: |

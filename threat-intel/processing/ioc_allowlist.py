@@ -7,6 +7,8 @@ import json
 import os
 import sys
 
+from ioc_safety import is_public_indicator, is_shared_host
+
 
 def load_allowlist(path: str) -> set[str]:
     """Load an allowlist file (one entry per line, # comments)."""
@@ -47,10 +49,9 @@ def is_ip_allowlisted(value: str, allowed_ips: set[str], allowed_networks: list)
     if value.lower() in allowed_ips:
         return True
     try:
-        addr = ipaddress.ip_address(value.split("/")[0])
-        for network in allowed_networks:
-            if addr in network:
-                return True
+        candidate = ipaddress.ip_network(value, strict=False)
+        networks = list(allowed_networks) + [ipaddress.ip_network(ip, strict=False) for ip in allowed_ips]
+        return any(candidate.version == network.version and candidate.overlaps(network) for network in networks)
     except ValueError:
         pass
     return False
@@ -79,8 +80,8 @@ def filter_iocs(
                 entry = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            value = entry.get("value", "").lower()
-            if value in allowlist:
+            value = entry.get("value", "").strip().lower().rstrip(".")
+            if value in allowlist or is_shared_host(value):
                 removed += 1
                 continue
             fout.write(json.dumps(entry, separators=(",", ":")) + "\n")
@@ -114,7 +115,7 @@ def filter_ip_iocs(
             except json.JSONDecodeError:
                 continue
             value = entry.get("value", "").strip()
-            if is_ip_allowlisted(value, allowed_ips, allowed_networks):
+            if not is_public_indicator(value) or is_ip_allowlisted(value, allowed_ips, allowed_networks):
                 removed += 1
                 continue
             fout.write(json.dumps(entry, separators=(",", ":")) + "\n")

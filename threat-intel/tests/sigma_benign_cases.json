@@ -1,0 +1,735 @@
+[
+  {
+    "id": "LB01",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "sh",
+        "cmdline": "/bin/sh -c /usr/lib/sysstat/debian-sa1 1 1",
+        "parent": "cron"
+      }
+    ]
+  },
+  {
+    "id": "LB02",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "bash",
+        "cmdline": "bash -c 'cd /srv/app && git pull'",
+        "parent": "sshd"
+      }
+    ]
+  },
+  {
+    "id": "LB03",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "tar",
+        "cmdline": "tar -czf /var/backups/home.tgz /home/alice",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB04",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "systemctl",
+        "cmdline": "systemctl restart nginx",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB05",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "ssh",
+        "cmdline": "ssh -i /home/alice/.ssh/deploy alice@10.0.0.5",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB06",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "grep",
+        "cmdline": "grep -r error /var/log/nginx",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB07",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "python3",
+        "cmdline": "python3 /opt/app/manage.py migrate",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB08",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "curl",
+        "cmdline": "curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /tmp/docker.gpg",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB09",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "apt-get",
+        "cmdline": "apt-get install -y nginx",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB10",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "id",
+        "cmdline": "id -u",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB11",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "whoami",
+        "cmdline": "whoami",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB12",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "uname",
+        "cmdline": "uname -r",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB13",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "ps",
+        "cmdline": "ps aux",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB14",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "rm",
+        "cmdline": "rm -f /tmp/build.log",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB15",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "chmod",
+        "cmdline": "chmod 755 /usr/local/bin/tool",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB16",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "cat",
+        "cmdline": "cat /proc/meminfo",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB17",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "find",
+        "cmdline": "find /var/log -name *.gz -mtime +30 -delete",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB18",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "rsync",
+        "cmdline": "rsync -az /srv/data backup@nas:/backups/",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB19",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "docker",
+        "cmdline": "docker ps",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB20",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "gzip",
+        "cmdline": "gzip -9 /var/log/app.log.1",
+        "parent": "logrotate"
+      }
+    ]
+  },
+  {
+    "id": "LB21",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "ls",
+        "cmdline": "ls -la /home/alice",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB22",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "dpkg",
+        "cmdline": "dpkg -l",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB23",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "vim",
+        "cmdline": "vim /etc/hosts",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB24",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "sudo",
+        "cmdline": "sudo -i",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB25",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "kubectl",
+        "cmdline": "kubectl get pods -A",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB26",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "git",
+        "cmdline": "git clone https://github.com/org/repo.git",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB27",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "openssl",
+        "cmdline": "openssl x509 -in cert.pem -noout -text",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB28",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "base64",
+        "cmdline": "base64 -d token.b64",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB29",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "ip",
+        "cmdline": "ip addr show",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB30",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "crontab",
+        "cmdline": "crontab -l",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB31",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "ss",
+        "cmdline": "ss -tlnp",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB32",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "journalctl",
+        "cmdline": "journalctl -u nginx --since today",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB33",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "node",
+        "cmdline": "node /srv/app/server.js",
+        "parent": "systemd"
+      }
+    ]
+  },
+  {
+    "id": "LB34",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "sh",
+        "cmdline": "sh -c 'echo ok | sha256sum'",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB35",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "touch",
+        "cmdline": "touch /tmp/.lock",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB36",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "hostname",
+        "cmdline": "hostname -f",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB37",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "df",
+        "cmdline": "df -h",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB38",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "mysql",
+        "cmdline": "mysql -u app -p appdb",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB39",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "tail",
+        "cmdline": "tail -f /var/log/syslog",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB40",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "wget",
+        "cmdline": "wget https://releases.example.org/tool.tar.gz",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB41",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "bash",
+        "cmdline": "/bin/bash /home/alice/deploy.sh",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB42",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "dash",
+        "cmdline": "/bin/sh /usr/sbin/update-motd",
+        "parent": "run-parts"
+      }
+    ]
+  },
+  {
+    "id": "LB43",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "systemctl",
+        "cmdline": "systemctl enable --now docker",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB44",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "cp",
+        "cmdline": "cp -a /etc/nginx /root/nginx.bak",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB45",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "ln",
+        "cmdline": "ln -sf /opt/app/current /srv/app",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB46",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "chown",
+        "cmdline": "chown -R www-data:www-data /var/www",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB47",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "nc",
+        "cmdline": "nc -zv db01 5432",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB48",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "lsmod",
+        "cmdline": "lsmod",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB49",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "env",
+        "cmdline": "env",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB50",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "history",
+        "cmdline": "history",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB51",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "netstat",
+        "cmdline": "netstat -tulpn",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB52",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "w",
+        "cmdline": "w",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB53",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "who",
+        "cmdline": "who",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB54",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "last",
+        "cmdline": "last -n 5",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB55",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "mount",
+        "cmdline": "mount",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB56",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "lscpu",
+        "cmdline": "lscpu",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB57",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "xz",
+        "cmdline": "xz -d linux.tar.xz",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB58",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "zip",
+        "cmdline": "zip -r site.zip /var/www/html",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LB59",
+    "events": [
+      {
+        "class": "process_exec",
+        "process": "scp",
+        "cmdline": "scp report.pdf alice@10.0.0.5:/tmp/",
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LF01",
+    "events": [
+      {
+        "class": "file_open",
+        "process": "unix_chkpwd",
+        "file_path": "/etc/shadow",
+        "file_write": false,
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LF02",
+    "events": [
+      {
+        "class": "file_open",
+        "process": "ssh",
+        "file_path": "/home/alice/.ssh/id_ed25519",
+        "file_write": false,
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LF03",
+    "events": [
+      {
+        "class": "file_open",
+        "process": "cat",
+        "file_path": "/home/alice/.ssh/id_ed25519.pub",
+        "file_write": false,
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LF04",
+    "events": [
+      {
+        "class": "file_open",
+        "process": "python3",
+        "file_path": "/usr/lib/python3/dist-packages/apt/cache.py",
+        "file_write": false,
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LF05",
+    "events": [
+      {
+        "class": "file_open",
+        "process": "python3",
+        "file_path": "/tmp/pip-build/data.dat",
+        "file_write": true,
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LF06",
+    "events": [
+      {
+        "class": "file_open",
+        "process": "sshd",
+        "file_path": "/etc/shadow",
+        "file_write": false,
+        "parent": "bash"
+      }
+    ]
+  },
+  {
+    "id": "LF07",
+    "events": [
+      {
+        "class": "file_open",
+        "process": "nginx",
+        "file_path": "/var/www/html/index.php",
+        "file_write": false,
+        "parent": "bash"
+      }
+    ]
+  }
+]

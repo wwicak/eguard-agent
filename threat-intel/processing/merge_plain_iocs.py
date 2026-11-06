@@ -26,13 +26,12 @@ def normalize_entry(entry: dict, fallback_source: str = "other") -> dict | None:
         source = str(entry.get("source", fallback_source)).strip() or fallback_source
         sources = [source]
     sources = sorted({str(s).strip() for s in sources if str(s).strip()}) or [fallback_source]
-    now = utc_now()
     return {
         "value": value,
         "confidence": confidence,
         "sources": sources,
-        "first_seen": str(entry.get("first_seen") or now),
-        "last_seen": str(entry.get("last_seen") or now),
+        "first_seen": str(entry.get("first_seen") or ""),
+        "last_seen": str(entry.get("last_seen") or ""),
     }
 
 
@@ -48,7 +47,7 @@ def merge_entry(existing: dict | None, new: dict) -> dict:
         "value": existing["value"],
         "confidence": confidence,
         "sources": sources,
-        "first_seen": min(existing.get("first_seen", ""), new.get("first_seen", "")),
+        "first_seen": min((v for v in [existing.get("first_seen", ""), new.get("first_seen", "")] if v), default=""),
         "last_seen": max(existing.get("last_seen", ""), new.get("last_seen", "")),
     }
 
@@ -107,8 +106,8 @@ def merge_plain_file(entries: dict[str, dict], path: Path, source: str, confiden
                 "value": value,
                 "confidence": confidence,
                 "sources": [source],
-                "first_seen": now,
-                "last_seen": now,
+                "first_seen": "",
+                "last_seen": "",
             }
             if value not in entries:
                 added += 1

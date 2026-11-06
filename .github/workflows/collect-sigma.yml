@@ -2,7 +2,7 @@ name: Collect SIGMA Rules
 
 on:
   schedule:
-    - cron: "0 2 * * *"  # Daily at 02:00 UTC
+    - cron: "0 2 * * *"
   workflow_dispatch:
 
 permissions:
@@ -15,37 +15,22 @@ concurrency:
 jobs:
   collect-sigma:
     runs-on: ubuntu-latest
+    env:
+      SIGMAHQ_COMMIT: "53423dac8742ef6a44fb73f23f049e84594a66ce"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ── Source 1: SigmaHQ ──────────────────────────────────────────
-      # The canonical SIGMA repository (3000+ rules).
-      # We process rules/, rules-emerging-threats/, and rules-threat-hunting/.
-      - name: Clone SigmaHQ
-        run: git clone --depth 1 https://github.com/SigmaHQ/sigma.git /tmp/sigma
+      - name: Fetch pinned SigmaHQ
+        run: |
+          git init "$RUNNER_TEMP/sigma"
+          git -C "$RUNNER_TEMP/sigma" remote add origin https://github.com/SigmaHQ/sigma.git
+          git -C "$RUNNER_TEMP/sigma" fetch --depth 1 origin "$SIGMAHQ_COMMIT"
+          git -C "$RUNNER_TEMP/sigma" checkout --detach FETCH_HEAD
+          test "$(git -C "$RUNNER_TEMP/sigma" rev-parse HEAD)" = "$SIGMAHQ_COMMIT"
 
-      # ── Source 2: mdecrevoisier advanced correlation rules ─────────
-      # 350+ advanced detection rules mapped to MITRE ATT&CK.
-      # Complements SigmaHQ with correlation-based detections.
-      - name: Clone mdecrevoisier SIGMA rules
-        run: git clone --depth 1 https://github.com/mdecrevoisier/SIGMA-detection-rules.git /tmp/mdecrevoisier
-
-      # ── Source 3: Joe Security SIGMA rules ──────────────────────
-      # Malware sandbox analysis rules from Joe Security.
-      - name: Clone Joe Security SIGMA rules
-        run: git clone --depth 1 https://github.com/joesecurity/sigma-rules.git /tmp/joesecurity 2>/dev/null || true
-
-      # ── Source 4: Tsale SIGMA rules ──────────────────────────────
-      # Community detection rules with strong ATT&CK mapping.
-      - name: Clone Tsale SIGMA rules
-        run: git clone --depth 1 https://github.com/tsale/Sigma_rules.git /tmp/tsale 2>/dev/null || true
-
-      # ── Source 5: Splunk Security Content ────────────────────────
-      # 400+ Sigma-format rules from Splunk's detection research team.
-      - name: Clone Splunk Security Content
-        run: git clone --depth 1 https://github.com/splunk/security_content.git /tmp/splunk 2>/dev/null || true
-
+      # Pending-permission sources and unpinned supplemental sources are not alert packs.
+      # SigmaHQ rules-threat-hunting contains analyst starting points, not detections.
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -54,74 +39,40 @@ jobs:
       - name: Install deps
         run: pip install pyyaml
 
-      - name: Filter SIGMA rules
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Filter observable SIGMA rules
         run: |
-          # Prepare Splunk sigma rules (nested under detections/sigma/)
-          SPLUNK_SIGMA="/tmp/splunk/detections"
-          if [ ! -d "${SPLUNK_SIGMA}" ]; then
-            SPLUNK_SIGMA="/tmp/splunk"
-          fi
-
-          # Build input args — skip sources that failed to clone
-          INPUTS=""
-          INPUTS="${INPUTS} --input /tmp/sigma/rules"
-          INPUTS="${INPUTS} --input /tmp/sigma/rules-emerging-threats"
-          INPUTS="${INPUTS} --input /tmp/sigma/rules-threat-hunting"
-          INPUTS="${INPUTS} --input /tmp/mdecrevoisier"
-          [ -d /tmp/joesecurity ] && INPUTS="${INPUTS} --input /tmp/joesecurity"
-          [ -d /tmp/tsale ] && INPUTS="${INPUTS} --input /tmp/tsale"
-          [ -d "${SPLUNK_SIGMA}" ] && INPUTS="${INPUTS} --input ${SPLUNK_SIGMA}"
-
           python threat-intel/processing/sigma_filter.py \
-            ${INPUTS} \
-            --output /tmp/sigma_filtered \
-            --platforms linux \
-            --min-status test
+            --input "$RUNNER_TEMP/sigma/rules" \
+            --input "$RUNNER_TEMP/sigma/rules-emerging-threats" \
+            --output "$RUNNER_TEMP/sigma-filtered" \
+            --platforms linux --min-status test \
+            --source-commit "$SIGMAHQ_COMMIT"
 
-      - name: Enforce SIGMA collector coverage
-        env:
-          EGUARD_MIN_SIGMA_FILTERED: "150"
-          EGUARD_REQUIRED_SIGMA_SOURCES: "rules,rules-emerging-threats,rules-threat-hunting"
+      - name: Compile and false-positive gate with exact qualified manifest
         run: |
-          python3 - <<'PY'
-          import os
-          import pathlib
-          import sys
+          python threat-intel/tests/sigma_benign_events.py "$RUNNER_TEMP/sigma-benign.json"
+          cargo run -p detection --example sigma_gate -- \
+            "$RUNNER_TEMP/sigma-filtered" "$RUNNER_TEMP/sigma-benign.json" --filter \
+            --manifest threat-intel/sigmahq-qualified-53423dac.txt \
+            --report "$RUNNER_TEMP/sigma-qualification.json"
+          cp "$RUNNER_TEMP/sigma-qualification.json" "$RUNNER_TEMP/sigma-filtered/sigma-qualification.json"
+          python threat-intel/processing/sigma_provenance.py \
+            "$RUNNER_TEMP/sigma-filtered" "$SIGMAHQ_COMMIT"
 
-          root = pathlib.Path('/tmp/sigma_filtered')
-          minimum = int(os.environ.get('EGUARD_MIN_SIGMA_FILTERED', '150'))
-          required_sources = [
-              s.strip() for s in os.environ.get('EGUARD_REQUIRED_SIGMA_SOURCES', '').split(',') if s.strip()
-          ]
-
-          total = sum(1 for _ in root.rglob('*.yml')) + sum(1 for _ in root.rglob('*.yaml'))
-          print(f'total filtered sigma rules: {total}')
-
-          failures = []
-          if total < minimum:
-              failures.append(f'sigma_count too low: {total} < {minimum}')
-
-          for source in required_sources:
-              src_dir = root / source
-              src_total = 0
-              if src_dir.is_dir():
-                  src_total = sum(1 for _ in src_dir.rglob('*.yml')) + sum(1 for _ in src_dir.rglob('*.yaml'))
-              print(f'source {source}: {src_total}')
-              if src_total <= 0:
-                  failures.append(f'missing sigma source coverage: {source}')
-
-          if failures:
-              print('sigma collector coverage gate failed:')
-              for failure in failures:
-                  print(f'- {failure}')
-              sys.exit(1)
-
-          print('sigma collector coverage gate passed')
-          PY
+      - name: Upload qualification report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sigma-qualification
+          path: ${{ runner.temp }}/sigma-qualification.json
+          retention-days: 7
 
       - name: Upload filtered rules as artifact
         uses: actions/upload-artifact@v4
         with:
           name: sigma-filtered
-          path: /tmp/sigma_filtered/
+          path: ${{ runner.temp }}/sigma-filtered/
           retention-days: 7

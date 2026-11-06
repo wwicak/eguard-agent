@@ -65,8 +65,16 @@ jobs:
       - name: Install threat-intel test dependencies
         run: pip install pytest pyyaml yara-python
 
+      - name: Build agent Sigma qualification test binary
+        run: cargo build -p detection --example sigma_gate
+
       - name: Run threat-intel processing tests
-        run: pytest -q threat-intel/tests/test_bundle.py
+        env:
+          SIGMA_GATE_BIN: target/debug/examples/sigma_gate
+        run: pytest -q threat-intel/tests/test_bundle.py threat-intel/tests/test_merge_plain_iocs.py threat-intel/tests/test_rafix_packs.py
+
+      - name: Test compiler and fallback detection precision
+        run: cargo test -p detection --test sigma_fidelity --test authored_sigma --test yara_precision
 
       - name: Lint workflow YAML contracts
         run: bash scripts/run_workflow_yaml_lint_ci.sh

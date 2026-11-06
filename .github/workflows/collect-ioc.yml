@@ -199,30 +199,12 @@ jobs:
           curl -sSfL --retry 3 --max-time 120 \
             "https://threatfox.abuse.ch/export/csv/recent/" \
             -o /tmp/threatfox.csv
-          grep -v '^#' /tmp/threatfox.csv | grep -v '^$' | \
-            awk -F'","' '{
-              type=$5; ioc=$6;
-              gsub(/"/, "", type); gsub(/"/, "", ioc);
-              if (type ~ /domain/) print ioc;
-            }' | sort -u > "$IOC_DIR/domains/threatfox.txt"
-          grep -v '^#' /tmp/threatfox.csv | grep -v '^$' | \
-            awk -F'","' '{
-              type=$5; ioc=$6;
-              gsub(/"/, "", type); gsub(/"/, "", ioc);
-              if (type ~ /ip/) { split(ioc, a, ":"); print a[1]; }
-            }' | sort -u > "$IOC_DIR/ips/threatfox.txt"
-          # Also extract SHA-256 hashes from ThreatFox
-          grep -v '^#' /tmp/threatfox.csv | grep -v '^$' | \
-            awk -F'","' '{
-              type=$5; ioc=$6;
-              gsub(/"/, "", type); gsub(/"/, "", ioc);
-              if (type ~ /sha256/) print ioc;
-            }' | sort -u > "$IOC_DIR/hashes/threatfox.txt"
+          python threat-intel/processing/ioc_feed.py threatfox /tmp/threatfox.csv "$IOC_DIR"
 
       - name: "Fetch Feodo C2 IPs (Tier 2 — abuse.ch)"
         run: |
           curl -sSfL --retry 3 --max-time 60 \
-            "https://feodotracker.abuse.ch/downloads/ipblocklist_aggressive.txt" \
+            "https://feodotracker.abuse.ch/downloads/ipblocklist_recommended.txt" \
             -o /tmp/feodo.txt
           grep -v '^#' /tmp/feodo.txt | grep -v '^$' | \
             sort -u > "$IOC_DIR/ips/feodo.txt"
@@ -233,9 +215,7 @@ jobs:
           curl -sSfL --retry 3 --max-time 120 \
             "https://urlhaus.abuse.ch/downloads/text_online/" \
             -o /tmp/urlhaus.txt
-          grep -v '^#' /tmp/urlhaus.txt | grep -v '^$' | \
-            sed 's|https\?://||; s|/.*||; s|:.*||' | \
-            sort -u > "$IOC_DIR/domains/urlhaus.txt"
+          python threat-intel/processing/ioc_feed.py urlhaus /tmp/urlhaus.txt "$IOC_DIR/domains/urlhaus.txt"
 
       - name: "Fetch URLhaus payload hashes (Tier 2 — abuse.ch)"
         run: |

@@ -231,8 +231,20 @@ def main():
 
     # Copy SIGMA rules
     sigma_count = 0
+    sigmahq_commit = None
     if args.sigma:
-        sigma_count = copy_tree(args.sigma, os.path.join(output_dir, "sigma"))
+        sigma_dir = os.path.join(output_dir, "sigma")
+        copy_tree(args.sigma, sigma_dir)
+        for source in ("mdecrevoisier", "joesecurity", "tsale", "rules-threat-hunting"):
+            path = os.path.join(sigma_dir, source)
+            if os.path.isdir(path) and (source == "rules-threat-hunting" or not include_restricted):
+                shutil.rmtree(path)
+                restricted_markers[f"sigma.{source}"] = {"source_id": f"sigma:{source}", "status": "hunting_excluded" if source == "rules-threat-hunting" else "restricted_excluded"}
+        sigma_count = count_files_by_ext(sigma_dir, (".yml", ".yaml"))
+        provenance = os.path.join(sigma_dir, "sigma-provenance.json")
+        if os.path.isfile(provenance):
+            with open(provenance, encoding="utf-8") as handle:
+                sigmahq_commit = json.load(handle).get("commit")
     print(f"Bundle: {sigma_count} SIGMA rules")
 
     # Copy YARA rules
@@ -246,7 +258,7 @@ def main():
                 "source_id": "yara:elastic",
                 "status": "restricted_excluded",
             }
-            yara_count = count_files_by_ext(os.path.join(output_dir, "yara"), (".yar", ".yara"))
+        yara_count = count_files_by_ext(os.path.join(output_dir, "yara"), (".yar", ".yara"))
     print(f"Bundle: {yara_count} YARA rules")
 
     # Copy IOC files
@@ -392,6 +404,7 @@ def main():
         "version": version,
         "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "sigma_count": sigma_count,
+        "sigmahq_commit": sigmahq_commit,
         "yara_count": yara_count,
         "ioc_hash_count": ioc_hash_count,
         "ioc_domain_count": ioc_domain_count,
