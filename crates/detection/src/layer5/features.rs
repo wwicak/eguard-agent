@@ -33,6 +33,11 @@ impl MlFeatures {
         extra: &MlExtraContext,
     ) -> Self {
         let mut values = [0.0f64; FEATURE_COUNT];
+        // Enriched command lines on network/file events are process metadata, not new executions.
+        let command_line = event
+            .command_line
+            .as_deref()
+            .filter(|_| event.event_class == EventClass::ProcessExec);
 
         // Binary detection signals (0 or 1)
         values[0] = if signals.z1_exact_ioc { 1.0 } else { 0.0 };
@@ -47,12 +52,8 @@ impl MlFeatures {
         values[7] = event_class_risk_score(event.event_class);
         values[8] = if event.uid == 0 { 1.0 } else { 0.0 };
         values[9] = dst_port_risk_score(event.dst_port);
-        values[10] = if event.command_line.is_some() {
-            1.0
-        } else {
-            0.0
-        };
-        values[11] = cmdline_length_normalized(event.command_line.as_deref());
+        values[10] = if command_line.is_some() { 1.0 } else { 0.0 };
+        values[11] = cmdline_length_normalized(command_line);
         values[12] = if signals.l1_prefilter_hit { 1.0 } else { 0.0 };
 
         // Multi-layer agreement count (strong indicator of true positive)
@@ -72,7 +73,7 @@ impl MlFeatures {
         values[13] = (layer_count as f64).min(4.0) / 4.0;
 
         // ── Information-theoretic features ──────────────────────────
-        if let Some(cmd) = &event.command_line {
+        if let Some(cmd) = command_line {
             let bytes = cmd.as_bytes();
             if let Some(metrics) = information::cmdline_information(bytes, 20) {
                 let normalized = metrics.normalized();

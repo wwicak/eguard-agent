@@ -84,3 +84,35 @@ fn windows_fp_warmed_encoded_command_still_alerts_with_calibrated_thresholds() {
             .max(crate::tau_delta(11, 8, config.delta_high).unwrap())
     );
 }
+
+#[test]
+fn windows_fp_discovery_network_metadata_is_not_ml_positive() {
+    for event in discovery_events() {
+        let features = crate::MlFeatures::extract(
+            &event,
+            &Default::default(),
+            0,
+            0,
+            0,
+            0,
+            0,
+            &Default::default(),
+        );
+        let score = crate::MlEngine::new().score(&features);
+        assert!(!score.positive, "{} score={}", event.process, score.score);
+    }
+}
+
+#[test]
+fn windows_fp_network_ioc_attack_remains_ml_positive() {
+    let mut event = discovery_events().remove(0);
+    event.dst_ip = Some("203.0.113.9".into());
+    event.dst_port = Some(4444);
+    let signals = crate::DetectionSignals {
+        z1_exact_ioc: true,
+        network_ioc_hit: true,
+        ..Default::default()
+    };
+    let features = crate::MlFeatures::extract(&event, &signals, 0, 0, 0, 0, 0, &Default::default());
+    assert!(crate::MlEngine::new().score(&features).positive);
+}
