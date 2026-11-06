@@ -169,6 +169,9 @@ case("image-reexec-refresh", "crates/platform-linux/src/lib.rs", 'if same_proces
 case("image-prime-continuity", "crates/platform-linux/src/lib.rs", 'if same_process_instance && same_exec {', 'if false {', "platform-linux", "rafix_", "linux")
 case("image-display-fallback", "crates/agent-core/src/lifecycle/detection_event.rs", '.or(process_name_from_invocation)', '', "agent-core", "rafix_mapping", "core")
 
+case("rename-role-secondary", "crates/platform-windows/src/etw/codec.rs", 'fields.path = Some(path);', 'if id == 27 { fields.secondary_path = Some(path); } else { fields.path = Some(path); }', "platform-windows", "rafix_manifest", "windows")
+case("rename-role-write-gate", "crates/agent-core/src/lifecycle/detection_event.rs", '&& !unknown_rename_role', '&& true', "agent-core", "rafix_windows_manifest_rename", "core")
+
 
 def run(package, test, log):
     cmd = ["cargo", "test", "--offline", "-p", package, test, "--", "--test-threads=1"]
@@ -180,7 +183,7 @@ def run(package, test, log):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("group", choices=["detection", "linux", "core"])
+    parser.add_argument("group", choices=["detection", "linux", "core", "windows"])
     parser.add_argument("--only", default="")
     args = parser.parse_args()
     selected = [c for c in CASES if c[-1] == args.group and (not args.only or c[0] in args.only.split(','))]

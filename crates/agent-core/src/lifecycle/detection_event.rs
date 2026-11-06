@@ -118,6 +118,12 @@ pub(super) fn to_detection_event(
         }
     }
 
+    // RAFIX shared: ID27's observed path must not be treated as a rename destination.
+    let unknown_rename_role = matches!(
+        enriched.event.event_type,
+        crate::platform::EventType::FileRename
+    ) && parse_payload_field(&enriched.event.payload, "rename_path")
+        .is_some();
     TelemetryEvent {
         ts_unix: now_unix,
         event_class: map_event_class(&enriched.event.event_type),
@@ -143,11 +149,12 @@ pub(super) fn to_detection_event(
         file_write: !matches!(
             enriched.event.event_type,
             crate::platform::EventType::FileUnlink
-        ) && (enriched.file_write
-            || matches!(
-                enriched.event.event_type,
-                crate::platform::EventType::FileWrite | crate::platform::EventType::FileRename
-            )),
+        ) && !unknown_rename_role
+            && (enriched.file_write
+                || matches!(
+                    enriched.event.event_type,
+                    crate::platform::EventType::FileWrite | crate::platform::EventType::FileRename
+                )),
         // RAFIX shared: a process-image IOC is not an IOC on a file it opened.
         file_hash: if matches!(
             enriched.event.event_type,
@@ -773,6 +780,22 @@ pub(super) fn map_event_class(event_type: &crate::platform::EventType) -> EventC
 
 #[cfg(test)]
 mod tests {
+    // RAFIX shared: an observed Windows rename path is not an established write target.
+    #[test]
+    fn rafix_windows_manifest_rename_is_not_a_persistence_write() {
+        let path =
+            r"C:\Users\fixture\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\x.lnk";
+        let raw = platform_windows::etw::test_support::kernel_file_rename_path_fixture(path);
+        let windows = platform_windows::enrich_event(raw);
+        assert!(windows.file_path_secondary.is_none());
+        assert!(!windows.file_write);
+        let native: crate::platform::EnrichedEvent =
+            serde_json::from_value(serde_json::to_value(windows).unwrap()).unwrap();
+        let event = super::to_detection_event(&native, 1);
+        assert!(!event.file_write);
+        assert!(!event.file_unlink);
+    }
+
     // RAFIX shared: pin image/invocation separation and mutation semantics.
     #[test]
     fn rafix_mapping_preserves_image_and_distinguishes_unlink_from_write() {

@@ -1331,16 +1331,14 @@ pub(crate) fn decode_manifest_record(
         26 | 27 => {
             let offset = if version == 0 { 5 * p + 4 } else { 4 * p + 8 };
             let path = read_utf16_str(data, offset)?;
-            let key = if id == 27 { "dst" } else { "path" };
+            let key = if id == 27 { "rename_path" } else { "path" };
             let suffix = format!(
                 ";{key}={}",
                 crate::payload_codec::escape_payload_value(&path)
             );
-            if id == 27 {
-                fields.secondary_path = Some(path);
-            } else {
-                fields.path = Some(path);
-            }
+            // RenamePath's source/destination role is not established. Keep the
+            // observation for telemetry without inventing a persistence write.
+            fields.path = Some(path);
             let object = if version == 0 { 2 * p } else { p };
             (
                 if id == 26 {
@@ -1357,7 +1355,7 @@ pub(crate) fn decode_manifest_record(
         }
         _ => return None,
     };
-    if let Some(path) = fields.path.as_deref().filter(|_| id != 26) {
+    if let Some(path) = fields.path.as_deref().filter(|_| !matches!(id, 26 | 27)) {
         payload.push_str(&format!(
             ";path={}",
             crate::payload_codec::escape_payload_value(path)
@@ -1462,6 +1460,24 @@ mod rafix_manifest_tests {
         assert!(decode_manifest_record(KERNEL_FILE, 12, 0, 9, 8, 42, 1, &[0; 80]).is_none());
         assert!(decode_manifest_record(KERNEL_FILE, 12, 0, 1, 8, 42, 1, &[0; 12]).is_none());
     }
+    #[test]
+    fn rafix_manifest_rename_path_does_not_invent_a_destination() {
+        let startup =
+            r"C:\Users\fixture\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\x.lnk";
+        let mut data = vec![0; 40];
+        path(&mut data, startup);
+        let raw = decode(27, 1, 8, &data);
+        assert!(matches!(raw.event_type, EventType::FileRename));
+        assert!(raw.fields.secondary_path.is_none());
+        assert_eq!(raw.fields.path.as_deref(), Some(startup));
+        assert_eq!(raw.fields.flags.unwrap_or(0) & 2, 0);
+        assert!(raw.payload.contains("rename_path="));
+        assert!(!raw.payload.contains("dst="));
+        let enriched = crate::enrich_event(raw);
+        assert!(enriched.file_path_secondary.is_none());
+        assert!(!enriched.file_write);
+    }
+
     #[test]
     fn rafix_manifest_process_imageload_not_kernel_general() {
         let mut data = vec![0; 36];
