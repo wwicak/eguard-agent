@@ -55,6 +55,12 @@ impl Fixture {
     fn runtime(&self) -> AgentRuntime {
         AgentRuntime::new(AgentConfig {
             offline_buffer_backend: "memory".into(),
+            // RAFIX shared: kernel-state persistence stays inside the fixture.
+            offline_buffer_path: self
+                .root
+                .join("offline-events.db")
+                .to_string_lossy()
+                .into_owned(),
             server_addr: "127.0.0.1:1".into(),
             detection_kernel_integrity_enabled: true,
             detection_kernel_integrity_interval_secs: 300,
@@ -98,6 +104,8 @@ fn identical_kernel_integrity_scans_emit_once_with_indicators() {
     let events = runtime.buffer.peek_batch(10).unwrap();
     let payload: serde_json::Value = serde_json::from_str(&events[0].1.payload_json).unwrap();
     assert_eq!(payload["event"]["process"], "kernel_integrity_scan");
+    assert_eq!(events[0].1.severity, "medium");
+    assert_eq!(payload["detection"]["signals"]["kernel_integrity"], false);
     assert_eq!(
         payload["detection"]["kernel_integrity_indicators"][0],
         "ftrace_filter_count:1"
@@ -143,15 +151,17 @@ fn changed_kernel_integrity_indicators_emit_again() {
     let fixture = Fixture::new();
     let mut runtime = fixture.runtime();
     runtime.run_kernel_integrity_scan_if_due(1_700_000_000);
-    fixture.filter("sys_execve\nsys_open\n");
     runtime.run_kernel_integrity_scan_if_due(1_700_000_300);
-    assert_eq!(runtime.buffer.pending_count(), 2);
+    fixture.filter("sys_execve\nsys_open\n");
     runtime.run_kernel_integrity_scan_if_due(1_700_000_600);
+    runtime.run_kernel_integrity_scan_if_due(1_700_000_900);
+    assert_eq!(runtime.buffer.pending_count(), 2);
+    runtime.run_kernel_integrity_scan_if_due(1_700_001_200);
     assert_eq!(runtime.buffer.pending_count(), 2);
 }
 
 #[test]
-fn changed_kernel_integrity_report_values_emit_again() {
+fn inventory_count_changes_do_not_realert_unchanged_indicators() {
     let _guard = shared_env_var_lock()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
@@ -161,9 +171,9 @@ fn changed_kernel_integrity_report_values_emit_again() {
     // A built-in module changes the report count without changing indicators.
     std::fs::create_dir(fixture.root.join("sys_module/builtin")).unwrap();
     runtime.run_kernel_integrity_scan_if_due(1_700_000_300);
-    assert_eq!(runtime.buffer.pending_count(), 2);
+    assert_eq!(runtime.buffer.pending_count(), 1);
     runtime.run_kernel_integrity_scan_if_due(1_700_000_600);
-    assert_eq!(runtime.buffer.pending_count(), 2);
+    assert_eq!(runtime.buffer.pending_count(), 1);
 }
 
 #[test]
@@ -173,27 +183,36 @@ fn kernel_integrity_a_b_a_emits_each_transition() {
         .unwrap_or_else(|e| e.into_inner());
     let fixture = Fixture::new();
     let mut runtime = fixture.runtime();
-    runtime.run_kernel_integrity_scan_if_due(1_700_000_000);
+    for now in [0, 300] {
+        runtime.run_kernel_integrity_scan_if_due(1_700_000_000 + now);
+    }
     fixture.filter("sys_execve\nsys_open\n");
-    runtime.run_kernel_integrity_scan_if_due(1_700_000_300);
+    for now in [600, 900] {
+        runtime.run_kernel_integrity_scan_if_due(1_700_000_000 + now);
+    }
     fixture.filter("sys_execve\n");
-    runtime.run_kernel_integrity_scan_if_due(1_700_000_600);
+    for now in [1200, 1500] {
+        runtime.run_kernel_integrity_scan_if_due(1_700_000_000 + now);
+    }
     assert_eq!(runtime.buffer.pending_count(), 3);
 }
 
 #[test]
-fn fresh_kernel_integrity_runtime_emits_first_scan() {
+fn fresh_kernel_runtime_confirms_once_and_restart_does_not_realert() {
     let _guard = shared_env_var_lock()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     let fixture = Fixture::new();
     let mut runtime = fixture.runtime();
     runtime.run_kernel_integrity_scan_if_due(1_700_000_000);
+    assert_eq!(runtime.buffer.pending_count(), 0);
+    runtime.run_kernel_integrity_scan_if_due(1_700_000_300);
     assert_eq!(runtime.buffer.pending_count(), 1);
     drop(runtime);
     let mut restarted = fixture.runtime();
-    restarted.run_kernel_integrity_scan_if_due(1_700_000_300);
-    assert_eq!(restarted.buffer.pending_count(), 1);
+    restarted.run_kernel_integrity_scan_if_due(1_700_000_600);
+    restarted.run_kernel_integrity_scan_if_due(1_700_000_900);
+    assert_eq!(restarted.buffer.pending_count(), 0);
 }
 
 #[test]
@@ -207,13 +226,18 @@ fn kernel_integrity_clean_transition_stays_silent_and_resets_result() {
     runtime.run_kernel_integrity_scan_if_due(1_700_000_000);
     assert_eq!(runtime.buffer.pending_count(), 0);
     fixture.filter("sys_execve\n");
-    runtime.run_kernel_integrity_scan_if_due(1_700_000_300);
+    for now in [300, 600] {
+        runtime.run_kernel_integrity_scan_if_due(1_700_000_000 + now);
+    }
     fixture.filter("");
-    runtime.run_kernel_integrity_scan_if_due(1_700_000_600);
-    runtime.run_kernel_integrity_scan_if_due(1_700_000_900);
+    for now in [900, 1200] {
+        runtime.run_kernel_integrity_scan_if_due(1_700_000_000 + now);
+    }
     assert_eq!(runtime.buffer.pending_count(), 1);
     fixture.filter("sys_execve\n");
-    runtime.run_kernel_integrity_scan_if_due(1_700_001_200);
+    for now in [1500, 1800] {
+        runtime.run_kernel_integrity_scan_if_due(1_700_000_000 + now);
+    }
     assert_eq!(runtime.buffer.pending_count(), 2);
 }
 
@@ -227,11 +251,13 @@ fn kernel_integrity_scan_interval_and_disabled_setting_are_preserved() {
     runtime.run_kernel_integrity_scan_if_due(1_700_000_000);
     fixture.filter("sys_execve\nsys_open\n");
     runtime.run_kernel_integrity_scan_if_due(1_700_000_299);
-    assert_eq!(runtime.buffer.pending_count(), 1);
+    assert_eq!(runtime.buffer.pending_count(), 0);
     runtime.run_kernel_integrity_scan_if_due(1_700_000_300);
-    assert_eq!(runtime.buffer.pending_count(), 2);
+    assert_eq!(runtime.buffer.pending_count(), 0);
+    runtime.run_kernel_integrity_scan_if_due(1_700_000_600);
+    assert_eq!(runtime.buffer.pending_count(), 1);
     runtime.config.detection_kernel_integrity_enabled = false;
     fixture.filter("sys_execve\n");
-    runtime.run_kernel_integrity_scan_if_due(1_700_000_600);
-    assert_eq!(runtime.buffer.pending_count(), 2);
+    runtime.run_kernel_integrity_scan_if_due(1_700_000_900);
+    assert_eq!(runtime.buffer.pending_count(), 1);
 }
