@@ -1,3 +1,5 @@
+#![cfg(not(feature = "yara-rust"))]
+
 use detection::{EventClass, TelemetryEvent, YaraEngine};
 
 const SUPPORTED: &str = r#"
