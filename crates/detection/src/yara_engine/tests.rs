@@ -219,7 +219,7 @@ rule rust_backend_rule {
         .expect("load rule");
     assert_eq!(loaded, 1);
 
-    let hits = backend.scan_bytes("memory", b"hello abc123xyz world");
+    let hits = backend.scan_bytes("memory", b"abc123xyz world");
     assert!(hits.iter().any(|h| h.rule_name == "rust_backend_rule"));
 }
 
@@ -300,5 +300,20 @@ fn system_root_exclusions_cover_windows_and_macos_with_boundaries() {
         "/tmp/payload",
     ] {
         assert!(!is_excluded_process_exec_path(p), "{p}");
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn verdict_cache_never_exceeds_entry_ceiling() {
+    let engine = YaraEngine::new();
+    let dir = tempfile::tempdir().unwrap();
+    for i in 0..514 {
+        let path = dir.path().join(format!("synthetic-{i}"));
+        fs::write(&path, b"clean").unwrap();
+        let event: TelemetryEvent = serde_json::from_value(serde_json::json!({"ts_unix":1,"event_class":"ProcessExec","pid":42,"ppid":1,"uid":1000,"process":"synthetic","parent_process":"test","session_id":42,"file_path":path.to_str(),"file_write":false,"container_escape":false,"container_privileged":false})).unwrap();
+        assert!(engine.scan_event(&event).is_empty());
+        let len = engine.verdicts.lock().unwrap().len();
+        assert!(len > 0 && len <= 512, "cache entries: {len}");
     }
 }
