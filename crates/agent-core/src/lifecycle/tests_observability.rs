@@ -26,6 +26,9 @@ fn detection_event(ts: i64, pid: u32) -> TelemetryEvent {
         parent_process: "systemd".to_string(),
         session_id: 1,
         file_path: None,
+        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        process_exe: None,
+        file_unlink: false,
         file_write: false,
         file_hash: None,
         dst_port: None,
@@ -144,6 +147,9 @@ fn telemetry_audit_payload_includes_rule_attribution() {
         parent_process: "init".to_string(),
         session_id: 9001,
         file_path: Some("memfd:payload (deleted)".to_string()),
+        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        process_exe: None,
+        file_unlink: false,
         file_write: false,
         file_hash: None,
         dst_port: None,
@@ -268,6 +274,9 @@ fn telemetry_payload_includes_nac_fields() {
         parent_process: "init".to_string(),
         session_id: 42,
         file_path: Some("/usr/bin/bash".to_string()),
+        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        process_exe: None,
+        file_unlink: false,
         file_write: false,
         file_hash: None,
         dst_port: None,
@@ -380,6 +389,9 @@ fn telemetry_payload_includes_correlation_event_fields() {
         parent_process: "init".to_string(),
         session_id: 9001,
         file_path: Some("/usr/bin/python".to_string()),
+        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        process_exe: None,
+        file_unlink: false,
         file_write: false,
         file_hash: Some("deadbeef".to_string()),
         dst_port: Some(443),

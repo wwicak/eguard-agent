@@ -39,6 +39,9 @@ rule test_rule {
         parent_process: "sshd".to_string(),
         session_id: 0,
         file_path: Some(marker_file.display().to_string()),
+        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        process_exe: None,
+        file_unlink: false,
         file_write: false,
         file_hash: None,
         dst_port: None,
@@ -98,6 +101,9 @@ rule sample_from_dir {
         parent_process: "bash".to_string(),
         session_id: 0,
         file_path: Some(path.to_string_lossy().into_owned()),
+        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        process_exe: None,
+        file_unlink: false,
         file_write: false,
         file_hash: None,
         dst_port: None,
@@ -174,6 +180,9 @@ rule elf_marker {
         parent_process: "bash".to_string(),
         session_id: 0,
         file_path: Some("/usr/bin/cat".to_string()),
+        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        process_exe: None,
+        file_unlink: false,
         file_write: false,
         file_hash: None,
         dst_port: None,

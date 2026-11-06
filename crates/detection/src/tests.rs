@@ -15,6 +15,9 @@ fn event(ts: i64, class: EventClass, process: &str, parent: &str, uid: u32) -> T
         parent_process: parent.to_string(),
         session_id: 100,
         file_path: None,
+        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        process_exe: None,
+        file_unlink: false,
         file_write: false,
         file_hash: None,
         dst_port: None,
@@ -91,6 +94,9 @@ fn cmdline_information_consistency_between_layers() {
         parent_process: "sshd".to_string(),
         session_id: 1,
         file_path: None,
+        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        process_exe: None,
+        file_unlink: false,
         file_write: false,
         file_hash: None,
         dst_port: None,
@@ -166,6 +172,9 @@ fn dns_entropy_feature_is_stable_and_high_for_dga_like_domains() {
         parent_process: "cron".to_string(),
         session_id: 1,
         file_path: None,
+        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        process_exe: None,
+        file_unlink: false,
         file_write: false,
         file_hash: None,
         dst_port: Some(53),
@@ -209,6 +218,9 @@ fn behavioral_repeated_high_entropy_domain_is_not_an_alarm() {
         parent_process: "init".to_string(),
         session_id: 4242,
         file_path: None,
+        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        process_exe: None,
+        file_unlink: false,
         file_write: false,
         file_hash: None,
         dst_port: Some(53),

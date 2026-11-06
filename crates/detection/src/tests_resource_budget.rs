@@ -13,6 +13,9 @@ fn event(ts: i64, class: EventClass, process: &str, parent: &str, uid: u32) -> T
         parent_process: parent.to_string(),
         session_id: 10,
         file_path: None,
+        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        process_exe: None,
+        file_unlink: false,
         file_write: false,
         file_hash: None,
         dst_port: None,

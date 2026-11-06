@@ -35,6 +35,9 @@ mod tests {
             parent_process: "bash".to_string(),
             session_id: 1,
             file_path: Some("/usr/bin/ls".to_string()),
+            // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+            process_exe: None,
+            file_unlink: false,
             file_write: false,
             file_hash: None,
             dst_port: None,
@@ -60,6 +63,9 @@ mod tests {
             parent_process: "bash".to_string(),
             session_id: 1,
             file_path: None,
+            // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+            process_exe: None,
+            file_unlink: false,
             file_write: false,
             file_hash: None,
             dst_port: Some(443),
@@ -85,6 +91,9 @@ mod tests {
             parent_process: "bash".to_string(),
             session_id: 1,
             file_path: Some("/home/user/notes.txt".to_string()),
+            // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+            process_exe: None,
+            file_unlink: false,
             file_write: true,
             file_hash: None,
             dst_port: None,
@@ -113,6 +122,9 @@ mod tests {
             parent_process: "python3".to_string(),
             session_id: 1,
             file_path: Some("/bin/bash".to_string()),
+            // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+            process_exe: None,
+            file_unlink: false,
             file_write: false,
             file_hash: None,
             dst_port: Some(4444),
@@ -141,6 +153,9 @@ mod tests {
         parent_process: "bash".to_string(),
         session_id: 1,
         file_path: Some("/usr/bin/python3".to_string()),
+        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        process_exe: None,
+        file_unlink: false,
         file_write: false,
         file_hash: None,
         dst_port: Some(8443),
@@ -170,6 +185,9 @@ mod tests {
             parent_process: "cron".to_string(),
             session_id: 1,
             file_path: None,
+            // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+            process_exe: None,
+            file_unlink: false,
             file_write: false,
             file_hash: None,
             dst_port: Some(53),
@@ -198,6 +216,9 @@ mod tests {
             parent_process: "bash".to_string(),
             session_id: 1,
             file_path: Some("/tmp/.hidden/payload.ko".to_string()),
+            // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+            process_exe: None,
+            file_unlink: false,
             file_write: false,
             file_hash: None,
             dst_port: None,
@@ -225,6 +246,9 @@ mod tests {
             parent_process: "bash".to_string(),
             session_id: 1,
             file_path: Some("/etc/shadow".to_string()),
+            // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+            process_exe: None,
+            file_unlink: false,
             file_write: false,
             file_hash: None,
             dst_port: Some(31337),
@@ -708,6 +732,9 @@ mod tests {
                 parent_process: "bash".to_string(),
                 session_id: 1,
                 file_path: None,
+                // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+                process_exe: None,
+                file_unlink: false,
                 file_write: false,
                 file_hash: None,
                 dst_port: None,
@@ -737,6 +764,9 @@ mod tests {
                 parent_process: "bash".to_string(),
                 session_id: 1,
                 file_path: None,
+                // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+                process_exe: None,
+                file_unlink: false,
                 file_write: false,
                 file_hash: None,
                 dst_port: Some(4444),

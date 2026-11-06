@@ -120,7 +120,14 @@ pub(super) fn to_detection_event(
             .unwrap_or_else(|| "unknown".to_string()),
         session_id,
         file_path,
-        file_write: enriched.file_write,
+        // RAFIX shared: keep resolved image separate from the invocation path.
+        process_exe: enriched.process_exe.clone(),
+        // RAFIX shared: deletion is not creation/content mutation.
+        file_unlink: matches!(enriched.event.event_type, crate::platform::EventType::FileUnlink),
+        // RAFIX shared: rename path is the destination; unlink must not trigger persistence.
+        file_write: !matches!(enriched.event.event_type, crate::platform::EventType::FileUnlink)
+            && (enriched.file_write || matches!(enriched.event.event_type,
+                crate::platform::EventType::FileWrite | crate::platform::EventType::FileRename)),
         file_hash: enriched
             .file_sha256
             .clone()
@@ -738,6 +745,39 @@ pub(super) fn map_event_class(event_type: &crate::platform::EventType) -> EventC
 
 #[cfg(test)]
 mod tests {
+    // RAFIX shared: pin image/invocation separation and mutation semantics.
+    #[test]
+    fn rafix_mapping_preserves_image_and_distinguishes_unlink_from_write() {
+        use crate::platform::{EnrichedEvent, RawEvent, EventType};
+        let mut enriched = EnrichedEvent {
+            event: RawEvent { event_type: EventType::ProcessExec, pid: 424242,
+                ..RawEvent::default() },
+            process_exe: Some("/memfd:stage (deleted)".into()),
+            process_exe_sha256: None, process_cmdline: None, parent_process: None,
+            parent_chain: vec![], file_path: Some("/proc/self/fd/3".into()),
+            file_path_secondary: None, file_write: false, file_sha256: None,
+            event_size: None, dst_ip: None, dst_port: None, dst_domain: None,
+            container_runtime: None, container_id: None, container_escape: false,
+            container_privileged: false,
+        };
+        let e = serde_json::to_value(super::to_detection_event(&enriched, 1)).unwrap();
+        assert_eq!(e["process_exe"], "/memfd:stage (deleted)");
+        assert_eq!(e["file_path"], "/proc/self/fd/3");
+        for (kind, write, unlink) in [
+            (EventType::FileOpen, false, false),
+            (EventType::FileWrite, true, false),
+            (EventType::FileRename, true, false),
+            (EventType::FileUnlink, false, true),
+        ] {
+            enriched.event.event_type = kind;
+            enriched.file_path = Some("/etc/eguard-agent/agent.conf".into());
+            enriched.file_write = false;
+            let e = serde_json::to_value(super::to_detection_event(&enriched, 1)).unwrap();
+            assert_eq!(e["file_write"], write, "{kind:?}");
+            assert_eq!(e["file_unlink"], unlink, "{kind:?}");
+        }
+    }
+
     use super::{
         infer_windows_process_from_file_path, process_basename, process_name_from_cmdline,
     };

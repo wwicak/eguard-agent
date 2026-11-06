@@ -527,6 +527,9 @@ rule bundle_runtime_marker {
         parent_process: "bundleparent".to_string(),
         session_id: 1,
         file_path: Some(marker_file.display().to_string()),
+        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        process_exe: None,
+        file_unlink: false,
         file_write: false,
         file_hash: None,
         dst_port: None,
@@ -558,6 +561,9 @@ rule bundle_runtime_marker {
         parent_process: "bundleparent".to_string(),
         session_id: 1,
         file_path: None,
+        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        process_exe: None,
+        file_unlink: false,
         file_write: false,
         file_hash: None,
         dst_port: Some(31337),
@@ -637,6 +643,9 @@ fn reload_detection_state_from_bundle_populates_ioc_layers_on_all_shards() {
         parent_process: "sshd".to_string(),
         session_id: 1,
         file_path: None,
+        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        process_exe: None,
+        file_unlink: false,
         file_write: false,
         file_hash: Some("bundle-ioc-hash-9911".to_string()),
         dst_port: None,
@@ -973,6 +982,9 @@ rule nested_signed_bundle_marker {
         parent_process: "nginx".to_string(),
         session_id: 1,
         file_path: Some(nested_marker.display().to_string()),
+        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        process_exe: None,
+        file_unlink: false,
         file_write: false,
         file_hash: None,
         dst_port: None,
@@ -1680,6 +1692,9 @@ async fn emergency_command_is_applied_immediately_in_command_path() {
         parent_process: "sshd".to_string(),
         session_id: 1,
         file_path: None,
+        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        process_exe: None,
+        file_unlink: false,
         file_write: false,
         file_hash: None,
         dst_port: None,

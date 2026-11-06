@@ -1021,6 +1021,9 @@ mod tests {
             parent_process: "nginx".to_string(),
             session_id: 1,
             file_path: None,
+            // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+            process_exe: None,
+            file_unlink: false,
             file_write: false,
             file_hash: None,
             dst_port: None,

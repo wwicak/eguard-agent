@@ -68,6 +68,9 @@ mod tests {
             parent_process: "init".to_string(),
             session_id: 1,
             file_path: Some(module.to_string()),
+            // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+            process_exe: None,
+            file_unlink: false,
             file_write: false,
             file_hash: None,
             dst_port: None,
@@ -113,6 +116,9 @@ mod tests {
             parent_process: String::new(),
             session_id: 0,
             file_path: None,
+            // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+            process_exe: None,
+            file_unlink: false,
             file_write: false,
             file_hash: None,
             dst_port: None,

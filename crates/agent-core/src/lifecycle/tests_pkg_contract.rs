@@ -1116,6 +1116,9 @@ fn repo_credential_access_rule_ignores_passwd_and_sudoers_noise_but_keeps_shadow
         parent_process: "bash".to_string(),
         session_id: 4242,
         file_path: Some(path.to_string()),
+        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        process_exe: None,
+        file_unlink: false,
         file_write: false,
         file_hash: None,
         dst_port: None,
@@ -1176,6 +1179,9 @@ fn repo_windows_runkey_rule_matches_cmd_wrapper_shape() {
         parent_process: "powershell.exe".to_string(),
         session_id: 7331,
         file_path: None,
+        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        process_exe: None,
+        file_unlink: false,
         file_write: false,
         file_hash: None,
         dst_port: None,
@@ -1215,6 +1221,9 @@ fn repo_windows_mshta_rule_matches_live_https_shape() {
         parent_process: "cmd.exe".to_string(),
         session_id: 7441,
         file_path: None,
+        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        process_exe: None,
+        file_unlink: false,
         file_write: false,
         file_hash: None,
         dst_port: None,
@@ -1254,6 +1263,9 @@ fn repo_windows_certutil_rule_matches_live_urlcache_shape() {
         parent_process: "cmd.exe".to_string(),
         session_id: 7551,
         file_path: None,
+        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        process_exe: None,
+        file_unlink: false,
         file_write: false,
         file_hash: None,
         dst_port: None,
@@ -1287,6 +1299,9 @@ fn repo_windows_event(process: &str, parent: &str, command_line: &str) -> Teleme
         parent_process: parent.to_string(),
         session_id: 9001,
         file_path: None,
+        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        process_exe: None,
+        file_unlink: false,
         file_write: false,
         file_hash: None,
         dst_port: None,
@@ -1347,6 +1362,9 @@ fn repo_default_yara_bundle_keeps_eicar_yara_hits_on_exact_ioc() {
         parent_process: "sshd".to_string(),
         session_id: 7331,
         file_path: Some(file.display().to_string()),
+        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        process_exe: None,
+        file_unlink: false,
         file_write: false,
         file_hash: Some(
             "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f".to_string(),

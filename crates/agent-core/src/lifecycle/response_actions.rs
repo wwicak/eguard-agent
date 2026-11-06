@@ -570,6 +570,9 @@ mod tests {
             parent_process: "sshd".to_string(),
             session_id: 7,
             file_path: Some("/tmp/payload.sh".to_string()),
+            // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+            process_exe: None,
+            file_unlink: false,
             file_write: true,
             file_hash: Some(
                 "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),

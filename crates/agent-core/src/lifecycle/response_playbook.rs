@@ -363,6 +363,9 @@ mod tests {
             parent_process: "bash".into(),
             session_id: 1,
             file_path: Some("/tmp/evil.bin".into()),
+            // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+            process_exe: None,
+            file_unlink: false,
             file_write: false,
             file_hash: Some("abc123".into()),
             dst_port: None,
