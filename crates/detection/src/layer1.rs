@@ -128,6 +128,8 @@ pub struct Layer1EventHit {
     pub result: Layer1Result,
     pub prefilter_hit: bool,
     pub matched_fields: Vec<String>,
+    // RAFIX shared: aggregate ExactMatch must not promote prefilter-only fields.
+    pub exact_matched_fields: Vec<String>,
     pub matched_signatures: Vec<String>,
 }
 
@@ -136,6 +138,7 @@ impl Default for Layer1EventHit {
         Self {
             result: Layer1Result::Clean,
             prefilter_hit: false,
+            exact_matched_fields: Vec::new(),
             matched_fields: Vec::new(),
             matched_signatures: Vec::new(),
         }
@@ -848,6 +851,8 @@ impl IocLayer1 {
                 }
             }
             Layer1Result::ExactMatch => {
+                // RAFIX shared: preserve per-field exact provenance for response gates.
+                hit.exact_matched_fields.push(field.to_string());
                 hit.prefilter_hit = true;
                 hit.matched_fields.push(field.to_string());
                 hit.result = Layer1Result::ExactMatch;

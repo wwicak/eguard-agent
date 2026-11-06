@@ -123,15 +123,31 @@ pub(super) fn to_detection_event(
         // RAFIX shared: keep resolved image separate from the invocation path.
         process_exe: enriched.process_exe.clone(),
         // RAFIX shared: deletion is not creation/content mutation.
-        file_unlink: matches!(enriched.event.event_type, crate::platform::EventType::FileUnlink),
+        file_unlink: matches!(
+            enriched.event.event_type,
+            crate::platform::EventType::FileUnlink
+        ),
         // RAFIX shared: rename path is the destination; unlink must not trigger persistence.
-        file_write: !matches!(enriched.event.event_type, crate::platform::EventType::FileUnlink)
-            && (enriched.file_write || matches!(enriched.event.event_type,
-                crate::platform::EventType::FileWrite | crate::platform::EventType::FileRename)),
-        file_hash: enriched
-            .file_sha256
-            .clone()
-            .or_else(|| enriched.process_exe_sha256.clone()),
+        file_write: !matches!(
+            enriched.event.event_type,
+            crate::platform::EventType::FileUnlink
+        ) && (enriched.file_write
+            || matches!(
+                enriched.event.event_type,
+                crate::platform::EventType::FileWrite | crate::platform::EventType::FileRename
+            )),
+        // RAFIX shared: a process-image IOC is not an IOC on a file it opened.
+        file_hash: if matches!(
+            enriched.event.event_type,
+            crate::platform::EventType::ProcessExec
+        ) {
+            enriched
+                .process_exe_sha256
+                .clone()
+                .or_else(|| enriched.file_sha256.clone())
+        } else {
+            enriched.file_sha256.clone()
+        },
         dst_port: enriched.dst_port,
         dst_ip: enriched.dst_ip.clone(),
         dst_domain: enriched.dst_domain.clone(),
@@ -748,21 +764,45 @@ mod tests {
     // RAFIX shared: pin image/invocation separation and mutation semantics.
     #[test]
     fn rafix_mapping_preserves_image_and_distinguishes_unlink_from_write() {
-        use crate::platform::{EnrichedEvent, RawEvent, EventType};
+        use crate::platform::{EnrichedEvent, EventType, RawEvent};
         let mut enriched = EnrichedEvent {
-            event: RawEvent { event_type: EventType::ProcessExec, pid: 424242,
-                ..RawEvent::default() },
+            event: RawEvent {
+                event_type: EventType::ProcessExec,
+                pid: 424242,
+                ..RawEvent::default()
+            },
             process_exe: Some("/memfd:stage (deleted)".into()),
-            process_exe_sha256: None, process_cmdline: None, parent_process: None,
-            parent_chain: vec![], file_path: Some("/proc/self/fd/3".into()),
-            file_path_secondary: None, file_write: false, file_sha256: None,
-            event_size: None, dst_ip: None, dst_port: None, dst_domain: None,
-            container_runtime: None, container_id: None, container_escape: false,
+            process_exe_sha256: None,
+            process_cmdline: None,
+            parent_process: None,
+            parent_chain: vec![],
+            file_path: Some("/proc/self/fd/3".into()),
+            file_path_secondary: None,
+            file_write: false,
+            file_sha256: None,
+            event_size: None,
+            dst_ip: None,
+            dst_port: None,
+            dst_domain: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
             container_privileged: false,
         };
         let e = serde_json::to_value(super::to_detection_event(&enriched, 1)).unwrap();
         assert_eq!(e["process_exe"], "/memfd:stage (deleted)");
         assert_eq!(e["file_path"], "/proc/self/fd/3");
+        // A process-image hash must never be attributed to a file it only opened.
+        enriched.process_exe_sha256 = Some("ab".repeat(32));
+        enriched.event.event_type = EventType::FileOpen;
+        enriched.file_write = true;
+        let e = super::to_detection_event(&enriched, 1);
+        assert!(e.file_hash.is_none());
+        enriched.file_sha256 = Some("cd".repeat(32));
+        assert_eq!(
+            super::to_detection_event(&enriched, 1).file_hash,
+            enriched.file_sha256
+        );
         for (kind, write, unlink) in [
             (EventType::FileOpen, false, false),
             (EventType::FileWrite, true, false),

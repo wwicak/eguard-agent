@@ -15,6 +15,9 @@ pub struct KillChainWitness {
     pub pid: u32,
     pub process: String,
     pub exec_generation: u64,
+    // RAFIX shared: destructive response needs same-file and session provenance.
+    pub file_path: Option<String>,
+    pub session_id: u32,
 }
 
 fn witness_epoch() -> String {
@@ -221,6 +224,9 @@ impl ProcessGraph {
             pid: event.pid,
             process: event.process.clone(),
             exec_generation: generation,
+            // RAFIX shared: bind this witness to the exact observed file event.
+            file_path: event.file_path.clone(),
+            session_id: event.session_id,
         };
         if matches!(event.event_class, EventClass::ProcessExit) {
             self.observe_process_exit(event.pid, event.ts_unix);
