@@ -1268,6 +1268,16 @@ async fn rafix_weak_very_high_stream_never_auto_isolates() {
         .push("process_injection".into());
     assert!(evaluation.detection_event.file_hash.is_none());
     assert!(evaluation.detection_event.file_path.is_none());
+    assert!(evaluation.detection_outcome.yara_hits.is_empty());
+    assert!(!evaluation.detection_outcome.signals.deception_triggered);
+    assert_eq!(
+        runtime.sanitize_planned_action_for_event(
+            PlannedAction::KillOnly,
+            &evaluation.detection_event,
+            &evaluation.detection_outcome
+        ),
+        PlannedAction::AlertOnly
+    );
     runtime.maybe_apply_auto_isolation(1_700_030_000, Some(&evaluation));
     runtime.maybe_apply_auto_isolation(1_700_030_010, Some(&evaluation));
     assert!(!runtime.host_control.isolated);
