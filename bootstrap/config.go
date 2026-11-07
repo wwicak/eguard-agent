@@ -141,7 +141,7 @@ func Verify(raw []byte, pin ed25519.PublicKey, b lifecycle.Binding, floor uint64
 	}
 	// Path supplied by an independently trusted installation; lexical check only,
 	// not proof of ACLs, reparse-point safety, or filesystem ownership.
-	if !validWindowsPath(path) || len(path) < 4 || path[1:3] != `:\` || strings.Contains(path, "..") || strings.ContainsAny(path, "/\x00") || strings.Contains(path[2:], ":") {
+	if !validJournalPath(path) {
 		return bad, invalid
 	}
 	env, e := object(raw, "version payload_b64 signature_b64")

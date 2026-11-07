@@ -55,6 +55,13 @@ func New(d Deps) servicehost.Factory {
 		if err != nil {
 			return nil, err
 		}
+		verified, verifyErr := bootstrap.Verify(in.BootstrapBytes, in.BootstrapPin, in.State.Binding, in.State.DurableFloor, in.State.JournalPath)
+		if verifyErr != nil {
+			return nil, verifyErr
+		}
+		if err = provision.CheckEnrollmentTrust(d.Root, verified); err != nil {
+			return nil, err
+		}
 		clockPath := filepath.Join(d.Root, ClockFile)
 		hw, err := clockguard.Load(clockPath)
 		if err != nil {

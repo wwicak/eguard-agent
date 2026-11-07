@@ -17,8 +17,6 @@ import (
 	"sync"
 )
 
-const Root = `C:\ProgramData\eGuard NAC`
-const JournalPath = Root + `\journal.db`
 const BootstrapFile = "bootstrap.json"
 const StateFile = "state.json"
 
@@ -175,7 +173,7 @@ func LoadConfig(root string) (Inputs, error) {
 	if e := safe(root); e != nil {
 		return out, fmt.Errorf("provision root: %w", e)
 	}
-	pin, e := Pin()
+	pin, e := PinForRoot(root)
 	if e != nil {
 		return out, fmt.Errorf("provision pin: %w", e)
 	}
@@ -199,7 +197,7 @@ func Load(root string) (Inputs, error) {
 	if e := safe(root); e != nil {
 		return out, fmt.Errorf("provision root: %w", e)
 	}
-	pin, e := Pin()
+	pin, e := PinForRoot(root)
 	if e != nil {
 		return out, fmt.Errorf("provision pin: %w", e)
 	}
@@ -252,7 +250,7 @@ func atomic(root, name string, data []byte) error {
 func Write(root string, s State, bootstrapBytes []byte) error {
 	mu.Lock()
 	defer mu.Unlock()
-	if _, e := Pin(); e != nil {
+	if _, e := PinForRoot(root); e != nil {
 		return e
 	}
 	data, e := encodeState(s)

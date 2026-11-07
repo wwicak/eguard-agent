@@ -8,6 +8,13 @@ import (
 )
 
 // Lexical checks do not establish filesystem ACL or reparse-point safety.
+func validJournalPath(p string) bool {
+	if p == "/var/lib/eguard-nac/journal.db" || p == "/Library/Application Support/eGuard NAC/journal.db" {
+		return true
+	}
+	return validWindowsPath(p) && !strings.Contains(p, "..")
+}
+
 func validWindowsPath(p string) bool {
 	if len(p) < 4 || !((p[0] >= 'A' && p[0] <= 'Z') || (p[0] >= 'a' && p[0] <= 'z')) || p[1:3] != `:\` {
 		return false

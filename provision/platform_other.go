@@ -5,6 +5,7 @@ package provision
 import (
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 func checkPath(p string) error {
@@ -12,7 +13,14 @@ func checkPath(p string) error {
 	if e != nil {
 		return e
 	}
-	if i.Mode()&os.ModeSymlink != 0 {
+	if i.Mode()&os.ModeSymlink != 0 || (!i.IsDir() && !i.Mode().IsRegular()) {
+		return ErrInvalid
+	}
+	if i.Mode().Perm()&0077 != 0 {
+		return ErrInvalid
+	}
+	st, ok := i.Sys().(*syscall.Stat_t)
+	if !ok || int(st.Uid) != os.Geteuid() {
 		return ErrInvalid
 	}
 	return nil
@@ -24,6 +32,13 @@ func prepareRoot(root string) error {
 	if e := os.MkdirAll(root, 0700); e != nil {
 		return e
 	}
+	i, e := os.Lstat(root)
+	if e != nil || !i.IsDir() || i.Mode()&os.ModeSymlink != 0 {
+		return ErrInvalid
+	}
+	if e = os.Chmod(root, 0700); e != nil {
+		return e
+	}
 	return checkPath(root)
 }
-func protectFile(string) error { return nil }
+func protectFile(p string) error { return os.Chmod(p, 0600) }

@@ -2,6 +2,14 @@
 
 Implementasi parsial NAC-only untuk review; **bukan produk siap instalasi**. Dokumentasi Bahasa Indonesia, pesan installer English. Target Windows 11 x64. Core Go menguji Ed25519 lifecycle dan posture tri-state; service Windows memakai subprocess fixed self-collector dengan deadline/output terbatas (Windows Job Object belum diuji di VM) untuk mengumpulkan evidence read-only native dan menulis ringkasan non-identitas ke event log bila sumber tersedia, tanpa pengiriman evidence, enrollment, atau enforcement. Binary `nac-inspect` menampilkan evidence lokal sensitif hanya untuk VM yang diizinkan. Installer NSIS inspection-only **bukan deliverable installer**: hanya menyalin payload ke TEMP; tidak memasang service atau ACL. Jangan jalankan pada host production.
 
+## Port Linux/macOS (parsial)
+
+Fondasi enrollment paket netral dengan fingerprint operator, pin persisten, path
+platform, serta CLI/service Unix tersedia untuk review. **Collector keamanan,
+cleanup lengkap, pkg macOS dan release pipeline belum selesai; bukan deliverable
+produksi.** Lihat [docs/linux-macos.md](docs/linux-macos.md) untuk kontrak trust,
+batas keamanan, build lokal dan pekerjaan tersisa.
+
 ## Uji/build terisolasi
 
 `GOPROXY=off GOSUMDB=off go test -count=1 ./...`

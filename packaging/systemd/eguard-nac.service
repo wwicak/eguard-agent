@@ -1,0 +1,20 @@
+[Unit]
+Description=eGuard NAC Agent
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/eguard-nac/eguard-nac-service
+Restart=on-failure
+RestartSec=10
+User=root
+UMask=0077
+ProtectSystem=strict
+ReadWritePaths=-/var/lib/eguard-nac
+ProtectHome=read-only
+NoNewPrivileges=yes
+PrivateTmp=yes
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

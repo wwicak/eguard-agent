@@ -87,7 +87,7 @@ func Endpoint() (string, *x509.CertPool, error) {
 }
 
 // Redeem posts code+CSR to endpoint over TLS verified against roots only.
-func Redeem(endpoint string, roots *x509.CertPool, code string, csrPEM []byte, hostname string) (Result, error) {
+func Redeem(endpoint string, roots *x509.CertPool, code string, csrPEM []byte, hostname string, platform ...string) (Result, error) {
 	var zero Result
 	c, err := Normalize(code)
 	if err != nil {
@@ -95,12 +95,25 @@ func Redeem(endpoint string, roots *x509.CertPool, code string, csrPEM []byte, h
 	}
 	client := &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{Proxy: nil, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots}},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	body, _ := json.Marshal(map[string]string{"code": c, "csr_pem": string(csrPEM), "hostname": hostname})
+	fields := map[string]string{"code": c, "csr_pem": string(csrPEM), "hostname": hostname}
+	// Omit on Windows to preserve the existing wire format. Variadic for
+	// source compatibility with stamped Windows installers.
+	if len(platform) > 1 {
+		return zero, errors.New("invalid enrollment platform")
+	}
+	if len(platform) == 1 && platform[0] != "" && platform[0] != "windows" {
+		if platform[0] != "linux" && platform[0] != "darwin" {
+			return zero, errors.New("invalid enrollment platform")
+		}
+		fields["platform"] = platform[0]
+	}
+	body, _ := json.Marshal(fields)
 	resp, err := client.Post(endpoint, "application/json", bytes.NewReader(body))
 	if err != nil {
 		return zero, fmt.Errorf("cannot reach the eGuard enrollment server: %w", err)
 	}
 	defer resp.Body.Close()
+	defer client.Transport.(*http.Transport).CloseIdleConnections()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 256<<10))
 	switch resp.StatusCode {
 	case 200:

@@ -50,7 +50,7 @@ func claimedBinding(raw []byte) (lifecycle.Binding, error) {
 // Installer-level authorization (elevation, operator consent) is the caller's job.
 func Install(root string, bootstrapRaw, activationRaw []byte, now time.Time) (lifecycle.Observation, error) {
 	var zero lifecycle.Observation
-	pin, e := provision.Pin()
+	pin, e := provision.PinForRoot(root)
 	if e != nil {
 		return zero, e
 	}
@@ -61,6 +61,9 @@ func Install(root string, bootstrapRaw, activationRaw []byte, now time.Time) (li
 	v, e := bootstrap.Verify(bootstrapRaw, pin, b, 1, provision.JournalPath)
 	if e != nil {
 		return zero, ErrRejected
+	}
+	if e = provision.CheckEnrollmentTrust(root, v); e != nil {
+		return zero, e
 	}
 	keys := v.LifecycleKeys()
 	g, e := lifecycle.VerifyEnvelope(activationRaw, keys, b)
