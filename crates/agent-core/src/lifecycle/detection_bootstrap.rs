@@ -669,6 +669,7 @@ detection:
         let _ = std::fs::remove_dir_all(base);
     }
 
+    #[cfg(not(feature = "yara-x"))]
     #[test]
     fn bootstrap_does_not_trust_arbitrary_yara_rules_from_configured_directory() {
         let base = unique_temp_dir("yara");
@@ -711,6 +712,57 @@ rule eguard_custom_dir_test {
 
         let outcome = engine.process_event(&event);
         assert!(outcome.yara_hits.is_empty());
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[cfg(feature = "yara-x")]
+    #[test]
+    fn real_yara_configured_directory_has_real_marker_semantics_alert_only() {
+        let base = unique_temp_dir("yara");
+        let sigma_dir = base.join("sigma");
+        let yara_dir = base.join("yara");
+        let ioc_dir = base.join("ioc");
+        std::fs::create_dir_all(&sigma_dir).expect("create sigma dir");
+        std::fs::create_dir_all(&yara_dir).expect("create yara dir");
+        std::fs::create_dir_all(&ioc_dir).expect("create ioc dir");
+        std::fs::write(
+            yara_dir.join("custom.yar"),
+            r#"
+rule eguard_custom_dir_test {
+  strings:
+    $marker = "eguard-custom-yara-marker"
+  condition:
+    $marker
+}
+"#,
+        )
+        .expect("write yara rule");
+
+        let sample_path = base.join("sample.bin");
+        std::fs::write(&sample_path, b"eguard-custom-yara-marker").expect("write sample");
+
+        let sources = DetectionSourcePaths {
+            sigma_dir,
+            yara_dir,
+            ioc_dir,
+            control_plane_peers: Vec::new(),
+        };
+        let mut engine =
+            build_detection_engine_with_ransomware_policy(RansomwarePolicy::default(), &sources);
+
+        let mut event = base_event();
+        event.event_class = EventClass::FileOpen;
+        // RAFIX shared: the loader sample models the completed file drop above, not a read.
+        event.file_write = true;
+        event.file_path = Some(sample_path.to_string_lossy().to_string());
+
+        let outcome = engine.process_event(&event);
+        assert_eq!(outcome.yara_hits.len(), 1);
+        assert_eq!(outcome.yara_hits[0].rule_name, "eguard_custom_dir_test");
+        assert!(!super::super::AgentRuntime::has_concrete_response_evidence(&event, &outcome));
+        std::fs::write(&sample_path, b"ordinary benign bytes").unwrap();
+        assert!(engine.process_event(&event).yara_hits.is_empty());
 
         let _ = std::fs::remove_dir_all(base);
     }
@@ -1509,6 +1561,7 @@ rule eguard_custom_dir_test {
             ]
         );
     }
+    #[cfg(not(feature = "yara-x"))]
     #[test]
     fn rafix_bootstrap_yara_has_no_markers_or_duplicate_eicar_prefix() {
         let base = unique_temp_dir("rafix-yara-seeds");
@@ -1554,6 +1607,47 @@ rule eguard_eicar_test {
             "EICAR must not also match a bootstrap prefix rule: {hits:?}"
         );
         assert_eq!(hits[0].rule_name, "eguard_eicar_test");
+        std::fs::remove_dir_all(base).unwrap();
+    }
+    #[cfg(feature = "yara-x")]
+    #[test]
+    fn rafix_bootstrap_yara_has_no_markers_or_duplicate_eicar_prefix() {
+        let base = unique_temp_dir("rafix-yara-seeds");
+        std::fs::create_dir_all(&base).unwrap();
+        let mut engine = detection::DetectionEngine::default_with_rules();
+        super::seed_yara_rules(&mut engine, &base.join("yara"));
+        let sample = base.join("sample.bin");
+        std::fs::write(
+            &sample,
+            "eguard-malware-test-marker eguard-shellcode-marker",
+        )
+        .unwrap();
+        let mut e = base_event();
+        e.event_class = EventClass::FileOpen;
+        // RAFIX shared: this fixture writes the file before each scan.
+        e.file_write = true;
+        e.file_path = Some(sample.to_string_lossy().into());
+        assert!(
+            engine.yara.scan_event(&e).is_empty(),
+            "raw backend must not load bootstrap canaries"
+        );
+        // rules/yara/default.yar owns canonical EICAR; do not add a fixture duplicate.
+        let names = engine.yara.rule_names();
+        assert_eq!(names.iter().filter(|name| name.contains("eicar")).count(), 1);
+        std::fs::write(
+            &sample,
+            b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*",
+        )
+        .unwrap();
+        let hits = engine.yara.scan_event(&e);
+        assert_eq!(
+            hits.len(),
+            1,
+            "EICAR must not also match a bootstrap prefix rule: {hits:?}"
+        );
+        assert_eq!(hits[0].rule_name, "eguard_eicar_test_file");
+        std::fs::write(&sample, b"X5O!P%@AP[4\\PZX54(P^)").unwrap();
+        assert!(engine.yara.scan_event(&e).is_empty(), "no prefix-only rule");
         std::fs::remove_dir_all(base).unwrap();
     }
 }
