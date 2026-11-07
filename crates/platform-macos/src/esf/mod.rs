@@ -909,7 +909,8 @@ fn decode_event_type(value: &Value) -> Option<super::EventType> {
     // data under a key that names the event (e.g., `event.exec`, `event.open`).
     // Detect by inspecting the keys of the `event` object.
     if let Some(event_obj) = value.get("event").and_then(|v| v.as_object()) {
-        for key in event_obj.keys() {
+        // Preserve sorted-key precedence regardless of serde_json/preserve_order.
+        for key in event_obj.keys().collect::<std::collections::BTreeSet<_>>() {
             let mapped = match key.as_str() {
                 "exec" => Some(super::EventType::ProcessExec),
                 "exit" => Some(super::EventType::ProcessExit),
@@ -1279,7 +1280,10 @@ fn decode_payload(event_type: &super::EventType, value: &Value) -> String {
     }
 
     if parts.is_empty() {
-        serde_json::to_string(value).unwrap_or_default()
+        // Fallback text becomes event identity, so retain sorted-key serialization.
+        let mut canonical = value.clone();
+        canonical.sort_all_objects();
+        serde_json::to_string(&canonical).unwrap_or_default()
     } else {
         parts.join(";")
     }
@@ -1457,7 +1461,8 @@ fn lookup_string_array_path(value: &Value, path: &[&str]) -> Option<Vec<String>>
 fn find_string_by_keys(value: &Value, keys: &[&str]) -> Option<String> {
     match value {
         Value::Object(map) => {
-            for (key, child) in map {
+            // Preserve sorted recursive lookup precedence with either JSON map backend.
+            for (key, child) in map.iter().collect::<std::collections::BTreeMap<_, _>>() {
                 if keys
                     .iter()
                     .any(|candidate| key.eq_ignore_ascii_case(candidate))
@@ -1492,7 +1497,8 @@ fn find_string_by_keys(value: &Value, keys: &[&str]) -> Option<String> {
 fn find_u64_by_keys(value: &Value, keys: &[&str]) -> Option<u64> {
     match value {
         Value::Object(map) => {
-            for (key, child) in map {
+            // Preserve sorted recursive lookup precedence with either JSON map backend.
+            for (key, child) in map.iter().collect::<std::collections::BTreeMap<_, _>>() {
                 if keys
                     .iter()
                     .any(|candidate| key.eq_ignore_ascii_case(candidate))
