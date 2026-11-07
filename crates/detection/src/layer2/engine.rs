@@ -6,7 +6,8 @@ use crate::types::{EventClass, TelemetryEvent};
 
 use super::automaton::{DeterministicMonitorAutomaton, MonitorTransition, TemporalState};
 use super::defaults::default_rules;
-use super::rule::TemporalRule;
+use super::predicate::TemporalLink;
+use super::rule::{RuleLevel, TemporalRule};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TemporalEvictionCounters {
@@ -18,10 +19,11 @@ pub struct TemporalEvictionCounters {
 #[derive(Debug, Default)]
 pub struct TemporalEngine {
     automata: Vec<DeterministicMonitorAutomaton>,
-    // Rule-local key: PID for same-process chains, session for exec chains.
+    // Rule-local causal key: PID, or immediate parent for sibling pairs.
     states: HashMap<(usize, u32), TemporalState>,
     subscriptions: HashMap<EventClass, Vec<usize>>,
     pid_exec_epoch: HashMap<u32, u64>,
+    pid_parents: HashMap<u32, u32>,
     pid_last_seen_ts: HashMap<u32, i64>,
     reorder_tolerance_secs: i64,
     max_observed_ts: i64,
@@ -77,7 +79,14 @@ impl TemporalEngine {
         }
     }
 
-    pub fn add_rule(&mut self, rule: TemporalRule) {
+    pub fn add_rule(&mut self, mut rule: TemporalRule) {
+        if rule.any_order && rule.stages.len() == 2 {
+            rule.any_order = false;
+            let mut reversed = rule.clone();
+            reversed.stages.reverse();
+            reversed.stages[1].predicate.link = rule.stages[1].predicate.link;
+            self.add_rule(reversed);
+        }
         let automaton = DeterministicMonitorAutomaton::from_rule(rule);
         let rule_id = self.automata.len();
         for transition in &automaton.transitions {
@@ -117,6 +126,7 @@ impl TemporalEngine {
         }
 
         self.record_entity_timestamp(event.pid, event.ts_unix);
+        self.pid_parents.insert(event.pid, event.ppid);
 
         let current_exec_epoch = self.bump_exec_epoch(event.pid, event.event_class);
         let event_identity_fingerprint = Self::identity_fingerprint(event);
@@ -133,22 +143,42 @@ impl TemporalEngine {
                 continue;
             }
 
-            let entity = if automaton.session_linked {
-                event.session_id
+            let initial_entity = if automaton.sibling_linked && event.ppid > 1 {
+                event.ppid
             } else {
                 event.pid
             };
-            let key = (rule_id, entity);
-            let current = self.states.get(&key).cloned();
+            let mut candidates = vec![event.pid];
+            let mut ancestor = event.ppid;
+            for _ in 0..4 {
+                if ancestor <= 1 {
+                    break;
+                }
+                candidates.push(ancestor);
+                ancestor = self.pid_parents.get(&ancestor).copied().unwrap_or(0);
+            }
+            let current_key = candidates.into_iter().find_map(|pid| {
+                let key = (rule_id, pid);
+                let state = self.states.get(&key)?;
+                let transition = &automaton.transitions[state.stage_idx];
+                self.link_compatible(state, transition, event)
+                    .then_some(key)
+            });
+            let mut key = current_key.unwrap_or((rule_id, initial_entity));
+            let current = current_key.and_then(|key| self.states.get(&key).cloned());
 
+            if current.is_none() && !automaton.transitions[0].predicate.matches(event) {
+                continue;
+            }
             let mut next_state = current.clone();
             if let Some(state) = current {
                 let stage_idx = state.stage_idx.min(automaton.transitions.len() - 1);
                 let transition = &automaton.transitions[stage_idx];
-                let exec_epoch_ok =
-                    Self::exec_epoch_compatible(&state, transition, current_exec_epoch);
-                let identity_ok =
-                    Self::identity_compatible(&state, transition, event_identity_fingerprint);
+                let same_pid = event.pid == state.pid;
+                let exec_epoch_ok = !same_pid
+                    || Self::exec_epoch_compatible(&state, transition, current_exec_epoch);
+                let identity_ok = !same_pid
+                    || Self::identity_compatible(&state, transition, event_identity_fingerprint);
 
                 let monotonic_ok =
                     event.ts_unix + self.reorder_tolerance_secs >= state.last_match_ts;
@@ -184,8 +214,12 @@ impl TemporalEngine {
                         exec_epoch: next_exec_epoch,
                         identity_fingerprint: next_identity_fingerprint,
                         pid: event.pid,
+                        ppid: event.ppid,
+                        command_line: event.command_line.clone(),
                     });
                 } else if automaton.transitions[0].predicate.matches(event) {
+                    // A child starting its own chain must not erase its parent's pending evidence.
+                    key = (rule_id, initial_entity);
                     if automaton.transitions.len() == 1 {
                         hits.push(automaton.name.clone());
                         self.states.remove(&key);
@@ -198,6 +232,8 @@ impl TemporalEngine {
                         exec_epoch: Self::initial_exec_epoch(event, current_exec_epoch),
                         identity_fingerprint: event_identity_fingerprint,
                         pid: event.pid,
+                        ppid: event.ppid,
+                        command_line: event.command_line.clone(),
                     });
                 } else if (event.pid == state.pid && (!exec_epoch_ok || !identity_ok))
                     || event.ts_unix - state.first_match_ts > automaton.max_window_secs
@@ -216,6 +252,8 @@ impl TemporalEngine {
                     exec_epoch: Self::initial_exec_epoch(event, current_exec_epoch),
                     identity_fingerprint: event_identity_fingerprint,
                     pid: event.pid,
+                    ppid: event.ppid,
+                    command_line: event.command_line.clone(),
                 });
             }
 
@@ -230,29 +268,86 @@ impl TemporalEngine {
         }
 
         self.enforce_capacity_limits();
+        hits.sort();
+        hits.dedup();
         hits
+    }
+
+    pub fn rule_level(&self, name: &str) -> RuleLevel {
+        self.automata
+            .iter()
+            .filter(|a| a.name == name)
+            .map(|a| a.level)
+            .max()
+            .unwrap_or_default()
+    }
+
+    fn link_compatible(
+        &self,
+        state: &TemporalState,
+        transition: &MonitorTransition,
+        event: &TelemetryEvent,
+    ) -> bool {
+        let same = event.pid == state.pid;
+        let child = event.ppid > 1 && event.ppid == state.pid;
+        let sibling = event.ppid > 1 && event.ppid == state.ppid && !same;
+        let mut ancestor = event.ppid;
+        let descendant = (0..3).any(|_| {
+            if ancestor <= 1 {
+                return false;
+            }
+            let found = ancestor == state.pid;
+            ancestor = self.pid_parents.get(&ancestor).copied().unwrap_or(0);
+            found
+        });
+        // Fork-before-exec inherits argv. Do not join arbitrary child activity
+        // for rules that explicitly require a single process.
+        let fork = child
+            && event.event_class != EventClass::ProcessExec
+            && state.command_line.is_some()
+            && state.command_line == event.command_line;
+        let linked = match transition.predicate.link {
+            TemporalLink::SameProcess => same || fork,
+            TemporalLink::SameProcessOrChild => same || child,
+            TemporalLink::SameProcessOrDescendant => same || descendant,
+            TemporalLink::Sibling => sibling,
+            TemporalLink::SameProcessOrSibling => same || sibling,
+            TemporalLink::SiblingOrChild => sibling || child,
+            TemporalLink::SameProcessOrDescendantOrSibling => same || descendant || sibling,
+        };
+        linked
+            && (same
+                || state
+                    .exec_epoch
+                    .is_none_or(|epoch| self.pid_exec_epoch.get(&state.pid) == Some(&epoch)))
     }
 
     fn enforce_capacity_limits(&mut self) {
         self.enforce_state_capacity();
         self.enforce_pid_metadata_capacity();
+        self.pid_parents
+            .retain(|pid, _| self.pid_last_seen_ts.contains_key(pid));
     }
 
-    fn teardown_entity(&mut self, pid: u32, session_id: u32) {
+    fn teardown_entity(&mut self, pid: u32, _session_id: u32) {
         self.states.retain(|(rule_id, _), state| {
             if state.pid != pid {
                 return true;
             }
-            // A downloader can exit before its sibling shell starts (wget && sh).
-            // Keep only pending exec transitions; never tear down its whole session.
-            pid != session_id
+            // A completed downloader may exit before its sibling interpreter starts.
+            let keep = self.automata[*rule_id].sibling_linked
                 && self.automata[*rule_id].transitions[state.stage_idx]
                     .predicate
                     .event_class
-                    == EventClass::ProcessExec
+                    == EventClass::ProcessExec;
+            if keep {
+                state.exec_epoch = None;
+            }
+            keep
         });
         self.pid_last_seen_ts.remove(&pid);
         self.pid_exec_epoch.remove(&pid);
+        self.pid_parents.remove(&pid);
     }
 
     fn enforce_state_capacity(&mut self) {
@@ -391,6 +486,8 @@ impl TemporalEngine {
         self.pid_exec_epoch
             .retain(|pid, _| active_pids.contains(pid) || tracked_pids.contains(pid));
         let removed_exec_epoch = before_exec_epoch.saturating_sub(self.pid_exec_epoch.len());
+
+        self.pid_parents.retain(|pid, _| tracked_pids.contains(pid));
 
         let total_pruned = (removed_states as u64)
             .saturating_add(removed_last_seen as u64)

@@ -26,10 +26,12 @@ pub(super) fn to_detection_event(
     enriched: &crate::platform::EnrichedEvent,
     now_unix: i64,
 ) -> TelemetryEvent {
+    // Root ancestors (notably PID 1) are host-wide, not correlation sessions.
     let session_id = enriched
         .parent_chain
-        .last()
+        .first()
         .copied()
+        .filter(|pid| *pid > 1)
         .unwrap_or(enriched.event.pid);
 
     let module_payload = if matches!(
@@ -55,9 +57,17 @@ pub(super) fn to_detection_event(
         None
     };
 
-    let file_path = enriched
-        .file_path
-        .clone()
+    let subject_path = if matches!(
+        enriched.event.event_type,
+        crate::platform::EventType::FileRename
+    ) {
+        // Primary may be only an observed/source name (Windows). Use captured dst;
+        // Linux's promoted dst is also retained in typed/raw fields below.
+        enriched.file_path_secondary.clone()
+    } else {
+        enriched.file_path.clone()
+    };
+    let file_path = subject_path
         .filter(|path| !is_low_value_windows_pseudo_identity(path))
         .or(module_payload)
         .or_else(|| fallback_file_path_from_payload(enriched))
@@ -106,6 +116,20 @@ pub(super) fn to_detection_event(
         }
     }
 
+    let file_write = enriched.file_write
+        || matches!(
+            enriched.event.event_type,
+            crate::platform::EventType::FileWrite | crate::platform::EventType::FileRename
+        );
+    #[cfg(target_os = "linux")]
+    let file_write = match (&enriched.event.event_type, enriched.event.fields.flags) {
+        (crate::platform::EventType::FileOpen, Some(flags)) => {
+            // File mode is permissions, not write intent; trust the captured open flags.
+            flags & (libc::O_WRONLY | libc::O_RDWR | libc::O_CREAT | libc::O_TRUNC) as u32 != 0
+        }
+        _ => file_write,
+    };
+
     TelemetryEvent {
         ts_unix: now_unix,
         event_class: map_event_class(&enriched.event.event_type),
@@ -120,7 +144,7 @@ pub(super) fn to_detection_event(
             .unwrap_or_else(|| "unknown".to_string()),
         session_id,
         file_path,
-        file_write: enriched.file_write,
+        file_write,
         file_hash: enriched
             .file_sha256
             .clone()
@@ -155,9 +179,15 @@ fn process_name_from_cmdline(cmdline: &str) -> Option<&str> {
 
 fn fallback_file_path_from_payload(enriched: &crate::platform::EnrichedEvent) -> Option<String> {
     match enriched.event.event_type {
+        crate::platform::EventType::FileRename => {
+            enriched.event.fields.secondary_path.clone().or_else(|| {
+                parse_payload_field(&enriched.event.payload, "dst")
+                    .or_else(|| parse_payload_field(&enriched.event.payload, "target"))
+                    .or_else(|| parse_payload_field(&enriched.event.payload, "new"))
+            })
+        }
         crate::platform::EventType::FileOpen
         | crate::platform::EventType::FileWrite
-        | crate::platform::EventType::FileRename
         | crate::platform::EventType::FileUnlink
         | crate::platform::EventType::ProcessExec => {
             enriched.event.fields.path.clone().or_else(|| {
@@ -796,9 +826,8 @@ mod tests {
         assert_eq!(process_name_from_cmdline("   "), None);
     }
 
-    #[test]
-    fn f4b_detection_recovers_typed_path_and_module_before_legacy_payload() {
-        let mut enriched = EnrichedEvent {
+    fn file_test_event() -> EnrichedEvent {
+        EnrichedEvent {
             event: RawEvent {
                 fields: Default::default(),
                 pid_start_ns: None,
@@ -813,7 +842,7 @@ mod tests {
             process_exe_sha256: None,
             process_cmdline: Some("/usr/bin/bash -lc test".to_string()),
             parent_process: Some("sshd".to_string()),
-            parent_chain: vec![100],
+            parent_chain: vec![100, 1],
             file_path: None,
             file_path_secondary: None,
             file_write: false,
@@ -826,9 +855,21 @@ mod tests {
             container_id: None,
             container_escape: false,
             container_privileged: false,
-        };
+        }
+    }
+
+    #[test]
+    fn f4b_detection_recovers_typed_path_and_module_before_legacy_payload() {
+        let mut enriched = file_test_event();
 
         let event = super::to_detection_event(&enriched, 55);
+        assert_eq!(
+            event.session_id, 100,
+            "root ancestor must not be the session"
+        );
+        enriched.parent_chain = vec![1];
+        assert_eq!(super::to_detection_event(&enriched, 55).session_id, 4242);
+        enriched.parent_chain = vec![100, 1];
         assert_eq!(event.file_path.as_deref(), Some("/tmp/payload.bin"));
         enriched.event.fields.path = Some("/typed".into());
         assert_eq!(
@@ -862,6 +903,89 @@ mod tests {
                 .as_deref(),
             Some("legacy-module")
         );
+    }
+
+    #[test]
+    fn file_mutation_bridge_uses_destination_and_write_intent() {
+        let mut enriched = file_test_event();
+        enriched.event.event_type = EventType::FileRename;
+        // Adapter contract: an enriched destination survives an opaque legacy carrier.
+        enriched.event.payload = "src=/tmp/staged-cron".into();
+        enriched.file_path = Some("/tmp/staged-cron".into());
+        enriched.file_path_secondary = Some("/etc/cron.d/renamed-job".into());
+        enriched.file_write = false;
+        let renamed = super::to_detection_event(&enriched, 55);
+        assert_eq!(
+            renamed.file_path.as_deref(),
+            Some("/etc/cron.d/renamed-job")
+        );
+        assert!(
+            renamed.file_write,
+            "rename destination is a write, not a read"
+        );
+        let mut detection = detection::DetectionEngine::default_with_rules();
+        assert!(detection
+            .process_event(&renamed)
+            .temporal_hits
+            .iter()
+            .any(|h| h == "phi_persistence_write"));
+        // Windows can supply only a cached source/observed name: never invent dst.
+        enriched.file_path_secondary = None;
+        enriched.event.payload = "path=/tmp/staged-cron;file_object=42".into();
+        assert!(super::to_detection_event(&enriched, 55).file_path.is_none());
+        // Linux promotes dst to primary, and the captured dst remains in raw data.
+        enriched.event.payload = "src=/tmp/staged-cron;dst=/etc/cron.d/renamed-job".into();
+        enriched.file_path = Some("/etc/cron.d/renamed-job".into());
+        assert_eq!(
+            super::to_detection_event(&enriched, 55)
+                .file_path
+                .as_deref(),
+            Some("/etc/cron.d/renamed-job")
+        );
+        enriched.file_path = None;
+        enriched.event.fields.path = Some("/tmp/staged-cron".into());
+        enriched.event.fields.secondary_path = Some("/etc/cron.d/raw-target".into());
+        assert_eq!(
+            super::to_detection_event(&enriched, 55)
+                .file_path
+                .as_deref(),
+            Some("/etc/cron.d/raw-target")
+        );
+        enriched.event.fields.secondary_path = None;
+        enriched.event.payload = "src=/tmp/staged-cron;dst=/etc/cron.d/payload-target".into();
+        assert_eq!(
+            super::to_detection_event(&enriched, 55)
+                .file_path
+                .as_deref(),
+            Some("/etc/cron.d/payload-target")
+        );
+        enriched.event.event_type = EventType::FileWrite;
+        enriched.event.fields = Default::default();
+        enriched.event.fields.fd = Some(3);
+        enriched.event.fields.size = Some(42);
+        enriched.event.payload = "fd=3;size=42".into();
+        // The shipped Linux write probe does not fill its path buffer.
+        assert!(super::to_detection_event(&enriched, 55).file_path.is_none());
+        assert!(
+            super::to_detection_event(&enriched, 55).file_write,
+            "write event needs no synthetic open flags"
+        );
+        enriched.event.event_type = EventType::FileOpen;
+        assert!(
+            !super::to_detection_event(&enriched, 55).file_write,
+            "ordinary read remains a read"
+        );
+        #[cfg(target_os = "linux")]
+        {
+            enriched.event.fields.flags = Some(0);
+            enriched.event.fields.mode = Some(0o755);
+            enriched.file_write = true; // old enrichment incorrectly treats executable mode as a write
+            assert!(!super::to_detection_event(&enriched, 55).file_write);
+            enriched.event.fields.flags = Some(libc::O_WRONLY as u32);
+            enriched.event.fields.mode = Some(0);
+            enriched.file_write = false;
+            assert!(super::to_detection_event(&enriched, 55).file_write);
+        }
     }
 
     #[test]

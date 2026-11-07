@@ -1,5 +1,5 @@
 use super::predicate::TemporalPredicate;
-use super::rule::TemporalRule;
+use super::rule::{RuleLevel, TemporalRule};
 
 #[derive(Debug, Clone)]
 pub(super) struct MonitorTransition {
@@ -12,7 +12,8 @@ pub(super) struct DeterministicMonitorAutomaton {
     pub(super) name: String,
     pub(super) transitions: Vec<MonitorTransition>,
     pub(super) max_window_secs: i64,
-    pub(super) session_linked: bool,
+    pub(super) sibling_linked: bool,
+    pub(super) level: RuleLevel,
 }
 
 impl DeterministicMonitorAutomaton {
@@ -36,16 +37,21 @@ impl DeterministicMonitorAutomaton {
             max_window_secs = 1;
         }
 
-        // Exec-to-exec chains may cross PIDs (e.g. curl | sh). Other chains
-        // require evidence from the same process, not every daemon under PID 1.
-        let session_linked = transitions.iter().skip(1).any(|transition| {
-            transition.predicate.event_class == crate::types::EventClass::ProcessExec
+        let sibling_linked = transitions.iter().skip(1).any(|transition| {
+            matches!(
+                transition.predicate.link,
+                super::predicate::TemporalLink::Sibling
+                    | super::predicate::TemporalLink::SameProcessOrSibling
+                    | super::predicate::TemporalLink::SiblingOrChild
+                    | super::predicate::TemporalLink::SameProcessOrDescendantOrSibling
+            )
         });
         Self {
             name: rule.name,
             transitions,
             max_window_secs,
-            session_linked,
+            sibling_linked,
+            level: rule.level,
         }
     }
 }
@@ -58,4 +64,6 @@ pub(super) struct TemporalState {
     pub(super) exec_epoch: Option<u64>,
     pub(super) identity_fingerprint: u64,
     pub(super) pid: u32,
+    pub(super) ppid: u32,
+    pub(super) command_line: Option<String>,
 }

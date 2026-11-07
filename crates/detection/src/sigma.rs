@@ -4,11 +4,13 @@ use std::fmt;
 use serde::{Deserialize, Deserializer};
 use serde_yaml::{Mapping, Value};
 
-use crate::layer2::{TemporalPredicate, TemporalRule, TemporalStage};
+use crate::layer2::{RuleLevel, TemporalPredicate, TemporalRule, TemporalStage};
 use crate::types::EventClass;
 
 #[derive(Debug, Clone)]
 pub struct BoundedTemporalAst {
+    pub level: RuleLevel,
+    pub any_order: bool,
     pub name: String,
     pub stages: Vec<AstStage>,
     pub root: TemporalExpr,
@@ -64,6 +66,8 @@ pub type Result<T> = std::result::Result<T, SigmaCompileError>;
 
 #[derive(Debug, Deserialize)]
 struct SigmaRuleDoc {
+    #[serde(default)]
+    level: RuleLevel,
     #[serde(default)]
     title: Option<String>,
     #[serde(default)]
@@ -174,6 +178,7 @@ fn compile_sequence_sigma_ast(doc: SigmaRuleDoc) -> Result<BoundedTemporalAst> {
 
         stages.push(AstStage {
             predicate: TemporalPredicate {
+                sigma: None,
                 event_class,
                 process_any_of: into_set(stage.process_any_of),
                 process_starts_with: None,
@@ -187,6 +192,7 @@ fn compile_sequence_sigma_ast(doc: SigmaRuleDoc) -> Result<BoundedTemporalAst> {
                 command_line_contains: into_set(stage.command_line_contains),
                 require_file_write: stage.require_file_write,
                 require_credential_source: false,
+                ..Default::default()
             },
             within_secs,
         });
@@ -199,7 +205,13 @@ fn compile_sequence_sigma_ast(doc: SigmaRuleDoc) -> Result<BoundedTemporalAst> {
         .unwrap_or_else(|| "sigma_unnamed_rule".to_string());
 
     let root = build_bounded_expr(&stages);
-    Ok(BoundedTemporalAst { name, stages, root })
+    Ok(BoundedTemporalAst {
+        level: doc.level,
+        any_order: false,
+        name,
+        stages,
+        root,
+    })
 }
 
 fn compile_legacy_sigma_ast(yaml: &str, doc: &SigmaRuleDoc) -> Result<BoundedTemporalAst> {
@@ -242,6 +254,7 @@ fn compile_legacy_sigma_ast(yaml: &str, doc: &SigmaRuleDoc) -> Result<BoundedTem
 
     let stage = AstStage {
         predicate: TemporalPredicate {
+            sigma: None,
             event_class,
             process_any_of: some_set(acc.process_any_of),
             process_starts_with: None,
@@ -255,6 +268,7 @@ fn compile_legacy_sigma_ast(yaml: &str, doc: &SigmaRuleDoc) -> Result<BoundedTem
             command_line_contains: some_set(acc.command_line_contains),
             require_file_write: false,
             require_credential_source: false,
+            ..Default::default()
         },
         within_secs: 30,
     };
@@ -267,6 +281,8 @@ fn compile_legacy_sigma_ast(yaml: &str, doc: &SigmaRuleDoc) -> Result<BoundedTem
         .unwrap_or_else(|| "sigma_unnamed_rule".to_string());
 
     Ok(BoundedTemporalAst {
+        level: doc.level,
+        any_order: false,
         name,
         stages: vec![stage],
         root: TemporalExpr::Stage(0),
@@ -656,6 +672,8 @@ fn temporal_rule_from_ast(ast: &BoundedTemporalAst) -> TemporalRule {
     TemporalRule {
         name: ast.name.clone(),
         stages,
+        level: ast.level,
+        any_order: ast.any_order,
     }
 }
 

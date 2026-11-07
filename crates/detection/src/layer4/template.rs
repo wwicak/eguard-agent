@@ -2,9 +2,11 @@ use std::collections::HashSet;
 
 use super::graph::{GraphNode, KillChainWitness};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TemplatePredicate {
     pub process_any_of: Option<HashSet<String>>,
+    pub command_line_any_of: Option<HashSet<String>>,
+    pub require_container_context: bool,
     pub uid_eq: Option<u32>,
     pub uid_ne: Option<u32>,
     pub require_network_non_web: bool,
@@ -50,6 +52,18 @@ impl TemplatePredicate {
     }
 
     pub(super) fn matches(&self, node: &GraphNode) -> bool {
+        if self.command_line_any_of.as_ref().is_some_and(|set| {
+            !set.iter().any(|s| {
+                node.command_line
+                    .to_ascii_lowercase()
+                    .contains(&s.to_ascii_lowercase())
+            })
+        }) {
+            return false;
+        }
+        if self.require_container_context && !node.container_context {
+            return false;
+        }
         if let Some(set) = &self.process_any_of {
             if !set.contains(&node.process) {
                 return false;

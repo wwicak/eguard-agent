@@ -20,6 +20,7 @@ pub mod memory_scanner;
 mod policy;
 mod replay;
 mod sigma;
+pub mod sigma_expr;
 mod tamper;
 pub mod threat_hunting;
 mod types;
@@ -45,7 +46,8 @@ pub use kernel_integrity::detect_kernel_integrity_indicators;
 pub use lateral_movement::{LateralMovementAlert, LateralMovementDetector, LateralTechnique};
 pub use layer1::{IocExactStore, IocLayer1, Layer1EventHit, Layer1Result};
 pub use layer2::{
-    TemporalEngine, TemporalEvictionCounters, TemporalPredicate, TemporalRule, TemporalStage,
+    RuleLevel, TemporalEngine, TemporalEvictionCounters, TemporalLink, TemporalPredicate,
+    TemporalRule, TemporalStage,
 };
 pub use layer3::{AnomalyConfig, AnomalyDecision, AnomalyEngine};
 pub use layer4::{
@@ -81,10 +83,10 @@ pub use zero_trust::{
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
-mod tests_windows_fp;
-#[cfg(test)]
 mod tests_detection_audit;
 #[cfg(all(test, not(miri)))]
 mod tests_resource_budget;
 #[cfg(all(test, not(miri)))]
 mod tests_stub_completion;
+#[cfg(test)]
+mod tests_windows_fp;

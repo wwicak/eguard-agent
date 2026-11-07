@@ -66,302 +66,76 @@ impl Layer4Engine {
     }
 
     pub fn with_default_templates() -> Self {
+        Self::with_default_templates_and_policy(RansomwarePolicy::default())
+    }
+
+    pub fn with_default_templates_and_policy(policy: RansomwarePolicy) -> Self {
         let mut engine = Self::with_capacity_and_policy(
             300,
             DEFAULT_LAYER4_MAX_NODES,
             DEFAULT_LAYER4_MAX_EDGES,
-            RansomwarePolicy::default(),
+            policy,
         );
-
-        engine.templates.push(KillChainTemplate {
-            name: "killchain_webshell_network".to_string(),
-            stages: vec![
-                TemplatePredicate {
-                    process_any_of: Some(set_of(["nginx", "apache2", "httpd", "caddy"])),
-                    uid_eq: None,
-                    uid_ne: None,
-                    require_network_non_web: false,
-                    require_module_loaded: false,
-                    require_sensitive_file_access: false,
-                    require_ransomware_write_burst: false,
-                    require_container_escape: false,
-                    require_privileged_container: false,
-                    require_ptrace_activity: false,
-                    require_userfaultfd_activity: false,
-                    require_execveat_activity: false,
-                    require_proc_mem_access: false,
-                    require_fileless_exec: false,
-                },
-                TemplatePredicate {
-                    process_any_of: Some(set_of(["bash", "sh", "dash", "zsh", "python", "perl"])),
-                    uid_eq: None,
-                    uid_ne: None,
-                    require_network_non_web: true,
-                    require_module_loaded: false,
-                    require_sensitive_file_access: false,
-                    require_ransomware_write_burst: false,
-                    require_container_escape: false,
-                    require_privileged_container: false,
-                    require_ptrace_activity: false,
-                    require_userfaultfd_activity: false,
-                    require_execveat_activity: false,
-                    require_proc_mem_access: false,
-                    require_fileless_exec: false,
-                },
-            ],
-            max_depth: 6,
-            max_inter_stage_secs: 30,
-        });
-
-        engine.templates.push(KillChainTemplate {
-            name: "killchain_user_root_module".to_string(),
-            stages: vec![
-                TemplatePredicate {
-                    process_any_of: None,
-                    uid_eq: None,
-                    uid_ne: Some(0),
-                    require_network_non_web: false,
-                    require_module_loaded: false,
-                    require_sensitive_file_access: false,
-                    require_ransomware_write_burst: false,
-                    require_container_escape: false,
-                    require_privileged_container: false,
-                    require_ptrace_activity: false,
-                    require_userfaultfd_activity: false,
-                    require_execveat_activity: false,
-                    require_proc_mem_access: false,
-                    require_fileless_exec: false,
-                },
-                TemplatePredicate {
-                    process_any_of: None,
-                    uid_eq: Some(0),
-                    uid_ne: None,
-                    require_network_non_web: false,
-                    require_module_loaded: true,
-                    require_sensitive_file_access: false,
-                    require_ransomware_write_burst: false,
-                    require_container_escape: false,
-                    require_privileged_container: false,
-                    require_ptrace_activity: false,
-                    require_userfaultfd_activity: false,
-                    require_execveat_activity: false,
-                    require_proc_mem_access: false,
-                    require_fileless_exec: false,
-                },
-            ],
-            max_depth: 6,
-            max_inter_stage_secs: 60,
-        });
-
-        engine.templates.push(KillChainTemplate {
-            name: "killchain_ransomware_write_burst".to_string(),
+        // Credential access, webshell and reverse-shell families live in layer2.
+        // Ransomware stays disabled until overwrite/rename evidence is available.
+        engine.add_template(KillChainTemplate {
+            name: "killchain_container_escape".into(),
             stages: vec![TemplatePredicate {
-                process_any_of: None,
-                uid_eq: None,
-                uid_ne: None,
-                require_network_non_web: false,
-                require_module_loaded: false,
-                require_sensitive_file_access: false,
-                require_ransomware_write_burst: true,
-                require_container_escape: false,
-                require_privileged_container: false,
-                require_ptrace_activity: false,
-                require_userfaultfd_activity: false,
-                require_execveat_activity: false,
-                require_proc_mem_access: false,
-                require_fileless_exec: false,
+                require_container_context: true,
+                command_line_any_of: Some(set_of([
+                    "nsenter -t 1 ",
+                    "nsenter --target 1 ",
+                    "nsenter -t1 ",
+                    "chroot /host",
+                    "> /proc/sys/kernel/core_pattern",
+                    ">/proc/sys/kernel/core_pattern",
+                    "mount /dev/sd",
+                    "mount /dev/nvme",
+                    "mount /dev/vd",
+                    "mount /dev/xvd",
+                ])),
+                ..Default::default()
             }],
-            max_depth: 2,
-            max_inter_stage_secs: 15,
+            max_depth: 4,
+            max_inter_stage_secs: 300,
         });
-
-        engine.templates.push(KillChainTemplate {
-            name: "killchain_credential_theft".to_string(),
-            stages: vec![TemplatePredicate {
-                process_any_of: None,
-                uid_eq: None,
-                uid_ne: Some(0),
-                require_network_non_web: false,
-                require_module_loaded: false,
-                require_sensitive_file_access: true,
-                require_ransomware_write_burst: false,
-                require_container_escape: false,
-                require_privileged_container: false,
-                require_ptrace_activity: false,
-                require_userfaultfd_activity: false,
-                require_execveat_activity: false,
-                require_proc_mem_access: false,
-                require_fileless_exec: false,
-            }],
-            max_depth: 2,
-            max_inter_stage_secs: 10,
-        });
-
-        engine.templates.push(KillChainTemplate {
-            name: "killchain_container_escape".to_string(),
-            stages: vec![TemplatePredicate {
-                process_any_of: None,
-                uid_eq: None,
-                uid_ne: None,
-                require_network_non_web: false,
-                require_module_loaded: false,
-                require_sensitive_file_access: false,
-                require_ransomware_write_burst: false,
-                require_container_escape: true,
-                require_privileged_container: false,
-                require_ptrace_activity: false,
-                require_userfaultfd_activity: false,
-                require_execveat_activity: false,
-                require_proc_mem_access: false,
-                require_fileless_exec: false,
-            }],
-            max_depth: 2,
-            max_inter_stage_secs: 10,
-        });
-
-        engine.templates.push(KillChainTemplate {
-            name: "killchain_container_privileged".to_string(),
-            stages: vec![TemplatePredicate {
-                process_any_of: None,
-                uid_eq: None,
-                uid_ne: None,
-                require_network_non_web: false,
-                require_module_loaded: false,
-                require_sensitive_file_access: false,
-                require_ransomware_write_burst: false,
-                require_container_escape: false,
-                require_privileged_container: true,
-                require_ptrace_activity: false,
-                require_userfaultfd_activity: false,
-                require_execveat_activity: false,
-                require_proc_mem_access: false,
-                require_fileless_exec: false,
-            }],
-            max_depth: 2,
-            max_inter_stage_secs: 10,
-        });
-
-        engine.templates.push(KillChainTemplate {
-            name: "killchain_exploit_ptrace_fileless".to_string(),
-            stages: vec![
+        for (name, first) in [
+            (
+                "killchain_exploit_ptrace_fileless",
                 TemplatePredicate {
-                    process_any_of: None,
-                    uid_eq: None,
-                    uid_ne: None,
-                    require_network_non_web: false,
-                    require_module_loaded: false,
-                    require_sensitive_file_access: false,
-                    require_ransomware_write_burst: false,
-                    require_container_escape: false,
-                    require_privileged_container: false,
                     require_ptrace_activity: true,
-                    require_userfaultfd_activity: false,
-                    require_execveat_activity: false,
-                    require_proc_mem_access: false,
-                    require_fileless_exec: false,
+                    ..Default::default()
                 },
+            ),
+            (
+                "killchain_exploit_proc_mem_fileless",
                 TemplatePredicate {
-                    process_any_of: None,
-                    uid_eq: None,
-                    uid_ne: None,
-                    require_network_non_web: false,
-                    require_module_loaded: false,
-                    require_sensitive_file_access: false,
-                    require_ransomware_write_burst: false,
-                    require_container_escape: false,
-                    require_privileged_container: false,
-                    require_ptrace_activity: false,
-                    require_userfaultfd_activity: false,
-                    require_execveat_activity: false,
-                    require_proc_mem_access: false,
-                    require_fileless_exec: true,
-                },
-            ],
-            max_depth: 6,
-            max_inter_stage_secs: 20,
-        });
-
-        engine.templates.push(KillChainTemplate {
-            name: "killchain_exploit_userfaultfd_execveat".to_string(),
-            stages: vec![
-                TemplatePredicate {
-                    process_any_of: None,
-                    uid_eq: None,
-                    uid_ne: None,
-                    require_network_non_web: false,
-                    require_module_loaded: false,
-                    require_sensitive_file_access: false,
-                    require_ransomware_write_burst: false,
-                    require_container_escape: false,
-                    require_privileged_container: false,
-                    require_ptrace_activity: false,
-                    require_userfaultfd_activity: true,
-                    require_execveat_activity: false,
-                    require_proc_mem_access: false,
-                    require_fileless_exec: false,
-                },
-                TemplatePredicate {
-                    process_any_of: None,
-                    uid_eq: None,
-                    uid_ne: None,
-                    require_network_non_web: false,
-                    require_module_loaded: false,
-                    require_sensitive_file_access: false,
-                    require_ransomware_write_burst: false,
-                    require_container_escape: false,
-                    require_privileged_container: false,
-                    require_ptrace_activity: false,
-                    require_userfaultfd_activity: false,
-                    require_execveat_activity: true,
-                    require_proc_mem_access: false,
-                    require_fileless_exec: false,
-                },
-            ],
-            max_depth: 6,
-            max_inter_stage_secs: 20,
-        });
-
-        engine.templates.push(KillChainTemplate {
-            name: "killchain_exploit_proc_mem_fileless".to_string(),
-            stages: vec![
-                TemplatePredicate {
-                    process_any_of: None,
-                    uid_eq: None,
-                    uid_ne: None,
-                    require_network_non_web: false,
-                    require_module_loaded: false,
-                    require_sensitive_file_access: false,
-                    require_ransomware_write_burst: false,
-                    require_container_escape: false,
-                    require_privileged_container: false,
-                    require_ptrace_activity: false,
-                    require_userfaultfd_activity: false,
-                    require_execveat_activity: false,
                     require_proc_mem_access: true,
-                    require_fileless_exec: false,
+                    ..Default::default()
                 },
-                TemplatePredicate {
-                    process_any_of: None,
-                    uid_eq: None,
-                    uid_ne: None,
-                    require_network_non_web: false,
-                    require_module_loaded: false,
-                    require_sensitive_file_access: false,
-                    require_ransomware_write_burst: false,
-                    require_container_escape: false,
-                    require_privileged_container: false,
-                    require_ptrace_activity: false,
-                    require_userfaultfd_activity: false,
-                    require_execveat_activity: false,
-                    require_proc_mem_access: false,
-                    require_fileless_exec: true,
-                },
-            ],
-            max_depth: 6,
-            max_inter_stage_secs: 20,
-        });
-
+            ),
+        ] {
+            engine.add_template(KillChainTemplate {
+                name: name.into(),
+                stages: vec![
+                    first,
+                    TemplatePredicate {
+                        require_fileless_exec: true,
+                        ..Default::default()
+                    },
+                ],
+                max_depth: 6,
+                max_inter_stage_secs: 20,
+            });
+        }
         engine
+    }
+
+    pub fn template_names(&self) -> Vec<&str> {
+        self.templates
+            .iter()
+            .map(|template| template.name.as_str())
+            .collect()
     }
 
     pub fn configure_control_plane(&mut self, agent_pid: u32, peers: Vec<(String, u16)>) {
@@ -470,7 +244,7 @@ impl Layer4Engine {
         template: &KillChainTemplate,
         stage_idx: usize,
         depth: usize,
-        prev_ts: Option<i64>,
+        prev_ts: Option<(i64, bool)>,
         terminal_pid: u32,
     ) -> Option<Vec<KillChainWitness>> {
         if stage_idx >= template.stages.len() || depth > template.max_depth {
@@ -479,8 +253,13 @@ impl Layer4Engine {
         let node = self.graph.node(pid)?;
         let mut witnesses = template.stages[stage_idx].witnesses(node)?;
         let stage_ts = witnesses.iter().map(|w| w.ts_unix).max()?;
-        if prev_ts.is_some_and(|prev| {
-            stage_ts < prev || stage_ts.saturating_sub(prev) > template.max_inter_stage_secs
+        if prev_ts.is_some_and(|(prev, signal)| {
+            let anchor = if signal {
+                prev
+            } else {
+                node.identity_witness.ts_unix
+            };
+            stage_ts < anchor || stage_ts.saturating_sub(anchor) > template.max_inter_stage_secs
         }) {
             return None;
         }
@@ -493,17 +272,48 @@ impl Layer4Engine {
         }
         if let Some(children) = self.graph.children_of(pid) {
             for child in children {
-                if let Some(next) = self.match_from(
+                if let Some(next) = self.match_descendant(
                     *child,
                     template,
                     stage_idx + 1,
                     depth + 1,
-                    Some(stage_ts),
+                    (
+                        stage_ts,
+                        witnesses.len() > 1
+                            || template.stages[stage_idx].command_line_any_of.is_some(),
+                    ),
                     terminal_pid,
                 ) {
                     witnesses.extend(next);
                     return Some(witnesses);
                 }
+            }
+        }
+        None
+    }
+
+    fn match_descendant(
+        &self,
+        pid: u32,
+        template: &KillChainTemplate,
+        stage_idx: usize,
+        depth: usize,
+        prev: (i64, bool),
+        terminal_pid: u32,
+    ) -> Option<Vec<KillChainWitness>> {
+        if depth > template.max_depth {
+            return None;
+        }
+        if let Some(witnesses) =
+            self.match_from(pid, template, stage_idx, depth, Some(prev), terminal_pid)
+        {
+            return Some(witnesses);
+        }
+        for child in self.graph.children_of(pid).into_iter().flatten() {
+            if let Some(witnesses) =
+                self.match_descendant(*child, template, stage_idx, depth + 1, prev, terminal_pid)
+            {
+                return Some(witnesses);
             }
         }
         None

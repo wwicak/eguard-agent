@@ -33,9 +33,12 @@ fn event(ts: i64, class: EventClass) -> TelemetryEvent {
 
 fn one_stage_rule(name: &str, class: EventClass) -> TemporalRule {
     TemporalRule {
+        level: crate::RuleLevel::High,
+        any_order: false,
         name: name.to_string(),
         stages: vec![TemporalStage {
             predicate: TemporalPredicate {
+                sigma: None,
                 event_class: class,
                 process_any_of: None,
                 process_starts_with: None,
@@ -49,6 +52,7 @@ fn one_stage_rule(name: &str, class: EventClass) -> TemporalRule {
                 command_line_contains: None,
                 require_file_write: false,
                 require_credential_source: false,
+                ..Default::default()
             },
             within_secs: 15,
         }],

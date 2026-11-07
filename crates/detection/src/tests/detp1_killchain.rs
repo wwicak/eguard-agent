@@ -17,6 +17,7 @@ fn reverse_shell_engine() -> Layer4Engine {
         require_execveat_activity: false,
         require_proc_mem_access: false,
         require_fileless_exec: false,
+        ..Default::default()
     };
     let first = stage.clone();
     stage.process_any_of = None;
@@ -100,4 +101,30 @@ fn detp1_killchain_does_not_refire_a_sibling_chain_on_new_child_activity() {
     sibling.dst_ip = Some("198.51.100.7".into());
     sibling.dst_port = Some(4444);
     assert_eq!(engine.observe(&sibling).len(), 1);
+}
+
+#[test]
+fn rafix_old_parent_recent_child_uses_child_exec_as_network_window_anchor() {
+    let mut engine = reverse_shell_engine();
+    engine.observe(&shell(1));
+    engine.observe(&child(200, EventClass::ProcessExec));
+    assert_eq!(
+        engine
+            .observe(&child(201, EventClass::NetworkConnect))
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn rafix_killchain_walks_bounded_descendants_not_just_direct_children() {
+    let mut engine = reverse_shell_engine();
+    engine.observe(&shell(1));
+    let mut intermediate = child(2, EventClass::ProcessExec);
+    intermediate.process = "supervisor".into();
+    engine.observe(&intermediate);
+    let mut terminal = child(3, EventClass::NetworkConnect);
+    terminal.pid = 12;
+    terminal.ppid = 11;
+    assert_eq!(engine.observe(&terminal).len(), 1);
 }
