@@ -321,31 +321,32 @@ pub fn find_suspicious_pids() -> io::Result<Vec<u32>> {
 }
 
 fn is_suspicious_process(pid: u32) -> bool {
-    // Check if exe is deleted
-    let exe_path = format!("/proc/{}/exe", pid);
-    if let Ok(target) = fs::read_link(&exe_path) {
-        let target_str = target.to_string_lossy();
-        if target_str.contains(" (deleted)") {
-            return true;
-        }
+    let exe = fs::read_link(format!("/proc/{pid}/exe"))
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let maps = fs::read_to_string(format!("/proc/{pid}/maps")).unwrap_or_default();
+    suspicious_memory_shape(&exe, &maps)
+}
+fn suspicious_memory_shape(exe: &str, maps: &str) -> bool {
+    let system_image = ["/usr/", "/opt/", "/snap/"]
+        .iter()
+        .any(|p| exe.starts_with(p));
+    if exe.ends_with(" (deleted)") && !system_image {
+        return true;
     }
-
-    // Check for memfd or anonymous executable regions
-    let maps_path = format!("/proc/{}/maps", pid);
-    if let Ok(content) = fs::read_to_string(&maps_path) {
-        for line in content.lines() {
-            // rwxp anonymous region — possible shellcode injection
-            if line.contains("rwxp") && !line.contains('/') {
-                return true;
-            }
-            // memfd-based execution
-            if line.contains("memfd:") {
-                return true;
-            }
-        }
-    }
-
-    false
+    let name = crate::behavioral::basename(exe);
+    let jit = matches!(
+        name.as_str(),
+        "java" | "node" | "chrome" | "chromium" | "firefox" | "dotnet" | "luajit" | "pwsh"
+    ) || name.starts_with("qemu-");
+    parse_maps_content(maps).iter().any(|region| {
+        region.is_executable()
+            && (region.path.contains("memfd:")
+                || (!jit
+                    && !region.is_file_backed()
+                    && !matches!(region.path.as_str(), "[vdso]" | "[vsyscall]" | "[vvar]")))
+    })
 }
 
 #[cfg(test)]

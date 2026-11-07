@@ -50,7 +50,10 @@ impl MlFeatures {
 
         // Event metadata
         values[7] = event_class_risk_score(event.event_class);
-        values[8] = if event.uid == 0 { 1.0 } else { 0.0 };
+        // Windows ETW uses uid=0 as unavailable, not UNIX root.
+        let windows = event.process.to_ascii_lowercase().ends_with(".exe")
+            || event.file_path.as_deref().is_some_and(|p| p.contains('\\'));
+        values[8] = if event.uid == 0 && !windows { 1.0 } else { 0.0 };
         values[9] = dst_port_risk_score(event.dst_port);
         values[10] = if command_line.is_some() { 1.0 } else { 0.0 };
         values[11] = cmdline_length_normalized(command_line);
@@ -72,29 +75,20 @@ impl MlFeatures {
         .count();
         values[13] = (layer_count as f64).min(4.0) / 4.0;
 
-        // ── Information-theoretic features ──────────────────────────
-        if let Some(cmd) = command_line {
-            let bytes = cmd.as_bytes();
-            if let Some(metrics) = information::cmdline_information(bytes, 20) {
-                let normalized = metrics.normalized();
-                values[14] = normalized.renyi_h2;
-                values[15] = normalized.compression_ratio;
-                values[16] = normalized.min_entropy;
-                values[17] = normalized.entropy_gap;
-            }
-        }
+        // Index 14 retains its slot for model compatibility, but measures an
+        // encoded token rather than near-constant entropy of every command.
+        values[14] = if crate::behavioral::encoded_blob(event) {
+            1.0
+        } else {
+            0.0
+        };
+        // Slots 15-17 remain zero until a discriminative feature is qualified.
 
         if let Some(domain) = &event.dst_domain {
             values[18] = information::dns_entropy(domain);
         }
 
         // ── Extended features (Fix 6) ───────────────────────────────
-
-        // Index 19: event_size_norm — normalized event size
-        values[19] = event
-            .event_size
-            .map(|s| clamp01(s as f64 / 4096.0))
-            .unwrap_or(0.0);
 
         // Index 20: container_risk
         values[20] = if event.container_escape || event.container_privileged {
@@ -104,20 +98,6 @@ impl MlFeatures {
         } else {
             0.0
         };
-
-        // Index 21: file_path_entropy — Shannon entropy of file path
-        values[21] = event
-            .file_path
-            .as_deref()
-            .map(|p| shannon_entropy(p.as_bytes()))
-            .unwrap_or(0.0);
-
-        // Index 22: file_path_depth — normalized path depth
-        values[22] = event
-            .file_path
-            .as_deref()
-            .map(|p| (p.matches('/').count() as f64 / 10.0).min(1.0))
-            .unwrap_or(0.0);
 
         // Index 23: behavioral_alarm_count — normalized
         values[23] = (behavioral_alarm_count as f64).min(5.0) / 5.0;
@@ -134,11 +114,7 @@ impl MlFeatures {
         // ── v2 process tree / file / network / credential features ───
 
         // Process tree / lineage
-        values[27] = process_tree_depth_norm(event, signals);
         values[28] = rare_parent_child_pair(event, signals);
-        values[29] = parent_cmdline_hash_risk(event);
-        values[30] = parent_child_cmdline_distance(event);
-        values[31] = sibling_spawn_burst_norm(event, signals);
 
         // File mutation behavior
         values[32] = sensitive_path_write_velocity(event, signals);
@@ -148,11 +124,8 @@ impl MlFeatures {
         values[36] = temp_to_system_write_ratio(event);
 
         // Network graph / beaconing
-        values[37] = conn_fanout_norm(event, signals);
         values[38] = unique_dst_ip_norm(event);
-        values[39] = unique_dst_port_norm(event);
         values[40] = beacon_periodicity_score(signals, extra);
-        values[41] = network_graph_centrality(values[37], values[38], values[40]);
 
         // Credential access indicators
         values[42] = credential_access_indicator(event, signals);
@@ -196,33 +169,20 @@ fn clamp01(v: f64) -> f64 {
     v.clamp(0.0, 1.0)
 }
 
-fn process_tree_depth_norm(event: &TelemetryEvent, signals: &DetectionSignals) -> f64 {
-    if !matches!(event.event_class, EventClass::ProcessExec) && !signals.process_tree_anomaly {
-        return 0.0;
-    }
-    let mut depth = if event.ppid <= 1 { 0.08 } else { 0.24 };
-    if event.session_id != 0 && event.session_id != event.pid {
-        depth += 0.12;
-    }
-    if signals.process_tree_anomaly {
-        depth += 0.30;
-    }
-    if matches!(event.event_class, EventClass::ProcessExec) {
-        depth += 0.08;
-    }
-    clamp01(depth)
-}
-
 fn rare_parent_child_pair(event: &TelemetryEvent, signals: &DetectionSignals) -> f64 {
     if !matches!(event.event_class, EventClass::ProcessExec) && !signals.process_tree_anomaly {
         return 0.0;
     }
-    let parent = event.parent_process.to_ascii_lowercase();
-    let child = event.process.to_ascii_lowercase();
-    let uncommon_parent = matches!(parent.as_str(), "python" | "perl" | "node" | "java");
+    let parent = crate::behavioral::basename(&event.parent_process);
+    let child = crate::behavioral::basename(&event.process);
+    let uncommon_parent = parent.starts_with("python")
+        || matches!(
+            parent.as_str(),
+            "perl" | "node" | "java" | "w3wp" | "winword" | "excel" | "outlook"
+        );
     let admin_child = matches!(
         child.as_str(),
-        "sudo" | "su" | "bash" | "sh" | "powershell" | "cmd.exe"
+        "sudo" | "su" | "bash" | "sh" | "dash" | "powershell" | "pwsh" | "cmd"
     );
     let mut score = 0.0;
     if uncommon_parent && admin_child {
@@ -235,60 +195,6 @@ fn rare_parent_child_pair(event: &TelemetryEvent, signals: &DetectionSignals) ->
     clamp01(score)
 }
 
-fn parent_cmdline_hash_risk(event: &TelemetryEvent) -> f64 {
-    if !matches!(event.event_class, EventClass::ProcessExec) {
-        return 0.0;
-    }
-    let Some(cmd) = event.command_line.as_deref() else {
-        return 0.0;
-    };
-    let entropy = shannon_entropy(cmd.as_bytes());
-    let has_encoded = contains_any_case_insensitive(
-        cmd,
-        &["base64", "-enc", "frombase64string", "certutil", "xxd -r"],
-    );
-    let mut score = entropy * 0.7;
-    if has_encoded {
-        score += 0.3;
-    }
-    clamp01(score)
-}
-
-fn parent_child_cmdline_distance(event: &TelemetryEvent) -> f64 {
-    if !matches!(event.event_class, EventClass::ProcessExec) {
-        return 0.0;
-    }
-    let p = event.parent_process.to_ascii_lowercase();
-    let c = event.process.to_ascii_lowercase();
-    if p.is_empty() || c.is_empty() {
-        return 0.0;
-    }
-    if p == c {
-        return 0.0;
-    }
-    let max_len = p.len().max(c.len()) as f64;
-    let common_prefix = p.chars().zip(c.chars()).take_while(|(a, b)| a == b).count() as f64;
-    clamp01(1.0 - common_prefix / max_len)
-}
-
-fn sibling_spawn_burst_norm(event: &TelemetryEvent, signals: &DetectionSignals) -> f64 {
-    if !matches!(event.event_class, EventClass::ProcessExec) && !signals.process_tree_anomaly {
-        return 0.0;
-    }
-    let mut score = if matches!(event.event_class, EventClass::ProcessExec) {
-        0.35
-    } else {
-        0.05
-    };
-    if event.ppid > 1 {
-        score += 0.2;
-    }
-    if signals.process_tree_anomaly {
-        score += 0.35;
-    }
-    clamp01(score)
-}
-
 fn sensitive_path_write_velocity(event: &TelemetryEvent, signals: &DetectionSignals) -> f64 {
     if !event.file_write {
         return 0.0;
@@ -297,6 +203,7 @@ fn sensitive_path_write_velocity(event: &TelemetryEvent, signals: &DetectionSign
         .file_path
         .as_deref()
         .unwrap_or_default()
+        .replace('\\', "/")
         .to_ascii_lowercase();
     let sensitive = contains_any_case_insensitive(
         &path,
@@ -316,6 +223,9 @@ fn sensitive_path_write_velocity(event: &TelemetryEvent, signals: &DetectionSign
 }
 
 fn rename_churn_norm(event: &TelemetryEvent) -> f64 {
+    if !event.file_write {
+        return 0.0;
+    }
     let Some(path) = event.file_path.as_deref() else {
         return 0.0;
     };
@@ -348,16 +258,29 @@ fn executable_write_ratio(event: &TelemetryEvent) -> f64 {
         return 0.0;
     }
     let path = event.file_path.as_deref().unwrap_or_default();
-    let executable = contains_any_case_insensitive(
-        path,
-        &[
-            ".exe", ".dll", ".so", ".dylib", ".bin", ".run", ".sh", ".ps1", ".bat",
-        ],
-    );
-    if executable {
+    let normalized = path.replace('\\', "/").to_ascii_lowercase();
+    let extension = std::path::Path::new(&normalized)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    if matches!(
+        extension,
+        "exe"
+            | "dll"
+            | "so"
+            | "dylib"
+            | "sys"
+            | "scr"
+            | "ps1"
+            | "bat"
+            | "cmd"
+            | "vbs"
+            | "js"
+            | "sh"
+    ) {
         1.0
     } else {
-        0.2
+        0.0
     }
 }
 
@@ -369,11 +292,27 @@ fn temp_to_system_write_ratio(event: &TelemetryEvent) -> f64 {
         .file_path
         .as_deref()
         .unwrap_or_default()
+        .replace('\\', "/")
         .to_ascii_lowercase();
-    let temp = contains_any_case_insensitive(&path, &["/tmp/", "/var/tmp/", "/temp/"]);
+    let temp = contains_any_case_insensitive(
+        &path,
+        &[
+            "/tmp/",
+            "/var/tmp/",
+            "/appdata/local/temp/",
+            "/windows/temp/",
+        ],
+    );
     let system = contains_any_case_insensitive(
         &path,
-        &["/etc/", "/usr/", "/bin/", "/sbin/", "/windows/system32/"],
+        &[
+            "/etc/",
+            "/usr/",
+            "/bin/",
+            "/sbin/",
+            "/windows/system32/",
+            "/windows/syswow64/",
+        ],
     );
     match (temp, system) {
         (true, true) => 1.0,
@@ -383,49 +322,34 @@ fn temp_to_system_write_ratio(event: &TelemetryEvent) -> f64 {
     }
 }
 
-fn conn_fanout_norm(event: &TelemetryEvent, signals: &DetectionSignals) -> f64 {
-    let mut score = if matches!(
-        event.event_class,
-        EventClass::NetworkConnect | EventClass::DnsQuery
-    ) {
-        0.25
+fn unique_dst_ip_norm(event: &TelemetryEvent) -> f64 {
+    let public = match event
+        .dst_ip
+        .as_deref()
+        .and_then(|ip| ip.parse::<std::net::IpAddr>().ok())
+    {
+        Some(std::net::IpAddr::V4(ip)) => {
+            !(ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || ip.is_broadcast())
+        }
+        Some(std::net::IpAddr::V6(ip)) => {
+            !(ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_unique_local()
+                || ip.is_unicast_link_local()
+                || ip.is_multicast())
+        }
+        None => false,
+    };
+    if public {
+        1.0
     } else {
         0.0
-    };
-    if event.dst_ip.is_some() {
-        score += 0.2;
     }
-    if event.dst_port.is_some() {
-        score += 0.15;
-    }
-    if signals.network_ioc_hit {
-        score += 0.25;
-    }
-    if signals.c2_beaconing_detected {
-        score += 0.15;
-    }
-    clamp01(score)
-}
-
-fn unique_dst_ip_norm(event: &TelemetryEvent) -> f64 {
-    let Some(ip) = event.dst_ip.as_deref() else {
-        return 0.0;
-    };
-    if ip.is_empty() {
-        return 0.0;
-    }
-    if ip.starts_with("10.") || ip.starts_with("192.168.") || ip.starts_with("172.") {
-        0.4
-    } else {
-        0.9
-    }
-}
-
-fn unique_dst_port_norm(event: &TelemetryEvent) -> f64 {
-    let Some(port) = event.dst_port else {
-        return 0.0;
-    };
-    clamp01(port as f64 / 65535.0)
 }
 
 fn beacon_periodicity_score(signals: &DetectionSignals, extra: &MlExtraContext) -> f64 {
@@ -436,69 +360,112 @@ fn beacon_periodicity_score(signals: &DetectionSignals, extra: &MlExtraContext) 
     clamp01(score)
 }
 
-fn network_graph_centrality(conn_fanout: f64, unique_ip: f64, beacon_score: f64) -> f64 {
-    clamp01((conn_fanout * 0.4) + (unique_ip * 0.3) + (beacon_score * 0.3))
-}
-
-fn credential_access_indicator(event: &TelemetryEvent, signals: &DetectionSignals) -> f64 {
-    let cmd = event.command_line.as_deref().unwrap_or_default();
-    let path = event.file_path.as_deref().unwrap_or_default();
-    let process = event.process.as_str();
-    let indicator =
+fn credential_access_indicator(event: &TelemetryEvent, _signals: &DetectionSignals) -> f64 {
+    let process = crate::behavioral::basename(&event.process);
+    let hit = if event.event_class == EventClass::ProcessExec {
         contains_any_case_insensitive(
-            cmd,
+            event.command_line.as_deref().unwrap_or(""),
             &[
-                "credential",
-                "password",
+                "sekurlsa::",
+                "lsadump::",
                 "hashdump",
-                "sekurlsa",
-                "vault",
-                "keychain",
+                "vaultcmd /list",
+                "security dump-keychain",
+                "findstr /si password",
+                "secretsdump",
             ],
-        ) || contains_any_case_insensitive(path, &["shadow", "passwd", "ntds", "credentials"])
-            || contains_any_case_insensitive(process, &["mimikatz", "procdump", "secretsdump"]);
-    let mut score = if indicator { 1.0 } else { 0.0 };
-    if signals.exploit_indicator && score > 0.0 {
-        score = 1.0;
+        ) || matches!(
+            process.as_str(),
+            "mimikatz" | "procdump" | "procdump64" | "secretsdump"
+        )
+    } else if event.event_class == EventClass::FileOpen {
+        let path = event
+            .file_path
+            .as_deref()
+            .unwrap_or("")
+            .replace('\\', "/")
+            .to_ascii_lowercase();
+        (matches!(path.as_str(), "/etc/shadow" | "/etc/gshadow")
+            && !matches!(
+                process.as_str(),
+                "unix_chkpwd" | "sshd" | "passwd" | "chage" | "sudo" | "login"
+            ))
+            || path.ends_with("/ntds.dit")
+            || (path.ends_with("/.aws/credentials")
+                && !matches!(
+                    process.as_str(),
+                    "aws" | "terraform" | "kubectl" | "python3"
+                ))
+    } else {
+        false
+    };
+    if hit {
+        1.0
+    } else {
+        0.0
     }
-    score
 }
-
 fn lsass_access_indicator(event: &TelemetryEvent) -> f64 {
-    let cmd = event.command_line.as_deref().unwrap_or_default();
-    let proc = event.process.as_str();
-    if contains_any_case_insensitive(cmd, &["lsass", "comsvcs.dll", "minidump"])
-        || contains_any_case_insensitive(proc, &["procdump", "rundll32"])
-    {
+    if event.event_class != EventClass::ProcessExec {
+        return 0.0;
+    }
+    let cmd = event
+        .command_line
+        .as_deref()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let dump = cmd.contains("lsass")
+        && ["minidump", "-ma ", "comsvcs", "sekurlsa"]
+            .iter()
+            .any(|s| cmd.contains(s));
+    if dump || (cmd.contains("comsvcs.dll") && cmd.contains("minidump")) {
         1.0
     } else {
         0.0
     }
 }
-
 fn sam_access_indicator(event: &TelemetryEvent) -> f64 {
-    let cmd = event.command_line.as_deref().unwrap_or_default();
-    let path = event.file_path.as_deref().unwrap_or_default();
-    if contains_any_case_insensitive(cmd, &["sam", "reg save", "hklm\\sam"])
-        || contains_any_case_insensitive(path, &["/etc/shadow", "windows/system32/config/sam"])
+    let path = event
+        .file_path
+        .as_deref()
+        .unwrap_or("")
+        .replace('\\', "/")
+        .to_ascii_lowercase();
+    let cmd = event
+        .command_line
+        .as_deref()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let exec = event.event_class == EventClass::ProcessExec
+        && ([
+            "reg save hklm\\sam",
+            "reg.exe save hklm\\sam",
+            "\\config\\sam",
+            "hklm\\security",
+        ]
+        .iter()
+        .any(|s| cmd.contains(s))
+            || (cmd.contains("esentutl") && cmd.contains("\\sam")));
+    if exec || (event.event_class == EventClass::FileOpen && path.ends_with("/system32/config/sam"))
     {
         1.0
     } else {
         0.0
     }
 }
-
-fn token_theft_indicator(event: &TelemetryEvent, signals: &DetectionSignals) -> f64 {
-    let cmd = event.command_line.as_deref().unwrap_or_default();
-    if contains_any_case_insensitive(
-        cmd,
-        &[
-            "token",
-            "impersonat",
-            "seassignprimarytoken",
-            "seimpersonate",
-        ],
-    ) || signals.exploit_indicator
+fn token_theft_indicator(event: &TelemetryEvent, _signals: &DetectionSignals) -> f64 {
+    if event.event_class == EventClass::ProcessExec
+        && contains_any_case_insensitive(
+            event.command_line.as_deref().unwrap_or(""),
+            &[
+                "seimpersonateprivilege",
+                "seassignprimarytoken",
+                "token::elevate",
+                "invoke-tokenmanipulation",
+                "incognito.exe",
+                "impersonate-user",
+            ],
+        )
     {
         1.0
     } else {
@@ -511,10 +478,10 @@ fn lolbin_credential_chain(
     credential_access: f64,
     token_theft: f64,
 ) -> f64 {
-    let process = event.process.to_ascii_lowercase();
+    let process = crate::behavioral::basename(&event.process);
     let lolbin = matches!(
         process.as_str(),
-        "powershell" | "pwsh" | "cmd.exe" | "wmic" | "rundll32" | "mshta" | "regsvr32" | "certutil"
+        "powershell" | "pwsh" | "cmd" | "wmic" | "rundll32" | "mshta" | "regsvr32" | "certutil"
     );
     if lolbin {
         clamp01(0.5 * credential_access + 0.5 * token_theft)
@@ -551,9 +518,9 @@ fn dst_port_risk_score(port: Option<u16>) -> f64 {
         // Common service ports
         8080 | 8443 | 3306 | 5432 | 6379 | 27017 => 0.2,
         // C2 / reverse shell common ports
-        4444 | 4445 | 5555 | 1234 | 9999 | 31337 => 0.95,
+        4444 | 4445 | 31337 => 0.95,
         // SMB / RDP / WinRM (lateral movement)
-        445 | 3389 | 5985 | 5986 => 0.8,
+        445 | 3389 | 5985 | 5986 => 0.3,
         // Uncommon high ports
         p if p > 10000 => 0.6,
         // Everything else

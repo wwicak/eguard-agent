@@ -226,18 +226,13 @@ mod win32 {
             let event = if guid_str.eq_ignore_ascii_case(super::super::providers::SECURITY_AUDITING)
             {
                 super::super::security_auditing::decode_security_auditing_record(record, ts_ns)
-            } else if guid_str.eq_ignore_ascii_case(super::super::providers::KERNEL_NETWORK) {
-                codec::decode_kernel_network(
-                    record.EventHeader.EventDescriptor.Id,
-                    pid,
-                    ts_ns,
-                    user_data,
-                )
             } else {
-                codec::decode_etw_record_versioned(
+                codec::decode_manifest_record(
                     &guid_str,
+                    header.EventDescriptor.Id,
                     opcode,
-                    record.EventHeader.EventDescriptor.Version,
+                    header.EventDescriptor.Version,
+                    if header.Flags & 0x20 != 0 { 4 } else { 8 },
                     pid,
                     ts_ns,
                     user_data,

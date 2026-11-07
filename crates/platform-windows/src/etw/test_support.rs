@@ -415,3 +415,11 @@ fn f4c_windows_decoder_fields_and_enrichment_differential() {
         );
     }
 }
+
+/// Real manifest ID27 / v1 / 64-bit layout; FilePath role is intentionally unknown.
+pub fn kernel_file_rename_path_fixture(path: &str) -> RawEvent {
+    let mut data = Vec::new();
+    wide(&mut data, 40, path);
+    super::codec::decode_manifest_record(KERNEL_FILE, 27, 0, 1, 8, u32::MAX, 1, &data)
+        .expect("manifest rename fixture")
+}

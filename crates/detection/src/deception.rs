@@ -1,9 +1,7 @@
 //! Deception Tokens -- Honeypot Canaries
 //!
-//! Deploy fake credentials, documents, and registry keys that trigger
-//! instant Definite-confidence alerts when accessed by an attacker.
-//! Zero false positive rate by construction -- no legitimate software
-//! should ever access these canary files.
+//! Only explicitly provisioned canaries are monitored. Ordinary user credential
+//! paths and backup/indexing reads are not guaranteed attack evidence.
 
 use serde::{Deserialize, Serialize};
 
@@ -43,7 +41,7 @@ pub struct DeceptionAlert {
     pub path: String,
     pub accessing_process: String,
     pub accessing_pid: u32,
-    /// Always `"definite"` -- guaranteed true positive.
+    /// Reader-aware alert confidence; never autonomous response evidence.
     pub confidence: &'static str,
 }
 
@@ -85,7 +83,23 @@ impl DeceptionEngine {
                     path: token.path.clone(),
                     accessing_process: process_name.to_owned(),
                     accessing_pid: pid,
-                    confidence: "definite",
+                    confidence: if matches!(
+                        crate::behavioral::basename(process_name).as_str(),
+                        "msmpeng"
+                            | "searchprotocolhost"
+                            | "searchindexer"
+                            | "clamd"
+                            | "mds"
+                            | "mdworker"
+                            | "tracker-miner-fs"
+                            | "tar"
+                            | "rsync"
+                            | "backup"
+                    ) {
+                        "low"
+                    } else {
+                        "high"
+                    },
                 });
             }
         }
@@ -124,130 +138,10 @@ impl Default for DeceptionEngine {
 // Defaults
 // ---------------------------------------------------------------------------
 
-/// Build a canary token with `deployed: true` and zero trigger count.
-fn token(name: &str, token_type: TokenType, path: &str) -> DeceptionToken {
-    DeceptionToken {
-        name: name.into(),
-        token_type,
-        path: path.into(),
-        deployed: true,
-        triggered_count: 0,
-    }
-}
-
-/// Pre-configured canary tokens that cover common attacker targets.
-/// The set is platform-specific so paths are realistic for the target OS.
+/// No token is deployed merely by starting the detector. Enrollment must first
+/// provision agent-owned decoys and then register their identities explicitly.
 pub fn default_tokens() -> Vec<DeceptionToken> {
-    platform_tokens()
-}
-
-#[cfg(target_os = "linux")]
-fn platform_tokens() -> Vec<DeceptionToken> {
-    vec![
-        token(
-            "ssh_canary",
-            TokenType::CredentialFile,
-            "/root/.ssh/id_rsa_backup",
-        ),
-        token(
-            "aws_canary",
-            TokenType::CredentialFile,
-            "/opt/.aws/credentials",
-        ),
-        token(
-            "password_canary",
-            TokenType::DocumentFile,
-            "/usr/local/share/.passwords.csv",
-        ),
-        token(
-            "db_canary",
-            TokenType::ConfigFile,
-            "/etc/eguard-agent/.db_credentials.conf",
-        ),
-        token(
-            "backup_key_canary",
-            TokenType::CredentialFile,
-            "/var/backups/.encryption_key",
-        ),
-    ]
-}
-
-#[cfg(target_os = "windows")]
-fn platform_tokens() -> Vec<DeceptionToken> {
-    vec![
-        token(
-            "ssh_canary",
-            TokenType::CredentialFile,
-            "C:\\Users\\Administrator\\.ssh\\id_rsa_backup",
-        ),
-        token(
-            "aws_canary",
-            TokenType::CredentialFile,
-            "C:\\Users\\Administrator\\.aws\\credentials",
-        ),
-        token(
-            "password_canary",
-            TokenType::DocumentFile,
-            "C:\\Users\\Public\\Documents\\passwords.csv",
-        ),
-        token(
-            "db_canary",
-            TokenType::ConfigFile,
-            "C:\\ProgramData\\eGuard\\.db_credentials.conf",
-        ),
-        token(
-            "rdp_canary",
-            TokenType::CredentialFile,
-            "C:\\Users\\Administrator\\Documents\\rdp_servers.rdg",
-        ),
-    ]
-}
-
-#[cfg(target_os = "macos")]
-fn platform_tokens() -> Vec<DeceptionToken> {
-    vec![
-        token(
-            "ssh_canary",
-            TokenType::CredentialFile,
-            "/Users/admin/.ssh/id_rsa_backup",
-        ),
-        token(
-            "aws_canary",
-            TokenType::CredentialFile,
-            "/Users/admin/.aws/credentials",
-        ),
-        token(
-            "password_canary",
-            TokenType::DocumentFile,
-            "/Users/Shared/.passwords.csv",
-        ),
-        token(
-            "db_canary",
-            TokenType::ConfigFile,
-            "/Library/Application Support/eGuard/.db_credentials.conf",
-        ),
-        token(
-            "keychain_canary",
-            TokenType::CredentialFile,
-            "/Users/admin/Library/Keychains/backup.keychain-db",
-        ),
-    ]
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-fn platform_tokens() -> Vec<DeceptionToken> {
-    vec![
-        token(
-            "ssh_canary",
-            TokenType::CredentialFile,
-            "/root/.ssh/id_rsa_backup",
-        ),
-        token(
-            "db_canary",
-            TokenType::ConfigFile,
-            "/etc/eguard-agent/.db_credentials.conf",
-        ),
-    ]
+    Vec::new()
 }
 
 // ---------------------------------------------------------------------------
@@ -258,39 +152,52 @@ fn platform_tokens() -> Vec<DeceptionToken> {
 mod tests {
     use super::*;
 
-    /// Return the path of the first default token (platform-specific).
-    fn first_token_path() -> String {
-        default_tokens()[0].path.clone()
+    fn fixture_engine() -> DeceptionEngine {
+        let mut engine = DeceptionEngine::new();
+        for (name, path) in [
+            ("ssh_canary", first_token_path()),
+            ("aws_canary", second_token_path()),
+        ] {
+            engine.add_token(DeceptionToken {
+                name: name.into(),
+                token_type: TokenType::CredentialFile,
+                path,
+                deployed: true,
+                triggered_count: 0,
+            });
+        }
+        engine
     }
-
-    /// Return the path of the second default token (platform-specific).
+    fn first_token_path() -> String {
+        "/var/lib/eguard-agent/decoy/synthetic-ssh".into()
+    }
     fn second_token_path() -> String {
-        default_tokens()[1].path.clone()
+        "/var/lib/eguard-agent/decoy/synthetic-aws".into()
     }
 
     #[test]
     fn access_to_canary_triggers_alert() {
-        let mut engine = DeceptionEngine::new();
+        let mut engine = fixture_engine();
         let path = first_token_path();
         let alert = engine.check_file_access(&path, "evil_proc", 1234);
         assert!(alert.is_some());
         let alert = alert.unwrap();
         assert_eq!(alert.token_name, "ssh_canary");
-        assert_eq!(alert.confidence, "definite");
+        assert_eq!(alert.confidence, "high");
         assert_eq!(alert.accessing_process, "evil_proc");
         assert_eq!(alert.accessing_pid, 1234);
     }
 
     #[test]
     fn access_to_normal_path_returns_none() {
-        let mut engine = DeceptionEngine::new();
+        let mut engine = fixture_engine();
         let alert = engine.check_file_access("/nonexistent/safe/path", "sshd", 500);
         assert!(alert.is_none());
     }
 
     #[test]
     fn multiple_accesses_increment_trigger_count() {
-        let mut engine = DeceptionEngine::new();
+        let mut engine = fixture_engine();
         let path = second_token_path();
         engine.check_file_access(&path, "proc_a", 100);
         engine.check_file_access(&path, "proc_b", 200);
@@ -306,7 +213,7 @@ mod tests {
 
     #[test]
     fn custom_token_addition_works() {
-        let mut engine = DeceptionEngine::new();
+        let mut engine = fixture_engine();
         let initial_count = engine.token_paths().len();
 
         engine.add_token(DeceptionToken {
@@ -325,19 +232,15 @@ mod tests {
     }
 
     #[test]
-    fn default_tokens_cover_all_types() {
-        let tokens = default_tokens();
-        let types: Vec<_> = tokens.iter().map(|t| &t.token_type).collect();
-        assert!(types.contains(&&TokenType::CredentialFile));
-        assert!(types.contains(&&TokenType::DocumentFile));
-        assert!(types.contains(&&TokenType::ConfigFile));
+    fn default_tokens_do_not_claim_deployment() {
+        assert!(default_tokens().is_empty());
     }
 
     #[test]
     fn stats_reflect_state() {
-        let mut engine = DeceptionEngine::new();
+        let mut engine = fixture_engine();
         let (deployed, triggers) = engine.stats();
-        assert_eq!(deployed, default_tokens().len());
+        assert_eq!(deployed, 2);
         assert_eq!(triggers, 0);
 
         let path = first_token_path();
@@ -349,7 +252,7 @@ mod tests {
 
     #[test]
     fn undeployed_token_does_not_trigger() {
-        let mut engine = DeceptionEngine::new();
+        let mut engine = fixture_engine();
         engine.add_token(DeceptionToken {
             name: "disabled_canary".into(),
             token_type: TokenType::DocumentFile,
@@ -363,7 +266,7 @@ mod tests {
 
     #[test]
     fn token_paths_excludes_undeployed() {
-        let mut engine = DeceptionEngine::new();
+        let mut engine = fixture_engine();
         let before = engine.token_paths().len();
         engine.add_token(DeceptionToken {
             name: "off".into(),

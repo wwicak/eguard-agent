@@ -137,7 +137,8 @@ fn has_evidence(event: &TelemetryEvent, outcome: &DetectionOutcome) -> bool {
         || !outcome.kernel_integrity_indicators.is_empty()
         || !outcome.tamper_indicators.is_empty()
         || !outcome.yara_hits.is_empty()
-        || !outcome.behavioral_alarms.is_empty()
+        // RAFIX shared: uncalibrated behavioral context is not detection evidence.
+        || outcome.behavioral_alarms.iter().any(|a| a.gated)
         || outcome.anomaly.as_ref().is_some_and(|a| a.high || a.medium)
         || outcome
             .ml_score
@@ -294,6 +295,29 @@ impl AgentRuntime {
 
 #[cfg(test)]
 mod tests {
+    // RAFIX shared: uncalibrated alarms must not keep negative-ML telemetry alive.
+    #[test]
+    fn rafix_noise_evidence_requires_a_gated_behavioral_alarm() {
+        let e: detection::TelemetryEvent = serde_json::from_value(serde_json::json!({
+            "ts_unix":1,"event_class":"ProcessExec","pid":42,"ppid":1,"uid":1000,
+            "process":"git","parent_process":"init","session_id":1,"file_write":false,
+            "container_escape":false,"container_privileged":false
+        }))
+        .unwrap();
+        let mut outcome = detection::DetectionOutcome::default();
+        outcome.behavioral_alarms.push(detection::BehavioralAlarm {
+            dimension: "cmdline_encoded_blob".into(),
+            magnitude: 1.5,
+            wasserstein_distance: None,
+            current_entropy: None,
+            p_value: None,
+            gated: false,
+        });
+        assert!(!super::has_evidence(&e, &outcome));
+        outcome.behavioral_alarms[0].gated = true;
+        outcome.behavioral_alarms[0].p_value = Some(0.001);
+        assert!(super::has_evidence(&e, &outcome));
+    }
     use super::*;
 
     #[test]

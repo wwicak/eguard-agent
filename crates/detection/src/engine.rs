@@ -290,7 +290,7 @@ impl DetectionEngine {
         // ── Layer 4: Kill chain graph matching ──────────────────
         let kill_chain_hits = self.layer4.observe(event);
 
-        // ── Behavioral engine: CUSUM + entropy + spectral ───────
+        // ── Calibrated behavioral context ───────────────────────
         let behavioral_alarms = self.behavioral.observe(event);
 
         let behavioral_high = behavioral_alarms
@@ -300,14 +300,18 @@ impl DetectionEngine {
             .iter()
             .any(|a| a.gated && a.magnitude > 1.0);
 
-        // ── Beaconing tracker: MI-based C2 detection ────────────
-        let (c2_beaconing_detected, beacon_mi_score) = if matches!(
-            event.event_class,
-            EventClass::NetworkConnect | EventClass::DnsQuery
-        ) {
+        // RAFIX shared: periodic connection context excludes our configured peers.
+        let (c2_beaconing_detected, beacon_mi_score) = if event.event_class
+            == EventClass::NetworkConnect
+            && !self.layer4.peer_is_configured_server(event)
+        {
             let dst_key = format!(
                 "{}:{}",
-                event.dst_ip.as_deref().unwrap_or(""),
+                event
+                    .dst_ip
+                    .as_deref()
+                    .or(event.dst_domain.as_deref())
+                    .unwrap_or(""),
                 event.dst_port.unwrap_or(0)
             );
             let result =
@@ -323,12 +327,8 @@ impl DetectionEngine {
             .iter()
             .any(|a| a.gated && a.dimension == "tree_branching");
 
-        // ── CVE vulnerability check on ModuleLoad ───────────────
-        let vulnerable_software = event.event_class == EventClass::ModuleLoad
-            && event
-                .file_path
-                .as_deref()
-                .is_some_and(|path| self.cve.check_module_path(path));
+        // RAFIX shared: versionless module names are inventory context, not exploitation.
+        let vulnerable_software = false;
 
         let exploit_indicators = detect_exploit_indicators(event);
         let kernel_integrity_indicators = detect_kernel_integrity_indicators(event);
@@ -350,15 +350,25 @@ impl DetectionEngine {
             z3_anomaly_med: anomaly.as_ref().map(|a| a.medium).unwrap_or(false) || behavioral_med,
             z4_kill_chain: !kill_chain_hits.is_empty(),
             l1_prefilter_hit: layer1.prefilter_hit,
+            // RAFIX shared: retain strong/named L1 and per-class AML evidence.
             l1_named_hit: !layer1.matched_signatures.is_empty()
                 || !layer1
                     .matched_fields
                     .iter()
                     .all(|f| f == "command_line" || f == "file_path"),
             l1_strong_signature: layer1.strong,
-            exploit_indicator: !exploit_indicators.is_empty(),
-            kernel_integrity: !kernel_integrity_indicators.is_empty(),
-            tamper_indicator: !tamper_indicators.is_empty(),
+            // RAFIX shared: context-only exploit subclasses must not set the HIGH boolean.
+            exploit_indicator: exploit_indicators
+                .iter()
+                .any(|i| crate::exploit::is_high_indicator(i)),
+            // RAFIX shared: only strong kernel classes may assert the response-facing boolean.
+            kernel_integrity: crate::kernel_integrity::kernel_integrity_confidence(
+                &kernel_integrity_indicators,
+            ) >= Confidence::High,
+            // RAFIX shared: service-control context is distinct from file mutation.
+            tamper_indicator: tamper_indicators
+                .iter()
+                .any(|i| i == "tamper:agent_file_mutation"),
             c2_beaconing_detected,
             process_tree_anomaly,
             network_ioc_hit,
@@ -376,18 +386,38 @@ impl DetectionEngine {
             kill_chain_hits.len(),
             yara_hits.len(),
             layer1.matched_signatures.len(),
-            behavioral_alarms.len(),
+            // RAFIX shared: ungated context is not ML anomaly evidence.
+            behavioral_alarms.iter().filter(|a| a.gated).count(),
             &extra,
         );
         let ml_result = self.layer5.score(&features);
 
         // ── Confidence aggregation ──────────────────────────────
         // Deterministic confidence from L1–L4, then ML can escalate
-        let base_confidence = confidence_policy(&signals);
+        // RAFIX shared: narrowed context subclasses are named MEDIUM, not standalone HIGH.
+        let base_confidence = confidence_policy(&signals)
+            .max(
+                if exploit_indicators
+                    .iter()
+                    .any(|i| !crate::exploit::is_high_indicator(i))
+                    || tamper_indicators
+                        .iter()
+                        .any(|i| i == "tamper:agent_service_control")
+                {
+                    Confidence::Medium
+                } else {
+                    Confidence::None
+                },
+            )
+            .max(crate::kernel_integrity::kernel_integrity_confidence(
+                &kernel_integrity_indicators,
+            ));
+        // RAFIX shared: ML reuses policy signals and cannot corroborate them.
+        // RAFIX shared: allowlists never suppress exact IOC or accepted YARA.
         let confidence = if allowed && !signals.z1_exact_ioc && !signals.yara_hit {
             Confidence::None
         } else {
-            ml_enhanced_confidence(base_confidence, &ml_result)
+            ml_enhanced_confidence(base_confidence, &ml_result, self.layer5.has_calibration())
         };
 
         DetectionOutcome {
@@ -418,18 +448,10 @@ fn has_network_ioc_field(layer1: &Layer1EventHit) -> bool {
         .any(|f| f == "dst_domain" || f == "dst_ip")
 }
 
-/// ML can escalate confidence but never downgrade deterministic decisions.
-/// This keeps CrowdStrike-style "ML overrules everything" from causing FPs
-/// while letting ML catch things the rule layers miss.
-fn ml_enhanced_confidence(base: Confidence, ml: &MlScore) -> Confidence {
+// RAFIX shared: echoed anomaly/rule features are not independent corroboration.
+fn ml_enhanced_confidence(base: Confidence, ml: &MlScore, calibrated: bool) -> Confidence {
     match base {
-        // Deterministic decisions are authoritative — ML cannot override
-        Confidence::Definite | Confidence::VeryHigh => base,
-        // An anomaly also feeds ML features; that is not independent evidence
-        // for High. Keep ML-only detections visible at Medium.
-        Confidence::None if ml.positive && ml.score >= 0.85 => Confidence::Medium,
-        Confidence::Low if ml.positive && ml.score >= 0.80 => Confidence::Medium,
-        Confidence::High if ml.positive && ml.score >= 0.95 => Confidence::VeryHigh,
+        Confidence::None if calibrated && ml.positive && ml.score >= 0.95 => Confidence::Low,
         _ => base,
     }
 }
@@ -437,5 +459,40 @@ fn ml_enhanced_confidence(base: Confidence, ml: &MlScore) -> Confidence {
 impl Default for DetectionEngine {
     fn default() -> Self {
         Self::default_with_rules()
+    }
+}
+
+#[cfg(test)]
+mod rafix_ml_policy_tests {
+    use super::*;
+    #[test]
+    fn rafix_ml_echo_never_upgrades_existing_confidence() {
+        let score = MlScore {
+            score: 0.999,
+            positive: true,
+            raw_positive: true,
+            conformal_gated: false,
+            decision_threshold: 0.95,
+            top_features: vec![],
+            conformal_p_value: Some(0.001),
+        };
+        for base in [
+            Confidence::Low,
+            Confidence::Medium,
+            Confidence::High,
+            Confidence::VeryHigh,
+            Confidence::Definite,
+        ] {
+            assert_eq!(ml_enhanced_confidence(base, &score, true), base);
+            assert_eq!(ml_enhanced_confidence(base, &score, false), base);
+        }
+        assert_eq!(
+            ml_enhanced_confidence(Confidence::None, &score, false),
+            Confidence::None
+        );
+        assert_eq!(
+            ml_enhanced_confidence(Confidence::None, &score, true),
+            Confidence::Low
+        );
     }
 }

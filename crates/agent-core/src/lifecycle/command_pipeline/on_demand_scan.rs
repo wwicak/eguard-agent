@@ -132,6 +132,9 @@ impl AgentRuntime {
             parent_process: "eguard-agent".to_string(),
             session_id: std::process::id(),
             file_path: Some(path.display().to_string()),
+            // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+            process_exe: None,
+            file_unlink: false,
             file_write: false,
             file_hash: Some(sha256),
             dst_port: None,

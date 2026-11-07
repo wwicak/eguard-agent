@@ -65,6 +65,12 @@ pub struct TelemetryEvent {
     pub session_id: u32,
     pub file_path: Option<String>,
     pub file_write: bool,
+    // RAFIX shared: resolved image identity is independent of the exec invocation path.
+    #[serde(default)]
+    pub process_exe: Option<String>,
+    // RAFIX shared: unlink is tamper-relevant but must not satisfy persistence write gates.
+    #[serde(default)]
+    pub file_unlink: bool,
     pub file_hash: Option<String>,
     pub dst_port: Option<u16>,
     pub dst_ip: Option<String>,

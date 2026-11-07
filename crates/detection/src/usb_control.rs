@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 // ── USB class codes (from USB specification) ─────────────────────────
 const USB_CLASS_MASS_STORAGE: u8 = 0x08;
 const USB_CLASS_HID: u8 = 0x03;
-const USB_CLASS_NETWORK: u8 = 0xE0; // Wireless controller (covers USB NICs)
+// 0xE0 is a wireless controller, including Bluetooth; it is not a NIC by class alone.
 const USB_CLASS_AUDIO: u8 = 0x01;
 const USB_CLASS_VIDEO: u8 = 0x0E;
 // CDC (Communications Device Class) is another common network class.
@@ -138,7 +138,7 @@ impl UsbPolicy {
             Some(UsbViolation {
                 event: event.clone(),
                 reason: format!(
-                    "USB {} device (vendor={}, product={}) blocked by policy",
+                    "USB {} device (vendor={}, product={}) prohibited by policy (monitor only)",
                     class_name, event.vendor_id, event.product_id,
                 ),
             })
@@ -153,7 +153,7 @@ pub fn parse_usb_class(class_code: u8) -> UsbDeviceClass {
     match class_code {
         USB_CLASS_MASS_STORAGE => UsbDeviceClass::MassStorage,
         USB_CLASS_HID => UsbDeviceClass::HumanInterface,
-        USB_CLASS_NETWORK | USB_CLASS_CDC => UsbDeviceClass::Network,
+        USB_CLASS_CDC => UsbDeviceClass::Network,
         USB_CLASS_AUDIO => UsbDeviceClass::Audio,
         USB_CLASS_VIDEO => UsbDeviceClass::Video,
         other => UsbDeviceClass::Other(format!("0x{:02x}", other)),
@@ -227,7 +227,7 @@ mod tests {
     fn known_class_codes_parse_correctly() {
         assert_eq!(parse_usb_class(0x08), UsbDeviceClass::MassStorage);
         assert_eq!(parse_usb_class(0x03), UsbDeviceClass::HumanInterface);
-        assert_eq!(parse_usb_class(0xE0), UsbDeviceClass::Network);
+        assert!(matches!(parse_usb_class(0xE0), UsbDeviceClass::Other(_)));
         assert_eq!(parse_usb_class(0x01), UsbDeviceClass::Audio);
         assert_eq!(parse_usb_class(0x0E), UsbDeviceClass::Video);
         // CDC also maps to Network.

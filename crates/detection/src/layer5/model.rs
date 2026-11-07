@@ -92,6 +92,9 @@ pub struct CiTrainedModel {
     /// from these scores to provide finite-sample FP-rate guarantees.
     #[serde(default)]
     pub calibration_scores: Option<Vec<f64>>,
+    /// Attested origin of the training labels; missing/synthetic labels are advisory only.
+    #[serde(default)]
+    pub label_source: Option<String>,
     #[serde(default)]
     pub base_score: Option<f64>,
     #[serde(default)]
@@ -128,6 +131,23 @@ impl CiTrainedModel {
                 });
             }
         }
+        let real_labels = self
+            .label_source
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty() && !s.to_ascii_lowercase().contains("synthetic"));
+        let calibrated = self.calibration_scores.as_ref().is_some_and(|scores| {
+            scores.len() >= 100
+                && scores
+                    .iter()
+                    .all(|s| s.is_finite() && (0.0..=1.0).contains(s))
+        });
+        if !real_labels || !calibrated {
+            return Err(MlError::InvalidCalibration(
+                "real label provenance and at least 100 finite calibration scores are required"
+                    .into(),
+            ));
+        }
+        self.to_runtime_model().validate()?;
         Ok(())
     }
 
@@ -255,6 +275,14 @@ impl MlModel {
                         "tree[{i}] has non-finite weight"
                     )));
                 }
+                for node in &tree.nodes {
+                    if node.leaf.is_none() && !FEATURE_NAMES.contains(&node.feature.as_str()) {
+                        return Err(MlError::InvalidTreeModel(format!(
+                            "tree[{i}] has unknown feature {}",
+                            node.feature
+                        )));
+                    }
+                }
                 if tree.nodes.is_empty() {
                     return Err(MlError::InvalidTreeModel(format!("tree[{i}] has no nodes")));
                 }
@@ -277,7 +305,7 @@ impl MlModel {
     }
 }
 
-/// Hardcoded default model — trained on initial threat-intel signature data.
+/// Hand-written default model; advisory until a qualified calibration is loaded.
 /// These weights approximate: "any L1/L2/L4 hit is very suspicious; anomaly
 /// alone is moderate; root + network + module load is elevated risk."
 impl Default for MlModel {
@@ -302,25 +330,25 @@ impl Default for MlModel {
                 1.2, // multi_layer_count       — multiple layers agree
                 // Information-theoretic weights
                 0.7, // cmdline_renyi_h2        — collision entropy anomaly
-                0.9, // cmdline_compression     — high compression = encrypted/packed
-                0.5, // cmdline_min_entropy      — low min-entropy = predictable pattern
-                0.6, // cmdline_entropy_gap      — flat spectrum = random/encrypted
+                0.0, // cmdline_compression     — high compression = encrypted/packed
+                0.0, // cmdline_min_entropy      — low min-entropy = predictable pattern
+                0.0, // cmdline_entropy_gap      — flat spectrum = random/encrypted
                 0.7, // dns_entropy             — high-entropy labels (DGA/tunnel)
                 // Extended feature weights (Fix 6)
-                0.2, // event_size_norm         — normalized event size
+                0.0, // event_size_norm         — normalized event size
                 0.4, // container_risk          — container escape/privileged risk
-                0.3, // file_path_entropy       — Shannon entropy of file path
-                0.2, // file_path_depth         — normalized path depth
+                0.0, // file_path_entropy       — Shannon entropy of file path
+                0.0, // file_path_depth         — normalized path depth
                 0.5, // behavioral_alarm_count  — behavioral alarm count
                 0.8, // z1_z2_interaction       — IOC + temporal = strong
                 0.7, // z1_z4_interaction       — IOC + kill chain = strong
                 0.6, // anomaly_behavioral      — anomaly + multi-signal = moderate
                 // Process tree / lineage
-                0.3, // process_tree_depth_norm
+                0.0, // process_tree_depth_norm
                 0.6, // rare_parent_child_pair
-                0.3, // parent_cmdline_hash_risk
-                0.3, // parent_child_cmdline_distance
-                0.4, // sibling_spawn_burst_norm
+                0.0, // parent_cmdline_hash_risk
+                0.0, // parent_child_cmdline_distance
+                0.0, // sibling_spawn_burst_norm
                 // File mutation behavior
                 0.3, // sensitive_path_write_velocity
                 0.2, // rename_churn_norm
@@ -328,11 +356,11 @@ impl Default for MlModel {
                 0.2, // executable_write_ratio
                 0.2, // temp_to_system_write_ratio
                 // Network graph / beaconing
-                0.3, // conn_fanout_norm
+                0.0, // conn_fanout_norm
                 0.2, // unique_dst_ip_norm
-                0.2, // unique_dst_port_norm
+                0.0, // unique_dst_port_norm
                 0.7, // beacon_periodicity_score
-                0.2, // network_graph_centrality
+                0.0, // network_graph_centrality
                 // Credential access indicators
                 0.5, // credential_access_indicator
                 0.4, // lsass_access_indicator
@@ -383,6 +411,7 @@ pub enum MlError {
         value: f64,
     },
     InvalidTreeModel(String),
+    InvalidCalibration(String),
 }
 
 impl std::fmt::Display for MlError {
@@ -412,6 +441,7 @@ impl std::fmt::Display for MlError {
                 )
             }
             Self::InvalidTreeModel(reason) => write!(f, "invalid tree model: {reason}"),
+            Self::InvalidCalibration(reason) => write!(f, "invalid model calibration: {reason}"),
         }
     }
 }

@@ -12,6 +12,9 @@ fn event_with_hash(hash: &str) -> TelemetryEvent {
         parent_process: "sshd".to_string(),
         session_id: 10,
         file_path: None,
+        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        process_exe: None,
+        file_unlink: false,
         file_write: false,
         file_hash: Some(hash.to_string()),
         dst_port: None,
@@ -37,6 +40,9 @@ fn event_with_command(cmd: &str) -> TelemetryEvent {
         parent_process: "sshd".to_string(),
         session_id: 10,
         file_path: None,
+        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        process_exe: None,
+        file_unlink: false,
         file_write: false,
         file_hash: None,
         dst_port: None,
@@ -69,6 +75,9 @@ fn event_process_exec_for_pid(pid: u32, process: &str, parent: &str, ts: i64) ->
         parent_process: parent.to_string(),
         session_id: pid,
         file_path: None,
+        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        process_exe: None,
+        file_unlink: false,
         file_write: false,
         file_hash: None,
         dst_port: None,
@@ -100,6 +109,9 @@ fn event_network_for_pid(
         parent_process: parent.to_string(),
         session_id: pid,
         file_path: None,
+        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        process_exe: None,
+        file_unlink: false,
         file_write: false,
         file_hash: None,
         dst_port: Some(port),

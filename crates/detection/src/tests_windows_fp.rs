@@ -104,7 +104,7 @@ fn windows_fp_discovery_network_metadata_is_not_ml_positive() {
 }
 
 #[test]
-fn windows_fp_network_ioc_attack_remains_ml_positive() {
+fn windows_fp_network_ioc_has_raw_score_but_uncalibrated_ml_is_advisory() {
     let mut event = discovery_events().remove(0);
     event.dst_ip = Some("203.0.113.9".into());
     event.dst_port = Some(4444);
@@ -114,5 +114,7 @@ fn windows_fp_network_ioc_attack_remains_ml_positive() {
         ..Default::default()
     };
     let features = crate::MlFeatures::extract(&event, &signals, 0, 0, 0, 0, 0, &Default::default());
-    assert!(crate::MlEngine::new().score(&features).positive);
+    let score = crate::MlEngine::new().score(&features);
+    assert!(score.raw_positive);
+    assert!(!score.positive);
 }

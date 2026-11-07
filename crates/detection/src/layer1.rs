@@ -129,6 +129,8 @@ pub struct Layer1EventHit {
     pub prefilter_hit: bool,
     pub strong: bool,
     pub matched_fields: Vec<String>,
+    // RAFIX shared: aggregate ExactMatch must not promote prefilter-only fields.
+    pub exact_matched_fields: Vec<String>,
     pub matched_signatures: Vec<String>,
 }
 
@@ -137,7 +139,9 @@ impl Default for Layer1EventHit {
         Self {
             result: Layer1Result::Clean,
             prefilter_hit: false,
+// RAFIX shared: preserve structural signatures and exact-field provenance.
             strong: false,
+            exact_matched_fields: Vec::new(),
             matched_fields: Vec::new(),
             matched_signatures: Vec::new(),
         }
@@ -889,6 +893,8 @@ impl IocLayer1 {
                 }
             }
             Layer1Result::ExactMatch => {
+                // RAFIX shared: preserve per-field exact provenance for response gates.
+                hit.exact_matched_fields.push(field.to_string());
                 hit.prefilter_hit = true;
                 hit.matched_fields.push(field.to_string());
                 hit.result = Layer1Result::ExactMatch;
@@ -970,6 +976,9 @@ mod tests {
             parent_process: "unknown".to_string(),
             session_id: 0,
             file_path: Some("/bin/bash".to_string()),
+            // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+            process_exe: None,
+            file_unlink: false,
             file_write: false,
             file_hash: None,
             dst_port: None,
@@ -991,6 +1000,7 @@ mod tests {
     }
 }
 
+// RAFIX shared: preserve structural signatures and exact-field provenance.
 pub(crate) fn strong_command_signatures(event: &TelemetryEvent) -> Vec<&'static str> {
     if event.event_class != EventClass::ProcessExec {
         return Vec::new();
@@ -1133,4 +1143,18 @@ fn has_writable_module_argument(process: &str, command: &str) -> bool {
         && [".ko", ".ko.xz", ".ko.zst"]
             .iter()
             .any(|suffix| path.ends_with(suffix))
+}
+
+#[cfg(test)]
+mod rafix_exact_provenance_tests {
+    use super::*;
+    #[test]
+    fn rafix_exact_domain_does_not_upgrade_prefilter_only_hash() {
+        let mut hit = Layer1EventHit::default();
+        IocLayer1::apply_result(Layer1Result::PrefilterOnly, "file_hash", &mut hit);
+        IocLayer1::apply_result(Layer1Result::ExactMatch, "dst_domain", &mut hit);
+        assert_eq!(hit.result, Layer1Result::ExactMatch);
+        assert_eq!(hit.matched_fields, ["file_hash", "dst_domain"]);
+        assert_eq!(hit.exact_matched_fields, ["dst_domain"]);
+    }
 }

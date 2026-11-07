@@ -90,14 +90,26 @@ pub(super) fn to_detection_event(
         .as_deref()
         .and_then(process_name_from_cmdline)
         .filter(|value| !value.trim().is_empty());
+    // RAFIX shared: an invocation may label an exited process, but is not image provenance.
+    let process_name_from_invocation = matches!(
+        enriched.event.event_type,
+        crate::platform::EventType::ProcessExec
+    )
+    .then_some(file_path.as_deref())
+    .flatten()
+    .filter(|p| !p.starts_with("/proc/") && !p.starts_with("/dev/fd/"))
+    .map(process_basename)
+    .filter(|p| !p.trim().is_empty());
     let authoritative_process_exec = matches!(
         enriched.event.event_type,
         crate::platform::EventType::ProcessExec
     ) && (process_name_from_path.is_some()
-        || process_name_from_cmd.is_some());
+        || process_name_from_cmd.is_some()
+        || process_name_from_invocation.is_some());
 
     let mut process = process_name_from_path
         .or(process_name_from_cmd)
+        .or(process_name_from_invocation)
         .unwrap_or("unknown")
         .to_string();
 
@@ -116,6 +128,7 @@ pub(super) fn to_detection_event(
         }
     }
 
+    // RAFIX shared: preserve open flags and explicit writes, but deny unknown rename roles.
     let file_write = enriched.file_write
         || matches!(
             enriched.event.event_type,
@@ -130,6 +143,12 @@ pub(super) fn to_detection_event(
         _ => file_write,
     };
 
+    // RAFIX shared: ID27's observed path must not be treated as a rename destination.
+    let unknown_rename_role = matches!(
+        enriched.event.event_type,
+        crate::platform::EventType::FileRename
+    ) && parse_payload_field(&enriched.event.payload, "rename_path")
+        .is_some();
     TelemetryEvent {
         ts_unix: now_unix,
         event_class: map_event_class(&enriched.event.event_type),
@@ -144,11 +163,31 @@ pub(super) fn to_detection_event(
             .unwrap_or_else(|| "unknown".to_string()),
         session_id,
         file_path,
-        file_write,
-        file_hash: enriched
-            .file_sha256
-            .clone()
-            .or_else(|| enriched.process_exe_sha256.clone()),
+        // RAFIX shared: keep resolved image separate from the invocation path.
+        process_exe: enriched.process_exe.clone(),
+        // RAFIX shared: deletion is not creation/content mutation.
+        file_unlink: matches!(
+            enriched.event.event_type,
+            crate::platform::EventType::FileUnlink
+        ),
+        // RAFIX shared: rename path is the destination; unlink must not trigger persistence.
+        file_write: !matches!(
+            enriched.event.event_type,
+            crate::platform::EventType::FileUnlink
+        ) && !unknown_rename_role
+            && file_write,
+        // RAFIX shared: a process-image IOC is not an IOC on a file it opened.
+        file_hash: if matches!(
+            enriched.event.event_type,
+            crate::platform::EventType::ProcessExec
+        ) {
+            enriched
+                .process_exe_sha256
+                .clone()
+                .or_else(|| enriched.file_sha256.clone())
+        } else {
+            enriched.file_sha256.clone()
+        },
         dst_port: enriched.dst_port,
         dst_ip: enriched.dst_ip.clone(),
         dst_domain: enriched.dst_domain.clone(),
@@ -768,6 +807,86 @@ pub(super) fn map_event_class(event_type: &crate::platform::EventType) -> EventC
 
 #[cfg(test)]
 mod tests {
+    // RAFIX shared: an observed Windows rename path is not an established write target.
+    #[test]
+    fn rafix_windows_manifest_rename_is_not_a_persistence_write() {
+        let path =
+            r"C:\Users\fixture\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\x.lnk";
+        let raw = platform_windows::etw::test_support::kernel_file_rename_path_fixture(path);
+        let windows = platform_windows::enrich_event(raw);
+        assert!(windows.file_path_secondary.is_none());
+        assert!(!windows.file_write);
+        let native: crate::platform::EnrichedEvent =
+            serde_json::from_value(serde_json::to_value(windows).unwrap()).unwrap();
+        let event = super::to_detection_event(&native, 1);
+        assert!(!event.file_write);
+        assert!(!event.file_unlink);
+    }
+
+    // RAFIX shared: pin image/invocation separation and mutation semantics.
+    #[test]
+    fn rafix_mapping_preserves_image_and_distinguishes_unlink_from_write() {
+        use crate::platform::{EnrichedEvent, EventType, RawEvent};
+        let mut enriched = EnrichedEvent {
+            event: RawEvent {
+                event_type: EventType::ProcessExec,
+                pid: 424242,
+                ..RawEvent::default()
+            },
+            process_exe: Some("/memfd:stage (deleted)".into()),
+            process_exe_sha256: None,
+            process_cmdline: None,
+            parent_process: None,
+            parent_chain: vec![],
+            file_path: Some("/proc/self/fd/3".into()),
+            file_path_secondary: None,
+            file_write: false,
+            file_sha256: None,
+            event_size: None,
+            dst_ip: None,
+            dst_port: None,
+            dst_domain: None,
+            container_runtime: None,
+            container_id: None,
+            container_escape: false,
+            container_privileged: false,
+        };
+        let e = serde_json::to_value(super::to_detection_event(&enriched, 1)).unwrap();
+        assert_eq!(e["process_exe"], "/memfd:stage (deleted)");
+        assert_eq!(e["file_path"], "/proc/self/fd/3");
+        // A process-image hash must never be attributed to a file it only opened.
+        enriched.process_exe_sha256 = Some("ab".repeat(32));
+        enriched.event.event_type = EventType::FileOpen;
+        enriched.file_write = true;
+        let e = super::to_detection_event(&enriched, 1);
+        assert!(e.file_hash.is_none());
+        enriched.file_sha256 = Some("cd".repeat(32));
+        assert_eq!(
+            super::to_detection_event(&enriched, 1).file_hash,
+            enriched.file_sha256
+        );
+        enriched.process_exe = None;
+        enriched.process_cmdline = None;
+        enriched.event.event_type = EventType::ProcessExec;
+        enriched.file_path = Some("/usr/bin/short-lived-fixture".into());
+        let e = super::to_detection_event(&enriched, 1);
+        assert_eq!(e.process, "short-lived-fixture");
+        assert!(e.process_exe.is_none());
+        for (kind, write, unlink) in [
+            (EventType::FileOpen, false, false),
+            (EventType::FileWrite, true, false),
+            (EventType::FileRename, true, false),
+            (EventType::FileUnlink, false, true),
+        ] {
+            enriched.event.event_type = kind;
+            enriched.file_path = Some("/etc/eguard-agent/agent.conf".into());
+            enriched.file_write = false;
+            let e = serde_json::to_value(super::to_detection_event(&enriched, 1)).unwrap();
+            assert_eq!(e["file_write"], write, "{kind:?}");
+            assert_eq!(e["file_unlink"], unlink, "{kind:?}");
+        }
+    }
+
     use super::{
         infer_windows_process_from_file_path, process_basename, process_name_from_cmdline,
     };

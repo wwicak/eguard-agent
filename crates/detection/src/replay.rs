@@ -115,6 +115,30 @@ pub fn replay_events(engine: &mut DetectionEngine, events: &[TelemetryEvent]) ->
                     .map(|v| format!("yara:{}", v.rule_name)),
             );
         }
+        if let Some(anomaly) = &outcome.anomaly {
+            if anomaly.high {
+                rule_hits.push("anomaly:high".into());
+            } else if anomaly.medium {
+                rule_hits.push("anomaly:medium".into());
+            }
+        }
+        rule_hits.extend(
+            outcome
+                .behavioral_alarms
+                .iter()
+                .filter(|a| a.gated)
+                .map(|a| format!("behavioral:{}", a.dimension)),
+        );
+        if outcome.ml_score.as_ref().is_some_and(|s| s.positive) {
+            rule_hits.push("ml:positive".into());
+        }
+        for (kind, indicators) in [
+            ("exploit", &outcome.exploit_indicators),
+            ("tamper", &outcome.tamper_indicators),
+            ("kernel", &outcome.kernel_integrity_indicators),
+        ] {
+            rule_hits.extend(indicators.iter().map(|name| format!("{kind}:{name}")));
+        }
         rule_hits.sort();
         rule_hits.dedup();
 

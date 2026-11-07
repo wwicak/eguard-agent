@@ -31,6 +31,9 @@ fn evaluation(
         parent_process: parent.into(),
         session_id: 42,
         file_path: path.map(str::to_string),
+        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        process_exe: None,
+        file_unlink: false,
         file_write: false,
         file_hash: None,
         dst_port: None,

@@ -34,6 +34,9 @@ pub struct ScoreFactor {
     pub score: u8,
     /// Relative weight in the range 0.0..=1.0.
     pub weight: f64,
+    /// Whether this factor is measured, rather than missing telemetry.
+    #[serde(default)]
+    pub known: bool,
     /// Human-readable explanation of the current score.
     pub detail: String,
 }
@@ -56,8 +59,13 @@ pub enum TrustAction {
 /// The aggregate score is the weighted average of all factor scores, clamped
 /// to the 0..=100 range.
 pub fn compute_score(factors: &[ScoreFactor], now_unix: i64) -> DeviceHealthScore {
-    let weighted_sum: f64 = factors.iter().map(|f| f64::from(f.score) * f.weight).sum();
-    let total_weight: f64 = factors.iter().map(|f| f.weight).sum();
+    let known = || {
+        factors
+            .iter()
+            .filter(|f| f.known && f.weight.is_finite() && f.weight > 0.0)
+    };
+    let weighted_sum: f64 = known().map(|f| f64::from(f.score) * f.weight).sum();
+    let total_weight: f64 = known().map(|f| f.weight).sum();
 
     let raw = if total_weight > 0.0 {
         (weighted_sum / total_weight).round() as i32
@@ -69,7 +77,11 @@ pub fn compute_score(factors: &[ScoreFactor], now_unix: i64) -> DeviceHealthScor
     DeviceHealthScore {
         score,
         factors: factors.to_vec(),
-        recommendation: recommend_action(score),
+        recommendation: if total_weight < 0.5 {
+            TrustAction::Restrict
+        } else {
+            recommend_action(score)
+        },
         computed_at: now_unix,
     }
 }
@@ -85,7 +97,7 @@ pub fn recommend_action(score: u8) -> TrustAction {
     }
 }
 
-/// Returns a set of factors initialised with "unknown" / worst-case scores.
+/// Returns unknown factors, excluded from the weighted mean until measured.
 ///
 /// Callers should overwrite individual factor scores as real telemetry becomes
 /// available.
@@ -95,36 +107,42 @@ pub fn default_factors() -> Vec<ScoreFactor> {
             name: "compliance_status".into(),
             score: 0,
             weight: 0.25,
+            known: false,
             detail: "Unknown compliance status".into(),
         },
         ScoreFactor {
             name: "cve_exposure".into(),
             score: 0,
             weight: 0.25,
+            known: false,
             detail: "Unknown CVE exposure".into(),
         },
         ScoreFactor {
             name: "fim_integrity".into(),
             score: 0,
             weight: 0.20,
+            known: false,
             detail: "Unknown FIM integrity".into(),
         },
         ScoreFactor {
             name: "detection_history".into(),
             score: 0,
             weight: 0.15,
+            known: false,
             detail: "Unknown detection history".into(),
         },
         ScoreFactor {
             name: "baseline_maturity".into(),
             score: 0,
             weight: 0.10,
+            known: false,
             detail: "Unknown baseline maturity".into(),
         },
         ScoreFactor {
             name: "encryption_status".into(),
             score: 0,
             weight: 0.05,
+            known: false,
             detail: "Unknown encryption status".into(),
         },
     ]
@@ -149,6 +167,7 @@ pub fn compliance_factor(compliant: bool, partial: bool) -> ScoreFactor {
         name: "compliance_status".into(),
         score,
         weight: 0.25,
+        known: true,
         detail: detail.into(),
     }
 }
@@ -163,6 +182,7 @@ pub fn cve_factor(critical_cve_count: u32) -> ScoreFactor {
         name: "cve_exposure".into(),
         score,
         weight: 0.25,
+        known: true,
         detail: format!("{critical_cve_count} critical CVE(s) detected"),
     }
 }
@@ -184,21 +204,23 @@ pub fn fim_factor(no_changes: bool, acknowledged: bool) -> ScoreFactor {
         name: "fim_integrity".into(),
         score,
         weight: 0.20,
+        known: true,
         detail: detail.into(),
     }
 }
 
 /// Score the detection history dimension.
 ///
-/// `100 - (high_plus_incidents * 20)`, clamped to 0.
-pub fn detection_history_factor(high_plus_incidents_24h: u32) -> ScoreFactor {
-    let raw = 100i32 - (high_plus_incidents_24h as i32 * 20);
+/// `100 - (confirmed_incidents * 20)`, clamped to 0. Raw alerts must not be passed here.
+pub fn detection_history_factor(confirmed_incidents_24h: u32) -> ScoreFactor {
+    let raw = 100i32 - (confirmed_incidents_24h as i32 * 20);
     let score = raw.max(0) as u8;
     ScoreFactor {
         name: "detection_history".into(),
         score,
         weight: 0.15,
-        detail: format!("{high_plus_incidents_24h} High+ detection(s) in last 24h"),
+        known: true,
+        detail: format!("{confirmed_incidents_24h} confirmed incident(s) in last 24h"),
     }
 }
 
@@ -219,6 +241,7 @@ pub fn baseline_factor(active: bool, learning: bool) -> ScoreFactor {
         name: "baseline_maturity".into(),
         score,
         weight: 0.10,
+        known: true,
         detail: detail.into(),
     }
 }
@@ -237,6 +260,7 @@ pub fn encryption_factor(encrypted: bool) -> ScoreFactor {
         name: "encryption_status".into(),
         score,
         weight: 0.05,
+        known: true,
         detail: detail.into(),
     }
 }
@@ -311,6 +335,7 @@ mod tests {
             name: "test".into(),
             score: 100,
             weight: 10.0,
+            known: true,
             detail: "max".into(),
         }];
         let result = compute_score(&factors, 0);
@@ -320,6 +345,7 @@ mod tests {
             name: "test".into(),
             score: 0,
             weight: 10.0,
+            known: true,
             detail: "min".into(),
         }];
         let result_zero = compute_score(&factors_zero, 0);
@@ -348,7 +374,7 @@ mod tests {
         let factors = default_factors();
         let result = compute_score(&factors, 0);
         assert_eq!(result.score, 0);
-        assert_eq!(result.recommendation, TrustAction::Quarantine);
+        assert_eq!(result.recommendation, TrustAction::Restrict);
     }
 
     #[test]
@@ -365,6 +391,6 @@ mod tests {
     fn empty_factors_yield_zero() {
         let result = compute_score(&[], 0);
         assert_eq!(result.score, 0);
-        assert_eq!(result.recommendation, TrustAction::Quarantine);
+        assert_eq!(result.recommendation, TrustAction::Restrict);
     }
 }

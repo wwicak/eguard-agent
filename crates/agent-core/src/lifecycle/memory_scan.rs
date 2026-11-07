@@ -1,8 +1,6 @@
 use tracing::{info, warn};
 
 use detection::memory_scanner::{find_suspicious_pids, MemoryScanResult, ScanMode};
-use detection::{Confidence, EventClass, TelemetryEvent};
-use response::plan_action;
 
 use super::{interval_due, AgentRuntime};
 
@@ -80,92 +78,120 @@ impl AgentRuntime {
     }
 
     async fn handle_memory_scan_detection(&mut self, detection: &MemoryScanResult, now_unix: i64) {
-        let mut notes = Vec::new();
-        notes.push(format!("memory_hits={}", detection.hits.len()));
-        notes.push(format!("bytes_scanned={}", detection.bytes_scanned));
-        if let Some(first) = detection.hits.first() {
-            notes.push(format!("rule_name={}", first.rule_name));
-            notes.push(format!("matched_literal={}", first.matched_literal));
-            notes.push(format!("region_perms={}", first.region_perms));
+        if detection.hits.is_empty() {
+            return;
         }
-        if !detection.errors.is_empty() {
-            notes.push(format!("scan_errors={}", detection.errors.len()));
-        }
-
-        let event = TelemetryEvent {
-            ts_unix: now_unix,
-            event_class: EventClass::Alert,
-            pid: detection.pid,
-            ppid: 0,
-            uid: 0,
-            process: "memory_scan".to_string(),
-            parent_process: String::new(),
-            session_id: detection.pid,
-            file_path: None,
-            file_write: false,
-            file_hash: None,
-            dst_port: None,
-            dst_ip: None,
-            dst_domain: None,
-            command_line: Some(notes.join(";")),
-            event_size: Some(detection.bytes_scanned),
-            container_runtime: None,
-            container_id: None,
-            container_escape: false,
-            container_privileged: false,
-        };
-
-        let detection_outcome = match self.detection_state.process_event(&event) {
-            Ok(outcome) => outcome,
-            Err(err) => {
-                warn!(error = %err, "memory scan event processing failed");
-                return;
-            }
-        };
-
-        let confidence = detection_outcome.confidence.max(Confidence::VeryHigh);
-        if std::env::var("EGUARD_DEBUG_EVENT_LOG")
-            .ok()
-            .filter(|v| !v.trim().is_empty())
-            .is_some()
-        {
-            let rule_name = detection
-                .hits
-                .first()
-                .map(|hit| hit.rule_name.clone())
-                .unwrap_or_default();
-            let matched_literal = detection
-                .hits
-                .first()
-                .map(|hit| hit.matched_literal.clone())
-                .unwrap_or_default();
-            info!(
-                event_class = ?event.event_class,
-                pid = event.pid,
-                confidence = ?confidence,
-                rule_name = %rule_name,
-                matched_literal = %matched_literal,
-                "debug memory scan detection"
-            );
-        }
-        let response_cfg = self.effective_response_config();
-        let action = self.sanitize_planned_action_for_event(
-            plan_action(confidence, &response_cfg),
-            &event,
-            &detection_outcome,
-        );
-        let rule_name = detection
+        // Memory substring hits are alert-only, never autonomous response evidence.
+        let strong = detection.hits.iter().any(|hit| {
+            hit.region_perms.as_bytes().get(2) == Some(&b'x')
+                && (hit.region_path.is_empty()
+                    || hit.region_path.starts_with('[')
+                    || hit.region_path.contains("memfd:"))
+        });
+        let confidence = if strong { "high" } else { "medium" };
+        let hits: Vec<_> = detection
             .hits
-            .first()
-            .map(|hit| hit.rule_name.clone())
-            .unwrap_or_default();
-        self.report_local_action_if_needed(
-            action,
-            confidence,
-            &event,
-            now_unix,
-            (&["BEH_behavioral".to_string()], &rule_name, "behavioral"),
-        )
-        .await;
+            .iter()
+            .map(|hit| {
+                serde_json::json!({
+                    "rule_name": hit.rule_name, "region_start": hit.region_start,
+                    "region_perms": hit.region_perms, "region_path": hit.region_path,
+                })
+            })
+            .collect();
+        let rule_name = format!("memory:{}", detection.hits[0].rule_name);
+        let envelope = grpc_client::EventEnvelope {
+            agent_id: self.config.agent_id.clone(),
+            event_type: "alert".into(),
+            severity: confidence.into(),
+            rule_name,
+            created_at_unix: now_unix,
+            payload_json: serde_json::json!({
+                "observed_at_unix": now_unix,
+                "event": { "event_class": "alert", "ts_unix": now_unix,
+                    "pid": detection.pid, "process": "memory_scan", "file_write": false },
+                "detection": { "confidence": confidence, "rule_type": "memory",
+                    "detection_layers": ["memory_scan"], "memory_scan_hits": hits,
+                    "bytes_scanned": detection.bytes_scanned, "scan_errors": detection.errors.len(),
+                    "signals": detection::DetectionSignals::default() },
+            })
+            .to_string(),
+        };
+        if let Err(err) = self.buffer.enqueue(envelope) {
+            warn!(error = %err, "memory scan alert enqueue failed");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use detection::memory_scanner::MemoryYaraHit;
+
+    #[tokio::test]
+    async fn rafix_memory_hits_are_reported_without_destructive_response() {
+        let root = std::env::temp_dir().join(format!("rafix-memory-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let replay = root.join("replay");
+        std::fs::write(&replay, "").unwrap();
+        let _guard = crate::test_support::TestEnvGuard::new(&[
+            "EGUARD_EBPF_REPLAY_PATH",
+            "EGUARD_AGENT_DATA_DIR",
+            "EGUARD_BASELINE_PATH",
+        ]);
+        std::env::set_var("EGUARD_EBPF_REPLAY_PATH", &replay);
+        std::env::set_var("EGUARD_AGENT_DATA_DIR", &root);
+        std::env::set_var("EGUARD_BASELINE_PATH", root.join("baseline.bin"));
+        let mut runtime = AgentRuntime::new(crate::config::AgentConfig {
+            offline_buffer_backend: "memory".into(),
+            server_addr: "127.0.0.1:1".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        for (region_path, expected) in [
+            ("", "high"),
+            ("/memfd:stage (deleted)", "high"),
+            ("/usr/lib/libfixture.so", "medium"),
+        ] {
+            let result = MemoryScanResult {
+                pid: 424242,
+                regions_scanned: 1,
+                bytes_scanned: 4096,
+                errors: vec![],
+                hits: vec![MemoryYaraHit {
+                    rule_name: "synthetic_memory_rule".into(),
+                    matched_literal: "fixture".into(),
+                    region_start: 0x1000,
+                    region_perms: "r-xp".into(),
+                    region_path: region_path.into(),
+                }],
+            };
+            let before = runtime.buffer.pending_count();
+            runtime.handle_memory_scan_detection(&result, 1).await;
+            assert_eq!(
+                runtime.buffer.pending_count(),
+                before + 1,
+                "memory hit was silently dropped"
+            );
+            let events = runtime.buffer.peek_batch(10).unwrap();
+            assert_eq!(events.last().unwrap().1.severity, expected);
+            let payload: serde_json::Value =
+                serde_json::from_str(&events.last().unwrap().1.payload_json).unwrap();
+            assert_eq!(
+                payload["detection"]["memory_scan_hits"][0]["rule_name"],
+                "synthetic_memory_rule"
+            );
+            assert!(runtime.pending_response_actions.is_empty());
+        }
+        let empty = MemoryScanResult {
+            pid: 1,
+            hits: vec![],
+            regions_scanned: 1,
+            bytes_scanned: 4096,
+            errors: vec![],
+        };
+        runtime.handle_memory_scan_detection(&empty, 1).await;
+        assert_eq!(runtime.buffer.pending_count(), 3);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

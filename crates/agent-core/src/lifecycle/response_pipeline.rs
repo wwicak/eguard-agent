@@ -54,7 +54,10 @@ impl AgentRuntime {
         };
 
         if self.host_control.isolated
-            || !Self::has_concrete_response_evidence(&evaluation.detection_outcome)
+            || !Self::has_concrete_response_evidence(
+                &evaluation.detection_event,
+                &evaluation.detection_outcome,
+            )
         {
             return;
         }
@@ -317,35 +320,63 @@ impl AgentRuntime {
             });
     }
 
-    pub(super) fn has_concrete_response_evidence(outcome: &DetectionOutcome) -> bool {
-        if outcome.confidence < detection::Confidence::VeryHigh {
+    pub(super) fn has_concrete_response_evidence(
+        event: &detection::TelemetryEvent,
+        outcome: &DetectionOutcome,
+    ) -> bool {
+        if outcome.confidence < detection::Confidence::VeryHigh || event.file_unlink {
             return false;
         }
-        if outcome.signals.deception_triggered {
-            return true;
+        let file_event = event.event_class == detection::EventClass::ProcessExec
+            || (event.event_class == detection::EventClass::FileOpen && event.file_write);
+        if !file_event {
+            return false;
         }
+        // Shared hosting and dirty IP/domain feeds are alert-only. Only an exact
+        // hash of the executed image or written file supports the IOC path.
         if outcome.signals.z1_exact_ioc
             && outcome.layer1.result == detection::Layer1Result::ExactMatch
             && outcome
                 .layer1
-                .matched_fields
+                .exact_matched_fields
                 .iter()
-                .any(|field| matches!(field.as_str(), "file_hash" | "dst_ip" | "dst_domain"))
+                .any(|f| f == "file_hash")
+            && event
+                .file_hash
+                .as_deref()
+                .is_some_and(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()))
         {
             return true;
         }
-        // Anomaly/ML and prefilter text are not independent attack evidence.
-        [
-            !outcome.temporal_hits.is_empty(),
-            !outcome.kill_chain_hits.is_empty(),
-            !outcome.yara_hits.is_empty(),
-            !outcome.exploit_indicators.is_empty(),
-            !outcome.tamper_indicators.is_empty(),
-        ]
-        .into_iter()
-        .filter(|active| *active)
-        .count()
-            >= 2
+        let Some(path) = event.file_path.as_deref().filter(|p| !p.is_empty()) else {
+            return false;
+        };
+        let Some(id) = outcome
+            .observation_id
+            .as_deref()
+            .filter(|id| !id.is_empty())
+        else {
+            return false;
+        };
+        // Substring YARA, heuristics, deception and broad chains are not enough
+        // alone. Both sources must witness this exact file event, pid and session.
+        event.pid != 0
+            && event.session_id != 0
+            && outcome
+                .yara_hits
+                .iter()
+                .any(|hit| !hit.rule_name.is_empty() && hit.source == path)
+            && outcome.kill_chain_evidence.iter().any(|chain| {
+                !chain.template.is_empty()
+                    && outcome.kill_chain_hits.contains(&chain.template)
+                    && chain.witnesses.iter().any(|w| {
+                        w.event_id == id
+                            && w.pid == event.pid
+                            && w.session_id == event.session_id
+                            && w.ts_unix == event.ts_unix
+                            && w.file_path.as_deref() == Some(path)
+                    })
+            })
     }
 
     pub(super) fn sanitize_planned_action_for_event(
@@ -359,7 +390,7 @@ impl AgentRuntime {
             super::PlannedAction::KillOnly
                 | super::PlannedAction::QuarantineOnly
                 | super::PlannedAction::KillAndQuarantine
-        ) && !Self::has_concrete_response_evidence(outcome)
+        ) && !Self::has_concrete_response_evidence(event, outcome)
         {
             return super::PlannedAction::AlertOnly;
         }
@@ -404,7 +435,10 @@ impl AgentRuntime {
         let cfg = self.effective_response_config();
         if !cfg.autonomous_response
             || cfg.dry_run
-            || !Self::has_concrete_response_evidence(&evaluation.detection_outcome)
+            || !Self::has_concrete_response_evidence(
+                &evaluation.detection_event,
+                &evaluation.detection_outcome,
+            )
         {
             return;
         }
@@ -819,9 +853,10 @@ mod tests {
         let _guard = crate::test_support::TestEnvGuard::new(&[]);
         let mut runtime = runtime();
         let mut evaluation = windows_evaluation();
-        evaluation.detection_event.file_hash = Some("known-malware-sha256".into());
+        evaluation.detection_event.event_class = EventClass::ProcessExec;
+        evaluation.detection_event.file_hash = Some("ab".repeat(32));
         let mut layer1 = detection::IocLayer1::new();
-        layer1.load_hashes(["known-malware-sha256".into()]);
+        layer1.load_hashes(["ab".repeat(32)]);
         let mut engine = detection::DetectionEngine::new(
             layer1,
             detection::TemporalEngine::with_default_rules(),
@@ -839,6 +874,202 @@ mod tests {
         );
     }
 
+    fn assert_weak_path_alert_only(requested: &str) {
+        let e = quarantine_event("/tmp/rafix-synthetic", true, EventClass::FileOpen);
+        let mut cases = Vec::new();
+        let mut a1 = DetectionOutcome::default();
+        a1.temporal_hits.push("prefilter_sequence".into());
+        a1.signals.l1_prefilter_hit = true;
+        cases.push(("A1-prefilter-temporal", a1));
+        let mut a2 = DetectionOutcome::default();
+        a2.temporal_hits.push("download_exec".into());
+        a2.kill_chain_hits.push("generic_shell_network".into());
+        cases.push(("A2-broad-chain", a2));
+        let mut a4 = DetectionOutcome::default();
+        a4.exploit_indicators.push("fileless_devfd".into());
+        a4.tamper_indicators.push("tamper:/proc/self/exe".into());
+        cases.push(("A4-runc-clone", a4));
+        let mut a6 = DetectionOutcome::default();
+        a6.temporal_hits.push("download_exec".into());
+        a6.yara_hits.push(detection::YaraHit {
+            rule_name: "broad_literal".into(),
+            source: "/tmp/rafix-synthetic".into(),
+            matched_literal: "bash".into(),
+        });
+        cases.push(("A6-substring-yara", a6));
+        let mut deception = DetectionOutcome::default();
+        deception.signals.deception_triggered = true;
+        cases.push(("deception-real-user-file", deception));
+        let mut memory = DetectionOutcome::default();
+        memory.signals.yara_hit = true;
+        cases.push(("memory-scan", memory));
+        for field in ["dst_domain", "dst_ip"] {
+            let mut ioc = DetectionOutcome::default();
+            ioc.signals.z1_exact_ioc = true;
+            ioc.layer1.result = detection::Layer1Result::ExactMatch;
+            ioc.layer1.matched_fields.push(field.into());
+            cases.push((field, ioc));
+        }
+        let (name, mut o) = cases
+            .into_iter()
+            .find(|(name, _)| *name == requested)
+            .expect("case exists");
+        o.confidence = detection::Confidence::Definite;
+        assert!(
+            !AgentRuntime::has_concrete_response_evidence(&e, &o),
+            "{name}"
+        );
+    }
+    #[test]
+    fn rafix_response_a1_prefilter_temporal_is_alert_only() {
+        assert_weak_path_alert_only("A1-prefilter-temporal");
+    }
+    #[test]
+    fn rafix_response_a2_broad_chain_is_alert_only() {
+        assert_weak_path_alert_only("A2-broad-chain");
+    }
+    #[test]
+    fn rafix_response_a4_runc_clone_is_alert_only() {
+        assert_weak_path_alert_only("A4-runc-clone");
+    }
+    #[test]
+    fn rafix_response_a6_substring_yara_is_alert_only() {
+        assert_weak_path_alert_only("A6-substring-yara");
+    }
+    #[test]
+    fn rafix_response_deception_alone_is_alert_only() {
+        assert_weak_path_alert_only("deception-real-user-file");
+    }
+    #[test]
+    fn rafix_response_memory_scan_is_alert_only() {
+        assert_weak_path_alert_only("memory-scan");
+    }
+    #[test]
+    fn rafix_response_domain_ioc_is_alert_only() {
+        assert_weak_path_alert_only("dst_domain");
+    }
+    #[test]
+    fn rafix_response_ip_ioc_is_alert_only() {
+        assert_weak_path_alert_only("dst_ip");
+    }
+
+    #[test]
+    fn rafix_response_domain_ioc_remains_a_definite_alert_not_kill_evidence() {
+        let mut engine = detection::DetectionEngine::default_with_rules();
+        engine.layer1.load_domains(["shared.fixture.test".into()]);
+        let mut e = quarantine_event("/tmp/rafix-domain", false, EventClass::ProcessExec);
+        e.file_hash = None;
+        e.dst_domain = Some("shared.fixture.test".into());
+        let o = engine.process_event(&e);
+        assert_eq!(o.confidence, detection::Confidence::Definite);
+        assert!(!AgentRuntime::has_concrete_response_evidence(&e, &o));
+    }
+
+    fn bound_file_evidence() -> (TelemetryEvent, DetectionOutcome) {
+        let e = quarantine_event("/tmp/rafix-payload", true, EventClass::FileOpen);
+        let mut o = DetectionOutcome::default();
+        o.confidence = detection::Confidence::VeryHigh;
+        o.observation_id = Some("current-file-event".into());
+        o.kill_chain_hits.push("named-file-chain".into());
+        o.kill_chain_evidence.push(detection::KillChainEvidence {
+            template: "named-file-chain".into(),
+            witnesses: vec![detection::KillChainWitness {
+                event_id: "current-file-event".into(),
+                ts_unix: e.ts_unix,
+                pid: e.pid,
+                process: e.process.clone(),
+                exec_generation: 1,
+                file_path: e.file_path.clone(),
+                session_id: e.session_id,
+            }],
+            peer_ip: None,
+            peer_port: None,
+            peer_is_configured_server: false,
+        });
+        o.yara_hits.push(detection::YaraHit {
+            rule_name: "file-signature".into(),
+            source: e.file_path.clone().unwrap(),
+            matched_literal: "synthetic".into(),
+        });
+        (e, o)
+    }
+
+    #[test]
+    fn rafix_response_exact_hash_only_for_executed_image_or_written_file() {
+        let mut e = quarantine_event("/tmp/rafix-payload", true, EventClass::FileOpen);
+        e.file_hash = Some("ab".repeat(32));
+        let mut o = DetectionOutcome::default();
+        o.confidence = detection::Confidence::Definite;
+        o.signals.z1_exact_ioc = true;
+        o.layer1.result = detection::Layer1Result::ExactMatch;
+        o.layer1.matched_fields.push("file_hash".into());
+        assert!(
+            !AgentRuntime::has_concrete_response_evidence(&e, &o),
+            "prefilter is not exact hash"
+        );
+        o.layer1.exact_matched_fields.push("file_hash".into());
+        assert!(AgentRuntime::has_concrete_response_evidence(&e, &o));
+        e.file_write = false;
+        assert!(
+            !AgentRuntime::has_concrete_response_evidence(&e, &o),
+            "read of a file is not the running image"
+        );
+        e.event_class = EventClass::ProcessExec;
+        assert!(AgentRuntime::has_concrete_response_evidence(&e, &o));
+        e.event_class = EventClass::NetworkConnect;
+        assert!(!AgentRuntime::has_concrete_response_evidence(&e, &o));
+        e.event_class = EventClass::ProcessExec;
+        e.file_hash = None;
+        assert!(!AgentRuntime::has_concrete_response_evidence(&e, &o));
+        e.file_hash = Some("invalid-hash".into());
+        assert!(!AgentRuntime::has_concrete_response_evidence(&e, &o));
+    }
+
+    #[test]
+    fn rafix_response_yara_and_chain_must_bind_same_file_event() {
+        let (e, o) = bound_file_evidence();
+        assert!(AgentRuntime::has_concrete_response_evidence(&e, &o));
+        let mut deleted = e.clone();
+        deleted.file_unlink = true;
+        assert!(!AgentRuntime::has_concrete_response_evidence(&deleted, &o));
+        for change in 0..13 {
+            let mut bad = o.clone();
+            match change {
+                0 => bad.kill_chain_evidence[0].witnesses[0].file_path = Some("/tmp/other".into()),
+                1 => bad.kill_chain_evidence[0].witnesses[0].pid += 1,
+                2 => bad.kill_chain_evidence[0].witnesses[0].session_id += 1,
+                3 => bad.kill_chain_evidence[0].witnesses[0].event_id = "older-event".into(),
+                4 => bad.kill_chain_evidence[0].witnesses[0].ts_unix -= 1,
+                5 => bad.yara_hits[0].source = "/tmp/other".into(),
+                6 => bad.kill_chain_evidence[0].template = "other-template".into(),
+                7 => bad.kill_chain_hits.clear(),
+                8 => bad.yara_hits.clear(),
+                9 => bad.confidence = detection::Confidence::High,
+                10 => bad.observation_id = None,
+                11 => bad.yara_hits[0].rule_name.clear(),
+                _ => {
+                    bad.kill_chain_evidence[0].template.clear();
+                    bad.kill_chain_hits = vec![String::new()];
+                }
+            }
+            assert!(
+                !AgentRuntime::has_concrete_response_evidence(&e, &bad),
+                "condition {change}"
+            );
+        }
+    }
+
+    #[test]
+    fn rafix_response_deception_requires_the_same_strong_corroboration() {
+        let (e, mut o) = bound_file_evidence();
+        o.signals.deception_triggered = true;
+        assert!(AgentRuntime::has_concrete_response_evidence(&e, &o));
+        o.yara_hits.clear();
+        assert!(!AgentRuntime::has_concrete_response_evidence(&e, &o));
+        o.kill_chain_evidence.clear();
+        assert!(!AgentRuntime::has_concrete_response_evidence(&e, &o));
+    }
+
     fn quarantine_event(path: &str, file_write: bool, event_class: EventClass) -> TelemetryEvent {
         TelemetryEvent {
             ts_unix: 1_700_000_000,
@@ -850,8 +1081,11 @@ mod tests {
             parent_process: "sshd".to_string(),
             session_id: 1,
             file_path: Some(path.to_string()),
+            // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+            process_exe: None,
+            file_unlink: false,
             file_write,
-            file_hash: None,
+            file_hash: Some("ab".repeat(32)),
             dst_port: None,
             dst_ip: None,
             dst_domain: None,
@@ -865,12 +1099,12 @@ mod tests {
     }
 
     fn concrete_outcome() -> DetectionOutcome {
-        DetectionOutcome {
-            confidence: detection::Confidence::VeryHigh,
-            temporal_hits: vec!["credential_dump_sequence".into()],
-            exploit_indicators: vec!["process_injection".into()],
-            ..Default::default()
-        }
+        let mut outcome = DetectionOutcome::default();
+        outcome.confidence = detection::Confidence::VeryHigh;
+        outcome.signals.z1_exact_ioc = true;
+        outcome.layer1.result = detection::Layer1Result::ExactMatch;
+        outcome.layer1.exact_matched_fields.push("file_hash".into());
+        outcome
     }
 
     #[test]
@@ -946,7 +1180,7 @@ mod tests {
     }
 
     #[test]
-    fn quarantine_only_is_retained_for_read_only_exact_ioc_file() {
+    fn quarantine_only_is_rejected_for_read_only_exact_ioc_file() {
         let runtime = runtime();
         let event = quarantine_event(
             "/tmp/platinum_exact_ioc_read_quarantine_test.txt",
@@ -962,7 +1196,7 @@ mod tests {
                 &event,
                 &outcome,
             ),
-            super::super::PlannedAction::QuarantineOnly
+            super::super::PlannedAction::AlertOnly
         );
     }
 

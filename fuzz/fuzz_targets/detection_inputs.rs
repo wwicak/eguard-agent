@@ -47,6 +47,9 @@ fuzz_target!(|data: &[u8]| {
         parent_process: bounded_text(data, 37, 32),
         session_id: ppid,
         file_path: Some(bounded_text(data, 69, 48)),
+        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        process_exe: None,
+        file_unlink: false,
         file_write: data.get(68).map(|v| v % 2 == 0).unwrap_or(false),
         file_hash: Some(bounded_text(data, 117, 64)),
         dst_port: data.get(181).copied().map(u16::from),

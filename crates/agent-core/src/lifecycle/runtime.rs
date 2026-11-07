@@ -137,6 +137,8 @@ pub struct AgentRuntime {
     pub(super) last_kernel_integrity_scan_unix: Option<i64>,
     // shortcut: in-memory only, re-reports once per agent restart; persist it if restarts get frequent.
     pub(super) last_kernel_integrity_report: Option<crate::platform::KernelIntegrityReport>,
+    // RAFIX shared: retain scan baselines even when state persistence is unavailable.
+    pub(super) kernel_integrity_scan_state: Option<super::kernel_integrity_scan::KernelScanState>,
     pub(super) tamper_forced_degraded: bool,
     pub(super) last_logged_posture: Option<nac::Posture>,
     pub(super) enrolled: bool,
@@ -576,6 +578,7 @@ impl AgentRuntime {
             last_memory_scan_unix: None,
             last_kernel_integrity_scan_unix: None,
             last_kernel_integrity_report: None,
+            kernel_integrity_scan_state: None,
             tamper_forced_degraded: false,
             last_logged_posture: None,
             latest_threat_version: None,

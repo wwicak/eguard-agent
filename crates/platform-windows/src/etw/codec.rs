@@ -1219,3 +1219,278 @@ fn unknown_process_versions_stay_visible_without_identity() {
         }
     }
 }
+
+/// Manifest IDs/layouts: repnz/etw-providers-docs, Win10-18990 provider manifests.
+/// Unknown versions and truncated records must not enter classic/text fallbacks.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn decode_manifest_record(
+    provider: &str,
+    id: u16,
+    opcode: u8,
+    version: u8,
+    pointer_size: usize,
+    pid: u32,
+    ts: u64,
+    data: &[u8],
+) -> Option<RawEvent> {
+    use super::providers::*;
+    if !matches!(pointer_size, 4 | 8) {
+        return None;
+    }
+    if provider == KERNEL_NETWORK {
+        return decode_kernel_network(id, pid, ts, data);
+    }
+    if provider == KERNEL_PROCESS {
+        return match id {
+            1 | 2 => decode_kernel_process_versioned(id as u8, version, pid, ts, data),
+            5 if version == 0 => {
+                // ImageBase(P), ImageSize(P), PID, Checksum, Timestamp, DefaultBase(P).
+                let offset = 3 * pointer_size + 12;
+                let path = read_utf16_str(data, offset)?;
+                let payload = format!("path={}", crate::payload_codec::escape_payload_value(&path));
+                Some(RawEvent {
+                    event_type: EventType::ModuleLoad,
+                    pid: read_u32_le(data, 2 * pointer_size),
+                    ts_ns: ts,
+                    fields: crate::RawEventFields {
+                        path: Some(path),
+                        ..Default::default()
+                    },
+                    payload,
+                    ..Default::default()
+                })
+            }
+            _ => None,
+        };
+    }
+    if provider == KERNEL_GENERAL {
+        return None;
+    }
+    if provider != KERNEL_FILE {
+        return decode_etw_record_versioned(provider, opcode, version, pid, ts, data);
+    }
+    if version > 1 {
+        return None;
+    }
+    let p = pointer_size;
+    let ptr = |offset| {
+        if p == 8 {
+            read_u64_le(data, offset)
+        } else {
+            u64::from(read_u32_le(data, offset))
+        }
+    };
+    let mut fields = crate::RawEventFields::default();
+    let (event_type, mut payload) = match id {
+        10 => {
+            fields.path = Some(read_utf16_str(data, p)?);
+            (EventType::FileOpen, format!("file_key=0x{:x}", ptr(0)))
+        }
+        12 | 30 => {
+            let options = if version == 0 { 3 * p } else { 2 * p + 4 };
+            fields.path = Some(read_utf16_str(data, options + 12)?);
+            let disposition = read_u32_le(data, options) >> 24;
+            // NT create disposition occupies the upper byte of CreateOptions.
+            let write = id == 30 || matches!(disposition, 0 | 2 | 4 | 5);
+            fields.flags = Some(if write { 2 } else { 0 });
+            (
+                EventType::FileOpen,
+                format!(
+                    "file_object=0x{:x};flags={}",
+                    ptr(if version == 0 { 2 * p } else { p }),
+                    fields.flags.unwrap()
+                ),
+            )
+        }
+        16 => {
+            let min = if version == 0 {
+                8 + 4 * p + 8
+            } else {
+                8 + 3 * p + 16
+            };
+            if data.len() < min {
+                return None;
+            }
+            let object = if version == 0 { 8 + 2 * p } else { 8 + p };
+            let size = if version == 0 {
+                8 + 4 * p
+            } else {
+                8 + 3 * p + 4
+            };
+            fields.size = Some(u64::from(read_u32_le(data, size)));
+            (
+                EventType::FileWrite,
+                format!(
+                    "file_object=0x{:x};file_key=0x{:x};size={}",
+                    ptr(object),
+                    ptr(object + p),
+                    fields.size.unwrap()
+                ),
+            )
+        }
+        26 | 27 => {
+            let offset = if version == 0 { 5 * p + 4 } else { 4 * p + 8 };
+            let path = read_utf16_str(data, offset)?;
+            let key = if id == 27 { "rename_path" } else { "path" };
+            let suffix = format!(
+                ";{key}={}",
+                crate::payload_codec::escape_payload_value(&path)
+            );
+            // RenamePath's source/destination role is not established. Keep the
+            // observation for telemetry without inventing a persistence write.
+            fields.path = Some(path);
+            let object = if version == 0 { 2 * p } else { p };
+            (
+                if id == 26 {
+                    EventType::FileUnlink
+                } else {
+                    EventType::FileRename
+                },
+                format!(
+                    "file_object=0x{:x};file_key=0x{:x}{suffix}",
+                    ptr(object),
+                    ptr(object + p)
+                ),
+            )
+        }
+        _ => return None,
+    };
+    if let Some(path) = fields.path.as_deref().filter(|_| !matches!(id, 26 | 27)) {
+        payload.push_str(&format!(
+            ";path={}",
+            crate::payload_codec::escape_payload_value(path)
+        ));
+    }
+    Some(RawEvent {
+        event_type,
+        pid,
+        ts_ns: ts,
+        fields,
+        payload,
+        ..Default::default()
+    })
+}
+
+#[cfg(test)]
+mod rafix_manifest_tests {
+    use super::super::providers::*;
+    use super::*;
+
+    fn path(data: &mut Vec<u8>, p: &str) {
+        data.extend(
+            p.encode_utf16()
+                .chain(std::iter::once(0))
+                .flat_map(u16::to_le_bytes),
+        );
+    }
+    fn decode(id: u16, version: u8, ptr: usize, data: &[u8]) -> RawEvent {
+        // Manifest events have opcode zero; ID, not opcode, defines the layout.
+        decode_manifest_record(KERNEL_FILE, id, 0, version, ptr, 42, 1, data).unwrap()
+    }
+    #[test]
+    fn rafix_manifest_create_dispositions_and_layouts() {
+        for ptr in [4, 8] {
+            for version in [0, 1] {
+                for disposition in 0u32..=5 {
+                    let option_offset = if version == 0 { 3 * ptr } else { 2 * ptr + 4 };
+                    let mut data = vec![0; option_offset + 12];
+                    data[option_offset..option_offset + 4]
+                        .copy_from_slice(&(disposition << 24).to_le_bytes());
+                    let startup = r"C:\Users\fixture\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\drop.lnk";
+                    path(&mut data, startup);
+                    let raw = decode(12, version, ptr, &data);
+                    assert!(matches!(raw.event_type, EventType::FileOpen));
+                    assert_eq!(raw.fields.path.as_deref(), Some(startup));
+                    let enriched = crate::enrich_event(raw);
+                    assert_eq!(
+                        enriched.file_write,
+                        matches!(disposition, 0 | 2 | 4 | 5),
+                        "v{version} ptr={ptr} disposition={disposition}"
+                    );
+                    assert!(crate::enrich_event(decode(30, version, ptr, &data)).file_write);
+                }
+            }
+        }
+    }
+    #[test]
+    fn rafix_manifest_write_delete_rename_and_name_events() {
+        for ptr in [4, 8] {
+            for version in [0, 1] {
+                let mut write = vec![
+                    0;
+                    if version == 0 {
+                        8 + 4 * ptr + 8
+                    } else {
+                        8 + 3 * ptr + 16
+                    }
+                ];
+                let size_offset = if version == 0 {
+                    8 + 4 * ptr
+                } else {
+                    8 + 3 * ptr + 4
+                };
+                write[size_offset..size_offset + 4].copy_from_slice(&512u32.to_le_bytes());
+                let raw = decode(16, version, ptr, &write);
+                assert!(matches!(raw.event_type, EventType::FileWrite));
+                assert_eq!(raw.fields.size, Some(512));
+                assert!(crate::enrich_event(raw).file_write);
+                let mut data = vec![
+                    0;
+                    if version == 0 {
+                        5 * ptr + 4
+                    } else {
+                        4 * ptr + 8
+                    }
+                ];
+                path(&mut data, r"C:\fixture\drop.lnk");
+                assert!(matches!(
+                    decode(26, version, ptr, &data).event_type,
+                    EventType::FileUnlink
+                ));
+                assert!(matches!(
+                    decode(27, version, ptr, &data).event_type,
+                    EventType::FileRename
+                ));
+            }
+            let mut name = vec![0; ptr];
+            path(&mut name, r"C:\fixture\existing.txt");
+            assert!(!crate::enrich_event(decode(10, 0, ptr, &name)).file_write);
+        }
+        assert!(decode_manifest_record(KERNEL_FILE, 99, 0, 0, 8, 42, 1, &[0; 80]).is_none());
+        assert!(decode_manifest_record(KERNEL_FILE, 12, 0, 9, 8, 42, 1, &[0; 80]).is_none());
+        assert!(decode_manifest_record(KERNEL_FILE, 12, 0, 1, 8, 42, 1, &[0; 12]).is_none());
+    }
+    #[test]
+    fn rafix_manifest_rename_path_does_not_invent_a_destination() {
+        let startup =
+            r"C:\Users\fixture\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\x.lnk";
+        let mut data = vec![0; 40];
+        path(&mut data, startup);
+        let raw = decode(27, 1, 8, &data);
+        assert!(matches!(raw.event_type, EventType::FileRename));
+        assert!(raw.fields.secondary_path.is_none());
+        assert_eq!(raw.fields.path.as_deref(), Some(startup));
+        assert_eq!(raw.fields.flags.unwrap_or(0) & 2, 0);
+        assert!(raw.payload.contains("rename_path="));
+        assert!(!raw.payload.contains("dst="));
+        let enriched = crate::enrich_event(raw);
+        assert!(enriched.file_path_secondary.is_none());
+        assert!(!enriched.file_write);
+    }
+
+    #[test]
+    fn rafix_manifest_process_imageload_not_kernel_general() {
+        let mut data = vec![0; 36];
+        data[16..20].copy_from_slice(&123u32.to_le_bytes());
+        path(&mut data, r"C:\Users\fixture\AppData\Local\Temp\x.dll");
+        let raw = decode_manifest_record(KERNEL_PROCESS, 5, 0, 0, 8, 42, 1, &data).unwrap();
+        assert!(matches!(raw.event_type, EventType::ModuleLoad));
+        assert_eq!(raw.pid, 123);
+        assert_eq!(
+            raw.fields.path.as_deref(),
+            Some(r"C:\Users\fixture\AppData\Local\Temp\x.dll")
+        );
+        assert!(decode_manifest_record(KERNEL_GENERAL, 1, 0, 0, 8, 42, 1, &data).is_none());
+        assert!(decode_manifest_record(KERNEL_PROCESS, 6, 0, 0, 8, 42, 1, &data).is_none());
+    }
+}
