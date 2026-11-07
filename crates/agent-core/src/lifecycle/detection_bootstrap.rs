@@ -760,7 +760,9 @@ rule eguard_custom_dir_test {
         let outcome = engine.process_event(&event);
         assert_eq!(outcome.yara_hits.len(), 1);
         assert_eq!(outcome.yara_hits[0].rule_name, "eguard_custom_dir_test");
-        assert!(!super::super::AgentRuntime::has_concrete_response_evidence(&event, &outcome));
+        assert!(!super::super::AgentRuntime::has_concrete_response_evidence(
+            &event, &outcome
+        ));
         std::fs::write(&sample_path, b"ordinary benign bytes").unwrap();
         assert!(engine.process_event(&event).yara_hits.is_empty());
 
@@ -898,7 +900,11 @@ rule eguard_custom_dir_test {
                 super::SIGMA_WIN_SHADOW_COPY_DELETE,
             ] {
                 engine
-                    .load_sigma_rule_yaml(&source.replace("  product: windows\n", ""))
+                    .load_sigma_rule_yaml(
+                        &source
+                            .replace("\r\n", "\n")
+                            .replace("  product: windows\n", ""),
+                    )
                     .unwrap();
             }
         }
@@ -1633,7 +1639,10 @@ rule eguard_eicar_test {
         );
         // rules/yara/default.yar owns canonical EICAR; do not add a fixture duplicate.
         let names = engine.yara.rule_names();
-        assert_eq!(names.iter().filter(|name| name.contains("eicar")).count(), 1);
+        assert_eq!(
+            names.iter().filter(|name| name.contains("eicar")).count(),
+            1
+        );
         std::fs::write(
             &sample,
             b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*",

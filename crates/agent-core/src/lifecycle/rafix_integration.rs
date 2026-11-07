@@ -32,7 +32,11 @@ fn boot_engine(include_pack: bool) -> DetectionEngine {
                 .0;
             if yaml.contains("  product: windows") {
                 engine
-                    .load_sigma_rule_yaml(&yaml.replace("  product: windows\n", ""))
+                    .load_sigma_rule_yaml(
+                        &yaml
+                            .replace("\r\n", "\n")
+                            .replace("  product: windows\n", ""),
+                    )
                     .unwrap();
             }
         }
@@ -182,7 +186,9 @@ fn pack_fires(_: &str, sequence: &[TelemetryEvent]) -> bool {
             .split_once("\"#;")
             .unwrap()
             .0;
-        let yaml = yaml.replace("  product: windows\n", "");
+        let yaml = yaml
+            .replace("\r\n", "\n")
+            .replace("  product: windows\n", "");
         match compile_sigma_rule(&yaml) {
             Ok(rule) => engine.add_rule(rule),
             Err(reason) => eprintln!("builtin {name} skipped: {reason}"),
@@ -198,6 +204,7 @@ fn pack_fires(_: &str, sequence: &[TelemetryEvent]) -> bool {
     for path in paths {
         let source = std::fs::read_to_string(path)
             .unwrap()
+            .replace("\r\n", "\n")
             .replace("  product: windows\n", "")
             .replace("  product: linux\n", "");
         engine.add_rule(compile_sigma_rule(&source).unwrap());
@@ -266,6 +273,7 @@ fn retained_download_declares_medium_and_matches_rustup() {
         .join("../../rules/sigma/linux_download_exec.yml");
     let source = std::fs::read_to_string(root)
         .unwrap()
+        .replace("\r\n", "\n")
         .replace("  product: linux\n", "");
     assert_eq!(
         compile_sigma_rule(&source).unwrap().level,

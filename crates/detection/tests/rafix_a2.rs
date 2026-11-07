@@ -46,7 +46,8 @@ fn production_engine() -> DetectionEngine {
     let sigmas = raw_consts("const SIGMA_");
     for y in &sigmas {
         d.load_sigma_rule_yaml(
-            &y.replace("  product: windows\n", "")
+            &y.replace("\r\n", "\n")
+                .replace("  product: windows\n", "")
                 .replace("  product: linux\n", ""),
         )
         .expect("sigma compiles");

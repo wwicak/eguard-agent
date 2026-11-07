@@ -50,6 +50,7 @@ fn authored_rule_levels_drive_expected_severity() {
     ] {
         let source = std::fs::read_to_string(root.join(format!("{file}.yml")))
             .unwrap()
+            .replace("\r\n", "\n")
             .replace("  product: windows\n", "")
             .replace("  product: linux\n", "");
         let mut engine = DetectionEngine::default_with_rules();

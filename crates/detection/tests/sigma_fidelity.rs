@@ -267,6 +267,7 @@ fn authored_setuid_writable_path_matches_mode_and_target_together() {
             if let Ok(rule) = compile_sigma_rule(
                 &std::fs::read_to_string(path)
                     .unwrap()
+                    .replace("\r\n", "\n")
                     .replace("  product: linux\n", ""),
             ) {
                 engine.add_rule(rule);

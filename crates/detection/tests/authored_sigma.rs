@@ -57,6 +57,7 @@ fn authored_verdict_recall_and_precision() {
         // Exercise Windows selection semantics on Linux too; the independent fidelity
         // suite proves foreign-platform rejection in the production compiler.
         let source = source
+            .replace("\r\n", "\n")
             .replace("  product: windows\n", "")
             .replace("  product: linux\n", "");
         if let Some(level) = case["expected_level"].as_str() {

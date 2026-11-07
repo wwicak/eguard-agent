@@ -17,6 +17,7 @@ fn repo_rule(rule_path: &str) -> String {
 fn repo_rule_for_platform_in_tests(path: &str) -> String {
     // Change only the platform gate; keep the real compiler and all rule constraints.
     repo_rule(path)
+        .replace("\r\n", "\n")
         .replace("  product: windows\n", "")
         .replace("  product: linux\n", "")
 }

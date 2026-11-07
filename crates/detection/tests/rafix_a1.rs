@@ -62,6 +62,7 @@ fn production_like_engine() -> DetectionEngine {
     for source in sigma_sources() {
         d.load_sigma_rule_yaml(
             &source
+                .replace("\r\n", "\n")
                 .replace("  product: windows\n", "")
                 .replace("  product: linux\n", ""),
         )
