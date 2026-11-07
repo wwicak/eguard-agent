@@ -37,6 +37,7 @@ fn has_line(lines: &[String], expected: &str) -> bool {
     lines.iter().any(|line| line == expected)
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 // AC-EBP-035
 fn tick_pipeline_produces_detection_compliance_envelope_and_baseline_learning() {
@@ -117,6 +118,7 @@ fn tick_pipeline_produces_detection_compliance_envelope_and_baseline_learning() 
     ));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 // AC-DET-223
 fn module_load_payload_maps_to_detection_file_path() {
@@ -350,6 +352,7 @@ fn sampling_stride_scales_with_backlog_and_drop_backpressure() {
     assert_eq!(compute_sampling_stride(9_000, 3), 8);
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn tick_drains_queued_events_past_a_filtered_event() {
     let mut cfg = AgentConfig::default();
@@ -403,6 +406,7 @@ async fn tick_drains_queued_events_past_a_filtered_event() {
     assert_eq!(runtime.tick_count, 1);
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn connected_tick_batches_first_and_drain_events_into_two_sends() {
     let mut cfg = AgentConfig::default();
@@ -476,6 +480,7 @@ async fn connected_tick_batches_first_and_drain_events_into_two_sends() {
     assert_eq!(runtime.telemetry_send_batches, vec![1, 2]);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 // AC-EBP-035 AC-OPT-005
 fn evaluate_tick_returns_none_when_no_ebpf_events_are_available() {
@@ -491,6 +496,7 @@ fn evaluate_tick_returns_none_when_no_ebpf_events_are_available() {
     assert!(evaluation.is_none());
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 // AC-11
 fn evaluate_tick_drains_polled_replay_events_across_multiple_ticks() {
@@ -532,6 +538,7 @@ fn evaluate_tick_drains_polled_replay_events_across_multiple_ticks() {
     let _ = std::fs::remove_file(replay_path);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn ingest_polled_events_caps_per_poll_burst_and_backlog_growth() {
     let mut cfg = AgentConfig::default();
@@ -571,6 +578,7 @@ fn ingest_polled_events_caps_per_poll_burst_and_backlog_growth() {
     );
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn backlog_cap_preserves_frontloaded_high_value_file_open_events() {
     let mut cfg = AgentConfig::default();
@@ -622,6 +630,7 @@ fn backlog_cap_preserves_frontloaded_high_value_file_open_events() {
         .any(|event| { event.payload.contains("/tmp/eguard-preserve-ioc.bin") }));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn evaluate_tick_suppresses_known_windows_powershell_sensor_child() {
     let mut cfg = AgentConfig::default();
@@ -650,6 +659,7 @@ fn evaluate_tick_suppresses_known_windows_powershell_sensor_child() {
     assert!(evaluation.is_none());
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn windows_sensor_child_pid_suppression_clears_on_process_exit() {
     let mut cfg = AgentConfig::default();
@@ -733,6 +743,7 @@ fn windows_sensor_child_pid_suppression_clears_on_process_exit() {
     assert_eq!(evaluation.detection_event.pid, sensor_pid);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn evaluate_tick_suppresses_linux_internal_child_process_exec() {
     let mut cfg = AgentConfig::default();
@@ -763,6 +774,7 @@ fn evaluate_tick_suppresses_linux_internal_child_process_exec() {
     assert!(evaluation.is_none());
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn linux_agent_helper_pid_suppression_clears_on_process_exit() {
     let mut cfg = AgentConfig::default();
@@ -847,6 +859,7 @@ fn linux_agent_helper_pid_suppression_clears_on_process_exit() {
     assert_eq!(evaluation.detection_event.pid, helper_pid);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn linux_internal_descendant_process_is_suppressed_transitively() {
     let mut cfg = AgentConfig::default();
@@ -895,6 +908,7 @@ fn linux_internal_descendant_process_is_suppressed_transitively() {
         .is_none());
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn linux_internal_direct_child_file_open_is_suppressed_without_exec_tracking() {
     let mut cfg = AgentConfig::default();
@@ -923,6 +937,7 @@ fn linux_internal_direct_child_file_open_is_suppressed_without_exec_tracking() {
         .is_none());
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn file_event_burst_coalescing_drops_repeated_writes_within_short_window() {
     let mut cfg = AgentConfig::default();
@@ -965,6 +980,7 @@ fn file_event_burst_coalescing_drops_repeated_writes_within_short_window() {
     let _ = std::fs::remove_file(replay_path);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn file_event_burst_coalescing_normalizes_path_case() {
     let mut cfg = AgentConfig::default();
@@ -1006,6 +1022,7 @@ fn file_event_burst_coalescing_normalizes_path_case() {
     let _ = std::fs::remove_file(replay_path);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn high_value_linux_file_open_events_bypass_pre_detection_coalescing() {
     let mut cfg = AgentConfig::default();
@@ -1059,6 +1076,7 @@ fn high_value_linux_file_open_events_bypass_pre_detection_coalescing() {
     let _ = std::fs::remove_file(target_file);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn event_txn_coalescing_drops_duplicate_dns_queries_within_window() {
     let mut cfg = AgentConfig::default();
@@ -1100,6 +1118,7 @@ fn event_txn_coalescing_drops_duplicate_dns_queries_within_window() {
     let _ = std::fs::remove_file(replay_path);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn file_open_coalescing_preserves_follow_up_read_after_write_for_exact_ioc_hashing() {
     let mut cfg = AgentConfig::default();
@@ -1171,6 +1190,7 @@ fn file_open_coalescing_preserves_follow_up_read_after_write_for_exact_ioc_hashi
     let _ = std::fs::remove_file(replay_path);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn same_session_eicar_exact_ioc_file_open_survives_process_exec_burst_ingress_cap() {
     let mut cfg = AgentConfig::default();
@@ -1320,6 +1340,7 @@ fn same_session_eicar_exact_ioc_file_open_survives_process_exec_burst_ingress_ca
     let _ = std::fs::remove_file(target_file);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn same_session_eicar_exact_ioc_file_open_survives_high_value_home_burst_ingress_cap() {
     let mut cfg = AgentConfig::default();
@@ -1436,6 +1457,7 @@ fn same_session_eicar_exact_ioc_file_open_survives_high_value_home_burst_ingress
     let _ = std::fs::remove_file(target_file);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn strict_budget_mode_skips_expensive_file_hashing_when_backlog_is_high() {
     let mut cfg = AgentConfig::default();
@@ -1595,6 +1617,7 @@ async fn send_event_batch_timeout_rebuffers_and_returns_promptly() {
     server.abort();
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn low_value_linux_systemd_cgroup_chatter_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -1611,6 +1634,7 @@ fn low_value_linux_systemd_cgroup_chatter_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn systemd_spawned_loader_library_chatter_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -1627,6 +1651,7 @@ fn systemd_spawned_loader_library_chatter_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn systemd_runtime_loader_cache_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -1643,6 +1668,7 @@ fn systemd_runtime_loader_cache_reads_are_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn systemd_user_worker_library_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -1659,6 +1685,7 @@ fn systemd_user_worker_library_reads_are_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn systemd_selinux_runtime_chatter_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -1675,6 +1702,7 @@ fn systemd_selinux_runtime_chatter_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn systemd_selinux_policy_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -1691,6 +1719,7 @@ fn systemd_selinux_policy_reads_are_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn systemd_pam_policy_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -1707,6 +1736,7 @@ fn systemd_pam_policy_reads_are_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn systemd_user_hidden_config_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -1723,6 +1753,7 @@ fn systemd_user_hidden_config_reads_are_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn systemd_journald_log_file_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -1739,6 +1770,7 @@ fn systemd_journald_log_file_reads_are_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn systemd_journald_proc_scrape_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -1755,6 +1787,7 @@ fn systemd_journald_proc_scrape_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn systemd_cleanup_relative_path_chatter_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -1772,6 +1805,7 @@ fn systemd_cleanup_relative_path_chatter_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn agent_spawned_systemctl_loader_chatter_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -1788,6 +1822,7 @@ fn agent_spawned_systemctl_loader_chatter_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn agent_spawned_systemctl_procfs_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -1804,6 +1839,7 @@ fn agent_spawned_systemctl_procfs_reads_are_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn agent_spawned_rpm_metadata_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -1820,6 +1856,7 @@ fn agent_spawned_rpm_metadata_reads_are_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn sshd_session_pam_stack_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -1836,6 +1873,7 @@ fn sshd_session_pam_stack_reads_are_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn sshd_session_auth_config_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -1852,6 +1890,7 @@ fn sshd_session_auth_config_reads_are_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn sshd_session_bootstrap_proc_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -1868,6 +1907,7 @@ fn sshd_session_bootstrap_proc_reads_are_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn sshd_session_crypto_policy_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -1884,6 +1924,7 @@ fn sshd_session_crypto_policy_reads_are_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn sshd_session_selinux_runtime_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -1900,6 +1941,7 @@ fn sshd_session_selinux_runtime_reads_are_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn sshd_session_environment_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -1916,6 +1958,7 @@ fn sshd_session_environment_reads_are_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn sshd_session_nologin_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -1932,6 +1975,7 @@ fn sshd_session_nologin_reads_are_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn sshd_session_security_policy_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -1948,6 +1992,7 @@ fn sshd_session_security_policy_reads_are_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn ssh_login_shell_dotfile_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -1964,6 +2009,7 @@ fn ssh_login_shell_dotfile_reads_are_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn ssh_login_shell_profile_d_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -1980,6 +2026,7 @@ fn ssh_login_shell_profile_d_reads_are_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn sshd_session_authorized_keys_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -1996,6 +2043,7 @@ fn sshd_session_authorized_keys_reads_are_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn unix_chkpwd_bootstrap_localtime_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2012,6 +2060,7 @@ fn unix_chkpwd_bootstrap_localtime_reads_are_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn agent_spawned_systemctl_unit_reads_remain_visible() {
     let raw = platform_linux::RawEvent {
@@ -2028,6 +2077,7 @@ fn agent_spawned_systemctl_unit_reads_remain_visible() {
     assert!(!AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn user_spawned_rpm_metadata_reads_remain_visible() {
     let raw = platform_linux::RawEvent {
@@ -2044,6 +2094,7 @@ fn user_spawned_rpm_metadata_reads_remain_visible() {
     assert!(!AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn sudo_auth_stack_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2062,6 +2113,7 @@ fn sudo_auth_stack_reads_are_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn sudo_pam_library_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2078,6 +2130,7 @@ fn sudo_pam_library_reads_are_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn unix_chkpwd_shadow_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2094,6 +2147,7 @@ fn unix_chkpwd_shadow_reads_are_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn unix_chkpwd_passwd_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2110,6 +2164,7 @@ fn unix_chkpwd_passwd_reads_are_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn unix_chkpwd_nsswitch_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2126,6 +2181,7 @@ fn unix_chkpwd_nsswitch_reads_are_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn sudo_security_policy_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2142,6 +2198,7 @@ fn sudo_security_policy_reads_are_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn systemd_userwork_shadow_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2158,6 +2215,7 @@ fn systemd_userwork_shadow_reads_are_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn benign_procfd_exec_runtime_artifacts_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2175,6 +2233,7 @@ fn benign_procfd_exec_runtime_artifacts_are_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn sshd_session_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2192,6 +2251,7 @@ fn sshd_session_exec_noise_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn unix_chkpwd_ssh_auth_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2209,6 +2269,7 @@ fn unix_chkpwd_ssh_auth_exec_noise_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn systemd_user_manager_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2225,6 +2286,7 @@ fn systemd_user_manager_exec_noise_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn systemd_user_generator_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2241,6 +2303,7 @@ fn systemd_user_generator_exec_noise_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn systemd_user_environment_generator_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2257,6 +2320,7 @@ fn systemd_user_environment_generator_exec_noise_is_filtered_before_backloging()
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn systemd_user_environment_generator_exec_noise_without_path_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2273,6 +2337,7 @@ fn systemd_user_environment_generator_exec_noise_without_path_is_filtered_before
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn systemd_user_generator_exec_noise_without_path_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2289,6 +2354,7 @@ fn systemd_user_generator_exec_noise_without_path_is_filtered_before_backloging(
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn systemd_tmpfiles_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2305,6 +2371,7 @@ fn systemd_tmpfiles_exec_noise_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn systemd_tmpfiles_exec_noise_without_path_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2323,6 +2390,7 @@ fn systemd_tmpfiles_exec_noise_without_path_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn bash_systemctl_show_environment_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2339,6 +2407,7 @@ fn bash_systemctl_show_environment_exec_noise_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn systemd_user_runtime_dir_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2355,6 +2424,7 @@ fn systemd_user_runtime_dir_exec_noise_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn systemd_user_runtime_dir_exec_noise_without_path_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2371,6 +2441,7 @@ fn systemd_user_runtime_dir_exec_noise_without_path_is_filtered_before_backlogin
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn systemd_user_manager_exec_noise_without_path_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2387,6 +2458,7 @@ fn systemd_user_manager_exec_noise_without_path_is_filtered_before_backloging() 
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn systemd_systemctl_exec_noise_without_path_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2404,6 +2476,7 @@ fn systemd_systemctl_exec_noise_without_path_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn unix_chkpwd_systemd_exec_noise_without_path_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2421,6 +2494,7 @@ fn unix_chkpwd_systemd_exec_noise_without_path_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn bash_profile_helper_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2437,6 +2511,7 @@ fn bash_profile_helper_exec_noise_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn systemd_started_bash_login_shell_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2455,6 +2530,7 @@ fn systemd_started_bash_login_shell_exec_noise_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn sshd_session_started_bash_login_shell_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2473,6 +2549,7 @@ fn sshd_session_started_bash_login_shell_exec_noise_is_filtered_before_backlogin
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn sshd_session_started_pathless_bash_login_shell_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2490,6 +2567,7 @@ fn sshd_session_started_pathless_bash_login_shell_exec_noise_is_filtered_before_
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn bash_nohup_startup_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2508,6 +2586,7 @@ fn bash_nohup_startup_exec_noise_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn bash_basename_startup_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2525,6 +2604,7 @@ fn bash_basename_startup_exec_noise_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn bash_cat_startup_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2542,6 +2622,7 @@ fn bash_cat_startup_exec_noise_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn bash_readlink_startup_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2559,6 +2640,7 @@ fn bash_readlink_startup_exec_noise_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn bash_locale_startup_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2576,6 +2658,7 @@ fn bash_locale_startup_exec_noise_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn bash_tr_startup_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2593,6 +2676,7 @@ fn bash_tr_startup_exec_noise_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn bash_tty_startup_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2610,6 +2694,7 @@ fn bash_tty_startup_exec_noise_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn bash_sed_startup_exec_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2627,6 +2712,7 @@ fn bash_sed_startup_exec_noise_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn bash_bashrc_read_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2644,6 +2730,7 @@ fn bash_bashrc_read_noise_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn bash_curlrc_read_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2661,6 +2748,7 @@ fn bash_curlrc_read_noise_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn sshd_session_motd_read_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2679,6 +2767,7 @@ fn sshd_session_motd_read_noise_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn sshd_session_nologin_read_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2696,6 +2785,7 @@ fn sshd_session_nologin_read_noise_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn sshd_session_boot_id_read_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2713,6 +2803,7 @@ fn sshd_session_boot_id_read_noise_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn sshd_session_userdb_runtime_read_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2730,6 +2821,7 @@ fn sshd_session_userdb_runtime_read_noise_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn sshd_session_unix_chkpwd_loader_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2747,6 +2839,7 @@ fn sshd_session_unix_chkpwd_loader_noise_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn systemd_userwork_root_probe_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2764,6 +2857,7 @@ fn systemd_userwork_root_probe_noise_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn sshd_session_bash_locale_file_read_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2781,6 +2875,7 @@ fn sshd_session_bash_locale_file_read_noise_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn sshd_session_bash_gconv_cache_read_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2798,6 +2893,7 @@ fn sshd_session_bash_gconv_cache_read_noise_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn sshd_session_oom_score_adj_read_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2815,6 +2911,7 @@ fn sshd_session_oom_score_adj_read_noise_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn bash_basename_pathless_file_open_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2833,6 +2930,7 @@ fn bash_basename_pathless_file_open_noise_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn bash_readlink_pathless_file_open_noise_is_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2851,6 +2949,7 @@ fn bash_readlink_pathless_file_open_noise_is_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn linux_console_device_reads_are_filtered_before_backloging() {
     let raw = platform_linux::RawEvent {
@@ -2869,6 +2968,7 @@ fn linux_console_device_reads_are_filtered_before_backloging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn pathless_linux_file_write_events_are_filtered_before_backlogging() {
     let raw = platform_linux::RawEvent {
@@ -2885,6 +2985,7 @@ fn pathless_linux_file_write_events_are_filtered_before_backlogging() {
     assert!(AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn suspicious_linux_tmp_file_open_is_not_filtered() {
     let raw = platform_linux::RawEvent {
@@ -2901,6 +3002,7 @@ fn suspicious_linux_tmp_file_open_is_not_filtered() {
     assert!(!AgentRuntime::should_drop_low_value_linux_raw_event(&raw));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn suspicious_linux_tmp_file_open_is_prioritized_ahead_of_systemd_chatter() {
     let noisy = platform_linux::RawEvent {
@@ -2929,6 +3031,7 @@ fn suspicious_linux_tmp_file_open_is_prioritized_ahead_of_systemd_chatter() {
     );
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn frontloaded_high_priority_linux_event_is_dequeued_before_existing_low_value_backlog() {
     let mut cfg = AgentConfig::default();
@@ -2965,6 +3068,7 @@ fn frontloaded_high_priority_linux_event_is_dequeued_before_existing_low_value_b
     assert!(first.payload.contains("/tmp/eguard-dump-proof.bin"));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn sampling_preserves_frontloaded_high_value_linux_file_open() {
     let mut cfg = AgentConfig::default();
@@ -3020,6 +3124,7 @@ fn sampling_preserves_frontloaded_high_value_linux_file_open() {
     assert!(runtime.raw_event_backlog.is_empty());
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn next_raw_event_continues_polling_kernel_when_backlog_is_non_empty() {
     let mut cfg = AgentConfig::default();

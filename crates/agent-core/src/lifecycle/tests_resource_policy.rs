@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use super::*;
 use crate::config::{AgentConfig, AgentMode};
+#[cfg(target_os = "linux")]
 use platform_linux::EbpfEngine;
 
 fn workspace_root() -> PathBuf {
@@ -68,6 +69,7 @@ fn runtime_dependency_set_excludes_ml_frameworks_and_keeps_zig_build_path() {
     );
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 // AC-RES-009 AC-OPT-005
 fn runtime_loop_progresses_without_busy_wait_under_offline_conditions() {
@@ -130,6 +132,7 @@ fn unix_runtime_shutdown_listener_uses_signalkind_interrupt_not_ctrl_c_helper() 
     assert!(!main_src.contains("_ = signal::ctrl_c() =>"));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 // AC-RES-009
 fn disabled_ebpf_engine_poll_and_forward_return_immediately_without_errors() {

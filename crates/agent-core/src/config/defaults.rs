@@ -204,7 +204,7 @@ fn should_skip_macos_interface(name: &str) -> bool {
     .any(|prefix| name.starts_with(prefix))
 }
 
-#[cfg(any(test, target_os = "macos"))]
+#[cfg(any(all(test, target_os = "linux"), target_os = "macos"))]
 fn score_macos_interface(name: &str, flags: i32) -> u8 {
     let mut score = 200u8;
 
@@ -351,7 +351,9 @@ impl Default for AgentConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_mac_bytes, score_macos_interface, should_skip_macos_interface};
+    use super::{normalize_mac_bytes, should_skip_macos_interface};
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    use super::score_macos_interface;
 
     #[test]
     fn normalize_mac_bytes_rejects_invalid_values() {
@@ -373,6 +375,7 @@ mod tests {
         assert!(!should_skip_macos_interface("en7"));
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn macos_interface_scoring_prefers_primary_running_en_devices() {
         let running = libc::IFF_UP | libc::IFF_RUNNING;

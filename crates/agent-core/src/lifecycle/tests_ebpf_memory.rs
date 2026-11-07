@@ -5,6 +5,7 @@ use std::time::Duration;
 use baseline::{BaselineStore, ProcessKey};
 use detection::YaraEngine;
 use grpc_client::{Client, EventBuffer, EventEnvelope, TlsConfig};
+#[cfg(target_os = "linux")]
 use platform_linux::{enrich_event_with_cache, EnrichmentCache, EventType, RawEvent};
 use sha2::{Digest, Sha256};
 
@@ -235,6 +236,7 @@ fn runtime_stack_runs_async_client_paths_with_tls_configuration() {
     let _ = std::fs::remove_dir_all(temp);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 // AC-EBP-104 AC-EBP-105 AC-RES-014 AC-RES-015 AC-RES-022
 fn process_and_file_cache_capacities_stay_in_half_megabyte_envelope() {

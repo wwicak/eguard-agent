@@ -104,6 +104,7 @@ fn tick_evaluation_for_confidence(confidence: Confidence, ts: i64, pid: u32) -> 
     }
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 // AC-DET-220 AC-DET-221 AC-DET-222
 fn telemetry_audit_payload_includes_rule_attribution() {
@@ -234,6 +235,7 @@ fn telemetry_audit_payload_includes_rule_attribution() {
         .any(|v| v == "fileless_memfd"));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 // AC-NAC-022 AC-TST-063
 fn telemetry_payload_includes_nac_fields() {
@@ -352,6 +354,7 @@ fn telemetry_payload_includes_nac_fields() {
     assert_eq!(audit["primary_rule_name"], "sigma.exec");
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 // AC-DET-228 AC-TST-065
 fn telemetry_payload_includes_correlation_event_fields() {
@@ -839,6 +842,7 @@ async fn observability_snapshot_tracks_self_protect_degraded_transition_once() {
     assert!(snapshot.pending_event_count >= 1);
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 // AC-OBS-001 AC-OBS-004 AC-OPT-005
 async fn degraded_tick_updates_stage_timing_snapshot() {
@@ -873,6 +877,7 @@ async fn degraded_tick_updates_stage_timing_snapshot() {
     );
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 // AC-OBS-001 AC-DET-166
 async fn observability_snapshot_reports_bounded_command_backlog_progress() {
@@ -1212,6 +1217,7 @@ async fn async_worker_queue_dispatches_response_reports() {
     runtime.drive_async_workers();
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 // AC-OPT-006 AC-OBS-001
 async fn runtime_tick_p99_and_degraded_churn_stay_within_guardrails() {
