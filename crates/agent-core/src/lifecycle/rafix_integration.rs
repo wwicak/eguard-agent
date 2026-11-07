@@ -440,3 +440,167 @@ fn production_pipeline_matrix_uses_runtime_shard_resolver() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+// External corpora stay read-only. Only aggregates leave this explicitly manual test.
+#[test]
+#[ignore = "external audit corpus and public qualified-rule directory required; aggregates only"]
+fn combined_boot_a5_and_corpus_aggregates() {
+    use serde_json::Value;
+    use std::collections::BTreeMap;
+    fn class(s: &str) -> EventClass {
+        match s {
+            "process_exec" => EventClass::ProcessExec,
+            "file_open" => EventClass::FileOpen,
+            "network_connect" => EventClass::NetworkConnect,
+            "dns_query" => EventClass::DnsQuery,
+            "module_load" => EventClass::ModuleLoad,
+            _ => EventClass::Alert,
+        }
+    }
+    fn input(v: &Value, platform: &str, ts: i64) -> TelemetryEvent {
+        let process = v["process"].as_str().unwrap_or("unknown");
+        let cls = class(
+            v["class"]
+                .as_str()
+                .or_else(|| v["event_class"].as_str())
+                .unwrap_or(""),
+        );
+        let mut e = ev(
+            cls,
+            process,
+            v["parent"].as_str().unwrap_or("unknown"),
+            v["cmdline"].as_str().unwrap_or(""),
+        );
+        e.ts_unix = ts;
+        e.uid = v["uid"]
+            .as_u64()
+            .unwrap_or(if platform == "windows" { 0 } else { 1000 }) as u32;
+        e.file_path = v["file_path"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .or(e.file_path);
+        if cls != EventClass::ProcessExec && v["file_path"].as_str().is_none() {
+            e.file_path = None;
+        }
+        e.file_write = v["file_write"].as_bool().unwrap_or(false);
+        e.dst_ip = v["dst_ip"].as_str().map(String::from);
+        e.dst_domain = v["dst_domain"].as_str().map(String::from);
+        e.dst_port = v["dst_port"].as_u64().map(|p| p as u16);
+        e
+    }
+    fn engine(platform: &str) -> DetectionEngine {
+        let mut e = boot_engine(false);
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut dirs = vec![
+            root.join("rules/sigma"),
+            root.join("evidence/sigma-qualified"),
+        ];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    dirs.push(path);
+                    continue;
+                }
+                if !matches!(
+                    path.extension().and_then(|s| s.to_str()),
+                    Some("yml" | "yaml")
+                ) {
+                    continue;
+                }
+                let source = std::fs::read_to_string(path).unwrap();
+                if source.lines().any(|s| {
+                    s.trim().starts_with("product:") && s.trim() != format!("product: {platform}")
+                }) {
+                    continue;
+                }
+                let source = source
+                    .lines()
+                    .filter(|s| !s.trim().starts_with("product:"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                e.load_sigma_rule_yaml(&source).unwrap();
+            }
+        }
+        e
+    }
+    let cases: Vec<Value> =
+        serde_json::from_str(&std::fs::read_to_string("/tmp/ra2-A5/cases.json").unwrap()).unwrap();
+    let mut counts = BTreeMap::<String, usize>::new();
+    for case in &cases {
+        let platform = case["platform"].as_str().unwrap();
+        let kind = case["kind"].as_str().unwrap();
+        let mut e = engine(platform);
+        let mut max = Confidence::None;
+        for (i, v) in case["events"].as_array().unwrap().iter().enumerate() {
+            max = max.max(
+                e.process_event(&input(v, platform, 100 + i as i64))
+                    .confidence,
+            );
+        }
+        *counts
+            .entry(format!("{platform}_{kind}_total"))
+            .or_default() += 1;
+        if max > Confidence::None {
+            *counts.entry(format!("{platform}_{kind}_hit")).or_default() += 1;
+        }
+        if kind == "benign" && max >= Confidence::High {
+            *counts.entry(format!("{platform}_benign_high")).or_default() += 1;
+        }
+    }
+    println!("COMBINED_A5 {counts:?}");
+    let rows: Vec<Value> = serde_json::from_str(
+        &std::fs::read_to_string("/home/dimas/eg-work/RULEFP/corpus/events-v2.json").unwrap(),
+    )
+    .unwrap();
+    let mut corpus = BTreeMap::<String, usize>::new();
+    let mut high_rules = BTreeMap::<String, usize>::new();
+    let mut pipeline_high = 0;
+    let start = std::time::Instant::now();
+    for platform in ["linux", "windows"] {
+        let mut e = engine(platform);
+        for (i, v) in rows
+            .iter()
+            .rev()
+            .filter(|v| v["platform"].as_str() == Some(platform))
+            .enumerate()
+        {
+            let out = e.process_event(&input(v, platform, 1_760_000_000 + 2 * i as i64));
+            *corpus.entry(format!("{platform}_total")).or_default() += 1;
+            if out.confidence == Confidence::Medium {
+                *corpus.entry(format!("{platform}_medium")).or_default() += 1;
+            }
+            if out.confidence >= Confidence::High {
+                *corpus.entry(format!("{platform}_high")).or_default() += 1;
+                for name in out
+                    .temporal_hits
+                    .iter()
+                    .chain(&out.kill_chain_hits)
+                    .chain(&out.exploit_indicators)
+                    .chain(&out.tamper_indicators)
+                    .chain(&out.kernel_integrity_indicators)
+                {
+                    *high_rules.entry(name.clone()).or_default() += 1;
+                }
+                if out
+                    .exploit_indicators
+                    .iter()
+                    .any(|n| n == "fileless_pipe_exec")
+                {
+                    pipeline_high += 1;
+                }
+            }
+        }
+    }
+    println!("COMBINED_CORPUS {corpus:?} high_rules={high_rules:?} pipeline_high={pipeline_high} elapsed_secs={}",start.elapsed().as_secs_f64());
+    assert_eq!(
+        pipeline_high, 0,
+        "Pi 651997de STOP: benign corpus acquired HIGH pipe path"
+    );
+    assert_eq!(
+        counts.get("linux_benign_high").copied().unwrap_or(0)
+            + counts.get("windows_benign_high").copied().unwrap_or(0),
+        0
+    );
+}

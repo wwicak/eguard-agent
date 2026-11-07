@@ -1284,6 +1284,10 @@ mod tests {
             super::super::PlannedAction::AlertOnly
         );
         assert!(path.exists());
+        assert!(
+            !AgentRuntime::has_concrete_response_evidence(&event, &concrete_outcome()),
+            "a process label cannot grant auto-isolation authority either"
+        );
         assert_eq!(
             runtime.sanitize_operator_scan_action(
                 super::super::PlannedAction::QuarantineOnly,
