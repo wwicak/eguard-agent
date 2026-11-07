@@ -155,3 +155,17 @@ fn byte_budget_is_per_second_and_never_borrows_past_capacity() {
         now + std::time::Duration::from_secs(100)
     ));
 }
+
+#[test]
+fn trusted_metadata_result_keeps_the_warmed_digest_without_reading() {
+    let (engine, _directory, event, active) = fixture();
+    mature(&engine);
+    assert_eq!(engine.scan_event(&event).len(), 1);
+    let reads = engine.status.file_read_count();
+    let worker = YaraWorker::new();
+    worker.submit(engine.clone(), active, &event, None);
+    let result = worker.take_results().pop().unwrap();
+    assert_eq!(result.sha256, digest_hex(&Sha256::digest(b"evil").into()));
+    assert_eq!(engine.status.file_read_count(), reads);
+    assert_eq!(worker.inner.counters.depth.load(Ordering::Relaxed), 0);
+}

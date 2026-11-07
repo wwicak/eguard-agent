@@ -182,6 +182,12 @@ trait YaraBackend: Send + Sync {
     }
 }
 
+#[derive(Default)]
+struct FileVerdict {
+    hits: Vec<YaraHit>,
+    digest: [u8; 32],
+}
+
 struct CachedVerdict {
     hits: Vec<YaraHit>,
     metadata_trusted: bool,
@@ -392,7 +398,7 @@ impl YaraEngine {
         Some(path)
     }
 
-    fn cached_metadata(&self, key: &FileKey) -> Option<Vec<YaraHit>> {
+    fn cached_metadata(&self, key: &FileKey) -> Option<FileVerdict> {
         #[cfg(test)]
         if self
             .force_hash_on_hit
@@ -412,7 +418,10 @@ impl YaraEngine {
             .find(|((cached, _, hash), verdict)| {
                 cached == key && *hash == pack && verdict.metadata_trusted
             })
-            .map(|(_, verdict)| verdict.hits.clone())
+            .map(|((_, digest, _), verdict)| FileVerdict {
+                hits: verdict.hits.clone(),
+                digest: *digest,
+            })
     }
 
     pub fn scan_event(&self, event: &TelemetryEvent) -> Vec<YaraHit> {
@@ -424,28 +433,28 @@ impl YaraEngine {
                 self.status
                     .first_hits
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                return hits;
+                return hits.hits;
             }
         }
-        self.scan_file_event(event, None)
+        self.scan_file_event(event, None).hits
     }
 
-    fn scan_file_event(&self, event: &TelemetryEvent, expected: Option<&FileKey>) -> Vec<YaraHit> {
+    fn scan_file_event(&self, event: &TelemetryEvent, expected: Option<&FileKey>) -> FileVerdict {
         let Some(path) = self.eligible_path(event) else {
-            return Vec::new();
+            return FileVerdict::default();
         };
         let read_start = std::time::SystemTime::now();
         #[cfg(test)]
         let read_start = self.read_clock.lock().unwrap().unwrap_or(read_start);
         let Ok(mut file) = open_regular(Path::new(path)) else {
-            return Vec::new();
+            return FileVerdict::default();
         };
         let Ok(metadata) = file.metadata() else {
-            return Vec::new();
+            return FileVerdict::default();
         };
         let key = FileKey::new(path, &file, &metadata);
         if expected.is_some_and(|expected| key.as_ref() != Some(expected)) {
-            return Vec::new();
+            return FileVerdict::default();
         }
         if let Some(hits) = key.as_ref().and_then(|key| self.cached_metadata(key)) {
             return hits;
@@ -458,18 +467,18 @@ impl YaraEngine {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut header = [0; 4];
         let Ok(count) = file.read(&mut header) else {
-            return Vec::new();
+            return FileVerdict::default();
         };
         let cap = self.scan_cap(&header[..count]);
         if metadata.len() > cap as u64 {
             self.status.size_skip(is_executable(&header[..count]));
-            return Vec::new();
+            return FileVerdict::default();
         }
         let Some(_permit) = self.backend.begin_file_scan(&header[..count]) else {
-            return Vec::new();
+            return FileVerdict::default();
         };
         if count > metadata.len() as usize {
-            return Vec::new();
+            return FileVerdict::default();
         }
         // Fixed allocation avoids read_to_end growing a full capped buffer at EOF.
         let mut content = vec![0; metadata.len() as usize];
@@ -480,7 +489,7 @@ impl YaraEngine {
                 .ok()
                 .is_none_or(|current| current.len() != content.len() as u64)
         {
-            return Vec::new();
+            return FileVerdict::default();
         }
         let digest: [u8; 32] = Sha256::digest(&content).into();
         let cache_key = key.map(|key| (key, digest, self.backend.pack_hash()));
@@ -492,7 +501,7 @@ impl YaraEngine {
                     digest,
                     self.backend.pack_hash(),
                 );
-                return Vec::new();
+                return FileVerdict::default();
             }
             if let Some(verdict) = self
                 .verdicts
@@ -502,7 +511,10 @@ impl YaraEngine {
             {
                 // Trust is earned by this read, never merely by an old entry aging in cache.
                 verdict.metadata_trusted = key.0.mature_at(read_start);
-                return verdict.hits.clone();
+                return FileVerdict {
+                    hits: verdict.hits.clone(),
+                    digest,
+                };
             }
         }
         let epoch = self
@@ -519,7 +531,7 @@ impl YaraEngine {
                     digest,
                     self.backend.pack_hash(),
                 );
-                return Vec::new();
+                return FileVerdict::default();
             }
         }
         // Never cache an incomplete/budget-skipped scan as a clean verdict.
@@ -565,7 +577,8 @@ impl YaraEngine {
                 }
             }
         }
-        hits
+        // The digest is over the SAME buffer passed to scan_file_bytes above, not a second read.
+        FileVerdict { hits, digest }
     }
 }
 

@@ -131,7 +131,7 @@ impl YaraWorker {
                     }
                     let before_budget = budget_skips(&request.engine.status);
                     let before_cap = cap_skips(&request.engine.status);
-                    let hits = request
+                    let verdict = request
                         .engine
                         .scan_file_event(&request.event, Some(&request.key));
                     worker_counters.time_skips.fetch_add(
@@ -151,7 +151,7 @@ impl YaraWorker {
                         &worker_results,
                         &worker_counters,
                         YaraScanResult {
-                            sha256: cached_digest(&request.engine, &request.key),
+                            sha256: digest_hex(&verdict.digest),
                             pack_hash: digest_hex(&request.engine.backend.pack_hash()),
                             scan_latency_ms: request
                                 .queued
@@ -161,7 +161,7 @@ impl YaraWorker {
                                 as u64,
                             event: request.event,
                             observation_id: request.observation_id,
-                            hits,
+                            hits: verdict.hits,
                             incomplete,
                             active: request.active,
                         },
@@ -219,19 +219,19 @@ impl YaraWorker {
                 .size_skip(event.event_class == EventClass::ProcessExec);
             return;
         }
-        if let Some(hits) = engine.cached_metadata(&key) {
+        if let Some(verdict) = engine.cached_metadata(&key) {
             self.inner.counters.hits.fetch_add(1, Ordering::Relaxed);
             // A warm exec never consumes a request slot or a byte/CPU permit.
             emit(
                 &self.inner.result_tx,
                 &self.inner.counters,
                 YaraScanResult {
-                    sha256: cached_digest(&engine, &key),
+                    sha256: digest_hex(&verdict.digest),
                     pack_hash: digest_hex(&engine.backend.pack_hash()),
                     scan_latency_ms: 0,
                     event: event.clone(),
                     observation_id,
-                    hits,
+                    hits: verdict.hits,
                     incomplete: Vec::new(),
                     active,
                 },
@@ -312,18 +312,6 @@ fn emit(tx: &mpsc::SyncSender<YaraScanResult>, counters: &Counters, result: Yara
 #[cfg(test)]
 mod tests;
 
-fn cached_digest(engine: &YaraEngine, key: &FileKey) -> String {
-    let pack = engine.backend.pack_hash();
-    engine
-        .verdicts
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .keys()
-        .find(|(cached, _, hash)| cached == key && *hash == pack)
-        .map(|(_, digest, _)| digest_hex(digest))
-        .unwrap_or_default()
-}
-
 struct ByteBudget {
     available: u64,
     updated: Instant,
@@ -342,3 +330,6 @@ impl ByteBudget {
         true
     }
 }
+
+#[cfg(test)]
+mod digest_tests;
