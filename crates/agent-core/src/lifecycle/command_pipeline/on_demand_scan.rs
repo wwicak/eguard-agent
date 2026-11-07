@@ -71,7 +71,7 @@ impl AgentRuntime {
             }
 
             matched_files = matched_files.saturating_add(1);
-            let action = self.sanitize_planned_action_for_event(
+            let action = self.sanitize_operator_scan_action(
                 normalize_scan_action(response::plan_action(outcome.confidence, &response_cfg)),
                 &event,
                 &outcome,

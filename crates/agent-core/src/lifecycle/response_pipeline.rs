@@ -8,6 +8,12 @@ use super::{AgentRuntime, PendingResponseAction, TickEvaluation, RESPONSE_QUEUE_
 // Well below half-queue drain headroom, even with primary/local response reports.
 const MAX_PLAYBOOK_REPORTS_PER_EVALUATION: usize = 16;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ResponseOrigin {
+    Telemetry,
+    OperatorScan,
+}
+
 impl AgentRuntime {
     pub(super) async fn run_connected_response_stage(
         &mut self,
@@ -324,11 +330,20 @@ impl AgentRuntime {
         event: &detection::TelemetryEvent,
         outcome: &DetectionOutcome,
     ) -> bool {
+        Self::has_concrete_response_evidence_for_origin(event, outcome, ResponseOrigin::Telemetry)
+    }
+
+    fn has_concrete_response_evidence_for_origin(
+        event: &detection::TelemetryEvent,
+        outcome: &DetectionOutcome,
+        origin: ResponseOrigin,
+    ) -> bool {
         if outcome.confidence < detection::Confidence::VeryHigh || event.file_unlink {
             return false;
         }
         let file_event = event.event_class == detection::EventClass::ProcessExec
-            || (event.event_class == detection::EventClass::FileOpen && event.file_write);
+            || (event.event_class == detection::EventClass::FileOpen
+                && (event.file_write || origin == ResponseOrigin::OperatorScan));
         if !file_event {
             return false;
         }
@@ -351,6 +366,14 @@ impl AgentRuntime {
         let Some(path) = event.file_path.as_deref().filter(|p| !p.is_empty()) else {
             return false;
         };
+        // Operator scans hash the current file bytes; passive telemetry keeps the same-file chain gate.
+        if origin == ResponseOrigin::OperatorScan {
+            return outcome.signals.yara_hit
+                && outcome
+                    .yara_hits
+                    .iter()
+                    .any(|hit| !hit.rule_name.is_empty() && hit.source == path);
+        }
         let Some(id) = outcome
             .observation_id
             .as_deref()
@@ -385,12 +408,36 @@ impl AgentRuntime {
         event: &detection::TelemetryEvent,
         outcome: &DetectionOutcome,
     ) -> super::PlannedAction {
+        self.sanitize_planned_action_for_origin(action, event, outcome, ResponseOrigin::Telemetry)
+    }
+
+    pub(super) fn sanitize_operator_scan_action(
+        &self,
+        action: super::PlannedAction,
+        event: &detection::TelemetryEvent,
+        outcome: &DetectionOutcome,
+    ) -> super::PlannedAction {
+        self.sanitize_planned_action_for_origin(
+            action,
+            event,
+            outcome,
+            ResponseOrigin::OperatorScan,
+        )
+    }
+
+    fn sanitize_planned_action_for_origin(
+        &self,
+        action: super::PlannedAction,
+        event: &detection::TelemetryEvent,
+        outcome: &DetectionOutcome,
+        origin: ResponseOrigin,
+    ) -> super::PlannedAction {
         if matches!(
             action,
             super::PlannedAction::KillOnly
                 | super::PlannedAction::QuarantineOnly
                 | super::PlannedAction::KillAndQuarantine
-        ) && !Self::has_concrete_response_evidence(event, outcome)
+        ) && !Self::has_concrete_response_evidence_for_origin(event, outcome, origin)
         {
             return super::PlannedAction::AlertOnly;
         }
@@ -1216,6 +1263,71 @@ mod tests {
                 super::super::PlannedAction::QuarantineOnly,
                 &event,
                 &outcome,
+            ),
+            super::super::PlannedAction::AlertOnly
+        );
+    }
+    #[test]
+    fn operator_scan_origin_cannot_be_spoofed_by_telemetry_labels() {
+        let runtime = runtime();
+        let path = std::env::temp_dir().join(format!("rafix-spoof-{}", std::process::id()));
+        std::fs::write(&path, b"synthetic").unwrap();
+        let mut event = quarantine_event(path.to_str().unwrap(), false, EventClass::FileOpen);
+        event.process = "on_demand_scan".into();
+        event.command_line = Some("on_demand_scan".into());
+        assert_eq!(
+            runtime.sanitize_planned_action_for_event(
+                super::super::PlannedAction::QuarantineOnly,
+                &event,
+                &concrete_outcome()
+            ),
+            super::super::PlannedAction::AlertOnly
+        );
+        assert!(path.exists());
+        assert_eq!(
+            runtime.sanitize_operator_scan_action(
+                super::super::PlannedAction::QuarantineOnly,
+                &event,
+                &concrete_outcome()
+            ),
+            super::super::PlannedAction::QuarantineOnly
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn operator_scan_preserves_protected_and_runtime_path_guards() {
+        let runtime = runtime();
+        for path in ["/usr/bin/ls", "/proc/self/exe", "/dev/fd/3", "relative.bin"] {
+            let event = quarantine_event(path, false, EventClass::FileOpen);
+            assert_eq!(
+                runtime.sanitize_operator_scan_action(
+                    super::super::PlannedAction::QuarantineOnly,
+                    &event,
+                    &concrete_outcome()
+                ),
+                super::super::PlannedAction::AlertOnly,
+                "{path}"
+            );
+        }
+        let mut event = quarantine_event("/tmp/rafix-operator-safe", false, EventClass::FileOpen);
+        event.file_unlink = true;
+        assert_eq!(
+            runtime.sanitize_operator_scan_action(
+                super::super::PlannedAction::QuarantineOnly,
+                &event,
+                &concrete_outcome()
+            ),
+            super::super::PlannedAction::AlertOnly
+        );
+        event.file_unlink = false;
+        let mut outcome = concrete_outcome();
+        outcome.confidence = detection::Confidence::High;
+        assert_eq!(
+            runtime.sanitize_operator_scan_action(
+                super::super::PlannedAction::QuarantineOnly,
+                &event,
+                &outcome
             ),
             super::super::PlannedAction::AlertOnly
         );
