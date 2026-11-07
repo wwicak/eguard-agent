@@ -134,6 +134,7 @@ fi
 /etc/eguard-agent/agent.conf
 /var/lib/eguard-agent/rules/sigma/credential_access.yml
 /var/lib/eguard-agent/rules/sigma/credential_access_ssh_private_key.yml
+/var/lib/eguard-agent/rules/sigma/linux_setuid_setgid_writable_path.yml
 /var/lib/eguard-agent/rules/sigma/windows_lateral_movement_service_exec.yml
 /var/lib/eguard-agent/rules/sigma/windows_lsass_access_dump.yml
 /var/lib/eguard-agent/rules/sigma/windows_powershell_download_cradle.yml
@@ -145,6 +146,7 @@ fi
 %files rules
 /var/lib/eguard-agent/rules/sigma/credential_access.yml
 /var/lib/eguard-agent/rules/sigma/credential_access_ssh_private_key.yml
+/var/lib/eguard-agent/rules/sigma/linux_setuid_setgid_writable_path.yml
 /var/lib/eguard-agent/rules/sigma/linux_data_staging_archive.yml
 /var/lib/eguard-agent/rules/sigma/linux_download_exec.yml
 /var/lib/eguard-agent/rules/sigma/linux_ld_preload_defense_evasion.yml

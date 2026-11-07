@@ -1,4 +1,5 @@
 use super::rule_bundle_loader::{
+// RAFIX shared: loader/swap fixture literals obey fail-closed YARA conditions.
     signed_bundle_contains_ml_artifacts, verify_signed_bundle_archive_contract,
 };
 use super::*;
@@ -365,7 +366,7 @@ rule bundle_marker {
   strings:
     $m = "bundle-malware-marker"
   condition:
-    $m
+    $m at 0 and filesize <= 128
 }
 "#,
     )
@@ -427,7 +428,7 @@ rule nested_bundle_marker {
   strings:
     $m = "nested-bundle-marker"
   condition:
-    $m
+    $m at 0 and filesize <= 128
 }
 "#,
     )
@@ -482,7 +483,7 @@ rule bundle_runtime_marker {
   strings:
     $m = "bundle-runtime-marker-8844"
   condition:
-    $m
+    $m at 0 and filesize <= 128
 }
 "#,
     )
@@ -771,7 +772,7 @@ rule signed_bundle_marker {
   strings:
     $m = "signed-bundle-marker"
   condition:
-    $m
+    $m at 0 and filesize <= 128
 }
 "#;
     std::fs::write(yara_dir.join("rule.yar"), yara_rule).expect("write yara rule");
@@ -881,7 +882,7 @@ rule nested_signed_bundle_marker {
   strings:
     $m = "nested-signed-bundle-marker"
   condition:
-    $m
+    $m at 0 and filesize <= 128
 }
 "#;
     std::fs::write(yara_dir.join("rule.yar"), yara_rule).expect("write nested yara rule");
@@ -1318,14 +1319,14 @@ rule mismatch_marker_one {
   strings:
     $a = "manifest-mismatch-one"
   condition:
-    $a
+    $a at 0 and filesize <= 128
 }
 
 rule mismatch_marker_two {
   strings:
     $b = "manifest-mismatch-two"
   condition:
-    $b
+    $b at 0 and filesize <= 128
 }
 "#;
     let mut sanity_engine = DetectionEngine::default_with_rules();
