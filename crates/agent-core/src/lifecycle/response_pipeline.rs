@@ -912,6 +912,7 @@ mod tests {
             rule_name: "broad_literal".into(),
             source: "/tmp/rafix-synthetic".into(),
             matched_literal: "bash".into(),
+            severity: detection::Confidence::High,
         });
         cases.push(("A6-substring-yara", a6));
         let mut deception = DetectionOutcome::default();
@@ -1007,6 +1008,7 @@ mod tests {
             rule_name: "file-signature".into(),
             source: e.file_path.clone().unwrap(),
             matched_literal: "synthetic".into(),
+            severity: detection::Confidence::High,
         });
         (e, o)
     }
@@ -1043,9 +1045,10 @@ mod tests {
     }
 
     #[test]
-    fn rafix_response_yara_and_chain_must_bind_same_file_event() {
+    fn rafix_response_yara_and_chain_remain_alert_only() {
         let (e, o) = bound_file_evidence();
-        assert!(AgentRuntime::has_concrete_response_evidence(&e, &o));
+        // YARA-ASYNC 4268d1e1 supersedes the former same-file YARA response clause.
+        assert!(!AgentRuntime::has_concrete_response_evidence(&e, &o));
         let mut deleted = e.clone();
         deleted.file_unlink = true;
         assert!(!AgentRuntime::has_concrete_response_evidence(&deleted, &o));
@@ -1080,7 +1083,7 @@ mod tests {
     fn rafix_response_deception_requires_the_same_strong_corroboration() {
         let (e, mut o) = bound_file_evidence();
         o.signals.deception_triggered = true;
-        assert!(AgentRuntime::has_concrete_response_evidence(&e, &o));
+        assert!(!AgentRuntime::has_concrete_response_evidence(&e, &o));
         o.yara_hits.clear();
         assert!(!AgentRuntime::has_concrete_response_evidence(&e, &o));
         o.kill_chain_evidence.clear();

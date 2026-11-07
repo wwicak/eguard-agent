@@ -663,6 +663,7 @@ mod tests {
             rule_name: "uncurated_noise".into(),
             source: "synthetic".into(),
             matched_literal: "1.0".into(),
+            severity: detection::Confidence::High,
         });
         assert_eq!(AgentRuntime::detection_rule_type(&outcome), "sigma");
         assert!(!AgentRuntime::detection_layers(&outcome)

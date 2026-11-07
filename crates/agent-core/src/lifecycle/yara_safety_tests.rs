@@ -2,7 +2,7 @@ use super::AgentRuntime;
 use detection::{Confidence, DetectionOutcome, YaraEngine};
 
 #[test]
-fn yara_combined_evidence_is_alert_only_but_hash_and_deception_are_unchanged() {
+fn yara_combined_evidence_is_alert_only_but_independent_hash_is_unchanged() {
     let mut engine = YaraEngine::new();
     engine.load_rules_str("rule fixture { meta: score = 75 strings: $a = \"synthetic\" condition: $a at 0 and filesize <= 128 }").unwrap();
     let mut outcome = DetectionOutcome {
@@ -12,16 +12,26 @@ fn yara_combined_evidence_is_alert_only_but_hash_and_deception_are_unchanged() {
         exploit_indicators: vec!["exploit".into()],
         ..Default::default()
     };
+    let event = detection::TelemetryEvent {
+        ts_unix: 123, event_class: detection::EventClass::ProcessExec, pid: 42,
+        ppid: 1, uid: 1000, process: "fixture".into(), parent_process: "shell".into(),
+        session_id: 42, file_path: Some("/tmp/fixture".into()), file_write: false,
+        process_exe: None, file_unlink: false, file_hash: Some("ab".repeat(32)),
+        dst_port: None, dst_ip: None, dst_domain: None, command_line: None,
+        event_size: None, container_runtime: None, container_id: None,
+        container_escape: false, container_privileged: false,
+    };
     assert!(!outcome.yara_hits.is_empty());
-    assert!(!AgentRuntime::has_concrete_response_evidence(&outcome));
+    assert!(!AgentRuntime::has_concrete_response_evidence(&event, &outcome));
     outcome.confidence = Confidence::Definite;
     outcome.signals.z1_exact_ioc = true;
     outcome.layer1.result = detection::Layer1Result::ExactMatch;
-    outcome.layer1.matched_fields = vec!["file_hash".into()];
-    assert!(AgentRuntime::has_concrete_response_evidence(&outcome));
+    outcome.layer1.exact_matched_fields = vec!["file_hash".into()];
+    assert!(AgentRuntime::has_concrete_response_evidence(&event, &outcome));
     outcome.signals.z1_exact_ioc = false;
     outcome.signals.deception_triggered = true;
-    assert!(AgentRuntime::has_concrete_response_evidence(&outcome));
+    // RAFIX never granted deception alone concrete-file response authority.
+    assert!(!AgentRuntime::has_concrete_response_evidence(&event, &outcome));
 }
 
 #[test]
