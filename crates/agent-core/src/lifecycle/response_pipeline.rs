@@ -1093,11 +1093,8 @@ mod tests {
     #[test]
     fn operator_yara_only_never_authorizes_any_action_but_exact_hash_does() {
         let runtime = runtime();
-        let event = quarantine_event(
-            "/tmp/approved-operator-fixture",
-            false,
-            EventClass::FileOpen,
-        );
+        let path = std::env::temp_dir().join("approved-operator-fixture");
+        let event = quarantine_event(&path.to_string_lossy(), false, EventClass::FileOpen);
         let mut outcome = DetectionOutcome::default();
         outcome.confidence = detection::Confidence::Definite;
         outcome.signals.yara_hit = true;
