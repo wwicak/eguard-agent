@@ -73,7 +73,7 @@ jobs:
           cargo build --release -p agent-core
           cp target/release/agent-core.exe qualification-yara/head-agent.exe
           qualification-yara/head-agent.exe --verify-yara-backend | tee artifacts/yara-windows/backend.txt
-          grep -qx 'yara_backend=yara-x' artifacts/yara-windows/backend.txt
+          grep -Eq '^yara_backend=yara-x( |$)' artifacts/yara-windows/backend.txt
           wix build installer/windows/eguard-agent.wxs -arch x64 \
             -d AgentExePath="$(pwd -W)/qualification-yara/head-agent.exe" -d AgentVersion=15.0.26 \
             -o qualification-yara/head.msi
