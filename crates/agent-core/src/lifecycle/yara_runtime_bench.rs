@@ -38,7 +38,7 @@ fn full_agent_yara_idle_and_scan_burst_rss() {
     std::env::set_var("EGUARD_COMPLIANCE_POLICY_PATH", root.join("missing-policy"));
     std::env::remove_var("EGUARD_COMPLIANCE_POLICY_JSON");
     std::env::remove_var("EGUARD_POLICY_PUBKEY_PATH");
-    std::env::set_var("EGUARD_DETECTION_SHARDS", "2");
+    std::env::set_var("EGUARD_DETECTION_SHARDS", "1");
     #[cfg(target_os = "linux")]
     {
         let replay = root.join("empty-replay");
@@ -81,6 +81,8 @@ fn full_agent_yara_idle_and_scan_burst_rss() {
         runtime.detection_state.process_event(&event).unwrap();
         elapsed.push(started.elapsed().as_micros());
     }
+    #[cfg(feature = "yara-x")]
+    runtime.detection_state.drain_yara_for_tests();
     stop.store(true, Ordering::Relaxed);
     sampler.join().unwrap();
     elapsed.sort();
@@ -132,7 +134,7 @@ fn loaded_executable_write_tick_p99() {
     std::fs::write(&replay, b"").unwrap();
     std::env::set_var("EGUARD_EBPF_REPLAY_PATH", replay);
     std::env::set_var("EGUARD_BASELINE_PATH", root.join("baseline"));
-    std::env::set_var("EGUARD_DETECTION_SHARDS", "2");
+    std::env::set_var("EGUARD_DETECTION_SHARDS", "1");
     let path = root.join("image");
     let mut bytes = vec![0; 4 * 1024 * 1024];
     bytes[..4].copy_from_slice(b"\x7fELF");
@@ -180,6 +182,7 @@ fn loaded_executable_write_tick_p99() {
             runtime.raw_event_backlog.push_back(RawEvent{event_type:EventType::FileOpen,pid,uid:1000,ts_ns:1_000_000_000+index*100_000_000,pid_start_ns:None,ppid_start_ns:None,payload:format!("path={};flags=577;ppid={ppid};comm={comm};parent_comm={parent_comm}",path.display()),fields:RawEventFields{path:Some(path.to_string_lossy().into()),flags:Some(577),ppid:Some(ppid),comm:Some(comm.clone()),parent_comm:Some(parent_comm.clone()),..Default::default()}});
             let started=std::time::Instant::now();runtime.tick(now).await.unwrap();assert!(runtime.raw_event_backlog.is_empty());consumed+=1;if index>=20{times.push(started.elapsed().as_micros());}
         }
+        #[cfg(feature="yara-x")] runtime.detection_state.drain_yara_for_tests();
         #[cfg(feature="yara-x")] let yara_health=runtime.detection_state.yara_health();
         #[cfg(not(feature="yara-x"))] let yara_health="baseline FileKey-only fallback".to_string();
         times.sort();println!("YARA_TICK {}",serde_json::json!({"events":times.len(),"consumed":consumed,"file_mib":4,"p50_us":times[times.len()/2],"p99_us":times[(times.len()*99).div_ceil(100)-1],"buffered_events":runtime.buffer.pending_count(),"yara_health":yara_health,"scope":"executable-magic file writes; no RPC/daemon"}));

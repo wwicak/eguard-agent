@@ -16,7 +16,7 @@ jobs:
     timeout-minutes: 90
     env:
       CARGO_BUILD_JOBS: "4"
-      BASELINE_REF: "6b64473"
+      BASELINE_REF: "86268317"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -98,9 +98,14 @@ jobs:
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
         run: |
           set -euo pipefail
+          # Offline workspace metadata includes non-native target dependencies too.
+          cargo fetch --locked
           cargo test --release -p platform-windows
           cargo test --release -p detection --lib --test yara_real --test yara_runtime_safety --test yara_diagnostics --test yara_curated
           cargo test --release -p agent-core lifecycle::yara_safety_tests -- --nocapture --test-threads=1
+          cargo test --release -p agent-core lifecycle::yara_async_tests -- --nocapture --test-threads=1
+          cargo test --release -p agent-core on_demand_scan::tests -- --nocapture --test-threads=1
+          cargo test --release -p agent-core operator_yara_only_never -- --nocapture --test-threads=1
       - name: Native benign corpus, executable1/4/16MiB qualification and idle RSS
         timeout-minutes: 45
         shell: bash
