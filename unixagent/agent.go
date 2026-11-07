@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"eguard-nac-agent/admission"
@@ -103,11 +104,18 @@ func (a removal) Handoff(raw []byte) error {
 	if e != nil {
 		return e
 	}
-	for i := 0; i < 100; i++ {
+	// "accepted" means the service verified the grant and is running official
+	// cleanup; only a rejection is final. Completion = state directory gone or
+	// emptied by the service (it cannot unlink the directory under systemd's
+	// ProtectSystem=strict, the CLI can).
+	for i := 0; i < 150; i++ {
 		if _, e = os.Lstat(a.root); os.IsNotExist(e) {
 			return nil
 		}
-		if raw, e := os.ReadFile(filepath.Join(a.root, servicefactory.ResultFile)); e == nil {
+		if entries, e := os.ReadDir(a.root); e == nil && len(entries) == 0 {
+			return os.Remove(a.root)
+		}
+		if raw, e := os.ReadFile(filepath.Join(a.root, servicefactory.ResultFile)); e == nil && strings.HasPrefix(string(raw), "rejected") {
 			return fmt.Errorf("uninstall result: %s", raw)
 		}
 		time.Sleep(200 * time.Millisecond)

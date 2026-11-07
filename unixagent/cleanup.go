@@ -6,7 +6,9 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"runtime"
+	"syscall"
 	"time"
 )
 
@@ -32,7 +34,14 @@ func cleanupUnix(platform string, p CleanupPaths, run Runner) error {
 		if e := run(ctx, "/usr/bin/systemctl", "disable", "eguard-nac.service"); e != nil {
 			return e
 		}
-		if e := os.RemoveAll(p.Root); e != nil {
+		// systemd ProtectSystem=strict lets the service write inside its state
+		// directory but not unlink the directory itself. Remove every entry
+		// (credential, journal, provisioning); an empty, root-only directory is
+		// not enrollment. The CLI or package removal deletes the empty directory.
+		if e := emptyDir(p.Root); e != nil {
+			return e
+		}
+		if e := os.Remove(p.Root); e != nil && !os.IsNotExist(e) && !os.IsPermission(e) && !errors.Is(e, syscall.EROFS) {
 			return e
 		}
 		return run(ctx, "/usr/bin/systemctl", "stop", "eguard-nac.service")
@@ -50,4 +59,27 @@ func cleanupUnix(platform string, p CleanupPaths, run Runner) error {
 		}
 	}
 	return run(ctx, "/bin/launchctl", "bootout", "system/id.eguard.nac")
+}
+
+func emptyDir(dir string) error {
+	i, e := os.Lstat(dir)
+	if os.IsNotExist(e) {
+		return nil
+	}
+	if e != nil {
+		return e
+	}
+	if !i.IsDir() {
+		return os.Remove(dir)
+	}
+	entries, e := os.ReadDir(dir)
+	if e != nil {
+		return e
+	}
+	for _, x := range entries {
+		if e := os.RemoveAll(filepath.Join(dir, x.Name())); e != nil {
+			return e
+		}
+	}
+	return nil
 }
