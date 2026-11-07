@@ -2,7 +2,6 @@
 /fuzz/target/
 /fuzz/corpus/
 /fuzz/artifacts/
-/Cargo.lock
 /.zig-cache/
 /zig-out/
 
