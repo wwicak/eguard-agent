@@ -24,6 +24,9 @@
       <Directory Id="EGUARDDATA" Name="eGuard">
         <Directory Id="EGUARDCERTS" Name="certs" />
         <Directory Id="EGUARDRULES" Name="rules-staging" />
+        <Directory Id="EGUARDINSTALLEDRULES" Name="rules">
+          <Directory Id="EGUARDYARA" Name="yara" />
+        </Directory>
         <Directory Id="EGUARDQUAR" Name="quarantine" />
         <Directory Id="EGUARDLOGS" Name="logs" />
       </Directory>
@@ -51,6 +54,23 @@
             Account="LocalSystem" />
 
         <ServiceControl Id="SvcStart" Name="eGuardAgent" Start="install" Stop="both" Remove="uninstall" Wait="yes" />
+      </Component>
+      <Component Id="CmpThirdPartyNotices" Guid="*">
+        <File Id="FilThirdPartyNotices" Source="$(sys.SOURCEFILEDIR)../../rules/yara/THIRD-PARTY-NOTICES.txt" KeyPath="yes" />
+      </Component>
+      <Component Id="CmpCuratedYara" Directory="EGUARDYARA" Guid="*">
+        <File Id="FilYaraEicar" Source="$(sys.SOURCEFILEDIR)../../rules/yara/default.yar" KeyPath="yes" />
+        <File Id="FilYaraRule0" Source="$(sys.SOURCEFILEDIR)../../rules/yara/mandiant/APT_Trojan_Linux_REDFLARE_1.yar" />
+        <File Id="FilYaraRule1" Source="$(sys.SOURCEFILEDIR)../../rules/yara/mandiant/APT_Loader_Win_PGF_2.yar" />
+        <File Id="FilYaraRule2" Source="$(sys.SOURCEFILEDIR)../../rules/yara/mandiant/APT_Loader_Win32_DShell_1.yar" />
+        <File Id="FilYaraRule3" Source="$(sys.SOURCEFILEDIR)../../rules/yara/withsecure/SILKLOADER.yar" />
+        <File Id="FilYaraRule4" Source="$(sys.SOURCEFILEDIR)../../rules/yara/withsecure/tanglecrypt.yar" />
+        <File Id="FilYaraRule5" Source="$(sys.SOURCEFILEDIR)../../rules/yara/withsecure/Andariel_UnderCrypt.yar" />
+        <File Id="FilYaraRule6" Source="$(sys.SOURCEFILEDIR)../../rules/yara/withsecure/Andariel_StarShellRAT.yar" />
+        <File Id="FilYaraRule7" Source="$(sys.SOURCEFILEDIR)../../rules/yara/withsecure/Andariel_GopherRAT.yar" />
+        <File Id="FilYaraRule8" Source="$(sys.SOURCEFILEDIR)../../rules/yara/withsecure/Andariel_JelusRAT_PDB.yar" />
+        <File Id="FilYaraProvenance" Source="$(sys.SOURCEFILEDIR)../../rules/yara/provenance.json" />
+        <File Id="FilYaraNotices" Source="$(sys.SOURCEFILEDIR)../../rules/yara/THIRD-PARTY-NOTICES.txt" />
       </Component>
     </ComponentGroup>
   </Fragment>

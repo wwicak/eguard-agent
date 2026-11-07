@@ -334,11 +334,14 @@ impl AgentRuntime {
         {
             return true;
         }
+        // YARA is alert-only, even when corroborated; independent hash/deception above are unchanged.
+        if !outcome.yara_hits.is_empty() {
+            return false;
+        }
         // Anomaly/ML and prefilter text are not independent attack evidence.
         [
             !outcome.temporal_hits.is_empty(),
             !outcome.kill_chain_hits.is_empty(),
-            !outcome.yara_hits.is_empty(),
             !outcome.exploit_indicators.is_empty(),
             !outcome.tamper_indicators.is_empty(),
         ]
@@ -354,6 +357,9 @@ impl AgentRuntime {
         event: &detection::TelemetryEvent,
         outcome: &DetectionOutcome,
     ) -> super::PlannedAction {
+        if !outcome.yara_hits.is_empty() && !Self::has_concrete_response_evidence(outcome) {
+            return super::PlannedAction::AlertOnly;
+        }
         if matches!(
             action,
             super::PlannedAction::KillOnly

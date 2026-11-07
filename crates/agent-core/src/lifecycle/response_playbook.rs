@@ -390,6 +390,7 @@ mod tests {
             kernel_integrity_indicators: Vec::new(),
             tamper_indicators: Vec::new(),
             yara_hits: Vec::new(),
+            yara_scan_incomplete: Vec::new(),
             anomaly: None,
             layer1: detection::Layer1EventHit::default(),
             ml_score: None,

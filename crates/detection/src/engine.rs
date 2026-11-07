@@ -111,6 +111,7 @@ pub struct DetectionOutcome {
     pub kernel_integrity_indicators: Vec<String>,
     pub tamper_indicators: Vec<String>,
     pub yara_hits: Vec<YaraHit>,
+    pub yara_scan_incomplete: Vec<crate::YaraIncomplete>,
     pub anomaly: Option<AnomalyDecision>,
     pub layer1: Layer1EventHit,
     pub ml_score: Option<MlScore>,
@@ -131,6 +132,7 @@ impl Default for DetectionOutcome {
             kernel_integrity_indicators: Vec::new(),
             tamper_indicators: Vec::new(),
             yara_hits: Vec::new(),
+            yara_scan_incomplete: Vec::new(),
             anomaly: None,
             layer1: Layer1EventHit::default(),
             ml_score: None,
@@ -270,6 +272,7 @@ impl DetectionEngine {
                 kernel_integrity_indicators: Vec::new(),
                 tamper_indicators: Vec::new(),
                 yara_hits: Vec::new(),
+                yara_scan_incomplete: Vec::new(),
                 anomaly: None,
                 layer1: Layer1EventHit::default(),
                 ml_score: None,
@@ -287,11 +290,12 @@ impl DetectionEngine {
             // downstream telemetry and playbooks can still observe the
             // matched content without running the rest of the pipeline.
             let yara_hits = self.yara.scan_event(event);
+            let yara_scan_incomplete = self.yara.take_incomplete();
             return DetectionOutcome {
                 confidence: Confidence::Definite,
                 signals: DetectionSignals {
                     z1_exact_ioc: true,
-                    yara_hit: !yara_hits.is_empty() && yara_hits.len() <= 50,
+                    yara_hit: !yara_hits.is_empty(),
                     network_ioc_hit,
                     ..Default::default()
                 },
@@ -304,6 +308,7 @@ impl DetectionEngine {
                 kernel_integrity_indicators: Vec::new(),
                 tamper_indicators: Vec::new(),
                 yara_hits,
+                yara_scan_incomplete,
                 anomaly: None,
                 layer1,
                 ml_score: None,
@@ -312,6 +317,7 @@ impl DetectionEngine {
         }
 
         let yara_hits = self.yara.scan_event(event);
+        let yara_scan_incomplete = self.yara.take_incomplete();
 
         // ── Layer 2: Temporal pattern correlation ───────────────
         let temporal_hits = self.layer2.observe(event);
@@ -372,7 +378,7 @@ impl DetectionEngine {
             // When the substring backend matches thousands of rules on a
             // system binary, that is a false positive and should not
             // elevate the confidence score.
-            yara_hit: !yara_hits.is_empty() && yara_hits.len() <= 50,
+            yara_hit: !yara_hits.is_empty(),
             z2_temporal: !temporal_hits.is_empty(),
             z3_anomaly_high: anomaly.as_ref().map(|a| a.high).unwrap_or(false) || behavioral_high,
             z3_anomaly_med: anomaly.as_ref().map(|a| a.medium).unwrap_or(false) || behavioral_med,
@@ -405,7 +411,14 @@ impl DetectionEngine {
 
         // ── Confidence aggregation ──────────────────────────────
         // Deterministic confidence from L1–L4, then ML can escalate
-        let base_confidence = confidence_policy(&signals);
+        let mut policy_signals = signals.clone();
+        policy_signals.yara_hit = yara_hits.iter().any(|hit| hit.severity >= Confidence::High);
+        let yara_confidence = yara_hits
+            .iter()
+            .map(|hit| hit.severity)
+            .max()
+            .unwrap_or(Confidence::None);
+        let base_confidence = confidence_policy(&policy_signals).max(yara_confidence);
         let confidence = ml_enhanced_confidence(base_confidence, &ml_result);
 
         DetectionOutcome {
@@ -420,6 +433,7 @@ impl DetectionEngine {
             kernel_integrity_indicators,
             tamper_indicators,
             yara_hits,
+            yara_scan_incomplete,
             anomaly,
             layer1,
             ml_score: Some(ml_result),

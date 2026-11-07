@@ -73,7 +73,7 @@ pub use usb_control::{
     parse_usb_class, UsbAction, UsbDeviceClass, UsbEvent, UsbPolicy, UsbViolation,
 };
 pub use vulnerability::{CveDatabase, CveRecord, VulnerabilityMatch};
-pub use yara_engine::{YaraEngine, YaraError, YaraHit};
+pub use yara_engine::{YaraEngine, YaraError, YaraHit, YaraIncomplete, YaraStatus};
 pub use zero_trust::{
     compute_score as compute_device_score, default_factors as default_health_factors,
     recommend_action, DeviceHealthScore, ScoreFactor, TrustAction,
@@ -82,10 +82,10 @@ pub use zero_trust::{
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
-mod tests_windows_fp;
-#[cfg(test)]
 mod tests_detection_audit;
 #[cfg(all(test, not(miri)))]
 mod tests_resource_budget;
 #[cfg(all(test, not(miri)))]
 mod tests_stub_completion;
+#[cfg(test)]
+mod tests_windows_fp;

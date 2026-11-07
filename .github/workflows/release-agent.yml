@@ -64,6 +64,9 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
+      - name: Enforce real-YARA toolchain
+        run: ${{ runner.os == 'Windows' && 'python' || 'python3' }} scripts/check_yara_toolchain.py
+
       - name: Install nfpm
         run: |
           NFPM_VERSION=2.45.0
@@ -191,6 +194,9 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
+      - name: Enforce real-YARA toolchain
+        run: ${{ runner.os == 'Windows' && 'python' || 'python3' }} scripts/check_yara_toolchain.py
+
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
 
@@ -291,6 +297,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Enforce real-YARA toolchain
+        run: ${{ runner.os == 'Windows' && 'python' || 'python3' }} scripts/check_yara_toolchain.py
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2

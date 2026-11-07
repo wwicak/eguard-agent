@@ -43,19 +43,22 @@ enum ShardCommand {
 #[derive(Clone)]
 struct DetectionShard {
     tx: mpsc::Sender<ShardCommand>,
+    yara_status: Arc<ArcSwap<detection::YaraStatus>>,
 }
 
 impl DetectionShard {
     fn spawn(shard_idx: usize, initial_engine: DetectionEngine) -> Self {
         let (tx, rx) = mpsc::channel();
+        let yara_status = Arc::new(ArcSwap::from(initial_engine.yara.status_handle()));
+        let worker_status = Arc::clone(&yara_status);
         let thread_name = format!("eguard-detection-shard-{shard_idx}");
         std::thread::Builder::new()
             .name(thread_name)
-            .spawn(move || shard_worker_loop(initial_engine, rx))
+            .spawn(move || shard_worker_loop(initial_engine, rx, worker_status))
             .unwrap_or_else(|err| {
                 panic!("failed spawning detection shard worker {shard_idx}: {err}")
             });
-        Self { tx }
+        Self { tx, yara_status }
     }
 
     fn process_event(&self, event: TelemetryEvent) -> Result<DetectionOutcome> {
@@ -170,7 +173,11 @@ impl DetectionShard {
     }
 }
 
-fn shard_worker_loop(mut engine: DetectionEngine, rx: mpsc::Receiver<ShardCommand>) {
+fn shard_worker_loop(
+    mut engine: DetectionEngine,
+    rx: mpsc::Receiver<ShardCommand>,
+    yara_status: Arc<ArcSwap<detection::YaraStatus>>,
+) {
     while let Ok(command) = rx.recv() {
         match command {
             ShardCommand::ProcessEvent { event, response } => {
@@ -210,6 +217,7 @@ fn shard_worker_loop(mut engine: DetectionEngine, rx: mpsc::Receiver<ShardComman
                 replacement.layer3.inherit_baselines(&mut engine.layer3);
                 // Swap the engine in immediately so subsequent ProcessEvent
                 // commands run against the new rules.
+                yara_status.store(replacement.yara.status_handle());
                 let old_engine = std::mem::replace(&mut engine, *replacement);
                 // Respond before dropping the old engine.  Detection engines
                 // carry millions of YARA/Sigma/IOC structures and the Drop
@@ -320,6 +328,15 @@ impl SharedDetectionState {
                 version: ArcSwap::new(Arc::new(version)),
             }),
         }
+    }
+
+    pub fn yara_health(&self) -> String {
+        self.inner
+            .shards
+            .iter()
+            .map(|shard| shard.yara_status.load().health())
+            .collect::<Vec<_>>()
+            .join(";")
     }
 
     pub fn process_event(&self, event: &TelemetryEvent) -> Result<DetectionOutcome> {

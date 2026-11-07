@@ -5,62 +5,148 @@ on:
 
 permissions:
   contents: read
-  actions: read
 
 concurrency:
   group: detection-benchmark-windows-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  CARGO_TERM_COLOR: always
-  ZIG_VERSION: "0.14.1"
-
 jobs:
   benchmark:
     runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      CARGO_BUILD_JOBS: "4"
+      BASELINE_REF: "6b64473"
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Install Zig
-        uses: mlugg/setup-zig@v2
+      - name: Enforce toolchain and create isolated qualification directories
+        shell: bash
+        run: |
+          python scripts/check_yara_toolchain.py
+          echo "CARGO_TARGET_DIR=$(pwd -W)/target" >> "$GITHUB_ENV"
+          mkdir -p qualification-yara/base-src artifacts/yara-windows
+          git archive "$BASELINE_REF" | tar -x -C qualification-yara/base-src
+          python - <<'PY'
+          from pathlib import Path
+          import shutil
+          base=Path('qualification-yara/base-src')
+          for relative in ['crates/agent-core/src/lifecycle/yara_runtime_bench.rs','crates/detection/tests/support/yara_metrics.rs']:
+              target=base/relative;target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(relative,target)
+          lifecycle=base/'crates/agent-core/src/lifecycle.rs'
+          lifecycle.write_text(lifecycle.read_text()+'\n#[cfg(test)]\nmod yara_runtime_bench;\n')
+          PY
+      - name: Install Zig and WiX build tools (no MSI installation)
+        shell: bash
+        run: |
+          python - <<'PY'
+          import io,os,pathlib,urllib.request,zipfile
+          url='https://ziglang.org/download/0.14.1/zig-x86_64-windows-0.14.1.zip'
+          with urllib.request.urlopen(url,timeout=120) as response: payload=response.read()
+          out=pathlib.Path('tools');out.mkdir(exist_ok=True)
+          with zipfile.ZipFile(io.BytesIO(payload)) as archive: archive.extractall(out)
+          zig=out/'zig-x86_64-windows-0.14.1'
+          with open(os.environ['GITHUB_PATH'],'a',encoding='utf8') as stream:stream.write(str(zig.resolve())+'\n')
+          PY
+          dotnet tool install --global wix --version 5.0.2
+      - name: Baseline production MSVC executable and MSI
+        timeout-minutes: 45
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd qualification-yara/base-src; zig build asm-artifacts; cargo build --release -p agent-core)
+          cp target/release/agent-core.exe qualification-yara/base-agent.exe
+          wix build qualification-yara/base-src/installer/windows/eguard-agent.wxs -arch x64 \
+            -d AgentExePath="$(pwd -W)/qualification-yara/base-agent.exe" -d AgentVersion=15.0.26 \
+            -o qualification-yara/base.msi
+      - name: Head production MSVC executable, real-backend self-check and MSI
+        timeout-minutes: 45
+        shell: bash
+        run: |
+          set -euo pipefail
+          zig build asm-artifacts
+          cargo build --release -p agent-core
+          cp target/release/agent-core.exe qualification-yara/head-agent.exe
+          qualification-yara/head-agent.exe --verify-yara-backend | tee artifacts/yara-windows/backend.txt
+          grep -qx 'yara_backend=yara-x' artifacts/yara-windows/backend.txt
+          wix build installer/windows/eguard-agent.wxs -arch x64 \
+            -d AgentExePath="$(pwd -W)/qualification-yara/head-agent.exe" -d AgentVersion=15.0.26 \
+            -o qualification-yara/head.msi
+          python - <<'PY'
+          import json,pathlib
+          root=pathlib.Path('qualification-yara')
+          result={name:(root/name).stat().st_size for name in ['base-agent.exe','head-agent.exe','base.msi','head.msi']}
+          result['executable_delta_bytes']=result['head-agent.exe']-result['base-agent.exe']
+          result['msi_delta_bytes']=result['head.msi']-result['base.msi']
+          pathlib.Path('artifacts/yara-windows/artifact-sizes.json').write_text(json.dumps(result,indent=2)+'\n')
+          print(result)
+          assert result['executable_delta_bytes']<=20_000_000,'STOP: executable growth exceeds20MB'
+          PY
+      - name: Verify packaged notices and every reviewed rule via MSI database (never install)
+        shell: pwsh
+        run: ./scripts/verify_yara_msi.ps1 qualification-yara/head.msi | Tee-Object artifacts/yara-windows/msi-files.txt
+      - name: Native platform, real semantics, safety, metadata and curated family tests
+        timeout-minutes: 45
+        shell: bash
+        env:
+          CARGO_PROFILE_RELEASE_LTO: "false"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+        run: |
+          set -euo pipefail
+          cargo test --release -p platform-windows
+          cargo test --release -p detection --lib --test yara_real --test yara_runtime_safety --test yara_diagnostics --test yara_curated
+          cargo test --release -p agent-core lifecycle::yara_safety_tests -- --nocapture --test-threads=1
+      - name: Native benign corpus, executable1/4/16MiB qualification and idle RSS
+        timeout-minutes: 45
+        shell: bash
+        env:
+          CARGO_PROFILE_RELEASE_LTO: "false"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+        run: |
+          set -euo pipefail
+          python scripts/yara_benign_manifest.py --output qualification-yara/benign.txt --metrics artifacts/yara-windows/corpus.json
+          cargo run --release -p detection --example yara_gate -- \
+            --rules rules/yara --manifest threat-intel/yara-v1.json --benign-list qualification-yara/benign.txt \
+            --bench-executables --metrics artifacts/yara-windows/qualification.json
+      - name: Baseline and head full AgentRuntime idle and scan-burst RSS (no daemon/server)
+        timeout-minutes: 45
+        shell: bash
+        env:
+          CARGO_PROFILE_RELEASE_LTO: "false"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+        run: |
+          set -euo pipefail
+          (cd qualification-yara/base-src; cargo test --release -p agent-core full_agent_yara_idle_and_scan_burst_rss -- --ignored --nocapture --test-threads=1) | tee artifacts/yara-windows/baseline-rss.log
+          cargo test --release -p agent-core full_agent_yara_idle_and_scan_burst_rss -- --ignored --nocapture --test-threads=1 | tee artifacts/yara-windows/head-rss.log
+          python - <<'PY'
+          import json,pathlib
+          root=pathlib.Path('artifacts/yara-windows')
+          def load(name):
+              return json.loads(next(line.split('YARA_AGENT_RSS ',1)[1] for line in (root/name).read_text().splitlines() if 'YARA_AGENT_RSS ' in line))
+          base,head=load('baseline-rss.log'),load('head-rss.log')
+          result={'baseline':base,'head':head,'idle_delta_bytes':(head['idle_kib']-base['idle_kib'])*1024,'burst_delta_bytes':(head['burst_peak_kib']-base['burst_peak_kib'])*1024}
+          (root/'rss-delta.json').write_text(json.dumps(result,indent=2)+'\n');print(result)
+          assert max(result['idle_delta_bytes'],result['burst_delta_bytes'])<=40_000_000,'STOP: RSS growth exceeds40MB'
+          PY
+      - name: Upload qualification logs and metrics only (not executables/MSIs, no publication)
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          version: ${{ env.ZIG_VERSION }}
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-msvc
-
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
-
-      - name: Build Zig ASM artifacts
-        shell: bash
-        run: zig build asm-artifacts
-
-      - name: Validate Windows platform crate compiles for MSVC target
-        shell: bash
-        run: |
-          cargo check --target x86_64-pc-windows-msvc -p platform-windows
-
-      - name: Run platform-windows unit tests
-        shell: bash
-        run: |
-          cargo test -p platform-windows
-
-      - name: Validate agent-core compiles for Windows MSVC target
-        shell: bash
-        run: |
-          cargo check --target x86_64-pc-windows-msvc -p agent-core
+          name: yara-real-windows-qualification
+          path: artifacts/yara-windows/
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Run Windows detection benchmark
         shell: bash
+        env:
+          CARGO_PROFILE_RELEASE_LTO: "false"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
         run: |
           set -euo pipefail
           ROOT_DIR="$(pwd)"
@@ -69,7 +155,7 @@ jobs:
           mkdir -p "${OUT_DIR}"
 
           START_NS="$(date +%s%N)"
-          cargo test -p detection tests::detection_latency_p99_stays_within_budget_for_reference_workload -- --exact
+          cargo test --release -p detection tests::detection_latency_p99_stays_within_budget_for_reference_workload -- --exact
           END_NS="$(date +%s%N)"
 
           ELAPSED_MS="$(( (END_NS - START_NS) / 1000000 ))"
@@ -80,7 +166,7 @@ jobs:
             "suite": "detection_latency_windows",
             "platform": "windows",
             "recorded_at_utc": "${NOW_UTC}",
-            "command": "cargo test -p detection tests::detection_latency_p99_stays_within_budget_for_reference_workload -- --exact",
+            "command": "cargo test --release -p detection tests::detection_latency_p99_stays_within_budget_for_reference_workload -- --exact",
             "wall_clock_ms": ${ELAPSED_MS}
           }
           EOF

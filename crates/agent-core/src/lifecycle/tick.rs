@@ -283,6 +283,7 @@ impl AgentRuntime {
         self.observe_baseline(&detection_event, now_unix);
 
         let mut detection_outcome = self.detection_state.process_event(&detection_event)?;
+        self.buffer_yara_incomplete(&detection_outcome, now_unix)?;
 
         // Buffer IOC signals for cross-endpoint campaign correlation.
         if detection_outcome.signals.z1_exact_ioc || detection_outcome.signals.yara_hit {

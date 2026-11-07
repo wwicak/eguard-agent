@@ -6,9 +6,28 @@ use tracing::{debug, info};
 use detection::{Confidence, DetectionOutcome, TelemetryEvent};
 use grpc_client::EventEnvelope;
 
-use super::{AgentRuntime, TickEvaluation};
+use super::{confidence_to_severity, AgentRuntime, TickEvaluation};
 
 impl AgentRuntime {
+    pub(super) fn buffer_yara_incomplete(
+        &mut self,
+        outcome: &DetectionOutcome,
+        now_unix: i64,
+    ) -> anyhow::Result<()> {
+        for incomplete in &outcome.yara_scan_incomplete {
+            self.buffer.enqueue(EventEnvelope {
+                agent_id: self.config.agent_id.clone(), event_type: "alert".to_string(),
+                severity: "low".to_string(), rule_name: "yara_scan_incomplete".to_string(),
+                payload_json: json!({"rule_type":"yara_scan_incomplete", "rule_name":"yara_scan_incomplete",
+                    "severity":"low", "alert_only":true, "auto_response":false,
+                    "reason":incomplete.reason,"file_path":incomplete.path,"sha256":incomplete.sha256,
+                    "active_pack_hash":incomplete.pack_hash}).to_string(),
+                created_at_unix: now_unix,
+            })?;
+        }
+        Ok(())
+    }
+
     pub(super) fn build_event_envelope(
         &self,
         enriched: &crate::platform::EnrichedEvent,
@@ -58,6 +77,7 @@ impl AgentRuntime {
                     "rule": hit.rule_name,
                     "source": hit.source,
                     "literal": hit.matched_literal,
+                    "severity": confidence_to_severity(hit.severity),
                 })
             })
             .collect::<Vec<_>>();
@@ -590,6 +610,7 @@ mod tests {
             kernel_integrity_indicators: Vec::new(),
             tamper_indicators: Vec::new(),
             yara_hits: Vec::new(),
+            yara_scan_incomplete: Vec::new(),
             anomaly: None,
             layer1: Layer1EventHit::default(),
             ml_score: None,

@@ -30,6 +30,10 @@ pub(super) fn parse_rules(source: &str) -> Result<Vec<SubstringRule>> {
         }
         match line {
             "meta:" if section.is_empty() => section = "meta",
+            _ if section.is_empty() && line.starts_with("meta:") => {
+                metadata(&line[5..])?;
+                section = "meta";
+            }
             "strings:" if section.is_empty() || section == "meta" => section = "strings",
             "condition:" if section == "strings" => section = "condition",
             "}" if section == "condition" => {
@@ -49,10 +53,7 @@ pub(super) fn parse_rules(source: &str) -> Result<Vec<SubstringRule>> {
             }
             _ if section == "meta" => {
                 // Metadata is never executable or a source of scan literals.
-                let (key, value) = line.split_once('=').ok_or_else(unsupported)?;
-                if !identifier(key.trim()) || value.trim().is_empty() {
-                    return Err(unsupported());
-                }
+                metadata(line)?;
             }
             _ if section == "strings" && id.is_none() => {
                 let (key, value) = line.split_once('=').ok_or_else(unsupported)?;
@@ -74,6 +75,14 @@ pub(super) fn parse_rules(source: &str) -> Result<Vec<SubstringRule>> {
         return Err(unsupported());
     }
     Ok(out)
+}
+
+fn metadata(line: &str) -> Result<()> {
+    let (key, value) = line.split_once('=').ok_or_else(unsupported)?;
+    if !identifier(key.trim()) || value.trim().is_empty() {
+        return Err(unsupported());
+    }
+    Ok(())
 }
 
 fn identifier(s: &str) -> bool {

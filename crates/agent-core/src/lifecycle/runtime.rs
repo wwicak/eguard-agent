@@ -182,6 +182,11 @@ pub struct AgentRuntime {
 
 impl AgentRuntime {
     pub fn new(config: AgentConfig) -> Result<Self> {
+        #[cfg(not(debug_assertions))]
+        anyhow::ensure!(
+            detection::YaraEngine::new().backend_name() == "yara-x",
+            "release agent requires the real YARA backend"
+        );
         if let Some(bundle_public_key) = config
             .detection_bundle_public_key
             .as_deref()
