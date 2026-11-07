@@ -1,4 +1,4 @@
-#![cfg(not(feature = "yara-rust"))]
+#![cfg(not(feature = "yara-x"))]
 
 use detection::{EventClass, TelemetryEvent, YaraEngine};
 

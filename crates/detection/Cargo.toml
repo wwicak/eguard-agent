@@ -1,12 +1,15 @@
 [package]
 name = "detection"
+rust-version = "1.95"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [features]
-default = []
-yara-rust = ["dep:yara"]
+default = ["yara-x"]
+yara-x = ["dep:yara-x"]
+# Compatibility alias for existing real-backend test invocations.
+yara-rust = ["yara-x"]
 
 [dependencies]
 serde.workspace = true
@@ -17,7 +20,8 @@ rusqlite.workspace = true
 aho-corasick.workspace = true
 sha2.workspace = true
 libc.workspace = true
-yara = { version = "0.31", optional = true, default-features = false, features = ["vendored", "bundled-4_5_5"] }
+tracing.workspace = true
+yara-x = { version = "=1.23.0", optional = true, default-features = false, features = ["pe-module"] }
 
 [dev-dependencies]
 proptest = "1.6"

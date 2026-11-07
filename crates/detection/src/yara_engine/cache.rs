@@ -12,6 +12,16 @@ pub(super) struct FileKey {
     changed: (i64, i64),
 }
 impl FileKey {
+    pub(super) fn cache_bytes(&self) -> usize {
+        std::mem::size_of::<Self>() + self.path.capacity()
+    }
+    pub(super) fn still_matches(&self, path: &str, file: &File) -> bool {
+        file.metadata()
+            .ok()
+            .and_then(|metadata| Self::new(path, file, &metadata))
+            .as_ref()
+            == Some(self)
+    }
     pub(super) fn new(path: &str, file: &File, metadata: &Metadata) -> Option<Self> {
         #[cfg(unix)]
         let (identity, changed) = {

@@ -1,8 +1,13 @@
 [package]
 name = "agent-core"
+rust-version = "1.95"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+
+[features]
+default = ["yara-x"]
+yara-x = ["detection/yara-x", "response/yara-x"]
 
 [dependencies]
 anyhow.workspace = true
@@ -14,8 +19,8 @@ serde_json.workspace = true
 reqwest.workspace = true
 grpc-client = { path = "../grpc-client" }
 agent-version = { path = "../agent-version" }
-detection = { path = "../detection" }
-response = { path = "../response" }
+detection = { path = "../detection", default-features = false }
+response = { path = "../response", default-features = false }
 compliance = { path = "../compliance" }
 baseline = { path = "../baseline" }
 nac = { path = "../nac" }

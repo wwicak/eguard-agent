@@ -363,43 +363,8 @@ impl AgentRuntime {
         {
             return true;
         }
-        let Some(path) = event.file_path.as_deref().filter(|p| !p.is_empty()) else {
-            return false;
-        };
-        // Operator scans hash the current file bytes; passive telemetry keeps the same-file chain gate.
-        if origin == ResponseOrigin::OperatorScan {
-            return outcome.signals.yara_hit
-                && outcome
-                    .yara_hits
-                    .iter()
-                    .any(|hit| !hit.rule_name.is_empty() && hit.source == path);
-        }
-        let Some(id) = outcome
-            .observation_id
-            .as_deref()
-            .filter(|id| !id.is_empty())
-        else {
-            return false;
-        };
-        // Substring YARA, heuristics, deception and broad chains are not enough
-        // alone. Both sources must witness this exact file event, pid and session.
-        event.pid != 0
-            && event.session_id != 0
-            && outcome
-                .yara_hits
-                .iter()
-                .any(|hit| !hit.rule_name.is_empty() && hit.source == path)
-            && outcome.kill_chain_evidence.iter().any(|chain| {
-                !chain.template.is_empty()
-                    && outcome.kill_chain_hits.contains(&chain.template)
-                    && chain.witnesses.iter().any(|w| {
-                        w.event_id == id
-                            && w.pid == event.pid
-                            && w.session_id == event.session_id
-                            && w.ts_unix == event.ts_unix
-                            && w.file_path.as_deref() == Some(path)
-                    })
-            })
+        // YARA-ASYNC 4268d1e1: YARA never authorizes response, including operator scans.
+        false
     }
 
     pub(super) fn sanitize_planned_action_for_event(
@@ -432,6 +397,11 @@ impl AgentRuntime {
         outcome: &DetectionOutcome,
         origin: ResponseOrigin,
     ) -> super::PlannedAction {
+        if !outcome.yara_hits.is_empty()
+            && !Self::has_concrete_response_evidence_for_origin(event, outcome, origin)
+        {
+            return super::PlannedAction::AlertOnly;
+        }
         if matches!(
             action,
             super::PlannedAction::KillOnly

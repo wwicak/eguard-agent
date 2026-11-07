@@ -7,17 +7,13 @@ use nac::{
 
 #[test]
 // AC-NAC-012
-fn yara_high_maps_to_malware_event_and_quarantine_actions() {
+fn yara_high_maps_to_malware_event_with_alert_only_actions() {
     let alert = AlertEvent::new("yara", "rule", Severity::High, &[], "malware");
     let event = map_alert_to_security_event(&alert).expect("event");
     assert_eq!(event.event_id, EVENT_MALWARE_DETECTED);
     assert_eq!(
         event.actions,
-        vec![
-            BridgeAction::ReevaluateAccess,
-            BridgeAction::EmailAdmin,
-            BridgeAction::RoleQuarantine
-        ]
+        vec![BridgeAction::EmailAdmin, BridgeAction::Log]
     );
 }
 

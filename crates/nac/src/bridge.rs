@@ -66,11 +66,7 @@ pub fn map_alert_to_security_event(alert: &AlertEvent) -> Option<SecurityEvent> 
         return Some(SecurityEvent {
             event_id: EVENT_MALWARE_DETECTED,
             title: "Malware detected (YARA)",
-            actions: vec![
-                BridgeAction::ReevaluateAccess,
-                BridgeAction::EmailAdmin,
-                BridgeAction::RoleQuarantine,
-            ],
+            actions: vec![BridgeAction::EmailAdmin, BridgeAction::Log],
         });
     }
 

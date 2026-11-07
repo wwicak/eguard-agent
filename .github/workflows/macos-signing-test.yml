@@ -44,6 +44,9 @@ jobs:
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
+      - name: Enforce real-YARA toolchain
+        run: ${{ runner.os == 'Windows' && 'python' || 'python3' }} scripts/check_yara_toolchain.py
+
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
 

@@ -46,6 +46,18 @@ enum ShutdownReason {
 fn main() -> Result<()> {
     if std::env::args_os()
         .skip(1)
+        .any(|arg| arg == OsStr::new("--verify-yara-backend"))
+    {
+        let engine = detection::YaraEngine::new();
+        println!("{}", engine.status_handle().health());
+        anyhow::ensure!(
+            engine.backend_name() == "yara-x",
+            "release artifact does not contain the real YARA backend"
+        );
+        return Ok(());
+    }
+    if std::env::args_os()
+        .skip(1)
         .any(|arg| is_version_flag(arg.as_os_str()))
     {
         println!("{}", effective_agent_version());

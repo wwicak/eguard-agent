@@ -287,6 +287,7 @@ impl AgentRuntime {
             .metrics
             .detection_pipe_alert_suppressed_total
             .saturating_add(u64::from(detection_outcome.pipe_alert_suppressed));
+        self.buffer_yara_incomplete(&detection_outcome, now_unix)?;
 
         // Buffer IOC signals for cross-endpoint campaign correlation.
         if detection_outcome.signals.z1_exact_ioc || detection_outcome.signals.yara_hit {

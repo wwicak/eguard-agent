@@ -85,6 +85,9 @@ jobs:
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Enforce real-YARA toolchain
+        run: python3 scripts/check_yara_toolchain.py
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -467,20 +470,16 @@ jobs:
           path: ${{ runner.temp }}/sigma-qualification.json
           retention-days: 7
 
-      - name: Validate and deduplicate YARA rules
+      - name: Enforce exact licensed YARA pack and real-engine compilation
         run: |
-          mkdir -p /tmp/yara_validated
+          set -euo pipefail
           YARA_DIR="/tmp/artifacts/yara-collected"
-          if [ -d "$YARA_DIR" ] && [ "$(find "$YARA_DIR" -name '*.yar' -o -name '*.yara' 2>/dev/null | head -1)" ]; then
-            python threat-intel/processing/yara_validate.py \
-              --input "$YARA_DIR" \
-              --output /tmp/yara_validated \
-              --test-files threat-intel/tests/clean_files \
-              --deduplicate \
-              --source-priority yara-forge,elastic,gcti,reversinglabs,malpedia,bartblaze,inquest
-          else
-            echo "No YARA rules to validate"
-          fi
+          test -d "$YARA_DIR" || { echo '::error::Missing curated YARA collector artifact'; exit 1; }
+          mkdir -p /tmp/yara_validated
+          cp -a "$YARA_DIR/." /tmp/yara_validated/
+          cargo run --release -p detection --example yara_gate -- \
+            --rules /tmp/yara_validated --manifest threat-intel/yara-v1.json \
+            --metrics "$RUNNER_TEMP/bundle-yara-qualification.json"
 
       - name: Merge supplemental IOCs into curated set
         run: |
@@ -566,6 +565,12 @@ jobs:
             bundle/sigma "$RUNNER_TEMP/sigma-benign.json" \
             --manifest threat-intel/sigmahq-qualified-53423dac.txt
 
+      - name: Verify packaged YARA qualified set and attribution
+        run: |
+          cargo run --release -p detection --example yara_gate -- \
+            --rules bundle/yara --manifest threat-intel/yara-v1.json \
+            --metrics "$RUNNER_TEMP/packaged-yara-qualification.json"
+
       - name: IOC behavior quality gate (bundle)
         run: |
           python3 threat-intel/processing/ioc_behavior_quality_gate.py \
@@ -581,7 +586,7 @@ jobs:
         env:
           # The exact qualified id manifest replaces volume quotas.
           EGUARD_MIN_SIGMA: "0"
-          EGUARD_MIN_YARA: "600"
+          EGUARD_MIN_YARA: "10"
           EGUARD_MIN_IOC_HASH: "5000"
           EGUARD_MIN_IOC_DOMAIN: "300"
           EGUARD_MIN_IOC_IP: "800"
@@ -589,15 +594,15 @@ jobs:
           EGUARD_MIN_CVE_KEV: "50"
           EGUARD_MIN_SIGNATURE_TOTAL: "900"
           EGUARD_MIN_DATABASE_TOTAL: "5000"
-          EGUARD_MIN_YARA_SOURCES: "3"
+          EGUARD_MIN_YARA_SOURCES: "2"
           EGUARD_MIN_SIGMA_SOURCES: "2"
           EGUARD_MIN_SURICATA: "1000"
           EGUARD_MIN_ELASTIC: "100"
           EGUARD_REQUIRE_SURICATA: "true"
           EGUARD_REQUIRE_ELASTIC: "true"
-          EGUARD_REQUIRED_YARA_SOURCES: "yara-forge,gcti,reversinglabs"
+          EGUARD_REQUIRED_YARA_SOURCES: "mandiant,withsecure"
           EGUARD_REQUIRED_SIGMA_SOURCES: "rules,rules-emerging-threats"
-          EGUARD_MIN_YARA_SOURCE_RULES: "yara-forge=1,gcti=30,reversinglabs=100"
+          EGUARD_MIN_YARA_SOURCE_RULES: "mandiant=3,withsecure=6"
           EGUARD_MIN_SIGMA_SOURCE_RULES: ""
         run: |
           EXTRA_FLAGS=()

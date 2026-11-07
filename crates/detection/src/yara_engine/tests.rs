@@ -210,10 +210,10 @@ fn yara_default_exclusions_cover_runtime_cache_and_journal_paths() {
     );
 }
 
-#[cfg(feature = "yara-rust")]
+#[cfg(feature = "yara-x")]
 #[test]
 fn yara_rust_backend_compiles_and_scans() {
-    let mut backend = YaraRustBackend::new().expect("init yara backend");
+    let mut backend = real::RealYaraBackend::new(Arc::new(YaraStatus::default()));
     let loaded = backend
         .load_rules_str(
             r#"
@@ -325,4 +325,90 @@ fn verdict_cache_never_exceeds_entry_ceiling() {
         let len = engine.verdicts.lock().unwrap().len();
         assert!(len > 0 && len <= 512, "cache entries: {len}");
     }
+}
+
+#[test]
+fn cache_key_pins_file_identity_content_and_active_pack() {
+    let mut engine = YaraEngine::new();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("payload");
+    fs::write(&path, b"synthetic").unwrap();
+    let event:TelemetryEvent=serde_json::from_value(serde_json::json!({"ts_unix":1,"event_class":"ProcessExec","pid":1,"ppid":0,"uid":1000,"process":"fixture","parent_process":"fixture","session_id":1,"file_path":path,"file_write":false,"container_escape":false,"container_privileged":false})).unwrap();
+    assert!(engine.scan_event(&event).is_empty());
+    let old_pack = {
+        let cache = engine.verdicts.lock().unwrap();
+        let key = cache.keys().next().unwrap();
+        let expected: [u8; 32] = Sha256::digest(b"synthetic").into();
+        assert_eq!(key.1, expected);
+        let file = fs::File::open(event.file_path.as_ref().unwrap()).unwrap();
+        assert_eq!(
+            key.0,
+            FileKey::new(
+                event.file_path.as_ref().unwrap(),
+                &file,
+                &file.metadata().unwrap()
+            )
+            .unwrap()
+        );
+        key.2
+    };
+    engine
+        .load_rules_str(
+            "rule new_pack { strings: $a = \"synthetic\" condition: $a at 0 and filesize <= 128 }",
+        )
+        .unwrap();
+    assert_eq!(engine.scan_event(&event).len(), 1);
+    let cache = engine.verdicts.lock().unwrap();
+    let key = cache.keys().next().unwrap();
+    assert_ne!(key.2, old_pack);
+    assert_eq!(key.2, engine.backend.pack_hash());
+}
+
+#[cfg(feature = "yara-x")]
+#[path = "../../tests/support/yara_fixtures.rs"]
+mod curated_fixtures;
+
+#[cfg(feature = "yara-x")]
+#[test]
+fn missing_score_is_one_medium_and_69_70_eicar100_preserve_policy() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("payload");
+    let event:TelemetryEvent=serde_json::from_value(serde_json::json!({"ts_unix":1,"event_class":"FileOpen","pid":42,"ppid":1,"uid":1000,"process":"synthetic","parent_process":"test","session_id":42,"file_path":path,"file_write":true,"container_escape":false,"container_privileged":false})).unwrap();
+    for (metadata, expected) in [
+        ("", crate::Confidence::Medium),
+        ("meta: score = 69", crate::Confidence::Medium),
+        ("meta: score = 70", crate::Confidence::High),
+    ] {
+        fs::write(event.file_path.as_ref().unwrap(), b"malware-test-marker").unwrap();
+        let mut engine = crate::DetectionEngine::default_with_rules();
+        engine.load_yara_rules_str(&format!("rule eguard_fixture_suspicious_payload {{ {metadata} strings: $a = \"malware-test-marker\" condition: $a at 0 and filesize <= 128 }}")).unwrap();
+        let outcome = engine.process_event(&event);
+        assert_eq!(outcome.yara_hits.len(), 1);
+        assert_eq!(outcome.yara_hits[0].severity, expected);
+        assert_eq!(outcome.confidence, expected, "{metadata}");
+    }
+    let eicar = curated_fixtures::cases()
+        .into_iter()
+        .find(|case| case.0 == "eguard_eicar_test_file")
+        .unwrap()
+        .1;
+    fs::write(event.file_path.as_ref().unwrap(), eicar).unwrap();
+    let source = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../rules/yara/default.yar"),
+    )
+    .unwrap();
+    let mut engine = crate::DetectionEngine::default_with_rules();
+    engine.load_yara_rules_str(&source).unwrap();
+    let outcome = engine.process_event(&event);
+    assert_eq!(outcome.yara_hits.len(), 1);
+    assert_eq!(outcome.yara_hits[0].severity, crate::Confidence::High);
+    assert_eq!(outcome.confidence, crate::Confidence::High);
+}
+
+#[test]
+fn inline_score_metadata_keeps_the_fallback_restricted() {
+    let mut backend = SubstringYaraBackend::default();
+    backend.load_rules_str("rule fixture {\nmeta: score = 75\nstrings:\n$a = \"fixture\"\ncondition:\n$a at 0 and filesize <= 128\n}\n").unwrap();
+    assert_eq!(backend.scan_bytes("x", b"fixture").len(), 1);
+    assert!(backend.scan_bytes("x", b"prefix fixture").is_empty());
 }

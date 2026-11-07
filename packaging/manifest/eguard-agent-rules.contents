@@ -28,4 +28,15 @@
 /var/lib/eguard-agent/rules/sigma/windows_uac_bypass_signals.yml
 /var/lib/eguard-agent/rules/sigma/windows_wmi_event_subscription_persistence.yml
 /var/lib/eguard-agent/rules/yara/default.yar
+/var/lib/eguard-agent/rules/yara/THIRD-PARTY-NOTICES.txt
+/var/lib/eguard-agent/rules/yara/mandiant/APT_Loader_Win32_DShell_1.yar
+/var/lib/eguard-agent/rules/yara/mandiant/APT_Loader_Win_PGF_2.yar
+/var/lib/eguard-agent/rules/yara/mandiant/APT_Trojan_Linux_REDFLARE_1.yar
+/var/lib/eguard-agent/rules/yara/provenance.json
+/var/lib/eguard-agent/rules/yara/withsecure/Andariel_GopherRAT.yar
+/var/lib/eguard-agent/rules/yara/withsecure/Andariel_JelusRAT_PDB.yar
+/var/lib/eguard-agent/rules/yara/withsecure/Andariel_StarShellRAT.yar
+/var/lib/eguard-agent/rules/yara/withsecure/Andariel_UnderCrypt.yar
+/var/lib/eguard-agent/rules/yara/withsecure/SILKLOADER.yar
+/var/lib/eguard-agent/rules/yara/withsecure/tanglecrypt.yar
 /var/lib/eguard-agent/rules/ioc/default_ioc.txt

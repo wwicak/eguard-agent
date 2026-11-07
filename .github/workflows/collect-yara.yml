@@ -2,7 +2,7 @@ name: Collect YARA Rules
 
 on:
   schedule:
-    - cron: "0 3 * * *"  # Daily at 03:00 UTC
+    - cron: "0 3 * * *"
   workflow_dispatch:
 
 permissions:
@@ -15,173 +15,31 @@ concurrency:
 jobs:
   collect-yara:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      # ── Source 1: YARA Forge Core ──────────────────────────────────
-      # Community execution remains fail-closed until a real agent backend is qualified.
-      - name: Download YARA Forge Core ruleset
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Enforce real-YARA toolchain
+        run: python3 scripts/check_yara_toolchain.py
+      - name: Reproduce only the reviewed original-source BSD rule set
         run: |
-          mkdir -p /tmp/yara_collected/yara-forge
-          curl -sSfL --retry 3 --max-time 300 \
-            -o /tmp/yara-forge.zip \
-            "https://github.com/YARAHQ/yara-forge/releases/latest/download/yara-forge-rules-core.zip"
-          unzip -o /tmp/yara-forge.zip -d /tmp/yara_collected/yara-forge
-          COUNT=$(find /tmp/yara_collected/yara-forge -name '*.yar' -o -name '*.yara' | wc -l)
-          echo "YARA Forge Core: ${COUNT} rule files"
-
-      # ── Source 2: Elastic Security YARA ────────────────────────────
-      # Vendor-maintained rules for endpoint malware detection.
-      # NOT included in YARA Forge — genuinely new content.
-      - name: Clone Elastic protections-artifacts
+          python3 threat-intel/processing/yara_curate.py --output "$RUNNER_TEMP/yara-collected"
+      - name: Compile and recall-check every rule with the shipped real engine
         run: |
-          git clone --depth 1 --filter=blob:none --sparse \
-            https://github.com/elastic/protections-artifacts.git /tmp/elastic-pa
-          cd /tmp/elastic-pa && git sparse-checkout set yara
-          mkdir -p /tmp/yara_collected/elastic
-          if [ -d "/tmp/elastic-pa/yara" ]; then
-            cp -r /tmp/elastic-pa/yara/* /tmp/yara_collected/elastic/ 2>/dev/null || true
-          fi
-          COUNT=$(find /tmp/yara_collected/elastic -name '*.yar' -o -name '*.yara' 2>/dev/null | wc -l)
-          echo "Elastic YARA: ${COUNT} rule files"
-
-      # ── Source 3: Google Cloud Threat Intelligence YARA ────────────
-      # CobaltStrike, Sliver, and other C2 framework detection.
-      # NOT included in YARA Forge — genuinely new content.
-      - name: Clone Google GCTI
-        run: |
-          git clone --depth 1 https://github.com/chronicle/GCTI.git /tmp/gcti
-          mkdir -p /tmp/yara_collected/gcti
-          find /tmp/gcti -name '*.yar' -o -name '*.yara' | while read -r f; do
-            rel="${f#/tmp/gcti/}"
-            dir=$(dirname "$rel")
-            mkdir -p "/tmp/yara_collected/gcti/${dir}"
-            cp "$f" "/tmp/yara_collected/gcti/${dir}/"
-          done
-          COUNT=$(find /tmp/yara_collected/gcti -name '*.yar' -o -name '*.yara' 2>/dev/null | wc -l)
-          echo "Google GCTI YARA: ${COUNT} rule files"
-
-      # ── Source 4: ReversingLabs YARA ───────────────────────────────
-      # Focused coverage: exploits, infostealers, ransomware, trojans.
-      - name: Clone ReversingLabs YARA rules
-        run: |
-          git clone --depth 1 https://github.com/reversinglabs/reversinglabs-yara-rules.git /tmp/rl-yara
-          mkdir -p /tmp/yara_collected/reversinglabs
-          find /tmp/rl-yara -name '*.yar' -o -name '*.yara' | while read -r f; do
-            rel="${f#/tmp/rl-yara/}"
-            dir=$(dirname "$rel")
-            mkdir -p "/tmp/yara_collected/reversinglabs/${dir}"
-            cp "$f" "/tmp/yara_collected/reversinglabs/${dir}/"
-          done
-          COUNT=$(find /tmp/yara_collected/reversinglabs -name '*.yar' -o -name '*.yara' 2>/dev/null | wc -l)
-          echo "ReversingLabs YARA: ${COUNT} rule files"
-
-      # ── Source 5: Malpedia auto-generated signatures ────────────────
-      # Academic-quality rules auto-generated from malware family code.
-      # Covers hundreds of malware families from Fraunhofer FKIE.
-      - name: Download Malpedia auto-generated YARA
-        run: |
-          mkdir -p /tmp/yara_collected/malpedia
-          curl -sSfL --retry 3 --max-time 300 \
-            -o /tmp/malpedia.zip \
-            "https://malpedia.caad.fkie.fraunhofer.de/api/get/yara/auto/zip" 2>/dev/null || true
-          if [ -s /tmp/malpedia.zip ]; then
-            unzip -o /tmp/malpedia.zip -d /tmp/yara_collected/malpedia 2>/dev/null || true
-            COUNT=$(find /tmp/yara_collected/malpedia -name '*.yar' -o -name '*.yara' 2>/dev/null | wc -l)
-            echo "Malpedia auto-gen YARA: ${COUNT} rule files"
-          else
-            echo "Malpedia: download failed or requires auth, skipping"
-          fi
-
-      # ── Source 6: bartblaze community YARA ─────────────────────────
-      # Personal collection by malware researcher bartblaze.
-      - name: Clone bartblaze YARA rules
-        run: |
-          git clone --depth 1 https://github.com/bartblaze/Yara-rules.git /tmp/bartblaze 2>/dev/null || true
-          mkdir -p /tmp/yara_collected/bartblaze
-          if [ -d /tmp/bartblaze ]; then
-            find /tmp/bartblaze -name '*.yar' -o -name '*.yara' | while read -r f; do
-              rel="${f#/tmp/bartblaze/}"
-              dir=$(dirname "$rel")
-              mkdir -p "/tmp/yara_collected/bartblaze/${dir}"
-              cp "$f" "/tmp/yara_collected/bartblaze/${dir}/"
-            done
-            COUNT=$(find /tmp/yara_collected/bartblaze -name '*.yar' -o -name '*.yara' 2>/dev/null | wc -l)
-            echo "bartblaze YARA: ${COUNT} rule files"
-          fi
-
-      # ── Source 7: InQuest YARA rules ───────────────────────────────
-      # Threat hunting rules from InQuest Labs.
-      - name: Clone InQuest YARA rules
-        run: |
-          git clone --depth 1 https://github.com/InQuest/yara-rules.git /tmp/inquest 2>/dev/null || true
-          mkdir -p /tmp/yara_collected/inquest
-          if [ -d /tmp/inquest ]; then
-            find /tmp/inquest -name '*.yar' -o -name '*.yara' | while read -r f; do
-              rel="${f#/tmp/inquest/}"
-              dir=$(dirname "$rel")
-              mkdir -p "/tmp/yara_collected/inquest/${dir}"
-              cp "$f" "/tmp/yara_collected/inquest/${dir}/"
-            done
-            COUNT=$(find /tmp/yara_collected/inquest -name '*.yar' -o -name '*.yara' 2>/dev/null | wc -l)
-            echo "InQuest YARA: ${COUNT} rule files"
-          fi
-
-      - name: Summary
-        run: |
-          echo "=== YARA Collection Summary ==="
-          for src in yara-forge elastic gcti reversinglabs malpedia bartblaze inquest; do
-            COUNT=$(find "/tmp/yara_collected/${src}" -name '*.yar' -o -name '*.yara' 2>/dev/null | wc -l)
-            echo "  ${src}: ${COUNT} rule files"
-          done
-          TOTAL=$(find /tmp/yara_collected -name '*.yar' -o -name '*.yara' | wc -l)
-          echo "  TOTAL: ${TOTAL} rule files (pre-validation)"
-
-      - name: Enforce YARA collector coverage
-        env:
-          EGUARD_MIN_YARA_COLLECTED: "1000"
-          EGUARD_REQUIRED_YARA_SOURCES: "yara-forge,gcti,reversinglabs"
-        run: |
-          python3 - <<'PY'
-          import os
-          import pathlib
-          import sys
-
-          root = pathlib.Path('/tmp/yara_collected')
-          minimum = int(os.environ.get('EGUARD_MIN_YARA_COLLECTED', '1000'))
-          required_sources = [
-              s.strip() for s in os.environ.get('EGUARD_REQUIRED_YARA_SOURCES', '').split(',') if s.strip()
-          ]
-
-          total = sum(1 for _ in root.rglob('*.yar')) + sum(1 for _ in root.rglob('*.yara'))
-          print(f'total collected yara rules: {total}')
-
-          failures = []
-          if total < minimum:
-              failures.append(f'yara_count too low: {total} < {minimum}')
-
-          for source in required_sources:
-              src_dir = root / source
-              src_total = 0
-              if src_dir.is_dir():
-                  src_total = sum(1 for _ in src_dir.rglob('*.yar')) + sum(1 for _ in src_dir.rglob('*.yara'))
-              print(f'source {source}: {src_total}')
-              if src_total <= 0:
-                  failures.append(f'missing yara source coverage: {source}')
-
-          if failures:
-              print('yara collector coverage gate failed:')
-              for failure in failures:
-                  print(f'- {failure}')
-              sys.exit(1)
-
-          print('yara collector coverage gate passed')
-          PY
-
+          cargo run --release -p detection --example yara_gate -- \
+            --rules "$RUNNER_TEMP/yara-collected" --manifest threat-intel/yara-v1.json \
+            --metrics "$RUNNER_TEMP/yara-qualification.json"
       - name: Upload collected rules as artifact
         uses: actions/upload-artifact@v4
         with:
           name: yara-collected
-          path: /tmp/yara_collected/
+          path: ${{ runner.temp }}/yara-collected/
+          retention-days: 7
+      - name: Upload qualification log
+        uses: actions/upload-artifact@v4
+        with:
+          name: yara-collection-qualification
+          path: ${{ runner.temp }}/yara-qualification.json
           retention-days: 7

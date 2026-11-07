@@ -118,6 +118,7 @@ pub struct DetectionOutcome {
     pub kernel_integrity_indicators: Vec<String>,
     pub tamper_indicators: Vec<String>,
     pub yara_hits: Vec<YaraHit>,
+    pub yara_scan_incomplete: Vec<crate::YaraIncomplete>,
     pub anomaly: Option<AnomalyDecision>,
     pub layer1: Layer1EventHit,
     pub ml_score: Option<MlScore>,
@@ -139,6 +140,7 @@ impl Default for DetectionOutcome {
             kernel_integrity_indicators: Vec::new(),
             tamper_indicators: Vec::new(),
             yara_hits: Vec::new(),
+            yara_scan_incomplete: Vec::new(),
             anomaly: None,
             layer1: Layer1EventHit::default(),
             ml_score: None,
@@ -286,6 +288,7 @@ impl DetectionEngine {
         let layer1 = self.layer1.check_event(event);
         // RAFIX shared: unsupported fallback rules are rejected at load, not by name.
         let yara_hits = self.yara.scan_event(event);
+        let yara_scan_incomplete = self.yara.take_incomplete();
 
         // ── Layer 2: Temporal pattern correlation ───────────────
         self.pipe_alerts.observe(event);
@@ -414,8 +417,12 @@ impl DetectionEngine {
 
         // ── Confidence aggregation ──────────────────────────────
         // Deterministic confidence from L1–L4, then ML can escalate
+        // Preserve RAFIX grades; YARA confidence comes from the compiled rule score.
+        let mut policy_signals = signals.clone();
+        policy_signals.yara_hit = yara_hits.iter().any(|hit| hit.severity >= Confidence::High);
+        let yara_confidence = yara_hits.iter().map(|hit| hit.severity).max().unwrap_or(Confidence::None);
         // RAFIX shared: narrowed context subclasses are named MEDIUM, not standalone HIGH.
-        let base_confidence = confidence_policy(&signals)
+        let base_confidence = confidence_policy(&policy_signals).max(yara_confidence)
             .max(
                 if exploit_indicators
                     .iter()
@@ -465,6 +472,7 @@ impl DetectionEngine {
             kernel_integrity_indicators,
             tamper_indicators,
             yara_hits,
+            yara_scan_incomplete,
             anomaly,
             layer1,
             ml_score: Some(ml_result),
