@@ -78,5 +78,8 @@ fn exhausted_wall_budget_denies_full_file_read_permit() {
         control.available_us = -1_000_000;
         control.updated = Instant::now();
     }
-    assert!(backend.begin_file_scan(b"MZ").is_none(), "do not read/hash a file before rejecting exhausted wall budget");
+    assert!(
+        backend.begin_file_scan(b"MZ").is_none(),
+        "do not read/hash a file before rejecting exhausted wall budget"
+    );
 }

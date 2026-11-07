@@ -5,8 +5,11 @@ fn fixture() -> (
     TelemetryEvent,
     Arc<AtomicBool>,
 ) {
+    static PACK_ID: AtomicU64 = AtomicU64::new(0);
+    let pack_id = PACK_ID.fetch_add(1, Ordering::Relaxed);
     let mut engine = YaraEngine::new();
-    engine.load_rules_str("rule asynchronous_fixture { meta: score = 75 strings: $a = \"evil\" condition: $a at 0 and filesize <= 128 }").unwrap();
+    // Parallel tests must not share the real backend's per-pack scan budget.
+    engine.load_rules_str(&format!("rule asynchronous_fixture_{pack_id} {{ meta: score = 75 strings: $a = \"evil\" condition: $a at 0 and filesize <= 128 }}")).unwrap();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("sample");
     fs::write(&path, b"evil").unwrap();
