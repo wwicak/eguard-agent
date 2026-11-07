@@ -2374,10 +2374,12 @@ detection:
 fn yara_rule_match_escalates_to_definite() {
     let mut engine = DetectionEngine::default_with_rules();
     // RAFIX shared: test expectation (APACKS spec)
+    // YARA-REAL: score>=70 -> HIGH (design 38450d49)
     let loaded = engine
         .load_yara_rules_str(
             r#"
 rule eguard_fixture_suspicious_payload {
+  meta: score = 75
   strings:
     $a = "malware-test-marker"
   condition:
