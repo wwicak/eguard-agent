@@ -169,3 +169,36 @@ fn trusted_metadata_result_keeps_the_warmed_digest_without_reading() {
     assert_eq!(engine.status.file_read_count(), reads);
     assert_eq!(worker.inner.counters.depth.load(Ordering::Relaxed), 0);
 }
+
+#[test]
+fn write_notification_invalidates_only_its_own_path() {
+    let (engine, directory, first, active) = fixture();
+    mature(&engine);
+    let second_path = directory.path().join("second");
+    fs::write(&second_path, b"evil").unwrap();
+    let mut second = first.clone();
+    second.file_path = Some(second_path.to_string_lossy().into());
+    assert_eq!(engine.scan_event(&first).len(), 1);
+    assert_eq!(engine.scan_event(&second).len(), 1);
+    let first_key = FileKey::at_path(first.file_path.as_ref().unwrap()).unwrap();
+    let second_key = FileKey::at_path(second.file_path.as_ref().unwrap()).unwrap();
+    assert!(engine.cached_metadata(&first_key).is_some());
+    assert!(engine.cached_metadata(&second_key).is_some());
+    let worker = YaraWorker::new();
+    let release = hold(&worker);
+    let mut write = first.clone();
+    write.event_class = EventClass::FileOpen;
+    write.file_write = true;
+    worker.submit(engine.clone(), active.clone(), &write, None);
+    assert!(engine.cached_metadata(&first_key).is_none());
+    assert!(
+        engine.cached_metadata(&second_key).is_some(),
+        "unrelated mature verdict must survive"
+    );
+    let reads = engine.status.file_read_count();
+    worker.submit(engine.clone(), active, &second, None);
+    assert_eq!(engine.status.file_read_count(), reads);
+    assert_eq!(worker.inner.counters.hits.load(Ordering::Relaxed), 1);
+    release.send(()).unwrap();
+    worker.drain_for_tests();
+}
