@@ -371,12 +371,6 @@ impl YaraEngine {
         {
             return Vec::new();
         }
-        if event.file_write {
-            self.verdicts
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .clear();
-        }
         let Ok(mut file) = open_regular(Path::new(path)) else {
             return Vec::new();
         };
@@ -664,3 +658,5 @@ fn is_platform_system_path(path: &str) -> bool {
         || path.starts_with("/system/applications/")
         || path.starts_with("/usr/libexec/")
 }
+#[cfg(test)]
+mod cache_tests;
