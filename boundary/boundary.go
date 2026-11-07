@@ -131,26 +131,39 @@ func run(ctx context.Context, command func() *exec.Cmd) (core.Posture, error) {
 	if err := json.Unmarshal(out.Bytes(), &p); err != nil {
 		return core.Posture{}, errors.New("collector output invalid")
 	}
-	if p.AgentType != "nac" || p.ObservedAt.IsZero() || p.ObservedAt.After(time.Now()) || p.TTL <= 0 || p.TTL > 5*time.Minute || time.Since(started) > p.TTL || !p.Fresh(time.Now()) || len(p.Adapters) > 512 || len(p.AV.Products) > 64 || len(p.Firewall) != 3 || !validTri(p.Domain.PartOfDomain) || !validTri(p.Domain.Match) || !validTri(p.AV.Installed) || !validTri(p.AV.Running) || !validTri(p.AV.Updated) {
+	if time.Since(started) > p.TTL {
 		return core.Posture{}, errors.New("collector evidence invalid")
+	}
+	if err := ValidatePosture(p, time.Now()); err != nil {
+		return core.Posture{}, err
+	}
+	return p, nil
+}
+
+// ValidatePosture applies the service-side evidence contract to one collector
+// result. It is shared by the child boundary and by tests of every native
+// collector, so a collector can never emit a shape the service silently drops.
+func ValidatePosture(p core.Posture, now time.Time) error {
+	if p.AgentType != "nac" || p.ObservedAt.IsZero() || p.ObservedAt.After(now) || p.TTL <= 0 || p.TTL > 5*time.Minute || !p.Fresh(now) || len(p.Adapters) > 512 || len(p.AV.Products) > 64 || len(p.Firewall) != 3 || !validTri(p.Domain.PartOfDomain) || !validTri(p.Domain.Match) || !validTri(p.AV.Installed) || !validTri(p.AV.Running) || !validTri(p.AV.Updated) {
+		return errors.New("collector evidence invalid")
 	}
 	for _, profile := range []string{"domain", "private", "public"} {
 		e, ok := p.Firewall[profile]
 		if !ok || !validTri(e.Value) {
-			return core.Posture{}, errors.New("collector firewall evidence invalid")
+			return errors.New("collector firewall evidence invalid")
 		}
 	}
 	if len(p.Hostname) > 63 {
-		return core.Posture{}, errors.New("collector hostname invalid")
+		return errors.New("collector hostname invalid")
 	}
 	if p.Device != nil && (!validTri(p.Device.SecureBoot.Value) || !validTri(p.Device.BitlockerOS.Value) || !validTri(p.Device.PendingReboot.Value)) {
-		return core.Posture{}, errors.New("collector device evidence invalid")
+		return errors.New("collector device evidence invalid")
 	}
 	if p.Defender != nil && !validTri(p.Defender.Realtime.Value) {
-		return core.Posture{}, errors.New("collector defender evidence invalid")
+		return errors.New("collector defender evidence invalid")
 	}
-	if err := ValidateVendors(p.AV.Vendors, time.Now()); err != nil {
-		return core.Posture{}, err
+	if err := ValidateVendors(p.AV.Vendors, now); err != nil {
+		return err
 	}
 	primary := 0
 	for _, a := range p.Adapters {
@@ -158,13 +171,13 @@ func run(ctx context.Context, command func() *exec.Cmd) (core.Posture, error) {
 			primary++
 		}
 		if primary > 1 {
-			return core.Posture{}, errors.New("multiple primary adapters")
+			return errors.New("multiple primary adapters")
 		}
 		if !validTri(a.RouteStatus) || (a.ActiveRoute && a.RouteStatus != core.Yes) || (a.Kind != "unknown" && a.Kind != "virtual" && a.Kind != "physical") {
-			return core.Posture{}, errors.New("collector adapter evidence invalid")
+			return errors.New("collector adapter evidence invalid")
 		}
 	}
-	return p, nil
+	return nil
 }
 func validTri(t core.Tri) bool { return t == core.Yes || t == core.No || t == core.Unknown }
 

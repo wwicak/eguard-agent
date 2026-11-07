@@ -60,6 +60,15 @@ func (u UnixProvider) command(ctx context.Context, n string, a ...string) ([]byt
 	return u.Run(ctx, n, a...)
 }
 func ev(t core.Tri, s string) core.Evidence { return core.Evidence{Value: t, Source: s} }
+
+// hostFirewall reports one profile-less host firewall observation under the
+// three policy profiles the service boundary and server accept. Unknown stays
+// Unknown; the source names the observation so it is never mistaken for a
+// Windows per-profile reading.
+func hostFirewall(e core.Evidence) map[string]core.Evidence {
+	e.Source = "host firewall (profile-less): " + e.Source
+	return map[string]core.Evidence{"domain": e, "private": e, "public": e}
+}
 func applyRoute(p *core.Posture, name, source string) {
 	for i := range p.Adapters {
 		a := &p.Adapters[i]

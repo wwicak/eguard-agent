@@ -13,7 +13,7 @@ import (
 func (u UnixProvider) MacPosture(ctx context.Context, expected string) core.Posture {
 	p := Collect(u.Now())
 	p.Errors = nil
-	p.Firewall = map[string]core.Evidence{"host": ev(core.Unknown, "socketfilterfw"), "gatekeeper": ev(core.Unknown, "spctl")}
+	fw := ev(core.Unknown, "socketfilterfw")
 	if b, e := u.command(ctx, "/usr/bin/sw_vers"); e == nil {
 		if s := parseSWVers(string(b)); s != "" {
 			p.OS = s
@@ -34,19 +34,19 @@ func (u UnixProvider) MacPosture(ctx context.Context, expected string) core.Post
 	for _, c := range []struct {
 		kind, name string
 		args       []string
-	}{{"firewall", "/usr/libexec/ApplicationFirewall/socketfilterfw", []string{"--getglobalstate"}}, {"filevault", "/usr/bin/fdesetup", []string{"status"}}, {"gatekeeper", "/usr/sbin/spctl", []string{"--status"}}} {
+	}{{"firewall", "/usr/libexec/ApplicationFirewall/socketfilterfw", []string{"--getglobalstate"}}, {"filevault", "/usr/bin/fdesetup", []string{"status"}}} {
 		if b, e := u.command(ctx, c.name, c.args...); e == nil {
 			v := parseMacState(c.kind, string(b))
 			switch c.kind {
 			case "firewall":
-				p.Firewall["host"] = ev(v, "socketfilterfw")
+				fw = ev(v, "socketfilterfw")
 			case "filevault":
 				p.Device.BitlockerOS = ev(v, "FileVault")
-			case "gatekeeper":
-				p.Firewall["gatekeeper"] = ev(v, "spctl (not network firewall)")
 			}
 		}
 	}
+	// Gatekeeper is not a network firewall and has no posture field; it is not reported.
+	p.Firewall = hostFirewall(fw)
 	xp := "/Library/Apple/System/Library/CoreServices/XProtect.bundle/Contents/Info.plist"
 	if m := parseXMLPlist(u.read(xp)); m["CFBundleShortVersionString"] != "" {
 		updated := core.Unknown

@@ -59,7 +59,7 @@ func TestUnixProviderFixturesAndSignedInventoryGate(t *testing.T) {
 		t.Fatal(e)
 	}
 	p := u.LinuxPosture(context.Background(), "example.test")
-	if p.OS != "fixture-1" || p.Domain.Match != core.Yes || p.Device.BitlockerOS.Value != core.Yes || p.Device.SecureBoot.Value != core.Yes || p.Device.PendingReboot.Value != core.Yes || p.Firewall["host"].Value != core.Yes || p.AV.Result() != core.Yes {
+	if p.OS != "fixture-1" || p.Domain.Match != core.Yes || p.Device.BitlockerOS.Value != core.Yes || p.Device.SecureBoot.Value != core.Yes || p.Device.PendingReboot.Value != core.Yes || p.Firewall["public"].Value != core.Yes || p.AV.Result() != core.Yes {
 		t.Fatalf("%+v", p)
 	}
 	calls = nil

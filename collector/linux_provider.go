@@ -15,7 +15,7 @@ func (u UnixProvider) LinuxPosture(ctx context.Context, expected string) core.Po
 	now := u.Now()
 	p := Collect(now)
 	p.Errors = nil
-	p.Firewall = map[string]core.Evidence{"host": ev(core.Unknown, "linux firewall")}
+	fw := ev(core.Unknown, "linux firewall")
 	if h, e := os.Hostname(); e == nil {
 		p.Hostname = cleanText(h)
 	}
@@ -40,11 +40,12 @@ func (u UnixProvider) LinuxPosture(ctx context.Context, expected string) core.Po
 		if b, e := u.command(ctx, c.name, c.args...); e == nil {
 			v := parseUnixState(c.kind, string(b))
 			if v != core.Unknown {
-				p.Firewall["host"] = ev(v, c.kind)
+				fw = ev(v, c.kind)
 				break
 			}
 		}
 	}
+	p.Firewall = hostFirewall(fw)
 	p.Device = &core.DeviceEvidence{SecureBoot: ev(core.Unknown, "efi SecureBoot"), BitlockerOS: ev(core.Unknown, "luks root"), PendingReboot: ev(core.Unknown, "reboot-required")}
 	b := u.read("/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c")
 	if len(b) == 5 {
