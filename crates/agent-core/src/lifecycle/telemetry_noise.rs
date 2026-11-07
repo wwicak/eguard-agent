@@ -18,7 +18,7 @@ pub(super) struct TelemetryNoiseFilter {
 }
 
 impl TelemetryNoiseFilter {
-    pub(super) fn should_send(
+    fn should_send(
         &mut self,
         enabled: bool,
         event: &TelemetryEvent,
@@ -250,45 +250,58 @@ fn static_system_path(path: &str) -> bool {
 }
 
 impl AgentRuntime {
+    pub(super) fn should_send_evaluation(&mut self, evaluation: &super::TickEvaluation) -> bool {
+        self.should_send_detection(
+            &evaluation.detection_event,
+            &evaluation.detection_outcome,
+            &evaluation.event_envelope,
+        )
+    }
+
     // The noise filter is Linux-only (and sensitive_config_paths is unix-only), so other targets always send.
     #[cfg(not(target_os = "linux"))]
-    pub(super) fn should_send_evaluation(&mut self, _evaluation: &super::TickEvaluation) -> bool {
+    pub(super) fn should_send_detection(
+        &mut self,
+        _event: &TelemetryEvent,
+        _outcome: &DetectionOutcome,
+        _envelope: &grpc_client::EventEnvelope,
+    ) -> bool {
         true
     }
 
     #[cfg(target_os = "linux")]
-    pub(super) fn should_send_evaluation(&mut self, evaluation: &super::TickEvaluation) -> bool {
-        if evaluation
-            .detection_event
-            .file_path
-            .as_deref()
-            .is_some_and(|path| {
-                self.config
-                    .sensitive_config_paths()
-                    .iter()
-                    .any(|protected| protected == std::path::Path::new(path))
-                    || [
-                        self.config.detection_sigma_rules_dir.as_str(),
-                        self.config.detection_yara_rules_dir.as_str(),
-                        self.config.detection_ioc_dir.as_str(),
-                        self.config.detection_bundle_path.as_str(),
-                        self.config.offline_buffer_path.as_str(),
-                    ]
-                    .iter()
-                    .any(|protected| {
-                        !protected.is_empty() && std::path::Path::new(path).starts_with(protected)
-                    })
-            })
-        {
+    pub(super) fn should_send_detection(
+        &mut self,
+        event: &TelemetryEvent,
+        outcome: &DetectionOutcome,
+        envelope: &grpc_client::EventEnvelope,
+    ) -> bool {
+        if event.file_path.as_deref().is_some_and(|path| {
+            self.config
+                .sensitive_config_paths()
+                .iter()
+                .any(|protected| protected == std::path::Path::new(path))
+                || [
+                    self.config.detection_sigma_rules_dir.as_str(),
+                    self.config.detection_yara_rules_dir.as_str(),
+                    self.config.detection_ioc_dir.as_str(),
+                    self.config.detection_bundle_path.as_str(),
+                    self.config.offline_buffer_path.as_str(),
+                ]
+                .iter()
+                .any(|protected| {
+                    !protected.is_empty() && std::path::Path::new(path).starts_with(protected)
+                })
+        }) {
             return true;
         }
         self.telemetry_noise.should_send(
             cfg!(target_os = "linux") && self.config.telemetry_noise_filter,
-            &evaluation.detection_event,
-            &evaluation.detection_outcome,
-            &evaluation.event_envelope.severity,
-            &evaluation.event_envelope.rule_name,
-            evaluation.event_envelope.created_at_unix,
+            event,
+            outcome,
+            &envelope.severity,
+            &envelope.rule_name,
+            envelope.created_at_unix,
         )
     }
 }

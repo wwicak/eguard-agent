@@ -40,22 +40,12 @@ impl AgentRuntime {
             }
             let rule_name = Self::detection_rule_name(&outcome).unwrap_or_default();
             let severity = confidence_to_severity(confidence);
-            if !self.telemetry_noise.should_send(
-                cfg!(target_os = "linux") && self.config.telemetry_noise_filter,
-                &result.event,
-                &outcome,
-                severity,
-                &rule_name,
-                now_unix,
-            ) {
-                continue;
-            }
             let hits = outcome.yara_hits.iter().map(|hit| json!({"rule":hit.rule_name,
                 "source":hit.source,"literal":hit.matched_literal,"severity":confidence_to_severity(hit.severity)})).collect::<Vec<_>>();
             let mut event_json = serde_json::to_value(&result.event)?;
             event_json["event_class"] = result.event.event_class.as_str().into();
             event_json["observation_id"] = serde_json::to_value(&outcome.observation_id)?;
-            self.buffer.enqueue(EventEnvelope {
+            let envelope = EventEnvelope {
                 agent_id: self.config.agent_id.clone(), event_type: "alert".into(),
                 severity: severity.into(), rule_name: rule_name.clone(), created_at_unix: now_unix,
                 payload_json: json!({"observed_at_unix":now_unix,"event":event_json,
@@ -66,7 +56,10 @@ impl AgentRuntime {
                         "detection_layers":["YARA"],"yara_hits":hits,"signals":{"yara_hit":true}},
                     "audit":{"primary_rule_name":rule_name,"rule_type":"yara","detection_layers":["YARA"],"yara_hits":hits}
                 }).to_string(),
-            })?;
+            };
+            if self.should_send_detection(&result.event, &outcome, &envelope) {
+                self.buffer.enqueue(envelope)?;
+            }
         }
         Ok(())
     }

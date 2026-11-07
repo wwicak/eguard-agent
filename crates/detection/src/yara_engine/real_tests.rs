@@ -69,3 +69,14 @@ fn file_permit_serializes_io_and_charges_read_hash_and_scan_wall_time() {
         .file_active
         .load(std::sync::atomic::Ordering::Acquire));
 }
+
+#[test]
+fn exhausted_wall_budget_denies_full_file_read_permit() {
+    let backend = raw_backend("rule no_match { condition: false }");
+    {
+        let mut control = backend.compiled.as_ref().unwrap().control.lock().unwrap();
+        control.available_us = -1_000_000;
+        control.updated = Instant::now();
+    }
+    assert!(backend.begin_file_scan(b"MZ").is_none(), "do not read/hash a file before rejecting exhausted wall budget");
+}
