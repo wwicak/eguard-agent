@@ -302,10 +302,46 @@ fn process_and_file_cache_capacities_stay_in_half_megabyte_envelope() {
 
 #[test]
 // AC-EBP-106 AC-RES-016
-fn yara_engine_loads_three_megabyte_synthetic_rule_corpus() {
-    let mut engine = YaraEngine::new();
+fn yara_engine_enforces_bounded_active_rule_pack() {
+    // The AC's "~3 MB compiled" estimate is NOT qualified by this source-bound test.
+    let rules = |count: usize| {
+        (0..count)
+            .map(|i| format!(
+                "rule bulk_rule_{i:04} {{\n  strings:\n    $a = \"bulk-marker-{i:04}\"\n  condition:\n    $a at 0 and filesize <= 128\n}}\n"
+            ))
+            .collect::<String>()
+    };
+    let mut source = rules(64);
+    source.push_str("//");
+    source.push_str(&"A".repeat(524_288 - source.len() - 1));
+    source.push('\n');
+    assert_eq!(source.len(), 524_288);
 
-    // RAFIX shared: retain the 3 MiB/256-rule memory workload with supported literals.
+    let mut engine = YaraEngine::new();
+    assert_eq!(engine.load_rules_str(&source).expect("load bounded pack"), 64);
+    let hits = engine.scan_bytes("bounded-pack", b"bulk-marker-0000");
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].rule_name, "bulk_rule_0000");
+
+    source.push(' ');
+    assert_eq!(source.len(), 524_289);
+    let error = YaraEngine::new().load_rules_str(&source).unwrap_err();
+    assert!(error.to_string().contains("rule source byte limit exceeded"));
+
+    let source = rules(65);
+    assert!(source.len() < 524_288);
+    let error = YaraEngine::new().load_rules_str(&source).unwrap_err();
+    assert!(error.to_string().contains("rule count limit exceeded"));
+
+    let mut source = String::from("rule too_many_patterns {\n strings:\n");
+    for i in 0..1_025 {
+        source.push_str(&format!(" $p{i} = \"pattern-{i:04}\"\n"));
+    }
+    source.push_str(" condition: any of them\n}\n");
+    assert!(source.len() < 524_288);
+    let error = YaraEngine::new().load_rules_str(&source).unwrap_err();
+    assert!(error.to_string().contains("pattern count limit exceeded"));
+
     let mut source = String::new();
     for i in 0..256usize {
         source.push_str(&format!(
@@ -313,13 +349,10 @@ fn yara_engine_loads_three_megabyte_synthetic_rule_corpus() {
             "A".repeat(12 * 1024)
         ));
     }
-    let source_bytes = source.len();
-    assert!((2 * 1024 * 1024..=4 * 1024 * 1024).contains(&source_bytes));
-
-    let loaded = engine
-        .load_rules_str(&source)
-        .expect("load synthetic yara corpus");
-    assert_eq!(loaded, 256);
+    assert!((2 * 1024 * 1024..=4 * 1024 * 1024).contains(&source.len()));
+    let error = engine.load_rules_str(&source).unwrap_err();
+    assert!(error.to_string().contains("rule source byte limit exceeded"));
+    assert_eq!(engine.scan_bytes("bounded-pack", b"bulk-marker-0000"), hits);
 }
 
 #[test]
