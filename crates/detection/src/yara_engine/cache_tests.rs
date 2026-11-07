@@ -194,11 +194,23 @@ fn future_ctime_and_zero_ctime_are_never_metadata_trusted() {
     let (_, _, _directory, event) = fixture();
     let mut key = FileKey::at_path(event.file_path.as_ref().unwrap()).unwrap();
     let now = std::time::SystemTime::now();
+    let epoch_offset = if cfg!(windows) { 11_644_473_600i64 } else { 0 };
     key.changed = (
-        (now.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() + 60) as i64,
+        (now.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() + 60) as i64 + epoch_offset,
         0,
     );
     assert!(!key.mature_at(now));
+    // Pin a one-second-old change without depending on a real filesystem tick boundary.
+    let changed =
+        now.duration_since(std::time::UNIX_EPOCH).unwrap() - std::time::Duration::from_secs(1);
+    key.changed = (
+        changed.as_secs() as i64 + epoch_offset,
+        changed.subsec_nanos() as i64,
+    );
+    assert!(
+        !key.mature_at(now),
+        "one-second-old entries are not metadata-trusted"
+    );
     key.changed = (0, 0);
     assert!(!key.mature_at(now));
 }
