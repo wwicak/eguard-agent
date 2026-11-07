@@ -354,7 +354,7 @@ fn cache_key_pins_file_identity_content_and_active_pack() {
     };
     engine
         .load_rules_str(
-            "rule new_pack { strings: $a = \"synthetic\" condition: $a at 0 and filesize <= 128 }",
+            "rule new_pack {\nstrings:\n$a = \"synthetic\"\ncondition:\n$a at 0 and filesize <= 128\n}\n",
         )
         .unwrap();
     assert_eq!(engine.scan_event(&event).len(), 1);

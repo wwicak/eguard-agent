@@ -9,7 +9,7 @@ fn fixture() -> (
     let pack_id = PACK_ID.fetch_add(1, Ordering::Relaxed);
     let mut engine = YaraEngine::new();
     // Parallel tests must not share the real backend's per-pack scan budget.
-    engine.load_rules_str(&format!("rule asynchronous_fixture_{pack_id} {{ meta: score = 75 strings: $a = \"evil\" condition: $a at 0 and filesize <= 128 }}")).unwrap();
+    engine.load_rules_str(&format!("rule asynchronous_fixture_{pack_id} {{\nmeta:\nscore = 75\nstrings:\n$a = \"evil\"\ncondition:\n$a at 0 and filesize <= 128\n}}\n")).unwrap();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("sample");
     fs::write(&path, b"evil").unwrap();
