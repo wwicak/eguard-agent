@@ -90,7 +90,7 @@ func (a removal) Config() (uninstall.Config, error) {
 }
 func (a removal) StopService() error { return serviceCommand(a.run, "stop") }
 func (a removal) Cleanup(_ [32]byte) error {
-	return errors.Join(serviceCommand(a.run, "disable"), os.RemoveAll(a.root))
+	return cleanupUnix(runtime.GOOS, productionCleanupPaths(a.root), a.run)
 }
 func (a removal) Handoff(raw []byte) error {
 	p := filepath.Join(a.root, servicefactory.RequestFile)
@@ -119,5 +119,5 @@ func Remove(root string, auth []byte, run Runner) error {
 }
 func TerminalCleanup(root string, run Runner) error {
 	// Called only after the verified runner has closed journal and credential.
-	return errors.Join(serviceCommand(run, "disable"), os.RemoveAll(root))
+	return cleanupUnix(runtime.GOOS, productionCleanupPaths(root), run)
 }
