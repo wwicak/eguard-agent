@@ -1,0 +1,26 @@
+--- a/crates/agent-core/src/lifecycle/tests_f4a_golden.rs
++++ b/crates/agent-core/src/lifecycle/tests_f4a_golden.rs
+@@ -394,3 +394,10 @@
+     );
+     eprintln!("binary layout parity: {count} records");
+ }
++
++#[test]
++fn rafix_dump_golden_sources() {
++    for (i,line) in linux_codec_corpus(false).into_iter().enumerate() {
++        println!("RAFIX_SOURCE {}", serde_json::json!({"file":0,"row":i,"input":serde_json::from_str::<serde_json::Value>(&line).unwrap()}));
++    }
++}
+--- a/crates/agent-core/src/lifecycle/tests_f4c_golden.rs
++++ b/crates/agent-core/src/lifecycle/tests_f4c_golden.rs
+@@ -251,3 +251,10 @@
+     }
+     std::fs::remove_dir_all(root).unwrap();
+ }
++
++#[test]
++fn rafix_dump_golden_sources() {
++    for (i,(e,_,macos)) in pairs().into_iter().enumerate() {
++        println!("RAFIX_SOURCE {}", serde_json::json!({"file":1,"row":i,"input":{"platform":if macos {"macos"} else {"windows"},"type":format!("{:?}",e.event.event_type),"payload":e.event.payload,"fields":e.event.fields,"enriched_path":e.file_path,"enriched_secondary_path":e.file_path_secondary,"enriched_write":e.file_write}}));
++    }
++}

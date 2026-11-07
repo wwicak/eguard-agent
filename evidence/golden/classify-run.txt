@@ -1,0 +1,28 @@
+{
+  "base": "fe43f8a",
+  "unclassified": 0,
+  "verdict_changes": 0,
+  "category_counts": {
+    "f4a-legacy.json": {
+      "additive-image-unlink": 120,
+      "invocation-label": 6,
+      "write-intent": 12
+    },
+    "f4c-platforms.json": {
+      "additive-image-unlink": 5172,
+      "rename-destination": 140,
+      "write-intent": 396,
+      "invocation-label": 18
+    }
+  },
+  "sha256": {
+    "f4a-legacy.json": {
+      "before": "609d070f418a305ff202ee1ba1601c878c98731f35267d9f020e0c82740d82f2",
+      "after": "96d1064377b290f9ba54a7ac57f6890e18da0de2c89c3852f73f2fde71257158"
+    },
+    "f4c-platforms.json": {
+      "before": "16b1f807b298b187234f5e577903b19ea52e7b11d1bce0c62285ff655c4ff3ac",
+      "after": "33694a97894dce867b304903383ef41274346587b5a11064d2a8489eb3a0765b"
+    }
+  }
+}
