@@ -95,11 +95,11 @@ jobs:
 
           metrics = json.loads(path.read_text())
           build_ms = int(metrics.get('baseline_release_build_ms', 10**9))
-          # Cold GitHub-hosted Linux container runs have been observed around
-          # ~183s even when local preflight stays comfortably below 90s. Keep
-          # the guardrail tight enough to catch regressions, but high enough to
-          # avoid flaking release builds on routine runner variance.
-          max_build_ms = 210_000
+          # 2026-11-07: cold baseline for the real YARA-X engine dependency set.
+          # Samples (run: ms): 42384667217: 292656; 42384678619: 360494;
+          # 42384688659: 345464. Pre-YARA: 177254 ms (run 42225450304).
+          # Guardrail = max sample x 1.15, rounded up to 10 s (420000 ms).
+          max_build_ms = 420_000
           if build_ms > max_build_ms:
               print(f'release optimization preflight build too high: {build_ms} ms > {max_build_ms} ms')
               sys.exit(1)
