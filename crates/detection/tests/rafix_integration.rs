@@ -86,6 +86,17 @@ fn agent_stop_positive_and_excluded_ancestry() {
             );
         }
     }
+    for (worker, command, intermediate, control, stop_command, expected) in [
+        ("bash", "bash /var/lib/eguard-agent/update/synthetic/apply-agent-update-worker.sh", "sh", "systemctl", "systemctl stop eguard-agent", Confidence::None),
+        ("powershell.exe", r"powershell.exe -File C:\ProgramData\eGuard\update\apply-agent-update-worker.ps1", "cmd.exe", "sc.exe", "sc.exe stop eguard-agent", Confidence::None),
+        ("powershell.exe", r"powershell.exe -File C:\ProgramData\eGuard\update\different-script.ps1", "cmd.exe", "sc.exe", "sc.exe stop eguard-agent", Confidence::Medium),
+    ] {
+        let mut engine = DetectionEngine::default_with_rules();
+        engine.process_event(&event(98, 1, worker, "init", command));
+        engine.process_event(&event(100, 98, intermediate, worker, intermediate));
+        let out = engine.process_event(&event(200, 100, control, intermediate, stop_command));
+        assert_eq!(out.confidence, expected, "updater ancestor: {command}");
+    }
     for cmd in [
         "systemctl restart eguard-agent",
         "systemctl reload eguard-agent",

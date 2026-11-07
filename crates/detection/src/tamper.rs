@@ -54,7 +54,7 @@ pub fn detect_tamper_indicators(event: &TelemetryEvent) -> Vec<String> {
 pub(crate) fn is_update_worker(event: &TelemetryEvent) -> bool {
     matches!(
         crate::behavioral::basename(&event.process).as_str(),
-        "sh" | "bash" | "powershell.exe" | "pwsh.exe"
+        "sh" | "bash" | "powershell" | "pwsh"
     ) && event
         .command_line
         .as_deref()
