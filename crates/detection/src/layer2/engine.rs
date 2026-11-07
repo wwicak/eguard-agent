@@ -149,6 +149,8 @@ impl TemporalEngine {
             return hits;
         };
 
+        // The observed ancestry is identical for every subscribed rule; resolve it once.
+        let (candidates, candidate_count) = self.ancestor_candidates(event.pid, event.ppid);
         for &rule_id in rule_ids {
             let Some(automaton) = self.automata.get(rule_id) else {
                 continue;
@@ -162,22 +164,16 @@ impl TemporalEngine {
             } else {
                 event.pid
             };
-            let mut candidates = vec![event.pid];
-            let mut ancestor = event.ppid;
-            for _ in 0..4 {
-                if ancestor <= 1 {
-                    break;
-                }
-                candidates.push(ancestor);
-                ancestor = self.pid_parents.get(&ancestor).copied().unwrap_or(0);
-            }
-            let current_key = candidates.into_iter().find_map(|pid| {
-                let key = (rule_id, pid);
-                let state = self.states.get(&key)?;
-                let transition = &automaton.transitions[state.stage_idx];
-                self.link_compatible(state, transition, event)
-                    .then_some(key)
-            });
+            let current_key = candidates[..candidate_count]
+                .iter()
+                .copied()
+                .find_map(|pid| {
+                    let key = (rule_id, pid);
+                    let state = self.states.get(&key)?;
+                    let transition = &automaton.transitions[state.stage_idx];
+                    self.link_compatible(state, transition, event)
+                        .then_some(key)
+                });
             let mut key = current_key.unwrap_or((rule_id, initial_entity));
             let current = current_key.and_then(|key| self.states.get(&key).cloned());
 
@@ -304,6 +300,21 @@ impl TemporalEngine {
         hits.sort();
         hits.dedup();
         hits
+    }
+
+    fn ancestor_candidates(&self, pid: u32, ppid: u32) -> ([u32; 5], usize) {
+        let mut candidates = [pid, 0, 0, 0, 0];
+        let mut count = 1;
+        let mut ancestor = ppid;
+        for slot in &mut candidates[1..] {
+            if ancestor <= 1 {
+                break;
+            }
+            *slot = ancestor;
+            count += 1;
+            ancestor = self.pid_parents.get(&ancestor).copied().unwrap_or(0);
+        }
+        (candidates, count)
     }
 
     pub(crate) fn exec_epoch(&self, pid: u32) -> Option<u64> {
@@ -698,5 +709,23 @@ mod rule_names_tests {
             });
         }
         assert_eq!(engine.rule_names(), vec!["first", "second"]);
+    }
+}
+
+#[cfg(test)]
+mod rafix_ancestry_cost_tests {
+    use super::*;
+    #[test]
+    fn ancestry_candidates_preserve_observed_order_and_depth_bound() {
+        let mut e = TemporalEngine::new();
+        for (child, parent) in [(20, 30), (30, 40), (40, 50), (50, 60)] {
+            e.pid_parents.insert(child, parent);
+        }
+        let (pids, n) = e.ancestor_candidates(10, 20);
+        assert_eq!(&pids[..n], &[10, 20, 30, 40, 50]);
+        let (pids, n) = e.ancestor_candidates(10, 1);
+        assert_eq!(&pids[..n], &[10]);
+        let (pids, n) = e.ancestor_candidates(10, 70);
+        assert_eq!(&pids[..n], &[10, 70]);
     }
 }
