@@ -311,10 +311,16 @@ mod tests {
         assert_eq!(runtime.pending_response_reports.len(), 1);
         let report = &runtime.pending_response_reports[0].envelope;
         assert_eq!(report.action_type, "quarantine_file");
+        let reported_path = Path::new(report.file_path.as_deref().expect("reported file path"));
         assert_eq!(
-            report.file_path.as_deref(),
-            Some(eicar_path.to_string_lossy().as_ref())
+            reported_path.file_name(),
+            Some(std::ffi::OsStr::new("eicar.com"))
         );
+        // Windows TEMP may be an 8.3 short name while quarantine reports the canonical long name.
+        let reported_parent = fs::canonicalize(reported_path.parent().expect("reported parent"))
+            .expect("canonical reported parent");
+        let expected_parent = fs::canonicalize(&temp_root).expect("canonical temp root");
+        assert_eq!(reported_parent, expected_parent);
 
         let _ = fs::remove_dir_all(&temp_root);
         std::env::remove_var("EGUARD_TEST_QUARANTINE_DIR");
